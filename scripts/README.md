@@ -53,4 +53,33 @@ regulating the vehicle, not coasting on defaults.
 > 2/4-wheeled actors (we restrict NPCs to 4-wheel cars); and `actor.get_location()` returns the
 > origin until the first `world.tick()` after spawn (we settle one tick before anchoring the route).
 
+## Attack escalation demo — LiDAR spoof → unsafe stop
+
+`scripts/demo_attack_lidar_spoof.py` runs the **`CarlaBackend`** twice and shows the full
+attack-escalation path — the framework's core thesis — end to end:
+
+```
+attack signal (injected phantom object) -> component error (phantom track)
+                                        -> driving consequence (unsafe hard stop)
+```
+
+`LidarSpoofAttack` attaches purely as a **perception-input hook** (`backend.add_perception_hook`);
+the AV/backend code is identical between the clean and attacked runs.
+
+```bash
+python scripts/demo_attack_lidar_spoof.py
+```
+
+Reference-box result:
+
+```
+clean    : peak_tracks=0  brake_frames=0    ego still driving at 5.2 m/s
+attacked : peak_tracks=1  brake_frames=108  first brake at 8 m -> ego stopped (0.0 m/s)
+-> LIDAR-SPOOF ESCALATION DEMO: PASS
+```
+
+The attack logic has offline (no-CARLA) regression coverage in `tests/test_attack_seam.py`
+(injection geometry, world-fixed phantom, propagation to a confirmed track) — run under the
+`avsec` env; skipped automatically in core-only CI.
+
 All three scripts printed `PASS` on the reference box (torch 1.13.1+cu117).
