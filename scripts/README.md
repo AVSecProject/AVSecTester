@@ -27,22 +27,30 @@ python scripts/smoke_carla.py
 
 ```
 CARLA ground-truth -> Passthrough3DObjectDetector -> BasicBoxTracker3D
-                   -> forward-waypoint plan -> VehiclePIDController -> carla.VehicleControl
+                   -> route follower (CARLA lane waypoints) -> VehiclePIDController
+                   -> carla.VehicleControl
 ```
 
-The ego is driven entirely by avstack (NPC traffic uses autopilot). Perception runs in
-ground-truth mode, so **no model checkpoints are needed** — and that detector is exactly
-the seam where an attacked/real detector gets swapped in later.
+The ego is driven **entirely by avstack's own controller — no CARLA autopilot**. To prove the
+custom control has real authority (throttle *and* steering), the ego follows the actual road:
+each step targets a CARLA lane waypoint ahead, so the avstack lateral PID must steer the car
+through curves and junction turns. Perception runs in ground-truth mode, so **no model
+checkpoints are needed** — that detector is exactly the seam where an attacked/real detector
+gets swapped in later. NPC traffic uses autopilot.
 
 ```bash
-python scripts/demo_avstack_carla.py --frames 200 --npcs 30
+python scripts/demo_avstack_carla.py --frames 300 --npcs 15
 ```
 
-Reference-box result (4× L40S, CARLA 0.9.15): 30 detections → 30 confirmed tracks held for
-200 sync frames, ego accelerates 0→~5.3 m/s under PID control → `DEMO: PASS`.
+Reference-box result (4× L40S, CARLA 0.9.15): ego follows the lane through a ~90° junction turn
+over 300 sync frames — **cross-track ≤2.4 m**, ~112° cumulative heading change, peak steer 0.43,
+steady 5.2 m/s under PID, with 15 detections → 15 confirmed tracks → `DRIVE: PASS`. The steer
+trace peaks mid-turn (−0.33) and settles to ~0 on the straight, i.e. the controller is genuinely
+regulating the vehicle, not coasting on defaults.
 
-> Two upstream avstack quirks worked around in the demo (documented inline): `GoStraightPlanner`
-> swaps its `Pose(position, attitude)` args and raises (we inline the waypoint push); and
-> `get_obj_type_from_actor` only maps 2/4-wheeled actors (we restrict NPCs to 4-wheel cars).
+> Three upstream avstack/avcarla quirks worked around (documented inline): `GoStraightPlanner`
+> swaps its `Pose(position, attitude)` args and raises; `get_obj_type_from_actor` only maps
+> 2/4-wheeled actors (we restrict NPCs to 4-wheel cars); and `actor.get_location()` returns the
+> origin until the first `world.tick()` after spawn (we settle one tick before anchoring the route).
 
 All three scripts printed `PASS` on the reference box (torch 1.13.1+cu117).
