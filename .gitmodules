@@ -1,0 +1,9 @@
+[submodule "third_party/avstack-core"]
+	path = third_party/avstack-core
+	url = https://github.com/avstack-lab/avstack-core.git
+[submodule "third_party/avstack-api"]
+	path = third_party/avstack-api
+	url = https://github.com/avstack-lab/avstack-api.git
+[submodule "third_party/lib-avstack-carla"]
+	path = third_party/lib-avstack-carla
+	url = https://github.com/avstack-lab/lib-avstack-carla.git

@@ -1,3 +1,6 @@
+# Local development tracking (not part of the public repo)
+dev/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -216,3 +219,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# avstack sibling-name compatibility symlinks (see docs/SETUP.md)
+third_party/lib-avstack-core
+third_party/lib-avstack-api
