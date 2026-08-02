@@ -26,7 +26,10 @@ def registry() -> None:
     # Import plugin packages so their @register_module classes self-register.
     import avsectester.attacks
     import avsectester.backends.carla_backend
-    import avsectester.backends.dataset_backend  # noqa: F401
+    import avsectester.backends.dataset_backend
+    import avsectester.backends.mock_backend
+    import avsectester.defenses
+    import avsectester.metrics  # noqa: F401
 
     for name, reg in [
         ("attacks", ATTACKS),
@@ -51,10 +54,29 @@ def validate(spec_path: str) -> None:
 
 
 @app.command()
-def run(spec_path: str) -> None:
-    """Run a security experiment (not yet implemented — Phase 2)."""
-    typer.echo("runner lands in Phase 2 (see dev/PLAN.md)")
-    raise typer.Exit(code=1)
+def run(spec_path: str, report_path: str = "") -> None:
+    """Run a security experiment (clean vs attacked) and print the escalation report."""
+    # import plugin packages so backends/attacks/defenses/metrics self-register
+    import avsectester.attacks
+    import avsectester.backends.carla_backend
+    import avsectester.backends.dataset_backend
+    import avsectester.backends.mock_backend
+    import avsectester.defenses
+    import avsectester.metrics  # noqa: F401
+
+    from .core import ExperimentSpec
+    from .core.engine import ExperimentRunner
+    from .reports import render_report
+
+    spec = ExperimentSpec.from_yaml(spec_path)
+    result = ExperimentRunner(spec).run()
+    report = render_report(result)
+    typer.echo(report)
+    if report_path:
+        with open(report_path, "w", encoding="utf-8") as fh:
+            fh.write(report)
+        typer.echo(f"\n(report written to {report_path})")
+    raise typer.Exit(code=0 if result.metrics["escalated"] else 1)
 
 
 if __name__ == "__main__":

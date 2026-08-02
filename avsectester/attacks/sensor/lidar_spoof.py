@@ -36,11 +36,13 @@ class LidarSpoofAttack(AttackBase):
         target_xyz: list[float] | None = None,
         n_points: int = 200,
         mode: str = "inject",  # inject | remove | shift
+        score: float = 1.0,  # detector confidence of the phantom (defenses may gate on this)
         threat_model: ThreatModel | None = None,
     ) -> None:
         self.target_xyz = target_xyz or [12.0, 0.0, 0.0]  # [forward, left, up] in ego frame
         self.n_points = n_points
         self.mode = mode
+        self.score = score
         self._phantom_world = None  # cached absolute position (fixed obstacle in the world)
         self._phantom_id = 90001
         self.threat_model = threat_model or ThreatModel(
@@ -92,7 +94,7 @@ class LidarSpoofAttack(AttackBase):
         pos = Position(self._phantom_world, GlobalOrigin3D)
         att = Attitude(ego_state.attitude.q, GlobalOrigin3D)
         box = Box3D(pos, att, _PHANTOM_EXTENT, where_is_t="bottom")
-        phantom = ObjectState("car", ID=self._phantom_id)
+        phantom = ObjectState("car", ID=self._phantom_id, score=self.score)
         phantom.set(
             data.timestamp,
             pos,

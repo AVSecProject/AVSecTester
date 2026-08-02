@@ -35,14 +35,35 @@ docs/          ARCHITECTURE.md · SETUP.md
 
 ```bash
 git clone --recurse-submodules <repo> && cd AVSecTester
-python3.10 -m venv .venv && . .venv/bin/activate
+conda create -y -n avsec python=3.10 && conda activate avsec
 pip install -e ".[dev]"          # core-only; full avstack stack: see docs/SETUP.md
 pytest
 avsectester version
 ```
 
-Status: **pre-alpha scaffold.** See `docs/ARCHITECTURE.md` for design and the development
-plan for the phased roadmap.
+## Run an experiment
+
+An experiment is one YAML spec (system + scenario + attack + defense + metrics). The engine
+runs a **clean** baseline and an **attacked** pass, scores them with the escalation metric,
+and (if a defense is declared) an **attacked+defended** pass to measure mitigation.
+
+```bash
+# CARLA-free: uses MockBackend (needs the full avstack stack, no simulator)
+avsectester run configs/mock_experiment.yaml
+
+# closed-loop CARLA (needs a CARLA 0.9.15 server on :2000 — see docs/SETUP.md)
+avsectester run configs/carla_experiment.yaml
+```
+
+Both print an **attack-escalation report** — verdict, activation/propagation/persistence/
+safety metrics, and the `attack_surface → perception → tracking → control → consequence`
+DAG with per-stage evidence. The same LiDAR-spoof phantom escalates to an unsafe stop on
+either backend; the baseline `ScoreGateDefense` mitigates it.
+
+Runnable demos live in [`scripts/`](scripts/) (closed-loop drive, attack escalation, smoke tests).
+
+Status: **early alpha** — end-to-end engine (spec → backend → attack/defense hooks → escalation
+DAG → report) works on `MockBackend` and `CarlaBackend`. See `docs/ARCHITECTURE.md` for design.
 
 ## License
 

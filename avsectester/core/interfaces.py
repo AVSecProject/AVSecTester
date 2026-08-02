@@ -43,6 +43,15 @@ class Backend(ABC):
     def close(self) -> None:
         """Tear down actors/connections."""
 
+    def add_perception_hook(self, hook: Any) -> None:
+        """Attach an attack/defense/monitor at the perception-input seam.
+
+        Hooks are applied in registration order each tick as ``hook(data, ego_state=...)
+        -> data`` (avstack pre-hook shape). Backends that support live interception
+        override this; the default refuses so misuse is loud.
+        """
+        raise NotImplementedError(f"{type(self).__name__} has no perception-hook seam")
+
 
 class AttackBase(ABC):
     """An attack as a first-class entity (PROJECT.md 4.1).

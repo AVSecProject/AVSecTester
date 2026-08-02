@@ -27,8 +27,6 @@ from collections.abc import Callable, Iterator
 from types import SimpleNamespace
 from typing import Any
 
-import numpy as np
-
 from ..config import BACKENDS
 from ..core.interfaces import Backend
 
@@ -170,19 +168,9 @@ class CarlaBackend(Backend):
         self._t0 = None
 
     def _forward_hazard(self, ego_state: Any, tracks: Any) -> float | None:
-        """Return forward distance (m) to the nearest confirmed track in the ego corridor."""
-        from avstack.geometry import transformations as tforms
+        from .common import forward_hazard
 
-        R = tforms.get_rot_yaw_matrix(ego_state.attitude.yaw, "+z")
-        fwd, left = R[:, 0], R[:, 1]
-        ego_pos = ego_state.position.x
-        nearest = None
-        for tk in tracks:
-            d = np.asarray(tk.position.x) - ego_pos
-            dx, dy = float(np.dot(d, fwd)), float(np.dot(d, left))
-            if 0.0 < dx < self.brake_distance and abs(dy) < self.brake_corridor:
-                nearest = dx if nearest is None else min(nearest, dx)
-        return nearest
+        return forward_hazard(ego_state, tracks, self.brake_distance, self.brake_corridor)
 
     def step(self) -> dict[str, Any]:
         import carla

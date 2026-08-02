@@ -4,8 +4,10 @@ Consumes the Attack Escalation DAG + traces to produce an audit report: feasibil
 impact, uncertainty, scenario dependence, component-level root cause, and recommended
 mitigations.
 
-TODO(phase8): rootcause.py (attribution over the DAG) and audit.py (report generation +
-provenance capture).
+``render_report`` is the baseline markdown renderer; rootcause.py (DAG attribution) and
+audit.py (provenance capture) are TODO(phase8).
 """
 
-__all__: list = []
+from .report import render_report
+
+__all__ = ["render_report"]

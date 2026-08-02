@@ -8,7 +8,10 @@ DefenseBase). Initial categories (PROJECT.md 12.4):
   - runtime safety monitoring (tie to avstack RSS metric)
   - attack-aware fallback / mitigation
 
-TODO(phase5): implement TemporalConsistencyDefense as the first reference defense.
+``ScoreGateDefense`` is the first (baseline) reference defense; TemporalConsistency /
+cross-sensor variants are TODO(phase5).
 """
 
-__all__: list = []
+from .score_gate import ScoreGateDefense
+
+__all__ = ["ScoreGateDefense"]

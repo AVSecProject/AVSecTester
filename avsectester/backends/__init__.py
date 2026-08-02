@@ -7,7 +7,7 @@
 Imports are lazy so ``avsectester.core`` stays importable without the heavy stack.
 """
 
-__all__ = ["CarlaBackend", "DatasetBackend"]
+__all__ = ["CarlaBackend", "DatasetBackend", "MockBackend"]
 
 
 def __getattr__(name: str):  # PEP 562 lazy import
@@ -19,4 +19,8 @@ def __getattr__(name: str):  # PEP 562 lazy import
         from .dataset_backend import DatasetBackend
 
         return DatasetBackend
+    if name == "MockBackend":
+        from .mock_backend import MockBackend
+
+        return MockBackend
     raise AttributeError(name)
