@@ -223,3 +223,10 @@ __marimo__/
 # avstack sibling-name compatibility symlinks (see docs/SETUP.md)
 third_party/lib-avstack-core
 third_party/lib-avstack-api
+
+# Model weights are fetched via scripts/fetch_models.sh (kept out of git).
+# The ./models structure + README are tracked; the binaries are not.
+/models/**/*.pth
+/models/**/*.onnx
+/models/**/*.engine
+/models/**/*.bin
