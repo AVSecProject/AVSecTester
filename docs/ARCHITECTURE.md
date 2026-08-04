@@ -32,7 +32,7 @@ mmengine-style registry/config system; AVSecTester adds everything security-spec
 
 ## Key integration decisions
 
-1. **Build on avstack** (confirmed). avstack already bridges CARLA 0.9.13 + mmdetection3d +
+1. **Build on avstack** (confirmed). avstack already bridges CARLA 0.9.15 + mmdetection3d +
    datasets; its `security-sandbox` is stale, so the security layer is greenfield.
 2. **Non-invasive interception via hooks.** avstack modules run `_apply_pre_hooks` /
    `_apply_post_hooks` (the `@apply_hooks` decorator, `HOOKS` registry). AVSecTester
@@ -41,8 +41,10 @@ mmengine-style registry/config system; AVSecTester adds everything security-spec
    in avstack (`MetricsHook`).
 3. **Shared registry/config.** We reuse avstack's `Registry` so plugins build-from-config
    the same way avstack modules do, with a local fallback shim when avstack isn't installed.
-4. **One spec, many backends.** `ExperimentSpec` runs on `CarlaBackend` (closed-loop) or
-   `DatasetBackend` (offline) unchanged.
+4. **One standard, many modes.** A single `ExperimentSpec` runs unchanged across the planned
+   testing modes — componential (isolated module), closed-loop simulation (`CarlaBackend`,
+   simulator-agnostic), and hardware-in-the-loop — all attaching at the same backend seam. Today
+   `CarlaBackend` (closed-loop) and `MockBackend` (simulator-free) are implemented.
 
 ## Package map
 

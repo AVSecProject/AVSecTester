@@ -15,7 +15,7 @@ AVSecTester is the *security layer* on top of [avstack-lab](https://github.com/a
 vendored under `third_party/` as git submodules:
 
 - **avstack-core** — reconfigurable AV modules, geometry, sensors, registry/config, hooks, RSS metric
-- **lib-avstack-carla** — closed-loop CARLA 0.9.13 bridge
+- **lib-avstack-carla** — closed-loop CARLA 0.9.15 bridge
 - **avstack-api** — KITTI / nuScenes / CARLA dataset adapters
 
 Attacks, defenses, and monitors attach to avstack pipelines as **pre/post hooks** — no
