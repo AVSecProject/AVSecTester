@@ -11,6 +11,7 @@ Initial categories (PROJECT.md 12.3):
   v2x/      - collaborative-perception / V2X attacks (stretch)
 """
 
+from .perception.phantom_detection import PhantomDetectionAttack
 from .sensor.lidar_spoof import LidarSpoofAttack
 
-__all__ = ["LidarSpoofAttack"]
+__all__ = ["LidarSpoofAttack", "PhantomDetectionAttack"]
