@@ -1,17 +1,29 @@
-"""Attack plugins + execution engine (PLAN.md Phase 3).
+"""Attack plugins, organized by **attack vector** (the shared delivery mechanism).
 
 Attacks register with the ATTACKS registry and are hook-shaped (see core.interfaces.
-AttackBase): they attach to avstack modules as pre/post hooks at a declared insertion
-point (SensorData boundary or an inter-module edge).
+AttackBase). They are grouped by *vector* — the mechanism and toolkit they share — with one
+or more concrete *methods* per vector (see attacks/vector.py):
 
-Initial categories (PROJECT.md 12.3):
-  sensor/   - LiDAR spoofing/point manipulation, camera adversarial perturbation
-  physical/ - object-level physical attacks
-  localization/ - localization / map manipulation
-  v2x/      - collaborative-perception / V2X attacks (stretch)
+  lidar_spoofing/  - LiDAR-spoofing vector; methods: object spoofing (false positive),
+                     object removal (false negative). Shared tools in ``vector.py``.
+  perception/      - detection-level manipulation (e.g. phantom detection injection).
+
+Planned vectors: camera adversarial patch, GPS/localization spoofing, V2X message injection
+— each a package with its own ``vector.py`` toolkit + method classes.
 """
 
+from .lidar_spoofing import (
+    LidarSpoofAttack,
+    LidarSpoofingVector,
+    ObjectRemovalAttack,
+    ObjectSpoofingAttack,
+)
 from .perception.phantom_detection import PhantomDetectionAttack
-from .sensor.lidar_spoof import LidarSpoofAttack
 
-__all__ = ["LidarSpoofAttack", "PhantomDetectionAttack"]
+__all__ = [
+    "LidarSpoofAttack",
+    "LidarSpoofingVector",
+    "ObjectRemovalAttack",
+    "ObjectSpoofingAttack",
+    "PhantomDetectionAttack",
+]

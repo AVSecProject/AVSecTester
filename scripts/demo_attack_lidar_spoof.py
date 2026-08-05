@@ -21,7 +21,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from avsectester.attacks.sensor.lidar_spoof import LidarSpoofAttack
+from avsectester.attacks.lidar_spoofing import LidarSpoofAttack
 from avsectester.backends.carla_backend import CarlaBackend
 
 WARMUP = 15  # frames the ego spends accelerating from rest; ignore for min-speed
