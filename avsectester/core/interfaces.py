@@ -16,6 +16,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from .capability import StackProfile
 from .plugin import SecurityPlugin
 
 if TYPE_CHECKING:
@@ -45,6 +46,16 @@ class Backend(ABC):
     @abstractmethod
     def close(self) -> None:
         """Tear down actors/connections."""
+
+    def profile(self) -> StackProfile:
+        """Advertise which seams and capabilities this stack exposes.
+
+        A plugin's declared bindings are resolved against this profile
+        (:meth:`SecurityPlugin.resolve_binding`). Concrete backends override it to reflect
+        their configuration (e.g. ground-truth vs neural perception). The empty default
+        supports nothing, so an unconfigured backend fails resolution loudly.
+        """
+        return StackProfile()
 
     def attach(self, plugin: Any, seam: str = "perception_out") -> None:
         """Attach an attack/defense at a named ``seam`` of the pipeline.

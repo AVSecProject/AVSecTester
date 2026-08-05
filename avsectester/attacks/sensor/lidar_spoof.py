@@ -22,6 +22,8 @@ from __future__ import annotations
 from typing import Any
 
 from ...config import ATTACKS
+from ...core.binding import BindingSpec
+from ...core.capability import Capability
 from ...core.interfaces import AttackBase
 from ...core.threat_model import AccessLevel, Knowledge, ThreatModel
 
@@ -31,7 +33,17 @@ _PHANTOM_EXTENT = [1.6, 1.8, 4.0]
 
 @ATTACKS.register_module()
 class LidarSpoofAttack(AttackBase):
-    seam = "perception_input"  # object-level injection at the detector input
+    category = "sensor"
+    # Object-level injection: appends an ObjectState to the passthrough detector's input, so
+    # it needs a ground-truth perception stage. The raw-point realization (spray into the
+    # LiDAR cloud on a neural stack) is a higher-fidelity binding tracked for the
+    # optimization track; not yet implemented, so it is not declared here.
+    bindings = (
+        BindingSpec(
+            "perception_input", payload="objects",
+            requires={Capability.GT_PERCEPTION}, fidelity=1,
+        ),
+    )
 
     def __init__(
         self,

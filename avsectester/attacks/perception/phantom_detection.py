@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import Any
 
 from ...config import ATTACKS
+from ...core.binding import BindingSpec
 from ...core.interfaces import AttackBase
 from ...core.threat_model import AccessLevel, Knowledge, ThreatModel
 
@@ -27,7 +28,10 @@ _PHANTOM_EXTENT = [1.6, 1.8, 4.0]
 
 @ATTACKS.register_module()
 class PhantomDetectionAttack(AttackBase):
-    seam = "perception_out"  # attaches as a post-hook on the detector
+    category = "perception"
+    # Appends a detection to the detector's output; works on any detector (GT passthrough or
+    # neural), so it needs no special capability — only that a perception_out seam exists.
+    bindings = (BindingSpec("perception_out", payload="detections", fidelity=1),)
 
     def __init__(
         self,

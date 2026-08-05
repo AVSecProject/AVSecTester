@@ -84,6 +84,23 @@ class SecurityPlugin(ABC):
         """The seam name of the resolved binding, or ``None`` if not yet resolved."""
         return self._binding.seam if self._binding else None
 
+    @property
+    def primary_binding(self) -> BindingSpec | None:
+        """The highest-fidelity declared binding (the plugin's preferred realization)."""
+        return max(self.bindings, key=lambda b: b.fidelity) if self.bindings else None
+
+    @property
+    def seam(self) -> str | None:
+        """Convenience: the resolved seam if bound, else the primary binding's seam.
+
+        Lets callers read a plugin's default seam without a stack profile (e.g. scripts that
+        attach directly); the engine still resolves against the live profile before attaching.
+        """
+        if self._binding is not None:
+            return self._binding.seam
+        pb = self.primary_binding
+        return pb.seam if pb else None
+
     # -- lifecycle (default no-ops) -------------------------------------------
     def setup(self, spec: ExperimentSpec) -> None:
         """Prepare before a run (optional)."""

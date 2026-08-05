@@ -14,18 +14,41 @@ from __future__ import annotations
 from typing import Any
 
 from ..config import DEFENSES
-from ..core.interfaces import DefenseBase
+from ..core.binding import BindingSpec
+from ..core.capability import Capability
+from ..core.interfaces import DefenseBase, DefenseOutcome
 
 
 @DEFENSES.register_module()
 class ScoreGateDefense(DefenseBase):
-    seam = "perception_input"  # gates the detector input (same surface as the attack)
+    category = "input_sanitize"
+    # Gates the passthrough detector's object-level input by confidence. Only meaningful on a
+    # ground-truth stack (objects carry a score at the input); the neural-stack counterpart
+    # gates detections at perception_out (added with the perception-output defenses).
+    bindings = (
+        BindingSpec(
+            "perception_input", payload="objects",
+            requires={Capability.GT_PERCEPTION}, fidelity=1,
+        ),
+    )
 
     def __init__(self, threshold: float = 0.5) -> None:
         self.threshold = threshold
 
-    def apply(self, data: Any, ego_state: Any = None, **kwargs: Any) -> Any:
-        kept = [o for o in data if getattr(o, "score", 1.0) >= self.threshold]
+    def apply(self, data: Any, ego_state: Any = None, ctx: Any = None, **kwargs: Any) -> Any:
         from avstack.datastructs import DataContainer
 
+        kept, dropped = [], []
+        for o in data:
+            (kept if getattr(o, "score", 1.0) >= self.threshold else dropped).append(o)
+        self.record_outcome(
+            ctx,
+            DefenseOutcome(
+                seam=self.seam or "perception_input",
+                frame=getattr(ctx, "frame", 0),
+                kept=len(kept),
+                dropped=[getattr(o, "ID", None) for o in dropped],
+                reason=f"score < {self.threshold}",
+            ),
+        )
         return DataContainer(data.frame, data.timestamp, kept, getattr(data, "source_identifier", "def"))

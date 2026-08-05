@@ -138,6 +138,25 @@ class CarlaBackend(Backend):
         self._recorder = recorder
 
     # -- attack/defense/monitor attachment -------------------------------------
+    def profile(self):
+        """Advertise seams/capabilities for the configured perception mode.
+
+        Neural mode runs a real LiDAR + learned detector (only the detection-level seam is
+        wired today); ground-truth mode feeds object-level boxes through a passthrough
+        detector, exposing the object-level input seam as well.
+        """
+        from ..core.capability import Capability, StackProfile
+
+        if self.perception == "neural":
+            return StackProfile.of(
+                seams=["perception_out"],
+                capabilities=[Capability.NEURAL_PERCEPTION, Capability.RAW_LIDAR, Capability.TRACKER],
+            )
+        return StackProfile.of(
+            seams=["perception_input", "perception_out"],
+            capabilities=[Capability.GT_PERCEPTION, Capability.TRACKER],
+        )
+
     def attach(self, plugin: Callable, seam: str = "perception_out") -> None:
         """Attach at ``perception_input`` (object-level pre-loop) or ``perception_out``
         (detector post-hook via the avstack hook adapter)."""

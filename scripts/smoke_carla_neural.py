@@ -23,7 +23,7 @@ def _run(attack, frames: int):
     be.build(None)
     if attack is not None:
         attack.reset()
-        be.attach(attack, attack.seam)
+        be.attach(attack, attack.resolve_binding(be.profile()).seam)
     recs = []
     try:
         recs = list(be.run())

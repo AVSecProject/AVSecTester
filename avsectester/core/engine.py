@@ -53,16 +53,38 @@ class ExperimentRunner:
         return DEFENSES.build(dict(self.spec.defense.spec))
 
     # -- one pass --------------------------------------------------------------
+    def _attach(self, backend, plugin) -> str:
+        """Resolve the plugin's binding against the backend's stack profile and attach it.
+
+        Falls back to a legacy ``seam`` attribute for plugins that predate the binding model.
+        Returns the seam the plugin bound to.
+        """
+        if getattr(plugin, "bindings", ()):
+            seam = plugin.resolve_binding(backend.profile()).seam
+        else:
+            seam = getattr(plugin, "seam", "perception_input")
+        backend.attach(plugin, seam)
+        return seam
+
     def _run(self, run_id: str, attack=None, defense=None) -> Trace:
+        from .binding import seams_downstream_of
+
         backend = self._backend()
         backend.build(self.spec)
+        attack_seam = None
         if attack is not None:
             if hasattr(attack, "reset"):
                 attack.reset()
-            backend.attach(attack, getattr(attack, "seam", "perception_input"))  # inject first
+            attack_seam = self._attach(backend, attack)  # inject first
         if defense is not None:
-            # ... then sanitize at the defense's seam (default: same as the attack surface)
-            backend.attach(defense, getattr(defense, "seam", "perception_input"))
+            # ... then sanitize at/downstream of the attack surface (an upstream sanitizer
+            # can never see the injected payload).
+            defense_seam = self._attach(backend, defense)
+            if attack_seam is not None and defense_seam not in seams_downstream_of(attack_seam):
+                raise ValueError(
+                    f"defense binds at {defense_seam!r}, upstream of the attack at "
+                    f"{attack_seam!r}; it cannot observe the injected payload"
+                )
         try:
             records = list(backend.run())
         finally:
