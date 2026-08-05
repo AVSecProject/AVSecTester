@@ -24,35 +24,23 @@ So weights live here, and stock avstack finds them with no edits to vendored cod
 
 ## Auto-downloaded (public)
 
-| Model | Dataset | File |
-|---|---|---|
-| PointPillars (SECFPN) | `kitti` | `checkpoints/kitti/hv_pointpillars_secfpn_6x8_160e_kitti-3d-3class_20220301_150306-37dc2420.pth` |
+| Model | Dataset | Source | File |
+|---|---|---|---|
+| PointPillars (SECFPN) | `kitti` | OpenMMLab | `checkpoints/kitti/hv_pointpillars_secfpn_6x8_160e_kitti-3d-3class_...pth` |
+| PointPillars (FPN) | `carla-vehicle` | avstack-lab (Globus) | `work_dirs/pointpillars_hv_fpn_sbn-all_8xb4-2x_carla-3d-vehicle/` |
 
-Selected in a spec/detector as `{"model": "pointpillars", "dataset": "kitti"}`. KITTI-trained
-weights run on CARLA LiDAR with a domain gap; they prove the real neural path end to end.
-For deployment-grade CARLA results, use the CARLA-trained weights below.
+- `{"model": "pointpillars", "dataset": "carla-vehicle"}` is the **CARLA-trained** detector
+  (classes car/bicycle/truck/motorcycle). Verified on live CARLA: detects an NPC 10 m ahead at
+  ~0.76 confidence, correct location. **Use this for CARLA.** Match avstack's default `CarlaLidar`
+  (32-beam) since the model was trained on it.
+- `{"model": "pointpillars", "dataset": "kitti"}` runs on any cloud but is **near-useless on CARLA
+  LiDAR** (severe domain gap: misses vehicles, many false positives). Kept only as a generic
+  real-neural-path check on KITTI data.
 
-## CARLA-trained weights (you provide)
-
-These are avstack-lab's own trained weights and are **not** on a public CDN. Obtain them from
-avstack-lab and drop each mmengine run directory in as-is (it already contains the config,
-`epoch_*.pth`, and a `last_checkpoint` file). avstack expects these exact directory names:
-
-| Dataset id | Directory (under `models/work_dirs/`) |
-|---|---|
-| `carla-vehicle` | `pointpillars_hv_fpn_sbn-all_8xb4-2x_carla-3d-vehicle/` |
-| `carla-joint` | `pointpillars_hv_fpn_sbn-all_8xb4-2x_carla-3d-joint/` |
-
-Each directory must contain:
-
-```
-pointpillars_hv_fpn_sbn-all_8xb4-2x_carla-3d-vehicle/
-  pointpillars_hv_fpn_sbn-all_8xb4-2x_carla-3d-vehicle.py   # config
-  epoch_XX.pth                                              # weights
-  last_checkpoint                                           # text: absolute path to epoch_XX.pth
-```
-
-Then select `{"model": "pointpillars", "dataset": "carla-vehicle"}` (or `carla-joint`).
+The CARLA `work_dirs/<run>/` directory holds the config `.py`, the `.pth`, and a `last_checkpoint`
+text file (absolute path to the `.pth`) that avstack reads to resolve epoch `latest`. All of it is
+produced by `scripts/fetch_models.sh`. Note: avstack advertises `carla-joint`/`carla-pedestrian`
+too, but only `carla-vehicle` and `carla-infrastructure` weights exist on the endpoint.
 
 ## Verify
 

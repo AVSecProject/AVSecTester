@@ -230,3 +230,6 @@ third_party/lib-avstack-api
 /models/**/*.onnx
 /models/**/*.engine
 /models/**/*.bin
+# fetched CARLA work_dirs (config + weights + last_checkpoint) are all artifacts
+/models/work_dirs/*
+!/models/work_dirs/.gitkeep
