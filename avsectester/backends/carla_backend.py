@@ -55,9 +55,25 @@ def build_lane_route(start_wp: Any, n_points: int, step: float = 2.0) -> list:
     return route
 
 
+class _Sink:
+    """Minimal stand-in for avstack's SensorDataManager: keep only the latest frame."""
+
+    def __init__(self) -> None:
+        self.latest = None
+
+    def push(self, data: Any) -> None:
+        self.latest = data
+
+
 @BACKENDS.register_module()
 class CarlaBackend(Backend):
-    """Closed-loop CARLA execution backend."""
+    """Closed-loop CARLA execution backend.
+
+    ``perception="groundtruth"`` feeds ground-truth NPC boxes through a passthrough detector
+    (perfect, simulator-cheap baseline). ``perception="neural"`` attaches a real ``CarlaLidar``
+    and runs an mmdet3d detector (default the CARLA-trained ``carla-vehicle`` PointPillars) on
+    the point cloud each tick -- genuine neural perception in the loop.
+    """
 
     def __init__(
         self,
@@ -71,6 +87,11 @@ class CarlaBackend(Backend):
         ego_vehicle: str = "vehicle.tesla.model3",
         brake_distance: float = 8.0,
         brake_corridor: float = 2.5,
+        perception: str = "groundtruth",
+        nn_model: str = "pointpillars",
+        nn_dataset: str = "carla-vehicle",
+        nn_threshold: float = 0.3,
+        gpu: int = 0,
     ) -> None:
         self.connect_ip = connect_ip
         self.connect_port = connect_port
@@ -82,9 +103,16 @@ class CarlaBackend(Backend):
         self.ego_vehicle = ego_vehicle
         self.brake_distance = brake_distance
         self.brake_corridor = brake_corridor
+        self.perception = perception
+        self.nn_model = nn_model
+        self.nn_dataset = nn_dataset
+        self.nn_threshold = nn_threshold
+        self.gpu = gpu
 
         self._perception_hooks: list[Callable] = []
         self._ctx = None
+        self._lidar = None
+        self._sink = None
         self._client = None
         self._world = None
         self._orig_settings = None
@@ -165,7 +193,10 @@ class CarlaBackend(Backend):
 
         from ..hooks import RunContext
 
-        self._perception = Passthrough3DObjectDetector()
+        if self.perception == "neural":
+            self._setup_neural(world)
+        else:
+            self._perception = Passthrough3DObjectDetector()
         self._tracker = BasicBoxTracker3D()
         self._ctx = RunContext(run_id="carla")
         self._controller = VehiclePIDController(
@@ -177,14 +208,95 @@ class CarlaBackend(Backend):
         self._frame = 0
         self._t0 = None
 
+    def _setup_neural(self, world: Any) -> None:
+        """Attach a real CarlaLidar to the ego and build the neural detector.
+
+        Uses a minimal parent stub (world/actor/reference/ID/sensor_data_manager sink) so we
+        reuse avcarla's coordinate-correct ``LidarData`` without its full actor framework.
+        """
+        from types import SimpleNamespace
+
+        from avcarla.geometry import CarlaReferenceFrame
+        from avcarla.sensors import CarlaLidar
+        from avstack.geometry import GlobalOrigin3D
+        from avstack.modules.perception.object3d import MMDetObjectDetector3D
+
+        egT = self._ego.get_transform()
+        ego_ref = CarlaReferenceFrame(
+            reference=GlobalOrigin3D,
+            location=(egT.location.x, egT.location.y, egT.location.z),
+            rotation=(egT.rotation.roll, egT.rotation.pitch, egT.rotation.yaw),
+        )
+        self._sink = _Sink()
+        host = SimpleNamespace(
+            world=world, actor=self._ego, reference=ego_ref, ID=self._ego.id,
+            sensor_data_manager=self._sink,
+        )
+        client_stub = SimpleNamespace(map=world.get_map())
+        # default avstack CarlaLidar (32-beam) -- the sensor the carla-vehicle model trained on
+        self._lidar = CarlaLidar(
+            parent=host, client=client_stub,
+            rotation_frequency=1.0 / self.fixed_delta_seconds, range=70.0,
+        )
+        snap = world.get_snapshot()
+        self._lidar.initialize(snap.timestamp.elapsed_seconds, snap.frame)
+        self._perception = MMDetObjectDetector3D(
+            model=self.nn_model, dataset=self.nn_dataset, gpu=self.gpu, threshold=self.nn_threshold,
+        )
+
     def _forward_hazard(self, ego_state: Any, tracks: Any) -> float | None:
         from .common import forward_hazard
 
         return forward_hazard(ego_state, tracks, self.brake_distance, self.brake_corridor)
 
+    def _neural_hazard(self, detections: Any) -> float | None:
+        """Nearest forward detection within the brake corridor, in the ego/sensor frame."""
+        best = None
+        for d in detections:
+            p = d.position.x  # [forward, left, up] relative to the ego-mounted lidar
+            in_corridor = 0.0 < p[0] < self.brake_distance and abs(p[1]) < self.brake_corridor
+            if in_corridor and (best is None or p[0] < best):
+                best = float(p[0])
+        return best
+
+    def _perceive(self, frame: int, t: float, ego_state: Any):
+        """Return (n_input, detections, confirmed_tracks, hazard) for the current tick."""
+        from avstack.datastructs import DataContainer
+
+        if self.perception == "neural":
+            data = self._sink.latest
+            self._ctx.tick(frame, t, ego_state=ego_state, ground_truth=None)
+            if data is None:
+                return 0, [], [], None
+            n_input = len(self._sink.latest.data.raw_data) // 16  # 4 float32 per point
+            detections = self._perception(data, frame=frame)  # perception_out hooks fire here
+            try:
+                self._tracker(detections, platform=data.calibration.reference)
+                confirmed = self._tracker.tracks_confirmed
+            except Exception:  # noqa: BLE001 - tracking is best-effort in the sensor frame
+                confirmed = detections
+            return n_input, detections, confirmed, self._neural_hazard(detections)
+
+        # ground-truth perception
+        gt_objects = []
+        for npc in self._npcs:
+            if npc.is_alive:
+                try:
+                    gt_objects.append(carla_actor_to_object_state(npc, t))
+                except NotImplementedError:
+                    continue
+        data = DataContainer(frame, t, gt_objects, "carla_gt")
+        self._ctx.tick(frame, t, ego_state=ego_state, ground_truth=gt_objects)
+        for hook in self._perception_hooks:  # perception_input seam (object level)
+            data = hook(data, ego_state=ego_state)
+        n_input = len(data)
+        detections = self._perception(data, frame=frame)  # perception_out hooks fire here
+        self._tracker(detections, platform=self._global_origin())
+        confirmed = self._tracker.tracks_confirmed
+        return n_input, detections, confirmed, self._forward_hazard(ego_state, confirmed)
+
     def step(self) -> dict[str, Any]:
         import carla
-        from avstack.datastructs import DataContainer
         from avstack.modules.planning.types import Waypoint
 
         world, ego = self._world, self._ego
@@ -196,26 +308,8 @@ class CarlaBackend(Backend):
         t = t_abs - self._t0
         ego_state = carla_actor_to_object_state(ego, t)
 
-        # ---- perception input: ground-truth NPC boxes ----
-        gt_objects = []
-        for npc in self._npcs:
-            if npc.is_alive:
-                try:
-                    gt_objects.append(carla_actor_to_object_state(npc, t))
-                except NotImplementedError:
-                    continue
-        data = DataContainer(frame, t, gt_objects, "carla_gt")
-
-        # ---- attack/defense/monitor hooks on the perception INPUT ----
-        self._ctx.tick(frame, t, ego_state=ego_state, ground_truth=gt_objects)
-        for hook in self._perception_hooks:
-            data = hook(data, ego_state=ego_state)
-        n_input = len(data)
-
-        # ---- perception + tracking (perception_out hooks fire inside this call) ----
-        detections = self._perception(data, frame=frame)
-        self._tracker(detections, platform=self._global_origin())
-        confirmed = self._tracker.tracks_confirmed
+        # ---- perception (groundtruth or neural) + attack/defense hooks ----
+        n_input, detections, confirmed, hazard = self._perceive(frame, t, ego_state)
 
         # ---- route follow (pure pursuit) ----
         best, best_d = self._idx, 1e9
@@ -230,7 +324,6 @@ class CarlaBackend(Backend):
         self._plan.clear()
         self._plan.push(ego_state.position.distance(target.position), Waypoint(target, self.target_speed))
         ctrl = self._controller(ego_state, self._plan)
-        hazard = self._forward_hazard(ego_state, confirmed)
         throttle, brake = float(ctrl.throttle), float(ctrl.brake)
         if hazard is not None:
             throttle, brake = 0.0, 1.0
@@ -264,6 +357,8 @@ class CarlaBackend(Backend):
         import carla
 
         try:
+            if self._lidar is not None:
+                self._lidar.destroy()  # stop the sensor callback before destroying actors
             if self._tm is not None:
                 self._tm.set_synchronous_mode(False)
             if self._world is not None and self._orig_settings is not None:

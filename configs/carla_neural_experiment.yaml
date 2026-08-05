@@ -1,0 +1,48 @@
+# Closed-loop CARLA experiment with REAL neural perception (needs a CARLA 0.9.15 server
+# on :2000 and the carla-vehicle weights: ./scripts/fetch_models.sh).
+#   avsectester run configs/carla_neural_experiment.yaml
+#
+# The ego perceives NPCs via the CARLA-trained PointPillars detector on a real CarlaLidar.
+# A detection-level phantom (perception_out seam) forces an unsafe stop.
+# (A perception_out defense to measure mitigation is a follow-up.)
+name: phantom_detection_brake_carla_neural
+
+system:
+  name: carla_av_neural
+  pipeline: {}
+  access_level: graybox
+
+scenario:
+  backend:
+    type: CarlaBackend
+    connect_ip: 127.0.0.1
+    connect_port: 2000
+    perception: neural           # CarlaLidar -> MMDetObjectDetector3D
+    nn_model: pointpillars
+    nn_dataset: carla-vehicle    # CARLA-trained weights (fetch_models.sh)
+    nn_threshold: 0.3
+    n_npcs: 8
+    frames: 60
+    target_speed: 6.0
+    brake_distance: 8.0
+  initial_conditions:
+    frames: 60
+
+attack:
+  spec:
+    type: PhantomDetectionAttack
+    target_xyz: [6.0, 0.0, -1.5]   # 6 m ahead (inside the brake corridor), ego frame
+    score: 0.9
+  threat_model:
+    goal: Emit a phantom obstacle detection to induce unsafe braking.
+    knowledge: graybox
+    access: [sensor, software]
+    target: ego 3D object detector output
+    capabilities: [inject_false_detection]
+    constraints: [obj_type_in_detector_whitelist]
+    success_criteria: Phantom detection confirmed -> ego decelerates hard.
+
+evaluation:
+  metrics:
+    - type: EscalationMetric
+  repetitions: 1
