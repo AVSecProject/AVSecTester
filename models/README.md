@@ -52,6 +52,19 @@ Each CARLA `work_dir` holds the config `.py`, the `.pth`, and (for the epoch-`la
 layouts) a `last_checkpoint` text file (absolute path to the `.pth`) that avstack reads. All
 of it is produced by `scripts/fetch_models.sh`.
 
+## External CARLA datasets
+
+- **nuCarla** — `third_party/nuCarla` (git submodule of
+  [michigan-traffic-lab/nuCarla](https://github.com/michigan-traffic-lab/nuCarla)). A
+  nuScenes-format, **camera-BEV** CARLA dataset (9 maps, 14 weathers, 6 classes) plus four
+  pretrained BEV detectors (BEVFormer / PETR / BEVDet / FastBEV, weights on the repo's GitHub
+  releases). The image data lives on
+  [HuggingFace](https://huggingface.co/datasets/zhijieq/nuCarla); fetch it with the repo's
+  `download.sh` (Town01–10 / Mcity / Metadata zips). Keep the downloaded data **out of git**
+  — put it under a git-ignored `data/` dir (repo root `/data/` is ignored) or inside the
+  submodule (its own `.gitignore` excludes `data/`). Note: the LiDAR files are dummy
+  placeholders — nuCarla is camera-only.
+
 ## Verify
 
 ```bash

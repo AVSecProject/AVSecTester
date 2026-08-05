@@ -238,3 +238,6 @@ third_party/lib-avstack-api
 
 # recorded run outputs (images + data)
 /results/
+
+# downloaded datasets (e.g. nuCarla HuggingFace zips) — keep large data out of git
+/data/
