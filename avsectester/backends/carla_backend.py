@@ -84,6 +84,7 @@ class CarlaBackend(Backend):
         self.brake_corridor = brake_corridor
 
         self._perception_hooks: list[Callable] = []
+        self._ctx = None
         self._client = None
         self._world = None
         self._orig_settings = None
@@ -100,9 +101,15 @@ class CarlaBackend(Backend):
         self._t0: float | None = None
 
     # -- attack/defense/monitor attachment -------------------------------------
-    def add_perception_hook(self, hook: Callable) -> None:
-        """Register ``hook(perception_input, ego_state=...) -> perception_input``."""
-        self._perception_hooks.append(hook)
+    def attach(self, plugin: Callable, seam: str = "perception_out") -> None:
+        """Attach at ``perception_input`` (object-level pre-loop) or ``perception_out``
+        (detector post-hook via the avstack hook adapter)."""
+        if seam == "perception_input":
+            self._perception_hooks.append(plugin)
+        else:
+            from ..hooks import attach as attach_hook
+
+            attach_hook(self._perception, plugin, seam, self._ctx)
 
     # -- lifecycle -------------------------------------------------------------
     def build(self, spec: Any = None) -> None:
@@ -156,8 +163,11 @@ class CarlaBackend(Backend):
         route = build_lane_route(start_wp, n_points=self.frames)
         self._route_poses = [carla_transform_to_pose(w.transform) for w in route]
 
+        from ..hooks import RunContext
+
         self._perception = Passthrough3DObjectDetector()
         self._tracker = BasicBoxTracker3D()
+        self._ctx = RunContext(run_id="carla")
         self._controller = VehiclePIDController(
             args_lateral={"K_P": 1.2, "K_D": 0.1, "K_I": 0.05},
             args_longitudinal={"K_P": 0.4, "K_D": 0.0, "K_I": 0.05},
@@ -197,11 +207,12 @@ class CarlaBackend(Backend):
         data = DataContainer(frame, t, gt_objects, "carla_gt")
 
         # ---- attack/defense/monitor hooks on the perception INPUT ----
+        self._ctx.tick(frame, t, ego_state=ego_state, ground_truth=gt_objects)
         for hook in self._perception_hooks:
             data = hook(data, ego_state=ego_state)
         n_input = len(data)
 
-        # ---- perception + tracking ----
+        # ---- perception + tracking (perception_out hooks fire inside this call) ----
         detections = self._perception(data, frame=frame)
         self._tracker(detections, platform=self._global_origin())
         confirmed = self._tracker.tracks_confirmed

@@ -27,6 +27,8 @@ _PHANTOM_EXTENT = [1.6, 1.8, 4.0]
 
 @ATTACKS.register_module()
 class PhantomDetectionAttack(AttackBase):
+    seam = "perception_out"  # attaches as a post-hook on the detector
+
     def __init__(
         self,
         target_xyz: list[float] | None = None,

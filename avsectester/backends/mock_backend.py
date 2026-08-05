@@ -49,12 +49,20 @@ class MockBackend(Backend):
         self._perception_hooks: list[Callable] = []
         self._perception = None
         self._tracker = None
+        self._ctx = None
         self._frame = 0
         self._x = 0.0
         self._v = 0.0
 
-    def add_perception_hook(self, hook: Callable) -> None:
-        self._perception_hooks.append(hook)
+    def attach(self, plugin: Callable, seam: str = "perception_out") -> None:
+        """Attach at ``perception_input`` (object-level pre-loop) or ``perception_out``
+        (detector post-hook via the avstack hook adapter)."""
+        if seam == "perception_input":
+            self._perception_hooks.append(plugin)
+        else:
+            from ..hooks import attach as attach_hook
+
+            attach_hook(self._perception, plugin, seam, self._ctx)
 
     # -- object construction ---------------------------------------------------
     @staticmethod
@@ -133,8 +141,11 @@ class MockBackend(Backend):
             self.frames = ic.get("frames", self.frames)
             self.target_speed = ic.get("target_speed", self.target_speed)
 
+        from ..hooks import RunContext
+
         self._perception = Passthrough3DObjectDetector()
         self._tracker = BasicBoxTracker3D()
+        self._ctx = RunContext(run_id="mock")
         self._frame = 0
         self._x = 0.0
         self._v = 0.0
@@ -148,12 +159,15 @@ class MockBackend(Backend):
         frame = self._frame
         t = frame * self.dt
         ego_state = self._ego_state(t)
+        gt = self._background(t)
+        self._ctx.tick(frame, t, ego_state=ego_state, ground_truth=gt)
 
-        data = DataContainer(frame, t, self._background(t), "mock")
-        for hook in self._perception_hooks:
+        data = DataContainer(frame, t, gt, "mock")
+        for hook in self._perception_hooks:  # perception_input seam (object level)
             data = hook(data, ego_state=ego_state)
         n_input = len(data)
 
+        # perception_out attacks/defenses fire as post-hooks inside this call
         detections = self._perception(data, frame=frame)
         self._tracker(detections, platform=GlobalOrigin3D)
         confirmed = self._tracker.tracks_confirmed

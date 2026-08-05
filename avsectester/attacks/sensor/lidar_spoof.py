@@ -31,6 +31,8 @@ _PHANTOM_EXTENT = [1.6, 1.8, 4.0]
 
 @ATTACKS.register_module()
 class LidarSpoofAttack(AttackBase):
+    seam = "perception_input"  # object-level injection at the detector input
+
     def __init__(
         self,
         target_xyz: list[float] | None = None,

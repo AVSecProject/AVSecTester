@@ -19,6 +19,8 @@ from ..core.interfaces import DefenseBase
 
 @DEFENSES.register_module()
 class ScoreGateDefense(DefenseBase):
+    seam = "perception_input"  # gates the detector input (same surface as the attack)
+
     def __init__(self, threshold: float = 0.5) -> None:
         self.threshold = threshold
 

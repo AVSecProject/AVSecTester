@@ -59,9 +59,10 @@ class ExperimentRunner:
         if attack is not None:
             if hasattr(attack, "reset"):
                 attack.reset()
-            backend.add_perception_hook(attack)  # inject first
+            backend.attach(attack, getattr(attack, "seam", "perception_input"))  # inject first
         if defense is not None:
-            backend.add_perception_hook(defense)  # ... then sanitize the injected input
+            # ... then sanitize at the defense's seam (default: same as the attack surface)
+            backend.attach(defense, getattr(defense, "seam", "perception_input"))
         try:
             records = list(backend.run())
         finally:

@@ -43,14 +43,18 @@ class Backend(ABC):
     def close(self) -> None:
         """Tear down actors/connections."""
 
-    def add_perception_hook(self, hook: Any) -> None:
-        """Attach an attack/defense/monitor at the perception-input seam.
+    def attach(self, plugin: Any, seam: str = "perception_out") -> None:
+        """Attach an attack/defense at a named ``seam`` of the pipeline.
 
-        Hooks are applied in registration order each tick as ``hook(data, ego_state=...)
-        -> data`` (avstack pre-hook shape). Backends that support live interception
-        override this; the default refuses so misuse is loud.
+        ``"perception_input"`` operates on the detector input (object/point level);
+        ``"perception_out"`` operates on the detector output (detection level, via an
+        avstack post-hook). Backends that support live interception override this.
         """
-        raise NotImplementedError(f"{type(self).__name__} has no perception-hook seam")
+        raise NotImplementedError(f"{type(self).__name__} has no attach seam support")
+
+    def add_perception_hook(self, hook: Any) -> None:
+        """Legacy alias for the perception-input seam (``hook(data, ego_state=...) -> data``)."""
+        self.attach(hook, seam="perception_input")
 
 
 class AttackBase(ABC):
