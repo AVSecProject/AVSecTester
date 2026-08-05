@@ -31,46 +31,29 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import Any
 
 from .core.escalation import Stage
+
+# Seam vocabulary lives in ``core`` (see core/seams.py); this module maps seams onto
+# avstack's concrete pre/post-hook machinery. Re-exported here for backward compatibility.
+from .core.seams import SEAMS, Phase, Seam, resolve_seam
 from .monitors.trace import ComponentIO, Trace
 
-
-class Phase(str, Enum):
-    """Whether a seam intercepts a module's input (pre) or output (post)."""
-
-    PRE = "pre"
-    POST = "post"
-
-
-@dataclass(frozen=True)
-class Seam:
-    """A named insertion point on an avstack module.
-
-    For a ``PRE`` seam, ``arg_index`` is the positional slot of the payload the plugin
-    operates on (a detector's input is ``args[0]``); the adapter splices the returned
-    payload back into that slot and preserves everything else. ``POST`` seams operate on
-    the module's single return value. ``stage``/``component`` label the trace record.
-    """
-
-    name: str
-    phase: Phase
-    stage: Stage
-    component: str
-    arg_index: int = 0
-
-
-# The standard seams of a perception -> tracking -> planning -> control stack. The raw-LiDAR
-# seam is the detector *input* (mutate the point cloud); the rest replace a module's output.
-SEAMS: dict[str, Seam] = {
-    "raw_lidar": Seam("raw_lidar", Phase.PRE, Stage.SENSOR, "lidar", arg_index=0),
-    "perception_out": Seam("perception_out", Phase.POST, Stage.PERCEPTION, "detector"),
-    "tracking_out": Seam("tracking_out", Phase.POST, Stage.TRACKING, "tracker"),
-    "planning_out": Seam("planning_out", Phase.POST, Stage.PLANNING, "planner"),
-    "control_out": Seam("control_out", Phase.POST, Stage.CONTROL, "controller"),
-}
+__all__ = [  # public surface (incl. seam names re-exported from core.seams)
+    "SEAMS",
+    "ComponentIO",
+    "HookAdapter",
+    "MonitorAdapter",
+    "Phase",
+    "RunContext",
+    "Seam",
+    "Stage",
+    "Trace",
+    "attach",
+    "attach_monitor",
+    "resolve_seam",
+]
 
 
 @dataclass
@@ -183,8 +166,7 @@ class MonitorAdapter:
         return (payload,)
 
 
-def _as_seam(seam: Seam | str) -> Seam:
-    return SEAMS[seam] if isinstance(seam, str) else seam
+_as_seam = resolve_seam  # backward-compatible alias
 
 
 def _register(module: Any, phase: Phase, adapter: Any) -> None:
