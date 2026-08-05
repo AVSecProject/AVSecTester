@@ -13,7 +13,10 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
+
+from .plugin import SecurityPlugin
 
 if TYPE_CHECKING:
     from .experiment import ExperimentSpec
@@ -57,36 +60,74 @@ class Backend(ABC):
         self.attach(hook, seam="perception_input")
 
 
-class AttackBase(ABC):
+class AttackBase(SecurityPlugin):
     """An attack as a first-class entity (PROJECT.md 4.1).
 
-    Subclasses declare the threat model they assume and implement ``apply`` as a hook that
-    manipulates module I/O at the declared insertion point.
+    Subclasses declare the threat model they assume plus one or more :attr:`bindings`
+    (inherited from :class:`SecurityPlugin`) and implement ``apply`` as a hook that
+    manipulates module I/O at the resolved seam.
     """
 
     threat_model: ThreatModel
 
-    @abstractmethod
-    def validate(self, spec: ExperimentSpec) -> None:
-        """Raise if the experiment would violate the declared threat model/constraints."""
+    def _kind(self) -> str:
+        return "attack"
 
-    @abstractmethod
-    def apply(self, data: Any, *args: Any, **kwargs: Any) -> Any:
-        """Perturb module I/O (hook contract). Return the (possibly) modified data."""
+    def describe(self) -> dict[str, Any]:
+        d = super().describe()
+        tm = getattr(self, "threat_model", None)
+        if tm is not None:
+            d["threat_model"] = {
+                "goal": tm.goal,
+                "knowledge": tm.knowledge.value,
+                "access": [a.value for a in tm.access],
+                "success_criteria": tm.success_criteria,
+            }
+        return d
 
-    def __call__(self, data: Any, *args: Any, **kwargs: Any) -> Any:
-        return self.apply(data, *args, **kwargs)
+
+@dataclass
+class DefenseOutcome:
+    """What a defense did on one tick — telemetry for scoring mitigation.
+
+    Recorded into the run context (not returned) so a defense stays a plain avstack hook.
+    ``dropped``/``flagged`` hold the IDs the defense removed / marked suspicious; ``kept``
+    and ``reason`` describe the decision for the report.
+    """
+
+    seam: str
+    frame: int = 0
+    kept: int = 0
+    dropped: list[Any] = field(default_factory=list)
+    flagged: list[Any] = field(default_factory=list)
+    reason: str = ""
 
 
-class DefenseBase(ABC):
-    """A defense/mitigation, also hook-shaped (PROJECT.md 6.5)."""
+class DefenseBase(SecurityPlugin):
+    """A defense/mitigation, also hook-shaped (PROJECT.md 6.5).
 
-    @abstractmethod
-    def apply(self, data: Any, *args: Any, **kwargs: Any) -> Any:
-        """Sanitize/monitor/mitigate. Return (possibly) corrected data; may flag detections."""
+    A defense records a :class:`DefenseOutcome` into the run context each tick via
+    :meth:`record_outcome` so the report can score mitigation, while ``apply`` still returns
+    the (sanitized) payload — keeping it a drop-in avstack hook.
+    """
 
-    def __call__(self, data: Any, *args: Any, **kwargs: Any) -> Any:
-        return self.apply(data, *args, **kwargs)
+    category: str = "defense"
+
+    def _kind(self) -> str:
+        return "defense"
+
+    def record_outcome(self, ctx: Any, outcome: DefenseOutcome) -> None:
+        """Append ``outcome`` to ``ctx.defense_outcomes`` (duck-typed; no-op if no ctx)."""
+        if ctx is None:
+            return
+        bucket = getattr(ctx, "defense_outcomes", None)
+        if bucket is None:
+            bucket = []
+            try:
+                ctx.defense_outcomes = bucket
+            except AttributeError:  # ctx doesn't accept the attribute; skip telemetry
+                return
+        bucket.append(outcome)
 
 
 class MonitorBase(ABC):

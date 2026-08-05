@@ -63,7 +63,8 @@ class RunContext:
     The backend calls :meth:`tick` at the top of each step (before invoking the pipeline)
     so adapters can read the current ``frame`` / ``t`` / ``ego_state`` / ``ground_truth``.
     This is how a plugin gets the ego pose that a module's call signature does not carry.
-    Monitors append per-stage records into ``trace``.
+    Monitors append per-stage records into ``trace``; defenses append per-tick
+    :class:`~avsectester.core.interfaces.DefenseOutcome` telemetry into ``defense_outcomes``.
     """
 
     run_id: str = "run"
@@ -72,6 +73,7 @@ class RunContext:
     ego_state: Any = None
     ground_truth: Any = None
     trace: Trace = field(default=None)  # type: ignore[assignment]
+    defense_outcomes: list[Any] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if self.trace is None:
