@@ -42,7 +42,7 @@ def _summary(tag: str, recs: list) -> tuple[float, int]:
 
 
 def main() -> int:
-    from avsectester.attacks.perception import PhantomDetectionAttack
+    from avsectester.attacks.detection_manipulation import PhantomDetectionAttack
 
     frames = int(sys.argv[1]) if len(sys.argv) > 1 else 40
     print("=== CLEAN neural run ===")

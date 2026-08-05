@@ -39,7 +39,7 @@ def _run(outdir: Path, attack, frames: int, camera: bool):
 
 
 def main() -> int:
-    from avsectester.attacks.perception import PhantomDetectionAttack
+    from avsectester.attacks.detection_manipulation import PhantomDetectionAttack
     from avsectester.core.engine import ExperimentResult
     from avsectester.metrics.escalation import EscalationMetric
     from avsectester.monitors.trace import build_trace

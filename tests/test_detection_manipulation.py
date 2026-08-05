@@ -1,7 +1,8 @@
-"""Detection-level phantom attack: geometry + hook-seam behavior (no GPU, no CARLA).
+"""Detection-manipulation vector: injection + removal methods (no GPU, no CARLA).
 
 Needs avstack geometry/detections but not a neural detector, so it is fast and runs
-wherever the stack is installed.
+wherever the stack is installed. Covers both methods sharing the vector: phantom detection
+injection (false positive) and detection removal (false negative).
 """
 from __future__ import annotations
 
@@ -10,7 +11,10 @@ import pytest
 pytest.importorskip("avstack")
 
 import numpy as np
-from avsectester.attacks.perception import PhantomDetectionAttack
+from avsectester.attacks.detection_manipulation import (
+    DetectionRemovalAttack,
+    PhantomDetectionAttack,
+)
 from avstack.datastructs import DataContainer
 from avstack.geometry import Attitude, Box3D, GlobalOrigin3D, Position, ReferenceFrame
 from avstack.modules.perception.detections import BoxDetection
@@ -50,3 +54,34 @@ def test_score_is_carried_for_downstream_gating():
 def test_validate_rejects_bad_score():
     with pytest.raises(ValueError, match="score"):
         PhantomDetectionAttack(score=1.5).validate(spec=None)
+
+
+def test_injection_and_removal_share_the_vector_bindings():
+    assert PhantomDetectionAttack.bindings is DetectionRemovalAttack.bindings
+    assert PhantomDetectionAttack.bindings[0].seam == "perception_out"
+
+
+def test_removal_drops_nearest_forward_detection():
+    ref = _ref()
+    data = DataContainer(
+        0, 0.0,
+        [_detection(ref, x=20.0), _detection(ref, x=8.0), _detection(ref, x=-6.0)],
+        "lidar",
+    )
+    for i, d in enumerate(data):
+        d.ID = 10 + i  # 10@20m, 11@8m, 12@-6m(behind)
+    out = DetectionRemovalAttack(corridor=3.0, max_range=40.0).apply(data)
+    assert {d.ID for d in out} == {10, 12}  # nearest forward (11 @ 8 m) suppressed
+
+
+def test_removal_never_targets_an_injected_phantom():
+    ref = _ref()
+    data = DataContainer(0, 0.0, [_detection(ref, x=8.0)], "lidar")
+    data[0].ID = 5
+    # inject a closer phantom, then run removal: it must drop the real one, not the phantom
+    PhantomDetectionAttack(target_xyz=[4.0, 0.0, -1.5]).apply(data)
+    attack = DetectionRemovalAttack()
+    out = attack.apply(data)
+    ids = {d.ID for d in out}
+    assert 90002 in ids and 5 not in ids  # phantom kept, real detection removed
+    assert attack._removed_id == 5

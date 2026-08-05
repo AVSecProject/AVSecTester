@@ -25,7 +25,7 @@ if not (os.path.exists(_CKPT) and os.path.exists(_CLOUD)):
     pytest.skip("run scripts/fetch_models.sh (checkpoint/cloud missing)", allow_module_level=True)
 
 import numpy as np
-from avsectester.attacks.perception import PhantomDetectionAttack
+from avsectester.attacks.detection_manipulation import PhantomDetectionAttack
 from avsectester.hooks import RunContext, attach, attach_monitor
 from avstack.calibration import LidarCalibration
 from avstack.geometry import GlobalOrigin3D, ReferenceFrame
