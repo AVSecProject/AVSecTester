@@ -233,3 +233,6 @@ third_party/lib-avstack-api
 # fetched CARLA work_dirs (config + weights + last_checkpoint) are all artifacts
 /models/work_dirs/*
 !/models/work_dirs/.gitkeep
+
+# recorded run outputs (images + data)
+/results/

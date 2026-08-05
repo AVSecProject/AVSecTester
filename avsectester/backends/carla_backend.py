@@ -92,6 +92,7 @@ class CarlaBackend(Backend):
         nn_dataset: str = "carla-vehicle",
         nn_threshold: float = 0.3,
         gpu: int = 0,
+        record_camera: bool = False,
     ) -> None:
         self.connect_ip = connect_ip
         self.connect_port = connect_port
@@ -108,11 +109,15 @@ class CarlaBackend(Backend):
         self.nn_dataset = nn_dataset
         self.nn_threshold = nn_threshold
         self.gpu = gpu
+        self.record_camera = record_camera
 
         self._perception_hooks: list[Callable] = []
         self._ctx = None
         self._lidar = None
         self._sink = None
+        self._camera = None
+        self._camera_sink = None
+        self._recorder = None
         self._client = None
         self._world = None
         self._orig_settings = None
@@ -127,6 +132,10 @@ class CarlaBackend(Backend):
         self._idx = 0
         self._frame = 0
         self._t0: float | None = None
+
+    def set_recorder(self, recorder: Any) -> None:
+        """Attach a viz.RunRecorder; the backend feeds it points/detections/rgb per tick."""
+        self._recorder = recorder
 
     # -- attack/defense/monitor attachment -------------------------------------
     def attach(self, plugin: Callable, seam: str = "perception_out") -> None:
@@ -197,6 +206,8 @@ class CarlaBackend(Backend):
             self._setup_neural(world)
         else:
             self._perception = Passthrough3DObjectDetector()
+        if self.record_camera:
+            self._setup_camera(world)
         self._tracker = BasicBoxTracker3D()
         self._ctx = RunContext(run_id="carla")
         self._controller = VehiclePIDController(
@@ -244,6 +255,32 @@ class CarlaBackend(Backend):
             model=self.nn_model, dataset=self.nn_dataset, gpu=self.gpu, threshold=self.nn_threshold,
         )
 
+    def _setup_camera(self, world: Any) -> None:
+        """Attach a forward RGB camera (for recording) via the same minimal-parent stub."""
+        from types import SimpleNamespace
+
+        from avcarla.geometry import CarlaReferenceFrame
+        from avcarla.sensors import CarlaRgbCamera
+        from avstack.geometry import GlobalOrigin3D
+
+        egT = self._ego.get_transform()
+        ego_ref = CarlaReferenceFrame(
+            reference=GlobalOrigin3D,
+            location=(egT.location.x, egT.location.y, egT.location.z),
+            rotation=(egT.rotation.roll, egT.rotation.pitch, egT.rotation.yaw),
+        )
+        self._camera_sink = _Sink()
+        host = SimpleNamespace(
+            world=world, actor=self._ego, reference=ego_ref, ID=self._ego.id,
+            sensor_data_manager=self._camera_sink,
+        )
+        client_stub = SimpleNamespace(map=world.get_map())
+        self._camera = CarlaRgbCamera(
+            parent=host, client=client_stub, image_size_x=640, image_size_y=360,
+        )
+        snap = world.get_snapshot()
+        self._camera.initialize(snap.timestamp.elapsed_seconds, snap.frame)
+
     def _forward_hazard(self, ego_state: Any, tracks: Any) -> float | None:
         from .common import forward_hazard
 
@@ -268,7 +305,7 @@ class CarlaBackend(Backend):
             self._ctx.tick(frame, t, ego_state=ego_state, ground_truth=None)
             if data is None:
                 return 0, [], [], None
-            n_input = len(self._sink.latest.data.raw_data) // 16  # 4 float32 per point
+            n_input = len(data.data.raw_data) // 16  # 4 float32 (x,y,z,intensity) per point
             detections = self._perception(data, frame=frame)  # perception_out hooks fire here
             try:
                 self._tracker(detections, platform=data.calibration.reference)
@@ -329,7 +366,7 @@ class CarlaBackend(Backend):
             throttle, brake = 0.0, 1.0
         ego.apply_control(carla.VehicleControl(throttle=throttle, steer=float(ctrl.steer), brake=brake))
 
-        return {
+        record = {
             "frame": frame,
             "t": t,
             "n_input": n_input,
@@ -342,6 +379,23 @@ class CarlaBackend(Backend):
             "hazard_dist": hazard,
             "braking": hazard is not None,
         }
+        if self._recorder is not None:
+            self._recorder.capture(
+                record, points=self._latest_points(), detections=detections, rgb=self._latest_rgb()
+            )
+        return record
+
+    def _latest_points(self) -> Any:
+        if self.perception != "neural" or self._sink is None or self._sink.latest is None:
+            return None
+        import numpy as np
+
+        return np.frombuffer(bytes(self._sink.latest.data.raw_data), dtype=np.float32).reshape(-1, 4)
+
+    def _latest_rgb(self) -> Any:
+        if self._camera_sink is None or self._camera_sink.latest is None:
+            return None
+        return self._camera_sink.latest.data[:, :, ::-1]  # BGR -> RGB
 
     @staticmethod
     def _global_origin() -> Any:
@@ -359,6 +413,8 @@ class CarlaBackend(Backend):
         try:
             if self._lidar is not None:
                 self._lidar.destroy()  # stop the sensor callback before destroying actors
+            if self._camera is not None:
+                self._camera.destroy()
             if self._tm is not None:
                 self._tm.set_synchronous_mode(False)
             if self._world is not None and self._orig_settings is not None:

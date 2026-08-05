@@ -39,6 +39,11 @@ dev = [
     "ruff>=0.6",
     "mypy>=1.10",
 ]
+# Recording + visualization + analysis tools (avsectester.viz).
+viz = [
+    "matplotlib>=3.6",
+    "pillow>=9",
+]
 
 [project.scripts]
 avsectester = "avsectester.cli:app"
