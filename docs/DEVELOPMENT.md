@@ -1,373 +1,369 @@
 # AVSecTester — Development Guide
 
-AVSecTester is a **security layer built on top of [avstack](https://github.com/avstack-lab)**.
-avstack supplies the AV stack, geometry, sensors, CARLA bridge, dataset adapters, and an
-mmengine-style registry/config system; AVSecTester adds everything security-specific.
+AVSecTester is a **security-testing framework for autonomous vehicles**, built as a thin
+security layer on top of [avstack](https://github.com/avstack-lab). Its central abstraction is
+the **attack-escalation path**: an attacker artifact becomes a component error, which
+propagates through the AV stack, which produces a driving consequence. Every part of the system
+exists to *inject*, *observe*, *quantify*, or *search* that path.
 
-Its central abstraction is the **attack-escalation path**: an attack signal becomes a
-component error, which propagates through the pipeline, which produces a driving
-consequence. Every component below exists to inject, observe, quantify, or search that path.
-
-This document is the single source of truth for the design. Section 1 is the overall
-architecture; Section 2 covers each component — its **design goal** and **how it is
-implemented / extended**.
+This guide is written **concept-first**: Section 1 gives the high-level architecture and the
+principles that hold it together; Section 2 develops each component — its **design goal** first,
+then **implementation details** and how to extend it. Throughout, **[Now]** marks what is
+implemented today and **[Planned]** / **[TODO]** mark the intended design not yet built, so the
+document doubles as a roadmap.
 
 ---
 
-## 1. Overall architecture
+## 1. High-level architecture
+
+A **central experiment engine** sits in the middle. Around it are five subsystems it composes —
+**AV stacks**, **attacks**, **defenses**, the **scenario engine**, and the **evaluation
+engine** — connected by a shared **registry / config / interface** layer. Above everything is an
+optional **AI harness** that drives the framework from intent while a CI/CD guardrail keeps
+generated code inside the defined interfaces.
 
 ```
-   natural-language      ┌────────────────────────────────────────────────────────────┐
-   goal / research  ───► │              AI agent harness  (agent/, planned)            │
-   paper                 │  generate ExperimentSpec · implement attack/defense code ·  │
-                         │  orchestrate runs · read traces + DAG · summarize verdict   │
-                         └───────────────┬───────────────────────────┬─────────────────┘
-                                         │ spec                       │ critical cases
-                                         ▼                            ▼
-                         ┌───────────────────────────────┐ ┌───────────────────────────┐
-   ExperimentSpec ─────► │   Experiment engine (core/)    │◄│ Testing handler (search/, │
-   (hand-written or      │   build plugins from registry· │ │ planned): fuzzing + sim   │
-    harness-generated)   │   run clean/attacked/defended  │ │ broker → critical cases   │
-                         └───────────────┬───────────────┘ └───────────────────────────┘
-                                         │  resolve_binding(profile) + attach at a seam
-              attacks ─┐          defenses ─┐          monitors ─┐
-                       │                    │                    │
-                       ▼   HookAdapter → avstack pre/post hooks  ▼
-                         ┌────────────────────────────────────────────┐
-        backends adapt ► │        AV pipeline (ego AV, avstack)        │
-        the stack        │  sensors → perception → tracking → … → ctrl │
-                         └────────────────────────────────────────────┘
-                                         │ per-frame records → Trace
+                         ┌──────────────────────────────────────────────────────────────┐
+   goal / paper  ─────►  │   AI harness  [Planned]  — generate specs & interface-         │
+                         │   compliant plugins; CI/CD guardrail on structure             │
+                         └───────────────┬──────────────────────────────────────────────┘
+                                         │ ExperimentSpec
                                          ▼
-                    monitors → escalation DAG · metrics · reports · viz
-                                         │
-        ┌────────────────┬───────────────┼───────────────────┬──────────────────────┐
-        ▼                ▼               ▼                   ▼                      ▼
-   MockBackend       CarlaBackend    DatasetBackend    (planned) AlpaSim     (planned) HIL /
-   (sim-free)        (closed-loop)   (offline replay)  AI-generative sim     Block Harbor VSEC
+   ┌───────────────┐          ┌────────────────────────────┐          ┌──────────────────┐
+   │   Scenario    │  cases   │   Central experiment engine │  signals │   Evaluation     │
+   │   engine      │ ───────► │   build · run clean/attack/ │ ───────► │   engine         │
+   │ (data + sim,  │          │   defended · orchestrate    │          │ (diagnosis →     │
+   │  augmentation)│ ◄─────── │                            │ ◄─────── │  attributes →    │
+   └───────────────┘  select  └───────┬────────────┬───────┘  request  │  mitigations)    │
+                                       │            │                   └──────────────────┘
+                       attacks ────────┤            ├──────── defenses
+                                       ▼            ▼
+                  read-write hooks (inject / optimize)   read hooks (diagnosis)
+                                       │            │
+                         ┌─────────────┴────────────┴──────────────┐
+                         │   AV stacks (behind interfaces only)    │
+                         │  modular (perception→…→control)  or     │
+                         │  end-to-end / foundation-model driving  │
+                         └─────────────────────────────────────────┘
+                    backends: Mock · CARLA · Dataset · (Planned) AlpaSim · HIL
 ```
 
-**Runtime flow of one experiment** (`core/engine.py`):
+### Principles
 
-1. The engine builds the backend, attack, and defense from the `ExperimentSpec` via the
-   registries (`{"type": name, ...}` configs).
-2. It runs a **clean** pass, then an **attacked** pass, and — if a defense is declared — an
-   **attacked+defended** pass. For each plugin it calls `plugin.resolve_binding(backend.profile())`
-   to pick the seam, then `backend.attach(plugin, seam)`.
-3. The backend drives the AV pipeline tick-by-tick; attacks/defenses fire as avstack
-   pre/post hooks at their seam; monitors record per-stage I/O into a `Trace`.
-4. `EscalationMetric` diffs the clean vs attacked traces into a scalar metric dict + an
-   `EscalationDAG`; `reports` renders it; `viz` optionally records images/plots.
+1. **AV-stack agnostic — expose interfaces, hide internals.** Attacks, defenses, monitors, and
+   metrics never import an AV model or a component class. They interact only through named
+   **seams** and typed **capabilities**. Two kinds of interface are exposed at each seam:
+   - **Read hooks** — expose *diagnosis signals* (a layer's I/O) read-only, for the evaluation
+     engine.
+   - **Read-write hooks** — expose *attack/defense interfaces*: perturb a payload, and (for
+     white-box optimization) read internal signals such as **gradients**.
+   Because everything lives above these interfaces, a modular stack, an end-to-end model, and
+   real hardware are interchangeable, and a verdict from one is comparable to another.
+2. **One declarative standard, many modes.** A single `ExperimentSpec` runs unchanged across
+   componential (isolated module), closed-loop simulation, and (planned) hardware-in-the-loop.
+3. **Build on avstack, don't fork it.** avstack supplies the stack, geometry, sensors, the CARLA
+   bridge, dataset adapters, and the registry/config system; we add only the security layer and
+   attach non-invasively via avstack's own hook machinery.
+4. **Separate generation from deployment, selection from augmentation, diagnosis from
+   assessment.** An attack *artifact* is distinct from its *deployment strategy*; a *scenario
+   selection* is distinct from *environmental augmentation*; *collecting* diagnosis signals is
+   distinct from *assessing* attack attributes. Each split is a seam for future work.
+5. **Plugins import only the contract.** `attacks/` and `defenses/` depend only on
+   `core/{interfaces,plugin,binding,capability,threat_model}` + `config` registries — never on
+   the engine, backends, or scenario/evaluation engines — so the plugin subtree stays a clean,
+   extractable unit.
 
-**Four integration decisions** hold the design together:
+### Package map
 
-1. **Build on avstack, don't fork it.** avstack bridges CARLA 0.9.15 + mmdetection3d +
-   datasets. We add only the security layer on top.
-2. **Non-invasive interception via hooks.** avstack modules run `_apply_pre_hooks` /
-   `_apply_post_hooks` (the `@apply_hooks` decorator, `HOOKS` registry). Our
-   attacks/defenses/monitors are hook-shaped and attach at runtime — no edits to vendored code.
-3. **Shared registry/config.** We reuse avstack's `Registry` so plugins build-from-config the
-   same way avstack modules do, with a local shim when avstack isn't installed.
-4. **One standard, many modes.** A single `ExperimentSpec` runs unchanged across componential
-   (isolated module), closed-loop simulation, and (planned) hardware-in-the-loop — all
-   attaching at the same backend seam, so verdicts are cross-mode comparable.
-
-**Plugin boundary (extraction-ready).** `attacks/` and `defenses/` import only the contract
-(`core/interfaces`, `core/plugin`, `core/binding`, `core/capability`, `core/threat_model`,
-`config` registries) — never the engine, backends, or search. This keeps the plugin subtree a
-clean `git filter-repo` extraction if it ever moves to its own repo.
-
-**Package map**
-
-| Package | Role | Status |
+| Concept (Section) | Package(s) | Status |
 |---|---|---|
-| `core` | seams, capabilities/bindings, plugin contract, threat model, experiment spec, escalation DAG, engine, interfaces, registries | implemented |
-| `hooks` | bridge plugins onto avstack's pre/post-hook calling convention | implemented |
-| `backends` | stack/mode adapters: `MockBackend`, `CarlaBackend`, `DatasetBackend` (stub); planned AlpaSim, HIL/VSEC | partial |
-| `attacks` | attack plugins organized by **vector × method × binding** | implemented (LiDAR-spoofing, detection-manipulation) |
-| `defenses` | defense/mitigation plugins | baseline (`ScoreGateDefense`) |
-| `monitors` | execution traces + clean-vs-attacked diff | implemented |
-| `metrics` | escalation metric → scalar dict + DAG | implemented |
-| `reports` | root-cause + audit report | implemented |
-| `viz` | per-frame image/data recording + timeline/comparison plots | implemented |
-| `search` | testing handler: fuzzing + simulation broker | planned |
-| `agent` | AI harness: spec generation, plugin authoring, orchestration | planned |
-| `knowledge` | reusable vulnerability-path store / AV vuln dataset | planned |
+| Central experiment engine (2.1) | `core/engine.py`, `cli.py` | [Now] |
+| Registry / config / interfaces (2.2) | `config/`, `core/{interfaces,plugin,seams,capability,binding,experiment,threat_model}` | [Now] |
+| AV stacks & interfaces (2.3) | `hooks.py`, `backends/`, `models/`, `scripts/` | [Now] modular; [Planned] e2e / gradients / HIL |
+| Attacks (2.4) | `attacks/` | [Now] LiDAR-spoofing, detection-manipulation |
+| Defenses (2.5) | `defenses/` | [Now] baseline only |
+| Scenario engine (2.6) | `core/experiment.py` (spec), `search/` | [Now] spec; [Planned] engine |
+| Evaluation engine (2.7) | `monitors/`, `core/escalation.py`, `metrics/`, `reports/`, `viz/` | [Now] escalation; [Planned] attributes/augmentation/mitigation |
+| AI harness (2.8) | `agent/`, CI | [Planned] |
 
 ---
 
-## 2. Components — design goal & how to implement
+## 2. Components
 
-### 2.1 Registries & config (`config/`)
+### 2.1 Central experiment engine
 
-**Design goal.** Let every plugin type (attacks, defenses, monitors, metrics, backends,
-search) be built from a `{"type": name, ...}` config dict, so an `ExperimentSpec` is fully
-declarative and the same class works from YAML, code, or a harness-generated spec.
+**Design goal.** Turn one declarative `ExperimentSpec` into a verdict by composing a stack, an
+attack, a defense, a scenario, and metrics — agnostic to which backend or stack is underneath —
+and by running the *paired* passes that make an attack's effect measurable.
 
-**How it's implemented.** `config/registry.py` prefers avstack's OpenMMLab-style `Registry`
-and falls back to a minimal shim (`register_module`, `get`, `build`, `__contains__`) when
-avstack isn't importable, so imports never hard-fail in core-only environments. Six registries
-are exposed: `ATTACKS, DEFENSES, MONITORS, METRICS, BACKENDS, SEARCH`.
+**Implementation [Now].** `core/engine.py::ExperimentRunner`:
+1. Builds the backend, attack, and defense from the registries (`{"type": name, ...}` configs).
+2. Runs a **clean** pass, an **attacked** pass, and — if a defense is declared — an
+   **attacked+defended** pass. For each plugin it calls
+   `plugin.resolve_binding(backend.profile())` to choose the seam, then `backend.attach(plugin,
+   seam)`; a defense bound *upstream* of the attack is rejected.
+3. Returns `ExperimentResult(metrics, dag, clean/attacked/defended traces, mitigated)`.
 
-**To extend.** Decorate a class with `@ATTACKS.register_module()` (etc.); it becomes buildable
-by name. Nothing else is needed for the engine/CLI to find it.
+`cli.py` exposes `version`, `registry` (list plugins), `validate <spec>`, `run <spec> [report]`
+(exit code reflects whether the attack escalated).
 
-### 2.2 Seams (`core/seams.py`)
+**Extend.** The engine is deliberately thin; new behavior (e.g. repetitions, augmentation
+sweeps) is added by having it drive the scenario engine (2.6) rather than by growing the runner.
 
-**Design goal.** Name the *logical* interception points of an AV pipeline independently of any
-concrete avstack module, so a plugin can target "the detector's output" without knowing which
-class implements it.
+### 2.2 Registry, config, and interfaces
 
-**How it's implemented.** A `Seam(name, phase, stage, component, arg_index)` frozen dataclass;
-`Phase` is `PRE`/`POST`. `SEAMS` registers the standard points: `raw_lidar`, `perception_input`,
-`perception_out`, `tracking_out`, `planning_out`, `control_out`. `SEAM_ORDER` gives their
-upstream→downstream order; `resolve_seam()` maps a name to a `Seam`.
+**Design goal.** Make systems, attacks, defenses, and metrics all *declarative and
+interchangeable*: buildable by name from a config dict, and interacting only through stable
+interfaces so implementations can be swapped without touching callers.
 
-**To extend.** Add an entry to `SEAMS` (and `SEAM_ORDER`) for a new pipeline point — e.g.
-`localization_out` or `prediction_out` — then teach a backend to attach there (2.8) and add a
-matching `Capability` (2.3).
+**Implementation [Now].**
+- **Registries** (`config/registry.py`): reuse avstack's OpenMMLab-style `Registry`
+  (`register_module` / `build` from `{"type": ...}`), with a local shim when avstack isn't
+  importable. Six registries: `ATTACKS, DEFENSES, MONITORS, METRICS, BACKENDS, SEARCH`.
+- **Experiment spec** (`core/experiment.py`): pydantic `ExperimentSpec(name, system, scenario,
+  attack?, defense?, evaluation, reproducibility)`. Sub-configs are registry-buildable dicts;
+  `AttackConfig` pairs an attack `spec` with a `ThreatModel`.
+- **Threat model** (`core/threat_model.py`): the entity that makes an attack security-relevant —
+  `goal, knowledge (white/gray/black-box), access[], target, capabilities[], constraints[],
+  timing, success_criteria`. The engine can refuse runs that violate declared constraints.
+- **Plugin contract** (`core/plugin.py`, `core/interfaces.py`): `SecurityPlugin` carries
+  `category`, `bindings`, `resolve_binding()`, lifecycle (`setup/validate/reset/teardown`), and
+  `describe()`. `AttackBase` adds `threat_model`; `DefenseBase` records a `DefenseOutcome`.
 
-### 2.3 Capabilities & bindings (`core/capability.py`, `core/binding.py`)
+**Extend.** New plugin type ⇒ new registry + a small `*Base` interface. Everything downstream
+(engine, CLI, harness) discovers it by name.
 
-**Design goal.** Decouple *what a plugin needs* from *what a stack offers*, so one attack works
-across different AV-stack settings (ground-truth passthrough vs neural detector vs raw sensor)
-instead of being hard-wired to one seam.
+### 2.3 AV stacks (behind interfaces)
 
-**How it's implemented.**
-- Each backend advertises a `StackProfile(seams, capabilities)` — which seams it exposes and
-  which `Capability` affordances it provides (`GT_PERCEPTION`, `NEURAL_PERCEPTION`, `RAW_LIDAR`,
-  `RAW_CAMERA`, `GRADIENTS`, `TRACKER`, `PLANNER`, `CONTROLLER`, `LOCALIZATION`, `V2X`).
-- A plugin declares ranked `BindingSpec(seam, payload, requires, fidelity)` options. `resolve()`
-  returns the highest-fidelity binding the profile supports, or raises `IncompatiblePlugin` with
-  a readable reason. `seams_downstream_of(seam)` lets a defense be checked to sit at/after the
-  attack it counters.
+**Design goal.** Put a *real* AV stack under test while keeping the framework agnostic to its AI
+model and component details. The stack exposes only **interfaces**: named seams for reading
+diagnosis signals and for read-write attack/optimization access. This must cover both **modular
+stacks** (perception → tracking → prediction → planning → control) and **end-to-end /
+foundation-model driving** (sensors → policy → control), and eventually **hardware-in-the-loop**.
 
-**To extend.** Add a `Capability` value and have the relevant backend advertise it in `profile()`;
-give new plugins bindings that `requires` it. Same intent + multiple bindings ⇒ automatic
-cross-stack portability.
+#### 2.3.1 Reusing avstack
 
-### 2.4 Plugin contract (`core/plugin.py`, `core/interfaces.py`)
+**[Now].** avstack supplies the modular pipeline, geometry, sensors, the CARLA bridge, and
+dataset adapters. We never fork it; we attach at runtime via its `@apply_hooks` machinery
+(`_apply_pre_hooks` / `_apply_post_hooks`). Genuine CARLA-trained perception is in the loop:
+`scripts/fetch_models.sh` pulls all reachable avstack CARLA checkpoints (2 LiDAR PointPillars +
+5 2D-camera R-CNNs), `scripts/verify_models.py` confirms they load and run, and
+`scripts/eval_camera_nucarla.py` validates the camera models on real nuCarla traces.
 
-**Design goal.** One uniform contract for attacks and defenses: hook-shaped, self-describing,
-with a lifecycle and declared bindings — so the engine, registries, and (future) inventory/
-leaderboard treat them uniformly.
+#### 2.3.2 Seams, capabilities, bindings — the interface layer
 
-**How it's implemented.** `SecurityPlugin` carries `category`, `bindings`, `resolve_binding()`,
-a resolved `seam` property, default-no-op lifecycle (`setup/validate/reset/teardown`), and
-`describe()` (inventory metadata). `apply(data, *, ego_state, ctx) -> data` is the hook.
-- `AttackBase(SecurityPlugin)` adds a `threat_model` and folds it into `describe()`.
-- `DefenseBase(SecurityPlugin)` returns the (sanitized) payload but records a
-  `DefenseOutcome(seam, frame, kept, dropped, flagged, reason)` into `ctx.defense_outcomes`
-  via `record_outcome()` — so mitigation can be scored while the defense stays a plain hook.
+**Design goal.** Let a plugin target "the detector's output" without knowing which class
+implements it, and let one attack work across different stack settings.
 
-**To extend.** See 2.9 (attacks) / 2.10 (defenses) — you subclass these, not `SecurityPlugin`
-directly.
+**[Now].**
+- **Seams** (`core/seams.py`): logical interception points — `raw_lidar`, `perception_input`,
+  `perception_out`, `tracking_out`, `planning_out`, `control_out` — each a
+  `Seam(name, phase, stage, component, arg_index)`; `SEAM_ORDER` fixes upstream→downstream order.
+- **Capabilities** (`core/capability.py`): a backend advertises a `StackProfile(seams,
+  capabilities)`; `Capability` ∈ `{GT_PERCEPTION, NEURAL_PERCEPTION, RAW_LIDAR, RAW_CAMERA,
+  GRADIENTS, TRACKER, PLANNER, CONTROLLER, LOCALIZATION, V2X}`.
+- **Bindings** (`core/binding.py`): a plugin declares ranked `BindingSpec(seam, payload,
+  requires, fidelity)`; `resolve()` picks the best binding the profile supports or raises
+  `IncompatiblePlugin`. This is what makes plugins **agnostic to model/component details** —
+  they name capabilities, not classes.
 
-### 2.5 Hook adapter (`hooks.py`)
+**Extend for end-to-end / foundation-model driving [Planned].** An e2e model has no internal
+component seams — only input (raw sensors) and output (trajectory/control). It fits the same
+abstraction: an `E2EBackend` advertises a profile with `raw_lidar`/`raw_camera` + `control_out`
+seams and `NEURAL_PERCEPTION`/`GRADIENTS` capabilities, and *omits* the intermediate seams. A
+plugin whose bindings require an intermediate seam simply fails to resolve (loudly) on an e2e
+stack, while raw-sensor and output attacks port over unchanged. Candidate models: the nuCarla
+BEV detectors and the CARLA end-to-end policies (TransFuser/InterFuser class), run in their own
+env behind the backend boundary.
 
-**Design goal.** Confine *all* knowledge of avstack's hook calling convention to one place, so
-plugins keep a clean, avstack-agnostic `apply(payload, ego_state=…, ctx=…)` contract and the
-subtree stays extractable.
+#### 2.3.3 Read hooks — diagnosis signals
 
-**How it's implemented.** avstack pre-hooks must return `(args, kwargs)`; post-hooks are
-re-splatted each iteration and must return `(value,)`. `HookAdapter` wraps a plugin for a seam
-and produces exactly those shapes; `MonitorAdapter` observes without modifying. `RunContext`
-(`run_id, frame, t, ego_state, ground_truth, trace, defense_outcomes`) carries per-tick state a
-module's own signature doesn't provide; the backend calls `ctx.tick(...)` each step.
-`attach(module, plugin, seam, ctx)` / `attach_monitor(...)` register the adapters at runtime.
+**Design goal.** Expose each layer's I/O read-only so the evaluation engine can see *where* an
+error appears and *how far* it propagates, without perturbing the run.
 
-**To extend.** Rarely touched. A genuinely new *kind* of interception (not pre/post on a
-`BaseModule`) would add an adapter here; everything else reuses `attach`.
+**[Now].** `hooks.py::MonitorAdapter` observes a seam and appends `ComponentIO(frame, stage,
+component, outputs)` into the run `Trace`. `RunContext` carries per-tick `frame/t/ego_state/
+ground_truth`. `attach_monitor(module, seam, ctx)` wires it.
 
-### 2.6 Threat model (`core/threat_model.py`)
+**Extend [Planned].** Add read hooks at the new seams (localization, prediction) and richer
+signals (feature maps, confidences, timing) so the evaluation engine's impacting-factor analysis
+has more to observe.
 
-**Design goal.** Make an attack *security-relevant* rather than arbitrary noise: state the
-adversary's goal, knowledge, access, and a checkable success criterion, and let the engine
-refuse runs that violate declared constraints.
+#### 2.3.4 Read-write hooks — attack/optimization interfaces
 
-**How it's implemented.** A pydantic `ThreatModel(goal, knowledge, access[], target,
-capabilities[], constraints[], timing, success_criteria)`. `Knowledge` ∈ white/gray/black-box;
-`AccessLevel` ∈ physical_environment / sensor / network_v2x / software / model.
+**Design goal.** Let an attack both *inject* a perturbation and, for white-box optimization,
+*read internal signals such as gradients* — through a defined interface, so the stack stays
+agnostic and the attack never imports the model.
 
-**To extend.** Every attack sets a `threat_model` in its `__init__`. When implementing a survey
-attack, encode the paper's assumptions here (attacker knowledge, sensor access, feasibility
-constraints) even when the delivery is simulated — this is what keeps the inventory faithful.
+**[Now].** `hooks.py::HookAdapter` wraps an attack/defense at a seam, confining avstack's
+calling convention (pre-hooks return `(args, kwargs)`; post-hooks return `(value,)`). It is
+read-write on the payload.
 
-### 2.7 Experiment specification (`core/experiment.py`)
+**[Planned] gradient / white-box interface.** The `GRADIENTS` capability is declared but not yet
+wired. The design: a backend that can expose a differentiable forward advertises `GRADIENTS`;
+the interface returns `∂(loss)/∂(input)` for an attacker-specified objective, so an optimization
+attack (2.4) can do PGD/EoT **without importing the detector** — e.g. a `WhiteboxLidarDetector`
+subclass that surfaces `self.model` gradients behind the interface. The stack exposes the
+gradient interface; the attack owns the objective and the optimizer.
 
-**Design goal.** A single declarative, validated, reproducible description of a whole
-experiment that runs unchanged across backends and modes.
+#### 2.3.5 Hardware-in-the-loop [TODO]
 
-**How it's implemented.** Pydantic models: `ExperimentSpec(name, system, scenario, attack?,
-defense?, evaluation, reproducibility)`, where `ScenarioSpec.backend` is a `{"type": ...}`
-build config, `AttackConfig` pairs an attack `spec` with a `ThreatModel`, and `EvaluationConfig`
-lists metrics. Sub-configs are registry-buildable dicts.
+HIL attaches at the **same backend seam** so one standard covers real hardware. A Block Harbor
+**VSEC** backend would bridge real ECUs/buses; because attacks/defenses/monitors/metrics live
+above the backend interface, a simulated verdict and a hardware verdict are directly comparable.
+Open questions: which seams a real ECU exposes, timing/synchronization, and safe fault
+injection — deferred.
 
-**To extend.** New scenario knobs go on `ScenarioSpec`; new metric selection on
-`EvaluationConfig`. The schema is the contract the (future) agent harness generates against.
+#### 2.3.6 Dataset & simulator interfaces (backends)
 
-### 2.8 Backends (`backends/`)
+**Design goal.** Adapt any execution environment — simulator, dataset, hardware — to one uniform
+surface (`Backend`: `build/step/run/close`, `profile()`, `attach(plugin, seam)`).
 
-**Design goal.** Adapt any execution environment (simulator, dataset, hardware) to one uniform
-surface so attacks/defenses/monitors/metrics above it never change.
+**[Now].** `MockBackend` (simulator-free GT passthrough + tracker + forward-collision reflex;
+used by the offline suite); `CarlaBackend` (closed-loop avcarla; switchable GT vs **neural**
+perception, optional camera + `RunRecorder`). **[Stub]** `DatasetBackend` (offline KITTI/nuScenes
+replay via avapi). **[Planned]** `AlpaSimBackend`. New backend ⇒ implement the five methods,
+advertise an accurate `profile()`, route `attach` to a manual pre-loop or `hooks.attach()`, and
+normalize coordinates at the boundary (§3).
 
-**How it's implemented.** `Backend` ABC: `build/step/run/close`, plus `profile() -> StackProfile`
-and `attach(plugin, seam)`. Implemented:
-- `MockBackend` — simulator-free; ground-truth passthrough detector + tracker + a forward-
-  collision reflex. Profile: `{perception_input, perception_out}`, `{GT_PERCEPTION, TRACKER}`.
-  Used by the offline test suite.
-- `CarlaBackend` — closed-loop via avcarla. Switchable perception: ground-truth passthrough, or
-  **neural** (real `CarlaLidar` → CARLA-trained PointPillars). Optional RGB camera + `RunRecorder`.
-  Profile depends on mode (neural ⇒ `{perception_out}`, `{NEURAL_PERCEPTION, RAW_LIDAR, TRACKER}`).
-- `DatasetBackend` — offline KITTI/nuScenes replay via avapi (stub; Phase 2).
-- `backends/common.py` — shared helpers (e.g. `forward_hazard`) used by more than one backend.
+### 2.4 Attacks
 
-**To extend (new simulator / HIL).** Subclass `Backend`; implement the five methods; advertise
-an accurate `profile()`; route `attach(plugin, seam)` to either a manual pre-loop (object-level
-seams) or `hooks.attach()` on the right avstack module. Normalize coordinates at the boundary
-(see §3). Planned backends: `AlpaSimBackend` (AI-generative sim) and a Block Harbor **VSEC** HIL
-backend — both reuse the identical seams and escalation metric.
+**Design goal.** An attack takes **knowledge of the system and the scenario** and produces two
+things: an **attack artifact** (the perturbation — spoofed points, an adversarial patch, a
+fabricated detection) and a **deployment strategy** (where/when/how it is injected). It may need
+to (a) read AV-stack interfaces to *optimize* the artifact (e.g. gradients), (b) access the
+scenario/dataset because an attack may only work in specific scenarios, and (c) expose a
+**parameter interface** for the variables the attacker controls. Physical sensor attacks
+additionally require a **data-informed physical model**.
 
-### 2.9 Attacks (`attacks/`)
+**Implementation [Now] — vector × method × binding.**
+- An **attack vector** (`attacks/vector.py`, `AttackVector`) is the shared delivery *mechanism*
+  plus the bindings a family inherits (a stateless toolkit).
+- A **method** composes a vector, sets `bindings = <Vector>.bindings`, and dispatches on the
+  resolved seam. Implemented:
+  - `attacks/lidar_spoofing/` — `LidarSpoofingVector`; `ObjectSpoofingAttack` (false positive),
+    `ObjectRemovalAttack` (false negative).
+  - `attacks/detection_manipulation/` — `DetectionManipulationVector` (binding `perception_out`,
+    any detector); `PhantomDetectionAttack`, `DetectionRemovalAttack`.
 
-**Design goal.** Grow a large, faithful inventory of AV attacks organized so that methods
-sharing a delivery mechanism share code and one consistent set of bindings.
-
-**How it's implemented — vector × method × binding.**
-- An **attack vector** (`attacks/vector.py`, `AttackVector`) is the shared *mechanism* + the
-  bindings a family inherits (a stateless toolkit; per-run state lives on the method).
-- A **method** is a concrete goal (false positive, false negative, …) that composes a vector,
-  sets `bindings = <Vector>.bindings`, and dispatches on the resolved seam.
-
-Implemented vectors:
-- `attacks/lidar_spoofing/` — `LidarSpoofingVector` (bindings: `raw_lidar` fid-3 requires
-  neural+raw cloud, `perception_input` fid-1 requires GT). Methods: `ObjectSpoofingAttack`
-  (false positive; alias `LidarSpoofAttack`), `ObjectRemovalAttack` (false negative). Raw-point
-  primitives are declared but raise pending the optimization track.
-- `attacks/detection_manipulation/` — `DetectionManipulationVector` (binding: `perception_out`,
-  no capability requirement → any detector). Methods: `PhantomDetectionAttack` (inject),
-  `DetectionRemovalAttack` (suppress).
-
-**To add an attack.**
+Add an attack:
 ```python
 @ATTACKS.register_module()
 class MyAttack(AttackBase):
-    category = "<vector name>"
-    bindings = MyVector.bindings          # inherit the vector's seams
-    def __init__(self, ...): self.vector = MyVector(); self.threat_model = ThreatModel(...)
-    def validate(self, spec): ...          # optional: enforce threat-model constraints
+    category = "<vector>"
+    bindings = MyVector.bindings          # inherited seams / capability requirements
+    def __init__(self, param_a=..., param_b=...):     # (c) attacker-tunable parameters
+        self.vector = MyVector(); self.threat_model = ThreatModel(...)
+    def validate(self, spec): ...          # enforce threat-model constraints
     def apply(self, data, ego_state=None, ctx=None, **kw):
-        seam = self.bound_seam             # dispatch to the vector primitive for this seam
-        return self.vector.<op>(data, ...)
+        return self.vector.<op>(data, ...) # deploy the artifact at the bound seam
 ```
-New modality (camera-patch, mmWave, GNSS, …) ⇒ a new vector package with its own `vector.py`
-toolkit + method classes. Effects that live at the same seam (FP/FN/misclassify/displace) reuse
-the same seam primitives across modalities.
 
-### 2.10 Defenses (`defenses/`)
+**Where the richer concept maps [current vs planned].**
+- **Artifact vs deployment.** Today `apply()` conflates a *fixed* artifact with its deployment
+  (the hook is the deployment). The intended split adds an artifact-generation phase — `Attack.
+  generate(system, scenario) -> Artifact` — that `apply()` then deploys, so optimized and static
+  attacks share one deployment path. **[Planned].**
+- **AV-stack access for optimization.** Generation may consume the `GRADIENTS` interface (2.3.4)
+  to optimize the artifact (PGD/EoT). The attack owns the objective; the stack owns the gradient
+  interface. **[Planned].**
+- **Scenario/dataset access.** An attack may declare *scenario preconditions* (it only works at
+  certain geometries/timings); the scenario engine (2.6) filters or generates matching cases,
+  and generation may read scenario/sensor data. **[Planned].**
+- **Parameter interface [Now, partial].** `__init__` kwargs are the attacker-controlled
+  variables (e.g. `target_xyz`, `corridor`, `score`); the search engine tunes them. A typed
+  parameter schema (bounds/space) for automated search is **[Planned]**.
+- **Physical-process modeling + data-informed validation [Planned].** For physical sensor
+  attacks (LiDAR point injection, camera patches), a naive artifact is not faithful — e.g. raw
+  point injection does not reliably fool a neural detector. Such attacks must ship a **data
+  generation pipeline that models the physical process** (how the injected signal actually
+  appears to the sensor) **validated against real data** (nuCarla traces, measured domain gap).
+  Until validated, the attack is labeled an *effect abstraction* (it injects the downstream error
+  with feasibility metadata) rather than a signal-level attack — kept honest via the threat model.
 
-**Design goal.** Mitigate or flag attacks at or downstream of the attack seam, and report what
-they did so mitigation is measurable.
+### 2.5 Defenses
 
-**How it's implemented.** `ScoreGateDefense` (baseline) gates the detector input by confidence
-(`perception_input`, requires `GT_PERCEPTION`) and records a `DefenseOutcome`. It is honest about
-its scope: the neural-mode counterpart must bind at `perception_out` (a gap tracked for the next
-defense).
+**Design goal.** Detect, sanitize, or mitigate an attack at or downstream of its seam, and
+report what it did so mitigation is measurable — potentially requiring **direct modification of
+the AV stack** (not just a hook), which is the open design question.
 
-**To add a defense.** Subclass `DefenseBase`, declare `bindings` (at/downstream of the attacks
-it counters), return the sanitized payload, and call `self.record_outcome(ctx, DefenseOutcome(...))`.
-The engine refuses to attach a defense upstream of the attack.
+**Implementation.** **[Now]** `ScoreGateDefense` — a baseline confidence gate at
+`perception_input` (requires `GT_PERCEPTION`) that records a `DefenseOutcome(kept, dropped,
+reason)` into `ctx.defense_outcomes` while returning the sanitized payload. A defense declares
+bindings at/downstream of the attacks it counters; the engine refuses upstream placement.
 
-### 2.11 Monitors & traces (`monitors/`)
+**[TODO].** (1) A neural-mode `perception_out` defense (the current gate is GT-only — the main
+gap). (2) Defenses that require **modifying the stack** rather than hooking it — e.g. swapping in
+a robust fusion module or a retrained detector — need a stack-modification interface beyond the
+read-write hook; scope and safety of that interface are open.
 
-**Design goal.** Observe per-stage pipeline I/O without changing it, so clean and attacked runs
-can be diffed into an escalation path.
+### 2.6 Scenario engine
 
-**How it's implemented.** `Trace` collects `ComponentIO(frame, stage, component, outputs)`
-records (appended by `MonitorAdapter` or by the backend directly); `build_trace(records, run_id)`
-assembles a `Trace` from per-frame record dicts.
+**Design goal.** Provide the *cases* an experiment runs, over **both datasets and simulation**,
+from a **formal definition of the applicable scenario**: either *filter* matching scenarios out
+of a dataset, or *generate* simulation scenarios from the description. Then **augment** each case
+with external environmental variables the attacker does *not* control (weather, lighting, traffic
+noise), and let an attacker *choose* a scenario by writing its specification.
 
-**To extend.** Attach a `MonitorAdapter` at any seam via `hooks.attach_monitor`, or have a
-backend push richer records (speeds, brake flags, detections) that the metric reads.
+**Implementation.**
+- **[Now]** `core/experiment.py::ScenarioSpec` carries `backend`, `map`, `initial_conditions`,
+  `participants`, `target_objects`, `seeds`, `repetitions`. `DatasetBackend`/`CarlaBackend` are
+  the data/sim sources.
+- **[Planned] scenario engine (`search/`).** (1) A **formal scenario schema** (a filterable /
+  generatable description). (2) A **dataset filter** that selects matching frames/scenes (e.g.
+  from nuCarla by class/geometry/weather). (3) A **simulation generator** that builds CARLA
+  scenarios from the description. (4) An **augmentation layer** that adds environmental noise
+  (weather, lighting, non-attacker traffic) to probe robustness. (5) A **fuzzing/search loop**
+  over scenario × attack-parameter space with escalation as fitness, behind a **simulation
+  broker** so one loop drives any backend. The attacker's own scenario spec is just a fully
+  constrained description fed to the same engine.
 
-### 2.12 Escalation DAG & metric (`core/escalation.py`, `metrics/`)
+### 2.7 Evaluation engine
 
-**Design goal.** Turn a pair of traces into (a) a scalar verdict — did the attack activate,
-propagate, and cause a driving consequence — and (b) an explainable graph of the propagation.
+**Design goal.** Go beyond a single pass/fail: **collect diagnosis signals from every layer**,
+**analyze what makes an attack effective** by observing results under data augmentation, **assess
+the attack's attributes** (precision, continuity, robustness, and related), and **propose
+mitigations**.
 
-**How it's implemented.** `Stage` enumerates the pipeline stages (`ATTACK_SURFACE, SENSOR,
-PERCEPTION, LOCALIZATION, TRACKING, FUSION, PREDICTION, PLANNING, CONTROL, SAFEGUARD,
-CONSEQUENCE`). `EscalationDAG` (nodes/edges over a networkx `DiGraph`) exposes `root_cause()` and
-`consequence_paths()`. `EscalationMetric.compute(clean, attacked)` finds the first per-stage
-divergence, chains them into a DAG, and returns `{"metrics": {activated, propagation_depth,
-reached_consequence, stopped, escalated, ...}, "dag": ...}`.
+**Implementation.**
+- **[Now] diagnosis + escalation.** Read hooks (2.3.3) fill a `Trace`. `core/escalation.py`
+  defines the pipeline `Stage`s and an `EscalationDAG` (`root_cause`, `consequence_paths`).
+  `metrics/escalation.py::EscalationMetric.compute(clean, attacked)` finds the first per-stage
+  divergence, chains it into a DAG, and returns `{activated, propagation_depth,
+  reached_consequence, stopped, escalated, ...}`. `reports/` renders the audit; `viz/`
+  (`RunRecorder`, `compare_runs`) records per-frame images/data and timeline/comparison plots.
+- **[Planned] impacting-factor analysis.** Sweep the scenario-engine augmentations (weather,
+  lighting, timing, distance) and correlate them with escalation to find *why* an attack works
+  and its operating envelope.
+- **[Planned] attack-attribute assessment.** Quantify attributes such as **precision** (how
+  targeted the induced error is), **continuity** (whether it persists frame-to-frame),
+  **robustness/generalizability** (does it survive augmentation and transfer across models),
+  intensity, and distance-to-impact — reusing the AV-security survey's attribute vocabulary as
+  the metric set.
+- **[Planned] mitigation proposal.** From the root-cause DAG + attributes, suggest candidate
+  defenses (e.g. the seam to gate, the corroborating sensor to add) and, where a defense plugin
+  exists, run the defended pass to confirm.
 
-**To add a metric.** Implement `MetricBase.compute(clean, attacked, **kw) -> dict`, register it in
-`METRICS`, and list it in `EvaluationConfig`.
+New metric: implement `MetricBase.compute(clean, attacked, **kw) -> dict`, register in `METRICS`,
+list it in `EvaluationConfig`.
 
-### 2.13 Reports (`reports/`)
+### 2.8 AI harness
 
-**Design goal.** A human-readable audit of what happened and why — root cause, propagation,
-metrics, and (if run) mitigation.
+**Design goal.** Let AI drive the framework from intent (a goal or a paper) while a guardrail
+guarantees it **cannot alter the fundamental project structure** and **can only produce code that
+complies with the defined interfaces**.
 
-**How it's implemented.** `render_report(ExperimentResult)` produces markdown from the metric
-dict + DAG + traces.
-
-### 2.14 Visualization & recording (`viz/`)
-
-**Design goal.** Record a run as inspectable images + data, and plot the analysis, so a result
-can be reviewed and shared.
-
-**How it's implemented.** `RunRecorder` (duck-typed onto a backend via `set_recorder`) writes
-per-frame BEV + RGB frames and `records.jsonl`, and a `timeline.png`; `compare_runs()` overlays
-clean vs attacked. Uses matplotlib (Agg) + PIL (the `viz` extra).
-
-### 2.15 Engine (`core/engine.py`)
-
-**Design goal.** Orchestrate the paired clean/attacked/defended passes and produce the result —
-backend-agnostic and stack-agnostic.
-
-**How it's implemented.** `ExperimentRunner` builds plugins from registries, resolves each
-plugin's binding against `backend.profile()`, attaches at the resolved seam (rejecting a defense
-upstream of the attack), runs the passes, and returns an `ExperimentResult(metrics, dag,
-clean/attacked/defended traces, mitigated)`.
-
-### 2.16 CLI (`cli.py`)
-
-**Design goal.** A thin operator entry point.
-
-**How it's implemented.** `typer` app: `version`, `registry` (list plugins), `validate <spec>`,
-`run <spec> [report]` (exit code reflects `escalated`).
-
-### 2.17 Models & datasets (`models/`, `scripts/`, `third_party/nuCarla`, `data/`)
-
-**Design goal.** Put genuine CARLA-trained perception in the loop, and provide real CARLA traces
-to check model behavior — without committing large binaries.
-
-**How it's implemented.**
-- `scripts/fetch_models.sh` downloads all reachable avstack CARLA-trained checkpoints (2 LiDAR
-  PointPillars + 5 2D-camera faster/cascade-RCNN) into `models/` and symlinks the two vendored
-  mmdet roots at them; the LiDAR (`work_dirs/`) and 2D (`work_dirs_2d/`) trees are kept separate
-  because avstack's loader probes the 2D root first.
-- `scripts/verify_models.py` loads every model + one forward pass (7/7).
-- `scripts/eval_camera_nucarla.py` runs the camera models on real nuCarla images (detection-rate
-  + score stats + annotated montages) — the "good CARLA traces" check.
-- `third_party/nuCarla` (submodule) + `data/nuCarla` (git-ignored symlink) supply the
-  nuScenes-format CARLA dataset. All weights and datasets are git-ignored.
-
-### 2.18 Planned components
-
-- **Testing handler (`search/`).** Design goal: pressure-test risk instead of one hand-picked
-  scenario. Implement as an evolutionary/search loop over the scenario + attack-parameter space
-  with escalation as fitness, behind a simulation broker so the same loop drives any backend;
-  each generated case becomes an `ExperimentSpec` variant.
-- **AI agent harness (`agent/`).** Design goal: drive the framework from intent. Implement agents
-  that generate/validate an `ExperimentSpec` from a goal or paper, author or adapt attack/defense
-  plugins against the stable hook seam, orchestrate the runs, and summarize the verdict — all
-  behind the same schema-validation and tests as hand-written artifacts.
-- **Knowledge / vuln dataset (`knowledge/`).** Design goal: accumulate reusable vulnerability
-  paths. Implement as a store of escalation DAGs + specs + verdicts, keyed for retrieval and
-  leaderboards.
+**Implementation [Planned].**
+- **Static CI/CD guardrail.** A pipeline that runs on every AI-produced change and rejects
+  anything that touches protected structure (core interfaces, seam/registry definitions, the
+  plugin-boundary rule) or breaks the offline suite / ruff. The interface contracts in 2.2 and
+  the import-boundary rule are what make this checkable.
+- **Interface-guided generation.** The harness prompts and constrains the model to author
+  `ExperimentSpec`s and new attack/defense plugins *against the stable contracts only* — subclass
+  `AttackBase`/`DefenseBase`, declare `bindings`, implement `apply()`/`generate()` — and validates
+  every artifact through the same schema checks and tests as hand-written code before a verdict is
+  trusted or indexed. A generated plugin is a normal registry entry; nothing about the runtime
+  trusts it more than a human's.
 
 ---
 
@@ -376,14 +372,14 @@ to check model behavior — without committing large binaries.
 CARLA is **left-handed** (X-fwd, Y-right, Z-up); mmdet3d/KITTI/nuScenes are **right-handed**. All
 frame conversions go through avstack `geometry` (reuse `CarlaReferenceFrame` / `refchoc` rather
 than hand-rolling), with explicit round-trip tests — silent frame bugs corrupt attack results
-without failing loudly. Each new simulator or HIL bridge normalizes to the same convention at its
-backend boundary.
+without failing loudly. Each new simulator or HIL bridge normalizes at its backend boundary.
 
 ## 4. Conventions
 
 - **Env / tests.** conda env `avsec` (Python 3.10); `python -m pytest tests -q` for the offline
   suite; `ruff check avsectester tests scripts` must pass. Slow GPU/CARLA tests are gated.
-- **Plugins import only the contract**, never engine/backends/search (keeps the subtree
-  extractable).
-- See `docs/SETUP.md` for installation and the full env, and `dev/PLAN.md` (local, git-ignored)
-  for the running task checklist.
+- **Plugins import only the contract** (`core/{interfaces,plugin,binding,capability,threat_model}`
+  + `config`), never engine/backends/scenario/evaluation — keeping the subtree extractable and the
+  AI-harness guardrail enforceable.
+- See `docs/SETUP.md` for installation and the full environment, and `dev/PLAN.md` (local,
+  git-ignored) for the running task checklist.
