@@ -19,7 +19,7 @@ vendored under `third_party/` as git submodules:
 - **avstack-api** — KITTI / nuScenes / CARLA dataset adapters
 
 Attacks, defenses, and monitors attach to avstack pipelines as **pre/post hooks** — no
-forking of avstack internals. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+forking of avstack internals. See [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
 
 ## Layout
 
@@ -28,7 +28,7 @@ avsectester/   core · backends · attacks · defenses · monitors ·
                metrics · search · reports · agent · knowledge
 third_party/   avstack-core · avstack-api · lib-avstack-carla   (git submodules)
 configs/       example experiment specs
-docs/          ARCHITECTURE.md · SETUP.md
+docs/          DEVELOPMENT.md · SETUP.md
 ```
 
 ## Quickstart
@@ -63,7 +63,7 @@ either backend; the baseline `ScoreGateDefense` mitigates it.
 Runnable demos live in [`scripts/`](scripts/) (closed-loop drive, attack escalation, smoke tests).
 
 Status: **early alpha** — end-to-end engine (spec → backend → attack/defense hooks → escalation
-DAG → report) works on `MockBackend` and `CarlaBackend`. See `docs/ARCHITECTURE.md` for design.
+DAG → report) works on `MockBackend` and `CarlaBackend`. See `docs/DEVELOPMENT.md` for design.
 
 ## License
 
