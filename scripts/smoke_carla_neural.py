@@ -23,7 +23,7 @@ def _run(attack, frames: int):
     be.build(None)
     if attack is not None:
         attack.reset()
-        attack.check(be.profile())
+        attack.check(be.supported_seams())
         for seam in attack.seams:
             be.attach(attack, seam)
     recs = []

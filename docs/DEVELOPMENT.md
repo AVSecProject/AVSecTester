@@ -53,7 +53,7 @@ generated code inside the defined interfaces.
 
 1. **AV-stack agnostic — expose interfaces, hide internals.** Attacks, defenses, monitors, and
    metrics never import an AV model or a component class. They interact only through named
-   **seams** and typed **capabilities**. Two kinds of interface are exposed at each seam:
+   **seams**. Two kinds of interface are exposed at each seam:
    - **Read hooks** — expose *diagnosis signals* (a layer's I/O) read-only, for the evaluation
      engine.
    - **Read-write hooks** — expose *attack/defense interfaces*: perturb a payload, and (for
@@ -70,7 +70,7 @@ generated code inside the defined interfaces.
    selection* is distinct from *environmental augmentation*; *collecting* diagnosis signals is
    distinct from *assessing* attack attributes. Each split is a seam for future work.
 5. **Plugins import only the contract.** `attacks/` and `defenses/` depend only on
-   `core/{interfaces,plugin,binding,capability,threat_model}` + `config` registries — never on
+   `core/{interfaces,plugin,binding,threat_model}` + `config` registries — never on
    the engine, backends, or scenario/evaluation engines — so the plugin subtree stays a clean,
    extractable unit.
 
@@ -79,7 +79,7 @@ generated code inside the defined interfaces.
 | Concept (Section) | Package(s) | Status |
 |---|---|---|
 | Central experiment engine (2.1) | `core/engine.py`, `cli.py` | [Now] |
-| Registry / config / interfaces (2.2) | `config/`, `core/{interfaces,plugin,seams,capability,binding,experiment,threat_model}` | [Now] |
+| Registry / config / interfaces (2.2) | `config/`, `core/{interfaces,plugin,seams,binding,experiment,threat_model}` | [Now] |
 | AV stacks & interfaces (2.3) | `hooks.py`, `backends/`, `models/`, `scripts/` | [Now] modular; [Planned] e2e / gradients / HIL |
 | Attacks (2.4) | `attacks/` | [Now] LiDAR-spoofing, detection-manipulation |
 | Defenses (2.5) | `defenses/` | [Now] baseline only |
@@ -101,7 +101,7 @@ and by running the *paired* passes that make an attack's effect measurable.
 1. Builds the backend, attack, and defense from the registries (`{"type": name, ...}` configs).
 2. Runs a **clean** pass, an **attacked** pass, and — if a defense is declared — an
    **attacked+defended** pass. For each plugin it checks compatibility
-   (`plugin.check(backend.profile())`) and attaches it at **every seam it declares**; a defense
+   (`plugin.check(backend.supported_seams())`) and attaches it at **every seam it declares**; a defense
    whose seams are all *upstream* of the attack is rejected.
 3. Returns `ExperimentResult(metrics, dag, clean/attacked/defended traces, mitigated)`.
 
@@ -128,7 +128,7 @@ interfaces so implementations can be swapped without touching callers.
   `goal, knowledge (white/gray/black-box), access[], target, capabilities[], constraints[],
   timing, success_criteria`. The engine can refuse runs that violate declared constraints.
 - **Plugin contract** (`core/plugin.py`, `core/interfaces.py`): `SecurityPlugin` carries
-  `category`, `seams` (the list of seams it hooks into), optional `requires`, `check()`,
+  `category`, `seams` (the list of seams it hooks into), `check()`,
   `current_seam()`, lifecycle (`validate/reset`), and `describe()`. `AttackBase` adds
   `threat_model`; `DefenseBase` records a `DefenseOutcome`.
 
@@ -152,7 +152,7 @@ dataset adapters. We never fork it; we attach at runtime via its `@apply_hooks` 
 5 2D-camera R-CNNs), `scripts/verify_models.py` confirms they load and run, and
 `scripts/eval_camera_nucarla.py` validates the camera models on real nuCarla traces.
 
-#### 2.3.2 Seams, capabilities, compatibility — the interface layer
+#### 2.3.2 Seams & compatibility — the interface layer
 
 **Design goal.** Let a plugin target "the detector's output" without knowing which class
 implements it, and let one plugin hook into several points at once.
@@ -161,21 +161,22 @@ implements it, and let one plugin hook into several points at once.
 - **Seams** (`core/seams.py`): logical interception points — `raw_lidar`, `perception_input`,
   `perception_out`, `tracking_out`, `planning_out`, `control_out` — each a
   `Seam(name, phase, stage, component, arg_index)`; `SEAM_ORDER` fixes upstream→downstream order.
-- **Capabilities** (`core/capability.py`): a backend advertises a `StackProfile(seams,
-  capabilities)`; `Capability` ∈ `{GT_PERCEPTION, NEURAL_PERCEPTION, RAW_LIDAR, RAW_CAMERA,
-  GRADIENTS, TRACKER, PLANNER, CONTROLLER, LOCALIZATION, V2X}`.
-- **A plugin declares a list of seams** (`SecurityPlugin.seams`) plus optional `requires`
-  capabilities. The engine attaches it at **every** declared seam the stack exposes, and
-  `check_support()` (`core/binding.py`) fails loudly (`IncompatiblePlugin`) if a declared seam or
-  required capability is missing. This is what makes plugins **agnostic to model/component
-  details** — they name seams and capabilities, not classes — and lets one attack span several
-  seams, dispatching on `ctx.seam` (via `current_seam(ctx)`).
+- **A backend advertises the set of seams it exposes** — just a `frozenset[str]` from
+  `Backend.supported_seams()` (no separate capability type: e.g. a GT stack exposes
+  `perception_input`, a neural stack doesn't — seam presence already encodes the difference).
+- **A plugin declares a list of seams** (`SecurityPlugin.seams`). The engine attaches it at
+  **every** declared seam the stack exposes, and `check_support()` (`core/binding.py`) fails
+  loudly (`IncompatiblePlugin`) if a declared seam isn't exposed. This is what makes plugins
+  **agnostic to model/component details** — they name seams, not classes — and lets one attack
+  span several seams, dispatching on `ctx.seam` (via `current_seam(ctx)`). If a stack ever needs
+  an affordance the seam name can't express (e.g. a *differentiable* forward), attach it as an
+  attribute of the exposed seam rather than reintroducing a global capability set.
 
 **Extend for end-to-end / foundation-model driving [Planned].** An e2e model has no internal
 component seams — only input (raw sensors) and output (trajectory/control). It fits the same
-abstraction: an `E2EBackend` advertises a profile with `raw_lidar`/`raw_camera` + `control_out`
-seams and `NEURAL_PERCEPTION`/`GRADIENTS` capabilities, and *omits* the intermediate seams. A
-plugin that declares an intermediate seam simply fails the compatibility check (loudly) on an e2e
+abstraction: an `E2EBackend` exposes `{raw_lidar, raw_camera, control_out}` and *omits* the
+intermediate seams. A plugin that declares an intermediate seam simply fails the compatibility
+check (loudly) on an e2e
 stack, while raw-sensor and output attacks port over unchanged. Candidate models: the nuCarla
 BEV detectors and the CARLA end-to-end policies (TransFuser/InterFuser class), run in their own
 env behind the backend boundary.
@@ -203,8 +204,8 @@ agnostic and the attack never imports the model.
 calling convention (pre-hooks return `(args, kwargs)`; post-hooks return `(value,)`). It is
 read-write on the payload.
 
-**[Planned] gradient / white-box interface.** The `GRADIENTS` capability is declared but not yet
-wired. The design: a backend that can expose a differentiable forward advertises `GRADIENTS`;
+**[Planned] gradient / white-box interface.** The differentiable-forward affordance is not yet
+wired. The design: a backend that can expose a differentiable forward marks that seam differentiable;
 the interface returns `∂(loss)/∂(input)` for an attacker-specified objective, so an optimization
 attack (2.4) can do PGD/EoT **without importing the detector** — e.g. a `WhiteboxLidarDetector`
 subclass that surfaces `self.model` gradients behind the interface. The stack exposes the
@@ -221,13 +222,13 @@ injection — deferred.
 #### 2.3.6 Dataset & simulator interfaces (backends)
 
 **Design goal.** Adapt any execution environment — simulator, dataset, hardware — to one uniform
-surface (`Backend`: `build/step/run/close`, `profile()`, `attach(plugin, seam)`).
+surface (`Backend`: `build/step/run/close`, `supported_seams()`, `attach(plugin, seam)`).
 
 **[Now].** `MockBackend` (simulator-free GT passthrough + tracker + forward-collision reflex;
 used by the offline suite); `CarlaBackend` (closed-loop avcarla; switchable GT vs **neural**
 perception, optional camera + `RunRecorder`). **[Stub]** `DatasetBackend` (offline KITTI/nuScenes
 replay via avapi). **[Planned]** `AlpaSimBackend`. New backend ⇒ implement the five methods,
-advertise an accurate `profile()`, route `attach` to a manual pre-loop or `hooks.attach()`, and
+advertise an accurate `supported_seams()`, route `attach` to a manual pre-loop or `hooks.attach()`, and
 normalize coordinates at the boundary (§3).
 
 ### 2.4 Attacks
@@ -242,10 +243,10 @@ additionally require a **data-informed physical model**.
 
 **Implementation [Now] — vector × method.**
 - An **attack vector** (`attacks/vector.py`, `AttackVector`) is the shared delivery *mechanism*
-  plus the `seams` (and optional `requires`) a family inherits (a stateless toolkit).
+  plus the `seams` a family inherits (a stateless toolkit).
 - A **method** composes a vector, sets `seams = <Vector>.seams`, and dispatches on the firing
   seam. Implemented:
-  - `attacks/lidar_spoofing/` — `LidarSpoofingVector` (seam `perception_input`, requires GT);
+  - `attacks/lidar_spoofing/` — `LidarSpoofingVector` (seam `perception_input`, GT stacks only);
     `ObjectSpoofingAttack` (false positive), `ObjectRemovalAttack` (false negative).
   - `attacks/detection_manipulation/` — `DetectionManipulationVector` (seam `perception_out`,
     any detector); `PhantomDetectionAttack`, `DetectionRemovalAttack`.
@@ -256,7 +257,6 @@ Add an attack:
 class MyAttack(AttackBase):
     category = "<vector>"
     seams = MyVector.seams                # the seams it hooks into (one or several)
-    requires = MyVector.requires          # optional capability requirements
     def __init__(self, param_a=..., param_b=...):     # (c) attacker-tunable parameters
         self.vector = MyVector(); self.threat_model = ThreatModel(...)
     def validate(self, spec): ...          # enforce threat-model constraints
@@ -269,7 +269,7 @@ class MyAttack(AttackBase):
   (the hook is the deployment). The intended split adds an artifact-generation phase — `Attack.
   generate(system, scenario) -> Artifact` — that `apply()` then deploys, so optimized and static
   attacks share one deployment path. **[Planned].**
-- **AV-stack access for optimization.** Generation may consume the `GRADIENTS` interface (2.3.4)
+- **AV-stack access for optimization.** Generation may consume the differentiable/white-box interface (2.3.4)
   to optimize the artifact (PGD/EoT). The attack owns the objective; the stack owns the gradient
   interface. **[Planned].**
 - **Scenario/dataset access.** An attack may declare *scenario preconditions* (it only works at
@@ -293,7 +293,7 @@ report what it did so mitigation is measurable — potentially requiring **direc
 the AV stack** (not just a hook), which is the open design question.
 
 **Implementation.** **[Now]** `ScoreGateDefense` — a baseline confidence gate at
-`perception_input` (requires `GT_PERCEPTION`) that records a `DefenseOutcome(kept, dropped,
+`perception_input` (GT stacks only) that records a `DefenseOutcome(kept, dropped,
 reason)` into `ctx.defense_outcomes` while returning the sanitized payload. A defense declares
 bindings at/downstream of the attacks it counters; the engine refuses upstream placement.
 
@@ -383,7 +383,7 @@ without failing loudly. Each new simulator or HIL bridge normalizes at its backe
 
 - **Env / tests.** conda env `avsec` (Python 3.10); `python -m pytest tests -q` for the offline
   suite; `ruff check avsectester tests scripts` must pass. Slow GPU/CARLA tests are gated.
-- **Plugins import only the contract** (`core/{interfaces,plugin,binding,capability,threat_model}`
+- **Plugins import only the contract** (`core/{interfaces,plugin,binding,threat_model}`
   + `config`), never engine/backends/scenario/evaluation — keeping the subtree extractable and the
   AI-harness guardrail enforceable.
 - See `docs/SETUP.md` for installation and the full environment, and `dev/PLAN.md` (local,

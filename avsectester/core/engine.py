@@ -58,7 +58,7 @@ class ExperimentRunner:
 
         Returns the tuple of seams it hooked into.
         """
-        plugin.check(backend.profile())  # loud-fail if the stack can't support its seams/caps
+        plugin.check(backend.supported_seams())  # loud-fail if the stack lacks a declared seam
         for seam in plugin.seams:
             backend.attach(plugin, seam)
         return plugin.seams

@@ -5,9 +5,9 @@ Every attack/defense is a :class:`SecurityPlugin`: a hook-shaped component
 into** (:attr:`seams`). The framework attaches it at every declared seam the backend exposes;
 each attachment calls :meth:`apply` with ``ctx.seam`` set to the seam currently firing, so one
 plugin can act at several seams and dispatch on which one it is. How a plugin uses its seams is
-entirely up to the subclass — the base only fixes the attachment contract.
+entirely up to the subclass — the base only fixes the attachment contract. If a declared seam
+isn't exposed by the stack, :meth:`check` fails loudly.
 
-Optional :attr:`requires` capabilities let an incompatible stack fail loudly (:meth:`check`).
 Lifecycle hooks (:meth:`reset`, :meth:`validate`) default to no-ops; :meth:`describe` returns
 inventory metadata.
 """
@@ -20,7 +20,6 @@ from typing import TYPE_CHECKING, Any
 from .binding import check_support
 
 if TYPE_CHECKING:
-    from .capability import Capability, StackProfile
     from .experiment import ExperimentSpec
 
 
@@ -35,8 +34,6 @@ class SecurityPlugin(ABC):
     category: str = "generic"
     #: The seams this plugin hooks into. Attached at every one the backend exposes.
     seams: tuple[str, ...] = ()
-    #: Optional capabilities the stack must provide (else the plugin is incompatible).
-    requires: frozenset[Capability] = frozenset()
 
     # -- identity / inventory -------------------------------------------------
     @property
@@ -50,17 +47,16 @@ class SecurityPlugin(ABC):
             "kind": self._kind(),
             "category": self.category,
             "seams": list(self.seams),
-            "requires": sorted(c.value for c in self.requires),
         }
 
     def _kind(self) -> str:
         return "plugin"
 
     # -- attachment -----------------------------------------------------------
-    def check(self, profile: StackProfile) -> None:
-        """Raise :class:`~avsectester.core.binding.IncompatiblePlugin` if ``profile`` can't
-        expose every declared seam / required capability."""
-        check_support(self.seams, frozenset(self.requires), profile)
+    def check(self, exposed: frozenset[str]) -> None:
+        """Raise :class:`~avsectester.core.binding.IncompatiblePlugin` if the stack does not
+        expose every declared seam. ``exposed`` = ``Backend.supported_seams()``."""
+        check_support(self.seams, exposed)
 
     def current_seam(self, ctx: Any) -> str | None:
         """The seam currently firing (``ctx.seam``), or the sole declared seam for a direct

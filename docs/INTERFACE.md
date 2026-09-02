@@ -12,7 +12,7 @@ from `avsectester/…`.
 **Contents**
 1. Interface map
 2. Plugin contracts — `SecurityPlugin`, `AttackBase`, `DefenseBase`, `MonitorBase`, `MetricBase`, `SearchStrategy`
-3. Stack interfaces — `Backend`, `StackProfile` / `Capability`, `Seam`, plugin/stack compatibility, hook calling convention, `RunContext`
+3. Stack interfaces — `Backend` (+ `supported_seams`), `Seam`, plugin/stack compatibility, hook calling convention, `RunContext`
 4. Data contracts — seam payloads, the per-frame record, `Trace` / `ComponentIO`, escalation DAG, metric output, recorder
 5. Config & spec contracts — `Registry`, `ExperimentSpec`, `ThreatModel`
 6. Engine & result contracts — `ExperimentRunner`, `ExperimentResult`, `render_report`
@@ -31,7 +31,7 @@ from `avsectester/…`.
 | `MetricBase` | base class | `core/interfaces.py` | evaluation metrics |
 | `SearchStrategy` | base class | `core/interfaces.py` | scenario/attack search [Planned use] |
 | `Backend` | ABC | `core/interfaces.py` | Mock / CARLA / Dataset / (HIL) backends |
-| `StackProfile`, `Capability` | data | `core/capability.py` | backends advertise; plugins require |
+| `Backend.supported_seams()` | fn | `core/interfaces.py` | backend advertises its exposed seams |
 | `Seam`, `SEAMS`, `Phase` | data | `core/seams.py` | seam vocabulary |
 | `check_support`, `seams_downstream_of` | fn | `core/binding.py` | engine checks plugin↔stack compatibility |
 | hook convention (`HookAdapter`, `MonitorAdapter`, `attach`) | adapter | `hooks.py` | framework only |
@@ -45,7 +45,7 @@ from `avsectester/…`.
 | `ThreatModel` | schema | `core/threat_model.py` | attacks declare |
 | `ExperimentResult` | data | `core/engine.py` | engine returns |
 
-**Golden rule.** Attacks and defenses import **only** `core/{interfaces,plugin,binding,capability,
+**Golden rule.** Attacks and defenses import **only** `core/{interfaces,plugin,binding,
 threat_model}` and `config`. They never import a backend, an avstack model, the engine, or the
 scenario/evaluation engines. The framework talks to a plugin only through the methods below.
 
@@ -62,15 +62,14 @@ bind* to a stack.
 class SecurityPlugin(ABC):
     category: str = "generic"                        # taxonomy / inventory tag
     seams: tuple[str, ...] = ()                       # the seams it hooks into (attach at ALL)
-    requires: frozenset[Capability] = frozenset()    # optional capabilities the stack must provide
 
     # identity / inventory
     @property
     def name(self) -> str: ...                        # defaults to class name
-    def describe(self) -> dict[str, Any]: ...          # {name, kind, category, seams, requires}
+    def describe(self) -> dict[str, Any]: ...          # {name, kind, category, seams}
 
     # attachment
-    def check(self, profile: StackProfile) -> None    # raises IncompatiblePlugin if unsupported
+    def check(self, exposed: frozenset[str]) -> None  # raises IncompatiblePlugin if a seam isn't exposed
     def current_seam(self, ctx: Any) -> str | None    # the seam firing now (ctx.seam), else seams[0]
 
     # lifecycle (default no-ops — override what you need)
@@ -88,8 +87,8 @@ class SecurityPlugin(ABC):
 as `apply(payload, ego_state=<state|None>, ctx=<RunContext|None>)` once per firing seam, with
 `ctx.seam` set to the seam currently running — branch on `self.current_seam(ctx)` to act
 differently per seam. `apply` MUST return a payload of the same type it received (§4.1). `seams`
-must be non-empty; `requires` is optional and only used to fail loudly on an incompatible stack.
-Use `reset()` to clear per-run state between passes.
+must be non-empty; a declared seam the stack doesn't expose fails `check()` loudly. Use `reset()`
+to clear per-run state between passes.
 
 ### 2.2 `AttackBase` — [Now]
 
@@ -195,39 +194,26 @@ class Backend(ABC):
     @abstractmethod
     def close(self) -> None                                  # tear down actors/connections
 
-    def profile(self) -> StackProfile                        # advertise seams+capabilities (default: empty)
+    def supported_seams(self) -> frozenset[str]              # the seams this stack exposes (default: empty)
     def attach(self, plugin: Any, seam: str = "perception_out") -> None   # default: raises
     def add_perception_hook(self, hook: Any) -> None         # legacy alias: attach(hook, "perception_input")
 ```
 
-**Contract.** `profile()` must accurately list the seams `attach` supports and the capabilities the
-stack provides — the engine checks plugin seams against it. `attach(plugin, seam)` routes to a
+**Contract.** `supported_seams()` must accurately list the seams `attach` supports — the engine
+checks each plugin's declared seams against it. `attach(plugin, seam)` routes to a
 manual pre-loop (object-level seams like `perception_input`) or to `hooks.attach()` on the right
 avstack module (post-hook seams). `step()`/`run()` emit the standardized record (§4.2). The backend
 calls `ctx.tick(...)` (§3.6) at the top of each tick.
 
-### 3.2 `StackProfile` & `Capability` — [Now]
+### 3.2 What a backend exposes — [Now]
 
-`core/capability.py`.
+There is no separate "capability" type: a backend advertises **just the set of seams it
+exposes**, as a `frozenset[str]` from `Backend.supported_seams()`. (If a stack ever needs an
+affordance the seam name can't express — e.g. a differentiable forward — attach it as an
+attribute of the exposed seam rather than reintroducing a global capability set.)
 
-```python
-class Capability(str, Enum):
-    GT_PERCEPTION; NEURAL_PERCEPTION; RAW_LIDAR; RAW_CAMERA; GRADIENTS
-    TRACKER; PLANNER; CONTROLLER; LOCALIZATION; V2X
-
-@dataclass(frozen=True)
-class StackProfile:
-    seams: frozenset[str] = frozenset()
-    capabilities: frozenset[Capability] = frozenset()
-    def has_seam(self, seam: str) -> bool
-    def provides(self, capabilities: frozenset[Capability]) -> bool
-    @classmethod
-    def of(cls, seams, capabilities=()) -> "StackProfile"      # from any iterables
-```
-
-Reference profiles: `MockBackend` → `of({"perception_input","perception_out"}, {GT_PERCEPTION,
-TRACKER})`; `CarlaBackend(neural)` → `of({"perception_out"}, {NEURAL_PERCEPTION, RAW_LIDAR,
-TRACKER})`.
+Reference: `MockBackend` → `{"perception_input", "perception_out"}`; `CarlaBackend(neural)` →
+`{"perception_out"}`; `CarlaBackend(groundtruth)` → `{"perception_input", "perception_out"}`.
 
 ### 3.3 `Seam` / `SEAMS` / `Phase` — [Now]
 
@@ -248,20 +234,19 @@ def resolve_seam(seam: str | Seam) -> Seam
 
 ### 3.4 Plugin ↔ stack compatibility — [Now]
 
-`core/binding.py`. A plugin declares a **list of seams** (plus optional `requires`); the engine
-attaches at every one the stack exposes and checks compatibility up front.
+`core/binding.py`. A plugin declares a **list of seams**; the engine attaches at every one the
+stack exposes and checks compatibility up front.
 
 ```python
-def check_support(seams: tuple[str, ...], requires: frozenset[Capability],
-                  profile: StackProfile) -> None                 # raises IncompatiblePlugin / ValueError
+def check_support(seams: tuple[str, ...], exposed: frozenset[str]) -> None   # raises IncompatiblePlugin / ValueError
 def seams_downstream_of(seam: str, *, inclusive: bool = True) -> frozenset[str]
 class IncompatiblePlugin(RuntimeError): ...
 ```
 
-**Contract.** `check_support` raises `IncompatiblePlugin` if any declared seam is not exposed or
-any required capability is missing (and `ValueError` for an unknown seam name) — naming the gap.
-There is no ranking or "pick one"; all declared seams are used together. `seams_downstream_of`
-gives the seams at/after one, so the engine can reject a defense placed upstream of the attack.
+**Contract.** `check_support` raises `IncompatiblePlugin` if any declared seam is not in `exposed`
+(and `ValueError` for an unknown seam name) — naming the gap. There is no ranking or "pick one";
+all declared seams are used together. `seams_downstream_of` gives the seams at/after one, so the
+engine can reject a defense placed upstream of the attack.
 
 ### 3.5 Hook calling convention — [Now] (framework-internal)
 
@@ -483,11 +468,12 @@ def render_report(result: ExperimentResult) -> str    # markdown audit
 These contracts are **not in code yet**; they are specified here so implementations stay
 consistent. Do not import them.
 
-- **Gradient / white-box interface** (attack optimization). A backend advertising
-  `Capability.GRADIENTS` exposes, at a raw-sensor seam, a differentiable objective:
+- **Gradient / white-box interface** (attack optimization). A backend whose raw-sensor seam is
+  marked *differentiable* exposes a differentiable objective:
   `grad(objective, payload) -> ndarray` returning `∂objective/∂payload`, so an optimization attack
   runs PGD/EoT **without importing the model**. The stack owns the interface; the attack owns the
-  objective + optimizer.
+  objective + optimizer. (Such an affordance would be an attribute of the exposed seam, not a
+  separate capability set.)
 - **Attack generation split.** `AttackBase.generate(system, scenario) -> Artifact` (produce the
   optimized artifact) separate from `apply` (deploy it), so static and optimized attacks share one
   deployment path. Plus a typed **parameter schema** (`parameter_space() -> dict`) exposing the

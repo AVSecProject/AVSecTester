@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import pytest
 from avsectester.core.binding import IncompatiblePlugin
-from avsectester.core.capability import Capability as Cap
-from avsectester.core.capability import StackProfile
 from avsectester.core.interfaces import AttackBase, DefenseBase, DefenseOutcome
 from avsectester.core.threat_model import Knowledge, ThreatModel
 
@@ -13,7 +11,6 @@ from avsectester.core.threat_model import Knowledge, ThreatModel
 class _Atk(AttackBase):
     category = "perception"
     seams = ("perception_out", "tracking_out")     # a multi-seam attack
-    requires = frozenset({Cap.NEURAL_PERCEPTION})
     threat_model = ThreatModel(
         goal="g", knowledge=Knowledge.GRAYBOX, target="t", success_criteria="s"
     )
@@ -31,21 +28,13 @@ class _Def(DefenseBase):
         return data
 
 
-def test_check_passes_when_stack_supports_all_seams_and_caps():
-    ok = StackProfile.of(["perception_out", "tracking_out"], [Cap.NEURAL_PERCEPTION])
-    _Atk().check(ok)  # must not raise
+def test_check_passes_when_stack_exposes_all_seams():
+    _Atk().check(frozenset({"perception_out", "tracking_out"}))  # must not raise
 
 
-def test_check_fails_on_missing_seam():
-    missing = StackProfile.of(["perception_out"], [Cap.NEURAL_PERCEPTION])  # no tracking_out
+def test_check_fails_on_unexposed_seam():
     with pytest.raises(IncompatiblePlugin, match="tracking_out"):
-        _Atk().check(missing)
-
-
-def test_check_fails_on_missing_capability():
-    gt = StackProfile.of(["perception_out", "tracking_out"], [Cap.GT_PERCEPTION])
-    with pytest.raises(IncompatiblePlugin, match="neural_perception"):
-        _Atk().check(gt)
+        _Atk().check(frozenset({"perception_out"}))  # no tracking_out
 
 
 def test_current_seam_uses_ctx_then_falls_back():
@@ -60,7 +49,6 @@ def test_describe_exposes_inventory_metadata():
     d = _Atk().describe()
     assert d["kind"] == "attack" and d["category"] == "perception"
     assert d["seams"] == ["perception_out", "tracking_out"]
-    assert d["requires"] == ["neural_perception"]
     assert d["threat_model"]["knowledge"] == "graybox"
 
 

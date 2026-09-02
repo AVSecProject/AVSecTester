@@ -18,7 +18,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from ...core.capability import Capability
 from ..vector import AttackVector
 
 # phantom vehicle box [h, w, l] in metres
@@ -30,7 +29,6 @@ class LidarSpoofingVector(AttackVector):
     # raw-point realization (spraying into the LiDAR cloud) is the optimization track and is
     # not wired yet, so ``raw_lidar`` is intentionally not declared here.
     seams = ("perception_input",)
-    requires = frozenset({Capability.GT_PERCEPTION})
 
     def __init__(self, n_points_budget: int = 1000) -> None:
         self.n_points_budget = n_points_budget

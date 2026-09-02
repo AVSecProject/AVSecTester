@@ -1,31 +1,24 @@
 """Plugin ↔ stack attachment compatibility.
 
-A plugin declares the **list of seams it hooks into** (`SecurityPlugin.seams`) plus an
-optional set of required capabilities. The framework attaches the plugin at *every* declared
-seam the backend exposes; if a declared seam (or a required capability) is missing, the whole
-plugin is incompatible with that stack and :func:`check_support` raises
-:class:`IncompatiblePlugin` with a readable reason. There is no "pick the best of several
+A plugin declares the **list of seams it hooks into** (`SecurityPlugin.seams`). A backend
+advertises the **set of seams it exposes** (`Backend.supported_seams()`). The framework
+attaches the plugin at every declared seam the backend exposes; if a declared seam is not
+exposed (or is not a known seam at all), the plugin is incompatible with that stack and
+:func:`check_support` raises :class:`IncompatiblePlugin`. There is no "pick the best of several
 alternatives" — a plugin's seams are the points it operates on, together.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from .seams import SEAM_ORDER, SEAMS
-
-if TYPE_CHECKING:
-    from .capability import Capability, StackProfile
 
 
 class IncompatiblePlugin(RuntimeError):
-    """Raised when a stack cannot support a plugin's declared seams / capabilities."""
+    """Raised when a stack does not expose every seam a plugin declares."""
 
 
-def check_support(
-    seams: tuple[str, ...], requires: frozenset[Capability], profile: StackProfile
-) -> None:
-    """Validate that ``profile`` exposes every declared seam and required capability.
+def check_support(seams: tuple[str, ...], exposed: frozenset[str]) -> None:
+    """Validate that ``exposed`` contains every declared seam.
 
     Raises :class:`IncompatiblePlugin` (naming the gap) or ``ValueError`` for an unknown seam.
     """
@@ -34,13 +27,10 @@ def check_support(
     unknown = [s for s in seams if s not in SEAMS]
     if unknown:
         raise ValueError(f"unknown seam(s) {unknown}; known seams: {sorted(SEAMS)}")
-    missing_seams = [s for s in seams if not profile.has_seam(s)]
-    missing_caps = sorted(c.value for c in (requires - profile.capabilities))
-    if missing_seams or missing_caps:
-        have = sorted(profile.seams)
+    missing = [s for s in seams if s not in exposed]
+    if missing:
         raise IncompatiblePlugin(
-            f"stack cannot support this plugin: missing seams {missing_seams}, "
-            f"missing capabilities {missing_caps} (stack exposes seams={have})"
+            f"stack does not expose seam(s) {missing} (it exposes {sorted(exposed)})"
         )
 
 

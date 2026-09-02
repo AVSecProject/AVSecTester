@@ -16,7 +16,6 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from .capability import StackProfile
 from .plugin import SecurityPlugin
 
 if TYPE_CHECKING:
@@ -47,15 +46,15 @@ class Backend(ABC):
     def close(self) -> None:
         """Tear down actors/connections."""
 
-    def profile(self) -> StackProfile:
-        """Advertise which seams and capabilities this stack exposes.
+    def supported_seams(self) -> frozenset[str]:
+        """The set of seams this stack exposes (a subset of :data:`core.seams.SEAMS`).
 
-        A plugin's declared seams are checked against this profile
-        (:meth:`SecurityPlugin.check`). Concrete backends override it to reflect their
-        configuration (e.g. ground-truth vs neural perception). The empty default supports
-        nothing, so an unconfigured backend fails the compatibility check loudly.
+        A plugin's declared seams are checked against this (:meth:`SecurityPlugin.check`).
+        Concrete backends override it to reflect their configuration (e.g. ground-truth vs
+        neural perception). The empty default exposes nothing, so an unconfigured backend fails
+        the compatibility check loudly.
         """
-        return StackProfile()
+        return frozenset()
 
     def attach(self, plugin: Any, seam: str = "perception_out") -> None:
         """Attach an attack/defense at a named ``seam`` of the pipeline.

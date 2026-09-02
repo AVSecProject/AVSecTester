@@ -54,14 +54,9 @@ class MockBackend(Backend):
         self._x = 0.0
         self._v = 0.0
 
-    def profile(self):
+    def supported_seams(self) -> frozenset[str]:
         """A ground-truth passthrough stack with a tracker; exposes both perception seams."""
-        from ..core.capability import Capability, StackProfile
-
-        return StackProfile.of(
-            seams=["perception_input", "perception_out"],
-            capabilities=[Capability.GT_PERCEPTION, Capability.TRACKER],
-        )
+        return frozenset({"perception_input", "perception_out"})
 
     def attach(self, plugin: Callable, seam: str = "perception_out") -> None:
         """Attach at ``perception_input`` (object-level pre-loop) or ``perception_out``

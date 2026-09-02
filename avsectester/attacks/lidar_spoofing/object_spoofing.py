@@ -21,7 +21,6 @@ from .vector import LidarSpoofingVector
 class ObjectSpoofingAttack(AttackBase):
     category = "lidar_spoofing"
     seams = LidarSpoofingVector.seams        # shared with every LiDAR-spoofing method
-    requires = LidarSpoofingVector.requires
 
     def __init__(
         self,

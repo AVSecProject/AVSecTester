@@ -3,14 +3,13 @@
 A *seam* is a *logical* interception point on a perception -> tracking -> planning ->
 control stack (e.g. "the detector's output"). It is deliberately independent of any
 concrete avstack module: :mod:`avsectester.hooks` maps a seam onto the actual avstack
-pre/post-hook at runtime, and different backends expose different seams (see
-:class:`avsectester.core.capability.StackProfile`).
+pre/post-hook at runtime, and different backends expose different seams
+(``Backend.supported_seams()``).
 
-Attacks and defenses never name a raw avstack hook; they declare *bindings* over these
-seams (:mod:`avsectester.core.binding`) and the framework resolves the binding against
-whatever the current stack exposes. Keeping the seam vocabulary in ``core`` (rather than in
-the avstack-bridge layer) lets the plugin contract depend on it without importing the
-bridge.
+Attacks and defenses never name a raw avstack hook; they declare the list of *seams* they hook
+into and the framework attaches them at every declared seam the current stack exposes
+(:mod:`avsectester.core.binding`). Keeping the seam vocabulary in ``core`` (rather than in the
+avstack-bridge layer) lets the plugin contract depend on it without importing the bridge.
 """
 
 from __future__ import annotations
