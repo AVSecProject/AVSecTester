@@ -28,7 +28,7 @@ avsectester/   core · backends · attacks · defenses · monitors ·
                metrics · search · reports · agent · knowledge
 third_party/   avstack-core · avstack-api · lib-avstack-carla   (git submodules)
 configs/       example experiment specs
-docs/          DEVELOPMENT.md · SETUP.md
+docs/          DEVELOPMENT.md · INTERFACE.md · SETUP.md
 ```
 
 ## Quickstart

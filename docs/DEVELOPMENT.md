@@ -10,7 +10,8 @@ This guide is written **concept-first**: Section 1 gives the high-level architec
 principles that hold it together; Section 2 develops each component — its **design goal** first,
 then **implementation details** and how to extend it. Throughout, **[Now]** marks what is
 implemented today and **[Planned]** / **[TODO]** mark the intended design not yet built, so the
-document doubles as a roadmap.
+document doubles as a roadmap. For exact signatures of every interface named here, see
+[`docs/INTERFACE.md`](INTERFACE.md).
 
 ---
 
