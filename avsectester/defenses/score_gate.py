@@ -1,12 +1,9 @@
-"""Baseline mock defense: confidence gate on the perception input (PLAN.md Phase 5).
+"""Baseline defense: confidence gate on the perception input.
 
-Drops perception-input objects whose detection ``score`` is below a threshold — the
-simplest realistic sanitizer. It attaches at the exact same perception-input seam as the
-attack (avstack pre-hook shape ``apply(data, ego_state=...) -> data``), so the engine can
-run an attacked-and-defended pass to measure mitigation.
-
-Baseline only: a real defense would use raw-sensor corroboration / temporal consistency /
-physical plausibility rather than a single confidence value. See DefenseBase.
+Drops object-level inputs whose ``score`` is below a threshold — the simplest realistic
+sanitizer. It attaches at the same ``perception_input`` seam as the object-level attacks, so
+the runner can run an attacked-and-defended pass to measure mitigation. Baseline only: a real
+defense would use raw-sensor corroboration / temporal consistency / physical plausibility.
 """
 
 from __future__ import annotations
@@ -14,34 +11,22 @@ from __future__ import annotations
 from typing import Any
 
 from ..config import DEFENSES
-from ..core.interfaces import DefenseBase, DefenseOutcome
+from ..core.attack import Defense
+from ..core.context import Context
+from ..core.seam import Seam
 
 
 @DEFENSES.register_module()
-class ScoreGateDefense(DefenseBase):
-    category = "input_sanitize"
-    # Gates the passthrough detector's object-level input by confidence. Only meaningful on a
-    # ground-truth stack (objects carry a score at the input); the neural-stack counterpart
-    # gates detections at perception_out (added with the perception-output defenses).
-    seams = ("perception_input",)
+class ScoreGateDefense(Defense):
+    seams = (Seam.PERCEPTION_INPUT,)
 
     def __init__(self, threshold: float = 0.5) -> None:
         self.threshold = threshold
 
-    def apply(self, data: Any, ego_state: Any = None, ctx: Any = None, **kwargs: Any) -> Any:
+    def apply(self, payload: Any, ctx: Context) -> Any:
         from avstack.datastructs import DataContainer
 
-        kept, dropped = [], []
-        for o in data:
-            (kept if getattr(o, "score", 1.0) >= self.threshold else dropped).append(o)
-        self.record_outcome(
-            ctx,
-            DefenseOutcome(
-                seam=self.current_seam(ctx) or "perception_input",
-                frame=getattr(ctx, "frame", 0),
-                kept=len(kept),
-                dropped=[getattr(o, "ID", None) for o in dropped],
-                reason=f"score < {self.threshold}",
-            ),
+        kept = [o for o in payload if getattr(o, "score", 1.0) >= self.threshold]
+        return DataContainer(
+            payload.frame, payload.timestamp, kept, getattr(payload, "source_identifier", "def")
         )
-        return DataContainer(data.frame, data.timestamp, kept, getattr(data, "source_identifier", "def"))

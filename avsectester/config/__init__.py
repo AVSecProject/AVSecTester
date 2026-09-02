@@ -1,31 +1,26 @@
 """AVSecTester registries.
 
 We reuse avstack's OpenMMLab-style ``Registry`` so plugins compose the same way avstack
-modules do (build-from-config, ``@register_module()`` decorators). Attacks/defenses/
-monitors are additionally hook-compatible so they can be attached to avstack pipelines.
-
-If avstack is not installed (e.g. docs-only or unit tests that don't touch the stack), we
-fall back to a minimal local Registry with the same surface so imports never hard-fail.
+modules do (build-from-config, ``@register_module()`` decorators), with a minimal local
+fallback so imports never hard-fail when avstack isn't installed.
 """
 
 from .registry import (
     ATTACKS,
-    BACKENDS,
     DEFENSES,
+    ENVIRONMENTS,
     HAVE_AVSTACK,
     METRICS,
-    MONITORS,
-    SEARCH,
+    SYSTEMS,
     Registry,
 )
 
 __all__ = [
     "ATTACKS",
-    "BACKENDS",
     "DEFENSES",
+    "ENVIRONMENTS",
     "HAVE_AVSTACK",
     "METRICS",
-    "MONITORS",
-    "SEARCH",
+    "SYSTEMS",
     "Registry",
 ]

@@ -1,12 +1,8 @@
 """Detection-removal attack (detection-manipulation vector): suppress a real detection.
 
-A **false-negative** method — the mirror image of detection injection. It drops a genuine
-detection from the detector's output (an adversary suppressing a true positive), so the
-obstacle never becomes a track and the ego does not slow or evade. The detection-level
-counterpart to LiDAR object removal.
-
-Target selection: an explicit ``target_id``, or (default) the nearest real detection ahead
-of the ego within the braking corridor. Injected phantoms are never targeted.
+A false-negative method — drops a genuine detection from the detector's output (an adversary
+suppressing a true positive), so the obstacle never becomes a track and the ego does not slow.
+Target: an explicit ``target_id``, or (default) the nearest real detection ahead of the ego.
 """
 
 from __future__ import annotations
@@ -14,15 +10,15 @@ from __future__ import annotations
 from typing import Any
 
 from ...config import ATTACKS
-from ...core.interfaces import AttackBase
+from ...core.attack import Attack
+from ...core.context import Context
 from ...core.threat_model import AccessLevel, Knowledge, ThreatModel
 from .vector import DetectionManipulationVector
 
 
 @ATTACKS.register_module()
-class DetectionRemovalAttack(AttackBase):
-    category = "detection_manipulation"
-    seams = DetectionManipulationVector.seams  # shared with every detection method
+class DetectionRemovalAttack(Attack):
+    seams = DetectionManipulationVector.seams   # ("perception_out",)
 
     def __init__(
         self,
@@ -42,26 +38,21 @@ class DetectionRemovalAttack(AttackBase):
             access=[AccessLevel.SENSOR, AccessLevel.SOFTWARE],
             target="ego 3D object detector output",
             capabilities=["drop_true_detection"],
-            constraints=["target_within_detector_range"],
             success_criteria="Target detection absent -> no track -> ego does not brake.",
         )
-
-    def validate(self, spec) -> None:
-        if self.corridor <= 0 or self.max_range <= 0:
-            raise ValueError("corridor and max_range must be positive")
 
     def reset(self) -> None:
         self._removed_id = None
 
-    def apply(self, data: Any, ego_state: Any = None, ctx: Any = None, **kwargs: Any) -> Any:
+    def apply(self, payload: Any, ctx: Context) -> Any:
         if self.target_id is not None:
             target_id = self.target_id
         else:
             target = self.vector.select_forward_detection(
-                data, corridor=self.corridor, max_range=self.max_range
+                payload, corridor=self.corridor, max_range=self.max_range
             )
             if target is None:
-                return data
+                return payload
             target_id = getattr(target, "ID", None)
         self._removed_id = target_id
-        return self.vector.drop_detections(data, lambda d: getattr(d, "ID", None) == target_id)
+        return self.vector.drop_detections(payload, lambda d: getattr(d, "ID", None) == target_id)

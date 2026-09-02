@@ -1,9 +1,8 @@
 """Detection-injection attack (detection-manipulation vector): inject a phantom detection.
 
-A **false-positive** method — appends a fabricated ``BoxDetection`` to the detector's output,
-so a phantom obstacle propagates detection -> track -> (via the forward-collision reflex) an
-unsafe stop, without needing to fool the neural network from raw points. It is the reliable
-detection-level counterpart to a raw-LiDAR object-spoofing attack.
+A false-positive method — appends a fabricated ``BoxDetection`` at the detector's output, so a
+phantom obstacle propagates detection -> track -> (via the forward-collision reflex) an unsafe
+stop, without fooling the network from raw points. No offline preparation needed.
 """
 
 from __future__ import annotations
@@ -11,15 +10,15 @@ from __future__ import annotations
 from typing import Any
 
 from ...config import ATTACKS
-from ...core.interfaces import AttackBase
+from ...core.attack import Attack
+from ...core.context import Context
 from ...core.threat_model import AccessLevel, Knowledge, ThreatModel
 from .vector import DetectionManipulationVector
 
 
 @ATTACKS.register_module()
-class PhantomDetectionAttack(AttackBase):
-    category = "detection_manipulation"
-    seams = DetectionManipulationVector.seams  # shared with every detection method
+class PhantomDetectionAttack(Attack):
+    seams = DetectionManipulationVector.seams   # ("perception_out",)
 
     def __init__(
         self,
@@ -41,19 +40,11 @@ class PhantomDetectionAttack(AttackBase):
             access=[AccessLevel.SENSOR, AccessLevel.SOFTWARE],
             target="ego 3D object detector output",
             capabilities=["inject_false_detection"],
-            constraints=["obj_type_in_detector_whitelist"],
             success_criteria="Phantom detection confirmed as a track -> ego decelerates hard.",
         )
 
-    def validate(self, spec) -> None:
-        if not (0.0 <= self.score <= 1.0):
-            raise ValueError("score must be in [0, 1]")
-
-    def reset(self) -> None:
-        """Stateless; provided for a uniform attack lifecycle."""
-
-    def apply(self, data: Any, ego_state: Any = None, ctx: Any = None, **kwargs: Any) -> Any:
+    def apply(self, payload: Any, ctx: Context) -> Any:
         return self.vector.add_detection(
-            data, self.target_xyz, ego_state=ego_state,
+            payload, self.target_xyz, ego_state=ctx.frame.ego,
             obj_type=self.obj_type, score=self.score, extent=self.extent, oid=self._phantom_id,
         )

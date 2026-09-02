@@ -1,7 +1,7 @@
 """Defense / monitoring plugins (PLAN.md Phase 5).
 
-Defenses register with the DEFENSES registry and are hook-shaped (core.interfaces.
-DefenseBase). Initial categories (PROJECT.md 12.4):
+Defenses register with the DEFENSES registry and implement core.Defense (runtime apply).
+Categories:
   - input-level anomaly detection
   - temporal-consistency checking
   - cross-sensor-consistency checking

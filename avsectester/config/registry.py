@@ -63,9 +63,8 @@ except Exception:  # noqa: BLE001 - avstack optional at import time
 # Security-layer registries owned by AVSecTester.
 ATTACKS = Registry("attacks")
 DEFENSES = Registry("defenses")
-MONITORS = Registry("monitors")
-METRICS = Registry("security_metrics")
-BACKENDS = Registry("backends")
-SEARCH = Registry("search")
+METRICS = Registry("metrics")
+ENVIRONMENTS = Registry("environments")   # dataset / simulation frame sources
+SYSTEMS = Registry("systems")             # AV pipelines under test
 
 HAVE_AVSTACK = _HAVE_AVSTACK

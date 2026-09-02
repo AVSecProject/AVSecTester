@@ -1,79 +1,25 @@
-"""Render an ExperimentResult to a human-readable markdown report (PLAN.md Phase 8)."""
+"""Render an experiment Result to a human-readable markdown report."""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ..core.engine import ExperimentResult
-
-_METRIC_ORDER = [
-    "activated",
-    "activation_frame",
-    "stages_reached",
-    "propagation_depth",
-    "reached_consequence",
-    "persistence_frames",
-    "brake_frames_clean",
-    "brake_frames_attacked",
-    "min_speed_clean",
-    "min_speed_attacked",
-    "speed_suppression",
-    "final_speed_attacked",
-    "stopped",
-    "escalated",
-]
+    from ..core.runner import Result
 
 
-def render_report(result: ExperimentResult) -> str:
-    m = result.metrics
-    lines: list[str] = []
-    lines.append(f"# AVSecTester report — {result.name}")
-    if m["escalated"]:
-        verdict = "🔴 ESCALATED — attack reached an unsafe driving consequence"
-    elif m["activated"]:
-        verdict = "🟠 ACTIVATED — component error induced, no unsafe consequence"
-    else:
-        verdict = "🟢 NO ACTIVATION — attack had no measurable effect"
-    lines += [f"**Verdict:** {verdict}", ""]
+def _table(metrics: dict) -> list[str]:
+    return [f"| `{k}` | {v} |" for k, v in metrics.items()]
 
-    lines.append("## Metrics")
-    for k in _METRIC_ORDER:
-        if k in m:
-            lines.append(f"- `{k}`: {m[k]}")
-    lines.append("")
 
-    lines.append("## Attack-escalation path")
-    g = result.dag.graph
-    if g.number_of_nodes() == 0:
-        lines.append("_(no divergence from the clean run — attack did not activate)_")
-    else:
-        nodes = [g.nodes[n]["data"] for n in g.nodes]
-        chain = " → ".join(nd.stage.value for nd in nodes)
-        lines.append(f"`{chain}`")
-        lines.append("")
-        for nd in nodes:
-            frame = nd.evidence.get("frame")
-            ev = {k: v for k, v in nd.evidence.items() if k != "frame"}
-            lines.append(f"- **{nd.stage.value}** (f{frame}, `{nd.component}`) — {nd.description}")
-            if ev:
-                lines.append(f"    - evidence: {ev}")
-        root = result.dag.root_cause()
-        if root is not None:
-            lines += ["", f"**Root cause:** {root.stage.value} — {root.description}"]
-    lines.append("")
-
+def render_report(name: str, result: Result) -> str:
+    lines = [f"# Security test report — {name}", ""]
+    lines.append(f"**Impacted:** {result.metrics.get('impacted')}  "
+                 f"(clean {len(result.clean)} frames, attacked {len(result.attacked)} frames)")
+    lines += ["", "## Attacked vs clean", "", "| metric | value |", "|---|---|", *_table(result.metrics)]
     if result.defended_metrics is not None:
-        lines.append("## Defense")
-        dm = result.defended_metrics
-        outcome = "✅ mitigated" if result.mitigated else "❌ not mitigated"
-        lines += [
-            f"- outcome: {outcome}",
-            (
-                f"- defended: escalated={dm['escalated']}, activated={dm['activated']}, "
-                f"stages_reached={dm['stages_reached']}"
-            ),
-        ]
-        lines.append("")
-
-    return "\n".join(lines)
+        lines += ["", "## Defended vs clean", "", "| metric | value |", "|---|---|",
+                  *_table(result.defended_metrics)]
+        mitigated = result.metrics.get("impacted") and not result.defended_metrics.get("impacted")
+        lines += ["", f"**Mitigated:** {bool(mitigated)}"]
+    return "\n".join(lines) + "\n"

@@ -1,10 +1,9 @@
 """Integration: detection-level phantom attack through the REAL neural detector.
 
-Proves the security layer (hook adapter + attack + monitor) composes with actual AI on a
-real point cloud: attach PhantomDetectionAttack at the ``perception_out`` seam of a live
-MMDetObjectDetector3D and confirm its output grows by exactly the phantom, traced by a
-monitor. Gated on avstack + CUDA + a downloaded checkpoint + the mmdet3d demo cloud, so it
-runs in the ``avsec`` env and skips cleanly elsewhere.
+Proves the attack composes with actual AI on a real point cloud: run a live
+MMDetObjectDetector3D, then apply PhantomDetectionAttack at the perception_out seam (as the
+System would) and confirm its output grows by exactly the phantom. Gated on avstack + CUDA +
+a downloaded checkpoint + the mmdet3d demo cloud.
 """
 from __future__ import annotations
 
@@ -25,8 +24,8 @@ if not (os.path.exists(_CKPT) and os.path.exists(_CLOUD)):
     pytest.skip("run scripts/fetch_models.sh (checkpoint/cloud missing)", allow_module_level=True)
 
 import numpy as np
-from avsectester.attacks.detection_manipulation import PhantomDetectionAttack
-from avsectester.hooks import RunContext, attach, attach_monitor
+from avsectester.attacks import PhantomDetectionAttack
+from avsectester.core import Context, Frame, Seam
 from avstack.calibration import LidarCalibration
 from avstack.geometry import GlobalOrigin3D, ReferenceFrame
 from avstack.geometry.datastructs import PointMatrix3D
@@ -44,20 +43,15 @@ def test_phantom_detection_augments_real_detector_output():
     calib = LidarCalibration(
         ReferenceFrame(x=np.array([0.0, 0.0, 1.73]), q=np.quaternion(1), reference=GlobalOrigin3D)
     )
-
     clean = det(_cloud(calib), frame=0)
     assert len(clean) > 0  # the checkpoint genuinely fires on a real cloud
 
-    ctx = RunContext()
-    attach(det, PhantomDetectionAttack(target_xyz=[12.0, 0.0, -1.5], score=0.9), "perception_out", ctx)
-    attach_monitor(det, "perception_out", ctx)
-    ctx.tick(0, 0.0)
-    attacked = det(_cloud(calib), frame=0)
+    # apply the attack at the perception_out seam, exactly as System.fire would
+    attack = PhantomDetectionAttack(target_xyz=[12.0, 0.0, -1.5], score=0.9)
+    ctx = Context(Frame(index=0, timestamp=0.0, ego=None), Seam.PERCEPTION_OUT)
+    attacked = attack.apply(det(_cloud(calib), frame=0), ctx)
 
     assert len(attacked) == len(clean) + 1
     phantom = [d for d in attacked if getattr(d, "ID", None) == 90002]
-    assert len(phantom) == 1
-    assert phantom[0].obj_type == "Car"
+    assert len(phantom) == 1 and phantom[0].obj_type == "Car"
     assert list(phantom[0].position.x) == [12.0, 0.0, -1.5]
-    # the monitor observed the post-attack detector output
-    assert ctx.trace.records[-1].outputs == {"count": len(clean) + 1}
