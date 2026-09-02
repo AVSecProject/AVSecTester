@@ -18,16 +18,18 @@ vendored under `third_party/` as git submodules:
 - **lib-avstack-carla** — closed-loop CARLA 0.9.15 bridge
 - **avstack-api** — KITTI / nuScenes / CARLA dataset adapters
 
-Attacks, defenses, and monitors attach to avstack pipelines as **pre/post hooks** — no
-forking of avstack internals. See [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
+Attacks/defenses act at named **seams** of an AV pipeline (`System`) running in an
+**environment** (simulation or dataset) — no forking of avstack internals. Six small core
+interfaces (`Frame`, `Environment`, `System`, `Attack`/`Defense`, `Metric`) carry the whole
+framework; see [`docs/INTERFACE.md`](docs/INTERFACE.md) and [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
 
 ## Layout
 
 ```
-avsectester/   core · backends · attacks · defenses · monitors ·
-               metrics · search · reports · agent · knowledge
-third_party/   avstack-core · avstack-api · lib-avstack-carla   (git submodules)
-configs/       example experiment specs
+avsectester/   core · envs · attacks · defenses · metrics · reports ·
+               config · viz · (search · agent · knowledge — planned)
+third_party/   avstack-core · avstack-api · lib-avstack-carla · nuCarla   (git submodules)
+configs/       example experiment configs
 docs/          DEVELOPMENT.md · INTERFACE.md · SETUP.md
 ```
 
@@ -43,27 +45,27 @@ avsectester version
 
 ## Run an experiment
 
-An experiment is one YAML spec (system + scenario + attack + defense + metrics). The engine
-runs a **clean** baseline and an **attacked** pass, scores them with the escalation metric,
-and (if a defense is declared) an **attacked+defended** pass to measure mitigation.
+An experiment is one YAML config (environment + system + attack + defense + metric). The runner
+runs a **clean** baseline and an **attacked** pass, scores them with the metric, and (if a
+defense is declared) an **attacked+defended** pass to measure mitigation.
 
 ```bash
-# CARLA-free: uses MockBackend (needs the full avstack stack, no simulator)
+# CARLA-free: MockEnv + MockSystem (needs the full avstack stack, no simulator)
 avsectester run configs/mock_experiment.yaml
 
-# closed-loop CARLA (needs a CARLA 0.9.15 server on :2000 — see docs/SETUP.md)
-avsectester run configs/carla_experiment.yaml
+# closed-loop CARLA with neural perception (needs a CARLA 0.9.15 server on :2000 + weights)
+avsectester run configs/carla_neural_experiment.yaml
 ```
 
-Both print an **attack-escalation report** — verdict, activation/propagation/persistence/
-safety metrics, and the `attack_surface → perception → tracking → control → consequence`
-DAG with per-stage evidence. The same LiDAR-spoof phantom escalates to an unsafe stop on
-either backend; the baseline `ScoreGateDefense` mitigates it.
+It prints an impact report — did the attack induce braking + a stop the clean run never had —
+and, with a defense, whether it was mitigated. The same phantom stops the ego on either
+environment; the baseline `ScoreGateDefense` mitigates the low-confidence object spoof.
 
-Runnable demos live in [`scripts/`](scripts/) (closed-loop drive, attack escalation, smoke tests).
+Runnable demos/smokes live in [`scripts/`](scripts/).
 
-Status: **early alpha** — end-to-end engine (spec → backend → attack/defense hooks → escalation
-DAG → report) works on `MockBackend` and `CarlaBackend`. See `docs/DEVELOPMENT.md` for design.
+Status: **early alpha** — the minimal core (environment → system → attack at seams → metric)
+runs on `MockEnv`/`MockSystem`; the CARLA env/system is ported but not yet re-verified live.
+See `docs/DEVELOPMENT.md`.
 
 ## License
 

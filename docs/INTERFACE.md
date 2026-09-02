@@ -1,496 +1,242 @@
 # AVSecTester — Interface Reference
 
-This is the precise contract reference for AVSecTester. It lists **every interface** a
-component author must implement or call, with exact signatures, the guarantees each side owes,
-and minimal examples. `docs/DEVELOPMENT.md` explains *why* the architecture is shaped this way;
-this document is the *what* — the contracts.
+The precise contract reference. Six small types in `avsectester.core` carry the whole
+framework; everything else (attacks, defenses, environments, metrics) implements them.
+`docs/DEVELOPMENT.md` explains *why*; this document is the *what*.
 
-Conventions: signatures are given as they exist in code. **[Now]** = implemented and stable;
-**[Planned]** = the intended contract, not yet in code (do not import). Types are the real ones
-from `avsectester/…`.
+Signatures are given as they exist in code. **[Now]** = implemented; **[Planned]** = intended,
+not in code yet.
 
 **Contents**
 1. Interface map
-2. Plugin contracts — `SecurityPlugin`, `AttackBase`, `DefenseBase`, `MonitorBase`, `MetricBase`, `SearchStrategy`
-3. Stack interfaces — `Backend` (+ `supported_seams`), `Seam`, plugin/stack compatibility, hook calling convention, `RunContext`
-4. Data contracts — seam payloads, the per-frame record, `Trace` / `ComponentIO`, escalation DAG, metric output, recorder
-5. Config & spec contracts — `Registry`, `ExperimentSpec`, `ThreatModel`
-6. Engine & result contracts — `ExperimentRunner`, `ExperimentResult`, `render_report`
-7. Planned interfaces — gradient/white-box, scenario engine, evaluation attributes, AI-harness guardrail
+2. `Frame`, `Seam`, `Context`
+3. `Environment` (dataset ⇄ simulation)
+4. `System` (AV pipeline under test) + `Outcome`
+5. `Attack` / `Defense`
+6. `Metric` + `Trace`
+7. Runner (`run`, `run_experiment`, `Result`)
+8. Config & registries · `ThreatModel`
+9. Planned interfaces
 
 ---
 
 ## 1. Interface map
 
-| Interface | Kind | Module | Implemented by / Called by |
-|---|---|---|---|
-| `SecurityPlugin` | base class | `core/plugin.py` | superclass of every attack/defense |
-| `AttackBase` | base class | `core/interfaces.py` | attack plugins |
-| `DefenseBase` | base class | `core/interfaces.py` | defense plugins |
-| `MonitorBase` | base class | `core/interfaces.py` | trace monitors |
-| `MetricBase` | base class | `core/interfaces.py` | evaluation metrics |
-| `SearchStrategy` | base class | `core/interfaces.py` | scenario/attack search [Planned use] |
-| `Backend` | ABC | `core/interfaces.py` | Mock / CARLA / Dataset / (HIL) backends |
-| `Backend.supported_seams()` | fn | `core/interfaces.py` | backend advertises its exposed seams |
-| `Seam`, `SEAMS`, `Phase` | data | `core/seams.py` | seam vocabulary |
-| `check_support`, `seams_downstream_of` | fn | `core/binding.py` | engine checks plugin↔stack compatibility |
-| hook convention (`HookAdapter`, `MonitorAdapter`, `attach`) | adapter | `hooks.py` | framework only |
-| `RunContext` | data | `hooks.py` | backend fills; plugins read |
-| per-frame **record** dict | data | `monitors/trace.py` | backend emits; engine consumes |
-| `Trace`, `ComponentIO` | data | `monitors/trace.py` | evaluation |
-| `EscalationDAG`/`Node`/`Edge`, `Stage` | data | `core/escalation.py` | metrics produce; reports consume |
-| metric output dict | data | `metrics/escalation.py` | metrics return |
-| `Registry` | registry | `config/registry.py` | plugin discovery |
-| `ExperimentSpec` (+ sub-specs) | schema | `core/experiment.py` | the declarative contract |
-| `ThreatModel` | schema | `core/threat_model.py` | attacks declare |
-| `ExperimentResult` | data | `core/engine.py` | engine returns |
+| Type | Module | Role |
+|---|---|---|
+| `Frame` | `core/frame.py` | one time-step of AV data (dataset & sim share it) |
+| `Seam` | `core/seam.py` | static injection-point names (enum) |
+| `Context` | `core/context.py` | `(frame, seam)` handed to `apply` |
+| `Environment` | `core/environment.py` | frame source: `reset`/`step`; the dataset⇄sim bridge |
+| `System` | `core/system.py` | AV pipeline under test; fires attacks at seams |
+| `Outcome` | `core/system.py` | `(control, record)` returned by `System.process` |
+| `Attack` / `Defense` | `core/attack.py` | offline `prepare` + runtime `apply` / runtime `apply` |
+| `Metric` | `core/metric.py` | `compute(clean, attacked) -> dict` |
+| `Trace` | `core/trace.py` | per-frame records of one run |
+| `run` / `run_experiment` / `Result` | `core/runner.py` | the runtime loop + paired passes |
 
-**Golden rule.** Attacks and defenses import **only** `core/{interfaces,plugin,binding,
-threat_model}` and `config`. They never import a backend, an avstack model, the engine, or the
-scenario/evaluation engines. The framework talks to a plugin only through the methods below.
+**Golden rule.** Attacks/defenses import only `core` (`Attack`/`Defense`/`Context`/`Seam`/`Frame`)
++ `config` registries — never an environment, an avstack model, or the runner.
 
 ---
 
-## 2. Plugin contracts
-
-### 2.1 `SecurityPlugin` (base of all attacks & defenses) — [Now]
-
-`core/plugin.py`. A plugin is a hook-shaped, self-describing component that declares *how it can
-bind* to a stack.
+## 2. `Frame`, `Seam`, `Context` — [Now]
 
 ```python
-class SecurityPlugin(ABC):
-    category: str = "generic"                        # taxonomy / inventory tag
-    seams: tuple[str, ...] = ()                       # the seams it hooks into (attach at ALL)
+@dataclass
+class Frame:
+    index: int = 0
+    timestamp: float = 0.0
+    sensors: dict[str, Any] = {}        # {"lidar": LidarData, "camera": ImageData, ...}
+    ego: Any = None                     # ego ObjectState (pose + velocity)
+    calibration: dict[str, Any] = {}    # per-sensor calibration
+    ground_truth: Any = None            # GT objects (metrics); may be None on real data
+    meta: dict[str, Any] = {}           # weather, scenario tags, route, ...
 
-    # identity / inventory
-    @property
-    def name(self) -> str: ...                        # defaults to class name
-    def describe(self) -> dict[str, Any]: ...          # {name, kind, category, seams}
+class Seam(str, Enum):                  # static injection points
+    RAW_LIDAR; RAW_CAMERA; RAW_GPS
+    PERCEPTION_INPUT; PERCEPTION_OUT; LOCALIZATION_OUT; TRACKING_OUT; PLANNING_OUT; CONTROL_OUT
 
-    # attachment
-    def check(self, exposed: frozenset[str]) -> None  # raises IncompatiblePlugin if a seam isn't exposed
-    def current_seam(self, ctx: Any) -> str | None    # the seam firing now (ctx.seam), else seams[0]
+@dataclass
+class Context:
+    frame: Frame                        # current frame (ego, sensors, ground_truth, meta)
+    seam: Seam                          # which seam is firing now
+```
 
-    # lifecycle (default no-ops — override what you need)
-    def validate(self, spec: ExperimentSpec) -> None  # raise to reject an incompatible run
-    def reset(self) -> None                           # clear per-run state between passes
+---
 
-    # the hook
+## 3. `Environment` — [Now]
+
+The common bridge over dataset replay and simulation.
+
+```python
+class Environment(ABC):
     @abstractmethod
-    def apply(self, data: Any, *args: Any, **kwargs: Any) -> Any
-    def __call__(self, data, *args, **kwargs) -> Any   # == apply
+    def reset(self) -> Frame: ...
+    @abstractmethod
+    def step(self, control: Any = None) -> tuple[Frame, bool]:   # (next_frame, done)
+        ...
+    def close(self) -> None: ...
 ```
 
-**Contract.** A plugin declares the **list of seams it hooks into**; the engine attaches it at
-**every** declared seam the backend exposes (there is no "pick one of several"). `apply` is called
-as `apply(payload, ego_state=<state|None>, ctx=<RunContext|None>)` once per firing seam, with
-`ctx.seam` set to the seam currently running — branch on `self.current_seam(ctx)` to act
-differently per seam. `apply` MUST return a payload of the same type it received (§4.1). `seams`
-must be non-empty; a declared seam the stack doesn't expose fails `check()` loudly. Use `reset()`
-to clear per-run state between passes.
+**Contract.** `reset` returns the first frame; `step` advances one tick and returns
+`(next_frame, done)`. **This is the only place dataset and simulation differ:** a dataset
+ignores `control` (returns the next recorded frame); a simulator applies it and advances the
+world. Reference: `MockEnv` (kinematic world), `CarlaEnv` (CARLA server) — both in
+`avsectester.envs`, registered in `ENVIRONMENTS`.
 
-### 2.2 `AttackBase` — [Now]
+---
 
-`core/interfaces.py`. Adds a threat model.
+## 4. `System` (+ `Outcome`) — [Now]
+
+The AV pipeline under test. It processes a frame into control, and **fires attached plugins at
+its seams by calling their `apply` directly** — so the plugin's `apply` *is* the hook.
 
 ```python
-class AttackBase(SecurityPlugin):
-    threat_model: ThreatModel                         # set in __init__
-    # describe() additionally emits {"threat_model": {goal, knowledge, access, success_criteria}}
+@dataclass
+class Outcome:
+    control: Any = None                 # fed back to Environment.step
+    record: dict[str, Any] = {}         # per-frame metrics record
+
+class System(ABC):
+    seams: tuple[Seam, ...] = ()        # the seams this system exposes
+
+    def attach(self, plugin, seam: Seam | str | None = None) -> None
+        # attach at `seam`, or (None) at each seam in plugin.seams; raises if a seam isn't exposed
+    def fire(self, seam: Seam, payload: Any, frame: Frame) -> Any
+        # run every plugin attached at `seam` over `payload` (sets ctx.seam) and return it
+    @abstractmethod
+    def process(self, frame: Frame) -> Outcome: ...
+    def close(self) -> None: ...
 ```
 
-**Minimal attack.**
+**Contract.** `process` runs the pipeline on `frame`, calling `self.fire(seam, payload, frame)`
+at each interception point, and returns an `Outcome`. `record` SHOULD carry the keys metrics
+read (see §6). Reference: `MockSystem` (passthrough perception + tracker + brake reflex),
+`CarlaSystem` — registered in `SYSTEMS`.
+
+---
+
+## 5. `Attack` / `Defense` — [Now]
+
+```python
+class Attack(ABC):
+    seams: tuple[Seam, ...] = ()        # where it injects
+    threat_model: Any = None            # optional adversary spec (ThreatModel)
+    artifact: Any = None                # prepared artifact, adopted via load()
+
+    def prepare(self, data: Iterable[Frame]) -> Any:   # OFFLINE: data → artifact (default: None)
+        return None
+    def load(self, artifact: Any) -> None:             # RUNTIME: adopt a prepared artifact
+        self.artifact = artifact
+    def reset(self) -> None: ...                        # clear per-run state (optional)
+    @abstractmethod
+    def apply(self, payload: Any, ctx: Context) -> Any # RUNTIME: inject at ctx.seam
+
+class Defense(ABC):                     # the runtime half of the attack shape (no artifact)
+    seams: tuple[Seam, ...] = ()
+    def reset(self) -> None: ...
+    @abstractmethod
+    def apply(self, payload: Any, ctx: Context) -> Any
+```
+
+**Contract.** Two parts:
+- **Offline** — `prepare(frames) -> artifact` consumes a stream of `Frame`\s (a dataset) and
+  returns a *serializable, attack-specific* artifact (a patch, a point set, tuned params);
+  `load(artifact)` adopts it. Attacks needing no optimization skip `prepare`.
+- **Runtime** — `apply(payload, ctx)` returns a payload of the same type it received. Read the
+  ego from `ctx.frame.ego`; if attached at several seams, branch on `ctx.seam`.
+
+**Minimal attack:**
 ```python
 @ATTACKS.register_module()
-class MyAttack(AttackBase):
-    category = "my_vector"
-    seams = ("perception_out",)            # one seam, or several: ("raw_lidar", "perception_out")
+class MyAttack(Attack):
+    seams = (Seam.PERCEPTION_OUT,)
     def __init__(self, target_xyz=(12,0,-1.5)):
         self.target_xyz = target_xyz
         self.threat_model = ThreatModel(goal="…", target="…", success_criteria="…")
-    def apply(self, data, ego_state=None, ctx=None, **kw):
-        if self.current_seam(ctx) == "perception_out":
-            ...        # perturb `data` and return it
-        return data
-```
-
-### 2.3 `DefenseBase` (+ `DefenseOutcome`) — [Now]
-
-`core/interfaces.py`. A defense returns the sanitized payload **and** records what it did.
-
-```python
-class DefenseBase(SecurityPlugin):
-    category: str = "defense"
-    def record_outcome(self, ctx: Any, outcome: DefenseOutcome) -> None   # duck-typed; no-op if ctx is None
-
-@dataclass
-class DefenseOutcome:
-    seam: str
-    frame: int = 0
-    kept: int = 0
-    dropped: list[Any] = []          # IDs removed
-    flagged: list[Any] = []          # IDs marked suspicious
-    reason: str = ""
-```
-
-**Contract.** `apply` returns the (possibly sanitized) payload; per tick it SHOULD call
-`self.record_outcome(ctx, DefenseOutcome(...))` so mitigation is measurable. The engine attaches a
-defense only at a seam **at or downstream of** the attack (`seams_downstream_of`, §3.4); an upstream
-defense is rejected.
-
-### 2.4 `MonitorBase` — [Now]
-
-`core/interfaces.py`. Read-only instrumentation.
-
-```python
-class MonitorBase(ABC):
-    @abstractmethod
-    def observe(self, stage: str, component: str, data: Any) -> None    # record; never modify
-```
-
-### 2.5 `MetricBase` — [Now]
-
-`core/interfaces.py`. Scores one or more (clean, attacked) traces.
-
-```python
-class MetricBase(ABC):
-    name: str
-    @abstractmethod
-    def compute(self, clean: Any, attacked: Any, **kwargs: Any) -> dict[str, Any]
-```
-
-**Contract.** `compute(clean_trace, attacked_trace)` returns a JSON-serializable dict. The built-in
-`EscalationMetric` additionally returns `{"metrics": {...}, "dag": EscalationDAG}` (§4.4).
-
-### 2.6 `SearchStrategy` — [Planned use]
-
-`core/interfaces.py`. Closed-loop case search (scenario engine).
-
-```python
-class SearchStrategy(ABC):
-    @abstractmethod
-    def propose(self) -> list[dict[str, Any]]                      # next (scenario × attack) points
-    @abstractmethod
-    def observe(self, results: list[dict[str, Any]]) -> None       # feedback (fitness = escalation)
+    def apply(self, payload, ctx):
+        ...            # perturb `payload` using self.target_xyz / self.artifact and return it
+        return payload
 ```
 
 ---
 
-## 3. Stack interfaces
-
-### 3.1 `Backend` (ABC) — [Now]
-
-`core/interfaces.py`. Adapts any execution environment to one surface.
+## 6. `Metric` (+ `Trace`) — [Now]
 
 ```python
-class Backend(ABC):
-    @abstractmethod
-    def build(self, spec: ExperimentSpec) -> None            # instantiate AV system + scenario
-    @abstractmethod
-    def step(self) -> dict[str, Any]                         # advance one tick → per-frame record (§4.2)
-    @abstractmethod
-    def run(self) -> Iterator[dict[str, Any]]                # drive to completion, yield records
-    @abstractmethod
-    def close(self) -> None                                  # tear down actors/connections
-
-    def supported_seams(self) -> frozenset[str]              # the seams this stack exposes (default: empty)
-    def attach(self, plugin: Any, seam: str = "perception_out") -> None   # default: raises
-    def add_perception_hook(self, hook: Any) -> None         # legacy alias: attach(hook, "perception_input")
-```
-
-**Contract.** `supported_seams()` must accurately list the seams `attach` supports — the engine
-checks each plugin's declared seams against it. `attach(plugin, seam)` routes to a
-manual pre-loop (object-level seams like `perception_input`) or to `hooks.attach()` on the right
-avstack module (post-hook seams). `step()`/`run()` emit the standardized record (§4.2). The backend
-calls `ctx.tick(...)` (§3.6) at the top of each tick.
-
-### 3.2 What a backend exposes — [Now]
-
-There is no separate "capability" type: a backend advertises **just the set of seams it
-exposes**, as a `frozenset[str]` from `Backend.supported_seams()`. (If a stack ever needs an
-affordance the seam name can't express — e.g. a differentiable forward — attach it as an
-attribute of the exposed seam rather than reintroducing a global capability set.)
-
-Reference: `MockBackend` → `{"perception_input", "perception_out"}`; `CarlaBackend(neural)` →
-`{"perception_out"}`; `CarlaBackend(groundtruth)` → `{"perception_input", "perception_out"}`.
-
-### 3.3 `Seam` / `SEAMS` / `Phase` — [Now]
-
-`core/seams.py`. Logical interception points.
-
-```python
-class Phase(str, Enum): PRE; POST
-
-@dataclass(frozen=True)
-class Seam:
-    name: str; phase: Phase; stage: Stage; component: str; arg_index: int = 0
-
-SEAMS: dict[str, Seam]          # raw_lidar, perception_input, perception_out,
-                                #   tracking_out, planning_out, control_out
-SEAM_ORDER: tuple[str, ...]     # upstream → downstream
-def resolve_seam(seam: str | Seam) -> Seam
-```
-
-### 3.4 Plugin ↔ stack compatibility — [Now]
-
-`core/binding.py`. A plugin declares a **list of seams**; the engine attaches at every one the
-stack exposes and checks compatibility up front.
-
-```python
-def check_support(seams: tuple[str, ...], exposed: frozenset[str]) -> None   # raises IncompatiblePlugin / ValueError
-def seams_downstream_of(seam: str, *, inclusive: bool = True) -> frozenset[str]
-class IncompatiblePlugin(RuntimeError): ...
-```
-
-**Contract.** `check_support` raises `IncompatiblePlugin` if any declared seam is not in `exposed`
-(and `ValueError` for an unknown seam name) — naming the gap. There is no ranking or "pick one";
-all declared seams are used together. `seams_downstream_of` gives the seams at/after one, so the
-engine can reject a defense placed upstream of the attack.
-
-### 3.5 Hook calling convention — [Now] (framework-internal)
-
-`hooks.py`. Plugins never see this — they keep the clean `apply(payload, ego_state=…, ctx=…)`
-contract. The adapters translate to avstack's convention:
-
-```
-pre-hook  callable(*args, **kwargs) -> (args, kwargs)     # payload at args[seam.arg_index]
-post-hook callable(*ret)            -> (value,)           # chain-safe single-tuple
-```
-```python
-def attach(module, plugin, seam: Seam | str, ctx: RunContext) -> HookAdapter
-def attach_monitor(module, seam, ctx, extract: Callable | None = None) -> MonitorAdapter
-```
-
-**Contract for a plugin's `apply`** (what the adapter guarantees you receive / must return):
-- PRE seam: receives the payload at `args[arg_index]`; return the (possibly modified) payload.
-- POST seam: receives the module's return value; return the (possibly modified) value.
-Attachment order is preserved: attack attached before defense ⇒ defense sees the perturbed payload.
-
-### 3.6 `RunContext` — [Now]
-
-`hooks.py`. Per-run, per-tick state a plugin reads (the ego pose a module's signature doesn't
-carry) and a defense writes telemetry into.
-
-```python
-@dataclass
-class RunContext:
-    run_id: str = "run"; frame: int = 0; t: float = 0.0
-    ego_state: Any = None; ground_truth: Any = None
-    seam: str = ""                 # the seam currently firing (set by HookAdapter; read via current_seam)
-    trace: Trace = <auto>
-    defense_outcomes: list[Any] = []
-    def tick(self, frame, t, ego_state=None, ground_truth=None) -> None    # backend calls each tick
-    def record(self, stage: Stage | str, component: str, outputs: Any) -> None
-```
-
----
-
-## 4. Data contracts
-
-### 4.1 Seam payload types — [Now]
-
-The object type flowing through each seam (what `apply` gets and must return):
-
-| Seam | Phase | Payload type |
-|---|---|---|
-| `raw_lidar` | PRE | LiDAR point cloud (`LidarData` / `[N,4]`) |
-| `perception_input` | PRE | `DataContainer[ObjectState]` (GT passthrough) |
-| `perception_out` | POST | `DataContainer[BoxDetection]` |
-| `tracking_out` | POST | tracks (container of track objects) |
-| `planning_out` | POST | planned trajectory |
-| `control_out` | POST | control command |
-
-### 4.2 Backend per-frame **record** dict — [Now]
-
-`monitors/trace.py::record_to_ios`. The standardized dict every `Backend.step()`/`run()` yields and
-the engine/recorder consume. Required keys:
-
-```python
-{
-  "frame": int, "t": float,
-  "n_input": int,          # objects/points into perception
-  "n_detections": int,     # detector outputs
-  "n_tracks": int,         # confirmed tracks
-  "braking": bool, "throttle": float, "brake": float,
-  "hazard_dist": float | None,   # nearest forward hazard (m)
-  "ego_speed": float,      # m/s
-}
-```
-A backend may add extra keys (ignored by the core mapping; used by `viz`).
-
-### 4.3 `Trace` & `ComponentIO` — [Now]
-
-`monitors/trace.py`.
-
-```python
-@dataclass
-class ComponentIO:
-    frame: int; stage: str; component: str
-    inputs: Any = None; outputs: Any = None; aux: dict[str, Any] = {}
-
 @dataclass
 class Trace:
-    run_id: str; records: list[ComponentIO] = []
-    def add(self, io) -> None
-    def by_frame(self, frame) -> list[ComponentIO]
-    def index(self) -> dict[tuple[int, str], ComponentIO]
-    def series(self, stage: str, key: str) -> list
+    records: list[dict] = []; run_id: str = "run"
+    def add(self, record: dict) -> None
+    def series(self, key: str) -> list          # values of record[key] over the run
+    def count(self, key: str) -> int            # records where record[key] is truthy
+    def __len__(self) -> int
 
-def build_trace(records: list[dict], run_id: str = "run") -> Trace     # from §4.2 records
+class Metric(ABC):
+    @abstractmethod
+    def compute(self, clean: Trace, attacked: Trace) -> dict[str, Any]: ...
 ```
 
-### 4.4 Escalation DAG, `Stage`, metric output — [Now]
+**Standard record keys** a `System` emits (what metrics read): `frame, t, n_input,
+n_detections, n_tracks, ego_speed, throttle, brake, steer, hazard_dist, braking`.
+Reference: `ImpactMetric` (`metrics/impact.py`) → `{brake_frames_*, min_speed_*,
+final_speed_attacked, stopped, speed_suppression, impacted}`. (Escalation/attribution analysis
+is intentionally **not** here yet — to be added later.)
 
-`core/escalation.py`, `metrics/escalation.py`.
+---
+
+## 7. Runner — [Now]
 
 ```python
-class Stage(str, Enum):
-    ATTACK_SURFACE; SENSOR; PERCEPTION; LOCALIZATION; TRACKING; FUSION
-    PREDICTION; PLANNING; CONTROL; SAFEGUARD; CONSEQUENCE
+def run(env: Environment, system: System, run_id="run") -> Trace
+    # frame = env.reset(); loop: out = system.process(frame); trace.add(out.record);
+    #                            frame, done = env.step(out.control)
 
 @dataclass
-class EscalationNode: id: str; stage: Stage; component: str; description: str = ""; evidence: dict = {}
-@dataclass
-class EscalationEdge: src: str; dst: str; condition: str = ""; kind: str = "propagated"
+class Result:
+    clean: Trace; attacked: Trace; metrics: dict
+    defended: Trace | None = None; defended_metrics: dict | None = None
 
-class EscalationDAG:
-    def add_node(self, node: EscalationNode) -> None
-    def add_edge(self, edge: EscalationEdge) -> None
-    @property
-    def graph(self) -> nx.DiGraph
-    def root_cause(self) -> EscalationNode | None
-    def consequence_paths(self) -> list[list[str]]
-```
-
-`EscalationMetric.compute(clean, attacked) -> {"metrics": {...}, "dag": EscalationDAG}`, where
-`metrics` has the keys:
-```python
-{ "activated", "activation_frame", "stages_reached", "propagation_depth",
-  "reached_consequence", "persistence_frames", "brake_frames_attacked",
-  "brake_frames_clean", "min_speed_attacked", "min_speed_clean",
-  "final_speed_attacked", "stopped", "speed_suppression", "escalated" }
-```
-`escalated` (bool) is the top-line verdict.
-
-### 4.5 Recorder interface (duck-typed) — [Now]
-
-`viz/recorder.py`. A backend calls a recorder if one is set via `backend.set_recorder(rec)`:
-
-```python
-rec.capture(record: dict, *, points=None, detections=None, rgb=None) -> None   # per tick
-rec.finalize(title: str = "run") -> None
-compare_runs(clean: list[dict], attacked: list[dict], path: str | Path) -> None
+def run_experiment(make_env, make_system, metric, attack=None, defense=None) -> Result
+    # fresh env+system per pass (factories); runs clean, attacked, and (if defense) defended
 ```
 
 ---
 
-## 5. Config & spec contracts
+## 8. Config & registries · `ThreatModel` — [Now]
 
-### 5.1 `Registry` — [Now]
+Registries (`config/registry.py`), built from `{"type": name, **params}`:
+`ENVIRONMENTS, SYSTEMS, ATTACKS, DEFENSES, METRICS`. A YAML config for `avsectester run`:
 
-`config/registry.py`. Registries: `ATTACKS, DEFENSES, MONITORS, METRICS, BACKENDS, SEARCH`.
-
-```python
-class Registry:
-    def register_module(self, name: str | None = None, module=None)   # decorator or direct
-    def get(self, key: str) -> Callable
-    def build(self, cfg: dict, **kwargs) -> Any        # cfg = {"type": name, **params}
-    def __contains__(self, key: str) -> bool
+```yaml
+name: mock_object_spoof_defended
+environment: {type: MockEnv, frames: 140}
+system: {type: MockSystem, target_speed: 6.0}
+attack:  {type: ObjectSpoofingAttack, target_xyz: [6.0, 0.0, 0.0], score: 0.3}
+defense: {type: ScoreGateDefense, threshold: 0.5}
+metric:  {type: ImpactMetric}
 ```
 
-### 5.2 `ExperimentSpec` (+ sub-specs) — [Now]
-
-`core/experiment.py` (pydantic).
-
-```python
-class SystemSpec:      pipeline: dict = {}; checkpoints: dict[str,str] = {}; access_level: str = "blackbox"
-class ScenarioSpec:    backend: dict;   # {"type": "CarlaBackend", ...} (required)
-                       map: str | None; initial_conditions: dict = {}; participants: list = []
-                       target_objects: list = []; seeds: list[int] = [0]; repetitions: int = 1
-class AttackConfig:    spec: dict;       # {"type": attack_name, **params} (required)
-                       threat_model: ThreatModel
-class DefenseConfig:   spec: dict        # {"type": defense_name, **params}
-class EvaluationConfig: metrics: list[dict] = []; repetitions: int = 1
-class ReproducibilityInfo: software_versions: dict = {}; container_image: str | None; config_hash: str | None; notes: str | None
-
-class ExperimentSpec:
-    name: str; system: SystemSpec; scenario: ScenarioSpec
-    attack: AttackConfig | None; defense: DefenseConfig | None
-    evaluation: EvaluationConfig; reproducibility: ReproducibilityInfo
-```
-
-### 5.3 `ThreatModel` — [Now]
-
-`core/threat_model.py` (pydantic).
-
-```python
-class Knowledge(str, Enum): WHITEBOX; GRAYBOX; BLACKBOX
-class AccessLevel(str, Enum): PHYSICAL_ENVIRONMENT; SENSOR; NETWORK_V2X; SOFTWARE; MODEL
-
-class ThreatModel:
-    goal: str                         # required
-    knowledge: Knowledge = BLACKBOX
-    access: list[AccessLevel] = []
-    target: str                       # required
-    capabilities: list[str] = []
-    constraints: list[str] = []
-    timing: str | None = None
-    success_criteria: str             # required, checkable
-```
+`ThreatModel` (`core/threat_model.py`, pydantic) — the optional adversary spec on an attack:
+`goal, knowledge (white/gray/black-box), access[], target, capabilities[], constraints[],
+timing, success_criteria`.
 
 ---
 
-## 6. Engine & result contracts
+## 9. Planned interfaces — [Planned]
 
-`core/engine.py`, `reports/report.py`.
+Not in code; specified so future work stays consistent.
 
-```python
-class ExperimentRunner:
-    def __init__(self, spec: ExperimentSpec) -> None
-    def run(self) -> ExperimentResult                 # clean + attacked (+ defended) passes
-
-@dataclass
-class ExperimentResult:
-    name: str; metrics: dict; dag: Any                # EscalationDAG
-    clean_trace: Trace; attacked_trace: Trace
-    defended_trace: Trace | None = None
-    defended_metrics: dict | None = None
-    mitigated: bool | None = None
-
-def render_report(result: ExperimentResult) -> str    # markdown audit
-```
+- **Escalation / attribution analysis.** A richer metric/graph over per-seam diagnosis signals
+  (the DAG was removed; its replacement will be designed by the project owner).
+- **DatasetEnv.** An `Environment` that replays nuCarla/KITTI frames (ignores `control`) — the
+  offline source for `Attack.prepare`.
+- **Optimization attacks.** `Attack.prepare` producing an optimized artifact against a victim
+  model via a differentiable/query interface exposed by the system at a raw-sensor seam.
+- **New seams wired.** `raw_camera` / `localization_out` / `tracking_out` on the systems.
 
 ---
 
-## 7. Planned interfaces — [Planned]
-
-These contracts are **not in code yet**; they are specified here so implementations stay
-consistent. Do not import them.
-
-- **Gradient / white-box interface** (attack optimization). A backend whose raw-sensor seam is
-  marked *differentiable* exposes a differentiable objective:
-  `grad(objective, payload) -> ndarray` returning `∂objective/∂payload`, so an optimization attack
-  runs PGD/EoT **without importing the model**. The stack owns the interface; the attack owns the
-  objective + optimizer. (Such an affordance would be an attribute of the exposed seam, not a
-  separate capability set.)
-- **Attack generation split.** `AttackBase.generate(system, scenario) -> Artifact` (produce the
-  optimized artifact) separate from `apply` (deploy it), so static and optimized attacks share one
-  deployment path. Plus a typed **parameter schema** (`parameter_space() -> dict`) exposing the
-  attacker-controlled variables + bounds for automated search.
-- **Scenario engine.** `ScenarioEngine.select(spec) -> Iterable[ScenarioSpec]` (filter a dataset or
-  generate simulation from a formal applicable-scenario description) and `augment(scenario, env) ->
-  ScenarioSpec` (add weather/lighting/traffic noise the attacker doesn't control), driven by
-  `SearchStrategy` (§2.6) behind a simulation broker.
-- **Evaluation attributes.** `AttributeMetric.assess(runs) -> {precision, continuity, robustness,
-  intensity, distance_to_impact, ...}` over augmentation sweeps, plus `propose_mitigations(dag,
-  attributes) -> list[DefenseConfig]`.
-- **AI-harness guardrail.** A static CI check that rejects any change touching protected structure
-  (core interfaces, `SEAMS`, registries, the plugin import boundary) or breaking the offline suite /
-  ruff — the mechanism that lets AI-authored plugins be trusted only after passing the same gates as
-  human code.
-
----
-
-*Keep this file in sync when a signature changes.* If you change an interface, update the matching
-row here and the component's section in `docs/DEVELOPMENT.md` in the same commit.
+*Keep this file in sync when a signature changes — update the matching section here and in
+`docs/DEVELOPMENT.md` in the same commit.*

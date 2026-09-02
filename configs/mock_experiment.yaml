@@ -1,42 +1,17 @@
-# Simulator-free experiment: runs end to end without CARLA (uses MockBackend).
-#   avsectester run configs/mock_experiment.yaml
-# Demonstrates the full engine: clean vs attacked vs attacked+defended, escalation DAG.
-name: lidar_spoof_phantom_brake_mock
+# Simulator-free experiment (no CARLA):  avsectester run configs/mock_experiment.yaml
+# Clean vs attacked vs attacked+defended, scored by ImpactMetric.
+name: mock_object_spoof_defended
 
-system:
-  name: mock_av_baseline
-  pipeline: {}            # baseline: backend uses Passthrough perception + BasicBoxTracker3D
-  access_level: blackbox
-
-scenario:
-  backend:
-    type: MockBackend
-    frames: 140
-    target_speed: 6.0
-  initial_conditions:
-    frames: 140
-    target_speed: 6.0
+environment: {type: MockEnv, frames: 140}
+system: {type: MockSystem, target_speed: 6.0}
 
 attack:
-  spec:
-    type: LidarSpoofAttack
-    target_xyz: [12.0, 0.0, 0.0]   # phantom 12 m ahead of the ego
-    score: 0.3                     # spoofed phantom carries low detector confidence
-  threat_model:
-    goal: Create a phantom obstacle to induce unsafe braking.
-    knowledge: blackbox
-    access: [sensor, physical_environment]
-    target: ego LiDAR perception
-    capabilities: [inject_lidar_points]
-    constraints: [n_points<=1000]
-    success_criteria: Phantom detected -> ego decelerates hard.
+  type: ObjectSpoofingAttack
+  target_xyz: [6.0, 0.0, 0.0]   # phantom 6 m ahead (in the brake corridor)
+  score: 0.3                    # low detector confidence -> the defense can gate it
 
 defense:
-  spec:
-    type: ScoreGateDefense
-    threshold: 0.5                 # gates out the low-confidence phantom
+  type: ScoreGateDefense
+  threshold: 0.5
 
-evaluation:
-  metrics:
-    - type: EscalationMetric
-  repetitions: 1
+metric: {type: ImpactMetric}
