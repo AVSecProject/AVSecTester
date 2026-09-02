@@ -16,7 +16,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from ...core.binding import BindingSpec
 from ..vector import AttackVector
 
 # phantom vehicle box [h, w, l] in metres
@@ -28,7 +27,7 @@ PHANTOM_IDS = (90001, 90002)
 class DetectionManipulationVector(AttackVector):
     # Detection-level manipulation works on any detector output -> no capability requirement,
     # only that a perception_out seam exists.
-    bindings = (BindingSpec("perception_out", payload="detections", fidelity=1),)
+    seams = ("perception_out",)
 
     # -- frame selection ------------------------------------------------------
     @staticmethod

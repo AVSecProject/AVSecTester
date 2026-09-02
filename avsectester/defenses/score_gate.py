@@ -14,7 +14,6 @@ from __future__ import annotations
 from typing import Any
 
 from ..config import DEFENSES
-from ..core.binding import BindingSpec
 from ..core.capability import Capability
 from ..core.interfaces import DefenseBase, DefenseOutcome
 
@@ -25,12 +24,8 @@ class ScoreGateDefense(DefenseBase):
     # Gates the passthrough detector's object-level input by confidence. Only meaningful on a
     # ground-truth stack (objects carry a score at the input); the neural-stack counterpart
     # gates detections at perception_out (added with the perception-output defenses).
-    bindings = (
-        BindingSpec(
-            "perception_input", payload="objects",
-            requires={Capability.GT_PERCEPTION}, fidelity=1,
-        ),
-    )
+    seams = ("perception_input",)
+    requires = frozenset({Capability.GT_PERCEPTION})
 
     def __init__(self, threshold: float = 0.5) -> None:
         self.threshold = threshold
@@ -44,7 +39,7 @@ class ScoreGateDefense(DefenseBase):
         self.record_outcome(
             ctx,
             DefenseOutcome(
-                seam=self.seam or "perception_input",
+                seam=self.current_seam(ctx) or "perception_input",
                 frame=getattr(ctx, "frame", 0),
                 kept=len(kept),
                 dropped=[getattr(o, "ID", None) for o in dropped],

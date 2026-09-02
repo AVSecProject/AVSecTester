@@ -72,6 +72,7 @@ class RunContext:
     t: float = 0.0
     ego_state: Any = None
     ground_truth: Any = None
+    seam: str = ""  # the seam currently firing (set by HookAdapter before each apply)
     trace: Trace = field(default=None)  # type: ignore[assignment]
     defense_outcomes: list[Any] = field(default_factory=list)
 
@@ -111,6 +112,7 @@ class HookAdapter:
         self.ctx = ctx
 
     def _invoke(self, payload: Any) -> Any:
+        self.ctx.seam = self.seam.name  # tell the plugin which seam is firing
         return self.plugin.apply(payload, ego_state=self.ctx.ego_state, ctx=self.ctx)
 
     def __call__(self, *args: Any, **kwargs: Any):

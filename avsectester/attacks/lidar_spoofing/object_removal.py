@@ -23,7 +23,8 @@ from .vector import LidarSpoofingVector
 @ATTACKS.register_module()
 class ObjectRemovalAttack(AttackBase):
     category = "lidar_spoofing"
-    bindings = LidarSpoofingVector.bindings  # shared with every LiDAR-spoofing method
+    seams = LidarSpoofingVector.seams        # shared with every LiDAR-spoofing method
+    requires = LidarSpoofingVector.requires
 
     def __init__(
         self,
@@ -55,7 +56,7 @@ class ObjectRemovalAttack(AttackBase):
         self._removed_id = None
 
     def apply(self, data: Any, ego_state: Any = None, ctx: Any = None, **kwargs: Any) -> Any:
-        seam = self.bound_seam or "perception_input"
+        seam = self.current_seam(ctx) or "perception_input"
         if seam == "raw_lidar":
             return self.vector.remove_points(data, self.target_id)
         # object-level (perception_input)

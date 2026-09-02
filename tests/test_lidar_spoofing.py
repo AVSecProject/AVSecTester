@@ -93,8 +93,9 @@ def test_lidar_spoof_alias_is_object_spoofing():
     assert LidarSpoofAttack is ObjectSpoofingAttack
 
 
-def test_spoofing_and_removal_share_the_vector_bindings():
-    assert ObjectSpoofingAttack.bindings is ObjectRemovalAttack.bindings
+def test_spoofing_and_removal_share_the_vector_seams():
+    assert ObjectSpoofingAttack.seams is ObjectRemovalAttack.seams
+    assert ObjectSpoofingAttack.seams == ("perception_input",)
 
 
 def _obj(oid: int, xyz, t: float = 0.0):

@@ -50,10 +50,10 @@ class Backend(ABC):
     def profile(self) -> StackProfile:
         """Advertise which seams and capabilities this stack exposes.
 
-        A plugin's declared bindings are resolved against this profile
-        (:meth:`SecurityPlugin.resolve_binding`). Concrete backends override it to reflect
-        their configuration (e.g. ground-truth vs neural perception). The empty default
-        supports nothing, so an unconfigured backend fails resolution loudly.
+        A plugin's declared seams are checked against this profile
+        (:meth:`SecurityPlugin.check`). Concrete backends override it to reflect their
+        configuration (e.g. ground-truth vs neural perception). The empty default supports
+        nothing, so an unconfigured backend fails the compatibility check loudly.
         """
         return StackProfile()
 
@@ -74,9 +74,9 @@ class Backend(ABC):
 class AttackBase(SecurityPlugin):
     """An attack as a first-class entity (PROJECT.md 4.1).
 
-    Subclasses declare the threat model they assume plus one or more :attr:`bindings`
+    Subclasses declare the threat model they assume plus the :attr:`seams` they hook into
     (inherited from :class:`SecurityPlugin`) and implement ``apply`` as a hook that
-    manipulates module I/O at the resolved seam.
+    manipulates module I/O at the firing seam (dispatch on :meth:`current_seam`).
     """
 
     threat_model: ThreatModel

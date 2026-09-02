@@ -18,7 +18,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from ...core.binding import BindingSpec
 from ...core.capability import Capability
 from ..vector import AttackVector
 
@@ -27,16 +26,11 @@ PHANTOM_EXTENT = [1.6, 1.8, 4.0]
 
 
 class LidarSpoofingVector(AttackVector):
-    bindings = (
-        BindingSpec(
-            "raw_lidar", payload="points",
-            requires={Capability.RAW_LIDAR, Capability.NEURAL_PERCEPTION}, fidelity=3,
-        ),
-        BindingSpec(
-            "perception_input", payload="objects",
-            requires={Capability.GT_PERCEPTION}, fidelity=1,
-        ),
-    )
+    # Object-level injection at the detector input, on a ground-truth passthrough stack. The
+    # raw-point realization (spraying into the LiDAR cloud) is the optimization track and is
+    # not wired yet, so ``raw_lidar`` is intentionally not declared here.
+    seams = ("perception_input",)
+    requires = frozenset({Capability.GT_PERCEPTION})
 
     def __init__(self, n_points_budget: int = 1000) -> None:
         self.n_points_budget = n_points_budget

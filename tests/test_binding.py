@@ -1,24 +1,16 @@
-"""Capability negotiation: a plugin's bindings resolve against a stack profile."""
+"""Plugin ↔ stack compatibility: seam-presence + capability checks, downstream helper."""
 
 from __future__ import annotations
 
 import pytest
 from avsectester.core.binding import (
-    BindingSpec,
     IncompatiblePlugin,
-    resolve,
+    check_support,
     seams_downstream_of,
 )
 from avsectester.core.capability import Capability as Cap
 from avsectester.core.capability import StackProfile
 from avsectester.core.seams import SEAMS
-
-# A phantom-obstacle attack realizable three ways, ranked by fidelity.
-PHANTOM = (
-    BindingSpec("raw_lidar", "points", requires={Cap.NEURAL_PERCEPTION, Cap.RAW_LIDAR}, fidelity=3),
-    BindingSpec("perception_out", "detections", requires={Cap.NEURAL_PERCEPTION}, fidelity=2),
-    BindingSpec("perception_input", "objects", requires={Cap.GT_PERCEPTION}, fidelity=1),
-)
 
 
 def test_perception_input_seam_is_registered():
@@ -26,35 +18,31 @@ def test_perception_input_seam_is_registered():
     assert SEAMS["perception_input"].phase.value == "pre"
 
 
-def test_gt_stack_resolves_to_object_level():
-    gt = StackProfile.of(["perception_input", "perception_out"], [Cap.GT_PERCEPTION])
-    assert resolve(PHANTOM, gt).seam == "perception_input"
+def test_check_support_ok_when_all_present():
+    profile = StackProfile.of(["perception_out", "tracking_out"], [Cap.NEURAL_PERCEPTION])
+    check_support(("perception_out", "tracking_out"), frozenset({Cap.NEURAL_PERCEPTION}), profile)
 
 
-def test_neural_stack_prefers_raw_lidar_by_fidelity():
-    neural = StackProfile.of(
-        ["raw_lidar", "perception_input", "perception_out"],
-        [Cap.NEURAL_PERCEPTION, Cap.RAW_LIDAR],
-    )
-    assert resolve(PHANTOM, neural).seam == "raw_lidar"
+def test_check_support_rejects_missing_seam():
+    profile = StackProfile.of(["perception_out"], [Cap.NEURAL_PERCEPTION])
+    with pytest.raises(IncompatiblePlugin, match="tracking_out"):
+        check_support(("perception_out", "tracking_out"), frozenset(), profile)
 
 
-def test_neural_without_raw_lidar_falls_back_to_detection_level():
-    neural = StackProfile.of(["perception_out"], [Cap.NEURAL_PERCEPTION])
-    assert resolve(PHANTOM, neural).seam == "perception_out"
+def test_check_support_rejects_missing_capability():
+    profile = StackProfile.of(["perception_out"], [Cap.GT_PERCEPTION])
+    with pytest.raises(IncompatiblePlugin, match="neural_perception"):
+        check_support(("perception_out",), frozenset({Cap.NEURAL_PERCEPTION}), profile)
 
 
-def test_incompatible_stack_raises_with_reason():
-    bare = StackProfile.of(["control_out"], [])
-    with pytest.raises(IncompatiblePlugin) as ei:
-        resolve(PHANTOM, bare)
-    msg = str(ei.value)
-    assert "not exposed" in msg and "control_out" in msg
-
-
-def test_unknown_seam_rejected_at_declaration():
+def test_check_support_rejects_unknown_seam():
     with pytest.raises(ValueError, match="unknown seam"):
-        BindingSpec("no_such_seam")
+        check_support(("no_such_seam",), frozenset(), StackProfile.of(["perception_out"]))
+
+
+def test_check_support_rejects_no_seams():
+    with pytest.raises(IncompatiblePlugin, match="no seams"):
+        check_support((), frozenset(), StackProfile.of(["perception_out"]))
 
 
 def test_seams_downstream_of():

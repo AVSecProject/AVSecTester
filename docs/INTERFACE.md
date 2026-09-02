@@ -12,7 +12,7 @@ from `avsectester/…`.
 **Contents**
 1. Interface map
 2. Plugin contracts — `SecurityPlugin`, `AttackBase`, `DefenseBase`, `MonitorBase`, `MetricBase`, `SearchStrategy`
-3. Stack interfaces — `Backend`, `StackProfile` / `Capability`, `Seam`, `BindingSpec`, hook calling convention, `RunContext`
+3. Stack interfaces — `Backend`, `StackProfile` / `Capability`, `Seam`, plugin/stack compatibility, hook calling convention, `RunContext`
 4. Data contracts — seam payloads, the per-frame record, `Trace` / `ComponentIO`, escalation DAG, metric output, recorder
 5. Config & spec contracts — `Registry`, `ExperimentSpec`, `ThreatModel`
 6. Engine & result contracts — `ExperimentRunner`, `ExperimentResult`, `render_report`
@@ -33,7 +33,7 @@ from `avsectester/…`.
 | `Backend` | ABC | `core/interfaces.py` | Mock / CARLA / Dataset / (HIL) backends |
 | `StackProfile`, `Capability` | data | `core/capability.py` | backends advertise; plugins require |
 | `Seam`, `SEAMS`, `Phase` | data | `core/seams.py` | seam vocabulary |
-| `BindingSpec`, `resolve` | data/fn | `core/binding.py` | plugins declare; engine resolves |
+| `check_support`, `seams_downstream_of` | fn | `core/binding.py` | engine checks plugin↔stack compatibility |
 | hook convention (`HookAdapter`, `MonitorAdapter`, `attach`) | adapter | `hooks.py` | framework only |
 | `RunContext` | data | `hooks.py` | backend fills; plugins read |
 | per-frame **record** dict | data | `monitors/trace.py` | backend emits; engine consumes |
@@ -60,31 +60,22 @@ bind* to a stack.
 
 ```python
 class SecurityPlugin(ABC):
-    category: str = "generic"                       # taxonomy / inventory tag
-    bindings: tuple[BindingSpec, ...] = ()          # ranked ways it can attach
-    _binding: BindingSpec | None = None             # set by resolve_binding()
+    category: str = "generic"                        # taxonomy / inventory tag
+    seams: tuple[str, ...] = ()                       # the seams it hooks into (attach at ALL)
+    requires: frozenset[Capability] = frozenset()    # optional capabilities the stack must provide
 
     # identity / inventory
     @property
-    def name(self) -> str: ...                       # defaults to class name
-    def describe(self) -> dict[str, Any]: ...         # {name, kind, category, bindings[...]}
+    def name(self) -> str: ...                        # defaults to class name
+    def describe(self) -> dict[str, Any]: ...          # {name, kind, category, seams, requires}
 
-    # binding resolution
-    def resolve_binding(self, profile: StackProfile) -> BindingSpec   # raises IncompatiblePlugin
-    @property
-    def binding(self) -> BindingSpec | None           # resolved binding, or None
-    @property
-    def bound_seam(self) -> str | None                # resolved seam name, or None
-    @property
-    def primary_binding(self) -> BindingSpec | None   # highest-fidelity declared binding
-    @property
-    def seam(self) -> str | None                      # resolved seam else primary seam
+    # attachment
+    def check(self, profile: StackProfile) -> None    # raises IncompatiblePlugin if unsupported
+    def current_seam(self, ctx: Any) -> str | None    # the seam firing now (ctx.seam), else seams[0]
 
     # lifecycle (default no-ops — override what you need)
-    def setup(self, spec: ExperimentSpec) -> None
     def validate(self, spec: ExperimentSpec) -> None  # raise to reject an incompatible run
     def reset(self) -> None                           # clear per-run state between passes
-    def teardown(self) -> None
 
     # the hook
     @abstractmethod
@@ -92,10 +83,13 @@ class SecurityPlugin(ABC):
     def __call__(self, data, *args, **kwargs) -> Any   # == apply
 ```
 
-**Contract.** `apply` is called as `apply(payload, ego_state=<state|None>, ctx=<RunContext|None>)`
-and MUST return a payload of the same type it received (the seam's payload type — §4.1). It may be
-called many times per run; use `reset()` to clear per-run state. `bindings` must be non-empty for
-a plugin the engine attaches. Reading `bound_seam` before `resolve_binding()` returns `None`.
+**Contract.** A plugin declares the **list of seams it hooks into**; the engine attaches it at
+**every** declared seam the backend exposes (there is no "pick one of several"). `apply` is called
+as `apply(payload, ego_state=<state|None>, ctx=<RunContext|None>)` once per firing seam, with
+`ctx.seam` set to the seam currently running — branch on `self.current_seam(ctx)` to act
+differently per seam. `apply` MUST return a payload of the same type it received (§4.1). `seams`
+must be non-empty; `requires` is optional and only used to fail loudly on an incompatible stack.
+Use `reset()` to clear per-run state between passes.
 
 ### 2.2 `AttackBase` — [Now]
 
@@ -112,12 +106,13 @@ class AttackBase(SecurityPlugin):
 @ATTACKS.register_module()
 class MyAttack(AttackBase):
     category = "my_vector"
-    bindings = (BindingSpec("perception_out", "detections", fidelity=1),)
+    seams = ("perception_out",)            # one seam, or several: ("raw_lidar", "perception_out")
     def __init__(self, target_xyz=(12,0,-1.5)):
         self.target_xyz = target_xyz
         self.threat_model = ThreatModel(goal="…", target="…", success_criteria="…")
     def apply(self, data, ego_state=None, ctx=None, **kw):
-        ...            # perturb `data` at self.bound_seam and return it
+        if self.current_seam(ctx) == "perception_out":
+            ...        # perturb `data` and return it
         return data
 ```
 
@@ -206,7 +201,7 @@ class Backend(ABC):
 ```
 
 **Contract.** `profile()` must accurately list the seams `attach` supports and the capabilities the
-stack provides — the engine resolves plugin bindings against it. `attach(plugin, seam)` routes to a
+stack provides — the engine checks plugin seams against it. `attach(plugin, seam)` routes to a
 manual pre-loop (object-level seams like `perception_input`) or to `hooks.attach()` on the right
 avstack module (post-hook seams). `step()`/`run()` emit the standardized record (§4.2). The backend
 calls `ctx.tick(...)` (§3.6) at the top of each tick.
@@ -251,27 +246,22 @@ SEAM_ORDER: tuple[str, ...]     # upstream → downstream
 def resolve_seam(seam: str | Seam) -> Seam
 ```
 
-### 3.4 `BindingSpec` & resolution — [Now]
+### 3.4 Plugin ↔ stack compatibility — [Now]
 
-`core/binding.py`. How a plugin's intent maps to a concrete seam on a given stack.
+`core/binding.py`. A plugin declares a **list of seams** (plus optional `requires`); the engine
+attaches at every one the stack exposes and checks compatibility up front.
 
 ```python
-@dataclass(frozen=True)
-class BindingSpec:
-    seam: str                                   # must be in SEAMS
-    payload: str = ""                           # informational: "points"/"objects"/"detections"/…
-    requires: frozenset[Capability] = frozenset()
-    fidelity: int = 0                           # higher = preferred
-    def supported_by(self, profile: StackProfile) -> bool
-
-def resolve(bindings: tuple[BindingSpec, ...], profile: StackProfile) -> BindingSpec   # else IncompatiblePlugin
+def check_support(seams: tuple[str, ...], requires: frozenset[Capability],
+                  profile: StackProfile) -> None                 # raises IncompatiblePlugin / ValueError
 def seams_downstream_of(seam: str, *, inclusive: bool = True) -> frozenset[str]
 class IncompatiblePlugin(RuntimeError): ...
 ```
 
-**Contract.** `resolve` returns the highest-fidelity binding whose `seam` is exposed and whose
-`requires` are all provided; on no match it raises `IncompatiblePlugin` naming the missing seam/
-capability. Ties break toward the more upstream seam.
+**Contract.** `check_support` raises `IncompatiblePlugin` if any declared seam is not exposed or
+any required capability is missing (and `ValueError` for an unknown seam name) — naming the gap.
+There is no ranking or "pick one"; all declared seams are used together. `seams_downstream_of`
+gives the seams at/after one, so the engine can reject a defense placed upstream of the attack.
 
 ### 3.5 Hook calling convention — [Now] (framework-internal)
 
@@ -302,6 +292,7 @@ carry) and a defense writes telemetry into.
 class RunContext:
     run_id: str = "run"; frame: int = 0; t: float = 0.0
     ego_state: Any = None; ground_truth: Any = None
+    seam: str = ""                 # the seam currently firing (set by HookAdapter; read via current_seam)
     trace: Trace = <auto>
     defense_outcomes: list[Any] = []
     def tick(self, frame, t, ego_state=None, ground_truth=None) -> None    # backend calls each tick

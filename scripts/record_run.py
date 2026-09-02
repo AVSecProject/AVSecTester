@@ -29,7 +29,9 @@ def _run(outdir: Path, attack, frames: int, camera: bool):
     be.set_recorder(rec)
     if attack is not None:
         attack.reset()
-        be.attach(attack, attack.resolve_binding(be.profile()).seam)
+        attack.check(be.profile())
+        for seam in attack.seams:
+            be.attach(attack, seam)
     try:
         list(be.run())
     finally:

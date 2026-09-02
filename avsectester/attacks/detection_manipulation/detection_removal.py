@@ -22,7 +22,7 @@ from .vector import DetectionManipulationVector
 @ATTACKS.register_module()
 class DetectionRemovalAttack(AttackBase):
     category = "detection_manipulation"
-    bindings = DetectionManipulationVector.bindings  # shared with every detection method
+    seams = DetectionManipulationVector.seams  # shared with every detection method
 
     def __init__(
         self,

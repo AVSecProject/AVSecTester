@@ -1,8 +1,9 @@
-"""The SecurityPlugin contract: binding resolution, describe(), defense telemetry."""
+"""The SecurityPlugin contract: seams, check(), current_seam(), describe(), defense telemetry."""
 
 from __future__ import annotations
 
-from avsectester.core.binding import BindingSpec
+import pytest
+from avsectester.core.binding import IncompatiblePlugin
 from avsectester.core.capability import Capability as Cap
 from avsectester.core.capability import StackProfile
 from avsectester.core.interfaces import AttackBase, DefenseBase, DefenseOutcome
@@ -11,40 +12,55 @@ from avsectester.core.threat_model import Knowledge, ThreatModel
 
 class _Atk(AttackBase):
     category = "perception"
-    bindings = (
-        BindingSpec("perception_out", "detections", requires={Cap.NEURAL_PERCEPTION}, fidelity=2),
-        BindingSpec("perception_input", "objects", requires={Cap.GT_PERCEPTION}, fidelity=1),
-    )
+    seams = ("perception_out", "tracking_out")     # a multi-seam attack
+    requires = frozenset({Cap.NEURAL_PERCEPTION})
     threat_model = ThreatModel(
         goal="g", knowledge=Knowledge.GRAYBOX, target="t", success_criteria="s"
     )
 
-    def apply(self, data, **kw):
-        return data
+    def apply(self, data, ego_state=None, ctx=None, **kw):
+        return (self.current_seam(ctx), data)       # echoes which seam fired
 
 
 class _Def(DefenseBase):
     category = "input_sanitize"
-    bindings = (BindingSpec("perception_out", "detections"),)
+    seams = ("perception_out",)
 
     def apply(self, data, ego_state=None, ctx=None, **kw):
         self.record_outcome(ctx, DefenseOutcome(seam="perception_out", dropped=[7], kept=len(data)))
         return data
 
 
-def test_attack_resolves_binding_per_stack():
+def test_check_passes_when_stack_supports_all_seams_and_caps():
+    ok = StackProfile.of(["perception_out", "tracking_out"], [Cap.NEURAL_PERCEPTION])
+    _Atk().check(ok)  # must not raise
+
+
+def test_check_fails_on_missing_seam():
+    missing = StackProfile.of(["perception_out"], [Cap.NEURAL_PERCEPTION])  # no tracking_out
+    with pytest.raises(IncompatiblePlugin, match="tracking_out"):
+        _Atk().check(missing)
+
+
+def test_check_fails_on_missing_capability():
+    gt = StackProfile.of(["perception_out", "tracking_out"], [Cap.GT_PERCEPTION])
+    with pytest.raises(IncompatiblePlugin, match="neural_perception"):
+        _Atk().check(gt)
+
+
+def test_current_seam_uses_ctx_then_falls_back():
+    from types import SimpleNamespace
+
     a = _Atk()
-    gt = StackProfile.of(["perception_input"], [Cap.GT_PERCEPTION])
-    assert a.resolve_binding(gt).seam == "perception_input"
-    assert a.bound_seam == "perception_input"
-    neural = StackProfile.of(["perception_out"], [Cap.NEURAL_PERCEPTION])
-    assert a.resolve_binding(neural).seam == "perception_out"
+    assert a.apply("x", ctx=SimpleNamespace(seam="tracking_out"))[0] == "tracking_out"
+    assert a.apply("x", ctx=None)[0] == "perception_out"     # falls back to first declared seam
 
 
 def test_describe_exposes_inventory_metadata():
     d = _Atk().describe()
     assert d["kind"] == "attack" and d["category"] == "perception"
-    assert {b["seam"] for b in d["bindings"]} == {"perception_out", "perception_input"}
+    assert d["seams"] == ["perception_out", "tracking_out"]
+    assert d["requires"] == ["neural_perception"]
     assert d["threat_model"]["knowledge"] == "graybox"
 
 
@@ -64,6 +80,5 @@ def test_defense_outcome_noop_without_ctx():
 
 def test_lifecycle_defaults_are_noops():
     a = _Atk()
-    a.setup(None)  # type: ignore[arg-type]
     a.reset()
-    a.teardown()
+    a.validate(None)  # type: ignore[arg-type]

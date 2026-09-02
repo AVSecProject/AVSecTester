@@ -1,15 +1,15 @@
 """The security-plugin contract shared by attacks and defenses.
 
 Every attack/defense is a :class:`SecurityPlugin`: a hook-shaped component
-(``apply(payload, *, ego_state, ctx) -> payload``) that declares *how it can bind* to a
-stack (a tuple of :class:`~avsectester.core.binding.BindingSpec`) rather than a single fixed
-seam. The framework resolves those bindings against the backend's
-:class:`~avsectester.core.capability.StackProfile` (:meth:`resolve_binding`) and attaches the
-plugin at whatever concrete avstack hook the resolved seam maps to.
+(``apply(payload, *, ego_state, ctx) -> payload``) that declares the **list of seams it hooks
+into** (:attr:`seams`). The framework attaches it at every declared seam the backend exposes;
+each attachment calls :meth:`apply` with ``ctx.seam`` set to the seam currently firing, so one
+plugin can act at several seams and dispatch on which one it is. How a plugin uses its seams is
+entirely up to the subclass — the base only fixes the attachment contract.
 
-Lifecycle hooks (:meth:`setup`, :meth:`reset`, :meth:`validate`, :meth:`teardown`) all
-default to no-ops so a concrete plugin overrides only what it needs. :meth:`describe`
-returns registry/inventory metadata (seeds the vulnerability database + leaderboards).
+Optional :attr:`requires` capabilities let an incompatible stack fail loudly (:meth:`check`).
+Lifecycle hooks (:meth:`reset`, :meth:`validate`) default to no-ops; :meth:`describe` returns
+inventory metadata.
 """
 
 from __future__ import annotations
@@ -17,28 +17,26 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
-from .binding import BindingSpec, resolve
+from .binding import check_support
 
 if TYPE_CHECKING:
-    from .capability import StackProfile
+    from .capability import Capability, StackProfile
     from .experiment import ExperimentSpec
 
 
 class SecurityPlugin(ABC):
     """Base class for attacks and defenses.
 
-    Subclasses set :attr:`bindings` (one or more :class:`BindingSpec`, ranked by fidelity)
-    and implement :meth:`apply`. When a plugin can bind at more than one seam, dispatch on
-    the resolved binding via :meth:`bound_seam` / a per-seam handler.
+    Subclasses set :attr:`seams` (the seams they hook into) and implement :meth:`apply`. To act
+    differently at different seams, branch on :meth:`current_seam` (``ctx.seam``).
     """
 
     #: Human/inventory category tag (e.g. "sensor", "perception", "input_sanitize").
     category: str = "generic"
-    #: Ranked ways this plugin can attach; the framework resolves against the stack profile.
-    bindings: tuple[BindingSpec, ...] = ()
-    #: The binding chosen by the last :meth:`resolve_binding` (class-level default so a
-    #: subclass need not call ``super().__init__()``).
-    _binding: BindingSpec | None = None
+    #: The seams this plugin hooks into. Attached at every one the backend exposes.
+    seams: tuple[str, ...] = ()
+    #: Optional capabilities the stack must provide (else the plugin is incompatible).
+    requires: frozenset[Capability] = frozenset()
 
     # -- identity / inventory -------------------------------------------------
     @property
@@ -51,73 +49,37 @@ class SecurityPlugin(ABC):
             "name": self.name,
             "kind": self._kind(),
             "category": self.category,
-            "bindings": [
-                {
-                    "seam": b.seam,
-                    "payload": b.payload,
-                    "fidelity": b.fidelity,
-                    "requires": sorted(c.value for c in b.requires),
-                }
-                for b in self.bindings
-            ],
+            "seams": list(self.seams),
+            "requires": sorted(c.value for c in self.requires),
         }
 
     def _kind(self) -> str:
         return "plugin"
 
-    # -- binding resolution ---------------------------------------------------
-    def resolve_binding(self, profile: StackProfile) -> BindingSpec:
-        """Pick and remember the binding to use on a stack with this ``profile``.
+    # -- attachment -----------------------------------------------------------
+    def check(self, profile: StackProfile) -> None:
+        """Raise :class:`~avsectester.core.binding.IncompatiblePlugin` if ``profile`` can't
+        expose every declared seam / required capability."""
+        check_support(self.seams, frozenset(self.requires), profile)
 
-        Raises :class:`~avsectester.core.binding.IncompatiblePlugin` if unsupported.
-        """
-        self._binding = resolve(self.bindings, profile)
-        return self._binding
-
-    @property
-    def binding(self) -> BindingSpec | None:
-        """The binding chosen by the last :meth:`resolve_binding` (``None`` until resolved)."""
-        return self._binding
-
-    @property
-    def bound_seam(self) -> str | None:
-        """The seam name of the resolved binding, or ``None`` if not yet resolved."""
-        return self._binding.seam if self._binding else None
-
-    @property
-    def primary_binding(self) -> BindingSpec | None:
-        """The highest-fidelity declared binding (the plugin's preferred realization)."""
-        return max(self.bindings, key=lambda b: b.fidelity) if self.bindings else None
-
-    @property
-    def seam(self) -> str | None:
-        """Convenience: the resolved seam if bound, else the primary binding's seam.
-
-        Lets callers read a plugin's default seam without a stack profile (e.g. scripts that
-        attach directly); the engine still resolves against the live profile before attaching.
-        """
-        if self._binding is not None:
-            return self._binding.seam
-        pb = self.primary_binding
-        return pb.seam if pb else None
+    def current_seam(self, ctx: Any) -> str | None:
+        """The seam currently firing (``ctx.seam``), or the sole declared seam for a direct
+        call with no context. Subclasses dispatch on this."""
+        if ctx is not None and getattr(ctx, "seam", ""):
+            return ctx.seam
+        return self.seams[0] if self.seams else None
 
     # -- lifecycle (default no-ops) -------------------------------------------
-    def setup(self, spec: ExperimentSpec) -> None:
-        """Prepare before a run (optional)."""
-
     def validate(self, spec: ExperimentSpec) -> None:
         """Raise if the experiment would violate this plugin's assumptions (optional)."""
 
     def reset(self) -> None:
         """Clear per-run state between passes (optional)."""
 
-    def teardown(self) -> None:
-        """Release resources after a run (optional)."""
-
     # -- the hook -------------------------------------------------------------
     @abstractmethod
     def apply(self, data: Any, *args: Any, **kwargs: Any) -> Any:
-        """Transform module I/O at the bound seam (hook contract). Return the payload."""
+        """Transform module I/O at the firing seam (hook contract). Return the payload."""
 
     def __call__(self, data: Any, *args: Any, **kwargs: Any) -> Any:
         return self.apply(data, *args, **kwargs)

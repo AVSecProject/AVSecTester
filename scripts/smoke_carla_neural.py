@@ -23,7 +23,9 @@ def _run(attack, frames: int):
     be.build(None)
     if attack is not None:
         attack.reset()
-        be.attach(attack, attack.resolve_binding(be.profile()).seam)
+        attack.check(be.profile())
+        for seam in attack.seams:
+            be.attach(attack, seam)
     recs = []
     try:
         recs = list(be.run())

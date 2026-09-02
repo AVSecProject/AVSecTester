@@ -100,9 +100,9 @@ and by running the *paired* passes that make an attack's effect measurable.
 **Implementation [Now].** `core/engine.py::ExperimentRunner`:
 1. Builds the backend, attack, and defense from the registries (`{"type": name, ...}` configs).
 2. Runs a **clean** pass, an **attacked** pass, and — if a defense is declared — an
-   **attacked+defended** pass. For each plugin it calls
-   `plugin.resolve_binding(backend.profile())` to choose the seam, then `backend.attach(plugin,
-   seam)`; a defense bound *upstream* of the attack is rejected.
+   **attacked+defended** pass. For each plugin it checks compatibility
+   (`plugin.check(backend.profile())`) and attaches it at **every seam it declares**; a defense
+   whose seams are all *upstream* of the attack is rejected.
 3. Returns `ExperimentResult(metrics, dag, clean/attacked/defended traces, mitigated)`.
 
 `cli.py` exposes `version`, `registry` (list plugins), `validate <spec>`, `run <spec> [report]`
@@ -128,8 +128,9 @@ interfaces so implementations can be swapped without touching callers.
   `goal, knowledge (white/gray/black-box), access[], target, capabilities[], constraints[],
   timing, success_criteria`. The engine can refuse runs that violate declared constraints.
 - **Plugin contract** (`core/plugin.py`, `core/interfaces.py`): `SecurityPlugin` carries
-  `category`, `bindings`, `resolve_binding()`, lifecycle (`setup/validate/reset/teardown`), and
-  `describe()`. `AttackBase` adds `threat_model`; `DefenseBase` records a `DefenseOutcome`.
+  `category`, `seams` (the list of seams it hooks into), optional `requires`, `check()`,
+  `current_seam()`, lifecycle (`validate/reset`), and `describe()`. `AttackBase` adds
+  `threat_model`; `DefenseBase` records a `DefenseOutcome`.
 
 **Extend.** New plugin type ⇒ new registry + a small `*Base` interface. Everything downstream
 (engine, CLI, harness) discovers it by name.
@@ -151,10 +152,10 @@ dataset adapters. We never fork it; we attach at runtime via its `@apply_hooks` 
 5 2D-camera R-CNNs), `scripts/verify_models.py` confirms they load and run, and
 `scripts/eval_camera_nucarla.py` validates the camera models on real nuCarla traces.
 
-#### 2.3.2 Seams, capabilities, bindings — the interface layer
+#### 2.3.2 Seams, capabilities, compatibility — the interface layer
 
 **Design goal.** Let a plugin target "the detector's output" without knowing which class
-implements it, and let one attack work across different stack settings.
+implements it, and let one plugin hook into several points at once.
 
 **[Now].**
 - **Seams** (`core/seams.py`): logical interception points — `raw_lidar`, `perception_input`,
@@ -163,16 +164,18 @@ implements it, and let one attack work across different stack settings.
 - **Capabilities** (`core/capability.py`): a backend advertises a `StackProfile(seams,
   capabilities)`; `Capability` ∈ `{GT_PERCEPTION, NEURAL_PERCEPTION, RAW_LIDAR, RAW_CAMERA,
   GRADIENTS, TRACKER, PLANNER, CONTROLLER, LOCALIZATION, V2X}`.
-- **Bindings** (`core/binding.py`): a plugin declares ranked `BindingSpec(seam, payload,
-  requires, fidelity)`; `resolve()` picks the best binding the profile supports or raises
-  `IncompatiblePlugin`. This is what makes plugins **agnostic to model/component details** —
-  they name capabilities, not classes.
+- **A plugin declares a list of seams** (`SecurityPlugin.seams`) plus optional `requires`
+  capabilities. The engine attaches it at **every** declared seam the stack exposes, and
+  `check_support()` (`core/binding.py`) fails loudly (`IncompatiblePlugin`) if a declared seam or
+  required capability is missing. This is what makes plugins **agnostic to model/component
+  details** — they name seams and capabilities, not classes — and lets one attack span several
+  seams, dispatching on `ctx.seam` (via `current_seam(ctx)`).
 
 **Extend for end-to-end / foundation-model driving [Planned].** An e2e model has no internal
 component seams — only input (raw sensors) and output (trajectory/control). It fits the same
 abstraction: an `E2EBackend` advertises a profile with `raw_lidar`/`raw_camera` + `control_out`
 seams and `NEURAL_PERCEPTION`/`GRADIENTS` capabilities, and *omits* the intermediate seams. A
-plugin whose bindings require an intermediate seam simply fails to resolve (loudly) on an e2e
+plugin that declares an intermediate seam simply fails the compatibility check (loudly) on an e2e
 stack, while raw-sensor and output attacks port over unchanged. Candidate models: the nuCarla
 BEV detectors and the CARLA end-to-end policies (TransFuser/InterFuser class), run in their own
 env behind the backend boundary.
@@ -237,14 +240,14 @@ scenario/dataset because an attack may only work in specific scenarios, and (c) 
 **parameter interface** for the variables the attacker controls. Physical sensor attacks
 additionally require a **data-informed physical model**.
 
-**Implementation [Now] — vector × method × binding.**
+**Implementation [Now] — vector × method.**
 - An **attack vector** (`attacks/vector.py`, `AttackVector`) is the shared delivery *mechanism*
-  plus the bindings a family inherits (a stateless toolkit).
-- A **method** composes a vector, sets `bindings = <Vector>.bindings`, and dispatches on the
-  resolved seam. Implemented:
-  - `attacks/lidar_spoofing/` — `LidarSpoofingVector`; `ObjectSpoofingAttack` (false positive),
-    `ObjectRemovalAttack` (false negative).
-  - `attacks/detection_manipulation/` — `DetectionManipulationVector` (binding `perception_out`,
+  plus the `seams` (and optional `requires`) a family inherits (a stateless toolkit).
+- A **method** composes a vector, sets `seams = <Vector>.seams`, and dispatches on the firing
+  seam. Implemented:
+  - `attacks/lidar_spoofing/` — `LidarSpoofingVector` (seam `perception_input`, requires GT);
+    `ObjectSpoofingAttack` (false positive), `ObjectRemovalAttack` (false negative).
+  - `attacks/detection_manipulation/` — `DetectionManipulationVector` (seam `perception_out`,
     any detector); `PhantomDetectionAttack`, `DetectionRemovalAttack`.
 
 Add an attack:
@@ -252,12 +255,13 @@ Add an attack:
 @ATTACKS.register_module()
 class MyAttack(AttackBase):
     category = "<vector>"
-    bindings = MyVector.bindings          # inherited seams / capability requirements
+    seams = MyVector.seams                # the seams it hooks into (one or several)
+    requires = MyVector.requires          # optional capability requirements
     def __init__(self, param_a=..., param_b=...):     # (c) attacker-tunable parameters
         self.vector = MyVector(); self.threat_model = ThreatModel(...)
     def validate(self, spec): ...          # enforce threat-model constraints
     def apply(self, data, ego_state=None, ctx=None, **kw):
-        return self.vector.<op>(data, ...) # deploy the artifact at the bound seam
+        return self.vector.<op>(data, ...) # act at self.current_seam(ctx)
 ```
 
 **Where the richer concept maps [current vs planned].**
@@ -361,7 +365,7 @@ complies with the defined interfaces**.
   the import-boundary rule are what make this checkable.
 - **Interface-guided generation.** The harness prompts and constrains the model to author
   `ExperimentSpec`s and new attack/defense plugins *against the stable contracts only* — subclass
-  `AttackBase`/`DefenseBase`, declare `bindings`, implement `apply()`/`generate()` — and validates
+  `AttackBase`/`DefenseBase`, declare `seams`, implement `apply()`/`generate()` — and validates
   every artifact through the same schema checks and tests as hand-written code before a verdict is
   trusted or indexed. A generated plugin is a normal registry entry; nothing about the runtime
   trusts it more than a human's.

@@ -56,9 +56,9 @@ def test_validate_rejects_bad_score():
         PhantomDetectionAttack(score=1.5).validate(spec=None)
 
 
-def test_injection_and_removal_share_the_vector_bindings():
-    assert PhantomDetectionAttack.bindings is DetectionRemovalAttack.bindings
-    assert PhantomDetectionAttack.bindings[0].seam == "perception_out"
+def test_injection_and_removal_share_the_vector_seams():
+    assert PhantomDetectionAttack.seams is DetectionRemovalAttack.seams
+    assert PhantomDetectionAttack.seams == ("perception_out",)
 
 
 def test_removal_drops_nearest_forward_detection():

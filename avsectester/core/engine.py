@@ -53,38 +53,37 @@ class ExperimentRunner:
         return DEFENSES.build(dict(self.spec.defense.spec))
 
     # -- one pass --------------------------------------------------------------
-    def _attach(self, backend, plugin) -> str:
-        """Resolve the plugin's binding against the backend's stack profile and attach it.
+    def _attach(self, backend, plugin) -> tuple[str, ...]:
+        """Attach ``plugin`` at every seam it declares (after a compatibility check).
 
-        Falls back to a legacy ``seam`` attribute for plugins that predate the binding model.
-        Returns the seam the plugin bound to.
+        Returns the tuple of seams it hooked into.
         """
-        if getattr(plugin, "bindings", ()):
-            seam = plugin.resolve_binding(backend.profile()).seam
-        else:
-            seam = getattr(plugin, "seam", "perception_input")
-        backend.attach(plugin, seam)
-        return seam
+        plugin.check(backend.profile())  # loud-fail if the stack can't support its seams/caps
+        for seam in plugin.seams:
+            backend.attach(plugin, seam)
+        return plugin.seams
 
     def _run(self, run_id: str, attack=None, defense=None) -> Trace:
         from .binding import seams_downstream_of
 
         backend = self._backend()
         backend.build(self.spec)
-        attack_seam = None
+        attack_seams: tuple[str, ...] = ()
         if attack is not None:
-            if hasattr(attack, "reset"):
-                attack.reset()
-            attack_seam = self._attach(backend, attack)  # inject first
+            attack.reset()
+            attack_seams = self._attach(backend, attack)  # inject first
         if defense is not None:
             # ... then sanitize at/downstream of the attack surface (an upstream sanitizer
             # can never see the injected payload).
-            defense_seam = self._attach(backend, defense)
-            if attack_seam is not None and defense_seam not in seams_downstream_of(attack_seam):
-                raise ValueError(
-                    f"defense binds at {defense_seam!r}, upstream of the attack at "
-                    f"{attack_seam!r}; it cannot observe the injected payload"
-                )
+            defense_seams = self._attach(backend, defense)
+            if attack_seams:
+                allowed = set().union(*(seams_downstream_of(s) for s in attack_seams))
+                bad = [s for s in defense_seams if s not in allowed]
+                if bad:
+                    raise ValueError(
+                        f"defense hooks at {bad}, upstream of every attack seam "
+                        f"{list(attack_seams)}; it cannot observe the injected payload"
+                    )
         try:
             records = list(backend.run())
         finally:
