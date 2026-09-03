@@ -42,8 +42,38 @@ docker run --rm -v "$PWD/configs:/app/configs" avsectester:mock \
     avsectester run configs/mock_experiment.yaml             # edit configs on the host, run in the image
 ```
 
-## Full stack (neural perception + CARLA)
+## Full end-to-end: neural perception + closed-loop CARLA (GPU)
 
-The neural-perception path (real CARLA-trained detector) and closed-loop CARLA need the full
-GPU stack (torch 1.13+cu117, compiled mmdet3d ops) and a CARLA 0.9.15 server — that install is
-documented in [`SETUP.md`](SETUP.md) and is intentionally *not* in this lightweight image.
+`Dockerfile.gpu` reproduces the full stack (torch 1.13+cu117, compiled mmdet3d ops, avstack +
+CARLA client) and `docker-compose.gpu.yml` wires it to a `carlasim/carla:0.9.15` server. This
+runs the **real** end-to-end path: a CARLA-trained PointPillars detector on a live CarlaLidar in
+a closed-loop drive, attacked by a phantom detection.
+
+Prerequisites: an NVIDIA GPU with the nvidia container runtime, and the nested mm* submodules on
+the host (needed to compile mmdet3d):
+
+```bash
+cd third_party/avstack-core && \
+  git submodule update --init --depth 1 third_party/mmdetection third_party/mmdetection3d third_party/mmsegmentation && cd -
+./scripts/fetch_models.sh          # pull the carla-vehicle weights → ./models (mounted into the image)
+```
+
+Then bring the whole thing up:
+
+```bash
+docker compose -f docker-compose.gpu.yml up --build
+```
+
+It builds the GPU image (the mmdet3d CUDA compile takes ~10–20 min the first time), starts the
+CARLA server, waits for it, and runs `scripts/smoke_carla_neural.py` — a clean pass then a
+phantom-attacked pass. Expected: the clean run cruises while the detector reports real NPC
+detections; the attacked run brakes and stops (`SMOKE: PASS`).
+
+Notes:
+- `nvcc` 11.7 can't target Ada (sm_89) directly, so the image emits `sm_86` cubin + PTX that JITs
+  on the L40S (`TORCH_CUDA_ARCH_LIST="8.0;8.6+PTX"`).
+- `Dockerfile.gpu.dockerignore` keeps `third_party/avstack-core/third_party` (the mm* sources)
+  that the light `.dockerignore` excludes.
+- `./models` is a bind mount, so weights are shared with the host rather than baked into the image;
+  `fetch_models.sh` runs at container start to (re)create the mmdet3d symlinks.
+- The manual (conda) install is documented in [`SETUP.md`](SETUP.md).
