@@ -1,0 +1,8 @@
+# Reproducible, CARLA-free environment for the end-to-end mock attack example.
+#   docker compose run --rm avsectester                 # run the mock attack example
+#   docker compose run --rm avsectester pytest -q       # run the offline test suite
+#   docker compose run --rm avsectester avsectester registry   # list registered plugins
+services:
+  avsectester:
+    build: .
+    image: avsectester:mock

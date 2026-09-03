@@ -30,17 +30,28 @@ avsectester/   core · envs · attacks · defenses · metrics · reports ·
                config · viz · (search · agent · knowledge — planned)
 third_party/   avstack-core · avstack-api · lib-avstack-carla · nuCarla   (git submodules)
 configs/       example experiment configs
-docs/          DEVELOPMENT.md · INTERFACE.md · SETUP.md
+docs/          DEVELOPMENT.md · INTERFACE.md · SETUP.md · DOCKER.md
 ```
 
 ## Quickstart
 
+Fastest path — a reproducible, torch-free Docker image that runs the end-to-end mock attack
+(see [`docs/DOCKER.md`](docs/DOCKER.md)):
+
 ```bash
 git clone --recurse-submodules <repo> && cd AVSecTester
+git submodule update --init third_party/avstack-core
+docker build -t avsectester:mock .
+docker run --rm avsectester:mock          # clean vs attacked vs attacked+defended
+```
+
+Or a local install:
+
+```bash
 conda create -y -n avsec python=3.10 && conda activate avsec
-pip install -e ".[dev]"          # core-only; full avstack stack: see docs/SETUP.md
+pip install -e third_party/avstack-core ".[dev]"   # mock example; full GPU/CARLA stack: docs/SETUP.md
 pytest
-avsectester version
+avsectester run configs/mock_experiment.yaml
 ```
 
 ## Run an experiment

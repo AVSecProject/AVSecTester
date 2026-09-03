@@ -1,0 +1,24 @@
+# keep the build context small: source only, no VCS / heavy artifacts / GPU-only submodules
+**/.git
+**/.gitmodules
+**/__pycache__
+*.py[cod]
+.pytest_cache
+.ruff_cache
+.mypy_cache
+
+# git-ignored data/model/output trees
+models
+data
+results
+dev
+*.pth
+*.onnx
+
+# GPU-only vendored code not needed for the torch-free mock image
+third_party/avstack-core/third_party
+third_party/nuCarla
+
+# docs artifacts
+results/
+docs/*.pdf
