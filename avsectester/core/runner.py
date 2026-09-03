@@ -17,8 +17,13 @@ from .system import System
 from .trace import Trace
 
 
-def run(env: Environment, system: System, run_id: str = "run") -> Trace:
-    """Drive ``env`` through ``system`` to completion, collecting a Trace."""
+def run(env: Environment, system: System, run_id: str = "run",
+        observer: Callable[[Any, Any], None] | None = None) -> Trace:
+    """Drive ``env`` through ``system`` to completion, collecting a Trace.
+
+    ``observer(frame, outcome)`` (optional) is called each tick after processing — used for
+    visualization/recording without changing the metrics path.
+    """
     trace = Trace(run_id=run_id)
     frame = env.reset()
     done = False
@@ -26,6 +31,8 @@ def run(env: Environment, system: System, run_id: str = "run") -> Trace:
         while not done:
             out = system.process(frame)
             trace.add(out.record)
+            if observer is not None:
+                observer(frame, out)
             frame, done = env.step(out.control)
     finally:
         system.close()

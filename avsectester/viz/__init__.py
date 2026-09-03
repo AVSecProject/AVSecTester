@@ -1,5 +1,5 @@
-"""Recording, visualization, and analysis of a security test run."""
+"""Recording + visualization for the evaluation side (CARLA screenshots + BEV detections)."""
 
-from .recorder import RunRecorder, compare_runs
+from .recorder import Recorder
 
-__all__ = ["RunRecorder", "compare_runs"]
+__all__ = ["Recorder"]

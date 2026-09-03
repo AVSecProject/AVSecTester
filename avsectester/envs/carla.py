@@ -323,4 +323,5 @@ class CarlaSystem(System):
             "ego_speed": float(ego.velocity.norm()), "throttle": throttle, "brake": brake,
             "steer": steer, "hazard_dist": hazard, "braking": hazard is not None,
         }
-        return Outcome(control=(throttle, steer, brake), record=record)
+        return Outcome(control=(throttle, steer, brake), record=record,
+                       extras={"detections": detections})

@@ -21,6 +21,7 @@ from .seam import Seam
 class Outcome:
     control: Any = None                                   # fed back to Environment.step
     record: dict[str, Any] = field(default_factory=dict)  # per-frame metrics record
+    extras: dict[str, Any] = field(default_factory=dict)  # non-metric data for viz (detections, ...)
 
 
 class System(ABC):
