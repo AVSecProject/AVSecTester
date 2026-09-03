@@ -40,5 +40,5 @@ RUN pip install --no-cache-dir -e third_party/avstack-core -c constraints.txt \
 # 5. AVSecTester
 RUN pip install --no-cache-dir -e ".[dev]"
 
-# default: the neural CARLA attack smoke (weights are mounted + linked at runtime — see compose)
-CMD ["python", "scripts/smoke_carla_neural.py", "40"]
+# default to a shell — run attacks/recordings explicitly (see docs/DOCKER.md / docker-compose.yml)
+CMD ["bash"]

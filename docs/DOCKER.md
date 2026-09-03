@@ -20,13 +20,15 @@ cd third_party/avstack-core && \
 
 ## Run the end-to-end attack
 
+Start the stack (a CARLA server + the AVSecTester container, which defaults to an idle shell),
+then run the attack in it:
+
 ```bash
-docker compose up --build
+docker compose up -d --build       # first build: the mmdet3d CUDA compile takes ~10–20 min
+docker compose exec avsectester python scripts/smoke_carla_neural.py 40
 ```
 
-This builds the GPU image (the mmdet3d CUDA compile takes ~10–20 min the first time), starts the
-CARLA server, waits for it, and runs `scripts/smoke_carla_neural.py` — a clean pass then a
-phantom-attacked pass. Expected output:
+`scripts/smoke_carla_neural.py` runs a clean pass then a phantom-attacked pass. Expected output:
 
 ```
 [clean]    frames=40 ... mean_detections=5.2 brake_frames=0
@@ -37,12 +39,32 @@ SMOKE: PASS (phantom forced an unsafe stop)
 i.e. the clean run cruises while the real detector reports NPC detections; the phantom detection
 injected at the `perception_out` seam propagates to a track and forces an unsafe stop.
 
-To run something else in the built image (e.g. the config-driven CLI or a shell):
+The container defaults to a **shell** — open one, or run anything else, with `exec`:
 
 ```bash
-docker compose run --rm avsectester python scripts/smoke_carla_neural.py 60
-docker compose run --rm avsectester avsectester registry
+docker compose exec avsectester bash                                # a shell in the environment
+docker compose exec avsectester avsectester run configs/carla_neural_experiment.yaml
+docker compose exec avsectester avsectester registry
 ```
+
+When you're done: `docker compose down`.
+
+## Record screenshots (visualize the attack)
+
+`scripts/record_carla.py` runs a clean and a phantom-attacked pass with the forward RGB camera
+on, and saves, per frame, a **CARLA screenshot** and a **bird's-eye view** of the LiDAR cloud +
+detector boxes (real detections green, injected phantom red):
+
+```bash
+docker compose exec avsectester python scripts/record_carla.py 40
+```
+
+Output lands under `results/carla_rec_{clean,attacked}/frames/` (`rgb_XXXX.png`, `bev_XXXX.png`,
+`records.jsonl`). In the attacked BEV the phantom shows as a red `car 0.90` box floating in the
+brake corridor with no LiDAR points beneath it — the injected detection that has no physical
+support — while the ego brakes to a stop. `results/` is bind-mounted, so the frames appear on the
+host. (The visualizer is `avsectester.viz.Recorder`, an `observer(frame, outcome)` for
+`avsectester.core.run` — the metrics path is unchanged.)
 
 ## Notes
 

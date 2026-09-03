@@ -1,11 +1,13 @@
-# End-to-end: neural perception (CARLA-trained mmdet3d) in closed-loop CARLA.
+# End-to-end environment: a CARLA 0.9.15 server + the AVSecTester GPU image (defaults to a shell).
 #   ./scripts/fetch_models.sh          # once, on the host: pulls carla-vehicle weights → ./models
-#   docker compose up --build
+#   docker compose up -d --build       # start CARLA + the (idle) AVSecTester shell container
+#   docker compose exec avsectester python scripts/smoke_carla_neural.py 40   # run the attack
+#   docker compose exec avsectester python scripts/record_carla.py 40         # record screenshots
+#   docker compose exec avsectester bash                                       # open a shell
 #
-# Brings up a CARLA 0.9.15 server and the AVSecTester GPU image, waits for the sim, then runs the
-# neural phantom-attack smoke (clean vs attacked). ./models is mounted and symlinked into the
-# mmdet3d root at container start, so weights are shared with the host (not baked into the image).
-# The box's default docker runtime is nvidia, so both containers get GPUs.
+# The entrypoint symlinks the bind-mounted ./models into the mmdet3d root, then runs the command
+# (default: bash, kept alive by tty). The box's default docker runtime is nvidia, so both
+# containers get GPUs (CARLA on GPU 0, AVSecTester on 1).
 services:
   carla:
     image: carlasim/carla:0.9.15
@@ -23,10 +25,7 @@ services:
       - NVIDIA_VISIBLE_DEVICES=1
     volumes:
       - ./models:/app/models          # share fetched weights with the host
-    command: >
-      bash -lc "
-        bash scripts/fetch_models.sh >/dev/null 2>&1 || true;
-        echo 'waiting for CARLA :2000 ...';
-        for i in $$(seq 1 60); do (exec 3<>/dev/tcp/127.0.0.1/2000) 2>/dev/null && break; sleep 3; done;
-        python scripts/smoke_carla_neural.py 40
-      "
+    stdin_open: true
+    tty: true
+    # link the mounted weights into the mmdet3d root, then run the command (Dockerfile CMD = bash)
+    entrypoint: ["bash", "-lc", "bash scripts/fetch_models.sh >/dev/null 2>&1 || true; exec \"$@\"", "--"]
