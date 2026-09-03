@@ -1,26 +1,44 @@
-# Minimal, reproducible image for the CARLA-free end-to-end example.
+# GPU stack for the end-to-end path: neural perception (CARLA-trained mmdet3d) in a closed-loop
+# CARLA simulation. Reproduces docs/SETUP.md §2 on a CUDA 11.7 base.
 #
-# The mock environment/system uses avstack's passthrough perception + tracker, which are pure
-# Python — so this image is torch-free / CUDA-free and builds in minutes on any machine.
-# (The neural-perception + CARLA path needs the full GPU stack; see docs/SETUP.md.)
+# Usually built via docker-compose.yml (which also runs a CARLA 0.9.15 server):
+#   docker compose up --build
+# Standalone build (needs the nested mm* submodules initialized on the host — see docs/DOCKER.md):
+#   docker build -t avsectester .
 #
-#   docker build -t avsectester:mock .
-#   docker run --rm avsectester:mock                      # runs the mock attack example
-#   docker run --rm avsectester:mock pytest -q            # runs the offline test suite
-FROM python:3.10-slim
+# nvcc 11.7 can't target Ada (sm_89) directly, so we emit sm_86 cubin + PTX (JITs on the L40S).
+FROM nvidia/cuda:11.7.1-cudnn8-devel-ubuntu22.04
 
-# opencv + scientific-stack runtime libs; build-essential/git for editable source installs
+ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      build-essential git libgl1 libglib2.0-0 \
- && rm -rf /var/lib/apt/lists/*
+      python3.10 python3.10-dev python3-pip git build-essential ninja-build \
+      libgl1 libglib2.0-0 curl wget ca-certificates \
+ && ln -sf /usr/bin/python3.10 /usr/bin/python && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY . /app
+# name-shim symlinks avcarla's metadata expects (avstack-core/api are our submodule names)
+RUN ln -sf avstack-core third_party/lib-avstack-core && ln -sf avstack-api third_party/lib-avstack-api
 
-# avstack-core (BASE deps only — no torch/mmcv/mmdet3d) provides the AV modules the mock uses;
-# then AVSecTester itself. pytest is included so the image can also run the offline suite.
-RUN pip install --no-cache-dir -e third_party/avstack-core \
- && pip install --no-cache-dir -e ".[dev]"
+# 1. torch + torchvision (cu117)
+RUN pip install --no-cache-dir torch==1.13.1+cu117 torchvision==0.14.1+cu117 \
+      --index-url https://download.pytorch.org/whl/cu117
+# 2. mmcv prebuilt wheel (torch1.13.1/cu11.7 — no compile) + mmengine, then pin numpy back
+RUN pip install --no-cache-dir \
+      "https://g-b0ef78.1d0d8d.03c0.data.globus.org/packages/mmcv/torch1.13.1_cu11.7/mmcv-2.0.1-cp310-cp310-linux_x86_64.whl" \
+      "mmengine>=0.7.3,<0.8" "numpy==1.24.4"
+# 3. mm-detectors editable; mmdet3d compiles CUDA ops (sm_86 cubin + PTX JIT for sm_89)
+RUN pip install --no-cache-dir -e third_party/avstack-core/third_party/mmdetection    -c constraints.txt \
+ && pip install --no-cache-dir -e third_party/avstack-core/third_party/mmsegmentation -c constraints.txt \
+ && CUDA_HOME=/usr/local/cuda FORCE_CUDA=1 TORCH_CUDA_ARCH_LIST="8.0;8.6+PTX" MAX_JOBS=16 \
+      pip install --no-cache-dir -e third_party/avstack-core/third_party/mmdetection3d -c constraints.txt
+# 4. avstack packages + CARLA 0.9.15 client
+RUN pip install --no-cache-dir -e third_party/avstack-core -c constraints.txt \
+ && pip install --no-cache-dir -e third_party/avstack-api  -c constraints.txt \
+ && pip install --no-cache-dir -e third_party/lib-avstack-carla --no-deps \
+ && pip install --no-cache-dir "carla==0.9.15" pygame -c constraints.txt
+# 5. AVSecTester
+RUN pip install --no-cache-dir -e ".[dev]"
 
-# default command: the end-to-end mock attack example (clean vs attacked vs attacked+defended)
-CMD ["avsectester", "run", "configs/mock_experiment.yaml"]
+# default: the neural CARLA attack smoke (weights are mounted + linked at runtime — see compose)
+CMD ["python", "scripts/smoke_carla_neural.py", "40"]

@@ -35,24 +35,21 @@ docs/          DEVELOPMENT.md · INTERFACE.md · SETUP.md · DOCKER.md
 
 ## Quickstart
 
-Fastest path — a reproducible, torch-free Docker image that runs the end-to-end mock attack
-(see [`docs/DOCKER.md`](docs/DOCKER.md)):
+Reproducible end-to-end (neural perception + closed-loop CARLA) via Docker Compose — brings up a
+CARLA server + the GPU AVSecTester image and runs a phantom attack (see [`docs/DOCKER.md`](docs/DOCKER.md)):
 
 ```bash
 git clone --recurse-submodules <repo> && cd AVSecTester
 git submodule update --init third_party/avstack-core
-docker build -t avsectester:mock .
-docker run --rm avsectester:mock          # clean vs attacked vs attacked+defended
+cd third_party/avstack-core && git submodule update --init --depth 1 \
+  third_party/mmdetection third_party/mmdetection3d third_party/mmsegmentation && cd -
+./scripts/fetch_models.sh          # CARLA-trained weights → ./models
+docker compose up --build          # CARLA + neural AV stack → clean vs attacked → SMOKE: PASS
 ```
 
-Or a local install:
-
-```bash
-conda create -y -n avsec python=3.10 && conda activate avsec
-pip install -e third_party/avstack-core ".[dev]"   # mock example; full GPU/CARLA stack: docs/SETUP.md
-pytest
-avsectester run configs/mock_experiment.yaml
-```
+Manual (conda) install for the full GPU/CARLA stack is in [`docs/SETUP.md`](docs/SETUP.md). The
+simulator-free path (`avsectester run configs/mock_experiment.yaml`) still works locally for quick
+iteration without a GPU or CARLA.
 
 ## Run an experiment
 
