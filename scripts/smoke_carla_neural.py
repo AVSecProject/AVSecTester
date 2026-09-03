@@ -16,7 +16,7 @@ def _run(attack, frames: int) -> list[dict]:
     from avsectester.core import run
     from avsectester.envs import CarlaEnv, CarlaSystem
 
-    env = CarlaEnv(perception="neural", n_npcs=8, frames=frames, target_speed=6.0)
+    env = CarlaEnv(perception="neural", n_npcs=8, frames=frames)
     system = CarlaSystem(perception="neural", nn_dataset="carla-vehicle", nn_threshold=0.3,
                          target_speed=6.0, brake_distance=8.0)
     if attack is not None:
