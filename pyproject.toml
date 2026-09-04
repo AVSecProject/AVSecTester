@@ -36,6 +36,10 @@ dev = [
     "ruff>=0.6",
     "mypy>=1.10",
 ]
+# Visualization (avsectester.viz): the clean-vs-attacked driving-impact plot.
+viz = [
+    "matplotlib>=3.6",
+]
 
 [project.scripts]
 avsectester = "avsectester.cli:app"

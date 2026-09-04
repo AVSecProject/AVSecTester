@@ -42,6 +42,13 @@ i.e. the clean run cruises while the real detector reports NPC detections; the p
 injected at the perception stage (an avstack hook) propagates to a confirmed track and forces an
 unsafe stop.
 
+Add `--plot results/impact.png` to also save a **driving-impact figure** (ego speed + brake over
+time, clean vs attacked). `results/` is bind-mounted, so the PNG appears on the host:
+
+```bash
+docker compose exec avsectester python scripts/run_demo.py 40 --plot results/impact.png
+```
+
 The container defaults to a **shell** — open one, or run anything else, with `exec`:
 
 ```bash

@@ -32,7 +32,9 @@ injected at the perception stage (an avstack hook — no pixels touched):
 => ATTACK SUCCEEDED (forced an unsafe stop)
 ```
 
-Details in [`docs/DOCKER.md`](docs/DOCKER.md).
+**Visualize it:** add `--plot results/impact.png` (needs the `viz` extra) to save a clean-vs-attacked
+plot of ego speed + brake over time — the green (clean) line cruises while the red (attacked) line
+brakes to a full stop. Details in [`docs/DOCKER.md`](docs/DOCKER.md).
 
 ## How it works
 

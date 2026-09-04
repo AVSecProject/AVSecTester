@@ -28,6 +28,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("frames", nargs="?", type=int, default=40, help="frames per run (default 40)")
     ap.add_argument("--gpu", type=int, default=None, help="override perception CUDA device")
+    ap.add_argument("--plot", nargs="?", const="results/impact.png", default=None,
+                    help="save a clean-vs-attacked driving-impact plot (default results/impact.png)")
     args = ap.parse_args()
 
     scenario = set_perception_gpu(yaml.safe_load(CONFIG.read_text()), args.gpu)
@@ -44,6 +46,9 @@ def main() -> int:
 
     result = impact(clean, attacked)
     print(result)
+    if args.plot:
+        from avsectester.viz import plot_impact
+        print(f"[plot]     saved {plot_impact(clean, attacked, args.plot, result=result)}")
     if result.attack_succeeded:
         print("SMOKE: PASS (phantom forced an unsafe stop)")
         return 0

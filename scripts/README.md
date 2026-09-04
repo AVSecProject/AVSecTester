@@ -25,6 +25,13 @@ where the ego container gets a dedicated GPU); on a single host CARLA already re
 pass `--gpu 1` (or another free device) to avoid contention. The CLI takes the same flag:
 `avsectester run configs/carla_scenario.yaml --frames 40 --gpu 1`.
 
+Add `--plot results/impact.png` to also save a **driving-impact figure** (ego speed + brake command
+over time, clean vs attacked) — needs the `viz` extra (`pip install -e ".[viz]"`):
+
+```bash
+python scripts/run_demo.py 40 --gpu 1 --plot results/impact.png
+```
+
 Expected:
 
 ```

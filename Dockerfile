@@ -37,8 +37,8 @@ RUN pip install --no-cache-dir -e third_party/avstack-core -c constraints.txt \
  && pip install --no-cache-dir -e third_party/avstack-api  -c constraints.txt \
  && pip install --no-cache-dir -e third_party/lib-avstack-carla --no-deps \
  && pip install --no-cache-dir "carla==0.9.15" pygame -c constraints.txt
-# 5. AVSecTester
-RUN pip install --no-cache-dir -e ".[dev]"
+# 5. AVSecTester (+ viz extra for the --plot driving-impact figure)
+RUN pip install --no-cache-dir -e ".[dev,viz]"
 
 # default to a shell — run attacks/recordings explicitly (see docs/DOCKER.md / docker-compose.yml)
 CMD ["bash"]
