@@ -75,6 +75,21 @@ class _DetectionCounter:
         return (detections,)
 
 
+def set_perception_gpu(scenario: dict, gpu: int | None) -> dict:
+    """Override the perception stage's CUDA device in a scenario config, in place.
+
+    Useful for host (non-Docker) runs: the scenario config targets ``gpu: 0`` for the container, but
+    on a single host CARLA already renders on GPU 0, so point neural inference at a free GPU to avoid
+    contention. No-op when ``gpu`` is None or the config has no such stage.
+    """
+    if gpu is not None:
+        try:
+            scenario["ego"]["pipeline"]["perception"]["gpu"] = gpu
+        except (KeyError, TypeError):
+            pass
+    return scenario
+
+
 def _build_npcs(spec: Any, client: Any) -> list:
     if not spec:
         return []

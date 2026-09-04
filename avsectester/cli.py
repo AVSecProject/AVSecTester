@@ -27,12 +27,15 @@ def version() -> None:
 def run(
     config: Path = typer.Argument(..., help="Scenario YAML (see configs/carla_scenario.yaml)."),
     frames: int = typer.Option(None, help="Override the scenario frame count."),
+    gpu: int = typer.Option(
+        None, help="Override the perception CUDA device (e.g. 1 on a host where CARLA holds GPU 0)."
+    ),
 ) -> None:
     """Run a scenario clean then attacked in CARLA and print the attack's driving impact."""
     from .metric import impact
-    from .scenario import run_scenario
+    from .scenario import run_scenario, set_perception_gpu
 
-    scenario = yaml.safe_load(Path(config).read_text())
+    scenario = set_perception_gpu(yaml.safe_load(Path(config).read_text()), gpu)
     n = frames or scenario.get("frames", 40)
     attacks = scenario.get("attacks", [])
 

@@ -90,6 +90,10 @@ Run the simulator in **synchronous mode** for reproducible perception.
 ## 3. Verify
 
 ```bash
-avsectester version     # prints version + whether the avstack stack imported
-avsectester registry    # lists registered attacks/defenses/backends/metrics
+avsectester version                                          # prints the version
+python -m pytest tests/ -q                                   # offline: attack hook + pipeline
+python scripts/run_demo.py 40 --gpu 1                        # end-to-end (needs a CARLA server)
 ```
+
+`run_demo.py` runs the scenario clean then phantom-attacked and asserts the attack forced an unsafe
+stop. On a single host, `--gpu 1` keeps neural inference off GPU 0 (which CARLA is rendering on).

@@ -5,9 +5,13 @@ Builds the avcarla closed loop from configs/carla_scenario.yaml, runs it clean t
 and asserts the attack forced an unsafe stop the clean run never had. Requires a running CARLA
 server (docs/DOCKER.md) and the carla-vehicle weights (scripts/fetch_models.sh).
 
-    python scripts/run_demo.py [frames]
+    python scripts/run_demo.py [frames] [--gpu N]
+
+--gpu overrides the perception CUDA device: the config targets GPU 0 (the container's dedicated ego
+GPU), but on a single host CARLA already renders on GPU 0, so pass --gpu 1 to avoid contention.
 """
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -15,22 +19,26 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from avsectester.metric import impact
-from avsectester.scenario import run_scenario
+from avsectester.scenario import run_scenario, set_perception_gpu
 
 CONFIG = Path(__file__).resolve().parents[1] / "configs" / "carla_scenario.yaml"
 
 
 def main() -> int:
-    frames = int(sys.argv[1]) if len(sys.argv) > 1 else 40
-    scenario = yaml.safe_load(CONFIG.read_text())
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("frames", nargs="?", type=int, default=40, help="frames per run (default 40)")
+    ap.add_argument("--gpu", type=int, default=None, help="override perception CUDA device")
+    args = ap.parse_args()
 
-    print(f"[clean]    {frames} frames ...")
-    clean = run_scenario(scenario, attacks=None, frames=frames)
+    scenario = set_perception_gpu(yaml.safe_load(CONFIG.read_text()), args.gpu)
+
+    print(f"[clean]    {args.frames} frames ...")
+    clean = run_scenario(scenario, attacks=None, frames=args.frames)
     print(f"[clean]    mean_detections={clean.mean_detections:.1f} "
           f"final_speed={clean.final_speed:.2f} brake_frames={clean.braking_frames}")
 
-    print(f"[attacked] {frames} frames (phantom) ...")
-    attacked = run_scenario(scenario, attacks=scenario["attacks"], frames=frames)
+    print(f"[attacked] {args.frames} frames (phantom) ...")
+    attacked = run_scenario(scenario, attacks=scenario["attacks"], frames=args.frames)
     print(f"[attacked] mean_detections={attacked.mean_detections:.1f} "
           f"final_speed={attacked.final_speed:.2f} brake_frames={attacked.braking_frames}")
 

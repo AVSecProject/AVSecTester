@@ -27,8 +27,8 @@ A CARLA-trained **PointPillars** detector runs on a live **CarlaLidar**; a fabri
 injected at the perception stage (an avstack hook — no pixels touched):
 
 ```
-[clean]    mean_detections=5.1 final_speed=2.56 brake_frames=0     # ego cruises, detects real NPCs
-[attacked] mean_detections=6.0 final_speed=0.09 brake_frames=14    # phantom → emergency stop
+[clean]    mean_detections=7.7 final_speed=5.17 brake_frames=0     # ego cruises, detects real NPCs
+[attacked] mean_detections=8.2 final_speed=0.00 brake_frames=38    # phantom → emergency stop
 => ATTACK SUCCEEDED (forced an unsafe stop)
 ```
 
@@ -62,12 +62,13 @@ Vendored under `third_party/` as git submodules (forked so the closed-loop piece
 ## Run a scenario
 
 ```bash
-avsectester run configs/carla_scenario.yaml --frames 40
+avsectester run configs/carla_scenario.yaml --frames 40          # add --gpu 1 for host runs
 ```
 
 builds the scenario, runs it clean then attacked, and prints the impact. The scenario config is the
 whole experiment: the `CarlaClient`, the ego (sensors + `ModularDrivingPipeline`), the NPC traffic,
-and the attack hooks.
+and the attack hooks. (`--gpu` overrides the perception device — the config targets GPU 0, which is
+right in Docker; on a single host where CARLA already holds GPU 0, pass `--gpu 1`.)
 
 ## Status
 

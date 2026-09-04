@@ -32,8 +32,8 @@ docker compose exec avsectester python scripts/run_demo.py 40
 phantom-attacked pass, and diffs them. Expected output:
 
 ```
-[clean]    mean_detections=5.1 final_speed=2.56 brake_frames=0
-[attacked] mean_detections=6.0 final_speed=0.09 brake_frames=14
+[clean]    mean_detections=7.7 final_speed=5.17 brake_frames=0
+[attacked] mean_detections=8.2 final_speed=0.00 brake_frames=38
 => ATTACK SUCCEEDED (forced an unsafe stop)
 SMOKE: PASS (phantom forced an unsafe stop)
 ```
@@ -62,4 +62,7 @@ When you're done: `docker compose down`.
   `fetch_models.sh` runs at container start to (re)create the mmdet3d symlinks.
 - Both services use `network_mode: host`, so the client reaches the server at `127.0.0.1:2000`; the
   default docker runtime is nvidia, so both containers get GPUs (CARLA on GPU 0, AVSecTester on 1).
+  This is why the scenario config targets `gpu: 0` (the ego container's dedicated GPU). Running the
+  demo directly on the host instead shares GPU 0 with CARLA, so pass `--gpu 1` there
+  (`python scripts/run_demo.py 40 --gpu 1`) to run neural inference on a free device.
 - The manual (conda) install is documented in [`SETUP.md`](SETUP.md).

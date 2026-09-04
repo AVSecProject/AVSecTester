@@ -8,6 +8,7 @@ These are *not* part of `pytest`, which stays hardware-free (`tests/`).
   into the mmdet3d root. Run once before any neural run.
 - **`run_demo.py`** — the end-to-end demo/smoke: build `configs/carla_scenario.yaml`, run it clean
   then phantom-attacked in real CARLA, and assert the attack forced an unsafe stop.
+  `python scripts/run_demo.py [frames] [--gpu N]`.
 
 ```bash
 # start a CARLA server (headless, GPU 0)
@@ -16,14 +17,19 @@ docker run -d --name carla-avsec --gpus 'device=0' --net=host \
 
 conda activate avsec
 ./scripts/fetch_models.sh
-python scripts/run_demo.py 40
+python scripts/run_demo.py 40 --gpu 1     # CARLA holds GPU 0, so run neural inference on GPU 1
 ```
+
+`--gpu` overrides the perception CUDA device. The scenario config targets GPU 0 (correct in Docker,
+where the ego container gets a dedicated GPU); on a single host CARLA already renders on GPU 0, so
+pass `--gpu 1` (or another free device) to avoid contention. The CLI takes the same flag:
+`avsectester run configs/carla_scenario.yaml --frames 40 --gpu 1`.
 
 Expected:
 
 ```
-[clean]    mean_detections=5.1 final_speed=2.56 brake_frames=0
-[attacked] mean_detections=6.0 final_speed=0.09 brake_frames=14
+[clean]    mean_detections=7.7 final_speed=5.17 brake_frames=0
+[attacked] mean_detections=8.2 final_speed=0.00 brake_frames=38
 => ATTACK SUCCEEDED (forced an unsafe stop)
 SMOKE: PASS (phantom forced an unsafe stop)
 ```

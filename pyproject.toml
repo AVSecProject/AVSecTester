@@ -19,7 +19,7 @@ classifiers = [
 dependencies = [
     "pyyaml>=6,<7",            # scenario config
     "numpy>=1.20,<1.26",      # kept compatible with avstack-core's pin
-    "typer>=0.12,<0.13",      # CLI
+    "typer>=0.15,<0.17",      # CLI (>=0.15 for click 8.2+ compatibility)
 ]
 
 [project.optional-dependencies]
@@ -55,7 +55,8 @@ src = ["avsectester", "tests"]
 
 [tool.ruff.lint]
 # C408: allow the `dict(type=...)` config idiom (avstack/mmengine build-from-config convention).
-ignore = ["C408"]
+# B008: typer requires `typer.Argument(...)`/`typer.Option(...)` calls in CLI arg defaults.
+ignore = ["C408", "B008"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
