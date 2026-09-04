@@ -28,8 +28,8 @@ pass `--gpu 1` (or another free device) to avoid contention. The CLI takes the s
 Expected:
 
 ```
-[clean]    mean_detections=7.7 final_speed=5.17 brake_frames=0
-[attacked] mean_detections=8.2 final_speed=0.00 brake_frames=38
+[clean]    peak_speed=5.19 final_speed=5.17 brake_frames=0
+[attacked] final_speed=0.00 brake_frames=38
 => ATTACK SUCCEEDED (forced an unsafe stop)
 SMOKE: PASS (phantom forced an unsafe stop)
 ```

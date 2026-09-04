@@ -27,8 +27,8 @@ A CARLA-trained **PointPillars** detector runs on a live **CarlaLidar**; a fabri
 injected at the perception stage (an avstack hook — no pixels touched):
 
 ```
-[clean]    mean_detections=7.7 final_speed=5.17 brake_frames=0     # ego cruises, detects real NPCs
-[attacked] mean_detections=8.2 final_speed=0.00 brake_frames=38    # phantom → emergency stop
+[clean]    peak_speed=5.19 final_speed=5.17 brake_frames=0     # ego cruises, detects real NPCs
+[attacked] final_speed=0.00 brake_frames=38                    # phantom → emergency stop
 => ATTACK SUCCEEDED (forced an unsafe stop)
 ```
 

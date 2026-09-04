@@ -64,7 +64,12 @@ from avsectester.metric import impact   # (clean: Trace, attacked: Trace) -> Imp
 ```
 
 `Impact` answers the differential question — did the attack induce braking / an unsafe stop the
-clean run never had — via `induced_braking`, `induced_stop`, `attack_succeeded`.
+clean run never had — via `induced_braking`, `induced_stop`, and `attack_succeeded`. The verdict is
+guarded by a **driving baseline**: `attack_succeeded` requires both that the clean run actually drove
+(`clean_drove`, i.e. `clean.peak_speed >= baseline_speed`) *and* `induced_stop`. If the clean ego
+never got moving (too few frames, or stuck at the spawn) the result is **inconclusive**, not a
+success — "an already-stopped car braking" proves nothing. So a real demo needs enough frames for the
+clean run to reach cruising speed (the 40-frame demo peaks ~5 m/s).
 
 ## What was contributed into avstack
 

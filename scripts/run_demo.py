@@ -34,7 +34,7 @@ def main() -> int:
 
     print(f"[clean]    {args.frames} frames ...")
     clean = run_scenario(scenario, attacks=None, frames=args.frames)
-    print(f"[clean]    mean_detections={clean.mean_detections:.1f} "
+    print(f"[clean]    mean_detections={clean.mean_detections:.1f} peak_speed={clean.peak_speed:.2f} "
           f"final_speed={clean.final_speed:.2f} brake_frames={clean.braking_frames}")
 
     print(f"[attacked] {args.frames} frames (phantom) ...")
@@ -44,9 +44,14 @@ def main() -> int:
 
     result = impact(clean, attacked)
     print(result)
-    ok = result.attack_succeeded
-    print("SMOKE: PASS (phantom forced an unsafe stop)" if ok else "SMOKE: FAIL")
-    return 0 if ok else 1
+    if result.attack_succeeded:
+        print("SMOKE: PASS (phantom forced an unsafe stop)")
+        return 0
+    if not result.clean_drove:
+        print("SMOKE: INCONCLUSIVE (clean run never established a driving baseline — run more frames)")
+        return 2
+    print("SMOKE: FAIL (attack did not force a stop)")
+    return 1
 
 
 if __name__ == "__main__":

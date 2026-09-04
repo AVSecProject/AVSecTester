@@ -56,6 +56,11 @@ class Trace:
         return self.records[-1].speed if self.records else 0.0
 
     @property
+    def peak_speed(self) -> float:
+        """Fastest the ego went during the run — used to tell whether it ever really drove."""
+        return max((r.speed for r in self.records), default=0.0)
+
+    @property
     def braking_frames(self) -> int:
         return sum(r.throttle == 0.0 and r.brake > 0.0 for r in self.records)
 
