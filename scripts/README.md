@@ -1,85 +1,31 @@
-# Smoke tests & demo
+# Scripts
 
-Manual, environment-dependent scripts for the **full avstack + CARLA stack** (require the
-`avsec` conda env with the `[avstack]` extras installed — see `docs/SETUP.md`). These are
-*not* part of the default `pytest` run, which stays core-only and hardware-free.
+Environment-dependent helpers for the **full avstack + CARLA stack** (need the `avsec` conda env
+with the `[avstack]` extras, plus a running CARLA server — see `docs/SETUP.md` / `docs/DOCKER.md`).
+These are *not* part of `pytest`, which stays hardware-free (`tests/`).
 
-Start the CARLA server once (headless, GPU 0):
+- **`fetch_models.sh`** — pull the CARLA-trained PointPillars weights into `./models` and link them
+  into the mmdet3d root. Run once before any neural run.
+- **`run_demo.py`** — the end-to-end demo/smoke: build `configs/carla_scenario.yaml`, run it clean
+  then phantom-attacked in real CARLA, and assert the attack forced an unsafe stop.
 
 ```bash
+# start a CARLA server (headless, GPU 0)
 docker run -d --name carla-avsec --gpus 'device=0' --net=host \
-  carlasim/carla:0.9.15 ./CarlaUE4.sh -RenderOffScreen -nosound -carla-rpc-port=2000 -quality-level=Epic
-```
+  carlasim/carla:0.9.15 ./CarlaUE4.sh -RenderOffScreen -nosound -carla-rpc-port=2000 -quality-level=Low
 
-```bash
 conda activate avsec
-
-# 1. Perception: compiled mmcv/mmdet3d CUDA ops run on this GPU (needs a CUDA GPU)
-python scripts/smoke_perception.py
-
-# 2. Closed-loop sensor path: connect, sync-mode ticks, ego + LiDAR sensor
-python scripts/smoke_carla.py
+./scripts/fetch_models.sh
+python scripts/run_demo.py 40
 ```
 
-## Closed-loop demo — avstack drives a CARLA ego
-
-`scripts/demo_avstack_carla.py` runs avstack's full decision stack in the loop:
+Expected:
 
 ```
-CARLA ground-truth -> Passthrough3DObjectDetector -> BasicBoxTracker3D
-                   -> route follower (CARLA lane waypoints) -> VehiclePIDController
-                   -> carla.VehicleControl
+[clean]    mean_detections=5.1 final_speed=2.56 brake_frames=0
+[attacked] mean_detections=6.0 final_speed=0.09 brake_frames=14
+=> ATTACK SUCCEEDED (forced an unsafe stop)
+SMOKE: PASS (phantom forced an unsafe stop)
 ```
 
-The ego is driven **entirely by avstack's own controller — no CARLA autopilot**. To prove the
-custom control has real authority (throttle *and* steering), the ego follows the actual road:
-each step targets a CARLA lane waypoint ahead, so the avstack lateral PID must steer the car
-through curves and junction turns. Perception runs in ground-truth mode, so **no model
-checkpoints are needed** — that detector is exactly the seam where an attacked/real detector
-gets swapped in later. NPC traffic uses autopilot.
-
-```bash
-python scripts/demo_avstack_carla.py --frames 300 --npcs 15
-```
-
-Reference-box result (4× L40S, CARLA 0.9.15): ego follows the lane through a ~90° junction turn
-over 300 sync frames — **cross-track ≤2.4 m**, ~112° cumulative heading change, peak steer 0.43,
-steady 5.2 m/s under PID, with 15 detections → 15 confirmed tracks → `DRIVE: PASS`. The steer
-trace peaks mid-turn (−0.33) and settles to ~0 on the straight, i.e. the controller is genuinely
-regulating the vehicle, not coasting on defaults.
-
-> Three upstream avstack/avcarla quirks worked around (documented inline): `GoStraightPlanner`
-> swaps its `Pose(position, attitude)` args and raises; `get_obj_type_from_actor` only maps
-> 2/4-wheeled actors (we restrict NPCs to 4-wheel cars); and `actor.get_location()` returns the
-> origin until the first `world.tick()` after spawn (we settle one tick before anchoring the route).
-
-## Attack escalation demo — LiDAR spoof → unsafe stop
-
-`scripts/demo_attack_lidar_spoof.py` runs the **`CarlaBackend`** twice and shows the full
-attack-escalation path — the framework's core thesis — end to end:
-
-```
-attack signal (injected phantom object) -> component error (phantom track)
-                                        -> driving consequence (unsafe hard stop)
-```
-
-`LidarSpoofAttack` attaches purely as a **perception-input hook** (`backend.add_perception_hook`);
-the AV/backend code is identical between the clean and attacked runs.
-
-```bash
-python scripts/demo_attack_lidar_spoof.py
-```
-
-Reference-box result:
-
-```
-clean    : peak_tracks=0  brake_frames=0    ego still driving at 5.2 m/s
-attacked : peak_tracks=1  brake_frames=108  first brake at 8 m -> ego stopped (0.0 m/s)
--> LIDAR-SPOOF ESCALATION DEMO: PASS
-```
-
-The attack logic has offline (no-CARLA) regression coverage in `tests/test_attack_seam.py`
-(injection geometry, world-fixed phantom, propagation to a confirmed track) — run under the
-`avsec` env; skipped automatically in core-only CI.
-
-All three scripts printed `PASS` on the reference box (torch 1.13.1+cu117).
+The same run is available through the CLI: `avsectester run configs/carla_scenario.yaml --frames 40`.

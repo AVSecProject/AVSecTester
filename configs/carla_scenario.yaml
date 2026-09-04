@@ -1,0 +1,65 @@
+# Closed-loop CARLA security scenario — real neural perception, attacked by an avstack hook.
+#
+# Everything here is built through avstack/avcarla's own registries (avcarla CARLA, avstack
+# PIPELINE/MODELS/HOOKS). There is no AVSecTester-specific system/environment type: the ego IS an
+# avcarla CarlaMobileActor whose pipeline IS an avstack ModularDrivingPipeline.
+#
+#   avsectester run configs/carla_scenario.yaml --frames 40
+# runs it clean, then attacked, and prints the impact.
+
+frames: 40
+
+client:
+  type: CarlaClient
+  connect_ip: 127.0.0.1
+  connect_port: 2000
+  traffic_manager_port: 8000
+  traffic_manager_seed: 0
+  synchronous: true
+  rate: 20.0
+  seed: 0
+
+ego:
+  type: CarlaMobileActor
+  spawn: 0
+  vehicle: vehicle.tesla.model3
+  autopilot: false
+  destination: null
+  sensors:
+    - type: CarlaLidar
+      name: lidar-0
+      rotation_frequency: 20
+      sensor_tick: 0.05
+      range: 70.0
+  pipeline:
+    type: ModularDrivingPipeline
+    perception:
+      type: MMDetObjectDetector3D
+      model: pointpillars
+      dataset: carla-vehicle
+      gpu: 0
+      threshold: 0.3
+    tracking:
+      type: BasicBoxTracker3D
+    planning:
+      type: ForwardCollisionPlanner
+      target_speed: 6.0
+      brake_distance: 12.0
+      brake_corridor: 2.5
+    control:
+      type: VehiclePIDController
+      args_lateral: {K_P: 1.2, K_D: 0.1, K_I: 0.05}
+      args_longitudinal: {K_P: 0.4, K_D: 0.0, K_I: 0.05}
+
+npcs:
+  count: 6
+  npc_type: vehicle
+
+# The attack: a fabricated detection injected at the perception stage (an avstack HOOKS post-hook).
+attacks:
+  - stage: perception
+    hook:
+      type: PhantomInjection
+      target_xyz: [6.0, 0.0, -1.5]
+      obj_type: Car
+      score: 0.9

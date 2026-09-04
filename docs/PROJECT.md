@@ -200,9 +200,10 @@ Attacks/defenses/monitors attach as **avstack-style pre/post hooks** — no fork
 
 ## 5. Key Workflows
 
-1. **Run a security experiment.** `avsectester run configs/mock_experiment.yaml` → the engine
-   builds the backend/attack/defense from the spec, runs a **clean** baseline and an **attacked**
-   pass (attack injected at the perception seam), scores them, and prints the escalation report.
+1. **Run a security experiment.** `avsectester run configs/carla_scenario.yaml` → builds the
+   scenario (an avcarla ego running an avstack `ModularDrivingPipeline`) from the spec, runs a
+   **clean** baseline and an **attacked** pass (attack = an avstack hook on a pipeline stage),
+   scores them with the impact metric, and prints the driving-impact report.
 2. **Measure a defense.** If the spec declares a defense, the engine adds an **attacked+defended**
    pass and reports whether the escalation was `mitigated`.
 3. **Trace escalation.** Each run yields paired traces; `diff_traces` finds the earliest per-stage
@@ -238,8 +239,7 @@ produces.
 **Current implementation status.** The end-to-end pipeline is exercised in CI without a GPU or
 simulator: `tests/test_scaffold.py` (schema round-trip, registry population, DAG helpers, config
 validation), `tests/test_attack_seam.py` (phantom-injection geometry, world-fixed persistence,
-propagation to a confirmed track, threat-budget validation), and `tests/test_engine.py` (full
-spec → engine → metric → DAG → report on `MockBackend`, asserting escalation and defense
-mitigation). Closed-loop `scripts/smoke_*.py` cover GPU perception CUDA ops and a CARLA ego+LiDAR
-sync loop (manual, hardware-dependent). The environment is pinned (`requirements.lock`,
-`docs/SETUP.md`).
+propagation to a confirmed track) and `tests/test_pipeline.py` (the avstack `ModularDrivingPipeline`
+builds from config and `ForwardCollisionPlanner` brakes for a forward-corridor track). Closed-loop
+`scripts/run_demo.py` covers the full GPU-perception CARLA ego+LiDAR loop end to end (manual,
+hardware-dependent). The environment is pinned (`docs/SETUP.md`).

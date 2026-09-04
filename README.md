@@ -2,10 +2,11 @@
 
 **Adversarial security-testing framework for autonomous-vehicle systems.**
 
-AVSecTester runs an attack against a real AV pipeline — in closed-loop simulation or over a
-dataset — and measures the effect on driving. Attacks act at named **seams** of the pipeline
-(e.g. the detector's output); the framework runs a clean baseline and an attacked pass and
-reports whether the attack propagated to a driving consequence, plus whether a defense mitigates it.
+AVSecTester runs an attack against a **real** AV pipeline in closed-loop CARLA simulation and
+measures the effect on driving. The AV stack is not reimplemented here — it *is* an
+[avstack](https://github.com/avstack-lab) pipeline running in the sim through avstack's own CARLA
+bridge. An attack is an avstack **hook** attached to a pipeline stage. Running the same scenario
+clean and attacked, and diffing the driving record, is the whole test.
 
 ## ▶ Demo — one command
 
@@ -19,78 +20,61 @@ cd third_party/avstack-core && git submodule update --init --depth 1 \
   third_party/mmdetection third_party/mmdetection3d third_party/mmsegmentation && cd -
 ./scripts/fetch_models.sh          # CARLA-trained weights → ./models
 docker compose up -d --build       # start a CARLA 0.9.15 server + the AVSecTester shell
-docker compose exec avsectester python scripts/smoke_carla_neural.py 40   # run the attack
+docker compose exec avsectester python scripts/run_demo.py 40   # run the attack
 ```
 
-What it does — a CARLA-trained **PointPillars** detector runs on a live **CarlaLidar**; a
-fabricated detection is injected at the `perception_out` seam (no pixels touched):
+A CARLA-trained **PointPillars** detector runs on a live **CarlaLidar**; a fabricated detection is
+injected at the perception stage (an avstack hook — no pixels touched):
 
 ```
-[clean]    frames=40 ... mean_detections=5.2 brake_frames=0     # ego cruises, detects real NPCs
-[attacked] frames=40 ... final_speed=0.0     brake_frames=39    # phantom → emergency stop
-SMOKE: PASS (phantom forced an unsafe stop)
+[clean]    mean_detections=5.1 final_speed=2.56 brake_frames=0     # ego cruises, detects real NPCs
+[attacked] mean_detections=6.0 final_speed=0.09 brake_frames=14    # phantom → emergency stop
+=> ATTACK SUCCEEDED (forced an unsafe stop)
 ```
 
-**See it:** `docker compose exec avsectester python scripts/record_carla.py 40` records per-frame
-CARLA screenshots + a LiDAR bird's-eye view (real detections green, injected phantom red) into
-`results/` — the phantom shows as a red box floating in the brake corridor with no points beneath
-it. Details in [`docs/DOCKER.md`](docs/DOCKER.md).
+Details in [`docs/DOCKER.md`](docs/DOCKER.md).
 
-No GPU/CARLA? The simulator-free path runs the same loop locally against a mock AV pipeline:
+## How it works
 
-```bash
-pip install -e third_party/avstack-core ".[dev]"
-avsectester run configs/mock_experiment.yaml   # clean vs attacked vs attacked+defended
-```
+The framework is deliberately tiny — it adds a security layer, nothing more:
+
+| Piece | What it is |
+|-------|------------|
+| **Scenario** (`avsectester/scenario.py`) | Builds an avcarla `CarlaClient` + `CarlaMobileActor` (ego) + `CarlaNpc` traffic **from config**, drives the loop, returns a driving `Trace`. |
+| **Pipeline** | The ego's brain is an avstack `ModularDrivingPipeline`: neural perception → tracking → planning → control. Real avstack modules, built from config. |
+| **Attack** (`avsectester/attacks/`) | An avstack `HOOKS` hook attached to a pipeline stage (e.g. `PhantomInjection` on `perception`). |
+| **Metric** (`avsectester/metric.py`) | Diffs a clean vs attacked `Trace` into a driving-impact verdict. |
+
+There is **no** parallel environment/system/attack machinery and **no** mock — AVSecTester uses
+avstack's own interfaces (`CARLA`/`PIPELINE`/`MODELS`/`HOOKS` registries, `register_post_hook`)
+directly. The closed-loop driving stack (`ModularDrivingPipeline`, `ForwardCollisionPlanner`) lives
+in the avstack fork where it belongs; see [`docs/INTERFACE.md`](docs/INTERFACE.md) and
+[`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
 
 ## Built on avstack
 
-AVSecTester is the *security layer* on top of [avstack-lab](https://github.com/avstack-lab),
-vendored under `third_party/` as git submodules:
+Vendored under `third_party/` as git submodules (forked so the closed-loop pieces can live upstream):
 
-- **avstack-core** — reconfigurable AV modules, geometry, sensors, registry/config
-- **lib-avstack-carla** — closed-loop CARLA 0.9.15 bridge
+- **avstack-core** — reconfigurable AV modules, geometry, sensors, registry/config, hooks
+- **lib-avstack-carla** (`avcarla`) — closed-loop CARLA 0.9.15 bridge (client, actors, sensors)
 - **avstack-api** — KITTI / nuScenes / CARLA dataset adapters
 
-Six small core interfaces carry the whole framework — `Frame`, `Environment` (dataset⇄sim),
-`System` (the AV pipeline; fires attacks at its seams), `Attack`/`Defense`, `Metric` — and we
-never fork avstack internals. See [`docs/INTERFACE.md`](docs/INTERFACE.md) and
-[`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
-
-## Layout
-
-```
-avsectester/   core · envs · attacks · defenses · metrics · reports ·
-               config · viz · (search · agent · knowledge — planned)
-third_party/   avstack-core · avstack-api · lib-avstack-carla · nuCarla   (git submodules)
-configs/       example experiment configs
-docs/          DOCKER.md · DEVELOPMENT.md · INTERFACE.md · SETUP.md
-```
-
-## Run an experiment
-
-An experiment is one YAML config (environment + system + attack + defense + metric). The runner
-runs a **clean** baseline and an **attacked** pass, scores them with the metric, and (if a
-defense is declared) an **attacked+defended** pass to measure mitigation.
+## Run a scenario
 
 ```bash
-avsectester run configs/mock_experiment.yaml          # simulator-free (MockEnv/MockSystem)
-avsectester run configs/carla_neural_experiment.yaml  # closed-loop CARLA + neural perception
+avsectester run configs/carla_scenario.yaml --frames 40
 ```
 
-It prints an impact report — did the attack induce braking + a stop the clean run never had —
-and, with a defense, whether it was mitigated. The baseline `ScoreGateDefense` mitigates the
-low-confidence object spoof.
-
-Docker is the reproducible path for the CARLA stack; the manual conda install is in
-[`docs/SETUP.md`](docs/SETUP.md).
+builds the scenario, runs it clean then attacked, and prints the impact. The scenario config is the
+whole experiment: the `CarlaClient`, the ego (sensors + `ModularDrivingPipeline`), the NPC traffic,
+and the attack hooks.
 
 ## Status
 
-**Early alpha.** The minimal core (environment → system → attack at seams → metric) is
-implemented; the neural CARLA closed loop is **verified end-to-end** (the demo above); the mock
-path drives the offline test suite. Richer escalation/attribution analysis, a scenario-search
-engine, and an AI harness are planned — see [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
+**Early alpha.** The neural CARLA closed loop is verified end-to-end (the demo above). The offline
+suite (`tests/`) covers the attack hook and the driving pipeline without needing CARLA. A
+scenario-search engine and richer attack/defense hooks are planned — see
+[`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
 
 ## License
 

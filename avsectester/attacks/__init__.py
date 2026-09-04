@@ -1,34 +1,14 @@
-"""Attack plugins, organized by **attack vector** (the shared delivery mechanism).
+"""Attacks — each is an avstack ``HOOKS`` hook attached to a pipeline stage.
 
-Attacks register with the ATTACKS registry and implement core.Attack (offline prepare +
-runtime apply). They are grouped by *vector* — the mechanism and toolkit they share — with one
-or more concrete *methods* per vector (see attacks/vector.py):
+An attack in AVSecTester is not a bespoke class hierarchy; it is a callable registered in avstack's
+``HOOKS`` registry and attached to a module's pre/post hooks (via config or ``register_post_hook``).
+That is the same mechanism avstack uses for any hook, so an attack composes with a real pipeline
+without any parallel machinery.
 
-  lidar_spoofing/         - LiDAR-spoofing vector; methods: object spoofing (false positive),
-                            object removal (false negative). Shared tools in ``vector.py``.
-  detection_manipulation/ - detector-output vector; methods: phantom detection injection
-                            (false positive), detection removal (false negative).
-
-Planned vectors: camera adversarial patch, GPS/localization spoofing, V2X message injection
-— each a package with its own ``vector.py`` toolkit + method classes.
+  ``PhantomInjection`` — appends a fabricated ``BoxDetection`` to the detector output, so a phantom
+  obstacle propagates detection -> track -> an unsafe stop.
 """
 
-from .detection_manipulation import (
-    DetectionManipulationVector,
-    DetectionRemovalAttack,
-    PhantomDetectionAttack,
-)
-from .lidar_spoofing import (
-    LidarSpoofingVector,
-    ObjectRemovalAttack,
-    ObjectSpoofingAttack,
-)
+from .phantom import PhantomInjection
 
-__all__ = [
-    "DetectionManipulationVector",
-    "DetectionRemovalAttack",
-    "LidarSpoofingVector",
-    "ObjectRemovalAttack",
-    "ObjectSpoofingAttack",
-    "PhantomDetectionAttack",
-]
+__all__ = ["PhantomInjection"]

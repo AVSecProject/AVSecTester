@@ -1,71 +1,49 @@
-"""AVSecTester command-line interface."""
+"""AVSecTester command-line interface.
+
+A single verb — ``run`` — takes a scenario config, drives it clean then attacked in real CARLA, and
+prints the impact. The scenario is built entirely from avstack/avcarla registries (see
+:mod:`avsectester.scenario`); attacks are avstack hooks declared in the config.
+"""
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import typer
+import yaml
 
 from . import __version__
-from .config import ATTACKS, DEFENSES, ENVIRONMENTS, HAVE_AVSTACK, METRICS, SYSTEMS
 
 app = typer.Typer(help="Adversarial security testing for AV systems.")
 
 
-def _load_plugins() -> None:
-    """Import plugin packages so their @register_module classes self-register."""
-    import avsectester.attacks
-    import avsectester.defenses
-    import avsectester.envs
-    import avsectester.metrics  # noqa: F401
-
-
-def _entries(reg) -> list[str]:
-    d = getattr(reg, "module_dict", None) or getattr(reg, "_entries", {})
-    return sorted(d)
-
-
 @app.command()
 def version() -> None:
-    """Print the AVSecTester version and whether the avstack stack is available."""
+    """Print the AVSecTester version."""
     typer.echo(f"avsectester {__version__}")
-    typer.echo(f"avstack stack available: {HAVE_AVSTACK}")
 
 
 @app.command()
-def registry() -> None:
-    """List registered plugins (environments / systems / attacks / defenses / metrics)."""
-    _load_plugins()
-    for name, reg in [("environments", ENVIRONMENTS), ("systems", SYSTEMS),
-                      ("attacks", ATTACKS), ("defenses", DEFENSES), ("metrics", METRICS)]:
-        typer.echo(f"{name}: {_entries(reg)}")
+def run(
+    config: Path = typer.Argument(..., help="Scenario YAML (see configs/carla_scenario.yaml)."),
+    frames: int = typer.Option(None, help="Override the scenario frame count."),
+) -> None:
+    """Run a scenario clean then attacked in CARLA and print the attack's driving impact."""
+    from .metric import impact
+    from .scenario import run_scenario
 
+    scenario = yaml.safe_load(Path(config).read_text())
+    n = frames or scenario.get("frames", 40)
+    attacks = scenario.get("attacks", [])
 
-@app.command()
-def run(config_path: str, report_path: str = "") -> None:
-    """Run an experiment (clean vs attacked [vs defended]) from a YAML config."""
-    from pathlib import Path
+    typer.echo(f"[clean]    running {n} frames ...")
+    clean = run_scenario(scenario, attacks=None, frames=n)
+    typer.echo(f"[attacked] running {n} frames with {len(attacks)} attack hook(s) ...")
+    attacked = run_scenario(scenario, attacks=attacks, frames=n)
 
-    import yaml
-
-    from .core import run_experiment
-    from .reports import render_report
-
-    _load_plugins()
-    cfg = yaml.safe_load(Path(config_path).read_text(encoding="utf-8"))
-    metric = METRICS.build(dict(cfg.get("metric") or {"type": "ImpactMetric"}))
-    attack = ATTACKS.build(dict(cfg["attack"])) if cfg.get("attack") else None
-    defense = DEFENSES.build(dict(cfg["defense"])) if cfg.get("defense") else None
-    result = run_experiment(
-        make_env=lambda: ENVIRONMENTS.build(dict(cfg["environment"])),
-        make_system=lambda: SYSTEMS.build(dict(cfg["system"])),
-        metric=metric, attack=attack, defense=defense,
-    )
-    report = render_report(cfg.get("name", config_path), result)
-    typer.echo(report)
-    if report_path:
-        with open(report_path, "w", encoding="utf-8") as fh:
-            fh.write(report)
-        typer.echo(f"\n(report written to {report_path})")
-    raise typer.Exit(code=0 if result.metrics.get("impacted") else 1)
+    result = impact(clean, attacked)
+    typer.echo(str(result))
+    raise typer.Exit(0 if result.attack_succeeded else 1)
 
 
 if __name__ == "__main__":
