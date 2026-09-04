@@ -241,5 +241,5 @@ simulator: `tests/test_scaffold.py` (schema round-trip, registry population, DAG
 validation), `tests/test_attack_seam.py` (phantom-injection geometry, world-fixed persistence,
 propagation to a confirmed track) and `tests/test_pipeline.py` (the avstack `ModularDrivingPipeline`
 builds from config and `ForwardCollisionPlanner` brakes for a forward-corridor track). Closed-loop
-`scripts/run_demo.py` covers the full GPU-perception CARLA ego+LiDAR loop end to end (manual,
+`avsectester run configs/carla_scenario.yaml` covers the full GPU-perception CARLA ego+LiDAR loop end to end (manual,
 hardware-dependent). The environment is pinned (`docs/SETUP.md`).

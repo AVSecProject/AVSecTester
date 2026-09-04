@@ -20,7 +20,7 @@ cd third_party/avstack-core && git submodule update --init --depth 1 \
   third_party/mmdetection third_party/mmdetection3d third_party/mmsegmentation && cd -
 ./scripts/fetch_models.sh          # CARLA-trained weights → ./models
 docker compose up -d --build       # start a CARLA 0.9.15 server + the AVSecTester shell
-docker compose exec avsectester python scripts/run_demo.py 40   # run the attack
+docker compose exec avsectester avsectester run configs/carla_scenario.yaml --frames 40   # run it
 ```
 
 A CARLA-trained **PointPillars** detector runs on a live **CarlaLidar**; a fabricated detection is
@@ -34,7 +34,10 @@ injected at the perception stage (an avstack hook — no pixels touched):
 
 **Visualize it:** add `--plot results/impact.png` (needs the `viz` extra) to save a clean-vs-attacked
 plot of ego speed + brake over time — the green (clean) line cruises while the red (attacked) line
-brakes to a full stop. Details in [`docs/DOCKER.md`](docs/DOCKER.md).
+brakes to a full stop.
+
+`avsectester run configs/carla_scenario.yaml` **is** the demo — one command, clean vs attacked, the
+impact verdict, and (with `--plot`) the figure. Details in [`docs/DOCKER.md`](docs/DOCKER.md).
 
 ## How it works
 
@@ -61,16 +64,25 @@ Vendored under `third_party/` as git submodules (forked so the closed-loop piece
 - **lib-avstack-carla** (`avcarla`) — closed-loop CARLA 0.9.15 bridge (client, actors, sensors)
 - **avstack-api** — KITTI / nuScenes / CARLA dataset adapters
 
-## Run a scenario
+## The one command
+
+There is a single entry point — the same one used in the demo above:
 
 ```bash
-avsectester run configs/carla_scenario.yaml --frames 40          # add --gpu 1 for host runs
+avsectester run configs/carla_scenario.yaml --frames 40 [--gpu 1] [--plot results/impact.png]
 ```
 
-builds the scenario, runs it clean then attacked, and prints the impact. The scenario config is the
-whole experiment: the `CarlaClient`, the ego (sensors + `ModularDrivingPipeline`), the NPC traffic,
-and the attack hooks. (`--gpu` overrides the perception device — the config targets GPU 0, which is
-right in Docker; on a single host where CARLA already holds GPU 0, pass `--gpu 1`.)
+It builds the scenario, runs it clean then attacked, prints the impact verdict, and (with `--plot`)
+saves the figure. The scenario config is the whole experiment: the `CarlaClient`, the ego (sensors +
+`ModularDrivingPipeline`), the NPC traffic, and the attack hooks.
+
+- `--frames` — steps per run (needs enough for the clean ego to reach cruising speed; 40 is good).
+- `--gpu` — perception CUDA device. The config targets GPU 0 (right in Docker, where the ego gets a
+  dedicated GPU); on a single host where CARLA already holds GPU 0, pass `--gpu 1`.
+- `--plot` — save the clean-vs-attacked driving-impact figure (needs the `viz` extra).
+
+Exit code encodes the verdict: `0` attack succeeded, `2` inconclusive (clean never drove), `1` no
+meaningful impact.
 
 ## Status
 

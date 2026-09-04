@@ -59,7 +59,7 @@ feed). Those are real avstack modules, registered in avstack's registries.
 
 ```bash
 python -m pytest tests/ -q        # offline: attack hook + driving pipeline, no CARLA/GPU
-python scripts/run_demo.py 40     # end-to-end: needs a running CARLA server + weights
+avsectester run configs/carla_scenario.yaml --frames 40   # end-to-end: needs a CARLA server + weights
 ```
 
 `tests/test_phantom.py` checks the attack hook (appends exactly one fabricated detection; registers

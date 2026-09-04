@@ -1,7 +1,7 @@
 # End-to-end environment: a CARLA 0.9.15 server + the AVSecTester GPU image (defaults to a shell).
 #   ./scripts/fetch_models.sh          # once, on the host: pulls carla-vehicle weights → ./models
 #   docker compose up -d --build       # start CARLA + the (idle) AVSecTester shell container
-#   docker compose exec avsectester python scripts/run_demo.py 40             # run the attack demo
+#   docker compose exec avsectester avsectester run configs/carla_scenario.yaml --frames 40   # the demo
 #   docker compose exec avsectester bash                                       # open a shell
 #
 # The entrypoint symlinks the bind-mounted ./models into the mmdet3d root, then runs the command

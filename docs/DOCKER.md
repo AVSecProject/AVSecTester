@@ -25,35 +25,35 @@ then run the attack in it:
 
 ```bash
 docker compose up -d --build       # first build: the mmdet3d CUDA compile takes ~10–20 min
-docker compose exec avsectester python scripts/run_demo.py 40
+docker compose exec avsectester avsectester run configs/carla_scenario.yaml --frames 40
 ```
 
-`scripts/run_demo.py` builds `configs/carla_scenario.yaml`, runs a clean pass then a
+`avsectester run` **is** the demo: it builds `configs/carla_scenario.yaml`, runs a clean pass then a
 phantom-attacked pass, and diffs them. Expected output:
 
 ```
-[clean]    peak_speed=5.19 final_speed=5.17 brake_frames=0
-[attacked] final_speed=0.00 brake_frames=38
+[clean]    mean_detections=6.8 peak_speed=5.19 final_speed=5.17 brake_frames=0
+[attacked] mean_detections=8.1 final_speed=0.00 brake_frames=38
+clean:    peak_speed= 5.19  final_speed= 5.17  brake_frames=0
+attacked: final_speed= 0.00  brake_frames=38
 => ATTACK SUCCEEDED (forced an unsafe stop)
-SMOKE: PASS (phantom forced an unsafe stop)
 ```
 
 i.e. the clean run cruises while the real detector reports NPC detections; the phantom detection
 injected at the perception stage (an avstack hook) propagates to a confirmed track and forces an
-unsafe stop.
+unsafe stop. (Exit code: `0` succeeded, `2` inconclusive, `1` no impact.)
 
 Add `--plot results/impact.png` to also save a **driving-impact figure** (ego speed + brake over
 time, clean vs attacked). `results/` is bind-mounted, so the PNG appears on the host:
 
 ```bash
-docker compose exec avsectester python scripts/run_demo.py 40 --plot results/impact.png
+docker compose exec avsectester avsectester run configs/carla_scenario.yaml --frames 40 --plot results/impact.png
 ```
 
 The container defaults to a **shell** — open one, or run anything else, with `exec`:
 
 ```bash
 docker compose exec avsectester bash                                       # a shell in the environment
-docker compose exec avsectester avsectester run configs/carla_scenario.yaml # same demo via the CLI
 ```
 
 When you're done: `docker compose down`.
@@ -71,5 +71,5 @@ When you're done: `docker compose down`.
   default docker runtime is nvidia, so both containers get GPUs (CARLA on GPU 0, AVSecTester on 1).
   This is why the scenario config targets `gpu: 0` (the ego container's dedicated GPU). Running the
   demo directly on the host instead shares GPU 0 with CARLA, so pass `--gpu 1` there
-  (`python scripts/run_demo.py 40 --gpu 1`) to run neural inference on a free device.
+  (`avsectester run configs/carla_scenario.yaml --gpu 1`) to run neural inference on a free device.
 - The manual (conda) install is documented in [`SETUP.md`](SETUP.md).
