@@ -67,14 +67,15 @@ def run(
 
     result = impact(clean, attacked)
 
+    saved_path = None
     if plot:
         from .viz import plot_impact
 
-        plot_impact(clean, attacked, plot, result=result)
+        saved_path = plot_impact(clean, attacked, plot, result=result)
 
     typer.echo(str(result))  # ends in "=> <verdict>"
-    if plot:
-        typer.echo(f"[plot]     saved {plot}")
+    if saved_path:
+        typer.echo(f"[output]   wrote driving-impact figure to file: {saved_path}")
 
     # exit code encodes the verdict for scripting: 0 success, 2 inconclusive, 1 no meaningful impact
     raise typer.Exit(0 if result.attack_succeeded else 2 if not result.clean_drove else 1)

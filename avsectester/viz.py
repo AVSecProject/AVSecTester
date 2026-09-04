@@ -57,7 +57,8 @@ def plot_impact(
              color="#d33" if result.attack_succeeded else "#555")
 
     fig.tight_layout(rect=(0, 0.03, 1, 0.97))
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    fig.savefig(path, dpi=130)
+    abspath = os.path.abspath(path)
+    os.makedirs(os.path.dirname(abspath), exist_ok=True)
+    fig.savefig(abspath, dpi=130)
     plt.close(fig)
-    return path
+    return abspath  # absolute, so callers can report exactly where the file landed

@@ -25,7 +25,7 @@ Expected:
 clean:    peak_speed= 5.19  final_speed= 5.17  brake_frames=0
 attacked: final_speed= 0.00  brake_frames=38
 => ATTACK SUCCEEDED (forced an unsafe stop)
-[plot]     saved results/impact.png
+[output]   wrote driving-impact figure to file: /.../AVSecTester/results/impact.png
 ```
 
 - `--frames` — steps per run (enough for the clean ego to reach cruising speed; 40 is good).
