@@ -1,0 +1,242 @@
+"""Exercise the real runner while replacing only its simulator-facing objects."""
+
+from copy import deepcopy
+from types import SimpleNamespace
+from unittest.mock import Mock
+
+import pytest
+from avsectester import scenario
+from avstack.modules.base import BaseModule
+
+
+@pytest.fixture
+def simulation(monkeypatch):
+    clock = SimpleNamespace(frame=100, t=10.0)
+
+    def snapshot():
+        return SimpleNamespace(
+            frame=clock.frame, timestamp=SimpleNamespace(elapsed_seconds=clock.t)
+        )
+
+    def tick():
+        clock.frame += 1
+        clock.t += 0.05
+
+    client = SimpleNamespace(
+        world=SimpleNamespace(get_snapshot=Mock(side_effect=snapshot)),
+        tick=Mock(side_effect=tick),
+    )
+    perception = BaseModule(name="test-perception")
+    tracking = BaseModule(name="test-tracking")
+    control = SimpleNamespace(throttle=0.0, brake=0.7, steer=-0.2)
+    stage_outputs = []
+
+    def ego_tick(t, frame):
+        stage_outputs.append(perception._apply_post_hooks(["real-detection"]))
+        return control
+
+    ego = SimpleNamespace(
+        pipeline=SimpleNamespace(perception=perception, tracking=tracking),
+        initialize=Mock(),
+        destroy=Mock(),
+        tick=Mock(side_effect=ego_tick),
+        sensor_data_manager=SimpleNamespace(empty=Mock(return_value=False)),
+        get_object_state=Mock(
+            return_value=SimpleNamespace(
+                velocity=SimpleNamespace(norm=lambda: (clock.frame - 100) * 0.5),
+            )
+        ),
+    )
+    npcs = [SimpleNamespace(initialize=Mock(), destroy=Mock()) for _ in range(2)]
+    built_npcs = []
+
+    def build(config, default_args=None):
+        if config["type"] == "CarlaClient":
+            return client
+        assert default_args == {"client": client}
+        if config["type"] == "CarlaMobileActor":
+            return ego
+        assert config["type"] == "CarlaNpc"
+        npc = npcs[len(built_npcs)]
+        built_npcs.append(npc)
+        return npc
+
+    registry = Mock(side_effect=build)
+    monkeypatch.setattr(scenario.CARLA, "build", registry)
+    sleep = Mock()
+    monkeypatch.setattr(scenario.time, "sleep", sleep)
+    config = {
+        "client": {"type": "CarlaClient"},
+        "ego": {"type": "CarlaMobileActor"},
+        "npcs": {"count": 2, "npc_type": "vehicle", "spawn_start": 3},
+    }
+    return SimpleNamespace(
+        config=config,
+        client=client,
+        ego=ego,
+        npcs=npcs,
+        registry=registry,
+        sleep=sleep,
+        stage_outputs=stage_outputs,
+    )
+
+
+def test_runner_records_requested_frames_and_initializes_actors(simulation):
+    sim = simulation
+    trace = scenario.run_scenario(sim.config, frames=3)
+    assert [record.frame for record in trace.records] == [0, 1, 2]
+    assert [record.t for record in trace.records] == pytest.approx([10.05, 10.10, 10.15])
+    assert [record.speed for record in trace.records] == [0.5, 1.0, 1.5]
+    assert [record.n_detections for record in trace.records] == [1, 1, 1]
+    assert all((r.throttle, r.brake, r.steer) == (0.0, 0.7, -0.2) for r in trace.records)
+    assert sim.client.tick.call_count == sim.ego.tick.call_count == 3
+    assert [call.args[1] for call in sim.ego.tick.call_args_list] == [101, 102, 103]
+    sim.ego.initialize.assert_called_once_with(10.0, 100)
+    sim.ego.destroy.assert_called_once_with()
+    for npc in sim.npcs:
+        npc.initialize.assert_called_once_with(10.0, 100)
+        npc.destroy.assert_called_once_with()
+    sim.sleep.assert_not_called()
+
+
+def test_runner_preserves_hook_order_and_counts_attacked_output(simulation, monkeypatch):
+    sim = simulation
+
+    def append_hook(name):
+        def hook(data):
+            data.append(name)
+            return (data,)
+
+        return hook
+
+    hooks = [append_hook("phantom-a"), append_hook("phantom-b"), append_hook("tracking-only")]
+    build_hook = Mock(side_effect=hooks)
+    monkeypatch.setattr(scenario.HOOKS, "build", build_hook)
+    attacks = [
+        {"stage": "perception", "hook": {"type": "A"}},
+        {"stage": "perception", "hook": {"type": "B"}},
+        {"stage": "tracking", "hook": {"type": "C"}},
+    ]
+    trace = scenario.run_scenario(sim.config, attacks=attacks, frames=2)
+    assert sim.stage_outputs == [["real-detection", "phantom-a", "phantom-b"]] * 2
+    assert [r.n_detections for r in trace.records] == [3, 3]
+    assert sim.ego.pipeline.tracking.post_hooks == [hooks[2]]
+    assert [call.args[0] for call in build_hook.call_args_list] == [a["hook"] for a in attacks]
+
+
+def test_compact_npc_config_is_expanded(simulation):
+    sim = simulation
+    scenario.run_scenario(sim.config, frames=1)
+    configs = [call.args[0] for call in sim.registry.call_args_list]
+    assert configs[2:] == [
+        {"type": "CarlaNpc", "spawn": 3, "npc_type": "vehicle"},
+        {"type": "CarlaNpc", "spawn": 4, "npc_type": "vehicle"},
+    ]
+
+
+@pytest.mark.parametrize(
+    "npcs",
+    [
+        None,
+        [],
+        {"count": 0},
+        [
+            {"type": "CarlaNpc", "spawn": 9, "npc_type": "vehicle"},
+        ],
+    ],
+)
+def test_optional_and_explicit_npc_config(simulation, npcs):
+    sim = simulation
+    sim.config["npcs"] = npcs
+    before = deepcopy(sim.config)
+    scenario.run_scenario(sim.config, frames=1)
+    assert sim.config == before
+    assert sim.registry.call_count == (3 if isinstance(npcs, list) and npcs else 2)
+    if isinstance(npcs, list) and npcs:
+        assert sim.registry.call_args.args[0] == npcs[0]
+
+
+@pytest.mark.parametrize("failure_site", ["world", "ego"])
+def test_tick_failure_propagates_and_destroys_all_actors(simulation, failure_site):
+    sim = simulation
+    target = sim.client.tick if failure_site == "world" else sim.ego.tick
+    target.side_effect = RuntimeError("tick failed")
+    with pytest.raises(RuntimeError, match="tick failed"):
+        scenario.run_scenario(sim.config, frames=3)
+    sim.ego.destroy.assert_called_once_with()
+    for npc in sim.npcs:
+        npc.destroy.assert_called_once_with()
+
+
+def test_npc_destroy_failure_does_not_prevent_remaining_cleanup(simulation):
+    sim = simulation
+    sim.npcs[0].destroy.side_effect = RuntimeError("already destroyed")
+    scenario.run_scenario(sim.config, frames=1)
+    sim.npcs[1].destroy.assert_called_once_with()
+
+
+@pytest.mark.parametrize("failure_site", ["initialize", "npc_build"])
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason="Runner cleanup starts after actor creation and initialization; setup failures leak actors",
+)
+def test_setup_failure_cleans_up_already_created_actors(simulation, failure_site):
+    sim = simulation
+    if failure_site == "initialize":
+        sim.ego.initialize.side_effect = RuntimeError("setup failed")
+    else:
+        sim.registry.side_effect = [sim.client, sim.ego, sim.npcs[0], RuntimeError("setup failed")]
+    with pytest.raises(RuntimeError, match="setup failed"):
+        scenario.run_scenario(sim.config, frames=1)
+    sim.ego.destroy.assert_called_once_with()
+    sim.npcs[0].destroy.assert_called_once_with()
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason="An exception from ego.destroy() prevents NPC cleanup",
+)
+def test_ego_destroy_failure_still_cleans_up_npcs(simulation):
+    sim = simulation
+    sim.ego.destroy.side_effect = RuntimeError("ego destroy failed")
+    with pytest.raises(RuntimeError, match="ego destroy failed"):
+        scenario.run_scenario(sim.config, frames=1)
+    for npc in sim.npcs:
+        npc.destroy.assert_called_once_with()
+
+
+def test_runner_waits_for_delayed_sensor_data(simulation):
+    sim = simulation
+    sim.ego.sensor_data_manager.empty.side_effect = [True, True, False]
+    trace = scenario.run_scenario(sim.config, frames=1, settle_iters=4)
+    assert len(trace.records) == 1
+    assert sim.sleep.call_count == 2
+    sim.ego.tick.assert_called_once()
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=pytest.fail.Exception,
+    reason="Exhausting the sensor wait currently proceeds to ego.tick() instead of reporting timeout",
+)
+def test_missing_sensor_data_reports_timeout_and_cleans_up(simulation):
+    sim = simulation
+    sim.ego.sensor_data_manager.empty.return_value = True
+    with pytest.raises(TimeoutError):
+        scenario.run_scenario(sim.config, frames=1, settle_iters=3)
+    sim.ego.tick.assert_not_called()
+    sim.ego.destroy.assert_called_once_with()
+    for npc in sim.npcs:
+        npc.destroy.assert_called_once_with()
+
+
+@pytest.mark.parametrize("gpu", [None, 0, 2])
+def test_gpu_override_changes_only_perception_device(gpu):
+    config = {"ego": {"pipeline": {"perception": {"gpu": 1, "model": "pointpillars"}}}}
+    expected = deepcopy(config)
+    if gpu is not None:
+        expected["ego"]["pipeline"]["perception"]["gpu"] = gpu
+    assert scenario.set_perception_gpu(config, gpu) is config
+    assert config == expected

@@ -68,3 +68,42 @@ def test_forward_collision_planner_brakes_in_body_frame():
     assert speed(e, [_Obj([10, 16, 0])]) == 0.0  # 6 m ahead in body frame -> brake
     assert speed(e, [_Obj([10, 4, 0])]) == 6.0  # behind -> cruise
     assert speed(e, [_Obj([16, 10, 0])]) == 6.0  # 6 m to the side -> cruise
+
+
+@pytest.mark.parametrize("yaw", [0.0, np.pi / 2])
+def test_phantom_propagates_to_track_plan_and_braking(
+    make_pipeline,
+    make_detections,
+    make_ego,
+    yaw,
+):
+    from avsectester.attacks import PhantomInjection
+    from avstack.geometry import ReferenceFrame
+
+    clean, attacked = make_pipeline(), make_pipeline()
+    attacked.perception.register_post_hook(PhantomInjection())
+    clean_commands, attacked_commands, attack_plans, confirmed = [], [], [], []
+    origin = np.array([20.0, 10.0, 0.0])
+    for frame in range(20):
+        t = frame * 0.05
+        xyz = origin + 5.0 * t * np.array([np.cos(yaw), np.sin(yaw), 0.0])
+        ego = make_ego(xyz=xyz, yaw=yaw, speed=5.0, t=t)
+        ref = ReferenceFrame(ego.position.x, ego.attitude.q, ego.reference)
+        # A genuine object outside the driving corridor establishes the sensor frame.
+        # Each branch receives fresh data so attack mutation cannot contaminate the baseline.
+        clean_commands.append(clean(make_detections([(30, 8, 0)], reference=ref, frame=frame), ego))
+        attacked_commands.append(
+            attacked(make_detections([(30, 8, 0)], reference=ref, frame=frame), ego)
+        )
+        attack_plans.append(attacked.plan.top()[1].target_speed)
+        confirmed.append(len(attacked.tracking.tracks_confirmed))
+
+    assert all(command.throttle > 0 and command.brake == 0 for command in clean_commands)
+    assert clean.plan.top()[1].target_speed == 6.0
+    assert confirmed[0] == 0  # a single observation should not immediately confirm the phantom
+    assert confirmed[-1] > len(clean.tracking.tracks_confirmed)
+    assert attack_plans[0] == 6.0
+    assert attack_plans[-1] == 0.0
+    assert attacked_commands[0].brake == 0
+    assert attacked_commands[-1].throttle == 0
+    assert attacked_commands[-1].brake > 0

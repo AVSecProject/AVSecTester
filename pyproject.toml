@@ -65,6 +65,9 @@ ignore = ["C408", "B008"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+markers = [
+    "carla: live CARLA, GPU and model checkpoints required; opt in with --run-carla",
+]
 
 [build-system]
 requires = ["hatchling"]
