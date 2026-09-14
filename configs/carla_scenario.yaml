@@ -6,6 +6,7 @@
 #
 #   avsectester run configs/carla_scenario.yaml --frames 40
 # runs it clean, then attacked, and prints the impact.
+# Configuration guide: docs/INTERFACE.md#configuring-a-yaml-scenario
 
 frames: 40
 
@@ -14,10 +15,14 @@ client:
   connect_ip: 127.0.0.1
   connect_port: 2000
   traffic_manager_port: 8000
-  traffic_manager_seed: 0
+  traffic_manager_seed: 0  # null follows the resolved client seed
   synchronous: true
   rate: 20.0
-  seed: 0
+  seed: 0  # fixed choices across pairs; null generates a fresh seed for each pair
+  # Each run reloads this server's world; use a dedicated experiment server.
+  # Set map_name / weather here to override the selected map's initial environment.
+  # Clean may relocate failed spawns; attacked reuses the actual poses without relocation.
+  # Set strict_spawn: true to disable relocation in clean as well.
 
 ego:
   type: CarlaMobileActor

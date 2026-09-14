@@ -45,11 +45,13 @@ def run(
     (scripts/fetch_models.sh). This is the end-to-end demo.
     """
     from .metric import impact
-    from .scenario import run_scenario, set_perception_gpu
+    from .scenario import prepare_scenario, run_scenario, set_perception_gpu
 
     scenario = set_perception_gpu(yaml.safe_load(Path(config).read_text()), gpu)
     n = frames or scenario.get("frames", 40)
     attacks = scenario.get("attacks", [])
+    scenario = prepare_scenario(scenario)
+    typer.echo(f"[scenario] seed={scenario['client'].get('seed')}")
 
     typer.echo(f"[clean]    {n} frames ...")
     clean = run_scenario(scenario, attacks=None, frames=n)
@@ -59,7 +61,7 @@ def run(
     )
 
     typer.echo(f"[attacked] {n} frames with {len(attacks)} attack hook(s) ...")
-    attacked = run_scenario(scenario, attacks=attacks, frames=n)
+    attacked = run_scenario(clean.replay_scenario, attacks=attacks, frames=n)
     typer.echo(
         f"[attacked] mean_detections={attacked.mean_detections:.1f} "
         f"final_speed={attacked.final_speed:.2f} brake_frames={attacked.braking_frames}"

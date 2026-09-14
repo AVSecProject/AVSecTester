@@ -76,6 +76,10 @@ It builds the scenario, runs it clean then attacked, prints the impact verdict, 
 saves the figure. The scenario config is the whole experiment: the `CarlaClient`, the ego (sensors +
 `ModularDrivingPipeline`), the NPC traffic, and the attack hooks.
 
+See [Configuring a YAML scenario](docs/INTERFACE.md#configuring-a-yaml-scenario) for field meanings,
+fixed versus random scenes, seed settings, and NPC examples. The supplied config uses a fixed seed;
+fresh random choices per experiment pair require an omitted or `null` `client.seed`.
+
 - `--frames` — steps per run (needs enough for the clean ego to reach cruising speed; 40 is good).
 - `--gpu` — perception CUDA device. The config targets GPU 0 (right in Docker, where the ego gets a
   dedicated GPU); on a single host where CARLA already holds GPU 0, pass `--gpu 1`.

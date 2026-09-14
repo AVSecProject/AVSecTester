@@ -10,6 +10,13 @@ from avsectester.cli import app
 from typer.testing import CliRunner
 
 
+@pytest.fixture(autouse=True)
+def prepared_scenario(monkeypatch):
+    prepare = Mock(side_effect=deepcopy)
+    monkeypatch.setattr(scenario, "prepare_scenario", prepare)
+    return prepare
+
+
 @pytest.fixture
 def cli_config(tmp_path):
     config = {
@@ -42,20 +49,29 @@ def test_cli_loads_config_and_runs_clean_then_attacked(
     args,
     frames,
     gpu,
+    prepared_scenario,
 ):
     path, config = cli_config
     clean, attacked = make_trace([0, 2, 5]), make_trace([0, 1, 0], [0, 1, 1])
+    replay = deepcopy(config)
+    replay["ego"]["spawn_transform"] = {
+        "location": {"x": 13.0, "y": -2.0, "z": 0.5},
+        "rotation": {"pitch": 1.0, "yaw": 37.0, "roll": -3.0},
+    }
+    replay["ego"]["pipeline"]["perception"]["gpu"] = gpu
+    clean.replay_scenario = replay
     run = Mock(side_effect=[clean, attacked])
     monkeypatch.setattr(scenario, "run_scenario", run)
     result = CliRunner().invoke(app, ["run", str(path), *args])
 
     assert result.exit_code == 0, result.output
     assert run.call_count == 2
+    prepared_scenario.assert_called_once()
     expected = deepcopy(config)
     expected["ego"]["pipeline"]["perception"]["gpu"] = gpu
     assert run.call_args_list[0].args == (expected,)
     assert run.call_args_list[0].kwargs == {"attacks": None, "frames": frames}
-    assert run.call_args_list[1].args == (expected,)
+    assert run.call_args_list[1].args == (replay,)
     assert run.call_args_list[1].kwargs == {"attacks": config["attacks"], "frames": frames}
     assert result.output.index("[clean]") < result.output.index("[attacked]")
     assert "peak_speed=5.00" in result.output

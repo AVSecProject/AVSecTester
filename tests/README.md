@@ -21,6 +21,7 @@ plot tests; those tests skip if it is absent.
 | `test_pipeline.py` | Pipeline construction, forward-corridor planning, clean/attacked sequences through real perception, tracking, planning, and PID control |
 | `test_metric.py` | Driving verdicts, unchanged/natural stops, threshold boundaries, custom thresholds, reported measurements, incomplete runs |
 | `test_scenario.py` | Runner frame records, actor initialization, hook ordering, NPC configuration, delayed/missing sensors, cleanup on success and failure, GPU override |
+| `test_reproducibility.py` | Seeded scene selection, explicit settings, world reset order, Traffic Manager port, clean spawn retries and strict replay of actual transforms |
 | `test_cli.py` | Configuration and overrides, clean/attacked passes, verdict exit codes, plotting, invalid input handling |
 | `test_viz.py` | Basic PNG output |
 | `test_carla_integration.py` | Explicitly enabled neural perception and real closed-loop driving |
@@ -41,8 +42,6 @@ the strict marker makes an unexpected pass fail the suite until the marker is re
 - A missing or truncated attacked trace should be inconclusive. Currently its low final speed
   can be interpreted as a successful attack. The tests define incomplete as fewer recorded frames
   than the paired clean run; they do not attempt to classify an arbitrary partial run by its speed.
-- Actors already created should be cleaned up when setup fails, and NPC cleanup should still
-  occur when ego destruction raises. Both paths currently leave actors behind.
 - When the initial sensor wait expires with no data, the runner should raise `TimeoutError` and
   clean up. Currently it calls the ego pipeline despite the missing input. The timeout expectation
   applies to a run with no first sensor frame, not a later dropped frame with cached data.
@@ -59,7 +58,7 @@ python -m pytest tests/ --runxfail -q
 ## Live CARLA test
 
 The integration test is marked `carla` and skipped unless `--run-carla` is supplied. Opting in
-uses a live server and changes its world settings, spawns actors, and runs clean/attacked drives.
+uses a live server, reloads its world, spawns actors, and runs clean/clean/attacked drives.
 Use a dedicated CARLA 0.9.15 server with the desired map already loaded, the full GPU perception
 environment, and downloaded model checkpoints. Missing prerequisites fail an opted-in run;
 they do not silently skip it.
@@ -71,7 +70,13 @@ python -m pytest tests/test_carla_integration.py --run-carla \
   --carla-config configs/carla_scenario.yaml --carla-gpu 1 -q
 ```
 
-The test checks driving thresholds rather than exact speeds or detection counts. It writes the
-configuration, both traces, and impact measurements to `carla-result.json` under pytest's temporary
+The spawn-only test puts an NPC at the ego's requested position to force relocation, then checks
+that a reset run accepts the recorded poses without applying the configured offset twice. It runs
+no driving steps and uses passthrough perception, so it does not need neural inference.
+
+The driving test compares initial vehicle poses and velocities across all three runs, and requires repeated
+clean speeds to agree within 0.05 m/s with equal braking-frame counts. It also checks the attack's
+driving impact. It writes the resolved configuration, all three traces, initial states and impact
+measurements to `carla-result.json` under pytest's temporary
 test directory before checking the verdict. Simulation physics and model inference are only
 covered when this test is actually executed.

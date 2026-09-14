@@ -25,6 +25,7 @@ def simulation(monkeypatch):
     client = SimpleNamespace(
         world=SimpleNamespace(get_snapshot=Mock(side_effect=snapshot)),
         tick=Mock(side_effect=tick),
+        close=Mock(),
     )
     perception = BaseModule(name="test-perception")
     tracking = BaseModule(name="test-tracking")
@@ -35,7 +36,15 @@ def simulation(monkeypatch):
         stage_outputs.append(perception._apply_post_hooks(["real-detection"]))
         return control
 
+    def spawned_actor(index):
+        transform = SimpleNamespace(
+            location=SimpleNamespace(x=10.0 + index, y=-2.0, z=0.5),
+            rotation=SimpleNamespace(pitch=1.0, yaw=37.0, roll=-3.0),
+        )
+        return SimpleNamespace(type_id="vehicle.test", get_transform=Mock(return_value=transform))
+
     ego = SimpleNamespace(
+        actor=spawned_actor(0),
         pipeline=SimpleNamespace(perception=perception, tracking=tracking),
         initialize=Mock(),
         destroy=Mock(),
@@ -47,7 +56,10 @@ def simulation(monkeypatch):
             )
         ),
     )
-    npcs = [SimpleNamespace(initialize=Mock(), destroy=Mock()) for _ in range(2)]
+    npcs = [
+        SimpleNamespace(actor=spawned_actor(i + 1), initialize=Mock(), destroy=Mock())
+        for i in range(2)
+    ]
     built_npcs = []
 
     def build(config, default_args=None):
@@ -60,6 +72,12 @@ def simulation(monkeypatch):
         npc = npcs[len(built_npcs)]
         built_npcs.append(npc)
         return npc
+
+    for actor in [ego, *npcs]:
+        actor.spawn_transform = actor.actor.get_transform.return_value
+        actor.actor.get_transform.side_effect = AssertionError(
+            "Actor state is stale before ticking"
+        )
 
     registry = Mock(side_effect=build)
     monkeypatch.setattr(scenario.CARLA, "build", registry)
@@ -96,6 +114,7 @@ def test_runner_records_requested_frames_and_initializes_actors(simulation):
     for npc in sim.npcs:
         npc.initialize.assert_called_once_with(10.0, 100)
         npc.destroy.assert_called_once_with()
+    sim.client.close.assert_called_once()
     sim.sleep.assert_not_called()
 
 
@@ -122,6 +141,32 @@ def test_runner_preserves_hook_order_and_counts_attacked_output(simulation, monk
     assert [r.n_detections for r in trace.records] == [3, 3]
     assert sim.ego.pipeline.tracking.post_hooks == [hooks[2]]
     assert [call.args[0] for call in build_hook.call_args_list] == [a["hook"] for a in attacks]
+
+
+def test_runner_records_actual_spawns_before_driving_without_mutating_input(simulation):
+    sim = simulation
+    before = deepcopy(sim.config)
+
+    def advance_world():
+        # Moving actors after setup must not alter the recorded spawn config.
+        for actor in [sim.ego, *sim.npcs]:
+            actor.spawn_transform.location.x = 999
+
+    sim.client.tick.side_effect = advance_world
+    trace = scenario.run_scenario(sim.config, frames=2)
+    replay = trace.replay_scenario
+    for spec, x in zip([replay["ego"], *replay["npcs"]], [10.0, 11.0, 12.0]):
+        assert spec["spawn_transform"] == {
+            "location": {"x": x, "y": -2.0, "z": 0.5},
+            "rotation": {"pitch": 1.0, "yaw": 37.0, "roll": -3.0},
+        }
+    assert replay["ego"]["vehicle"] == "vehicle.test"
+    assert all(npc["npc_type"] == "vehicle.test" for npc in replay["npcs"])
+    assert replay["client"]["strict_spawn"] is True
+    assert sim.registry.call_args_list[0].args[0]["strict_spawn"] is False
+    assert sim.config == before
+    sim.ego.actor.get_transform.assert_not_called()
+    assert replay["ego"]["spawn_transform"]["location"]["x"] == 10.0
 
 
 def test_compact_npc_config_is_expanded(simulation):
@@ -176,11 +221,6 @@ def test_npc_destroy_failure_does_not_prevent_remaining_cleanup(simulation):
 
 
 @pytest.mark.parametrize("failure_site", ["initialize", "npc_build"])
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="Runner cleanup starts after actor creation and initialization; setup failures leak actors",
-)
 def test_setup_failure_cleans_up_already_created_actors(simulation, failure_site):
     sim = simulation
     if failure_site == "initialize":
@@ -193,11 +233,6 @@ def test_setup_failure_cleans_up_already_created_actors(simulation, failure_site
     sim.npcs[0].destroy.assert_called_once_with()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="An exception from ego.destroy() prevents NPC cleanup",
-)
 def test_ego_destroy_failure_still_cleans_up_npcs(simulation):
     sim = simulation
     sim.ego.destroy.side_effect = RuntimeError("ego destroy failed")
