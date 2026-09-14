@@ -68,7 +68,9 @@ def make_detections():
             )
             for xyz in xyzs
         ]
-        return DataContainer(frame, frame * 0.05, detections, "test-lidar")
+        return DataContainer(
+            frame, frame * 0.05, detections, "test-lidar", source_reference=reference
+        )
 
     return make
 

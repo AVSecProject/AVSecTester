@@ -17,7 +17,7 @@ plot tests; those tests skip if it is absent.
 
 | File | Behavior exercised |
 |---|---|
-| `test_phantom.py` | Hook registration and execution, detection preservation, phantom geometry, transformed reference frames, empty outputs |
+| `test_phantom.py` | Hook registration and execution, detection preservation, phantom geometry, empty outputs, moving sensor frames, source-reference metadata |
 | `test_pipeline.py` | Pipeline construction, forward-corridor planning, clean/attacked sequences through real perception, tracking, planning, and PID control |
 | `test_metric.py` | Driving verdicts, unchanged/natural stops, threshold boundaries, custom thresholds, reported measurements, incomplete runs |
 | `test_scenario.py` | Runner frame records, actor initialization, hook ordering, NPC configuration, delayed/missing sensors, cleanup on success and failure, GPU override |
@@ -38,8 +38,6 @@ this test addition**, and an expected failure is not evidence that the behavior 
 exception types still fail where the marker specifies an exception type. Once a defect is fixed,
 the strict marker makes an unexpected pass fail the suite until the marker is removed.
 
-- An empty detector output should preserve the phantom's intended sensor-relative placement.
-  Currently it falls back to global coordinates, even after a populated frame.
 - A missing or truncated attacked trace should be inconclusive. Currently its low final speed
   can be interpreted as a successful attack. The tests define incomplete as fewer recorded frames
   than the paired clean run; they do not attempt to classify an arbitrary partial run by its speed.

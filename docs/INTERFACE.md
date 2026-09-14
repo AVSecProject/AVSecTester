@@ -57,6 +57,14 @@ The scenario attaches each configured attack with avstack's own
 config (`stage: tracking`, `stage: planning`, …); to write a pre-hook attack, use
 `register_pre_hook`. A defense is the same thing — a hook that sanitizes a stage's output.
 
+`PhantomInjection.target_xyz` is expressed in the source sensor's coordinates (forward, left, up).
+It requires `detections.source_reference`, including when there are no detections. The perception
+base class copies the input reference before inference and attaches it to the output before
+post-hooks run, so later ego motion does not move an earlier phantom. Passthrough detector inputs
+must supply `DataContainer(..., source_reference=reference)` explicitly. Missing source metadata
+raises `ValueError`; the attack never guesses the frame from a box or falls back to world origin.
+Container copy, filter, mapping, addition and serialization retain the source reference.
+
 ## 3. Metric (clean vs attacked → verdict)
 
 ```python

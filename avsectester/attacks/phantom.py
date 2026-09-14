@@ -19,12 +19,19 @@ from avstack.config import HOOKS
 
 @HOOKS.register_module()
 class PhantomInjection:
+    """Place a phantom in the observation's source frame, including for empty outputs.
+
+    Perception supplies ``source_reference`` from its input. A detection box cannot
+    establish this frame reliably: there may be no boxes, or they may be transformed.
+    """
+
     def __init__(
         self,
-        target_xyz: tuple[float, float, float] = (6.0, 0.0, -1.5),  # [fwd, left, up] in detection frame
+        # Coordinates are [forward, left, up] in the source observation frame.
+        target_xyz: tuple[float, float, float] = (6.0, 0.0, -1.5),
         obj_type: str = "Car",
         score: float = 0.9,
-        extent: tuple[float, float, float] = (1.6, 1.8, 4.0),       # h, w, l
+        extent: tuple[float, float, float] = (1.6, 1.8, 4.0),  # h, w, l
         oid: int = 90002,
     ) -> None:
         self.target_xyz = target_xyz
@@ -35,10 +42,12 @@ class PhantomInjection:
 
     def __call__(self, detections: Any) -> tuple[Any]:
         import numpy as np
-        from avstack.geometry import Attitude, Box3D, GlobalOrigin3D, Position
+        from avstack.geometry import Attitude, Box3D, Position
         from avstack.modules.perception.detections import BoxDetection
 
-        ref = detections[0].box.reference if len(detections) > 0 else GlobalOrigin3D
+        ref = getattr(detections, "source_reference", None)
+        if ref is None:
+            raise ValueError("PhantomInjection requires detections.source_reference")
         pos = Position(np.asarray(self.target_xyz, dtype=float), ref)
         att = Attitude(np.quaternion(1), ref)
         box = Box3D(pos, att, list(self.extent), where_is_t="bottom")
