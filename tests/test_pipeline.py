@@ -107,3 +107,66 @@ def test_phantom_propagates_to_track_plan_and_braking(
     assert attacked_commands[0].brake == 0
     assert attacked_commands[-1].throttle == 0
     assert attacked_commands[-1].brake > 0
+
+
+def test_tracking_hook_replacement_reaches_planner(make_pipeline, make_detections, make_ego):
+    from avstack.datastructs import DataContainer
+
+    clean, attacked = make_pipeline(), make_pipeline()
+    observed_track_counts = []
+
+    def hide_tracks(tracks):
+        observed_track_counts.append(len(tracks))
+        # Replace the output without changing the tracker's internal tracks.
+        return (DataContainer(tracks.frame, tracks.timestamp, [], tracks.source_identifier),)
+
+    attacked.tracking.register_post_hook(hide_tracks)
+    for frame in range(20):
+        ego = make_ego(speed=5.0, t=frame * 0.05)
+        clean_command = clean(make_detections([(6, 0, 0)], frame=frame), ego)
+        attacked_command = attacked(make_detections([(6, 0, 0)], frame=frame), ego)
+
+    assert observed_track_counts[-1] > 0
+    assert len(attacked.tracking.tracks_confirmed) == len(clean.tracking.tracks_confirmed) > 0
+    assert clean.plan.top()[1].target_speed == 0.0
+    assert clean_command.throttle == 0.0
+    assert clean_command.brake > 0.0
+    assert attacked.plan.top()[1].target_speed == 6.0
+    assert attacked_command.throttle > 0.0
+    assert attacked_command.brake == 0.0
+
+
+def test_planning_hook_replacement_reaches_control_and_next_frame(
+    make_pipeline, make_detections, make_ego
+):
+    from avstack.modules.planning.types import Waypoint, WaypointPlan
+
+    pipe = make_pipeline()
+    planner_inputs, replacement_plans = [], []
+
+    def record_plan_input(*args, **kwargs):
+        planner_inputs.append(args[0])
+        return args, kwargs
+
+    def replace_with_stop(plan):
+        distance, waypoint = plan.top()
+        assert waypoint.target_speed == 6.0
+        # A fresh plan and waypoint ensure the original cruise plan is not mutated.
+        replacement = WaypointPlan()
+        replacement.push(distance, Waypoint(waypoint.target_point, target_speed=0.0))
+        replacement_plans.append(replacement)
+        return (replacement,)
+
+    pipe.planning.register_pre_hook(record_plan_input)
+    pipe.planning.register_post_hook(replace_with_stop)
+    for frame in range(3):
+        previous_plan = pipe.plan
+        command = pipe(make_detections(frame=frame), make_ego(speed=5.0, t=frame * 0.05))
+
+        assert planner_inputs[-1] is previous_plan
+        assert pipe.plan is replacement_plans[-1]
+        assert pipe.plan is not previous_plan
+        assert previous_plan.top()[1].target_speed == 6.0
+        assert pipe.plan.top()[1].target_speed == 0.0
+        assert command.throttle == 0.0
+        assert command.brake > 0.0
