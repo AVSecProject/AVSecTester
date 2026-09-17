@@ -50,7 +50,23 @@ def test_checkpoint_and_restore_round_trip():
     assert backend.frame == ckpt["frame"]
 
 
-def test_stub_render_is_deterministic_for_a_pose():
-    r = StubRenderer()
-    pose = EgoPose(x=1.23456, y=2.0, yaw=math.pi, t=0.5)
-    assert r.render(pose, "camera_front") == r.render(pose, "camera_front")
+def test_trajectory_follower_tracks_a_straight_plan_and_coasts_when_empty():
+    from avsectester.nurec import TrajectoryFollower
+
+    follower = TrajectoryFollower()
+    # straight rig-frame plan: +2 m forward at t=0.1 s, +4 m at 0.2 s (t in microseconds)
+    plan = Control(trajectory=[((2.0, 0.0, 0.0), (1, 0, 0, 0), 100_000),
+                               ((4.0, 0.0, 0.0), (1, 0, 0, 0), 200_000)])
+    p = follower.step(EgoPose(t=0.0), plan, dt=0.1)  # interp at 0.1 s -> 2 m ahead
+    assert p.x == pytest.approx(2.0) and p.y == pytest.approx(0.0)
+    assert p.speed == pytest.approx(20.0)  # 2 m / 0.1 s
+    # no plan -> coast (decelerate), not crash
+    assert follower.step(EgoPose(speed=5.0), Control(), dt=0.1).speed == pytest.approx(4.6)
+
+
+def test_stub_render_returns_a_frame_shaped_image():
+    import numpy as np
+
+    r = StubRenderer(cameras=["camera_front_wide_120fov"], height=120, width=160)
+    frame = r.render(EgoPose(x=1.0, y=2.0, yaw=math.pi, t=0.5), "camera_front_wide_120fov")
+    assert frame.shape == (120, 160, 3) and frame.dtype == np.uint8

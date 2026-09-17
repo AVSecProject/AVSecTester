@@ -19,6 +19,7 @@ import math
 from abc import ABC, abstractmethod
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
+from itertools import pairwise
 from typing import Any, ClassVar
 
 from avsectester.backend import WorldBackend
@@ -63,6 +64,47 @@ class KinematicBicycle:
         )
 
 
+@dataclass
+class TrajectoryFollower:
+    """Advance the ego along a planned trajectory (for trajectory-output stacks like Alpamayo).
+
+    ``Control.trajectory`` is ``[((x,y,z),(w,x,y,z),t_us), ...]`` in the **rig frame** (x forward,
+    y left) at absolute microsecond timestamps. Each step interpolates the rig-frame position at
+    ``pose.t + dt`` and places the ego there in world coordinates — an open-loop follower (the ego
+    realizes exactly what the policy planned). With no trajectory it coasts to a stop.
+    """
+
+    decel: float = 4.0  # m/s^2 when coasting with no plan
+
+    def step(self, pose: EgoPose, control: Control, dt: float) -> EgoPose:
+        traj = control.trajectory or []
+        if not traj:
+            speed = max(0.0, pose.speed - self.decel * dt)
+            return EgoPose(pose.x, pose.y, pose.yaw, speed, pose.t + dt)
+        dx, dy = self._interp_rig_xy(traj, (pose.t + dt) * 1e6)
+        c, s = math.cos(pose.yaw), math.sin(pose.yaw)
+        dist = math.hypot(dx, dy)
+        yaw = pose.yaw + math.atan2(dy, dx) if dist > 1e-3 else pose.yaw
+        return EgoPose(
+            x=pose.x + dx * c - dy * s,
+            y=pose.y + dx * s + dy * c,
+            yaw=yaw,
+            speed=dist / dt,
+            t=pose.t + dt,
+        )
+
+    @staticmethod
+    def _interp_rig_xy(traj: list, target_us: float) -> tuple[float, float]:
+        pts = [(t_us, xyz[0], xyz[1]) for xyz, _quat, t_us in traj]
+        if target_us <= pts[0][0]:
+            return pts[0][1], pts[0][2]
+        for (t0, x0, y0), (t1, x1, y1) in pairwise(pts):
+            if target_us <= t1:
+                a = (target_us - t0) / (t1 - t0) if t1 > t0 else 0.0
+                return x0 + a * (x1 - x0), y0 + a * (y1 - y0)
+        return pts[-1][1], pts[-1][2]
+
+
 class Renderer(ABC):
     """Renders sensor observations from the reconstructed scene at a given ego pose."""
 
@@ -81,14 +123,21 @@ class Renderer(ABC):
 
 
 class StubRenderer(Renderer):
-    """A deterministic placeholder renderer — no scene, no server. Lets the loop run and be debugged.
-
-    Returns a small dict standing in for a rendered frame; swap in :class:`NuRecRenderer` for real
-    imagery without touching the backend or the AV stack.
+    """A placeholder renderer — no scene, no server: returns a black HWC uint8 frame. Lets the whole
+    loop run and be debugged, and gives image-consuming stacks (e.g. Alpamayo) a valid tensor. Swap
+    in :class:`NuRecRenderer` for real imagery without touching the backend or the AV stack.
     """
 
-    def render(self, pose: EgoPose, camera: str) -> dict:
-        return {"camera": camera, "ego_xy": (round(pose.x, 3), round(pose.y, 3)), "t": pose.t}
+    def __init__(
+        self, cameras: list[str] | None = None, height: int = 480, width: int = 640
+    ) -> None:
+        self.cameras = list(cameras) if cameras else ["camera_front"]
+        self.height, self.width = height, width
+
+    def render(self, pose: EgoPose, camera: str):
+        import numpy as np
+
+        return np.zeros((self.height, self.width, 3), dtype=np.uint8)
 
 
 class NuRecBackend(WorldBackend):
