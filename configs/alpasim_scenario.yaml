@@ -1,0 +1,29 @@
+# AlpaSim closed-loop scenario (SKETCH — pending live integration).
+#
+# AlpaSim is a neural-reconstruction world: its runtime (NuRec/OmniDreams sensor render + controller
+# + physics + traffic) drives an ego whose policy is an EgodriverService gRPC server. AVSecTester's
+# AlpaSimBackend IS that EgodriverService (a relay), so it fits the WorldBackend interface:
+#
+#   backend = AlpaSimBackend(config, endpoint="0.0.0.0:50100")
+#   run(backend, AlpamayoAVStack(...), frames, perturb=<camera attack>)
+#
+# Running it live requires the AlpaSim install, a NuRec reconstruction for the scene, and the gated
+# NVIDIA driver models — none of which are on this box, so this config is a placeholder for the field
+# shapes, not a runnable scenario yet. Camera attacks (adversarial rendered objects / edge cases)
+# will plug in via run()'s `perturb(Observation)` seam on the camera sensor_data.
+
+frames: 40
+
+backend:
+  type: AlpaSimBackend
+  endpoint: 0.0.0.0:50100      # this relay serves EgodriverService; the AlpaSim runtime connects here
+  scene: null                  # NuRec scene id (see AlpaSim data/scenes/sim_scenes.csv)
+  renderer: nurec              # nurec | omnidreams
+  cameras: [camera_front_wide] # logical camera ids the policy consumes
+
+stack:
+  type: AlpamayoAVStack         # to build: a trajectory-output end-to-end camera policy
+  # model: alpamayo1_5
+
+# An attack here is a camera/world perturbation on the Observation stream (not a modular hook):
+attacks: []
