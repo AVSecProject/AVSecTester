@@ -21,7 +21,6 @@ import secrets
 import time
 from contextlib import ExitStack
 from copy import deepcopy
-from dataclasses import dataclass, field
 from typing import Any
 
 import avcarla  # noqa: F401  (CarlaClient / CarlaMobileActor / CarlaLidar / CarlaNpc)
@@ -38,41 +37,8 @@ from avstack.config import HOOKS
 
 import avsectester.attacks  # noqa: F401  (registers PhantomInjection et al. in avstack HOOKS)
 
-
-@dataclass
-class FrameRecord:
-    frame: int
-    t: float
-    n_detections: int
-    speed: float
-    throttle: float
-    brake: float
-    steer: float
-
-
-@dataclass
-class Trace:
-    """The driving record of one run — the observable a security test scores."""
-
-    records: list[FrameRecord] = field(default_factory=list)
-    replay_scenario: dict | None = None
-
-    @property
-    def final_speed(self) -> float:
-        return self.records[-1].speed if self.records else 0.0
-
-    @property
-    def peak_speed(self) -> float:
-        """Fastest the ego went during the run — used to tell whether it ever really drove."""
-        return max((r.speed for r in self.records), default=0.0)
-
-    @property
-    def braking_frames(self) -> int:
-        return sum(r.throttle == 0.0 and r.brake > 0.0 for r in self.records)
-
-    @property
-    def mean_detections(self) -> float:
-        return sum(r.n_detections for r in self.records) / max(len(self.records), 1)
+# The driving record lives in the backend-agnostic data plane; re-exported here for compatibility.
+from avsectester.plane import FrameRecord, Trace
 
 
 class _DetectionCounter:
