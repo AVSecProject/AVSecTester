@@ -68,8 +68,8 @@ When you're done: `docker compose down`.
 - `./models` is a bind mount, so weights are shared with the host rather than baked into the image;
   `fetch_models.sh` runs at container start to (re)create the mmdet3d symlinks.
 - Both services use `network_mode: host`, so the client reaches the server at `127.0.0.1:2000`; the
-  default docker runtime is nvidia, so both containers get GPUs (CARLA on GPU 0, AVSecTester on 1).
+  default docker runtime is nvidia, so both containers get GPUs (CARLA on GPU 2, AVSecTester on 1).
   This is why the scenario config targets `gpu: 0` (the ego container's dedicated GPU). Running the
-  demo directly on the host instead shares GPU 0 with CARLA, so pass `--gpu 1` there
+  demo directly on the host instead shares GPU 2 with CARLA, so pass `--gpu 1` there
   (`avsectester run configs/carla_scenario.yaml --gpu 1`) to run neural inference on a free device.
 - The manual (conda) install is documented in [`SETUP.md`](SETUP.md).

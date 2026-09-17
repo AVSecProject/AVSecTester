@@ -7,7 +7,7 @@
 
 Prerequisites (see docs / prior setup):
   1. nre-ga renderer serving a NuRec scene on :50051 --
-       docker run -d --name nre --net=host --gpus '"device=3"' -e HOME=/tmp \
+       docker run -d --name nre --net=host --gpus '"device=2"' -e HOME=/tmp \
          -v <scenes-dir>:/mnt/nre-data \
          --entrypoint /app/internal/scripts/pycena/runtime/pycena_nrm_full \
          nvcr.io/nvidia/nre/nre-ga:26.04 serve-grpc --host=0.0.0.0 --port=50051 \

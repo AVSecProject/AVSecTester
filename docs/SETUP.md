@@ -81,7 +81,7 @@ CARLA **server** (0.9.15) runs separately via docker (the box's default docker r
 
 ```bash
 docker pull carlasim/carla:0.9.15
-docker run -d --name carla-avsec --gpus 'device=0' --net=host \
+docker run -d --name carla-avsec --gpus 'device=2' --net=host \
   carlasim/carla:0.9.15 ./CarlaUE4.sh -RenderOffScreen -nosound -carla-rpc-port=2000 -quality-level=Epic
 ```
 
@@ -96,4 +96,4 @@ avsectester run configs/carla_scenario.yaml --frames 40 --gpu 1   # end-to-end (
 ```
 
 `avsectester run` runs the scenario clean then phantom-attacked and asserts the attack forced an unsafe
-stop. On a single host, `--gpu 1` keeps neural inference off GPU 0 (which CARLA is rendering on).
+stop. On a single host, `--gpu 1` keeps neural inference off GPU 2 (which CARLA is rendering on).
