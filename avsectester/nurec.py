@@ -195,6 +195,28 @@ class NuRecBackend(WorldBackend):
         self.frame = ckpt["frame"]
 
 
+def _compose_pose(a, b, pb):
+    """SE(3) compose two protobuf poses: ``a @ b``. AlpaSim builds the camera's world pose as
+    ``world_rig @ rig_to_camera`` (rig_to_camera = the camera's pose in the rig); we replicate it."""
+    aw, ax, ay, az = a.quat.w, a.quat.x, a.quat.y, a.quat.z
+    bw, bx, by, bz = b.quat.w, b.quat.x, b.quat.y, b.quat.z
+    q = pb.Quat(  # quaternion product a*b
+        w=aw * bw - ax * bx - ay * by - az * bz,
+        x=aw * bx + ax * bw + ay * bz - az * by,
+        y=aw * by - ax * bz + ay * bw + az * bx,
+        z=aw * bz + ax * by - ay * bx + az * bw,
+    )
+    tx, ty, tz = b.vec.x, b.vec.y, b.vec.z  # rotate b's translation by a's rotation: v + 2w(q×v)+2(q×(q×v))
+    cx, cy, cz = ay * tz - az * ty, az * tx - ax * tz, ax * ty - ay * tx
+    ccx, ccy, ccz = ay * cz - az * cy, az * cx - ax * cz, ax * cy - ay * cx
+    vec = pb.Vec3(
+        x=a.vec.x + tx + 2 * (aw * cx + ccx),
+        y=a.vec.y + ty + 2 * (aw * cy + ccy),
+        z=a.vec.z + tz + 2 * (aw * cz + ccz),
+    )
+    return pb.Pose(vec=vec, quat=q)
+
+
 @dataclass
 class NuRecRenderer(Renderer):
     """Real NuRec renderer: one stateless ``SensorsimService.render_rgb`` per frame to an nre server.
@@ -214,6 +236,7 @@ class NuRecRenderer(Renderer):
     def __post_init__(self) -> None:
         self._stub = None
         self._spec = None  # CameraSpec for our camera (intrinsics), queried from the scene
+        self._rig_to_camera = None  # camera pose in the rig (extrinsic), composed onto the ego pose
         self._start_pose = None  # scene-frame ego start pose (from the recorded trajectory)
         self._t0 = 0  # scene-clip start timestamp (us); render times map from our sim clock onto it
 
@@ -231,6 +254,7 @@ class NuRecRenderer(Renderer):
         )
         cam = next(c for c in cams.available_cameras if c.logical_id == self.cameras[0])
         self._spec = cam.intrinsics
+        self._rig_to_camera = cam.rig_to_camera  # extrinsic: camera pose in the rig
         poses = self._stub.get_available_trajectories(
             sensorsim_pb2.AvailableTrajectoriesRequest(scene_id=self.scene_id)
         ).available_trajectories[0].trajectory.poses
@@ -257,10 +281,11 @@ class NuRecRenderer(Renderer):
         from alpasim_grpc.v0 import common_pb2, sensorsim_pb2
 
         z = self._start_pose.vec.z if self._start_pose is not None else 0.0
-        world = common_pb2.Pose(
+        rig = common_pb2.Pose(
             vec=common_pb2.Vec3(x=pose.x, y=pose.y, z=z),
             quat=common_pb2.Quat(w=math.cos(pose.yaw / 2), x=0.0, y=0.0, z=math.sin(pose.yaw / 2)),
         )
+        cam = _compose_pose(rig, self._rig_to_camera, common_pb2)  # world_cam = world_rig @ rig_to_camera
         frame_us = self._t0 + int(pose.t * 1e6)  # advance the dynamic scene with our sim clock
         req = sensorsim_pb2.RGBRenderRequest(
             scene_id=self.scene_id,
@@ -269,7 +294,7 @@ class NuRecRenderer(Renderer):
             camera_intrinsics=self._spec,
             frame_start_us=frame_us,
             frame_end_us=frame_us + 1,  # render at an instant: a non-empty [t, t+1) interval
-            sensor_pose=sensorsim_pb2.PosePair(start_pose=world, end_pose=world),
+            sensor_pose=sensorsim_pb2.PosePair(start_pose=cam, end_pose=cam),
             image_format=sensorsim_pb2.ImageFormat.JPEG,
             image_quality=self.image_quality,
             insert_ego_mask=False,
