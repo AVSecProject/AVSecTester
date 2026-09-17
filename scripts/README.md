@@ -8,8 +8,8 @@ Everything below needs the `avsec` conda env with the `[avstack]` extras and a r
 (see `docs/SETUP.md` / `docs/DOCKER.md`); it's not part of `pytest`, which stays hardware-free.
 
 ```bash
-# start a CARLA server (headless, GPU 0)
-docker run -d --name carla-avsec --gpus 'device=0' --net=host \
+# start a CARLA server (headless, GPU 2)
+docker run -d --name carla-avsec --gpus 'device=2' --net=host \
   carlasim/carla:0.9.15 ./CarlaUE4.sh -RenderOffScreen -nosound -carla-rpc-port=2000 -quality-level=Low
 
 conda activate avsec
@@ -30,7 +30,7 @@ attacked: final_speed= 0.00  brake_frames=38
 
 - `--frames` — steps per run (enough for the clean ego to reach cruising speed; 40 is good).
 - `--gpu` — perception CUDA device. The config targets GPU 0 (right in Docker, where the ego gets a
-  dedicated GPU); on a single host CARLA already renders on GPU 0, so pass `--gpu 1`.
+  dedicated GPU); on a single host CARLA already renders on GPU 2, so pass `--gpu 1`.
 - `--plot` — save the clean-vs-attacked driving-impact figure (needs the `viz` extra:
   `pip install -e ".[viz]"`).
 
