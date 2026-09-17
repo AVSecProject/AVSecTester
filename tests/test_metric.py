@@ -6,7 +6,7 @@ never moved (inconclusive, not success), and braking induced without a full stop
 
 import pytest
 from avsectester.metric import impact
-from avsectester.scenario import FrameRecord, Trace
+from avsectester.plane import FrameRecord, Trace
 
 
 def _trace(speeds, brakes):

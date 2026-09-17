@@ -33,12 +33,11 @@ import avstack.modules.planning.vehicle
 import avstack.modules.tracking.tracker3d  # noqa: F401  (BasicBoxTracker3D)
 import numpy as np
 from avcarla.config import CARLA
-from avstack.config import HOOKS
+from avstack.config import HOOKS, PIPELINE
 
 import avsectester.attacks  # noqa: F401  (registers PhantomInjection et al. in avstack HOOKS)
-
-# The driving record lives in the backend-agnostic data plane; re-exported here for compatibility.
-from avsectester.plane import FrameRecord, Trace
+from avsectester.backend import AVStack, WorldBackend, run
+from avsectester.plane import Control, Observation, Trace
 
 
 class _DetectionCounter:
@@ -155,70 +154,150 @@ def _spawn_config(spec: dict, actor: Any, vehicle_field: str) -> dict:
     return resolved
 
 
+class CarlaBackend(WorldBackend):
+    """A CARLA :class:`~avsectester.backend.WorldBackend`.
+
+    Owns the client, the ego vehicle + its sensors, and the NPC traffic, and applies control through
+    CARLA's shared physics. The ego's own avcarla pipeline is a no-op placeholder: driving is
+    *external* (the :class:`AVStack`), so this backend only senses (``_observe``) and actuates
+    (``step`` -> ``apply_control``). ``reset`` also captures a strict-spawn ``replay_scenario`` so a
+    paired run reproduces the same scene.
+    """
+
+    def __init__(self, scenario: dict, settle_iters: int = 100) -> None:
+        self.scenario = deepcopy(scenario)
+        self.settle_iters = settle_iters
+        self.client = None
+        self.ego = None
+        self.npcs: list = []
+        self.replay_scenario: dict | None = None
+        self._t0: float | None = None
+        self._resources = ExitStack()
+
+    def reset(self) -> Observation:
+        scenario = self.scenario
+        client_config = scenario["client"]
+        client_config.setdefault("reset_world", True)
+        client_config.setdefault("strict_spawn", False)
+        replay = deepcopy(scenario)
+        replay["client"]["strict_spawn"] = True
+        replay["npcs"] = []
+
+        # Register teardown as we build, so a failure mid-setup still cleans up (LIFO): npcs (best
+        # effort) then ego (propagates) then client -- matching the paired-run cleanup contract.
+        self.client = CARLA.build(client_config)
+        self._resources.callback(self.client.close)
+        # Driving is external: give the CARLA ego an empty pipeline so its own _tick never drives.
+        ego_cfg = deepcopy(scenario["ego"])
+        ego_cfg["pipeline"] = {"type": "SerialPipeline", "modules": []}
+        self.ego = CARLA.build(ego_cfg, default_args={"client": self.client})
+        self._resources.callback(self.ego.destroy)
+        replay["ego"] = _spawn_config(scenario["ego"], self.ego, "vehicle")
+        for spec in _npc_specs(scenario.get("npcs")):
+            npc = CARLA.build(dict(spec), default_args={"client": self.client})
+            self.npcs.append(npc)
+            self._resources.callback(_destroy_npc, npc)
+            replay["npcs"].append(_spawn_config(spec, npc, "npc_type"))
+        self.replay_scenario = replay
+
+        snap = self.client.world.get_snapshot()
+        self.ego.initialize(snap.timestamp.elapsed_seconds, snap.frame)
+        for npc in self.npcs:
+            npc.initialize(snap.timestamp.elapsed_seconds, snap.frame)
+        self.client.tick()  # produce the first sensor frame (ego stationary until first control)
+        return self._observe()
+
+    def step(self, control: Control) -> Observation:
+        self.ego.apply_control(control)  # decision from the AVStack; CARLA physics does the rest
+        self.client.tick()
+        return self._observe()
+
+    def _observe(self) -> Observation:
+        for _ in range(self.settle_iters):  # await asynchronous sensor delivery for this frame
+            if not self.ego.sensor_data_manager.empty():
+                break
+            time.sleep(0.005)
+        # Refresh the ego body frame so the sensor->global reference chain is current this frame.
+        pose = self.ego.get_pose()
+        self.ego.reference.x = pose.position.x
+        self.ego.reference.q = pose.attitude.q
+        snap = self.client.world.get_snapshot()
+        t = snap.timestamp.elapsed_seconds
+        self._t0 = t if self._t0 is None else self._t0
+        self.ego.timestamp = t
+        sensor_data = self.ego.sensor_data_manager.pop()
+        state = self.ego.get_object_state()
+        return Observation(
+            t=t,
+            frame=snap.frame,
+            sensor_data=sensor_data,
+            calibration={},  # modular stack reads references off sensor_data; kept for the contract
+            vehicle_state=state,
+            ego_speed=float(state.velocity.norm()),
+        )
+
+    def close(self) -> None:
+        # Runs the registered teardown in LIFO order; ego-destroy failures propagate, npc/client
+        # failures are swallowed (npc via _destroy_npc, client.close best-effort registration).
+        self._resources.close()
+
+
+class ModularAVStack(AVStack):
+    """An :class:`~avsectester.backend.AVStack` backed by an avstack ``ModularDrivingPipeline``.
+
+    Observation -> the pipeline (perception -> tracking -> planning -> control) -> a Control command.
+    White-box modular attacks attach as avstack hooks on a stage via :meth:`attach` (e.g.
+    ``PhantomInjection`` on ``perception``); universal sensor/world attacks instead use ``run``'s
+    ``perturb`` seam. A detection counter (attached last, after any attack) records per-frame
+    detection counts for telemetry.
+    """
+
+    def __init__(self, pipeline_cfg: dict) -> None:
+        self.pipeline = PIPELINE.build(deepcopy(pipeline_cfg))
+        self._counter: _DetectionCounter | None = None
+        self.detection_counts: list[int] = []
+
+    def attach(self, stage: str, hook_cfg: dict) -> None:
+        getattr(self.pipeline, stage).register_post_hook(HOOKS.build(deepcopy(hook_cfg)))
+
+    def attach_counter(self) -> None:
+        """Register the detection counter last, so it counts any attack-injected detections too."""
+        self._counter = _DetectionCounter()
+        self.pipeline.perception.register_post_hook(self._counter)
+
+    def __call__(self, observation: Observation) -> Control:
+        ctrl = self.pipeline(observation.sensor_data, observation.vehicle_state)
+        if self._counter is not None:
+            self.detection_counts.append(self._counter.last)
+        return Control(
+            throttle=float(ctrl.throttle), steer=float(ctrl.steer), brake=float(ctrl.brake)
+        )
+
+
 def run_scenario(
     scenario: dict,
     attacks: list[dict] | None = None,
     frames: int = 40,
     settle_iters: int = 100,
 ) -> Trace:
-    """Build the avcarla closed loop from ``scenario`` config, optionally attach ``attacks`` (avstack
-    hooks) to named pipeline stages, drive ``frames`` steps, and return the driving :class:`Trace`.
+    """Run the CARLA + modular demo through the generic interface and return the driving Trace.
 
-    The returned ``replay_scenario`` records actual spawn transforms for a subsequent run.
-    Initial spawning allows relocation on failure unless ``client.strict_spawn`` is enabled;
-    recorded transforms are always replayed strictly.
+    Assembles a :class:`CarlaBackend` (world + ego + traffic) and a :class:`ModularAVStack` (the AV
+    box), attaches any modular ``attacks`` as hooks on the stack's pipeline, and drives them with
+    :func:`avsectester.backend.run`. ``replay_scenario`` (actual spawn transforms) is carried on the
+    returned Trace for a paired run; strict-spawn replay is always used there.
     """
     scenario = deepcopy(scenario)
-    client_config = scenario["client"]
-    client_config.setdefault("reset_world", True)
-    client_config.setdefault("strict_spawn", False)
-    replay = deepcopy(scenario)
-    replay["client"]["strict_spawn"] = True
-    replay["npcs"] = []
-    trace = Trace(replay_scenario=replay)
-    with ExitStack() as resources:
-        client = CARLA.build(client_config)
-        resources.callback(client.close)
-        ego = CARLA.build(scenario["ego"], default_args={"client": client})
-        resources.callback(ego.destroy)
-        replay["ego"] = _spawn_config(scenario["ego"], ego, "vehicle")
-        npcs = []
-        for spec in _npc_specs(scenario.get("npcs")):
-            npc = CARLA.build(dict(spec), default_args={"client": client})
-            resources.callback(_destroy_npc, npc)
-            npcs.append(npc)
-            replay["npcs"].append(_spawn_config(spec, npc, "npc_type"))
-
-        # Attacks are attached only to this run's freshly built pipeline.
-        for atk in attacks or []:
-            stage = getattr(ego.pipeline, atk["stage"])
-            stage.register_post_hook(HOOKS.build(deepcopy(atk["hook"])))
-        counter = _DetectionCounter()
-        ego.pipeline.perception.register_post_hook(counter)
-
-        snap = client.world.get_snapshot()
-        ego.initialize(snap.timestamp.elapsed_seconds, snap.frame)
-        for npc in npcs:
-            npc.initialize(snap.timestamp.elapsed_seconds, snap.frame)
-
-        for i in range(frames):
-            client.tick()
-            for _ in range(settle_iters):  # Allow asynchronous sensor delivery before driving.
-                if not ego.sensor_data_manager.empty():
-                    break
-                time.sleep(0.005)
-            snap = client.world.get_snapshot()
-            ctrl = ego.tick(snap.timestamp.elapsed_seconds, snap.frame)
-            state = ego.get_object_state()
-            trace.records.append(
-                FrameRecord(
-                    frame=i,
-                    t=snap.timestamp.elapsed_seconds,
-                    n_detections=counter.last,
-                    speed=float(state.velocity.norm()),
-                    throttle=float(getattr(ctrl, "throttle", 0.0)),
-                    brake=float(getattr(ctrl, "brake", 0.0)),
-                    steer=float(getattr(ctrl, "steer", 0.0)),
-                )
-            )
+    backend = CarlaBackend(scenario, settle_iters=settle_iters)
+    stack = ModularAVStack(scenario["ego"]["pipeline"])
+    for atk in attacks or []:
+        stack.attach(atk["stage"], atk["hook"])
+    stack.attach_counter()
+    try:
+        trace = run(backend, stack, frames)
+        trace.replay_scenario = backend.replay_scenario
+        for record, n in zip(trace.records, stack.detection_counts):
+            record.n_detections = n
+    finally:
+        backend.close()
     return trace
