@@ -207,31 +207,35 @@ class NuRecRenderer(Renderer):
 
     endpoint: str = "127.0.0.1:50051"
     scene_id: str | None = None
-    cameras: list[str] = field(default_factory=lambda: ["camera_front_wide"])
+    cameras: list[str] = field(default_factory=lambda: ["camera_front_wide_120fov"])
     calibration: dict = field(default_factory=dict)
+    image_quality: float = 95.0
 
     def __post_init__(self) -> None:
         self._stub = None
         self._spec = None  # CameraSpec for our camera (intrinsics), queried from the scene
         self._start_pose = None  # scene-frame ego start pose (from the recorded trajectory)
+        self._t0 = 0  # scene-clip start timestamp (us); render times map from our sim clock onto it
 
     def load_scene(self, scene: Any) -> None:
-        """Connect to the nre-ga renderer and read the scene's camera spec + recorded start pose."""
+        """Connect to the nre-ga renderer and read the scene id, camera spec, and start pose/time."""
         import grpc
-        from alpasim_grpc.v0 import sensorsim_pb2, sensorsim_pb2_grpc
+        from alpasim_grpc.v0 import common_pb2, sensorsim_pb2, sensorsim_pb2_grpc
 
         self._stub = sensorsim_pb2_grpc.SensorsimServiceStub(grpc.insecure_channel(self.endpoint))
-        self.scene_id = scene or self.scene_id
+        available = list(self._stub.get_available_scenes(common_pb2.Empty()).scene_ids)
+        want = scene or self.scene_id
+        self.scene_id = next((s for s in available if want and want in s), available[0])
         cams = self._stub.get_available_cameras(
             sensorsim_pb2.AvailableCamerasRequest(scene_id=self.scene_id)
         )
         cam = next(c for c in cams.available_cameras if c.logical_id == self.cameras[0])
         self._spec = cam.intrinsics
-        trajs = self._stub.get_available_trajectories(
+        poses = self._stub.get_available_trajectories(
             sensorsim_pb2.AvailableTrajectoriesRequest(scene_id=self.scene_id)
-        )
-        poses = trajs.available_trajectories[0].trajectory.poses
+        ).available_trajectories[0].trajectory.poses
         self._start_pose = poses[0].pose  # scene world-frame origin for the ego
+        self._t0 = poses[0].timestamp_us
 
     def start_pose(self):
         """Scene-frame (x, y, yaw) the backend should spawn the ego at; None until load_scene."""
@@ -257,13 +261,17 @@ class NuRecRenderer(Renderer):
             vec=common_pb2.Vec3(x=pose.x, y=pose.y, z=z),
             quat=common_pb2.Quat(w=math.cos(pose.yaw / 2), x=0.0, y=0.0, z=math.sin(pose.yaw / 2)),
         )
+        frame_us = self._t0 + int(pose.t * 1e6)  # advance the dynamic scene with our sim clock
         req = sensorsim_pb2.RGBRenderRequest(
             scene_id=self.scene_id,
             resolution_h=self._spec.resolution_h,
             resolution_w=self._spec.resolution_w,
             camera_intrinsics=self._spec,
+            frame_start_us=frame_us,
+            frame_end_us=frame_us + 1,  # render at an instant: a non-empty [t, t+1) interval
             sensor_pose=sensorsim_pb2.PosePair(start_pose=world, end_pose=world),
             image_format=sensorsim_pb2.ImageFormat.JPEG,
+            image_quality=self.image_quality,
             insert_ego_mask=False,
         )
         ret = self._stub.render_rgb(req)
