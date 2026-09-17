@@ -35,7 +35,7 @@ import numpy as np
 from avcarla.config import CARLA
 from avstack.config import HOOKS, PIPELINE
 
-import avsectester.attacks  # noqa: F401  (registers PhantomInjection et al. in avstack HOOKS)
+import avsectester.attacks.phantom  # noqa: F401  (registers PhantomInjection et al. in avstack HOOKS)
 from avsectester.backend import AVStack, WorldBackend, run
 from avsectester.plane import Control, Observation, Trace
 
@@ -140,6 +140,14 @@ def _destroy_npc(npc):
         logging.getLogger(__name__).warning("Could not destroy NPC", exc_info=True)
 
 
+def _destroy_actor(actor):
+    """Best-effort teardown for a raw CARLA actor (patch prop or a synthesized lead vehicle)."""
+    try:
+        actor.destroy()
+    except Exception:
+        logging.getLogger(__name__).warning("Could not destroy CARLA actor", exc_info=True)
+
+
 def _spawn_config(spec: dict, actor: Any, vehicle_field: str) -> dict:
     """Capture the successful spawn before driving, in native CARLA world coordinates."""
     resolved = deepcopy(spec)
@@ -164,9 +172,20 @@ class CarlaBackend(WorldBackend):
     paired run reproduces the same scene.
     """
 
-    def __init__(self, scenario: dict, settle_iters: int = 100) -> None:
+    def __init__(
+        self, scenario: dict, settle_iters: int = 100, patches: list[dict] | None = None
+    ) -> None:
         self.scenario = deepcopy(scenario)
         self.settle_iters = settle_iters
+        # Physical-patch attacks are a WORLD-level seam applied at reset (attached to a target
+        # vehicle), distinct from perturb(Observation) and the modular hooks. `patches` is passed
+        # explicitly for the attacked run so a paired clean run stays clean; None means no patch.
+        self.patch_specs = list(patches) if patches else []
+        # An optional stationary lead vehicle spawned directly ahead of the ego, present in BOTH the
+        # clean and attacked runs (scene content). A physical patch (attacked run) attaches to it, so
+        # the only difference between the paired runs is the patch itself.
+        self.lead_cfg = self.scenario.get("lead")
+        self.lead = None
         self.client = None
         self.ego = None
         self.npcs: list = []
@@ -199,6 +218,10 @@ class CarlaBackend(WorldBackend):
             self._resources.callback(_destroy_npc, npc)
             replay["npcs"].append(_spawn_config(spec, npc, "npc_type"))
         self.replay_scenario = replay
+
+        if self.lead_cfg is not None:  # scene content: a stationary lead ahead of the ego (both runs)
+            self.lead = self._spawn_lead(self.lead_cfg)
+        self._apply_patches()  # world-level physical patches (attacked run only)
 
         snap = self.client.world.get_snapshot()
         self.ego.initialize(snap.timestamp.elapsed_seconds, snap.frame)
@@ -235,6 +258,57 @@ class CarlaBackend(WorldBackend):
             vehicle_state=state,
             ego_speed=float(state.velocity.norm()),
         )
+
+    def _apply_patches(self) -> None:
+        """Attach + paint each configured physical patch onto its target vehicle (attacked run)."""
+        if not self.patch_specs:
+            return
+        from avsectester.attacks.physical_patch import build_patch
+
+        world = self.client.world
+        for spec in self.patch_specs:
+            spec = dict(spec)
+            target = self._resolve_patch_target(spec)
+            spawned = build_patch(spec).apply(world, target)
+            for actor in spawned:
+                self._resources.callback(_destroy_actor, actor)
+
+    def _resolve_patch_target(self, spec: dict) -> Any:
+        """Resolve a patch's ``target``: the scene ``lead`` car, the ``ego``, or ``npc:<i>``."""
+        target = spec.get("target", "lead")
+        if target == "ego":
+            return self.ego.actor
+        if target.startswith("npc:"):
+            return self.npcs[int(target.split(":", 1)[1])].actor
+        if target == "lead":
+            if self.lead is None:
+                raise ValueError("patch target 'lead' needs a `lead:` section in the scenario")
+            return self.lead
+        raise ValueError(f"unknown patch target {target!r} (use 'lead', 'ego', or 'npc:<i>')")
+
+    def _spawn_lead(self, cfg: dict) -> Any:
+        """Spawn a stationary lead vehicle ``cfg['gap']`` metres directly ahead of the ego."""
+        import carla
+
+        world = self.client.world
+        gap = float(cfg.get("gap", 9.0))
+        vehicle = str(cfg.get("vehicle", "vehicle.tesla.model3"))
+        # Use the recorded spawn transform (valid before the first world tick, unlike the live actor
+        # transform which still reads the origin at this point).
+        ego_tf = self.ego.spawn_transform
+        fwd = ego_tf.get_forward_vector()
+        loc = carla.Location(
+            ego_tf.location.x + fwd.x * gap,
+            ego_tf.location.y + fwd.y * gap,
+            ego_tf.location.z + 0.3,
+        )
+        bp = world.get_blueprint_library().filter(vehicle)[0]
+        lead = world.try_spawn_actor(bp, carla.Transform(loc, ego_tf.rotation))
+        if lead is None:
+            raise RuntimeError(f"could not spawn lead vehicle {gap} m ahead (spawn point blocked)")
+        self._resources.callback(_destroy_actor, lead)
+        world.tick()
+        return lead
 
     def close(self) -> None:
         # Runs the registered teardown in LIFO order; ego-destroy failures propagate, npc/client
@@ -279,16 +353,18 @@ def run_scenario(
     attacks: list[dict] | None = None,
     frames: int = 40,
     settle_iters: int = 100,
+    patches: list[dict] | None = None,
 ) -> Trace:
     """Run the CARLA + modular demo through the generic interface and return the driving Trace.
 
     Assembles a :class:`CarlaBackend` (world + ego + traffic) and a :class:`ModularAVStack` (the AV
     box), attaches any modular ``attacks`` as hooks on the stack's pipeline, and drives them with
-    :func:`avsectester.backend.run`. ``replay_scenario`` (actual spawn transforms) is carried on the
-    returned Trace for a paired run; strict-spawn replay is always used there.
+    :func:`avsectester.backend.run`. ``patches`` are world-level physical-patch attacks applied by the
+    backend at reset (pass them only for the attacked run). ``replay_scenario`` (actual spawn
+    transforms) is carried on the returned Trace for a paired run; strict-spawn replay is always used.
     """
     scenario = deepcopy(scenario)
-    backend = CarlaBackend(scenario, settle_iters=settle_iters)
+    backend = CarlaBackend(scenario, settle_iters=settle_iters, patches=patches)
     stack = ModularAVStack(scenario["ego"]["pipeline"])
     for atk in attacks or []:
         stack.attach(atk["stage"], atk["hook"])
