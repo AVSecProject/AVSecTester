@@ -29,7 +29,7 @@ def pytest_collection_modifyitems(config, items):
 
 @pytest.fixture
 def make_trace():
-    from avsectester.scenario import FrameRecord, Trace
+    from avsectester.plane import FrameRecord, Trace
 
     def make(speeds, brakes=None):
         brakes = [0.0] * len(speeds) if brakes is None else brakes

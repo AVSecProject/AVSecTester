@@ -1,7 +1,7 @@
 """The driving-impact plot renders from two traces (needs matplotlib; skipped otherwise)."""
 
 import pytest
-from avsectester.scenario import FrameRecord, Trace
+from avsectester.plane import FrameRecord, Trace
 
 
 def _trace(speeds, brakes):
