@@ -7,8 +7,8 @@ import math
 
 import pytest
 from avsectester.backend import AVStack, run
-from avsectester.nurec import EgoPose, KinematicBicycle, NuRecBackend, StubRenderer
 from avsectester.plane import Control
+from avsectester.simulators.nurec import EgoPose, KinematicBicycle, NuRecBackend, StubRenderer
 
 
 class ThrottleStack(AVStack):
@@ -51,7 +51,7 @@ def test_checkpoint_and_restore_round_trip():
 
 
 def test_trajectory_follower_tracks_a_straight_plan_and_coasts_when_empty():
-    from avsectester.nurec import TrajectoryFollower
+    from avsectester.simulators.nurec import TrajectoryFollower
 
     follower = TrajectoryFollower()
     # straight rig-frame plan: +2 m forward at t=0.1 s, +4 m at 0.2 s (t in microseconds)

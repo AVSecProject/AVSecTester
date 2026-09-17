@@ -241,3 +241,6 @@ third_party/lib-avstack-api
 
 # downloaded datasets (e.g. nuCarla HuggingFace zips) — keep large data out of git
 /data/
+
+# scene-visualization output (avsectester.simulators.viz)
+/tmp/

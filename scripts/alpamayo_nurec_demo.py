@@ -24,9 +24,15 @@ import argparse
 import sys
 import time
 
-from avsectester.alpamayo import AlpamayoAVStack
 from avsectester.backend import run
-from avsectester.nurec import NuRecBackend, NuRecRenderer, StubRenderer, TrajectoryFollower
+from avsectester.simulators.nurec import (
+    NuRecBackend,
+    NuRecRenderer,
+    StubRenderer,
+    TrajectoryFollower,
+)
+from avsectester.simulators.viz import REPO_TMP, camera_view, record_run
+from avsectester.stacks.alpamayo import AlpamayoAVStack
 
 CAM = "camera_front_wide_120fov"
 
@@ -38,6 +44,8 @@ def main() -> int:
     ap.add_argument("--scene", default="01d503d4", help="NuRec scene id substring")
     ap.add_argument("--endpoint", default="127.0.0.1:50051", help="nre-ga renderer endpoint")
     ap.add_argument("--gpu", type=int, default=1, help="CUDA device for Alpamayo")
+    ap.add_argument("--save-frames", nargs="?", const=str(REPO_TMP / "alpamayo_nurec"),
+                    default=None, help="save each rendered frame (default <repo>/tmp/alpamayo_nurec)")
     args = ap.parse_args()
 
     renderer = (
@@ -53,13 +61,18 @@ def main() -> int:
     kind = "stub (black)" if args.stub else "NuRec"
     print(f"[demo] Alpamayo + {kind} renderer, {args.frames} frames ...")
     t0 = time.time()
-    trace = run(backend, stack, args.frames)
+    if args.save_frames:
+        trace = record_run(backend, stack, args.frames, out_dir=args.save_frames, visualize=camera_view)
+    else:
+        trace = run(backend, stack, args.frames)
     for r in trace.records:
         print(f"  f{r.frame:02d} t={r.t:.1f}s  speed={r.speed:5.2f} m/s")
     print(
         f"END-TO-END OK: Alpamayo drove on {kind} imagery {len(trace.records)} frames in "
         f"{time.time() - t0:.0f}s; peak_speed={trace.peak_speed:.2f}"
     )
+    if args.save_frames:
+        print(f"[output]   saved {len(trace.records)} frames to {args.save_frames}")
     return 0
 
 
