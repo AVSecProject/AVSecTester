@@ -212,17 +212,60 @@ class NuRecRenderer(Renderer):
 
     def __post_init__(self) -> None:
         self._stub = None
+        self._spec = None  # CameraSpec for our camera (intrinsics), queried from the scene
+        self._start_pose = None  # scene-frame ego start pose (from the recorded trajectory)
 
     def load_scene(self, scene: Any) -> None:
+        """Connect to the nre-ga renderer and read the scene's camera spec + recorded start pose."""
         import grpc
-        from alpasim_grpc.v0 import sensorsim_pb2_grpc
+        from alpasim_grpc.v0 import sensorsim_pb2, sensorsim_pb2_grpc
 
         self._stub = sensorsim_pb2_grpc.SensorsimServiceStub(grpc.insecure_channel(self.endpoint))
         self.scene_id = scene or self.scene_id
-        # (load/select the scene + read camera calibration from the service here)
-
-    def render(self, pose: EgoPose, camera: str) -> Any:
-        raise NotImplementedError(
-            "Wire SensorsimService.render_rgb(RGBRenderRequest(scene, camera, pose)) here against a "
-            "running nre-ga renderer with a loaded NuRec scene (not available on this box yet)."
+        cams = self._stub.get_available_cameras(
+            sensorsim_pb2.AvailableCamerasRequest(scene_id=self.scene_id)
         )
+        cam = next(c for c in cams.available_cameras if c.logical_id == self.cameras[0])
+        self._spec = cam.intrinsics
+        trajs = self._stub.get_available_trajectories(
+            sensorsim_pb2.AvailableTrajectoriesRequest(scene_id=self.scene_id)
+        )
+        poses = trajs.available_trajectories[0].trajectory.poses
+        self._start_pose = poses[0].pose  # scene world-frame origin for the ego
+
+    def start_pose(self):
+        """Scene-frame (x, y, yaw) the backend should spawn the ego at; None until load_scene."""
+        import math
+
+        if self._start_pose is None:
+            return None
+        p, q = self._start_pose.vec, self._start_pose.quat
+        yaw = math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
+        return {"x": p.x, "y": p.y, "yaw": yaw}
+
+    def render(self, pose: EgoPose, camera: str):
+        """Render one RGB frame at the ego pose via a single stateless render_rgb call."""
+        # ego rig pose in the scene world frame -> common.Pose (2-D; z from the recorded start)
+        import math
+
+        import cv2
+        import numpy as np
+        from alpasim_grpc.v0 import common_pb2, sensorsim_pb2
+
+        z = self._start_pose.vec.z if self._start_pose is not None else 0.0
+        world = common_pb2.Pose(
+            vec=common_pb2.Vec3(x=pose.x, y=pose.y, z=z),
+            quat=common_pb2.Quat(w=math.cos(pose.yaw / 2), x=0.0, y=0.0, z=math.sin(pose.yaw / 2)),
+        )
+        req = sensorsim_pb2.RGBRenderRequest(
+            scene_id=self.scene_id,
+            resolution_h=self._spec.resolution_h,
+            resolution_w=self._spec.resolution_w,
+            camera_intrinsics=self._spec,
+            sensor_pose=sensorsim_pb2.PosePair(start_pose=world, end_pose=world),
+            image_format=sensorsim_pb2.ImageFormat.JPEG,
+            insert_ego_mask=False,
+        )
+        ret = self._stub.render_rgb(req)
+        img = cv2.imdecode(np.frombuffer(ret.image_bytes, np.uint8), cv2.IMREAD_COLOR)
+        return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)  # HWC uint8 RGB for the AV stack
