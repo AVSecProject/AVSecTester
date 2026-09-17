@@ -22,10 +22,13 @@ Mapping (grounded in ``alpasim_grpc/v0/{egodriver,common}.proto``):
   * scene camera calibration (intrinsics + rig extrinsics) -> ``Observation.calibration``
   * our ``Control.trajectory`` -> ``common.Trajectory`` (repeated ``PoseAtTime``) in ``DriveResponse``
 
-Because AlpaSim needs its runtime, a NuRec scene, and gated NVIDIA models, the parts that touch a live
-runtime are lazily imported and clearly marked; this module imports without ``alpasim`` installed.
-NOT yet verifiable on this box (no AlpaSim install). AlpaSim's policies output trajectories, so the
-matching AV box is a trajectory-output stack (e.g. an Alpamayo ``AVStack``), not the lidar-modular one.
+The **relay + interface mapping are verified over real gRPC** against AlpaSim's own compiled protos,
+using a fake runtime in place of the NuRec renderer (``scripts/alpasim_roundtrip.py``): a camera frame
++ egomotion in, the stack's trajectory out. What is not yet exercised here is the live neural runtime
+(NuRec rendering + controller/physics + a real Alpamayo policy) -- ``_launch_runtime`` marks that
+boundary. gRPC / ``alpasim_grpc`` imports are lazy, so this module loads without AlpaSim installed.
+AlpaSim's policies output trajectories, so the matching AV box is a trajectory-output stack (e.g. an
+Alpamayo ``AVStack``), not the lidar-modular one.
 """
 
 from __future__ import annotations
@@ -117,9 +120,14 @@ class AlpaSimBackend(WorldBackend):
     that the AlpaSim runtime connects to.
     """
 
-    def __init__(self, config: dict, endpoint: str = "0.0.0.0:50100") -> None:
+    def __init__(
+        self, config: dict, endpoint: str = "0.0.0.0:50100", launch_runtime: bool = True
+    ) -> None:
         self.config = deepcopy(config)
         self.endpoint = endpoint
+        # When False, an AlpaSim runtime is started/managed elsewhere and connects to `endpoint`
+        # (e.g. wired as the driver-0 service, or a round-trip test) -- we only serve the relay.
+        self._do_launch = launch_runtime
         self._obs_q: queue.Queue = queue.Queue(maxsize=1)
         self._act_q: queue.Queue = queue.Queue(maxsize=1)
         self._server = None
@@ -176,8 +184,9 @@ class AlpaSimBackend(WorldBackend):
 
     def reset(self) -> Observation:
         self._start_server()
-        self._launch_runtime()  # the live AlpaSim runtime, pointed at self.endpoint
-        return self._obs_q.get()
+        if self._do_launch:
+            self._launch_runtime()  # the live AlpaSim runtime, pointed at self.endpoint
+        return self._obs_q.get()  # blocks until the runtime's first drive()
 
     def step(self, control: Control) -> Observation:
         self._act_q.put(control)
