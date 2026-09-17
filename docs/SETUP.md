@@ -1,9 +1,13 @@
 # Setup
 
-AVSecTester has two install tiers:
+AVSecTester has three install tiers:
 
-- **Core only** (no GPU, no simulator): the schema/registry/DAG layer + tests.
-- **Full avstack stack** (GPU + CARLA): closed-loop execution and perception.
+- **Core only** (no GPU, no simulator): the interface (`plane`/`backend`), the in-process NuRec
+  backend on `StubRenderer`, the attack/metric seams, and the offline tests.
+- **Full avstack stack** (GPU + CARLA): the `CarlaBackend` + `ModularAVStack` closed loop and neural
+  perception (§2).
+- **NuRec + Alpamayo** (GPU + the AlpaSim driver env): the `NuRecBackend` + `AlpamayoAVStack` closed
+  loop — the real Alpamayo policy on photoreal NuRec imagery (§4).
 
 ## 0. Clone with submodules
 
@@ -97,3 +101,49 @@ avsectester run configs/carla_scenario.yaml --frames 40 --gpu 1   # end-to-end (
 
 `avsectester run` runs the scenario clean then phantom-attacked and asserts the attack forced an unsafe
 stop. On a single host, `--gpu 1` keeps neural inference off GPU 2 (which CARLA is rendering on).
+
+## 4. NuRec + Alpamayo (the end-to-end path)
+
+This tier drives the real **Alpamayo-1.5-10B** policy on photoreal **NuRec** imagery. It reuses two
+NVIDIA [AlpaSim](https://github.com/NVlabs/alpasim) pieces: the `nre-ga` renderer (serves a
+reconstructed scene over gRPC) and `alpasim_driver` (provides the Alpamayo model). Alpamayo pins a
+**Python-3.12** environment, separate from avstack's 3.10 — heavy imports in `stacks/alpamayo.py` are
+lazy, so the base install still imports and tests AVSecTester without it.
+
+**a. The Alpamayo driver env.** Clone AlpaSim and build its driver workspace (`uv sync --package
+alpasim_driver`); the local checkpoint lives at
+`/workspace/hdd/models/huggingface/nvidia/Alpamayo-1.5-10B`. Run AVSecTester scripts from that env
+with AVSecTester on `PYTHONPATH`:
+
+```bash
+cd /workspace/nvme/qzzhang/alpasim
+HF_HOME=/workspace/hdd/models/huggingface PYTHONPATH=/workspace/nvme/qzzhang/AVSecProject/AVSecTester \
+  uv run python /workspace/nvme/qzzhang/AVSecProject/AVSecTester/scripts/alpamayo_nurec_demo.py 8 --gpu 1
+```
+
+Add `--stub` to swap `NuRecRenderer` for `StubRenderer` (black frames — no renderer needed) to sanity
+-check the loop, and `--save-frames` to dump each rendered frame under `./tmp/alpamayo_nurec/`.
+
+**b. The NuRec renderer (`nre-ga`) + a scene.** Pull a NuRec scene (license-gated dataset; approve it
+once on your HF account, and pass `HF_TOKEN` explicitly when `HF_HOME` is overridden):
+
+```bash
+HF_TOKEN=$(cat ~/.cache/huggingface/token) hf download nvidia/PhysicalAI-Autonomous-Vehicles-NuRec \
+  --repo-type dataset --revision 26.01 "sample_set/26.01_release/<uuid>/<uuid>.usdz" \
+  --local-dir /workspace/hdd/datasets/huggingface/nvidia/PhysicalAI-Autonomous-Vehicles-NuRec
+```
+
+Serve it on `:50051` (GPU 2, alongside CARLA). The `--entrypoint` is required — the image's default
+entrypoint swallows the command:
+
+```bash
+docker run -d --name nre --net=host --gpus '"device=2"' -e HOME=/tmp \
+  -v <scenes-dir>/sample_set/26.01_release:/mnt/nre-data \
+  --entrypoint /app/internal/scripts/pycena/runtime/pycena_nrm_full \
+  nvcr.io/nvidia/nre/nre-ga:26.04 serve-grpc --host=0.0.0.0 --port=50051 \
+  '--artifact-glob=/mnt/nre-data/**/*.usdz' --cache-size=2 --enable-editing-actors
+```
+
+The scene loads under an id like `clipgt-<uuid>`; `NuRecRenderer(scene_id="<substring>")` resolves it
+via `get_available_scenes()`. **GPU layout:** the CARLA server and the NRE renderer both run on
+**GPU 2**; perception / AV models (Alpamayo, PointPillars) run on GPU 1 (`--gpu 1`).

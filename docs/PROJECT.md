@@ -157,63 +157,75 @@ flowchart LR
 
 ## 4. Architecture Overview (current implementation)
 
-The vision above is realized incrementally. Today's engine implements the end-to-end path
-(spec → backend → attack/defense hooks → escalation DAG → report) on two backends, with specific
-systems, attacks, and defenses as working baselines that plug into the same seams the larger vision
-will fill.
+The vision above is realized incrementally. Today's framework implements the closed-loop path on a
+**pure data-plane spine** shared by two world backends and two AV stacks — a 2×2 that any attack, as
+a stream transform, plugs into uniformly. See [`INTERFACE.md`](INTERFACE.md) for the full contract.
 
 ```mermaid
 flowchart TB
-    SPEC[ExperimentSpec  pydantic/YAML] --> RUN[ExperimentRunner  core/engine]
-    RUN -->|build from registries| BE
-    subgraph BE[Backend  Backend ABC]
-        CARLA[CarlaBackend  avcarla closed loop]
-        MOCK[MockBackend  simulator-free]
+    subgraph PLANE[Data plane  avsectester/plane.py -- pure, serializable]
+        OBS[Observation  sensors + ego, down]
+        CTL[Control  throttle/steer/brake or trajectory, up]
     end
-    ATK[Attacks  LidarSpoof] -. perception-input hook .-> BE
-    DEF[Defenses  ScoreGate] -. perception-input hook .-> BE
-    BE -->|per-frame records| MON[Monitors  TraceMonitor]
-    MON --> MET[EscalationMetric]
-    MET --> DAG[EscalationDAG]
-    MET --> REP[reports.render_report]
-    REG[(Registries: ATTACKS/DEFENSES/BACKENDS/METRICS)] --- RUN
+    RUN["run(backend, stack, frames, perturb)  avsectester/backend.py"]
+    ATK[perturb Observation  the universal attack seam] -. transforms the stream .-> RUN
+    subgraph BE[WorldBackend]
+        CARLA[CarlaBackend  avcarla closed loop]
+        NUREC[NuRecBackend  in-process NuRec reconstruction]
+    end
+    subgraph ST[AVStack -- the box under test]
+        MOD[ModularAVStack  avstack ModularDrivingPipeline]
+        ALPA[AlpamayoAVStack  real Alpamayo-1.5-10B]
+    end
+    RUN -->|reset / step Control| BE
+    BE -->|Observation| RUN
+    RUN -->|Observation| ST
+    ST -->|Control| RUN
+    HOOK[avstack HOOKS hook  modular white-box] -. pre/post stage .-> MOD
+    RUN -->|Trace of TRUE ego state| MET[impact  avsectester/metric.py]
+    MET --> VERDICT[driving-impact verdict + plot]
 ```
 
-- **`core`** — `ExperimentSpec`, `ThreatModel`, plugin interfaces, the `EscalationDAG`, and the
-  `ExperimentRunner` engine.
-- **`backends`** — `CarlaBackend` (real avcarla closed loop) and `MockBackend` (simulator-free
-  synthetic world running the same avstack perception→tracking→control loop). Both expose a
-  **perception-input hook seam** (`add_perception_hook`) and a forward-collision brake reflex so
-  component errors reach the driving layer. These are the first two of the three planned testing
-  modes; hardware-in-the-loop attaches at the same backend seam.
-- **`attacks` / `defenses`** — hook-shaped plugins (`apply(data, ego_state=…) → data`). Baseline:
-  `LidarSpoofAttack` (phantom injection), `ScoreGateDefense` (confidence gate). The seam is generic
-  across the sensor, AI-adversarial, in-vehicle-network, and V2X surfaces.
-- **`monitors`** — lift per-frame backend records into per-stage traces (`TraceMonitor`,
-  `diff_traces`).
-- **`metrics` / `reports`** — `EscalationMetric` scores paired traces and builds the DAG;
-  `render_report` emits the markdown audit.
-- **`config`** — OpenMMLab-style registries (reused from avstack) so plugins build from
-  `{"type": name, …}` config.
+- **`plane`** — `Observation` (down), `Control` (up), and the `Trace`/`FrameRecord` driving record.
+  Pure data; no `carla`/`avcarla`/`torch`/`avstack` imports, serializable so the loop can split
+  across processes.
+- **`backend`** — the `WorldBackend` / `AVStack` interfaces and `run(backend, stack, frames,
+  perturb=None)`. `perturb: Observation -> Observation` is the **single universal attack seam** — it
+  works against any stack, black-box included — and the `Trace` records the backend's *true* ego
+  state, not the perturbed view.
+- **World backends** — `CarlaBackend` (`scenario.py`; real avcarla closed loop) and `NuRecBackend`
+  (`simulators/nurec.py`; in-process NVIDIA NuRec neural reconstruction with a pluggable renderer —
+  `StubRenderer` for CI, `NuRecRenderer` → the `nre-ga` gRPC renderer).
+- **AV stacks** — `ModularAVStack` (`scenario.py`; an avstack `ModularDrivingPipeline`, the modular
+  white-box mode) and `AlpamayoAVStack` (`stacks/alpamayo.py`; the real end-to-end Alpamayo-1.5-10B
+  policy, the black-box mode). These are the first two of the three planned testing modes;
+  hardware-in-the-loop attaches at the same `WorldBackend` seam.
+- **`attacks`** — universal as `perturb(Observation)`; modular-internal as an avstack `HOOKS` hook on
+  a pipeline stage (baseline `PhantomInjection`). A defense is the same shape — a sanitizing hook.
+- **`metric` / `viz`** — `impact(clean, attacked)` scores the paired traces into a driving-impact
+  verdict; `viz.plot_impact` renders the clean-vs-attacked figure, and `simulators/viz` saves
+  per-simulation scene views.
 
-Attacks/defenses/monitors attach as **avstack-style pre/post hooks** — no forking of the AV stack.
+Attacks/defenses attach either at the universal `perturb` seam or as **avstack-style pre/post hooks**
+— no forking of the AV stack.
 
 ## 5. Key Workflows
 
-1. **Run a security experiment.** `avsectester run configs/carla_scenario.yaml` → builds the
-   scenario (an avcarla ego running an avstack `ModularDrivingPipeline`) from the spec, runs a
-   **clean** baseline and an **attacked** pass (attack = an avstack hook on a pipeline stage),
-   scores them with the impact metric, and prints the driving-impact report.
-2. **Measure a defense.** If the spec declares a defense, the engine adds an **attacked+defended**
-   pass and reports whether the escalation was `mitigated`.
-3. **Trace escalation.** Each run yields paired traces; `diff_traces` finds the earliest per-stage
-   divergence; `EscalationMetric` builds the `attack_surface → perception → tracking → control →
-   consequence` DAG with per-stage evidence and a root cause.
-4. **Portability across modes.** The *same* spec runs on `MockBackend` (CI, no simulator) and
-   `CarlaBackend` (closed-loop CARLA), proving results aren't tied to one execution environment;
-   the same standard extends to hardware-in-the-loop.
-5. **Reuse a result.** Each verdict, its escalation DAG, and its traces are indexed through the
-   vulnerability-dataset interface, so a finding is comparable and reproducible rather than one-off.
+1. **Run a modular security experiment.** `avsectester run configs/carla_scenario.yaml` → builds the
+   `CarlaBackend` + `ModularAVStack` scenario from config, runs a **clean** baseline and an
+   **attacked** pass (attack = an avstack hook on a pipeline stage), scores them with the impact
+   metric, and prints the driving-impact report.
+2. **Test an end-to-end policy.** `run(NuRecBackend(NuRecRenderer), AlpamayoAVStack, frames)` drives
+   the real Alpamayo-1.5 policy on photoreal NuRec-reconstructed imagery
+   (`scripts/alpamayo_nurec_demo.py`); a camera `perturb` is the black-box attack seam here.
+3. **Mix and match.** The same `run(...)` loop composes any of the 2×2 — a stack is validated across
+   worlds, and a world exercises different stacks, proving a result is a property of the system under
+   test, not one execution environment. The same seam extends to hardware-in-the-loop.
+4. **Measure a defense.** Add a sanitizing hook (modular) or an input filter (universal) and compare
+   the impact with and without it.
+5. **Reuse a result.** Each verdict and its paired traces are indexed through the
+   vulnerability-dataset interface (planned), so a finding is comparable and reproducible rather than
+   one-off.
 
 ## 6. Testing and Validation Plan
 
@@ -236,10 +248,14 @@ produces.
 - **Statistical reliability:** repeat runs across seeds and scenario variations to report activation
   reliability and confidence, not single-shot anecdotes.
 
-**Current implementation status.** The end-to-end pipeline is exercised in CI without a GPU or
-simulator: `tests/test_scaffold.py` (schema round-trip, registry population, DAG helpers, config
-validation), `tests/test_attack_seam.py` (phantom-injection geometry, world-fixed persistence,
-propagation to a confirmed track) and `tests/test_pipeline.py` (the avstack `ModularDrivingPipeline`
-builds from config and `ForwardCollisionPlanner` brakes for a forward-corridor track). Closed-loop
-`avsectester run configs/carla_scenario.yaml` covers the full GPU-perception CARLA ego+LiDAR loop end to end (manual,
-hardware-dependent). The environment is pinned (`docs/SETUP.md`).
+**Current implementation status.** Two closed loops are verified end-to-end: the neural CARLA
+modular loop (`avsectester run configs/carla_scenario.yaml`) and the **real Alpamayo-1.5-10B policy
+driving on real NuRec-rendered imagery** (`scripts/alpamayo_nurec_demo.py`). The offline suite runs
+in CI without a GPU or simulator: `tests/test_interface.py` (the `run` loop + the `perturb` seam on
+an in-memory backend/stack), `tests/test_phantom.py` (phantom-injection geometry, world-fixed
+persistence, propagation to a confirmed track), `tests/test_pipeline.py` (the avstack
+`ModularDrivingPipeline` builds from config and `ForwardCollisionPlanner` brakes for a
+forward-corridor track), `tests/test_nurec.py` (the in-process NuRec backend, dynamics, and
+checkpoint/restore against `StubRenderer`), and `tests/test_sim_viz.py` (the per-simulation scene
+views). Closed-loop CARLA and the NuRec renderer are manual and hardware-dependent. The environments
+are pinned (`docs/SETUP.md`).

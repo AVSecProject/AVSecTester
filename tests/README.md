@@ -17,6 +17,9 @@ plot tests; those tests skip if it is absent.
 
 | File | Behavior exercised |
 |---|---|
+| `test_interface.py` | The `run(backend, stack, frames, perturb)` loop and the universal `perturb(Observation)` attack seam on an in-memory backend/stack (no avstack/CARLA) |
+| `test_nurec.py` | The in-process `NuRecBackend`: `KinematicBicycle`/`TrajectoryFollower` dynamics, the closed loop on `StubRenderer`, and `checkpoint`/`restore` round-trip |
+| `test_sim_viz.py` | Per-simulation scene views: `camera_view` (frame vs non-image), `lidar_bev` defensiveness, and `record_run` saving a frame per step |
 | `test_phantom.py` | Hook registration and execution, detection preservation, phantom geometry, empty outputs, moving sensor frames, source-reference metadata |
 | `test_pipeline.py` | Pipeline construction, forward-corridor planning, clean/attacked sequences through real perception, tracking, planning, and PID control |
 | `test_metric.py` | Driving verdicts, unchanged/natural stops, threshold boundaries, custom thresholds, reported measurements, incomplete runs |

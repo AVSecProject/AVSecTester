@@ -1,22 +1,69 @@
 # Interfaces
 
-AVSecTester has a tiny surface because it borrows avstack's. There are exactly three things it
-adds — a **scenario**, an **attack hook**, and a **metric** — plus the closed-loop driving stack
-that was contributed *into* avstack. Everything else (world, ego, sensors, perception, tracking,
-planning, control, the hook mechanism, the config registries) is avstack/avcarla.
+AVSecTester is two roles joined by a **pure data plane**. A **world backend** senses and actuates; an
+**AV stack** (the box under test) turns observations into control. An attack is a transform on the
+stream between them — *not* part of the contract. Everything else (the world, ego, sensors, the
+perception/tracking/planning/control modules, the Alpamayo policy, the hook mechanism, the config
+registries) comes from avstack / avcarla / alpasim_driver.
 
-## 1. Scenario (config → a driving `Trace`)
+## 0. The spine: data plane + interfaces
 
-A scenario is a plain config dict built through avstack/avcarla's registries. `run_scenario`
-constructs it, drives the loop, and returns a `Trace`.
+Two files, both pure — no `carla`/`avcarla`/`torch`/`avstack` imports, serializable so the loop can
+run over gRPC if ever split across processes.
 
+**`avsectester/plane.py`** — the sim↔stack contract, two messages plus the driving record:
+
+- **`Observation`** (down): `sensor_data` dict + `calibration` + ego `vehicle_state` + `ego_speed`.
+  World state stays hidden in the backend.
+- **`Control`** (up): `throttle` / `steer` / `brake`, plus an optional `trajectory` (rig-frame
+  waypoints) for stacks that plan rather than actuate directly.
+- **`Trace`** / **`FrameRecord`** — the per-frame driving record the metric reads
+  (`final_speed`, `peak_speed`, `braking_frames`, `mean_detections`).
+
+**`avsectester/backend.py`** — the interfaces:
+
+- **`WorldBackend`**: `reset() -> Observation` and `step(control) -> Observation`. Owns the world
+  state and the shared vehicle dynamics.
+- **`AVStack`**: `__call__(observation) -> Control`. The box; it knows nothing of modular vs
+  end-to-end. `reset(obs)` lets it clear per-episode history.
+- **`run(backend, stack, frames, perturb=None) -> Trace`** drives the loop:
+
+  ```python
+  obs = backend.reset(); stack.reset(obs)
+  for i in range(frames):
+      seen = perturb(obs) if perturb else obs      # the single attack seam
+      control = stack(seen)
+      obs = backend.step(control)
+      trace.records.append(FrameRecord(... obs.ego_speed ...))   # TRUE ego state, not the perturbed view
+  ```
+
+  **Causal invariant:** control at *t* affects only *t+1*, so the loop serializes cleanly.
+  `perturb: Observation -> Observation` is the **single universal attack seam** — it works against
+  any stack, black-box included.
+
+## 1. The 2×2: any backend × any stack
+
+| | **ModularAVStack** | **AlpamayoAVStack** |
+|---|---|---|
+| **CarlaBackend** | phantom-injection demo (`avsectester run`) | Alpamayo in a CARLA world |
+| **NuRecBackend** | modular stack on reconstructed sensors | ✔ Alpamayo on photoreal NuRec frames |
+
+### 1a. CarlaBackend + ModularAVStack (`avsectester/scenario.py`)
+
+`CarlaBackend` owns an avcarla `CarlaClient` + ego (`CarlaMobileActor` with a no-op internal pipeline
+— driving is external, done by the `AVStack`) + `CarlaNpc` traffic. `reset()` spawns actors and
+captures a strict-spawn `replay_scenario`; `step(control)` applies the `Control` through CARLA
+physics; `_observe()` reads sensors + ego into an `Observation`. `ModularAVStack` wraps an avstack
+`ModularDrivingPipeline` (perception → tracking → planning → control) and returns a `Control`.
+
+`run_scenario` = `run(CarlaBackend, ModularAVStack, frames)` with the clean/attacked pairing below.
 For a clean/attacked comparison, call `prepare_scenario(config)` once and run clean with its returned
-configuration. Then run attacked with `clean.replay_scenario`, which records the actual successful
-spawn transforms. The CLI does this automatically. Preparation resolves
-random vehicle models, spawn indices and destinations using `client.seed`, while preserving
-explicit selections. A missing seed is generated once for the pair. The resolved configuration
-also retains the map, weather, traffic-light settings, Traffic Manager seed and LiDAR noise seed;
-it is held in memory and the input configuration is not mutated.
+configuration; then run attacked with `clean.replay_scenario`, which records the actual successful
+spawn transforms. The CLI does this automatically. Preparation resolves random vehicle models, spawn
+indices and destinations using `client.seed`, while preserving explicit selections. A missing seed is
+generated once for the pair. The resolved configuration also retains the map, weather, traffic-light
+settings, Traffic Manager seed and LiDAR noise seed; it is held in memory and the input configuration
+is not mutated.
 
 These experiments require a dedicated CARLA server: each run reloads the world after enabling
 synchronous, fixed-step physics, then rebuilds its actors and driving pipeline. The clean run can
@@ -29,7 +76,7 @@ When omitted, preparation uses the selected world's initial environment and the 
 Traffic continues to react to the ego after the common starting point; an attack can therefore
 change NPC trajectories as part of its driving consequence.
 
-### Configuring a YAML scenario
+#### Configuring a YAML scenario
 
 Start with the complete [example configuration](../configs/carla_scenario.yaml). Keep its
 `type` fields and nested pipeline settings when editing individual parameters, then run:
@@ -131,7 +178,7 @@ relocation as well. Recorded transforms are always replayed strictly, even if th
 `ego.destination` accepts `null`, a spawn index or `random`, but the default straight-driving
 pipeline does not use it to navigate to a destination.
 
-### Python interface
+##### CARLA Python interface
 
 ```python
 from avsectester.scenario import prepare_scenario, run_scenario
@@ -146,13 +193,48 @@ attacked = run_scenario(clean.replay_scenario, attacks=prepared.get("attacks", [
 `rotation`: pitch/yaw/roll in degrees). It already includes `reference_to_spawn` and any retry
 displacement. The runner produces this field; users normally configure `spawn` instead.
 
-`Trace` (in `avsectester/scenario.py`) is a list of per-frame records with three convenience
-properties the metric reads: `final_speed`, `braking_frames`, `mean_detections`.
+### 1b. NuRecBackend (`avsectester/simulators/nurec.py`)
 
-## 2. Attack (an avstack `HOOKS` hook)
+An in-process world driven by an NVIDIA **NuRec** neural reconstruction (a 3D `.usdz` scene rendered
+per pose, not a pre-baked video). The backend owns an `EgoPose`, transparent dynamics
+(`KinematicBicycle` for throttle/steer control, or `TrajectoryFollower` to track a rig-frame
+`Control.trajectory`), and a pluggable `Renderer`:
 
-An attack is a callable registered in avstack's `HOOKS` registry and attached to a pipeline stage's
-pre/post hooks. That is the entire interface — no base class, no seams enum.
+- **`StubRenderer`** — deterministic black `HWC-uint8` frames; **no server or GPU**, so it runs the
+  whole loop in CI and every `tests/test_nurec.py` case.
+- **`NuRecRenderer`** — one stateless `SensorsimService.render_rgb(pose)` gRPC call per frame to an
+  `nre-ga` renderer. The render pose is `world_rig @ rig_to_camera` (the camera extrinsic is composed
+  in, matching AlpaSim's `construct_rgb_render_request`); the returned JPEG is decoded to `HWC-uint8`.
+
+`step(control)` integrates dynamics → pose → `renderer.render(pose, camera)` → `Observation`.
+`checkpoint()`/`restore()` snapshot the whole world state as a small picklable dict. Bringing up the
+renderer + a scene is covered in [`SETUP.md`](SETUP.md); the runnable demo is
+[`scripts/alpamayo_nurec_demo.py`](../scripts/alpamayo_nurec_demo.py).
+
+### 1c. AlpamayoAVStack (`avsectester/stacks/alpamayo.py`)
+
+Wraps NVIDIA's real **Alpamayo-1.5-10B** end-to-end policy
+(`alpasim_driver.models.alpamayo1_5_model.Alpamayo15Model`) as an `AVStack`. `__call__(obs)` builds a
+`PredictionInput` (camera frames + ego speed + ego-pose history) → `model.predict()` →
+`ModelPrediction.candidate_positions` (K×T×3 rig-frame waypoints) → `Control.trajectory`, which a
+`TrajectoryFollower` backend then tracks. The model input contract, learned by running it: it needs
+`context_length` camera frames (padded at startup) and ≥1.5 s of backward ego history (synthesized
+constant-velocity); model-facing timestamps carry an epoch offset while waypoints stay in the
+backend's sim clock. Torch / `alpasim_driver` imports are **lazy**, so importing AVSecTester and
+running the offline suite need only the base env. It runs in a dedicated Python-3.12 driver env — see
+[`SETUP.md`](SETUP.md).
+
+## 2. Attack — a stream transform, or an avstack hook
+
+Two seams, chosen by how much of the stack the attack needs to see:
+
+**Universal — `perturb(Observation) -> Observation`.** The `run(...)` seam. A sensor/camera/world
+perturbation that works against *any* stack, black-box end-to-end policies included. The `Trace`
+still records the backend's true ego state, so the metric measures the real driving consequence of a
+perturbed *view*. This is where the AlpaSim adversarial-render camera attacks go.
+
+**Modular white-box — an avstack `HOOKS` hook.** For `ModularAVStack`, an attack can attach to a
+pipeline stage's pre/post hooks and see its internal tensors:
 
 ```python
 from avstack.config import HOOKS
@@ -192,10 +274,10 @@ never got moving (too few frames, or stuck at the spawn) the result is **inconcl
 success — "an already-stopped car braking" proves nothing. So a real demo needs enough frames for the
 clean run to reach cruising speed (the 40-frame demo peaks ~5 m/s).
 
-## What was contributed into avstack
+## 4. What comes from avstack / AlpaSim
 
-avstack shipped the modules but not a turnkey closed-loop driving stack, so these live in the
-`avstack-core` / `lib-avstack-carla` forks (not in AVSecTester):
+AVSecTester adds only the interface (§0), the two new backend/stack halves (§1b, §1c), the attack and
+metric seams, and the viz. The heavy pieces are external:
 
 - **`ModularDrivingPipeline`** (`avstack.modules.pipeline`) — maps `(sensor_data, ego_state)` →
   control by running perception → tracking → planning → control; the modular counterpart to
@@ -203,5 +285,9 @@ avstack shipped the modules but not a turnkey closed-loop driving stack, so thes
 - **`ForwardCollisionPlanner`** (`avstack.modules.planning.vehicle`) — drive straight, brake to a
   stop when a track occupies the forward corridor (body-frame check); the driving consequence a
   perception attack triggers.
-- **`CarlaMobileActor`** (`avcarla`) — closed the control loop: `apply_control` + feeding ego state
-  into the pipeline each tick.
+- **`CarlaMobileActor`** (`avcarla`) — the CARLA closed-loop actor: `apply_control` + feeding ego
+  state into the pipeline each tick. (These closed-loop pieces were contributed *into* the
+  avstack-core / lib-avstack-carla forks, not kept here.)
+- **`nre-ga` NuRec renderer** and **`alpasim_driver` / Alpamayo-1.5** — NVIDIA
+  [AlpaSim](https://github.com/NVlabs/alpasim) pieces that `NuRecRenderer` and `AlpamayoAVStack`
+  wrap. See [`SETUP.md`](SETUP.md) for standing them up.
