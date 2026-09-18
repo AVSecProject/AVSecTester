@@ -203,7 +203,7 @@ flowchart TB
 - **`attacks`** — universal as `perturb(Observation)`; modular-internal as an avstack `HOOKS` hook on
   a pipeline stage (baseline `PhantomInjection`). A defense is the same shape — a sanitizing hook.
 - **`metric` / `viz`** — `impact(clean, attacked)` scores the paired traces into a driving-impact
-  verdict; `viz.plot_impact` renders the clean-vs-attacked figure, and `simulators/viz` saves
+  verdict and `metric.plot_impact` renders the clean-vs-attacked figure, while `simulators/viz` saves
   per-simulation scene views.
 
 Attacks/defenses attach either at the universal `perturb` seam or as **avstack-style pre/post hooks**

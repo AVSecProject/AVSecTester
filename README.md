@@ -90,7 +90,7 @@ See [`docs/INTERFACE.md`](docs/INTERFACE.md) for the full contract and
 | **AlpamayoAVStack** (`avsectester/stacks/alpamayo.py`) | Wraps the real **Alpamayo-1.5-10B** end-to-end policy as an `AVStack`: camera frames → trajectory `Control`. |
 | **Attacks** (`avsectester/attacks/`) | Universal: `perturb(Observation)`. Modular white-box: an avstack `HOOKS` hook on a pipeline stage (e.g. `PhantomInjection` on `perception`). |
 | **Metric** (`avsectester/metric.py`) | Diffs a clean vs attacked `Trace` into a driving-impact verdict. |
-| **Visualization** | `avsectester/viz.py` — the clean-vs-attacked impact plot; `avsectester/simulators/viz.py` — the **simulator-agnostic** scene pipeline (`record_run`, `detections_view`, `filmstrip`, `save_gif` over a generic RGB *view*), with per-simulator view adapters in `simulators/<sim>.py` (e.g. `simulators/carla.py`: `camera_view` for `ImageData`, `lidar_bev`). |
+| **Visualization** | `avsectester/metric.py:plot_impact` — the clean-vs-attacked impact plot (metric view); `avsectester/simulators/viz.py` — the **simulator-agnostic** scene pipeline (`record_run`, `detections_view`, `filmstrip`, `save_gif` over a generic RGB *view*), with per-simulator view adapters in `simulators/<sim>.py` (e.g. `simulators/carla.py`: `camera_view` for `ImageData`, `lidar_bev`). |
 
 ## Built on avstack + AlpaSim
 

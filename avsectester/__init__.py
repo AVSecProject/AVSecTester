@@ -19,8 +19,8 @@ The **2×2** of interchangeable implementations:
   clean/attacked experiment (``run_scenario`` / ``prepare_scenario``).
 
 Plus :mod:`avsectester.attacks` (avstack ``HOOKS`` hooks — the modular white-box seam),
-:mod:`avsectester.metric` (clean-vs-attacked driving-impact verdict), :mod:`avsectester.viz` (the
-impact plot), and :mod:`avsectester.simulators.viz` (per-simulation scene views). The AV modules,
+:mod:`avsectester.metric` (clean-vs-attacked driving-impact verdict + its ``plot_impact`` figure), and
+:mod:`avsectester.simulators.viz` (per-simulation scene views). The AV modules,
 geometry, sensors, CARLA bridge, and the Alpamayo model come from avstack/avcarla/alpasim_driver;
 AVSecTester adds only the interface, the attack/metric seams, and the two new backend/stack halves.
 """

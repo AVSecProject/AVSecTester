@@ -39,7 +39,7 @@ The spine is one loop over a pure data plane; any world backend composes with an
                                                                                                     real Alpamayo-1.5-10B → trajectory
 
   scoring:  impact(clean_trace, attacked_trace)   # induced braking / unsafe stop?
-  viz:      viz.plot_impact (metric)  ·  simulators/viz.record_run (per-frame scene → ./tmp/)
+  viz:      metric.plot_impact (metric)  ·  simulators/viz.record_run (per-frame scene → ./tmp/)
 ```
 
 The CARLA closed-loop driving pieces were contributed upstream into the forks (see
@@ -63,8 +63,7 @@ avsectester/
     modular.py        ModularAVStack (avstack ModularDrivingPipeline)
     alpamayo.py       AlpamayoAVStack (wraps alpasim_driver Alpamayo-1.5)
   attacks/            PhantomInjection (avstack HOOKS hook) + registration
-  metric.py           impact(clean, attacked) -> Impact             (driving-impact verdict)
-  viz.py              plot_impact                                    (clean-vs-attacked figure)
+  metric.py           impact(clean, attacked) -> Impact + plot_impact  (verdict + its figure)
   cli.py              `avsectester run ...`
 ```
 
