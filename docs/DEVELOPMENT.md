@@ -57,7 +57,8 @@ avsectester/
   scenario.py         CarlaBackend + ModularAVStack + run_scenario/prepare_scenario
   simulators/
     nurec.py          NuRecBackend · Renderer · StubRenderer · NuRecRenderer · dynamics
-    viz.py            camera_view · lidar_bev · record_run          (per-simulation scene views)
+    viz.py            record_run · detections_view · filmstrip · save_gif   (generic scene pipeline)
+    carla.py          camera_view (ImageData) · lidar_bev            (CARLA view adapters)
   stacks/
     alpamayo.py       AlpamayoAVStack (wraps alpasim_driver Alpamayo-1.5)
   attacks/            PhantomInjection (avstack HOOKS hook) + registration

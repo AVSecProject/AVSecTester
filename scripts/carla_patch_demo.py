@@ -20,8 +20,8 @@ import yaml
 from avsectester.backend import AVStack
 from avsectester.plane import Control
 from avsectester.scenario import CarlaBackend
+from avsectester.simulators import carla as carla_view  # CARLA-specific view adapters
 from avsectester.simulators.viz import (
-    camera_view,
     detections_view,
     filmstrip,
     record_run,
@@ -89,7 +89,10 @@ def main() -> int:
             p["emissive"] = True
         kind = "adversarial (PGD-optimized)"
 
-    visualize = camera_view if args.no_detect else detections_view(build_detector(args.gpu))
+    visualize = (
+        carla_view.camera_view if args.no_detect
+        else detections_view(build_detector(args.gpu), base=carla_view.camera_view)
+    )
 
     print(f"[demo] {kind} physical patch, {args.frames}-frame sequence via record_run ...")
     backend = CarlaBackend(scenario, patches=patches)
