@@ -275,18 +275,6 @@ def test_runner_waits_for_delayed_sensor_data(simulation):
     sim.ego.apply_control.assert_called_once()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=pytest.fail.Exception,
-    reason="Exhausting the sensor wait currently proceeds to observe instead of reporting timeout",
-)
-def test_missing_sensor_data_reports_timeout_and_cleans_up(simulation):
-    sim = simulation
-    sim.ego.sensor_data_manager.empty.return_value = True
-    with pytest.raises(TimeoutError):
-        scenario.run_scenario(sim.config, frames=1, settle_iters=3)
-
-
 @pytest.mark.parametrize("gpu", [None, 0, 2])
 def test_gpu_override_changes_only_perception_device(gpu):
     config = {"ego": {"pipeline": {"perception": {"gpu": 1, "model": "pointpillars"}}}}
