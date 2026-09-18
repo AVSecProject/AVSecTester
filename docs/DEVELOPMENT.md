@@ -54,12 +54,13 @@ Alpamayo model come from NVIDIA AlpaSim (`nre-ga`, `alpasim_driver`); `NuRecRend
 avsectester/
   plane.py            Observation · Control · Trace · FrameRecord   (pure data)
   backend.py          WorldBackend · AVStack · run(...)             (interfaces + loop)
-  scenario.py         CarlaBackend + ModularAVStack + run_scenario/prepare_scenario
-  simulators/
+  scenario.py         run_scenario · prepare_scenario   (compose a CARLA backend + modular stack)
+  simulators/                                            (WorldBackend implementations)
+    carla.py          CarlaBackend + camera_view (ImageData) · lidar_bev   (CARLA + its view adapters)
     nurec.py          NuRecBackend · Renderer · StubRenderer · NuRecRenderer · dynamics
     viz.py            record_run · detections_view · filmstrip · save_gif   (generic scene pipeline)
-    carla.py          camera_view (ImageData) · lidar_bev            (CARLA view adapters)
-  stacks/
+  stacks/                                                (AVStack implementations)
+    modular.py        ModularAVStack (avstack ModularDrivingPipeline)
     alpamayo.py       AlpamayoAVStack (wraps alpasim_driver Alpamayo-1.5)
   attacks/            PhantomInjection (avstack HOOKS hook) + registration
   metric.py           impact(clean, attacked) -> Impact             (driving-impact verdict)

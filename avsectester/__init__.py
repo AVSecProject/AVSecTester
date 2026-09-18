@@ -11,10 +11,12 @@ AV stack and an attack is a transform on the stream between them:
 
 The **2×2** of interchangeable implementations:
 
-* World backends — ``CarlaBackend`` (:mod:`avsectester.scenario`; real avcarla closed loop) and
-  ``NuRecBackend`` (:mod:`avsectester.simulators`; in-process NVIDIA NuRec neural reconstruction).
-* AV stacks — ``ModularAVStack`` (:mod:`avsectester.scenario`; an avstack ``ModularDrivingPipeline``)
-  and ``AlpamayoAVStack`` (:mod:`avsectester.stacks`; the real end-to-end Alpamayo-1.5 policy).
+* World backends (:mod:`avsectester.simulators`) — ``CarlaBackend`` (``simulators.carla``; real
+  avcarla closed loop) and ``NuRecBackend`` (``simulators.nurec``; in-process NuRec reconstruction).
+* AV stacks (:mod:`avsectester.stacks`) — ``ModularAVStack`` (``stacks.modular``; an avstack
+  ``ModularDrivingPipeline``) and ``AlpamayoAVStack`` (``stacks.alpamayo``; end-to-end Alpamayo-1.5).
+* Composition — :mod:`avsectester.scenario` wires a CARLA backend + modular stack into a paired
+  clean/attacked experiment (``run_scenario`` / ``prepare_scenario``).
 
 Plus :mod:`avsectester.attacks` (avstack ``HOOKS`` hooks — the modular white-box seam),
 :mod:`avsectester.metric` (clean-vs-attacked driving-impact verdict), :mod:`avsectester.viz` (the

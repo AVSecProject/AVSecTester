@@ -19,8 +19,8 @@ from pathlib import Path
 import yaml
 from avsectester.backend import AVStack
 from avsectester.plane import Control
-from avsectester.scenario import CarlaBackend
-from avsectester.simulators import carla as carla_view  # CARLA-specific view adapters
+from avsectester.simulators import carla as carla_view  # CarlaBackend + CARLA view adapters
+from avsectester.simulators.carla import CarlaBackend
 from avsectester.simulators.viz import (
     detections_view,
     filmstrip,
