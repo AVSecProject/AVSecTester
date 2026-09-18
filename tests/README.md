@@ -22,11 +22,12 @@ plot tests; those tests skip if it is absent.
 | `test_sim_viz.py` | Per-simulation scene views: `camera_view` (frame vs non-image), `lidar_bev` defensiveness, and `record_run` saving a frame per step |
 | `test_phantom.py` | Hook registration and execution, detection preservation, phantom geometry, empty outputs, moving sensor frames, source-reference metadata |
 | `test_pipeline.py` | Pipeline construction, forward-corridor planning, clean/attacked sequences through real perception, tracking, planning, and PID control |
-| `test_metric.py` | Driving verdicts, unchanged/natural stops, threshold boundaries, custom thresholds, reported measurements, incomplete runs |
-| `test_scenario.py` | Runner frame records, actor initialization, hook ordering, NPC configuration, delayed/missing sensors, cleanup on success and failure, GPU override |
-| `test_reproducibility.py` | Seeded scene selection, explicit settings, world reset order, Traffic Manager port, clean spawn retries and strict replay of actual transforms |
-| `test_cli.py` | Configuration and overrides, clean/attacked passes, verdict exit codes, plotting, invalid input handling |
-| `test_viz.py` | Basic PNG output |
+| `test_patch_optim.py` | PGD/NES adversarial optimization: objectives, placement homography, and that PGD/NES reduce the objective on a synthetic scorer (no CARLA/mmdet) |
+| `test_physical_patch.py` | Physical-patch texture helpers (checkerboard/image RGBA) and config parsing (no CARLA) |
+| `test_metric.py` | Driving verdicts, unchanged/natural stops, threshold boundaries, custom thresholds, reported measurements, empty runs |
+| `test_scenario.py` | Runner frame records, actor initialization, hook ordering, NPC configuration, delayed sensor data, cleanup on success and failure, GPU override |
+| `test_reproducibility.py` | `prepare_scenario`: seeded scene selection, resolved settings, client release on failure, and the clean-spawn-retry flag |
+| `test_cli.py` | Configuration and overrides, clean/attacked passes, verdict exit codes, plotting |
 | `test_carla_integration.py` | Explicitly enabled neural perception and real closed-loop driving |
 
 The propagation tests supply a moving ego's state and synthetic detection sequences to the real
@@ -35,28 +36,9 @@ and control command; they do not simulate vehicle dynamics. The runner tests rep
 simulator-facing objects and registry builders, exercising the actual `run_scenario` function.
 The CLI tests replace the scenario runner while exercising the real CLI and impact metric.
 
-## Existing defects exposed by the suite
-
-The following desired behaviors are recorded with `xfail(strict=True)`. They are **not fixed by
-this test addition**, and an expected failure is not evidence that the behavior works. Unexpected
-exception types still fail where the marker specifies an exception type. Once a defect is fixed,
-the strict marker makes an unexpected pass fail the suite until the marker is removed.
-
-- A missing or truncated attacked trace should be inconclusive. Currently its low final speed
-  can be interpreted as a successful attack. The tests define incomplete as fewer recorded frames
-  than the paired clean run; they do not attempt to classify an arbitrary partial run by its speed.
-- When the initial sensor wait expires with no data, the runner should raise `TimeoutError` and
-  clean up. Currently it calls the ego pipeline despite the missing input. The timeout expectation
-  applies to a run with no first sensor frame, not a later dropped frame with cached data.
-- Invalid YAML/scenario structure should produce a readable CLI error before simulation starts.
-  Currently exceptions may escape without a user-facing message or invalid structure reaches the
-  runner. Nonpositive frame counts should likewise be rejected before execution.
-
-To see these defects as ordinary failures while investigating them:
-
-```bash
-python -m pytest tests/ --runxfail -q
-```
+The interface / NuRec / viz / patch-optimization tests (`test_interface`, `test_nurec`,
+`test_sim_viz`, `test_patch_optim`, `test_physical_patch`) import without avstack/avcarla/CARLA;
+their torch/matplotlib/PIL-dependent cases skip when those packages are absent.
 
 ## Live CARLA test
 

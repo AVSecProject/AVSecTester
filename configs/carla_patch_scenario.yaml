@@ -1,0 +1,58 @@
+# Physical adversarial-patch scenario (CARLA) — a textured panel on the rear of the lead car.
+#
+# A world-level attack (distinct from the perception-hook attack in carla_scenario.yaml): the backend
+# spawns a stationary `lead` car directly ahead of the ego (scene content, present in BOTH runs) and,
+# in the attacked run only, attaches + paints an `ironplank` panel on its rear so the ego's RGB camera
+# renders it in-scene. Run clean vs patched and compare the camera views (scripts/carla_patch_demo.py).
+#
+# Slice 1 proves the physical substrate (patch renders through the framework). Feeding the camera into
+# a detector so the patch changes perception/driving is the next slice.
+
+frames: 20
+
+client:
+  type: CarlaClient
+  connect_ip: 127.0.0.1
+  connect_port: 2000
+  traffic_manager_port: 8000
+  traffic_manager_seed: 0
+  synchronous: true
+  rate: 20.0
+  seed: 0
+
+ego:
+  type: CarlaMobileActor
+  spawn: 0
+  vehicle: vehicle.tesla.model3
+  autopilot: false
+  destination: null
+  sensors:
+    - type: CarlaRgbCamera
+      name: camera-0
+      image_size_x: 800
+      image_size_y: 600
+      fov: 90
+      sensor_tick: 0.05
+  # The backend replaces the ego's own pipeline with a no-op; driving comes from the AVStack.
+  pipeline:
+    type: ModularDrivingPipeline
+    perception: {type: MMDetObjectDetector3D, model: pointpillars, dataset: carla-vehicle, gpu: 0, threshold: 0.3}
+    tracking: {type: BasicBoxTracker3D}
+    planning: {type: ForwardCollisionPlanner, target_speed: 6.0, brake_distance: 12.0, brake_corridor: 2.5}
+    control: {type: VehiclePIDController, args_lateral: {K_P: 1.2, K_D: 0.1, K_I: 0.05}, args_longitudinal: {K_P: 0.4, K_D: 0.0, K_I: 0.05}}
+
+# No random traffic — the lead below is the scene's only other vehicle.
+npcs: []
+
+# Scene content: a stationary lead vehicle spawned directly ahead of the ego (both runs).
+lead:
+  gap: 9.0
+  vehicle: vehicle.tesla.model3
+
+# The attack (attacked run only): a checkerboard patch on the lead car's rear.
+patches:
+  - target: lead
+    prop: static.prop.ironplank
+    location: [-2.3, 0.0, 1.0]   # x back, y lateral, z up (m) in the lead's frame
+    rotation: [90.0, 0.0, 0.0]   # pitch, yaw, roll (deg) — stands the plank vertical, facing the ego
+    texture: {pattern: checkerboard, size: 256, squares: 8, color_a: [255, 0, 0], color_b: [255, 255, 255]}

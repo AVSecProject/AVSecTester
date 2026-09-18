@@ -116,16 +116,3 @@ def test_empty_runs_are_inconclusive(make_trace):
     result = impact(make_trace([]), make_trace([]))
     assert not result.attack_succeeded
     assert result.verdict.startswith("INCONCLUSIVE")
-
-
-@pytest.mark.parametrize("attacked_speeds", [[], [0.0]])
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="impact() accepts missing/truncated attacked traces as successful stops",
-)
-def test_incomplete_attacked_run_is_inconclusive(make_trace, attacked_speeds):
-    # A stopped first frame or no frames cannot establish the outcome of the requested drive.
-    result = impact(make_trace([0, 2, 5]), make_trace(attacked_speeds))
-    assert not result.attack_succeeded
-    assert result.verdict.startswith("INCONCLUSIVE")

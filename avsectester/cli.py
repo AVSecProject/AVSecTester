@@ -71,7 +71,7 @@ def run(
 
     saved_path = None
     if plot:
-        from .viz import plot_impact
+        from .metric import plot_impact
 
         saved_path = plot_impact(clean, attacked, plot, result=result)
 

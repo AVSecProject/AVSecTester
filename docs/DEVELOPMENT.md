@@ -39,7 +39,7 @@ The spine is one loop over a pure data plane; any world backend composes with an
                                                                                                     real Alpamayo-1.5-10B → trajectory
 
   scoring:  impact(clean_trace, attacked_trace)   # induced braking / unsafe stop?
-  viz:      viz.plot_impact (metric)  ·  simulators/viz.record_run (per-frame scene → ./tmp/)
+  viz:      metric.plot_impact (metric)  ·  simulators/viz.record_run (per-frame scene → ./tmp/)
 ```
 
 The CARLA closed-loop driving pieces were contributed upstream into the forks (see
@@ -54,15 +54,16 @@ Alpamayo model come from NVIDIA AlpaSim (`nre-ga`, `alpasim_driver`); `NuRecRend
 avsectester/
   plane.py            Observation · Control · Trace · FrameRecord   (pure data)
   backend.py          WorldBackend · AVStack · run(...)             (interfaces + loop)
-  scenario.py         CarlaBackend + ModularAVStack + run_scenario/prepare_scenario
-  simulators/
+  scenario.py         run_scenario · prepare_scenario   (compose a CARLA backend + modular stack)
+  simulators/                                            (WorldBackend implementations)
+    carla.py          CarlaBackend + camera_view (ImageData) · lidar_bev   (CARLA + its view adapters)
     nurec.py          NuRecBackend · Renderer · StubRenderer · NuRecRenderer · dynamics
-    viz.py            camera_view · lidar_bev · record_run          (per-simulation scene views)
-  stacks/
+    viz.py            record_run · detections_view · filmstrip · save_gif   (generic scene pipeline)
+  stacks/                                                (AVStack implementations)
+    modular.py        ModularAVStack (avstack ModularDrivingPipeline)
     alpamayo.py       AlpamayoAVStack (wraps alpasim_driver Alpamayo-1.5)
   attacks/            PhantomInjection (avstack HOOKS hook) + registration
-  metric.py           impact(clean, attacked) -> Impact             (driving-impact verdict)
-  viz.py              plot_impact                                    (clean-vs-attacked figure)
+  metric.py           impact(clean, attacked) -> Impact + plot_impact  (verdict + its figure)
   cli.py              `avsectester run ...`
 ```
 

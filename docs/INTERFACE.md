@@ -48,7 +48,7 @@ run over gRPC if ever split across processes.
 | **CarlaBackend** | phantom-injection demo (`avsectester run`) | Alpamayo in a CARLA world |
 | **NuRecBackend** | modular stack on reconstructed sensors | ✔ Alpamayo on photoreal NuRec frames |
 
-### 1a. CarlaBackend + ModularAVStack (`avsectester/scenario.py`)
+### 1a. CarlaBackend (`simulators/carla.py`) + ModularAVStack (`stacks/modular.py`)
 
 `CarlaBackend` owns an avcarla `CarlaClient` + ego (`CarlaMobileActor` with a no-op internal pipeline
 — driving is external, done by the `AVStack`) + `CarlaNpc` traffic. `reset()` spawns actors and
