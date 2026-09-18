@@ -54,3 +54,32 @@ class MMDetRPNObjectnessScorer(Scorer):
         if not vals:
             return torch.zeros((), device=self.device)
         return torch.cat(vals).mean()
+
+
+class MMDetInferenceScorer(Scorer):
+    """Black-box (non-differentiable) scorer: the detector's actual max confidence in the target box.
+
+    Runs the full ``inference_detector`` on a rendered ``(H,W,3)`` uint8 RGB frame — the true metric an
+    object-removal attack must drive below the detection threshold. For gradient-free attacks (NES).
+    """
+
+    differentiable = False
+
+    def __init__(self, model):
+        self.model = model
+
+    def target_score(self, image, target: TargetSpec) -> float:
+        import numpy as np
+        from mmdet.apis import inference_detector
+
+        img = np.asarray(image)
+        inst = inference_detector(self.model, img[:, :, ::-1]).pred_instances
+        scores = inst.scores.detach().cpu().numpy()
+        boxes = inst.bboxes.detach().cpu().numpy()
+        x0, y0, x1, y1 = target.box
+        best = 0.0
+        for b, sc in zip(boxes, scores):
+            cx, cy = (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
+            if x0 <= cx <= x1 and y0 <= cy <= y1:
+                best = max(best, float(sc))
+        return best

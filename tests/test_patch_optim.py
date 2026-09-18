@@ -65,3 +65,44 @@ def test_pgd_reduces_the_objective_on_a_synthetic_scorer():
     assert result.history[-1] < result.history[0]  # HideObject minimizes -> patch darkens the region
     assert result.export.shape == (32, 32, 4) and result.export.dtype == np.uint8
     assert float(result.delta.mean()) < 0.5  # started at gray 0.5, optimized darker
+
+
+def test_nes_reduces_objective_black_box():
+    # gradient-free NES on a non-differentiable synthetic scorer (numpy only, no torch/CARLA)
+    from avsectester.attacks.optim.blackbox import NES
+    from avsectester.attacks.optim.interface import (
+        AdvSample,
+        DataSource,
+        Perturbation,
+        Scorer,
+        TargetSpec,
+    )
+
+    class AddPatch(Perturbation):  # the "image" is just delta; project to [0,1]
+        def init(self):
+            return np.full((3, 4, 4), 0.8, np.float32)
+
+        def apply(self, sample, delta):
+            return delta
+
+        def project(self, delta):
+            return np.clip(delta, 0, 1)
+
+        def export(self, delta):
+            return (np.clip(delta, 0, 1) * 255).astype(np.uint8)
+
+    class MeanBrightness(Scorer):
+        differentiable = False
+
+        def target_score(self, image, target):
+            return float(np.mean(image))
+
+    class One(DataSource):
+        def sample(self, batch):
+            return [AdvSample(x=None, target=TargetSpec((0, 0, 1, 1)))] * batch
+
+    result = NES(steps=15, popsize=10, sigma=0.1, lr=0.3, seed=0).run(
+        One(), AddPatch(), MeanBrightness(), HideObject()
+    )
+    assert result.history[-1] < result.history[0]  # HideObject minimizes -> brightness falls
+    assert result.export.shape == (3, 4, 4) or result.export.ndim == 3

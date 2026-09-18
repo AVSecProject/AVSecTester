@@ -1,7 +1,8 @@
-"""Concrete gradient attacks. PGD here; FGSM / MI-FGSM would sit beside it against the same contract.
+"""Gradient-based attacks (torch). PGD here; FGSM / MI-FGSM would sit beside it against the contract.
 
 PGD is threat-model-agnostic: it only draws samples, calls ``perturbation.apply``/``project`` and the
-scorer/objective. The budget (Lp ball / [0,1] box / patch mask) lives in the ``Perturbation``.
+scorer/objective. The budget (Lp ball / [0,1] box / patch mask) lives in the ``Perturbation``. The
+gradient-FREE black-box attacks (NES) live in ``blackbox.py`` (numpy, no torch).
 """
 
 from __future__ import annotations
@@ -51,7 +52,7 @@ class PGD(GradientAttack):
         objective: AttackObjective,
     ) -> AttackResult:
         if not scorer.differentiable:
-            raise ValueError("PGD needs a differentiable (white-box) scorer")
+            raise ValueError("PGD needs a differentiable (white-box) scorer; use NES for black-box")
         torch.manual_seed(self.seed)
         delta = perturbation.init()
         history: list[float] = []
@@ -72,8 +73,7 @@ class PGD(GradientAttack):
             if self.verbose and (step % self.log_every == 0 or step == self.steps - 1):
                 print(f"  step {step:4d}  loss {history[-1]:.4f}")
 
-        # final target confidence, averaged over a fresh batch, no grad
-        with torch.no_grad():
+        with torch.no_grad():  # final target confidence, averaged over a fresh batch
             samples = data.sample(self.batch)
             final = float(
                 sum(float(scorer.target_score(perturbation.apply(s, delta), s.target))

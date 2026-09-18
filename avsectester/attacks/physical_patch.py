@@ -71,14 +71,17 @@ class PhysicalPatch:
     """A textured panel attached to a target actor's rear, painted with an arbitrary image.
 
     ``texture`` is either ``{"pattern": "checkerboard", ...}`` (the default) or
-    ``{"image": "<path>", "size": N}``. ``apply`` spawns and paints the panel and returns the spawned
-    CARLA actors so the caller can register their teardown.
+    ``{"image": "<path>", "size": N}``. ``emissive=True`` also paints the texture into the Emissive
+    channel so it is self-lit — scene lighting no longer dims it, which is what lets an optimized
+    adversarial texture survive rendering (closes the digital->physical appearance gap). ``apply``
+    spawns and paints the panel and returns the spawned CARLA actors for teardown.
     """
 
     prop: str = DEFAULT_PROP
     location: tuple = DEFAULT_LOCATION
     rotation: tuple = DEFAULT_ROTATION
     texture: dict = field(default_factory=lambda: {"pattern": "checkerboard", "size": 256})
+    emissive: bool = False
 
     def _rgba(self) -> np.ndarray:
         spec = dict(self.texture)
@@ -118,6 +121,8 @@ class PhysicalPatch:
         for name in new_names:
             try:
                 world.apply_color_texture_to_object(name, carla.MaterialParameter.Diffuse, texture)
+                if self.emissive:  # also self-illuminate so scene lighting does not dim the texture
+                    world.apply_color_texture_to_object(name, carla.MaterialParameter.Emissive, texture)
                 painted.append(name)
             except RuntimeError:
                 pass  # not every new name is the prop mesh; paint the one(s) that take it
