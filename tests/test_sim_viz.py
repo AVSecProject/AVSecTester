@@ -15,11 +15,32 @@ class Cruise(AVStack):
 def test_camera_view_returns_the_frame_and_skips_non_images():
     import numpy as np
 
-    img = np.zeros((4, 5, 3), dtype=np.uint8)
+    img = np.dstack([np.zeros((4, 5), np.uint8), np.ones((4, 5), np.uint8), np.full((4, 5), 2, np.uint8)])
     obs = Observation(t=0.0, frame=0, sensor_data={"cam": img})
-    assert camera_view(obs) is img
+    out = camera_view(obs)  # normalized HWC-uint8 RGB, not necessarily the same object
+    assert out.shape == (4, 5, 3) and out.dtype == np.uint8 and np.array_equal(out, img)
     assert camera_view(Observation(t=0.0, frame=0, sensor_data={"cam": {"stub": 1}})) is None
     assert camera_view(Observation(t=0.0, frame=0)) is None  # empty sensor_data
+
+
+def test_camera_view_extracts_rgb_from_an_imagedata_like_payload():
+    import numpy as np
+
+    class FakeImageData:  # avstack ImageData exposes .rgb_image + .shape
+        def __init__(self, arr):
+            self.data = arr
+
+        @property
+        def rgb_image(self):
+            return self.data
+
+        @property
+        def shape(self):
+            return self.data.shape
+
+    arr = np.zeros((3, 4, 3), np.uint8)
+    out = camera_view(Observation(t=0.0, frame=0, sensor_data={"camera-0": FakeImageData(arr)}))
+    assert out.shape == (3, 4, 3) and out.dtype == np.uint8
 
 
 def test_lidar_bev_is_defensive_on_non_lidar_payloads():

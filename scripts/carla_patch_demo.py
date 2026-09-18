@@ -1,106 +1,112 @@
 #!/usr/bin/env python
-"""Physical adversarial-patch demo (CARLA): render a patch on the lead car's rear, clean vs attacked.
+"""Physical-patch CARLA scenario as a SEQUENCE — driven and visualized through the standard pipeline.
 
-Drives the ego (a simple cruise stack) in ``configs/carla_patch_scenario.yaml`` twice through the
-framework's ``run`` loop — once clean, once with the patch attached to the lead car by
-``CarlaBackend`` at reset — and saves the ego camera frames from each to ``./tmp/carla_patch/{clean,
-patched}/``. This proves the physical patch renders in-scene (the substrate); feeding the camera into
-a detector so the patch changes perception/driving is the next slice.
+Drives the ego (a cruise stack) in ``configs/carla_patch_scenario.yaml`` with a physical patch on the
+lead car, recording a sequence through :func:`avsectester.simulators.viz.record_run` (the same
+pipeline every simulator uses). Each frame is overlaid with the detector's output (``detections_view``)
+so the attack's effect is visible over the sequence, then assembled into a filmstrip + GIF.
 
-Run in the `avsec` conda env against a CARLA 0.9.15 server on :2000 (GPU 2):
-    conda run -n avsec python scripts/carla_patch_demo.py [--frames 20]
+    conda run -n avsec python scripts/carla_patch_demo.py --frames 16 --gap 6 \
+        --texture tmp/patch_optim/phys_texture.png       # the PGD-optimized adversarial patch
+
+Omit --texture for the benign checkerboard patch. Needs a CARLA 0.9.15 server on :2000 (GPU 2).
 """
 
 import argparse
 import sys
 from pathlib import Path
 
-import numpy as np
 import yaml
 from avsectester.backend import AVStack
 from avsectester.plane import Control
 from avsectester.scenario import CarlaBackend
+from avsectester.simulators.viz import (
+    camera_view,
+    detections_view,
+    filmstrip,
+    record_run,
+    save_gif,
+    save_image,
+)
 
 REPO = Path(__file__).resolve().parents[1]
 OUT = REPO / "tmp" / "carla_patch"
 
 
 class CruiseStack(AVStack):
-    """A trivial AV stack: hold a gentle constant throttle (enough to roll, not to reach the lead)."""
+    """Hold a gentle constant throttle so the ego rolls toward the lead over the sequence."""
 
-    def __init__(self, throttle: float = 0.3) -> None:
+    def __init__(self, throttle: float = 0.25) -> None:
         self.throttle = throttle
 
     def __call__(self, obs) -> Control:
         return Control(throttle=self.throttle)
 
 
-def _rgb(frame) -> np.ndarray | None:
-    """Best-effort extract an (H, W, 3) uint8 array from a camera Observation payload."""
-    for attr in ("rgb_image", "data"):
-        v = getattr(frame, attr, None)
-        if v is not None and hasattr(v, "shape"):
-            arr = np.asarray(v)
-            return arr[..., :3] if arr.ndim == 3 else arr
-    return np.asarray(frame)[..., :3] if hasattr(frame, "shape") else None
+def build_detector(gpu: int):
+    """Return ``detect(rgb) -> [(xyxy, score, 'car')]`` using the CARLA-trained 2D detector."""
+    import avstack.modules.perception.object2dfv  # noqa: F401
+    from avstack.config import MODELS
+    from mmdet.apis import inference_detector
 
+    det = MODELS.build({"type": "MMDetObjectDetector2D", "model": "fasterrcnn",
+                        "dataset": "carla-vehicle", "gpu": gpu, "threshold": 0.3})
 
-def _save_frames(backend, stack, frames, out_dir):
-    """Drive `frames` steps, saving each camera view to out_dir; return the driving Trace."""
-    from PIL import Image
+    def detect(rgb):
+        h, w = rgb.shape[:2]
+        inst = inference_detector(det.model, rgb[:, :, ::-1]).pred_instances
+        boxes = inst.bboxes.detach().cpu().numpy()
+        scores = inst.scores.detach().cpu().numpy()
+        best = None  # the single best plausible lead-car box (drop near-full-frame false positives)
+        for b, sc in zip(boxes, scores):
+            area = (b[2] - b[0]) * (b[3] - b[1])
+            if area < 0.6 * w * h and (best is None or sc > best[1]):
+                best = (b, float(sc), "car")
+        return [best] if best else []
 
-    out_dir.mkdir(parents=True, exist_ok=True)
-    obs = backend.reset()
-    stack.reset(obs)
-    saved = 0
-    for i in range(frames):
-        control = stack(obs)
-        for payload in (obs.sensor_data or {}).values():
-            arr = _rgb(payload)
-            if arr is not None and arr.ndim == 3:
-                Image.fromarray(arr.astype(np.uint8)).save(out_dir / f"frame_{i:04d}.png")
-                saved += 1
-                break
-        obs = backend.step(control)
-    print(f"  saved {saved} camera frames -> {out_dir}")
-    return saved
+    return detect
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--config", default=str(REPO / "configs" / "carla_patch_scenario.yaml"))
-    ap.add_argument("--frames", type=int, default=None, help="override frames from the config")
+    ap.add_argument("--frames", type=int, default=16)
+    ap.add_argument("--gap", type=float, default=None, help="override lead distance (m)")
+    ap.add_argument("--texture", default=None, help="adversarial patch image (else benign checkerboard)")
+    ap.add_argument("--tex", type=int, default=192)
+    ap.add_argument("--gpu", type=int, default=1)
+    ap.add_argument("--no-detect", action="store_true", help="skip the detection overlay")
     args = ap.parse_args()
 
     scenario = yaml.safe_load(Path(args.config).read_text())
-    frames = args.frames or scenario.get("frames", 20)
+    if args.gap is not None:
+        scenario.setdefault("lead", {})["gap"] = args.gap
     patches = scenario.get("patches")
+    kind = "benign checkerboard"
+    if args.texture and patches:
+        for p in patches:  # deploy the optimized adversarial texture as an emissive patch
+            p["texture"] = {"image": str(Path(args.texture).resolve()), "size": args.tex}
+            p["emissive"] = True
+        kind = "adversarial (PGD-optimized)"
 
-    print(f"[demo] physical-patch CARLA demo, {frames} frames/run")
-    print("[clean]   no patch on the lead car")
-    backend = CarlaBackend(scenario, patches=None)
-    try:
-        _save_frames(backend, CruiseStack(), frames, OUT / "clean")
-    finally:
-        backend.close()
+    visualize = camera_view if args.no_detect else detections_view(build_detector(args.gpu))
 
-    print("[patched] checkerboard patch attached to the lead car's rear")
+    print(f"[demo] {kind} physical patch, {args.frames}-frame sequence via record_run ...")
     backend = CarlaBackend(scenario, patches=patches)
     try:
-        _save_frames(backend, CruiseStack(), frames, OUT / "patched")
+        trace = record_run(backend, CruiseStack(), args.frames, out_dir=OUT / "seq",
+                           visualize=visualize, collect=True)
     finally:
         backend.close()
 
-    # report a coarse difference on the last frame (the patch should change the pixels)
-    from PIL import Image
-
-    last = f"frame_{frames - 1:04d}.png"
-    ca, pa = OUT / "clean" / last, OUT / "patched" / last
-    if ca.exists() and pa.exists():
-        c = np.asarray(Image.open(ca), np.float32)
-        p = np.asarray(Image.open(pa), np.float32)
-        print(f"[diff] mean |clean-patched| on {last}: {np.abs(c - p).mean():.2f}/255")
-    print(f"[output] frames under {OUT}/")
+    if trace.frames:
+        save_image(filmstrip(trace.frames, cols=4), OUT / "patch_filmstrip.png")
+        save_gif(trace.frames, OUT / "patch_sequence.gif", fps=4)
+        print(f"[output] {len(trace.frames)} frames -> {OUT}/seq/")
+        print(f"[output] filmstrip -> {OUT}/patch_filmstrip.png")
+        print(f"[output] gif       -> {OUT}/patch_sequence.gif")
+    else:
+        print("[warn] no camera frames captured (is a CarlaRgbCamera in the ego sensors?)")
     return 0
 
 
