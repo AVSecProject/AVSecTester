@@ -9,7 +9,9 @@ so the attack's effect is visible over the sequence, then assembled into a films
     conda run -n avsec python scripts/carla_patch_demo.py --frames 16 --gap 6 \
         --texture tmp/patch_optim/phys_texture.png       # the PGD-optimized adversarial patch
 
-Omit --texture for the benign checkerboard patch. Needs a CARLA 0.9.15 server on :2000 (GPU 2).
+Omit --texture for the benign checkerboard patch. Needs a CARLA 0.9.15 server on :2000 (GPU 2);
+launch it with ``-quality-level=Epic`` for the most realistic rendering (the patch is a matte,
+scene-lit surface by default).
 """
 
 import argparse

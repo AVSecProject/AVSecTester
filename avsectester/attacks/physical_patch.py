@@ -66,15 +66,28 @@ def to_carla_texture(rgba: np.ndarray) -> Any:
     return tex
 
 
+def _matte_material() -> Any:
+    """A matte, non-metallic, non-emissive material map so the patch is lit by the scene like a real
+    poster (packs AO=1, Roughness=1, Metallic=0, Emissive=0 into AO_Roughness_Metallic_Emissive)."""
+    import carla
+
+    tex = carla.TextureFloatColor(4, 4)
+    for y in range(4):
+        for x in range(4):
+            tex.set(x, y, carla.FloatColor(1.0, 1.0, 0.0, 0.0))
+    return tex
+
+
 @dataclass
 class PhysicalPatch:
     """A textured panel attached to a target actor's rear, painted with an arbitrary image.
 
     ``texture`` is either ``{"pattern": "checkerboard", ...}`` (the default) or
-    ``{"image": "<path>", "size": N}``. ``emissive=True`` also paints the texture into the Emissive
-    channel so it is self-lit — scene lighting no longer dims it, which is what lets an optimized
-    adversarial texture survive rendering (closes the digital->physical appearance gap). ``apply``
-    spawns and paints the panel and returns the spawned CARLA actors for teardown.
+    ``{"image": "<path>", "size": N}``. By default (``emissive=False``) the panel is given a **matte**
+    material so it is **lit by the scene** — brightness and shadows track the environment, the
+    realistic look. ``emissive=True`` instead paints the texture into the Emissive channel so it is
+    self-lit (unlit by the scene) — an unrealistic mode that lets an optimized adversarial texture
+    survive rendering unchanged. ``apply`` spawns and paints the panel and returns the actors.
     """
 
     prop: str = DEFAULT_PROP
@@ -117,12 +130,17 @@ class PhysicalPatch:
             prop.destroy()
             raise RuntimeError("spawned patch prop did not register a paintable object name")
         texture = to_carla_texture(self._rgba())
+        matte = _matte_material()
         painted = []
         for name in new_names:
             try:
                 world.apply_color_texture_to_object(name, carla.MaterialParameter.Diffuse, texture)
-                if self.emissive:  # also self-illuminate so scene lighting does not dim the texture
+                if self.emissive:  # self-illuminate (unlit) so scene lighting does not dim the texture
                     world.apply_color_texture_to_object(name, carla.MaterialParameter.Emissive, texture)
+                else:  # realistic default: a matte surface lit by the scene (shadows/brightness track it)
+                    world.apply_float_color_texture_to_object(
+                        name, carla.MaterialParameter.AO_Roughness_Metallic_Emissive, matte
+                    )
                 painted.append(name)
             except RuntimeError:
                 pass  # not every new name is the prop mesh; paint the one(s) that take it
