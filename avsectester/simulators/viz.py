@@ -132,6 +132,24 @@ def save_gif(images: list, path: str | Path, fps: int = 5) -> None:
                    duration=int(1000 / max(fps, 1)), loop=0)
 
 
+def save_sequence(frames: list, out_dir: str | Path, name: str = "sequence",
+                  cols: int = 4, fps: int = 4) -> tuple[str, str] | None:
+    """Save a captured frame sequence as both a filmstrip PNG and an animated GIF — the one place
+    demos turn ``trace.frames`` into output, so no script re-implements the filmstrip+gif dance.
+
+    Writes ``<out_dir>/<name>_filmstrip.png`` and ``<out_dir>/<name>.gif``; returns their paths (or
+    None when there are no frames). ``collect=True`` on :func:`record_run` fills ``trace.frames``.
+    """
+    if not frames:
+        return None
+    out = Path(out_dir)
+    strip = out / f"{name}_filmstrip.png"
+    gif = out / f"{name}.gif"
+    save_image(filmstrip(frames, cols=cols), strip)
+    save_gif(frames, gif, fps=fps)
+    return str(strip), str(gif)
+
+
 def record_run(
     backend: WorldBackend,
     stack: AVStack,

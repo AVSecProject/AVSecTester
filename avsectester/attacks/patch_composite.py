@@ -196,7 +196,7 @@ class LibcomHarmonizer(Harmonizer):
             out = np.asarray(Image.open(out_p).convert("RGB"))
             log.info("harmonized frame with libcom %s", self.model)
             return out
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             if self.strict:  # validation mode: never hide a failure behind the classic blend
                 raise RuntimeError(f"libcom {self.model} harmonization failed: {exc}") from exc
             log.warning("libcom %s failed (%s) -> classic fallback", self.model, str(exc)[-300:])
@@ -216,7 +216,7 @@ class LibcomHarmonizer(Harmonizer):
     def __del__(self):
         try:
             self.close()
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001, S110 - best-effort teardown during GC; nothing to log to
             pass
 
 

@@ -29,34 +29,13 @@ from avsectester.attacks.patch_composite import (
     PatchCompositor,
 )
 from avsectester.attacks.physical_patch import checkerboard_rgba, image_rgba
-from avsectester.backend import AVStack
-from avsectester.plane import Control
 from avsectester.simulators.nurec import NuRecBackend, NuRecRenderer, nurec_panel_quad
-from avsectester.simulators.viz import (
-    camera_view,
-    composite_view,
-    filmstrip,
-    record_run,
-    save_gif,
-    save_image,
-)
+from avsectester.simulators.viz import camera_view, composite_view, record_run, save_sequence
+from demo_common import CruiseStack  # shared demo glue
 
 REPO = Path(__file__).resolve().parents[1]
 OUT = REPO / "tmp" / "nurec_patch"
 CAM = "camera_front_wide_120fov"
-
-
-class CruiseStack(AVStack):
-    """Hold a gentle throttle so the ego rolls toward the planted panel over the sequence."""
-
-    def __init__(self, throttle: float = 0.4) -> None:
-        self.throttle = throttle
-
-    def reset(self, observation) -> None:
-        pass
-
-    def __call__(self, observation) -> Control:
-        return Control(throttle=self.throttle)
 
 
 def main() -> int:
@@ -91,12 +70,9 @@ def main() -> int:
         if isinstance(harmonizer, LibcomHarmonizer):
             harmonizer.close()
 
-    if trace.frames:
-        save_image(filmstrip(trace.frames, cols=4), OUT / "nurec_filmstrip.png")
-        save_gif(trace.frames, OUT / "nurec_sequence.gif", fps=4)
-        print(f"[output] {len(trace.frames)} frames -> {OUT}/seq/")
-        print(f"[output] filmstrip -> {OUT}/nurec_filmstrip.png")
-        print(f"[output] gif       -> {OUT}/nurec_sequence.gif")
+    out = save_sequence(trace.frames, OUT, name="nurec")
+    if out:
+        print(f"[output] {len(trace.frames)} frames -> {OUT}/seq/ ; filmstrip+gif -> {out[0]} , {out[1]}")
     else:
         print("[warn] no frames captured")
     return 0

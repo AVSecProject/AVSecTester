@@ -5,16 +5,19 @@ One CARLA reset, roll the ego a few frames toward the lead, then at one frame co
 the projected rear quad under each variant and report the detector's top car-box confidence. Decides
 which deployment actually hides the car (< 0.3 threshold) before a full driving run.
 """
-import argparse, logging, sys
+import argparse
+import logging
+import sys
 from pathlib import Path
-import numpy as np, yaml
-from PIL import Image
+
+import yaml
 from avsectester.attacks.patch_composite import ClassicHarmonizer, LibcomHarmonizer, PatchCompositor
-from avsectester.attacks.physical_patch import image_rgba, checkerboard_rgba
+from avsectester.attacks.physical_patch import image_rgba
 from avsectester.plane import Control
 from avsectester.simulators import carla as carla_sim
 from avsectester.simulators.carla import CarlaBackend, lead_rear_quad
-from carla_patch_demo import build_detector
+from demo_common import build_detector
+from PIL import Image
 
 REPO = Path(__file__).resolve().parents[1]; OUT = REPO/"tmp"/"patch_probe"
 

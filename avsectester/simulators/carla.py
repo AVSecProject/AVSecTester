@@ -82,7 +82,7 @@ def lead_rear_quad(
     from avsectester.attacks.patch_composite import carla_cam_coords, order_quad, project_to_pixels
 
     def _quad_of(_observation: Observation) -> Any:
-        import carla  # noqa: F401 - carla.Location used below
+        import carla
 
         lead = backend.lead
         if lead is None:  # also covers pre-reset: ego/lead not spawned yet

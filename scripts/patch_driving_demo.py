@@ -36,9 +36,8 @@ from avsectester.metric import impact, plot_impact
 from avsectester.plane import Control
 from avsectester.simulators import carla as carla_sim
 from avsectester.simulators.carla import CarlaBackend, camera_patch_perturbation
-from avsectester.simulators.viz import detections_view, filmstrip, record_run, save_gif, save_image
-
-from carla_patch_demo import build_detector  # reuse the CARLA-trained 2D detector  # noqa: E402
+from avsectester.simulators.viz import detections_view, record_run, save_sequence
+from demo_common import build_detector, plausible_detector  # shared demo glue
 
 REPO = Path(__file__).resolve().parents[1]
 OUT = REPO / "tmp" / "patch_driving"
@@ -68,27 +67,6 @@ class CameraForwardCollisionStack(AVStack):
                 if (box[2] - box[0]) * (box[3] - box[1]) >= self.area_brake * w * h:
                     close = True
         return Control(throttle=0.0, brake=1.0) if close else Control(throttle=self.throttle)
-
-
-def plausible_detector(detect, area_max: float = 0.30, max_height_frac: float = 0.6):
-    """Gate a detector to boxes a real planner would trust: not implausibly large or too tall.
-
-    Adversarial patches can spawn a phantom full-scene box; gating it out is standard AV hygiene and
-    keeps the demo about the genuine object-hiding, not a false positive. Feeds both the stack and the
-    detection overlay so the visualization matches what the ego acted on.
-    """
-
-    def _detect(rgb):
-        h, w = rgb.shape[:2]
-        out = []
-        for box, score, label in detect(rgb):
-            bh = box[3] - box[1]
-            area = (box[2] - box[0]) * bh / (w * h)
-            if bh <= max_height_frac * h and area <= area_max:
-                out.append((box, score, label))
-        return out
-
-    return _detect
 
 
 def main() -> int:
@@ -138,9 +116,7 @@ def main() -> int:
     plot_impact(clean, attacked, str(OUT / "impact.png"),
                 title="Physical patch (object-hiding) — driving impact", result=result)
     for name, trace in (("clean", clean), ("patched", attacked)):
-        if trace.frames:
-            save_image(filmstrip(trace.frames, cols=5), OUT / f"{name}_filmstrip.png")
-            save_gif(trace.frames, OUT / f"{name}.gif", fps=6)
+        save_sequence(trace.frames, OUT, name=name, cols=5, fps=6)
     print(f"[output] impact plot -> {OUT}/impact.png")
     print(f"[output] filmstrips  -> {OUT}/clean_filmstrip.png , {OUT}/patched_filmstrip.png")
     print(f"[output] gifs        -> {OUT}/clean.gif , {OUT}/patched.gif")

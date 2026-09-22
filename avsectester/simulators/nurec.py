@@ -136,7 +136,7 @@ def _quat_to_R(w: float, x: float, y: float, z: float):
     ])
 
 
-def nurec_panel_quad(renderer: "NuRecRenderer", ahead: float = 12.0, half_w: float = 0.9,
+def nurec_panel_quad(renderer: NuRecRenderer, ahead: float = 12.0, half_w: float = 0.9,
                      z_lo: float = 0.5, z_hi: float = 2.3):
     """Return ``quad_of(obs) -> (4,2) px | None`` for a fixed world panel ahead of the ego.
 

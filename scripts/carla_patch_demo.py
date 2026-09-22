@@ -19,54 +19,13 @@ import sys
 from pathlib import Path
 
 import yaml
-from avsectester.backend import AVStack
-from avsectester.plane import Control
 from avsectester.simulators import carla as carla_view  # CarlaBackend + CARLA view adapters
 from avsectester.simulators.carla import CarlaBackend
-from avsectester.simulators.viz import (
-    detections_view,
-    filmstrip,
-    record_run,
-    save_gif,
-    save_image,
-)
+from avsectester.simulators.viz import detections_view, record_run, save_sequence
+from demo_common import CruiseStack, build_detector  # shared demo glue
 
 REPO = Path(__file__).resolve().parents[1]
 OUT = REPO / "tmp" / "carla_patch"
-
-
-class CruiseStack(AVStack):
-    """Hold a gentle constant throttle so the ego rolls toward the lead over the sequence."""
-
-    def __init__(self, throttle: float = 0.25) -> None:
-        self.throttle = throttle
-
-    def __call__(self, obs) -> Control:
-        return Control(throttle=self.throttle)
-
-
-def build_detector(gpu: int):
-    """Return ``detect(rgb) -> [(xyxy, score, 'car')]`` using the CARLA-trained 2D detector."""
-    import avstack.modules.perception.object2dfv  # noqa: F401
-    from avstack.config import MODELS
-    from mmdet.apis import inference_detector
-
-    det = MODELS.build({"type": "MMDetObjectDetector2D", "model": "fasterrcnn",
-                        "dataset": "carla-vehicle", "gpu": gpu, "threshold": 0.3})
-
-    def detect(rgb):
-        h, w = rgb.shape[:2]
-        inst = inference_detector(det.model, rgb[:, :, ::-1]).pred_instances
-        boxes = inst.bboxes.detach().cpu().numpy()
-        scores = inst.scores.detach().cpu().numpy()
-        best = None  # the single best plausible lead-car box (drop near-full-frame false positives)
-        for b, sc in zip(boxes, scores):
-            area = (b[2] - b[0]) * (b[3] - b[1])
-            if area < 0.6 * w * h and (best is None or sc > best[1]):
-                best = (b, float(sc), "car")
-        return [best] if best else []
-
-    return detect
 
 
 def main() -> int:
@@ -104,12 +63,9 @@ def main() -> int:
     finally:
         backend.close()
 
-    if trace.frames:
-        save_image(filmstrip(trace.frames, cols=4), OUT / "patch_filmstrip.png")
-        save_gif(trace.frames, OUT / "patch_sequence.gif", fps=4)
-        print(f"[output] {len(trace.frames)} frames -> {OUT}/seq/")
-        print(f"[output] filmstrip -> {OUT}/patch_filmstrip.png")
-        print(f"[output] gif       -> {OUT}/patch_sequence.gif")
+    out = save_sequence(trace.frames, OUT, name="patch")
+    if out:
+        print(f"[output] {len(trace.frames)} frames -> {OUT}/seq/ ; filmstrip+gif -> {out[0]} , {out[1]}")
     else:
         print("[warn] no camera frames captured (is a CarlaRgbCamera in the ego sensors?)")
     return 0
