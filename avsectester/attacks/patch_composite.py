@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -75,6 +76,69 @@ def warp_patch(frame_rgb: np.ndarray, dst_quad: np.ndarray, patch_rgba: np.ndarr
     comp = frame_rgb.astype(np.float32) * (1 - alpha) + warped[:, :, :3].astype(np.float32) * alpha
     mask = (warped[:, :, 3] > 127).astype(np.uint8) * 255
     return comp.astype(np.uint8), mask
+
+
+# ---------------------------------------------------------------------------------------------------
+# Fine-grained (per-pixel) decal projection — conform the patch to the real surface, not a flat quad
+# ---------------------------------------------------------------------------------------------------
+@dataclass
+class DecalFrame:
+    """A patch's placement as a projected decal, in **camera coordinates** (x right, y down, z fwd).
+
+    ``origin`` is the decal centre on the target surface; ``u_axis`` / ``v_axis`` its unit right / up
+    directions and ``normal`` the surface normal (projection direction). ``size_u`` / ``size_v`` are the
+    full decal extents in metres, and ``thickness`` the half-depth of the slab around the plane that
+    counts as "on the surface" (bounds the projection + gives occlusion by real depth).
+    """
+
+    origin: np.ndarray
+    u_axis: np.ndarray
+    v_axis: np.ndarray
+    normal: np.ndarray
+    size_u: float
+    size_v: float
+    thickness: float = 0.25
+
+
+def decal_project(frame_rgb, patch_rgba, depth, unproject, decal: DecalFrame, mask=None):
+    """Per-pixel decal projection: warp the patch onto the *real surface*, every pixel independently.
+
+    Unlike :func:`warp_patch` (a single planar homography — exact only for a flat quad), this uses the
+    per-pixel ``depth`` to back-project each pixel to its true 3-D point (``unproject(u, v, d) ->
+    (H,W,3)`` camera-frame), expresses it in the ``decal`` frame to get patch UVs, and samples the patch
+    there. A pixel is painted only if its UV is in range **and** it lies within ``decal.thickness`` of
+    the surface plane — so the patch follows curvature/relief, foreshortens per pixel, and clips to the
+    true silhouette (occlusion-correct: a nearer object in front is not painted). ``mask`` optionally
+    restricts to the target object (e.g. a segmentation mask). Returns ``(composite_rgb, mask uint8)``.
+    """
+    h, w = depth.shape
+    uu, vv = np.meshgrid(np.arange(w), np.arange(h))
+    xyz = unproject(uu, vv, depth)  # (H,W,3) camera-frame points
+    rel = xyz - np.asarray(decal.origin, dtype=np.float64)
+    s = (rel @ decal.u_axis) / decal.size_u + 0.5
+    t = 0.5 - (rel @ decal.v_axis) / decal.size_v
+    dn = rel @ decal.normal
+    inside = (depth > 0) & (s >= 0) & (s <= 1) & (t >= 0) & (t <= 1) & (np.abs(dn) <= decal.thickness)
+    if mask is not None:
+        inside &= mask.astype(bool)
+    ph, pw = patch_rgba.shape[:2]
+    sx = np.clip((s * (pw - 1)).astype(int), 0, pw - 1)
+    sy = np.clip((t * (ph - 1)).astype(int), 0, ph - 1)
+    sampled = patch_rgba[sy, sx]  # (H,W,4) nearest-neighbour patch sample
+    alpha = (sampled[:, :, 3].astype(np.float32) / 255.0) * inside
+    comp = (frame_rgb.astype(np.float32) * (1 - alpha[..., None])
+            + sampled[:, :, :3].astype(np.float32) * alpha[..., None])
+    return comp.astype(np.uint8), (alpha > 0.5).astype(np.uint8) * 255
+
+
+def pinhole_unproject(K: np.ndarray):
+    """Return ``unproject(u, v, z) -> (...,3)`` for a pinhole camera (z = metric depth along the axis)."""
+    fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
+
+    def _unproject(u, v, z):
+        return np.stack([(u - cx) / fx * z, (v - cy) / fy * z, z], axis=-1)
+
+    return _unproject
 
 
 # ---------------------------------------------------------------------------------------------------

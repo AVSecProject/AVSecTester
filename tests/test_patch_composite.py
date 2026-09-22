@@ -87,3 +87,22 @@ def test_order_quad_shared_helper():
 
     pts = np.array([[5, 5], [1, 5], [1, 1], [5, 1]], float)  # BR, BL, TL, TR scrambled
     assert np.allclose(order_quad(pts), [[1, 1], [5, 1], [5, 5], [1, 5]])  # TL, TR, BR, BL
+
+
+def test_decal_project_plane_and_occlusion():
+    """Decal on a fronto-parallel plane paints a centered block; points off the slab are skipped."""
+    from avsectester.attacks.patch_composite import DecalFrame, decal_project, pinhole_unproject
+
+    H = W = 40
+    K = np.array([[50.0, 0, 20], [0, 50.0, 20], [0, 0, 1]])
+    depth = np.full((H, W), 5.0)                 # a flat wall 5 m ahead
+    frame = np.zeros((H, W, 3), np.uint8)
+    patch = np.dstack([np.full((16, 16), 200, np.uint8)] * 3 + [np.full((16, 16), 255, np.uint8)])
+    decal = DecalFrame(origin=np.array([0, 0, 5.0]), u_axis=np.array([1.0, 0, 0]),
+                       v_axis=np.array([0, -1.0, 0]), normal=np.array([0, 0, 1.0]),
+                       size_u=1.0, size_v=1.0, thickness=0.2)
+    comp, mask = decal_project(frame, patch, depth, pinhole_unproject(K), decal)
+    assert (mask > 0).any() and (comp[mask > 0] == 200).all()   # painted where the plane is in range
+    # push the wall outside the decal slab -> nothing lands
+    _, mask_far = decal_project(frame, patch, np.full((H, W), 50.0), pinhole_unproject(K), decal)
+    assert not (mask_far > 0).any()
