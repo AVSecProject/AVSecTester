@@ -65,6 +65,66 @@ def lidar_bev(observation: Observation, size: int = 800, meters: float = 60.0) -
     return img
 
 
+def _order_quad(pts: Any) -> Any:
+    """Order 4 image points into (TL, TR, BR, BL) by pixel position — the compositor's quad order.
+
+    Geometric ordering (not physical-corner order) so the warped patch stays upright and unmirrored
+    regardless of the target's world orientation relative to the camera.
+    """
+    import numpy as np
+
+    pts = np.asarray(pts, dtype=np.float64)
+    s = pts.sum(axis=1)
+    d = pts[:, 0] - pts[:, 1]  # x - y
+    return np.stack([pts[np.argmin(s)], pts[np.argmax(d)], pts[np.argmax(s)], pts[np.argmin(d)]])
+
+
+def lead_rear_quad(
+    backend: Any, camera: str | None = None, width_frac: float = 0.8, height_frac: float = 0.55
+) -> Any:
+    """Return ``quad_of(observation) -> (4,2) px | None`` for the lead car's rear face (live actors).
+
+    The backend-specific projection injected into :func:`avsectester.simulators.viz.composite_view`:
+    reads the live CARLA camera + lead vehicle actors off ``backend`` each frame, builds the rear-face
+    quad from the lead's bounding box (a centered panel scaled by ``width_frac`` / ``height_frac``),
+    and projects it through the camera to pixels. Yields None when the face is behind the camera or
+    off-frame, so the compositor leaves that frame clean. Camera intrinsics come from the sensor's own
+    projection matrix ``P``; extrinsics from the live camera transform (CARLA UE axis convention).
+    """
+    import numpy as np
+
+    from avsectester.attacks.patch_composite import carla_cam_coords, project_to_pixels
+
+    def _quad_of(_observation: Observation) -> Any:
+        import carla  # noqa: F401 - carla.Location used below
+
+        lead = backend.lead
+        if lead is None:  # also covers pre-reset: ego/lead not spawned yet
+            return None
+        sensors = backend.ego.sensors  # read lazily: actors exist only after backend.reset()
+        sensor = sensors[camera] if camera in sensors else next(iter(sensors.values()))
+        K = np.asarray(sensor.P)[:, :3]  # avcarla packs intrinsics in the 3x4 projection matrix
+        h_img, w_img = sensor.imsize
+        bb = lead.bounding_box
+        xr = bb.location.x - bb.extent.x  # rear face plane (vehicle local, +x = forward)
+        ey, ez = bb.extent.y * width_frac, bb.extent.z * height_frac
+        cy, cz = bb.location.y, bb.location.z
+        local = [(xr, cy - ey, cz + ez), (xr, cy + ey, cz + ez),
+                 (xr, cy + ey, cz - ez), (xr, cy - ey, cz - ez)]
+        tf = lead.get_transform()
+        world = np.array([[(p := tf.transform(carla.Location(*c))).x, p.y, p.z] for c in local])
+        inv = np.array(sensor.object.get_transform().get_inverse_matrix())
+        cam_pts = carla_cam_coords(world, inv)
+        if np.any(cam_pts[:, 2] <= 0.1):  # any corner behind the camera -> skip this frame
+            return None
+        px = project_to_pixels(cam_pts, K)
+        if px[:, 0].max() < 0 or px[:, 0].min() > w_img or px[:, 1].max() < 0 or px[:, 1].min() > h_img:
+            return None
+        return _order_quad(px)
+
+    return _quad_of
+
+
 # ---------------------------------------------------------------------------------------------------
 # Scenario config helpers (pure) + preparation (CARLA)
 # ---------------------------------------------------------------------------------------------------

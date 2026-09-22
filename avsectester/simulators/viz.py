@@ -76,6 +76,28 @@ def detections_view(
     return _view
 
 
+def composite_view(
+    compositor: Any, patch_rgba: Any, quad_of: Callable[[Observation], Any], base: View = camera_view
+) -> View:
+    """Wrap a camera ``base`` view to insert a harmonized patch onto the rendered frame.
+
+    The mirror of :func:`detections_view`, at the pixel-insertion layer: ``quad_of(observation)`` gives
+    the target surface as a ``(4, 2)`` image-space quad (TL, TR, BR, BL) — the backend-specific
+    projection is injected (e.g. :func:`avsectester.simulators.carla.lead_rear_quad`), so this module
+    stays simulator-agnostic — and ``compositor`` (a
+    :class:`avsectester.attacks.patch_composite.PatchCompositor`) warps + harmonizes ``patch_rgba``
+    onto it. Returns the clean frame unchanged when ``quad_of`` yields None (target not in view)."""
+
+    def _view(observation: Observation) -> Any:
+        rgb = base(observation)
+        if rgb is None:
+            return None
+        quad = quad_of(observation)
+        return rgb if quad is None else compositor.apply(rgb, quad, patch_rgba)
+
+    return _view
+
+
 def save_image(image: Any, path: Path) -> None:
     from matplotlib import image as mpimg
 

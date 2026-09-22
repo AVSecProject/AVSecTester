@@ -31,6 +31,29 @@ def test_rear_face_quad_corners():
     assert np.allclose(q, [[-1, 1, 0], [1, 1, 0], [1, -1, 0], [-1, -1, 0]])  # TL, TR, BR, BL
 
 
+def test_composite_view_wraps_base_and_skips_when_no_quad():
+    """The generic view wrapper composites only when quad_of yields a quad; else passes the frame."""
+    from avsectester.plane import Observation
+    from avsectester.simulators.viz import composite_view
+
+    frame = np.zeros((8, 8, 3), np.uint8)
+    patched = np.ones((8, 8, 3), np.uint8)
+
+    class StubCompositor:
+        def apply(self, rgb, quad, patch):
+            return patched
+
+    obs = Observation(t=0.0, frame=0)
+    quad = np.array([[1, 1], [5, 1], [5, 5], [1, 5]], np.float32)
+
+    hit = composite_view(StubCompositor(), None, lambda _o: quad, base=lambda _o: frame)
+    miss = composite_view(StubCompositor(), None, lambda _o: None, base=lambda _o: frame)
+    none_base = composite_view(StubCompositor(), None, lambda _o: quad, base=lambda _o: None)
+    assert np.array_equal(hit(obs), patched)  # quad present -> composited
+    assert np.array_equal(miss(obs), frame)  # no quad -> clean frame unchanged
+    assert none_base(obs) is None  # base view skipped -> skip
+
+
 def test_warp_and_harmonize_under_cv2():
     pytest.importorskip("cv2")
     from avsectester.attacks.patch_composite import ClassicHarmonizer, PatchCompositor, warp_patch
