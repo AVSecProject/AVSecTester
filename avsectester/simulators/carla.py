@@ -125,6 +125,40 @@ def lead_rear_quad(
     return _quad_of
 
 
+def camera_patch_perturbation(backend: Any, compositor: Any, patch_rgba: Any, camera: str | None = None,
+                              width_frac: float = 1.0, height_frac: float = 0.95):
+    """Return ``perturb(obs) -> obs`` that composites the patch into the ego camera image.
+
+    The **Observation-level** (sensor-plane) form of the patch attack, for a closed-loop run: unlike
+    :func:`avsectester.simulators.viz.composite_view` (which only paints the visualization), this
+    rewrites the camera payload so the *AVStack itself perceives the patched frame* and acts on it.
+    Same warp + harmonize path (via ``compositor``) and same rear-face projection (:func:`lead_rear_quad`);
+    returns the frame unchanged when the target is out of view.
+    """
+    import copy as _copy
+    from dataclasses import replace
+
+    quad_of = lead_rear_quad(backend, camera, width_frac=width_frac, height_frac=height_frac)
+
+    def _perturb(observation: Observation) -> Observation:
+        data = observation.sensor_data
+        if not data:
+            return observation
+        key = camera if camera in data else next(iter(data))
+        rgb = camera_view(observation, camera)
+        quad = quad_of(observation)
+        if rgb is None or quad is None:
+            return observation
+        patched = compositor.apply(rgb, quad, patch_rgba)  # HxWx3 uint8, same channel order as rgb
+        img = _copy.copy(data[key])  # shallow-copy the ImageData; swap only its pixel buffer
+        img.data = patched
+        new_data = dict(data)
+        new_data[key] = img
+        return replace(observation, sensor_data=new_data)
+
+    return _perturb
+
+
 # ---------------------------------------------------------------------------------------------------
 # Scenario config helpers (pure) + preparation (CARLA)
 # ---------------------------------------------------------------------------------------------------

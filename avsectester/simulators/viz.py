@@ -143,7 +143,7 @@ def record_run(
     prefix: str = "frame",
     collect: bool = False,
 ) -> Trace:
-    """Drive ``stack`` in ``backend`` for ``frames`` steps, saving ``visualize(obs)`` per frame.
+    """Drive ``stack`` in ``backend`` for ``frames`` steps, saving ``visualize(seen)`` per frame.
 
     Same loop and Trace as :func:`avsectester.backend.run`; the only addition is writing each frame's
     scene view to ``out_dir`` (default ``<repo>/tmp/frames``). ``visualize`` is any backend's view.
@@ -159,7 +159,7 @@ def record_run(
     for i in range(frames):
         seen = perturb(obs) if perturb is not None else obs
         control = stack(seen)
-        image = visualize(obs)
+        image = visualize(seen)  # visualize what the stack perceives (== obs when no perturb)
         if image is not None:
             save_image(image, out / f"{prefix}_{i:04d}.png")
             if collect:

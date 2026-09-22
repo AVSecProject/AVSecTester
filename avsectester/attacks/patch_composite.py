@@ -140,35 +140,84 @@ class LibcomHarmonizer(Harmonizer):
         self.model = model
         self.strict = strict  # True -> raise instead of silently falling back (for validation)
         self._fallback = ClassicHarmonizer()
+        self._proc = None  # persistent worker (model stays resident across frames)
+        self._tmp = None
+        self._n = 0
 
-    def __call__(self, composite_rgb, mask, background_rgb):
+    def _worker(self):
+        """Lazily start (or restart) the resident libcom server; returns the live process."""
         import subprocess
         import tempfile
+        from pathlib import Path
+
+        if self._proc is not None and self._proc.poll() is None:
+            return self._proc
+        script = Path(__file__).resolve().parents[2] / "scripts" / "libcom_harmonize.py"
+        # -u + --no-capture-output so READY/OK flush straight through conda's wrapper
+        self._proc = subprocess.Popen(
+            ["conda", "run", "--no-capture-output", "-n", self.env, "python", "-u", str(script),
+             "--serve", "--model", self.model],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1,
+        )
+        self._tmp = self._tmp or tempfile.mkdtemp(prefix="libcom_hz_")
+        for _ in range(2000):  # skip library banner noise on stdout until the READY sentinel
+            line = self._proc.stdout.readline()
+            if line == "":  # EOF: the worker died before signaling ready
+                raise RuntimeError("libcom worker exited before READY")
+            if line.strip() == "READY":
+                log.info("libcom %s worker ready (env=%s)", self.model, self.env)
+                return self._proc
+        raise RuntimeError("libcom worker never signaled READY")
+
+    def __call__(self, composite_rgb, mask, background_rgb):
         from pathlib import Path
 
         from PIL import Image
 
         try:
-            with tempfile.TemporaryDirectory() as d:
-                dp = Path(d)
-                Image.fromarray(composite_rgb).save(dp / "comp.png")
-                Image.fromarray(mask).save(dp / "mask.png")
-                script = Path(__file__).resolve().parents[2] / "scripts" / "libcom_harmonize.py"
-                subprocess.run(
-                    ["conda", "run", "-n", self.env, "python", str(script),
-                     "--comp", str(dp / "comp.png"), "--mask", str(dp / "mask.png"),
-                     "--out", str(dp / "out.png"), "--model", self.model],
-                    check=True, capture_output=True, timeout=300, text=True,
-                )
-                out = np.asarray(Image.open(dp / "out.png").convert("RGB"))
-                log.info("harmonized with libcom %s (env=%s)", self.model, self.env)
-                return out
+            proc = self._worker()
+            self._n += 1
+            d = Path(self._tmp)
+            comp_p, mask_p, out_p = d / f"c{self._n}.png", d / f"m{self._n}.png", d / f"o{self._n}.png"
+            Image.fromarray(composite_rgb).save(comp_p)
+            Image.fromarray(mask).save(mask_p)
+            proc.stdin.write(f"{comp_p}\t{mask_p}\t{out_p}\n")
+            proc.stdin.flush()
+            resp = ""
+            for _ in range(2000):  # skip any per-inference stdout noise until OK / ERR
+                line = proc.stdout.readline()
+                if line == "":
+                    raise RuntimeError("libcom worker died mid-request")
+                resp = line.strip()
+                if resp == "OK" or resp.startswith("ERR"):
+                    break
+            if resp != "OK":
+                raise RuntimeError(f"libcom worker: {resp!r}")
+            out = np.asarray(Image.open(out_p).convert("RGB"))
+            log.info("harmonized frame with libcom %s", self.model)
+            return out
         except Exception as exc:  # noqa: BLE001
-            detail = getattr(exc, "stderr", "") or str(exc)
             if self.strict:  # validation mode: never hide a failure behind the classic blend
-                raise RuntimeError(f"libcom {self.model} harmonization failed: {detail}") from exc
-            log.warning("libcom %s failed (%s) -> classic fallback", self.model, detail[-300:])
+                raise RuntimeError(f"libcom {self.model} harmonization failed: {exc}") from exc
+            log.warning("libcom %s failed (%s) -> classic fallback", self.model, str(exc)[-300:])
             return self._fallback(composite_rgb, mask, background_rgb)
+
+    def close(self) -> None:
+        """Shut the resident worker down (also happens on GC)."""
+        if self._proc is not None and self._proc.poll() is None:
+            try:
+                self._proc.stdin.write("QUIT\n")
+                self._proc.stdin.flush()
+                self._proc.wait(timeout=10)
+            except Exception:  # noqa: BLE001 - best-effort teardown
+                self._proc.kill()
+        self._proc = None
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 # ---------------------------------------------------------------------------------------------------
