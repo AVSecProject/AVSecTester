@@ -66,7 +66,7 @@ def lidar_bev(observation: Observation, size: int = 800, meters: float = 60.0) -
 
 
 def lead_rear_quad(
-    backend: Any, camera: str | None = None, width_frac: float = 0.8, height_frac: float = 0.55
+    backend: Any, camera: str | None = None, width_frac: float = 0.5, height_frac: float = 0.42
 ) -> Any:
     """Return ``quad_of(observation) -> (4,2) px | None`` for the lead car's rear face (live actors).
 
@@ -402,9 +402,11 @@ class CarlaBackend(WorldBackend):
         # transform which still reads the origin at this point).
         ego_tf = self.ego.spawn_transform
         fwd = ego_tf.get_forward_vector()
+        right = ego_tf.get_right_vector()
+        lateral = float(cfg.get("lateral", 0.0))  # sideways offset -> the ego sees the rear obliquely
         loc = carla.Location(
-            ego_tf.location.x + fwd.x * gap,
-            ego_tf.location.y + fwd.y * gap,
+            ego_tf.location.x + fwd.x * gap + right.x * lateral,
+            ego_tf.location.y + fwd.y * gap + right.y * lateral,
             ego_tf.location.z + 0.3,
         )
         bp = world.get_blueprint_library().filter(vehicle)[0]

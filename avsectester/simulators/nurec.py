@@ -136,15 +136,18 @@ def _quat_to_R(w: float, x: float, y: float, z: float):
     ])
 
 
-def nurec_panel_quad(renderer: NuRecRenderer, ahead: float = 12.0, half_w: float = 0.9,
-                     z_lo: float = 0.5, z_hi: float = 2.3):
+def nurec_panel_quad(renderer: NuRecRenderer, ahead: float = 10.0, half_w: float = 0.65,
+                     z_lo: float = 0.7, z_hi: float = 1.7, yaw: float = 0.5):
     """Return ``quad_of(obs) -> (4,2) px | None`` for a fixed world panel ahead of the ego.
 
     The NuRec analog of :func:`avsectester.simulators.carla.lead_rear_quad`: since the render API
     exposes no actor 3-D boxes, the patch target is a **virtual panel** planted in the reconstructed
-    scene ``ahead`` metres in front of the ego start (a billboard / stand-in lead surface). Each frame
-    it composes the ego rig pose with the camera extrinsic, transforms the panel corners world->camera,
-    and projects through the f-theta model. Reads the renderer's spec lazily (populated at reset).
+    scene ``ahead`` metres in front of the ego start (a billboard / stand-in lead surface), a modest
+    ``half_w`` × (``z_hi`` − ``z_lo``) poster turned ``yaw`` radians about the vertical so it is seen
+    obliquely — the projection is then a foreshortened trapezoid that reads as a real angled surface,
+    not a fronto-parallel sticker. Each frame it composes the ego rig pose with the camera extrinsic,
+    transforms the panel corners world->camera, and projects through the f-theta model. Reads the
+    renderer's spec lazily (populated at reset).
     """
     import numpy as np
 
@@ -168,9 +171,12 @@ def nurec_panel_quad(renderer: NuRecRenderer, ahead: float = 12.0, half_w: float
         rig_t = np.array([pose.x, pose.y, z0])
         world_cam_R = rig_R @ r2c_R                 # camera->world
         world_cam_t = rig_t + rig_R @ r2c_t
-        # fixed world panel ahead of the start pose, upright, lane-centered (rig +x fwd, +y left, +z up)
-        panel = np.array([[ahead, half_w, z_hi], [ahead, -half_w, z_hi],
-                          [ahead, -half_w, z_lo], [ahead, half_w, z_lo]])
+        # world panel ahead of the start pose (rig +x fwd, +y left, +z up), turned by `yaw` about the
+        # vertical so the plane is seen obliquely -> a foreshortened (trapezoidal) warp that reads as a
+        # real angled surface rather than a fronto-parallel sticker. u = in-plane horizontal direction.
+        u = np.array([math.sin(yaw), math.cos(yaw), 0.0])
+        panel = np.array([[ahead, 0.0, z_hi] - half_w * u, [ahead, 0.0, z_hi] + half_w * u,
+                          [ahead, 0.0, z_lo] + half_w * u, [ahead, 0.0, z_lo] - half_w * u])
         pc = (panel - world_cam_t) @ world_cam_R    # world->camera (R^T (P - t))
         px, z = ftheta_project(pc, pp, poly)
         if np.any(z <= 0.1):                        # any corner behind the camera -> skip
