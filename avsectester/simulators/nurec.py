@@ -204,17 +204,61 @@ def nurec_road_decal(renderer: NuRecRenderer, observation: Observation, ahead: f
     u_c = Rt @ u_w  # directions: rotation only
     v_c = Rt @ left if yaw == 0 else Rt @ (-math.sin(yaw) * fwd + math.cos(yaw) * left)
     n_c = Rt @ up_w
-    decal = DecalFrame(origin=o_c, u_axis=u_c, v_axis=v_c, normal=n_c,
-                       size_u=size_u, size_v=size_v, thickness=0.05)
+    return _ftheta_plane_decal(spec, o_c, u_c, v_c, n_c, size_u, size_v, thickness=0.05)
 
+
+def _ftheta_plane_decal(spec, o_c, u_c, v_c, n_c, size_u, size_v, thickness):
+    """Shared core: intersect every f-theta ray with the camera-frame plane ``(o_c, n_c)`` and return
+    ``(xyz (H,W,3), DecalFrame)`` for :func:`decal_project`. Used by the road and vehicle decals."""
+    import numpy as np
+
+    from avsectester.attacks.patch_composite import DecalFrame
+
+    fp = spec.ftheta_param
     rays = ftheta_rays(spec.resolution_w, spec.resolution_h,
                        (fp.principal_point_x, fp.principal_point_y), list(fp.pixeldist_to_angle_poly))
     denom = rays @ n_c
     with np.errstate(divide="ignore", invalid="ignore"):
-        tdist = (o_c @ n_c) / denom          # ray-plane intersection distance
-    tdist = np.where(denom < -1e-6, tdist, -1.0)  # only rays pointing at the ground (denom<0) hit it
-    xyz = tdist[..., None] * rays              # camera-frame ground points (z<=0 rows -> behind, culled)
+        tdist = (o_c @ n_c) / denom               # ray-plane intersection distance
+    tdist = np.where(np.abs(denom) > 1e-6, tdist, -1.0)
+    tdist = np.where(tdist > 0, tdist, -1.0)      # keep only intersections in front of the camera
+    xyz = tdist[..., None] * rays
+    decal = DecalFrame(origin=o_c, u_axis=u_c, v_axis=v_c, normal=n_c,
+                       size_u=size_u, size_v=size_v, thickness=thickness)
     return xyz, decal
+
+
+def nurec_vehicle_decal(renderer: NuRecRenderer, observation: Observation,
+                        size_u: float = 1.0, size_v: float = 0.8):
+    """Build ``(xyz, decal)`` for a per-pixel decal on the **rear of the vehicle ahead** (for
+    ``decal_project``). NuRec has no actor boxes, so the obstacle is located from a lidar sweep: the
+    reconstruction's own metric points, transformed rig->camera by ``rig_to_camera``. The nearest
+    ahead, lane-centred, above-road cluster is the lead's rear; it is modelled as a vertical plane
+    facing the ego and the patch is f-theta ray-projected onto it. Returns None if no vehicle is found."""
+    import numpy as np
+
+    r2c = getattr(renderer, "_rig_to_camera", None)
+    spec = getattr(renderer, "_spec", None)
+    if r2c is None or spec is None:
+        return None
+    pts_rig = renderer.render_lidar_points(observation.vehicle_state)  # (N,3) rig frame
+    r = _quat_to_R(r2c.quat.w, r2c.quat.x, r2c.quat.y, r2c.quat.z)
+    t = np.array([r2c.vec.x, r2c.vec.y, r2c.vec.z])
+    pc = (pts_rig - t) @ r                       # camera frame (x right, y down, z fwd)
+    x, y, z = pc[:, 0], pc[:, 1], pc[:, 2]
+    # the lead's rear: ahead (z), near lane centre (|x|), and ABOVE the road (y is down; road is ~+1.5,
+    # so the vehicle body is y < ~0.9) but below the cabin top — this excludes the road surface.
+    m = (z > 2.5) & (z < 25.0) & (np.abs(x) < 1.0) & (y > -2.5) & (y < 0.6)
+    if int(m.sum()) < 25:
+        return None
+    zc = float(np.median(z[m]))                  # the lead's distance = the bulk of the ahead cluster
+    face = m & (np.abs(z - zc) < 1.2)            # points on the rear face
+    # lidar rings sample the vehicle low, so the cluster centroid sits near its base — lift the decal
+    # centre up onto the body by half its height so the patch lands on the rear panel, not the road.
+    o_c = np.array([float(np.median(x[face])), float(np.median(y[face])) - 0.5 * size_v,
+                    float(np.median(z[face]))])
+    return _ftheta_plane_decal(spec, o_c, np.array([1.0, 0.0, 0.0]), np.array([0.0, -1.0, 0.0]),
+                               np.array([0.0, 0.0, -1.0]), size_u, size_v, thickness=0.6)
 
 
 def nurec_panel_quad(renderer: NuRecRenderer, ahead: float = 10.0, half_w: float = 0.65,
@@ -398,7 +442,10 @@ class NuRecRenderer(Renderer):
         import grpc
         from alpasim_grpc.v0 import common_pb2, sensorsim_pb2, sensorsim_pb2_grpc
 
-        self._stub = sensorsim_pb2_grpc.SensorsimServiceStub(grpc.insecure_channel(self.endpoint))
+        # a lidar sweep can exceed gRPC's 4 MB default; raise the receive limit
+        channel = grpc.insecure_channel(
+            self.endpoint, options=[("grpc.max_receive_message_length", 256 * 1024 * 1024)])
+        self._stub = sensorsim_pb2_grpc.SensorsimServiceStub(channel)
         available = list(self._stub.get_available_scenes(common_pb2.Empty()).scene_ids)
         want = scene or self.scene_id
         self.scene_id = next((s for s in available if want and want in s), available[0])
@@ -455,3 +502,29 @@ class NuRecRenderer(Renderer):
         ret = self._stub.render_rgb(req)
         img = cv2.imdecode(np.frombuffer(ret.image_bytes, np.uint8), cv2.IMREAD_COLOR)
         return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)  # HWC uint8 RGB for the AV stack
+
+    def render_lidar_points(self, pose: EgoPose):
+        """Render one lidar sweep at the ego ``pose``; return ``(N,3)`` points in the **rig frame**
+        (x fwd, y left, z up). The scene's own metric geometry — the only per-object depth NuRec
+        exposes — used to locate obstacles (there are no actor boxes / depth maps)."""
+        import math
+
+        import numpy as np
+        from alpasim_grpc.v0 import common_pb2, sensorsim_pb2
+
+        z = self._start_pose.vec.z if self._start_pose is not None else 0.0
+        rig = common_pb2.Pose(  # place the lidar at the rig pose, so points come back in the rig frame
+            vec=common_pb2.Vec3(x=pose.x, y=pose.y, z=z),
+            quat=common_pb2.Quat(w=math.cos(pose.yaw / 2), x=0.0, y=0.0, z=math.sin(pose.yaw / 2)),
+        )
+        frame_us = self._t0 + int(pose.t * 1e6)
+        req = sensorsim_pb2.LidarRenderRequest(
+            scene_id=self.scene_id,
+            lidar_config=sensorsim_pb2.LidarSpec(lidar_type=sensorsim_pb2.LidarDeviceType.PANDAR128),
+            frame_start_us=frame_us, frame_end_us=frame_us + 100000,
+            sensor_pose=sensorsim_pb2.PosePair(start_pose=rig, end_pose=rig),
+        )
+        ret = self._stub.render_lidar(req)
+        if ret.point_xyzs_buffer:
+            return np.frombuffer(ret.point_xyzs_buffer, np.float32).reshape(-1, 3).astype(np.float64)
+        return np.asarray(ret.point_xyzs, np.float64).reshape(-1, 3)
