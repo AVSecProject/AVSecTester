@@ -126,6 +126,10 @@ class LibcomHarmonizer(Harmonizer):
     libcom's deps (mmdet 3.2 / mmpose / diffusers) conflict with the avstack stack, so it lives in its
     own env and we shell out: write composite+mask to temp PNGs, run ``scripts/libcom_harmonize.py`` in
     ``env``, read back the harmonized PNG. Falls back to ``ClassicHarmonizer`` if the call fails.
+
+    Set the env up once with ``scripts/setup_libcom_env.sh`` (installs the AVSecProject/libcom fork,
+    which fixes the upstream packaging + HF-download bugs). PCTNet gives a milder, texture-preserving
+    harmonization than the classic Poisson blend — better for keeping an adversarial pattern intact.
     """
 
     def __init__(self, env: str = "libcom", model: str = "PCTNet") -> None:
