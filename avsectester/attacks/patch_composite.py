@@ -103,22 +103,32 @@ class DecalFrame:
 def decal_project(frame_rgb, patch_rgba, depth, unproject, decal: DecalFrame, mask=None):
     """Per-pixel decal projection: warp the patch onto the *real surface*, every pixel independently.
 
-    Unlike :func:`warp_patch` (a single planar homography — exact only for a flat quad), this uses the
-    per-pixel ``depth`` to back-project each pixel to its true 3-D point (``unproject(u, v, d) ->
-    (H,W,3)`` camera-frame), expresses it in the ``decal`` frame to get patch UVs, and samples the patch
-    there. A pixel is painted only if its UV is in range **and** it lies within ``decal.thickness`` of
-    the surface plane — so the patch follows curvature/relief, foreshortens per pixel, and clips to the
-    true silhouette (occlusion-correct: a nearer object in front is not painted). ``mask`` optionally
-    restricts to the target object (e.g. a segmentation mask). Returns ``(composite_rgb, mask uint8)``.
+    Unlike :func:`warp_patch` (a single planar homography — exact only for a flat quad seen by a
+    pinhole), each pixel is placed at its true 3-D point, expressed in the ``decal`` frame to get patch
+    UVs, then the patch is sampled there. A pixel is painted only if its UV is in range **and** it lies
+    within ``decal.thickness`` of the surface plane — so the patch follows curvature/relief, foreshortens
+    per pixel, and clips to the true silhouette (occlusion-correct). ``mask`` optionally restricts to the
+    target object. Two ways to supply the geometry:
+      * ``unproject`` given: ``depth`` is an ``HxW`` metric depth map and ``unproject(u, v, d)->(H,W,3)``
+        back-projects it (e.g. :func:`pinhole_unproject` for a CARLA depth camera);
+      * ``unproject=None``: ``depth`` is already an ``(H,W,3)`` camera-frame point map (e.g. f-theta
+        rays intersected with a known plane — the NuRec road path, where no depth sensor exists).
+    Returns ``(composite_rgb, mask uint8)``.
     """
-    h, w = depth.shape
-    uu, vv = np.meshgrid(np.arange(w), np.arange(h))
-    xyz = unproject(uu, vv, depth)  # (H,W,3) camera-frame points
+    depth = np.asarray(depth, dtype=np.float64)
+    if unproject is None:  # `depth` is already the (H,W,3) camera-frame point map
+        xyz = depth
+        z = xyz[:, :, 2]
+    else:
+        h, w = depth.shape
+        uu, vv = np.meshgrid(np.arange(w), np.arange(h))
+        xyz = unproject(uu, vv, depth)  # (H,W,3) camera-frame points
+        z = depth
     rel = xyz - np.asarray(decal.origin, dtype=np.float64)
     s = (rel @ decal.u_axis) / decal.size_u + 0.5
     t = 0.5 - (rel @ decal.v_axis) / decal.size_v
     dn = rel @ decal.normal
-    inside = (depth > 0) & (s >= 0) & (s <= 1) & (t >= 0) & (t <= 1) & (np.abs(dn) <= decal.thickness)
+    inside = (z > 0) & (s >= 0) & (s <= 1) & (t >= 0) & (t <= 1) & (np.abs(dn) <= decal.thickness)
     if mask is not None:
         inside &= mask.astype(bool)
     ph, pw = patch_rgba.shape[:2]

@@ -106,3 +106,13 @@ def test_decal_project_plane_and_occlusion():
     # push the wall outside the decal slab -> nothing lands
     _, mask_far = decal_project(frame, patch, np.full((H, W), 50.0), pinhole_unproject(K), decal)
     assert not (mask_far > 0).any()
+
+
+def test_ftheta_rays_inverse():
+    """f-theta rays: optical-axis pixel -> +z; ftheta_project should round-trip the ray back."""
+    from avsectester.simulators.nurec import ftheta_rays
+
+    rays = ftheta_rays(60, 40, (30, 20), [0.0, 0.002])
+    assert np.allclose(rays[20, 30], [0, 0, 1], atol=1e-6)     # principal point -> optical axis
+    assert np.all(np.abs(np.linalg.norm(rays, axis=-1) - 1) < 1e-6)  # unit rays
+    assert rays[35, 30, 1] > 0 and rays[5, 30, 1] < 0          # lower pixels look down, upper look up

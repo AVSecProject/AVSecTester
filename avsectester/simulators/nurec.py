@@ -126,6 +126,21 @@ def ftheta_project(pts_cam: Any, principal_point: tuple, angle_to_pixeldist_poly
     return px, z
 
 
+def ftheta_rays(width: int, height: int, principal_point: tuple, pixeldist_to_angle_poly: list):
+    """Per-pixel **unit ray directions** (camera frame) for an f-theta camera — the inverse of
+    :func:`ftheta_project`. Uses the backward polynomial ``theta(r) = sum(b[i]·r^i)`` (pixel radius ->
+    angle from the +z axis); the ray is ``(sinθ·cosφ, sinθ·sinφ, cosθ)`` at azimuth φ. ``(H,W,3)``."""
+    import numpy as np
+
+    uu, vv = np.meshgrid(np.arange(width), np.arange(height))
+    du, dv = uu - principal_point[0], vv - principal_point[1]
+    r = np.hypot(du, dv)
+    theta = sum(b * r**i for i, b in enumerate(pixeldist_to_angle_poly))
+    phi = np.arctan2(dv, du)
+    st = np.sin(theta)
+    return np.stack([st * np.cos(phi), st * np.sin(phi), np.cos(theta)], axis=-1)
+
+
 def _quat_to_R(w: float, x: float, y: float, z: float):
     import numpy as np
 
@@ -134,6 +149,72 @@ def _quat_to_R(w: float, x: float, y: float, z: float):
         [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
         [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
     ])
+
+
+def _ego_world_to_cam(renderer: NuRecRenderer, pose):
+    """(world_to_cam rotation Rᵀ, camera-centre translation) for the ego ``pose`` — shared by the NuRec
+    projectors. Composes the ego rig pose with ``rig_to_camera`` (camera->world), then inverts."""
+    import numpy as np
+
+    r2c = renderer._rig_to_camera
+    r2c_R = _quat_to_R(r2c.quat.w, r2c.quat.x, r2c.quat.y, r2c.quat.z)
+    r2c_t = np.array([r2c.vec.x, r2c.vec.y, r2c.vec.z])
+    z0 = renderer._start_pose.vec.z if renderer._start_pose is not None else 0.0
+    c, s = math.cos(pose.yaw), math.sin(pose.yaw)
+    rig_R = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+    rig_t = np.array([pose.x, pose.y, z0])
+    world_cam_R = rig_R @ r2c_R          # camera -> world
+    world_cam_t = rig_t + rig_R @ r2c_t
+    return world_cam_R.T, world_cam_t     # X_cam = R.T @ (X_world - t)
+
+
+def nurec_road_decal(renderer: NuRecRenderer, observation: Observation, ahead: float = 4.5,
+                     lateral: float = 0.0, size_u: float = 1.6, size_v: float = 0.9,
+                     yaw: float = 0.0):
+    """Build ``(xyz, decal)`` for a **per-pixel road decal** ahead of the ego (for ``decal_project``).
+
+    NuRec exposes no depth sensor, but the road plane is known exactly (``z=0`` in the rig frame, camera
+    ~1.6 m above it). So every pixel's f-theta ray is intersected with that plane to get its true 3-D
+    ground point — the patch then conforms to the road per pixel with correct fisheye curvature and
+    foreshortening (a homography can't, and is wrong for a fisheye). ``size_u`` runs along the lane,
+    ``size_v`` across it. Returns ``(xyz (H,W,3), DecalFrame)`` or None before the scene is loaded.
+    """
+    import numpy as np
+
+    from avsectester.attacks.patch_composite import DecalFrame
+
+    spec = getattr(renderer, "_spec", None)
+    if spec is None or getattr(renderer, "_rig_to_camera", None) is None:
+        return None
+    fp = spec.ftheta_param
+    pose = observation.vehicle_state
+    Rt, cam_t = _ego_world_to_cam(renderer, pose)
+
+    # decal frame on the road (world): centre ahead (+ lateral) of the ego, axes along/across the lane.
+    fwd = np.array([math.cos(pose.yaw), math.sin(pose.yaw), 0.0])
+    left = np.array([-math.sin(pose.yaw), math.cos(pose.yaw), 0.0])
+    u_w = math.cos(yaw) * fwd + math.sin(yaw) * left  # in-plane "along" direction, optionally turned
+    o_w = np.array([pose.x, pose.y, 0.0]) + ahead * fwd + lateral * left
+    up_w = np.array([0.0, 0.0, 1.0])
+
+    def to_cam(pt):
+        return Rt @ (pt - cam_t)
+
+    o_c = to_cam(o_w)
+    u_c = Rt @ u_w  # directions: rotation only
+    v_c = Rt @ left if yaw == 0 else Rt @ (-math.sin(yaw) * fwd + math.cos(yaw) * left)
+    n_c = Rt @ up_w
+    decal = DecalFrame(origin=o_c, u_axis=u_c, v_axis=v_c, normal=n_c,
+                       size_u=size_u, size_v=size_v, thickness=0.05)
+
+    rays = ftheta_rays(spec.resolution_w, spec.resolution_h,
+                       (fp.principal_point_x, fp.principal_point_y), list(fp.pixeldist_to_angle_poly))
+    denom = rays @ n_c
+    with np.errstate(divide="ignore", invalid="ignore"):
+        tdist = (o_c @ n_c) / denom          # ray-plane intersection distance
+    tdist = np.where(denom < -1e-6, tdist, -1.0)  # only rays pointing at the ground (denom<0) hit it
+    xyz = tdist[..., None] * rays              # camera-frame ground points (z<=0 rows -> behind, culled)
+    return xyz, decal
 
 
 def nurec_panel_quad(renderer: NuRecRenderer, ahead: float = 10.0, half_w: float = 0.65,
@@ -159,25 +240,16 @@ def nurec_panel_quad(renderer: NuRecRenderer, ahead: float = 10.0, half_w: float
         if r2c is None or spec is None:
             return None
         fp = spec.ftheta_param
-        r2c_R = _quat_to_R(r2c.quat.w, r2c.quat.x, r2c.quat.y, r2c.quat.z)
-        r2c_t = np.array([r2c.vec.x, r2c.vec.y, r2c.vec.z])
         pp = (fp.principal_point_x, fp.principal_point_y)
         poly = list(fp.angle_to_pixeldist_poly)
-        z0 = renderer._start_pose.vec.z if renderer._start_pose is not None else 0.0
-
-        pose = observation.vehicle_state  # EgoPose (scene world frame)
-        c, s = math.cos(pose.yaw), math.sin(pose.yaw)
-        rig_R = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
-        rig_t = np.array([pose.x, pose.y, z0])
-        world_cam_R = rig_R @ r2c_R                 # camera->world
-        world_cam_t = rig_t + rig_R @ r2c_t
+        rt, cam_t = _ego_world_to_cam(renderer, observation.vehicle_state)
         # world panel ahead of the start pose (rig +x fwd, +y left, +z up), turned by `yaw` about the
         # vertical so the plane is seen obliquely -> a foreshortened (trapezoidal) warp that reads as a
         # real angled surface rather than a fronto-parallel sticker. u = in-plane horizontal direction.
         u = np.array([math.sin(yaw), math.cos(yaw), 0.0])
         panel = np.array([[ahead, 0.0, z_hi] - half_w * u, [ahead, 0.0, z_hi] + half_w * u,
                           [ahead, 0.0, z_lo] + half_w * u, [ahead, 0.0, z_lo] - half_w * u])
-        pc = (panel - world_cam_t) @ world_cam_R    # world->camera (R^T (P - t))
+        pc = (panel - cam_t) @ rt.T                 # world->camera: Rᵀ(P - t) per corner
         px, z = ftheta_project(pc, pp, poly)
         if np.any(z <= 0.1):                        # any corner behind the camera -> skip
             return None
