@@ -16,9 +16,12 @@ cv2/skimage are imported lazily, so this module imports without them.
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 
 import numpy as np
+
+log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -132,9 +135,10 @@ class LibcomHarmonizer(Harmonizer):
     harmonization than the classic Poisson blend — better for keeping an adversarial pattern intact.
     """
 
-    def __init__(self, env: str = "libcom", model: str = "PCTNet") -> None:
+    def __init__(self, env: str = "libcom", model: str = "PCTNet", strict: bool = False) -> None:
         self.env = env
         self.model = model
+        self.strict = strict  # True -> raise instead of silently falling back (for validation)
         self._fallback = ClassicHarmonizer()
 
     def __call__(self, composite_rgb, mask, background_rgb):
@@ -154,10 +158,16 @@ class LibcomHarmonizer(Harmonizer):
                     ["conda", "run", "-n", self.env, "python", str(script),
                      "--comp", str(dp / "comp.png"), "--mask", str(dp / "mask.png"),
                      "--out", str(dp / "out.png"), "--model", self.model],
-                    check=True, capture_output=True, timeout=300,
+                    check=True, capture_output=True, timeout=300, text=True,
                 )
-                return np.asarray(Image.open(dp / "out.png").convert("RGB"))
-        except Exception:  # noqa: BLE001 - out-of-process harmonizer failed; keep the pipeline reliable
+                out = np.asarray(Image.open(dp / "out.png").convert("RGB"))
+                log.info("harmonized with libcom %s (env=%s)", self.model, self.env)
+                return out
+        except Exception as exc:  # noqa: BLE001
+            detail = getattr(exc, "stderr", "") or str(exc)
+            if self.strict:  # validation mode: never hide a failure behind the classic blend
+                raise RuntimeError(f"libcom {self.model} harmonization failed: {detail}") from exc
+            log.warning("libcom %s failed (%s) -> classic fallback", self.model, detail[-300:])
             return self._fallback(composite_rgb, mask, background_rgb)
 
 
