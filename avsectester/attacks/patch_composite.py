@@ -235,6 +235,18 @@ class PatchCompositor:
         return self.harmonizer(composite, mask, frame_rgb)
 
 
+def order_quad(pts: np.ndarray) -> np.ndarray:
+    """Order 4 image points into (TL, TR, BR, BL) — the warp's quad order.
+
+    Geometric ordering (by pixel position, not physical-corner identity) so the warped patch stays
+    upright and unmirrored regardless of the target's world orientation relative to the camera.
+    """
+    p = np.asarray(pts, dtype=np.float64)
+    s = p.sum(axis=1)
+    d = p[:, 0] - p[:, 1]  # x - y
+    return np.stack([p[np.argmin(s)], p[np.argmax(d)], p[np.argmax(s)], p[np.argmin(d)]])
+
+
 def rear_face_quad(center: np.ndarray, right: np.ndarray, up: np.ndarray) -> np.ndarray:
     """4 world-space corners (TL, TR, BR, BL) of a planar patch given its center + right/up half-edges."""
     c, r, u = (np.asarray(v, dtype=np.float64) for v in (center, right, up))

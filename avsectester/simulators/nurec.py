@@ -105,6 +105,81 @@ class TrajectoryFollower:
         return pts[-1][1], pts[-1][2]
 
 
+def ftheta_project(pts_cam: Any, principal_point: tuple, angle_to_pixeldist_poly: list):
+    """Project camera-frame points through an NVIDIA f-theta (fisheye) camera to pixels.
+
+    f-theta maps the ray's angle from the optical axis (+z) to a radial pixel distance via a forward
+    polynomial: ``r(theta) = sum(a[i] * theta**i)``; the pixel is that radius from the principal point
+    along the ray's image-plane direction. Returns ``(px (N,2), z)`` — ``z`` (camera depth) is returned
+    so callers can cull points behind the camera. Validated against a live NuRec render.
+    """
+    import numpy as np
+
+    p = np.asarray(pts_cam, dtype=np.float64)
+    x, y, z = p[:, 0], p[:, 1], p[:, 2]
+    rho = np.hypot(x, y)
+    theta = np.arctan2(rho, z)  # angle from the +z optical axis
+    r = sum(c * theta**i for i, c in enumerate(angle_to_pixeldist_poly))
+    ux = np.where(rho > 1e-9, x / rho, 0.0)
+    uy = np.where(rho > 1e-9, y / rho, 0.0)
+    px = np.stack([principal_point[0] + r * ux, principal_point[1] + r * uy], axis=1)
+    return px, z
+
+
+def _quat_to_R(w: float, x: float, y: float, z: float):
+    import numpy as np
+
+    return np.array([
+        [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+        [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+        [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+    ])
+
+
+def nurec_panel_quad(renderer: "NuRecRenderer", ahead: float = 12.0, half_w: float = 0.9,
+                     z_lo: float = 0.5, z_hi: float = 2.3):
+    """Return ``quad_of(obs) -> (4,2) px | None`` for a fixed world panel ahead of the ego.
+
+    The NuRec analog of :func:`avsectester.simulators.carla.lead_rear_quad`: since the render API
+    exposes no actor 3-D boxes, the patch target is a **virtual panel** planted in the reconstructed
+    scene ``ahead`` metres in front of the ego start (a billboard / stand-in lead surface). Each frame
+    it composes the ego rig pose with the camera extrinsic, transforms the panel corners world->camera,
+    and projects through the f-theta model. Reads the renderer's spec lazily (populated at reset).
+    """
+    import numpy as np
+
+    from avsectester.attacks.patch_composite import order_quad
+
+    def quad_of(observation: Observation) -> Any:
+        r2c = getattr(renderer, "_rig_to_camera", None)
+        spec = getattr(renderer, "_spec", None)
+        if r2c is None or spec is None:
+            return None
+        fp = spec.ftheta_param
+        r2c_R = _quat_to_R(r2c.quat.w, r2c.quat.x, r2c.quat.y, r2c.quat.z)
+        r2c_t = np.array([r2c.vec.x, r2c.vec.y, r2c.vec.z])
+        pp = (fp.principal_point_x, fp.principal_point_y)
+        poly = list(fp.angle_to_pixeldist_poly)
+        z0 = renderer._start_pose.vec.z if renderer._start_pose is not None else 0.0
+
+        pose = observation.vehicle_state  # EgoPose (scene world frame)
+        c, s = math.cos(pose.yaw), math.sin(pose.yaw)
+        rig_R = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+        rig_t = np.array([pose.x, pose.y, z0])
+        world_cam_R = rig_R @ r2c_R                 # camera->world
+        world_cam_t = rig_t + rig_R @ r2c_t
+        # fixed world panel ahead of the start pose, upright, lane-centered (rig +x fwd, +y left, +z up)
+        panel = np.array([[ahead, half_w, z_hi], [ahead, -half_w, z_hi],
+                          [ahead, -half_w, z_lo], [ahead, half_w, z_lo]])
+        pc = (panel - world_cam_t) @ world_cam_R    # world->camera (R^T (P - t))
+        px, z = ftheta_project(pc, pp, poly)
+        if np.any(z <= 0.1):                        # any corner behind the camera -> skip
+            return None
+        return order_quad(px)
+
+    return quad_of
+
+
 class Renderer(ABC):
     """Renders sensor observations from the reconstructed scene at a given ego pose."""
 

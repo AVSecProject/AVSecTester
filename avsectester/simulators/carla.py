@@ -65,20 +65,6 @@ def lidar_bev(observation: Observation, size: int = 800, meters: float = 60.0) -
     return img
 
 
-def _order_quad(pts: Any) -> Any:
-    """Order 4 image points into (TL, TR, BR, BL) by pixel position — the compositor's quad order.
-
-    Geometric ordering (not physical-corner order) so the warped patch stays upright and unmirrored
-    regardless of the target's world orientation relative to the camera.
-    """
-    import numpy as np
-
-    pts = np.asarray(pts, dtype=np.float64)
-    s = pts.sum(axis=1)
-    d = pts[:, 0] - pts[:, 1]  # x - y
-    return np.stack([pts[np.argmin(s)], pts[np.argmax(d)], pts[np.argmax(s)], pts[np.argmin(d)]])
-
-
 def lead_rear_quad(
     backend: Any, camera: str | None = None, width_frac: float = 0.8, height_frac: float = 0.55
 ) -> Any:
@@ -93,7 +79,7 @@ def lead_rear_quad(
     """
     import numpy as np
 
-    from avsectester.attacks.patch_composite import carla_cam_coords, project_to_pixels
+    from avsectester.attacks.patch_composite import carla_cam_coords, order_quad, project_to_pixels
 
     def _quad_of(_observation: Observation) -> Any:
         import carla  # noqa: F401 - carla.Location used below
@@ -120,7 +106,7 @@ def lead_rear_quad(
         px = project_to_pixels(cam_pts, K)
         if px[:, 0].max() < 0 or px[:, 0].min() > w_img or px[:, 1].max() < 0 or px[:, 1].min() > h_img:
             return None
-        return _order_quad(px)
+        return order_quad(px)
 
     return _quad_of
 

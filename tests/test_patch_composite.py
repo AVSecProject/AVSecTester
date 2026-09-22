@@ -65,3 +65,25 @@ def test_warp_and_harmonize_under_cv2():
     assert comp.shape == frame.shape and (mask > 0).any()  # patch landed in the quad
     out = PatchCompositor(ClassicHarmonizer()).apply(frame, quad, patch)
     assert out.shape == frame.shape and out.dtype == np.uint8
+
+
+def test_ftheta_projection_axis_and_center():
+    """f-theta: a point on the optical axis maps to the principal point; +x lands to its right."""
+    from avsectester.simulators.nurec import ftheta_project
+
+    pp = (960.0, 540.0)
+    poly = [0.0, 900.0]  # r(theta) = 900*theta
+    # straight ahead (+z) -> principal point
+    px, z = ftheta_project(np.array([[0.0, 0.0, 5.0]]), pp, poly)
+    assert np.allclose(px[0], pp) and z[0] > 0
+    # a point offset in +x at 45deg (x==z) -> radius 900*(pi/4) to the right of cx, same cy
+    px2, _ = ftheta_project(np.array([[1.0, 0.0, 1.0]]), pp, poly)
+    assert px2[0, 0] == pytest.approx(pp[0] + 900.0 * (np.pi / 4), rel=1e-6)
+    assert px2[0, 1] == pytest.approx(pp[1], abs=1e-6)
+
+
+def test_order_quad_shared_helper():
+    from avsectester.attacks.patch_composite import order_quad
+
+    pts = np.array([[5, 5], [1, 5], [1, 1], [5, 1]], float)  # BR, BL, TL, TR scrambled
+    assert np.allclose(order_quad(pts), [[1, 1], [5, 1], [5, 5], [1, 5]])  # TL, TR, BR, BL
