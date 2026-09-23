@@ -145,68 +145,6 @@ def camera_patch_perturbation(backend: Any, compositor: Any, patch_rgba: Any, ca
     return _perturb
 
 
-def _carla_depth_meters(depth_data: Any) -> Any:
-    """Decode a CARLA depth payload to an ``HxW`` float array of metres.
-
-    ``CarlaDepthCamera`` stores the raw ``carla.Image`` (unconverted), whose BGRA bytes encode depth as
-    ``1000·(R + G·256 + B·256²)/(256³−1)`` — decode that; fall back to a already-numpy ``.depths``.
-    """
-    import numpy as np
-
-    raw = getattr(depth_data, "data", depth_data)
-    if hasattr(raw, "raw_data"):  # a live carla.Image
-        arr = np.frombuffer(bytes(raw.raw_data), np.uint8).reshape(raw.height, raw.width, 4)
-        r, g, b = arr[:, :, 2].astype(np.float64), arr[:, :, 1].astype(np.float64), arr[:, :, 0].astype(np.float64)
-        return 1000.0 * (r + g * 256.0 + b * 256.0 * 256.0) / (256.0**3 - 1.0)
-    return np.asarray(getattr(depth_data, "depths", raw), dtype=np.float64)
-
-
-def lead_rear_decal(backend: Any, observation: Observation, rgb_camera: str, depth_camera: str,
-                    size_u: float = 1.0, size_v: float = 0.8, thickness: float = 0.3):
-    """Build the inputs for :func:`avsectester.attacks.patch_composite.decal_project` on the lead rear.
-
-    Returns ``(depth_m, unproject, decal)`` — per-pixel metric depth from the CARLA depth camera, the
-    pinhole back-projection, and the decal frame (origin + right/up/normal axes, in camera coords)
-    anchored on the lead's rear surface — or None if the lead/data is missing. The depth camera must be
-    spawned at the SAME pose/fov/resolution as the RGB camera so their pixels align. Occlusion + curvature
-    then come for free from the real depth (see :func:`decal_project`).
-    """
-    import numpy as np
-
-    from avsectester.attacks.patch_composite import DecalFrame, carla_cam_coords, pinhole_unproject
-
-    lead = backend.lead
-    data = observation.sensor_data
-    if lead is None or depth_camera not in data:
-        return None
-    depth_m = _carla_depth_meters(data[depth_camera])  # HxW metres
-    sensors = backend.ego.sensors  # registry keyed by NAME; data keys carry a '-<id>' suffix
-    sensor = sensors.get(rgb_camera) or sensors.get(rgb_camera.rsplit("-", 1)[0]) or next(iter(sensors.values()))
-    K = np.asarray(sensor.P)[:, :3]
-    cam_inv = np.array(sensor.object.get_transform().get_inverse_matrix())
-
-    tf = lead.get_transform()
-    bb = lead.bounding_box
-    fwd, right, up = tf.get_forward_vector(), tf.get_right_vector(), tf.get_up_vector()
-    centre = tf.transform(bb.location)  # box centre in world
-    o = np.array([centre.x - fwd.x * bb.extent.x,   # rear-face centre (behind the box by extent.x)
-                  centre.y - fwd.y * bb.extent.x,
-                  centre.z - fwd.z * bb.extent.x])
-    # transform the origin and three unit-offset points to camera coords; differences give the axes
-    pts = np.array([o, o + [right.x, right.y, right.z], o + [up.x, up.y, up.z],
-                    o - [fwd.x, fwd.y, fwd.z]])  # normal points backward (toward the ego)
-    cam = carla_cam_coords(pts, cam_inv)
-    o_cam = cam[0]
-
-    def _unit(v):
-        n = np.linalg.norm(v)
-        return v / n if n > 1e-9 else v
-
-    decal = DecalFrame(origin=o_cam, u_axis=_unit(cam[1] - o_cam), v_axis=_unit(cam[2] - o_cam),
-                       normal=_unit(cam[3] - o_cam), size_u=size_u, size_v=size_v, thickness=thickness)
-    return depth_m, pinhole_unproject(K), decal
-
-
 # ---------------------------------------------------------------------------------------------------
 # Scenario config helpers (pure) + preparation (CARLA)
 # ---------------------------------------------------------------------------------------------------

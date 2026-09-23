@@ -51,6 +51,35 @@ def build_detector(gpu: int):
     return detect
 
 
+def build_coco_detector(gpu: int = 0, threshold: float = 0.5):
+    """Return ``detect(rgb) -> [(xyxy, score, 'vehicle')]`` using a COCO-pretrained detector.
+
+    For real / neural-reconstruction imagery (NuRec/Alpamayo) where the CARLA-trained detector does not
+    apply. Keeps car/bus/truck boxes (COCO labels 3/6/8). torchvision is imported lazily.
+    """
+    import torch
+    from torchvision.models.detection import (
+        FasterRCNN_ResNet50_FPN_Weights,
+        fasterrcnn_resnet50_fpn,
+    )
+
+    dev = f"cuda:{gpu}" if torch.cuda.is_available() else "cpu"
+    model = fasterrcnn_resnet50_fpn(weights=FasterRCNN_ResNet50_FPN_Weights.DEFAULT).eval().to(dev)
+
+    def detect(rgb):
+        t = torch.from_numpy(rgb).permute(2, 0, 1).float().div(255).to(dev)
+        with torch.no_grad():
+            out = model([t])[0]
+        res = []
+        for b, lab, sc in zip(out["boxes"].cpu().numpy(), out["labels"].cpu().numpy(),
+                              out["scores"].cpu().numpy()):
+            if int(lab) in (3, 6, 8) and float(sc) >= threshold:
+                res.append((b, float(sc), "vehicle"))
+        return res
+
+    return detect
+
+
 def plausible_detector(detect, area_max: float = 0.30, max_height_frac: float = 0.6):
     """Gate a detector to boxes a real planner would trust: not implausibly large or too tall.
 

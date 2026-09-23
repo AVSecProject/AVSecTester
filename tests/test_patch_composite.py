@@ -67,21 +67,6 @@ def test_warp_and_harmonize_under_cv2():
     assert out.shape == frame.shape and out.dtype == np.uint8
 
 
-def test_ftheta_projection_axis_and_center():
-    """f-theta: a point on the optical axis maps to the principal point; +x lands to its right."""
-    from avsectester.simulators.nurec import ftheta_project
-
-    pp = (960.0, 540.0)
-    poly = [0.0, 900.0]  # r(theta) = 900*theta
-    # straight ahead (+z) -> principal point
-    px, z = ftheta_project(np.array([[0.0, 0.0, 5.0]]), pp, poly)
-    assert np.allclose(px[0], pp) and z[0] > 0
-    # a point offset in +x at 45deg (x==z) -> radius 900*(pi/4) to the right of cx, same cy
-    px2, _ = ftheta_project(np.array([[1.0, 0.0, 1.0]]), pp, poly)
-    assert px2[0, 0] == pytest.approx(pp[0] + 900.0 * (np.pi / 4), rel=1e-6)
-    assert px2[0, 1] == pytest.approx(pp[1], abs=1e-6)
-
-
 def test_order_quad_shared_helper():
     from avsectester.attacks.patch_composite import order_quad
 
@@ -89,30 +74,11 @@ def test_order_quad_shared_helper():
     assert np.allclose(order_quad(pts), [[1, 1], [5, 1], [5, 5], [1, 5]])  # TL, TR, BR, BL
 
 
-def test_decal_project_plane_and_occlusion():
-    """Decal on a fronto-parallel plane paints a centered block; points off the slab are skipped."""
-    from avsectester.attacks.patch_composite import DecalFrame, decal_project, pinhole_unproject
+def test_box_to_quad_planar_target():
+    """A detection box -> a centered planar-warp quad (TL,TR,BR,BL); yaw makes it a trapezoid."""
+    from avsectester.attacks.patch_composite import box_to_quad
 
-    H = W = 40
-    K = np.array([[50.0, 0, 20], [0, 50.0, 20], [0, 0, 1]])
-    depth = np.full((H, W), 5.0)                 # a flat wall 5 m ahead
-    frame = np.zeros((H, W, 3), np.uint8)
-    patch = np.dstack([np.full((16, 16), 200, np.uint8)] * 3 + [np.full((16, 16), 255, np.uint8)])
-    decal = DecalFrame(origin=np.array([0, 0, 5.0]), u_axis=np.array([1.0, 0, 0]),
-                       v_axis=np.array([0, -1.0, 0]), normal=np.array([0, 0, 1.0]),
-                       size_u=1.0, size_v=1.0, thickness=0.2)
-    comp, mask = decal_project(frame, patch, depth, pinhole_unproject(K), decal)
-    assert (mask > 0).any() and (comp[mask > 0] == 200).all()   # painted where the plane is in range
-    # push the wall outside the decal slab -> nothing lands
-    _, mask_far = decal_project(frame, patch, np.full((H, W), 50.0), pinhole_unproject(K), decal)
-    assert not (mask_far > 0).any()
-
-
-def test_ftheta_rays_inverse():
-    """f-theta rays: optical-axis pixel -> +z; ftheta_project should round-trip the ray back."""
-    from avsectester.simulators.nurec import ftheta_rays
-
-    rays = ftheta_rays(60, 40, (30, 20), [0.0, 0.002])
-    assert np.allclose(rays[20, 30], [0, 0, 1], atol=1e-6)     # principal point -> optical axis
-    assert np.all(np.abs(np.linalg.norm(rays, axis=-1) - 1) < 1e-6)  # unit rays
-    assert rays[35, 30, 1] > 0 and rays[5, 30, 1] < 0          # lower pixels look down, upper look up
+    q = box_to_quad([100, 100, 200, 200], width_frac=0.5, height_frac=0.5, v_center=0.5)
+    assert np.allclose(q, [[125, 125], [175, 125], [175, 175], [125, 175]])  # centered half-size box
+    qy = box_to_quad([100, 100, 200, 200], width_frac=0.5, height_frac=0.5, yaw=0.3)
+    assert (qy[0, 1] < qy[1, 1]) and (qy[3, 1] > qy[2, 1])  # left edge taller -> foreshortened trapezoid

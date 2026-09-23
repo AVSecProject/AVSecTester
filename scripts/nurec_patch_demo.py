@@ -1,12 +1,13 @@
 #!/usr/bin/env python
 """Realistic patch insertion into a NuRec (AlpaSim) reconstructed trace — the AlpaSim-side end-to-end.
 
-The same backend-agnostic warp+harmonize compositor used for CARLA, now bridged to NuRec: render a
-clean frame from the neural reconstruction, project a virtual panel planted ahead of the ego through
-the real f-theta camera model, warp the patch onto it, and harmonize it into the reconstructed
-imagery. The patch is NEVER baked into the reconstruction (the render API cannot insert objects) — it
-is a 2-D composite on the render, exactly as on CARLA. Only the projection is simulator-specific
-(:func:`avsectester.simulators.nurec.nurec_panel_quad`); the warp + harmonizer are shared.
+The same backend-agnostic warp+harmonize compositor used for CARLA, now bridged to NuRec by **planar
+warping**: render a clean frame from the neural reconstruction, get the lead vehicle's rear-face quad
+from a COCO detection box (:func:`avsectester.simulators.viz.detector_quad` — image-space, no depth,
+since NuRec exposes neither actor boxes nor depth), homography-warp the patch onto it, and harmonize
+it in. The patch is NEVER baked into the reconstruction — it is a 2-D composite on the render, exactly
+as on CARLA (where the quad instead comes from the ground-truth 3-D box). The warp + harmonizer are
+shared; only how the quad is obtained differs per backend.
 
 Run in the AlpaSim driver env (Python 3.12), with an nre-ga server on :50051 (GPU 2):
 
@@ -29,9 +30,15 @@ from avsectester.attacks.patch_composite import (
     PatchCompositor,
 )
 from avsectester.attacks.physical_patch import checkerboard_rgba, image_rgba
-from avsectester.simulators.nurec import NuRecBackend, NuRecRenderer, nurec_panel_quad
-from avsectester.simulators.viz import camera_view, composite_view, record_run, save_sequence
-from demo_common import CruiseStack  # shared demo glue
+from avsectester.simulators.nurec import NuRecBackend, NuRecRenderer
+from avsectester.simulators.viz import (
+    camera_view,
+    composite_view,
+    detector_quad,
+    record_run,
+    save_sequence,
+)
+from demo_common import CruiseStack, build_coco_detector  # shared demo glue
 
 REPO = Path(__file__).resolve().parents[1]
 OUT = REPO / "tmp" / "nurec_patch"
@@ -46,7 +53,7 @@ def main() -> int:
     ap.add_argument("--texture", default=None, help="adversarial patch image (else checkerboard)")
     ap.add_argument("--tex", type=int, default=256)
     ap.add_argument("--harmonizer", choices=["classic", "libcom"], default="classic")
-    ap.add_argument("--ahead", type=float, default=12.0, help="panel distance ahead of the ego (m)")
+    ap.add_argument("--gpu", type=int, default=0, help="CUDA device for the COCO detector")
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
@@ -57,8 +64,9 @@ def main() -> int:
 
     renderer = NuRecRenderer(endpoint=args.endpoint, scene_id=args.scene, cameras=[CAM])
     backend = NuRecBackend({"dt": 0.1, "ego0": {"speed": 4.0}}, renderer=renderer)
-    visualize = composite_view(compositor, patch, nurec_panel_quad(renderer, ahead=args.ahead),
-                               base=camera_view)
+    # planar warp on the lead vehicle's rear: quad approximated from a COCO detection (no depth)
+    quad_of = detector_quad(build_coco_detector(args.gpu), base=camera_view)
+    visualize = composite_view(compositor, patch, quad_of, base=camera_view)
 
     kind = f"{'adversarial' if args.texture else 'checkerboard'} / {args.harmonizer}"
     print(f"[demo] NuRec patch insert ({kind}), {args.frames}-frame sequence via record_run ...")

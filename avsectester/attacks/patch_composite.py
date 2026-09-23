@@ -17,8 +17,8 @@ cv2/skimage are imported lazily, so this module imports without them.
 from __future__ import annotations
 
 import logging
+import math
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
 
 import numpy as np
 
@@ -76,79 +76,6 @@ def warp_patch(frame_rgb: np.ndarray, dst_quad: np.ndarray, patch_rgba: np.ndarr
     comp = frame_rgb.astype(np.float32) * (1 - alpha) + warped[:, :, :3].astype(np.float32) * alpha
     mask = (warped[:, :, 3] > 127).astype(np.uint8) * 255
     return comp.astype(np.uint8), mask
-
-
-# ---------------------------------------------------------------------------------------------------
-# Fine-grained (per-pixel) decal projection — conform the patch to the real surface, not a flat quad
-# ---------------------------------------------------------------------------------------------------
-@dataclass
-class DecalFrame:
-    """A patch's placement as a projected decal, in **camera coordinates** (x right, y down, z fwd).
-
-    ``origin`` is the decal centre on the target surface; ``u_axis`` / ``v_axis`` its unit right / up
-    directions and ``normal`` the surface normal (projection direction). ``size_u`` / ``size_v`` are the
-    full decal extents in metres, and ``thickness`` the half-depth of the slab around the plane that
-    counts as "on the surface" (bounds the projection + gives occlusion by real depth).
-    """
-
-    origin: np.ndarray
-    u_axis: np.ndarray
-    v_axis: np.ndarray
-    normal: np.ndarray
-    size_u: float
-    size_v: float
-    thickness: float = 0.25
-
-
-def decal_project(frame_rgb, patch_rgba, depth, unproject, decal: DecalFrame, mask=None):
-    """Per-pixel decal projection: warp the patch onto the *real surface*, every pixel independently.
-
-    Unlike :func:`warp_patch` (a single planar homography — exact only for a flat quad seen by a
-    pinhole), each pixel is placed at its true 3-D point, expressed in the ``decal`` frame to get patch
-    UVs, then the patch is sampled there. A pixel is painted only if its UV is in range **and** it lies
-    within ``decal.thickness`` of the surface plane — so the patch follows curvature/relief, foreshortens
-    per pixel, and clips to the true silhouette (occlusion-correct). ``mask`` optionally restricts to the
-    target object. Two ways to supply the geometry:
-      * ``unproject`` given: ``depth`` is an ``HxW`` metric depth map and ``unproject(u, v, d)->(H,W,3)``
-        back-projects it (e.g. :func:`pinhole_unproject` for a CARLA depth camera);
-      * ``unproject=None``: ``depth`` is already an ``(H,W,3)`` camera-frame point map (e.g. f-theta
-        rays intersected with a known plane — the NuRec road path, where no depth sensor exists).
-    Returns ``(composite_rgb, mask uint8)``.
-    """
-    depth = np.asarray(depth, dtype=np.float64)
-    if unproject is None:  # `depth` is already the (H,W,3) camera-frame point map
-        xyz = depth
-        z = xyz[:, :, 2]
-    else:
-        h, w = depth.shape
-        uu, vv = np.meshgrid(np.arange(w), np.arange(h))
-        xyz = unproject(uu, vv, depth)  # (H,W,3) camera-frame points
-        z = depth
-    rel = xyz - np.asarray(decal.origin, dtype=np.float64)
-    s = (rel @ decal.u_axis) / decal.size_u + 0.5
-    t = 0.5 - (rel @ decal.v_axis) / decal.size_v
-    dn = rel @ decal.normal
-    inside = (z > 0) & (s >= 0) & (s <= 1) & (t >= 0) & (t <= 1) & (np.abs(dn) <= decal.thickness)
-    if mask is not None:
-        inside &= mask.astype(bool)
-    ph, pw = patch_rgba.shape[:2]
-    sx = np.clip((s * (pw - 1)).astype(int), 0, pw - 1)
-    sy = np.clip((t * (ph - 1)).astype(int), 0, ph - 1)
-    sampled = patch_rgba[sy, sx]  # (H,W,4) nearest-neighbour patch sample
-    alpha = (sampled[:, :, 3].astype(np.float32) / 255.0) * inside
-    comp = (frame_rgb.astype(np.float32) * (1 - alpha[..., None])
-            + sampled[:, :, :3].astype(np.float32) * alpha[..., None])
-    return comp.astype(np.uint8), (alpha > 0.5).astype(np.uint8) * 255
-
-
-def pinhole_unproject(K: np.ndarray):
-    """Return ``unproject(u, v, z) -> (...,3)`` for a pinhole camera (z = metric depth along the axis)."""
-    fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
-
-    def _unproject(u, v, z):
-        return np.stack([(u - cx) / fx * z, (v - cy) / fy * z, z], axis=-1)
-
-    return _unproject
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -319,6 +246,26 @@ def order_quad(pts: np.ndarray) -> np.ndarray:
     s = p.sum(axis=1)
     d = p[:, 0] - p[:, 1]  # x - y
     return np.stack([p[np.argmin(s)], p[np.argmax(d)], p[np.argmax(s)], p[np.argmin(d)]])
+
+
+def box_to_quad(box, width_frac: float = 0.6, height_frac: float = 0.5,
+                v_center: float = 0.5, yaw: float = 0.0) -> np.ndarray:
+    """Approximate a target plane's image quad (TL,TR,BR,BL) from a 2-D detection ``box`` [x1,y1,x2,y2].
+
+    For a surface seen roughly head-on (e.g. a lead vehicle's rear), the plane's image quad is a
+    centered sub-rectangle of the detection box — this is the *planar-warp* target, no depth needed:
+    :func:`warp_patch` then homography-maps the patch onto it (every pixel, exact for a plane).
+    ``width_frac`` / ``height_frac`` size the patch within the box, ``v_center`` places it vertically
+    (0=top, 1=bottom), and ``yaw`` (radians) foreshortens one side into a trapezoid for an oblique view.
+    """
+    x1, y1, x2, y2 = (float(v) for v in box)
+    bw, bh = x2 - x1, y2 - y1
+    cx, cy = (x1 + x2) / 2.0, y1 + v_center * bh
+    hw, hh = 0.5 * width_frac * bw, 0.5 * height_frac * bh
+    # yaw>0 pushes the right edge back (narrower) -> a trapezoid, approximating an oblique plane
+    l, r = 1.0 + math.sin(yaw), 1.0 - math.sin(yaw)
+    return np.array([[cx - hw, cy - hh * l], [cx + hw, cy - hh * r],
+                     [cx + hw, cy + hh * r], [cx - hw, cy + hh * l]], dtype=np.float64)
 
 
 def rear_face_quad(center: np.ndarray, right: np.ndarray, up: np.ndarray) -> np.ndarray:
