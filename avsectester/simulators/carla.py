@@ -65,6 +65,86 @@ def lidar_bev(observation: Observation, size: int = 800, meters: float = 60.0) -
     return img
 
 
+def lead_rear_quad(
+    backend: Any, camera: str | None = None, width_frac: float = 0.5, height_frac: float = 0.42
+) -> Any:
+    """Return ``quad_of(observation) -> (4,2) px | None`` for the lead car's rear face (live actors).
+
+    The backend-specific projection injected into :func:`avsectester.simulators.viz.composite_view`:
+    reads the live CARLA camera + lead vehicle actors off ``backend`` each frame, builds the rear-face
+    quad from the lead's bounding box (a centered panel scaled by ``width_frac`` / ``height_frac``),
+    and projects it through the camera to pixels. Yields None when the face is behind the camera or
+    off-frame, so the compositor leaves that frame clean. Camera intrinsics come from the sensor's own
+    projection matrix ``P``; extrinsics from the live camera transform (CARLA UE axis convention).
+    """
+    import numpy as np
+
+    from avsectester.attacks.patch_composite import carla_cam_coords, order_quad, project_to_pixels
+
+    def _quad_of(_observation: Observation) -> Any:
+        import carla
+
+        lead = backend.lead
+        if lead is None:  # also covers pre-reset: ego/lead not spawned yet
+            return None
+        sensors = backend.ego.sensors  # read lazily: actors exist only after backend.reset()
+        sensor = sensors[camera] if camera in sensors else next(iter(sensors.values()))
+        K = np.asarray(sensor.P)[:, :3]  # avcarla packs intrinsics in the 3x4 projection matrix
+        h_img, w_img = sensor.imsize
+        bb = lead.bounding_box
+        xr = bb.location.x - bb.extent.x  # rear face plane (vehicle local, +x = forward)
+        ey, ez = bb.extent.y * width_frac, bb.extent.z * height_frac
+        cy, cz = bb.location.y, bb.location.z
+        local = [(xr, cy - ey, cz + ez), (xr, cy + ey, cz + ez),
+                 (xr, cy + ey, cz - ez), (xr, cy - ey, cz - ez)]
+        tf = lead.get_transform()
+        world = np.array([[(p := tf.transform(carla.Location(*c))).x, p.y, p.z] for c in local])
+        inv = np.array(sensor.object.get_transform().get_inverse_matrix())
+        cam_pts = carla_cam_coords(world, inv)
+        if np.any(cam_pts[:, 2] <= 0.1):  # any corner behind the camera -> skip this frame
+            return None
+        px = project_to_pixels(cam_pts, K)
+        if px[:, 0].max() < 0 or px[:, 0].min() > w_img or px[:, 1].max() < 0 or px[:, 1].min() > h_img:
+            return None
+        return order_quad(px)
+
+    return _quad_of
+
+
+def camera_patch_perturbation(backend: Any, compositor: Any, patch_rgba: Any, camera: str | None = None,
+                              width_frac: float = 1.0, height_frac: float = 0.95):
+    """Return ``perturb(obs) -> obs`` that composites the patch into the ego camera image.
+
+    The **Observation-level** (sensor-plane) form of the patch attack, for a closed-loop run: unlike
+    :func:`avsectester.simulators.viz.composite_view` (which only paints the visualization), this
+    rewrites the camera payload so the *AVStack itself perceives the patched frame* and acts on it.
+    Same warp + harmonize path (via ``compositor``) and same rear-face projection (:func:`lead_rear_quad`);
+    returns the frame unchanged when the target is out of view.
+    """
+    import copy as _copy
+    from dataclasses import replace
+
+    quad_of = lead_rear_quad(backend, camera, width_frac=width_frac, height_frac=height_frac)
+
+    def _perturb(observation: Observation) -> Observation:
+        data = observation.sensor_data
+        if not data:
+            return observation
+        key = camera if camera in data else next(iter(data))
+        rgb = camera_view(observation, camera)
+        quad = quad_of(observation)
+        if rgb is None or quad is None:
+            return observation
+        patched = compositor.apply(rgb, quad, patch_rgba)  # HxWx3 uint8, same channel order as rgb
+        img = _copy.copy(data[key])  # shallow-copy the ImageData; swap only its pixel buffer
+        img.data = patched
+        new_data = dict(data)
+        new_data[key] = img
+        return replace(observation, sensor_data=new_data)
+
+    return _perturb
+
+
 # ---------------------------------------------------------------------------------------------------
 # Scenario config helpers (pure) + preparation (CARLA)
 # ---------------------------------------------------------------------------------------------------
@@ -322,9 +402,11 @@ class CarlaBackend(WorldBackend):
         # transform which still reads the origin at this point).
         ego_tf = self.ego.spawn_transform
         fwd = ego_tf.get_forward_vector()
+        right = ego_tf.get_right_vector()
+        lateral = float(cfg.get("lateral", 0.0))  # sideways offset -> the ego sees the rear obliquely
         loc = carla.Location(
-            ego_tf.location.x + fwd.x * gap,
-            ego_tf.location.y + fwd.y * gap,
+            ego_tf.location.x + fwd.x * gap + right.x * lateral,
+            ego_tf.location.y + fwd.y * gap + right.y * lateral,
             ego_tf.location.z + 0.3,
         )
         bp = world.get_blueprint_library().filter(vehicle)[0]
