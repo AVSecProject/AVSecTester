@@ -16,7 +16,7 @@ Run in the AlpaSim driver env (Python 3.12), with an nre-ga server on :50051 (GP
         uv run python scripts/nurec_patch_demo.py --frames 16 \
         --texture tmp/patch_optim/phys_texture.png --harmonizer classic
 
---harmonizer classic (in-process) | libcom (learned PCTNet, resident worker in the libcom env).
+--harmonizer classic | libcom (learned PCTNet, in-process). Both run in this process, no separate env.
 """
 
 import argparse
