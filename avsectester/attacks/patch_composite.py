@@ -126,7 +126,9 @@ class LibcomHarmonizer(Harmonizer):
     ``env``, read back the harmonized PNG. Falls back to ``ClassicHarmonizer`` if the call fails.
 
     Set the env up once with ``scripts/setup_libcom_env.sh`` (installs the AVSecProject/libcom fork,
-    which fixes the upstream packaging + HF-download bugs). PCTNet gives a milder, texture-preserving
+    vendored as the ``third_party/libcom`` submodule, which fixes the upstream packaging + HF-download
+    bugs). It stays a separate env — libcom's deps (mmdet 3.2 / mmpose / diffusers) can't coexist with
+    the avstack stack, so it can't be imported in-process. PCTNet gives a milder, texture-preserving
     harmonization than the classic Poisson blend — better for keeping an adversarial pattern intact.
     """
 

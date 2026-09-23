@@ -10,3 +10,6 @@
 [submodule "third_party/nuCarla"]
 	path = third_party/nuCarla
 	url = https://github.com/michigan-traffic-lab/nuCarla.git
+[submodule "third_party/libcom"]
+	path = third_party/libcom
+	url = git@github.com:AVSecProject/libcom.git

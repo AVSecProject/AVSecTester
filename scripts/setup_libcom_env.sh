@@ -12,10 +12,12 @@
 set -euo pipefail
 
 ENV=${1:-libcom}
-FORK_DIR=${2:-/workspace/nvme/qzzhang/libcom-fork}
+REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+FORK_DIR=${2:-$REPO/third_party/libcom}   # the AVSecProject/libcom fork, vendored as a submodule
 
-if [ ! -d "$FORK_DIR" ]; then
-  git clone git@github.com:AVSecProject/libcom.git "$FORK_DIR"
+# ensure the submodule is checked out (git@github.com:AVSecProject/libcom.git, pinned in .gitmodules)
+if [ ! -f "$FORK_DIR/setup.py" ] && [ ! -f "$FORK_DIR/pyproject.toml" ]; then
+  git -C "$REPO" submodule update --init third_party/libcom
 fi
 
 conda create -y -n "$ENV" python=3.10
