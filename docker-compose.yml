@@ -10,6 +10,7 @@
 services:
   carla:
     image: carlasim/carla:0.9.15
+    runtime: nvidia
     command: ./CarlaUE4.sh -RenderOffScreen -nosound -quality-level=Low -carla-rpc-port=2000
     network_mode: host
     environment:
@@ -18,6 +19,7 @@ services:
   avsectester:
     build: .
     image: avsectester
+    runtime: nvidia
     depends_on: [carla]
     network_mode: host
     environment:
