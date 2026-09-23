@@ -26,7 +26,7 @@ def test_extrinsics_and_carla_axis_swap():
 def test_composite_view_wraps_base_and_skips_when_no_quad():
     """The generic view wrapper composites only when quad_of yields a quad; else passes the frame."""
     from avsectester.plane import Observation
-    from avsectester.simulators.viz import composite_view
+    from avsectester.simulators.patch_insertion import composite_view
 
     frame = np.zeros((8, 8, 3), np.uint8)
     patched = np.ones((8, 8, 3), np.uint8)

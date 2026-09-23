@@ -3,7 +3,7 @@
 
 The same backend-agnostic warp+harmonize compositor used for CARLA, now bridged to NuRec by **planar
 warping**: render a clean frame from the neural reconstruction, get the lead vehicle's rear-face quad
-from a COCO detection box (:func:`avsectester.simulators.viz.detector_quad` — image-space, no depth,
+from a COCO detection box (:func:`avsectester.simulators.patch_insertion.detector_quad` — image-space, no depth,
 since NuRec exposes neither actor boxes nor depth), homography-warp the patch onto it, and harmonize
 it in. The patch is NEVER baked into the reconstruction — it is a 2-D composite on the render, exactly
 as on CARLA (where the quad instead comes from the ground-truth 3-D box). The warp + harmonizer are
@@ -30,14 +30,10 @@ from avsectester.simulators.patch_insertion import (
     ClassicHarmonizer,
     PatchCompositor,
     PCTNetHarmonizer,
-)
-from avsectester.simulators.viz import (
-    camera_view,
     composite_view,
     detector_quad,
-    record_run,
-    save_sequence,
 )
+from avsectester.simulators.viz import camera_view, record_run, save_sequence
 from demo_common import CruiseStack, build_coco_detector  # shared demo glue
 
 REPO = Path(__file__).resolve().parents[1]

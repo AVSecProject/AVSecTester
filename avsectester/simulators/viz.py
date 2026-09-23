@@ -76,57 +76,6 @@ def detections_view(
     return _view
 
 
-def detector_quad(detect: Callable[[Any], Any], base: View = camera_view, width_frac: float = 0.7,
-                  height_frac: float = 0.55, v_center: float = 0.5, yaw: float = 0.0,
-                  central: float = 0.25) -> Callable[[Observation], Any]:
-    """Return ``quad_of(observation) -> (4,2) | None``: the rear-face quad of the lead vehicle,
-    approximated from a 2-D detector box (image-space, no depth). Runs ``detect(rgb) -> [(xyxy, score,
-    label)]`` on the ``base`` view, picks the largest box near the image centre (the lead), and turns it
-    into a planar-warp quad via :func:`avsectester.simulators.patch_insertion.box_to_quad`. Feeds
-    :func:`composite_view` — the NuRec/real-imagery analog of the geometric ``carla.lead_rear_quad``."""
-    from avsectester.simulators.patch_insertion import box_to_quad
-
-    def _quad_of(observation: Observation) -> Any:
-        rgb = base(observation)
-        if rgb is None:
-            return None
-        w = rgb.shape[1]
-        best = None
-        for box, _score, _label in detect(rgb):
-            cx = (box[0] + box[2]) / 2.0
-            area = (box[2] - box[0]) * (box[3] - box[1])
-            if abs(cx - w / 2) < central * w and (best is None or area > best[1]):
-                best = (box, area)
-        if best is None:
-            return None
-        return box_to_quad(best[0], width_frac=width_frac, height_frac=height_frac,
-                           v_center=v_center, yaw=yaw)
-
-    return _quad_of
-
-
-def composite_view(
-    compositor: Any, patch_rgba: Any, quad_of: Callable[[Observation], Any], base: View = camera_view
-) -> View:
-    """Wrap a camera ``base`` view to insert a harmonized patch onto the rendered frame.
-
-    The mirror of :func:`detections_view`, at the pixel-insertion layer: ``quad_of(observation)`` gives
-    the target surface as a ``(4, 2)`` image-space quad (TL, TR, BR, BL) — the backend-specific
-    projection is injected (e.g. :func:`avsectester.simulators.carla.lead_rear_quad`), so this module
-    stays simulator-agnostic — and ``compositor`` (a
-    :class:`avsectester.simulators.patch_insertion.PatchCompositor`) warps + harmonizes ``patch_rgba``
-    onto it. Returns the clean frame unchanged when ``quad_of`` yields None (target not in view)."""
-
-    def _view(observation: Observation) -> Any:
-        rgb = base(observation)
-        if rgb is None:
-            return None
-        quad = quad_of(observation)
-        return rgb if quad is None else compositor.apply(rgb, quad, patch_rgba)
-
-    return _view
-
-
 def save_image(image: Any, path: Path) -> None:
     from matplotlib import image as mpimg
 

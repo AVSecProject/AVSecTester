@@ -13,7 +13,7 @@ Three families, from deepest (inside the stack) to shallowest (on the render):
     frame). The attack owns only the payload (which texture) + the target; the realistic-insertion
     mechanics (warp + harmonize) live in :mod:`avsectester.simulators.patch_insertion` because that is
     a simulation/rendering concern, wired per backend by ``carla.lead_rear_quad`` /
-    ``viz.detector_quad`` + ``viz.composite_view`` / ``carla.camera_patch_perturbation``.
+    ``patch_insertion.detector_quad`` + ``patch_insertion.composite_view`` / ``carla.camera_patch_perturbation``.
 
   * **Optimization** (``optim``) — the algorithm layer (PGD white-box, NES black-box) that *produces*
     an adversarial patch/perturbation against a scorer; not tied to any one threat model.
