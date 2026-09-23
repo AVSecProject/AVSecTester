@@ -1,26 +1,26 @@
 """Attacks — grouped by the *seam* in the sim<->stack loop they exploit, not one class hierarchy.
 
-Four families, from deepest (inside the stack) to shallowest (on the render):
+Three families, from deepest (inside the stack) to shallowest (on the render):
 
   * **Pipeline hook** — a callable registered in avstack's ``HOOKS`` registry and attached to a
     module's pre/post hooks, so it composes with a real pipeline with no parallel machinery.
     ``PhantomInjection`` appends a fabricated ``BoxDetection`` to the detector output, propagating a
     phantom obstacle detection -> track -> an unsafe stop.
 
-  * **World-level physical patch** (``physical_patch``) — for CARLA: attach + paint a panel on a
-    target vehicle so the ego's camera renders it in-scene (applied at ``CarlaBackend.reset``).
-
-  * **Sensor-plane composite** (``patch_composite``) — backend-agnostic: warp a patch onto the target
-    surface in the *rendered* frame and harmonize it to the scene, never baking it into the world /
-    reconstruction. One insert path for CARLA and NuRec (paired with a per-backend quad projector and
-    :func:`avsectester.simulators.viz.composite_view`).
+  * **Physical patch** (``physical_patch``) — put an adversarial patch on a target surface (the lead
+    vehicle's rear). One attack, two render substrates: *world-level* (CARLA: attach + paint a panel on
+    the vehicle so the camera renders it in-scene) and *sensor-level* (composite it onto the rendered
+    frame). The attack owns only the payload (which texture) + the target; the realistic-insertion
+    mechanics (warp + harmonize) live in :mod:`avsectester.simulators.patch_insertion` because that is
+    a simulation/rendering concern, wired per backend by ``carla.lead_rear_quad`` /
+    ``patch_insertion.detector_quad`` + ``patch_insertion.composite_view`` / ``carla.camera_patch_perturbation``.
 
   * **Optimization** (``optim``) — the algorithm layer (PGD white-box, NES black-box) that *produces*
     an adversarial patch/perturbation against a scorer; not tied to any one threat model.
 
 Only ``PhantomInjection`` needs avstack; it is imported lazily (PEP 562) so importing this package —
-or the pure ``physical_patch`` / ``patch_composite`` helpers — does not pull it in. The CARLA path
-imports the ``phantom`` submodule explicitly (in :mod:`avsectester.scenario`) to run its registration.
+or the pure ``physical_patch`` helpers — does not pull it in. The CARLA path imports the ``phantom``
+submodule explicitly (in :mod:`avsectester.scenario`) to run its registration.
 """
 
 __all__ = ["PhantomInjection"]

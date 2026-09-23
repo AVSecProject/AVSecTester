@@ -70,7 +70,7 @@ def lead_rear_quad(
 ) -> Any:
     """Return ``quad_of(observation) -> (4,2) px | None`` for the lead car's rear face (live actors).
 
-    The backend-specific projection injected into :func:`avsectester.simulators.viz.composite_view`:
+    The backend-specific projection injected into :func:`avsectester.simulators.patch_insertion.composite_view`:
     reads the live CARLA camera + lead vehicle actors off ``backend`` each frame, builds the rear-face
     quad from the lead's bounding box (a centered panel scaled by ``width_frac`` / ``height_frac``),
     and projects it through the camera to pixels. Yields None when the face is behind the camera or
@@ -79,7 +79,11 @@ def lead_rear_quad(
     """
     import numpy as np
 
-    from avsectester.attacks.patch_composite import carla_cam_coords, order_quad, project_to_pixels
+    from avsectester.simulators.patch_insertion import (
+        carla_cam_coords,
+        order_quad,
+        project_to_pixels,
+    )
 
     def _quad_of(_observation: Observation) -> Any:
         import carla
@@ -116,7 +120,7 @@ def camera_patch_perturbation(backend: Any, compositor: Any, patch_rgba: Any, ca
     """Return ``perturb(obs) -> obs`` that composites the patch into the ego camera image.
 
     The **Observation-level** (sensor-plane) form of the patch attack, for a closed-loop run: unlike
-    :func:`avsectester.simulators.viz.composite_view` (which only paints the visualization), this
+    :func:`avsectester.simulators.patch_insertion.composite_view` (which only paints the visualization), this
     rewrites the camera payload so the *AVStack itself perceives the patched frame* and acts on it.
     Same warp + harmonize path (via ``compositor``) and same rear-face projection (:func:`lead_rear_quad`);
     returns the frame unchanged when the target is out of view.

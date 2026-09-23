@@ -25,17 +25,17 @@ import sys
 from pathlib import Path
 
 import yaml
-from avsectester.attacks.patch_composite import (
-    ClassicHarmonizer,
-    PatchCompositor,
-    PCTNetHarmonizer,
-)
 from avsectester.attacks.physical_patch import checkerboard_rgba, image_rgba
 from avsectester.backend import AVStack
 from avsectester.metric import impact, plot_impact
 from avsectester.plane import Control
 from avsectester.simulators import carla as carla_sim
 from avsectester.simulators.carla import CarlaBackend, camera_patch_perturbation
+from avsectester.simulators.patch_insertion import (
+    ClassicHarmonizer,
+    PatchCompositor,
+    PCTNetHarmonizer,
+)
 from avsectester.simulators.viz import detections_view, record_run, save_sequence
 from demo_common import build_detector, plausible_detector  # shared demo glue
 
