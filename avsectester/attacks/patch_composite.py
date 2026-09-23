@@ -8,10 +8,11 @@ Each backend supplies only the clean frame + camera intrinsics + the target's im
 its pose/geometry); the warp + harmonization are shared here. Harmonization is pluggable:
   * ``ClassicHarmonizer`` — OpenCV Poisson blend + Reinhard color transfer; in-process, reliable, no
     heavy deps, texture-preserving (keeps the patch's gradients, matches color/lighting to the scene).
-  * ``LibcomHarmonizer`` — a learned harmonizer (libcom) run **out-of-process** in an isolated conda
-    env, because libcom's deps (mmdet 3.2 / mmpose / diffusers) conflict with the avstack stack.
+  * ``PCTNetHarmonizer`` — a learned harmonizer (libcom's PCTNet) run **in-process**: PCTNet needs only
+    torch/torchvision/numpy/einops, so we load just its module from the ``third_party/libcom`` submodule
+    (bypassing libcom's diffusers-laden package ``__init__``) and run it in this process.
 
-cv2/skimage are imported lazily, so this module imports without them.
+cv2/torch/skimage are imported lazily, so this module imports without them.
 """
 
 from __future__ import annotations
@@ -118,103 +119,101 @@ class ClassicHarmonizer(Harmonizer):
         return out
 
 
-class LibcomHarmonizer(Harmonizer):
-    """Learned harmonization via libcom, run out-of-process in an isolated conda env.
+class PCTNetHarmonizer(Harmonizer):
+    """Learned harmonization via libcom's **PCTNet**, run **in-process** (no subprocess, no separate env).
 
-    libcom's deps (mmdet 3.2 / mmpose / diffusers) conflict with the avstack stack, so it lives in its
-    own env and we shell out: write composite+mask to temp PNGs, run ``scripts/libcom_harmonize.py`` in
-    ``env``, read back the harmonized PNG. Falls back to ``ClassicHarmonizer`` if the call fails.
-
-    Set the env up once with ``scripts/setup_libcom_env.sh`` (installs the AVSecProject/libcom fork,
-    vendored as the ``third_party/libcom`` submodule, which fixes the upstream packaging + HF-download
-    bugs). It stays a separate env — libcom's deps (mmdet 3.2 / mmpose / diffusers) can't coexist with
-    the avstack stack, so it can't be imported in-process. PCTNet gives a milder, texture-preserving
-    harmonization than the classic Poisson blend — better for keeping an adversarial pattern intact.
+    PCTNet is a self-contained color-transform CNN needing only torch / torchvision / numpy / einops —
+    all compatible with the avstack stack (torch 1.13) — so we load just the ``pct_net`` module from the
+    ``third_party/libcom`` submodule, bypassing libcom's package ``__init__`` (which eagerly imports
+    diffusers-based models). PCTNet gives a milder, texture-preserving harmonization than the classic
+    Poisson blend — better for keeping an adversarial pattern intact. Falls back to
+    :class:`ClassicHarmonizer` on any error (or set ``strict`` to raise instead).
     """
 
-    def __init__(self, env: str = "libcom", model: str = "PCTNet", strict: bool = False) -> None:
-        self.env = env
-        self.model = model
-        self.strict = strict  # True -> raise instead of silently falling back (for validation)
-        self._fallback = ClassicHarmonizer()
-        self._proc = None  # persistent worker (model stays resident across frames)
-        self._tmp = None
-        self._n = 0
+    _SUBMODULE = "third_party/libcom/libcom/image_harmonization"
 
-    def _worker(self):
-        """Lazily start (or restart) the resident libcom server; returns the live process."""
-        import subprocess
-        import tempfile
+    def __init__(self, device: int = 0, weights: str | None = None, strict: bool = False) -> None:
+        self.device_id = device
+        self.weights = weights
+        self.strict = strict
+        self._net = None
+        self._dev = None
+        self._fallback = ClassicHarmonizer()
+
+    def _load(self):
+        if self._net is not None:
+            return self._net
+        import importlib.util
+        import sys
+        import types
         from pathlib import Path
 
-        if self._proc is not None and self._proc.poll() is None:
-            return self._proc
-        script = Path(__file__).resolve().parents[2] / "scripts" / "libcom_harmonize.py"
-        # -u + --no-capture-output so READY/OK flush straight through conda's wrapper
-        self._proc = subprocess.Popen(
-            ["conda", "run", "--no-capture-output", "-n", self.env, "python", "-u", str(script),
-             "--serve", "--model", self.model],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1,
-        )
-        self._tmp = self._tmp or tempfile.mkdtemp(prefix="libcom_hz_")
-        for _ in range(2000):  # skip library banner noise on stdout until the READY sentinel
-            line = self._proc.stdout.readline()
-            if line == "":  # EOF: the worker died before signaling ready
-                raise RuntimeError("libcom worker exited before READY")
-            if line.strip() == "READY":
-                log.info("libcom %s worker ready (env=%s)", self.model, self.env)
-                return self._proc
-        raise RuntimeError("libcom worker never signaled READY")
+        import torch
+
+        root = Path(__file__).resolve().parents[2] / self._SUBMODULE
+        src = root / "source"
+        # dummy parent packages so pct_net's absolute imports resolve WITHOUT running libcom/__init__
+        # (which imports diffusers/pytorch-lightning models that conflict with the avstack stack).
+        for name in ("libcom", "libcom.image_harmonization", "libcom.image_harmonization.source"):
+            if name not in sys.modules:
+                mod = types.ModuleType(name)
+                mod.__path__ = []
+                sys.modules[name] = mod
+
+        def _load_file(name, path):
+            spec = importlib.util.spec_from_file_location(name, str(path))
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules[name] = mod
+            spec.loader.exec_module(mod)
+            return mod
+
+        _load_file("libcom.image_harmonization.source.functions", src / "functions.py")
+        pct = _load_file("libcom.image_harmonization.source.pct_net", src / "pct_net.py")
+        weights = Path(self.weights) if self.weights else self._resolve_weights(root)
+        self._dev = f"cuda:{self.device_id}" if torch.cuda.is_available() else "cpu"
+        net = pct.PCTNet()
+        net.load_state_dict(torch.load(str(weights), map_location="cpu", weights_only=True))
+        self._net = net.to(self._dev).eval()
+        log.info("PCTNet harmonizer loaded in-process (%s, %s)", weights.name, self._dev)
+        return self._net
+
+    def _resolve_weights(self, root):
+        from pathlib import Path
+
+        cand = root / "pretrained_models" / "PCTNet.pth"
+        if cand.exists():
+            return cand
+        from huggingface_hub import hf_hub_download  # downloaded once, then cached in the submodule
+        cand.parent.mkdir(parents=True, exist_ok=True)
+        return Path(hf_hub_download("BCMIZB/Libcom_pretrained_models", "PCTNet.pth",
+                                    local_dir=str(cand.parent)))
 
     def __call__(self, composite_rgb, mask, background_rgb):
-        from pathlib import Path
-
-        from PIL import Image
-
         try:
-            proc = self._worker()
-            self._n += 1
-            d = Path(self._tmp)
-            comp_p, mask_p, out_p = d / f"c{self._n}.png", d / f"m{self._n}.png", d / f"o{self._n}.png"
-            Image.fromarray(composite_rgb).save(comp_p)
-            Image.fromarray(mask).save(mask_p)
-            proc.stdin.write(f"{comp_p}\t{mask_p}\t{out_p}\n")
-            proc.stdin.flush()
-            resp = ""
-            for _ in range(2000):  # skip any per-inference stdout noise until OK / ERR
-                line = proc.stdout.readline()
-                if line == "":
-                    raise RuntimeError("libcom worker died mid-request")
-                resp = line.strip()
-                if resp == "OK" or resp.startswith("ERR"):
-                    break
-            if resp != "OK":
-                raise RuntimeError(f"libcom worker: {resp!r}")
-            out = np.asarray(Image.open(out_p).convert("RGB"))
-            log.info("harmonized frame with libcom %s", self.model)
-            return out
+            import cv2
+            import torch
+
+            net = self._load()
+            img = np.ascontiguousarray(composite_rgb, dtype=np.uint8)  # RGB HxWx3
+            m = (np.asarray(mask) > 0).astype(np.uint8) * 255
+            img_lr, mask_lr = cv2.resize(img, (256, 256)), cv2.resize(m, (256, 256))
+
+            def _t(a):
+                return torch.from_numpy(a).float().div(255).permute(2, 0, 1).to(self._dev)
+
+            def _tm(a):
+                return torch.from_numpy(a).float().div(255)[None].to(self._dev)
+
+            with torch.no_grad():  # PCTNet.forward adds the batch dim itself; pass (C,H,W)
+                out = net(_t(img_lr), _t(img), _tm(mask_lr), _tm(m))
+            res = torch.clamp(255.0 * out.squeeze(0).permute(1, 2, 0), 0, 255).cpu().numpy()
+            log.info("harmonized frame with in-process PCTNet")
+            return res.astype(np.uint8)
         except Exception as exc:
-            if self.strict:  # validation mode: never hide a failure behind the classic blend
-                raise RuntimeError(f"libcom {self.model} harmonization failed: {exc}") from exc
-            log.warning("libcom %s failed (%s) -> classic fallback", self.model, str(exc)[-300:])
+            if self.strict:
+                raise RuntimeError(f"PCTNet harmonization failed: {exc}") from exc
+            log.warning("PCTNet failed (%s) -> classic fallback", str(exc)[-200:])
             return self._fallback(composite_rgb, mask, background_rgb)
-
-    def close(self) -> None:
-        """Shut the resident worker down (also happens on GC)."""
-        if self._proc is not None and self._proc.poll() is None:
-            try:
-                self._proc.stdin.write("QUIT\n")
-                self._proc.stdin.flush()
-                self._proc.wait(timeout=10)
-            except Exception:  # noqa: BLE001 - best-effort teardown
-                self._proc.kill()
-        self._proc = None
-
-    def __del__(self):
-        try:
-            self.close()
-        except Exception:  # noqa: BLE001, S110 - best-effort teardown during GC; nothing to log to
-            pass
 
 
 # ---------------------------------------------------------------------------------------------------

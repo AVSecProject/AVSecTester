@@ -15,8 +15,8 @@ Runs the identical scene twice (clean, then patched), diffs the two driving Trac
     conda run -n avsec python scripts/patch_driving_demo.py --frames 40 \
         --texture tmp/patch_optim/phys_texture.png --harmonizer libcom
 
---harmonizer classic (fast, in-process) | libcom (learned PCTNet, resident worker). Needs a CARLA
-server on :2000 (GPU 2); detector on --gpu (default 1).
+--harmonizer classic (fast) | libcom (learned PCTNet, in-process). Needs a CARLA server on :2000
+(GPU 2); detector on --gpu (default 1).
 """
 
 import argparse
@@ -27,8 +27,8 @@ from pathlib import Path
 import yaml
 from avsectester.attacks.patch_composite import (
     ClassicHarmonizer,
-    LibcomHarmonizer,
     PatchCompositor,
+    PCTNetHarmonizer,
 )
 from avsectester.attacks.physical_patch import checkerboard_rgba, image_rgba
 from avsectester.backend import AVStack
@@ -88,7 +88,7 @@ def main() -> int:
 
     patch = (image_rgba(args.texture, args.tex) if args.texture
              else checkerboard_rgba(args.tex, squares=8))
-    harmonizer = LibcomHarmonizer() if args.harmonizer == "libcom" else ClassicHarmonizer()
+    harmonizer = PCTNetHarmonizer() if args.harmonizer == "libcom" else ClassicHarmonizer()
     compositor = PatchCompositor(harmonizer)
     detect = plausible_detector(build_detector(args.gpu))  # gate phantom boxes; feeds stack + overlay
     overlay = detections_view(detect, base=carla_sim.camera_view)
@@ -108,8 +108,6 @@ def main() -> int:
     print(f"[demo] PATCHED run ({'adversarial' if args.texture else 'checkerboard'} / "
           f"{args.harmonizer} harmonizer) ...")
     attacked = drive(patched=True)
-    if isinstance(harmonizer, LibcomHarmonizer):
-        harmonizer.close()
 
     result = impact(clean, attacked)
     print("\n" + str(result) + "\n")

@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 import yaml
-from avsectester.attacks.patch_composite import ClassicHarmonizer, LibcomHarmonizer, PatchCompositor
+from avsectester.attacks.patch_composite import ClassicHarmonizer, PatchCompositor, PCTNetHarmonizer
 from avsectester.attacks.physical_patch import image_rgba
 from avsectester.plane import Control
 from avsectester.simulators import carla as carla_sim
@@ -59,9 +59,9 @@ def main():
         variants = [
             ("patch + none (raw warp)", quad, None),
             ("patch + classic",         quad, ClassicHarmonizer()),
-            ("patch + libcom PCTNet",   quad, LibcomHarmonizer()),
+            ("patch + libcom PCTNet",   quad, PCTNetHarmonizer()),
             ("BIG patch + none",        quad_big, None),
-            ("BIG patch + libcom",      quad_big, LibcomHarmonizer()),
+            ("BIG patch + libcom",      quad_big, PCTNetHarmonizer()),
         ]
         for name, q, harm in variants:
             if q is None:
@@ -71,7 +71,6 @@ def main():
                 comp, _ = warp_patch(rgb, q, patch)
             else:
                 comp = PatchCompositor(harm).apply(rgb, q, patch)
-                if isinstance(harm, LibcomHarmonizer): harm.close()
             conf = top_car_conf(detect, comp)
             tag = "HIDDEN" if conf < 0.3 else ""
             print(f"{name:25s}: {conf:.3f}  {tag}")

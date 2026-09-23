@@ -26,8 +26,8 @@ from pathlib import Path
 
 from avsectester.attacks.patch_composite import (
     ClassicHarmonizer,
-    LibcomHarmonizer,
     PatchCompositor,
+    PCTNetHarmonizer,
 )
 from avsectester.attacks.physical_patch import checkerboard_rgba, image_rgba
 from avsectester.simulators.nurec import NuRecBackend, NuRecRenderer
@@ -59,7 +59,7 @@ def main() -> int:
 
     patch = (image_rgba(args.texture, args.tex) if args.texture
              else checkerboard_rgba(args.tex, squares=8))
-    harmonizer = LibcomHarmonizer() if args.harmonizer == "libcom" else ClassicHarmonizer()
+    harmonizer = PCTNetHarmonizer() if args.harmonizer == "libcom" else ClassicHarmonizer()
     compositor = PatchCompositor(harmonizer)
 
     renderer = NuRecRenderer(endpoint=args.endpoint, scene_id=args.scene, cameras=[CAM])
@@ -75,8 +75,6 @@ def main() -> int:
                            visualize=visualize, collect=True)
     finally:
         backend.close()
-        if isinstance(harmonizer, LibcomHarmonizer):
-            harmonizer.close()
 
     out = save_sequence(trace.frames, OUT, name="nurec")
     if out:
