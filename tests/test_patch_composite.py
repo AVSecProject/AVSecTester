@@ -5,16 +5,13 @@ import pytest
 from avsectester.attacks.patch_composite import (
     cam_coords,
     carla_cam_coords,
-    intrinsics_from_fov,
     project_to_pixels,
-    rear_face_quad,
 )
 
 
-def test_intrinsics_and_projection():
-    k = intrinsics_from_fov(100, 100, 90.0)
-    assert k[0, 0] == pytest.approx(50.0) and k[0, 2] == 50.0 and k[1, 2] == 50.0
-    # a point on the optical axis maps to the principal point; +x shifts right by f*x/z
+def test_projection():
+    # pinhole K (f=50, principal point 50,50): optical axis -> principal point; +x shifts right by f*x/z
+    k = np.array([[50.0, 0, 50], [0, 50.0, 50], [0, 0, 1]])
     assert project_to_pixels(np.array([[0, 0, 1.0]]), k)[0] == pytest.approx([50, 50])
     assert project_to_pixels(np.array([[1, 0, 1.0]]), k)[0] == pytest.approx([100, 50])
 
@@ -24,11 +21,6 @@ def test_extrinsics_and_carla_axis_swap():
     assert np.allclose(cam_coords(np.array([[1, 2, 3.0]]), eye), [[1, 2, 3]])
     # CARLA UE (x fwd, y right, z up) -> standard (x right, y down, z fwd) = [y, -z, x]
     assert np.allclose(carla_cam_coords(np.array([[1, 2, 3.0]]), eye), [[2, -3, 1]])
-
-
-def test_rear_face_quad_corners():
-    q = rear_face_quad([0, 0, 0], [1, 0, 0], [0, 1, 0])
-    assert np.allclose(q, [[-1, 1, 0], [1, 1, 0], [1, -1, 0], [-1, -1, 0]])  # TL, TR, BR, BL
 
 
 def test_composite_view_wraps_base_and_skips_when_no_quad():

@@ -26,14 +26,8 @@ log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------------------------------
-# Geometry: intrinsics + projection (backend adapters convert world -> camera coords, then call these)
+# Geometry: projection (backend adapters convert world -> camera coords, then call these)
 # ---------------------------------------------------------------------------------------------------
-def intrinsics_from_fov(width: int, height: int, fov_deg: float) -> np.ndarray:
-    """Pinhole K from horizontal FOV (CARLA/NuRec RGB cameras)."""
-    f = width / (2.0 * np.tan(np.radians(fov_deg) / 2.0))
-    return np.array([[f, 0, width / 2.0], [0, f, height / 2.0], [0, 0, 1.0]], dtype=np.float64)
-
-
 def project_to_pixels(pts_cam: np.ndarray, K: np.ndarray) -> np.ndarray:
     """Standard pinhole projection: camera-frame points (x right, y down, z forward) -> (N,2) px."""
     uv = (K @ np.asarray(pts_cam, dtype=np.float64).T).T
@@ -266,9 +260,3 @@ def box_to_quad(box, width_frac: float = 0.6, height_frac: float = 0.5,
     l, r = 1.0 + math.sin(yaw), 1.0 - math.sin(yaw)
     return np.array([[cx - hw, cy - hh * l], [cx + hw, cy - hh * r],
                      [cx + hw, cy + hh * r], [cx - hw, cy + hh * l]], dtype=np.float64)
-
-
-def rear_face_quad(center: np.ndarray, right: np.ndarray, up: np.ndarray) -> np.ndarray:
-    """4 world-space corners (TL, TR, BR, BL) of a planar patch given its center + right/up half-edges."""
-    c, r, u = (np.asarray(v, dtype=np.float64) for v in (center, right, up))
-    return np.stack([c - r + u, c + r + u, c + r - u, c - r - u])
