@@ -26,5 +26,6 @@ services:
       - ./models:/app/models          # share fetched weights with the host
     stdin_open: true
     tty: true
+    command: ["bash"]
     # link the mounted weights into the mmdet3d root, then run the command (Dockerfile CMD = bash)
     entrypoint: ["bash", "-lc", "bash scripts/fetch_models.sh >/dev/null 2>&1 || true; exec \"$@\"", "--"]
