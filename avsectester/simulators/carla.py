@@ -79,7 +79,11 @@ def lead_rear_quad(
     """
     import numpy as np
 
-    from avsectester.attacks.patch_composite import carla_cam_coords, order_quad, project_to_pixels
+    from avsectester.simulators.patch_insertion import (
+        carla_cam_coords,
+        order_quad,
+        project_to_pixels,
+    )
 
     def _quad_of(_observation: Observation) -> Any:
         import carla

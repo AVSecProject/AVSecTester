@@ -82,9 +82,9 @@ def detector_quad(detect: Callable[[Any], Any], base: View = camera_view, width_
     """Return ``quad_of(observation) -> (4,2) | None``: the rear-face quad of the lead vehicle,
     approximated from a 2-D detector box (image-space, no depth). Runs ``detect(rgb) -> [(xyxy, score,
     label)]`` on the ``base`` view, picks the largest box near the image centre (the lead), and turns it
-    into a planar-warp quad via :func:`avsectester.attacks.patch_composite.box_to_quad`. Feeds
+    into a planar-warp quad via :func:`avsectester.simulators.patch_insertion.box_to_quad`. Feeds
     :func:`composite_view` — the NuRec/real-imagery analog of the geometric ``carla.lead_rear_quad``."""
-    from avsectester.attacks.patch_composite import box_to_quad
+    from avsectester.simulators.patch_insertion import box_to_quad
 
     def _quad_of(observation: Observation) -> Any:
         rgb = base(observation)
@@ -114,7 +114,7 @@ def composite_view(
     the target surface as a ``(4, 2)`` image-space quad (TL, TR, BR, BL) — the backend-specific
     projection is injected (e.g. :func:`avsectester.simulators.carla.lead_rear_quad`), so this module
     stays simulator-agnostic — and ``compositor`` (a
-    :class:`avsectester.attacks.patch_composite.PatchCompositor`) warps + harmonizes ``patch_rgba``
+    :class:`avsectester.simulators.patch_insertion.PatchCompositor`) warps + harmonizes ``patch_rgba``
     onto it. Returns the clean frame unchanged when ``quad_of`` yields None (target not in view)."""
 
     def _view(observation: Observation) -> Any:

@@ -1,11 +1,15 @@
-"""Standard-warp + harmonization patch compositor — one backend-agnostic 2D insert for CARLA & NuRec.
+"""Realistic 2D patch insertion — a **simulation** concern (how an inserted patch renders), shared by
+all backends. Not attack logic: warping a texture onto a surface and harmonizing it to the scene is
+modelling how the object would appear in the render; the *attack* only chooses the payload (which
+texture) and the target (where) — see :mod:`avsectester.attacks.physical_patch`.
 
 The patch is composited **on the rendered frame**, never baked into the world/reconstruction:
 
     project the target surface quad -> perspective-warp the patch onto it -> harmonize to fit.
 
-Each backend supplies only the clean frame + camera intrinsics + the target's image-space quad (from
-its pose/geometry); the warp + harmonization are shared here. Harmonization is pluggable:
+Each backend supplies only the clean frame + the target's image-space quad (from its pose/geometry via
+a per-backend adapter, e.g. ``carla.lead_rear_quad`` / ``viz.detector_quad``); the warp + harmonization
+are shared here. Harmonization is pluggable:
   * ``ClassicHarmonizer`` — OpenCV Poisson blend + Reinhard color transfer; in-process, reliable, no
     heavy deps, texture-preserving (keeps the patch's gradients, matches color/lighting to the scene).
   * ``PCTNetHarmonizer`` — a learned harmonizer (libcom's PCTNet) run **in-process**: PCTNet needs only

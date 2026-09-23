@@ -11,11 +11,15 @@ import sys
 from pathlib import Path
 
 import yaml
-from avsectester.attacks.patch_composite import ClassicHarmonizer, PatchCompositor, PCTNetHarmonizer
 from avsectester.attacks.physical_patch import image_rgba
 from avsectester.plane import Control
 from avsectester.simulators import carla as carla_sim
 from avsectester.simulators.carla import CarlaBackend, lead_rear_quad
+from avsectester.simulators.patch_insertion import (
+    ClassicHarmonizer,
+    PatchCompositor,
+    PCTNetHarmonizer,
+)
 from demo_common import build_detector
 from PIL import Image
 
@@ -67,7 +71,7 @@ def main():
             if q is None:
                 print(f"{name:25s}: quad None"); continue
             if harm is None:
-                from avsectester.attacks.patch_composite import warp_patch
+                from avsectester.simulators.patch_insertion import warp_patch
                 comp, _ = warp_patch(rgb, q, patch)
             else:
                 comp = PatchCompositor(harm).apply(rgb, q, patch)

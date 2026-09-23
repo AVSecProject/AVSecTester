@@ -2,7 +2,7 @@
 
 import numpy as np
 import pytest
-from avsectester.attacks.patch_composite import (
+from avsectester.simulators.patch_insertion import (
     cam_coords,
     carla_cam_coords,
     project_to_pixels,
@@ -48,7 +48,11 @@ def test_composite_view_wraps_base_and_skips_when_no_quad():
 
 def test_warp_and_harmonize_under_cv2():
     pytest.importorskip("cv2")
-    from avsectester.attacks.patch_composite import ClassicHarmonizer, PatchCompositor, warp_patch
+    from avsectester.simulators.patch_insertion import (
+        ClassicHarmonizer,
+        PatchCompositor,
+        warp_patch,
+    )
 
     frame = np.full((40, 60, 3), 100, np.uint8)
     patch = np.dstack([np.full((16, 16), 255, np.uint8)] * 3 + [np.full((16, 16), 255, np.uint8)])
@@ -60,7 +64,7 @@ def test_warp_and_harmonize_under_cv2():
 
 
 def test_order_quad_shared_helper():
-    from avsectester.attacks.patch_composite import order_quad
+    from avsectester.simulators.patch_insertion import order_quad
 
     pts = np.array([[5, 5], [1, 5], [1, 1], [5, 1]], float)  # BR, BL, TL, TR scrambled
     assert np.allclose(order_quad(pts), [[1, 1], [5, 1], [5, 5], [1, 5]])  # TL, TR, BR, BL
@@ -68,7 +72,7 @@ def test_order_quad_shared_helper():
 
 def test_box_to_quad_planar_target():
     """A detection box -> a centered planar-warp quad (TL,TR,BR,BL); yaw makes it a trapezoid."""
-    from avsectester.attacks.patch_composite import box_to_quad
+    from avsectester.simulators.patch_insertion import box_to_quad
 
     q = box_to_quad([100, 100, 200, 200], width_frac=0.5, height_frac=0.5, v_center=0.5)
     assert np.allclose(q, [[125, 125], [175, 125], [175, 175], [125, 175]])  # centered half-size box

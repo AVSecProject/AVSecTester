@@ -24,13 +24,13 @@ import logging
 import sys
 from pathlib import Path
 
-from avsectester.attacks.patch_composite import (
+from avsectester.attacks.physical_patch import checkerboard_rgba, image_rgba
+from avsectester.simulators.nurec import NuRecBackend, NuRecRenderer
+from avsectester.simulators.patch_insertion import (
     ClassicHarmonizer,
     PatchCompositor,
     PCTNetHarmonizer,
 )
-from avsectester.attacks.physical_patch import checkerboard_rgba, image_rgba
-from avsectester.simulators.nurec import NuRecBackend, NuRecRenderer
 from avsectester.simulators.viz import (
     camera_view,
     composite_view,
