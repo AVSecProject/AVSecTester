@@ -145,12 +145,14 @@ object model (`serialize`) is the source of truth; NL is a front-end onto it.
 
 1. **Interface + DSL — DONE.** `scene.py`, `requirement.py` (fully implemented + tested), `source.py`,
    `requirements.py`. Offline, ruff-clean, unit-tested.
-2. **CARLA builder — DONE (offline-verified).** `CarlaScenarioBuilder` enumerates lead placements
-   *analytically* (`carla_gt.predict_scene_gt` — no CARLA), keeps those where `req.match` holds, and
-   builds the real `CarlaBackend` lazily in `make_backend`. Tested offline; **live end-to-end pending a
-   CARLA session** (nre currently holds GPU 2).
-3. **CARLA GT adapter — DONE (impl).** `carla_gt.carla_scene_gt(backend)` (live actors → `ObjectGT` in
-   the ego frame, 3-D boxes projected via `simulators.patch_insertion`). Implemented; live-validate next.
+2. **CARLA builder — DONE (validated live).** `CarlaScenarioBuilder` enumerates lead placements
+   *analytically* (`carla_gt.predict_scene_gt` — no CARLA; needs a physically-spawnable `min_gap`),
+   keeps those where `req.match` holds, and builds the real `CarlaBackend` lazily in `make_backend`.
+   Confirmed end-to-end on a live CARLA server: a built scene's live GT satisfies all five constraints.
+3. **CARLA GT adapter — DONE (validated live).** `carla_gt.carla_scene_gt(backend)` (live actors →
+   `ObjectGT` in the ego frame, 3-D boxes projected via `simulators.patch_insertion`). Note: derive the
+   box centre from the world vertices — never `carla.Transform.transform(bb.location)`, which mutates
+   `bb.location` in place and corrupts the next projection.
 4. **Serialization + NL — DONE.** `serialize.py` (dict <-> requirement) + `nl.py` (LLM interpreter),
    tested with a stub LLM.
 5. **Dataset adapter + filter — PARTIAL.** `DatasetFilter` implemented + tested over a stub `Dataset`;

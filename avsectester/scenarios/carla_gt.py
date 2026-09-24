@@ -79,10 +79,12 @@ def predict_scene_gt(scenario: dict, gap: float, lateral: float, speed: float = 
     scenario's front camera would see it — computed analytically (no CARLA)."""
     name, w, h, fov, cam_pos = _camera_config(scenario)
     k = _pinhole_k(w, h, fov)
-    center = np.array([gap, lateral, extent[2] / 2])  # lead centre in the ego frame (on the road)
+    # `lateral` matches the scenario's `lead.lateral` (CARLA right +); ego frame y is left, so y = -lateral
+    y_left = -lateral
+    center = np.array([gap, y_left, extent[2] / 2])  # lead centre in the ego frame (on the road)
     px, z = _project_ego(_corners_ego(center, extent, yaw=0.0), cam_pos, k)
     box2d = _box2d_from_corners(px, z, w, h)
-    lead = ObjectGT(track_id="lead", category="vehicle", center=(gap, lateral, extent[2] / 2),
+    lead = ObjectGT(track_id="lead", category="vehicle", center=(gap, y_left, extent[2] / 2),
                     extent=extent, yaw=0.0, box2d={name: box2d} if box2d else {}, visibility=1.0)
     calib = CameraCalib(name=name, width=w, height=h)
     return SceneGT(frame=0, t=0.0, ego=EgoState(speed=speed), cameras={name: calib}, objects=[lead],
@@ -103,8 +105,8 @@ def carla_scene_gt(backend: Any, camera: str = "front") -> SceneGT:
     cam_inv = np.array(sensor.object.get_transform().get_inverse_matrix())
     h_img, w_img = sensor.imsize
 
-    def to_ego(loc):  # world Location -> ego frame (x fwd, y left, z up)
-        p = ego_inv @ np.array([loc.x, loc.y, loc.z, 1.0])
+    def to_ego(xyz):  # world point -> ego frame (x fwd, y left, z up)
+        p = ego_inv @ np.array([xyz[0], xyz[1], xyz[2], 1.0])
         return (float(p[0]), float(-p[1]), float(p[2]))
 
     objects = []
@@ -113,12 +115,12 @@ def carla_scene_gt(backend: Any, camera: str = "front") -> SceneGT:
             continue
         tf = actor.get_transform()
         bb = actor.bounding_box
-        centre = tf.transform(bb.location)
-        cx, cy, cz = to_ego(centre)
+        # NB: carla.Transform.transform() mutates its argument in place, so derive the box centre from
+        # the world vertices (never call tf.transform(bb.location), which corrupts bb for the next call).
         corners = np.array([[v.x, v.y, v.z] for v in bb.get_world_vertices(tf)])
-        px = project_to_pixels(carla_cam_coords(corners, cam_inv), k_full)
-        zc = carla_cam_coords(corners, cam_inv)[:, 2]
-        box2d = _box2d_from_corners(px, zc, w_img, h_img)
+        cx, cy, cz = to_ego(corners.mean(axis=0))
+        cc = carla_cam_coords(corners, cam_inv)
+        box2d = _box2d_from_corners(project_to_pixels(cc, k_full), cc[:, 2], w_img, h_img)
         yaw = math.radians(tf.rotation.yaw - ego_tf.rotation.yaw)
         objects.append(ObjectGT(
             track_id=str(actor.id), category="vehicle", center=(cx, cy, cz),

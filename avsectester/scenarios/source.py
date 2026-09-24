@@ -102,11 +102,12 @@ class CarlaScenarioBuilder(ScenarioSource):
 
     def __init__(self, base_scenario: dict | None = None, samples: int = 200,
                  lateral_range: tuple[float, float] = (0.0, 3.0), ego_speed: float = 5.0,
-                 seed: int = 0) -> None:
+                 min_gap: float = 6.0, seed: int = 0) -> None:
         self.base_scenario = base_scenario
         self.samples = samples
         self.lateral_range = lateral_range
         self.ego_speed = ego_speed
+        self.min_gap = min_gap  # two ~4.7 m cars can't be spawned closer without overlapping
         self.seed = seed
 
     def _base(self) -> dict:
@@ -127,6 +128,7 @@ class CarlaScenarioBuilder(ScenarioSource):
         base = self._base()
         dist = next((c for c in req.constraints if isinstance(c, DistanceRange)), None)
         gmin, gmax = (dist.min_m, dist.max_m) if dist else (5.0, 20.0)
+        gmin = max(gmin, self.min_gap)  # keep the lead physically spawnable (no ego overlap)
         rng = np.random.RandomState(self.seed)
         n = 0
         for _ in range(self.samples):
