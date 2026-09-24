@@ -160,11 +160,16 @@ class ScenarioMatch:
 
 @dataclass
 class ScenarioRequirement:
-    """An attack's preconditions: pick a target, then require all constraints to hold on it."""
+    """An attack's preconditions: pick a target, then require all constraints to hold on it.
+
+    ``description`` is a free-text statement of the requirement in natural language. It is the
+    human-authorable surface an LLM interprets into the formal ``target`` + ``constraints`` (see
+    :mod:`avsectester.scenarios.nl`), and documents intent alongside the executable predicate."""
 
     name: str
     target: TargetSpec
     constraints: list[Constraint] = field(default_factory=list)
+    description: str = ""
 
     def match(self, scene: SceneGT) -> ScenarioMatch | None:
         """Return a :class:`ScenarioMatch` if this scene qualifies (target selectable + all constraints

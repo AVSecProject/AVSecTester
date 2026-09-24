@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -76,31 +77,78 @@ class DatasetFilter(ScenarioSource):
         self.dataset = dataset
 
     def scenarios(self, req, limit=None):
-        raise NotImplementedError(
-            "phase 4: for scene in self.dataset.scenes(): "
-            "m = req.match(scene); if m: yield ScenarioInstance("
-            "make_backend=lambda s=scene: self.dataset.make_backend(s), target=m, "
-            "provenance=scene.source)  # honour `limit`"
-        )
+        n = 0
+        for scene in self.dataset.scenes():
+            match = req.match(scene)
+            if match is None:
+                continue
+            yield ScenarioInstance(
+                make_backend=lambda s=scene: self.dataset.make_backend(s),
+                target=match, provenance=dict(scene.source))
+            n += 1
+            if limit is not None and n >= limit:
+                return
 
 
 class CarlaScenarioBuilder(ScenarioSource):
-    """Construct CARLA scenes that satisfy the requirement, then self-validate with the same predicate.
+    """Construct CARLA scenes that satisfy the requirement by placing a lead vehicle ahead of the ego.
 
-    Reads the constraints to *parameterize* construction — e.g. sample the lead-vehicle distance inside a
-    ``DistanceRange``, a small lateral offset so ``ViewpointRear`` / ``ImageAreaFrac`` hold — emit a
-    ``carla_patch_scenario``-style config, build ``SceneGT`` from the CARLA world (live actor boxes +
-    sensor calibration, projected via ``simulators.patch_insertion``), and keep the case only if
-    ``req.match`` holds. Skeleton: phases 2-3."""
+    Enumeration is **analytic** (no CARLA): sample a lead placement — distance inside the requirement's
+    ``DistanceRange``, a small lateral offset so ``ViewpointRear`` / ``ImageAreaFrac`` can hold —
+    :func:`~avsectester.scenarios.carla_gt.predict_scene_gt` computes the SceneGT the front camera would
+    see, and the case is kept only if ``req.match`` holds. The real ``CarlaBackend`` is built lazily in
+    ``make_backend`` (so ``scenarios`` runs offline and CARLA is only touched for cases actually run);
+    :func:`~avsectester.scenarios.carla_gt.carla_scene_gt` can re-validate the live scene at run time."""
 
-    def __init__(self, base_scenario: dict | None = None, samples: int = 50, seed: int = 0) -> None:
+    def __init__(self, base_scenario: dict | None = None, samples: int = 200,
+                 lateral_range: tuple[float, float] = (0.0, 3.0), ego_speed: float = 5.0,
+                 seed: int = 0) -> None:
         self.base_scenario = base_scenario
         self.samples = samples
+        self.lateral_range = lateral_range
+        self.ego_speed = ego_speed
         self.seed = seed
 
+    def _base(self) -> dict:
+        if self.base_scenario is not None:
+            return self.base_scenario
+        from pathlib import Path
+
+        import yaml
+        cfg = Path(__file__).resolve().parents[2] / "configs" / "carla_patch_scenario.yaml"
+        return yaml.safe_load(cfg.read_text())
+
     def scenarios(self, req, limit=None):
-        raise NotImplementedError(
-            "phase 2-3: sample construction params from req.constraints -> build a carla scenario config"
-            " -> carla_scene_gt(backend) -> if req.match(scene): yield ScenarioInstance(make_backend=..."
-            ", target=match, provenance={'backend': 'carla', 'params': ...})"
-        )
+        import numpy as np
+
+        from avsectester.scenarios.carla_gt import predict_scene_gt
+        from avsectester.scenarios.requirement import DistanceRange
+
+        base = self._base()
+        dist = next((c for c in req.constraints if isinstance(c, DistanceRange)), None)
+        gmin, gmax = (dist.min_m, dist.max_m) if dist else (5.0, 20.0)
+        rng = np.random.RandomState(self.seed)
+        n = 0
+        for _ in range(self.samples):
+            gap = float(rng.uniform(gmin, gmax))
+            lateral = float(rng.uniform(*self.lateral_range))
+            scene = predict_scene_gt(base, gap, lateral, speed=self.ego_speed)
+            match = req.match(scene)
+            if match is None:
+                continue
+            config = deepcopy(base)
+            config.setdefault("lead", {}).update(gap=gap, lateral=lateral)
+            config.pop("patches", None)  # the attack is applied by the eval harness, not baked in
+            yield ScenarioInstance(
+                make_backend=lambda c=config: _carla_backend(c), target=match,
+                provenance={"backend": "carla", "gap": gap, "lateral": lateral})
+            n += 1
+            if limit is not None and n >= limit:
+                return
+
+
+def _carla_backend(config: dict):
+    """Lazily build a ``CarlaBackend`` (imports the CARLA stack only when a scenario is actually run)."""
+    from avsectester.simulators.carla import CarlaBackend
+
+    return CarlaBackend(config)

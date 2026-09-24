@@ -130,15 +130,31 @@ report = aggregate(results)   # attack success rate over the qualifying scenario
 The scenario layer's job ends at yielding qualifying, runnable `ScenarioInstance`s + the target; the
 eval harness (separate module, next step) runs clean-vs-attacked and aggregates `impact` verdicts.
 
-## Phased implementation
+## Natural-language requirements (LLM-interpreted)
 
-1. **Interface (this commit):** `scene.py`, `requirement.py` (DSL, fully implemented + tested),
-   `source.py` (interfaces + provider skeletons), `requirements.py` (physical-patch example). No
-   sim/dataset deps — imports offline, ruff-clean, unit-tested DSL.
-2. **CARLA builder:** implement `CarlaScenarioBuilder` — parameterize a `carla_patch_scenario`-style
-   config from the constraints, build `SceneGT` from CARLA world state + projection, self-validate.
-3. **CARLA GT adapter:** `carla_scene_gt(backend) -> SceneGT` (live actors → `ObjectGT`, sensor → calib).
-4. **Dataset adapter + filter:** an Alpamayo/NuRec `Dataset` yielding `SceneGT` from annotations; wire
-   `DatasetFilter`; map a selected clip+frame to a `NuRecBackend`.
-5. **Eval harness:** `avsectester/evaluation/` — run a `ScenarioSource` × an attack, score with
-   `metric.impact`, aggregate to an attack success rate + a report.
+`ScenarioRequirement` carries a free-text `description`; `nl.interpret(description, llm)` turns it into
+the formal target + constraints. The LLM is **injected** (`llm: str -> str`), so there is no API
+dependency: `nl.build_prompt` grounds the model in the exact constraint vocabulary
+(`serialize.constraint_vocabulary`, auto-generated from the dataclasses), `nl.parse_response` extracts
+its JSON, and `serialize.requirement_from_dict` deserializes it through the constraint registry — an
+unknown kind or bad field raises rather than silently mis-specifying the scenario. So a human writes
+"a car directly ahead, close and unoccluded, rear facing us" and gets a runnable predicate. The
+object model (`serialize`) is the source of truth; NL is a front-end onto it.
+
+## Phased implementation — status
+
+1. **Interface + DSL — DONE.** `scene.py`, `requirement.py` (fully implemented + tested), `source.py`,
+   `requirements.py`. Offline, ruff-clean, unit-tested.
+2. **CARLA builder — DONE (offline-verified).** `CarlaScenarioBuilder` enumerates lead placements
+   *analytically* (`carla_gt.predict_scene_gt` — no CARLA), keeps those where `req.match` holds, and
+   builds the real `CarlaBackend` lazily in `make_backend`. Tested offline; **live end-to-end pending a
+   CARLA session** (nre currently holds GPU 2).
+3. **CARLA GT adapter — DONE (impl).** `carla_gt.carla_scene_gt(backend)` (live actors → `ObjectGT` in
+   the ego frame, 3-D boxes projected via `simulators.patch_insertion`). Implemented; live-validate next.
+4. **Serialization + NL — DONE.** `serialize.py` (dict <-> requirement) + `nl.py` (LLM interpreter),
+   tested with a stub LLM.
+5. **Dataset adapter + filter — PARTIAL.** `DatasetFilter` implemented + tested over a stub `Dataset`;
+   the concrete Alpamayo/NuRec `Dataset` (annotations -> `SceneGT`, clip -> `NuRecBackend`) is the
+   remaining integration.
+6. **Eval harness — TODO.** `avsectester/evaluation/` — run a `ScenarioSource` × an attack, score with
+   `metric.impact`, aggregate to an attack success rate + report.

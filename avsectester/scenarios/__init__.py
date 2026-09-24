@@ -14,6 +14,7 @@ Phase 1 (here): the ``SceneGT`` schema + the requirement DSL (implemented, teste
 interface (skeletons). Later phases wire the CARLA builder, the dataset adapter, and the eval harness.
 """
 
+from avsectester.scenarios.nl import interpret
 from avsectester.scenarios.requirement import (
     Constraint,
     ScenarioMatch,
@@ -21,6 +22,7 @@ from avsectester.scenarios.requirement import (
     TargetSpec,
 )
 from avsectester.scenarios.scene import CameraCalib, EgoState, ObjectGT, SceneGT
+from avsectester.scenarios.serialize import requirement_from_dict, requirement_to_dict
 from avsectester.scenarios.source import (
     CarlaScenarioBuilder,
     Dataset,
@@ -43,4 +45,7 @@ __all__ = [
     "ScenarioSource",
     "SceneGT",
     "TargetSpec",
+    "interpret",
+    "requirement_from_dict",
+    "requirement_to_dict",
 ]
