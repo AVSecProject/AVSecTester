@@ -25,7 +25,8 @@ then run the attack in it:
 
 ```bash
 docker compose up -d --build       # first build: the mmdet3d CUDA compile takes ~10–20 min
-docker compose exec avsectester avsectester run configs/carla_scenario.yaml --frames 40
+docker compose exec -e TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 avsectester \
+  avsectester run configs/carla_scenario.yaml --frames 40
 ```
 
 `avsectester run` **is** the demo: it builds `configs/carla_scenario.yaml`, runs a clean pass then a
@@ -47,7 +48,8 @@ Add `--plot results/impact.png` to also save a **driving-impact figure** (ego sp
 time, clean vs attacked). `results/` is bind-mounted, so the PNG appears on the host:
 
 ```bash
-docker compose exec avsectester avsectester run configs/carla_scenario.yaml --frames 40 --plot results/impact.png
+docker compose exec -e TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 avsectester \
+  avsectester run configs/carla_scenario.yaml --frames 40 --plot results/impact.png
 ```
 
 The container defaults to a **shell** — open one, or run anything else, with `exec`:

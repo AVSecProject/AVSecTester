@@ -25,7 +25,8 @@ cd third_party/avstack-core && git submodule update --init --depth 1 \
   third_party/mmdetection third_party/mmdetection3d third_party/mmsegmentation && cd -
 ./scripts/fetch_models.sh          # CARLA-trained weights → ./models
 docker compose up -d --build       # start a CARLA 0.9.15 server + the AVSecTester shell
-docker compose exec avsectester avsectester run configs/carla_scenario.yaml --frames 40   # run it
+docker compose exec -e TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 avsectester \
+  avsectester run configs/carla_scenario.yaml --frames 40   # run it
 ```
 
 A CARLA-trained **PointPillars** detector runs on a live **CarlaLidar**; a fabricated detection is
