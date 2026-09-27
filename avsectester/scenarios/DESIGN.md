@@ -155,13 +155,20 @@ object model (`serialize`) is the source of truth; NL is a front-end onto it.
    `bb.location` in place and corrupts the next projection.
 4. **Serialization + NL — DONE.** `serialize.py` (dict <-> requirement) + `nl.py` (LLM interpreter),
    tested with a stub LLM.
-5. **Dataset adapter + filter — DONE (real data).** `datasets/nuscenes.py:NuScenesDataset` (GT boxes ->
-   `SceneGT` via the devkit) + `RecordedFrameBackend` (replay a recorded frame). Where 3-D labels are
-   unavailable — nuScenes GT here is permission-locked, and **NuRec/Alpamayo has no labels** (the render
-   API exposes no actor boxes and no annotation files ship with the clips) — `datasets/detector.py:
-   DetectorDataset` builds `SceneGT` from a 2-D detector on the real images (box2d + monocular distance;
-   viewpoint/visibility approximated). Validated on **real nuScenes**: 80 CAM_FRONT frames -> 56 qualify
-   for `physical_patch_hide_vehicle` (target drawn in `tmp/compare/nuscenes_filter.png`). Unit tests use
-   duck-typed boxes / a stub detector so they need neither the dataset nor a GPU.
+5. **Dataset adapter + filter — DONE (real data).** Two *distinct levels*, kept separate:
+   - **A dataset that ships 3-D labels:** `datasets/nuscenes.py:NuScenesDataset` reads nuScenes GT boxes
+     via the devkit -> `SceneGT`, paired with `RecordedFrameBackend` (replay the recorded frame).
+     Validated on **real nuScenes v1.0-trainval GT** (permission fixed): 400 keyframes / 861 GT vehicles
+     -> **80 qualify** for `physical_patch_hide_vehicle`, with real distance + orientation + visibility
+     (so `ViewpointRear`/`MinVisibility` are meaningful, not approximated). Target drawn in
+     `tmp/compare/nuscenes_gt_filter.png` (a truck 25 m ahead, yaw -2°, vis 0.9).
+   - **A frame source + a labeling strategy**, for traces with no accessible 3-D labels: `source.py`
+     defines `Frame`/`FrameSource` (raw pixels + calib, no GT); `datasets/frames.py:ImageFolder` is a bare
+     source; `datasets/detector.py:DetectorLabeler` **composes over any `FrameSource`** and *derives*
+     `SceneGT` with an injected 2-D detector (box2d + monocular distance; viewpoint/visibility
+     approximated). This is a *strategy that produces a labeled `Dataset`* — **not a peer of
+     `NuScenesDataset`**. NuRec/Alpamayo falls here (no actor boxes from the render API, no annotation
+     files ship). Unit tests use duck-typed boxes / a stub detector, so they need neither the dataset nor
+     a GPU.
 6. **Eval harness — TODO.** `avsectester/evaluation/` — run a `ScenarioSource` × an attack, score with
    `metric.impact`, aggregate to an attack success rate + report.
