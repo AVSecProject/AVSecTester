@@ -68,25 +68,3 @@ def test_recorded_frame_backend_serves_the_image(tmp_path):
     assert backend.step(None).sensor_data["front"].shape == (90, 160, 3)  # static: same frame
 
 
-def test_detector_labeler_builds_scenegt_and_filters(tmp_path):
-    import cv2
-    from avsectester.scenarios.datasets.detector import DetectorLabeler
-    from avsectester.scenarios.datasets.frames import ImageFolder
-    from avsectester.scenarios.source import DatasetFilter
-
-    p = tmp_path / "f.jpg"
-    cv2.imwrite(str(p), np.full((900, 1600, 3), 120, np.uint8))
-    # a detector returning one large, centred vehicle box (height 400 px -> ~4.9 m at f=1266, H=1.55)
-    def detect(rgb):
-        return [((700.0, 300.0, 1000.0, 700.0), 0.9, "vehicle")]
-
-    # the labeling strategy composes over a bare frame source (pixels only), not a sibling Dataset
-    ds = DetectorLabeler(ImageFolder([str(p)], K), detect)
-    scenes = list(ds.scenes())
-    assert len(scenes) == 1 and len(scenes[0].objects) == 1
-    o = scenes[0].objects[0]
-    assert 4.0 < o.distance < 6.0 and "front" in o.box2d       # monocular distance estimate
-    assert len(list(DatasetFilter(ds).scenarios(REQ))) == 1    # this real-image frame qualifies
-    # the .over_images convenience is equivalent
-    scene = next(DetectorLabeler.over_images([str(p)], detect, K).scenes())
-    assert scene.objects[0].category == "vehicle"

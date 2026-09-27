@@ -22,8 +22,6 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-import numpy as np
-
 from avsectester.scenarios.requirement import ScenarioMatch, ScenarioRequirement
 
 if TYPE_CHECKING:  # avoid importing the sim stack at module import time
@@ -53,42 +51,14 @@ class ScenarioSource(ABC):
         ...
 
 
-@dataclass
-class Frame:
-    """One raw, *unlabeled* camera frame: the pixels + the calibration needed to interpret them.
-
-    A :class:`FrameSource` yields these (a folder of images, a NuRec render sequence, …). A *labeler*
-    (e.g. :class:`~avsectester.scenarios.datasets.detector.DetectorLabeler`) turns each into a
-    :class:`SceneGT`; a dataset that already ships 3-D labels (nuScenes) skips this and reads them."""
-
-    image_path: str
-    k: np.ndarray                       # 3x3 camera intrinsic
-    width: int
-    height: int
-    camera: str = "front"               # the logical camera name the requirement targets
-    meta: dict[str, Any] = field(default_factory=dict)
-
-
-class FrameSource(ABC):
-    """Yields raw :class:`Frame`s (pixels + calibration) with **no** ground truth attached.
-
-    This is the pixel side of a trace — a bare image folder, or the nre-ga renderer's output. Pair it
-    with a labeler to get a :class:`Dataset` when the source ships no 3-D annotations of its own."""
-
-    @abstractmethod
-    def frames(self) -> Iterator[Frame]:
-        ...
-
-
 class Dataset(ABC):
     """A **labeled** real-data trace source: it exposes a ground-truth :class:`SceneGT` per frame.
 
-    Two ways a dataset gets its labels, both satisfying this one interface:
-      * it *ships* 3-D annotations — read them directly (:class:`~...datasets.nuscenes.NuScenesDataset`);
-      * it ships none — wrap a :class:`FrameSource` in a labeler that *derives* the GT
-        (:class:`~avsectester.scenarios.datasets.detector.DetectorLabeler`, a 2-D detector).
-    NuRec/Alpamayo falls in the second bucket: the nre-ga renderer produces *pixels* but exposes no actor
-    boxes, so labels come from a labeler over its frames, not from the renderer."""
+    Both real datasets we filter ship 3-D labels read directly here:
+      * :class:`~avsectester.scenarios.datasets.nuscenes.NuScenesDataset` — nuScenes GT boxes (devkit);
+      * :class:`~avsectester.scenarios.datasets.nurec.NuRecDataset` — nuRec ``.usdz`` cuboid tracks.
+    The nre-ga *renderer* returns only pixels, but the nuRec ``.usdz`` itself carries the actor cuboids +
+    ego trajectory, so :class:`NuRecDataset` reads those directly rather than needing a detector."""
 
     @abstractmethod
     def scenes(self) -> Iterator[SceneGT]:
