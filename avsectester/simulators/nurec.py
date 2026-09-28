@@ -271,6 +271,24 @@ class NuRecRenderer(Renderer):
         yaw = math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
         return {"x": p.x, "y": p.y, "yaw": yaw}
 
+    def camera_model(self):
+        """The rendered camera's lens model (:class:`~avsectester.simulators.camera_models.FThetaCamera`)
+        — for world-anchored insertion; available after :meth:`load_scene`."""
+        from avsectester.simulators.camera_models import FThetaCamera
+
+        return FThetaCamera.from_nurec(self._spec)
+
+    def cam_from_world(self, pose: EgoPose):
+        """4x4 scene-world -> camera (x right, y down, z fwd) transform at ego ``pose`` — the inverse
+        of the camera pose :meth:`render` sends (``world_rig @ rig_to_camera``)."""
+        import numpy as np
+
+        from avsectester.simulators.camera_models import planar_rig_pose, pose_from_proto
+
+        z = self._start_pose.vec.z if self._start_pose is not None else 0.0
+        world_from_cam = planar_rig_pose(pose.x, pose.y, pose.yaw, z) @ pose_from_proto(self._rig_to_camera)
+        return np.linalg.inv(world_from_cam)
+
     def render(self, pose: EgoPose, camera: str):
         """Render one RGB frame at the ego pose via a single stateless render_rgb call."""
         # ego rig pose in the scene world frame -> common.Pose (2-D; z from the recorded start)
