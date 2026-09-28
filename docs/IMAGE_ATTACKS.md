@@ -72,6 +72,15 @@ phantom attack. The choice of harmonizer decides whether the attack works at all
 harmonizer removes the sign's colour, and with it the detection; it likewise washes a person
 silhouette into the background (the standee), while a poster's own paper and frame shield the figure.
 
+### Across real scenes (nuScenes)
+
+`scripts/nuscenes_object_demo.py` places the same three objects in the ego frame of real nuScenes
+`CAM_FRONT` photos (pinhole camera from the image's calibration) and harmonizes with PCTNet. A spot is
+used only if its footprint overlaps no annotated object. On 8 val images (Boston and Singapore, 6 day,
+2 night) the COCO detector finds the STOP sign, the standee and the billboard person in 8/8 images
+each, and nothing at those spots in the clean images. Seen in the grid: an unlit white poster stays
+too bright at night, and a spot can land in a traffic lane because no map is consulted.
+
 ## Running
 
 With an `nre-ga` server serving a NuRec scene (see [`SETUP.md`](SETUP.md) §4b):
@@ -79,6 +88,10 @@ With an `nre-ga` server serving a NuRec scene (see [`SETUP.md`](SETUP.md) §4b):
 ```bash
 python scripts/nurec_object_demo.py --endpoint 127.0.0.1:50051 --object stop \
     --mode roadside vehicle --harmonizer none classic chroma libcom --frames 50 --eval
+
+# the three objects on real nuScenes photos
+python scripts/nuscenes_object_demo.py --nuscenes <nuscenes root> \
+    --asset <assets>/pedestrians/person_001.png --n 8 --harmonizer libcom --eval
 
 # person cut-outs (once), then a standee / billboard
 python scripts/extract_person_cutouts.py --nuscenes <nuscenes root> --out <assets>/pedestrians
@@ -96,6 +109,9 @@ its own default position.
 
 - No occlusion: an inserted object is always drawn on top, even if a vehicle passes in front of it.
 - No shadows, specular reflection or retro-reflectivity; lighting comes only from harmonization.
-- The world-anchored ground height is a parameter (`--ground-z`), not read from the scene.
+- The world-anchored ground height is a parameter (`--ground-z`), not read from the scene, and
+  placements do not consult a map (drivable area, sidewalk).
+- No light sources: an unlit object is only as dark as its surroundings suggest (a white poster at
+  night stays too bright).
 - Scene `clipgt-01d503d4` only. Perception is scored with a COCO detector, not the stack under
   test; no driving-impact (closed-loop Alpamayo) evaluation yet.

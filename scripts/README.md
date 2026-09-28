@@ -18,6 +18,8 @@
   (world-anchored, ray-cast through the f-theta camera), `--mode vehicle` on the lead vehicle's rear.
   Compares harmonizers (`--harmonizer none classic chroma libcom`); `--eval` scores a COCO detector on
   it. See `docs/IMAGE_ATTACKS.md`.
+- **`nuscenes_object_demo.py`** — the same objects inserted into real nuScenes `CAM_FRONT` photos
+  (pinhole camera from each image's calibration), day and night, with an optional detector check.
 - **`extract_person_cutouts.py`** — cut full-body pedestrians out of nuScenes images with SAM
   (RGBA assets for the standee / billboard objects; kept outside the repo, CC BY-NC-SA).
 
