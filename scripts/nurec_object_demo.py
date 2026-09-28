@@ -1,22 +1,32 @@
 #!/usr/bin/env python
-"""Fake STOP sign in a NuRec (AlpaSim) reconstructed scene — clean vs attacked, side by side.
+"""Insert a fake object into a NuRec (AlpaSim) reconstructed scene — clean vs attacked, side by side.
 
-Two placements of the same public-domain MUTCD STOP face (:mod:`avsectester.attacks.sign_spoof`):
+Objects (``--object``), all camera-facing *natural physical object* attacks:
 
-  * ``roadside`` — planted on the road shoulder at a fixed scene position and rendered by ray casting
-    through the NuRec camera's f-theta model, so perspective/scale stay correct as the ego drives up;
-  * ``vehicle``  — carried on the rear of the lead vehicle, a square quad from a COCO detection box.
+  * ``stop``      — a public-domain MUTCD STOP sign (:mod:`avsectester.attacks.sign_spoof`);
+  * ``standee``   — a life-size cut-out of a real person (:mod:`avsectester.attacks.person_poster`);
+  * ``billboard`` — the same person printed on a roadside poster board.
 
-Each variant is a ``perturb(Observation)`` (the stack sees the sign); the ego cruises at a constant
-speed (``--speed``, ~the recorded speed) so both runs see the same poses and frames pair up.
+Placements (``--mode``):
+
+  * ``roadside`` — at a fixed scene position (``--x/--y``), rendered by ray casting through the NuRec
+    camera's f-theta model, so perspective/scale stay correct as the ego drives up;
+  * ``vehicle``  — on the rear of the lead vehicle (a quad from a COCO detection box): the STOP sign,
+    or for the person objects a poster of the person.
+
+Each variant is a ``perturb(Observation)`` (the stack sees the object); the ego cruises at a constant
+speed (``--speed``, ~the recorded speed) so both runs see the same poses and frames pair up. ``--eval``
+scores whether a COCO detector picks the object up (``stop sign`` / ``person``).
 
 Run with an nre-ga server serving the scene (see docs/SETUP.md §4b):
 
-    python scripts/nurec_sign_demo.py --endpoint 127.0.0.1:50051 --mode roadside vehicle \
-        --harmonizer classic chroma libcom --frames 50
+    python scripts/nurec_object_demo.py --endpoint 127.0.0.1:50051 --object stop \
+        --mode roadside vehicle --harmonizer classic chroma libcom --frames 50 --eval
+    python scripts/nurec_object_demo.py --endpoint 127.0.0.1:50051 --object standee \
+        --asset <cutouts>/person_000.png --mode roadside --harmonizer chroma libcom --eval
 
-Outputs under ``tmp/nurec_sign/``: ``clean/`` frames, and per variant ``<mode>_<harmonizer>/`` with the
-attacked frames, ``side_by_side.gif`` (clean | attacked), a filmstrip, and ``zoom_XXXX.png`` crops.
+Outputs under ``tmp/nurec_<object>/``: ``clean/`` frames, and per variant ``<mode>_<harmonizer>/`` with
+the attacked frames, ``side_by_side.gif`` (clean | attacked), a filmstrip, and ``zoom_XXXX.png`` crops.
 """
 
 import argparse
@@ -25,6 +35,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+from avsectester.attacks.person_poster import billboard, load_cutout, poster_rgba, standee
 from avsectester.attacks.sign_spoof import (
     RoadsideSign,
     quad_insert,
@@ -41,10 +52,43 @@ from avsectester.simulators.patch_insertion import (
     frame_perturbation,
 )
 from avsectester.simulators.viz import filmstrip, record_run, save_gif, save_image
-from demo_common import COCO_STOP_SIGN, CruiseStack, build_coco_detector  # shared demo glue
+from demo_common import (  # shared demo glue
+    COCO_PERSON,
+    COCO_STOP_SIGN,
+    CruiseStack,
+    build_coco_detector,
+)
 
 REPO = Path(__file__).resolve().parents[1]
 CAM = "camera_front_wide_120fov"
+# per object: default roadside position (x ahead, y lateral; m), what COCO class it should trigger
+OBJECTS = {
+    "stop": {"x": 28.0, "y": -6.5, "label": (COCO_STOP_SIGN, "stop sign")},
+    "standee": {"x": 25.0, "y": -3.2, "label": (COCO_PERSON, "person")},
+    "billboard": {"x": 28.0, "y": -7.0, "label": (COCO_PERSON, "person")},
+}
+
+
+def build_object(args):
+    """-> (roadside RoadsideSign, vehicle-rear face RGBA, its height/width aspect) for ``args.object``."""
+    spec = OBJECTS[args.object]
+    x = spec["x"] if args.x is None else args.x
+    y = spec["y"] if args.y is None else args.y
+    if args.object == "stop":
+        face = sign_rgba()
+        sign = RoadsideSign(x=x, y=y, face=face, width=args.size or 0.9, yaw=args.yaw,
+                            mount_height=1.5 if args.mount is None else args.mount, ground_z=args.ground_z)
+        return sign, face, 1.0
+    if not args.asset:
+        raise SystemExit(f"--object {args.object} needs --asset <person cut-out PNG>")
+    person = load_cutout(args.asset)
+    poster = poster_rgba(person)
+    if args.object == "standee":
+        sign = standee(person, x, y, height=args.size or 1.75, yaw=args.yaw, ground_z=args.ground_z)
+    else:
+        sign = billboard(person, x, y, width=args.size or 1.4, yaw=args.yaw, ground_z=args.ground_z,
+                         mount_height=0.6 if args.mount is None else args.mount)
+    return sign, poster, poster.shape[0] / poster.shape[1]
 
 
 class NoHarmonizer(Harmonizer):
@@ -161,48 +205,48 @@ def main() -> int:
     ap.add_argument("--speed", type=float, default=3.7, help="constant ego speed (m/s)")
     ap.add_argument("--scene", default="01d503d4", help="NuRec scene id substring")
     ap.add_argument("--endpoint", default="127.0.0.1:50051")
+    ap.add_argument("--object", choices=sorted(OBJECTS), default="stop")
+    ap.add_argument("--asset", default=None, help="person cut-out PNG (standee / billboard)")
     ap.add_argument("--mode", nargs="+", choices=["roadside", "vehicle"], default=["roadside", "vehicle"])
     ap.add_argument("--harmonizer", nargs="+", choices=["none", "classic", "chroma", "libcom"],
                     default=["classic", "chroma", "libcom"])
-    ap.add_argument("--x", type=float, default=28.0, help="roadside sign: metres ahead of the start pose")
-    ap.add_argument("--y", type=float, default=-6.5, help="roadside sign: lateral metres (+left, -right)")
-    ap.add_argument("--yaw", type=float, default=0.15, help="roadside sign: face turned toward the road (rad)")
-    ap.add_argument("--size", type=float, default=0.9, help="roadside sign face width (m)")
-    ap.add_argument("--mount", type=float, default=1.5, help="roadside sign bottom height above ground (m)")
+    ap.add_argument("--x", type=float, default=None, help="roadside: metres ahead of the start pose")
+    ap.add_argument("--y", type=float, default=None, help="roadside: lateral metres (+left, -right)")
+    ap.add_argument("--yaw", type=float, default=0.15, help="roadside: face turned toward the road (rad)")
+    ap.add_argument("--size", type=float, default=None,
+                    help="roadside size (m): sign/board width, standee height (default 0.9 / 1.4 / 1.75)")
+    ap.add_argument("--mount", type=float, default=None, help="roadside bottom edge above ground (m)")
     ap.add_argument("--ground-z", type=float, default=0.0, help="scene ground height at the sign (m)")
     ap.add_argument("--soften", type=float, default=0.6, help="blur (px) to match the soft neural render")
     ap.add_argument("--eval", action="store_true",
-                    help="score whether a COCO detector sees the inserted STOP sign (clean vs attacked)")
+                    help="score whether a COCO detector sees the inserted object (clean vs attacked)")
     ap.add_argument("--gpu", type=int, default=0)
-    ap.add_argument("--out", default=str(REPO / "tmp" / "nurec_sign"))
+    ap.add_argument("--out", default=None, help="output dir (default tmp/nurec_<object>)")
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-    out = Path(args.out)
-    face = sign_rgba()
+    out = Path(args.out or REPO / "tmp" / f"nurec_{args.object}")
+    sign, face, aspect = build_object(args)
+    label_id, label = OBJECTS[args.object]["label"]
 
     print(f"[demo] clean drive: {args.frames} frames at {args.speed} m/s")
     clean = drive(args.endpoint, args.scene, args.frames, args.speed, out / "clean")
     detect = build_coco_detector(args.gpu) if "vehicle" in args.mode else None
-    sign_detect = build_coco_detector(args.gpu, threshold=0.05, labels={COCO_STOP_SIGN: "stop sign"}) \
-        if args.eval else None
+    obj_detect = build_coco_detector(args.gpu, threshold=0.05, labels={label_id: label}) if args.eval else None
     evals: dict = {}
 
     for mode in args.mode:
         for hname in args.harmonizer:
             compositor = PatchCompositor(make_harmonizer(hname, args.gpu))
             if mode == "roadside":
-                sign = RoadsideSign(x=args.x, y=args.y, face=face, width=args.size, yaw=args.yaw,
-                                    mount_height=args.mount, ground_z=args.ground_z)
-
-                def perturb(r, sign=sign, compositor=compositor):
+                def perturb(r, compositor=compositor):
                     insert = roadside_sign_insert(sign, compositor, r.camera_model(),
                                                   lambda o: r.cam_from_world(o.vehicle_state),
                                                   soften=args.soften)
                     return frame_perturbation(insert, camera=CAM)
             else:
                 def perturb(r, compositor=compositor):
-                    return frame_perturbation(quad_insert(vehicle_sign_quad(detect), compositor, face),
-                                              camera=CAM)
+                    quad_of = vehicle_sign_quad(detect, width_frac=0.4 if aspect == 1.0 else 0.3, aspect=aspect)
+                    return frame_perturbation(quad_insert(quad_of, compositor, face), camera=CAM)
 
             tag = f"{mode}_{hname}"
             print(f"[demo] attacked drive: {tag}")
@@ -215,20 +259,20 @@ def main() -> int:
                 z = zoom(clean[i], attacked[i])
                 if z is not None:
                     save_image(z, out / tag / f"zoom_{i:04d}.png")
-            if sign_detect is not None:
-                rows = perception_eval(clean, attacked, sign_detect)
+            if obj_detect is not None:
+                rows = perception_eval(clean, attacked, obj_detect)
                 evals.setdefault(mode, {})[tag] = rows
                 vis = [r for r in rows if r["visible"]]
                 hit = sum(r["attacked"] >= 0.5 for r in vis)
-                print(f"[eval] {tag}: STOP detected (score>=0.5) in {hit}/{len(vis)} frames where the sign "
-                      f"is in view; clean false hits {sum(r['clean'] >= 0.5 for r in vis)}")
+                print(f"[eval] {tag}: '{label}' detected (score>=0.5) in {hit}/{len(vis)} frames where the "
+                      f"object is in view; clean false hits {sum(r['clean'] >= 0.5 for r in vis)}")
             print(f"[output] {out / tag}")
     if evals:
         import json
 
         (out / "perception_eval.json").write_text(json.dumps(evals, indent=1))
         for mode, results in evals.items():
-            plot_eval(results, out / f"perception_{mode}.png", "stop sign")
+            plot_eval(results, out / f"perception_{mode}.png", label)
     return 0
 
 

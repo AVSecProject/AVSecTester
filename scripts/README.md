@@ -13,10 +13,13 @@
     uv run python <AVSecTester>/scripts/alpamayo_nurec_demo.py 8 --save-frames --gpu 1
   ```
 
-- **`nurec_sign_demo.py`** — fake STOP sign in a NuRec scene, clean vs attacked side by side:
-  `--mode roadside` plants it on the shoulder (world-anchored, ray-cast through the f-theta camera),
-  `--mode vehicle` puts it on the lead vehicle's rear. Compares harmonizers
-  (`--harmonizer none classic chroma libcom`). See `docs/IMAGE_ATTACKS.md`.
+- **`nurec_object_demo.py`** — insert a fake object into a NuRec scene, clean vs attacked side by
+  side: `--object stop | standee | billboard`; `--mode roadside` places it on the shoulder
+  (world-anchored, ray-cast through the f-theta camera), `--mode vehicle` on the lead vehicle's rear.
+  Compares harmonizers (`--harmonizer none classic chroma libcom`); `--eval` scores a COCO detector on
+  it. See `docs/IMAGE_ATTACKS.md`.
+- **`extract_person_cutouts.py`** — cut full-body pedestrians out of nuScenes images with SAM
+  (RGBA assets for the standee / billboard objects; kept outside the repo, CC BY-NC-SA).
 
 The **CARLA modular demo** is not a script — it's the CLI, `avsectester run` (see `avsectester/cli.py`).
 It needs the `avsec` conda env with the `[avstack]` extras and a running CARLA server

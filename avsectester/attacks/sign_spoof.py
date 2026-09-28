@@ -77,6 +77,7 @@ class RoadsideSign:
     yaw: float = 0.0
     post: bool = True
     post_width: float = 0.07
+    n_posts: int = 1  # 2: a board on two legs at +-35% of its width
 
     def planes(self) -> list[tuple[np.ndarray, np.ndarray]]:
         """The textured world rectangles to render, back to front: ``[(corners 4x3, rgba), ...]``."""
@@ -86,9 +87,11 @@ class RoadsideSign:
         h = self.width * self.face.shape[0] / self.face.shape[1]
         bottom = self.ground_z + self.mount_height
         planes = []
-        if self.post:  # from the ground to the sign's centre, just behind the face
-            planes.append((_rect(c - normal * 0.03, right, self.post_width, bottom + h / 2, self.ground_z),
-                           post_rgba()))
+        if self.post:  # from the ground to the face's centre, just behind the face
+            offsets = [0.0] if self.n_posts == 1 else np.linspace(-0.35, 0.35, self.n_posts) * self.width
+            for off in offsets:
+                planes.append((_rect(c - normal * 0.03 + right * off, right, self.post_width, bottom + h / 2,
+                                     self.ground_z), post_rgba()))
         planes.append((_rect(c, right, self.width, bottom + h, bottom), self.face))
         return planes
 
@@ -108,15 +111,16 @@ def roadside_sign_insert(sign: RoadsideSign, compositor: Any, camera: Any,
 
 
 def vehicle_sign_quad(detect: Callable[[Any], Any], width_frac: float = 0.4, v_center: float = 0.45,
-                      central: float = 0.25) -> Callable[[Any], Any]:
-    """``quad_of(observation)``: a square on the lead vehicle's rear (from a 2-D detector box) for
-    :meth:`PatchCompositor.apply` — a STOP sign carried on the back of the car ahead. The lead is the
+                      central: float = 0.25, aspect: float = 1.0) -> Callable[[Any], Any]:
+    """``quad_of(observation)``: a quad (height/width ``aspect``, square by default) on the lead vehicle's
+    rear from a 2-D detector box, for :meth:`PatchCompositor.apply` — a STOP sign (or a poster) carried
+    on the back of the car ahead. The lead is the
     nearest detection in the ego lane, so the sign stays on one vehicle as others overtake; a missed
     detection holds the previous quad for a few frames instead of dropping the sign."""
     from avsectester.simulators.patch_insertion import detector_quad, hold_quad
 
     return hold_quad(detector_quad(detect, width_frac=width_frac, v_center=v_center, central=central,
-                                   aspect=1.0, pick="lane"))
+                                   aspect=aspect, pick="lane"))
 
 
 def quad_insert(quad_of: Callable[[Any], Any], compositor: Any,

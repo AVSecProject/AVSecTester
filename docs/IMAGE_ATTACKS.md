@@ -9,8 +9,15 @@ simulation code in `avsectester/simulators/patch_insertion.py`.
 | Attack | Payload | Placement | Module / demo |
 |---|---|---|---|
 | Physical patch | checkerboard / optimized texture | lead vehicle rear (detector quad) | `attacks/physical_patch.py`, `scripts/nurec_patch_demo.py` |
-| **Fake STOP sign — roadside** | MUTCD R1-1 face + post | fixed world position on the shoulder | `attacks/sign_spoof.py`, `scripts/nurec_sign_demo.py --mode roadside` |
-| **Fake STOP sign — on vehicle** | MUTCD R1-1 face | lead vehicle rear (ego-lane detector quad) | `attacks/sign_spoof.py`, `scripts/nurec_sign_demo.py --mode vehicle` |
+| **Fake STOP sign — roadside** | MUTCD R1-1 face + post | fixed world position on the shoulder | `attacks/sign_spoof.py`, `scripts/nurec_object_demo.py --mode roadside` |
+| **Fake STOP sign — on vehicle** | MUTCD R1-1 face | lead vehicle rear (ego-lane detector quad) | `attacks/sign_spoof.py`, `scripts/nurec_object_demo.py --mode vehicle` |
+| **Phantom person — standee** | life-size cut-out of a real pedestrian | fixed world position on the shoulder | `attacks/person_poster.py`, `--object standee --mode roadside` |
+| **Phantom person — billboard** | the person printed on a poster board on two legs | roadside, or a poster on the lead vehicle's rear | `attacks/person_poster.py`, `--object billboard --mode roadside vehicle` |
+
+Person cut-outs come from nuScenes camera images, segmented with SAM from the annotated 2-D boxes
+(`scripts/extract_person_cutouts.py`). nuScenes is CC BY-NC-SA 4.0, so the cut-outs are not in the
+repo; the demo takes one with `--asset`. The STOP face is public domain and ships in
+`avsectester/assets/signs/`.
 
 ## Two ways to place an object
 
@@ -51,23 +58,39 @@ object, so a sign on a dark truck comes out too dark: a dark *surface* is read a
 | roadside (x=28 m, y=-6.5 m) | 50/50 | **0/50** | 50/50 | 50/50 |
 | lead vehicle rear | 48/50 | **0/50** | 47/50 | 47/50 |
 
-Frames with score >= 0.5, out of the frames where the sign is in view; the clean runs score 0
-throughout. The choice of harmonizer decides whether the attack works at all: the default classic
-harmonizer removes the sign's colour, and with it the detection.
+Phantom person (cut-out `person_001`, COCO `person` class):
+
+| Object | none | classic | chroma | libcom |
+|---|---|---|---|---|
+| standee, roadside (x=25 m, y=-3.2 m) | 50/50 | **4/50** | 50/50 | 50/50 |
+| billboard, roadside (x=28 m, y=-7 m) | 50/50 | 50/50 | 50/50 | 50/50 |
+| poster on lead vehicle rear | 47/50 | 48/50 | 48/50 | 48/50 |
+
+Frames with score >= 0.5, out of the frames where the object is in view; the clean runs score 0
+throughout. A printed person is detected as a pedestrian in nearly every frame, which is the
+phantom attack. The choice of harmonizer decides whether the attack works at all: the default classic
+harmonizer removes the sign's colour, and with it the detection; it likewise washes a person
+silhouette into the background (the standee), while a poster's own paper and frame shield the figure.
 
 ## Running
 
 With an `nre-ga` server serving a NuRec scene (see [`SETUP.md`](SETUP.md) §4b):
 
 ```bash
-python scripts/nurec_sign_demo.py --endpoint 127.0.0.1:50051 \
+python scripts/nurec_object_demo.py --endpoint 127.0.0.1:50051 --object stop \
     --mode roadside vehicle --harmonizer none classic chroma libcom --frames 50 --eval
+
+# person cut-outs (once), then a standee / billboard
+python scripts/extract_person_cutouts.py --nuscenes <nuscenes root> --out <assets>/pedestrians
+python scripts/nurec_object_demo.py --endpoint 127.0.0.1:50051 --object billboard \
+    --asset <assets>/pedestrians/person_001.png --mode roadside vehicle --eval
 ```
 
-Writes `tmp/nurec_sign/<mode>_<harmonizer>/`: `side_by_side.gif` (clean | attacked), `filmstrip.png`,
+Writes `tmp/nurec_<object>/<mode>_<harmonizer>/`: `side_by_side.gif` (clean | attacked), `filmstrip.png`,
 `zoom_XXXX.png` crops, and the attacked frames; with `--eval` also `perception_eval.json` and
 `perception_<mode>.png`. Roadside placement: `--x/--y` (scene metres; start
-pose is the origin, x forward, y left), `--yaw`, `--size`, `--mount`, `--ground-z`.
+pose is the origin, x forward, y left), `--yaw`, `--size`, `--mount`, `--ground-z`; each object has
+its own default position.
 
 ## Known limitations
 
