@@ -81,6 +81,16 @@ used only if its footprint overlaps no annotated object. On 8 val images (Boston
 each, and nothing at those spots in the clean images. Seen in the grid: an unlit white poster stays
 too bright at night, and a spot can land in a traffic lane because no map is consulted.
 
+### Driving impact (Alpamayo-1.5, closed loop)
+
+`scripts/alpamayo_attack_demo.py` drives the real Alpamayo-1.5-10B through the NuRec scene for 60
+frames (6 s) clean and with the roadside STOP sign (PCTNet), same inference seeds. With the sign 28 m
+ahead / 6.5 m right the final speed is 4.59 vs 4.59 m/s; 30 m ahead / 4 m right, 4.65 vs 4.57 m/s. No
+driving impact: the policy follows the truck ahead throughout and its reasoning never mentions the
+sign. In the near placement the attacked run's reasoning calls the lead vehicle "stopped" 7 times
+(0 clean), a possible perception shift that one run cannot confirm. Once the ego leaves the recorded
+path, NuRec renders visible artifacts on neighbouring vehicles.
+
 ## Running
 
 With an `nre-ga` server serving a NuRec scene (see [`SETUP.md`](SETUP.md) §4b):
@@ -113,5 +123,5 @@ its own default position.
   placements do not consult a map (drivable area, sidewalk).
 - No light sources: an unlit object is only as dark as its surroundings suggest (a white poster at
   night stays too bright).
-- Scene `clipgt-01d503d4` only. Perception is scored with a COCO detector, not the stack under
-  test; no driving-impact (closed-loop Alpamayo) evaluation yet.
+- Scene `clipgt-01d503d4` only; single-seed closed-loop runs. Perception is scored with a COCO
+  detector, not the stack under test.
