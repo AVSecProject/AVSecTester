@@ -41,17 +41,32 @@ Colour-transfer harmonizers suit textures whose hue does not matter (a patch), b
 whose colour carries meaning. Every harmonizer here estimates the lighting from the pixels around the
 object, so a sign on a dark truck comes out too dark: a dark *surface* is read as dark *light*.
 
+### Does perception see it?
+
+`--eval` runs the COCO Faster R-CNN (torchvision) on every clean and attacked frame and records the best
+`stop sign` score for a box on the inserted sign. Scene `clipgt-01d503d4`, 50 frames at 3.7 m/s:
+
+| Placement | none | classic | chroma | libcom |
+|---|---|---|---|---|
+| roadside (x=28 m, y=-6.5 m) | 50/50 | **0/50** | 50/50 | 50/50 |
+| lead vehicle rear | 48/50 | **0/50** | 47/50 | 47/50 |
+
+Frames with score >= 0.5, out of the frames where the sign is in view; the clean runs score 0
+throughout. The choice of harmonizer decides whether the attack works at all: the default classic
+harmonizer removes the sign's colour, and with it the detection.
+
 ## Running
 
 With an `nre-ga` server serving a NuRec scene (see [`SETUP.md`](SETUP.md) §4b):
 
 ```bash
 python scripts/nurec_sign_demo.py --endpoint 127.0.0.1:50051 \
-    --mode roadside vehicle --harmonizer none classic chroma libcom --frames 50
+    --mode roadside vehicle --harmonizer none classic chroma libcom --frames 50 --eval
 ```
 
 Writes `tmp/nurec_sign/<mode>_<harmonizer>/`: `side_by_side.gif` (clean | attacked), `filmstrip.png`,
-`zoom_XXXX.png` crops, and the attacked frames. Roadside placement: `--x/--y` (scene metres; start
+`zoom_XXXX.png` crops, and the attacked frames; with `--eval` also `perception_eval.json` and
+`perception_<mode>.png`. Roadside placement: `--x/--y` (scene metres; start
 pose is the origin, x forward, y left), `--yaw`, `--size`, `--mount`, `--ground-z`.
 
 ## Known limitations
@@ -59,4 +74,5 @@ pose is the origin, x forward, y left), `--yaw`, `--size`, `--mount`, `--ground-
 - No occlusion: an inserted object is always drawn on top, even if a vehicle passes in front of it.
 - No shadows, specular reflection or retro-reflectivity; lighting comes only from harmonization.
 - The world-anchored ground height is a parameter (`--ground-z`), not read from the scene.
-- Scene `clipgt-01d503d4` only; no driving-impact evaluation yet.
+- Scene `clipgt-01d503d4` only. Perception is scored with a COCO detector, not the stack under
+  test; no driving-impact (closed-loop Alpamayo) evaluation yet.

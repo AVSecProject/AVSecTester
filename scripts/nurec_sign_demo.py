@@ -41,7 +41,7 @@ from avsectester.simulators.patch_insertion import (
     frame_perturbation,
 )
 from avsectester.simulators.viz import filmstrip, record_run, save_gif, save_image
-from demo_common import CruiseStack, build_coco_detector  # shared demo glue
+from demo_common import COCO_STOP_SIGN, CruiseStack, build_coco_detector  # shared demo glue
 
 REPO = Path(__file__).resolve().parents[1]
 CAM = "camera_front_wide_120fov"
@@ -72,14 +72,20 @@ def side_by_side(a: np.ndarray, b: np.ndarray, scale: float = 0.5) -> np.ndarray
     return np.hstack([small[0], np.full((small[0].shape[0], 6, 3), 255, np.uint8), small[1]])
 
 
+def diff_region(clean: np.ndarray, attacked: np.ndarray):
+    """Pixels where the attacked frame differs from the clean one (the inserted object), or None."""
+    diff = np.abs(clean.astype(np.int16) - attacked.astype(np.int16)).max(axis=2) > 12
+    return np.where(diff) if diff.sum() >= 20 else None
+
+
 def zoom(clean: np.ndarray, attacked: np.ndarray, pad: int = 60, out_h: int = 360):
     """Crop both frames around where they differ (the inserted object); None if identical."""
     import cv2
 
-    diff = np.abs(clean.astype(np.int16) - attacked.astype(np.int16)).max(axis=2) > 12
-    if diff.sum() < 20:
+    region = diff_region(clean, attacked)
+    if region is None:
         return None
-    ys, xs = np.where(diff)
+    ys, xs = region
     h, w = clean.shape[:2]
     cx, cy = int(np.median(xs)), int(np.median(ys))
     half = max(xs.max() - xs.min(), ys.max() - ys.min(), 40) // 2 + pad
@@ -87,6 +93,53 @@ def zoom(clean: np.ndarray, attacked: np.ndarray, pad: int = 60, out_h: int = 36
     crops = [cv2.resize(im[y0:y1, x0:x1], None, fx=out_h / (y1 - y0), fy=out_h / (y1 - y0),
                         interpolation=cv2.INTER_CUBIC) for im in (clean, attacked)]
     return np.hstack([crops[0], np.full((out_h, 6, 3), 255, np.uint8), crops[1]])
+
+
+def perception_eval(clean: list, attacked: list, detect) -> list[dict]:
+    """Per frame, the detector's best score for a box on the inserted object (>= half its area inside
+    the object's footprint), on the clean and the attacked frame — did perception pick the object up?"""
+
+    def best(frame, box):
+        scores = []
+        for b, score, _ in detect(frame):
+            ix = max(0.0, min(b[2], box[2]) - max(b[0], box[0]))
+            iy = max(0.0, min(b[3], box[3]) - max(b[1], box[1]))
+            if ix * iy >= 0.5 * (b[2] - b[0]) * (b[3] - b[1]):
+                scores.append(score)
+        return max(scores, default=0.0)
+
+    rows = []
+    for i, (c, a) in enumerate(zip(clean, attacked)):
+        region = diff_region(c, a)
+        if region is None:
+            rows.append({"frame": i, "visible": False, "clean": 0.0, "attacked": 0.0})
+            continue
+        ys, xs = region
+        box = (xs.min() - 4, ys.min() - 4, xs.max() + 4, ys.max() + 4)
+        rows.append({"frame": i, "visible": True, "clean": round(best(c, box), 3),
+                     "attacked": round(best(a, box), 3)})
+    return rows
+
+
+def plot_eval(results: dict, path: Path, label: str) -> None:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(8, 3.2))
+    for tag, rows in results.items():
+        ax.plot([r["frame"] for r in rows], [r["attacked"] for r in rows], label=tag)
+    first = next(iter(results.values()))
+    ax.plot([r["frame"] for r in first], [r["clean"] for r in first], "k--", label="clean")
+    ax.axhline(0.5, color="grey", lw=0.8, ls=":")
+    ax.set_xlabel("frame (0.1 s)")
+    ax.set_ylabel(f"'{label}' score")
+    ax.set_ylim(0, 1.02)
+    ax.legend(fontsize=8, ncol=2)
+    fig.tight_layout()
+    fig.savefig(path, dpi=120)
+    plt.close(fig)
 
 
 def drive(endpoint: str, scene: str, frames: int, speed: float, out_dir: Path, perturb=None):
@@ -118,6 +171,8 @@ def main() -> int:
     ap.add_argument("--mount", type=float, default=1.5, help="roadside sign bottom height above ground (m)")
     ap.add_argument("--ground-z", type=float, default=0.0, help="scene ground height at the sign (m)")
     ap.add_argument("--soften", type=float, default=0.6, help="blur (px) to match the soft neural render")
+    ap.add_argument("--eval", action="store_true",
+                    help="score whether a COCO detector sees the inserted STOP sign (clean vs attacked)")
     ap.add_argument("--gpu", type=int, default=0)
     ap.add_argument("--out", default=str(REPO / "tmp" / "nurec_sign"))
     args = ap.parse_args()
@@ -128,6 +183,9 @@ def main() -> int:
     print(f"[demo] clean drive: {args.frames} frames at {args.speed} m/s")
     clean = drive(args.endpoint, args.scene, args.frames, args.speed, out / "clean")
     detect = build_coco_detector(args.gpu) if "vehicle" in args.mode else None
+    sign_detect = build_coco_detector(args.gpu, threshold=0.05, labels={COCO_STOP_SIGN: "stop sign"}) \
+        if args.eval else None
+    evals: dict = {}
 
     for mode in args.mode:
         for hname in args.harmonizer:
@@ -157,7 +215,20 @@ def main() -> int:
                 z = zoom(clean[i], attacked[i])
                 if z is not None:
                     save_image(z, out / tag / f"zoom_{i:04d}.png")
+            if sign_detect is not None:
+                rows = perception_eval(clean, attacked, sign_detect)
+                evals.setdefault(mode, {})[tag] = rows
+                vis = [r for r in rows if r["visible"]]
+                hit = sum(r["attacked"] >= 0.5 for r in vis)
+                print(f"[eval] {tag}: STOP detected (score>=0.5) in {hit}/{len(vis)} frames where the sign "
+                      f"is in view; clean false hits {sum(r['clean'] >= 0.5 for r in vis)}")
             print(f"[output] {out / tag}")
+    if evals:
+        import json
+
+        (out / "perception_eval.json").write_text(json.dumps(evals, indent=1))
+        for mode, results in evals.items():
+            plot_eval(results, out / f"perception_{mode}.png", "stop sign")
     return 0
 
 
