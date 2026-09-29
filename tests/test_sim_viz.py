@@ -160,6 +160,22 @@ def test_draw_boxes3d_projects_wireframe_and_falls_back_to_2d():
     assert out2d.shape == img.shape and out2d[:, :, 1].sum() > 0
 
 
+def test_draw_boxes3d_skips_out_of_view_and_far_boxes():
+    import numpy as np
+
+    k = np.array([[1000.0, 0, 960.0], [0, 1000.0, 540.0], [0, 0, 1.0]])
+    img = np.zeros((1080, 1920, 3), np.uint8)
+    # a box straddling the camera plane (center 1 m ahead, 4 m long -> rear corners behind) has corners
+    # that do not all project -> the box is skipped rather than drawn as a frame-spanning mess
+    behind = _Obj("t1", "vehicle", 1.0, {}, center=(1.0, 0.0, 0.0), extent=(4.0, 2.0, 1.5))
+    assert draw_boxes3d(img, _Scene([behind], model=k), camera="front")[:, :, 1].sum() == 0
+    # max_distance drops a far actor (60 m) but never the highlighted target
+    far = _Obj("t2", "vehicle", 60.0, {}, center=(60.0, 0.0, 0.0), extent=(4.0, 2.0, 1.5))
+    scene = _Scene([far], model=k)
+    assert draw_boxes3d(img, scene, camera="front", max_distance=40.0)[:, :, 1].sum() == 0
+    assert draw_boxes3d(img, scene, camera="front", target=far, max_distance=40.0).sum() > 0
+
+
 def test_record_run_saves_a_frame_per_step(tmp_path):
     pytest.importorskip("matplotlib")
     backend = NuRecBackend({"dt": 0.1}, renderer=StubRenderer(cameras=["camera_front"], height=16, width=24))

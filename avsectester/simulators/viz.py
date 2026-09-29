@@ -139,12 +139,14 @@ def ego_projector(model: Any) -> Any:
 
 
 def draw_boxes3d(image: Any, scene: Any, camera: str | None = None, target: Any = None,
-                 subdiv: int = 8, color=(40, 200, 40), target_color=(235, 64, 52)) -> Any:
+                 subdiv: int = 8, max_distance: float | None = None,
+                 color=(40, 200, 40), target_color=(235, 64, 52)) -> Any:
     """Draw ground-truth **3-D bounding boxes** (projected cuboid wireframes) on an RGB frame — the right
     representation for a 3-D scene. Each of the 12 edges is subdivided in 3-D and projected point-by-point,
     so a straight edge renders as the correct **curve** under a fisheye (f-theta) camera, not an
-    over-covering axis-aligned rectangle. ``target`` is highlighted and drawn last. Falls back to
-    :func:`annotate` + :func:`scene_labels` (2-D boxes) when the camera model cannot project 3-D points."""
+    over-covering axis-aligned rectangle. ``target`` is highlighted and drawn last. ``max_distance`` (m)
+    drops far actors so the frame is not swamped by tiny distant boxes. Falls back to :func:`annotate` +
+    :func:`scene_labels` (2-D boxes) when the camera model cannot project 3-D points."""
     import numpy as np
     from PIL import Image, ImageDraw
 
@@ -158,31 +160,33 @@ def draw_boxes3d(image: Any, scene: Any, camera: str | None = None, target: Any 
     tid = getattr(target, "track_id", None)
     ts = np.linspace(0.0, 1.0, subdiv + 1)[:, None]
     for obj in sorted(scene.objects, key=lambda o: o.track_id == tid):  # target last (drawn on top)
+        if max_distance is not None and obj.distance > max_distance and obj.track_id != tid:
+            continue
         corners = box3d_corners(obj.center, obj.extent, obj.yaw)
+        corner_px, corner_valid = project(corners)
+        # Only draw a fully-projectable box. A box with any corner behind the camera or outside the
+        # fisheye field of view (e.g. an actor closer than a few metres) would otherwise project to
+        # nonsense edges spanning the whole frame, so it is skipped rather than drawn wrong.
+        if not corner_valid.all():
+            continue
         col = target_color if (tid is not None and obj.track_id == tid) else color
-        drew = False
-        for a, b in _BOX_EDGES:
-            px, valid = project(corners[a] + ts * (corners[b] - corners[a]))
-            pts = [(float(x), float(y)) for (x, y), v in zip(px, valid) if v]
-            if len(pts) >= 2:
-                draw.line(pts, fill=col, width=2)
-                drew = True
-        if drew:
-            px, valid = project(corners)
-            vis = px[valid]
-            if len(vis):
-                top = vis[np.argmin(vis[:, 1])]
-                draw.text((float(top[0]) + 2, max(float(top[1]) - 12, 2)),
-                          f"{obj.category} {obj.distance:.0f}m", fill=col)
+        for a, b in _BOX_EDGES:  # subdivide each edge so it curves correctly under the fisheye
+            px, _ = project(corners[a] + ts * (corners[b] - corners[a]))
+            draw.line([(float(x), float(y)) for x, y in px], fill=col, width=2)
+        top = corner_px[np.argmin(corner_px[:, 1])]
+        draw.text((float(top[0]) + 2, max(float(top[1]) - 12, 2)),
+                  f"{obj.category} {obj.distance:.0f}m", fill=col)
     return np.asarray(im)
 
 
 def labels_view(get_scene: Callable[[Observation], Any], base: View = camera_view,
-                camera: str | None = None, target: Any = None, boxes3d: bool = True) -> View:
+                camera: str | None = None, target: Any = None, boxes3d: bool = True,
+                max_distance: float | None = None) -> View:
     """Wrap any camera ``base`` view to overlay ground-truth scene labels — the GT counterpart of
-    :func:`detections_view`. ``boxes3d=True`` draws projected 3-D bounding boxes (:func:`draw_boxes3d`);
-    ``boxes3d=False`` draws 2-D boxes (:func:`annotate` + :func:`scene_labels`). ``get_scene(obs) ->
-    SceneGT`` (or None) supplies the frame's ground truth; returns the plain frame when it is None."""
+    :func:`detections_view`. ``boxes3d=True`` draws projected 3-D bounding boxes (:func:`draw_boxes3d`,
+    honouring ``max_distance``); ``boxes3d=False`` draws 2-D boxes (:func:`annotate` + :func:`scene_labels`).
+    ``get_scene(obs) -> SceneGT`` (or None) supplies the frame's ground truth; returns the plain frame when
+    it is None."""
 
     def _view(observation: Observation) -> Any:
         rgb = base(observation)
@@ -191,7 +195,7 @@ def labels_view(get_scene: Callable[[Observation], Any], base: View = camera_vie
         scene = get_scene(observation)
         if scene is None:
             return rgb
-        return (draw_boxes3d(rgb, scene, camera, target) if boxes3d
+        return (draw_boxes3d(rgb, scene, camera, target, max_distance=max_distance) if boxes3d
                 else annotate(rgb, scene_labels(scene, camera, target)))
 
     return _view

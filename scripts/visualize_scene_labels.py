@@ -44,8 +44,9 @@ def nurec_examples(uuid: str = "023b7fcc-671c-40e3-9bd2-c66b0b073fbc") -> None:
         if frame is None:
             continue
         match = REQ.match(scene)
-        # projected 3-D bounding boxes; the requirement's target (if any) is highlighted
-        overlaid = draw_boxes3d(frame, scene, target=match.target if match else None)
+        # projected 3-D bounding boxes (near vehicles only, to keep the frame legible); the requirement's
+        # target (if any) is highlighted and always drawn regardless of distance
+        overlaid = draw_boxes3d(frame, scene, target=match.target if match else None, max_distance=40.0)
         strip.append(overlaid)
         if match and not target_saved:  # first qualifying frame -> the single-frame example
             save_image(overlaid, OUT / "labels_nurec_target.png")
@@ -65,7 +66,7 @@ def nuscenes_example() -> None:
             continue
         backend = RecordedFrameBackend(scene.source["image_path"])
         # the standard view path: labels_view wraps camera_view, overlaying this frame's GT
-        view = labels_view(lambda _obs, s=scene: s, camera="front", target=match.target)
+        view = labels_view(lambda _obs, s=scene: s, camera="front", target=match.target, max_distance=40.0)
         save_image(view(backend.reset()), OUT / "labels_nuscenes_target.png")
         print("saved", OUT / "labels_nuscenes_target.png",
               f"(target vehicle d={match.target.distance:.1f}m)")
