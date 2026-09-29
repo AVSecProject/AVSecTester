@@ -6,23 +6,25 @@ Each nuRec scene is a ``.usdz`` (a ZIP) reconstructed from a real driving clip (
 * ``sequence_tracks.json`` — actor cuboid tracks: ``tracks_id``, ``tracks_label_class``,
   ``tracks_poses`` (per timestamp, ``[x, y, z, qx, qy, qz, qw]`` in the **NRE** frame), ``tracks_flags``,
   ``tracks_timestamps_us``, and ``cuboidtracks_data.cuboids_dims`` (l, w, h);
-* ``rig_trajectories.json`` — ``world_to_nre`` (world->NRE), and per rig_trajectory the **per-camera-frame**
-  rig poses ``cameras_frame_T_rig_worlds`` (rig->world SE3, aligned 1:1 with the rendered video frames)
-  and ``cameras_frame_timestamps_us``, plus each camera's ``camera_calibrations`` (an f-theta intrinsic +
-  the ``T_sensor_rig`` extrinsic).
+* ``rig_trajectories.json`` — per rig_trajectory the **per-camera-frame** rig poses
+  ``cameras_frame_T_rig_worlds`` (the rig's pose in the local frame, SE3, aligned 1:1 with the rendered
+  video frames) and ``cameras_frame_timestamps_us``, plus each camera's ``camera_calibrations`` (an
+  f-theta intrinsic + the ``T_sensor_rig`` extrinsic).
 
 :class:`NuRecDataset` reads them and, at a chosen camera frame, expresses every actor present in the
 **rig frame** — which is exactly our ego frame (x fwd, y left, z up; AlpaSim ``CONTRIBUTING.md``) — via
-``inv(T_rig_world) @ inv(world_to_nre)`` (``T_rig_world`` is rig->world, so its inverse maps world->rig).
-2-D boxes are projected with the scene's real **f-theta** camera model, so a :class:`SceneGT` the
-requirement predicate runs on is produced with no renderer or GPU. This puts nuRec on the same tier as
+``inv(T_rig_world) @ actor_pose``. The track poses and the rig trajectory share the same frame, so this
+inverse is the whole transform, matching AlpaSim (which uses the tracks directly with ``pose_local_to_rig``
+and applies ``world_to_nre`` only on the renderer side, never to the tracks). 2-D boxes are projected with
+the scene's real **f-theta** camera model, so a :class:`SceneGT` the requirement predicate runs on is
+produced with no renderer or GPU. This puts nuRec on the same tier as
 :class:`~avsectester.scenarios.datasets.nuscenes.NuScenesDataset` (a real *labeled* dataset).
 
-Verified against a real ``.usdz`` (``PhysicalAI-Autonomous-Vehicles-NuRec`` 26.01): the composition
-direction (rig->world, confirmed by forward-motion), the ``xyzw`` quaternion order, the ``automobile /
-heavy_truck / bus / trailer`` label strings, and the f-theta poly (reaches the image corner at
-``max_angle``) all come from the data. ``visibility`` is set to 1.0 — the tracks carry no occlusion
-fraction. ``cv2``/zip imported lazily; the module imports offline.
+Verified against a real ``.usdz`` (``PhysicalAI-Autonomous-Vehicles-NuRec`` 26.01) by overlaying the
+projected boxes on the rendered ``.mp4`` — the composition (``inv(T_rig_world)``, no ``world_to_nre``),
+the ``xyzw`` quaternion order (AlpaSim's ``Pose`` uses scipy order), the ``automobile / heavy_truck / bus
+/ trailer`` label strings, and the f-theta poly all come from the data. ``visibility`` is set to 1.0 —
+the tracks carry no occlusion fraction. ``cv2``/zip imported lazily; the module imports offline.
 """
 
 from __future__ import annotations
@@ -169,7 +171,6 @@ class NuRecDataset(Dataset):
             rig = json.loads(zf.read("rig_trajectories.json").decode("utf-8"))
             trk = json.loads(zf.read("sequence_tracks.json").decode("utf-8"))
 
-        world_to_nre = np.asarray(rig["world_to_nre"]["matrix"], dtype=np.float64)
         traj = rig["rig_trajectories"][0]
         fk = next(k for k in rig["camera_calibrations"] if k.split("@")[0] == self.sensor)
         scene_id = fk.split("@")[1] if "@" in fk else traj.get("sequence_id")
@@ -179,8 +180,11 @@ class NuRecDataset(Dataset):
         cam_T = np.asarray(traj["cameras_frame_T_rig_worlds"][fk], dtype=np.float64)  # (F, 2, 4, 4)
         fi = round(self.keyframe * (len(cam_ts) - 1))
         timestamp_us = int(cam_ts[fi].mean())
-        t_rig_world = cam_T[fi, 0]                       # rig->world at this frame
-        world_to_rig = np.linalg.inv(t_rig_world) @ np.linalg.inv(world_to_nre)  # NRE->rig
+        t_rig_world = cam_T[fi, 0]                       # rig pose in the local/world frame at this frame
+        # Track poses and the rig trajectory share the same frame, so an actor goes to the rig frame by
+        # the inverse of the rig's own pose — exactly what AlpaSim does (it uses the tracks directly with
+        # `pose_local_to_rig`; `world_to_nre` is only for the renderer and is NOT applied to the tracks).
+        world_to_rig = np.linalg.inv(t_rig_world)
         ego_speed = self._ego_speed(cam_T[:, 0, :3, 3], cam_ts.mean(axis=1), fi)
 
         objects = self._objects(trk, timestamp_us, world_to_rig, cam)
