@@ -163,15 +163,19 @@ object model (`serialize`) is the source of truth; NL is a front-end onto it.
      `physical_patch_hide_vehicle`, with real distance + orientation + visibility (so `ViewpointRear`/
      `MinVisibility` are meaningful). Target in `tmp/compare/nuscenes_gt_filter.png` (truck 25 m ahead).
    - **nuRec:** `datasets/nurec.py:NuRecDataset` reads each `.usdz` (a ZIP) — the render RPC returns only
-     pixels, but the artifact itself ships GT: `sequence_tracks.json` (7-DoF actor cuboid tracks: id,
-     `label_class`, per-ts pose, dims) + `rig_trajectories.json` (rig SE3 trajectory + `world_to_nre`).
-     At a keyframe each actor is expressed in the **rig frame** (= our ego frame; AlpaSim CONTRIBUTING.md)
-     via `T_rig_world @ inv(world_to_nre)`, giving exact center/yaw/extent/distance. `box2d` is projected
-     through a **pinhole-from-FOV** (documented approximation of the wide front camera, exact near
-     boresight where a lead sits); `visibility=1.0` (tracks carry no occlusion fraction). This makes nuRec
-     a **peer of `NuScenesDataset`** — no renderer/GPU needed to filter. Tested with a synthetic `.usdz`
-     of known geometry (schema mirrors `alpasim_utils.scenario`), validating parse + composition +
-     projection offline.
+     pixels, but the artifact itself ships GT: `sequence_tracks.json` (actor cuboid tracks: id,
+     `label_class`, per-ts pose `[x,y,z,qx,qy,qz,qw]`, dims) + `rig_trajectories.json` (`world_to_nre`,
+     per-camera-frame rig poses `cameras_frame_T_rig_worlds` aligned 1:1 with the rendered `.mp4`, and the
+     f-theta camera calibration). At a chosen camera frame each present actor is expressed in the **rig
+     frame** (= our ego frame; AlpaSim CONTRIBUTING.md) via `inv(T_rig_world) @ inv(world_to_nre)`
+     (`T_rig_world` is rig->world), giving exact center/yaw/extent/distance; `box2d` is projected with the
+     scene's **real f-theta model** (`FThetaCamera`, `T_sensor_rig` extrinsic + `angle_to_pixeldist` poly);
+     `visibility=1.0` (tracks carry no occlusion fraction). This makes nuRec a **peer of `NuScenesDataset`**
+     — no renderer/GPU needed to filter. **Validated on real `PhysicalAI-Autonomous-Vehicles-NuRec` 26.01
+     `.usdz`**: boxes overlaid on the rendered `.mp4` land on the real vehicles (`tmp/compare/nurec_gt_*.png`);
+     10/40 and 13/40 sampled frames of two clips qualify for `physical_patch_hide_vehicle` (a rear-facing
+     lead in the distance/area band). Tests read the real artifacts and **skip** if absent (no synthetic
+     stand-in).
 
    The earlier detector-labeling fallback (`DetectorLabeler`/`ImageFolder`/`FrameSource`) is **removed** —
    both datasets now have real 3-D labels, so deriving `SceneGT` from a 2-D detector had no remaining use.
