@@ -7,17 +7,27 @@ from avsectester.simulators import carla as carla_view
 from avsectester.simulators.nurec import NuRecBackend, StubRenderer
 from avsectester.simulators.viz import (
     annotate,
+    box3d_corners,
     camera_view,
     detections_view,
+    draw_boxes3d,
+    ego_projector,
     labels_view,
     record_run,
     scene_labels,
 )
 
 
-class _Obj:  # duck-types ObjectGT for the pure label-mapping logic (no dataset needed)
-    def __init__(self, track_id, category, distance, box):
+class _Cam:  # duck-types CameraCalib (only .model is read by the projector)
+    def __init__(self, model=None):
+        self.model = model
+
+
+class _Obj:  # duck-types ObjectGT for the pure label/box logic (no dataset needed)
+    def __init__(self, track_id, category, distance, box,
+                 center=(10.0, 0.0, 0.0), extent=(4.0, 2.0, 1.5), yaw=0.0):
         self.track_id, self.category, self._d, self.box2d = track_id, category, distance, box
+        self.center, self.extent, self.yaw = center, extent, yaw
 
     @property
     def distance(self):
@@ -25,9 +35,9 @@ class _Obj:  # duck-types ObjectGT for the pure label-mapping logic (no dataset 
 
 
 class _Scene:  # duck-types SceneGT
-    def __init__(self, objects, cameras=("front",)):
+    def __init__(self, objects, cameras=("front",), model=None):
         self.objects = objects
-        self.cameras = {c: object() for c in cameras}
+        self.cameras = {c: _Cam(model) for c in cameras}
 
 
 class Cruise(AVStack):
@@ -117,6 +127,37 @@ def test_labels_view_overlays_scene_gt_through_the_camera_path():
     out = labels_view(lambda _o: scene, camera="front")(obs)
     assert out.shape == (20, 20, 3) and out[:, :, 1].sum() > 0            # GT box drawn (green)
     assert labels_view(lambda _o: None)(obs) is not None                  # no scene -> plain frame, not None
+
+
+def test_box3d_corners_and_pinhole_projector_are_geometric():
+    import numpy as np
+
+    corners = box3d_corners((10.0, 0.0, 0.0), (4.0, 2.0, 1.5), 0.0)  # length x, width y, height z
+    assert corners.shape == (8, 3)
+    assert np.isclose(np.ptp(corners[:, 0]), 4.0)   # extent spans match (length, width, height)
+    assert np.isclose(np.ptp(corners[:, 1]), 2.0) and np.isclose(np.ptp(corners[:, 2]), 1.5)
+
+    k = np.array([[1000.0, 0, 960.0], [0, 1000.0, 540.0], [0, 0, 1.0]])
+    project = ego_projector(k)
+    px, valid = project(np.array([[10.0, 0.0, 0.0]]))     # dead ahead -> principal point, in front
+    assert valid[0] and np.allclose(px[0], [960.0, 540.0], atol=1e-6)
+    _, behind = project(np.array([[-5.0, 0.0, 0.0]]))     # behind the camera -> invalid
+    assert not behind[0]
+    assert ego_projector(None) is None                    # no model -> no projector
+
+
+def test_draw_boxes3d_projects_wireframe_and_falls_back_to_2d():
+    import numpy as np
+
+    k = np.array([[1000.0, 0, 960.0], [0, 1000.0, 540.0], [0, 0, 1.0]])
+    obj = _Obj("t1", "vehicle", 10.0, {"front": (900, 500, 1020, 600)},
+               center=(10.0, 0.0, 0.0), extent=(4.0, 2.0, 1.5))
+    img = np.zeros((1080, 1920, 3), np.uint8)
+    out = draw_boxes3d(img, _Scene([obj], model=k), camera="front")
+    assert out.shape == img.shape and out[:, :, 1].sum() > 0        # 3-D wireframe drawn (green)
+    # no projector (model=None) -> falls back to 2-D boxes via annotate(scene_labels)
+    out2d = draw_boxes3d(img, _Scene([obj], model=None), camera="front")
+    assert out2d.shape == img.shape and out2d[:, :, 1].sum() > 0
 
 
 def test_record_run_saves_a_frame_per_step(tmp_path):

@@ -59,10 +59,12 @@ def scene_from_cam_boxes(boxes: list, k: np.ndarray, width: int, height: int, ca
             continue
         cx_r, cy_d, cz_f = (float(v) for v in b.center)
         fwd = b.orientation.rotate(np.array([1.0, 0.0, 0.0]))  # vehicle heading in the camera frame
+        w, length, h = (float(v) for v in b.wlh)  # nuScenes Box.wlh = (width, length, height)
         objects.append(ObjectGT(
             track_id=b.token, category="vehicle",
             center=(cz_f, -cx_r, -cy_d),  # camera (right,down,fwd) -> ego (fwd,left,up)
-            yaw=math.atan2(float(fwd[0]), float(fwd[2])),
+            extent=(length, w, h),
+            yaw=math.atan2(-float(fwd[0]), float(fwd[2])),  # ego yaw about +z (ego_y = -cam_x)
             box2d={camera: (x1, y1, x2, y2)},
             visibility=visibility.get(b.token, 1.0)))
     calib = CameraCalib(name=camera, width=width, height=height, model=np.asarray(k))

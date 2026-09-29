@@ -1,10 +1,11 @@
 """Visualize ground-truth *scene labels* on real frames — reusing ``avsectester.simulators.viz``.
 
 Overlays a dataset's :class:`SceneGT` (from :class:`NuRecDataset` / :class:`NuScenesDataset`) on the real
-camera frame using only the shared viz primitives — no new drawing code:
+camera frame as projected **3-D bounding boxes** (the right representation for a 3-D scene; edges are
+subdivided so they render correctly curved under the nuRec fisheye), using only the shared viz primitives:
 
-* nuRec: ``annotate(frame, scene_labels(scene, target=...))`` on the scene's rendered ``.mp4`` frame,
-  plus a :func:`filmstrip` across several frames;
+* nuRec: ``draw_boxes3d(frame, scene, target=...)`` on the scene's rendered ``.mp4`` frame, plus a
+  :func:`filmstrip` across several frames;
 * nuScenes: the full backend path — ``labels_view(...)`` wrapping ``camera_view`` over a
   ``RecordedFrameBackend``, exactly as a run would visualize a frame.
 
@@ -18,7 +19,7 @@ from pathlib import Path
 
 from avsectester.scenarios.datasets.nurec import NuRecDataset
 from avsectester.scenarios.requirements import PHYSICAL_PATCH_HIDE_VEHICLE as REQ
-from avsectester.simulators.viz import annotate, filmstrip, labels_view, save_image, scene_labels
+from avsectester.simulators.viz import draw_boxes3d, filmstrip, labels_view, save_image
 
 OUT = Path("tmp/compare")
 NUREC = Path("/workspace/hdd/datasets/PhysicalAI-Autonomous-Vehicles-NuRec/sample_set/26.01_release")
@@ -43,8 +44,8 @@ def nurec_examples(uuid: str = "023b7fcc-671c-40e3-9bd2-c66b0b073fbc") -> None:
         if frame is None:
             continue
         match = REQ.match(scene)
-        # scene labels reuse annotate(); the requirement's target (if any) is highlighted
-        overlaid = annotate(frame, scene_labels(scene, target=match.target if match else None))
+        # projected 3-D bounding boxes; the requirement's target (if any) is highlighted
+        overlaid = draw_boxes3d(frame, scene, target=match.target if match else None)
         strip.append(overlaid)
         if match and not target_saved:  # first qualifying frame -> the single-frame example
             save_image(overlaid, OUT / "labels_nurec_target.png")

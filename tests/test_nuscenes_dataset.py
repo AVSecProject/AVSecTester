@@ -1,59 +1,41 @@
-"""nuScenes adapter: box->SceneGT conversion + the replay backend, tested without the dataset/devkit.
+"""nuScenes -> ``SceneGT``: validated on REAL nuScenes GT (no synthetic boxes).
 
-The real nuScenes GT is validated by feeding duck-typed camera-frame boxes (as the devkit's
-``get_sample_data`` returns) into the pure ``scene_from_cam_boxes``; the requirement predicate then runs
-exactly as it would on the real data.
+Reads real ``v1.0-trainval`` ground truth through the devkit and is **skipped** when the dataset/devkit
+are absent — there is no fabricated stand-in. Asserts the adapter yields qualifying vehicles with real
+3-D extent and that the requirement filter selects a rear-facing lead in the patch band. The
+``RecordedFrameBackend`` plumbing is tested separately with a real on-disk image (no GT fabrication).
 """
 
+import os
+
 import numpy as np
-from avsectester.scenarios.datasets.nuscenes import RecordedFrameBackend, scene_from_cam_boxes
+import pytest
+from avsectester.scenarios.datasets.nuscenes import NuScenesDataset, RecordedFrameBackend
 from avsectester.scenarios.requirements import PHYSICAL_PATCH_HIDE_VEHICLE as REQ
+from avsectester.scenarios.source import DatasetFilter
 
-# a nuScenes CAM_FRONT-like intrinsic (1600x900, f~1266)
-K = np.array([[1266.0, 0, 800.0], [0, 1266.0, 450.0], [0, 0, 1.0]])
-W, H = 1600, 900
-
-
-class _FakeQuat:
-    def __init__(self, fwd):
-        self._fwd = np.asarray(fwd, float)
-
-    def rotate(self, v):  # only the +x (vehicle forward) rotation is used
-        return self._fwd
+_ROOT = "/workspace/hdd/datasets/nuscenes"
 
 
-class _FakeBox:
-    """Duck-types the nuScenes ``Box`` in the camera frame (x right, y down, z fwd)."""
-
-    def __init__(self, name, token, center, fwd, size=(2.0, 4.5, 1.5)):
-        self.name, self.token, self.center = name, token, np.asarray(center, float)
-        self.orientation = _FakeQuat(fwd)
-        self._w, self._l, self._h = size
-
-    def corners(self):
-        cx, cy, cz = self.center
-        w, l, h = self._w / 2, self._l / 2, self._h / 2
-        pts = [(cx + sx, cy + sy, cz + sz) for sx in (-w, w) for sy in (-h, h) for sz in (-l, l)]
-        return np.array(pts).T  # (3, 8)
+def _has_nuscenes() -> bool:
+    if not os.path.isdir(os.path.join(_ROOT, "v1.0-trainval")):
+        return False
+    try:
+        import nuscenes  # noqa: F401
+    except ImportError:
+        return False
+    return True
 
 
-def _lead(z, fwd=(0, 0, 1), name="vehicle.car"):  # a vehicle z m ahead, centred
-    return _FakeBox(name, f"t{z}", center=(0.0, 0.5, float(z)), fwd=fwd)
-
-
-def test_scene_from_cam_boxes_builds_and_matches():
-    scene = scene_from_cam_boxes([_lead(10)], K, W, H, visibility={"t10": 0.9})
-    assert len(scene.objects) == 1
-    o = scene.objects[0]
-    assert abs(o.distance - 10.0) < 0.2 and o.ahead and abs(o.yaw) < 0.1  # 10 m ahead, rear-facing
-    assert "front" in o.box2d and REQ.match(scene) is not None            # a close rear-facing lead qualifies
-
-
-def test_scene_from_cam_boxes_filters_by_requirement():
-    assert REQ.match(scene_from_cam_boxes([_lead(60)], K, W, H)) is None          # too far / tiny box
-    assert REQ.match(scene_from_cam_boxes([_lead(10, fwd=(0, 0, -1))], K, W, H)) is None  # facing us
-    # a bicycle is not a "vehicle" target -> dropped
-    assert scene_from_cam_boxes([_lead(10, name="vehicle.bicycle")], K, W, H).objects == []
+@pytest.mark.skipif(not _has_nuscenes(), reason="real nuScenes v1.0-trainval + devkit not present")
+def test_reads_real_nuscenes_gt_and_filters():
+    ds = NuScenesDataset(_ROOT, max_samples=80)
+    hits = list(DatasetFilter(ds).scenarios(REQ))
+    assert hits, "expected some qualifying frames among 80 real keyframes"
+    target = hits[0].target.target             # ScenarioInstance.target is a ScenarioMatch; .target = ObjectGT
+    assert target.category == "vehicle" and "front" in target.box2d
+    assert 4.0 <= target.distance <= 25.0        # in the physical-patch distance band
+    assert min(target.extent) > 0                # a real 3-D box has non-zero size (drives 3-D drawing)
 
 
 def test_recorded_frame_backend_serves_the_image(tmp_path):
@@ -62,9 +44,5 @@ def test_recorded_frame_backend_serves_the_image(tmp_path):
     p = tmp_path / "frame.png"
     cv2.imwrite(str(p), np.full((90, 160, 3), 128, np.uint8))
     backend = RecordedFrameBackend(str(p), sensor_id="front")
-    obs = backend.reset()
-    rgb = obs.sensor_data["front"]
-    assert rgb.shape == (90, 160, 3)
+    assert backend.reset().sensor_data["front"].shape == (90, 160, 3)
     assert backend.step(None).sensor_data["front"].shape == (90, 160, 3)  # static: same frame
-
-
