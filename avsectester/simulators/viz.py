@@ -48,18 +48,69 @@ def camera_view(observation: Observation, camera: str | None = None) -> Any:
 
 
 def annotate(image: Any, detections: Any, threshold: float = 0.3) -> Any:
-    """Draw detection boxes on an RGB frame. ``detections`` = iterable of ``(xyxy, score, label)``."""
+    """Draw boxes on an RGB frame — the one box-drawing primitive, shared by detections and GT labels.
+
+    ``detections`` = iterable of ``(xyxy, score, label)``, or ``(xyxy, score, label, color)`` to force the
+    box colour. A 3-tuple is a *detection*: coloured green/red by ``score`` vs ``threshold`` and labelled
+    ``"label score"``. A 4-tuple is a *label* (e.g. from :func:`scene_labels`): drawn in its own colour
+    with the score omitted from the text. Boxes below ``threshold`` are labelled but not outlined.
+    """
     import numpy as np
     from PIL import Image, ImageDraw
 
     im = Image.fromarray(np.asarray(image).astype("uint8")).convert("RGB")
     d = ImageDraw.Draw(im)
-    for box, score, label in detections:
-        col = (40, 200, 40) if score >= threshold else (230, 60, 60)
+    for det in detections:
+        box, score, label = det[0], det[1], det[2]
+        explicit = len(det) > 3
+        col = det[3] if explicit else ((40, 200, 40) if score >= threshold else (230, 60, 60))
         if score >= threshold:
             d.rectangle([box[0], box[1], box[2], box[3]], outline=col, width=4)
-        d.text((box[0] + 3, max(box[1] - 14, 2)), f"{label} {score:.2f}", fill=col)
+        d.text((box[0] + 3, max(box[1] - 14, 2)), label if explicit else f"{label} {score:.2f}", fill=col)
     return np.asarray(im)
+
+
+def scene_labels(scene: Any, camera: str | None = None, target: Any = None,
+                 color=(40, 200, 40), target_color=(235, 64, 52)) -> list:
+    """Ground-truth :class:`SceneGT` objects -> :func:`annotate` tuples, so scene labels reuse the same
+    drawing primitive as detections.
+
+    Returns ``(xyxy, 1.0, "category dist", color)`` for every object with a 2-D box in ``camera``
+    (default: the scene's first camera). ``target`` (a ``ScenarioMatch.target`` / ``ObjectGT``, or
+    anything with a ``track_id``) is drawn in ``target_color`` and last, so its box sits on top.
+    Duck-typed — reads ``.objects``/``.cameras``/``.box2d``/``.category``/``.distance``/``.track_id`` — so
+    this module keeps no dependency on the scenarios package.
+    """
+    cam = camera if (camera and camera in scene.cameras) else next(iter(scene.cameras))
+    tid = getattr(target, "track_id", None)
+    others, hit = [], []
+    for o in scene.objects:
+        box = o.box2d.get(cam)
+        if box is None:
+            continue
+        text = f"{o.category} {o.distance:.0f}m"
+        if tid is not None and o.track_id == tid:
+            hit.append((box, 1.0, text, target_color))
+        else:
+            others.append((box, 1.0, text, color))
+    return others + hit
+
+
+def labels_view(get_scene: Callable[[Observation], Any], base: View = camera_view,
+                camera: str | None = None, target: Any = None) -> View:
+    """Wrap any camera ``base`` view to overlay ground-truth scene labels — the GT counterpart of
+    :func:`detections_view`, reusing :func:`annotate` + :func:`scene_labels`. ``get_scene(obs) -> SceneGT``
+    (or None) supplies the frame's ground truth (e.g. a dataset scene); returns the plain frame when it is
+    None."""
+
+    def _view(observation: Observation) -> Any:
+        rgb = base(observation)
+        if rgb is None:
+            return None
+        scene = get_scene(observation)
+        return rgb if scene is None else annotate(rgb, scene_labels(scene, camera, target))
+
+    return _view
 
 
 def detections_view(
