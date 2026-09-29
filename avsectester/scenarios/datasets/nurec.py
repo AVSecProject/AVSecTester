@@ -24,6 +24,15 @@ Two documented approximations, both isolated and easy to replace once a real ``.
 
 The zip/JSON field names mirror ``alpasim_utils.scenario`` (``Rig.load_from_json`` /
 ``TrafficObjects.load_from_json``). ``cv2``/zip are imported lazily; the module imports offline.
+
+.. warning::
+   **UNVALIDATED against a real ``.usdz``.** No real nuRec scene is available on this machine (they are
+   git-LFS / HF-license-gated, multi-GB, and the ``-NuRec`` HF dataset is not downloaded). The reader is
+   written to AlpaSim's documented schema, but four points are *assumptions* only a real artifact can
+   confirm: (1) the quaternion order in ``tracks_poses`` (assumed ``xyzw``, scipy); (2) the
+   ``T_rig_world`` direction + ``world_to_nre`` composition; (3) the ``label_class`` strings; (4) the true
+   camera intrinsic (a pinhole-from-FOV stands in for the wide/f-theta model). Do **not** treat filter
+   results as trustworthy until a real ``.usdz`` has been read and these are checked.
 """
 
 from __future__ import annotations
