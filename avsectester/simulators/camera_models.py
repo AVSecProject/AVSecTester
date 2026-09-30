@@ -55,24 +55,26 @@ class FThetaCamera:
 
     ``pixeldist_to_angle`` is the inverse polynomial used by :meth:`unproject`. Polynomials are
     coefficient lists in increasing order (c0 + c1*x + c2*x^2 ...), exactly as NuRec's ``ftheta_param``
-    stores them. Only the identity ``linear_cde`` (c=1, d=e=0) is supported, which is what NuRec ships.
+    and ``.usdz`` calibration store them. ``linear_cde`` is the small affine screen correction
+    ``[[c, d], [e, 1]]`` applied to the radial offset (identity ``(1, 0, 0)`` in NuRec); :meth:`unproject`
+    supports only the identity. This is the one f-theta lens model in the package — the scenario layer's
+    rig-frame camera (:class:`avsectester.scenarios.datasets.nurec.FThetaCamera`) projects through it.
     """
 
     cx: float
     cy: float
     angle_to_pixeldist: tuple
-    pixeldist_to_angle: tuple
     width: int
     height: int
+    pixeldist_to_angle: tuple = ()
     max_angle: float = math.pi / 2
+    linear_cde: tuple = (1.0, 0.0, 0.0)
 
     @classmethod
     def from_nurec(cls, spec: Any) -> FThetaCamera:
         """Build from a NuRec ``CameraSpec`` (``RGBRenderRequest.camera_intrinsics``)."""
         f = spec.ftheta_param
         cde = f.linear_cde
-        if (cde.linear_c, cde.linear_d, cde.linear_e) not in ((1.0, 0.0, 0.0), (0.0, 0.0, 0.0)):
-            raise NotImplementedError("non-identity f-theta linear_cde is not supported")
         return cls(
             cx=f.principal_point_x,
             cy=f.principal_point_y,
@@ -81,6 +83,7 @@ class FThetaCamera:
             width=spec.resolution_w,
             height=spec.resolution_h,
             max_angle=f.max_angle or math.pi / 2,
+            linear_cde=(cde.linear_c or 1.0, cde.linear_d, cde.linear_e),
         )
 
     @staticmethod
@@ -88,14 +91,23 @@ class FThetaCamera:
         return np.polynomial.polynomial.polyval(x, np.asarray(coeffs, dtype=np.float64))
 
     def project(self, pts_cam: np.ndarray) -> np.ndarray:
-        p = np.asarray(pts_cam, dtype=np.float64)
+        p = np.atleast_2d(np.asarray(pts_cam, dtype=np.float64))
         rho = np.hypot(p[:, 0], p[:, 1])
         theta = np.arctan2(rho, p[:, 2])
         r = self._poly(self.angle_to_pixeldist, theta)
         scale = np.divide(r, rho, out=np.zeros_like(r), where=rho > 1e-12)
-        return np.stack([self.cx + p[:, 0] * scale, self.cy + p[:, 1] * scale], axis=1)
+        du, dv = p[:, 0] * scale, p[:, 1] * scale
+        c, d, e = self.linear_cde
+        return np.stack([self.cx + c * du + d * dv, self.cy + e * du + dv], axis=1)
+
+    def in_view(self, pts_cam: np.ndarray) -> np.ndarray:
+        """Which camera-frame points project: in front of the camera and within ``max_angle``."""
+        p = np.atleast_2d(np.asarray(pts_cam, dtype=np.float64))
+        return (p[:, 2] > 0) & (np.arctan2(np.hypot(p[:, 0], p[:, 1]), p[:, 2]) <= self.max_angle)
 
     def unproject(self, uv: np.ndarray) -> np.ndarray:
+        if tuple(self.linear_cde) != (1.0, 0.0, 0.0) or not len(self.pixeldist_to_angle):
+            raise NotImplementedError("unproject needs pixeldist_to_angle and an identity linear_cde")
         uv = np.asarray(uv, dtype=np.float64)
         dx, dy = uv[:, 0] - self.cx, uv[:, 1] - self.cy
         r = np.hypot(dx, dy)
