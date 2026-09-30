@@ -55,6 +55,7 @@ from avsectester.simulators.viz import filmstrip, record_run, save_gif, save_ima
 from demo_common import (  # shared demo glue
     COCO_PERSON,
     COCO_STOP_SIGN,
+    COCO_TRAFFIC_LIGHT,
     CruiseStack,
     build_coco_detector,
 )
@@ -66,6 +67,7 @@ OBJECTS = {
     "stop": {"x": 28.0, "y": -6.5, "label": (COCO_STOP_SIGN, "stop sign")},
     "standee": {"x": 25.0, "y": -3.2, "label": (COCO_PERSON, "person")},
     "billboard": {"x": 28.0, "y": -7.0, "label": (COCO_PERSON, "person")},
+    "trafficlights": {"x": 26.0, "y": -6.0, "label": (COCO_TRAFFIC_LIGHT, "traffic light")},
 }
 
 
@@ -79,6 +81,12 @@ def build_object(args):
         sign = RoadsideSign(x=x, y=y, face=face, width=args.size or 0.9, yaw=args.yaw,
                             mount_height=1.5 if args.mount is None else args.mount, ground_z=args.ground_z)
         return sign, face, 1.0
+    if args.object == "trafficlights":
+        from avsectester.attacks.traffic_light import aspect_of, roadside_rig, traffic_lights_rgba
+        face = traffic_lights_rgba(n=3, lit="red")
+        sign = roadside_rig(face, x, y, width=args.size or 2.4, yaw=args.yaw, ground_z=args.ground_z,
+                            mount_height=2.2 if args.mount is None else args.mount)
+        return sign, face, aspect_of(face)
     if not args.asset:
         raise SystemExit(f"--object {args.object} needs --asset <person cut-out PNG>")
     person = load_cutout(args.asset)
@@ -244,8 +252,11 @@ def main() -> int:
                                                   soften=args.soften)
                     return frame_perturbation(insert, camera=CAM)
             else:
-                def perturb(r, compositor=compositor):
-                    quad_of = vehicle_sign_quad(detect, width_frac=0.4 if aspect == 1.0 else 0.3, aspect=aspect)
+                # a wide board (aspect<1, e.g. traffic lights) fills more of the rear; a tall poster less
+                wf = 0.6 if aspect < 0.95 else (0.4 if aspect == 1.0 else 0.3)
+
+                def perturb(r, compositor=compositor, wf=wf):
+                    quad_of = vehicle_sign_quad(detect, width_frac=wf, aspect=aspect)
                     return frame_perturbation(quad_insert(quad_of, compositor, face), camera=CAM)
 
             tag = f"{mode}_{hname}"

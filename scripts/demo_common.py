@@ -52,7 +52,7 @@ def build_detector(gpu: int):
 
 
 COCO_VEHICLES = {3: "vehicle", 6: "vehicle", 8: "vehicle"}  # car / bus / truck
-COCO_PERSON, COCO_STOP_SIGN = 1, 13
+COCO_PERSON, COCO_TRAFFIC_LIGHT, COCO_STOP_SIGN = 1, 10, 13
 
 
 def build_coco_detector(gpu: int = 0, threshold: float = 0.5, labels: dict | None = None):

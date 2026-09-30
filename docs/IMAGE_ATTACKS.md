@@ -13,6 +13,7 @@ simulation code in `avsectester/simulators/patch_insertion.py`.
 | **Fake STOP sign — on vehicle** | MUTCD R1-1 face | lead vehicle rear (ego-lane detector quad) | `attacks/sign_spoof.py`, `scripts/nurec_object_demo.py --mode vehicle` |
 | **Phantom person — standee** | life-size cut-out of a real pedestrian | fixed world position on the shoulder | `attacks/person_poster.py`, `--object standee --mode roadside` |
 | **Phantom person — billboard** | the person printed on a poster board on two legs | roadside, or a poster on the lead vehicle's rear | `attacks/person_poster.py`, `--object billboard --mode roadside vehicle` |
+| **Fake traffic lights** | 3 signal heads (red lit) on a board, drawn procedurally | roadside rig, or on the lead vehicle's rear ("truck with traffic lights") | `attacks/traffic_light.py`, `--object trafficlights --mode roadside vehicle` |
 
 Person cut-outs come from nuScenes camera images, segmented with SAM from the annotated 2-D boxes
 (`scripts/extract_person_cutouts.py`). nuScenes is CC BY-NC-SA 4.0, so the cut-outs are not in the
@@ -65,6 +66,16 @@ Phantom person (cut-out `person_001`, COCO `person` class):
 | standee, roadside (x=25 m, y=-3.2 m) | 50/50 | **4/50** | 50/50 | 50/50 |
 | billboard, roadside (x=28 m, y=-7 m) | 50/50 | 50/50 | 50/50 | 50/50 |
 | poster on lead vehicle rear | 47/50 | 48/50 | 48/50 | 48/50 |
+
+Fake traffic lights (3 red heads, COCO `traffic light` class):
+
+| Placement | none | chroma | libcom |
+|---|---|---|---|
+| roadside rig (x=26 m, y=-6 m) | 50/50 | 47/50 | 50/50 |
+| on the lead vehicle rear | 46/50 | 45/50 | 30/50 |
+
+The lit lenses are self-emitting, so a harmonizer that dims the object to the (dark) scene weakens the
+detection — most on the truck rear, where PCTNet reads the black housing as low light (30/50).
 
 Frames with score >= 0.5, out of the frames where the object is in view; the clean runs score 0
 throughout. A printed person is detected as a pedestrian in nearly every frame, which is the
