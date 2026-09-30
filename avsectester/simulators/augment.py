@@ -363,10 +363,10 @@ def compose(*perturbs: Callable[[Observation], Observation] | None) -> Callable[
 # behind the same :class:`Corruption` interface. Optional dependency (`augment` extra) — the hand-rolled
 # operators above are the zero-dependency fallback.
 #
-# Backend: **AlbumentationsX (>= 2.0)**, installed via the `augment` extra. It imports as
-# ``import albumentations as A`` and requires numpy >= 2 (fine on this stack: numpy 2 + torch 2.5). The
-# builder parameter names below target the 2.x API (e.g. ``blur_range``, ``radius_range``,
-# ``color_shift_range``), which differ from classic albumentations 1.x.
+# Backend: **classic albumentations (>=1.4,<2, MIT)**, installed via the `augment` extra. It imports as
+# ``import albumentations as A``. This stack is numpy<2 (torch 2.1 / OpenMMLab-official), so we use classic
+# albumentations rather than AlbumentationsX/2.x (which require numpy>=2). Same transforms + API; the
+# builder parameter names below target the 1.4.x API (e.g. ``blur_limit``, ``radius``, ``color_shift``).
 
 
 def albumentations_available() -> bool:
@@ -413,7 +413,7 @@ def _odd(n: float) -> int:
 def _albumentations_builders() -> dict[str, tuple[str, Callable[[float], Any]]]:
     """``name -> (category, build(severity))`` for the Albumentations-backed operators (imports A so the
     builder lambdas capture it). Severity in ``[0, 1]`` maps to each transform's native parameters.
-    Parameter names target AlbumentationsX / albumentations >= 2.0."""
+    Parameter names target classic albumentations 1.4.x (this stack is numpy<2)."""
     import albumentations as A
 
     return {
@@ -426,10 +426,10 @@ def _albumentations_builders() -> dict[str, tuple[str, Callable[[float], Any]]]:
             snow_point_range=(min(0.1 + 0.4 * s, 0.9),) * 2, brightness_coeff=1.5 + 1.0 * s, p=1.0)),
         "GaussNoise": ("sensor", lambda s: A.GaussNoise(std_range=(min(0.05 + 0.35 * s, 0.99),) * 2, p=1.0)),
         "ISONoise": ("sensor", lambda s: A.ISONoise(
-            color_shift_range=(0.01 + 0.05 * s,) * 2, intensity_range=(0.1 + 0.6 * s,) * 2, p=1.0)),
-        "MotionBlur": ("sensor", lambda s: A.MotionBlur(blur_range=(_odd(3 + s * 12),) * 2, p=1.0)),
+            color_shift=(0.01 + 0.05 * s,) * 2, intensity=(0.1 + 0.6 * s,) * 2, p=1.0)),
+        "MotionBlur": ("sensor", lambda s: A.MotionBlur(blur_limit=(_odd(3 + s * 12),) * 2, p=1.0)),
         "DefocusBlur": ("sensor", lambda s: A.Defocus(
-            radius_range=(max(1, round(1 + s * 8)),) * 2, alias_blur_range=(0.1, 0.1), p=1.0)),
+            radius=(max(1, round(1 + s * 8)),) * 2, alias_blur=(0.1, 0.1), p=1.0)),
         "JPEGCompression": ("sensor", lambda s: A.ImageCompression(
             quality_range=(int(max(5, 100 - 90 * s)),) * 2, p=1.0)),
     }
@@ -440,6 +440,6 @@ def albumentations_corruptions(severity: float = 0.5) -> list[AugmentationPipeli
     ``severity`` (the parallel of :func:`common_corruptions`, using Albumentations implementations).
     Raises if the backend is not installed."""
     if not albumentations_available():
-        raise RuntimeError("Albumentations backend not installed; `pip install 'albumentationsx>=2.0'`")
+        raise RuntimeError("Albumentations backend not installed; `pip install 'albumentations>=1.4,<2'`")
     return [AugmentationPipeline([AlbumentationsCorruption(build, severity, cat, label=name)])
             for name, (cat, build) in _albumentations_builders().items()]

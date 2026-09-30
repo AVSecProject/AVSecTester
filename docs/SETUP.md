@@ -29,9 +29,16 @@ pytest            # scaffold tests pass without the heavy stack
 
 ## 2. Full stack (Python 3.11 — upgraded, `dependencies` branch)
 
-Modern stack: **Python 3.11, torch 2.5.1+cu124, torchvision 0.20.1, numpy 2.2.6, mmcv 2.2.0,
-mmdet 3.3.0, mmdet3d 1.4.0, AlbumentationsX 2.x, CARLA 0.9.16**. (The old numpy<1.26 / torch1.13+cu117 /
-mmdet3d 1.1.0 stack lives in git history before the `dependencies` branch.)
+Modern **OpenMMLab-official** stack (every version cap satisfied → no patching, no source builds):
+**Python 3.11, torch 2.1.0+cu121, torchvision 0.16.0, numpy 1.26.4, mmcv 2.1.0, mmdet 3.2.0,
+mmdet3d 1.4.0, albumentations 1.4 (MIT), CARLA 0.9.16**. (The old torch1.13+cu117 / mmdet3d 1.1.0 stack
+lives in git history before the `dependencies` branch.)
+
+> **Why torch 2.1.0, not newer?** mmdet3d 1.4.0 caps `mmcv<2.2.0`, and mmcv 2.1.0 (the newest allowed)
+> only ships prebuilt wheels up to **torch 2.1.0**. Anything newer forces mmcv 2.2.0, which breaks the cap
+> (needs patching) and/or a source build. torch 2.1.0+cu121 still fully supports the L40S (Ada sm_89) and
+> gives torch 2.x + CUDA 12.1. It is numpy<2, so the augmentation backend is classic **albumentations 1.4**
+> (MIT) rather than AlbumentationsX/2.x (which require numpy≥2, hence torch≥2.4 → the cap conflict).
 
 > **CARLA version note.** CARLA **0.9.15** has no Python-3.11 wheel; PyPI ships **0.9.16** for cp311,
 > which imports fine (client only — pair with a matching 0.9.16 server for a live run). `avcarla` uses
@@ -41,37 +48,29 @@ Install torch/mmcv/mm-detectors explicitly **before** the avstack packages, in t
 
 ```bash
 conda activate avsec311
-# 1. torch + torchvision (cu124 index) — L40S (Ada, sm_89) wants torch 2.x + CUDA 12
-pip install torch==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cu124
-# 2. mmcv 2.2.0: the torch2.4/cu121 prebuilt wheel is ABI-compatible with torch2.5+cu124 (no source
-#    build needed — verified: mmcv.ops CUDA kernels load) + mmengine
-pip install mmcv==2.2.0 -f https://download.openmmlab.com/mmcv/dist/cu121/torch2.4.0/index.html
+# 1. torch + torchvision (cu121 index) — torch 2.x + CUDA 12.1 on the L40S (Ada, sm_89)
+pip install torch==2.1.0 torchvision==0.16.0 --index-url https://download.pytorch.org/whl/cu121
+# 2. mmcv 2.1.0 prebuilt wheel for torch2.1.0/cu121 (no source build) + mmengine
+pip install mmcv==2.1.0 -f https://download.openmmlab.com/mmcv/dist/cu121/torch2.1.0/index.html
 pip install "mmengine>=0.10"
-# 3. mmdet 3.3.0 + mmdet3d 1.4.0 from PyPI. Their mmcv<2.2.0 assert is conservative; mmcv 2.2.0 works,
-#    so relax the version cap in the two installed __init__.py (documented workaround):
-pip install --no-deps mmdet==3.3.0 mmdet3d==1.4.0
-pip install scikit-image terminaltables plyfile trimesh tensorboard networkx   # their runtime deps
-SP=$(python -c "import site; print(site.getsitepackages()[0])")
-sed -i "s/mmcv_maximum_version = '2.2.0'/mmcv_maximum_version = '2.3.0'/" "$SP/mmdet/__init__.py" "$SP/mmdet3d/__init__.py"
-sed -i "s/mmdet_maximum_version = '3.3.0'/mmdet_maximum_version = '3.4.0'/" "$SP/mmdet3d/__init__.py"
-# 4. avstack packages (base avstack-core, NOT [percep]) — pins now allow numpy2/torch2.5
-pip install -e third_party/avstack-core -c constraints.txt   # constraints.txt = "numpy>=2,<3"
-pip install -e third_party/avstack-api  -c constraints.txt
+# 3. mmdet 3.2.0 + mmdet3d 1.4.0 from PyPI — all version caps are satisfied by mmcv 2.1.0, so NO patching
+pip install --no-deps mmdet==3.2.0 mmdet3d==1.4.0
+pip install "numpy==1.26.4" "scikit-image>=0.21,<0.24" "pandas>=2,<3" \
+            pycocotools terminaltables plyfile trimesh tensorboard networkx   # deps, kept numpy<2
+# 4. avstack packages (base avstack-core, NOT [percep])
+pip install -e third_party/avstack-core -c constraints.txt   # constraints.txt = "numpy>=1.26,<2"
+pip install -e third_party/avstack-api  --no-deps
 pip install -e third_party/lib-avstack-carla --no-deps
-pip install carla==0.9.16 pygame ipywidgets nuscenes-devkit   # nuscenes-devkit numpy<2 pin is conservative (works on numpy 2)
-# 5. AlbumentationsX augmentation backend
+pip install carla==0.9.16 pygame ipywidgets nuscenes-devkit -c constraints.txt
+# 5. augmentation backend (classic albumentations 1.4, MIT)
 pip install -e ".[augment]"
 ```
 
-> **No CUDA compilation needed.** In OpenMMLab 2.0 the CUDA ops live in **mmcv** (prebuilt wheel above);
-> mmdet/mmdet3d are pure-Python, so there is no mmdet3d source build (unlike the old stack).
-
-> **CUDA build note (mmdet3d ops).** This box has system nvcc **11.5** (`/usr/bin/nvcc`, full
-> toolkit under `/usr/include`) and a too-new `/usr/local/cuda` → 13.3. torch is built for 11.7, so
-> build mmdet3d's CUDA ops with `CUDA_HOME=/usr` (the 11.5 toolkit; 11.5-vs-11.7 minor mismatch is
-> tolerated). The GPUs are **L40S = sm_89 (Ada)**, which nvcc 11.5 can't target directly — pin
-> `TORCH_CUDA_ARCH_LIST="8.0;8.6+PTX"` so it emits sm_86 cubin (forward-compatible on sm_89) plus
-> PTX JIT fallback.
+> **No CUDA compilation, no version-cap patching.** In OpenMMLab 2.0 the CUDA ops live in **mmcv**
+> (prebuilt wheel above); mmdet/mmdet3d are pure-Python. Because this stack stays on the last combo
+> OpenMMLab officially supports (mmcv 2.1.0 / mmdet 3.2.0 / mmdet3d 1.4.0), every version assert passes
+> unmodified. Watch that transitive deps (scikit-image, pandas, plyfile) don't pull numpy≥2 — pin numpy
+> back to 1.26.4 if they do.
 
 > **Known submodule-name shim.** `lib-avstack-carla`'s own metadata references sibling path
 > deps `../lib-avstack-core` and `../lib-avstack-api`, but our submodules are named
