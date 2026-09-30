@@ -24,7 +24,7 @@ git submodule update --init third_party/avstack-core
 cd third_party/avstack-core && git submodule update --init --depth 1 \
   third_party/mmdetection third_party/mmdetection3d third_party/mmsegmentation && cd -
 ./scripts/fetch_models.sh          # CARLA-trained weights → ./models
-docker compose up -d --build       # start a CARLA 0.9.15 server + the AVSecTester shell
+docker compose up -d --build       # start a CARLA 0.9.16 server + the AVSecTester shell
 docker compose exec avsectester avsectester run configs/carla_scenario.yaml --frames 40   # run it
 ```
 
@@ -97,7 +97,7 @@ See [`docs/INTERFACE.md`](docs/INTERFACE.md) for the full contract and
 Vendored under `third_party/` as git submodules (forked so the closed-loop pieces can live upstream):
 
 - **avstack-core** — reconfigurable AV modules, geometry, sensors, registry/config, hooks
-- **lib-avstack-carla** (`avcarla`) — closed-loop CARLA 0.9.15 bridge (client, actors, sensors)
+- **lib-avstack-carla** (`avcarla`) — closed-loop CARLA 0.9.16 bridge (client, actors, sensors)
 - **avstack-api** — KITTI / nuScenes / CARLA dataset adapters
 
 The NuRec + Alpamayo halves reuse NVIDIA's [AlpaSim](https://github.com/NVlabs/alpasim) pieces: the

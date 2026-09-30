@@ -1,9 +1,9 @@
 # Docker — reproducible GPU + CARLA end-to-end
 
-`Dockerfile` reproduces the full stack (torch 1.13+cu117, compiled mmdet3d ops, avstack + CARLA
-client) and `docker-compose.yml` wires it to a `carlasim/carla:0.9.15` server. Together they run
-the **real** end-to-end path: a CARLA-trained PointPillars detector on a live CarlaLidar in a
-closed-loop drive, attacked by a phantom detection.
+`Dockerfile` reproduces the full stack (torch 2.1.0+cu121, mmcv 2.1.0 / mmdet 3.2.0 / mmdet3d 1.4.0 —
+prebuilt, no ops compile, avstack + CARLA client) and `docker-compose.yml` wires it to a
+`carlasim/carla:0.9.16` server. Together they run the **real** end-to-end path: a CARLA-trained
+PointPillars detector on a live CarlaLidar in a closed-loop drive, attacked by a phantom detection.
 
 ## Prerequisites
 
@@ -60,11 +60,12 @@ When you're done: `docker compose down`.
 
 ## Notes
 
-- `nvcc` 11.7 can't target Ada (sm_89) directly, so the image emits `sm_86` cubin + PTX that JITs
-  on the L40S (`TORCH_CUDA_ARCH_LIST="8.0;8.6+PTX"`). On a different GPU generation, bump the base
-  image to cuda 11.8+ and adjust the arch list.
-- `.dockerignore` keeps `third_party/avstack-core/third_party` (the mm* sources needed to compile
-  mmdet3d) and drops VCS/data/model/output trees.
+- No CUDA ops are compiled: in OpenMMLab 2.0 the ops live in **mmcv** (installed as a prebuilt
+  `cu121/torch2.1.0` wheel), and mmdet/mmdet3d are pure-Python. The CUDA 12.1 base runs natively on the
+  L40S (Ada, sm_89).
+- Watch transitive deps (scikit-image, pandas, plyfile) — their latest releases pull numpy≥2, which
+  torch 2.1 cannot run; the Dockerfile pins `numpy==1.26.4` after installing them.
+- `.dockerignore` drops VCS/data/model/output trees.
 - `./models` is a bind mount, so weights are shared with the host rather than baked into the image;
   `fetch_models.sh` runs at container start to (re)create the mmdet3d symlinks.
 - Both services use `network_mode: host`, so the client reaches the server at `127.0.0.1:2000`; the

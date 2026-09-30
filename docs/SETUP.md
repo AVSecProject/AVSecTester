@@ -84,12 +84,12 @@ pip install -e ".[augment]"
 Capture a working lockfile once it succeeds (`pip freeze > requirements.lock`) — reproducing this
 install is the #1 adoption risk (PLAN.md).
 
-CARLA **server** (0.9.15) runs separately via docker (the box's default docker runtime is nvidia):
+CARLA **server** (0.9.16) runs separately via docker (the box's default docker runtime is nvidia):
 
 ```bash
-docker pull carlasim/carla:0.9.15
+docker pull carlasim/carla:0.9.16
 docker run -d --name carla-avsec --gpus 'device=2' --net=host \
-  carlasim/carla:0.9.15 ./CarlaUE4.sh -RenderOffScreen -nosound -carla-rpc-port=2000 -quality-level=Epic
+  carlasim/carla:0.9.16 ./CarlaUE4.sh -RenderOffScreen -nosound -carla-rpc-port=2000 -quality-level=Epic
 ```
 
 Run the simulator in **synchronous mode** for reproducible perception.

@@ -63,12 +63,13 @@ MotionBlur/Defocus/ImageCompression` behind the same `Corruption` interface — 
 seeding `A.Compose` from our own RNG, so the `(seed, frame)` pairing still holds. Install with the
 `augment` extra.
 
-**Backend — AlbumentationsX (`albumentationsx>=2.0`), on the upgraded stack.** After the `dependencies`
-upgrade (Python 3.11, torch 2.5+cu124, numpy 2), AlbumentationsX installs cleanly and imports as
-`import albumentations as A`. The builder param names target the 2.x API (`blur_range`, `radius_range`,
-`color_shift_range`, …). (Historical note: on the old numpy<1.26 stack, AlbumentationsX/2.x was blocked by
-avstack's numpy-1-only `quaternion` C-extension; the dependency upgrade resolved that with
-`numpy-quaternion>=2024`.)
+**Backend — classic albumentations (`albumentations>=1.4,<2`, MIT).** Installed via the `augment` extra.
+It imports as `import albumentations as A`; the builder param names target the 1.4.x API (`blur_limit`,
+`radius`, `color_shift`, …). The `dependencies` branch stack is **numpy<2** (torch 2.1.0+cu121, the newest
+combo OpenMMLab supports without version-cap patching), so we use classic albumentations rather than
+AlbumentationsX/2.x — those require numpy≥2, which would force torch≥2.4 → mmcv 2.2.0 → breaks the
+`mmdet3d<mmcv2.2` cap. Classic albumentations exposes the same transforms and API, so the adapter is
+unchanged.
 
 ## Determinism across the pair (the subtle bit)
 
