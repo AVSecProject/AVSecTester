@@ -132,7 +132,7 @@ class PCTNetHarmonizer(Harmonizer):
     """Learned harmonization via libcom's **PCTNet**, run **in-process** (no subprocess, no separate env).
 
     PCTNet is a self-contained color-transform CNN needing only torch / torchvision / numpy / einops —
-    all compatible with the avstack stack (torch 1.13) — so we load just the ``pct_net`` module from the
+    all compatible with the avstack stack (torch 2.1) — so we load just the ``pct_net`` module from the
     ``third_party/libcom`` submodule, bypassing libcom's package ``__init__`` (which eagerly imports
     diffusers-based models). PCTNet gives a milder, texture-preserving harmonization than the classic
     Poisson blend — better for keeping an adversarial pattern intact. Falls back to
