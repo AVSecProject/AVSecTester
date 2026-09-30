@@ -106,10 +106,15 @@ class FThetaCamera:
         return (p[:, 2] > 0) & (np.arctan2(np.hypot(p[:, 0], p[:, 1]), p[:, 2]) <= self.max_angle)
 
     def unproject(self, uv: np.ndarray) -> np.ndarray:
-        if tuple(self.linear_cde) != (1.0, 0.0, 0.0) or not len(self.pixeldist_to_angle):
-            raise NotImplementedError("unproject needs pixeldist_to_angle and an identity linear_cde")
+        if not len(self.pixeldist_to_angle):
+            raise NotImplementedError("unproject needs the inverse polynomial pixeldist_to_angle")
         uv = np.asarray(uv, dtype=np.float64)
-        dx, dy = uv[:, 0] - self.cx, uv[:, 1] - self.cy
+        # invert the affine screen correction [[c, d], [e, 1]] to recover the radial offset (dx, dy)
+        c, d, e = self.linear_cde
+        u0, v0 = uv[:, 0] - self.cx, uv[:, 1] - self.cy
+        det = c - d * e
+        dx = (u0 - d * v0) / det
+        dy = (-e * u0 + c * v0) / det
         r = np.hypot(dx, dy)
         theta = self._poly(self.pixeldist_to_angle, r)
         s = np.sin(theta)
