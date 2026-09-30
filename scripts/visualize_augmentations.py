@@ -12,7 +12,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from avsectester.simulators.augment import CORRUPTIONS
+from avsectester.simulators.augment import CORRUPTIONS, albumentations_corruptions
 from avsectester.simulators.viz import filmstrip, save_image
 
 OUT = Path("tmp/compare")
@@ -29,9 +29,8 @@ def _label(rgb, text):
     return out[:, :, ::-1]
 
 
-def main(severity: float) -> None:
+def main(severity: float, backend: str) -> None:
     import cv2
-    import numpy as np
 
     mp4 = str(NUREC / _UUID / "camera_front_wide_120fov.mp4")
     cap = cv2.VideoCapture(mp4)
@@ -41,20 +40,29 @@ def main(severity: float) -> None:
     if not ok:
         raise SystemExit(f"could not read a frame from {mp4}")
     frame = cv2.resize(bgr[:, :, ::-1], (640, 360))       # downscale for a compact contact sheet
-    rng = np.random.default_rng(0)
 
     tiles = [_label(frame, "clean")]
-    for name, cls in CORRUPTIONS.items():
-        tiles.append(_label(cls(severity).apply(frame, rng), f"{cls.category}: {name}"))
+    if backend == "albumentations":
+        for pipe in albumentations_corruptions(severity):    # Albumentations-backed operators
+            c = pipe.corruptions[0]
+            tiles.append(_label(pipe.apply(frame, frame=0), f"{c.category}: {c.name}"))
+        suffix = "_albumentations"
+    else:
+        import numpy as np
+        rng = np.random.default_rng(0)
+        for name, cls in CORRUPTIONS.items():                # hand-rolled operators
+            tiles.append(_label(cls(severity).apply(frame, rng), f"{cls.category}: {name}"))
+        suffix = ""
 
-    out = OUT / "augmentations.png"
+    out = OUT / f"augmentations{suffix}.png"
     save_image(filmstrip(tiles, cols=3), out)
-    print(f"saved {out} ({len(tiles)} tiles at severity {severity})")
+    print(f"saved {out} ({len(tiles)} tiles, backend={backend}, severity {severity})")
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--severity", type=float, default=0.6)
+    ap.add_argument("--backend", choices=["native", "albumentations"], default="native")
     args = ap.parse_args()
     OUT.mkdir(parents=True, exist_ok=True)
-    main(args.severity)
+    main(args.severity, args.backend)

@@ -40,6 +40,12 @@ dev = [
 viz = [
     "matplotlib>=3.6",
 ]
+# Battle-tested augmentation backend for avsectester.simulators.augment (weather/sensor corruptions).
+# Pinned <2 (classic, MIT): albumentations 2.x / AlbumentationsX require numpy>=2, which conflicts with
+# the avstack stack (numpy<1.26). The hand-rolled operators are the zero-dependency fallback.
+augment = [
+    "albumentations>=1.4,<2",
+]
 
 [project.scripts]
 avsectester = "avsectester.cli:app"

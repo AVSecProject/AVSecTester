@@ -14,6 +14,8 @@ from avsectester.simulators.augment import (
     Fog,
     GaussianNoise,
     Rain,
+    albumentations_available,
+    albumentations_corruptions,
     common_corruptions,
     compose,
     read_camera_rgb,
@@ -94,6 +96,28 @@ def test_sensor_augmentation_reads_writes_ndarray_and_imagedata():
 def test_sensor_augmentation_passes_through_when_no_camera():
     obs = Observation(t=0.0, frame=0, sensor_data={})
     assert sensor_augmentation([Fog(0.5)])(obs) is obs
+
+
+@pytest.mark.skipif(not albumentations_available(), reason="albumentations backend not installed")
+def test_albumentations_backend_corrupts_deterministically_and_lifts():
+    img = _img()
+    suite = albumentations_corruptions(0.6)
+    assert len(suite) >= 6                                   # weather + sensor operators
+    for pipe in suite:
+        a = pipe.apply(img, frame=2)
+        assert a.shape == img.shape and a.dtype == np.uint8
+        assert not np.array_equal(a, img)                    # actually corrupts
+        assert np.array_equal(a, pipe.apply(img, frame=2))   # deterministic given (seed, frame)
+    # same seed -> identical across a "pair"; the operator name records the backend
+    p1 = AugmentationPipeline(suite[0].corruptions, seed=5)
+    p2 = AugmentationPipeline(suite[0].corruptions, seed=5)
+    assert np.array_equal(p1.apply(img, 1), p2.apply(img, 1))
+    assert suite[0].corruptions[0].name.startswith("alb:")
+
+    # lifts to the perturb seam like the hand-rolled operators
+    obs = Observation(t=0.0, frame=1, sensor_data={"front": img})
+    out = sensor_augmentation(suite[0], camera="front")(obs)
+    assert not np.array_equal(out.sensor_data["front"], img)
 
 
 def test_compose_applies_perturbs_in_order_and_skips_none():

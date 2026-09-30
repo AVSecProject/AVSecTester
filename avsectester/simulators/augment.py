@@ -354,3 +354,91 @@ def compose(*perturbs: Callable[[Observation], Observation] | None) -> Callable[
         return observation
 
     return _perturb
+
+
+# ----------------------------------------------------------------------------------------------------
+# Optional Albumentations backend
+# ----------------------------------------------------------------------------------------------------
+# Battle-tested implementations (Albumentations, MIT, ~15k stars, paper) for the weather/sensor
+# operators, behind the same :class:`Corruption` interface. Optional dependency — the hand-rolled
+# operators above are the zero-dependency fallback.
+#
+# NOTE: we pin ``albumentations>=1.4,<2`` (classic, MIT). AlbumentationsX / albumentations 2.x require
+# numpy>=2, which is incompatible with the avstack stack here (numpy<1.26; its ``quaternion`` C-extension
+# breaks under numpy 2). Classic albumentations exposes the identical transforms + ``import albumentations
+# as A`` API, so this adapter is unchanged if that constraint is ever lifted.
+
+
+def albumentations_available() -> bool:
+    """True if the (compatible) Albumentations backend can be imported."""
+    try:
+        import albumentations  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+class AlbumentationsCorruption(Corruption):
+    """Wrap an Albumentations transform as a :class:`Corruption`.
+
+    ``build(severity) -> A.BasicTransform`` maps our ``severity`` to the transform's own parameters.
+    Determinism (so the clean and attacked run of a pair match) comes from seeding ``A.Compose`` with a
+    value drawn from *our* rng — the :class:`AugmentationPipeline`'s ``(seed, frame)`` seeding therefore
+    still controls the realisation. ``category`` and ``label`` are for reporting only."""
+
+    def __init__(self, build: Callable[[float], Any], severity: float = 0.5,
+                 category: str = "sensor", label: str = "albumentations") -> None:
+        super().__init__(severity)
+        self._build = build
+        self.category = category
+        self._label = label
+
+    @property
+    def name(self) -> str:
+        return f"alb:{self._label}@{self.severity:.2f}"
+
+    def apply(self, rgb: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+        import albumentations as A
+
+        seed = int(rng.integers(0, 2**31 - 1))
+        transform = A.Compose([self._build(self.severity)], seed=seed)
+        return transform(image=np.ascontiguousarray(rgb))["image"]
+
+
+def _odd(n: float) -> int:
+    n = max(3, round(n))
+    return n if n % 2 == 1 else n + 1
+
+
+def _albumentations_builders() -> dict[str, tuple[str, Callable[[float], Any]]]:
+    """``name -> (category, build(severity))`` for the Albumentations-backed operators (imports A so the
+    builder lambdas capture it). Severity in ``[0, 1]`` maps to each transform's native parameters."""
+    import albumentations as A
+
+    return {
+        "Fog": ("weather", lambda s: A.RandomFog(
+            fog_coef_range=(min(0.2 + 0.6 * s, 0.95),) * 2, alpha_coef=0.08 + 0.06 * s, p=1.0)),
+        "Rain": ("weather", lambda s: A.RandomRain(
+            drop_length=int(5 + 15 * s), drop_width=1, blur_value=_odd(1 + 6 * s),
+            brightness_coefficient=max(0.5, 1.0 - 0.4 * s), p=1.0)),
+        "Snow": ("weather", lambda s: A.RandomSnow(
+            snow_point_range=(min(0.1 + 0.4 * s, 0.9),) * 2, brightness_coeff=1.5 + 1.0 * s, p=1.0)),
+        "GaussNoise": ("sensor", lambda s: A.GaussNoise(std_range=(min(0.05 + 0.35 * s, 0.99),) * 2, p=1.0)),
+        "ISONoise": ("sensor", lambda s: A.ISONoise(
+            color_shift=(0.01 + 0.05 * s,) * 2, intensity=(0.1 + 0.6 * s,) * 2, p=1.0)),
+        "MotionBlur": ("sensor", lambda s: A.MotionBlur(blur_limit=(_odd(3 + s * 12),) * 2, p=1.0)),
+        "DefocusBlur": ("sensor", lambda s: A.Defocus(
+            radius=(max(1, round(1 + s * 8)),) * 2, alias_blur=(0.1, 0.1), p=1.0)),
+        "JPEGCompression": ("sensor", lambda s: A.ImageCompression(
+            quality_range=(int(max(5, 100 - 90 * s)),) * 2, p=1.0)),
+    }
+
+
+def albumentations_corruptions(severity: float = 0.5) -> list[AugmentationPipeline]:
+    """Albumentations-backed robustness suite — one single-corruption pipeline per operator at
+    ``severity`` (the parallel of :func:`common_corruptions`, using Albumentations implementations).
+    Raises if the backend is not installed."""
+    if not albumentations_available():
+        raise RuntimeError("Albumentations backend not installed; `pip install 'albumentations>=1.4,<2'`")
+    return [AugmentationPipeline([AlbumentationsCorruption(build, severity, cat, label=name)])
+            for name, (cat, build) in _albumentations_builders().items()]

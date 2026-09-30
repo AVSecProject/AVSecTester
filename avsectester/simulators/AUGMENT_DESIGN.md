@@ -54,6 +54,22 @@ to the clean and attacked runs of a pair.
 `CORRUPTIONS` is a name→class registry; `common_corruptions(severity)` returns a standard suite (one of
 each) for benchmarking — the AV analogue of ImageNet-C's common-corruptions set, plus driving weather.
 
+### Backends: hand-rolled (default) or Albumentations (optional)
+
+The operators above are **zero-dependency** (numpy + cv2) and are the default. For battle-tested
+implementations there is an optional **Albumentations** backend (`AlbumentationsCorruption`,
+`albumentations_corruptions(severity)`) that wraps `A.RandomFog/RandomRain/RandomSnow/GaussNoise/ISONoise/
+MotionBlur/Defocus/ImageCompression` behind the same `Corruption` interface — determinism preserved by
+seeding `A.Compose` from our own RNG, so the `(seed, frame)` pairing still holds. Install with the
+`augment` extra.
+
+**Version pin — `albumentations>=1.4,<2` (classic, MIT).** Albumentations 2.x / **AlbumentationsX** require
+`numpy>=2`, which is **incompatible** with the avstack stack here (`numpy<1.26`; its `quaternion`
+C-extension breaks under numpy 2 with `_ARRAY_API not found`). Classic albumentations exposes the identical
+transforms and `import albumentations as A` API, so the adapter is unchanged if that constraint is ever
+lifted. Using AlbumentationsX would require isolating it in a separate env/process (à la the libcom
+harmonizer) — not worth it for a per-frame image augmentation.
+
 ## Determinism across the pair (the subtle bit)
 
 Robustness is measured by *diffing* a clean run and an attacked run **under the same condition**. If the
