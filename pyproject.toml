@@ -6,7 +6,7 @@ authors = [{ name = "zqzqz", email = "fszqz001@gmail.com" }]
 readme = "README.md"
 license = "MIT"
 # Pinned to avstack's supported interpreter for the closed-loop path (avstack-core requires >=3.10,<3.11).
-requires-python = ">=3.10,<3.11"
+requires-python = ">=3.11,<3.12"
 keywords = ["autonomous-vehicles", "security", "adversarial", "carla", "avstack"]
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
@@ -18,7 +18,7 @@ classifiers = [
 # via the `avstack` extra + the submodules under third_party/ — see docs/SETUP.md.
 dependencies = [
     "pyyaml>=6,<7",            # scenario config
-    "numpy>=1.20,<1.26",      # kept compatible with avstack-core's pin
+    "numpy>=2,<3",            # numpy 2.x (torch 2.5 / albumentationsx / avstack-core all on numpy 2)
     "typer>=0.15,<0.17",      # CLI (>=0.15 for click 8.2+ compatibility)
 ]
 
@@ -41,10 +41,10 @@ viz = [
     "matplotlib>=3.6",
 ]
 # Battle-tested augmentation backend for avsectester.simulators.augment (weather/sensor corruptions).
-# Pinned <2 (classic, MIT): albumentations 2.x / AlbumentationsX require numpy>=2, which conflicts with
-# the avstack stack (numpy<1.26). The hand-rolled operators are the zero-dependency fallback.
+# AlbumentationsX (2.x, AGPL/commercial) now that the stack is on numpy 2. Same `import albumentations
+# as A` API. The hand-rolled operators remain the zero-dependency fallback.
 augment = [
-    "albumentations>=1.4,<2",
+    "albumentationsx>=2.0",
 ]
 
 [project.scripts]

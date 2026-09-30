@@ -63,12 +63,12 @@ MotionBlur/Defocus/ImageCompression` behind the same `Corruption` interface — 
 seeding `A.Compose` from our own RNG, so the `(seed, frame)` pairing still holds. Install with the
 `augment` extra.
 
-**Version pin — `albumentations>=1.4,<2` (classic, MIT).** Albumentations 2.x / **AlbumentationsX** require
-`numpy>=2`, which is **incompatible** with the avstack stack here (`numpy<1.26`; its `quaternion`
-C-extension breaks under numpy 2 with `_ARRAY_API not found`). Classic albumentations exposes the identical
-transforms and `import albumentations as A` API, so the adapter is unchanged if that constraint is ever
-lifted. Using AlbumentationsX would require isolating it in a separate env/process (à la the libcom
-harmonizer) — not worth it for a per-frame image augmentation.
+**Backend — AlbumentationsX (`albumentationsx>=2.0`), on the upgraded stack.** After the `dependencies`
+upgrade (Python 3.11, torch 2.5+cu124, numpy 2), AlbumentationsX installs cleanly and imports as
+`import albumentations as A`. The builder param names target the 2.x API (`blur_range`, `radius_range`,
+`color_shift_range`, …). (Historical note: on the old numpy<1.26 stack, AlbumentationsX/2.x was blocked by
+avstack's numpy-1-only `quaternion` C-extension; the dependency upgrade resolved that with
+`numpy-quaternion>=2024`.)
 
 ## Determinism across the pair (the subtle bit)
 
