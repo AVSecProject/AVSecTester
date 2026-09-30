@@ -6,7 +6,7 @@ authors = [{ name = "zqzqz", email = "fszqz001@gmail.com" }]
 readme = "README.md"
 license = "MIT"
 # Pinned to avstack's supported interpreter for the closed-loop path (avstack-core requires >=3.10,<3.11).
-requires-python = ">=3.10,<3.11"
+requires-python = ">=3.11,<3.12"
 keywords = ["autonomous-vehicles", "security", "adversarial", "carla", "avstack"]
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
@@ -18,7 +18,7 @@ classifiers = [
 # via the `avstack` extra + the submodules under third_party/ — see docs/SETUP.md.
 dependencies = [
     "pyyaml>=6,<7",            # scenario config
-    "numpy>=1.20,<1.26",      # kept compatible with avstack-core's pin
+    "numpy>=1.26,<2",         # numpy 1.26 (torch 2.1 / OpenMMLab-official stack; see dependency-upgrade)
     "typer>=0.15,<0.17",      # CLI (>=0.15 for click 8.2+ compatibility)
 ]
 
@@ -39,6 +39,13 @@ dev = [
 # Visualization (avsectester.viz): the clean-vs-attacked driving-impact plot.
 viz = [
     "matplotlib>=3.6",
+]
+# Battle-tested augmentation backend for avsectester.simulators.augment (weather/sensor corruptions).
+# Classic albumentations 1.4 (MIT): this stack is numpy<2 (torch 2.1 / OpenMMLab-official), and
+# AlbumentationsX/2.x require numpy>=2. Same `import albumentations as A` API + transforms. The
+# hand-rolled operators remain the zero-dependency fallback.
+augment = [
+    "albumentations>=1.4,<2",
 ]
 
 [project.scripts]

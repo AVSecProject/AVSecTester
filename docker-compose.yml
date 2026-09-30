@@ -1,4 +1,4 @@
-# End-to-end environment: a CARLA 0.9.15 server + the AVSecTester GPU image (defaults to a shell).
+# End-to-end environment: a CARLA 0.9.16 server + the AVSecTester GPU image (defaults to a shell).
 #   ./scripts/fetch_models.sh          # once, on the host: pulls carla-vehicle weights → ./models
 #   docker compose up -d --build       # start CARLA + the (idle) AVSecTester shell container
 #   docker compose exec avsectester avsectester run configs/carla_scenario.yaml --frames 40   # the demo
@@ -9,7 +9,7 @@
 # containers get GPUs (CARLA on GPU 2, AVSecTester on 1).
 services:
   carla:
-    image: carlasim/carla:0.9.15
+    image: carlasim/carla:0.9.16
     command: ./CarlaUE4.sh -RenderOffScreen -nosound -quality-level=Low -carla-rpc-port=2000
     network_mode: host
     environment:

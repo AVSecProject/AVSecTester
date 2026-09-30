@@ -125,26 +125,18 @@ def camera_patch_perturbation(backend: Any, compositor: Any, patch_rgba: Any, ca
     Same warp + harmonize path (via ``compositor``) and same rear-face projection (:func:`lead_rear_quad`);
     returns the frame unchanged when the target is out of view.
     """
-    import copy as _copy
-    from dataclasses import replace
+    from avsectester.simulators.augment import read_camera_rgb, write_camera_rgb
 
     quad_of = lead_rear_quad(backend, camera, width_frac=width_frac, height_frac=height_frac)
 
     def _perturb(observation: Observation) -> Observation:
-        data = observation.sensor_data
-        if not data:
-            return observation
-        key = camera if camera in data else next(iter(data))
-        rgb = camera_view(observation, camera)
+        got = read_camera_rgb(observation, camera)
         quad = quad_of(observation)
-        if rgb is None or quad is None:
+        if got is None or quad is None:
             return observation
+        key, rgb = got
         patched = compositor.apply(rgb, quad, patch_rgba)  # HxWx3 uint8, same channel order as rgb
-        img = _copy.copy(data[key])  # shallow-copy the ImageData; swap only its pixel buffer
-        img.data = patched
-        new_data = dict(data)
-        new_data[key] = img
-        return replace(observation, sensor_data=new_data)
+        return write_camera_rgb(observation, key, patched)  # swaps the ImageData pixel buffer
 
     return _perturb
 
@@ -266,6 +258,15 @@ def _spawn_config(spec: dict, actor: Any, vehicle_field: str) -> dict:
     return resolved
 
 
+# A curated set of built-in ``carla.WeatherParameters`` presets for world-level robustness sweeps
+# (pass one as the scenario ``weather`` key; see ``CarlaBackend._apply_weather``). Any preset CARLA
+# exposes also works — this is just the driving-relevant spread from clear to adverse.
+CARLA_WEATHER_PRESETS = (
+    "ClearNoon", "CloudyNoon", "WetNoon", "WetCloudyNoon", "MidRainyNoon", "HardRainNoon",
+    "ClearSunset", "CloudySunset", "WetSunset", "HardRainSunset",
+)
+
+
 # ---------------------------------------------------------------------------------------------------
 # The CARLA WorldBackend
 # ---------------------------------------------------------------------------------------------------
@@ -330,6 +331,7 @@ class CarlaBackend(WorldBackend):
 
         if self.lead_cfg is not None:  # scene content: a stationary lead ahead of the ego (both runs)
             self.lead = self._spawn_lead(self.lead_cfg)
+        self._apply_weather(scenario.get("weather"))  # world-level augmentation (both runs, same weather)
         self._apply_patches()  # world-level physical patches (attacked run only)
 
         snap = self.client.world.get_snapshot()
@@ -381,6 +383,24 @@ class CarlaBackend(WorldBackend):
             spawned = build_patch(spec).apply(world, target)
             for actor in spawned:
                 self._resources.callback(_destroy_actor, actor)
+
+    def _apply_weather(self, weather: Any) -> None:
+        """Set the world weather (the CARLA-native, world-level augmentation tier). ``weather`` is a
+        ``carla.WeatherParameters`` preset **name** (e.g. ``"HardRainNoon"``, ``"ClearSunset"``) or a dict
+        of parameters (``cloudiness``, ``precipitation``, ``sun_altitude_angle``, ``fog_density``,
+        ``wetness``, …). Applied to the whole scene — including any world-level patch — so it re-renders
+        under that weather. ``None`` leaves the map's default weather."""
+        if weather is None:
+            return
+        import carla
+
+        if isinstance(weather, str):
+            params = getattr(carla.WeatherParameters, weather, None)
+            if params is None:
+                raise ValueError(f"unknown CARLA weather preset {weather!r} (see CARLA_WEATHER_PRESETS)")
+        else:
+            params = carla.WeatherParameters(**dict(weather))
+        self.client.world.set_weather(params)
 
     def _resolve_patch_target(self, spec: dict) -> Any:
         """Resolve a patch's ``target``: the scene ``lead`` car, the ``ego``, or ``npc:<i>``."""
