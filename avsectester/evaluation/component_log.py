@@ -1,0 +1,102 @@
+"""Component-level logging — gather per-frame, per-layer stack outputs for in-system attack analysis.
+
+The stack already knows how to expose its component outputs (``ModularAVStack.instrument`` attaches an
+avstack post-hook per stage and ``component_log()`` returns ``{stage: output}``); this module just
+*gathers* those per-frame snapshots across a run and *processes* them. :func:`run_logged` is the
+instrumented twin of :func:`avstack.backend.run` — same loop (via its ``on_step`` hook), but it also
+collects the stack's ``component_log()`` each frame into a :class:`ComponentTrace`.
+
+The analysis is deliberately thin and reuses avstack: per-stage **counts** come from ``len()`` of the raw
+output (no new schema), and per-stage **performance vs ground truth** reuses
+``avstack.metrics.get_instantaneous_metrics`` (TP/FP/FN by nearest-neighbour assignment). The headline
+in-system signal is the **clean-vs-attacked** per-stage diff — which layer the attack first changes, and
+how it ripples forward — which needs no ground truth.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
+
+from avsectester.backend import run as _run_loop
+
+if TYPE_CHECKING:
+    from avsectester.backend import AVStack, WorldBackend
+    from avsectester.plane import Observation, Trace
+
+
+def _count(output: Any) -> int:
+    """Size of a stage output: ``len`` for a detections/tracks container, else 1 if present, 0 if None."""
+    if output is None:
+        return 0
+    try:
+        return len(output)
+    except TypeError:
+        return 1
+
+
+@dataclass
+class StepLog:
+    """One frame's per-stage stack outputs (raw avstack objects), keyed by stage name."""
+
+    frame: int
+    stages: dict[str, Any] = field(default_factory=dict)
+
+    def count(self, stage: str) -> int:
+        return _count(self.stages.get(stage))
+
+
+@dataclass
+class ComponentTrace:
+    """Per-frame component outputs across a run, with thin per-stage processing."""
+
+    steps: list[StepLog] = field(default_factory=list)
+
+    @property
+    def stage_names(self) -> list[str]:
+        return list(self.steps[0].stages) if self.steps else []
+
+    def counts(self, stage: str) -> list[int]:
+        """Per-frame output size of ``stage`` (e.g. n_detections, n_tracks)."""
+        return [s.count(stage) for s in self.steps]
+
+    def degradation(self, other: ComponentTrace, stage: str) -> list[int]:
+        """Per-frame count drop ``self[stage] - other[stage]`` — the in-system effect of the difference
+        between two runs (e.g. ``clean.degradation(attacked, "perception")`` is how many detections the
+        attack removed each frame)."""
+        return [a - b for a, b in zip(self.counts(stage), other.counts(stage))]
+
+    def performance(self, stage: str, truths: list[Any], assign_radius: float = 4.0) -> list[Any]:
+        """Per-frame detection/tracking performance of ``stage`` vs ground truth, reusing avstack's
+        ``get_instantaneous_metrics`` (returns its per-frame metrics object; needs ``truths[i]`` — the GT
+        objects for frame ``i`` — in a matching reference frame)."""
+        from avstack.metrics import get_instantaneous_metrics
+
+        out = []
+        for i, step in enumerate(self.steps):
+            objs = step.stages.get(stage)
+            data = getattr(objs, "data", objs) or []
+            out.append(get_instantaneous_metrics(tracks=list(data), truths=truths[i],
+                                                  assign_radius=assign_radius))
+        return out
+
+
+def run_logged(
+    backend: WorldBackend,
+    stack: AVStack,
+    frames: int,
+    perturb: Callable[[Observation], Observation] | None = None,
+) -> tuple[Trace, ComponentTrace]:
+    """Drive the scenario like :func:`avstack.backend.run`, additionally collecting the stack's
+    ``component_log()`` each frame. Returns the driving :class:`Trace` and the :class:`ComponentTrace`
+    (empty when the stack is not instrumented, so the call site is uniform)."""
+    component = ComponentTrace()
+    log = getattr(stack, "component_log", None)
+
+    def _capture(i: int, seen: Observation, control: Any) -> None:
+        if log is not None:
+            component.steps.append(StepLog(frame=i, stages=dict(log() or {})))
+
+    trace = _run_loop(backend, stack, frames, perturb=perturb, on_step=_capture)
+    return trace, component

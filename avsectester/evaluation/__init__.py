@@ -6,6 +6,13 @@ corruptions (:mod:`avsectester.simulators.augment`) and scores each with
 :func:`avsectester.metric.impact`, reporting how the attack's success rate degrades with corruption.
 """
 
+from .component_log import ComponentTrace, StepLog, run_logged
 from .robustness import RobustnessReport, evaluate_robustness
 
-__all__ = ["RobustnessReport", "evaluate_robustness"]
+__all__ = [
+    "ComponentTrace",
+    "RobustnessReport",
+    "StepLog",
+    "evaluate_robustness",
+    "run_logged",
+]

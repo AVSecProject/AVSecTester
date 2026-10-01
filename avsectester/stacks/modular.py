@@ -25,6 +25,21 @@ class _DetectionCounter:
         return (detections,)
 
 
+class _StageCapture:
+    """A generic avstack post-hook that keeps a pipeline stage's most recent output (pass-through).
+
+    The component-logging counterpart of :class:`_DetectionCounter`, reused across every stage: it stores
+    the stage's output so the stack can report per-layer results for in-system analysis, and returns it
+    unchanged so the pipeline is unaffected."""
+
+    def __init__(self) -> None:
+        self.last: Any = None
+
+    def __call__(self, output: Any, *args: Any, **kwargs: Any) -> tuple[Any]:
+        self.last = output
+        return (output,)
+
+
 def _register_avstack_modules() -> None:
     """Import the avstack modules so perception/tracking/planning/control + the attack hooks register."""
     import avstack.modules.control.vehicle
@@ -63,6 +78,21 @@ class ModularAVStack(AVStack):
         """Register the detection counter last, so it counts any attack-injected detections too."""
         self._counter = _DetectionCounter()
         self.pipeline.perception.register_post_hook(self._counter)
+
+    def instrument(self, stages: tuple[str, ...] = ("perception", "tracking", "planning", "control")) -> None:
+        """Capture each pipeline stage's per-frame output for in-system analysis, reusing avstack's
+        post-hook mechanism (a :class:`_StageCapture` attached **last** on each stage, so it observes the
+        *attacked* output, as the detection counter does). Enables :meth:`component_log`."""
+        self._captures = {s: _StageCapture() for s in stages}
+        for stage, capture in self._captures.items():
+            getattr(self.pipeline, stage).register_post_hook(capture)
+
+    def component_log(self) -> dict[str, Any] | None:
+        """The most recent per-stage outputs ``{stage: output}`` (needs :meth:`instrument` first), or
+        None if the stack is not instrumented. The caller (an evaluation logger) derives counts/metrics
+        from the raw avstack outputs — reusing e.g. ``avstack.metrics.get_instantaneous_metrics``."""
+        captures = getattr(self, "_captures", None)
+        return {stage: cap.last for stage, cap in captures.items()} if captures else None
 
     def __call__(self, observation: Observation) -> Control:
         ctrl = self.pipeline(observation.sensor_data, observation.vehicle_state)
