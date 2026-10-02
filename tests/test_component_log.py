@@ -7,8 +7,14 @@ evaluation tests.
 """
 
 from avsectester.backend import AVStack, WorldBackend
-from avsectester.evaluation.component_log import ComponentTrace, StepLog, run_logged
+from avsectester.evaluation.component_log import (
+    ComponentTrace,
+    InstrumentedStack,
+    StepLog,
+    run_logged,
+)
 from avsectester.plane import Control, Observation
+from avsectester.stacks.alpamayo import AlpamayoAVStack
 from avsectester.stacks.modular import ModularAVStack, _StageCapture
 
 
@@ -121,3 +127,41 @@ def test_run_logged_is_empty_when_stack_is_not_instrumented():
 
     trace, comp = run_logged(_StubBackend(), _Plain(), frames=2)
     assert len(trace.records) == 2 and comp.steps == []
+
+
+# --- the common interface across stack shapes (modular stages vs e2e policy+action) ----------------
+
+
+class _E2EStub(AVStack):
+    """An end-to-end stack: one key for the policy's candidate trajectories, one for the action."""
+
+    def __call__(self, obs):
+        return Control(trajectory=[(0.0, 0.0, 0.0)])
+
+    def component_log(self):
+        return {"policy": [1, 2, 3], "action": "ctrl"}   # (candidate trajectories), (emitted command)
+
+
+def test_common_interface_collects_e2e_logs_the_same_way():
+    trace, comp = run_logged(_StubBackend(), _E2EStub(), frames=2)
+    assert len(trace.records) == 2 and len(comp.steps) == 2
+    assert comp.stage_names == ["policy", "action"]       # e2e keys, not modular stages
+    assert comp.counts("policy") == [3, 3]                # processed uniformly (len of the free output)
+
+
+def test_alpamayo_component_log_emits_free_logs():
+    stack = object.__new__(AlpamayoAVStack)               # bypass the heavy model load
+    assert stack.component_log() is None                  # before any call
+    stack._last_log = {"policy": "prediction", "action": "ctrl"}
+    assert stack.component_log() == {"policy": "prediction", "action": "ctrl"}
+
+
+def test_both_stack_shapes_satisfy_the_common_interface():
+    assert isinstance(_E2EStub(), InstrumentedStack)      # e2e conforms
+    assert isinstance(_bare_modular(), InstrumentedStack)  # modular conforms
+
+    class _Plain(AVStack):
+        def __call__(self, obs):
+            return Control()
+
+    assert not isinstance(_Plain(), InstrumentedStack)    # a stack without component_log does not

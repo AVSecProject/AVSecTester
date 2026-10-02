@@ -17,13 +17,35 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from avsectester.backend import run as _run_loop
 
 if TYPE_CHECKING:
     from avsectester.backend import AVStack, WorldBackend
     from avsectester.plane import Observation, Trace
+
+
+@runtime_checkable
+class InstrumentedStack(Protocol):
+    """The **common component-logging interface** — the one thing a stack adds to be loggable.
+
+    ``component_log() -> {component_name: free_output} | None`` returns the latest frame's per-component
+    outputs, or None when the stack is not instrumented. It is deliberately a plain dict of the stack's
+    *already-produced* ("free") outputs — no bespoke schema — so it fits either stack shape:
+
+    * **modular** (``ModularAVStack``): one key per pipeline stage, ``{"perception": detections,
+      "tracking": tracks, "planning": plan, "control": control}`` (captured via avstack post-hooks);
+    * **end-to-end** (``AlpamayoAVStack``): ``{"policy": prediction, "action": control}`` from what the
+      policy already returns (candidate trajectories + the emitted command). Sparse, but the same contract.
+
+    :func:`run_logged` collects whatever keys a stack emits; :class:`ComponentTrace` processes them
+    uniformly (counts/degradation per key). Keeping the interface alive for the E2E stack now means the
+    logger and report need no change when the E2E stack later exposes more.
+    """
+
+    def component_log(self) -> dict[str, Any] | None:
+        ...
 
 
 def _count(output: Any) -> int:
@@ -92,11 +114,11 @@ def run_logged(
     ``component_log()`` each frame. Returns the driving :class:`Trace` and the :class:`ComponentTrace`
     (empty when the stack is not instrumented, so the call site is uniform)."""
     component = ComponentTrace()
-    log = getattr(stack, "component_log", None)
+    instrumented = isinstance(stack, InstrumentedStack)
 
     def _capture(i: int, seen: Observation, control: Any) -> None:
-        if log is not None:
-            component.steps.append(StepLog(frame=i, stages=dict(log() or {})))
+        if instrumented:
+            component.steps.append(StepLog(frame=i, stages=dict(stack.component_log() or {})))
 
     trace = _run_loop(backend, stack, frames, perturb=perturb, on_step=_capture)
     return trace, component

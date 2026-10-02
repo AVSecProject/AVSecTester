@@ -11,15 +11,33 @@ so that chain is visible.
 
 ## Design: reuse what avstack already provides
 
-avstack **natively supports component logging** through its per-stage hook system (`BaseModule.register_post_hook` / the `@apply_hooks` decorator; it even ships `DetectionsLogger`/`TracksLogger`/`MetricsHook`). So we do **not** invent a parallel logging path or a heavy per-layer schema — we reuse the hooks and avstack's metrics, and keep the gatherer thin.
+avstack **natively supports component logging** through its per-stage hook system (`BaseModule.register_post_hook` / the `@apply_hooks` decorator; it even ships `DetectionsLogger`/`TracksLogger`/`MetricsHook`). So we do **not** invent a parallel logging path or a heavy per-layer schema — we reuse the hooks and avstack's metrics, collect only **free, already-produced outputs**, and keep the gatherer thin.
+
+### The common interface (both stack shapes)
+
+One contract, defined in `evaluation/component_log.py`:
+
+```python
+class InstrumentedStack(Protocol):
+    def component_log(self) -> dict[str, Any] | None: ...   # {component_name: free_output}, or None
+```
+
+A plain dict of the stack's *already-produced* outputs — no bespoke schema — so it fits either shape:
+- **modular** (`ModularAVStack`): `{"perception": detections, "tracking": tracks, "planning": plan,
+  "control": control}` (the stage outputs, captured via avstack post-hooks);
+- **end-to-end** (`AlpamayoAVStack`): `{"policy": prediction, "action": control}` — just what `predict()`
+  already returns (candidate trajectories `(K,T,3)` + `selected_index`) and the emitted command.
+
+The E2E log is **sparse** (no semantic layers exist), but it is the *same* contract, so the logger and the
+report need no change when the E2E stack later exposes more. Both stacks implement it today.
 
 Three small pieces:
 
-1. **Capture (stack side, `stacks/modular.py`).** `_StageCapture` is a generic avstack post-hook — the
-   component-logging twin of the existing `_DetectionCounter` — that remembers a stage's most recent output
-   and returns it unchanged. `ModularAVStack.instrument(stages=…)` attaches one per stage **last** (so it
-   observes the *attacked* output, exactly as `attach_counter` does), and `component_log() -> {stage:
-   output}` returns the latest per-stage raw avstack outputs. That is the whole stack-side addition.
+1. **Capture (stack side, `stacks/`).** Modular: `_StageCapture` — a generic avstack post-hook, the
+   component-logging twin of the existing `_DetectionCounter` — remembers a stage's output and returns it
+   unchanged; `ModularAVStack.instrument()` attaches one per stage **last** (so it observes the *attacked*
+   output, as `attach_counter` does). E2E: `AlpamayoAVStack.component_log()` returns the prediction + control
+   it already computed in `__call__`. Both satisfy `InstrumentedStack`.
 
 2. **Gather (`evaluation/component_log.py`).** `run_logged(backend, stack, frames, perturb)` is the
    instrumented twin of `backend.run`: it reuses the *same* loop via `run`'s new `on_step` callback, and
@@ -54,16 +72,16 @@ A later `evaluation/report.py` assembles all five.
 
 ## Status / phasing
 
-1. **DONE — capture + gather + counts/degradation.** `_StageCapture`, `ModularAVStack.instrument` /
-   `component_log`, `run`'s `on_step` hook, `run_logged`, `ComponentTrace` (counts / degradation /
-   performance). Unit-tested with a fake pipeline + stub loop (`tests/test_component_log.py`), no simulator.
-2. **Prediction layer + GT plumbing + plots.** Map a `prediction` stage when the pipeline has one (schema
-   needs no change — layers are just stage keys); feed per-frame `truths` (from `SceneGT` / live CARLA GT)
-   into `performance`; add a propagation figure and the clean-vs-attacked in-system diff to the report.
-3. **E2E / VLA (`AlpamayoAVStack`).** No perception/tracking/planning layers — it maps frames to a
-   trajectory. It will implement `component_log()` returning a `policy` layer (candidate-trajectory
-   distribution, chosen mode, optional saliency) plus `action`. `component_log()` is an optional protocol,
-   so `run_logged` already handles a stack that returns different/fewer stage keys; only the Alpamayo-side
-   extraction and the report's policy view are new.
+1. **DONE — the common interface + free logs, both stacks.** `InstrumentedStack` protocol; `_StageCapture`
+   + `ModularAVStack.instrument`/`component_log` (modular stage outputs); `AlpamayoAVStack.component_log`
+   (E2E `policy`+`action`, free from `predict()`); `run`'s `on_step` hook; `run_logged`; `ComponentTrace`
+   (counts / degradation / performance). Unit-tested with a fake pipeline, a stub loop, and both stack
+   shapes (`tests/test_component_log.py`), no simulator.
+2. **Prediction stage + GT plumbing + plots.** Map a `prediction` stage when the pipeline has one (just
+   another stage key); feed per-frame `truths` (from `SceneGT` / live CARLA GT) into `performance`; add a
+   propagation figure + the clean-vs-attacked in-system diff to the report.
+3. **E2E processing.** The E2E `policy`/`action` logs are collected now; later add *free* processing of them
+   (e.g. clean-vs-attacked trajectory divergence / planned-speed delta) — no new model internals, no
+   speculative probes.
 4. **`evaluation/report.py`** — assemble all five sections (tables + plots, reusing `simulators.viz` /
    `metric.plot_impact`).
