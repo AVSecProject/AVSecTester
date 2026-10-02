@@ -23,9 +23,12 @@ git submodule update --init            # top-level avstack repos (NOT their nest
 
 ```bash
 conda create -y -n avsec311 python=3.11 && conda activate avsec311
-pip install -e ".[dev]"
-pytest            # scaffold tests pass without the heavy stack
+pip install torch==2.1.0 --index-url https://download.pytorch.org/whl/cpu
+pip install -e ".[dev,test]" -c constraints.txt
+python -m pytest tests/core -q    # no avstack, CARLA server or checkpoints
 ```
+
+See [tests/README.md](../tests/README.md) for the offline avstack suite and CI environment.
 
 ## 2. Full stack (Python 3.11 — upgraded, `dependencies` branch)
 
@@ -98,7 +101,7 @@ Run the simulator in **synchronous mode** for reproducible perception.
 
 ```bash
 avsectester version                                          # prints the version
-python -m pytest tests/ -q                                   # offline: attack hook + pipeline
+python -m pytest -q                                         # offline groups; install .[test] first
 avsectester run configs/carla_scenario.yaml --frames 40 --gpu 1   # end-to-end (needs a CARLA server)
 ```
 

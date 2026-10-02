@@ -4,7 +4,6 @@ forward-collision planner brakes, without needing CARLA/GPU (avstack modules onl
 import numpy as np
 import pytest
 
-pytest.importorskip("avstack")
 
 
 def _ego(pos_xyz, yaw_deg):
@@ -170,3 +169,41 @@ def test_planning_hook_replacement_reaches_control_and_next_frame(
         assert pipe.plan.top()[1].target_speed == 0.0
         assert command.throttle == 0.0
         assert command.brake > 0.0
+
+
+def test_modular_stack_forwards_observation_and_converts_control(monkeypatch, pipeline_config):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from avsectester.plane import Control, Observation
+    from avsectester.stacks.modular import ModularAVStack
+    from avstack.config import PIPELINE
+
+    pipeline = Mock(return_value=SimpleNamespace(
+        throttle=np.float32(0.25), steer=np.float32(-0.5), brake=np.float32(0.0)))
+    monkeypatch.setattr(PIPELINE, "build", Mock(return_value=pipeline))
+    stack = ModularAVStack(pipeline_config)
+    observation = Observation(t=1.0, frame=20, sensor_data={"lidar": object()},
+                              vehicle_state=object())
+
+    control = stack(observation)
+
+    pipeline.assert_called_once_with(observation.sensor_data, observation.vehicle_state)
+    assert control == Control(throttle=0.25, steer=-0.5, brake=0.0)
+    assert all(type(value) is float for value in (control.throttle, control.steer, control.brake))
+
+
+def test_modular_stack_counts_detections_after_attack(pipeline_config, make_detections, make_ego):
+    from avsectester.plane import Control, Observation
+    from avsectester.stacks.modular import ModularAVStack
+
+    stack = ModularAVStack(pipeline_config)
+    stack.attach("perception", {"type": "PhantomInjection"})
+    stack.attach_counter()
+    for frame in range(3):
+        detections = make_detections([(30, 8, 0)], frame=frame)
+        observation = Observation(t=frame * 0.05, frame=frame, sensor_data=detections,
+                                  vehicle_state=make_ego(t=frame * 0.05))
+        assert isinstance(stack(observation), Control)
+
+    assert stack.detection_counts == [2, 2, 2]  # original object plus injected phantom, every frame

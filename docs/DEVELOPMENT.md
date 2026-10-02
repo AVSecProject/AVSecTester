@@ -86,18 +86,21 @@ avsectester/
 
 ## Testing
 
+Install the dependencies described in [tests/README.md](../tests/README.md). The `core` and
+`avstack` directories run in CI; live tests are selected explicitly.
+
 ```bash
-python -m pytest tests/ -q        # offline: interface + attack hook + pipeline + NuRec + viz, no CARLA/GPU
+python -m pytest -q        # offline: interface + attack hook + pipeline + NuRec + viz, no CARLA/GPU
 avsectester run configs/carla_scenario.yaml --frames 40   # CARLA end-to-end: needs a server + weights
 python scripts/alpamayo_nurec_demo.py 8 --save-frames     # Alpamayo+NuRec (driver env; needs nre-ga + a scene)
 ```
 
-`tests/test_interface.py` exercises the `run` loop and the `perturb` seam on an in-memory
-backend/stack. `tests/test_phantom.py` checks the attack hook (appends exactly one fabricated
-detection; registers in `HOOKS`). `tests/test_pipeline.py` builds `ModularDrivingPipeline` from
+`tests/core/test_interface.py` exercises the `run` loop and the `perturb` seam on an in-memory
+backend/stack. `tests/avstack/test_phantom.py` checks the attack hook (appends exactly one fabricated
+detection; registers in `HOOKS`). `tests/avstack/test_pipeline.py` builds `ModularDrivingPipeline` from
 config and checks `ForwardCollisionPlanner` brakes for a forward-corridor track.
-`tests/test_nurec.py` drives the in-process NuRec backend (dynamics, closed loop, checkpoint/restore)
-against `StubRenderer`. `tests/test_sim_viz.py` checks the per-simulation scene views. None need
+`tests/core/test_nurec.py` drives the in-process NuRec backend (dynamics, closed loop, checkpoint/restore)
+against `StubRenderer`. `tests/core/test_sim_viz.py` checks the per-simulation scene views. None need
 CARLA, a GPU, or the NuRec renderer.
 
 ## Roadmap

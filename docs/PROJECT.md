@@ -251,11 +251,11 @@ produces.
 **Current implementation status.** Two closed loops are verified end-to-end: the neural CARLA
 modular loop (`avsectester run configs/carla_scenario.yaml`) and the **real Alpamayo-1.5-10B policy
 driving on real NuRec-rendered imagery** (`scripts/alpamayo_nurec_demo.py`). The offline suite runs
-in CI without a GPU or simulator: `tests/test_interface.py` (the `run` loop + the `perturb` seam on
-an in-memory backend/stack), `tests/test_phantom.py` (phantom-injection geometry, world-fixed
-persistence, propagation to a confirmed track), `tests/test_pipeline.py` (the avstack
+in CI without a GPU or simulator: `tests/core/test_interface.py` (the `run` loop + the `perturb` seam on
+an in-memory backend/stack), `tests/avstack/test_phantom.py` (phantom-injection geometry, world-fixed
+persistence, propagation to a confirmed track), `tests/avstack/test_pipeline.py` (the avstack
 `ModularDrivingPipeline` builds from config and `ForwardCollisionPlanner` brakes for a
-forward-corridor track), `tests/test_nurec.py` (the in-process NuRec backend, dynamics, and
-checkpoint/restore against `StubRenderer`), and `tests/test_sim_viz.py` (the per-simulation scene
+forward-corridor track), `tests/core/test_nurec.py` (the in-process NuRec backend, dynamics, and
+checkpoint/restore against `StubRenderer`), and `tests/core/test_sim_viz.py` (the per-simulation scene
 views). Closed-loop CARLA and the NuRec renderer are manual and hardware-dependent. The environments
 are pinned (`docs/SETUP.md`).

@@ -1,67 +1,123 @@
-# First-party functional tests
+# Tests and CI
 
-Run from the repository root in a Python 3.10 environment with the project's development
-dependencies and the avstack packages installed:
+Offline tests use **Python 3.11**. They are selected by directory, before pytest imports the
+test modules, so the core suite does not need avstack installed.
+
+| Directory | What runs | Requirements |
+|---|---|---|
+| `core/` | Run loop, metrics, CPU attack optimization, images, scenario selection, NuRec dynamics, Alpamayo adapter | CPU test dependencies below |
+| `avstack/` | Phantom geometry, real tracking/planning/control, modular adapter, scenario orchestration, CLI | Core dependencies plus the three avstack packages and CARLA Python client |
+| `live/` | Real CARLA driving and real NuRec/nuScenes datasets | Explicit selection and the corresponding server, models or datasets |
+
+`python -m pytest` selects `core/` and `avstack/`. A core-only installation should explicitly run
+`python -m pytest tests/core`. Missing offline test dependencies **fail**, rather than silently skip
+the affected functionality. Live tests retain their prerequisite checks and CARLA opt-in.
+
+## Core tests
+
+From the repository root, in a Python 3.11 environment:
 
 ```bash
-python -m pytest tests/ -q
+python -m pip install torch==2.1.0 --index-url https://download.pytorch.org/whl/cpu
+python -m pip install -e '.[test]' -c constraints.txt
+NO_ALBUMENTATIONS_UPDATE=1 python -m pytest tests/core -q
 ```
 
-The default suite does not connect to CARLA or load neural checkpoints. It does import the
-real avstack/avcarla packages. Their import dependencies must therefore be installed, including
-the CARLA Python client, pygame, and ipywidgets (used by avstack-api visualization imports).
-See [the setup guide](../docs/SETUP.md) for the dependency layout. Matplotlib is needed for the
-plot tests; those tests skip if it is absent.
+The `test` extra includes pytest, coverage, Pillow, matplotlib, OpenCV and Albumentations.
+CPU torch is installed separately to avoid downloading CUDA dependencies. In an existing full
+environment, keep its compatible torch installation and install only the test extra.
 
-## Coverage
+## Offline avstack tests
 
-| File | Behavior exercised |
-|---|---|
-| `test_interface.py` | The `run(backend, stack, frames, perturb)` loop and the universal `perturb(Observation)` attack seam on an in-memory backend/stack (no avstack/CARLA) |
-| `test_nurec.py` | The in-process `NuRecBackend`: `KinematicBicycle`/`TrajectoryFollower` dynamics, the closed loop on `StubRenderer`, and `checkpoint`/`restore` round-trip |
-| `test_sim_viz.py` | Per-simulation scene views: `camera_view` (frame vs non-image), `lidar_bev` defensiveness, and `record_run` saving a frame per step |
-| `test_phantom.py` | Hook registration and execution, detection preservation, phantom geometry, empty outputs, moving sensor frames, source-reference metadata |
-| `test_pipeline.py` | Pipeline construction, forward-corridor planning, clean/attacked sequences through real perception, tracking, planning, and PID control |
-| `test_patch_optim.py` | PGD/NES adversarial optimization: objectives, placement homography, and that PGD/NES reduce the objective on a synthetic scorer (no CARLA/mmdet) |
-| `test_physical_patch.py` | Physical-patch texture helpers (checkerboard/image RGBA) and config parsing (no CARLA) |
-| `test_metric.py` | Driving verdicts, unchanged/natural stops, threshold boundaries, custom thresholds, reported measurements, empty runs |
-| `test_scenario.py` | Runner frame records, actor initialization, hook ordering, NPC configuration, delayed sensor data, cleanup on success and failure, GPU override |
-| `test_reproducibility.py` | `prepare_scenario`: seeded scene selection, resolved settings, client release on failure, and the clean-spawn-retry flag |
-| `test_cli.py` | Configuration and overrides, clean/attacked passes, verdict exit codes, plotting |
-| `test_carla_integration.py` | Explicitly enabled neural perception and real closed-loop driving |
+These tests use the real avstack implementation. They replace the CARLA server-facing objects
+and use synthetic detections instead of neural inference; no server, CUDA or checkpoints are needed.
 
-The propagation tests supply a moving ego's state and synthetic detection sequences to the real
-avstack modules. They establish that a phantom becomes a confirmed track and changes the plan
-and control command; they do not simulate vehicle dynamics. The runner tests replace only the
-simulator-facing objects and registry builders, exercising the actual `run_scenario` function.
-The CLI tests replace the scenario runner while exercising the real CLI and impact metric.
-
-The interface / NuRec / viz / patch-optimization tests (`test_interface`, `test_nurec`,
-`test_sim_viz`, `test_patch_optim`, `test_physical_patch`) import without avstack/avcarla/CARLA;
-their torch/matplotlib/PIL-dependent cases skip when those packages are absent.
-
-## Live CARLA test
-
-The integration test is marked `carla` and skipped unless `--run-carla` is supplied. Opting in
-uses a live server, reloads its world, spawns actors, and runs clean/clean/attacked drives.
-Use a dedicated CARLA 0.9.15 server with the desired map already loaded, the full GPU perception
-environment, and downloaded model checkpoints. Missing prerequisites fail an opted-in run;
-they do not silently skip it.
+After installing the core test dependencies:
 
 ```bash
-python -m pytest tests/test_carla_integration.py --run-carla -q
-# Use another scenario or a different perception GPU:
-python -m pytest tests/test_carla_integration.py --run-carla \
+git -c url.https://github.com/.insteadOf=git@github.com: submodule update --init --depth 1 -- \
+  third_party/avstack-core third_party/avstack-api third_party/lib-avstack-carla
+python -m pip install -e third_party/avstack-core \
+  carla==0.9.16 pygame ipywidgets 'opencv-python<4.12' -c constraints.txt
+python -m pip install --no-deps -e third_party/avstack-api -e third_party/lib-avstack-carla
+NO_ALBUMENTATIONS_UPDATE=1 python -m pytest tests/avstack -q
+# Both offline groups:
+NO_ALBUMENTATIONS_UPDATE=1 python -m pytest -q
+```
+
+The adapters are installed with `--no-deps` because their full dataset/Open3D dependencies and
+legacy sibling-path declarations are unnecessary for this suite. The commands above install
+the imports exercised by these tests. This is an offline test environment; use
+[SETUP.md](../docs/SETUP.md) for neural perception or real dataset workflows.
+
+## Functional coverage
+
+| Tests | Behavior exercised |
+|---|---|
+| `core/test_interface.py` | Per-step controls affect subsequent true state; replacement attack observations reach the stack without falsifying the recorded state |
+| `core/test_metric.py` | Induced stops, suppressed safe stops, duration/speed thresholds, late stops, inconclusive baselines |
+| `core/test_alpamayo.py` | Camera history padding/order, ego history, model vs simulation clocks, candidate selection, plan chaining, experiment reset |
+| `core/test_nurec.py` | Dynamics, stub-rendered closed loop, reset, checkpoint replay, trajectory interpolation and rig-to-world conversion |
+| `core/test_patch_optim.py` | PGD/NES optimization direction, patch footprint, valid pixels and L-infinity budget |
+| `core/test_patch_insertion.py`, `core/test_physical_patch.py` | Projection, compositing, texture construction and patch configuration |
+| `core/test_augment.py` | Image corruptions, seeded paired experiments, sensor write-back, composition, real Albumentations operators |
+| `core/test_scenarios.py`, `core/test_recorded_backend.py` | Scene constraints/filtering and recorded-image playback without full datasets |
+| `core/test_sim_viz.py` | Camera/LiDAR views, projected labels/boxes and saved frames |
+| `avstack/test_phantom.py` | Attack registration, detection preservation, moving/empty source frames and phantom geometry |
+| `avstack/test_pipeline.py` | Real tracking/planning/PID propagation, hook output replacement and the `ModularAVStack` adapter |
+| `avstack/test_scenario.py`, `avstack/test_reproducibility.py` | Actor setup/cleanup, hook ordering, scene resolution and actual spawn replay |
+| `avstack/test_cli.py` | YAML/overrides, clean/attacked calls, verdict exit codes and plotting |
+
+Alpamayo tests use small external-schema stand-ins and a model with prescribed predictions.
+They validate our adapter, not AlpaSim API compatibility, checkpoint loading or real inference.
+NuRec core tests use `StubRenderer`, not the rendering service. The avstack propagation tests
+exercise real tracking/planning/control against constructed observations, not CARLA physics.
+
+## GitHub Actions
+
+[ci.yml](../.github/workflows/ci.yml) runs on pull requests, pushes to `main`, and manual dispatch.
+It uses Ubuntu 22.04 / Python 3.11 with three parallel checks:
+
+- `core-tests`: core suite, then wheel build and CLI startup from a fresh installation outside
+  the checkout, without the source tree on `PYTHONPATH`.
+- `avstack-tests`: avstack suite at the main repository's recorded submodule revisions.
+- `lint`: Ruff correctness checks on `avsectester/` and `tests/`; no third-party lint or formatting gate.
+
+The workflow caches downloaded dependencies and cancels superseded runs on the same PR/branch.
+JUnit and coverage reports remain available as artifacts for seven days, including after a test
+failure. Coverage is informational, with no percentage gate. Test dependencies come from the
+`test` extra and workflow install steps, not the historical CUDA `requirements.lock`.
+
+To prevent merging a failing PR, a repository administrator can make `core-tests`, `avstack-tests`
+and `lint` required status checks in the GitHub branch rules. Workflow files alone do not enable
+that policy. The workflow does not publish packages or images.
+
+## Live tests
+
+Select these explicitly; they are outside the default offline test paths.
+
+For CARLA, use a dedicated **0.9.16** server with the full perception environment and downloaded
+model checkpoints. The test reloads the world and spawns actors:
+
+```bash
+python -m pytest tests/live/test_carla_integration.py --run-carla -q
+python -m pytest tests/live/test_carla_integration.py --run-carla \
   --carla-config configs/carla_scenario.yaml --carla-gpu 1 -q
 ```
 
-The spawn-only test puts an NPC at the ego's requested position to force relocation, then checks
-that a reset run accepts the recorded poses without applying the configured offset twice. It runs
-no driving steps and uses passthrough perception, so it does not need neural inference.
+The spawn-only case needs no neural inference. The driving case compares clean/clean/attacked
+runs, including initial actor state and driving impact. It writes `carla-result.json` under
+pytest's temporary directory. Opting into CARLA makes missing prerequisites an error.
 
-The driving test compares initial vehicle poses and velocities across all three runs, and requires repeated
-clean speeds to agree within 0.05 m/s with equal braking-frame counts. It also checks the attack's
-driving impact. It writes the resolved configuration, all three traces, initial states and impact
-measurements to `carla-result.json` under pytest's temporary
-test directory before checking the verdict. Simulation physics and model inference are only
-covered when this test is actually executed.
+Real dataset tests can use configurable roots (the existing workstation paths remain defaults):
+
+```bash
+AVSECTESTER_NUSCENES_ROOT=/path/to/nuscenes \
+  python -m pytest tests/live/test_nuscenes_dataset.py -q
+AVSECTESTER_NUREC_ROOT=/path/to/sample_set/26.01_release \
+  python -m pytest tests/live/test_nurec_dataset.py -q
+```
+
+The nuScenes test needs `v1.0-trainval` and the devkit. The NuRec tests use the two scene UUIDs
+listed in `live/test_nurec_dataset.py`. Dataset tests skip when their required artifacts are absent;
+a skipped dataset test does not establish dataset-reader correctness.

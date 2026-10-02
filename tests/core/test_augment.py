@@ -14,7 +14,6 @@ from avsectester.simulators.augment import (
     Fog,
     GaussianNoise,
     Rain,
-    albumentations_available,
     albumentations_corruptions,
     common_corruptions,
     compose,
@@ -98,7 +97,6 @@ def test_sensor_augmentation_passes_through_when_no_camera():
     assert sensor_augmentation([Fog(0.5)])(obs) is obs
 
 
-@pytest.mark.skipif(not albumentations_available(), reason="albumentations backend not installed")
 def test_albumentations_backend_corrupts_deterministically_and_lifts():
     img = _img()
     suite = albumentations_corruptions(0.6)

@@ -8,13 +8,12 @@ are absent — there is no fabricated stand-in. Asserts the adapter yields quali
 
 import os
 
-import numpy as np
 import pytest
-from avsectester.scenarios.datasets.nuscenes import NuScenesDataset, RecordedFrameBackend
+from avsectester.scenarios.datasets.nuscenes import NuScenesDataset
 from avsectester.scenarios.requirements import PHYSICAL_PATCH_HIDE_VEHICLE as REQ
 from avsectester.scenarios.source import DatasetFilter
 
-_ROOT = "/workspace/hdd/datasets/nuscenes"
+_ROOT = os.environ.get("AVSECTESTER_NUSCENES_ROOT", "/workspace/hdd/datasets/nuscenes")
 
 
 def _has_nuscenes() -> bool:
@@ -36,13 +35,3 @@ def test_reads_real_nuscenes_gt_and_filters():
     assert target.category == "vehicle" and "front" in target.box2d
     assert 4.0 <= target.distance <= 25.0        # in the physical-patch distance band
     assert min(target.extent) > 0                # a real 3-D box has non-zero size (drives 3-D drawing)
-
-
-def test_recorded_frame_backend_serves_the_image(tmp_path):
-    import cv2
-
-    p = tmp_path / "frame.png"
-    cv2.imwrite(str(p), np.full((90, 160, 3), 128, np.uint8))
-    backend = RecordedFrameBackend(str(p), sensor_id="front")
-    assert backend.reset().sensor_data["front"].shape == (90, 160, 3)
-    assert backend.step(None).sensor_data["front"].shape == (90, 160, 3)  # static: same frame

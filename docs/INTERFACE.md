@@ -201,7 +201,7 @@ per pose, not a pre-baked video). The backend owns an `EgoPose`, transparent dyn
 `Control.trajectory`), and a pluggable `Renderer`:
 
 - **`StubRenderer`** — deterministic black `HWC-uint8` frames; **no server or GPU**, so it runs the
-  whole loop in CI and every `tests/test_nurec.py` case.
+  whole loop in CI and every `tests/core/test_nurec.py` case.
 - **`NuRecRenderer`** — one stateless `SensorsimService.render_rgb(pose)` gRPC call per frame to an
   `nre-ga` renderer. The render pose is `world_rig @ rig_to_camera` (the camera extrinsic is composed
   in, matching AlpaSim's `construct_rgb_render_request`); the returned JPEG is decoded to `HWC-uint8`.

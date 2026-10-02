@@ -47,7 +47,7 @@ def test_composite_view_wraps_base_and_skips_when_no_quad():
 
 
 def test_warp_and_harmonize_under_cv2():
-    pytest.importorskip("cv2")
+    import cv2  # noqa: F401
     from avsectester.simulators.patch_insertion import (
         ClassicHarmonizer,
         PatchCompositor,

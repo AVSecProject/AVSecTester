@@ -50,6 +50,34 @@ def test_checkpoint_and_restore_round_trip():
     assert backend.frame == ckpt["frame"]
 
 
+def test_restoring_checkpoint_replays_the_same_subsequent_motion():
+    backend = NuRecBackend({"dt": 0.1, "ego0": {"x": 10.0, "y": -3.0, "yaw": 0.4}})
+    run(backend, ThrottleStack(), frames=3)
+    checkpoint = backend.checkpoint()
+    controls = [Control(throttle=0.7, steer=0.3), Control(brake=0.2, steer=-0.1)]
+    expected = [backend.step(control) for control in controls]
+
+    backend.restore(checkpoint)
+    replayed = [backend.step(control) for control in controls]
+
+    for actual, original in zip(replayed, expected):
+        assert actual.vehicle_state == original.vehicle_state
+        assert actual.frame == original.frame
+        assert actual.t == original.t
+        assert actual.ego_speed == original.ego_speed
+
+
+def test_reset_restores_configured_pose_after_a_previous_drive():
+    backend = NuRecBackend({"dt": 0.1, "ego0": {"x": 10.0, "y": -3.0, "yaw": 0.4}})
+    initial = backend.reset()
+    backend.step(Control(throttle=1.0, steer=0.5))
+
+    restarted = backend.reset()
+
+    assert restarted.frame == 0
+    assert restarted.vehicle_state == initial.vehicle_state
+
+
 def test_trajectory_follower_tracks_a_straight_plan_and_coasts_when_empty():
     from avsectester.simulators.nurec import TrajectoryFollower
 
@@ -70,3 +98,22 @@ def test_stub_render_returns_a_frame_shaped_image():
     r = StubRenderer(cameras=["camera_front_wide_120fov"], height=120, width=160)
     frame = r.render(EgoPose(x=1.0, y=2.0, yaw=math.pi, t=0.5), "camera_front_wide_120fov")
     assert frame.shape == (120, 160, 3) and frame.dtype == np.uint8
+
+
+@pytest.mark.parametrize("yaw,expected_xy", [(0.0, (13.0, -3.0)), (math.pi / 2, (9.0, -1.0))])
+def test_trajectory_follower_interpolates_in_rig_then_transforms_to_world(yaw, expected_xy):
+    from avsectester.simulators.nurec import TrajectoryFollower
+
+    # At 2.15 s, halfway between waypoints, the rig-frame offset is (3, 1).
+    plan = Control(trajectory=[
+        ((2.0, 0.0, 0.0), (1, 0, 0, 0), 2_100_000),
+        ((4.0, 2.0, 0.0), (1, 0, 0, 0), 2_200_000),
+    ])
+    pose = EgoPose(x=10.0, y=-4.0, yaw=yaw, t=2.0)
+
+    moved = TrajectoryFollower().step(pose, plan, dt=0.15)
+
+    assert (moved.x, moved.y) == pytest.approx(expected_xy)
+    assert moved.t == pytest.approx(2.15)
+    assert moved.speed == pytest.approx(math.sqrt(10) / 0.15)
+    assert moved.yaw == pytest.approx(yaw + math.atan2(1, 3))

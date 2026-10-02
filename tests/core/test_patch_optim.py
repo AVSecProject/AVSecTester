@@ -1,4 +1,4 @@
-"""Adversarial-optimization contract: pure objective/geometry offline, PGD loop under torch guard.
+"""Adversarial optimization: objective/geometry and CPU PGD/NES on small synthetic inputs.
 
 The white-box detector + CARLA capture live in scripts/optimize_patch.py (needs GPU + a server); here
 we cover the parts that run without them.
@@ -35,7 +35,7 @@ def test_rear_panel_homography_maps_patch_into_the_box():
 
 
 def test_pgd_reduces_the_objective_on_a_synthetic_scorer():
-    torch = pytest.importorskip("torch")
+    import torch
     from avsectester.attacks.optim.attacks import PGD
     from avsectester.attacks.optim.interface import AdvSample, DataSource, Scorer, TargetSpec
     from avsectester.attacks.optim.perturbations import PatchPerturbation, rear_panel_homography
@@ -65,6 +65,7 @@ def test_pgd_reduces_the_objective_on_a_synthetic_scorer():
     assert result.history[-1] < result.history[0]  # HideObject minimizes -> patch darkens the region
     assert result.export.shape == (32, 32, 4) and result.export.dtype == np.uint8
     assert float(result.delta.mean()) < 0.5  # started at gray 0.5, optimized darker
+    assert torch.all((result.delta >= 0) & (result.delta <= 1))
 
 
 def test_nes_reduces_objective_black_box():
@@ -105,4 +106,42 @@ def test_nes_reduces_objective_black_box():
         One(), AddPatch(), MeanBrightness(), HideObject()
     )
     assert result.history[-1] < result.history[0]  # HideObject minimizes -> brightness falls
-    assert result.export.shape == (3, 4, 4) or result.export.ndim == 3
+    assert result.export.shape == (3, 4, 4)
+    assert result.export.dtype == np.uint8
+    assert np.all((result.delta >= 0) & (result.delta <= 1))
+
+
+def test_patch_changes_only_its_placed_pixels():
+    import torch
+    from avsectester.attacks.optim.interface import AdvSample, TargetSpec
+    from avsectester.attacks.optim.perturbations import PatchPerturbation
+
+    # An integer translation makes the expected footprint independent of the warp implementation.
+    placement = torch.tensor([[1, 0, 3], [0, 1, 2], [0, 0, 1]], dtype=torch.float32)
+    background = torch.full((3, 8, 10), 0.25)
+    sample = AdvSample(background, TargetSpec((3, 2, 6, 4)), {"placement": placement})
+    patch = PatchPerturbation(size=(2, 3), device="cpu")
+
+    attacked = patch.apply(sample, torch.ones((3, 2, 3)))
+
+    expected = background.clone()
+    expected[:, 2:4, 3:6] = 1.0
+    torch.testing.assert_close(attacked, expected)
+    torch.testing.assert_close(background, torch.full_like(background, 0.25))
+
+
+def test_linf_attack_respects_budget_and_valid_image_range():
+    import torch
+    from avsectester.attacks.optim.interface import AdvSample, TargetSpec
+    from avsectester.attacks.optim.perturbations import LinfImage
+
+    perturb = LinfImage(epsilon=0.1, image_hw=(2, 3), device="cpu")
+    background = torch.tensor([[[0.0, 0.5, 1.0], [1.0, 0.5, 0.0]]]).expand(3, -1, -1)
+    proposed = torch.tensor([[[-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]]]).expand(3, -1, -1)
+    sample = AdvSample(background, TargetSpec((0, 0, 3, 2)))
+
+    attacked = perturb.apply(sample, perturb.project(proposed))
+
+    expected = torch.tensor([[[0.0, 0.4, 0.9], [1.0, 0.6, 0.1]]]).expand(3, -1, -1)
+    torch.testing.assert_close(attacked, expected)
+    assert float((attacked - background).abs().max()) <= 0.1 + 1e-7
