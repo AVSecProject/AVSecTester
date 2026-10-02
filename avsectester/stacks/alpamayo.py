@@ -44,6 +44,7 @@ class AlpamayoAVStack(AVStack):
         self._frames: dict[str, deque] = {c: deque(maxlen=context_length) for c in self.camera_ids}
         self._prev_plan = None
         self._iseed = 0
+        self.last_reasoning: str | None = None
 
     def _load(self):
         """Lazily build the Alpamayo model from the driver package (heavy: torch + a 10B checkpoint)."""
@@ -143,6 +144,7 @@ class AlpamayoAVStack(AVStack):
         prediction = self._model.predict(self._prediction_input(observation))
         self._iseed += 1
         self._prev_plan = getattr(prediction, "selected_plan", None)
+        self.last_reasoning = getattr(prediction, "reasoning_text", None)  # chain-of-causation text, if any
         return Control(trajectory=self._to_waypoints(prediction, observation))
 
     def _to_waypoints(self, prediction: Any, obs: Observation) -> list:

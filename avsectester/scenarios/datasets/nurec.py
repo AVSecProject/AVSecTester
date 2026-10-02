@@ -96,21 +96,15 @@ class FThetaCamera:
 
     def project(self, pts_rig: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Project ego/rig-frame points ``(N, 3)`` -> pixels ``(N, 2)`` + a validity mask ``(N,)``."""
+        from avsectester.simulators.camera_models import FThetaCamera as Lens
+
         pts = np.atleast_2d(np.asarray(pts_rig, dtype=np.float64))
         homo = np.c_[pts, np.ones(len(pts))]
         cam = (np.linalg.inv(self.t_sensor_rig) @ homo.T).T[:, :3]  # sensor frame (x right, y down, z fwd)
-        x, y, z = cam[:, 0], cam[:, 1], cam[:, 2]
-        rxy = np.hypot(x, y)
-        theta = np.arctan2(rxy, z)
-        valid = (z > 0) & (theta <= self.max_angle)
-        r = np.polyval(self.angle_to_pixeldist[::-1], theta)  # polyval wants high->low
-        ux = np.divide(x, rxy, out=np.zeros_like(x), where=rxy > 1e-9)
-        uy = np.divide(y, rxy, out=np.zeros_like(y), where=rxy > 1e-9)
-        du, dv = r * ux, r * uy
-        c, d, e = self.linear_cde
-        u = self.principal_point[0] + c * du + d * dv
-        v = self.principal_point[1] + e * du + dv
-        return np.c_[u, v], valid
+        lens = Lens(cx=self.principal_point[0], cy=self.principal_point[1],
+                    angle_to_pixeldist=tuple(self.angle_to_pixeldist), width=self.width, height=self.height,
+                    max_angle=self.max_angle, linear_cde=tuple(self.linear_cde))
+        return lens.project(cam), lens.in_view(cam)
 
 
 def _box2d_from_corners(cam: FThetaCamera, corners_rig: np.ndarray) -> tuple | None:

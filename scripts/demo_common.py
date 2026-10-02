@@ -51,12 +51,18 @@ def build_detector(gpu: int):
     return detect
 
 
-def build_coco_detector(gpu: int = 0, threshold: float = 0.5):
-    """Return ``detect(rgb) -> [(xyxy, score, 'vehicle')]`` using a COCO-pretrained detector.
+COCO_VEHICLES = {3: "vehicle", 6: "vehicle", 8: "vehicle"}  # car / bus / truck
+COCO_PERSON, COCO_TRAFFIC_LIGHT, COCO_STOP_SIGN = 1, 10, 13
+
+
+def build_coco_detector(gpu: int = 0, threshold: float = 0.5, labels: dict | None = None):
+    """Return ``detect(rgb) -> [(xyxy, score, name)]`` using a COCO-pretrained detector.
 
     For real / neural-reconstruction imagery (NuRec/Alpamayo) where the CARLA-trained detector does not
-    apply. Keeps car/bus/truck boxes (COCO labels 3/6/8). torchvision is imported lazily.
+    apply. Keeps car/bus/truck boxes (COCO labels 3/6/8) as ``'vehicle'`` by default; pass ``labels``
+    (``{coco_id: name}``) to keep other classes, e.g. ``{13: 'stop sign'}``. torchvision is imported lazily.
     """
+    labels = COCO_VEHICLES if labels is None else labels
     import torch
     from torchvision.models.detection import (
         FasterRCNN_ResNet50_FPN_Weights,
@@ -73,8 +79,8 @@ def build_coco_detector(gpu: int = 0, threshold: float = 0.5):
         res = []
         for b, lab, sc in zip(out["boxes"].cpu().numpy(), out["labels"].cpu().numpy(),
                               out["scores"].cpu().numpy()):
-            if int(lab) in (3, 6, 8) and float(sc) >= threshold:
-                res.append((b, float(sc), "vehicle"))
+            if int(lab) in labels and float(sc) >= threshold:
+                res.append((b, float(sc), labels[int(lab)]))
         return res
 
     return detect
