@@ -1,4 +1,4 @@
-"""Fake traffic lights — a camera-facing *natural physical object* attack (image family).
+"""Inserted traffic lights — a camera-facing *natural physical object* attack (image family).
 
 The "truck with multiple traffic lights on it" example of docs/PROJECT.md: real signal heads mounted
 where the ego's camera reads them as live traffic lights, e.g. carried on the rear of the lead

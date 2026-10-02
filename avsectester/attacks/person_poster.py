@@ -1,4 +1,4 @@
-"""Phantom person — a camera-facing *natural physical object* attack (image family).
+"""Inserted pedestrian image — a camera-facing *natural physical object* attack (image family).
 
 A picture of a pedestrian where no pedestrian is: the "human being poster / billboard on the road"
 example of docs/PROJECT.md (after *Phantom of the ADAS*, Nassi et al., CCS 2020). Two props, both

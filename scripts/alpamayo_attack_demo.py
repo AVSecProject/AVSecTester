@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Closed loop: does a fake object in the camera change how Alpamayo drives?
+"""Closed loop: does an inserted object (a real sign/person/lights placed in the scene) change how Alpamayo drives?
 
 The real Alpamayo-1.5-10B policy drives the NuRec scene twice from the same start — clean, then with
 an object inserted into its camera stream by ``perturb(Observation)`` (the same insertion as

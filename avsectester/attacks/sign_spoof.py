@@ -1,4 +1,8 @@
-"""Fake traffic sign — a camera-facing *natural physical object* attack (image family).
+"""Inserted traffic sign — a camera-facing *natural physical object* attack (image family).
+
+A **real, standard** traffic sign (the public-domain MUTCD STOP face) placed where no legitimate one
+exists — a roadside with no intersection, or the rear of the lead vehicle — so perception reads a stop
+command that is not legitimately there. The sign is genuine; the attack is its invalid placement.
 
 A benign-looking but misplaced traffic sign (here a STOP sign) put where the ego's camera sees it,
 e.g. planted on the roadside of a road with no intersection, or carried on the back of the lead

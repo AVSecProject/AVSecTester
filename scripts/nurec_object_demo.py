@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Insert a fake object into a NuRec (AlpaSim) reconstructed scene — clean vs attacked, side by side.
+"""Insert a real object at an invalid location into a NuRec (AlpaSim) reconstructed scene — clean vs attacked, side by side.
 
 Objects (``--object``), all camera-facing *natural physical object* attacks:
 

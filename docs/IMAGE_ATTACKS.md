@@ -6,14 +6,21 @@ neural reconstruction or CARLA) rather than into the world. The attack chooses t
 (what) and the **target** (where); the insertion itself (geometry + harmonization) is shared
 simulation code in `avsectester/simulators/patch_insertion.py`.
 
+> **Terminology.** These insert a **real, standard object** (an MUTCD stop sign, a photo of a real
+> pedestrian, standard signal heads) at a location where no legitimate one exists — a roadside with no
+> intersection, or a vehicle's rear. The object is genuine; the attack is its **invalid placement**,
+> which makes perception read a control signal (stop / pedestrian / red light) that is not legitimately
+> there. This is the *natural physical object* family of `PROJECT.md` ("placing natural objects at rare
+> locations"), not a forged or fake-looking object.
+
 | Attack | Payload | Placement | Module / demo |
 |---|---|---|---|
 | Physical patch | checkerboard / optimized texture | lead vehicle rear (detector quad) | `attacks/physical_patch.py`, `scripts/nurec_patch_demo.py` |
-| **Fake STOP sign — roadside** | MUTCD R1-1 face + post | fixed world position on the shoulder | `attacks/sign_spoof.py`, `scripts/nurec_object_demo.py --mode roadside` |
-| **Fake STOP sign — on vehicle** | MUTCD R1-1 face | lead vehicle rear (ego-lane detector quad) | `attacks/sign_spoof.py`, `scripts/nurec_object_demo.py --mode vehicle` |
-| **Phantom person — standee** | life-size cut-out of a real pedestrian | fixed world position on the shoulder | `attacks/person_poster.py`, `--object standee --mode roadside` |
-| **Phantom person — billboard** | the person printed on a poster board on two legs | roadside, or a poster on the lead vehicle's rear | `attacks/person_poster.py`, `--object billboard --mode roadside vehicle` |
-| **Fake traffic lights** | 3 signal heads (red lit) on a board, drawn procedurally | roadside rig, or on the lead vehicle's rear ("truck with traffic lights") | `attacks/traffic_light.py`, `--object trafficlights --mode roadside vehicle` |
+| **Inserted STOP sign — roadside** | MUTCD R1-1 face + post | fixed world position on the shoulder | `attacks/sign_spoof.py`, `scripts/nurec_object_demo.py --mode roadside` |
+| **Inserted STOP sign — on vehicle** | MUTCD R1-1 face | lead vehicle rear (ego-lane detector quad) | `attacks/sign_spoof.py`, `scripts/nurec_object_demo.py --mode vehicle` |
+| **Inserted pedestrian — standee** | life-size cut-out of a real pedestrian | fixed world position on the shoulder | `attacks/person_poster.py`, `--object standee --mode roadside` |
+| **Inserted pedestrian — billboard** | the person printed on a poster board on two legs | roadside, or a poster on the lead vehicle's rear | `attacks/person_poster.py`, `--object billboard --mode roadside vehicle` |
+| **Inserted traffic lights** | 3 signal heads (red lit) on a board, drawn procedurally | roadside rig, or on the lead vehicle's rear ("truck with traffic lights") | `attacks/traffic_light.py`, `--object trafficlights --mode roadside vehicle` |
 
 Person cut-outs come from nuScenes camera images, segmented with SAM from the annotated 2-D boxes
 (`scripts/extract_person_cutouts.py`). nuScenes is CC BY-NC-SA 4.0, so the cut-outs are not in the
@@ -59,7 +66,7 @@ object, so a sign on a dark truck comes out too dark: a dark *surface* is read a
 | roadside (x=28 m, y=-6.5 m) | 50/50 | **0/50** | 50/50 | 50/50 |
 | lead vehicle rear | 48/50 | **0/50** | 47/50 | 47/50 |
 
-Phantom person (cut-out `person_001`, COCO `person` class):
+Inserted pedestrian (cut-out `person_001`, COCO `person` class):
 
 | Object | none | classic | chroma | libcom |
 |---|---|---|---|---|
@@ -67,7 +74,7 @@ Phantom person (cut-out `person_001`, COCO `person` class):
 | billboard, roadside (x=28 m, y=-7 m) | 50/50 | 50/50 | 50/50 | 50/50 |
 | poster on lead vehicle rear | 47/50 | 48/50 | 48/50 | 48/50 |
 
-Fake traffic lights (3 red heads, COCO `traffic light` class):
+Inserted traffic lights (3 red heads, COCO `traffic light` class):
 
 | Placement | none | chroma | libcom |
 |---|---|---|---|
@@ -79,7 +86,7 @@ detection — most on the truck rear, where PCTNet reads the black housing as lo
 
 Frames with score >= 0.5, out of the frames where the object is in view; the clean runs score 0
 throughout. A printed person is detected as a pedestrian in nearly every frame, which is the
-phantom attack. The choice of harmonizer decides whether the attack works at all: the default classic
+inserted-object attack. The choice of harmonizer decides whether the attack works at all: the default classic
 harmonizer removes the sign's colour, and with it the detection; it likewise washes a person
 silhouette into the background (the standee), while a poster's own paper and frame shield the figure.
 
