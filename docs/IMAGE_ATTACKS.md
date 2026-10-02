@@ -31,8 +31,9 @@ repo; the demo takes one with `--asset`. The STOP face is public domain and ship
 
 - **Image-anchored** (`detector_quad` → `warp_patch`): a 2-D detector box gives a quad on the target
   surface; the object is homography-warped onto it. No depth or camera model needed, so it works on
-  any imagery, but it only follows what the detector finds. `pick="lane"` keeps the object on the
-  in-lane lead vehicle when a larger car overtakes, and `hold_quad` bridges missed detections.
+  any imagery, but it only follows what the detector finds. `pick="lane"` selects a box spanning
+  the image centre column, and `hold_quad` bridges missed detections by retaining its coordinates.
+  Neither associates vehicle identities across frames, so the selected vehicle can change.
 - **World-anchored** (`render_plane`): the object is a textured 3-D rectangle at a fixed scene
   position, rendered through the real camera — `camera_models.FThetaCamera` for NuRec's 120° f-theta
   fisheye, `PinholeCamera` for pinhole cameras. Each pixel is ray-cast onto the plane, which is exact
@@ -51,6 +52,9 @@ perceives the inserted object in closed loop (not only the visualization).
 | `ClassicHarmonizer()` (default) | Lab mean/std transfer + Poisson blend | **destroys the red**: the sign turns into grey "STOP" lettering with a halo |
 | `ClassicHarmonizer(preserve_chroma=True, blend="feather")` | exposure gain on lightness only + feathered edge | keeps hue and legend contrast; dims to the scene |
 | `PCTNetHarmonizer()` (libcom) | learned color transform | natural, darker red |
+
+The object-insertion demos use `PCTNetHarmonizer(strict=True)` for `--harmonizer libcom`: loading
+or inference errors stop the experiment instead of falling back to classic under the libcom label.
 
 Colour-transfer harmonizers suit textures whose hue does not matter (a patch), but wash out objects
 whose colour carries meaning. Every harmonizer here estimates the lighting from the pixels around the
@@ -109,6 +113,20 @@ sign. In the near placement the attacked run's reasoning calls the lead vehicle 
 (0 clean), a possible perception shift that one run cannot confirm. Once the ego leaves the recorded
 path, NuRec renders visible artifacts on neighbouring vehicles.
 
+The demo writes one `trace.json` containing `clean` and `attacked` step sequences and the impact
+verdict. Each step contains the corresponding `Trace.records` fields without rounding, plus
+`input_t` and `reasoning`:
+
+- `frame`: zero-based step index.
+- `input_t`: simulation time of the observation used to generate the reasoning and control.
+- `reasoning`: the model's explanation for that decision, or `null` if unavailable.
+- `t`, `speed`: simulation time and vehicle speed **after** executing that step (`t = input_t + dt`).
+- `throttle`, `brake`, `steer`, `n_detections`: existing Trace fields. Alpamayo supplies a trajectory,
+  so the actuator fields and detection count remain at their defaults in this demo.
+
+A row describes one input-to-outcome transition, not a snapshot at a single time. The saved states
+include the final executed step and are the same states used for the speed plot and impact score.
+
 ## Running
 
 With an `nre-ga` server serving a NuRec scene (see [`SETUP.md`](SETUP.md) §4b):
@@ -136,6 +154,7 @@ its own default position.
 ## Known limitations
 
 - No occlusion: an inserted object is always drawn on top, even if a vehicle passes in front of it.
+- No vehicle identity tracking: image-anchored placement can switch vehicles when detections change.
 - No shadows, specular reflection or retro-reflectivity; lighting comes only from harmonization.
 - The world-anchored ground height is a parameter (`--ground-z`), not read from the scene, and
   placements do not consult a map (drivable area, sidewalk).

@@ -5,7 +5,7 @@ The real Alpamayo-1.5-10B policy drives the NuRec scene twice from the same star
 an object inserted into its camera stream by ``perturb(Observation)`` (the same insertion as
 ``nurec_object_demo.py``: a roadside STOP sign by default). Its planned trajectories move the ego
 (``TrajectoryFollower``), so the attacked run sees the sign from wherever the policy actually drives.
-Per frame we record the ego speed and Alpamayo's reasoning text; the driving-impact verdict is
+Per step we record the resulting ego state and the reasoning that produced its control; the verdict is
 :func:`avsectester.metric.impact` on the two traces.
 
 Run in an AlpaSim driver env (Python 3.12 + alpasim_driver) with an nre-ga server (docs/SETUP.md §4):
@@ -14,13 +14,14 @@ Run in an AlpaSim driver env (Python 3.12 + alpasim_driver) with an nre-ga serve
         --gpu 1 --harm-gpu 0
 
 Outputs under ``tmp/alpamayo_<object>/``: ``speed.png`` (clean vs attacked), ``side_by_side.gif``,
-``trace.json`` (speed + reasoning per frame, impact verdict).
+``trace.json`` (post-step Trace records + input time and reasoning per step, impact verdict).
 """
 
 import argparse
 import json
 import sys
 import time
+from dataclasses import asdict
 from pathlib import Path
 
 from avsectester.attacks.sign_spoof import roadside_sign_insert
@@ -36,16 +37,15 @@ CAM = "camera_front_wide_120fov"
 
 
 class Recording(AlpamayoAVStack):
-    """AlpamayoAVStack that also logs each step's speed input and reasoning text."""
+    """Record each decision's input time and reasoning, to pair with the resulting Trace record."""
 
     def reset(self, observation):
         super().reset(observation)
-        self.log = []
+        self.decisions = []
 
     def __call__(self, observation):
         control = super().__call__(observation)
-        self.log.append({"t": round(observation.t, 2), "speed": round(float(observation.ego_speed), 3),
-                         "reasoning": self.last_reasoning})
+        self.decisions.append({"input_t": observation.t, "reasoning": self.last_reasoning})
         return control
 
 
@@ -58,7 +58,12 @@ def drive(args, stack, perturb_of=None):
         perturb = perturb_of(renderer) if perturb_of else None
         trace = record_run(backend, stack, args.frames, out_dir=args.out / ("attacked" if perturb else "clean"),
                            perturb=perturb, collect=True)
-        return trace, list(stack.log)
+        # Each decision uses the input at t; its Trace record holds the outcome at t + dt.
+        steps = [
+            {**asdict(record), **decision}
+            for record, decision in zip(trace.records, stack.decisions, strict=True)
+        ]
+        return trace, steps
     finally:
         backend.close()
 
@@ -115,9 +120,9 @@ def main() -> int:
     stack = Recording(device=f"cuda:{args.gpu}", camera_ids=[CAM])
     t0 = time.time()
     print(f"[alpamayo] clean drive, {args.frames} frames")
-    clean, clean_log = drive(args, stack)
+    clean, clean_steps = drive(args, stack)
     print(f"[alpamayo] attacked drive ({args.object} at x={sign.x}, y={sign.y}; {args.harmonizer})")
-    attacked, att_log = drive(args, stack, perturb_of)
+    attacked, attacked_steps = drive(args, stack, perturb_of)
     verdict = impact(clean, attacked)
     print(f"[alpamayo] {time.time() - t0:.0f}s; clean final {clean.records[-1].speed:.2f} m/s, "
           f"attacked final {attacked.records[-1].speed:.2f} m/s; verdict: {verdict}")
@@ -129,7 +134,7 @@ def main() -> int:
     (args.out / "trace.json").write_text(json.dumps({
         "object": args.object, "at": [sign.x, sign.y], "harmonizer": args.harmonizer,
         "verdict": str(verdict),
-        "clean": clean_log, "attacked": att_log,
+        "clean": clean_steps, "attacked": attacked_steps,
     }, indent=1))
     print(f"[output] {args.out}")
     return 0

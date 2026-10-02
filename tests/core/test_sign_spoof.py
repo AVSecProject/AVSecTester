@@ -67,7 +67,6 @@ def test_roadside_sign_planes_geometry():
 
 
 def test_render_plane_lands_where_projected_and_keeps_red():
-    pytest.importorskip("cv2")
     from avsectester.attacks.sign_spoof import RoadsideSign
     from avsectester.simulators.patch_insertion import (
         ClassicHarmonizer,
@@ -93,7 +92,6 @@ def test_render_plane_lands_where_projected_and_keeps_red():
 
 
 def test_render_plane_behind_camera_is_noop():
-    pytest.importorskip("cv2")
     from avsectester.attacks.sign_spoof import RoadsideSign
     from avsectester.simulators.patch_insertion import render_plane
 
@@ -112,6 +110,30 @@ def test_frame_perturbation_rewrites_only_the_camera():
     seen = frame_perturbation(lambda o, im: im + 7, camera="cam")(obs)
     assert (seen.sensor_data["cam"] == 7).all() and seen.sensor_data["other"] == "lidar"
     assert (obs.sensor_data["cam"] == 0).all()  # the backend's true observation is untouched
+
+
+@pytest.mark.parametrize("custom_view", [False, True], ids=["default-view", "custom-view"])
+def test_frame_perturbation_reads_and_rewrites_the_selected_camera(custom_view):
+    from avsectester.plane import Observation
+    from avsectester.simulators.patch_insertion import frame_perturbation
+
+    other = np.full((4, 4, 3), 90, np.uint8)
+    target = np.zeros((4, 4, 3), np.uint8)
+    obs = Observation(t=0.0, frame=0, sensor_data={"other": other, "target": target})
+    calls = []
+
+    def view(observation):
+        calls.append(observation)
+        return observation.sensor_data["target"] + 3
+
+    kwargs = {"base": view} if custom_view else {}
+    seen = frame_perturbation(lambda o, rgb: rgb + 7, camera="target", **kwargs)(obs)
+
+    assert (seen.sensor_data["target"] == (10 if custom_view else 7)).all()
+    assert seen.sensor_data["other"] is other
+    assert (other == 90).all() and (target == 0).all()
+    if custom_view:
+        assert len(calls) == 1 and calls[0] is obs
 
 
 def test_lane_pick_and_hold():

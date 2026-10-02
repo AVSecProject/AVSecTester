@@ -107,11 +107,12 @@ class NoHarmonizer(Harmonizer):
 
 
 def make_harmonizer(name: str, gpu: int) -> Harmonizer:
+    """Use the requested method; a libcom failure must not become a classic experiment."""
     return {
         "none": NoHarmonizer,
         "classic": ClassicHarmonizer,  # original: Lab mean/std transfer + Poisson
         "chroma": lambda: ClassicHarmonizer(preserve_chroma=True, blend="feather"),  # keep the sign's red
-        "libcom": lambda: PCTNetHarmonizer(device=gpu),
+        "libcom": lambda: PCTNetHarmonizer(device=gpu, strict=True),
     }[name]()
 
 

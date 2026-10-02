@@ -333,6 +333,7 @@ class PatchCompositor:
         """Render world-anchored textured ``planes`` — ``[(corners_world 4x3, texture_rgba), ...]``,
         drawn in order (later ones on top) — with :func:`render_plane`, then harmonize them into the
         frame together as one object. Returns the clean frame when nothing is in view."""
+        # TODO: use scene depth or an occlusion mask to hide insertions behind foreground objects.
         comp, union = frame_rgb, np.zeros(frame_rgb.shape[:2], np.uint8)
         for corners, texture in planes:
             comp, mask = render_plane(comp, camera, cam_from_world, corners, texture, soften=soften)
@@ -397,6 +398,7 @@ def detector_quad(detect: Callable[[Any], Any], base: View = camera_view, width_
         if rgb is None:
             return None
         w = rgb.shape[1]
+        # TODO: associate vehicle identities across frames; per-frame ranking can switch targets.
         best = None
         for box, _score, _label in detect(rgb):
             cx = (box[0] + box[2]) / 2.0
@@ -418,7 +420,8 @@ def detector_quad(detect: Callable[[Any], Any], base: View = camera_view, width_
 
 def hold_quad(quad_of: Callable[[Observation], Any], frames: int = 3) -> Callable[[Observation], Any]:
     """Wrap ``quad_of`` to reuse the last quad for up to ``frames`` consecutive misses, so a single
-    missed detection does not make the inserted object blink out of the sequence."""
+    missed detection does not make the inserted object blink out of the sequence.
+    This holds image coordinates only; it does not associate vehicle identities."""
     state = {"quad": None, "age": 0}
 
     def _quad_of(observation: Observation) -> Any:
@@ -454,7 +457,7 @@ def composite_view(
 
 
 def frame_perturbation(insert: Callable[[Observation, Any], Any], camera: str | None = None,
-                       base: View = camera_view) -> Callable[[Observation], Observation]:
+                       base: View | None = None) -> Callable[[Observation], Observation]:
     """Return ``perturb(obs) -> obs`` that rewrites one camera's frame with ``insert(obs, rgb) -> rgb``.
 
     The sensor-plane attack seam for backends whose camera payload is a raw RGB ndarray (NuRec): the
@@ -468,7 +471,7 @@ def frame_perturbation(insert: Callable[[Observation, Any], Any], camera: str | 
         if not data:
             return observation
         key = camera if camera in data else next(iter(data))
-        rgb = base(observation, key)
+        rgb = camera_view(observation, key) if base is None else base(observation)
         if rgb is None:
             return observation
         new_data = dict(data)
