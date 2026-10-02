@@ -1,7 +1,7 @@
 """Realistic 2D patch insertion — a **simulation** concern (how an inserted patch renders), shared by
 all backends. Not attack logic: warping a texture onto a surface and harmonizing it to the scene is
 modelling how the object would appear in the render; the *attack* only chooses the payload (which
-texture) and the target (where) — see :mod:`avsectester.attacks.physical_patch`.
+texture) and the target (where) — see :mod:`avsectester.attacks.patch.physical_patch`.
 
 The patch is composited **on the rendered frame**, never baked into the world/reconstruction:
 

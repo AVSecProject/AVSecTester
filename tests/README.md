@@ -52,18 +52,27 @@ the imports exercised by these tests. This is an offline test environment; use
 
 ## Functional coverage
 
+Attack tests mirror the implementation families under `core/attacks/` and `avstack/attacks/`.
+Shared camera and compositing tests live under `core/simulators/`; experiment-script tests live
+under `core/scripts/`. The `core`, `avstack` and `live` dependency groups remain unchanged, and
+pytest/CI collect their subdirectories recursively.
+
 | Tests | Behavior exercised |
 |---|---|
 | `core/test_interface.py` | Per-step controls affect subsequent true state; replacement attack observations reach the stack without falsifying the recorded state |
 | `core/test_metric.py` | Induced stops, suppressed safe stops, duration/speed thresholds, late stops, inconclusive baselines |
 | `core/test_alpamayo.py` | Camera history padding/order, ego history, model vs simulation clocks, candidate selection, plan chaining, experiment reset |
 | `core/test_nurec.py` | Dynamics, stub-rendered closed loop, reset, checkpoint replay, trajectory interpolation and rig-to-world conversion |
-| `core/test_patch_optim.py` | PGD/NES optimization direction, patch footprint, valid pixels and L-infinity budget |
-| `core/test_patch_insertion.py`, `core/test_physical_patch.py` | Projection, compositing, texture construction and patch configuration |
+| `core/attacks/optim/test_patch_optim.py` | PGD/NES optimization direction, patch footprint, valid pixels and L-infinity budget |
+| `core/attacks/patch/test_physical_patch.py` | Texture construction and patch configuration |
+| `core/attacks/object_insertion/` | Sign geometry, pedestrian standees/posters and traffic light payloads |
+| `core/simulators/test_camera_models.py` | Camera projection/inverse projection and camera-to-rig axes |
+| `core/simulators/test_patch_insertion.py` | Projection, compositing, target selection and camera perturbation callbacks |
+| `core/scripts/test_image_attack_demos.py` | Strict PCTNet failure handling and saved step records paired with model reasoning |
 | `core/test_augment.py` | Image corruptions, seeded paired experiments, sensor write-back, composition, real Albumentations operators |
 | `core/test_scenarios.py`, `core/test_recorded_backend.py` | Scene constraints/filtering and recorded-image playback without full datasets |
 | `core/test_sim_viz.py` | Camera/LiDAR views, projected labels/boxes and saved frames |
-| `avstack/test_phantom.py` | Attack registration, detection preservation, moving/empty source frames and phantom geometry |
+| `avstack/attacks/pipeline/test_phantom.py` | Attack registration, detection preservation, moving/empty source frames and phantom geometry |
 | `avstack/test_pipeline.py` | Real tracking/planning/PID propagation, hook output replacement and the `ModularAVStack` adapter |
 | `avstack/test_scenario.py`, `avstack/test_reproducibility.py` | Actor setup/cleanup, hook ordering, scene resolution and actual spawn replay |
 | `avstack/test_cli.py` | YAML/overrides, clean/attacked calls, verdict exit codes and plotting |

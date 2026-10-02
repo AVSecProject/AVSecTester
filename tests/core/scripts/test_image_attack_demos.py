@@ -16,7 +16,7 @@ from avsectester.simulators.nurec import StubRenderer
 @pytest.fixture
 def demo(monkeypatch):
     # Scripts import shared helpers as siblings, just as when invoked from the CLI.
-    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "scripts"))
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[3] / "scripts"))
     return importlib.import_module("alpamayo_attack_demo")
 
 

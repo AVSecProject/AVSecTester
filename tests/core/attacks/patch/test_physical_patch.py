@@ -1,7 +1,7 @@
 """Pure (CARLA-free) parts of the physical-patch attack: texture generation + config parsing."""
 
 import numpy as np
-from avsectester.attacks.physical_patch import (
+from avsectester.attacks.patch.physical_patch import (
     DEFAULT_PROP,
     PhysicalPatch,
     build_patch,

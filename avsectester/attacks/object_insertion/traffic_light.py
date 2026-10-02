@@ -2,7 +2,7 @@
 
 The "truck with multiple traffic lights on it" example of docs/PROJECT.md: real signal heads mounted
 where the ego's camera reads them as live traffic lights, e.g. carried on the rear of the lead
-vehicle, or on a roadside board. Like :mod:`avsectester.attacks.sign_spoof`, the attack owns only the
+vehicle, or on a roadside board. Like :mod:`avsectester.attacks.object_insertion.sign_spoof`, the attack owns only the
 **payload** (the signal-head image) and the **target** (where); how it renders is shared simulation in
 :mod:`avsectester.simulators.patch_insertion`.
 
@@ -10,8 +10,8 @@ The payload is drawn procedurally (numpy/PIL, no external asset): one or more st
 heads in black housings, on a board, with a chosen lens lit (red / yellow / green). Reuse it as:
 
   * a board carried on the lead vehicle's rear — image-anchored via
-    :func:`avsectester.attacks.sign_spoof.vehicle_sign_quad` (pass this module's ``aspect``);
-  * a roadside rig — world-anchored via :class:`avsectester.attacks.sign_spoof.RoadsideSign`.
+    :func:`avsectester.attacks.object_insertion.sign_spoof.vehicle_sign_quad` (pass this module's ``aspect``);
+  * a roadside rig — world-anchored via :class:`avsectester.attacks.object_insertion.sign_spoof.RoadsideSign`.
 
 Only numpy/PIL here; no simulator imports.
 """
@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from avsectester.attacks.sign_spoof import RoadsideSign
+from avsectester.attacks.object_insertion.sign_spoof import RoadsideSign
 
 # (housing, lens-off, red, yellow, green) BGR-agnostic RGB; drawn on transparent background
 _HOUSING = (28, 28, 30)

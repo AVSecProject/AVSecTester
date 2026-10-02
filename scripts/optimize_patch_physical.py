@@ -25,7 +25,7 @@ from avsectester.attacks.optim.geometry import homography_4pt
 from avsectester.attacks.optim.interface import AdvSample, HideObject, TargetSpec
 from avsectester.attacks.optim.perturbations import PatchPerturbation
 from avsectester.attacks.optim.scorers import MMDetRPNObjectnessScorer
-from avsectester.attacks.physical_patch import PhysicalPatch, to_carla_texture
+from avsectester.attacks.patch.physical_patch import PhysicalPatch, to_carla_texture
 
 REPO = Path(__file__).resolve().parents[1]
 OUT = REPO / "tmp" / "patch_optim"

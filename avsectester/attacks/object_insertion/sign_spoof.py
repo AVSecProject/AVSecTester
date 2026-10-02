@@ -9,7 +9,7 @@ e.g. planted on the roadside of a road with no intersection, or carried on the b
 vehicle ("a stop sign at the rear of a car" in docs/PROJECT.md). No optimization: the payload is the
 standard sign face itself.
 
-As with :mod:`avsectester.attacks.physical_patch`, the attack owns only the **payload** (which sign)
+As with :mod:`avsectester.attacks.patch.physical_patch`, the attack owns only the **payload** (which sign)
 and the **target** (where); how it renders into the frame is simulation, shared in
 :mod:`avsectester.simulators.patch_insertion`:
 
@@ -34,7 +34,7 @@ from typing import Any
 
 import numpy as np
 
-ASSETS = Path(__file__).resolve().parents[1] / "assets" / "signs"
+ASSETS = Path(__file__).resolve().parents[2] / "assets" / "signs"
 STOP_SIGN = ASSETS / "mutcd_r1-1_stop.png"  # public-domain MUTCD R1-1 face (see assets/signs/SOURCES.md)
 
 

@@ -24,7 +24,7 @@ import logging
 import sys
 from pathlib import Path
 
-from avsectester.attacks.physical_patch import checkerboard_rgba, image_rgba
+from avsectester.attacks.patch.physical_patch import checkerboard_rgba, image_rgba
 from avsectester.simulators.nurec import NuRecBackend, NuRecRenderer
 from avsectester.simulators.patch_insertion import (
     ClassicHarmonizer,

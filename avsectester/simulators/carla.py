@@ -374,7 +374,7 @@ class CarlaBackend(WorldBackend):
         """Attach + paint each configured physical patch onto its target vehicle (attacked run)."""
         if not self.patch_specs:
             return
-        from avsectester.attacks.physical_patch import build_patch
+        from avsectester.attacks.patch.physical_patch import build_patch
 
         world = self.client.world
         for spec in self.patch_specs:

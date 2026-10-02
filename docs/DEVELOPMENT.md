@@ -62,10 +62,21 @@ avsectester/
   stacks/                                                (AVStack implementations)
     modular.py        ModularAVStack (avstack ModularDrivingPipeline)
     alpamayo.py       AlpamayoAVStack (wraps alpasim_driver Alpamayo-1.5)
-  attacks/            PhantomInjection (avstack HOOKS hook) + registration
+  attacks/
+    pipeline/         Internal pipeline attacks: PhantomInjection (avstack HOOKS hook)
+    patch/            Physical patch textures, configuration and deployment
+    object_insertion/ Traffic signs, pedestrian images and traffic lights
+    optim/            Shared PGD/NES algorithms, perturbations, objectives and scorers
   metric.py           impact(clean, attacked) -> Impact + plot_impact  (verdict + its figure)
   cli.py              `avsectester run ...`
 ```
+
+Attack modules are grouped by function, while rendering and harmonization remain in `simulators`.
+For example, import `PhysicalPatch` from `avsectester.attacks.patch.physical_patch` and `RoadsideSign`
+from `avsectester.attacks.object_insertion.sign_spoof`. The top-level
+`from avsectester.attacks import PhantomInjection` entry point remains lazy; its implementation is
+in `avsectester.attacks.pipeline.phantom`. The former flat module paths have been moved, without
+changing YAML attack names or hook registration names.
 
 ## Extending
 
@@ -76,7 +87,7 @@ avsectester/
 - **A universal attack** — write `perturb(Observation) -> Observation` and pass it to `run(..., perturb=)`;
   it works against any stack, black-box policies included.
 - **A modular white-box attack** — write a callable, `@HOOKS.register_module()` it (see
-  `avsectester/attacks/phantom.py`), and reference it in a scenario's `attacks:` list with the
+  `avsectester/attacks/pipeline/phantom.py`), and reference it in a scenario's `attacks:` list with the
   `stage` to hook. Removal, tracking-stage, and pre-hook (sensor-input) attacks use the same seam.
 - **A new modular driving behavior** — add/replace an avstack planning or control module (in the
   fork) and name it in the pipeline config; the scenario is unchanged.
@@ -96,7 +107,7 @@ python scripts/alpamayo_nurec_demo.py 8 --save-frames     # Alpamayo+NuRec (driv
 ```
 
 `tests/core/test_interface.py` exercises the `run` loop and the `perturb` seam on an in-memory
-backend/stack. `tests/avstack/test_phantom.py` checks the attack hook (appends exactly one fabricated
+backend/stack. `tests/avstack/attacks/pipeline/test_phantom.py` checks the attack hook (appends exactly one fabricated
 detection; registers in `HOOKS`). `tests/avstack/test_pipeline.py` builds `ModularDrivingPipeline` from
 config and checks `ForwardCollisionPlanner` brakes for a forward-corridor track.
 `tests/core/test_nurec.py` drives the in-process NuRec backend (dynamics, closed loop, checkpoint/restore)

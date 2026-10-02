@@ -7,7 +7,7 @@ The algorithm-facing contract is in :mod:`~avsectester.attacks.optim.interface` 
 Concrete pieces are torch-backed and added incrementally: ``perturbations.py`` (LinfImage,
 PatchPerturbation with the differentiable EoT paste), ``scorers.py`` (white-box mmdet detector), and
 ``attacks.py`` (the PGD loop). A ``PatchPerturbation``'s ``export`` yields the texture that
-:class:`avsectester.attacks.physical_patch.PhysicalPatch` deploys in CARLA.
+:class:`avsectester.attacks.patch.physical_patch.PhysicalPatch` deploys in CARLA.
 """
 
 from .interface import (

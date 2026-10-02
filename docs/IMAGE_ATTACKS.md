@@ -15,12 +15,12 @@ simulation code in `avsectester/simulators/patch_insertion.py`.
 
 | Attack | Payload | Placement | Module / demo |
 |---|---|---|---|
-| Physical patch | checkerboard / optimized texture | lead vehicle rear (detector quad) | `attacks/physical_patch.py`, `scripts/nurec_patch_demo.py` |
-| **Inserted STOP sign — roadside** | MUTCD R1-1 face + post | fixed world position on the shoulder | `attacks/sign_spoof.py`, `scripts/nurec_object_demo.py --mode roadside` |
-| **Inserted STOP sign — on vehicle** | MUTCD R1-1 face | lead vehicle rear (ego-lane detector quad) | `attacks/sign_spoof.py`, `scripts/nurec_object_demo.py --mode vehicle` |
-| **Inserted pedestrian — standee** | life-size cut-out of a real pedestrian | fixed world position on the shoulder | `attacks/person_poster.py`, `--object standee --mode roadside` |
-| **Inserted pedestrian — billboard** | the person printed on a poster board on two legs | roadside, or a poster on the lead vehicle's rear | `attacks/person_poster.py`, `--object billboard --mode roadside vehicle` |
-| **Inserted traffic lights** | 3 signal heads (red lit) on a board, drawn procedurally | roadside rig, or on the lead vehicle's rear ("truck with traffic lights") | `attacks/traffic_light.py`, `--object trafficlights --mode roadside vehicle` |
+| Physical patch | checkerboard / optimized texture | lead vehicle rear (detector quad) | `attacks/patch/physical_patch.py`, `scripts/nurec_patch_demo.py` |
+| **Inserted STOP sign — roadside** | MUTCD R1-1 face + post | fixed world position on the shoulder | `attacks/object_insertion/sign_spoof.py`, `scripts/nurec_object_demo.py --mode roadside` |
+| **Inserted STOP sign — on vehicle** | MUTCD R1-1 face | lead vehicle rear (ego-lane detector quad) | `attacks/object_insertion/sign_spoof.py`, `scripts/nurec_object_demo.py --mode vehicle` |
+| **Inserted pedestrian — standee** | life-size cut-out of a real pedestrian | fixed world position on the shoulder | `attacks/object_insertion/person_poster.py`, `--object standee --mode roadside` |
+| **Inserted pedestrian — billboard** | the person printed on a poster board on two legs | roadside, or a poster on the lead vehicle's rear | `attacks/object_insertion/person_poster.py`, `--object billboard --mode roadside vehicle` |
+| **Inserted traffic lights** | 3 signal heads (red lit) on a board, drawn procedurally | roadside rig, or on the lead vehicle's rear ("truck with traffic lights") | `attacks/object_insertion/traffic_light.py`, `--object trafficlights --mode roadside vehicle` |
 
 Person cut-outs come from nuScenes camera images, segmented with SAM from the annotated 2-D boxes
 (`scripts/extract_person_cutouts.py`). nuScenes is CC BY-NC-SA 4.0, so the cut-outs are not in the

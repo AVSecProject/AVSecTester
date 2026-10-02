@@ -21,8 +21,8 @@ import sys
 from pathlib import Path
 
 import numpy as np
-from avsectester.attacks.person_poster import billboard, load_cutout, standee
-from avsectester.attacks.sign_spoof import RoadsideSign, sign_rgba
+from avsectester.attacks.object_insertion.person_poster import billboard, load_cutout, standee
+from avsectester.attacks.object_insertion.sign_spoof import RoadsideSign, sign_rgba
 from avsectester.simulators.camera_models import PinholeCamera, make_pose, quat_to_matrix
 from avsectester.simulators.patch_insertion import PatchCompositor, render_plane
 from demo_common import COCO_PERSON, COCO_STOP_SIGN, build_coco_detector

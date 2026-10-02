@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 import yaml
-from avsectester.attacks.physical_patch import image_rgba
+from avsectester.attacks.patch.physical_patch import image_rgba
 from avsectester.plane import Control
 from avsectester.simulators import carla as carla_sim
 from avsectester.simulators.carla import CarlaBackend, lead_rear_quad

@@ -2,7 +2,7 @@
 
 A picture of a pedestrian where no pedestrian is: the "human being poster / billboard on the road"
 example of docs/PROJECT.md (after *Phantom of the ADAS*, Nassi et al., CCS 2020). Two props, both
-world-anchored like :class:`avsectester.attacks.sign_spoof.RoadsideSign` (they reuse it — a sign is
+world-anchored like :class:`avsectester.attacks.object_insertion.sign_spoof.RoadsideSign` (they reuse it — a sign is
 any textured board at a fixed scene position):
 
   * :func:`standee` — a life-size cardboard cut-out of a person standing on the ground, e.g. on the
@@ -10,7 +10,7 @@ any textured board at a fixed scene position):
   * :func:`billboard` — the person printed on a poster board on two legs by the roadside.
 
 :func:`poster_rgba` also makes the face for a poster carried on the lead vehicle's rear (an ad on a
-truck), placed image-anchored with :func:`avsectester.attacks.sign_spoof.vehicle_sign_quad`.
+truck), placed image-anchored with :func:`avsectester.attacks.object_insertion.sign_spoof.vehicle_sign_quad`.
 
 The payload is a real person cut out of a camera image (``scripts/extract_person_cutouts.py`` builds
 them from nuScenes with SAM). Those cut-outs are CC BY-NC-SA derived data, so none ship with the repo:
@@ -23,7 +23,7 @@ from pathlib import Path
 
 import numpy as np
 
-from avsectester.attacks.sign_spoof import RoadsideSign
+from avsectester.attacks.object_insertion.sign_spoof import RoadsideSign
 
 
 def load_cutout(path: str | Path) -> np.ndarray:

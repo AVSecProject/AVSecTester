@@ -33,7 +33,7 @@ def _register_avstack_modules() -> None:
     import avstack.modules.planning.vehicle
     import avstack.modules.tracking.tracker3d  # noqa: F401  (BasicBoxTracker3D)
 
-    import avsectester.attacks.phantom  # noqa: F401  (registers PhantomInjection in avstack HOOKS)
+    import avsectester.attacks.pipeline.phantom  # noqa: F401  (registers PhantomInjection in avstack HOOKS)
 
 
 class ModularAVStack(AVStack):

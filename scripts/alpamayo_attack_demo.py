@@ -24,7 +24,7 @@ import time
 from dataclasses import asdict
 from pathlib import Path
 
-from avsectester.attacks.sign_spoof import roadside_sign_insert
+from avsectester.attacks.object_insertion.sign_spoof import roadside_sign_insert
 from avsectester.metric import impact
 from avsectester.simulators.nurec import NuRecBackend, NuRecRenderer, TrajectoryFollower
 from avsectester.simulators.patch_insertion import PatchCompositor, frame_perturbation

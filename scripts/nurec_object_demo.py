@@ -3,8 +3,8 @@
 
 Objects (``--object``), all camera-facing *natural physical object* attacks:
 
-  * ``stop``      — a public-domain MUTCD STOP sign (:mod:`avsectester.attacks.sign_spoof`);
-  * ``standee``   — a life-size cut-out of a real person (:mod:`avsectester.attacks.person_poster`);
+  * ``stop``      — a public-domain MUTCD STOP sign (:mod:`avsectester.attacks.object_insertion.sign_spoof`);
+  * ``standee``   — a life-size cut-out of a real person (:mod:`avsectester.attacks.object_insertion.person_poster`);
   * ``billboard`` — the same person printed on a roadside poster board.
 
 Placements (``--mode``):
@@ -35,8 +35,8 @@ import sys
 from pathlib import Path
 
 import numpy as np
-from avsectester.attacks.person_poster import billboard, load_cutout, poster_rgba, standee
-from avsectester.attacks.sign_spoof import (
+from avsectester.attacks.object_insertion.person_poster import billboard, load_cutout, poster_rgba, standee
+from avsectester.attacks.object_insertion.sign_spoof import (
     RoadsideSign,
     quad_insert,
     roadside_sign_insert,
@@ -82,7 +82,7 @@ def build_object(args):
                             mount_height=1.5 if args.mount is None else args.mount, ground_z=args.ground_z)
         return sign, face, 1.0
     if args.object == "trafficlights":
-        from avsectester.attacks.traffic_light import aspect_of, roadside_rig, traffic_lights_rgba
+        from avsectester.attacks.object_insertion.traffic_light import aspect_of, roadside_rig, traffic_lights_rgba
         face = traffic_lights_rgba(n=3, lit="red")
         sign = roadside_rig(face, x, y, width=args.size or 2.4, yaw=args.yaw, ground_z=args.ground_z,
                             mount_height=2.2 if args.mount is None else args.mount)

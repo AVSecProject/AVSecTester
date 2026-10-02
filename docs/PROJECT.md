@@ -252,7 +252,7 @@ produces.
 modular loop (`avsectester run configs/carla_scenario.yaml`) and the **real Alpamayo-1.5-10B policy
 driving on real NuRec-rendered imagery** (`scripts/alpamayo_nurec_demo.py`). The offline suite runs
 in CI without a GPU or simulator: `tests/core/test_interface.py` (the `run` loop + the `perturb` seam on
-an in-memory backend/stack), `tests/avstack/test_phantom.py` (phantom-injection geometry, world-fixed
+an in-memory backend/stack), `tests/avstack/attacks/pipeline/test_phantom.py` (phantom-injection geometry, world-fixed
 persistence, propagation to a confirmed track), `tests/avstack/test_pipeline.py` (the avstack
 `ModularDrivingPipeline` builds from config and `ForwardCollisionPlanner` brakes for a
 forward-corridor track), `tests/core/test_nurec.py` (the in-process NuRec backend, dynamics, and
