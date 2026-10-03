@@ -33,11 +33,12 @@ report need no change when the E2E stack later exposes more. Both stacks impleme
 
 Three small pieces:
 
-1. **Capture (stack side, `stacks/`).** Modular: `_StageCapture` — a generic avstack post-hook, the
-   component-logging twin of the existing `_DetectionCounter` — remembers a stage's output and returns it
-   unchanged; `ModularAVStack.instrument()` attaches one per stage **last** (so it observes the *attacked*
-   output, as `attach_counter` does). E2E: `AlpamayoAVStack.component_log()` returns the prediction + control
-   it already computed in `__call__`. Both satisfy `InstrumentedStack`.
+1. **Capture (stack side, `stacks/`).** Modular: `_StageCapture` — a single generic avstack post-hook that
+   remembers a stage's output and returns it unchanged; `ModularAVStack.instrument(stages)` attaches one per
+   stage **last** (so it observes the *attacked* output). It is the *one* per-stage capture mechanism — used
+   for plain detection telemetry (`instrument(("perception",))`, driving `FrameRecord.n_detections` via
+   `run_logged`) and full in-system analysis (all stages) alike. E2E: `AlpamayoAVStack.component_log()`
+   returns the prediction + control it already computed in `__call__`. Both satisfy `InstrumentedStack`.
 
 2. **Gather (`evaluation/component_log.py`).** `run_logged(backend, stack, frames, perturb)` is the
    instrumented twin of `backend.run`: it reuses the *same* loop via `run`'s new `on_step` callback, and

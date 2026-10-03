@@ -53,8 +53,7 @@ class _FakePipeline:
 def _bare_modular():
     stack = object.__new__(ModularAVStack)       # bypass the heavy avstack pipeline build
     stack.pipeline = _FakePipeline()
-    stack._counter = None
-    stack.detection_counts = []
+    stack._captures = {}
     return stack
 
 
