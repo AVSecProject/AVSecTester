@@ -1,7 +1,7 @@
 """Pure (CARLA-free) parts of the physical-patch attack: texture generation + config parsing."""
 
 import numpy as np
-from avsectester.attacks.physical_patch import (
+from avsectester.attacks.patch.physical_patch import (
     DEFAULT_PROP,
     PhysicalPatch,
     build_patch,
@@ -33,9 +33,7 @@ def test_build_patch_passes_through_a_patch_object():
 
 
 def test_image_rgba_resizes_to_square(tmp_path):
-    import pytest
-
-    Image = pytest.importorskip("PIL.Image")
+    from PIL import Image
     src = tmp_path / "patch.png"
     Image.fromarray(np.full((10, 20, 3), 128, np.uint8)).save(src)
     out = image_rgba(str(src), size=32)

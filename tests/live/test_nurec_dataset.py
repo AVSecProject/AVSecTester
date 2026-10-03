@@ -14,7 +14,10 @@ import pytest
 from avsectester.scenarios.datasets.nurec import NuRecDataset
 from avsectester.scenarios.requirements import PHYSICAL_PATCH_HIDE_VEHICLE as REQ
 
-_ROOT = "/workspace/hdd/datasets/PhysicalAI-Autonomous-Vehicles-NuRec/sample_set/26.01_release"
+_ROOT = os.environ.get(
+    "AVSECTESTER_NUREC_ROOT",
+    "/workspace/hdd/datasets/PhysicalAI-Autonomous-Vehicles-NuRec/sample_set/26.01_release",
+)
 _UUIDS = ("023b7fcc-671c-40e3-9bd2-c66b0b073fbc", "0245ff75-aa3f-46b7-ba87-16a7afb841af")
 _SCENES = [os.path.join(_ROOT, u, f"{u}.usdz") for u in _UUIDS]
 

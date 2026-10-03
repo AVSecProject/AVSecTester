@@ -1,0 +1,130 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  MPLBACKEND: Agg
+  NO_ALBUMENTATIONS_UPDATE: "1"
+  OMP_NUM_THREADS: "1"
+  OPENBLAS_NUM_THREADS: "1"
+  NUMBA_NUM_THREADS: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  core-tests:
+    name: core-tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            constraints.txt
+            .github/workflows/ci.yml
+      - name: Install CPU test dependencies
+        run: |
+          python -m pip install 'pip>=25,<26'
+          python -m pip install torch==2.1.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -e '.[test]' -c constraints.txt build==1.6.1
+      - name: Test core functionality
+        run: >-
+          python -m pytest tests/core -q
+          --junitxml=reports/core.xml
+          --cov=avsectester --cov-report=term-missing:skip-covered
+          --cov-report=xml:reports/core-coverage.xml
+      - name: Build and test the installed CLI outside the checkout
+        run: |
+          python -m build --wheel --outdir "$RUNNER_TEMP/wheels"
+          python -m venv "$RUNNER_TEMP/wheel-venv"
+          "$RUNNER_TEMP/wheel-venv/bin/python" -m pip install "$RUNNER_TEMP"/wheels/*.whl
+          cd "$RUNNER_TEMP"
+          env -u PYTHONPATH "$RUNNER_TEMP/wheel-venv/bin/avsectester" --help
+          env -u PYTHONPATH "$RUNNER_TEMP/wheel-venv/bin/avsectester" version
+      - name: Save core test results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: core-test-results
+          path: reports/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  avstack-tests:
+    name: avstack-tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Fetch the three required submodules at the recorded revisions
+        # These repositories are public. HTTPS also works for fork PRs without an SSH key.
+        # Nested detector repositories and the other backends are not needed for offline tests.
+        run: |
+          git -c url.https://github.com/.insteadOf=git@github.com: submodule update --init --depth 1 -- \
+            third_party/avstack-core third_party/avstack-api third_party/lib-avstack-carla
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            constraints.txt
+            third_party/avstack-core/pyproject.toml
+            third_party/avstack-api/pyproject.toml
+            third_party/lib-avstack-carla/pyproject.toml
+            .github/workflows/ci.yml
+      - name: Install offline avstack dependencies
+        run: |
+          python -m pip install 'pip>=25,<26'
+          python -m pip install torch==2.1.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -e '.[test]' -e third_party/avstack-core \
+            carla==0.9.16 pygame ipywidgets 'opencv-python<4.12' -c constraints.txt
+          # Install only the adapters: their full dataset/Open3D extras and stale sibling-path
+          # dependencies are unnecessary here. Required import dependencies are installed above.
+          python -m pip install --no-deps -e third_party/avstack-api -e third_party/lib-avstack-carla
+      - name: Test attacks and the real avstack pipeline without a server
+        run: >-
+          python -m pytest tests/avstack -q
+          --junitxml=reports/avstack.xml
+          --cov=avsectester --cov-report=term-missing:skip-covered
+          --cov-report=xml:reports/avstack-coverage.xml
+      - name: Save avstack test results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: avstack-test-results
+          path: reports/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  lint:
+    name: lint
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - run: python -m pip install ruff==0.15.22
+      - run: python -m ruff check avsectester tests

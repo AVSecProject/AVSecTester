@@ -7,14 +7,10 @@ BoxDetection. This is the same hook the closed-loop demo attaches to MMDetObject
 
 import numpy as np
 import pytest
-
-pytest.importorskip("avstack")
-
 from avsectester.attacks import PhantomInjection
 
 
 def _detections():
-    pytest.importorskip("avstack")
     from avstack.datastructs import DataContainer
     from avstack.geometry import Attitude, Box3D, GlobalOrigin3D, Position
     from avstack.modules.perception.detections import BoxDetection
@@ -48,7 +44,6 @@ def test_phantom_appends_one_detection():
 
 
 def test_phantom_registers_in_avstack_hooks():
-    pytest.importorskip("avstack")
     from avstack.config import HOOKS
 
     assert "PhantomInjection" in HOOKS.module_dict

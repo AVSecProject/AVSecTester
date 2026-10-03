@@ -116,3 +116,53 @@ def test_empty_runs_are_inconclusive(make_trace):
     result = impact(make_trace([]), make_trace([]))
     assert not result.attack_succeeded
     assert result.verdict.startswith("INCONCLUSIVE")
+
+
+@pytest.mark.parametrize("overdrive_frames,success", [(2, False), (3, True)])
+def test_hiding_requires_a_sustained_suppression_of_the_clean_stop(
+    make_trace, overdrive_frames, success
+):
+    clean = make_trace([0, 3] + [0] * overdrive_frames)
+    attacked = make_trace([0, 3] + [3] * overdrive_frames)
+
+    result = impact(clean, attacked)
+
+    assert result.overdrive_frames == overdrive_frames
+    assert result.suppressed_stop is success
+    assert result.attack_succeeded is success
+    assert not result.induced_stop
+    if success:
+        assert "suppressed a safe stop" in result.verdict
+
+
+def test_hiding_success_survives_a_late_stop(make_trace):
+    clean = make_trace([0, 3, 0, 0, 0, 0])
+    attacked = make_trace([0, 3, 3, 3, 3, 0])
+
+    result = impact(clean, attacked)
+
+    assert result.attacked_final_speed == 0
+    assert result.overdrive_frames == 3
+    assert result.suppressed_stop and result.attack_succeeded
+
+
+def test_hiding_without_a_driving_baseline_is_inconclusive(make_trace):
+    result = impact(make_trace([0, 0, 0, 0]), make_trace([0, 3, 3, 3]))
+
+    assert result.overdrive_frames == 3
+    assert not result.attack_succeeded
+    assert result.verdict.startswith("INCONCLUSIVE")
+
+
+def test_hiding_uses_custom_duration_and_speed_thresholds(make_trace):
+    clean = make_trace([0, 3, 0.7, 0.7, 0.7])
+    attacked = make_trace([0, 3, 2.0, 2.1, 2.1])
+    options = dict(stop_speed=0.7, baseline_speed=2.0)
+
+    result = impact(clean, attacked, min_overdrive_frames=2, **options)
+
+    # At the baseline speed the attacked ego does not count as overdriving;
+    # at the stop threshold the clean ego does count as stopped.
+    assert result.overdrive_frames == 2
+    assert result.suppressed_stop and result.attack_succeeded
+    assert not impact(clean, attacked, min_overdrive_frames=3, **options).attack_succeeded

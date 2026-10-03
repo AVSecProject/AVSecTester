@@ -86,6 +86,9 @@ def test_cli_loads_config_and_runs_clean_then_attacked(
         ([0, 2, 5], [0, 2, 5], [0, 0, 0], 1, "no impact"),
         ([0, 2, 5], [0, 2, 2], [0, 1, 1], 1, "ATTACK INDUCED BRAKING"),
         ([0, 0.1, 0.1], [0, 0, 0], [0, 1, 1], 2, "INCONCLUSIVE"),
+        ([0, 3, 0, 0, 0], [0, 3, 3, 3, 3], [0] * 5, 0, "suppressed a safe stop"),
+        ([0, 3, 0, 0], [0, 3, 3, 3], [0] * 4, 1, "no impact"),
+        ([0, 0, 0, 0], [0, 3, 3, 3], [0] * 4, 2, "INCONCLUSIVE"),
     ],
 )
 def test_cli_exit_code_matches_verdict(
@@ -115,7 +118,7 @@ def test_cli_exit_code_matches_verdict(
 
 
 def test_cli_optional_plot_creates_file(monkeypatch, cli_config, make_trace, tmp_path):
-    pytest.importorskip("matplotlib")
+    import matplotlib  # noqa: F401
     path, _ = cli_config
     monkeypatch.setattr(
         scenario,

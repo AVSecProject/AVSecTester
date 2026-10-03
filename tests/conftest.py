@@ -101,22 +101,26 @@ def make_ego():
 
 
 @pytest.fixture
-def make_pipeline():
-    from avstack.config import PIPELINE
+def pipeline_config():
+    return dict(
+        type="ModularDrivingPipeline",
+        perception=dict(type="Passthrough3DObjectDetector"),
+        tracking=dict(type="BasicBoxTracker3D"),
+        planning=dict(type="ForwardCollisionPlanner", target_speed=6.0),
+        control=dict(
+            type="VehiclePIDController",
+            args_lateral=dict(K_P=1.0, K_D=0.0, K_I=0.0),
+            args_longitudinal=dict(K_P=0.5, K_D=0.0, K_I=0.0),
+        ),
+    )
+
+
+@pytest.fixture
+def make_pipeline(pipeline_config):
+    from avsectester.stacks.modular import ModularAVStack
 
     def make():
-        return PIPELINE.build(
-            dict(
-                type="ModularDrivingPipeline",
-                perception=dict(type="Passthrough3DObjectDetector"),
-                tracking=dict(type="BasicBoxTracker3D"),
-                planning=dict(type="ForwardCollisionPlanner", target_speed=6.0),
-                control=dict(
-                    type="VehiclePIDController",
-                    args_lateral=dict(K_P=1.0, K_D=0.0, K_I=0.0),
-                    args_longitudinal=dict(K_P=0.5, K_D=0.0, K_I=0.0),
-                ),
-            )
-        )
+        # Register modules explicitly, so an individual test also works in a fresh process.
+        return ModularAVStack(pipeline_config).pipeline
 
     return make

@@ -13,6 +13,19 @@
     uv run python <AVSecTester>/scripts/alpamayo_nurec_demo.py 8 --save-frames --gpu 1
   ```
 
+- **`nurec_object_demo.py`** — insert a fake object into a NuRec scene, clean vs attacked side by
+  side: `--object stop | standee | billboard`; `--mode roadside` places it on the shoulder
+  (world-anchored, ray-cast through the f-theta camera), `--mode vehicle` on the lead vehicle's rear.
+  Compares harmonizers (`--harmonizer none classic chroma libcom`); `--eval` scores a COCO detector on
+  it. See `docs/IMAGE_ATTACKS.md`.
+- **`alpamayo_attack_demo.py`** — closed loop: the real Alpamayo-1.5 drives the NuRec scene clean and
+  with an inserted object in its camera; records speed and Alpamayo's reasoning text per frame and the
+  impact verdict. Runs in the AlpaSim driver env.
+- **`nuscenes_object_demo.py`** — the same objects inserted into real nuScenes `CAM_FRONT` photos
+  (pinhole camera from each image's calibration), day and night, with an optional detector check.
+- **`extract_person_cutouts.py`** — cut full-body pedestrians out of nuScenes images with SAM
+  (RGBA assets for the standee / billboard objects; kept outside the repo, CC BY-NC-SA).
+
 The **CARLA modular demo** is not a script — it's the CLI, `avsectester run` (see `avsectester/cli.py`).
 It needs the `avsec` conda env with the `[avstack]` extras and a running CARLA server
 (see `docs/SETUP.md` / `docs/DOCKER.md`). Neither demo is part of `pytest`, which stays hardware-free.

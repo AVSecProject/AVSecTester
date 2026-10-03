@@ -25,7 +25,7 @@ import sys
 from pathlib import Path
 
 import yaml
-from avsectester.attacks.physical_patch import checkerboard_rgba, image_rgba
+from avsectester.attacks.patch.physical_patch import checkerboard_rgba, image_rgba
 from avsectester.backend import AVStack
 from avsectester.metric import impact, plot_impact
 from avsectester.plane import Control
