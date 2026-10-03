@@ -199,11 +199,13 @@ def test_modular_stack_counts_detections_after_attack(pipeline_config, make_dete
 
     stack = ModularAVStack(pipeline_config)
     stack.attach("perception", {"type": "PhantomInjection"})
-    stack.attach_counter()
+    stack.instrument(stages=("perception",))  # capture last, so it sees the attacked output
+    counts = []
     for frame in range(3):
         detections = make_detections([(30, 8, 0)], frame=frame)
         observation = Observation(t=frame * 0.05, frame=frame, sensor_data=detections,
                                   vehicle_state=make_ego(t=frame * 0.05))
         assert isinstance(stack(observation), Control)
+        counts.append(len(stack.component_log()["perception"]))
 
-    assert stack.detection_counts == [2, 2, 2]  # original object plus injected phantom, every frame
+    assert counts == [2, 2, 2]  # original object plus injected phantom, every frame

@@ -61,6 +61,7 @@ def run(
     stack: AVStack,
     frames: int,
     perturb: Callable[[Observation], Observation] | None = None,
+    on_step: Callable[[int, Observation, Control], None] | None = None,
 ) -> Trace:
     """Drive ``stack`` in ``backend`` for ``frames`` steps and return the driving :class:`Trace`.
 
@@ -68,6 +69,10 @@ def run(
     attack seam, and it is not part of the sim<->stack contract. The Trace always records the
     backend's **true** ego state, never the perturbed observation, so scoring is honest even when the
     box is being fed a spoofed view.
+
+    ``on_step(i, seen, control)`` (optional) is called after each ``stack(seen)`` — a generic
+    instrumentation point (e.g. to pull the stack's per-frame component log for in-system analysis);
+    it cannot change the control or the Trace.
     """
     obs = backend.reset()
     stack.reset(obs)
@@ -75,6 +80,8 @@ def run(
     for i in range(frames):
         seen = perturb(obs) if perturb is not None else obs
         control = stack(seen)
+        if on_step is not None:
+            on_step(i, seen, control)
         obs = backend.step(control)
         trace.records.append(
             FrameRecord(

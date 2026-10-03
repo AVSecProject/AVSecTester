@@ -26,7 +26,7 @@ from avstack.config import (  # noqa: F401  (tests patch scenario.{HOOKS,PIPELIN
     PIPELINE,
 )
 
-from avsectester.backend import run
+from avsectester.evaluation.component_log import run_logged
 from avsectester.plane import Trace
 from avsectester.simulators.carla import (
     CarlaBackend,
@@ -57,7 +57,7 @@ def run_scenario(
 
     Assembles a :class:`~avsectester.simulators.carla.CarlaBackend` (world + ego + traffic) and a
     :class:`~avsectester.stacks.modular.ModularAVStack` (the AV box), attaches any modular ``attacks``
-    as hooks on the stack's pipeline, and drives them with :func:`avsectester.backend.run`. ``patches``
+    as hooks on the stack's pipeline, and drives them with :func:`run_logged`. ``patches``
     are world-level physical-patch attacks applied by the backend at reset (pass them only for the
     attacked run). ``replay_scenario`` (actual spawn transforms) is carried on the returned Trace for a
     paired run; strict-spawn replay is always used.
@@ -67,12 +67,12 @@ def run_scenario(
     stack = ModularAVStack(scenario["ego"]["pipeline"])
     for atk in attacks or []:
         stack.attach(atk["stage"], atk["hook"])
-    stack.attach_counter()
+    stack.instrument(stages=("perception",))  # per-frame detection telemetry via the common log interface
     try:
-        trace = run(backend, stack, frames)
+        trace, components = run_logged(backend, stack, frames)
         trace.replay_scenario = backend.replay_scenario
-        for record, n in zip(trace.records, stack.detection_counts):
-            record.n_detections = n
+        for record, step in zip(trace.records, components.steps):
+            record.n_detections = step.count("perception")
     finally:
         backend.close()
     return trace

@@ -180,5 +180,11 @@ object model (`serialize`) is the source of truth; NL is a front-end onto it.
 
    The earlier detector-labeling fallback (`DetectorLabeler`/`ImageFolder`/`FrameSource`) is **removed** —
    both datasets now have real 3-D labels, so deriving `SceneGT` from a 2-D detector had no remaining use.
-6. **Eval harness — TODO.** `avsectester/evaluation/` — run a `ScenarioSource` × an attack, score with
-   `metric.impact`, aggregate to an attack success rate + report.
+6. **Eval harness — DONE.** `avsectester/evaluation/robustness.py:evaluate_robustness` runs a
+   `ScenarioSource` × an attack × a **corruption suite** (`simulators.augment`): for each scenario and
+   each condition (clean baseline + each `AugmentationPipeline`) it drives clean-vs-attacked under the
+   *same* corruption and scores with `metric.impact`. `RobustnessReport` aggregates
+   `impact.attack_succeeded` into an **attack success rate (ASR)** per condition and a **resilience**
+   (`ASR(corruption)/ASR(clean)`, a Robo3D-mRR-style retention rate) + `mean_resilience`. The attack is
+   injected (`attack_for(match, backend) -> perturb`), so the harness is attack-agnostic. Tested with a
+   closed-loop stub (`tests/test_robustness.py`).
