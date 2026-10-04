@@ -63,7 +63,7 @@ def test_saved_steps_pair_reasoning_with_post_step_trace(demo, monkeypatch, tmp_
     def load_model(stack):
         stack._model = Model()
 
-    # Keep the real stack adapter, run loop and trajectory follower; replace only external inputs.
+    # Keep the real stack adapter, run loop and trajectory follower. Replace only external inputs.
     monkeypatch.setattr(demo, "NuRecRenderer", Renderer)
     monkeypatch.setattr(demo.AlpamayoAVStack, "_load", load_model)
     monkeypatch.setattr(demo.AlpamayoAVStack, "_prediction_input", lambda self, obs: obs)

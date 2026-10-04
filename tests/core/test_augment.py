@@ -106,7 +106,7 @@ def test_albumentations_backend_corrupts_deterministically_and_lifts():
         assert a.shape == img.shape and a.dtype == np.uint8
         assert not np.array_equal(a, img)                    # actually corrupts
         assert np.array_equal(a, pipe.apply(img, frame=2))   # deterministic given (seed, frame)
-    # same seed -> identical across a "pair"; the operator name records the backend
+    # same seed -> identical across a "pair". The operator name records the backend
     p1 = AugmentationPipeline(suite[0].corruptions, seed=5)
     p2 = AugmentationPipeline(suite[0].corruptions, seed=5)
     assert np.array_equal(p1.apply(img, 1), p2.apply(img, 1))

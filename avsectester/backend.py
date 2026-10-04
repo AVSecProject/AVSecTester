@@ -4,7 +4,7 @@
     AVStack      : (observation) -> Control                     (modular pipeline OR end-to-end model)
 
 Both are deliberately ignorant of each other's internals. The backend owns world state and the
-shared vehicle dynamics; the AV box owns the driving decision. Neither knows whether the other is
+shared vehicle dynamics. The AV box owns the driving decision. Neither knows whether the other is
 CARLA vs a neural-reconstruction world model, or a modular perception->planning->control pipeline
 vs a single end-to-end model. Like :mod:`avsectester.plane`, this module imports nothing from
 avstack/avcarla/carla — the backend and stack *implementations* carry those dependencies.
@@ -21,7 +21,7 @@ from .plane import Control, FrameRecord, Observation, Trace
 class WorldBackend(ABC):
     """A world that renders sensor data and applies shared physical control.
 
-    Owns the world state and the ego dynamics; the AV stack never sees world state, only the
+    Owns the world state and the ego dynamics. The AV stack never sees world state, only the
     :class:`~avsectester.plane.Observation`. ``step`` applies a :class:`~avsectester.plane.Control`
     through the shared physics, advances the world + traffic, renders the next sensors, and returns
     the next Observation. The causal invariant (so the loop serializes over gRPC): a control at
@@ -38,6 +38,14 @@ class WorldBackend(ABC):
 
     def close(self) -> None:
         """Release simulator resources. Optional."""
+
+    def prepare_clean_attack_pair(self) -> None:
+        """Prepare consecutive resets to replay one initial scene for clean and attack.
+
+        Deterministic backends need no extra preparation. Backends with random scene choices or
+        spawn fallback must resolve them once and replay the first run's actual initial settings.
+        Subsequent world dynamics remain responsive to each run's controls.
+        """
 
 
 class AVStack(ABC):
@@ -71,7 +79,7 @@ def run(
     box is being fed a spoofed view.
 
     ``on_step(i, seen, control)`` (optional) is called after each ``stack(seen)`` — a generic
-    instrumentation point (e.g. to pull the stack's per-frame component log for in-system analysis);
+    instrumentation point (e.g. to pull the stack's per-frame component log for in-system analysis).
     it cannot change the control or the Trace.
     """
     obs = backend.reset()

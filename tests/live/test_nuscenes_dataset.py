@@ -31,7 +31,7 @@ def test_reads_real_nuscenes_gt_and_filters():
     ds = NuScenesDataset(_ROOT, max_samples=80)
     hits = list(DatasetFilter(ds).scenarios(REQ))
     assert hits, "expected some qualifying frames among 80 real keyframes"
-    target = hits[0].target.target             # ScenarioInstance.target is a ScenarioMatch; .target = ObjectGT
+    target = hits[0].target.target             # ScenarioInstance.target is a ScenarioMatch. .target = ObjectGT
     assert target.category == "vehicle" and "front" in target.box2d
     assert 4.0 <= target.distance <= 25.0        # in the physical-patch distance band
     assert min(target.extent) > 0                # a real 3-D box has non-zero size (drives 3-D drawing)

@@ -2,7 +2,7 @@
 
 After the interface split, ``run_scenario`` assembles a :class:`~avsectester.scenario.CarlaBackend`
 (client + ego + traffic, senses/actuates) and a :class:`~avsectester.scenario.ModularAVStack` (the AV
-box), and drives them with :func:`avsectester.backend.run`. These tests mock ``CARLA.build`` (the
+box), and drives them with :func:`avsectester.evaluation.run_logged`. These tests mock ``CARLA.build`` (the
 simulator objects) and ``PIPELINE.build`` (the AV pipeline) so the runner's own logic — frame
 recording, hook order + attacked detection counts, replay-spawn capture, NPC handling, cleanup on
 failure, and the sensor-delivery wait — is exercised without a live simulator.
@@ -267,7 +267,7 @@ def test_ego_destroy_failure_still_cleans_up_npcs(simulation):
 
 def test_runner_waits_for_delayed_sensor_data(simulation):
     sim = simulation
-    # reset's observe finds data immediately; the single step's observe waits two polls for it.
+    # reset's observe finds data immediately. The single step's observe waits two polls for it.
     sim.ego.sensor_data_manager.empty.side_effect = [False, True, True, False]
     trace = scenario.run_scenario(sim.config, frames=1, settle_iters=4)
     assert len(trace.records) == 1
@@ -283,3 +283,66 @@ def test_gpu_override_changes_only_perception_device(gpu):
         expected["ego"]["pipeline"]["perception"]["gpu"] = gpu
     assert scenario.set_perception_gpu(config, gpu) is config
     assert config == expected
+
+
+def test_paired_backend_replays_actual_spawns_and_releases_old_actors(simulation, monkeypatch):
+    from avsectester.simulators import carla as carla_backend
+
+    sim = simulation
+    prepared = deepcopy(sim.config)
+    prepared["client"].update(seed=17, traffic_manager_seed=17, reset_world=True,
+                              strict_spawn=False)
+    prepare = Mock(return_value=prepared)
+    monkeypatch.setattr(carla_backend, "prepare_scenario", prepare)
+    groups = [(sim.ego, sim.npcs), (deepcopy(sim.ego), deepcopy(sim.npcs))]
+    calls = []
+    generation = -1
+    npc_index = 0
+
+    def build(config, default_args=None):
+        nonlocal generation, npc_index
+        calls.append(deepcopy(config))
+        if config["type"] == "CarlaClient":
+            generation += 1
+            npc_index = 0
+            if generation:
+                sim.ego.destroy.assert_called_once()
+                sim.client.close.assert_called_once()
+                for npc in sim.npcs:
+                    npc.destroy.assert_called_once()
+            return sim.client
+        if config["type"] == "CarlaMobileActor":
+            return groups[generation][0]
+        npc = groups[generation][1][npc_index]
+        npc_index += 1
+        return npc
+
+    sim.registry.side_effect = build
+    backend = carla_backend.CarlaBackend(sim.config)
+    try:
+        backend.prepare_clean_attack_pair()
+        assert backend.scenario == sim.config  # pair preparation preserves the user's random config
+        backend.reset()
+        replay = deepcopy(backend.replay_scenario)
+        backend.reset()
+        assert len(backend.npcs) == 2
+        assert backend.npcs == groups[1][1]
+        assert calls[0]["strict_spawn"] is False
+        assert calls[4]["strict_spawn"] is True
+        assert calls[4]["seed"] == calls[0]["seed"] == 17
+        assert calls[5]["spawn_transform"] == replay["ego"]["spawn_transform"]
+        assert calls[6]["spawn_transform"] == replay["npcs"][0]["spawn_transform"]
+        assert calls[7]["spawn_transform"] == replay["npcs"][1]["spawn_transform"]
+        # Old NPCs were initialized only during clean. Attack uses fresh actors.
+        for npc in sim.npcs:
+            npc.initialize.assert_called_once()
+        prepare.assert_called_once()
+    finally:
+        backend.close()
+    for ego, npcs in groups:
+        ego.destroy.assert_called_once()
+        for npc in npcs:
+            npc.destroy.assert_called_once()
+    assert backend.ego is None and backend.npcs == []
+    backend.close()  # cleanup is idempotent
+    assert sim.client.close.call_count == 2

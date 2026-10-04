@@ -1,6 +1,6 @@
 """Attack-robustness harness — does the attack still succeed under sensor corruption?
 
-The scenario layer yields *which* scenes qualify for an attack; the augmentation layer yields *under
+The scenario layer yields *which* scenes qualify for an attack. The augmentation layer yields *under
 which conditions* to test it. This harness runs the grid: for every qualifying
 :class:`~avsectester.scenarios.source.ScenarioInstance`, and every corruption condition (a clean baseline
 plus each :class:`~avsectester.simulators.augment.AugmentationPipeline`), it drives the scenario twice —
@@ -16,14 +16,15 @@ retention rate (cf. Robo3D's mRR): 1.0 means the corruption did not blunt the at
 neutralised it.
 
 The attack itself is injected as ``attack_for(match, backend) -> perturb`` so the harness is
-attack-agnostic; the corruption suite defaults to :func:`~avsectester.simulators.augment.common_corruptions`.
+attack-agnostic. The corruption suite defaults to :func:`~avsectester.simulators.augment.common_corruptions`.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from dataclasses import dataclass, field, replace
+from math import isnan
+from typing import TYPE_CHECKING, Literal
 
 from avsectester.backend import run as _run_loop
 from avsectester.metric import impact
@@ -43,6 +44,17 @@ if TYPE_CHECKING:
 Perturb = Callable[["Observation"], "Observation"]
 AttackFor = Callable[["ScenarioMatch", object], Perturb | None]
 _CLEAN = "clean"
+OutcomeStatus = Literal["success", "failure", "skipped", "inconclusive"]
+
+
+@dataclass(frozen=True)
+class ScenarioResult:
+    """One attempted pair, including why it was excluded from the valid-experiment count."""
+
+    scenario_id: str
+    condition: str
+    status: OutcomeStatus
+    reason: str = ""
 
 
 @dataclass
@@ -50,44 +62,57 @@ class ConditionResult:
     """Aggregated attack outcome for one corruption condition across all scenarios."""
 
     condition: str
-    n: int = 0
     successes: int = 0
+    failures: int = 0
+    skipped: int = 0
+    inconclusive: int = 0
+
+    @property
+    def n(self) -> int:
+        """Number of valid pairs. Skipped and inconclusive attempts are reported separately."""
+        return self.successes + self.failures
 
     @property
     def asr(self) -> float:
-        """Attack success rate — fraction of scenarios where the attack succeeded under this condition."""
-        return self.successes / self.n if self.n else 0.0
+        """Success fraction among valid pairs. NaN when there are no valid pairs."""
+        return self.successes / self.n if self.n else float("nan")
 
 
 @dataclass
 class RobustnessReport:
     """The robustness grid: attack success per (scenario, condition), aggregated per condition.
 
-    ``rows`` are the raw ``(scenario_id, condition, succeeded)`` outcomes; ``per_condition`` the ASR per
-    condition; ``baseline`` names the clean condition the resiliences are relative to."""
+    ``rows`` retain each attempt's status and reason. ``per_condition`` aggregates valid outcomes and
+    excluded attempts separately. ``baseline`` names the condition the resiliences are relative to."""
 
     per_condition: dict[str, ConditionResult] = field(default_factory=dict)
-    rows: list[tuple[str, str, bool]] = field(default_factory=list)
+    rows: list[ScenarioResult] = field(default_factory=list)
     baseline: str = _CLEAN
 
-    def record(self, scenario_id: str, condition: str, succeeded: bool) -> None:
-        self.rows.append((scenario_id, condition, succeeded))
+    def record(self, scenario_id: str, condition: str, status: OutcomeStatus,
+               reason: str = "") -> None:
+        counter = {"success": "successes", "failure": "failures",
+                   "skipped": "skipped", "inconclusive": "inconclusive"}[status]
+        self.rows.append(ScenarioResult(scenario_id, condition, status, reason))
         cr = self.per_condition.setdefault(condition, ConditionResult(condition))
-        cr.n += 1
-        cr.successes += int(succeeded)
+        setattr(cr, counter, getattr(cr, counter) + 1)
 
     @property
     def baseline_asr(self) -> float:
         cr = self.per_condition.get(self.baseline)
-        return cr.asr if cr else 0.0
+        return cr.asr if cr else float("nan")
 
     def resilience(self, condition: str) -> float:
         """``ASR(condition) / ASR(baseline)`` clamped to [0, 1] — how much of the attack survives the
-        corruption. Undefined (returns 0.0) when the attack never succeeded even clean."""
+        corruption. Returns NaN when either condition has no valid pairs. The existing zero-baseline
+        convention (0.0 when the attack never succeeded clean) is retained."""
         base = self.baseline_asr
+        current = self.per_condition[condition].asr
+        if isnan(base) or isnan(current):
+            return float("nan")
         if base <= 0.0:
             return 0.0
-        return min(1.0, self.per_condition[condition].asr / base)
+        return min(1.0, current / base)
 
     @property
     def mean_resilience(self) -> float:
@@ -96,14 +121,37 @@ class RobustnessReport:
         return sum(self.resilience(c) for c in corruptions) / len(corruptions) if corruptions else 0.0
 
     def summary(self) -> str:
+        def percent(value: float) -> str:
+            return "N/A" if isnan(value) else f"{value:.0%}"
+
         n = self.per_condition.get(self.baseline, ConditionResult("")).n
-        lines = [f"Attack robustness over {n} scenario(s) — baseline ASR = {self.baseline_asr:.0%}",
-                 f"{'condition':<28} {'ASR':>6} {'resilience':>11}"]
+        lines = [f"Attack robustness — {n} valid baseline pair(s). "
+                 f"baseline ASR = {percent(self.baseline_asr)}",
+                 f"{'condition':<28} {'valid':>6} {'skipped':>8} {'inconclusive':>12} "
+                 f"{'ASR':>6} {'resilience':>11}"]
         for name, cr in sorted(self.per_condition.items(), key=lambda kv: (kv[0] != self.baseline, kv[0])):
-            res = "  (baseline)" if name == self.baseline else f"{self.resilience(name):>10.0%}"
-            lines.append(f"{name:<28} {cr.asr:>6.0%} {res:>11}")
-        lines.append(f"{'mean resilience (corruptions)':<28} {'':>6} {self.mean_resilience:>10.0%}")
+            res = "(baseline)" if name == self.baseline else percent(self.resilience(name))
+            lines.append(f"{name:<28} {cr.n:>6} {cr.skipped:>8} {cr.inconclusive:>12} "
+                         f"{percent(cr.asr):>6} {res:>11}")
+        lines.append(f"mean resilience (corruptions): {percent(self.mean_resilience)}")
         return "\n".join(lines)
+
+
+def _condition_perturbation(pipeline: AugmentationPipeline | None, camera: str) -> Perturb | None:
+    """Seed corruption by relative frame, since simulator frame IDs can differ after a reset."""
+    if pipeline is None:
+        return None
+    augment = sensor_augmentation(pipeline, camera=camera)
+    first_frame = None
+
+    def perturb(obs: Observation) -> Observation:
+        nonlocal first_frame
+        if first_frame is None:
+            first_frame = obs.frame
+        augmented = augment(replace(obs, frame=obs.frame - first_frame))
+        return replace(augmented, frame=obs.frame)
+
+    return perturb
 
 
 def evaluate_robustness(
@@ -122,8 +170,9 @@ def evaluate_robustness(
 
     For each :class:`ScenarioInstance` from ``source.scenarios(req, limit)`` and each condition (a clean
     baseline first, then each corruption pipeline — default :func:`common_corruptions` at ``severity``),
-    build a fresh backend, run clean-vs-attacked under that condition, and record
-    ``impact(...).attack_succeeded``. ``stack`` is a factory (a fresh AV box per run); ``attack_for`` maps
+    build a fresh backend, prepare a repeatable pair, and run clean-vs-attacked under that condition.
+    Skipped attacks and inconclusive driving baselines are excluded from the valid-pair count.
+    ``stack`` is a factory (a fresh AV box per run). ``attack_for`` maps
     a scenario's target + its backend to the attack ``perturb`` (or None to skip). ``run_fn`` is injectable
     for testing.
     """
@@ -141,11 +190,25 @@ def evaluate_robustness(
         for name, pipeline in labelled:
             backend = instance.make_backend()
             try:
-                aug = sensor_augmentation(pipeline, camera=match.camera) if pipeline is not None else None
                 attack = attack_for(match, backend)
-                clean = run_fn(backend, stack(), frames, perturb=aug)
-                attacked = run_fn(backend, stack(), frames, perturb=compose(attack, aug))
+                if attack is None:
+                    report.record(scenario_id, name, "skipped", "Attack factory returned None")
+                    continue
+                backend.prepare_clean_attack_pair()
+                clean = run_fn(backend, stack(), frames,
+                               perturb=_condition_perturbation(pipeline, match.camera))
+                attacked = run_fn(
+                    backend, stack(), frames,
+                    perturb=compose(attack, _condition_perturbation(pipeline, match.camera)),
+                )
             finally:
                 backend.close()
-            report.record(scenario_id, name, impact(clean, attacked).attack_succeeded)
+            # TODO: Select success criteria by experiment/benchmark. impact currently only scores
+            # induced/suppressed stops. It is not a universal definition of attack success.
+            result = impact(clean, attacked)
+            if not result.clean_drove:
+                report.record(scenario_id, name, "inconclusive", result.verdict)
+            else:
+                status = "success" if result.attack_succeeded else "failure"
+                report.record(scenario_id, name, status, result.verdict)
     return report

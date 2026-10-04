@@ -30,7 +30,7 @@ environment, keep its compatible torch installation and install only the test ex
 ## Offline avstack tests
 
 These tests use the real avstack implementation. They replace the CARLA server-facing objects
-and use synthetic detections instead of neural inference; no server, CUDA or checkpoints are needed.
+and use synthetic detections instead of neural inference. No server, CUDA or checkpoints are needed.
 
 After installing the core test dependencies:
 
@@ -47,19 +47,21 @@ NO_ALBUMENTATIONS_UPDATE=1 python -m pytest -q
 
 The adapters are installed with `--no-deps` because their full dataset/Open3D dependencies and
 legacy sibling-path declarations are unnecessary for this suite. The commands above install
-the imports exercised by these tests. This is an offline test environment; use
+the imports exercised by these tests. This is an offline test environment. Use
 [SETUP.md](../docs/SETUP.md) for neural perception or real dataset workflows.
 
 ## Functional coverage
 
 Attack tests mirror the implementation families under `core/attacks/` and `avstack/attacks/`.
-Shared camera and compositing tests live under `core/simulators/`; experiment-script tests live
+Shared camera and compositing tests live under `core/simulators/`. Experiment-script tests live
 under `core/scripts/`. The `core`, `avstack` and `live` dependency groups remain unchanged, and
 pytest/CI collect their subdirectories recursively.
 
 | Tests | Behavior exercised |
 |---|---|
-| `core/test_interface.py` | Per-step controls affect subsequent true state; replacement attack observations reach the stack without falsifying the recorded state |
+| `core/test_interface.py` | Per-step controls affect subsequent true state. Replacement attack observations reach the stack without falsifying the recorded state |
+| `core/test_component_log.py` | Output snapshots, named component collection and count differences |
+| `core/test_robustness.py` | Clean/attack preparation, corruption alignment, status accounting, valid denominators and failure cleanup |
 | `core/test_metric.py` | Induced stops, suppressed safe stops, duration/speed thresholds, late stops, inconclusive baselines |
 | `core/test_alpamayo.py` | Camera history padding/order, ego history, model vs simulation clocks, candidate selection, plan chaining, experiment reset |
 | `core/test_nurec.py` | Dynamics, stub-rendered closed loop, reset, checkpoint replay, trajectory interpolation and rig-to-world conversion |
@@ -73,6 +75,7 @@ pytest/CI collect their subdirectories recursively.
 | `core/test_scenarios.py`, `core/test_recorded_backend.py` | Scene constraints/filtering and recorded-image playback without full datasets |
 | `core/test_sim_viz.py` | Camera/LiDAR views, projected labels/boxes and saved frames |
 | `avstack/attacks/pipeline/test_phantom.py` | Attack registration, detection preservation, moving/empty source frames and phantom geometry |
+| `avstack/test_component_log_real.py` | Historical plans/tracks/reference frames, unchanged controls under logging, attack hook ordering and matching metrics |
 | `avstack/test_pipeline.py` | Real tracking/planning/PID propagation, hook output replacement and the `ModularAVStack` adapter |
 | `avstack/test_scenario.py`, `avstack/test_reproducibility.py` | Actor setup/cleanup, hook ordering, scene resolution and actual spawn replay |
 | `avstack/test_cli.py` | YAML/overrides, clean/attacked calls, verdict exit codes and plotting |
@@ -82,6 +85,11 @@ They validate our adapter, not AlpaSim API compatibility, checkpoint loading or 
 NuRec core tests use `StubRenderer`, not the rendering service. The avstack propagation tests
 exercise real tracking/planning/control against constructed observations, not CARLA physics.
 
+The offline suites cover the existing interfaces and the regressions described above. They do not
+establish full system coverage. CARLA physics and sensor timing need live runs. NuRec RPC compatibility,
+real Alpamayo inference, neural attack effectiveness and long-running resource use still need dedicated
+integration validation. The optional GPU test below checks detector output capture only.
+
 ## GitHub Actions
 
 [ci.yml](../.github/workflows/ci.yml) runs on pull requests, pushes to `main`, and manual dispatch.
@@ -90,7 +98,7 @@ It uses Ubuntu 22.04 / Python 3.11 with three parallel checks:
 - `core-tests`: core suite, then wheel build and CLI startup from a fresh installation outside
   the checkout, without the source tree on `PYTHONPATH`.
 - `avstack-tests`: avstack suite at the main repository's recorded submodule revisions.
-- `lint`: Ruff correctness checks on `avsectester/` and `tests/`; no third-party lint or formatting gate.
+- `lint`: Ruff correctness checks on `avsectester/` and `tests/`. No third-party lint or formatting gate.
 
 The workflow caches downloaded dependencies and cancels superseded runs on the same PR/branch.
 JUnit and coverage reports remain available as artifacts for seven days, including after a test
@@ -103,7 +111,7 @@ that policy. The workflow does not publish packages or images.
 
 ## Live tests
 
-Select these explicitly; they are outside the default offline test paths.
+Select these explicitly. They are outside the default offline test paths.
 
 For CARLA, use a dedicated **0.9.16** server with the full perception environment and downloaded
 model checkpoints. The test reloads the world and spawns actors:
@@ -127,6 +135,18 @@ AVSECTESTER_NUREC_ROOT=/path/to/sample_set/26.01_release \
   python -m pytest tests/live/test_nurec_dataset.py -q
 ```
 
-The nuScenes test needs `v1.0-trainval` and the devkit. The NuRec tests use the two scene UUIDs
-listed in `live/test_nurec_dataset.py`. Dataset tests skip when their required artifacts are absent;
-a skipped dataset test does not establish dataset-reader correctness.
+The nuScenes test needs `v1.0-trainval` and the devkit. The NuRec tests use the scene UUID
+listed in `live/test_nurec_dataset.py`. Dataset tests skip when their required artifacts are absent.
+A skipped dataset test does not establish dataset-reader correctness.
+
+The optional GPU capture test uses the same nuScenes root variable. It also needs the CARLA-trained
+Faster R-CNN checkpoint at the path declared in `live/test_component_log_gpu.py`, the full detector
+environment and an available GPU:
+
+```bash
+AVSECTESTER_NUSCENES_ROOT=/path/to/nuscenes AVSECTESTER_TEST_GPU=0 \
+  python -m pytest tests/live/test_component_log_gpu.py -q
+```
+
+It checks that the detector's post-hook observes its returned output. It does not require nonempty
+detections or claim accuracy on nuScenes with CARLA-trained weights.

@@ -1,7 +1,7 @@
 """Component-level logging — gather per-frame, per-layer stack outputs for in-system attack analysis.
 
 The stack already knows how to expose its component outputs (``ModularAVStack.instrument`` attaches an
-avstack post-hook per stage and ``component_log()`` returns ``{stage: output}``); this module just
+avstack post-hook per stage and ``component_log()`` returns ``{stage: output}``). This module just
 *gathers* those per-frame snapshots across a run and *processes* them. :func:`run_logged` is the
 instrumented twin of :func:`avstack.backend.run` — same loop (via its ``on_step`` hook), but it also
 collects the stack's ``component_log()`` each frame into a :class:`ComponentTrace`.
@@ -16,6 +16,7 @@ how it ripples forward — which needs no ground truth.
 from __future__ import annotations
 
 from collections.abc import Callable
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -35,11 +36,11 @@ class InstrumentedStack(Protocol):
     *already-produced* ("free") outputs — no bespoke schema — so it fits either stack shape:
 
     * **modular** (``ModularAVStack``): one key per pipeline stage, ``{"perception": detections,
-      "tracking": tracks, "planning": plan, "control": control}`` (captured via avstack post-hooks);
+      "tracking": tracks, "planning": plan, "control": control}`` (captured via avstack post-hooks).
     * **end-to-end** (``AlpamayoAVStack``): ``{"policy": prediction, "action": control}`` from what the
       policy already returns (candidate trajectories + the emitted command). Sparse, but the same contract.
 
-    :func:`run_logged` collects whatever keys a stack emits; :class:`ComponentTrace` processes them
+    :func:`run_logged` collects whatever keys a stack emits. :class:`ComponentTrace` processes them
     uniformly (counts/degradation per key). Keeping the interface alive for the E2E stack now means the
     logger and report need no change when the E2E stack later exposes more.
     """
@@ -91,7 +92,7 @@ class ComponentTrace:
 
     def performance(self, stage: str, truths: list[Any], assign_radius: float = 4.0) -> list[Any]:
         """Per-frame detection/tracking performance of ``stage`` vs ground truth, reusing avstack's
-        ``get_instantaneous_metrics`` (returns its per-frame metrics object; needs ``truths[i]`` — the GT
+        ``get_instantaneous_metrics`` (returns its per-frame metrics object. Needs ``truths[i]`` — the GT
         objects for frame ``i`` — in a matching reference frame)."""
         from avstack.metrics import get_instantaneous_metrics
 
@@ -118,7 +119,9 @@ def run_logged(
 
     def _capture(i: int, seen: Observation, control: Any) -> None:
         if instrumented:
-            component.steps.append(StepLog(frame=i, stages=dict(stack.component_log() or {})))
+            # Tracks, plans and their reference frames are mutable across steps. Copy the
+            # complete output graph now, while preserving shared references within this step.
+            component.steps.append(StepLog(frame=i, stages=deepcopy(stack.component_log() or {})))
 
     trace = _run_loop(backend, stack, frames, perturb=perturb, on_step=_capture)
     return trace, component
