@@ -1,6 +1,6 @@
 """Our Alpamayo adapter, using schema stand-ins and a model with prescribed predictions.
 
-These tests exercise buffering, clocks and trajectory conversion; they do not validate the
+These tests exercise buffering, clocks and trajectory conversion. They do not validate the
 external AlpaSim schema or real model inference.
 """
 
@@ -119,9 +119,13 @@ def test_prediction_chains_plans_and_reset_starts_a_fresh_experiment(driver_sche
     first = Observation(t=0.0, frame=0, sensor_data={"front": np.zeros((2, 3, 3), np.uint8)})
     second = Observation(t=0.1, frame=1, sensor_data={"front": np.ones((2, 3, 3), np.uint8)})
 
+    assert stack.component_log() is None
     stack.reset(first)
     control = stack(first)
-    stack(second)
+    assert stack.component_log()["policy"] is prediction
+    assert stack.component_log()["action"] is control
+    next_control = stack(second)
+    assert stack.component_log()["action"] is next_control
     initial_input, next_input = [c.args[0] for c in model.predict.call_args_list]
     assert initial_input.previous_plan is None and initial_input.inference_seed == 0
     assert next_input.previous_plan is prediction.selected_plan and next_input.inference_seed == 1

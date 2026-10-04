@@ -69,3 +69,17 @@ def test_perturb_replacement_controls_the_drive_but_not_recorded_state():
     assert [o.ego_speed for o in originals] == [0, 0, 0]
     assert attacked.braking_frames == 3
     assert [r.speed for r in attacked.records] == [0, 0, 0]
+
+
+
+def test_on_step_observes_attacked_input_and_control_before_world_advances():
+    backend = ThrottleBackend()
+    recorded = []
+
+    def on_step(index, seen, control):
+        recorded.append((index, seen.frame, seen.ego_speed, control.throttle, backend.i))
+
+    trace = run(backend, GoStack(), frames=2,
+                perturb=lambda obs: replace(obs, ego_speed=100), on_step=on_step)
+    assert recorded == [(0, 0, 100, 1.0, 0), (1, 1, 100, 1.0, 1)]
+    assert [row.speed for row in trace.records] == [1.0, 2.0]

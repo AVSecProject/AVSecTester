@@ -79,7 +79,11 @@ corruption. So `AugmentationPipeline.apply(rgb, frame)` seeds its RNG from `(see
 in the frame index — and the harness gives the clean and attacked runs the *same* pipeline `seed`. The
 corruption is then pixel-identical across the pair, and `metric.impact` measures only the attack.
 
-## Robustness evaluation protocol (consumed by the eval harness, phase 6)
+## Robustness evaluation protocol (implemented: `avsectester.evaluation.robustness`)
+
+This protocol is realised by `evaluate_robustness(source, req, attack_for, stack, frames, ...)`, which
+returns a `RobustnessReport` (ASR + resilience per condition). The sketch below is what it does:
+
 
 ```python
 from avsectester.simulators.augment import common_corruptions, sensor_augmentation, compose

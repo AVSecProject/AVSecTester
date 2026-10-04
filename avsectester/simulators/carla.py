@@ -5,7 +5,7 @@ Heavy imports (``avcarla`` / ``carla`` / the avstack CARLA registry) are lazy â€
 package import without a CARLA stack (the pure view adapters and config helpers stay offline-usable).
 
   * View adapters (:func:`camera_view`, :func:`lidar_bev`) feed the simulator-agnostic pipeline in
-    :mod:`avsectester.simulators.viz`; they duck-type avstack ``ImageData`` / ``LidarData``.
+    :mod:`avsectester.simulators.viz`. They duck-type avstack ``ImageData`` / ``LidarData``.
   * :class:`CarlaBackend` owns the client, ego (+ sensors), traffic, an optional scene ``lead`` car,
     and applies physical-patch attacks at reset. Compose it with a stack via
     :func:`avsectester.scenario.run_scenario`.
@@ -75,7 +75,7 @@ def lead_rear_quad(
     quad from the lead's bounding box (a centered panel scaled by ``width_frac`` / ``height_frac``),
     and projects it through the camera to pixels. Yields None when the face is behind the camera or
     off-frame, so the compositor leaves that frame clean. Camera intrinsics come from the sensor's own
-    projection matrix ``P``; extrinsics from the live camera transform (CARLA UE axis convention).
+    projection matrix ``P``. Extrinsics from the live camera transform (CARLA UE axis convention).
     """
     import numpy as np
 
@@ -122,7 +122,7 @@ def camera_patch_perturbation(backend: Any, compositor: Any, patch_rgba: Any, ca
     The **Observation-level** (sensor-plane) form of the patch attack, for a closed-loop run: unlike
     :func:`avsectester.simulators.patch_insertion.composite_view` (which only paints the visualization), this
     rewrites the camera payload so the *AVStack itself perceives the patched frame* and acts on it.
-    Same warp + harmonize path (via ``compositor``) and same rear-face projection (:func:`lead_rear_quad`);
+    Same warp + harmonize path (via ``compositor``) and same rear-face projection (:func:`lead_rear_quad`).
     returns the frame unchanged when the target is out of view.
     """
     from avsectester.simulators.augment import read_camera_rgb, write_camera_rgb
@@ -259,7 +259,7 @@ def _spawn_config(spec: dict, actor: Any, vehicle_field: str) -> dict:
 
 
 # A curated set of built-in ``carla.WeatherParameters`` presets for world-level robustness sweeps
-# (pass one as the scenario ``weather`` key; see ``CarlaBackend._apply_weather``). Any preset CARLA
+# (pass one as the scenario ``weather`` key. See ``CarlaBackend._apply_weather``). Any preset CARLA
 # exposes also works â€” this is just the driving-relevant spread from clear to adverse.
 CARLA_WEATHER_PRESETS = (
     "ClearNoon", "CloudyNoon", "WetNoon", "WetCloudyNoon", "MidRainyNoon", "HardRainNoon",
@@ -287,7 +287,7 @@ class CarlaBackend(WorldBackend):
         self.settle_iters = settle_iters
         # Physical-patch attacks are a WORLD-level seam applied at reset (attached to a target
         # vehicle), distinct from perturb(Observation) and the modular hooks. `patches` is passed
-        # explicitly for the attacked run so a paired clean run stays clean; None means no patch.
+        # explicitly for the attacked run so a paired clean run stays clean. None means no patch.
         self.patch_specs = list(patches) if patches else []
         # An optional stationary lead vehicle spawned directly ahead of the ego, present in BOTH the
         # clean and attacked runs (scene content). A physical patch (attacked run) attaches to it, so
@@ -300,11 +300,24 @@ class CarlaBackend(WorldBackend):
         self.replay_scenario: dict | None = None
         self._t0: float | None = None
         self._resources = ExitStack()
+        self._pair_scenario: dict | None = None
+
+    def prepare_clean_attack_pair(self) -> None:
+        """Resolve scene choices once. The first reset may fall back to an available spawn."""
+        self.close()
+        # Keep the original config so preparing another pair can resolve random choices afresh.
+        self._pair_scenario = prepare_scenario(self.scenario)
+        self.replay_scenario = None
 
     def reset(self) -> Observation:
         from avcarla.config import CARLA
 
-        scenario = self.scenario
+        # Destroy old actors before reloading the world, including after partial setup failures.
+        self.close()
+        if self._pair_scenario is not None:
+            scenario = deepcopy(self.replay_scenario or self._pair_scenario)
+        else:
+            scenario = deepcopy(self.scenario)
         client_config = scenario["client"]
         client_config.setdefault("reset_world", True)
         client_config.setdefault("strict_spawn", False)
@@ -342,7 +355,7 @@ class CarlaBackend(WorldBackend):
         return self._observe()
 
     def step(self, control: Control) -> Observation:
-        self.ego.apply_control(control)  # decision from the AVStack; CARLA physics does the rest
+        self.ego.apply_control(control)  # decision from the AVStack. CARLA physics does the rest
         self.client.tick()
         return self._observe()
 
@@ -365,7 +378,7 @@ class CarlaBackend(WorldBackend):
             t=t,
             frame=snap.frame,
             sensor_data=sensor_data,
-            calibration={},  # modular stack reads references off sensor_data; kept for the contract
+            calibration={},  # modular stack reads references off sensor_data. Kept for the contract
             vehicle_state=state,
             ego_speed=float(state.velocity.norm()),
         )
@@ -442,6 +455,11 @@ class CarlaBackend(WorldBackend):
         return lead
 
     def close(self) -> None:
-        # Runs the registered teardown in LIFO order; ego-destroy failures propagate, npc/client
-        # failures are swallowed (npc via _destroy_npc, client.close best-effort registration).
-        self._resources.close()
+        # ExitStack attempts every callback even if one fails. Never retain stale actors for reset.
+        try:
+            self._resources.close()
+        finally:
+            self._resources = ExitStack()
+            self.client = self.ego = self.lead = None
+            self.npcs.clear()
+            self._t0 = None

@@ -81,7 +81,6 @@ def test_carla_lidar_bev_is_defensive_on_non_lidar_payloads():
 
 
 def test_detections_view_overlays_boxes_on_any_base_view():
-    import PIL  # noqa: F401
     import numpy as np
 
     img = np.zeros((20, 20, 3), np.uint8)
@@ -176,7 +175,6 @@ def test_draw_boxes3d_skips_out_of_view_and_far_boxes():
 
 
 def test_record_run_saves_a_frame_per_step(tmp_path):
-    import matplotlib  # noqa: F401
     backend = NuRecBackend({"dt": 0.1}, renderer=StubRenderer(cameras=["camera_front"], height=16, width=24))
     trace = record_run(backend, Cruise(), frames=4, out_dir=tmp_path, visualize=camera_view)
     assert len(trace.records) == 4

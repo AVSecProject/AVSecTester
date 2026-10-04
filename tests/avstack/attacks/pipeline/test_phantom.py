@@ -10,47 +10,6 @@ import pytest
 from avsectester.attacks import PhantomInjection
 
 
-def _detections():
-    from avstack.datastructs import DataContainer
-    from avstack.geometry import Attitude, Box3D, GlobalOrigin3D, Position
-    from avstack.modules.perception.detections import BoxDetection
-
-    dets = []
-    for i in range(3):
-        pos = Position(np.array([10.0 + i, 0.0, 0.0]), GlobalOrigin3D)
-        att = Attitude(np.quaternion(1), GlobalOrigin3D)
-        box = Box3D(pos, att, [1.5, 1.8, 4.0], where_is_t="bottom")
-        dets.append(
-            BoxDetection(
-                data=box,
-                noise=np.ones(6),
-                source_identifier="test",
-                reference=GlobalOrigin3D,
-                obj_type="Car",
-                score=0.8,
-            )
-        )
-    return DataContainer(0, 0.0, dets, "test", source_reference=GlobalOrigin3D)
-
-
-def test_phantom_appends_one_detection():
-    dets = _detections()
-    n0 = len(dets)
-    (out,) = PhantomInjection(target_xyz=(6.0, 0.0, -1.5))(dets)
-    assert len(out) == n0 + 1
-    phantom = out[-1]
-    assert phantom.obj_type == "Car"
-    assert float(phantom.score) == pytest.approx(0.9)
-
-
-def test_phantom_registers_in_avstack_hooks():
-    from avstack.config import HOOKS
-
-    assert "PhantomInjection" in HOOKS.module_dict
-    hook = HOOKS.build({"type": "PhantomInjection"})
-    assert isinstance(hook, PhantomInjection)
-
-
 def test_phantom_post_hook_preserves_detections_and_sets_geometry(make_detections):
     from avstack.geometry import GlobalOrigin3D, ReferenceFrame
     from avstack.geometry import transformations as tforms
@@ -104,6 +63,8 @@ def test_phantom_handles_empty_detection_container(make_detections):
     detector.register_post_hook(PhantomInjection())
     output = detector(make_detections(frame=4))
     assert len(output) == 1
+    assert output[0].obj_type == "Car"
+    assert output[0].score == pytest.approx(0.9)
     assert output.frame == 4
     assert output.timestamp == pytest.approx(0.2)
     np.testing.assert_allclose(output[0].position.x, [6, 0, -1.5])

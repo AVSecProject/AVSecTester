@@ -118,7 +118,6 @@ def test_cli_exit_code_matches_verdict(
 
 
 def test_cli_optional_plot_creates_file(monkeypatch, cli_config, make_trace, tmp_path):
-    import matplotlib  # noqa: F401
     path, _ = cli_config
     monkeypatch.setattr(
         scenario,

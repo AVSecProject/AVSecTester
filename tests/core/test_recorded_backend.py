@@ -1,14 +1,24 @@
-"""Recorded-image playback requires an image, not a complete nuScenes dataset."""
+"""Recorded-image playback preserves RGB pixels and remains static under controls."""
 
 import numpy as np
+from PIL import Image
+
+from avsectester.plane import Control
 from avsectester.scenarios.datasets.nuscenes import RecordedFrameBackend
 
 
-def test_recorded_frame_backend_serves_the_image(tmp_path):
-    import cv2
+def test_recorded_frame_backend_preserves_rgb_and_replays_the_same_image(tmp_path):
+    rgb = np.zeros((9, 16, 3), np.uint8)
+    rgb[:] = (200, 70, 10)
+    rgb[0, 0] = (20, 30, 240)
+    path = tmp_path / "frame.png"
+    Image.fromarray(rgb).save(path)
+    backend = RecordedFrameBackend(str(path), sensor_id="front")
 
-    p = tmp_path / "frame.png"
-    cv2.imwrite(str(p), np.full((90, 160, 3), 128, np.uint8))
-    backend = RecordedFrameBackend(str(p), sensor_id="front")
-    assert backend.reset().sensor_data["front"].shape == (90, 160, 3)
-    assert backend.step(None).sensor_data["front"].shape == (90, 160, 3)  # static: same frame
+    initial = backend.reset()
+    advanced = backend.step(Control(throttle=1.0, steer=0.5))
+    restarted = backend.reset()
+    for obs in (initial, advanced, restarted):
+        assert set(obs.sensor_data) == {"front"}
+        np.testing.assert_array_equal(obs.sensor_data["front"], rgb)
+        assert obs.frame == initial.frame and obs.t == initial.t

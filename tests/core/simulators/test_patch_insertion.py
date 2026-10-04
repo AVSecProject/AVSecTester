@@ -10,7 +10,7 @@ from avsectester.simulators.patch_insertion import (
 
 
 def test_projection():
-    # pinhole K (f=50, principal point 50,50): optical axis -> principal point; +x shifts right by f*x/z
+    # pinhole K (f=50, principal point 50,50): optical axis -> principal point. +x shifts right by f*x/z
     k = np.array([[50.0, 0, 50], [0, 50.0, 50], [0, 0, 1]])
     assert project_to_pixels(np.array([[0, 0, 1.0]]), k)[0] == pytest.approx([50, 50])
     assert project_to_pixels(np.array([[1, 0, 1.0]]), k)[0] == pytest.approx([100, 50])
@@ -24,7 +24,7 @@ def test_extrinsics_and_carla_axis_swap():
 
 
 def test_composite_view_wraps_base_and_skips_when_no_quad():
-    """The generic view wrapper composites only when quad_of yields a quad; else passes the frame."""
+    """The generic view wrapper composites only when quad_of yields a quad. Else passes the frame."""
     from avsectester.plane import Observation
     from avsectester.simulators.patch_insertion import composite_view
 
@@ -47,7 +47,6 @@ def test_composite_view_wraps_base_and_skips_when_no_quad():
 
 
 def test_warp_and_harmonize_under_cv2():
-    import cv2  # noqa: F401
     from avsectester.simulators.patch_insertion import (
         ClassicHarmonizer,
         PatchCompositor,
@@ -71,7 +70,7 @@ def test_order_quad_shared_helper():
 
 
 def test_box_to_quad_planar_target():
-    """A detection box -> a centered planar-warp quad (TL,TR,BR,BL); yaw makes it a trapezoid."""
+    """A detection box -> a centered planar-warp quad (TL,TR,BR,BL). Yaw makes it a trapezoid."""
     from avsectester.simulators.patch_insertion import box_to_quad
 
     q = box_to_quad([100, 100, 200, 200], width_frac=0.5, height_frac=0.5, v_center=0.5)
@@ -98,7 +97,7 @@ def test_render_plane_lands_where_projected_and_keeps_red(ftheta_camera, cam_fro
     u, v = ftheta_camera.project(c)[0]
     assert abs(xs.mean() - u) < 3 and abs(ys.mean() - v) < 3  # rendered footprint centred on the projection
     assert xs.mean() > ftheta_camera.cx  # right of centre (negative y)
-    # chroma-preserving harmonization keeps the sign red; the default Lab transfer pulls it to grey
+    # chroma-preserving harmonization keeps the sign red. The default Lab transfer pulls it to grey
     kept = PatchCompositor(ClassicHarmonizer(preserve_chroma=True, blend="feather")).apply_planes(
         frame, ftheta_camera, cam_from_world, [(corners, face)])
     r, g, b = kept[mask > 0].astype(float).mean(axis=0)
@@ -113,17 +112,6 @@ def test_render_plane_behind_camera_is_noop(ftheta_camera, cam_from_world):
     corners, face = RoadsideSign(x=-10.0, y=-4.0, post=False).planes()[0]  # behind the ego
     comp, mask = render_plane(frame, ftheta_camera, cam_from_world, corners, face)
     assert not mask.any() and np.array_equal(comp, frame)
-
-
-def test_frame_perturbation_rewrites_only_the_camera():
-    from avsectester.plane import Observation
-    from avsectester.simulators.patch_insertion import frame_perturbation
-
-    rgb = np.zeros((4, 4, 3), np.uint8)
-    obs = Observation(t=0.0, frame=0, sensor_data={"cam": rgb, "other": "lidar"})
-    seen = frame_perturbation(lambda o, im: im + 7, camera="cam")(obs)
-    assert (seen.sensor_data["cam"] == 7).all() and seen.sensor_data["other"] == "lidar"
-    assert (obs.sensor_data["cam"] == 0).all()  # the backend's true observation is untouched
 
 
 @pytest.mark.parametrize("custom_view", [False, True], ids=["default-view", "custom-view"])

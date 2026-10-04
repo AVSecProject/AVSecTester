@@ -18,7 +18,7 @@ class ThrottleStack(AVStack):
 
 def test_bicycle_accelerates_brakes_and_turns():
     dyn = KinematicBicycle(max_accel=3.0, max_brake=8.0, max_steer=0.5)
-    # throttle from rest -> speed increases; straight (steer 0) -> yaw unchanged
+    # throttle from rest -> speed increases. Straight (steer 0) -> yaw unchanged
     p = dyn.step(EgoPose(), Control(throttle=1.0), dt=0.1)
     assert p.speed == pytest.approx(0.3) and p.yaw == 0.0 and p.x > 0
     # brake decays speed, clamped at 0
@@ -39,17 +39,6 @@ def test_backend_loop_drives_in_process_with_stub_renderer():
     assert isinstance(backend.renderer, StubRenderer)
 
 
-def test_checkpoint_and_restore_round_trip():
-    backend = NuRecBackend({"dt": 0.1})
-    run(backend, ThrottleStack(), frames=3)
-    ckpt = backend.checkpoint()
-    moved = backend.step(Control(throttle=1.0))
-    assert moved.ego_speed > ckpt["pose"]["speed"]
-    backend.restore(ckpt)
-    assert backend.pose.speed == ckpt["pose"]["speed"]
-    assert backend.frame == ckpt["frame"]
-
-
 def test_restoring_checkpoint_replays_the_same_subsequent_motion():
     backend = NuRecBackend({"dt": 0.1, "ego0": {"x": 10.0, "y": -3.0, "yaw": 0.4}})
     run(backend, ThrottleStack(), frames=3)
@@ -58,6 +47,7 @@ def test_restoring_checkpoint_replays_the_same_subsequent_motion():
     expected = [backend.step(control) for control in controls]
 
     backend.restore(checkpoint)
+    assert backend.checkpoint() == checkpoint
     replayed = [backend.step(control) for control in controls]
 
     for actual, original in zip(replayed, expected):

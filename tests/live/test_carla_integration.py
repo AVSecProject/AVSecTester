@@ -9,7 +9,7 @@ import pytest
 
 @pytest.mark.carla
 def test_clean_spawn_relocation_is_replayed_in_reset_world(request):
-    """Exercise real spawning only; no driving steps or neural inference are needed."""
+    """Exercise real spawning only. No driving steps or neural inference are needed."""
     import yaml
     from avsectester.scenario import prepare_scenario, run_scenario
 
@@ -86,7 +86,7 @@ def test_neural_phantom_changes_closed_loop_drive(request, tmp_path, monkeypatch
     repeated_clean = run_scenario(clean.replay_scenario, frames=frames)
     attacked = run_scenario(clean.replay_scenario, attacks=config["attacks"], frames=frames)
     result = impact(clean, attacked)
-    # Preserve evidence even when a verdict assertion fails; pytest prints tmp_path on failure.
+    # Preserve evidence even when a verdict assertion fails. Pytest prints tmp_path on failure.
     (tmp_path / "carla-result.json").write_text(
         json.dumps(
             {

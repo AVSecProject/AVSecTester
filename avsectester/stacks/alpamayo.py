@@ -145,7 +145,19 @@ class AlpamayoAVStack(AVStack):
         self._iseed += 1
         self._prev_plan = getattr(prediction, "selected_plan", None)
         self.last_reasoning = getattr(prediction, "reasoning_text", None)  # chain-of-causation text, if any
-        return Control(trajectory=self._to_waypoints(prediction, observation))
+        control = Control(trajectory=self._to_waypoints(prediction, observation))
+        # free end-to-end component log: what predict() already returns + the emitted command
+        self._last_log = {"policy": prediction, "action": control}
+        return control
+
+    def component_log(self) -> dict[str, Any] | None:
+        """The common component-logging interface for the end-to-end stack
+        (``avsectester.evaluation.InstrumentedStack``): the latest frame's **free** outputs — the policy's
+        raw ``prediction`` (``candidate_positions`` ``(K, T, 3)`` + ``selected_index``) under ``policy`` and
+        the emitted :class:`~avsectester.plane.Control` under ``action``. No model internals; sparse by
+        nature compared with the modular stack's per-stage log, but the same contract so the evaluation
+        logger treats both uniformly."""
+        return getattr(self, "_last_log", None)
 
     def _to_waypoints(self, prediction: Any, obs: Observation) -> list:
         """Selected candidate (T,3) rig-frame positions -> [((x,y,z),(w,x,y,z),t_us), ...]."""

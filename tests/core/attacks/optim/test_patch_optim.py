@@ -1,6 +1,6 @@
 """Adversarial optimization: objective/geometry and CPU PGD/NES on small synthetic inputs.
 
-The white-box detector + CARLA capture live in scripts/optimize_patch.py (needs GPU + a server); here
+The white-box detector + CARLA capture live in scripts/optimize_patch.py (needs GPU + a server). Here
 we cover the parts that run without them.
 """
 
@@ -79,7 +79,7 @@ def test_nes_reduces_objective_black_box():
         TargetSpec,
     )
 
-    class AddPatch(Perturbation):  # the "image" is just delta; project to [0,1]
+    class AddPatch(Perturbation):  # the "image" is just delta. Project to [0,1]
         def init(self):
             return np.full((3, 4, 4), 0.8, np.float32)
 
