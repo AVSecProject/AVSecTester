@@ -11,7 +11,7 @@ not a live object) so a source can enumerate thousands of candidates cheaply and
 instantiates the ones it runs.
 
 The two providers are **skeletons** here (phase 1 = interface). Their GT sourcing — CARLA world state vs.
-dataset labels — and the backend construction are the phase 2-4 work described in ``DESIGN.md``.
+dataset labels — and the backend construction are the phase 2-4 work described in ``docs/SCENARIOS.md``.
 """
 
 from __future__ import annotations

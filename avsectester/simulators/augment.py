@@ -5,7 +5,7 @@ and sensor/optics degradation. This module provides that variation as image-spac
 operators, lifted to the same ``perturb: Observation -> Observation`` seam an attack uses
 (:func:`avsectester.backend.run`). So an augmentation composes with an attack — ``compose(attack, aug)``
 inserts the patch and *then* corrupts the frame — and the two can be diffed under one condition to see
-whether the attack still fires (see ``AUGMENT_DESIGN.md``).
+whether the attack still fires (see ``docs/AUGMENTATION.md``).
 
 Backend-agnostic: a :class:`Corruption` transforms an ``(H, W, 3)`` uint8 RGB array, so this works on
 CARLA, in-process NuRec, and dataset replay (nuScenes/nuRec recorded frames) alike. CARLA additionally
