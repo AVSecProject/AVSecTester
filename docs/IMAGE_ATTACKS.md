@@ -1,17 +1,16 @@
 # Image attacks — realistic object insertion into rendered camera frames
 
-Camera-facing attacks from the *natural / adversarial physical object* families in
-[`PROJECT.md`](PROJECT.md), simulated by inserting the object into each rendered frame (NuRec
-neural reconstruction or CARLA) rather than into the world. The attack chooses the **payload**
-(what) and the **target** (where); the insertion itself (geometry + harmonization) is shared
-simulation code in `avsectester/simulators/patch_insertion.py`.
+The physical-object and patch attacks of [`PROJECT.md`](PROJECT.md)'s AI-adversarial surface,
+simulated by inserting the object into each rendered frame (NuRec neural reconstruction or CARLA)
+rather than into the world. The attack chooses the **payload** (what) and the **target** (where); the
+insertion itself (geometry + harmonization) is shared simulation code in
+`avsectester/simulators/patch_insertion.py`.
 
 > **Terminology.** These insert a **real, standard object** (an MUTCD stop sign, a photo of a real
 > pedestrian, standard signal heads) at a location where no legitimate one exists — a roadside with no
 > intersection, or a vehicle's rear. The object is genuine; the attack is its **invalid placement**,
 > which makes perception read a control signal (stop / pedestrian / red light) that is not legitimately
-> there. This is the *natural physical object* family of `PROJECT.md` ("placing natural objects at rare
-> locations"), not a forged or fake-looking object.
+> there — not a forged or fake-looking object.
 
 | Attack | Payload | Placement | Module / demo |
 |---|---|---|---|
@@ -100,8 +99,8 @@ silhouette into the background (the standee), while a poster's own paper and fra
 `CAM_FRONT` photos (pinhole camera from the image's calibration) and harmonizes with PCTNet. A spot is
 used only if its footprint overlaps no annotated object. On 8 val images (Boston and Singapore, 6 day,
 2 night) the COCO detector finds the STOP sign, the standee and the billboard person in 8/8 images
-each, and nothing at those spots in the clean images. Seen in the grid: an unlit white poster stays
-too bright at night, and a spot can land in a traffic lane because no map is consulted.
+each, and nothing at those spots in the clean images. (Two artifacts visible in the grid — an unlit
+poster too bright at night, a spot landing in a traffic lane — are noted under Known limitations.)
 
 ### Driving impact (Alpamayo-1.5, closed loop)
 

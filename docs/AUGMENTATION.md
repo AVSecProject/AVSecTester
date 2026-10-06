@@ -31,8 +31,9 @@ reality.
 1. **Image-space corruptions** — `augment.py`, backend-agnostic. Each `Corruption` is an
    `apply(rgb, rng) -> rgb` on the camera image; an `AugmentationPipeline` chains several and
    `sensor_augmentation(pipeline)` lifts it to a `perturb`. Because it operates on pixels it works on
-   **every** backend — CARLA, in-process NuRec, and dataset replay (nuScenes/nuRec `RecordedFrameBackend`)
-   — so robustness can be measured on real recorded frames, not only in simulation.
+   **every** backend — CARLA, in-process NuRec, and recorded-frame replay (the nuScenes
+   `RecordedFrameBackend`, the nuRec `NuRecBackend`) — so robustness can be measured on real recorded
+   frames, not only in simulation.
 2. **CARLA world-weather** — `carla.py`. A `weather` key in the scenario config sets native
    `carla.WeatherParameters` (cloud, precipitation, sun altitude, fog, wetness) at `reset`, so the whole
    scene — including a *world-level* physical patch — is re-rendered under that weather. Higher fidelity
@@ -58,18 +59,12 @@ each) for benchmarking — the AV analogue of ImageNet-C's common-corruptions se
 
 The operators above are **zero-dependency** (numpy + cv2) and are the default. For battle-tested
 implementations there is an optional **Albumentations** backend (`AlbumentationsCorruption`,
-`albumentations_corruptions(severity)`) that wraps `A.RandomFog/RandomRain/RandomSnow/GaussNoise/ISONoise/
-MotionBlur/Defocus/ImageCompression` behind the same `Corruption` interface — determinism preserved by
-seeding `A.Compose` from our own RNG, so the `(seed, frame)` pairing still holds. Install with the
-`augment` extra.
-
-**Backend — classic albumentations (`albumentations>=1.4,<2`, MIT).** Installed via the `augment` extra.
-It imports as `import albumentations as A`; the builder param names target the 1.4.x API (`blur_limit`,
-`radius`, `color_shift`, …). The `dependencies` branch stack is **numpy<2** (torch 2.1.0+cu121, the newest
-combo OpenMMLab supports without version-cap patching), so we use classic albumentations rather than
-AlbumentationsX/2.x — those require numpy≥2, which would force torch≥2.4 → mmcv 2.2.0 → breaks the
-`mmdet3d<mmcv2.2` cap. Classic albumentations exposes the same transforms and API, so the adapter is
-unchanged.
+`albumentations_corruptions(severity)`, `augment` extra) that wraps `A.RandomFog/RandomRain/RandomSnow/
+GaussNoise/ISONoise/MotionBlur/Defocus/ImageCompression` behind the same `Corruption` interface, seeding
+`A.Compose` from our own RNG so the `(seed, frame)` pairing still holds. It is **classic albumentations**
+(`>=1.4,<2`, MIT) — AlbumentationsX/2.x needs numpy≥2, which this stack's numpy<2 / torch-2.1 pin
+excludes (see [`SETUP.md`](SETUP.md)); the classic API (`import albumentations as A`, params
+`blur_limit`/`radius`/`color_shift`) is otherwise identical.
 
 ## Determinism across the pair (the subtle bit)
 
@@ -81,24 +76,21 @@ corruption is then pixel-identical across the pair, and `metric.impact` measures
 
 ## Robustness evaluation protocol (implemented: `avsectester.evaluation.robustness`)
 
-This protocol is realised by `evaluate_robustness(source, req, attack_for, stack, frames, ...)`, which
-returns a `RobustnessReport` (ASR + resilience per condition). The sketch below is what it does:
-
+`evaluate_robustness(source, req, attack_for, stack, frames, ...)` runs the grid and returns a
+`RobustnessReport` (ASR + resilience per condition). `stack` is a **factory** (`Callable[[], AVStack]`)
+so each run gets a fresh box; for each scenario from `source` and each condition it does, conceptually:
 
 ```python
-from avsectester.simulators.augment import common_corruptions, sensor_augmentation, compose
-
-for cor in common_corruptions(severity):                 # or sweep severities per corruption
-    aug   = sensor_augmentation(cor, camera="front")     # same seed for both runs
-    clean    = run(backend, stack, N, perturb=aug)                 # corruption only
-    attacked = run(backend, stack, N, perturb=compose(attack, aug))# attack under the corruption
-    verdict  = impact(clean, attacked)                            # did the attack still fire?
-report = aggregate_over(corruptions, severities)          # attack-success-rate vs condition
+for cor in common_corruptions(severity):                        # the condition suite (+ a clean baseline)
+    aug      = sensor_augmentation(cor, camera=match.camera)     # same seed for both runs of the pair
+    clean    = run(backend, stack(), N, perturb=aug)             # corruption only
+    attacked = run(backend, stack(), N, perturb=compose(attack, aug))  # attack under the corruption
+    report.record(scenario_id, cor.name, impact(clean, attacked).attack_succeeded)
 ```
 
-The scenario layer yields *which* scenes to run; this augmentation layer yields *under which conditions*;
-the eval harness runs the grid and reports an **attack robustness curve** — success rate as a function of
-corruption type and severity.
+The scenario layer yields *which* scenes to run; this augmentation layer yields *under which conditions*.
+`RobustnessReport` aggregates to **ASR per condition** and **resilience** = `ASR(corruption)/ASR(clean)`
+(the attack analogue of Robo3D's mRR): how much of the attack survives each corruption.
 
 ## Non-goals / approximations (kept honest)
 

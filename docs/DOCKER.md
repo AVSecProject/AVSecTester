@@ -8,13 +8,14 @@ PointPillars detector on a live CarlaLidar in a closed-loop drive, attacked by a
 ## Prerequisites
 
 - An NVIDIA GPU with the nvidia container runtime.
-- The nested mm* submodules on the host (needed to compile mmdet3d) and the CARLA-trained weights:
+- The nested mmdet/mmdet3d submodules on the host (checkpoint-symlink roots, not a build step) and the
+  CARLA-trained weights:
 
 ```bash
 git clone --recurse-submodules <this-repo> && cd AVSecTester
 git submodule update --init third_party/avstack-core
 cd third_party/avstack-core && \
-  git submodule update --init --depth 1 third_party/mmdetection third_party/mmdetection3d third_party/mmsegmentation && cd -
+  git submodule update --init --depth 1 third_party/mmdetection third_party/mmdetection3d && cd -
 ./scripts/fetch_models.sh          # pull carla-vehicle weights → ./models (bind-mounted into the image)
 ```
 
@@ -24,7 +25,7 @@ Start the stack (a CARLA server + the AVSecTester container, which defaults to a
 then run the attack in it:
 
 ```bash
-docker compose up -d --build       # first build: the mmdet3d CUDA compile takes ~10–20 min
+docker compose up -d --build       # first build downloads prebuilt wheels (no CUDA compile)
 docker compose exec avsectester avsectester run configs/carla_scenario.yaml --frames 40
 ```
 
@@ -60,14 +61,11 @@ When you're done: `docker compose down`.
 
 ## Notes
 
-- No CUDA ops are compiled: in OpenMMLab 2.0 the ops live in **mmcv** (installed as a prebuilt
-  `cu121/torch2.1.0` wheel), and mmdet/mmdet3d are pure-Python. The CUDA 12.1 base runs natively on the
-  L40S (Ada, sm_89).
-- Watch transitive deps (scikit-image, pandas, plyfile) — their latest releases pull numpy≥2, which
-  torch 2.1 cannot run; the Dockerfile pins `numpy==1.26.4` after installing them.
+- Everything installs from prebuilt wheels — no CUDA compile. The version pins and the numpy<2
+  constraint are explained in [`SETUP.md`](SETUP.md).
 - `.dockerignore` drops VCS/data/model/output trees.
 - `./models` is a bind mount, so weights are shared with the host rather than baked into the image;
-  `fetch_models.sh` runs at container start to (re)create the mmdet3d symlinks.
+  `fetch_models.sh` runs at container start to (re)create the mmdet/mmdet3d checkpoint symlinks.
 - Both services use `network_mode: host`, so the client reaches the server at `127.0.0.1:2000`; the
   default docker runtime is nvidia, so both containers get GPUs (CARLA on GPU 2, AVSecTester on 1).
   This is why the scenario config targets `gpu: 0` (the ego container's dedicated GPU). Running the
