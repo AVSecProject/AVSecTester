@@ -29,13 +29,15 @@ run over gRPC if ever split across processes.
 - **`run(backend, stack, frames, perturb=None, on_step=None) -> Trace`** drives the loop:
 
   ```python
-  obs = backend.reset(); stack.reset(obs)
+  obs = backend.reset()
+  stack.reset(obs)
   for i in range(frames):
       seen = perturb(obs) if perturb else obs      # the single attack seam
       control = stack(seen)
-      if on_step: on_step(i, seen, control)        # side-channel hook (e.g. component logging)
+      if on_step:
+          on_step(i, seen, control)               # side-channel hook (e.g. component logging)
       obs = backend.step(control)
-      trace.records.append(FrameRecord(... obs.speed ...))   # TRUE ego state, not the perturbed view
+      trace.records.append(FrameRecord(... obs.ego_speed ...))   # TRUE ego state, not the perturbed view
   ```
 
   **Causal invariant:** control at *t* affects only *t+1*, so the loop serializes cleanly.
