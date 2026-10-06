@@ -31,8 +31,9 @@ reality.
 1. **Image-space corruptions** — `augment.py`, backend-agnostic. Each `Corruption` is an
    `apply(rgb, rng) -> rgb` on the camera image; an `AugmentationPipeline` chains several and
    `sensor_augmentation(pipeline)` lifts it to a `perturb`. Because it operates on pixels it works on
-   **every** backend — CARLA, in-process NuRec, and dataset replay (nuScenes/nuRec `RecordedFrameBackend`)
-   — so robustness can be measured on real recorded frames, not only in simulation.
+   camera images from CARLA, NuRec reconstructed-scene rendering (`NuRecBackend`), and recorded-frame
+   replay (`RecordedFrameBackend`, used by nuScenes). NuRec generates new views from the ego pose,
+   while recorded-frame replay returns captured images.
 2. **CARLA world-weather** — `carla.py`. A `weather` key in the scenario config sets native
    `carla.WeatherParameters` (cloud, precipitation, sun altitude, fog, wetness) at `reset`, so the whole
    scene — including a *world-level* physical patch — is re-rendered under that weather. Higher fidelity
@@ -58,47 +59,53 @@ each) for benchmarking — the AV analogue of ImageNet-C's common-corruptions se
 
 The operators above are **zero-dependency** (numpy + cv2) and are the default. For battle-tested
 implementations there is an optional **Albumentations** backend (`AlbumentationsCorruption`,
-`albumentations_corruptions(severity)`) that wraps `A.RandomFog/RandomRain/RandomSnow/GaussNoise/ISONoise/
-MotionBlur/Defocus/ImageCompression` behind the same `Corruption` interface — determinism preserved by
-seeding `A.Compose` from our own RNG, so the `(seed, frame)` pairing still holds. Install with the
-`augment` extra.
-
-**Backend — classic albumentations (`albumentations>=1.4,<2`, MIT).** Installed via the `augment` extra.
-It imports as `import albumentations as A`; the builder param names target the 1.4.x API (`blur_limit`,
-`radius`, `color_shift`, …). The `dependencies` branch stack is **numpy<2** (torch 2.1.0+cu121, the newest
-combo OpenMMLab supports without version-cap patching), so we use classic albumentations rather than
-AlbumentationsX/2.x — those require numpy≥2, which would force torch≥2.4 → mmcv 2.2.0 → breaks the
-`mmdet3d<mmcv2.2` cap. Classic albumentations exposes the same transforms and API, so the adapter is
-unchanged.
+`albumentations_corruptions(severity)`, `augment` extra) that wraps `A.RandomFog/RandomRain/RandomSnow/
+GaussNoise/ISONoise/MotionBlur/Defocus/ImageCompression` behind the same `Corruption` interface, seeding
+`A.Compose` from our own RNG so the `(seed, frame)` pairing still holds. It is **classic albumentations**
+(`>=1.4,<2`, MIT) — AlbumentationsX/2.x needs numpy≥2, which this stack's numpy<2 / torch-2.1 pin
+excludes (see [`SETUP.md`](SETUP.md)); the classic API (`import albumentations as A`, params
+`blur_limit`/`radius`/`color_shift`) is otherwise identical.
 
 ## Determinism across the pair (the subtle bit)
 
 Robustness is measured by *diffing* a clean run and an attacked run **under the same condition**. If the
 fog pattern or noise realisation differed between the two, the diff would conflate the attack with the
-corruption. So `AugmentationPipeline.apply(rgb, frame)` seeds its RNG from `(seed, frame)` — deterministic
-in the frame index — and the harness gives the clean and attacked runs the *same* pipeline `seed`. The
-corruption is then pixel-identical across the pair, and `metric.impact` measures only the attack.
+corruption. `AugmentationPipeline.apply(rgb, frame)` seeds its RNG from `(seed, frame)`. The harness
+uses the same pipeline seed and aligns frames relative to each run's first observation, since absolute
+simulator frame IDs can differ after reset. Corresponding steps therefore use the same random draws,
+even when their input images differ because of the attack or subsequent driving.
 
 ## Robustness evaluation protocol (implemented: `avsectester.evaluation.robustness`)
 
-This protocol is realised by `evaluate_robustness(source, req, attack_for, stack, frames, ...)`, which
-returns a `RobustnessReport` (ASR + resilience per condition). The sketch below is what it does:
-
+`evaluate_robustness(source, req, attack_for, stack, frames, ...)` runs the grid and returns a
+`RobustnessReport` (ASR + resilience per condition). `stack` is a **factory** (`Callable[[], AVStack]`)
+so each run gets a fresh box. Given a scenario source, requirement, attack factory and stack factory:
 
 ```python
-from avsectester.simulators.augment import common_corruptions, sensor_augmentation, compose
+from avsectester.evaluation.robustness import evaluate_robustness
 
-for cor in common_corruptions(severity):                 # or sweep severities per corruption
-    aug   = sensor_augmentation(cor, camera="front")     # same seed for both runs
-    clean    = run(backend, stack, N, perturb=aug)                 # corruption only
-    attacked = run(backend, stack, N, perturb=compose(attack, aug))# attack under the corruption
-    verdict  = impact(clean, attacked)                            # did the attack still fire?
-report = aggregate_over(corruptions, severities)          # attack-success-rate vs condition
+report = evaluate_robustness(source, req, attack_for, stack, frames, severity=0.5)
+print(report.summary())
 ```
 
-The scenario layer yields *which* scenes to run; this augmentation layer yields *under which conditions*;
-the eval harness runs the grid and reports an **attack robustness curve** — success rate as a function of
-corruption type and severity.
+The harness includes a no-corruption baseline plus the corruption suite. For each scenario and
+condition it creates a backend, calls `prepare_clean_attack_pair()`, runs clean and attacked with
+aligned corruption, and closes the backend. The attacked run applies the attack before corruption.
+
+`RobustnessReport.rows` retains each attempt's status and reason:
+
+- `success` / `failure`: a valid driving baseline, scored by `metric.impact`.
+- `skipped`: `attack_for(match, backend)` returned `None`.
+- `inconclusive`: the clean run did not establish a driving baseline.
+
+**ASR per condition** is `successes / (successes + failures)`. Skipped and inconclusive attempts are
+reported separately and excluded from the denominator. With no valid pairs, ASR is `NaN` and the
+summary displays `N/A`. Direct callers of `report.record()` must pass a status string, not a boolean.
+
+**Resilience** is `ASR(corruption) / ASR(clean)`, capped at 1. It is `NaN` if either condition has no
+valid pairs, and 0 when the valid baseline ASR is 0. These are the current implementation's conventions.
+The current success criterion covers induced or suppressed stops. Experiment-specific criteria remain
+a TODO in the harness, so this is not a universal definition of attack success.
 
 ## Non-goals / approximations (kept honest)
 

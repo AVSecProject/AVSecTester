@@ -1,4 +1,4 @@
-"""Scenario layer — obtain test cases that satisfy an attack's assumptions (see ``DESIGN.md``).
+"""Scenario layer — obtain test cases that satisfy an attack's assumptions (see ``docs/SCENARIOS.md``).
 
 An attack is only meaningful on a scene that meets its preconditions (a patch-hides-a-vehicle attack
 needs a vehicle actually visible + placeable). Each attack declares its preconditions once as a

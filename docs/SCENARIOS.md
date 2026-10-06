@@ -98,8 +98,9 @@ ScenarioRequirement(
 
 - **DatasetFilter** keeps only Alpamayo/NuRec frames where a vehicle meets all five → those clips +
   start frames become `ScenarioInstance`s (a `NuRecBackend` seeded at that clip/frame).
-- **CarlaScenarioBuilder** spawns a lead vehicle ahead of the ego, sampling distance in `[4, 25]` and a
-  small lateral offset so `ViewpointRear`/`ImageAreaFrac` hold, then validates with `req.match`.
+- **CarlaScenarioBuilder** spawns a lead vehicle ahead of the ego, sampling distance in `[min_gap, 25]`
+  (lower bound clamped to a physically-spawnable `min_gap`, default 6 m) and a small lateral offset so
+  `ViewpointRear`/`ImageAreaFrac` hold, then validates with `req.match`.
 
 ## Ground-truth sourcing (the hard part per provider)
 
@@ -113,22 +114,18 @@ ScenarioRequirement(
   `NuRecRenderer` at run time. This split (annotations for selection, renderer for pixels) is the main
   integration to build.
 
-## How it plugs into the evaluation layer (context, planned next)
+## How it plugs into the evaluation layer
+
+The scenario layer's job ends at yielding qualifying, runnable `ScenarioInstance`s + the target. The
+eval harness (`evaluation/robustness.py:evaluate_robustness`) then consumes a `ScenarioSource`, runs
+clean-vs-attacked over the qualifying scenarios × a corruption suite, and aggregates `impact` verdicts
+into a `RobustnessReport` — see [`AUGMENTATION.md`](AUGMENTATION.md) for that protocol.
 
 ```python
-source   = CarlaScenarioBuilder()            # or DatasetFilter(alpamayo)
-req      = REQUIREMENTS["physical_patch_hide_vehicle"]
-results  = []
-for case in source.scenarios(req, limit=50):
-    backend = case.make_backend()
-    clean   = run(backend, stack, frames)                    # no attack
-    attacked= run(backend, stack, frames, perturb=attack_for(case.target))
-    results.append(impact(clean, attacked))                  # avsectester.metric
-report = aggregate(results)   # attack success rate over the qualifying scenarios
+source  = CarlaScenarioBuilder()            # or DatasetFilter(alpamayo)
+req     = REQUIREMENTS["physical_patch_hide_vehicle"]
+report  = evaluate_robustness(source, req, attack_for, stack, frames)   # ASR + resilience per condition
 ```
-
-The scenario layer's job ends at yielding qualifying, runnable `ScenarioInstance`s + the target; the
-eval harness (separate module, next step) runs clean-vs-attacked and aggregates `impact` verdicts.
 
 ## Natural-language requirements (LLM-interpreted)
 
@@ -161,30 +158,19 @@ object model (`serialize`) is the source of truth; NL is a front-end onto it.
      paired with `RecordedFrameBackend` (replay the recorded frame). Validated on **real nuScenes
      v1.0-trainval GT** (permission fixed): 400 keyframes / 861 GT vehicles -> **80 qualify** for
      `physical_patch_hide_vehicle`, with real distance + orientation + visibility (so `ViewpointRear`/
-     `MinVisibility` are meaningful). Target in `tmp/compare/nuscenes_gt_filter.png` (truck 25 m ahead).
-   - **nuRec:** `datasets/nurec.py:NuRecDataset` reads each `.usdz` (a ZIP) — the render RPC returns only
-     pixels, but the artifact itself ships GT: `sequence_tracks.json` (actor cuboid tracks: id,
-     `label_class`, per-ts pose `[x,y,z,qx,qy,qz,qw]`, dims) + `rig_trajectories.json` (per-camera-frame
-     rig poses `cameras_frame_T_rig_worlds` aligned 1:1 with the rendered `.mp4`, and the f-theta camera
-     calibration). At a chosen camera frame each present actor is expressed in the **rig frame** (= our ego
-     frame; AlpaSim CONTRIBUTING.md) via `inv(T_rig_world) @ actor_pose` — the tracks and the rig share one
-     frame, so this inverse is the whole transform, **matching AlpaSim** (it uses the tracks directly with
-     `pose_local_to_rig`; `world_to_nre` is renderer-only and is NOT applied to the tracks). This gives
-     exact center/yaw/extent/distance; `box2d` is projected with the scene's **real f-theta model**
-     (`FThetaCamera`, `T_sensor_rig` extrinsic + `angle_to_pixeldist` poly); `visibility=1.0` (tracks carry
-     no occlusion fraction). nuRec is a **peer of `NuScenesDataset`** — no renderer/GPU needed to filter.
-     **Validated on real `PhysicalAI-Autonomous-Vehicles-NuRec` 26.01 `.usdz`** by overlaying the projected
-     boxes on the rendered `.mp4` (they land on the real vehicles across early and late frames); ~7/21 and
-     8/21 sampled frames of two clips qualify for `physical_patch_hide_vehicle`. Tests read the real
-     artifacts and **skip** if absent (no synthetic stand-in).
+     `MinVisibility` are meaningful).
+   - **nuRec:** `datasets/nurec.py:NuRecDataset` reads each `.usdz`'s shipped GT — `sequence_tracks.json`
+     (actor cuboid tracks) + `rig_trajectories.json` (per-frame rig poses + f-theta calibration) — and
+     expresses each present actor in the rig (= ego) frame via `inv(T_rig_world) @ actor_pose`, **matching
+     AlpaSim** (tracks only; `world_to_nre` is renderer-only). `box2d` uses the scene's real f-theta model
+     (`FThetaCamera`); `visibility=1.0`. CPU-only, a **peer of `NuScenesDataset`** (no renderer/GPU to
+     filter). See the `nurec.py` module docstring for the full transform. **Validated on real 26.01
+     `.usdz`** (projected boxes land on the real vehicles; ~7/21 and 8/21 frames of two clips qualify);
+     tests read the real artifacts and **skip** if absent (no synthetic stand-in).
 
-   The earlier detector-labeling fallback (`DetectorLabeler`/`ImageFolder`/`FrameSource`) is **removed** —
-   both datasets now have real 3-D labels, so deriving `SceneGT` from a 2-D detector had no remaining use.
-6. **Eval harness — DONE.** `avsectester/evaluation/robustness.py:evaluate_robustness` runs a
-   `ScenarioSource` × an attack × a **corruption suite** (`simulators.augment`): for each scenario and
-   each condition (clean baseline + each `AugmentationPipeline`) it drives clean-vs-attacked under the
-   *same* corruption and scores with `metric.impact`. `RobustnessReport` aggregates
-   `impact.attack_succeeded` into an **attack success rate (ASR)** per condition and a **resilience**
-   (`ASR(corruption)/ASR(clean)`, a Robo3D-mRR-style retention rate) + `mean_resilience`. The attack is
-   injected (`attack_for(match, backend) -> perturb`), so the harness is attack-agnostic. Tested with a
-   closed-loop stub (`tests/test_robustness.py`).
+   The earlier detector-labeling fallback (`DetectorLabeler`/`ImageFolder`) is **removed** — both datasets
+   now have real 3-D labels, so deriving `SceneGT` from a 2-D detector had no remaining use.
+6. **Eval harness — DONE.** `evaluation/robustness.py:evaluate_robustness` runs a `ScenarioSource` × an
+   attack × a corruption suite into a `RobustnessReport` (ASR + resilience per condition); the attack is
+   injected (`attack_for(match, backend) -> perturb`), so the harness is attack-agnostic. Protocol in
+   [`AUGMENTATION.md`](AUGMENTATION.md); tested with a closed-loop stub (`tests/core/test_robustness.py`).

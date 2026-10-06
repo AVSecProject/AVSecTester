@@ -30,8 +30,7 @@ A plain dict of the stack's *already-produced* outputs — no bespoke schema —
 - **end-to-end** (`AlpamayoAVStack`): `{"policy": prediction, "action": control}` — just what `predict()`
   already returns (candidate trajectories `(K,T,3)` + `selected_index`) and the emitted command.
 
-The E2E adapter currently exposes policy and action through the same contract. The collector accepts
-additional component keys if the adapter later exposes more outputs.
+The collector accepts additional component keys if the E2E adapter later exposes more outputs.
 
 Three small pieces:
 

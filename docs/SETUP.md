@@ -30,12 +30,11 @@ python -m pytest tests/core -q    # no avstack, CARLA server or checkpoints
 
 See [tests/README.md](../tests/README.md) for the offline avstack suite and CI environment.
 
-## 2. Full stack (Python 3.11 — upgraded, `dependencies` branch)
+## 2. Full stack (GPU + CARLA)
 
 Modern **OpenMMLab-official** stack (every version cap satisfied → no patching, no source builds):
 **Python 3.11, torch 2.1.0+cu121, torchvision 0.16.0, numpy 1.26.4, mmcv 2.1.0, mmdet 3.2.0,
-mmdet3d 1.4.0, albumentations 1.4 (MIT), CARLA 0.9.16**. (The old torch1.13+cu117 / mmdet3d 1.1.0 stack
-lives in git history before the `dependencies` branch.)
+mmdet3d 1.4.0, albumentations 1.4 (MIT), CARLA 0.9.16**.
 
 > **Why torch 2.1.0, not newer?** mmdet3d 1.4.0 caps `mmcv<2.2.0`, and mmcv 2.1.0 (the newest allowed)
 > only ships prebuilt wheels up to **torch 2.1.0**. Anything newer forces mmcv 2.2.0, which breaks the cap
@@ -68,12 +67,6 @@ pip install carla==0.9.16 pygame ipywidgets nuscenes-devkit -c constraints.txt
 # 5. augmentation backend (classic albumentations 1.4, MIT)
 pip install -e ".[augment]"
 ```
-
-> **No CUDA compilation, no version-cap patching.** In OpenMMLab 2.0 the CUDA ops live in **mmcv**
-> (prebuilt wheel above); mmdet/mmdet3d are pure-Python. Because this stack stays on the last combo
-> OpenMMLab officially supports (mmcv 2.1.0 / mmdet 3.2.0 / mmdet3d 1.4.0), every version assert passes
-> unmodified. Watch that transitive deps (scikit-image, pandas, plyfile) don't pull numpy≥2 — pin numpy
-> back to 1.26.4 if they do.
 
 > **Known submodule-name shim.** `lib-avstack-carla`'s own metadata references sibling path
 > deps `../lib-avstack-core` and `../lib-avstack-api`, but our submodules are named
@@ -113,7 +106,7 @@ stop. On a single host, `--gpu 1` keeps neural inference off GPU 2 (which CARLA 
 This tier drives the real **Alpamayo-1.5-10B** policy on photoreal **NuRec** imagery. It reuses two
 NVIDIA [AlpaSim](https://github.com/NVlabs/alpasim) pieces: the `nre-ga` renderer (serves a
 reconstructed scene over gRPC) and `alpasim_driver` (provides the Alpamayo model). Alpamayo pins a
-**Python-3.12** environment, separate from avstack's 3.10 — heavy imports in `stacks/alpamayo.py` are
+**Python-3.12** environment, separate from avstack's 3.11 — heavy imports in `stacks/alpamayo.py` are
 lazy, so the base install still imports and tests AVSecTester without it.
 
 **a. The Alpamayo driver env.** Clone AlpaSim and build its driver workspace (`uv sync --package

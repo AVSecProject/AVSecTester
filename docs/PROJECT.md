@@ -189,17 +189,20 @@ flowchart TB
 - **`plane`** — `Observation` (down), `Control` (up), and the `Trace`/`FrameRecord` driving record.
   Pure data; no `carla`/`avcarla`/`torch`/`avstack` imports, serializable so the loop can split
   across processes.
-- **`backend`** — the `WorldBackend` / `AVStack` interfaces and `run(backend, stack, frames,
-  perturb=None)`. `perturb: Observation -> Observation` is the **single universal attack seam** — it
-  works against any stack, black-box included — and the `Trace` records the backend's *true* ego
-  state, not the perturbed view.
-- **World backends** — `CarlaBackend` (`scenario.py`; real avcarla closed loop) and `NuRecBackend`
-  (`simulators/nurec.py`; in-process NVIDIA NuRec neural reconstruction with a pluggable renderer —
-  `StubRenderer` for CI, `NuRecRenderer` → the `nre-ga` gRPC renderer).
-- **AV stacks** — `ModularAVStack` (`scenario.py`; an avstack `ModularDrivingPipeline`, the modular
-  white-box mode) and `AlpamayoAVStack` (`stacks/alpamayo.py`; the real end-to-end Alpamayo-1.5-10B
-  policy, the black-box mode). These are the first two of the three planned testing modes;
-  hardware-in-the-loop attaches at the same `WorldBackend` seam.
+- **`backend`** — the `WorldBackend` / `AVStack` interfaces and the `run(...)` loop. `perturb:
+  Observation -> Observation` is the **single universal attack seam**, and the `Trace` records the
+  backend's *true* ego state, not the perturbed view. See [`INTERFACE.md`](INTERFACE.md) for the full
+  contract.
+- **World backends** — `CarlaBackend` (`simulators/carla.py`; real avcarla closed loop) and
+  `NuRecBackend` (`simulators/nurec.py`; in-process NVIDIA NuRec neural reconstruction with a pluggable
+  renderer — `StubRenderer` for CI, `NuRecRenderer` → the `nre-ga` gRPC renderer).
+- **AV stacks** — `ModularAVStack` (`stacks/modular.py`; an avstack `ModularDrivingPipeline`, the
+  modular white-box mode) and `AlpamayoAVStack` (`stacks/alpamayo.py`; the real end-to-end
+  Alpamayo-1.5-10B policy, the black-box mode). These are the first two of the three planned testing
+  modes; hardware-in-the-loop attaches at the same `WorldBackend` seam.
+- **`scenarios` / `evaluation`** — `scenarios/` selects or builds test cases that meet an attack's
+  preconditions (see [`SCENARIOS.md`](SCENARIOS.md)); `evaluation/` adds the robustness harness and
+  component logging (see [`AUGMENTATION.md`](AUGMENTATION.md), [`COMPONENT_LOGGING.md`](COMPONENT_LOGGING.md)).
 - **`attacks`** — universal as `perturb(Observation)`; modular-internal as an avstack `HOOKS` hook on
   a pipeline stage (baseline `PhantomInjection`). A defense is the same shape — a sanitizing hook.
 - **`metric` / `viz`** — `impact(clean, attacked)` scores the paired traces into a driving-impact

@@ -30,8 +30,8 @@ The spine is one loop over a pure data plane; any world backend composes with an
                                                                   ▼
   WorldBackend.reset()/step(Control) ──Observation──►  run(backend, stack, frames) ──►  AVStack(obs)──►Control
        │                                                     │                                │
-       ├─ CarlaBackend        (scenario.py)                  └──── Trace (TRUE ego state) ────┤
-       │    avcarla CarlaClient · CarlaMobileActor · CarlaNpc                                  ├─ ModularAVStack (scenario.py)
+       ├─ CarlaBackend        (simulators/carla.py)          └──── Trace (TRUE ego state) ────┤
+       │    avcarla CarlaClient · CarlaMobileActor · CarlaNpc                                  ├─ ModularAVStack (stacks/modular.py)
        │                                                                                       │    avstack ModularDrivingPipeline
        └─ NuRecBackend        (simulators/nurec.py)                                            │    perception►tracking►planning►control
             EgoPose · KinematicBicycle/TrajectoryFollower · Renderer                          │      ▲ attack: avstack HOOKS hook
@@ -62,6 +62,8 @@ avsectester/
   stacks/                                                (AVStack implementations)
     modular.py        ModularAVStack (avstack ModularDrivingPipeline)
     alpamayo.py       AlpamayoAVStack (wraps alpasim_driver Alpamayo-1.5)
+  scenarios/          select/build test cases meeting an attack's preconditions   (see SCENARIOS.md)
+  evaluation/         robustness harness + component logging   (see AUGMENTATION.md, COMPONENT_LOGGING.md)
   attacks/
     pipeline/         Internal pipeline attacks: PhantomInjection (avstack HOOKS hook)
     patch/            Physical patch textures, configuration and deployment

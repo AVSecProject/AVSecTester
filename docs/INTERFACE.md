@@ -26,13 +26,16 @@ run over gRPC if ever split across processes.
   state and the shared vehicle dynamics.
 - **`AVStack`**: `__call__(observation) -> Control`. The box; it knows nothing of modular vs
   end-to-end. `reset(obs)` lets it clear per-episode history.
-- **`run(backend, stack, frames, perturb=None) -> Trace`** drives the loop:
+- **`run(backend, stack, frames, perturb=None, on_step=None) -> Trace`** drives the loop:
 
   ```python
-  obs = backend.reset(); stack.reset(obs)
+  obs = backend.reset()
+  stack.reset(obs)
   for i in range(frames):
       seen = perturb(obs) if perturb else obs      # the single attack seam
       control = stack(seen)
+      if on_step:
+          on_step(i, seen, control)               # side-channel hook (e.g. component logging)
       obs = backend.step(control)
       trace.records.append(FrameRecord(... obs.ego_speed ...))   # TRUE ego state, not the perturbed view
   ```
@@ -56,25 +59,15 @@ captures a strict-spawn `replay_scenario`; `step(control)` applies the `Control`
 physics; `_observe()` reads sensors + ego into an `Observation`. `ModularAVStack` wraps an avstack
 `ModularDrivingPipeline` (perception → tracking → planning → control) and returns a `Control`.
 
-`run_scenario` = `run(CarlaBackend, ModularAVStack, frames)` with the clean/attacked pairing below.
-For a clean/attacked comparison, call `prepare_scenario(config)` once and run clean with its returned
-configuration; then run attacked with `clean.replay_scenario`, which records the actual successful
-spawn transforms. The CLI does this automatically. Preparation resolves random vehicle models, spawn
-indices and destinations using `client.seed`, while preserving explicit selections. A missing seed is
-generated once for the pair. The resolved configuration also retains the map, weather, traffic-light
-settings, Traffic Manager seed and LiDAR noise seed; it is held in memory and the input configuration
-is not mutated.
-
-These experiments require a dedicated CARLA server: each run reloads the world after enabling
-synchronous, fixed-step physics, then rebuilds its actors and driving pipeline. The clean run can
-relocate vehicles when spawning fails; the attacked run must reproduce the successful clean spawns.
-
-Optional client settings include `map_name`, `weather` (a dictionary of CARLA weather fields),
-and `traffic_lights` (OpenDRIVE light ID to state, green/yellow/red duration and frozen flag).
-When omitted, preparation uses the selected world's initial environment and the existing
-`randomize_lights` setting. `reset_world` must be enabled for paired experiments.
-Traffic continues to react to the ego after the common starting point; an attack can therefore
-change NPC trajectories as part of its driving consequence.
+`run_scenario` = `run(CarlaBackend, ModularAVStack, frames)` with a clean/attacked pairing (the CLI
+does it automatically): `prepare_scenario(config)` resolves the random choices **once** (vehicle
+models, spawn indices, destinations, seeds — explicit values preserved; a missing `client.seed`
+generated once for the pair) into an in-memory config without mutating the input; clean runs from that,
+then attacked replays `clean.replay_scenario` — the actual successful spawn transforms. Each run needs
+a dedicated CARLA server (it reloads the world into synchronous fixed-step physics, then rebuilds
+actors and pipeline). The clean run may relocate vehicles when a spawn fails; the attacked run
+reproduces the clean spawns strictly. NPC traffic keeps reacting to the ego after the shared start, so
+an attack can change NPC trajectories as part of its driving consequence.
 
 #### Configuring a YAML scenario
 
@@ -266,13 +259,15 @@ Container copy, filter, mapping, addition and serialization retain the source re
 from avsectester.metric import impact   # (clean: Trace, attacked: Trace) -> Impact
 ```
 
-`Impact` answers the differential question — did the attack induce braking / an unsafe stop the
-clean run never had — via `induced_braking`, `induced_stop`, and `attack_succeeded`. The verdict is
-guarded by a **driving baseline**: `attack_succeeded` requires both that the clean run actually drove
-(`clean_drove`, i.e. `clean.peak_speed >= baseline_speed`) *and* `induced_stop`. If the clean ego
-never got moving (too few frames, or stuck at the spawn) the result is **inconclusive**, not a
-success — "an already-stopped car braking" proves nothing. So a real demo needs enough frames for the
-clean run to reach cruising speed (the 40-frame demo peaks ~5 m/s).
+`Impact` answers the differential question — did the attack change the drive the clean run never had?
+— via `induced_braking`, `induced_stop` (phantom family: stopped a car that was driving),
+`suppressed_stop` / `overdrive_frames` (object-hiding family: kept the ego rolling where the clean run
+braked), and `attack_succeeded`. The verdict is guarded by a **driving baseline**: `attack_succeeded`
+is `clean_drove and (induced_stop or suppressed_stop)` — the clean run must actually have driven
+(`clean_drove`, i.e. `clean.peak_speed >= baseline_speed`). If the clean ego never got moving (too few
+frames, or stuck at the spawn) the result is **inconclusive**, not a success — "an already-stopped car
+braking" proves nothing. So a real demo needs enough frames for the clean run to reach cruising speed
+(the 40-frame demo peaks ~5 m/s).
 
 ## 4. What comes from avstack / AlpaSim
 
