@@ -1,16 +1,8 @@
-"""In-process neural-reconstruction world backend (NuRec / OmniDreams) — we own the loop.
+"""Neural-reconstruction backend with in-process ego dynamics and pluggable rendering.
 
-Unlike AlpaSim's gRPC runtime (which owns the loop and calls the driver back), this
-:class:`~avsectester.backend.WorldBackend` owns the closed loop *in process*, exactly like
-``CarlaBackend``: ``step()`` integrates the ego dynamics and renders the camera from the
-reconstructed scene. The only thing that may cross a boundary is the **stateless** per-frame render
-(``render(pose) -> image``) — the loop, ego state, and dynamics stay in one process. That makes it
-easy to set breakpoints in ``step()``, inspect the frame + state, and checkpoint the world as a plain
-picklable dict (``checkpoint``/``restore``).
-
-The renderer is pluggable: :class:`StubRenderer` (default) needs nothing and returns a deterministic
-placeholder, so the whole loop runs and is debugged with no server; :class:`NuRecRenderer` wraps a
-real NuRec ``SensorsimService`` (one stateless ``render_rgb`` call per frame) and is wired later.
+``NuRecBackend`` owns the control loop. ``StubRenderer`` supports offline use, while
+``NuRecRenderer`` calls a separate SensorsimService for RGB images and exposes its native RPC
+client for metadata access. Host-bound insertions use the shared geometric insertion renderer.
 """
 
 from __future__ import annotations
@@ -24,11 +16,12 @@ from typing import Any, ClassVar
 
 from avsectester.backend import WorldBackend
 from avsectester.plane import Control, Observation
+from avsectester.simulators.patch_insertion import InsertionRenderer
 
 
 @dataclass
 class EgoPose:
-    """Ego world state we own and integrate (2-D kinematic; enough for a closed-loop drive)."""
+    """Ego world state we own and integrate (2-D kinematic dynamics)."""
 
     x: float = 0.0
     y: float = 0.0
@@ -172,12 +165,16 @@ class NuRecBackend(WorldBackend):
         return self._observe()
 
     def _observe(self) -> Observation:
-        sensor_data = {cam: self.renderer.render(self.pose, cam) for cam in self.renderer.cameras}
+        aliases = self.config.get("camera_aliases", {})
+        sensor_data = {
+            aliases.get(cam, cam): self.renderer.render(self.pose, cam)
+            for cam in self.renderer.cameras
+        }
         return Observation(
             t=self.pose.t,
             frame=self.frame,
             sensor_data=sensor_data,
-            calibration=self.renderer.calibration,
+            calibration={aliases.get(k, k): v for k, v in self.renderer.calibration.items()},
             vehicle_state=self.pose,
             ego_speed=self.pose.speed,
         )
@@ -197,7 +194,7 @@ class NuRecBackend(WorldBackend):
 
 def _compose_pose(a, b, pb):
     """SE(3) compose two protobuf poses: ``a @ b``. AlpaSim builds the camera's world pose as
-    ``world_rig @ rig_to_camera`` (rig_to_camera = the camera's pose in the rig); we replicate it."""
+    ``world_rig @ rig_to_camera`` (rig_to_camera = the camera's pose in the rig)."""
     aw, ax, ay, az = a.quat.w, a.quat.x, a.quat.y, a.quat.z
     bw, bx, by, bz = b.quat.w, b.quat.x, b.quat.y, b.quat.z
     q = pb.Quat(  # quaternion product a*b
@@ -206,7 +203,11 @@ def _compose_pose(a, b, pb):
         y=aw * by - ax * bz + ay * bw + az * bx,
         z=aw * bz + ax * by - ay * bx + az * bw,
     )
-    tx, ty, tz = b.vec.x, b.vec.y, b.vec.z  # rotate b's translation by a's rotation: v + 2w(q×v)+2(q×(q×v))
+    tx, ty, tz = (
+        b.vec.x,
+        b.vec.y,
+        b.vec.z,
+    )  # rotate b's translation by a's rotation: v + 2w(q×v)+2(q×(q×v))
     cx, cy, cz = ay * tz - az * ty, az * tx - ax * tz, ax * ty - ay * tx
     ccx, ccy, ccz = ay * cz - az * cy, az * cx - ax * cz, ax * cy - ay * cx
     vec = pb.Vec3(
@@ -223,8 +224,9 @@ class NuRecRenderer(Renderer):
 
     The heavy neural rendering lives in the ``nre-ga`` server (like the CARLA server), so this stays a
     thin, stateless client — no runtime, no controller/physics/traffic microservices, no callback
-    inversion. Lazily imports the gRPC stubs; wire it against a running renderer + a loaded NuRec
-    scene. Not exercised yet on this box (needs the nre-ga server + a scene reconstruction).
+    inversion. Lazily imports the gRPC stubs. Connect it to a running renderer and a loaded NuRec
+    scene. ``service`` exposes the native RPC client after loading. ``render_at`` supports exact
+    recorded poses for initial-sequence inspection without advancing a driving policy.
     """
 
     endpoint: str = "127.0.0.1:50051"
@@ -233,83 +235,165 @@ class NuRecRenderer(Renderer):
     calibration: dict = field(default_factory=dict)
     image_quality: float = 95.0
 
+    start_timestamp_us: int | None = None
+    start_transform: Any = None
+
     def __post_init__(self) -> None:
         self._stub = None
+        self._channel = None
+        self._camera_specs = {}
+        self._camera_poses = {}
         self._spec = None  # CameraSpec for our camera (intrinsics), queried from the scene
         self._rig_to_camera = None  # camera pose in the rig (extrinsic), composed onto the ego pose
         self._start_pose = None  # scene-frame ego start pose (from the recorded trajectory)
-        self._t0 = 0  # scene-clip start timestamp (us); render times map from our sim clock onto it
+        self._t0 = (
+            0  # Scene start timestamp in microseconds, corresponding to simulation time zero.
+        )
 
     def load_scene(self, scene: Any) -> None:
         """Connect to the nre-ga renderer and read the scene id, camera spec, and start pose/time."""
         import grpc
         from alpasim_grpc.v0 import common_pb2, sensorsim_pb2, sensorsim_pb2_grpc
 
-        self._stub = sensorsim_pb2_grpc.SensorsimServiceStub(grpc.insecure_channel(self.endpoint))
+        self.close()
+        self._channel = grpc.insecure_channel(self.endpoint)
+        self._stub = sensorsim_pb2_grpc.SensorsimServiceStub(self._channel)
         available = list(self._stub.get_available_scenes(common_pb2.Empty()).scene_ids)
         want = scene or self.scene_id
-        self.scene_id = next((s for s in available if want and want in s), available[0])
+        matches = [s for s in available if want and want in s]
+        if want in available:
+            self.scene_id = want
+        elif want and len(matches) == 1:
+            self.scene_id = matches[0]
+        elif want or not available:
+            raise ValueError(f"Scene {want!r} did not resolve to exactly one renderer scene")
+        else:
+            self.scene_id = available[0]
         cams = self._stub.get_available_cameras(
             sensorsim_pb2.AvailableCamerasRequest(scene_id=self.scene_id)
         )
-        cam = next(c for c in cams.available_cameras if c.logical_id == self.cameras[0])
-        self._spec = cam.intrinsics
-        self._rig_to_camera = cam.rig_to_camera  # extrinsic: camera pose in the rig
-        poses = self._stub.get_available_trajectories(
-            sensorsim_pb2.AvailableTrajectoriesRequest(scene_id=self.scene_id)
-        ).available_trajectories[0].trajectory.poses
+        native_cameras = {c.logical_id: c for c in cams.available_cameras}
+        for name in self.cameras:
+            if name not in native_cameras:
+                raise ValueError(f"Camera {name!r} is not available in {self.scene_id!r}")
+        self._camera_specs = {name: native_cameras[name].intrinsics for name in self.cameras}
+        self._camera_poses = {name: native_cameras[name].rig_to_camera for name in self.cameras}
+        self._spec = self._camera_specs[self.cameras[0]]
+        self._rig_to_camera = self._camera_poses[self.cameras[0]]
+        poses = (
+            self._stub.get_available_trajectories(
+                sensorsim_pb2.AvailableTrajectoriesRequest(scene_id=self.scene_id)
+            )
+            .available_trajectories[0]
+            .trajectory.poses
+        )
         self._start_pose = poses[0].pose  # scene world-frame origin for the ego
-        self._t0 = poses[0].timestamp_us
+        self._t0 = (
+            poses[0].timestamp_us if self.start_timestamp_us is None else self.start_timestamp_us
+        )
 
     def start_pose(self):
-        """Scene-frame (x, y, yaw) the backend should spawn the ego at; None until load_scene."""
+        """Scene-frame (x, y, yaw) the backend should spawn the ego at. None until load_scene."""
         import math
 
+        if self.start_transform is not None:
+            transform = self.start_transform
+            return {
+                "x": float(transform[0][3]),
+                "y": float(transform[1][3]),
+                "yaw": math.atan2(transform[1][0], transform[0][0]),
+            }
         if self._start_pose is None:
             return None
         p, q = self._start_pose.vec, self._start_pose.quat
         yaw = math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
         return {"x": p.x, "y": p.y, "yaw": yaw}
 
-    def camera_model(self):
+    @property
+    def service(self):
+        """Native SensorsimService client, including metadata APIs not normalized by this adapter."""
+        if self._stub is None:
+            raise RuntimeError("Call load_scene before accessing the NuRec service")
+        return self._stub
+
+    def close(self):
+        if self._channel is not None:
+            self._channel.close()
+        self._channel = None
+        self._stub = None
+
+    def timestamp_us(self, pose: EgoPose) -> int:
+        return self._t0 + round(pose.t * 1e6)
+
+    def camera_model(self, camera: str | None = None):
         """The rendered camera's lens model (:class:`~avsectester.simulators.camera_models.FThetaCamera`)
-        — for world-anchored insertion; available after :meth:`load_scene`."""
+        for world-anchored insertion, available after :meth:`load_scene`."""
         from avsectester.simulators.camera_models import FThetaCamera
 
-        return FThetaCamera.from_nurec(self._spec)
+        return FThetaCamera.from_nurec(self._camera_specs.get(camera, self._spec))
 
-    def cam_from_world(self, pose: EgoPose):
-        """4x4 scene-world -> camera (x right, y down, z fwd) transform at ego ``pose`` — the inverse
-        of the camera pose :meth:`render` sends (``world_rig @ rig_to_camera``)."""
+    def rig_transform(self, pose: EgoPose):
+        """Preserve the selected frame's height/tilt while evolving planar position and heading."""
         import numpy as np
+        from avsectester.simulators.camera_models import planar_rig_pose
 
-        from avsectester.simulators.camera_models import planar_rig_pose, pose_from_proto
+        if self.start_transform is None:
+            z = self._start_pose.vec.z if self._start_pose is not None else 0.0
+            return planar_rig_pose(pose.x, pose.y, pose.yaw, z)
+        anchor = np.asarray(self.start_transform, dtype=float)
+        anchor_yaw = math.atan2(anchor[1, 0], anchor[0, 0])
+        current = planar_rig_pose(pose.x, pose.y, pose.yaw, anchor[2, 3])
+        initial_flat = planar_rig_pose(0, 0, anchor_yaw)
+        current[:3, :3] = current[:3, :3] @ initial_flat[:3, :3].T @ anchor[:3, :3]
+        return current
 
-        z = self._start_pose.vec.z if self._start_pose is not None else 0.0
-        world_from_cam = planar_rig_pose(pose.x, pose.y, pose.yaw, z) @ pose_from_proto(self._rig_to_camera)
-        return np.linalg.inv(world_from_cam)
+    def cam_from_world(self, pose: EgoPose, camera: str | None = None):
+        """The same camera pose used by the render request, including selected-frame tilt."""
+        import numpy as np
+        from avsectester.simulators.camera_models import pose_from_proto
+
+        extrinsic = self._camera_poses.get(camera, self._rig_to_camera)
+        return np.linalg.inv(self.rig_transform(pose) @ pose_from_proto(extrinsic))
+
+    def camera_transform(self, world_from_rig, camera: str | None = None):
+        """World-to-optical-camera transform for an explicit recorded rig pose."""
+        import numpy as np
+        from avsectester.simulators.camera_models import pose_from_proto
+
+        extrinsic = self._camera_poses.get(camera, self._rig_to_camera)
+        return np.linalg.inv(np.asarray(world_from_rig) @ pose_from_proto(extrinsic))
 
     def render(self, pose: EgoPose, camera: str):
         """Render one RGB frame at the ego pose via a single stateless render_rgb call."""
-        # ego rig pose in the scene world frame -> common.Pose (2-D; z from the recorded start)
-        import math
+        return self.render_at(self.rig_transform(pose), self.timestamp_us(pose), camera)
+
+    def render_at(self, world_from_rig, timestamp_us: int, camera: str):
+        """Render a recorded or user-provided SE(3) pose at an absolute scene timestamp."""
 
         import cv2
         import numpy as np
         from alpasim_grpc.v0 import common_pb2, sensorsim_pb2
 
-        z = self._start_pose.vec.z if self._start_pose is not None else 0.0
+        from scipy.spatial.transform import Rotation
+
+        if self._stub is None:
+            raise RuntimeError("Call load_scene before rendering")
+        if camera not in self._camera_specs:
+            raise ValueError(f"Camera {camera!r} was not loaded")
+        spec = self._camera_specs[camera]
+        transform = np.asarray(world_from_rig, dtype=float)
+        qx, qy, qz, qw = Rotation.from_matrix(transform[:3, :3]).as_quat()
         rig = common_pb2.Pose(
-            vec=common_pb2.Vec3(x=pose.x, y=pose.y, z=z),
-            quat=common_pb2.Quat(w=math.cos(pose.yaw / 2), x=0.0, y=0.0, z=math.sin(pose.yaw / 2)),
+            vec=common_pb2.Vec3(x=transform[0, 3], y=transform[1, 3], z=transform[2, 3]),
+            quat=common_pb2.Quat(w=qw, x=qx, y=qy, z=qz),
         )
-        cam = _compose_pose(rig, self._rig_to_camera, common_pb2)  # world_cam = world_rig @ rig_to_camera
-        frame_us = self._t0 + int(pose.t * 1e6)  # advance the dynamic scene with our sim clock
+        cam = _compose_pose(rig, self._camera_poses[camera], common_pb2)
+        frame_us = int(timestamp_us)
         req = sensorsim_pb2.RGBRenderRequest(
             scene_id=self.scene_id,
-            resolution_h=self._spec.resolution_h,
-            resolution_w=self._spec.resolution_w,
-            camera_intrinsics=self._spec,
+            resolution_h=spec.resolution_h,
+            resolution_w=spec.resolution_w,
+            camera_intrinsics=spec,
             frame_start_us=frame_us,
             frame_end_us=frame_us + 1,  # render at an instant: a non-empty [t, t+1) interval
             sensor_pose=sensorsim_pb2.PosePair(start_pose=cam, end_pose=cam),
@@ -320,3 +404,42 @@ class NuRecRenderer(Renderer):
         ret = self._stub.render_rgb(req)
         img = cv2.imdecode(np.frombuffer(ret.image_bytes, np.uint8), cv2.IMREAD_COLOR)
         return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)  # HWC uint8 RGB for the AV stack
+
+
+class NuRecInsertions(InsertionRenderer):
+    """Insertion renderer with optional known-cuboid visibility for NuRec observations.
+
+    ``geometry(observation)`` provides stable actor world poses, the victim pose and the
+    world-to-camera matrix. Use with ``frame_perturbation`` to change the model input.
+    """
+
+    def __init__(
+        self,
+        insertions,
+        camera,
+        geometry,
+        compositor=None,
+        visibility_estimator=None,
+        camera_name="front",
+    ):
+        def evidence(observation, resolved, state):
+            actors, _victim, camera_transform = state
+            return {
+                item.id: visibility_estimator.estimate(
+                    item,
+                    camera,
+                    camera_transform,
+                    occluders=actors,
+                    other_insertions=tuple(other for other in resolved if other.id != item.id),
+                    camera_name=camera_name,
+                )
+                for item in resolved
+            }
+
+        super().__init__(
+            insertions,
+            camera,
+            geometry,
+            compositor,
+            evidence_provider=evidence if visibility_estimator is not None else None,
+        )

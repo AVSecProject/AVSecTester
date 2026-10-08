@@ -5,6 +5,7 @@ closed-loop interactions.
 """
 
 import math
+from dataclasses import replace
 import os
 
 import pytest
@@ -38,6 +39,9 @@ def test_reads_real_usdz_ego_frame_gt():
 def test_real_filtering_yields_matches():
     # scanning frames of a real clip, some qualify for physical_patch_hide_vehicle (rear-facing lead in
     # the distance/area band) and some do not — real, non-trivial filtering.
-    hits = sum(REQ.match(next(NuRecDataset([_SCENE], keyframe=k / 20).scenes())) is not None
-               for k in range(21))
+    # NuRec does not provide occlusion evidence. Test geometric selection separately.
+    geometric = replace(REQ, constraints=REQ.constraints[:-1])
+    scenes = [next(NuRecDataset([_SCENE], keyframe=k / 20).scenes()) for k in range(21)]
+    assert all(REQ.match(scene) is None for scene in scenes)
+    hits = sum(geometric.match(scene) is not None for scene in scenes)
     assert 1 <= hits < 21

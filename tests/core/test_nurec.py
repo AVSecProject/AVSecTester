@@ -73,8 +73,12 @@ def test_trajectory_follower_tracks_a_straight_plan_and_coasts_when_empty():
 
     follower = TrajectoryFollower()
     # straight rig-frame plan: +2 m forward at t=0.1 s, +4 m at 0.2 s (t in microseconds)
-    plan = Control(trajectory=[((2.0, 0.0, 0.0), (1, 0, 0, 0), 100_000),
-                               ((4.0, 0.0, 0.0), (1, 0, 0, 0), 200_000)])
+    plan = Control(
+        trajectory=[
+            ((2.0, 0.0, 0.0), (1, 0, 0, 0), 100_000),
+            ((4.0, 0.0, 0.0), (1, 0, 0, 0), 200_000),
+        ]
+    )
     p = follower.step(EgoPose(t=0.0), plan, dt=0.1)  # interp at 0.1 s -> 2 m ahead
     assert p.x == pytest.approx(2.0) and p.y == pytest.approx(0.0)
     assert p.speed == pytest.approx(20.0)  # 2 m / 0.1 s
@@ -95,10 +99,12 @@ def test_trajectory_follower_interpolates_in_rig_then_transforms_to_world(yaw, e
     from avsectester.simulators.nurec import TrajectoryFollower
 
     # At 2.15 s, halfway between waypoints, the rig-frame offset is (3, 1).
-    plan = Control(trajectory=[
-        ((2.0, 0.0, 0.0), (1, 0, 0, 0), 2_100_000),
-        ((4.0, 2.0, 0.0), (1, 0, 0, 0), 2_200_000),
-    ])
+    plan = Control(
+        trajectory=[
+            ((2.0, 0.0, 0.0), (1, 0, 0, 0), 2_100_000),
+            ((4.0, 2.0, 0.0), (1, 0, 0, 0), 2_200_000),
+        ]
+    )
     pose = EgoPose(x=10.0, y=-4.0, yaw=yaw, t=2.0)
 
     moved = TrajectoryFollower().step(pose, plan, dt=0.15)

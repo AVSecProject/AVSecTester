@@ -76,14 +76,21 @@ def warp_patch(frame_rgb: np.ndarray, dst_quad: np.ndarray, patch_rgba: np.ndarr
     src = np.array([[0, 0], [pw, 0], [pw, ph], [0, ph]], dtype=np.float32)
     homography = cv2.getPerspectiveTransform(src, np.asarray(dst_quad, dtype=np.float32))
     warped = cv2.warpPerspective(patch_rgba, homography, (w, h), flags=cv2.INTER_LINEAR)
-    alpha = (warped[:, :, 3:4].astype(np.float32) / 255.0)
+    alpha = warped[:, :, 3:4].astype(np.float32) / 255.0
     comp = frame_rgb.astype(np.float32) * (1 - alpha) + warped[:, :, :3].astype(np.float32) * alpha
     mask = (warped[:, :, 3] > 127).astype(np.uint8) * 255
     return comp.astype(np.uint8), mask
 
 
-def render_plane(frame_rgb: np.ndarray, camera: Any, cam_from_world: np.ndarray, corners_world: np.ndarray,
-                 texture_rgba: np.ndarray, soften: float = 0.0, margin: int = 2):
+def render_plane(
+    frame_rgb: np.ndarray,
+    camera: Any,
+    cam_from_world: np.ndarray,
+    corners_world: np.ndarray,
+    texture_rgba: np.ndarray,
+    soften: float = 0.0,
+    margin: int = 2,
+):
     """Render a textured planar rectangle anchored in the **world** into the frame; composite it.
 
     The world-anchored counterpart of :func:`warp_patch`: instead of an image quad, the target is a
@@ -132,21 +139,32 @@ def render_plane(frame_rgb: np.ndarray, camera: Any, cam_from_world: np.ndarray,
     span = max(x1 - x0, y1 - y0, 4)
     th, tw = texture_rgba.shape[:2]
     k = min(1.0, 2.0 * span / max(th, tw))
-    tex = cv2.resize(texture_rgba, (max(2, int(tw * k)), max(2, int(th * k))), interpolation=cv2.INTER_AREA) \
-        if k < 1.0 else texture_rgba
+    tex = (
+        cv2.resize(
+            texture_rgba, (max(2, int(tw * k)), max(2, int(th * k))), interpolation=cv2.INTER_AREA
+        )
+        if k < 1.0
+        else texture_rgba
+    )
     th, tw = tex.shape[:2]
     map_x = np.where(valid, s * tw - 0.5, -10).reshape(xs.shape).astype(np.float32)
     map_y = np.where(valid, tt * th - 0.5, -10).reshape(xs.shape).astype(np.float32)
-    sampled = cv2.remap(tex, map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT,
-                        borderValue=(0, 0, 0, 0)).astype(np.float32)
+    sampled = cv2.remap(
+        tex,
+        map_x,
+        map_y,
+        cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=(0, 0, 0, 0),
+    ).astype(np.float32)
     if soften > 0:
         sampled = cv2.GaussianBlur(sampled, (0, 0), soften)
     alpha = sampled[:, :, 3:4] / 255.0
     comp = frame_rgb.astype(np.float32).copy()
-    roi = comp[y0:y1 + 1, x0:x1 + 1]
-    comp[y0:y1 + 1, x0:x1 + 1] = roi * (1 - alpha) + sampled[:, :, :3] * alpha
+    roi = comp[y0 : y1 + 1, x0 : x1 + 1]
+    comp[y0 : y1 + 1, x0 : x1 + 1] = roi * (1 - alpha) + sampled[:, :, :3] * alpha
     mask = np.zeros((h, w), np.uint8)
-    mask[y0:y1 + 1, x0:x1 + 1] = (sampled[:, :, 3] > 127).astype(np.uint8) * 255
+    mask[y0 : y1 + 1, x0 : x1 + 1] = (sampled[:, :, 3] > 127).astype(np.uint8) * 255
     return comp.astype(np.uint8), mask
 
 
@@ -157,8 +175,9 @@ class Harmonizer(ABC):
     """Adjust the pasted foreground to fit the background. Must preserve the patch's texture."""
 
     @abstractmethod
-    def __call__(self, composite_rgb: np.ndarray, mask: np.ndarray, background_rgb: np.ndarray) -> np.ndarray:
-        ...
+    def __call__(
+        self, composite_rgb: np.ndarray, mask: np.ndarray, background_rgb: np.ndarray
+    ) -> np.ndarray: ...
 
 
 class ClassicHarmonizer(Harmonizer):
@@ -175,8 +194,15 @@ class ClassicHarmonizer(Harmonizer):
     edge, which keeps the object's own colours. Defaults reproduce the original behaviour.
     """
 
-    def __init__(self, color_transfer: bool = True, poisson: bool = True, preserve_chroma: bool = False,
-                 blend: str = "poisson", feather: float = 1.2, gain_range: tuple = (0.35, 1.2)) -> None:
+    def __init__(
+        self,
+        color_transfer: bool = True,
+        poisson: bool = True,
+        preserve_chroma: bool = False,
+        blend: str = "poisson",
+        feather: float = 1.2,
+        gain_range: tuple = (0.35, 1.2),
+    ) -> None:
         self.color_transfer = color_transfer
         self.poisson = poisson and blend == "poisson"
         self.preserve_chroma = preserve_chroma
@@ -209,7 +235,9 @@ class ClassicHarmonizer(Harmonizer):
                 out = cv2.cvtColor(np.clip(lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB)
         if self.blend == "feather" and self.feather > 0 and m.any():
             a = cv2.GaussianBlur(mask.astype(np.float32) / 255.0, (0, 0), self.feather)[:, :, None]
-            out = (out.astype(np.float32) * a + background_rgb.astype(np.float32) * (1 - a)).astype(np.uint8)
+            out = (out.astype(np.float32) * a + background_rgb.astype(np.float32) * (1 - a)).astype(
+                np.uint8
+            )
         if self.poisson and m.any():
             ys, xs = np.where(m)
             center = (int((xs.min() + xs.max()) / 2), int((ys.min() + ys.max()) / 2))
@@ -282,9 +310,13 @@ class PCTNetHarmonizer(Harmonizer):
         if cand.exists():
             return cand
         from huggingface_hub import hf_hub_download  # downloaded once, then cached in the submodule
+
         cand.parent.mkdir(parents=True, exist_ok=True)
-        return Path(hf_hub_download("BCMIZB/Libcom_pretrained_models", "PCTNet.pth",
-                                    local_dir=str(cand.parent)))
+        return Path(
+            hf_hub_download(
+                "BCMIZB/Libcom_pretrained_models", "PCTNet.pth", local_dir=str(cand.parent)
+            )
+        )
 
     def __call__(self, composite_rgb, mask, background_rgb):
         try:
@@ -323,13 +355,21 @@ class PatchCompositor:
     def __init__(self, harmonizer: Harmonizer | None = None) -> None:
         self.harmonizer = harmonizer or ClassicHarmonizer()
 
-    def apply(self, frame_rgb: np.ndarray, dst_quad: np.ndarray, patch_rgba: np.ndarray) -> np.ndarray:
+    def apply(
+        self, frame_rgb: np.ndarray, dst_quad: np.ndarray, patch_rgba: np.ndarray
+    ) -> np.ndarray:
         """Insert ``patch_rgba`` at image quad ``dst_quad`` in ``frame_rgb``; return the patched frame."""
         composite, mask = warp_patch(frame_rgb, dst_quad, patch_rgba)
         return self.harmonizer(composite, mask, frame_rgb)
 
-    def apply_planes(self, frame_rgb: np.ndarray, camera: Any, cam_from_world: np.ndarray,
-                     planes: list, soften: float = 0.0) -> np.ndarray:
+    def apply_planes(
+        self,
+        frame_rgb: np.ndarray,
+        camera: Any,
+        cam_from_world: np.ndarray,
+        planes: list,
+        soften: float = 0.0,
+    ) -> np.ndarray:
         """Render world-anchored textured ``planes`` — ``[(corners_world 4x3, texture_rgba), ...]``,
         drawn in order (later ones on top) — with :func:`render_plane`, then harmonize them into the
         frame together as one object. Returns the clean frame when nothing is in view."""
@@ -339,6 +379,59 @@ class PatchCompositor:
             comp, mask = render_plane(comp, camera, cam_from_world, corners, texture, soften=soften)
             union |= mask
         return self.harmonizer(comp, union, frame_rgb) if union.any() else frame_rgb
+
+
+def render_resolved(frame, camera, cam_from_world, resolved, evidence=None, *, compositor=None):
+    """Composite a resolved insertion with per-pixel surface depth and visibility.
+
+    ``evidence`` is the estimator result for this same pose and camera. Its visible
+    mask prevents the insertion from painting over foreground geometry. Without
+    evidence, only the insertion's own surfaces occlude one another. An optional
+    compositor supplies harmonization, applied within the visible region only.
+
+    Returns ``(RGB image, uint8 mask)``. Unknown visibility is an explicit error,
+    because treating missing evidence as visible would silently change the scene.
+    """
+    from avsectester.simulators.camera_models import transform
+
+    shape = frame.shape[:2]
+    if shape != (camera.height, camera.width):
+        raise ValueError("Frame dimensions do not match camera calibration")
+    if evidence is not None:
+        if evidence.visibility is None:
+            raise ValueError(f"Insertion visibility is unknown: {evidence.reason}")
+        if evidence.visible_mask.shape != shape:
+            raise ValueError("Visibility mask dimensions do not match the image")
+    output = frame.copy()
+    nearest = np.full(shape, np.inf)
+    union = np.zeros(shape, np.uint8)
+    for corners, texture in resolved.planes():
+        rendered, mask = render_plane(frame, camera, cam_from_world, corners, texture)
+        active = mask > 0
+        if evidence is not None:
+            active &= evidence.visible_mask
+        ys, xs = np.nonzero(active)
+        if len(xs) == 0:
+            continue
+        rays = camera.unproject(np.column_stack((xs + 0.5, ys + 0.5)))
+        points = transform(cam_from_world, corners)
+        normal = np.cross(points[1] - points[0], points[3] - points[0])
+        denominator = rays @ normal
+        distance = np.divide(
+            points[0] @ normal,
+            denominator,
+            out=np.full(len(xs), np.inf),
+            where=np.abs(denominator) > 1e-12,
+        )
+        closer = (distance > 0) & (distance < nearest[ys, xs])
+        ys, xs = ys[closer], xs[closer]
+        nearest[ys, xs] = distance[closer]
+        output[ys, xs] = rendered[ys, xs]
+        union[ys, xs] = 255
+    if compositor is not None and union.any():
+        harmonized = compositor.harmonizer(output, union, frame)
+        output[union > 0] = harmonized[union > 0]
+    return output, union
 
 
 def order_quad(pts: np.ndarray) -> np.ndarray:
@@ -353,8 +446,14 @@ def order_quad(pts: np.ndarray) -> np.ndarray:
     return np.stack([p[np.argmin(s)], p[np.argmax(d)], p[np.argmax(s)], p[np.argmin(d)]])
 
 
-def box_to_quad(box, width_frac: float = 0.6, height_frac: float = 0.5,
-                v_center: float = 0.5, yaw: float = 0.0, aspect: float | None = None) -> np.ndarray:
+def box_to_quad(
+    box,
+    width_frac: float = 0.6,
+    height_frac: float = 0.5,
+    v_center: float = 0.5,
+    yaw: float = 0.0,
+    aspect: float | None = None,
+) -> np.ndarray:
     """Approximate a target plane's image quad (TL,TR,BR,BL) from a 2-D detection ``box`` [x1,y1,x2,y2].
 
     For a surface seen roughly head-on (e.g. a lead vehicle's rear), the plane's image quad is a
@@ -372,17 +471,31 @@ def box_to_quad(box, width_frac: float = 0.6, height_frac: float = 0.5,
     hh = hw * aspect if aspect is not None else 0.5 * height_frac * bh
     # yaw>0 pushes the right edge back (narrower) -> a trapezoid, approximating an oblique plane
     l, r = 1.0 + math.sin(yaw), 1.0 - math.sin(yaw)
-    return np.array([[cx - hw, cy - hh * l], [cx + hw, cy - hh * r],
-                     [cx + hw, cy + hh * r], [cx - hw, cy + hh * l]], dtype=np.float64)
+    return np.array(
+        [
+            [cx - hw, cy - hh * l],
+            [cx + hw, cy - hh * r],
+            [cx + hw, cy + hh * r],
+            [cx - hw, cy + hh * l],
+        ],
+        dtype=np.float64,
+    )
 
 
 # ---------------------------------------------------------------------------------------------------
 # View wrappers — plug the insertion into the standard viz pipeline (backend-agnostic)
 # ---------------------------------------------------------------------------------------------------
-def detector_quad(detect: Callable[[Any], Any], base: View = camera_view, width_frac: float = 0.7,
-                  height_frac: float = 0.55, v_center: float = 0.5, yaw: float = 0.0,
-                  central: float = 0.25, aspect: float | None = None,
-                  pick: str = "largest") -> Callable[[Observation], Any]:
+def detector_quad(
+    detect: Callable[[Any], Any],
+    base: View = camera_view,
+    width_frac: float = 0.7,
+    height_frac: float = 0.55,
+    v_center: float = 0.5,
+    yaw: float = 0.0,
+    central: float = 0.25,
+    aspect: float | None = None,
+    pick: str = "largest",
+) -> Callable[[Observation], Any]:
     """Return ``quad_of(observation) -> (4,2) | None``: the rear-face quad of the lead vehicle,
     approximated from a 2-D detector box (image-space, no depth). Runs ``detect(rgb) -> [(xyxy, score,
     label)]`` on the ``base`` view, picks the largest box near the image centre (the lead), and turns it
@@ -412,13 +525,21 @@ def detector_quad(detect: Callable[[Any], Any], base: View = camera_view, width_
                 best = (box, key)
         if best is None:
             return None
-        return box_to_quad(best[0], width_frac=width_frac, height_frac=height_frac,
-                           v_center=v_center, yaw=yaw, aspect=aspect)
+        return box_to_quad(
+            best[0],
+            width_frac=width_frac,
+            height_frac=height_frac,
+            v_center=v_center,
+            yaw=yaw,
+            aspect=aspect,
+        )
 
     return _quad_of
 
 
-def hold_quad(quad_of: Callable[[Observation], Any], frames: int = 3) -> Callable[[Observation], Any]:
+def hold_quad(
+    quad_of: Callable[[Observation], Any], frames: int = 3
+) -> Callable[[Observation], Any]:
     """Wrap ``quad_of`` to reuse the last quad for up to ``frames`` consecutive misses, so a single
     missed detection does not make the inserted object blink out of the sequence.
     This holds image coordinates only; it does not associate vehicle identities."""
@@ -436,7 +557,10 @@ def hold_quad(quad_of: Callable[[Observation], Any], frames: int = 3) -> Callabl
 
 
 def composite_view(
-    compositor: Any, patch_rgba: Any, quad_of: Callable[[Observation], Any], base: View = camera_view
+    compositor: Any,
+    patch_rgba: Any,
+    quad_of: Callable[[Observation], Any],
+    base: View = camera_view,
 ) -> View:
     """Wrap a camera ``base`` view to insert a harmonized patch onto the rendered frame.
 
@@ -456,8 +580,9 @@ def composite_view(
     return _view
 
 
-def frame_perturbation(insert: Callable[[Observation, Any], Any], camera: str | None = None,
-                       base: View | None = None) -> Callable[[Observation], Observation]:
+def frame_perturbation(
+    insert: Callable[[Observation, Any], Any], camera: str | None = None, base: View | None = None
+) -> Callable[[Observation], Observation]:
     """Return ``perturb(obs) -> obs`` that rewrites one camera's frame with ``insert(obs, rgb) -> rgb``.
 
     The sensor-plane attack seam for backends whose camera payload is a raw RGB ndarray (NuRec): the
@@ -479,3 +604,46 @@ def frame_perturbation(insert: Callable[[Observation, Any], Any], camera: str | 
         return replace(observation, sensor_data=new_data)
 
     return _perturb
+
+
+class InsertionRenderer:
+    """Resolve bound objects and render them through the same geometry used by selection.
+
+    ``geometry(observation)`` returns ``(actors, victim, cam_from_world)``. An optional
+    ``evidence_provider(observation, resolved, geometry)`` returns visibility evidence by insertion
+    ID. No filters run here. Use ``frame_perturbation`` or a backend adapter to update model inputs.
+    """
+
+    def __init__(self, insertions, camera, geometry, compositor=None, evidence_provider=None):
+        self.insertions = tuple(insertions)
+        if len({item.id for item in self.insertions}) != len(self.insertions):
+            raise ValueError("Insertion IDs must be unique")
+        self.camera = camera
+        self.geometry = geometry
+        self.compositor = compositor
+        self.evidence_provider = evidence_provider
+        self.resolved = ()
+        self.evidence = {}
+
+    def __call__(self, observation, rgb):
+        from avsectester.insertion import resolve_insertion
+
+        state = self.geometry(observation)
+        actors, victim, camera_transform = state
+        self.resolved = tuple(resolve_insertion(item, actors, victim) for item in self.insertions)
+        self.evidence = (
+            self.evidence_provider(observation, self.resolved, state)
+            if self.evidence_provider is not None
+            else {}
+        )
+        result = rgb
+        for item in self.resolved:
+            result, _ = render_resolved(
+                result,
+                self.camera,
+                camera_transform,
+                item,
+                self.evidence[item.id] if self.evidence_provider else None,
+                compositor=self.compositor,
+            )
+        return result

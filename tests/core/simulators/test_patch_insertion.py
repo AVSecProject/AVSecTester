@@ -74,9 +74,13 @@ def test_box_to_quad_planar_target():
     from avsectester.simulators.patch_insertion import box_to_quad
 
     q = box_to_quad([100, 100, 200, 200], width_frac=0.5, height_frac=0.5, v_center=0.5)
-    assert np.allclose(q, [[125, 125], [175, 125], [175, 175], [125, 175]])  # centered half-size box
+    assert np.allclose(
+        q, [[125, 125], [175, 125], [175, 175], [125, 175]]
+    )  # centered half-size box
     qy = box_to_quad([100, 100, 200, 200], width_frac=0.5, height_frac=0.5, yaw=0.3)
-    assert (qy[0, 1] < qy[1, 1]) and (qy[3, 1] > qy[2, 1])  # left edge taller -> foreshortened trapezoid
+    assert (qy[0, 1] < qy[1, 1]) and (
+        qy[3, 1] > qy[2, 1]
+    )  # left edge taller -> foreshortened trapezoid
 
 
 def test_render_plane_lands_where_projected_and_keeps_red(ftheta_camera, cam_from_world):
@@ -95,11 +99,14 @@ def test_render_plane_lands_where_projected_and_keeps_red(ftheta_camera, cam_fro
     centre_world = corners.mean(axis=0)[None]
     c = (cam_from_world[:3, :3] @ centre_world.T).T + cam_from_world[:3, 3]
     u, v = ftheta_camera.project(c)[0]
-    assert abs(xs.mean() - u) < 3 and abs(ys.mean() - v) < 3  # rendered footprint centred on the projection
+    assert (
+        abs(xs.mean() - u) < 3 and abs(ys.mean() - v) < 3
+    )  # rendered footprint centred on the projection
     assert xs.mean() > ftheta_camera.cx  # right of centre (negative y)
     # chroma-preserving harmonization keeps the sign red. The default Lab transfer pulls it to grey
     kept = PatchCompositor(ClassicHarmonizer(preserve_chroma=True, blend="feather")).apply_planes(
-        frame, ftheta_camera, cam_from_world, [(corners, face)])
+        frame, ftheta_camera, cam_from_world, [(corners, face)]
+    )
     r, g, b = kept[mask > 0].astype(float).mean(axis=0)
     assert r > g + 30 and r > b + 30
 
@@ -146,10 +153,57 @@ def test_lane_pick_and_hold():
     big_side = ([10, 30, 95, 90], 0.9, 3)  # larger, nearer, but in the next lane
     boxes = [[lead, big_side], [], [], [], [], [lead]]
     detect = lambda _rgb: boxes.pop(0)
-    quad_of = hold_quad(detector_quad(detect, base=lambda _o: frame, pick="lane", aspect=1.0), frames=3)
+    quad_of = hold_quad(
+        detector_quad(detect, base=lambda _o: frame, pick="lane", aspect=1.0), frames=3
+    )
     q0 = quad_of(None)
-    assert q0 is not None and 90 < q0[:, 0].mean() < 130  # took the in-lane lead, not the bigger car
+    assert (
+        q0 is not None and 90 < q0[:, 0].mean() < 130
+    )  # took the in-lane lead, not the bigger car
     assert np.allclose(q0[2] - q0[1], [0, q0[1, 0] - q0[0, 0]])  # aspect=1: square
     held = [quad_of(None) for _ in range(4)]
-    assert all(np.array_equal(h, q0) for h in held[:3]) and held[3] is None  # held 3 misses, then dropped
+    assert (
+        all(np.array_equal(h, q0) for h in held[:3]) and held[3] is None
+    )  # held 3 misses, then dropped
     assert quad_of(None) is not None  # re-acquired
+
+
+@pytest.mark.parametrize("reverse_surfaces", [False, True])
+@pytest.mark.parametrize("harmonize", [False, True])
+def test_insertion_renderer_depth_orders_surfaces_and_preserves_cutout_holes(
+    reverse_surfaces,
+    harmonize,
+):
+    from avsectester.insertion import ActorPose, Insertion, PlaneAsset, PlaneSurface, WorldPlacement
+    from avsectester.plane import Observation
+    from avsectester.simulators.camera_models import PinholeCamera
+    from avsectester.simulators.patch_insertion import InsertionRenderer, PatchCompositor
+
+    red = np.full((16, 16, 4), [255, 0, 0, 255], np.uint8)
+    red[6:10, 6:10, 3] = 0
+    blue = np.full((16, 16, 4), [0, 0, 255, 255], np.uint8)
+    near = PlaneAsset(red, 2, 2).planes()[0]
+    far = PlaneAsset(blue, 4, 4).planes()[0]
+    surfaces = [
+        PlaneSurface(near.corners + [5, 0, 0], near.texture),
+        PlaneSurface(far.corners + [10, 0, 0], far.texture),
+    ]
+    if reverse_surfaces:
+        surfaces.reverse()
+
+    class LayeredAsset:
+        def planes(self):
+            return surfaces
+
+    camera = PinholeCamera(np.array([[50, 0, 50], [0, 50, 40], [0, 0, 1]]), 100, 80)
+    camera_from_world = np.array([[0, -1, 0, 0], [0, 0, -1, 0], [1, 0, 0, 0], [0, 0, 0, 1]])
+    compositor = PatchCompositor(lambda image, mask, background: image) if harmonize else None
+    render = InsertionRenderer(
+        [Insertion("layered", LayeredAsset(), WorldPlacement((0, 0, 0)))],
+        camera,
+        lambda _: ({}, ActorPose(np.eye(4)), camera_from_world),
+        compositor=compositor,
+    )
+    image = render(Observation(0, 0), np.zeros((80, 100, 3), np.uint8))
+    np.testing.assert_array_equal(image[40, 50], [0, 0, 255])
+    np.testing.assert_array_equal(image[40, 56], [255, 0, 0])

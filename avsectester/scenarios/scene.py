@@ -19,10 +19,12 @@ from typing import Any
 
 @dataclass
 class CameraCalib:
-    """One camera's calibration. ``model`` is the opaque intrinsics (pinhole K, CARLA ``P``, or an
-    f-theta spec) filled by the provider; ``cam_to_ego`` its extrinsic. Only ``name``/``width``/
-    ``height`` are needed by the current constraints (they read 2-D boxes); the rest lets a provider
-    project 3-D boxes to fill :attr:`ObjectGT.box2d` when the dataset gives only 3-D."""
+    """Camera calibration in optical axes (x right, y down, z forward).
+
+    ``model`` is a projection model, pinhole K, or provider lens specification.
+    ``cam_to_ego`` maps optical coordinates into the scene's ego frame. Inserted geometry
+    needs both fields. Existing annotation boxes can be queried using image dimensions alone.
+    """
 
     name: str
     width: int
@@ -32,12 +34,12 @@ class CameraCalib:
 
 
 @dataclass
-class ObjectGT:
+class TargetGeometry:
     """A ground-truth object in the scene, in the ego frame.
 
     ``box2d`` maps ``camera_name -> (x1, y1, x2, y2)`` image-space boxes; a provider fills it from the
-    dataset labels or by projecting the 3-D box. ``visibility`` is the unoccluded fraction in [0, 1]
-    when known (else 1.0)."""
+    dataset labels or by projecting the 3-D box. ``visibility`` is the visible fraction in [0, 1], including image truncation for rendered
+    measurements. Dataset labels retain their documented semantics. Missing evidence is unknown."""
 
     track_id: str
     category: str  # "vehicle" | "pedestrian" | "cyclist" | ...
@@ -45,7 +47,8 @@ class ObjectGT:
     extent: tuple[float, float, float] = (0.0, 0.0, 0.0)  # (length, width, height)
     yaw: float = 0.0  # heading relative to the ego (rad); 0 = same heading, pi = facing the ego
     box2d: dict[str, tuple[float, float, float, float]] = field(default_factory=dict)
-    visibility: float = 1.0
+    visibility: Visibility | float | None = None
+    pose: Any = None  # Optional ego-from-object 4x4 transform at the bounding-box centre.
 
     @property
     def distance(self) -> float:
@@ -57,21 +60,58 @@ class ObjectGT:
         """Is the object in front of the ego (positive x)?"""
         return self.center[0] > 0.0
 
+    def __post_init__(self):
+        # Explicit legacy scalar values remain usable, but absence never means fully visible.
+        if isinstance(self.visibility, (int, float)):
+            self.visibility = Visibility(float(self.visibility), source="provided")
+
     def image_area_frac(self, camera: str, calib: CameraCalib) -> float | None:
-        """Fraction of the ``camera`` frame the object's 2-D box covers, or None if not projected."""
+        from .geometry import clipped_box_area
+
         box = self.box2d.get(camera)
         if box is None:
             return None
-        x1, y1, x2, y2 = box
-        return max(0.0, (x2 - x1)) * max(0.0, (y2 - y1)) / float(calib.width * calib.height)
+        return clipped_box_area(tuple(box), calib.width, calib.height) / (
+            calib.width * calib.height
+        )
+
+
+@dataclass(frozen=True)
+class Visibility:
+    """Measured fraction or a coarse dataset representative. None camera means source-wide scope."""
+
+    fraction: float
+    source: str
+    camera: str | None = None
+    label: str | None = None
+
+    def __post_init__(self):
+        if not math.isfinite(self.fraction) or not 0 <= self.fraction <= 1:
+            raise ValueError("visibility fraction must be in [0, 1]")
+
+
+@dataclass
+class ObjectGT(TargetGeometry):
+    """An existing object identified by its track ID."""
+
+
+@dataclass
+class PlacementCandidate(TargetGeometry):
+    """A proposed insertion, not an existing actor. Geometry is in the same ego frame as SceneGT.
+
+    The attack or source supplies its projected footprint and optional visibility measurement.
+    ``track_id`` is a stable placement ID, retained when the selected case is replayed.
+    """
 
 
 @dataclass
 class EgoState:
-    """The ego's own state (what a requirement needs about the platform)."""
+    """Victim state. ``pose`` defines ego axes, while ``center`` locates its bounding box."""
 
     speed: float = 0.0  # m/s
-    pose: Any = None  # optional full pose, provider-specific
+    pose: Any = None  # Optional world-from-ego 4x4 transform, x forward, y left, z up.
+    extent: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    center: tuple[float, float, float] = (0.0, 0.0, 0.0)  # Bounding-box centre in ego axes.
 
 
 @dataclass
@@ -88,6 +128,8 @@ class SceneGT:
     cameras: dict[str, CameraCalib]
     objects: list[ObjectGT]
     source: dict[str, Any] = field(default_factory=dict)
+
+    placements: list[PlacementCandidate] = field(default_factory=list)
 
     def objects_of(self, category: str) -> list[ObjectGT]:
         return [o for o in self.objects if o.category == category]

@@ -141,6 +141,8 @@ def _condition_perturbation(pipeline: AugmentationPipeline | None, camera: str) 
     """Seed corruption by relative frame, since simulator frame IDs can differ after a reset."""
     if pipeline is None:
         return None
+    if camera is None:
+        raise ValueError("Image corruptions require a camera. Use conditions=[] for scene-only cases.")
     augment = sensor_augmentation(pipeline, camera=camera)
     first_frame = None
 

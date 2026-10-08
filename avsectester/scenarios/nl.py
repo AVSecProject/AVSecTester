@@ -44,7 +44,7 @@ def build_prompt(description: str, name: str = "custom") -> str:
         "object describing which scene an attack needs.\n\n"
         "Output ONLY JSON of the form:\n"
         '{"name": str, "description": str, '
-        '"target": {"category": str, "camera": str, "select": '
+        '"target": null | {"kind": "object"|"placement", "category": str, "camera": str|null, "select": '
         '"nearest_ahead"|"nearest"|"largest"}, '
         '"constraints": [{"kind": str, ...fields}]}\n\n'
         f"Available constraint kinds and their fields (use ONLY these, with these field names):\n{vocab}\n\n"
