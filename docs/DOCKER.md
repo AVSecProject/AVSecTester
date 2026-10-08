@@ -30,19 +30,17 @@ docker compose exec avsectester avsectester run configs/carla_scenario.yaml --fr
 ```
 
 `avsectester run` **is** the demo: it builds `configs/carla_scenario.yaml`, runs a clean pass then a
-phantom-attacked pass, and diffs them. Expected output:
+phantom-attacked pass, and compares their driving traces. It prints detection counts, peak and
+final speeds, braking-frame counts and a verdict. Results depend on the configured scene and
+whether the baseline establishes driving.
 
-```
-[clean]    mean_detections=6.8 peak_speed=5.19 final_speed=5.17 brake_frames=0
-[attacked] mean_detections=8.1 final_speed=0.00 brake_frames=38
-clean:    peak_speed= 5.19  final_speed= 5.17  brake_frames=0
-attacked: final_speed= 0.00  brake_frames=38
-=> ATTACK SUCCEEDED (forced an unsafe stop)
-```
+| Exit code | Meaning |
+|---|---|
+| `0` | Attack succeeded under the current driving-impact criterion |
+| `1` | A valid baseline was established, but the attack did not meet that criterion |
+| `2` | Inconclusive because the clean run did not establish driving |
 
-i.e. the clean run cruises while the real detector reports NPC detections; the phantom detection
-injected at the perception stage (an avstack hook) propagates to a confirmed track and forces an
-unsafe stop. (Exit code: `0` succeeded, `2` inconclusive, `1` no impact.)
+See [INTERFACE.md](INTERFACE.md#3-metric-clean-vs-attacked--verdict) for the criterion.
 
 Add `--plot results/impact.png` to also save a **driving-impact figure** (ego speed + brake over
 time, clean vs attacked). `results/` is bind-mounted, so the PNG appears on the host:

@@ -36,13 +36,14 @@ Three small pieces:
 
 1. **Capture (stack side, `stacks/`).** Modular: `_StageCapture` — a single generic avstack post-hook that
    remembers a stage's output and returns it unchanged. `ModularAVStack.instrument(stages)` attaches one per
-   stage **last** (so it observes the *attacked* output). It is the *one* per-stage capture mechanism — used
-   for plain detection telemetry (`instrument(("perception",))`, driving `FrameRecord.n_detections` via
-   `run_logged`) and full in-system analysis (all stages) alike. E2E: `AlpamayoAVStack.component_log()`
+   stage **last** (so it observes the *attacked* output). The same mechanism captures one stage
+   (`instrument(("perception",))`) or all configured stages. Read detection counts from
+   `ComponentTrace.counts("perception")`. `run_logged` does not populate `FrameRecord.n_detections`
+   from these captures. E2E: `AlpamayoAVStack.component_log()`
    returns the prediction + control it already computed in `__call__`. Both satisfy `InstrumentedStack`.
 
 2. **Gather (`evaluation/component_log.py`).** `run_logged(backend, stack, frames, perturb)` is the
-   instrumented twin of `backend.run`: it reuses the *same* loop via `run`'s new `on_step` callback, and
+   instrumented twin of `backend.run`: it reuses the *same* loop via `run`'s `on_step` callback, and
    each frame deep-copies the stack's `component_log()` into a `ComponentTrace` (a list of
    `StepLog{frame, stages}`). The snapshot includes mutable tracks, plans and reference frames so
    subsequent steps cannot rewrite earlier outputs. A stack without the component logging interface
@@ -58,6 +59,36 @@ Three small pieces:
 
 The sim↔stack contract (`plane.Observation`/`Control`) is untouched — component logs are a side channel
 pulled through `component_log()`. `evaluation` never imports `stacks`.
+
+## Collect and read outputs
+
+Given a selected `case` and a modular `pipeline_config`, instrument the stack and call `run_logged`.
+Attach any attack hooks before instrumentation so the capture observes their returned outputs:
+
+```python
+from avsectester.evaluation.component_log import run_logged
+from avsectester.stacks.modular import ModularAVStack
+
+backend = case.make_backend()
+try:
+    stack = ModularAVStack(pipeline_config)
+    stack.instrument()
+    trace, components = run_logged(backend, stack, frames=30)
+    perception_counts = components.counts("perception")
+    first_outputs = components.steps[0].stages
+finally:
+    backend.close()
+```
+
+Use a pipeline configured for the backend's sensors. For Alpamayo, supply an `AlpamayoAVStack`
+instead, without calling `instrument()`. It exposes `policy` and `action` through the same collector.
+
+`components.steps[i]` captures outputs computed from the input to decision step `i`.
+`trace.records[i]` records the state after executing that decision. These refer to different
+instants. Ground truth supplied to `performance(stage, truths)` must match the component output's
+input frame and reference coordinates, not the post-control state. Counts alone cannot establish
+attack success. Both traces are returned in memory, and this API does not automatically export
+all raw stage objects or generate a paper-ready report.
 
 ## How it feeds the end goal (paper-style report)
 

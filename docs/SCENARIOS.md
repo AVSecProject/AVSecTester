@@ -1,176 +1,462 @@
-# Scenario layer — evaluating attacks on scenes that satisfy their assumptions
+# Scenario selection and insertion
 
-## The problem
+Select an initial case before running an experiment. A case contains the initial scene, stable
+actor bindings and explicit insertion specifications. Clean and attacked runs use this same case.
+Filters are not installed in the driving loop and do not promise attack success.
 
-An attack is only meaningful on a scene that satisfies its **assumptions**. A physical-patch attack
-that removes a *vehicle* detection needs a target vehicle actually visible in the camera, close enough
-and unoccluded enough to carry a patch. A phantom-injection attack needs the ego to be *driving toward
-a clear road* so an injected obstacle can change the plan. Different attacks → different preconditions.
+The workflow is:
 
-So before we can score an attack we must first **obtain test cases that satisfy its preconditions**:
+1. Specify inserted assets and their exact world or host-local positions.
+2. Combine filters into a `ScenarioRequirement`.
+3. Ask a source to prepare candidates and return qualifying cases.
+4. Create a backend from a selected case and run clean and attacked experiments from that origin.
 
-- **Real data (Alpamayo / NuRec traces):** only a *subset* of frames/clips satisfy the requirement —
-  we must **filter** the dataset to those.
-- **Simulation (CARLA):** we can **construct** a scene that satisfies the requirement (spawn the target
-  vehicle at a qualifying distance / angle).
+Selection is a Python API. The `avsectester run` YAML command runs a configured CARLA experiment,
+but does not parse the selection API described here. See [SETUP.md](SETUP.md) for dependencies.
 
-The two look different (select vs. build) but must be driven by **one shared specification** of the
-requirement, defined **once per attack**, so a new attack only declares *what it needs* and both
-providers just work.
+## Interfaces
 
-## The key idea: a requirement is a predicate over ground-truth scene state
+| API | Responsibility |
+|---|---|
+| `SceneGT`, `CameraCalib` | Normalized ground truth and camera calibration |
+| `FilterContext` | Scene, selected roles, insertions, raw metadata and native provider APIs |
+| `Constraint.evaluate(context)` | Return `FilterResult(status, reason)` |
+| `ScenarioRequirement` | Compose conditions and select a fixed role assignment |
+| `InitialWindow(frames=N)` | Require conditions on the first N prepared frames |
+| `DatasetFilter`, `CarlaScenarioBuilder` | Prepare candidates and yield selected cases |
+| `ScenarioInstance.make_backend()` | Create a backend starting at the selected origin |
+| `Insertion`, `resolve_insertion` | Specify and resolve object placement and orientation |
 
-Both a CARLA sim and an annotated dataset can expose the same **ground-truth scene state**
-(`SceneGT`: ego state, camera calibrations, and the 3-D/2-D objects with categories, poses, distances,
-image boxes, visibility). We define an attack's requirement as a **composable predicate over
-`SceneGT`** that also **selects the target** the attack acts on. Then:
+A filter returns `pass`, `fail` or `unknown`. Missing visibility, missing bound actors and an
+incomplete initial window produce unknown checks. Only passing cases are selected. Programming
+errors propagate. All top-level constraints must pass. Use `All`, `Any` and `Not` for other
+combinations:
 
-- **filter** = evaluate the predicate on each dataset sample's `SceneGT`, keep the ones that hold;
-- **build** = construct a CARLA scene, then **validate** it by evaluating the *same* predicate on the
-  built scene's `SceneGT` (and use the constraints to *parameterize* the construction).
+| Combination | Result |
+|---|---|
+| `All(filters)` | Fail if any child fails, otherwise unknown if any is unknown, otherwise pass |
+| `Any(filters)` | Pass if any child passes, otherwise unknown if any is unknown, otherwise fail |
+| `Not(filter)` | Exchange pass and fail, preserving unknown |
 
-One requirement, two `ScenarioSource`s. This is the whole design.
+`ScenarioRequirement.evaluate(context)` returns detailed candidate checks. `match(context)` returns
+the selected `ScenarioMatch` or `None`. The match retains `binding_ids`, `insertions` and `window`.
+Sources retain accepted, rejected and unknown checks in `selection_log`. `save_selection(path)`
+writes these checks as JSON, without copying native clients or image arrays.
 
-```
-                         ScenarioRequirement (per attack)
-                     target: TargetSpec  +  [Constraint, ...]
-                                    │
-              ┌─────────────────────┴─────────────────────┐
-              ▼                                            ▼
-      DatasetFilter(dataset)                     CarlaScenarioBuilder()
-   for each clip/frame:                       parameterize a scene from the
-     SceneGT from annotations                   constraints, build it, then
-     req.match(scene)? ──► yield                 VALIDATE req.match(scene) ──► yield
-              │                                            │
-              └───────────────► ScenarioInstance ◄─────────┘
-             make_backend() -> WorldBackend  +  target (ScenarioMatch)  +  provenance
-                                    │
-                                    ▼
-                          evaluation harness runs the
-                          attack on the backend + scores
-                          (avsectester.metric.impact)
-```
+## Specify inserted objects
 
-## Components (this folder)
-
-- **`scene.py`** — `SceneGT`, `ObjectGT`, `EgoState`, `CameraCalib`: the **canonical ground-truth**
-  scene representation the predicates read. A *provider adapter* maps its native GT (CARLA world state,
-  or a dataset's per-frame labels) into this schema. Backend-agnostic, no sim/dataset imports.
-
-- **`requirement.py`** — the **DSL**: a `Constraint` base + concrete constraints
-  (`InView`, `ImageAreaFrac`, `DistanceRange`, `ViewpointRear`, `MinVisibility`, `EgoMoving`,
-  `ClearLaneAhead`, …), `TargetSpec` (how to pick the target), and `ScenarioRequirement`
-  (target + constraints) whose `match(scene) -> ScenarioMatch | None` is the predicate. Pure logic,
-  fully testable offline.
-
-- **`source.py`** — `ScenarioInstance` (a runnable case: a `WorldBackend` factory + the target +
-  provenance), the `ScenarioSource` interface, and the two providers `DatasetFilter` /
-  `CarlaScenarioBuilder` that consume any `ScenarioRequirement`.
-
-- **`requirements.py`** — the **per-attack requirement definitions** (e.g. `physical_patch_hide_vehicle`).
-  A new attack adds one entry here (or the attack module exports its own `ScenarioRequirement`); the
-  providers and the eval harness are unchanged.
-
-## Why a Python-object DSL (not a text/YAML DSL) — for now
-
-Constraints are composable objects (`ScenarioRequirement(target=…, constraints=[DistanceRange(4, 25),
-ImageAreaFrac(0.02, 0.5), ViewpointRear(35), MinVisibility(0.7)])`). This is an *embedded* DSL: type-
-checked, trivially extensible (add a `Constraint` subclass), and directly executable. A parsed
-text/YAML surface can be added later as a thin front-end that builds these objects — but the object
-model is the source of truth. Keeping the object model first avoids inventing grammar before we know
-the constraint vocabulary.
-
-## Example — physical patch that hides a vehicle
+Positions are explicit. The framework does not search for a patch location or move an insertion
+to make a filter pass. World and object coordinates use metres and right-handed axes: X forward,
+Y left, Z up. The CARLA adapter converts Unreal coordinates at the boundary.
 
 ```python
-ScenarioRequirement(
-    name="physical_patch_hide_vehicle",
-    target=TargetSpec(category="vehicle", camera="front", select="nearest_ahead"),
+import numpy as np
+from avsectester.insertion import (
+    AttachedPlacement, Insertion, Orientation, PlaneAsset, WorldPlacement,
+)
+from avsectester.attacks.object_insertion.sign_spoof import STOP_SIGN
+
+# Replace this RGBA array with a texture path or your own array.
+texture = np.full((32, 32, 4), [255, 0, 255, 255], dtype=np.uint8)
+
+patch = Insertion(
+    id="rear_patch",
+    asset=PlaneAsset(texture, width_m=0.6, height_m=0.4),
+    placement=AttachedPlacement(
+        host="attacker", anchor="rear_center", offset_m=(-0.05, 0.0, 0.15),
+    ),
+    orientation=Orientation("follow_host", rotation_deg=(0, 0, 180)),
+)
+
+sign = Insertion(
+    id="roadside_sign",
+    asset=PlaneAsset(STOP_SIGN, width_m=0.8, height_m=0.8),
+    placement=WorldPlacement(position_m=(20, -3, 1.8)),
+    orientation=Orientation("face_victim"),
+)
+```
+
+The sign coordinates are illustrative. `WorldPlacement` takes absolute coordinates in the
+provider's world frame, not distance ahead of the ego. Choose a position in your selected map or
+reconstruction. Neither placement searches for an alternative when its filters fail.
+
+`AttachedPlacement` uses the host's bounding-box centre as its local origin. Named anchors are
+`center`, `front_center`, `rear_center`, `left_center`, `right_center`, `top_center` and
+`bottom_center`. Offsets use the host's local axes and rotate with it. These anchors describe
+bounding-box faces, not exact vehicle body panels. Choose offsets appropriate to the actual asset.
+Use `anchor="center"` with `offset_m=(x, y, z)` for a custom local point.
+
+Position and orientation are independent:
+
+| Orientation | Rotation behavior |
+|---|---|
+| `follow_host` | Host rotation multiplied by the specified local rotation |
+| `fixed_world` | Absolute rotation remains constant while an attached centre follows its host |
+| `face_victim` | Asset front continuously points toward the current victim position |
+
+Angles are `(roll, pitch, yaw)` in degrees, with rotation `Rz(yaw) @ Ry(pitch) @ Rx(roll)`.
+The asset front is +X and its top is +Z. A rear patch therefore normally uses local yaw 180°.
+`face_victim` uses `target_offset_m` in the victim frame and keeps world up where possible.
+A coincident insertion and target is invalid. `follow_host` requires an attached placement.
+
+Each insertion has its own asset, dimensions, offset and orientation. A host can carry multiple
+insertions. Multiple hosts can carry different insertions. A missing host is never replaced with
+a new nearby actor. In paired runs, world orientation and host bindings remain the same, while
+`face_victim` follows each run's current ego pose.
+
+`PlaneAsset` supports RGBA textures. Transparent pixels do not belong to its silhouette. Custom
+assets implement `planes()` and return local `PlaneSurface(corners, texture)` rectangles. This
+supports multi-surface objects using the same resolver and compositor. Surfaces are currently
+two-sided. General mesh rendering requires a provider-specific renderer and reference silhouette,
+not a bounding-box substitute.
+
+Each surface uses four `(x, y, z)` corners in top-left, top-right, bottom-right, bottom-left texture
+order and a `uint8` RGBA texture. All surfaces are expressed in one asset-local frame. A custom
+asset can be passed directly to `Insertion` without registration. Custom asset serialization
+requires an application-defined loader, since the built-in dictionary format covers `PlaneAsset`.
+
+## Compose a requirement
+
+```python
+from avsectester.scenarios import InitialWindow, RoleSpec, ScenarioRequirement
+from avsectester.scenarios.requirement import DistanceRange, InView, MinVisibility, ViewpointRear
+
+requirement = ScenarioRequirement(
+    name="rear_patch_case",
+    roles={"attacker": RoleSpec(category="vehicle", count=1, select="nearest_ahead")},
+    insertions=(patch,),
+    camera="front",
+    window=InitialWindow(frames=1),
     constraints=[
-        InView("front"),            # the target projects into the front camera
-        DistanceRange(4.0, 25.0),   # close enough to place + read a patch, not on top of us
-        ImageAreaFrac(0.02, 0.5),   # big enough to matter, not the whole frame (false positive)
-        ViewpointRear(max_deg=35),  # we see roughly its rear face (where the patch goes)
-        MinVisibility(0.7),         # mostly unoccluded, so the patch is not hidden
+        DistanceRange(5, 25),
+        ViewpointRear(max_deg=35, camera="front"),
+        InView("front"),
+        MinVisibility(0.5, camera="front"),
     ],
 )
 ```
 
-- **DatasetFilter** keeps only Alpamayo/NuRec frames where a vehicle meets all five → those clips +
-  start frames become `ScenarioInstance`s (a `NuRecBackend` seeded at that clip/frame).
-- **CarlaScenarioBuilder** spawns a lead vehicle ahead of the ego, sampling distance in `[min_gap, 25]`
-  (lower bound clamped to a physically-spawnable `min_gap`, default 6 m) and a small lateral offset so
-  `ViewpointRear`/`ImageAreaFrac` hold, then validates with `req.match`.
+Automatic selection checks candidate bindings before choosing among eligible ones. A nearer car
+that fails the conditions does not exclude a farther suitable car. `RoleSpec(ids=("track-17",))`
+selects an explicit identity without substitution. For two hosts, use `RoleSpec(count=2)` or
+`RoleSpec(ids=("track-17", "track-42"), count=2)`. Attach individual objects with role aliases
+such as `hosts[0]` and `hosts[1]`. `max_bindings` bounds the number of role assignments examined.
+If none of the examined bindings passes and the budget is exhausted, the result is unknown.
+An accepted binding satisfies the filters, but a bounded search cannot promise the best choice
+among unexamined assignments.
 
-## Ground-truth sourcing (the hard part per provider)
+For insertion cases, visual filters evaluate the inserted objects only. Patch visibility does
+not use the host vehicle's visibility label. With multiple insertions, all are checked unless a
+filter specifies `subjects=("rear_patch",)`. Insertion requirements always check that every
+insertion overlaps the victim image. `camera="front"` sets this mandatory check's camera.
+Without an explicit setting, the target camera, `front`, or the sole available camera is used.
+Ambiguous camera selection is unknown. Scene-only or nonvisual requirements need no visual filter.
 
-- **CARLA:** GT is free from the sim — object 3-D boxes/poses from live actors, camera calib from the
-  sensor; project boxes to 2-D with the existing `simulators.patch_insertion` projection helpers to
-  fill `ObjectGT.box2d`. So the builder both *constructs* and *self-validates*.
-- **NuRec / Alpamayo:** the **render API exposes no actor boxes** (only the ego trajectory), so
-  `SceneGT` must come from the **dataset's own annotations** (the Alpamayo clip labels: per-frame 3-D
-  boxes + calibration), read by a `Dataset` adapter — *separate from* the nre-ga renderer that produces
-  pixels at run time. `DatasetFilter` reads annotations to select; the selected clip+frame then drives a
-  `NuRecRenderer` at run time. This split (annotations for selection, renderer for pixels) is the main
-  integration to build.
+| Filter | Measurement |
+|---|---|
+| `DistanceRange` | Horizontal attacker-to-victim distance in metres, inclusive bounds |
+| `ViewpointRear` | Host rear direction versus host-to-camera bearing in the horizontal plane |
+| `InView` | At least one opaque insertion pixel projects inside the image, independently of occlusion. Existing annotations use their projected boxes |
+| `ImageAreaFrac` | Clipped projected bounding-box area divided by image area |
+| `MinVisibility` | Visible fraction of the insertion, or an existing object's documented annotation |
+| `EgoMoving` | Ego speed threshold |
+| `ClearLaneAhead` | Existing centre-based corridor test, independent of optical occlusion |
 
-## How it plugs into the evaluation layer
+Distance requires an `attacker` role. It never silently switches to patch-to-camera distance.
+`TargetSpec` remains a shorthand for existing-object annotation queries. The named
+`physical_patch_hide_vehicle` preset queries vehicle annotations. For inserted patch
+selection, provide the actual patch specification as shown above.
 
-The scenario layer's job ends at yielding qualifying, runnable `ScenarioInstance`s + the target. The
-eval harness (`evaluation/robustness.py:evaluate_robustness`) then consumes a `ScenarioSource`, runs
-clean-vs-attacked over the qualifying scenarios × a corruption suite, and aggregates `impact` verdicts
-into a `RobustnessReport` — see [`AUGMENTATION.md`](AUGMENTATION.md) for that protocol.
+## Select a case
+
+The following examples use `requirement` and `patch` from above. Choose one source.
+
+For CARLA, start a dedicated server matching your CARLA client version. The example configuration
+contains an ego camera and a lead vehicle. The builder applies its own selection backend and
+removes the configuration's physical `patches` so insertion visibility is measured before attack:
 
 ```python
-source  = CarlaScenarioBuilder()            # or DatasetFilter(alpamayo)
-req     = REQUIREMENTS["physical_patch_hide_vehicle"]
-report  = evaluate_robustness(source, req, attack_for, stack, frames)   # ASR + resilience per condition
+from pathlib import Path
+import yaml
+from avsectester.scenarios import CarlaScenarioBuilder
+
+config = yaml.safe_load(Path("configs/carla_patch_scenario.yaml").read_text())
+# Set config["client"]["connect_port"] if your server does not use port 2000.
+source = CarlaScenarioBuilder(base_scenario=config)
 ```
 
-## Natural-language requirements (LLM-interpreted)
+For NuRec, point the dataset at local USDZ files. Metadata-based selection does not require a
+renderer connection. Running the selected backend or rendering from a custom filter does require
+an `nre-ga` server serving the corresponding scene:
 
-`ScenarioRequirement` carries a free-text `description`; `nl.interpret(description, llm)` turns it into
-the formal target + constraints. The LLM is **injected** (`llm: str -> str`), so there is no API
-dependency: `nl.build_prompt` grounds the model in the exact constraint vocabulary
-(`serialize.constraint_vocabulary`, auto-generated from the dataclasses), `nl.parse_response` extracts
-its JSON, and `serialize.requirement_from_dict` deserializes it through the constraint registry — an
-unknown kind or bad field raises rather than silently mis-specifying the scenario. So a human writes
-"a car directly ahead, close and unoccluded, rear facing us" and gets a runnable predicate. The
-object model (`serialize`) is the source of truth; NL is a front-end onto it.
+```python
+from avsectester.scenarios import DatasetFilter
+from avsectester.scenarios.datasets.nurec import NuRecDataset
 
-## Phased implementation — status
+dataset = NuRecDataset.from_glob(
+    "/path/to/scenes/*.usdz", keyframe=0.5, endpoint="127.0.0.1:50051",
+)
+source = DatasetFilter(dataset)
+```
 
-1. **Interface + DSL — DONE.** `scene.py`, `requirement.py` (fully implemented + tested), `source.py`,
-   `requirements.py`. Offline, ruff-clean, unit-tested.
-2. **CARLA builder — DONE (validated live).** `CarlaScenarioBuilder` enumerates lead placements
-   *analytically* (`carla_gt.predict_scene_gt` — no CARLA; needs a physically-spawnable `min_gap`),
-   keeps those where `req.match` holds, and builds the real `CarlaBackend` lazily in `make_backend`.
-   Confirmed end-to-end on a live CARLA server: a built scene's live GT satisfies all five constraints.
-3. **CARLA GT adapter — DONE (validated live).** `carla_gt.carla_scene_gt(backend)` (live actors →
-   `ObjectGT` in the ego frame, 3-D boxes projected via `simulators.patch_insertion`). Note: derive the
-   box centre from the world vertices — never `carla.Transform.transform(bb.location)`, which mutates
-   `bb.location` in place and corrupts the next projection.
-4. **Serialization + NL — DONE.** `serialize.py` (dict <-> requirement) + `nl.py` (LLM interpreter),
-   tested with a stub LLM.
-5. **Dataset adapter + filter — DONE (real data, both datasets labeled).** A `Dataset` exposes a GT
-   `SceneGT` per frame; both real sources ship 3-D labels, read directly:
-   - **nuScenes:** `datasets/nuscenes.py:NuScenesDataset` reads GT boxes via the devkit -> `SceneGT`,
-     paired with `RecordedFrameBackend` (replay the recorded frame). Validated on **real nuScenes
-     v1.0-trainval GT** (permission fixed): 400 keyframes / 861 GT vehicles -> **80 qualify** for
-     `physical_patch_hide_vehicle`, with real distance + orientation + visibility (so `ViewpointRear`/
-     `MinVisibility` are meaningful).
-   - **nuRec:** `datasets/nurec.py:NuRecDataset` reads each `.usdz`'s shipped GT — `sequence_tracks.json`
-     (actor cuboid tracks) + `rig_trajectories.json` (per-frame rig poses + f-theta calibration) — and
-     expresses each present actor in the rig (= ego) frame via `inv(T_rig_world) @ actor_pose`, **matching
-     AlpaSim** (tracks only; `world_to_nre` is renderer-only). `box2d` uses the scene's real f-theta model
-     (`FThetaCamera`); `visibility=1.0`. CPU-only, a **peer of `NuScenesDataset`** (no renderer/GPU to
-     filter). See the `nurec.py` module docstring for the full transform. **Validated on real 26.01
-     `.usdz`** (projected boxes land on the real vehicles; ~7/21 and 8/21 frames of two clips qualify);
-     tests read the real artifacts and **skip** if absent (no synthetic stand-in).
+Both sources use the same selection call:
 
-   The earlier detector-labeling fallback (`DetectorLabeler`/`ImageFolder`) is **removed** — both datasets
-   now have real 3-D labels, so deriving `SceneGT` from a 2-D detector had no remaining use.
-6. **Eval harness — DONE.** `evaluation/robustness.py:evaluate_robustness` runs a `ScenarioSource` × an
-   attack × a corruption suite into a `RobustnessReport` (ASR + resilience per condition); the attack is
-   injected (`attack_for(match, backend) -> perturb`), so the harness is attack-agnostic. Protocol in
-   [`AUGMENTATION.md`](AUGMENTATION.md); tested with a closed-loop stub (`tests/core/test_robustness.py`).
+```python
+case = next(source.scenarios(requirement, limit=1), None)
+if case is None:
+    raise RuntimeError(f"No qualifying case: {source.selection_log}")
+
+print(case.target.binding_ids)  # Role names mapped to fixed actor IDs.
+print(case.selection)          # Filter decisions and reasons.
+```
+
+`limit` counts accepted cases. `case.target.scene` is the selected initial ground truth and
+`case.target.insertions` holds the insertion specifications. `case.provenance` describes the
+source. Preview clients are already closed when the case is returned. Call `case.make_backend()`
+to construct experiment resources and close that backend when finished.
+
+## Initial windows and providers
+
+A window starts at the selected experiment origin and uses consecutive recorded or prescribed
+states. Bindings remain fixed throughout it. If an actor disappears, the window does not select a
+replacement. A source with one frame cannot establish a ten-frame condition by repeating it.
+No driving-policy rollout or attack feedback is used to construct the window.
+Passing an initial window does not guarantee that the same conditions persist once either
+experiment starts responding to its driving model.
+
+**NuRec** uses recorded camera timestamps and interpolated full actor poses. The dataset exposes
+all labeled actors, including nonvehicle occluders. `DatasetFilter(dataset)` checks the same
+requirement across `dataset.initial_sequence(scene, N)` and starts the backend at the first frame.
+`NuRecDataset.from_glob(pattern, keyframe=0.5, endpoint="127.0.0.1:50051")` selects the candidate
+start within each clip. It provides one candidate start per USDZ, not a sliding search over every
+frame. `keyframe` is a fraction in `[0, 1]` of that camera's frame indices. To enumerate additional
+starts, override `scenes()` and use `scene_at_frame(path, frame)` for each desired candidate.
+
+**CARLA** creates a candidate world before checking its actual geometry. Fixed scene positions
+are respected. `sample_scene=True` explicitly enables bounded lead-position sampling for new
+scene candidates, independently of user-specified insertion locations.
+
+```python
+from dataclasses import replace
+from avsectester.plane import Control
+from avsectester.scenarios import CarlaScenarioBuilder
+from avsectester.scenarios.carla_provider import CarlaCandidateProvider
+
+def advance_initial(backend, index):
+    # A prescribed control sequence, without querying a driving model.
+    return backend.step(Control(brake=1.0))
+
+requirement = replace(requirement, window=InitialWindow(frames=10))
+provider = CarlaCandidateProvider(initial_frames=10, advance_initial=advance_initial)
+source = CarlaScenarioBuilder(base_scenario=config, candidate_provider=provider)
+case = next(source.scenarios(requirement, limit=1), None)
+```
+
+`advance_initial(backend, index)` advances one prescribed frame and obtains its observation.
+For a one-frame requirement, the default provider needs no callback. For longer windows, provide
+this callback or a custom provider. Live contexts are evaluated before advancing the world, so
+custom filters see matching native state. Candidate resources close before the case is yielded.
+
+The default `CarlaSelectionBackend` uses calibrated pinhole RGB cameras and adds matching depth.
+It has a dedicated sensor setup step before returning the initial observation. Selected cases and
+paired resets use this same preparation path. Ordinary `CarlaBackend` behavior is unchanged.
+The selected RGB camera must produce a frame at every experiment step. Configure
+`sensor_tick=0` or a period matching the simulator step. Slower camera streams do not satisfy
+the same-frame insertion contract.
+`analytic_preview=True` explicitly requests approximate offline enumeration. It does not establish
+rendered visibility or validate an actual CARLA spawn.
+
+Clean uses the attack-selected case with the insertion disabled. Resolve random scene choices
+once per pair through `prepare_clean_attack_pair()`. Neither run selects its own preferred host,
+position or start time. Trajectories may diverge after the experiment starts.
+
+## Visibility
+
+For known insertion geometry, visibility is:
+
+```text
+visible opaque target pixels inside the camera image
+----------------------------------------------------
+complete projected opaque target pixels from that viewpoint
+```
+
+The denominator includes the portion outside the image. The host remains an occluder for its
+patch. Other inserted objects can also occlude one another. Projection, alpha silhouette and
+pose resolution are shared between selection and rendering.
+
+| Provider | Evidence |
+|---|---|
+| CARLA | Aligned scene depth compared with insertion surface depth |
+| NuRec | Ray intersections against known 3D cuboids and other insertion surfaces |
+| nuScenes | Original coarse visibility labels for existing annotated objects |
+| Custom | `visibility_provider(context, insertion_id, camera)` callback |
+
+`DepthVisibilityEstimator` requires the same camera pose, lens and frame for depth and geometry.
+Its depth convention is explicit: `z` or `range`. CARLA uses `z`. Invalid depth at target pixels
+produces unknown. `CuboidVisibilityEstimator` reports source `cuboid_estimate`. It cannot account
+for unannotated buildings, vegetation, holes in a vehicle, or precise mesh boundaries. NuRec's
+estimate must not be interpreted as exact rendered occlusion.
+
+`Visibility(fraction, source, camera=None, label=None)` retains provenance. nuScenes tokens retain
+the coarse representatives `1 → 0.2`, `2 → 0.5`, `3 → 0.7`, `4 → 0.9`. They are dataset-wide labels,
+not exact camera-specific measurements and not labels for a newly inserted patch.
+
+For native complex assets, `visibility_from_masks` and `visibility_from_depth` accept a complete
+unoccluded reference at the same viewpoint. A larger reference canvas must preserve focal length
+in pixels. `image_bounds=(left, top, right, bottom)` restricts the numerator to the real image.
+An empty reference is unknown. An opaque target entirely outside the image has visibility zero.
+Fog attenuation and recognition confidence are separate from geometric visibility.
+
+## Custom filters and native access
+
+```python
+from dataclasses import dataclass, replace
+from avsectester.scenarios import Constraint, FilterResult
+
+@dataclass
+class AllowedWeather(Constraint):
+    max_rain: float
+
+    def evaluate(self, context):
+        world = context.native.get("world")
+        if world is None:
+            return FilterResult("unknown", "CARLA world unavailable")
+        rain = world.get_weather().precipitation
+        return FilterResult.from_bool(rain <= self.max_rain, f"Precipitation {rain}")
+
+# For a CARLA requirement, append the custom filter to the same constraint list.
+requirement = replace(requirement, constraints=[*requirement.constraints, AllowedWeather(20)])
+```
+
+`FilterContext` exposes `scene`, `bindings`, `insertions`, `metadata`, `dataset`, `backend`,
+`renderer` and `native`. There is no method whitelist. NuRec provides raw track and rig records,
+archive access and a lazy renderer. CARLA provides the live world, actors, client and aligned
+depth. nuScenes provides its native SDK and source records. Custom filters can call these APIs
+or query information not represented by `SceneGT`.
+
+| Provider | Native access examples |
+|---|---|
+| CARLA | `context.native["world"]`, `["actors"]`, `["client"]`, `["depth"][camera]` |
+| NuRec | `context.metadata` contains raw JSON records, `context.native["open_archive"]()` opens the USDZ, `["actor_poses"](timestamp_us)` interpolates actor poses |
+| nuScenes | `context.native["nusc"]` exposes the SDK, `context.metadata` contains source records |
+
+These capabilities are provider-specific. A filter that needs unavailable information should
+return `FilterResult("unknown", reason)`. Filters return decisions, not modified observations.
+They run on prepared initial frames, where native world state and `context.scene` agree.
+
+Normalized geometry uses these transforms, all as 4×4 rigid matrices:
+
+| Value | Transform |
+|---|---|
+| `scene.ego.pose` | Ego frame to world |
+| `ObjectGT.pose` | Object bounding-box centre frame to ego |
+| `CameraCalib.cam_to_ego` | Optical camera frame to ego, with X right, Y down and Z forward |
+| `ActorPose.transform` | Actor bounding-box centre frame to world |
+
+`FilterContext.actors` resolves world poses and role aliases. `context.victim` is the victim's
+bounding-box centre pose. Extents are full length, width and height, not half-extents. Native APIs
+retain their provider's conventions, so convert them before constructing normalized geometry.
+
+To support another dataset, subclass `Dataset`:
+
+| Method | Contract |
+|---|---|
+| `scenes()` | Yield candidate initial `SceneGT` records with stable actor IDs |
+| `make_backend(scene)` | Create a fresh `WorldBackend` configured at that selected origin |
+| `initial_sequence(scene, frames)` | Return consecutive prepared states beginning with `scene`, without padding a short sequence |
+| `context(scene)` | Return a `FilterContext` exposing the scene and any native resources |
+
+`scenes()` and `make_backend()` are required. The default sequence contains one frame, and the
+default context exposes the dataset itself. A simulator provider instead implements
+`config -> context manager[FilterContext]` for `CarlaScenarioBuilder(candidate_provider=...)`.
+Provide `context.native["make_backend"]` as a factory that reconstructs the selected origin.
+
+Use `DatasetFilter(..., prepare_context=...)` or a custom candidate provider to add resources.
+A context's native resources are valid within its provider scope. Register newly created resources
+with `context.own(resource)` to have their `close()` called after selection, including rejected
+candidates and exceptions. Merely assigning `renderer`, `backend` or `native` does not transfer
+ownership. This allows filters to borrow shared clients without closing them.
+
+```python
+def prepare_context(context):
+    context.renderer = context.own(MyRenderer())  # Must provide close().
+    return context
+
+source = DatasetFilter(dataset, prepare_context=prepare_context)
+```
+
+`DatasetFilter` and `CarlaScenarioBuilder` release owned preview resources before yielding a
+selected case. Derived contexts share the original resource scope. When using an adapter context
+directly, use `with dataset.context(scene) as context:` or call `context.close()` in `finally`.
+NuRec's context owns its lazy renderer. Selected backend factories create fresh resources and must
+not capture preview clients. `register_constraint` is needed only for dictionary serialization and the optional
+natural-language vocabulary. Direct Python composition does not require registration.
+`requirement_to_dict` and `requirement_from_dict` support groups, roles, windows and built-in assets.
+
+## Feed insertions to the driving model
+
+Insertion rendering must modify the observation passed to the stack. A visualization-only overlay
+does not constitute an input attack. `InsertionRenderer` resolves stable hosts each frame and
+uses the same visibility evidence to mask the composite. It never reruns selection filters.
+
+The following helper runs a selected case twice and returns both `Trace` objects. Supply a
+`stack_factory()` returning a fresh `AVStack` compatible with the case's sensors. `run()` resets
+the backend at the start of each run. The attack adapter is constructed after the clean run so
+camera calibration is available, then follows the backend through the attacked reset:
+
+```python
+from avsectester.backend import run
+
+def run_pair(case, stack_factory, make_perturb, frames=30):
+    backend = case.make_backend()
+    try:
+        backend.prepare_clean_attack_pair()
+        clean = run(backend, stack_factory(), frames=frames)
+        perturb = make_perturb(case, backend)
+        attacked = run(backend, stack_factory(), frames=frames, perturb=perturb)
+        return clean, attacked
+    finally:
+        backend.close()
+```
+
+For a case selected by `CarlaScenarioBuilder` using `CarlaSelectionBackend`:
+
+```python
+from avsectester.simulators.carla import insertion_perturbation
+
+def make_carla_perturb(case, backend):
+    return insertion_perturbation(
+        backend, case.target.insertions, bindings=case.target.binding_ids,
+        camera=case.target.camera,
+    )
+
+# clean, attacked = run_pair(case, stack_factory, make_carla_perturb)
+```
+
+CARLA logical host names `lead` and `npc:<index>` survive paired resets. For a case selected from
+the `NuRecDataset` instance named `dataset`:
+
+```python
+from avsectester.simulators.patch_insertion import frame_perturbation
+
+def make_nurec_perturb(case, backend):
+    insert = dataset.insertion_renderer(
+        case.target.scene, backend, case.target.insertions,
+        bindings=case.target.binding_ids,
+    )
+    return frame_perturbation(insert, camera=dataset.camera)
+
+# clean, attacked = run_pair(case, stack_factory, make_nurec_perturb)
+```
+
+Use [component logging](COMPONENT_LOGGING.md) to capture stack outputs, or
+[robustness evaluation](AUGMENTATION.md) to run selected cases across corruption conditions.
+
+For a custom backend, use `InsertionRenderer(insertions, camera, geometry, evidence_provider=...)`.
+`geometry(observation)` returns `(actor_poses, victim_pose, world_to_camera)`.
+The evidence callback receives `(observation, resolved_insertions, geometry_result)` and returns
+`VisibilityEvidence` objects keyed by insertion ID, including image masks and target depth for
+the current camera and frame. `actor_poses` maps stable IDs to `ActorPose`, and `victim_pose` is
+also an `ActorPose`. A scalar `Visibility` can answer a filter but cannot mask a rendered image.
+Without an evidence provider, the compositor does not account for scene occluders.
+`render_resolved` supports direct composition with the same surface and visibility contracts.

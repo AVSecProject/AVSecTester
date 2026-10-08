@@ -2,9 +2,9 @@
 
 AVSecTester is two roles joined by a **pure data plane**. A **world backend** senses and actuates; an
 **AV stack** (the box under test) turns observations into control. An attack is a transform on the
-stream between them — *not* part of the contract. Everything else (the world, ego, sensors, the
-perception/tracking/planning/control modules, the Alpamayo policy, the hook mechanism, the config
-registries) comes from avstack / avcarla / alpasim_driver.
+stream between them. Scenario selection prepares the initial case before that loop. Simulator
+and driving-model implementations come from avstack, avcarla and NVIDIA services, connected
+through this repository's adapters.
 
 ## 0. The spine: data plane + interfaces
 
@@ -37,7 +37,10 @@ run over gRPC if ever split across processes.
       if on_step:
           on_step(i, seen, control)               # side-channel hook (e.g. component logging)
       obs = backend.step(control)
-      trace.records.append(FrameRecord(... obs.ego_speed ...))   # TRUE ego state, not the perturbed view
+      trace.records.append(FrameRecord(
+          frame=i, t=obs.t, speed=obs.ego_speed,
+          throttle=control.throttle, brake=control.brake, steer=control.steer,
+      ))  # State after applying control, taken from the backend observation.
   ```
 
   **Causal invariant:** control at *t* affects only *t+1*, so the loop serializes cleanly.
@@ -200,7 +203,8 @@ per pose, not a pre-baked video). The backend owns an `EgoPose`, transparent dyn
   in, matching AlpaSim's `construct_rgb_render_request`); the returned JPEG is decoded to `HWC-uint8`.
 
 `step(control)` integrates dynamics → pose → `renderer.render(pose, camera)` → `Observation`.
-`checkpoint()`/`restore()` snapshot the whole world state as a small picklable dict. Bringing up the
+`checkpoint()`/`restore()` save and restore the local ego pose and frame counter.
+They do not checkpoint a remote rendering service. Bringing up the
 renderer + a scene is covered in [`SETUP.md`](SETUP.md); the runnable demo is
 [`scripts/alpamayo_nurec_demo.py`](../scripts/alpamayo_nurec_demo.py).
 
@@ -210,12 +214,40 @@ Wraps NVIDIA's real **Alpamayo-1.5-10B** end-to-end policy
 (`alpasim_driver.models.alpamayo1_5_model.Alpamayo15Model`) as an `AVStack`. `__call__(obs)` builds a
 `PredictionInput` (camera frames + ego speed + ego-pose history) → `model.predict()` →
 `ModelPrediction.candidate_positions` (K×T×3 rig-frame waypoints) → `Control.trajectory`, which a
-`TrajectoryFollower` backend then tracks. The model input contract, learned by running it: it needs
+`TrajectoryFollower` backend then tracks. The model input contract requires
 `context_length` camera frames (padded at startup) and ≥1.5 s of backward ego history (synthesized
 constant-velocity); model-facing timestamps carry an epoch offset while waypoints stay in the
 backend's sim clock. Torch / `alpasim_driver` imports are **lazy**, so importing AVSecTester and
 running the offline suite need only the base env. It runs in a dedicated Python-3.12 driver env — see
 [`SETUP.md`](SETUP.md).
+
+### 1d. Models and supporting components
+
+The repository uses different models for driving, auxiliary detection and image preparation.
+They are not all stages of one pipeline:
+
+| Component | Role and entry point | Participates in driving decisions? |
+|---|---|---|
+| Alpamayo-1.5-10B | End-to-end camera policy through `AlpamayoAVStack` | Yes, outputs a trajectory |
+| PointPillars, CARLA vehicle weights | LiDAR perception in `configs/carla_scenario.yaml` through `ModularAVStack` | Yes, detections feed tracking, planning and control |
+| Faster R-CNN, CARLA vehicle weights, MMDetection | `scripts/demo_common.py:build_detector` and patch optimization scripts | In `patch_driving_demo.py`, detections feed a rule-based braking policy. Other uses inspect or optimize detector response |
+| Faster R-CNN ResNet-50 FPN, COCO weights, torchvision | `scripts/demo_common.py:build_coco_detector`, used by NuRec/nuScenes object demos | No, selects image-space vehicle targets or provides auxiliary detection scores |
+| PCTNet | `PCTNetHarmonizer` adjusts inserted image appearance | No, optional image harmonization |
+| SAM, default `facebook/sam-vit-huge` | `scripts/extract_person_cutouts.py` prepares pedestrian RGBA assets | No, offline segmentation |
+| NuRec through `nre-ga` | `NuRecRenderer` obtains images at the requested camera pose | No, scene rendering rather than a driving policy |
+
+COCO names the detector's pretraining dataset. Using these weights does not add a COCO scene
+source, and the auxiliary detector's scores are not Alpamayo predictions or closed-loop outcomes.
+
+The default modular driving configuration is
+`PointPillars → BasicBoxTracker3D → ForwardCollisionPlanner → VehiclePIDController`.
+The tracker, straight-ahead collision planner and PID controller are algorithmic components,
+not additional end-to-end neural models. Demo-only `CruiseStack` holds a prescribed throttle,
+while `CameraForwardCollisionStack` brakes using a detected box-area threshold.
+
+See [SETUP.md](SETUP.md#5-model-dependencies-and-weights)
+for loading, [IMAGE_ATTACKS.md](IMAGE_ATTACKS.md#auxiliary-models) for image-processing use, and
+the [script index](../scripts/README.md) for each entry point's actual components.
 
 ## 2. Attack — a stream transform, or an avstack hook
 
@@ -230,15 +262,18 @@ perturbed *view*. This is where the AlpaSim adversarial-render camera attacks go
 pipeline stage's pre/post hooks and see its internal tensors:
 
 ```python
-from avstack.config import HOOKS
+from avsectester.stacks.modular import ModularAVStack
 
-@HOOKS.register_module()
-class PhantomInjection:
-    def __init__(self, target_xyz=(6.0, 0.0, -1.5), obj_type="Car", score=0.9, ...): ...
-    def __call__(self, detections):
-        detections.append(<fabricated BoxDetection>)
-        return (detections,)          # avstack post-hook contract: return the value as a 1-tuple
+stack = ModularAVStack(pipeline_config)
+stack.attach("perception", {
+    "type": "PhantomInjection", "target_xyz": (6.0, 0.0, -1.5),
+    "obj_type": "Car", "score": 0.9,
+})
 ```
+
+Here `pipeline_config` is the modular pipeline configuration, such as the `ego.pipeline` mapping
+in the CARLA YAML. A custom post-hook registers with `avstack.config.HOOKS` and returns its updated
+stage output as a one-element tuple, `(output,)`.
 
 The scenario attaches each configured attack with avstack's own
 `stage.register_post_hook(HOOKS.build(hook_cfg))`. To act on a different stage, name it in the
@@ -266,13 +301,29 @@ braked), and `attack_succeeded`. The verdict is guarded by a **driving baseline*
 is `clean_drove and (induced_stop or suppressed_stop)` — the clean run must actually have driven
 (`clean_drove`, i.e. `clean.peak_speed >= baseline_speed`). If the clean ego never got moving (too few
 frames, or stuck at the spawn) the result is **inconclusive**, not a success — "an already-stopped car
-braking" proves nothing. So a real demo needs enough frames for the clean run to reach cruising speed
-(the 40-frame demo peaks ~5 m/s).
+braking" does not establish driving impact.
 
-## 4. What comes from avstack / AlpaSim
+## 4. Scenario selection
 
-AVSecTester adds only the interface (§0), the two new backend/stack halves (§1b, §1c), the attack and
-metric seams, and the viz. The heavy pieces are external:
+Selection prepares an initial case before the driving experiment:
+
+- `Constraint.evaluate(context) -> FilterResult` returns `pass`, `fail` or `unknown`.
+  `FilterContext` exposes normalized state, raw metadata and native provider APIs.
+- `ScenarioRequirement` composes conditions and evaluates fixed actor bindings across an
+  `InitialWindow`.
+- `ScenarioSource.scenarios(requirement)` yields selected `ScenarioInstance` objects.
+  `DatasetFilter` and `CarlaScenarioBuilder` implement this interface.
+- `ScenarioInstance.make_backend()` creates a fresh backend at the selected origin. The case
+  also retains the actor bindings and insertion specifications used for selection.
+
+Clean and attacked runs share the selected initial case, with the attack disabled for clean.
+Filters are not installed in the driving loop. See [SCENARIOS.md](SCENARIOS.md) for composition,
+custom filters, placement, visibility and resource ownership.
+
+## 5. What comes from avstack / AlpaSim
+
+AVSecTester provides the shared interfaces, backend/stack adapters, attack integration, metrics,
+scenario selection and visualization. The underlying simulator and model components include:
 
 - **`ModularDrivingPipeline`** (`avstack.modules.pipeline`) — maps `(sensor_data, ego_state)` →
   control by running perception → tracking → planning → control; the modular counterpart to

@@ -11,9 +11,10 @@ closed loop needs, we add it **into the avstack fork** where it belongs, not as 
 
 Concretely:
 
-- The framework's only *own* abstractions are the **pure data plane** (`Observation`/`Control`/`Trace`
-  in `plane.py`) and the **two interfaces** (`WorldBackend`/`AVStack` + the `run` loop in
-  `backend.py`). Everything else is an upstream object behind one of those interfaces.
+- The driving loop uses the **pure data plane** (`Observation`/`Control`/`Trace` in `plane.py`)
+  and **two interfaces** (`WorldBackend`/`AVStack` + `run` in `backend.py`). Scenario selection,
+  insertion geometry and evaluation expose additional research-facing APIs in this repository.
+  They reuse provider state and do not replace simulator actors or driving-model modules.
 - The modular AV system is an **avcarla `CarlaMobileActor`** driven by an **avstack
   `ModularDrivingPipeline`**; the end-to-end one is NVIDIA's real **Alpamayo-1.5** model.
 - The CARLA world/traffic/ticking is **avcarla `CarlaClient` / `CarlaNpc`**; the NuRec world is
@@ -24,6 +25,11 @@ Concretely:
 ## Architecture
 
 The spine is one loop over a pure data plane; any world backend composes with any AV stack (the 2×2).
+
+Before that loop, `ScenarioSource.scenarios(requirement)` prepares candidates and returns
+`ScenarioInstance` objects. `case.make_backend()` reconstructs the selected origin for a paired
+experiment. Selection filters stop at this boundary. Runtime insertion uses fixed actor bindings
+and updates placement from the current pose. See [SCENARIOS.md](SCENARIOS.md) for the full workflow.
 
 ```
       perturb(Observation)  ── the single universal attack seam ──┐
@@ -54,6 +60,7 @@ Alpamayo model come from NVIDIA AlpaSim (`nre-ga`, `alpasim_driver`); `NuRecRend
 avsectester/
   plane.py            Observation · Control · Trace · FrameRecord   (pure data)
   backend.py          WorldBackend · AVStack · run(...)             (interfaces + loop)
+  insertion.py        Insertion · placement/orientation · asset surfaces · pose resolution
   scenario.py         run_scenario · prepare_scenario   (compose a CARLA backend + modular stack)
   simulators/                                            (WorldBackend implementations)
     carla.py          CarlaBackend + camera_view (ImageData) · lidar_bev   (CARLA + its view adapters)
@@ -77,8 +84,7 @@ Attack modules are grouped by function, while rendering and harmonization remain
 For example, import `PhysicalPatch` from `avsectester.attacks.patch.physical_patch` and `RoadsideSign`
 from `avsectester.attacks.object_insertion.sign_spoof`. The top-level
 `from avsectester.attacks import PhantomInjection` entry point remains lazy; its implementation is
-in `avsectester.attacks.pipeline.phantom`. The former flat module paths have been moved, without
-changing YAML attack names or hook registration names.
+in `avsectester.attacks.pipeline.phantom`.
 
 ## Extending
 
@@ -94,6 +100,14 @@ changing YAML attack names or hook registration names.
 - **A new modular driving behavior** — add/replace an avstack planning or control module (in the
   fork) and name it in the pipeline config; the scenario is unchanged.
 - **A new CARLA scenario** — copy `configs/carla_scenario.yaml`; change town/spawn/traffic/sensors/attack.
+- **A selection filter** — implement `Constraint.evaluate(context) -> FilterResult` and compose it
+  with existing filters. Native data access and resource ownership are described in
+  [SCENARIOS.md](SCENARIOS.md#custom-filters-and-native-access).
+- **A dataset or candidate provider** — expose prepared initial states and a factory that recreates
+  the selected origin. Preserve actor IDs across the initial window and paired experiment.
+- **An inserted asset** — implement `planes()` with asset-local `PlaneSurface` rectangles and use
+  `Insertion` for placement. Reuse pose resolution, projection and visibility instead of defining
+  a second attachment mechanism in an attack module.
 - **A defense** — a sanitizing hook (modular) or an input filter (universal); compare impact with and
   without it.
 

@@ -98,8 +98,14 @@ python -m pytest -q                                         # offline groups; in
 avsectester run configs/carla_scenario.yaml --frames 40 --gpu 1   # end-to-end (needs a CARLA server)
 ```
 
-`avsectester run` runs the scenario clean then phantom-attacked and asserts the attack forced an unsafe
-stop. On a single host, `--gpu 1` keeps neural inference off GPU 2 (which CARLA is rendering on).
+`avsectester run` runs the scenario clean then phantom-attacked and reports the driving impact.
+An unsafe stop is one possible result, not a guaranteed outcome. On a single host, `--gpu 1` keeps
+neural inference off GPU 2 in the server command above.
+
+To select cases and insert host-bound or world-fixed assets, continue with
+[SCENARIOS.md](SCENARIOS.md). For geometry-only demonstrations, see
+[IMAGE_ATTACKS.md](IMAGE_ATTACKS.md#run-an-insertion-demo). These demonstrations do not need
+driving-model checkpoints, although their simulator or renderer services are still required.
 
 ## 4. NuRec + Alpamayo (the end-to-end path)
 
@@ -146,3 +152,104 @@ docker run -d --name nre --net=host --gpus '"device=2"' -e HOME=/tmp \
 The scene loads under an id like `clipgt-<uuid>`; `NuRecRenderer(scene_id="<substring>")` resolves it
 via `get_available_scenes()`. **GPU layout:** the CARLA server and the NRE renderer both run on
 **GPU 2**; perception / AV models (Alpamayo, PointPillars) run on GPU 1 (`--gpu 1`).
+
+## 5. Model dependencies and weights
+
+Install only the models used by your experiment. The [model overview](INTERFACE.md#1d-models-and-supporting-components)
+distinguishes driving models from auxiliary detectors and image-processing components. Model
+weights are not bundled with the Python package.
+
+| Component | Python dependencies or service | Weight loading |
+|---|---|---|
+| PointPillars / CARLA-trained Faster R-CNN | Full avstack environment in §2, including MMDetection3D / MMDetection | `scripts/fetch_models.sh` downloads configuration/checkpoint pairs and creates links used by avstack |
+| COCO Faster R-CNN | Matching `torch` and `torchvision`, as installed in §2 or the driver environment | `FasterRCNN_ResNet50_FPN_Weights.DEFAULT` is requested by `build_coco_detector` |
+| PCTNet | `torch`, `torchvision`, `numpy`, `einops`, OpenCV, the `libcom` submodule, and `huggingface_hub` for downloading | Local `PCTNet.pth`, an explicit `weights` path, or the loader's Hugging Face download |
+| SAM | `torch`, `transformers` exposing `SamModel` and `SamProcessor`, OpenCV | `from_pretrained(--sam)` loads model and processor from a model ID or local directory |
+| Alpamayo-1.5-10B | AlpaSim driver environment in §4 | `AlpamayoAVStack(checkpoint_path=...)` passes the checkpoint location to the driver |
+| NuRec | `nre-ga` service and renderer client from §4 | The service loads reconstructed USDZ scenes, not a driving-model checkpoint |
+
+The minimal core install does not provision all these optional packages. Keep `torch` and
+`torchvision` compatible within the selected environment. The §2 versions apply to avstack,
+not to the separate AlpaSim driver environment.
+
+### CARLA perception checkpoints
+
+From the repository root:
+
+```bash
+git submodule update --init third_party/avstack-core
+git -C third_party/avstack-core submodule update --init --depth 1 \
+    third_party/mmdetection third_party/mmdetection3d
+./scripts/fetch_models.sh
+```
+
+The script stores CARLA PointPillars files under `models/work_dirs/` and CARLA 2D detector files
+under `models/work_dirs_2d/`. It links these directories into their respective vendored detector
+roots. The 2D and 3D paths remain separate because avstack uses them to resolve configurations.
+The script skips existing files.
+
+The default CARLA driving YAML uses PointPillars with `dataset: carla-vehicle`.
+The camera patch scripts explicitly request Faster R-CNN with that dataset.
+
+### COCO detector
+
+`scripts/demo_common.py:build_coco_detector` constructs torchvision's
+`fasterrcnn_resnet50_fpn(weights=FasterRCNN_ResNet50_FPN_Weights.DEFAULT)`. Torchvision downloads
+missing weights into its Torch Hub cache on first use. Set `TORCH_HOME` before launching the
+script to choose the cache root. Offline runs need that cache populated already. These scripts
+do not expose a checkpoint-path argument for this detector.
+
+No COCO image dataset is needed to run inference. The inputs are the CARLA, NuRec or recorded
+images supplied by the calling script, rather than images loaded from COCO.
+
+### PCTNet harmonizer
+
+Initialize its source submodule:
+
+```bash
+git submodule update --init third_party/libcom
+```
+
+`PCTNetHarmonizer` loads the image-harmonization modules directly from that checkout. Installing
+the entire `libcom` package is not required. Without an explicit weight path it checks
+`third_party/libcom/libcom/image_harmonization/pretrained_models/PCTNet.pth`, then downloads
+`PCTNet.pth` from the `BCMIZB/Libcom_pretrained_models` Hugging Face repository into that directory.
+To use an existing local checkpoint:
+
+```python
+from avsectester.simulators.patch_insertion import PCTNetHarmonizer, PatchCompositor
+
+harmonizer = PCTNetHarmonizer(device=0, weights="/path/to/PCTNet.pth", strict=True)
+compositor = PatchCompositor(harmonizer)
+```
+
+Loading is lazy, at the first harmonization call. `strict=True` propagates load/inference errors.
+The default `strict=False` falls back to classic harmonization on errors.
+
+### SAM assets and Alpamayo checkpoints
+
+The extraction script defaults to `--sam facebook/sam-vit-huge`. Its `from_pretrained` calls
+obtain the model and processor through the Hugging Face cache. Set `HF_HOME` to choose that cache,
+or pass `--sam /path/to/local/sam-model` for a directory containing both model and processor files.
+See [IMAGE_ATTACKS.md](IMAGE_ATTACKS.md#payload-composition-examples) for the extraction command
+and required nuScenes annotations. SAM is not needed once the RGBA asset has been produced.
+
+For Alpamayo, use the AlpaSim driver environment in §4 and download the checkpoint to your chosen
+location with the Hugging Face CLI:
+
+```bash
+hf download nvidia/Alpamayo-1.5-10B --local-dir /path/to/Alpamayo-1.5-10B
+```
+
+The adapter's default is a workstation-specific local path. For another machine, pass your own
+location through the Python API:
+
+```python
+from avsectester.stacks.alpamayo import AlpamayoAVStack
+
+stack = AlpamayoAVStack(checkpoint_path="/path/to/Alpamayo-1.5-10B", device="cuda:1")
+```
+
+The current Alpamayo demo scripts use the adapter's default checkpoint path and do not expose a
+checkpoint CLI option. `scripts/fetch_models.sh` does not download Alpamayo, SAM, PCTNet or the
+torchvision COCO detector.

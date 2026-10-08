@@ -92,6 +92,12 @@ The harness includes a no-corruption baseline plus the corruption suite. For eac
 condition it creates a backend, calls `prepare_clean_attack_pair()`, runs clean and attacked with
 aligned corruption, and closes the backend. The attacked run applies the attack before corruption.
 
+Construct `source` and `req` using [scenario selection](SCENARIOS.md#select-a-case).
+`attack_for(match, backend)` is called before the backend is reset. If an insertion adapter needs
+loaded camera calibration, initialize it lazily on the first attacked observation. Its returned
+callable must preserve `match.binding_ids` and `match.insertions`, rather than selecting a new
+target. Source filters run before this grid, not on every corrupted observation.
+
 `RobustnessReport.rows` retains each attempt's status and reason:
 
 - `success` / `failure`: a valid driving baseline, scored by `metric.impact`.

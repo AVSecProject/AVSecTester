@@ -10,8 +10,20 @@ them. Running the same scenario clean and attacked, and diffing the driving reco
 
 Nothing in the AV stack is reimplemented: the modular pipeline *is* an
 [avstack](https://github.com/avstack-lab) pipeline, and the end-to-end policy *is* NVIDIA's real
-Alpamayo model — AVSecTester only adds the interface, the attack/metric seams, and the two new
-simulator/stack halves.
+Alpamayo model. AVSecTester provides the connecting interfaces, scenario selection, insertion
+geometry, attack integration and evaluation.
+
+## Documentation
+
+| Task | Guide |
+|---|---|
+| Install dependencies and start simulator services | [Setup](docs/SETUP.md), [Docker](docs/DOCKER.md) |
+| Understand backend, stack and attack contracts | [Interfaces](docs/INTERFACE.md) |
+| Select initial cases, bind actors and add custom filters | [Scenario selection](docs/SCENARIOS.md) |
+| Insert patches or objects and inspect visibility | [Image attacks](docs/IMAGE_ATTACKS.md) |
+| Run corruption conditions and interpret outcome summaries | [Robustness evaluation](docs/AUGMENTATION.md) |
+| Capture intermediate component outputs | [Component logging](docs/COMPONENT_LOGGING.md) |
+| Extend the framework and run tests | [Development](docs/DEVELOPMENT.md), [Tests](tests/README.md) |
 
 ## ▶ Demo — one command
 
@@ -31,15 +43,12 @@ docker compose exec avsectester avsectester run configs/carla_scenario.yaml --fr
 A CARLA-trained **PointPillars** detector runs on a live **CarlaLidar**; a fabricated detection is
 injected at the perception stage (an avstack hook — no pixels touched):
 
-```
-[clean]    peak_speed=5.19 final_speed=5.17 brake_frames=0     # ego cruises, detects real NPCs
-[attacked] final_speed=0.00 brake_frames=38                    # phantom → emergency stop
-=> ATTACK SUCCEEDED (forced an unsafe stop)
-```
+The command reports clean and attacked driving statistics and an impact verdict. Values depend on
+the scene, model and run length. An attack can succeed, fail, or be inconclusive when the clean run
+does not establish a driving baseline.
 
 **Visualize it:** add `--plot results/impact.png` (needs the `viz` extra) to save a clean-vs-attacked
-plot of ego speed + brake over time — the green (clean) line cruises while the red (attacked) line
-brakes to a full stop.
+plot of ego speed and brake over time for both runs.
 
 `avsectester run configs/carla_scenario.yaml` **is** the modular demo — one command, clean vs
 attacked, the impact verdict, and (with `--plot`) the figure. Details in [`docs/DOCKER.md`](docs/DOCKER.md).
@@ -63,7 +72,7 @@ Any world backend composes with any AV stack:
 |                         | **ModularAVStack** (avstack pipeline) | **AlpamayoAVStack** (end-to-end policy) |
 |-------------------------|---------------------------------------|-----------------------------------------|
 | **CarlaBackend** (CARLA closed loop) | the one-command demo above — phantom-injection at perception | Alpamayo driving a CARLA world |
-| **NuRecBackend** (NuRec neural reconstruction) | modular stack on reconstructed camera/lidar | ✔ verified end-to-end — Alpamayo on photoreal NuRec frames |
+| **NuRecBackend** (NuRec neural reconstruction) | requires modules configured for the available camera observations | Alpamayo on NuRec frames |
 
 ```python
 from avsectester.backend import run
@@ -89,6 +98,7 @@ See [`docs/INTERFACE.md`](docs/INTERFACE.md) for the full contract and
 | **NuRecBackend** (`avsectester/simulators/nurec.py`) | In-process NVIDIA **NuRec** neural-reconstruction world; pluggable `Renderer` (`StubRenderer` black frames for CI, `NuRecRenderer` → the `nre-ga` gRPC renderer); `KinematicBicycle`/`TrajectoryFollower` dynamics; `checkpoint()`/`restore()`. |
 | **AlpamayoAVStack** (`avsectester/stacks/alpamayo.py`) | Wraps the real **Alpamayo-1.5-10B** end-to-end policy as an `AVStack`: camera frames → trajectory `Control`. |
 | **Attacks** (`avsectester/attacks/`) | Universal: `perturb(Observation)`. Modular white-box: an avstack `HOOKS` hook on a pipeline stage (e.g. `PhantomInjection` on `perception`). |
+| **Selection and insertion** (`avsectester/scenarios/`, `insertion.py`) | Initial-case filters, stable actor bindings, explicit placements and camera visibility. |
 | **Metric** (`avsectester/metric.py`) | Diffs a clean vs attacked `Trace` into a driving-impact verdict. |
 | **Visualization** | `avsectester/metric.py:plot_impact` — the clean-vs-attacked impact plot (metric view); `avsectester/simulators/viz.py` — the **simulator-agnostic** scene pipeline (`record_run`, `detections_view`, `filmstrip`, `save_gif` over a generic RGB *view*), with per-simulator view adapters in `simulators/<sim>.py` (e.g. `simulators/carla.py`: `camera_view` for `ImageData`, `lidar_bev`). |
 
@@ -106,11 +116,12 @@ Alpamayo model. Those run in a dedicated Python-3.12 driver env; see [`docs/SETU
 
 ## Status
 
-**Early alpha.** Two closed loops are verified end-to-end: the neural CARLA modular loop (the demo
-above) and the **real Alpamayo-1.5-10B policy driving on real NuRec-rendered imagery**. The offline
-suite (`tests/`) covers the interface, the attack hook, the driving pipeline, the in-process NuRec
-backend, and the scene viz without needing CARLA or a GPU. A scenario-search engine and richer
-attack/defense hooks are planned — see [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
+**Early alpha.** The repository provides CARLA and NuRec backends, modular and Alpamayo stack
+adapters, initial-case selection, insertion rendering and component logging. Backend/stack
+combinations require compatible sensor inputs and model dependencies. Selection is available
+through the Python API, while the YAML CLI runs configured CARLA experiments. Automated searches
+for worst-case driving outcomes and broader reporting remain development work. See
+[`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) and [test instructions](tests/README.md).
 
 ## License
 

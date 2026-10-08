@@ -1,163 +1,200 @@
-# Image attacks — realistic object insertion into rendered camera frames
+# Image attacks
 
-The physical-object and patch attacks of [`PROJECT.md`](PROJECT.md)'s AI-adversarial surface,
-simulated by inserting the object into each rendered frame (NuRec neural reconstruction or CARLA)
-rather than into the world. The attack chooses the **payload** (what) and the **target** (where); the
-insertion itself (geometry + harmonization) is shared simulation code in
+Image attacks choose a payload and a placement. The simulation layer projects and composites the
+payload into camera observations before they reach the driving stack. Shared rendering lives in
 `avsectester/simulators/patch_insertion.py`.
 
-> **Terminology.** These insert a **real, standard object** (an MUTCD stop sign, a photo of a real
-> pedestrian, standard signal heads) at a location where no legitimate one exists — a roadside with no
-> intersection, or a vehicle's rear. The object is genuine; the attack is its **invalid placement**,
-> which makes perception read a control signal (stop / pedestrian / red light) that is not legitimately
-> there — not a forged or fake-looking object.
+Object-insertion attacks can use an ordinary sign, pedestrian image or signal board. The attack
+comes from placing that visual cue where it does not belong. An optimized adversarial texture is
+not required.
 
-| Attack | Payload | Placement | Module / demo |
-|---|---|---|---|
-| Physical patch | checkerboard / optimized texture | lead vehicle rear (detector quad) | `attacks/patch/physical_patch.py`, `scripts/nurec_patch_demo.py` |
-| **Inserted STOP sign — roadside** | MUTCD R1-1 face + post | fixed world position on the shoulder | `attacks/object_insertion/sign_spoof.py`, `scripts/nurec_object_demo.py --mode roadside` |
-| **Inserted STOP sign — on vehicle** | MUTCD R1-1 face | lead vehicle rear (ego-lane detector quad) | `attacks/object_insertion/sign_spoof.py`, `scripts/nurec_object_demo.py --mode vehicle` |
-| **Inserted pedestrian — standee** | life-size cut-out of a real pedestrian | fixed world position on the shoulder | `attacks/object_insertion/person_poster.py`, `--object standee --mode roadside` |
-| **Inserted pedestrian — billboard** | the person printed on a poster board on two legs | roadside, or a poster on the lead vehicle's rear | `attacks/object_insertion/person_poster.py`, `--object billboard --mode roadside vehicle` |
-| **Inserted traffic lights** | 3 signal heads (red lit) on a board, drawn procedurally | roadside rig, or on the lead vehicle's rear ("truck with traffic lights") | `attacks/object_insertion/traffic_light.py`, `--object trafficlights --mode roadside vehicle` |
+## Payloads
 
-Person cut-outs come from nuScenes camera images, segmented with SAM from the annotated 2-D boxes
-(`scripts/extract_person_cutouts.py`). nuScenes is CC BY-NC-SA 4.0, so the cut-outs are not in the
-repo; the demo takes one with `--asset`. The STOP face is public domain and ships in
-`avsectester/assets/signs/`.
+| Payload | Module |
+|---|---|
+| Patch textures and CARLA physical panels | `attacks/patch/physical_patch.py` |
+| STOP sign face and post | `attacks/object_insertion/sign_spoof.py` |
+| Pedestrian cutout or printed poster | `attacks/object_insertion/person_poster.py` |
+| Printed traffic signal board | `attacks/object_insertion/traffic_light.py` |
 
-## Two ways to place an object
+The STOP face is included in `avsectester/assets/signs/`. Its source and license are recorded in
+[SOURCES.md](../avsectester/assets/signs/SOURCES.md). Person payloads take a caller-supplied RGBA
+asset. `scripts/extract_person_cutouts.py` can extract them from annotated nuScenes images using SAM.
+These cutouts are derived dataset assets and are not bundled with the repository. The extraction
+script records their nuScenes source and license in `index.json`.
 
-- **Image-anchored** (`detector_quad` → `warp_patch`): a 2-D detector box gives a quad on the target
-  surface; the object is homography-warped onto it. No depth or camera model needed, so it works on
-  any imagery, but it only follows what the detector finds. `pick="lane"` selects a box spanning
-  the image centre column, and `hold_quad` bridges missed detections by retaining its coordinates.
-  Neither associates vehicle identities across frames, so the selected vehicle can change.
-- **World-anchored** (`render_plane`): the object is a textured 3-D rectangle at a fixed scene
-  position, rendered through the real camera — `camera_models.FThetaCamera` for NuRec's 120° f-theta
-  fisheye, `PinholeCamera` for pinhole cameras. Each pixel is ray-cast onto the plane, which is exact
-  under lens distortion (a 4-corner homography is not), and the texture is pre-filtered to its
-  on-screen size. The object keeps correct perspective and scale as the ego moves.
-  `NuRecRenderer.camera_model()` / `cam_from_world(pose)` expose the camera for this.
+CARLA physical panels are a separate world-level insertion path. The image-space renderers below
+modify camera observations without spawning a physical actor.
 
-Both become a `perturb(Observation)` via `patch_insertion.frame_perturbation`, so the AV stack
-perceives the inserted object in closed loop (not only the visualization).
+## Placement and model input
+
+Use `Insertion` for stable host-bound or fixed-world placement. Each object has an independent
+asset, local offset and orientation. The three orientation modes are `follow_host`, `fixed_world`
+and `face_victim`. See [SCENARIOS.md](SCENARIOS.md) for the coordinate convention, configuration
+examples, initial-scene selection and visibility providers.
+
+`InsertionRenderer` takes resolved actor poses and camera calibration, projects the surfaces,
+applies visibility masks, and optionally harmonizes their appearance. Its output is connected to
+`perturb(Observation)` so the driving model receives the inserted image. `composite_view` is for
+visualization only and must not be used as the input attack.
+
+The rendering primitives are:
+
+- `render_plane` projects a world-space textured rectangle through pinhole or f-theta calibration.
+- `render_resolved` composites a resolved asset with surface depth and optional visibility evidence.
+- `detector_quad` and `warp_patch` implement image-space insertion from a detected box. This
+  path does not bind a stable actor identity. `hold_quad` retains the last image location across short
+  detection gaps, rather than tracking the actor in 3D.
+
+For stable attachment and visibility filtering, follow the complete
+[selection and execution example](SCENARIOS.md#select-a-case). The payload-composition examples
+below demonstrate additional objects and appearance options with the stated placement method.
+
+## Auxiliary models
+
+Model roles across the framework are listed in
+[INTERFACE.md](INTERFACE.md#1d-models-and-supporting-components). Image-attack scripts use them at
+specific points:
+
+- `nurec_object_demo.py --mode vehicle` uses a COCO-pretrained Faster R-CNN to locate vehicle boxes.
+  Adding `--eval` uses the detector to score the inserted object's class. Roadside mode without
+  `--eval` needs no detector. `nuscenes_object_demo.py` also loads this detector only with `--eval`.
+- CARLA patch probes and optimization use the separate CARLA-trained MMDetection Faster R-CNN.
+  In `patch_driving_demo.py`, its detections also drive the script's rule-based braking policy.
+- `--harmonizer libcom` selects PCTNet in the object-composition demos. It modifies the inserted
+  appearance, not the driving policy. `none`, `classic` and `chroma` do not load a learned
+  harmonization model.
+- `extract_person_cutouts.py` runs SAM during asset preparation. Insertion scripts load the saved
+  RGBA image and do not rerun SAM. `--sam` accepts a model ID or a local model directory.
+
+The attachment/visibility demos use neither a learned driving policy nor an auxiliary detector.
+`alpamayo_attack_demo.py` uses Alpamayo for driving and the selected harmonizer for insertion,
+without the COCO detector's evaluation stage. Dependencies and weight locations are described in
+[SETUP.md](SETUP.md#5-model-dependencies-and-weights).
 
 ## Harmonization
 
-| Harmonizer | What it does | On a STOP sign |
+| Harmonizer | Behavior |
+|---|---|
+| `InsertionRenderer(..., compositor=None)` | Preserve the texture's colors |
+| `ClassicHarmonizer()` | Color transfer and Poisson blending |
+| `ClassicHarmonizer(preserve_chroma=True, blend="feather")` | Adjust lightness while preserving hue |
+| `PCTNetHarmonizer(strict=True)` | Learned color transformation, with loading/inference errors propagated |
+
+Pass a harmonizer through `PatchCompositor(harmonizer)` to `InsertionRenderer`. Calling
+`PatchCompositor()` without a harmonizer selects `ClassicHarmonizer`, not a plain alpha paste.
+
+Choose color transfer carefully when the payload's hue carries meaning. Harmonization changes
+appearance, not geometry or the visibility denominator. Estimated lighting does not provide cast
+shadows, reflections, retro-reflection or physically simulated illumination.
+Local background color is only a lighting proxy. A dark vehicle body can cause excessive dimming,
+and this method does not model self-emitting traffic lights or an unlit poster at night.
+
+The object demos use `PCTNetHarmonizer(strict=True)` for `--harmonizer libcom`, so loading or
+inference errors stop the experiment. Direct callers using the default `strict=False` receive a
+classic-harmonizer fallback on errors.
+
+## Run an insertion demo
+
+Start the required simulator or NuRec renderer as described in [SETUP.md](SETUP.md).
+CARLA scripts require a client matching the server version and a dedicated world.
+
+| Script | What it demonstrates | Motion and visibility |
 |---|---|---|
-| none | alpha paste | too bright and saturated for an overcast scene; stands out |
-| `ClassicHarmonizer()` (default) | Lab mean/std transfer + Poisson blend | **destroys the red**: the sign turns into grey "STOP" lettering with a halo |
-| `ClassicHarmonizer(preserve_chroma=True, blend="feather")` | exposure gain on lightness only + feathered edge | keeps hue and legend contrast; dims to the scene |
-| `PCTNetHarmonizer()` (libcom) | learned color transform | natural, darker red |
+| `carla_insertion_demo.py` | Host attachments with three orientation modes and a world-fixed sign | Prescribed CARLA motion, aligned depth visibility |
+| `nurec_insertion_demo.py` | Stable recorded host attachments and a world-fixed sign | Recorded poses, labeled-cuboid visibility estimate |
+| `nurec_patch_demo.py` | Patch-only variant of the NuRec insertion demo | Same host binding and visibility method |
 
-The object-insertion demos use `PCTNetHarmonizer(strict=True)` for `--harmonizer libcom`: loading
-or inference errors stop the experiment instead of falling back to classic under the libcom label.
-
-Colour-transfer harmonizers suit textures whose hue does not matter (a patch), but wash out objects
-whose colour carries meaning. Every harmonizer here estimates the lighting from the pixels around the
-object, so a sign on a dark truck comes out too dark: a dark *surface* is read as dark *light*.
-
-### Does perception see it?
-
-`--eval` runs the COCO Faster R-CNN (torchvision) on every clean and attacked frame and records the best
-`stop sign` score for a box on the inserted sign. Scene `clipgt-01d503d4`, 50 frames at 3.7 m/s:
-
-| Placement | none | classic | chroma | libcom |
-|---|---|---|---|---|
-| roadside (x=28 m, y=-6.5 m) | 50/50 | **0/50** | 50/50 | 50/50 |
-| lead vehicle rear | 48/50 | **0/50** | 47/50 | 47/50 |
-
-Inserted pedestrian (cut-out `person_001`, COCO `person` class):
-
-| Object | none | classic | chroma | libcom |
-|---|---|---|---|---|
-| standee, roadside (x=25 m, y=-3.2 m) | 50/50 | **4/50** | 50/50 | 50/50 |
-| billboard, roadside (x=28 m, y=-7 m) | 50/50 | 50/50 | 50/50 | 50/50 |
-| poster on lead vehicle rear | 47/50 | 48/50 | 48/50 | 48/50 |
-
-Inserted traffic lights (3 red heads, COCO `traffic light` class):
-
-| Placement | none | chroma | libcom |
-|---|---|---|---|
-| roadside rig (x=26 m, y=-6 m) | 50/50 | 47/50 | 50/50 |
-| on the lead vehicle rear | 46/50 | 45/50 | 30/50 |
-
-The lit lenses are self-emitting, so a harmonizer that dims the object to the (dark) scene weakens the
-detection — most on the truck rear, where PCTNet reads the black housing as low light (30/50).
-
-Frames with score >= 0.5, out of the frames where the object is in view; the clean runs score 0
-throughout. A printed person is detected as a pedestrian in nearly every frame, which is the
-inserted-object attack. The choice of harmonizer decides whether the attack works at all: the default classic
-harmonizer removes the sign's colour, and with it the detection; it likewise washes a person
-silhouette into the background (the standee), while a poster's own paper and frame shield the figure.
-
-### Across real scenes (nuScenes)
-
-`scripts/nuscenes_object_demo.py` places the same three objects in the ego frame of real nuScenes
-`CAM_FRONT` photos (pinhole camera from the image's calibration) and harmonizes with PCTNet. A spot is
-used only if its footprint overlaps no annotated object. On 8 val images (Boston and Singapore, 6 day,
-2 night) the COCO detector finds the STOP sign, the standee and the billboard person in 8/8 images
-each, and nothing at those spots in the clean images. (Two artifacts visible in the grid — an unlit
-poster too bright at night, a spot landing in a traffic lane — are noted under Known limitations.)
-
-### Driving impact (Alpamayo-1.5, closed loop)
-
-`scripts/alpamayo_attack_demo.py` drives the real Alpamayo-1.5-10B through the NuRec scene for 60
-frames (6 s) clean and with the roadside STOP sign (PCTNet), same inference seeds. With the sign 28 m
-ahead / 6.5 m right the final speed is 4.59 vs 4.59 m/s; 30 m ahead / 4 m right, 4.65 vs 4.57 m/s. No
-driving impact: the policy follows the truck ahead throughout and its reasoning never mentions the
-sign. In the near placement the attacked run's reasoning calls the lead vehicle "stopped" 7 times
-(0 clean), a possible perception shift that one run cannot confirm. Once the ego leaves the recorded
-path, NuRec renders visible artifacts on neighbouring vehicles.
-
-The demo writes one `trace.json` containing `clean` and `attacked` step sequences and the impact
-verdict. Each step contains the corresponding `Trace.records` fields without rounding, plus
-`input_t` and `reasoning`:
-
-- `frame`: zero-based step index.
-- `input_t`: simulation time of the observation used to generate the reasoning and control.
-- `reasoning`: the model's explanation for that decision, or `null` if unavailable.
-- `t`, `speed`: simulation time and vehicle speed **after** executing that step (`t = input_t + dt`).
-- `throttle`, `brake`, `steer`, `n_detections`: existing Trace fields. Alpamayo supplies a trajectory,
-  so the actuator fields and detection count remain at their defaults in this demo.
-
-A row describes one input-to-outcome transition, not a snapshot at a single time. The saved states
-include the final executed step and are the same states used for the speed plot and impact score.
-
-## Running
-
-With an `nre-ga` server serving a NuRec scene (see [`SETUP.md`](SETUP.md) §4b):
+These are the entry points for inspecting attachment and visibility. They modify observation
+images but do not run a driving policy. For clean/attacked driving runs, use the selected-case
+adapters in [SCENARIOS.md](SCENARIOS.md#feed-insertions-to-the-driving-model).
 
 ```bash
+python scripts/carla_insertion_demo.py --port 2300 --frames 30 --output tmp/carla-insertions
+
+python scripts/nurec_insertion_demo.py --usdz /path/to/scene.usdz \
+    --endpoint 127.0.0.1:50051 --host 15 --frames 30 --out tmp/nurec-insertion
+
+python scripts/nurec_patch_demo.py --usdz /path/to/scene.usdz \
+    --endpoint 127.0.0.1:50051 --host 15 --texture /path/to/patch.png --frames 30
+```
+
+These demos inspect geometry and visibility using prescribed motion or recorded trajectories.
+They do not run a driving-policy evaluation. They save model-input frames, annotated comparisons,
+a GIF animation, and per-frame placement/visibility measurements. NuRec `--host` is the track
+ID in the supplied USDZ. `--world-position X Y Z` sets the sign's explicit world position.
+
+## Payload composition examples
+
+`nurec_object_demo.py` demonstrates STOP signs, pedestrian standees/posters and printed traffic
+signals with selectable harmonizers. Its roadside mode uses fixed world planes. Its vehicle
+mode uses detector-derived image quads, so it cannot guarantee a stable host or depth occlusion.
+`nuscenes_object_demo.py` places payloads in recorded photographs, without a closed-loop drive.
+Use these scripts to inspect payload appearance. They do not exercise case selection.
+
+```bash
+python scripts/extract_person_cutouts.py --nuscenes /path/to/nuscenes \
+    --out /path/to/pedestrians
+
 python scripts/nurec_object_demo.py --endpoint 127.0.0.1:50051 --object stop \
     --mode roadside vehicle --harmonizer none classic chroma libcom --frames 50 --eval
 
-# the three objects on real nuScenes photos
-python scripts/nuscenes_object_demo.py --nuscenes <nuscenes root> \
-    --asset <assets>/pedestrians/person_001.png --n 8 --harmonizer libcom --eval
-
-# person cut-outs (once), then a standee / billboard
-python scripts/extract_person_cutouts.py --nuscenes <nuscenes root> --out <assets>/pedestrians
 python scripts/nurec_object_demo.py --endpoint 127.0.0.1:50051 --object billboard \
-    --asset <assets>/pedestrians/person_001.png --mode roadside vehicle --eval
+    --asset /path/to/person.png --mode roadside --eval
+
+python scripts/nuscenes_object_demo.py --nuscenes /path/to/nuscenes \
+    --asset /path/to/person.png --n 8 --harmonizer libcom --eval
 ```
 
-Writes `tmp/nurec_<object>/<mode>_<harmonizer>/`: `side_by_side.gif` (clean | attacked), `filmstrip.png`,
-`zoom_XXXX.png` crops, and the attacked frames; with `--eval` also `perception_eval.json` and
-`perception_<mode>.png`. Roadside placement: `--x/--y` (scene metres; start
-pose is the origin, x forward, y left), `--yaw`, `--size`, `--mount`, `--ground-z`; each object has
-its own default position.
+`nurec_object_demo.py` accepts `--object stop`, `standee`, `billboard` or `trafficlights`.
+The pedestrian variants require `--asset`. Roadside placement uses these options:
 
-## Known limitations
+| Option | Meaning |
+|---|---|
+| `--x`, `--y` | Metres relative to the starting pose, X forward and Y left |
+| `--yaw` | Surface orientation in radians |
+| `--size` | Sign/board width or standee height in metres |
+| `--mount` | Bottom edge height above the specified ground in metres |
+| `--ground-z` | Ground height in scene coordinates, supplied by the caller |
 
-- No occlusion: an inserted object is always drawn on top, even if a vehicle passes in front of it.
-- No vehicle identity tracking: image-anchored placement can switch vehicles when detections change.
-- No shadows, specular reflection or retro-reflectivity; lighting comes only from harmonization.
-- The world-anchored ground height is a parameter (`--ground-z`), not read from the scene, and
-  placements do not consult a map (drivable area, sidewalk).
-- No light sources: an unlit object is only as dark as its surroundings suggest (a white poster at
-  night stays too bright).
-- Scene `clipgt-01d503d4` only; single-seed closed-loop runs. Perception is scored with a COCO
-  detector, not the stack under test.
+`--mode vehicle` uses a detected image-space quad. `pick="lane"` prefers boxes spanning the
+image centre column, and `hold_quad` retains coordinates during short detection gaps. These
+helpers do not track vehicle identity. Use host-bound `Insertion` for stable attachment.
+
+The output root defaults to `tmp/nurec_<object>` and can be changed with `--out`. Each
+`<mode>_<harmonizer>/` directory contains `side_by_side.gif`, `filmstrip.png`, available
+`zoom_XXXX.png` crops and attacked frames under `seq/`.
+
+`--eval` runs a COCO Faster R-CNN detector and writes `perception_eval.json` and
+`perception_<mode>.png` at the output root. This demo identifies evaluation regions from
+clean/attacked pixel differences, not from the geometric visibility provider. Its detector scores
+are separate from closed-loop driving impact and are not measurements from the stack under test.
+The geometric selection API does not use detector success as a prerequisite.
+
+## Driving evaluation output
+
+`scripts/alpamayo_attack_demo.py` runs clean and attacked driving experiments. Its `trace.json`
+contains both step sequences and their impact verdict. Each step retains:
+
+- `frame`: zero-based step index.
+- `input_t`: timestamp of the observation used to choose the control.
+- `reasoning`: the model's explanation, when available.
+- `t`, `speed`: state after executing the control.
+- `throttle`, `brake`, `steer`, `n_detections`: fields from `Trace.records`.
+
+A row represents an input-to-outcome transition. `t` and `input_t` have different meanings.
+Trajectory-based models can leave actuator fields and detection counts at their defaults.
+
+## Rendering scope
+
+The shared insertion renderer supports opaque planar and multi-surface assets. Surface silhouette
+membership uses alpha greater than 127. Surfaces are two-sided. General translucent transport and
+native mesh rendering require additional renderer support.
+
+CARLA insertion visibility uses calibrated scene depth. NuRec uses a labeled-cuboid estimate,
+which can miss unannotated occluders and cannot establish exact mesh visibility. Image-space
+warping and `apply_planes` do not automatically acquire scene visibility. Use
+`InsertionRenderer` with evidence when foreground occlusion matters.
+
+Explicit coordinates are not checked against a drivable-area or sidewalk map. The framework does
+not infer a physically valid installation surface or automatically move the user's insertion.

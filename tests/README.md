@@ -65,6 +65,9 @@ pytest/CI collect their subdirectories recursively.
 | `core/test_metric.py` | Induced stops, suppressed safe stops, duration/speed thresholds, late stops, inconclusive baselines |
 | `core/test_alpamayo.py` | Camera history padding/order, ego history, model vs simulation clocks, candidate selection, plan chaining, experiment reset |
 | `core/test_nurec.py` | Dynamics, stub-rendered closed loop, reset, checkpoint replay, trajectory interpolation and rig-to-world conversion |
+| `core/test_insertions.py`, `core/test_estimators.py` | Host/world placement, orientation modes, complete silhouettes, depth and cuboid occlusion |
+| `core/test_initial_selection.py`, `core/test_carla_selection.py` | Fixed role bindings, initial windows, native API access, CARLA lifecycle and observation insertion |
+| `core/test_nurec_metadata.py` | Native metadata, full actor poses, recorded windows and insertions reaching a driving stack |
 | `core/attacks/optim/test_patch_optim.py` | PGD/NES optimization direction, patch footprint, valid pixels and L-infinity budget |
 | `core/attacks/patch/test_physical_patch.py` | Texture construction and patch configuration |
 | `core/attacks/object_insertion/` | Sign geometry, pedestrian standees/posters and traffic light payloads |
@@ -86,8 +89,22 @@ NuRec core tests use `StubRenderer`, not the rendering service. The avstack prop
 exercise real tracking/planning/control against constructed observations, not CARLA physics.
 
 The offline suites cover the existing interfaces and the regressions described above. They do not
-establish full system coverage. CARLA physics and sensor timing need live runs. NuRec RPC compatibility,
-real Alpamayo inference, neural attack effectiveness and long-running resource use still need dedicated
+establish full system coverage. CARLA physics and sensor timing need live runs.
+
+Case-filter tests also cover eligible-target selection, camera-relative rear angles, unknown visibility,
+custom conditions and selected-state transfer. `scripts/validate_carla_visibility.py` performs a
+road-scene reference-depth validation for vehicles and physical patches on a dedicated server,
+including image truncation and occlusion. Use a dedicated CARLA server with a matching Python client,
+since the script changes that server's scene:
+
+```bash
+PYTHONPATH=. python scripts/validate_carla_visibility.py --port 2300 \
+  --output tmp/visibility-road
+```
+
+RGB images, masks and `result.json` are written to the specified output directory.
+
+NuRec RPC compatibility, real Alpamayo inference, neural attack effectiveness and long-running resource use still need dedicated
 integration validation. The optional GPU test below checks detector output capture only.
 
 ## GitHub Actions
@@ -125,6 +142,18 @@ python -m pytest tests/live/test_carla_integration.py --run-carla \
 The spawn-only case needs no neural inference. The driving case compares clean/clean/attacked
 runs, including initial actor state and driving impact. It writes `carla-result.json` under
 pytest's temporary directory. Opting into CARLA makes missing prerequisites an error.
+
+The selection pipeline test needs the matching CARLA client and server plus avstack adapters,
+but no model checkpoint. It checks prescribed initial frames, preview cleanup, selected-scene
+reconstruction and depth-aligned insertion into the observation. The scenario YAML supplies the
+server address and ego spawn. The test configures its own RGB camera and lead vehicle:
+
+```bash
+python -m pytest tests/live/test_carla_selection_pipeline.py --run-carla \
+  --carla-config configs/carla_patch_scenario.yaml -q
+```
+
+Initial clean and inserted images are saved in pytest's temporary directory.
 
 Real dataset tests can use configurable roots (the existing workstation paths remain defaults):
 

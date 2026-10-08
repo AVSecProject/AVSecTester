@@ -1,60 +1,97 @@
 # Scripts
 
-- **`fetch_models.sh`** — pull the CARLA-trained PointPillars weights into `./models` and link them
-  into the mmdet3d root. Run once before any neural CARLA run.
-- **`alpamayo_nurec_demo.py`** — the end-to-end **NuRec + Alpamayo** demo: drives the real
-  Alpamayo-1.5-10B policy on photoreal NuRec imagery via `run(NuRecBackend, AlpamayoAVStack, frames)`.
-  Runs in the **AlpaSim driver env** (Python 3.12); `--stub` swaps in black frames (no renderer),
-  `--save-frames` dumps each frame under `./tmp/alpamayo_nurec/`. See §4 of `docs/SETUP.md`.
+Run scripts from the repository root in the environment described in [SETUP.md](../docs/SETUP.md).
+Use a matching CARLA client/server for CARLA scripts, and a running `nre-ga` service for rendered
+NuRec examples. Models are loaded only by the entry points that use them. See the
+[model overview](../docs/INTERFACE.md#1d-models-and-supporting-components) and
+[weight-loading guide](../docs/SETUP.md#5-model-dependencies-and-weights).
 
-  ```bash
-  cd /workspace/nvme/qzzhang/alpasim
-  HF_HOME=/workspace/hdd/models/huggingface PYTHONPATH=<AVSecTester> \
-    uv run python <AVSecTester>/scripts/alpamayo_nurec_demo.py 8 --save-frames --gpu 1
-  ```
+## Driving and insertion examples
 
-- **`nurec_object_demo.py`** — insert a fake object into a NuRec scene, clean vs attacked side by
-  side: `--object stop | standee | billboard`; `--mode roadside` places it on the shoulder
-  (world-anchored, ray-cast through the f-theta camera), `--mode vehicle` on the lead vehicle's rear.
-  Compares harmonizers (`--harmonizer none classic chroma libcom`); `--eval` scores a COCO detector on
-  it. See `docs/IMAGE_ATTACKS.md`.
-- **`alpamayo_attack_demo.py`** — closed loop: the real Alpamayo-1.5 drives the NuRec scene clean and
-  with an inserted object in its camera; records speed and Alpamayo's reasoning text per frame and the
-  impact verdict. Runs in the AlpaSim driver env.
-- **`nuscenes_object_demo.py`** — the same objects inserted into real nuScenes `CAM_FRONT` photos
-  (pinhole camera from each image's calibration), day and night, with an optional detector check.
-- **`extract_person_cutouts.py`** — cut full-body pedestrians out of nuScenes images with SAM
-  (RGBA assets for the standee / billboard objects; kept outside the repo, CC BY-NC-SA).
+| Entry point | Function | Driving policy and other learned models |
+|---|---|---|
+| `avsectester run configs/carla_scenario.yaml` | Paired clean/phantom-attacked CARLA drive | Modular stack with CARLA-trained PointPillars, tracking, collision planning and PID control |
+| [alpamayo_nurec_demo.py](alpamayo_nurec_demo.py) | Drive in a rendered NuRec scene | Alpamayo-1.5-10B |
+| [alpamayo_attack_demo.py](alpamayo_attack_demo.py) | Compare clean and object-inserted driving, saving traces, reasoning and imagery | Alpamayo, plus PCTNet when `--harmonizer libcom` is selected. No COCO detector |
+| [carla_insertion_demo.py](carla_insertion_demo.py) | Inspect three attachment orientations, a world-fixed sign and depth visibility | No learned driving policy or detector, prescribed actor motion |
+| [nurec_insertion_demo.py](nurec_insertion_demo.py) | Inspect recorded host attachments, a world-fixed sign and cuboid visibility estimates | No learned driving policy or detector, recorded poses and NuRec rendering |
+| [nurec_patch_demo.py](nurec_patch_demo.py) | Patch-only version of the NuRec insertion example | Same components as `nurec_insertion_demo.py` |
+| [carla_patch_demo.py](carla_patch_demo.py) | Render a physical textured panel attached to the lead vehicle | Fixed-throttle `CruiseStack`. CARLA-trained Faster R-CNN for the overlay unless `--no-detect` |
+| [patch_driving_demo.py](patch_driving_demo.py) | Compare camera-based braking with and without a composited patch | CARLA-trained Faster R-CNN feeding a box-area braking rule, optional PCTNet |
 
-The **CARLA modular demo** is not a script — it's the CLI, `avsectester run` (see `avsectester/cli.py`).
-It needs the `avsec` conda env with the `[avstack]` extras and a running CARLA server
-(see `docs/SETUP.md` / `docs/DOCKER.md`). Neither demo is part of `pytest`, which stays hardware-free.
+For host binding, initial-case selection and paired execution through the Python API, use
+[SCENARIOS.md](../docs/SCENARIOS.md). Geometry demos generate images/GIFs and measurements for
+inspection. They do not measure the response of an autonomous-driving policy.
 
 ```bash
-# start a CARLA server (headless, GPU 2)
-docker run -d --name carla-avsec --gpus 'device=2' --net=host \
-  carlasim/carla:0.9.15 ./CarlaUE4.sh -RenderOffScreen -nosound -carla-rpc-port=2000 -quality-level=Low
+python scripts/carla_insertion_demo.py --port 2300 --frames 30 --output tmp/carla-insertions
+python scripts/nurec_insertion_demo.py --usdz /path/to/scene.usdz \
+    --endpoint 127.0.0.1:50051 --host 15 --frames 30 --out tmp/nurec-insertion
+```
 
-conda activate avsec
+Run Alpamayo examples in the AlpaSim driver environment, with this repository importable:
+
+```bash
+python scripts/alpamayo_nurec_demo.py 8 --endpoint 127.0.0.1:50051 --gpu 1 --save-frames
+```
+
+`--stub` replaces NuRec rendering with black frames. It still loads Alpamayo and needs its model
+weights. Current checkpoint-path behavior is documented in
+[SETUP.md](../docs/SETUP.md#sam-assets-and-alpamayo-checkpoints).
+
+## Payload composition and detector evaluation
+
+| Script | Function | Models |
+|---|---|---|
+| [nurec_object_demo.py](nurec_object_demo.py) | Insert a STOP sign, standee, billboard or traffic-signal board in NuRec frames | COCO Faster R-CNN for vehicle-mode placement and with `--eval`, optional PCTNet |
+| [nuscenes_object_demo.py](nuscenes_object_demo.py) | Insert objects into recorded nuScenes `CAM_FRONT` photographs | COCO Faster R-CNN only with `--eval`, optional PCTNet |
+| [patch_hide_probe.py](patch_hide_probe.py) | Inspect detector response to different patch sizes and harmonization choices on a CARLA image | CARLA-trained Faster R-CNN and PCTNet |
+
+`nurec_object_demo.py --mode roadside` uses fixed world planes. `--mode vehicle` uses detected
+image-space quads without stable host identity. Its prescribed-motion sequence uses `CruiseStack`,
+not Alpamayo. `nuscenes_object_demo.py` processes recorded images without a driving loop.
+COCO here identifies the detector's pretraining dataset, not a simulator or driving policy.
+
+The image-space and plane-composition entry points do not acquire the visibility evidence used by
+the attachment demos. Their placement methods and outputs are documented in
+[IMAGE_ATTACKS.md](../docs/IMAGE_ATTACKS.md#payload-composition-examples).
+
+## Model and asset preparation
+
+| Script | Function | Models or data |
+|---|---|---|
+| [fetch_models.sh](fetch_models.sh) | Download perception configurations/checkpoints and create avstack model-path links | CARLA PointPillars, Faster R-CNN, Cascade R-CNN variants and KITTI PointPillars |
+| [extract_person_cutouts.py](extract_person_cutouts.py) | Segment annotated pedestrians into reusable RGBA assets | SAM, default `facebook/sam-vit-huge`, on nuScenes images |
+| [optimize_patch.py](optimize_patch.py) | Optimize a patch with a digital projection surrogate | PGD against a CARLA-trained Faster R-CNN objectness scorer |
+| [optimize_patch_physical.py](optimize_patch_physical.py) | Optimize a patch and inspect its detector response after physical CARLA rendering | Same detector family and PGD, plus native CARLA patch deployment |
+
+PGD is an optimization algorithm, not an additional learned model.
+Person cutouts are generated outside the repository and retain their source-dataset provenance.
+
+## Geometry and visualization utilities
+
+| Script | Function | Learned models |
+|---|---|---|
+| [validate_carla_visibility.py](validate_carla_visibility.py) | Compare target reference silhouettes, masks and depth in a CARLA road scene | None |
+| [visualize_scene_labels.py](visualize_scene_labels.py) | Overlay dataset ground-truth geometry on recorded camera frames | None |
+| [visualize_augmentations.py](visualize_augmentations.py) | Show corruption operators applied to a recorded frame | None |
+
+The two `visualize_*` scripts currently contain local dataset-path constants. Set those to your
+available dataset before running. `demo_common.py` supplies shared detector factories and
+`CruiseStack` to the examples, and is not a standalone entry point.
+
+## CARLA CLI output
+
+```bash
 ./scripts/fetch_models.sh
 avsectester run configs/carla_scenario.yaml --frames 40 --gpu 1 --plot results/impact.png
 ```
 
-Expected:
+Start the server using [DOCKER.md](../docs/DOCKER.md) or [SETUP.md](../docs/SETUP.md), and select an
+available inference device with `--gpu`. `--frames` controls steps per run. `--plot` saves a driving
+impact figure and requires the `viz` extra. No particular attack result is guaranteed.
 
-```
-[clean]    mean_detections=6.8 peak_speed=5.19 final_speed=5.17 brake_frames=0
-[attacked] mean_detections=8.1 final_speed=0.00 brake_frames=38
-clean:    peak_speed= 5.19  final_speed= 5.17  brake_frames=0
-attacked: final_speed= 0.00  brake_frames=38
-=> ATTACK SUCCEEDED (forced an unsafe stop)
-[output]   wrote driving-impact figure to file: /.../AVSecTester/results/impact.png
-```
-
-- `--frames` — steps per run (enough for the clean ego to reach cruising speed; 40 is good).
-- `--gpu` — perception CUDA device. The config targets GPU 0 (right in Docker, where the ego gets a
-  dedicated GPU); on a single host CARLA already renders on GPU 2, so pass `--gpu 1`.
-- `--plot` — save the clean-vs-attacked driving-impact figure (needs the `viz` extra:
-  `pip install -e ".[viz]"`).
-
-Exit code encodes the verdict: `0` succeeded, `2` inconclusive (clean never drove), `1` no impact.
+The CLI prints driving statistics and an impact verdict. Exit codes are `0` for attack success,
+`1` for failure under the current criterion and `2` for an inconclusive driving baseline. See
+[INTERFACE.md](../docs/INTERFACE.md#3-metric-clean-vs-attacked--verdict) for that criterion and
+[tests/README.md](../tests/README.md) for offline and opt-in simulator tests.
