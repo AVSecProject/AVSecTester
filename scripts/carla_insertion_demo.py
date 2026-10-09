@@ -22,12 +22,12 @@ from avsectester.insertion import (
     WorldPlacement,
     resolve_insertion,
 )
+from avsectester.plane import Observation
+from avsectester.rendering.cameras import PinholeCamera
+from avsectester.rendering.visibility import DepthVisibilityEstimator
 from avsectester.scenarios.carla_gt import carla_actor_pose
 from avsectester.scenarios.carla_provider import carla_filter_context
-from avsectester.scenarios.estimators import DepthVisibilityEstimator
-from avsectester.plane import Observation
 from avsectester.simulators.carla import insertion_perturbation
-from avsectester.simulators.camera_models import PinholeCamera
 from validate_carla_visibility import FOCAL, HEIGHT, WIDTH, RoadValidation
 
 
@@ -141,7 +141,7 @@ def main():
             victim = carla_actor_pose(ego)
             if index == 0:
                 from avsectester.scenarios import RoleSpec, ScenarioRequirement
-                from avsectester.scenarios.requirement import InView, MinVisibility
+                from avsectester.scenarios.filters import InView, MinVisibility
 
                 context = carla_filter_context(backend, depth=captures["depth"])
                 requirement = ScenarioRequirement(

@@ -18,8 +18,9 @@ import numpy as np
 
 from avsectester.backend import WorldBackend
 from avsectester.plane import Control, Observation
+from avsectester.rendering.types import Visibility
 from avsectester.scenarios.context import FilterContext
-from avsectester.scenarios.scene import CameraCalib, EgoState, ObjectGT, SceneGT, Visibility
+from avsectester.scenarios.scene import CameraCalib, EgoState, ObjectGT, SceneGT
 from avsectester.scenarios.source import Dataset
 
 # nuScenes visibility token (fraction of the object visible across all cameras) -> a representative value

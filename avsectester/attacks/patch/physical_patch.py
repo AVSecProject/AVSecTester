@@ -4,7 +4,7 @@ Unlike the two existing attack seams (``perturb(Observation)`` in :func:`avsecte
 and avstack ``HOOKS`` hooks on a pipeline stage), a physical patch modifies the **world itself**: a
 textured panel is rigidly attached to a target vehicle (e.g. the rear of the lead car) so the ego's
 camera renders it in-scene, with correct perspective, lighting and occlusion. It is therefore applied
-by the backend at ``reset`` (see :class:`avsectester.scenario.CarlaBackend`), not by the run loop.
+by the backend at ``reset`` (see :class:`avsectester.simulators.carla.CarlaBackend`), not by the run loop.
 
 Mechanism (validated against CARLA 0.9.15):
   * spawn a flat prop (``static.prop.ironplank``) with ``attach_to=<target>, AttachmentType.Rigid``;

@@ -45,7 +45,8 @@ def run(
     (scripts/fetch_models.sh). This is the end-to-end demo.
     """
     from .metric import impact
-    from .scenario import prepare_scenario, run_scenario, set_perception_gpu
+    from .scenario import run_scenario
+    from .simulators.carla import prepare_scenario, set_perception_gpu
 
     scenario = set_perception_gpu(yaml.safe_load(Path(config).read_text()), gpu)
     n = frames or scenario.get("frames", 40)

@@ -21,46 +21,24 @@ cv2/torch/skimage are imported lazily, so this module imports without them.
 
 from __future__ import annotations
 
-import logging
 import math
-from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 
 import numpy as np
 
 from avsectester.plane import Observation
+from avsectester.insertion import Insertion
+from avsectester.rendering.cameras import Camera, project_to_pixels, cam_coords, carla_cam_coords
+from avsectester.rendering.types import InsertionGeometry, GeometryProvider, EvidenceProvider
 from avsectester.simulators.viz import View, camera_view
 
-log = logging.getLogger(__name__)
+from avsectester.rendering.harmonizers import Harmonizer, ClassicHarmonizer, PCTNetHarmonizer
 
 
 # ---------------------------------------------------------------------------------------------------
 # Geometry: projection (backend adapters convert world -> camera coords, then call these)
 # ---------------------------------------------------------------------------------------------------
-def project_to_pixels(pts_cam: np.ndarray, K: np.ndarray) -> np.ndarray:
-    """Standard pinhole projection: camera-frame points (x right, y down, z forward) -> (N,2) px."""
-    uv = (K @ np.asarray(pts_cam, dtype=np.float64).T).T
-    return uv[:, :2] / uv[:, 2:3]
-
-
-def cam_coords(pts_world: np.ndarray, world_to_cam: np.ndarray) -> np.ndarray:
-    """Standard extrinsic: world points -> camera frame (x right, y down, z fwd). NuRec/pinhole."""
-    pts = np.asarray(pts_world, dtype=np.float64)
-    homog = np.c_[pts, np.ones(len(pts))]
-    return (np.asarray(world_to_cam, dtype=np.float64) @ homog.T).T[:, :3]
-
-
-def carla_cam_coords(pts_world: np.ndarray, cam_inverse_matrix: np.ndarray) -> np.ndarray:
-    """CARLA UE convention: world -> camera then reorder to standard (x right, y down, z fwd).
-
-    ``cam_inverse_matrix`` = ``camera.get_transform().get_inverse_matrix()``; UE camera axes are
-    (x fwd, y right, z up), so the standard camera frame is ``[y, -z, x]``.
-    """
-    pc = cam_coords(pts_world, cam_inverse_matrix)  # UE camera coords (x fwd, y right, z up)
-    return np.stack([pc[:, 1], -pc[:, 2], pc[:, 0]], axis=1)
-
-
 # ---------------------------------------------------------------------------------------------------
 # Warp + composite
 # ---------------------------------------------------------------------------------------------------
@@ -95,7 +73,7 @@ def render_plane(
 
     The world-anchored counterpart of :func:`warp_patch`: instead of an image quad, the target is a
     3-D rectangle ``corners_world`` (4x3, TL,TR,BR,BL as seen from the front) and a real ``camera``
-    (:mod:`avsectester.simulators.camera_models` — pinhole or f-theta fisheye). Every pixel in the
+    (:mod:`avsectester.rendering.cameras` — pinhole or f-theta fisheye). Every pixel in the
     rectangle's image footprint is cast as a ray and intersected with the plane, so the result is exact
     for a distorting lens (a 4-corner homography is not). The texture is pre-filtered to its on-screen
     size (no aliasing on distant objects); ``soften`` (px sigma) optionally blurs it to match a soft
@@ -103,247 +81,25 @@ def render_plane(
     an empty mask when the plane is behind the camera / out of view.
     """
     import cv2
+    from avsectester.insertion import PlaneSurface
+    from avsectester.rendering.geometry import prepare_surface, sample_image
 
-    from avsectester.simulators.camera_models import transform
-
-    h, w = frame_rgb.shape[:2]
-    empty = (frame_rgb.copy(), np.zeros((h, w), np.uint8))
-    c = transform(cam_from_world, corners_world)  # camera frame (x right, y down, z fwd)
-    if (c[:, 2] <= 0.05).any():
-        return empty
-    # footprint: project densely sampled edges (straight 3-D edges bow under a fisheye)
-    t = np.linspace(0.0, 1.0, 16)[:, None]
-    edge_pts = np.concatenate([c[i] + t * (c[(i + 1) % 4] - c[i]) for i in range(4)])
-    uv = camera.project(edge_pts)
-    x0, y0 = np.floor(uv.min(axis=0)).astype(int) - margin
-    x1, y1 = np.ceil(uv.max(axis=0)).astype(int) + margin
-    x0, y0, x1, y1 = max(x0, 0), max(y0, 0), min(x1, w - 1), min(y1, h - 1)
-    if x1 <= x0 or y1 <= y0:
-        return empty
-
-    # ray-plane intersection for every pixel in the footprint (camera frame)
-    o, u_axis, v_axis = c[0], c[1] - c[0], c[3] - c[0]  # plane origin (TL), width axis, height axis
-    n = np.cross(u_axis, v_axis)
-    xs, ys = np.meshgrid(np.arange(x0, x1 + 1), np.arange(y0, y1 + 1))
-    rays = camera.unproject(np.stack([xs.ravel() + 0.5, ys.ravel() + 0.5], axis=1))
-    denom = rays @ n
-    lam = np.divide(o @ n, denom, out=np.full_like(denom, -1.0), where=np.abs(denom) > 1e-12)
-    hit = rays * lam[:, None] - o
-    s = hit @ u_axis / (u_axis @ u_axis)  # 0..1 across the width
-    tt = hit @ v_axis / (v_axis @ v_axis)  # 0..1 down the height
-    valid = (lam > 0) & (s >= 0) & (s <= 1) & (tt >= 0) & (tt <= 1)
-    if not valid.any():
-        return empty
-
-    # pre-filter the texture to ~2x its on-screen size, then sample it bilinearly
-    span = max(x1 - x0, y1 - y0, 4)
-    th, tw = texture_rgba.shape[:2]
-    k = min(1.0, 2.0 * span / max(th, tw))
-    tex = (
-        cv2.resize(
-            texture_rgba, (max(2, int(tw * k)), max(2, int(th * k))), interpolation=cv2.INTER_AREA
-        )
-        if k < 1.0
-        else texture_rgba
-    )
-    th, tw = tex.shape[:2]
-    map_x = np.where(valid, s * tw - 0.5, -10).reshape(xs.shape).astype(np.float32)
-    map_y = np.where(valid, tt * th - 0.5, -10).reshape(xs.shape).astype(np.float32)
-    sampled = cv2.remap(
-        tex,
-        map_x,
-        map_y,
-        cv2.INTER_LINEAR,
-        borderMode=cv2.BORDER_CONSTANT,
-        borderValue=(0, 0, 0, 0),
-    ).astype(np.float32)
+    if frame_rgb.shape[:2] != (camera.height, camera.width):
+        raise ValueError("Frame dimensions do not match camera calibration")
+    sampler = prepare_surface(PlaneSurface(corners_world, texture_rgba), camera, cam_from_world)
+    sampled, _ = sample_image(sampler, camera, margin=margin)
+    sampled = sampled.astype(np.float32)
     if soften > 0:
-        sampled = cv2.GaussianBlur(sampled, (0, 0), soften)
-    alpha = sampled[:, :, 3:4] / 255.0
-    comp = frame_rgb.astype(np.float32).copy()
-    roi = comp[y0 : y1 + 1, x0 : x1 + 1]
-    comp[y0 : y1 + 1, x0 : x1 + 1] = roi * (1 - alpha) + sampled[:, :, :3] * alpha
-    mask = np.zeros((h, w), np.uint8)
-    mask[y0 : y1 + 1, x0 : x1 + 1] = (sampled[:, :, 3] > 127).astype(np.uint8) * 255
-    return comp.astype(np.uint8), mask
-
-
-# ---------------------------------------------------------------------------------------------------
-# Harmonizers
-# ---------------------------------------------------------------------------------------------------
-class Harmonizer(ABC):
-    """Adjust the pasted foreground to fit the background. Must preserve the patch's texture."""
-
-    @abstractmethod
-    def __call__(
-        self, composite_rgb: np.ndarray, mask: np.ndarray, background_rgb: np.ndarray
-    ) -> np.ndarray: ...
-
-
-class ClassicHarmonizer(Harmonizer):
-    """Reinhard color transfer (match the patch's Lab mean/std to the scene) + Poisson seamless blend.
-
-    Reliable, in-process, no model weights; texture-preserving (Poisson keeps the patch's gradients
-    while shifting color/brightness to the background).
-
-    Both steps pull the patch's *colour* toward its surroundings, which suits a texture whose exact hue
-    does not matter but washes out objects whose colour carries meaning (a red STOP sign turns grey-brown
-    on a grey road). For those, ``preserve_chroma=True`` instead scales only the Lab lightness by an
-    exposure gain (surrounding mean / object mean, clipped to ``gain_range``), keeping a/b and the
-    object's internal contrast; ``blend="feather"`` replaces the Poisson solve with a feathered alpha
-    edge, which keeps the object's own colours. Defaults reproduce the original behaviour.
-    """
-
-    def __init__(
-        self,
-        color_transfer: bool = True,
-        poisson: bool = True,
-        preserve_chroma: bool = False,
-        blend: str = "poisson",
-        feather: float = 1.2,
-        gain_range: tuple = (0.35, 1.2),
-    ) -> None:
-        self.color_transfer = color_transfer
-        self.poisson = poisson and blend == "poisson"
-        self.preserve_chroma = preserve_chroma
-        self.gain_range = gain_range
-        self.blend = blend
-        self.feather = feather
-
-    def __call__(self, composite_rgb, mask, background_rgb):
-        import cv2
-
-        out = composite_rgb.copy()
-        m = mask > 0
-        if self.color_transfer and m.any():
-            lab = cv2.cvtColor(out, cv2.COLOR_RGB2LAB).astype(np.float32)
-            bg_lab = cv2.cvtColor(background_rgb, cv2.COLOR_RGB2LAB).astype(np.float32)
-            # dilate the mask to sample the surrounding scene for the target statistics
-            ring = cv2.dilate(mask, np.ones((25, 25), np.uint8)) > 0
-            ring &= ~m
-            if ring.any() and self.preserve_chroma:
-                # exposure-style gain on lightness only: the scene's light level scales the object
-                # while its own contrast (white legend vs red field) and hue survive
-                gain = np.clip(bg_lab[ring, 0].mean() / (lab[m, 0].mean() + 1e-5), *self.gain_range)
-                lab[m, 0] *= gain
-                out = cv2.cvtColor(np.clip(lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB)
-            elif ring.any():
-                for c in range(3):
-                    fmu, fsd = lab[m, c].mean(), lab[m, c].std() + 1e-5
-                    bmu, bsd = bg_lab[ring, c].mean(), bg_lab[ring, c].std() + 1e-5
-                    lab[m, c] = (lab[m, c] - fmu) * (bsd / fsd) + bmu
-                out = cv2.cvtColor(np.clip(lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB)
-        if self.blend == "feather" and self.feather > 0 and m.any():
-            a = cv2.GaussianBlur(mask.astype(np.float32) / 255.0, (0, 0), self.feather)[:, :, None]
-            out = (out.astype(np.float32) * a + background_rgb.astype(np.float32) * (1 - a)).astype(
-                np.uint8
-            )
-        if self.poisson and m.any():
-            ys, xs = np.where(m)
-            center = (int((xs.min() + xs.max()) / 2), int((ys.min() + ys.max()) / 2))
-            out = cv2.seamlessClone(out, background_rgb, mask, center, cv2.NORMAL_CLONE)
-        return out
-
-
-class PCTNetHarmonizer(Harmonizer):
-    """Learned harmonization via libcom's **PCTNet**, run **in-process** (no subprocess, no separate env).
-
-    PCTNet is a self-contained color-transform CNN needing only torch / torchvision / numpy / einops —
-    all compatible with the avstack stack (torch 2.1) — so we load just the ``pct_net`` module from the
-    ``third_party/libcom`` submodule, bypassing libcom's package ``__init__`` (which eagerly imports
-    diffusers-based models). PCTNet gives a milder, texture-preserving harmonization than the classic
-    Poisson blend — better for keeping an adversarial pattern intact. Falls back to
-    :class:`ClassicHarmonizer` on any error (or set ``strict`` to raise instead).
-    """
-
-    _SUBMODULE = "third_party/libcom/libcom/image_harmonization"
-
-    def __init__(self, device: int = 0, weights: str | None = None, strict: bool = False) -> None:
-        self.device_id = device
-        self.weights = weights
-        self.strict = strict
-        self._net = None
-        self._dev = None
-        self._fallback = ClassicHarmonizer()
-
-    def _load(self):
-        if self._net is not None:
-            return self._net
-        import importlib.util
-        import sys
-        import types
-        from pathlib import Path
-
-        import torch
-
-        root = Path(__file__).resolve().parents[2] / self._SUBMODULE
-        src = root / "source"
-        # dummy parent packages so pct_net's absolute imports resolve WITHOUT running libcom/__init__
-        # (which imports diffusers/pytorch-lightning models that conflict with the avstack stack).
-        for name in ("libcom", "libcom.image_harmonization", "libcom.image_harmonization.source"):
-            if name not in sys.modules:
-                mod = types.ModuleType(name)
-                mod.__path__ = []
-                sys.modules[name] = mod
-
-        def _load_file(name, path):
-            spec = importlib.util.spec_from_file_location(name, str(path))
-            mod = importlib.util.module_from_spec(spec)
-            sys.modules[name] = mod
-            spec.loader.exec_module(mod)
-            return mod
-
-        _load_file("libcom.image_harmonization.source.functions", src / "functions.py")
-        pct = _load_file("libcom.image_harmonization.source.pct_net", src / "pct_net.py")
-        weights = Path(self.weights) if self.weights else self._resolve_weights(root)
-        self._dev = f"cuda:{self.device_id}" if torch.cuda.is_available() else "cpu"
-        net = pct.PCTNet()
-        net.load_state_dict(torch.load(str(weights), map_location="cpu", weights_only=True))
-        self._net = net.to(self._dev).eval()
-        log.info("PCTNet harmonizer loaded in-process (%s, %s)", weights.name, self._dev)
-        return self._net
-
-    def _resolve_weights(self, root):
-        from pathlib import Path
-
-        cand = root / "pretrained_models" / "PCTNet.pth"
-        if cand.exists():
-            return cand
-        from huggingface_hub import hf_hub_download  # downloaded once, then cached in the submodule
-
-        cand.parent.mkdir(parents=True, exist_ok=True)
-        return Path(
-            hf_hub_download(
-                "BCMIZB/Libcom_pretrained_models", "PCTNet.pth", local_dir=str(cand.parent)
-            )
-        )
-
-    def __call__(self, composite_rgb, mask, background_rgb):
-        try:
-            import cv2
-            import torch
-
-            net = self._load()
-            img = np.ascontiguousarray(composite_rgb, dtype=np.uint8)  # RGB HxWx3
-            m = (np.asarray(mask) > 0).astype(np.uint8) * 255
-            img_lr, mask_lr = cv2.resize(img, (256, 256)), cv2.resize(m, (256, 256))
-
-            def _t(a):
-                return torch.from_numpy(a).float().div(255).permute(2, 0, 1).to(self._dev)
-
-            def _tm(a):
-                return torch.from_numpy(a).float().div(255)[None].to(self._dev)
-
-            with torch.no_grad():  # PCTNet.forward adds the batch dim itself; pass (C,H,W)
-                out = net(_t(img_lr), _t(img), _tm(mask_lr), _tm(m))
-            res = torch.clamp(255.0 * out.squeeze(0).permute(1, 2, 0), 0, 255).cpu().numpy()
-            log.info("harmonized frame with in-process PCTNet")
-            return res.astype(np.uint8)
-        except Exception as exc:
-            if self.strict:
-                raise RuntimeError(f"PCTNet harmonization failed: {exc}") from exc
-            log.warning("PCTNet failed (%s) -> classic fallback", str(exc)[-200:])
-            return self._fallback(composite_rgb, mask, background_rgb)
+        bounds = sampler.bounds or (0, 0, camera.width, camera.height)
+        padding = margin - 2 if sampler.bounds is not None else 0
+        x0, y0 = max(0, bounds[0] - padding), max(0, bounds[1] - padding)
+        x1, y1 = min(camera.width, bounds[2] + padding), min(camera.height, bounds[3] + padding)
+        if x1 > x0 and y1 > y0:
+            sampled[y0:y1, x0:x1] = cv2.GaussianBlur(sampled[y0:y1, x0:x1], (0, 0), soften)
+    alpha = sampled[:, :, 3:4].astype(np.float32) / 255
+    composite = frame_rgb.astype(np.float32) * (1 - alpha) + sampled[:, :, :3] * alpha
+    mask = (sampled[:, :, 3] > 127).astype(np.uint8) * 255
+    return composite.astype(np.uint8), mask
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -392,7 +148,7 @@ def render_resolved(frame, camera, cam_from_world, resolved, evidence=None, *, c
     Returns ``(RGB image, uint8 mask)``. Unknown visibility is an explicit error,
     because treating missing evidence as visible would silently change the scene.
     """
-    from avsectester.simulators.camera_models import transform
+    from avsectester.rendering.geometry import insertion_image
 
     shape = frame.shape[:2]
     if shape != (camera.height, camera.width):
@@ -402,35 +158,20 @@ def render_resolved(frame, camera, cam_from_world, resolved, evidence=None, *, c
             raise ValueError(f"Insertion visibility is unknown: {evidence.reason}")
         if evidence.visible_mask.shape != shape:
             raise ValueError("Visibility mask dimensions do not match the image")
+    if evidence is not None and getattr(evidence, "sampled_rgba", None) is not None:
+        rgba, depth = evidence.sampled_rgba, evidence.target_depth
+    else:
+        rgba, depth = insertion_image(resolved, camera, cam_from_world)
+    active = np.isfinite(depth)
+    if evidence is not None:
+        active &= evidence.visible_mask
     output = frame.copy()
-    nearest = np.full(shape, np.inf)
-    union = np.zeros(shape, np.uint8)
-    for corners, texture in resolved.planes():
-        rendered, mask = render_plane(frame, camera, cam_from_world, corners, texture)
-        active = mask > 0
-        if evidence is not None:
-            active &= evidence.visible_mask
-        ys, xs = np.nonzero(active)
-        if len(xs) == 0:
-            continue
-        rays = camera.unproject(np.column_stack((xs + 0.5, ys + 0.5)))
-        points = transform(cam_from_world, corners)
-        normal = np.cross(points[1] - points[0], points[3] - points[0])
-        denominator = rays @ normal
-        distance = np.divide(
-            points[0] @ normal,
-            denominator,
-            out=np.full(len(xs), np.inf),
-            where=np.abs(denominator) > 1e-12,
-        )
-        closer = (distance > 0) & (distance < nearest[ys, xs])
-        ys, xs = ys[closer], xs[closer]
-        nearest[ys, xs] = distance[closer]
-        output[ys, xs] = rendered[ys, xs]
-        union[ys, xs] = 255
-    if compositor is not None and union.any():
+    alpha = rgba[active, 3:4].astype(np.float32) / 255
+    output[active] = (frame[active] * (1 - alpha) + rgba[active, :3] * alpha).astype(np.uint8)
+    union = active.astype(np.uint8) * 255
+    if compositor is not None and active.any():
         harmonized = compositor.harmonizer(output, union, frame)
-        output[union > 0] = harmonized[union > 0]
+        output[active] = harmonized[active]
     return output, union
 
 
@@ -609,12 +350,19 @@ def frame_perturbation(
 class InsertionRenderer:
     """Resolve bound objects and render them through the same geometry used by selection.
 
-    ``geometry(observation)`` returns ``(actors, victim, cam_from_world)``. An optional
+    ``geometry(observation)`` returns :class:`InsertionGeometry`. Tuple returns remain supported. An optional
     ``evidence_provider(observation, resolved, geometry)`` returns visibility evidence by insertion
     ID. No filters run here. Use ``frame_perturbation`` or a backend adapter to update model inputs.
     """
 
-    def __init__(self, insertions, camera, geometry, compositor=None, evidence_provider=None):
+    def __init__(
+        self,
+        insertions: Sequence[Insertion],
+        camera: Camera,
+        geometry: GeometryProvider,
+        compositor: PatchCompositor | None = None,
+        evidence_provider: EvidenceProvider | None = None,
+    ):
         self.insertions = tuple(insertions)
         if len({item.id for item in self.insertions}) != len(self.insertions):
             raise ValueError("Insertion IDs must be unique")
@@ -629,8 +377,11 @@ class InsertionRenderer:
         from avsectester.insertion import resolve_insertion
 
         state = self.geometry(observation)
-        actors, victim, camera_transform = state
-        self.resolved = tuple(resolve_insertion(item, actors, victim) for item in self.insertions)
+        if not isinstance(state, InsertionGeometry):
+            state = InsertionGeometry(*state)
+        self.resolved = tuple(
+            resolve_insertion(item, state.actors, state.victim) for item in self.insertions
+        )
         self.evidence = (
             self.evidence_provider(observation, self.resolved, state)
             if self.evidence_provider is not None
@@ -641,7 +392,7 @@ class InsertionRenderer:
             result, _ = render_resolved(
                 result,
                 self.camera,
-                camera_transform,
+                state.cam_from_world,
                 item,
                 self.evidence[item.id] if self.evidence_provider else None,
                 compositor=self.compositor,

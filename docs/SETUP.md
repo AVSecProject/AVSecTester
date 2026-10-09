@@ -30,6 +30,16 @@ python -m pytest tests/core -q    # no avstack, CARLA server or checkpoints
 
 See [tests/README.md](../tests/README.md) for the offline avstack suite and CI environment.
 
+For image insertion and geometric visibility without the test suite, install the rendering extra:
+
+```bash
+pip install -e '.[rendering]' -c constraints.txt
+```
+
+This supplies OpenCV and Pillow. Camera models and ordinary annotation filters remain usable
+with the core dependencies. Simulator connections and learned harmonizers need their separate
+dependencies below.
+
 ## 2. Full stack (GPU + CARLA)
 
 Modern **OpenMMLab-official** stack (every version cap satisfied → no patching, no source builds):
@@ -217,7 +227,8 @@ the entire `libcom` package is not required. Without an explicit weight path it 
 To use an existing local checkpoint:
 
 ```python
-from avsectester.simulators.patch_insertion import PCTNetHarmonizer, PatchCompositor
+from avsectester.rendering.harmonizers import PCTNetHarmonizer
+from avsectester.simulators.patch_insertion import PatchCompositor
 
 harmonizer = PCTNetHarmonizer(device=0, weights="/path/to/PCTNet.pth", strict=True)
 compositor = PatchCompositor(harmonizer)

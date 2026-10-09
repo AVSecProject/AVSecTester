@@ -65,9 +65,11 @@ pytest/CI collect their subdirectories recursively.
 | `core/test_metric.py` | Induced stops, suppressed safe stops, duration/speed thresholds, late stops, inconclusive baselines |
 | `core/test_alpamayo.py` | Camera history padding/order, ego history, model vs simulation clocks, candidate selection, plan chaining, experiment reset |
 | `core/test_nurec.py` | Dynamics, stub-rendered closed loop, reset, checkpoint replay, trajectory interpolation and rig-to-world conversion |
-| `core/test_insertions.py`, `core/test_estimators.py` | Host/world placement, orientation modes, complete silhouettes, depth and cuboid occlusion |
-| `core/test_initial_selection.py`, `core/test_carla_selection.py` | Fixed role bindings, initial windows, native API access, CARLA lifecycle and observation insertion |
-| `core/test_nurec_metadata.py` | Native metadata, full actor poses, recorded windows and insertions reaching a driving stack |
+| `core/rendering/test_visibility_rendering.py` | Shared alpha samples across scale/cropping, depth masking and independent insertion ordering |
+| `core/scenarios/test_selected_experiment.py` | Selected origin and role bindings reach clean/attack evaluation without runtime filtering |
+| `core/test_insertions.py`, `core/rendering/test_estimators.py` | Host/world placement, orientation modes, complete silhouettes, depth and cuboid occlusion |
+| `core/scenarios/test_initial_selection.py`, `core/scenarios/test_carla_selection.py` | Fixed role bindings, initial windows, native API access, CARLA lifecycle and observation insertion |
+| `core/scenarios/test_nurec_metadata.py` | Native metadata, full actor poses, recorded windows and insertions reaching a driving stack |
 | `core/attacks/optim/test_patch_optim.py` | PGD/NES optimization direction, patch footprint, valid pixels and L-infinity budget |
 | `core/attacks/patch/test_physical_patch.py` | Texture construction and patch configuration |
 | `core/attacks/object_insertion/` | Sign geometry, pedestrian standees/posters and traffic light payloads |
@@ -75,7 +77,7 @@ pytest/CI collect their subdirectories recursively.
 | `core/simulators/test_patch_insertion.py` | Projection, compositing, target selection and camera perturbation callbacks |
 | `core/scripts/test_image_attack_demos.py` | Strict PCTNet failure handling and saved step records paired with model reasoning |
 | `core/test_augment.py` | Image corruptions, seeded paired experiments, sensor write-back, composition, real Albumentations operators |
-| `core/test_scenarios.py`, `core/test_recorded_backend.py` | Scene constraints/filtering and recorded-image playback without full datasets |
+| `core/scenarios/test_scenarios.py`, `core/test_recorded_backend.py` | Scene constraints/filtering and recorded-image playback without full datasets |
 | `core/test_sim_viz.py` | Camera/LiDAR views, projected labels/boxes and saved frames |
 | `avstack/attacks/pipeline/test_phantom.py` | Attack registration, detection preservation, moving/empty source frames and phantom geometry |
 | `avstack/test_component_log_real.py` | Historical plans/tracks/reference frames, unchanged controls under logging, attack hook ordering and matching metrics |

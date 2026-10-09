@@ -160,7 +160,7 @@ def carla_scene_gt(backend: Any, camera: str = "front") -> SceneGT:
     actors retain their native IDs. The complete native world is available separately
     through the selection context.
     """
-    from avsectester.simulators.patch_insertion import carla_cam_coords, project_to_pixels
+    from avsectester.rendering.cameras import carla_cam_coords, project_to_pixels
 
     world = backend.client.world
     ego = backend.ego.actor

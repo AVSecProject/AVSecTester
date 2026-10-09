@@ -7,7 +7,6 @@ import numpy as np
 import pytest
 
 from avsectester.insertion import (
-    AttachedPlacement,
     Insertion,
     Orientation,
     PlaneAsset,
@@ -19,47 +18,17 @@ from avsectester.scenarios import (
     Constraint,
     Dataset,
     DatasetFilter,
-    EgoState,
     FilterContext,
     FilterResult,
     InitialWindow,
     Not,
-    ObjectGT,
     RoleSpec,
     ScenarioRequirement,
-    SceneGT,
     Visibility,
 )
-from avsectester.scenarios.requirement import DistanceRange, InView, MinVisibility
-from avsectester.scenarios.scene import CameraCalib
+from avsectester.scenarios.filters import DistanceRange, InView, MinVisibility
 from avsectester.scenarios.serialize import requirement_from_dict, requirement_to_dict
 from avsectester.scenarios.source import CarlaScenarioBuilder
-
-
-def scene(frame=0, distances=(8, 12), *, ids=("a", "b")):
-    optical_to_ego = np.eye(4)
-    optical_to_ego[:3, :3] = [[0, 0, 1], [-1, 0, 0], [0, -1, 0]]
-    optical_to_ego[2, 3] = 1.5
-    camera = CameraCalib("front", 160, 120, (80, 80, 60), optical_to_ego)
-    return SceneGT(
-        frame,
-        frame * 0.1,
-        EgoState(pose=np.eye(4)),
-        {"front": camera},
-        [
-            ObjectGT(track, "vehicle", (x, 0, 0.75), extent=(4, 2, 1.5), visibility=0.0)
-            for track, x in zip(ids, distances)
-        ],
-    )
-
-
-def patch(identifier="patch", host="host"):
-    return Insertion(
-        identifier,
-        PlaneAsset(np.full((4, 4, 4), 255, np.uint8), 0.6, 0.4),
-        AttachedPlacement(host, "rear_center", (-0.05, 0, 0.2)),
-        Orientation("follow_host", (0, 0, 180)),
-    )
 
 
 @dataclass
@@ -80,7 +49,7 @@ class Status(Constraint):
         ((), "pass", "fail"),
     ],
 )
-def test_groups_preserve_unknown(statuses, all_status, any_status):
+def test_groups_preserve_unknown(statuses, all_status, any_status, scene):
     ctx = FilterContext(scene())
     filters = [Status(status) for status in statuses]
     assert All(filters).evaluate(ctx).status == all_status
@@ -91,7 +60,7 @@ def test_groups_preserve_unknown(statuses, all_status, any_status):
 
 
 @pytest.mark.parametrize("opaque_center,expected", [(False, "fail"), (True, "pass")])
-def test_in_view_uses_opaque_pixels_not_the_texture_rectangle(opaque_center, expected):
+def test_in_view_uses_opaque_pixels_not_the_texture_rectangle(opaque_center, expected, scene):
     texture = np.full((10, 100, 4), 255, np.uint8)
     if not opaque_center:
         texture[:, 5:-5, 3] = 0
@@ -103,8 +72,8 @@ def test_in_view_uses_opaque_pixels_not_the_texture_rectangle(opaque_center, exp
     assert result.status == expected
 
 
-def test_in_view_is_independent_of_occlusion():
-    from avsectester.scenarios.estimators import CuboidVisibilityEstimator
+def test_in_view_is_independent_of_occlusion(scene):
+    from avsectester.rendering.visibility import CuboidVisibilityEstimator
 
     item = Insertion(
         "hidden", PlaneAsset(np.full((4, 4, 4), 255, np.uint8), 1, 1), WorldPlacement((15, 0, 0.75))
@@ -117,7 +86,7 @@ def test_in_view_is_independent_of_occlusion():
 
 
 @pytest.mark.parametrize("outcome", ["pass", "fail", "unknown", "error", "prepare_error"])
-def test_dataset_filter_closes_owned_resources_on_all_exit_paths(outcome):
+def test_dataset_filter_closes_owned_resources_on_all_exit_paths(outcome, scene):
     events = []
 
     class Resource:
@@ -182,7 +151,7 @@ def test_dataset_filter_closes_owned_resources_on_all_exit_paths(outcome):
         assert all(closed.count(f"extra-{name}") == 1 for name in opened)
 
 
-def test_derived_context_shares_resource_scope():
+def test_derived_context_shares_resource_scope(scene):
     from unittest.mock import Mock
 
     resource = Mock()
@@ -193,7 +162,7 @@ def test_derived_context_shares_resource_scope():
     resource.close.assert_called_once_with()
 
 
-def test_manual_and_automatic_roles_never_replace_explicit_choices():
+def test_manual_and_automatic_roles_never_replace_explicit_choices(scene):
     req = ScenarioRequirement(
         "roles",
         roles={
@@ -210,7 +179,7 @@ def test_manual_and_automatic_roles_never_replace_explicit_choices():
     assert req.evaluate(too_far).candidates[0].bindings["host"] == ("b",)
 
 
-def test_distance_does_not_silently_use_insertion_position():
+def test_distance_does_not_silently_use_insertion_position(scene, patch):
     inserted = Insertion("sign", patch().asset, WorldPlacement((8, 0, 1)))
     req = ScenarioRequirement(
         "no attacker", insertions=(inserted,), constraints=[DistanceRange(1, 20)]
@@ -220,7 +189,7 @@ def test_distance_does_not_silently_use_insertion_position():
     assert req.evaluate(scene(distances=(8, 30))).status == "fail"
 
 
-def test_filter_uses_patch_visibility_without_host_visibility_and_ranks_eligible_hosts():
+def test_filter_uses_patch_visibility_without_host_visibility_and_ranks_eligible_hosts(scene, patch):
     calls = []
 
     def measure(ctx, insertion_id, camera):
@@ -241,11 +210,11 @@ def test_filter_uses_patch_visibility_without_host_visibility_and_ranks_eligible
     assert calls == [("a", "patch", "front"), ("b", "patch", "front")]
 
 
-def test_multiple_independent_insertions_bind_indexed_hosts():
+def test_multiple_independent_insertions_bind_indexed_hosts(scene, patch):
     small = patch("small", "hosts[0]")
     large = replace(
         patch("large", "hosts[1]"),
-        asset=PlaneAsset(np.full((5, 5, 4), 127, np.uint8), 1.2, 0.8),
+        asset=PlaneAsset(np.full((5, 5, 4), [127, 127, 127, 255], np.uint8), 1.2, 0.8),
         orientation=Orientation("face_victim"),
     )
     resolved = []
@@ -269,7 +238,7 @@ def test_multiple_independent_insertions_bind_indexed_hosts():
     assert match.insertions == (small, large)
 
 
-def test_initial_window_keeps_identity_instead_of_choosing_a_new_nearest_actor():
+def test_initial_window_keeps_identity_instead_of_choosing_a_new_nearest_actor(scene):
     frames = (scene(0, (8, 12)), scene(1, (30, 8)), scene(2, (8, 12)))
     req = ScenarioRequirement(
         "window",
@@ -287,7 +256,7 @@ def test_initial_window_keeps_identity_instead_of_choosing_a_new_nearest_actor()
     assert result.candidates[1].status == "unknown"
 
 
-def test_initial_window_missing_or_repeated_frames_cannot_pass():
+def test_initial_window_missing_or_repeated_frames_cannot_pass(scene):
     initial = scene()
     req = ScenarioRequirement("window", window=InitialWindow(2))
     assert req.evaluate(initial).status == "unknown"
@@ -297,7 +266,7 @@ def test_initial_window_missing_or_repeated_frames_cannot_pass():
         req.evaluate(FilterContext(initial, sequence=(scene(1), scene(2))))
 
 
-def test_live_sequence_evaluates_all_bindings_before_advancing_native_world():
+def test_live_sequence_evaluates_all_bindings_before_advancing_native_world(scene):
     class World:
         frame = 0
 
@@ -333,7 +302,7 @@ def test_live_sequence_evaluates_all_bindings_before_advancing_native_world():
     assert world.frame == 2
 
 
-def test_custom_dataset_filter_gets_original_metadata_and_lazy_renderer():
+def test_custom_dataset_filter_gets_original_metadata_and_lazy_renderer(scene):
     raw_metadata = {"unstandardized": object()}
     render_calls, filter_calls = [], []
 
@@ -383,7 +352,7 @@ def test_custom_dataset_filter_gets_original_metadata_and_lazy_renderer():
     assert filter_calls == [0, 1]  # Runtime construction does not invoke filters.
 
 
-def test_carla_uses_prepared_actual_scene_and_closes_preview_before_execution():
+def test_carla_uses_prepared_actual_scene_and_closes_preview_before_execution(scene):
     lifecycle, configs = [], []
 
     @contextmanager
@@ -407,32 +376,49 @@ def test_carla_uses_prepared_actual_scene_and_closes_preview_before_execution():
     case = next(builder.scenarios(req))
     assert case.make_backend()[-1] == "closed"
     assert configs[0]["lead"] == fixed["lead"]
-    assert case.target.bindings["attacker"][0].distance == 40
+    assert case.match.bindings["attacker"][0].distance == 40
 
 
-def test_requirement_roundtrips_roles_window_groups_and_independent_patch_assets():
+def test_requirement_roundtrips_roles_window_groups_and_independent_patch_assets(scene, patch):
+    import json
+
+    first = patch("rear", "hosts[0]")
+    second = replace(
+        patch("side", "hosts[1]"),
+        asset=PlaneAsset(np.full((8, 12, 4), [20, 180, 40, 255], np.uint8), 1.2, 0.8),
+        orientation=Orientation("fixed_world", (10, 20, 170)),
+    )
     req = ScenarioRequirement(
         "serialized",
-        roles={"host": RoleSpec(ids=("a",))},
-        insertions=(patch(),),
+        roles={"hosts": RoleSpec(ids=("a", "b"), count=2)},
+        insertions=(first, second),
         window=InitialWindow(3),
         constraints=[
             All(
                 [
                     InView("front"),
-                    Any([MinVisibility(0.8, subjects=("patch",)), Not(InView("rear"))]),
+                    Any([MinVisibility(0.8, subjects=("rear",)), Not(InView("rear"))]),
                 ]
             )
         ],
     )
     encoded = requirement_to_dict(req)
-    restored = requirement_from_dict(encoded)
+    restored = requirement_from_dict(json.loads(json.dumps(encoded)))
     assert requirement_to_dict(restored) == encoded
-    assert restored.insertions[0].placement.host == "host"
+    assert [item.placement.host for item in restored.insertions] == ["hosts[0]", "hosts[1]"]
     assert restored.window.frames == 3
+    state = scene()
+    bindings = {"hosts": tuple(state.objects)}
+    before = FilterContext(state, bindings=bindings, insertions=req.insertions).resolved_insertions
+    after = FilterContext(state, bindings=bindings, insertions=restored.insertions).resolved_insertions
+    for key in before:
+        assert before[key].host_id == after[key].host_id
+        np.testing.assert_array_equal(before[key].pose, after[key].pose)
+        np.testing.assert_array_equal(before[key].asset.texture, after[key].asset.texture)
+    assert not np.array_equal(after["rear"].asset.texture, after["side"].asset.texture)
 
 
-def test_role_search_budget_reports_incomplete_search_instead_of_infeasible_case():
+def test_role_search_budget_reports_incomplete_search_instead_of_infeasible_case(scene):
     req = ScenarioRequirement(
         "budget",
         roles={"attacker": RoleSpec()},
@@ -445,7 +431,7 @@ def test_role_search_budget_reports_incomplete_search_instead_of_infeasible_case
     assert req.evaluate(scene()).match.binding_ids["attacker"] == ("b",)
 
 
-def test_nuscenes_context_exposes_unmodified_sdk_records():
+def test_nuscenes_context_exposes_unmodified_sdk_records(scene, patch):
     from avsectester.scenarios.datasets.nuscenes import NuScenesDataset
 
     records = {
@@ -479,7 +465,7 @@ def test_nuscenes_context_exposes_unmodified_sdk_records():
     assert context.visibility(subject, "front") is None
 
 
-def test_missing_world_pose_is_unknown_in_selection_and_rejected_on_direct_resolution():
+def test_missing_world_pose_is_unknown_in_selection_and_rejected_on_direct_resolution(scene, patch):
     state = scene()
     state.ego.pose = None
     req = ScenarioRequirement("pose", insertions=(patch(host="a"),), constraints=[InView("front")])
@@ -488,7 +474,7 @@ def test_missing_world_pose_is_unknown_in_selection_and_rejected_on_direct_resol
         FilterContext(state, insertions=req.insertions).resolved_insertions
 
 
-def test_insertions_require_actual_camera_overlap_even_without_explicit_visual_filter():
+def test_insertions_require_actual_camera_overlap_even_without_explicit_visual_filter(scene, patch):
     asset = patch().asset
     outside = Insertion("outside", asset, WorldPlacement((10, 100, 1)), Orientation("face_victim"))
     req = ScenarioRequirement("required", insertions=(outside,))
@@ -499,7 +485,7 @@ def test_insertions_require_actual_camera_overlap_even_without_explicit_visual_f
     assert req.evaluate(scene()).status == "pass"
 
 
-def test_insertion_camera_selection_is_explicit_when_multiple_nonfront_cameras_exist():
+def test_insertion_camera_selection_is_explicit_when_multiple_nonfront_cameras_exist(scene, patch):
     state = scene()
     calibration = state.cameras.pop("front")
     state.cameras = {

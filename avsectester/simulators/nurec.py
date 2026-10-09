@@ -326,16 +326,16 @@ class NuRecRenderer(Renderer):
         return self._t0 + round(pose.t * 1e6)
 
     def camera_model(self, camera: str | None = None):
-        """The rendered camera's lens model (:class:`~avsectester.simulators.camera_models.FThetaCamera`)
+        """The rendered camera's lens model (:class:`~avsectester.rendering.cameras.FThetaCamera`)
         for world-anchored insertion, available after :meth:`load_scene`."""
-        from avsectester.simulators.camera_models import FThetaCamera
+        from avsectester.rendering.cameras import FThetaCamera
 
         return FThetaCamera.from_nurec(self._camera_specs.get(camera, self._spec))
 
     def rig_transform(self, pose: EgoPose):
         """Preserve the selected frame's height/tilt while evolving planar position and heading."""
         import numpy as np
-        from avsectester.simulators.camera_models import planar_rig_pose
+        from avsectester.rendering.cameras import planar_rig_pose
 
         if self.start_transform is None:
             z = self._start_pose.vec.z if self._start_pose is not None else 0.0
@@ -350,7 +350,7 @@ class NuRecRenderer(Renderer):
     def cam_from_world(self, pose: EgoPose, camera: str | None = None):
         """The same camera pose used by the render request, including selected-frame tilt."""
         import numpy as np
-        from avsectester.simulators.camera_models import pose_from_proto
+        from avsectester.rendering.cameras import pose_from_proto
 
         extrinsic = self._camera_poses.get(camera, self._rig_to_camera)
         return np.linalg.inv(self.rig_transform(pose) @ pose_from_proto(extrinsic))
@@ -358,7 +358,7 @@ class NuRecRenderer(Renderer):
     def camera_transform(self, world_from_rig, camera: str | None = None):
         """World-to-optical-camera transform for an explicit recorded rig pose."""
         import numpy as np
-        from avsectester.simulators.camera_models import pose_from_proto
+        from avsectester.rendering.cameras import pose_from_proto
 
         extrinsic = self._camera_poses.get(camera, self._rig_to_camera)
         return np.linalg.inv(np.asarray(world_from_rig) @ pose_from_proto(extrinsic))
@@ -409,7 +409,7 @@ class NuRecRenderer(Renderer):
 class NuRecInsertions(InsertionRenderer):
     """Insertion renderer with optional known-cuboid visibility for NuRec observations.
 
-    ``geometry(observation)`` provides stable actor world poses, the victim pose and the
+    ``geometry(observation)`` returns InsertionGeometry with actor/victim poses and the
     world-to-camera matrix. Use with ``frame_perturbation`` to change the model input.
     """
 
@@ -423,13 +423,12 @@ class NuRecInsertions(InsertionRenderer):
         camera_name="front",
     ):
         def evidence(observation, resolved, state):
-            actors, _victim, camera_transform = state
             return {
                 item.id: visibility_estimator.estimate(
                     item,
                     camera,
-                    camera_transform,
-                    occluders=actors,
+                    state.cam_from_world,
+                    occluders=state.actors,
                     other_insertions=tuple(other for other in resolved if other.id != item.id),
                     camera_name=camera_name,
                 )

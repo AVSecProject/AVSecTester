@@ -2,11 +2,7 @@
 
 import numpy as np
 import pytest
-from avsectester.simulators.patch_insertion import (
-    cam_coords,
-    carla_cam_coords,
-    project_to_pixels,
-)
+from avsectester.rendering.cameras import cam_coords, carla_cam_coords, project_to_pixels
 
 
 def test_projection():
@@ -47,11 +43,8 @@ def test_composite_view_wraps_base_and_skips_when_no_quad():
 
 
 def test_warp_and_harmonize_under_cv2():
-    from avsectester.simulators.patch_insertion import (
-        ClassicHarmonizer,
-        PatchCompositor,
-        warp_patch,
-    )
+    from avsectester.rendering.harmonizers import ClassicHarmonizer
+    from avsectester.simulators.patch_insertion import PatchCompositor, warp_patch
 
     frame = np.full((40, 60, 3), 100, np.uint8)
     patch = np.dstack([np.full((16, 16), 255, np.uint8)] * 3 + [np.full((16, 16), 255, np.uint8)])
@@ -85,11 +78,8 @@ def test_box_to_quad_planar_target():
 
 def test_render_plane_lands_where_projected_and_keeps_red(ftheta_camera, cam_from_world):
     from avsectester.attacks.object_insertion.sign_spoof import RoadsideSign
-    from avsectester.simulators.patch_insertion import (
-        ClassicHarmonizer,
-        PatchCompositor,
-        render_plane,
-    )
+    from avsectester.rendering.harmonizers import ClassicHarmonizer
+    from avsectester.simulators.patch_insertion import PatchCompositor, render_plane
 
     frame = np.full((1080, 1920, 3), 90, np.uint8)
     sign = RoadsideSign(x=12.0, y=-4.0, post=False)
@@ -176,7 +166,8 @@ def test_insertion_renderer_depth_orders_surfaces_and_preserves_cutout_holes(
 ):
     from avsectester.insertion import ActorPose, Insertion, PlaneAsset, PlaneSurface, WorldPlacement
     from avsectester.plane import Observation
-    from avsectester.simulators.camera_models import PinholeCamera
+    from avsectester.rendering.cameras import PinholeCamera
+    from avsectester.rendering.types import InsertionGeometry
     from avsectester.simulators.patch_insertion import InsertionRenderer, PatchCompositor
 
     red = np.full((16, 16, 4), [255, 0, 0, 255], np.uint8)
@@ -201,7 +192,7 @@ def test_insertion_renderer_depth_orders_surfaces_and_preserves_cutout_holes(
     render = InsertionRenderer(
         [Insertion("layered", LayeredAsset(), WorldPlacement((0, 0, 0)))],
         camera,
-        lambda _: ({}, ActorPose(np.eye(4)), camera_from_world),
+        lambda _: InsertionGeometry({}, ActorPose(np.eye(4)), camera_from_world),
         compositor=compositor,
     )
     image = render(Observation(0, 0), np.zeros((80, 100, 3), np.uint8))

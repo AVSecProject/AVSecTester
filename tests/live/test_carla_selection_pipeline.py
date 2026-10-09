@@ -15,7 +15,8 @@ def test_selected_case_replays_and_inserts_into_same_frame_observation(request, 
     from avsectester.plane import Control
     from avsectester.scenarios import CarlaScenarioBuilder, RoleSpec, ScenarioRequirement
     from avsectester.scenarios.carla_provider import CarlaCandidateProvider, CarlaSelectionBackend
-    from avsectester.scenarios.requirement import InitialWindow, MinVisibility
+    from avsectester.scenarios.requirement import InitialWindow
+    from avsectester.scenarios.filters import MinVisibility
     from avsectester.simulators.carla import camera_view, insertion_perturbation
 
     config = yaml.safe_load(Path(request.config.getoption("--carla-config")).read_text())
@@ -65,8 +66,8 @@ def test_selected_case_replays_and_inserts_into_same_frame_observation(request, 
     assert len(cases) == 1, source.selection_log
     assert previews[0].client is None  # Preview released before returning the runnable case.
     case = cases[0]
-    assert case.target.binding_ids == {"host": ("lead",)}
-    selected_host = next(obj for obj in case.target.scene.objects if obj.track_id == "lead")
+    assert case.match.binding_ids == {"host": ("lead",)}
+    selected_host = next(obj for obj in case.match.scene.objects if obj.track_id == "lead")
     backend = case.make_backend()
     try:
         # Both resets must reconstruct the selected origin, including the same setup ticks.
@@ -74,14 +75,14 @@ def test_selected_case_replays_and_inserts_into_same_frame_observation(request, 
             observation = backend.reset()
             context = backend.selection_context()
             np.testing.assert_allclose(
-                context.scene.ego.pose, case.target.scene.ego.pose, atol=1e-4
+                context.scene.ego.pose, case.match.scene.ego.pose, atol=1e-4
             )
             host = next(obj for obj in context.scene.objects if obj.track_id == "lead")
             np.testing.assert_allclose(host.pose, selected_host.pose, atol=1e-4)
             perturb = insertion_perturbation(
                 backend,
-                case.target.insertions,
-                bindings=case.target.binding_ids,
+                case.match.insertions,
+                bindings=case.match.binding_ids,
             )
             for step in range(3):
                 assert backend.depth_frame == observation.frame

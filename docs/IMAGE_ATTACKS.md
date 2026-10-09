@@ -1,8 +1,9 @@
 # Image attacks
 
 Image attacks choose a payload and a placement. The simulation layer projects and composites the
-payload into camera observations before they reach the driving stack. Shared rendering lives in
-`avsectester/simulators/patch_insertion.py`.
+payload into camera observations before they reach the driving stack. Shared camera geometry,
+surface sampling, visibility and harmonization live in `avsectester/rendering/`.
+`avsectester/simulators/patch_insertion.py` supplies the compositor and observation/view wrappers.
 
 Object-insertion attacks can use an ordinary sign, pedestrian image or signal board. The attack
 comes from placing that visual cue where it does not belong. An optimized adversarial texture is
@@ -37,6 +38,11 @@ examples, initial-scene selection and visibility providers.
 applies visibility masks, and optionally harmonizes their appearance. Its output is connected to
 `perturb(Observation)` so the driving model receives the inserted image. `composite_view` is for
 visualization only and must not be used as the input attack.
+
+Geometry callbacks return `InsertionGeometry(actors, victim, cam_from_world)`.
+See [custom rendering adapters](SCENARIOS.md#custom-rendering-adapters) for coordinate conventions,
+camera protocols and visibility evidence. The built-in estimators and compositor share texture
+prefiltering and alpha samples, so visibility clips the same silhouette that is rendered.
 
 The rendering primitives are:
 
@@ -73,6 +79,9 @@ without the COCO detector's evaluation stage. Dependencies and weight locations 
 [SETUP.md](SETUP.md#5-model-dependencies-and-weights).
 
 ## Harmonization
+
+Import harmonizers from `avsectester.rendering.harmonizers`. Imports through
+`avsectester.simulators.patch_insertion` remain supported.
 
 | Harmonizer | Behavior |
 |---|---|

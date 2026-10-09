@@ -6,13 +6,13 @@ from unittest.mock import Mock
 
 import numpy as np
 import pytest
-from avsectester.scenario import prepare_scenario
+from avcarla.config import CARLA
+from avsectester.simulators import carla as carla_backend
+from avsectester.simulators.carla import prepare_scenario
 
 
 @pytest.fixture
 def scene_builder(monkeypatch):
-    from avsectester import scenario
-
     library = Mock()
     library.filter.return_value = [
         SimpleNamespace(id="vehicle.c"),
@@ -26,7 +26,7 @@ def scene_builder(monkeypatch):
         close=Mock(),
     )
     build = Mock(return_value=client)
-    monkeypatch.setattr(scenario.CARLA, "build", build)
+    monkeypatch.setattr(CARLA, "build", build)
     return client, build, library
 
 
@@ -65,10 +65,8 @@ def test_scene_selection_uses_seed_and_stable_candidates(scene_builder):
 
 
 def test_missing_seed_is_resolved_once_and_explicit_values_survive(scene_builder, monkeypatch):
-    from avsectester import scenario
-
     generate = Mock(return_value=987)
-    monkeypatch.setattr(scenario.secrets, "randbelow", generate)
+    monkeypatch.setattr(carla_backend.secrets, "randbelow", generate)
     config = random_scene(None)
     config["client"]["traffic_manager_seed"] = 42
     config["ego"].update(vehicle="vehicle.b", spawn=7, destination=8)

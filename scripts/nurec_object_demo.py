@@ -43,14 +43,9 @@ from avsectester.attacks.object_insertion.sign_spoof import (
     sign_rgba,
     vehicle_sign_quad,
 )
+from avsectester.rendering.harmonizers import ClassicHarmonizer, Harmonizer, PCTNetHarmonizer
 from avsectester.simulators.nurec import NuRecBackend, NuRecRenderer
-from avsectester.simulators.patch_insertion import (
-    ClassicHarmonizer,
-    Harmonizer,
-    PatchCompositor,
-    PCTNetHarmonizer,
-    frame_perturbation,
-)
+from avsectester.simulators.patch_insertion import PatchCompositor, frame_perturbation
 from avsectester.simulators.viz import filmstrip, record_run, save_gif, save_image
 from demo_common import (  # shared demo glue
     COCO_PERSON,

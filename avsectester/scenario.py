@@ -13,15 +13,14 @@ are re-exported here for backward compatibility; import them from their home mod
 
 from __future__ import annotations
 
-# Re-imported here so callers/tests can reach them as scenario.* (they are the SAME registry/module
-# objects the relocated CarlaBackend/ModularAVStack use, so patching a shared object's .build/.sleep
-# reaches those). This makes the orchestration module require the CARLA stack, as before the split.
+# Keep legacy registry/module attributes available to callers using scenario.*.
+# They reference the same objects used by CarlaBackend and ModularAVStack.
 import secrets  # noqa: F401
 import time  # noqa: F401
 from copy import deepcopy
 
-from avcarla.config import CARLA  # noqa: F401  (tests patch scenario.CARLA.build)
-from avstack.config import (  # noqa: F401  (tests patch scenario.{HOOKS,PIPELINE}.build)
+from avcarla.config import CARLA  # noqa: F401  (compatibility export)
+from avstack.config import (  # noqa: F401  (compatibility exports)
     HOOKS,
     PIPELINE,
 )

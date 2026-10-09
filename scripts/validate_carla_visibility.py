@@ -13,7 +13,7 @@ from queue import Queue
 
 import numpy as np
 
-from avsectester.scenarios.visibility import visibility_from_depth
+from avsectester.rendering.visibility import visibility_from_depth
 
 
 WIDTH, HEIGHT = 640, 480

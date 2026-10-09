@@ -119,7 +119,7 @@ requires an application-defined loader, since the built-in dictionary format cov
 
 ```python
 from avsectester.scenarios import InitialWindow, RoleSpec, ScenarioRequirement
-from avsectester.scenarios.requirement import DistanceRange, InView, MinVisibility, ViewpointRear
+from avsectester.scenarios.filters import DistanceRange, InView, MinVisibility, ViewpointRear
 
 requirement = ScenarioRequirement(
     name="rear_patch_case",
@@ -206,12 +206,12 @@ case = next(source.scenarios(requirement, limit=1), None)
 if case is None:
     raise RuntimeError(f"No qualifying case: {source.selection_log}")
 
-print(case.target.binding_ids)  # Role names mapped to fixed actor IDs.
+print(case.match.binding_ids)  # Role names mapped to fixed actor IDs.
 print(case.selection)          # Filter decisions and reasons.
 ```
 
-`limit` counts accepted cases. `case.target.scene` is the selected initial ground truth and
-`case.target.insertions` holds the insertion specifications. `case.provenance` describes the
+`limit` counts accepted cases. `case.match.scene` is the selected initial ground truth and
+`case.match.insertions` holds the insertion specifications. `case.provenance` describes the
 source. Preview clients are already closed when the case is returned. Call `case.make_backend()`
 to construct experiment resources and close that backend when finished.
 
@@ -283,6 +283,15 @@ complete projected opaque target pixels from that viewpoint
 The denominator includes the portion outside the image. The host remains an occluder for its
 patch. Other inserted objects can also occlude one another. Projection, alpha silhouette and
 pose resolution are shared between selection and rendering.
+
+Planar assets use bilinearly sampled RGBA textures. Samples with alpha greater than 127 count
+as opaque target pixels. Texture prefiltering uses the full projected surface size, including
+the off-image part. Cropping the image therefore does not change the texture's sampling scale.
+The built-in estimators retain these samples in `VisibilityEvidence.sampled_rgba`, and the
+compositor reuses them. Harmonization changes appearance after visibility is determined.
+This is a binary geometric visibility measure, not a model of transmission through translucent
+materials. A target crossing the camera plane has an unavailable full projection and returns
+unknown visibility.
 
 | Provider | Evidence |
 |---|---|
@@ -426,8 +435,8 @@ from avsectester.simulators.carla import insertion_perturbation
 
 def make_carla_perturb(case, backend):
     return insertion_perturbation(
-        backend, case.target.insertions, bindings=case.target.binding_ids,
-        camera=case.target.camera,
+        backend, case.match.insertions, bindings=case.match.binding_ids,
+        camera=case.match.camera,
     )
 
 # clean, attacked = run_pair(case, stack_factory, make_carla_perturb)
@@ -441,8 +450,8 @@ from avsectester.simulators.patch_insertion import frame_perturbation
 
 def make_nurec_perturb(case, backend):
     insert = dataset.insertion_renderer(
-        case.target.scene, backend, case.target.insertions,
-        bindings=case.target.binding_ids,
+        case.match.scene, backend, case.match.insertions,
+        bindings=case.match.binding_ids,
     )
     return frame_perturbation(insert, camera=dataset.camera)
 
@@ -452,11 +461,71 @@ def make_nurec_perturb(case, backend):
 Use [component logging](COMPONENT_LOGGING.md) to capture stack outputs, or
 [robustness evaluation](AUGMENTATION.md) to run selected cases across corruption conditions.
 
-For a custom backend, use `InsertionRenderer(insertions, camera, geometry, evidence_provider=...)`.
-`geometry(observation)` returns `(actor_poses, victim_pose, world_to_camera)`.
-The evidence callback receives `(observation, resolved_insertions, geometry_result)` and returns
-`VisibilityEvidence` objects keyed by insertion ID, including image masks and target depth for
-the current camera and frame. `actor_poses` maps stable IDs to `ActorPose`, and `victim_pose` is
-also an `ActorPose`. A scalar `Visibility` can answer a filter but cannot mask a rendered image.
-Without an evidence provider, the compositor does not account for scene occluders.
-`render_resolved` supports direct composition with the same surface and visibility contracts.
+### Custom rendering adapters
+
+Use `InsertionRenderer(insertions, camera, geometry, evidence_provider=...)`. The camera satisfies
+`rendering.cameras.Camera`: `width`, `height`, `project(points)` and `unproject(pixels)`.
+Projection maps `(N, 3)` optical-frame points to `(N, 2)` pixels. Unprojection returns `(N, 3)`
+unit rays. Optical axes are X right, Y down, Z forward. Pixel centres are `(column + 0.5, row + 0.5)`.
+An optional `max_angle` limits the lens field of view in radians. Custom cameras need not inherit
+from our concrete classes.
+
+`geometry(observation)` returns `InsertionGeometry`:
+
+| Field | Contract |
+|---|---|
+| `actors` | Mapping from stable IDs or bound role aliases to world-frame `ActorPose` objects |
+| `victim` | Victim `ActorPose` in the same world frame |
+| `cam_from_world` | `4×4` transform from world coordinates to optical camera coordinates |
+
+All geometry belongs to the current observation. Distances use metres. This callback updates
+placement during a drive and does not run selection filters.
+
+In this example, implement `read_native_geometry` using your simulator or dataset's native API:
+
+```python
+from avsectester.rendering.types import InsertionGeometry
+from avsectester.rendering.visibility import CuboidVisibilityEstimator
+from avsectester.simulators.patch_insertion import InsertionRenderer
+
+def geometry(observation) -> InsertionGeometry:
+    actors, victim, cam_from_world = read_native_geometry(observation)
+    return InsertionGeometry(actors=actors, victim=victim, cam_from_world=cam_from_world)
+
+estimator = CuboidVisibilityEstimator()
+
+def evidence_provider(observation, resolved, geometry):
+    return {
+        item.id: estimator.estimate(
+            item, camera, geometry.cam_from_world,
+            occluders=geometry.actors, other_insertions=resolved, camera_name="front",
+        )
+        for item in resolved
+    }
+
+insert = InsertionRenderer(insertions, camera, geometry, evidence_provider=evidence_provider)
+```
+
+The evidence callback returns `VisibilityEvidence` keyed by every insertion ID. Masks are
+image-sized, and `target_depth` uses optical-axis Z in metres. The data must match the current
+camera, pose and frame. Custom providers may omit `sampled_rgba`, in which case composition
+uses the shared surface sampler. Unknown visibility raises an error during composition rather
+than painting an insertion with missing evidence. A scalar `Visibility` can answer a filter but
+cannot mask a rendered image.
+
+`GeometryProvider`, `EvidenceProvider` and `GeometryVisibilityEstimator` in `rendering.types`
+describe these extension contracts. They do not restrict access to native SDKs or metadata.
+Without an evidence provider, only surfaces within each insertion occlude one another.
+`render_resolved` supports direct composition with the same contracts.
+
+### Compatibility
+
+Use `case.match` for the selected `ScenarioMatch`. `case.target` and the `target=` constructor
+keyword remain compatibility aliases. `case.match.target` is the optional single-object target,
+not the whole selected case. `InsertionGeometry` supports tuple unpacking, and geometry callbacks
+returning `(actors, victim, cam_from_world)` remain supported.
+
+Filters are defined in `scenarios.filters`. Camera models, visibility estimators and harmonizers
+are defined in `rendering.cameras`, `rendering.visibility` and `rendering.harmonizers`.
+Their previous imports through `scenarios.requirement`, `scenarios.estimators`,
+`scenarios.visibility`, `simulators.camera_models` and `simulators.patch_insertion` remain available.

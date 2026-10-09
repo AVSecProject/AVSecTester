@@ -177,7 +177,8 @@ pipeline does not use it to navigate to a destination.
 ##### CARLA Python interface
 
 ```python
-from avsectester.scenario import prepare_scenario, run_scenario
+from avsectester.scenario import run_scenario
+from avsectester.simulators.carla import prepare_scenario
 
 prepared = prepare_scenario(config)
 clean = run_scenario(prepared, frames=40)
@@ -314,7 +315,13 @@ Selection prepares an initial case before the driving experiment:
 - `ScenarioSource.scenarios(requirement)` yields selected `ScenarioInstance` objects.
   `DatasetFilter` and `CarlaScenarioBuilder` implement this interface.
 - `ScenarioInstance.make_backend()` creates a fresh backend at the selected origin. The case
-  also retains the actor bindings and insertion specifications used for selection.
+  retains the actor bindings and insertion specifications in `case.match`.
+
+`scenarios.filters` defines conditions and their combinations. `scenarios.requirement` performs
+role assignment and initial-window evaluation. Both selection and runtime insertion use the
+camera, sampling and visibility code in `rendering/`. That shared layer does not depend on the
+selection workflow or simulator SDKs. `InsertionGeometry` names the actor poses, victim pose
+and world-to-camera transform passed to a custom insertion renderer.
 
 Clean and attacked runs share the selected initial case, with the attack disabled for clean.
 Filters are not installed in the driving loop. See [SCENARIOS.md](SCENARIOS.md) for composition,

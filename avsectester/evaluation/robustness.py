@@ -184,7 +184,7 @@ def evaluate_robustness(
 
     report = RobustnessReport()
     for i, instance in enumerate(source.scenarios(req, limit=limit)):
-        match = instance.target
+        match = instance.match
         scenario_id = str(instance.provenance.get("scene_id")
                           or instance.provenance.get("sample_token")
                           or instance.provenance.get("image_path")

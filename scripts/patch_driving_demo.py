@@ -29,13 +29,10 @@ from avsectester.attacks.patch.physical_patch import checkerboard_rgba, image_rg
 from avsectester.backend import AVStack
 from avsectester.metric import impact, plot_impact
 from avsectester.plane import Control
+from avsectester.rendering.harmonizers import ClassicHarmonizer, PCTNetHarmonizer
 from avsectester.simulators import carla as carla_sim
 from avsectester.simulators.carla import CarlaBackend, camera_patch_perturbation
-from avsectester.simulators.patch_insertion import (
-    ClassicHarmonizer,
-    PatchCompositor,
-    PCTNetHarmonizer,
-)
+from avsectester.simulators.patch_insertion import PatchCompositor
 from avsectester.simulators.viz import detections_view, record_run, save_sequence
 from demo_common import build_detector, plausible_detector  # shared demo glue
 

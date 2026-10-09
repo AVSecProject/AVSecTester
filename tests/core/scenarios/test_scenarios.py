@@ -5,7 +5,7 @@ import numpy as np
 from dataclasses import replace
 
 from avsectester.scenarios import CameraCalib, EgoState, FilterContext, ObjectGT, SceneGT
-from avsectester.scenarios.requirement import DistanceRange, ImageAreaFrac, ViewpointRear
+from avsectester.scenarios.filters import DistanceRange, ImageAreaFrac, ViewpointRear
 from avsectester.scenarios.requirements import PHYSICAL_PATCH_HIDE_VEHICLE
 
 CAM = {"front": CameraCalib(name="front", width=800, height=600, cam_to_ego=np.eye(4))}
@@ -120,7 +120,7 @@ def test_predict_scene_gt_and_builder_are_offline():
     )
     assert len(insts) == 5  # the builder found qualifying lead placements, analytically
     for it in insts:
-        assert 4.0 <= it.target.target.distance <= 25.0 and it.provenance["backend"] == "carla"
+        assert 4.0 <= it.match.target.distance <= 25.0 and it.provenance["backend"] == "carla"
 
 
 # ---- DatasetFilter over a stub dataset ------------------------------------------------------------
@@ -197,7 +197,7 @@ def test_rear_angle_uses_camera_bearing_and_preserves_yaw_wrapping():
 
 def test_unknown_visibility_and_wrong_camera_do_not_pass():
     from avsectester.scenarios import Visibility
-    from avsectester.scenarios.requirement import MinVisibility
+    from avsectester.scenarios.filters import MinVisibility
 
     target = _vehicle("car", 8, (1, 1, 20, 20), vis=None)
     scene = _scene([target])
@@ -214,7 +214,7 @@ def test_unknown_visibility_and_wrong_camera_do_not_pass():
 
 def test_scene_only_and_placement_requirements_share_filters():
     from avsectester.scenarios import PlacementCandidate, ScenarioRequirement, TargetSpec
-    from avsectester.scenarios.requirement import EgoMoving, InView
+    from avsectester.scenarios.filters import EgoMoving, InView
 
     scene = _scene([])
     assert ScenarioRequirement("moving", constraints=[EgoMoving(2)]).match(scene).target is None
@@ -294,7 +294,7 @@ def test_dataset_filter_records_exclusions_and_preserves_selected_state(tmp_path
 def test_carla_builder_does_not_filter_against_fictitious_initial_speed():
     from avsectester.scenarios.source import CarlaScenarioBuilder
     from avsectester.scenarios import ScenarioRequirement
-    from avsectester.scenarios.requirement import EgoMoving
+    from avsectester.scenarios.filters import EgoMoving
 
     with pytest.raises(ValueError, match="starts stationary"):
         CarlaScenarioBuilder(ego_speed=5)

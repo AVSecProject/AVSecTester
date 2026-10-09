@@ -26,12 +26,8 @@ from avsectester.scenarios.carla_provider import (
     _require_pinhole_sensor,
 )
 from avsectester.scenarios.context import FilterContext
-from avsectester.scenarios.requirement import (
-    Constraint,
-    FilterResult,
-    InitialWindow,
-    ScenarioRequirement,
-)
+from avsectester.scenarios.filters import Constraint, FilterResult
+from avsectester.scenarios.requirement import InitialWindow, ScenarioRequirement
 from avsectester.scenarios.scene import CameraCalib, EgoState, ObjectGT, SceneGT
 from avsectester.simulators.carla import CarlaBackend, insertion_perturbation
 

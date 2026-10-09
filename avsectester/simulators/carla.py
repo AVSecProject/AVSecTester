@@ -79,11 +79,8 @@ def lead_rear_quad(
     """
     import numpy as np
 
-    from avsectester.simulators.patch_insertion import (
-        carla_cam_coords,
-        order_quad,
-        project_to_pixels,
-    )
+    from avsectester.rendering.cameras import carla_cam_coords, project_to_pixels
+    from avsectester.simulators.patch_insertion import order_quad
 
     def _quad_of(_observation: Observation) -> Any:
         import carla
@@ -147,12 +144,14 @@ def insertion_perturbation(backend, insertions, *, bindings=None, camera="front"
     The backend must provide ``selection_context()`` with current same-frame depth,
     as :class:`avsectester.scenarios.carla_provider.CarlaSelectionBackend` does.
     Geometry is updated each frame. Selection filters are never rerun here.
-    Pass ``bindings=case.target.binding_ids`` to preserve selected role aliases across
+    Pass ``bindings=case.match.binding_ids`` to preserve selected role aliases across
     resets. Native logical host names such as ``lead`` need no additional mapping.
     """
     import numpy as np
 
-    from avsectester.scenarios.estimators import DepthVisibilityEstimator, camera_from_calibration
+    from avsectester.rendering.cameras import camera_from_calibration
+    from avsectester.rendering.visibility import DepthVisibilityEstimator
+    from avsectester.rendering.types import InsertionGeometry
     from avsectester.simulators.augment import read_camera_rgb, write_camera_rgb
     from avsectester.simulators.patch_insertion import InsertionRenderer
 
@@ -167,9 +166,9 @@ def insertion_perturbation(backend, insertions, *, bindings=None, camera="front"
     def geometry(observation):
         context = current
         calibration = context.scene.cameras[camera]
-        return context.actors, context.victim, np.linalg.inv(
+        return InsertionGeometry(context.actors, context.victim, np.linalg.inv(
             context.world_from_ego @ calibration.cam_to_ego
-        )
+        ))
 
     def evidence_provider(observation, resolved, geometry_data):
         depth = current.native.get("depth", {}).get(camera)
@@ -177,7 +176,7 @@ def insertion_perturbation(backend, insertions, *, bindings=None, camera="front"
             raise ValueError("CARLA insertion needs aligned depth for the selected camera")
         return {
             item.id: DepthVisibilityEstimator(tolerance_m=0.0002).estimate(
-                item, renderer.camera, geometry_data[2], scene_depth=depth,
+                item, renderer.camera, geometry_data.cam_from_world, scene_depth=depth,
                 depth_convention="z", camera_name=camera,
                 other_insertions=tuple(other for other in resolved if other.id != item.id),
             ) for item in resolved

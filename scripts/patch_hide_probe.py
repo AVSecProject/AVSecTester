@@ -13,13 +13,10 @@ from pathlib import Path
 import yaml
 from avsectester.attacks.patch.physical_patch import image_rgba
 from avsectester.plane import Control
+from avsectester.rendering.harmonizers import ClassicHarmonizer, PCTNetHarmonizer
 from avsectester.simulators import carla as carla_sim
 from avsectester.simulators.carla import CarlaBackend, lead_rear_quad
-from avsectester.simulators.patch_insertion import (
-    ClassicHarmonizer,
-    PatchCompositor,
-    PCTNetHarmonizer,
-)
+from avsectester.simulators.patch_insertion import PatchCompositor
 from demo_common import build_detector
 from PIL import Image
 

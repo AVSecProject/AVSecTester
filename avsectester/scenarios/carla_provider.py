@@ -15,7 +15,8 @@ import numpy as np
 
 from avsectester.scenarios.carla_gt import carla_rgb_sensor, carla_scene_gt
 from avsectester.scenarios.context import FilterContext
-from avsectester.scenarios.estimators import DepthVisibilityEstimator, camera_from_calibration
+from avsectester.rendering.cameras import camera_from_calibration
+from avsectester.rendering.visibility import DepthVisibilityEstimator
 from avsectester.simulators.carla import CarlaBackend
 
 

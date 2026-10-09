@@ -24,14 +24,12 @@ from avsectester.insertion import (
     WorldPlacement,
 )
 from avsectester.plane import Observation
+from avsectester.rendering.harmonizers import Harmonizer
+from avsectester.rendering.types import InsertionGeometry
+from avsectester.rendering.visibility import CuboidVisibilityEstimator
 from avsectester.scenarios.datasets.nurec import NuRecDataset
-from avsectester.scenarios.estimators import CuboidVisibilityEstimator
 from avsectester.simulators.nurec import NuRecInsertions
-from avsectester.simulators.patch_insertion import (
-    Harmonizer,
-    PatchCompositor,
-    frame_perturbation,
-)
+from avsectester.simulators.patch_insertion import PatchCompositor, frame_perturbation
 
 
 class UnchangedColors(Harmonizer):
@@ -180,7 +178,7 @@ def main(patch_only=False):
 
         def geometry(obs):
             ctx = observations[obs.frame]
-            return (
+            return InsertionGeometry(
                 ctx.actors,
                 ctx.victim,
                 renderer.camera_transform(ctx.world_from_ego, dataset.sensor),

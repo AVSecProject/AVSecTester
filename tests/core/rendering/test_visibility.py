@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from avsectester.scenarios.visibility import visibility_from_depth, visibility_from_masks
+from avsectester.rendering.visibility import visibility_from_depth, visibility_from_masks
 
 
 def test_depth_visibility_ignores_background_and_measures_partial_occlusion():

@@ -1,7 +1,7 @@
 """Exercise the real runner while replacing only its simulator- and stack-facing objects.
 
-After the interface split, ``run_scenario`` assembles a :class:`~avsectester.scenario.CarlaBackend`
-(client + ego + traffic, senses/actuates) and a :class:`~avsectester.scenario.ModularAVStack` (the AV
+After the interface split, ``run_scenario`` assembles a :class:`~avsectester.simulators.carla.CarlaBackend`
+(client + ego + traffic, senses/actuates) and a :class:`~avsectester.stacks.modular.ModularAVStack` (the AV
 box), and drives them with :func:`avsectester.evaluation.run_logged`. These tests mock ``CARLA.build`` (the
 simulator objects) and ``PIPELINE.build`` (the AV pipeline) so the runner's own logic — frame
 recording, hook order + attacked detection counts, replay-spawn capture, NPC handling, cleanup on
@@ -13,7 +13,10 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from avcarla.config import CARLA
 from avsectester import scenario
+from avsectester.simulators import carla as carla_backend
+from avstack.config import HOOKS, PIPELINE
 from avstack.modules.base import BaseModule
 
 
@@ -50,7 +53,7 @@ def simulation(monkeypatch):
     pipeline = Mock(side_effect=pipeline_call)
     pipeline.perception = perception
     pipeline.tracking = tracking
-    monkeypatch.setattr(scenario.PIPELINE, "build", Mock(return_value=pipeline))
+    monkeypatch.setattr(PIPELINE, "build", Mock(return_value=pipeline))
 
     # --- the simulator objects (what CARLA.build returns): ego senses + actuates, no driving ---
     def spawned_actor(index):
@@ -104,9 +107,9 @@ def simulation(monkeypatch):
         )
 
     registry = Mock(side_effect=build)
-    monkeypatch.setattr(scenario.CARLA, "build", registry)
+    monkeypatch.setattr(CARLA, "build", registry)
     sleep = Mock()
-    monkeypatch.setattr(scenario.time, "sleep", sleep)
+    monkeypatch.setattr(carla_backend.time, "sleep", sleep)
     config = {
         "client": {"type": "CarlaClient"},
         "ego": {"type": "CarlaMobileActor", "pipeline": {"type": "ModularDrivingPipeline"}},
@@ -156,7 +159,7 @@ def test_runner_preserves_hook_order_and_counts_attacked_output(simulation, monk
 
     hooks = [append_hook("phantom-a"), append_hook("phantom-b"), append_hook("tracking-only")]
     build_hook = Mock(side_effect=hooks)
-    monkeypatch.setattr(scenario.HOOKS, "build", build_hook)
+    monkeypatch.setattr(HOOKS, "build", build_hook)
     attacks = [
         {"stage": "perception", "hook": {"type": "A"}},
         {"stage": "perception", "hook": {"type": "B"}},
@@ -281,13 +284,11 @@ def test_gpu_override_changes_only_perception_device(gpu):
     expected = deepcopy(config)
     if gpu is not None:
         expected["ego"]["pipeline"]["perception"]["gpu"] = gpu
-    assert scenario.set_perception_gpu(config, gpu) is config
+    assert carla_backend.set_perception_gpu(config, gpu) is config
     assert config == expected
 
 
 def test_paired_backend_replays_actual_spawns_and_releases_old_actors(simulation, monkeypatch):
-    from avsectester.simulators import carla as carla_backend
-
     sim = simulation
     prepared = deepcopy(sim.config)
     prepared["client"].update(seed=17, traffic_manager_seed=17, reset_world=True,

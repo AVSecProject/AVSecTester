@@ -11,7 +11,10 @@ from contextlib import ExitStack
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from .scene import SceneGT, TargetGeometry, Visibility
+from avsectester.insertion import Insertion
+from avsectester.rendering.types import GeometryVisibilityEstimator, Visibility, VisibilityEvidence
+
+from .scene import SceneGT, TargetGeometry
 
 
 @dataclass
@@ -26,15 +29,17 @@ class FilterContext:
 
     scene: SceneGT
     bindings: dict[str, tuple[TargetGeometry, ...]] = field(default_factory=dict)
-    insertions: tuple[Any, ...] = ()
+    insertions: tuple[Insertion, ...] = ()
     sequence: tuple[SceneGT, ...] = ()
     metadata: Any = None
     dataset: Any = None
     backend: Any = None
     renderer: Any = None
     native: Mapping[str, Any] = field(default_factory=dict)
-    visibility_estimator: Any = None
-    visibility_provider: Callable | None = None
+    visibility_estimator: GeometryVisibilityEstimator | None = None
+    visibility_provider: (
+        Callable[[FilterContext, str, str], Visibility | VisibilityEvidence | None] | None
+    ) = None
     frame_context: Callable[[SceneGT], FilterContext] | None = None
     initial_contexts: Callable[[], Iterator[FilterContext]] | None = None
     target: TargetGeometry | None = None
@@ -181,7 +186,8 @@ class FilterContext:
     def in_view(self, subject: TargetGeometry, camera: str) -> bool:
         """Test opaque insertion pixels against a calibrated image, independently of occlusion."""
         import numpy as np
-        from .estimators import camera_from_calibration, projected_silhouette
+        from avsectester.rendering.cameras import camera_from_calibration
+        from avsectester.rendering.geometry import projected_silhouette
 
         key = ("in_view", subject.track_id, camera)
         if key not in self._cache:
@@ -205,7 +211,7 @@ class FilterContext:
                 elif self.visibility_estimator is not None:
                     import numpy as np
 
-                    from .estimators import camera_from_calibration
+                    from avsectester.rendering.cameras import camera_from_calibration
 
                     calib = self.scene.cameras.get(camera)
                     if calib is None or calib.cam_to_ego is None or calib.model is None:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import dataclasses
 from typing import Any
 
-from .requirement import (
+from .filters import (
     All,
     Any as AnyFilter,
     Not,
@@ -14,13 +14,15 @@ from .requirement import (
     DistanceRange,
     EgoMoving,
     ImageAreaFrac,
-    InitialWindow,
     InView,
     MinVisibility,
+    ViewpointRear,
+)
+from .requirement import (
+    InitialWindow,
     RoleSpec,
     ScenarioRequirement,
     TargetSpec,
-    ViewpointRear,
 )
 
 CONSTRAINT_TYPES: dict[str, type[Constraint]] = {

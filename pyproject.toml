@@ -23,6 +23,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Shared planar sampling and image composition, without a simulator or driving model.
+rendering = [
+    "opencv-python-headless>=4.9,<4.12",
+    "Pillow>=10",
+]
 # The avstack backend stack. Installed as editable path deps from the git submodules.
 # NOTE: install order and the heavy torch/mmcv/mmdet wheels are documented in docs/SETUP.md.
 avstack = [

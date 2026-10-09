@@ -80,7 +80,7 @@ class FThetaCamera:
 
     def project(self, pts_rig: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Project ego/rig-frame points ``(N, 3)`` -> pixels ``(N, 2)`` + a validity mask ``(N,)``."""
-        from avsectester.simulators.camera_models import FThetaCamera as Lens
+        from avsectester.rendering.cameras import FThetaCamera as Lens
 
         pts = np.atleast_2d(np.asarray(pts_rig, dtype=np.float64))
         homo = np.c_[pts, np.ones(len(pts))]
@@ -325,7 +325,7 @@ class NuRecDataset(Dataset):
     def context(self, scene: SceneGT):
         """Expose source annotations, native archive access, and a lazy renderer to filters."""
         from avsectester.scenarios.context import FilterContext
-        from avsectester.scenarios.estimators import CuboidVisibilityEstimator
+        from avsectester.rendering.visibility import CuboidVisibilityEstimator
 
         path = scene.source["usdz_path"]
         context = FilterContext(
@@ -381,7 +381,8 @@ class NuRecDataset(Dataset):
         ego pose. This updates attachment geometry without invoking selection filters.
         """
         from avsectester.insertion import ActorPose
-        from avsectester.scenarios.estimators import CuboidVisibilityEstimator
+        from avsectester.rendering.types import InsertionGeometry
+        from avsectester.rendering.visibility import CuboidVisibilityEstimator
         from avsectester.simulators.nurec import NuRecInsertions
 
         renderer = backend.renderer
@@ -407,7 +408,7 @@ class NuRecDataset(Dataset):
                         raise ValueError(f"Role {alias!r} conflicts with an actor track ID")
                     actors[alias] = actors[track_id]
             victim = ActorPose(renderer.rig_transform(pose) @ local_center, scene.ego.extent)
-            return actors, victim, renderer.cam_from_world(pose, self.sensor)
+            return InsertionGeometry(actors, victim, renderer.cam_from_world(pose, self.sensor))
 
         return NuRecInsertions(
             insertions,

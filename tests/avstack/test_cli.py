@@ -7,13 +7,14 @@ import pytest
 import yaml
 from avsectester import scenario
 from avsectester.cli import app
+from avsectester.simulators import carla as carla_backend
 from typer.testing import CliRunner
 
 
 @pytest.fixture(autouse=True)
 def prepared_scenario(monkeypatch):
     prepare = Mock(side_effect=deepcopy)
-    monkeypatch.setattr(scenario, "prepare_scenario", prepare)
+    monkeypatch.setattr(carla_backend, "prepare_scenario", prepare)
     return prepare
 
 

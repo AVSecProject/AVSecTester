@@ -11,15 +11,11 @@ from avsectester.insertion import (
     WorldPlacement,
     resolve_insertion,
 )
-from avsectester.scenarios.estimators import (
-    CuboidVisibilityEstimator,
-    DepthVisibilityEstimator,
-    camera_from_calibration,
-    resolved_to_target,
-    projected_silhouette,
-)
+from avsectester.rendering.cameras import FThetaCamera, PinholeCamera, camera_from_calibration
+from avsectester.rendering.geometry import projected_silhouette
+from avsectester.rendering.visibility import CuboidVisibilityEstimator, DepthVisibilityEstimator
+from avsectester.scenarios.estimators import resolved_to_target
 from avsectester.scenarios.scene import CameraCalib
-from avsectester.simulators.camera_models import FThetaCamera, PinholeCamera
 
 
 CAM_FROM_WORLD = np.array([[0, -1, 0, 0], [0, 0, -1, 0], [1, 0, 0, 0], [0, 0, 0, 1.0]])

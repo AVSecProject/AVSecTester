@@ -5,7 +5,7 @@
 For each chosen ``CAM_FRONT`` image the objects (STOP sign, person standee, person billboard) are
 placed in the **ego frame** (x forward, y left, z up; nuScenes' ego origin is on the ground at the rear
 axle) and rendered through the image's calibrated pinhole camera
-(:class:`avsectester.simulators.camera_models.PinholeCamera`). A placement is used only if its image
+(:class:`avsectester.rendering.cameras.PinholeCamera`). A placement is used only if its image
 footprint overlaps no annotated object (a crude occlusion check); several candidate spots are tried.
 
     python scripts/nuscenes_object_demo.py --nuscenes /workspace/hdd/datasets/nuscenes \
@@ -23,7 +23,7 @@ from pathlib import Path
 import numpy as np
 from avsectester.attacks.object_insertion.person_poster import billboard, load_cutout, standee
 from avsectester.attacks.object_insertion.sign_spoof import RoadsideSign, sign_rgba
-from avsectester.simulators.camera_models import PinholeCamera, make_pose, quat_to_matrix
+from avsectester.rendering.cameras import PinholeCamera, make_pose, quat_to_matrix
 from avsectester.simulators.patch_insertion import PatchCompositor, render_plane
 from demo_common import COCO_PERSON, COCO_STOP_SIGN, build_coco_detector
 from nurec_object_demo import make_harmonizer

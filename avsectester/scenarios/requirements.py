@@ -8,15 +8,14 @@ filtering and CARLA construction.
 
 from __future__ import annotations
 
-from avsectester.scenarios.requirement import (
+from avsectester.scenarios.filters import (
     DistanceRange,
     ImageAreaFrac,
     InView,
     MinVisibility,
-    ScenarioRequirement,
-    TargetSpec,
     ViewpointRear,
 )
+from avsectester.scenarios.requirement import ScenarioRequirement, TargetSpec
 
 #: Physical-patch attack that removes a vehicle detection: needs a target vehicle visible in the front
 #: camera, close + rear-facing + mostly unoccluded so a patch can be placed on its rear surface, and not

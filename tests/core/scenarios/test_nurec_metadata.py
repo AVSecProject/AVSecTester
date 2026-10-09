@@ -125,7 +125,7 @@ def test_runtime_adapter_uses_scene_time_stable_alias_and_current_ego(recorded_d
     from types import SimpleNamespace
     from avsectester.insertion import AttachedPlacement, Insertion, Orientation, PlaneAsset
     from avsectester.plane import Observation
-    from avsectester.simulators.camera_models import PinholeCamera, planar_rig_pose
+    from avsectester.rendering.cameras import PinholeCamera, planar_rig_pose
     from avsectester.simulators.nurec import EgoPose
 
     dataset, _path = recorded_dataset
@@ -167,7 +167,7 @@ def test_insertion_pipeline_survives_backend_reset_and_drives_from_modified_inpu
     from avsectester.backend import AVStack, run
     from avsectester.insertion import AttachedPlacement, Insertion, Orientation, PlaneAsset
     from avsectester.plane import Control
-    from avsectester.simulators.camera_models import PinholeCamera, planar_rig_pose
+    from avsectester.rendering.cameras import PinholeCamera, planar_rig_pose
     from avsectester.simulators.nurec import NuRecBackend, StubRenderer
     from avsectester.simulators.patch_insertion import frame_perturbation
 

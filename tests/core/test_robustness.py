@@ -82,7 +82,7 @@ class _StubSource(ScenarioSource):
         for i in range(self.n if limit is None else min(self.n, limit)):
             yield ScenarioInstance(
                 make_backend=self.backend_factory,
-                target=_Match(),
+                match=_Match(),
                 provenance={"scene_id": f"stub-{i}"},
             )
 

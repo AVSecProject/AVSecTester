@@ -6,14 +6,14 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from avsectester.scenarios import CameraCalib, EgoState, SceneGT
+from avsectester.scenarios import EgoState, SceneGT
 from avsectester.scenarios.datasets.nurec import NuRecDataset
 from avsectester.simulators.nurec import EgoPose, NuRecRenderer
 
 
 def test_nurec_factory_preserves_selected_pose_time_camera_and_reset(monkeypatch):
     import avsectester.simulators.nurec as module
-    from avsectester.simulators.camera_models import planar_rig_pose
+    from avsectester.rendering.cameras import planar_rig_pose
 
     pose = planar_rig_pose(12, -3, 0.7, 1.8)
     scene = SceneGT(
@@ -50,7 +50,7 @@ def test_nurec_factory_preserves_selected_pose_time_camera_and_reset(monkeypatch
 
 
 def test_nurec_renderer_keeps_initial_tilt_and_height():
-    from avsectester.simulators.camera_models import planar_rig_pose
+    from avsectester.rendering.cameras import planar_rig_pose
 
     anchor = planar_rig_pose(10, 20, 0.4, 2)
     tilt = np.array(
@@ -67,7 +67,7 @@ def test_nurec_renderer_keeps_initial_tilt_and_height():
 
 def test_nuscenes_geometry_uses_recorded_camera_extrinsic():
     from avsectester.scenarios.datasets.nuscenes import scene_from_cam_boxes
-    from avsectester.scenarios.requirement import ViewpointRear
+    from avsectester.scenarios.filters import ViewpointRear
 
     class Orientation:
         def rotate(self, _):
@@ -92,7 +92,7 @@ def test_nuscenes_geometry_uses_recorded_camera_extrinsic():
 
 def test_carla_live_gt_selects_rgb_camera_and_converts_unreal_yaw():
     from avsectester.scenarios.carla_gt import carla_scene_gt
-    from avsectester.scenarios.requirement import ViewpointRear
+    from avsectester.scenarios.filters import ViewpointRear
 
     class Transform:
         rotation = SimpleNamespace(yaw=0)
@@ -172,7 +172,7 @@ def test_nurec_rpc_uses_selected_timestamp_and_initial_pose(monkeypatch):
     import sys
     import cv2
     from scipy.spatial.transform import Rotation
-    from avsectester.simulators.camera_models import planar_rig_pose, pose_from_proto
+    from avsectester.rendering.cameras import planar_rig_pose, pose_from_proto
 
     encoded = cv2.imencode(".jpg", np.zeros((2, 3, 3), np.uint8))[1].tobytes()
     common = SimpleNamespace(

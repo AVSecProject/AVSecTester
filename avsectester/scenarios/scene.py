@@ -16,6 +16,8 @@ import math
 from dataclasses import dataclass, field
 from typing import Any
 
+from avsectester.rendering.types import Visibility
+
 
 @dataclass
 class CameraCalib:
@@ -74,20 +76,6 @@ class TargetGeometry:
         return clipped_box_area(tuple(box), calib.width, calib.height) / (
             calib.width * calib.height
         )
-
-
-@dataclass(frozen=True)
-class Visibility:
-    """Measured fraction or a coarse dataset representative. None camera means source-wide scope."""
-
-    fraction: float
-    source: str
-    camera: str | None = None
-    label: str | None = None
-
-    def __post_init__(self):
-        if not math.isfinite(self.fraction) or not 0 <= self.fraction <= 1:
-            raise ValueError("visibility fraction must be in [0, 1]")
 
 
 @dataclass
