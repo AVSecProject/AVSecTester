@@ -23,5 +23,5 @@ def test_traffic_lights_payload():
     assert 0.7 < aspect_of(board) < 1.0  # a wide-ish board (3 heads in a row)
     assert board.shape[1] > board.shape[0]  # wider than tall
 
-    ((face, _), *_rest) = roadside_rig(board, x=26.0, y=-6.0, mount_height=2.2).planes()[-1:]
+    face = roadside_rig(board, mount_height=2.2).planes()[-1].corners
     assert np.isclose(face[3, 2], 2.2)  # bottom edge at the mount height

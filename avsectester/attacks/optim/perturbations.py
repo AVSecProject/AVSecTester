@@ -9,7 +9,6 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from .geometry import rear_panel_homography  # noqa: F401 - re-exported for callers
 from .interface import AdvSample, Perturbation
 
 

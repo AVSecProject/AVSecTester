@@ -36,8 +36,8 @@ examples, initial-scene selection and visibility providers.
 
 `InsertionRenderer` takes resolved actor poses and camera calibration, projects the surfaces,
 applies visibility masks, and optionally harmonizes their appearance. Its output is connected to
-`perturb(Observation)` so the driving model receives the inserted image. `composite_view` is for
-visualization only and must not be used as the input attack.
+`perturb(Observation)` so the driving model receives the inserted image. A visualization callback
+alone changes only displayed/saved images and must not be used as the input attack.
 
 Geometry callbacks return `InsertionGeometry(actors, victim, cam_from_world)`.
 See [custom rendering adapters](SCENARIOS.md#custom-rendering-adapters) for coordinate conventions,
@@ -48,13 +48,37 @@ The rendering primitives are:
 
 - `render_plane` projects a world-space textured rectangle through pinhole or f-theta calibration.
 - `render_resolved` composites a resolved asset with surface depth and optional visibility evidence.
-- `detector_quad` and `warp_patch` implement image-space insertion from a detected box. This
-  path does not bind a stable actor identity. `hold_quad` retains the last image location across short
-  detection gaps, rather than tracking the actor in 3D.
+- `warp_patch` is a low-level image-space primitive for caller-supplied quads. Runtime insertion demos use
+  explicit 3D insertions instead of deriving attachment positions from detector boxes.
 
 For stable attachment and visibility filtering, follow the complete
 [selection and execution example](SCENARIOS.md#select-a-case). The payload-composition examples
 below demonstrate additional objects and appearance options with the stated placement method.
+
+## Build a payload
+
+Payload constructors return local assets. Placement is specified separately:
+
+```python
+from avsectester.attacks.object_insertion.sign_spoof import SignAsset
+from avsectester.insertion import Insertion, Orientation, WorldPlacement
+
+sign = Insertion(
+    "stop_sign",
+    SignAsset(width=0.9, mount_height=1.5),
+    WorldPlacement((20, -3, 0)),
+    Orientation("fixed_world", (0, 0, 180)),
+)
+```
+
+`SignAsset` includes the STOP face and a post by default. Its origin is the ground point beneath
+the face, local +X is the face normal, and `mount_height` locates the face's bottom edge.
+`standee(person, height=1.75)` returns a cut-out without posts.
+`billboard(person, width=1.4, mount_height=0.6)` returns a printed board on two posts.
+`roadside_rig(face, width=2.4, mount_height=2.2)` returns a traffic-light board on a post.
+All implement the same `planes() -> Sequence[PlaneSurface]` contract. To install only a face on
+a vehicle, use `PlaneAsset` with `AttachedPlacement`, as in
+[SCENARIOS.md](SCENARIOS.md#specify-inserted-objects).
 
 ## Auxiliary models
 
@@ -62,9 +86,8 @@ Model roles across the framework are listed in
 [INTERFACE.md](INTERFACE.md#1d-models-and-supporting-components). Image-attack scripts use them at
 specific points:
 
-- `nurec_object_demo.py --mode vehicle` uses a COCO-pretrained Faster R-CNN to locate vehicle boxes.
-  Adding `--eval` uses the detector to score the inserted object's class. Roadside mode without
-  `--eval` needs no detector. `nuscenes_object_demo.py` also loads this detector only with `--eval`.
+- `nurec_object_demo.py` and `nuscenes_object_demo.py` load COCO-pretrained Faster R-CNN only
+  with `--eval`, to score the inserted object's class. Placement does not depend on this detector.
 - CARLA patch probes and optimization use the separate CARLA-trained MMDetection Faster R-CNN.
   In `patch_driving_demo.py`, its detections also drive the script's rule-based braking policy.
 - `--harmonizer libcom` selects PCTNet in the object-composition demos. It modifies the inserted
@@ -80,8 +103,7 @@ without the COCO detector's evaluation stage. Dependencies and weight locations 
 
 ## Harmonization
 
-Import harmonizers from `avsectester.rendering.harmonizers`. Imports through
-`avsectester.simulators.patch_insertion` remain supported.
+Import harmonizers from `avsectester.rendering.harmonizers`.
 
 | Harmonizer | Behavior |
 |---|---|
@@ -92,6 +114,10 @@ Import harmonizers from `avsectester.rendering.harmonizers`. Imports through
 
 Pass a harmonizer through `PatchCompositor(harmonizer)` to `InsertionRenderer`. Calling
 `PatchCompositor()` without a harmonizer selects `ClassicHarmonizer`, not a plain alpha paste.
+
+The compositor accepts `soften` as a nonnegative Gaussian blur sigma in image pixels:
+`PatchCompositor(harmonizer, soften=0.6)`. Softening changes appearance within the geometric
+visible mask. It never paints over foreground occluders or changes the visibility fraction.
 
 Choose color transfer carefully when the payload's hue carries meaning. Harmonization changes
 appearance, not geometry or the visibility denominator. Estimated lighting does not provide cast
@@ -136,19 +162,21 @@ ID in the supplied USDZ. `--world-position X Y Z` sets the sign's explicit world
 ## Payload composition examples
 
 `nurec_object_demo.py` demonstrates STOP signs, pedestrian standees/posters and printed traffic
-signals with selectable harmonizers. Its roadside mode uses fixed world planes. Its vehicle
-mode uses detector-derived image quads, so it cannot guarantee a stable host or depth occlusion.
+signals with selectable harmonizers. Both placements use the common insertion renderer and
+known-cuboid visibility estimate. Roadside mode uses a fixed world position. Vehicle mode
+installs the face on the rear of an explicitly selected recorded vehicle.
 `nuscenes_object_demo.py` places payloads in recorded photographs, without a closed-loop drive.
-Use these scripts to inspect payload appearance. They do not exercise case selection.
+Its candidate spots are checked against annotated 2D boxes, not exact scene depth.
+These scripts inspect payload appearance and do not exercise case selection.
 
 ```bash
 python scripts/extract_person_cutouts.py --nuscenes /path/to/nuscenes \
     --out /path/to/pedestrians
 
-python scripts/nurec_object_demo.py --endpoint 127.0.0.1:50051 --object stop \
-    --mode roadside vehicle --harmonizer none classic chroma libcom --frames 50 --eval
+python scripts/nurec_object_demo.py --usdz /path/to/scene.usdz --endpoint 127.0.0.1:50051 --object stop \
+    --mode roadside vehicle --host 15 --harmonizer none classic chroma libcom --frames 50 --eval
 
-python scripts/nurec_object_demo.py --endpoint 127.0.0.1:50051 --object billboard \
+python scripts/nurec_object_demo.py --usdz /path/to/scene.usdz --endpoint 127.0.0.1:50051 --object billboard \
     --asset /path/to/person.png --mode roadside --eval
 
 python scripts/nuscenes_object_demo.py --nuscenes /path/to/nuscenes \
@@ -160,15 +188,23 @@ The pedestrian variants require `--asset`. Roadside placement uses these options
 
 | Option | Meaning |
 |---|---|
-| `--x`, `--y` | Metres relative to the starting pose, X forward and Y left |
+| `--x`, `--y` | Absolute coordinates in the NuRec scene frame, X forward and Y left |
 | `--yaw` | Surface orientation in radians |
 | `--size` | Sign/board width or standee height in metres |
 | `--mount` | Bottom edge height above the specified ground in metres |
 | `--ground-z` | Ground height in scene coordinates, supplied by the caller |
 
-`--mode vehicle` uses a detected image-space quad. `pick="lane"` prefers boxes spanning the
-image centre column, and `hold_quad` retains coordinates during short detection gaps. These
-helpers do not track vehicle identity. Use host-bound `Insertion` for stable attachment.
+`--usdz` supplies the matching scene metadata. Optional `--scene` must identify that same scene.
+Both runs start at the first recorded camera timestamp. The constant-speed demo keeps its
+planar ego origin at `(0, 0, 0)` and advances at `dt=0.1 s`. The metadata clock drives actor poses,
+while the camera follows the actual simulated ego pose.
+
+`--mode vehicle` requires `--host ID`, a vehicle track present at the initial frame. The attachment
+uses `rear_center`, local yaw 180°, and a small outward offset. Width is a fraction of the host's
+3D width, with height preserving the payload's aspect ratio. The same host and local mount are
+used throughout the sequence. A missing host raises an error instead of switching to another car.
+For explicit metric dimensions, offsets or other orientations, use `Insertion` directly or the
+attachment demo above.
 
 The output root defaults to `tmp/nurec_<object>` and can be changed with `--out`. Each
 `<mode>_<harmonizer>/` directory contains `side_by_side.gif`, `filmstrip.png`, available
@@ -182,8 +218,15 @@ The geometric selection API does not use detector success as a prerequisite.
 
 ## Driving evaluation output
 
-`scripts/alpamayo_attack_demo.py` runs clean and attacked driving experiments. Its `trace.json`
-contains both step sequences and their impact verdict. Each step retains:
+`scripts/alpamayo_attack_demo.py` runs clean and attacked driving experiments with the same
+metadata start time and world-fixed insertion path. For example:
+
+```bash
+python scripts/alpamayo_attack_demo.py --usdz /path/to/scene.usdz \
+    --endpoint 127.0.0.1:50051 --object stop --harmonizer libcom --frames 30 --gpu 1 --harm-gpu 0
+```
+
+Its `trace.json` contains both step sequences and their impact verdict. Each step retains:
 
 - `frame`: zero-based step index.
 - `input_t`: timestamp of the observation used to choose the control.
@@ -201,9 +244,9 @@ membership uses alpha greater than 127. Surfaces are two-sided. General transluc
 native mesh rendering require additional renderer support.
 
 CARLA insertion visibility uses calibrated scene depth. NuRec uses a labeled-cuboid estimate,
-which can miss unannotated occluders and cannot establish exact mesh visibility. Image-space
-warping and `apply_planes` do not automatically acquire scene visibility. Use
-`InsertionRenderer` with evidence when foreground occlusion matters.
+which can miss unannotated occluders and cannot establish exact mesh visibility. Low-level
+`warp_patch` and `render_plane` do not acquire scene visibility. Use `InsertionRenderer` with
+evidence when foreground occlusion matters.
 
 Explicit coordinates are not checked against a drivable-area or sidewalk map. The framework does
 not infer a physically valid installation surface or automatically move the user's insertion.

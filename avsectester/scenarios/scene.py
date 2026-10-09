@@ -49,7 +49,7 @@ class TargetGeometry:
     extent: tuple[float, float, float] = (0.0, 0.0, 0.0)  # (length, width, height)
     yaw: float = 0.0  # heading relative to the ego (rad); 0 = same heading, pi = facing the ego
     box2d: dict[str, tuple[float, float, float, float]] = field(default_factory=dict)
-    visibility: Visibility | float | None = None
+    visibility: Visibility | None = None
     pose: Any = None  # Optional ego-from-object 4x4 transform at the bounding-box centre.
 
     @property
@@ -61,11 +61,6 @@ class TargetGeometry:
     def ahead(self) -> bool:
         """Is the object in front of the ego (positive x)?"""
         return self.center[0] > 0.0
-
-    def __post_init__(self):
-        # Explicit legacy scalar values remain usable, but absence never means fully visible.
-        if isinstance(self.visibility, (int, float)):
-            self.visibility = Visibility(float(self.visibility), source="provided")
 
     def image_area_frac(self, camera: str, calib: CameraCalib) -> float | None:
         from .geometry import clipped_box_area

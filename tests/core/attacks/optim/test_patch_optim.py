@@ -38,7 +38,8 @@ def test_pgd_reduces_the_objective_on_a_synthetic_scorer():
     import torch
     from avsectester.attacks.optim.attacks import PGD
     from avsectester.attacks.optim.interface import AdvSample, DataSource, Scorer, TargetSpec
-    from avsectester.attacks.optim.perturbations import PatchPerturbation, rear_panel_homography
+    from avsectester.attacks.optim.geometry import rear_panel_homography
+    from avsectester.attacks.optim.perturbations import PatchPerturbation
 
     class BrightnessScorer(Scorer):  # differentiable, no model: "confidence" = brightness in the box
         differentiable = True

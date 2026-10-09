@@ -232,7 +232,7 @@ They are not all stages of one pipeline:
 | Alpamayo-1.5-10B | End-to-end camera policy through `AlpamayoAVStack` | Yes, outputs a trajectory |
 | PointPillars, CARLA vehicle weights | LiDAR perception in `configs/carla_scenario.yaml` through `ModularAVStack` | Yes, detections feed tracking, planning and control |
 | Faster R-CNN, CARLA vehicle weights, MMDetection | `scripts/demo_common.py:build_detector` and patch optimization scripts | In `patch_driving_demo.py`, detections feed a rule-based braking policy. Other uses inspect or optimize detector response |
-| Faster R-CNN ResNet-50 FPN, COCO weights, torchvision | `scripts/demo_common.py:build_coco_detector`, used by NuRec/nuScenes object demos | No, selects image-space vehicle targets or provides auxiliary detection scores |
+| Faster R-CNN ResNet-50 FPN, COCO weights, torchvision | `scripts/demo_common.py:build_coco_detector`, used by NuRec/nuScenes object demos | No, provides auxiliary detection scores only with `--eval` |
 | PCTNet | `PCTNetHarmonizer` adjusts inserted image appearance | No, optional image harmonization |
 | SAM, default `facebook/sam-vit-huge` | `scripts/extract_person_cutouts.py` prepares pedestrian RGBA assets | No, offline segmentation |
 | NuRec through `nre-ga` | `NuRecRenderer` obtains images at the requested camera pose | No, scene rendering rather than a driving policy |

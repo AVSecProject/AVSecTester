@@ -2,7 +2,7 @@
 """Measure how much a composited patch drops the lead-car detection confidence, per harmonizer/size.
 
 One CARLA reset, roll the ego a few frames toward the lead, then at one frame composite the patch onto
-the projected rear quad under each variant and report the detector's top car-box confidence. Decides
+the host-bound rear surface under each variant and report the detector's top car-box confidence. Decides
 which deployment actually hides the car (< 0.3 threshold) before a full driving run.
 """
 import argparse
@@ -15,18 +15,21 @@ from avsectester.attacks.patch.physical_patch import image_rgba
 from avsectester.plane import Control
 from avsectester.rendering.harmonizers import ClassicHarmonizer, PCTNetHarmonizer
 from avsectester.simulators import carla as carla_sim
-from avsectester.simulators.carla import CarlaBackend, lead_rear_quad
+from avsectester.scenarios.carla_provider import CarlaSelectionBackend
 from avsectester.simulators.patch_insertion import PatchCompositor
-from demo_common import build_detector
+from demo_common import build_detector, carla_rear_perturbation, NoHarmonizer
 from PIL import Image
 
-REPO = Path(__file__).resolve().parents[1]; OUT = REPO/"tmp"/"patch_probe"
+REPO = Path(__file__).resolve().parents[1]
+OUT = REPO / "tmp" / "patch_probe"
+
 
 def top_car_conf(detect, rgb):
     best = 0.0
-    for b, sc, _ in detect(rgb):
+    for _, sc, _ in detect(rgb):
         best = max(best, sc)
     return best
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -39,46 +42,42 @@ def main():
     OUT.mkdir(parents=True, exist_ok=True)
 
     scen = yaml.safe_load((REPO/"configs"/"carla_patch_scenario.yaml").read_text())
-    scen.setdefault("lead", {})["gap"] = args.gap; scen.pop("patches", None)
+    scen.setdefault("lead", {})["gap"] = args.gap
+    scen.pop("patches", None)
     detect = build_detector(args.gpu)
     patch = image_rgba(args.texture, 256)
 
-    backend = CarlaBackend(scen)
+    backend = CarlaSelectionBackend(scen)
     try:
         obs = backend.reset()
         for _ in range(args.approach):
             obs = backend.step(Control(throttle=0.55))
         rgb = carla_sim.camera_view(obs)
-        quad = lead_rear_quad(backend, width_frac=0.85, height_frac=0.6)(obs)
-        quad_big = lead_rear_quad(backend, width_frac=1.0, height_frac=0.95)(obs)
         Image.fromarray(rgb).save(OUT/"probe_clean.png")
         base = top_car_conf(detect, rgb)
         print(f"\n=== lead-car top confidence (threshold 0.3), gap {args.gap} m, frame {args.approach} ===")
         print(f"no patch                 : {base:.3f}")
-        if quad is None:
-            print("quad None (lead not in view) — increase --gap/--approach"); return 1
         variants = [
-            ("patch + none (raw warp)", quad, None),
-            ("patch + classic",         quad, ClassicHarmonizer()),
-            ("patch + libcom PCTNet",   quad, PCTNetHarmonizer()),
-            ("BIG patch + none",        quad_big, None),
-            ("BIG patch + libcom",      quad_big, PCTNetHarmonizer()),
+            ("patch + none", 0.85, 0.6, NoHarmonizer()),
+            ("patch + classic", 0.85, 0.6, ClassicHarmonizer()),
+            ("patch + libcom PCTNet", 0.85, 0.6, PCTNetHarmonizer(device=args.gpu, strict=True)),
+            ("BIG patch + none", 1.0, 0.95, NoHarmonizer()),
+            ("BIG patch + libcom", 1.0, 0.95, PCTNetHarmonizer(device=args.gpu, strict=True)),
         ]
-        for name, q, harm in variants:
-            if q is None:
-                print(f"{name:25s}: quad None"); continue
-            if harm is None:
-                from avsectester.simulators.patch_insertion import warp_patch
-                comp, _ = warp_patch(rgb, q, patch)
-            else:
-                comp = PatchCompositor(harm).apply(rgb, q, patch)
+        for name, width_frac, height_frac, harm in variants:
+            perturb = carla_rear_perturbation(backend, patch, PatchCompositor(harm),
+                                              width_frac=width_frac, height_frac=height_frac)
+            comp = carla_sim.camera_view(perturb(obs))
             conf = top_car_conf(detect, comp)
             tag = "HIDDEN" if conf < 0.3 else ""
             print(f"{name:25s}: {conf:.3f}  {tag}")
-            Image.fromarray(comp).save(OUT/f"probe_{name.split()[0]}_{'big' if 'BIG' in name else 'std'}_{harm.__class__.__name__ if harm else 'raw'}.png")
+            size = "big" if "BIG" in name else "std"
+            method = "raw" if isinstance(harm, NoHarmonizer) else type(harm).__name__
+            Image.fromarray(comp).save(OUT / f"probe_{name.split()[0]}_{size}_{method}.png")
     finally:
         backend.close()
     return 0
+
 
 if __name__ == "__main__":
     sys.exit(main())

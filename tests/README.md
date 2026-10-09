@@ -75,7 +75,7 @@ pytest/CI collect their subdirectories recursively.
 | `core/attacks/object_insertion/` | Sign geometry, pedestrian standees/posters and traffic light payloads |
 | `core/simulators/test_camera_models.py` | Camera projection/inverse projection and camera-to-rig axes |
 | `core/simulators/test_patch_insertion.py` | Projection, compositing, target selection and camera perturbation callbacks |
-| `core/scripts/test_image_attack_demos.py` | Strict PCTNet failure handling and saved step records paired with model reasoning |
+| `core/scripts/test_image_attack_demos.py` | Rear attachment geometry, shared metadata start time, strict PCTNet errors and saved driving transitions |
 | `core/test_augment.py` | Image corruptions, seeded paired experiments, sensor write-back, composition, real Albumentations operators |
 | `core/scenarios/test_scenarios.py`, `core/test_recorded_backend.py` | Scene constraints/filtering and recorded-image playback without full datasets |
 | `core/test_sim_viz.py` | Camera/LiDAR views, projected labels/boxes and saved frames |

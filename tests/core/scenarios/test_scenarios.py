@@ -1,6 +1,8 @@
 """Scenario requirement DSL — the predicate selects the right target and enforces each constraint."""
 
 import pytest
+from avsectester.rendering.types import Visibility
+
 import numpy as np
 from dataclasses import replace
 
@@ -19,7 +21,7 @@ def _vehicle(track, x, box, yaw=0.0, vis=1.0, category="vehicle"):
         extent=(4.5, 2.0, 1.5),
         yaw=yaw,
         box2d={"front": box},
-        visibility=vis,
+        visibility=Visibility(vis, source="provided") if vis is not None else None,
     )
 
 

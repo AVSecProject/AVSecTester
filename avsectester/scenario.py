@@ -1,48 +1,15 @@
-"""CARLA closed-loop security experiment — compose a CarlaBackend with a ModularAVStack and drive it.
-
-The implementations now live with their interface category — the world backend in
-:mod:`avsectester.simulators.carla`, the AV stack in :mod:`avsectester.stacks.modular` — and this
-module is the CARLA-specific *orchestration* that wires them: :func:`run_scenario` runs one pass (clean
-or attacked) and :func:`prepare_scenario` resolves random choices once for a paired run. Running a
-scenario clean and then attacked, and diffing the driving record, is the whole test
-(see :mod:`avsectester.metric`).
-
-``CarlaBackend``, ``ModularAVStack``, ``prepare_scenario``, ``set_perception_gpu`` and ``_spawn_config``
-are re-exported here for backward compatibility; import them from their home modules in new code.
-"""
+"""Compose a CARLA backend and modular AV stack for a clean or attacked run."""
 
 from __future__ import annotations
 
-# Keep legacy registry/module attributes available to callers using scenario.*.
-# They reference the same objects used by CarlaBackend and ModularAVStack.
-import secrets  # noqa: F401
-import time  # noqa: F401
 from copy import deepcopy
-
-from avcarla.config import CARLA  # noqa: F401  (compatibility export)
-from avstack.config import (  # noqa: F401  (compatibility exports)
-    HOOKS,
-    PIPELINE,
-)
 
 from avsectester.evaluation.component_log import run_logged
 from avsectester.plane import Trace
-from avsectester.simulators.carla import (
-    CarlaBackend,
-    _spawn_config,
-    prepare_scenario,
-    set_perception_gpu,
-)
+from avsectester.simulators.carla import CarlaBackend
 from avsectester.stacks.modular import ModularAVStack
 
-__all__ = [
-    "CarlaBackend",
-    "ModularAVStack",
-    "_spawn_config",
-    "prepare_scenario",
-    "run_scenario",
-    "set_perception_gpu",
-]
+__all__ = ["run_scenario"]
 
 
 def run_scenario(

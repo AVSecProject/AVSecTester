@@ -224,3 +224,30 @@ def test_insertion_pipeline_survives_backend_reset_and_drives_from_modified_inpu
     assert not clean.sensor_data[dataset.camera].any()
     assert adapter.resolved[0].host_id == "lead"
     assert adapter.evidence["patch"].visibility.source == "cuboid_estimate"
+
+
+def test_demo_source_and_rear_attachment_use_the_explicit_recorded_host(recorded_dataset, monkeypatch):
+    from pathlib import Path
+    from types import SimpleNamespace
+    from avsectester.insertion import ActorPose, resolve_insertion
+
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[3] / "scripts"))
+    from demo_common import nurec_rear_insertion, nurec_source
+
+    _, path = recorded_dataset
+    dataset, scene = nurec_source(path, "test")
+    assert scene.source["timestamp_us"] == 0
+    with pytest.raises(ValueError, match="does not match"):
+        nurec_source(path, "another-scene")
+    payload = SimpleNamespace(vehicle_texture=np.full((16, 16, 4), 255, np.uint8))
+    item = nurec_rear_insertion(payload, scene, "host")
+    initial = resolve_insertion(item, dataset.actor_poses(path, 0), ActorPose(np.eye(4)))
+    later = resolve_insertion(item, dataset.actor_poses(path, 250000), ActorPose(np.eye(4)))
+    assert initial.host_id == later.host_id == "host"
+    np.testing.assert_allclose(initial.pose[:3, 3], [7.97, 0, 1.1])
+    np.testing.assert_allclose(later.pose[:3, 3], [11, -2.03, 1.1])
+    assert item.asset.width_m == pytest.approx(.8)
+    assert item.asset.height_m == pytest.approx(.8)
+    for invalid in ("missing", "obstacle"):
+        with pytest.raises(ValueError, match="must be a vehicle"):
+            nurec_rear_insertion(payload, scene, invalid)

@@ -1,6 +1,8 @@
 """Small initial-scene and insertion factories shared by selection tests."""
 
 import numpy as np
+from avsectester.rendering.types import Visibility
+
 import pytest
 
 from avsectester.insertion import AttachedPlacement, Insertion, Orientation, PlaneAsset
@@ -20,7 +22,7 @@ def scene():
             EgoState(pose=np.eye(4)),
             {"front": camera},
             [
-                ObjectGT(track, "vehicle", (x, 0, 0.75), extent=(4, 2, 1.5), visibility=0.0)
+                ObjectGT(track, "vehicle", (x, 0, 0.75), extent=(4, 2, 1.5), visibility=Visibility(0.0, source="provided"))
                 for track, x in zip(ids, distances)
             ],
         )

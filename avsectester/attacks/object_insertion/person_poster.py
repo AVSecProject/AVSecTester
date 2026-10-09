@@ -1,20 +1,7 @@
-"""Inserted pedestrian image — a camera-facing *natural physical object* attack (image family).
+"""Person cut-outs and printed boards for the common insertion pipeline.
 
-A picture of a pedestrian where no pedestrian is: the "human being poster / billboard on the road"
-example of docs/PROJECT.md (after *Phantom of the ADAS*, Nassi et al., CCS 2020). Two props, both
-world-anchored like :class:`avsectester.attacks.object_insertion.sign_spoof.RoadsideSign` (they reuse it — a sign is
-any textured board at a fixed scene position):
-
-  * :func:`standee` — a life-size cardboard cut-out of a person standing on the ground, e.g. on the
-    shoulder next to the ego lane;
-  * :func:`billboard` — the person printed on a poster board on two legs by the roadside.
-
-:func:`poster_rgba` also makes the face for a poster carried on the lead vehicle's rear (an ad on a
-truck), placed image-anchored with :func:`avsectester.attacks.object_insertion.sign_spoof.vehicle_sign_quad`.
-
-The payload is a real person cut out of a camera image (``scripts/extract_person_cutouts.py`` builds
-them from nuScenes with SAM). Those cut-outs are CC BY-NC-SA derived data, so none ship with the repo:
-point :func:`load_cutout` at your own asset directory.
+Cut-outs can be loaded from user assets or extracted by ``extract_person_cutouts.py``.
+They contain no simulator-specific placement or vehicle selection logic.
 """
 
 from __future__ import annotations
@@ -23,7 +10,7 @@ from pathlib import Path
 
 import numpy as np
 
-from avsectester.attacks.object_insertion.sign_spoof import RoadsideSign
+from avsectester.attacks.object_insertion.sign_spoof import SignAsset
 
 
 def load_cutout(path: str | Path) -> np.ndarray:
@@ -60,15 +47,13 @@ def poster_rgba(person: np.ndarray, aspect: float = 1.5, fill: float = 0.86,
     return poster
 
 
-def standee(person: np.ndarray, x: float, y: float, height: float = 1.75, yaw: float = 0.0,
-            ground_z: float = 0.0) -> RoadsideSign:
-    """A life-size cut-out (``height`` m tall) standing on the ground at scene position (x, y)."""
-    return RoadsideSign(x=x, y=y, face=person, width=height * person.shape[1] / person.shape[0],
-                        mount_height=0.0, ground_z=ground_z, yaw=yaw, post=False)
+def standee(person: np.ndarray, height: float = 1.75) -> SignAsset:
+    """A local life-size cut-out standing on the ground, without posts."""
+    return SignAsset(face=person, width=height * person.shape[1] / person.shape[0],
+                     mount_height=0.0, post=False)
 
 
-def billboard(person: np.ndarray, x: float, y: float, width: float = 1.4, mount_height: float = 0.6,
-              yaw: float = 0.0, ground_z: float = 0.0) -> RoadsideSign:
-    """The person printed on a ``width``-m poster board on two legs, bottom edge ``mount_height`` up."""
-    return RoadsideSign(x=x, y=y, face=poster_rgba(person), width=width, mount_height=mount_height,
-                        ground_z=ground_z, yaw=yaw, post=True, post_width=0.09, n_posts=2)
+def billboard(person: np.ndarray, width: float = 1.4, mount_height: float = 0.6) -> SignAsset:
+    """A printed poster on two legs. Placement is supplied separately by ``Insertion``."""
+    return SignAsset(face=poster_rgba(person), width=width, mount_height=mount_height,
+                     post=True, post_width=0.09, n_posts=2)

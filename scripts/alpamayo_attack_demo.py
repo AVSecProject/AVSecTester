@@ -10,7 +10,7 @@ Per step we record the resulting ego state and the reasoning that produced its c
 
 Run in an AlpaSim driver env (Python 3.12 + alpasim_driver) with an nre-ga server (docs/SETUP.md §4):
 
-    python scripts/alpamayo_attack_demo.py --endpoint 127.0.0.1:50051 --object stop --frames 60 \
+    python scripts/alpamayo_attack_demo.py --usdz /data/scene.usdz --endpoint 127.0.0.1:50051 --object stop --frames 60 \
         --gpu 1 --harm-gpu 0
 
 Outputs under ``tmp/alpamayo_<object>/``: ``speed.png`` (clean vs attacked), ``side_by_side.gif``,
@@ -24,13 +24,13 @@ import time
 from dataclasses import asdict
 from pathlib import Path
 
-from avsectester.attacks.object_insertion.sign_spoof import roadside_sign_insert
 from avsectester.metric import impact
 from avsectester.simulators.nurec import NuRecBackend, NuRecRenderer, TrajectoryFollower
 from avsectester.simulators.patch_insertion import PatchCompositor, frame_perturbation
 from avsectester.simulators.viz import record_run, save_gif
 from avsectester.stacks.alpamayo import AlpamayoAVStack
-from nurec_object_demo import OBJECTS, build_object, make_harmonizer, side_by_side
+from demo_common import OBJECTS, build_object, make_harmonizer, nurec_source
+from nurec_object_demo import side_by_side
 
 REPO = Path(__file__).resolve().parents[1]
 CAM = "camera_front_wide_120fov"
@@ -50,12 +50,13 @@ class Recording(AlpamayoAVStack):
 
 
 def drive(args, stack, perturb_of=None):
-    renderer = NuRecRenderer(endpoint=args.endpoint, scene_id=args.scene, cameras=[CAM])
+    renderer = NuRecRenderer(endpoint=args.endpoint, scene_id=args.scene, cameras=[CAM],
+                             start_timestamp_us=args.start_timestamp_us)
     backend = NuRecBackend({"dt": 0.1, "ego0": {"speed": args.speed}}, renderer=renderer,
                            dynamics=TrajectoryFollower())
     try:
         renderer.load_scene(args.scene)
-        perturb = perturb_of(renderer) if perturb_of else None
+        perturb = perturb_of(backend) if perturb_of else None
         trace = record_run(backend, stack, args.frames, out_dir=args.out / ("attacked" if perturb else "clean"),
                            perturb=perturb, collect=True)
         # Each decision uses the input at t; its Trace record holds the outcome at t + dt.
@@ -90,7 +91,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--frames", type=int, default=60)
     ap.add_argument("--speed", type=float, default=5.0, help="initial ego speed (m/s)")
-    ap.add_argument("--scene", default="01d503d4")
+    ap.add_argument("--scene", default=None)
+    ap.add_argument("--usdz", required=True, help="matching NuRec scene archive with actor metadata")
     ap.add_argument("--endpoint", default="127.0.0.1:50051")
     ap.add_argument("--object", choices=sorted(OBJECTS), default="stop")
     ap.add_argument("--asset", default=None, help="person cut-out PNG (standee / billboard)")
@@ -106,22 +108,27 @@ def main() -> int:
     ap.add_argument("--harm-gpu", type=int, default=0, help="CUDA device for the PCTNet harmonizer")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
+    if args.frames < 1:
+        ap.error("--frames must be positive")
     args.out = Path(args.out or REPO / "tmp" / f"alpamayo_{args.object}")
     args.out.mkdir(parents=True, exist_ok=True)
 
-    sign, _face, _aspect = build_object(args)
-    compositor = PatchCompositor(make_harmonizer(args.harmonizer, args.harm_gpu))
+    payload = build_object(args)
+    dataset, scene = nurec_source(args.usdz, args.scene)
+    args.scene = scene.source["scene_id"]
+    args.start_timestamp_us = scene.source["timestamp_us"]
+    compositor = PatchCompositor(make_harmonizer(args.harmonizer, args.harm_gpu), soften=args.soften)
 
-    def perturb_of(r):
-        insert = roadside_sign_insert(sign, compositor, r.camera_model(),
-                                      lambda o: r.cam_from_world(o.vehicle_state), soften=args.soften)
+    def perturb_of(backend):
+        insert = dataset.insertion_renderer(scene, backend, [payload.roadside], compositor=compositor)
         return frame_perturbation(insert, camera=CAM)
 
+    position = payload.roadside.placement.position_m
     stack = Recording(device=f"cuda:{args.gpu}", camera_ids=[CAM])
     t0 = time.time()
     print(f"[alpamayo] clean drive, {args.frames} frames")
     clean, clean_steps = drive(args, stack)
-    print(f"[alpamayo] attacked drive ({args.object} at x={sign.x}, y={sign.y}; {args.harmonizer})")
+    print(f"[alpamayo] attacked drive ({args.object} at x={position[0]}, y={position[1]}; {args.harmonizer})")
     attacked, attacked_steps = drive(args, stack, perturb_of)
     verdict = impact(clean, attacked)
     print(f"[alpamayo] {time.time() - t0:.0f}s; clean final {clean.records[-1].speed:.2f} m/s, "
@@ -132,7 +139,7 @@ def main() -> int:
     save_gif([side_by_side(c, a) for c, a in zip(clean.frames, attacked.frames)],
              args.out / "side_by_side.gif", fps=10)
     (args.out / "trace.json").write_text(json.dumps({
-        "object": args.object, "at": [sign.x, sign.y], "harmonizer": args.harmonizer,
+        "object": args.object, "at": list(position), "harmonizer": args.harmonizer,
         "verdict": str(verdict),
         "clean": clean_steps, "attacked": attacked_steps,
     }, indent=1))

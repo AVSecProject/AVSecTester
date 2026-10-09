@@ -21,7 +21,8 @@ import torch
 from avsectester.attacks.optim.attacks import PGD
 from avsectester.attacks.optim.data import FrameSource
 from avsectester.attacks.optim.interface import AdvSample, HideObject, TargetSpec
-from avsectester.attacks.optim.perturbations import PatchPerturbation, rear_panel_homography
+from avsectester.attacks.optim.geometry import rear_panel_homography
+from avsectester.attacks.optim.perturbations import PatchPerturbation
 from avsectester.attacks.optim.scorers import MMDetRPNObjectnessScorer
 
 REPO = Path(__file__).resolve().parents[1]

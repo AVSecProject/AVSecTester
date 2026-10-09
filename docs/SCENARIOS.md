@@ -400,7 +400,7 @@ directly, use `with dataset.context(scene) as context:` or call `context.close()
 NuRec's context owns its lazy renderer. Selected backend factories create fresh resources and must
 not capture preview clients. `register_constraint` is needed only for dictionary serialization and the optional
 natural-language vocabulary. Direct Python composition does not require registration.
-`requirement_to_dict` and `requirement_from_dict` support groups, roles, windows and built-in assets.
+`requirement_to_dict` and `requirement_from_dict` support groups, roles, windows and `PlaneAsset` insertions.
 
 ## Feed insertions to the driving model
 
@@ -518,14 +518,13 @@ describe these extension contracts. They do not restrict access to native SDKs o
 Without an evidence provider, only surfaces within each insertion occlude one another.
 `render_resolved` supports direct composition with the same contracts.
 
-### Compatibility
+### Public modules
 
-Use `case.match` for the selected `ScenarioMatch`. `case.target` and the `target=` constructor
-keyword remain compatibility aliases. `case.match.target` is the optional single-object target,
-not the whole selected case. `InsertionGeometry` supports tuple unpacking, and geometry callbacks
-returning `(actors, victim, cam_from_world)` remain supported.
+Use `case.match` for the selected `ScenarioMatch`. Its optional `target` field describes a
+single-object target, while `binding_ids` and `insertions` describe the full selected assignment.
+Geometry callbacks return `InsertionGeometry`, with the three named fields shown above.
 
-Filters are defined in `scenarios.filters`. Camera models, visibility estimators and harmonizers
-are defined in `rendering.cameras`, `rendering.visibility` and `rendering.harmonizers`.
-Their previous imports through `scenarios.requirement`, `scenarios.estimators`,
-`scenarios.visibility`, `simulators.camera_models` and `simulators.patch_insertion` remain available.
+Import filters from `scenarios.filters`, camera models from `rendering.cameras`, visibility
+estimators from `rendering.visibility` and harmonizers from `rendering.harmonizers`.
+Use `Visibility(fraction, source, camera=None, label=None)` for provided visibility measurements,
+and `None` when visibility is unavailable.

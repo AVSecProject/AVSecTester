@@ -61,7 +61,7 @@ avsectester/
   plane.py            Observation · Control · Trace · FrameRecord   (pure data)
   backend.py          WorldBackend · AVStack · run(...)             (interfaces + loop)
   insertion.py        Insertion · placement/orientation · asset surfaces · pose resolution
-  scenario.py         run_scenario · prepare_scenario   (compose a CARLA backend + modular stack)
+  scenario.py         run_scenario   (compose a CARLA backend + modular stack)
   simulators/                                            (WorldBackend implementations)
     carla.py          CarlaBackend + camera_view (ImageData) · lidar_bev   (CARLA + its view adapters)
     nurec.py          NuRecBackend · Renderer · StubRenderer · NuRecRenderer · dynamics
@@ -80,8 +80,9 @@ avsectester/
   cli.py              `avsectester run ...`
 ```
 
-Attack modules are grouped by function, while rendering and harmonization remain in `simulators`.
-For example, import `PhysicalPatch` from `avsectester.attacks.patch.physical_patch` and `RoadsideSign`
+Attack modules are grouped by function. Shared geometry and harmonization live in `rendering`,
+while backend observation adapters and composition live in `simulators`.
+For example, import `PhysicalPatch` from `avsectester.attacks.patch.physical_patch` and `SignAsset`
 from `avsectester.attacks.object_insertion.sign_spoof`. The top-level
 `from avsectester.attacks import PhantomInjection` entry point remains lazy; its implementation is
 in `avsectester.attacks.pipeline.phantom`.

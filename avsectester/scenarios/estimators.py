@@ -1,4 +1,4 @@
-"""Scene projection adapters and compatibility exports for shared rendering utilities."""
+"""Scene projection adapter for exposing resolved insertions to visual filters."""
 
 from __future__ import annotations
 
@@ -9,18 +9,8 @@ import numpy as np
 from avsectester.insertion import ActorPose, ResolvedInsertion
 from avsectester.scenarios.scene import CameraCalib, PlacementCandidate
 from avsectester.rendering.cameras import camera_from_calibration, transform
-from avsectester.rendering.geometry import edge_points, projected_silhouette
-from avsectester.rendering.types import VisibilityEvidence
-from avsectester.rendering.visibility import CuboidVisibilityEstimator, DepthVisibilityEstimator
-
-__all__ = [
-    "camera_from_calibration",
-    "resolved_to_target",
-    "projected_silhouette",
-    "VisibilityEvidence",
-    "CuboidVisibilityEstimator",
-    "DepthVisibilityEstimator",
-]
+from avsectester.rendering.geometry import edge_points
+__all__ = ["resolved_to_target"]
 
 
 def resolved_to_target(

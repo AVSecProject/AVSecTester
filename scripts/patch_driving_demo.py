@@ -12,11 +12,12 @@ Runs the identical scene twice (clean, then patched), diffs the two driving Trac
   * ``clean_filmstrip.png`` / ``patched_filmstrip.png`` — detector overlay per frame (scene view)
   * ``clean.gif`` / ``patched.gif``
 
-    conda run -n avsec python scripts/patch_driving_demo.py --frames 40 \
+    python scripts/patch_driving_demo.py --frames 40 \
         --texture tmp/patch_optim/phys_texture.png --harmonizer libcom
 
---harmonizer classic (fast) | libcom (learned PCTNet, in-process). Needs a CARLA server on :2000
-(GPU 2); detector on --gpu (default 1).
+--harmonizer classic (fast) | libcom (learned PCTNet, in-process). Needs a CARLA server
+at the configured endpoint and matched RGB/depth sensors.
+Detector and optional PCTNet inference use --gpu (default 1).
 """
 
 import argparse
@@ -31,10 +32,10 @@ from avsectester.metric import impact, plot_impact
 from avsectester.plane import Control
 from avsectester.rendering.harmonizers import ClassicHarmonizer, PCTNetHarmonizer
 from avsectester.simulators import carla as carla_sim
-from avsectester.simulators.carla import CarlaBackend, camera_patch_perturbation
+from avsectester.scenarios.carla_provider import CarlaSelectionBackend
 from avsectester.simulators.patch_insertion import PatchCompositor
 from avsectester.simulators.viz import detections_view, record_run, save_sequence
-from demo_common import build_detector, plausible_detector  # shared demo glue
+from demo_common import build_detector, plausible_detector, carla_rear_perturbation  # shared demo glue
 
 REPO = Path(__file__).resolve().parents[1]
 OUT = REPO / "tmp" / "patch_driving"
@@ -85,26 +86,28 @@ def main() -> int:
 
     patch = (image_rgba(args.texture, args.tex) if args.texture
              else checkerboard_rgba(args.tex, squares=8))
-    harmonizer = PCTNetHarmonizer() if args.harmonizer == "libcom" else ClassicHarmonizer()
+    harmonizer = PCTNetHarmonizer(device=args.gpu, strict=True) if args.harmonizer == "libcom" else ClassicHarmonizer()
     compositor = PatchCompositor(harmonizer)
     detect = plausible_detector(build_detector(args.gpu))  # gate phantom boxes; feeds stack + overlay
     overlay = detections_view(detect, base=carla_sim.camera_view)
 
-    def drive(patched: bool):
-        backend = CarlaBackend(scenario)
-        stack = CameraForwardCollisionStack(detect, area_brake=args.area_brake)
-        perturb = camera_patch_perturbation(backend, compositor, patch) if patched else None
-        try:
-            return record_run(backend, stack, args.frames, out_dir=OUT / ("patched" if patched else "clean"),
-                              visualize=overlay, perturb=perturb, collect=True)
-        finally:
-            backend.close()
+    backend = CarlaSelectionBackend(scenario)
+    backend.prepare_clean_attack_pair()
 
-    print(f"[demo] CLEAN run ({args.frames} frames, lead {args.gap} m) ...")
-    clean = drive(patched=False)
-    print(f"[demo] PATCHED run ({'adversarial' if args.texture else 'checkerboard'} / "
-          f"{args.harmonizer} harmonizer) ...")
-    attacked = drive(patched=True)
+    def drive(patched: bool):
+        stack = CameraForwardCollisionStack(detect, area_brake=args.area_brake)
+        perturb = carla_rear_perturbation(backend, patch, compositor) if patched else None
+        return record_run(backend, stack, args.frames, out_dir=OUT / ("patched" if patched else "clean"),
+                          visualize=overlay, perturb=perturb, collect=True)
+
+    try:
+        print(f"[demo] CLEAN run ({args.frames} frames, lead {args.gap} m) ...")
+        clean = drive(patched=False)
+        print(f"[demo] PATCHED run ({'adversarial' if args.texture else 'checkerboard'} / "
+              f"{args.harmonizer} harmonizer) ...")
+        attacked = drive(patched=True)
+    finally:
+        backend.close()
 
     result = impact(clean, attacked)
     print("\n" + str(result) + "\n")

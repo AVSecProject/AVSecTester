@@ -38,7 +38,7 @@ def _project(pts_cam: np.ndarray, k: np.ndarray) -> np.ndarray:
 
 
 def scene_from_cam_boxes(boxes: list, k: np.ndarray, width: int, height: int, camera: str = "front",
-                         visibility: dict[str, Visibility | float] | None = None,
+                         visibility: dict[str, Visibility] | None = None,
                          cam_to_ego: np.ndarray | None = None) -> SceneGT:
     """Build a :class:`SceneGT` from nuScenes ``Box``es already in the camera frame + intrinsic ``k``.
 

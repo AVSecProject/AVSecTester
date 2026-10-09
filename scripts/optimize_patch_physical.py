@@ -9,8 +9,8 @@ Pipeline (the acceptance test is the CARLA-RENDERED patch, not a digital paste):
      not dim it — this closes the digital->physical appearance gap);
   4. render and re-run the detector: report the CARLA-rendered detection confidence.
 
-Run in the `avsec` conda env with a CARLA 0.9.15 server on :2000 (GPU 2):
-    conda run -n avsec python scripts/optimize_patch_physical.py [--steps 250] [--gpu 1]
+Use the CARLA/model environment in docs/SETUP.md with a matching server at the configured endpoint:
+    python scripts/optimize_patch_physical.py [--steps 250] [--gpu 1]
 """
 
 import argparse

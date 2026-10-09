@@ -6,11 +6,11 @@ lead car, recording a sequence through :func:`avsectester.simulators.viz.record_
 pipeline every simulator uses). Each frame is overlaid with the detector's output (``detections_view``)
 so the attack's effect is visible over the sequence, then assembled into a filmstrip + GIF.
 
-    conda run -n avsec python scripts/carla_patch_demo.py --frames 16 --gap 6 \
+    python scripts/carla_patch_demo.py --frames 16 --gap 6 \
         --texture tmp/patch_optim/phys_texture.png       # the PGD-optimized adversarial patch
 
-Omit --texture for the benign checkerboard patch. Needs a CARLA 0.9.15 server on :2000 (GPU 2);
-launch it with ``-quality-level=Epic`` for the most realistic rendering (the patch is a matte,
+Omit --texture for the benign checkerboard patch. Use a CARLA server matching the installed client
+at the configured endpoint. Launch it with ``-quality-level=Epic`` for the most realistic rendering (the patch is a matte,
 scene-lit surface by default).
 """
 

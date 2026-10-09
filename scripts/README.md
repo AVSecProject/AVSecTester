@@ -43,18 +43,35 @@ weights. Current checkpoint-path behavior is documented in
 
 | Script | Function | Models |
 |---|---|---|
-| [nurec_object_demo.py](nurec_object_demo.py) | Insert a STOP sign, standee, billboard or traffic-signal board in NuRec frames | COCO Faster R-CNN for vehicle-mode placement and with `--eval`, optional PCTNet |
+| [nurec_object_demo.py](nurec_object_demo.py) | Insert a STOP sign, standee, billboard or traffic-signal board in NuRec frames | COCO Faster R-CNN only with `--eval`, optional PCTNet |
 | [nuscenes_object_demo.py](nuscenes_object_demo.py) | Insert objects into recorded nuScenes `CAM_FRONT` photographs | COCO Faster R-CNN only with `--eval`, optional PCTNet |
 | [patch_hide_probe.py](patch_hide_probe.py) | Inspect detector response to different patch sizes and harmonization choices on a CARLA image | CARLA-trained Faster R-CNN and PCTNet |
 
-`nurec_object_demo.py --mode roadside` uses fixed world planes. `--mode vehicle` uses detected
-image-space quads without stable host identity. Its prescribed-motion sequence uses `CruiseStack`,
-not Alpamayo. `nuscenes_object_demo.py` processes recorded images without a driving loop.
-COCO here identifies the detector's pretraining dataset, not a simulator or driving policy.
+`nurec_object_demo.py` requires the matching `--usdz`. Roadside mode uses fixed world insertions.
+Vehicle mode requires a stable `--host` track ID and updates the rear attachment from the host's
+current 3D pose. Both use known-cuboid visibility estimates and perturb the stack's camera input.
+The sequence uses constant-speed `CruiseStack`, while `alpamayo_attack_demo.py` uses Alpamayo
+and trajectory-following dynamics. Both clean and attacked runs share the metadata start timestamp.
+`nuscenes_object_demo.py` processes recorded images and checks candidate positions against
+annotated 2D boxes. It has no driving loop or exact depth visibility.
 
-The image-space and plane-composition entry points do not acquire the visibility evidence used by
-the attachment demos. Their placement methods and outputs are documented in
-[IMAGE_ATTACKS.md](../docs/IMAGE_ATTACKS.md#payload-composition-examples).
+```bash
+python scripts/nurec_object_demo.py --usdz /path/to/scene.usdz \
+    --endpoint 127.0.0.1:50051 --mode roadside vehicle --host 15 \
+    --harmonizer none --frames 30
+
+python scripts/alpamayo_attack_demo.py --usdz /path/to/scene.usdz \
+    --endpoint 127.0.0.1:50051 --object stop --frames 30 --gpu 1 --harm-gpu 0
+```
+
+`patch_driving_demo.py` and `patch_hide_probe.py` use a depth-equipped CARLA backend for composited
+rear attachments. Clean and attacked driving runs use the same prepared scene and pinhole RGB
+camera settings. `carla_patch_demo.py` and `optimize_patch_physical.py` retain native world panels,
+including physical lighting and their configured local installation poses.
+
+COCO names the auxiliary detector's pretraining dataset. It does not provide scenes or drive the
+vehicle. See [IMAGE_ATTACKS.md](../docs/IMAGE_ATTACKS.md#payload-composition-examples) for options,
+placement conventions and outputs.
 
 ## Model and asset preparation
 
@@ -77,7 +94,7 @@ Person cutouts are generated outside the repository and retain their source-data
 | [visualize_augmentations.py](visualize_augmentations.py) | Show corruption operators applied to a recorded frame | None |
 
 The two `visualize_*` scripts currently contain local dataset-path constants. Set those to your
-available dataset before running. `demo_common.py` supplies shared detector factories and
+available dataset before running. `demo_common.py` supplies shared detector factories, insertion payload builders and
 `CruiseStack` to the examples, and is not a standalone entry point.
 
 ## CARLA CLI output

@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from .scene import SceneGT
 
 
-@dataclass(init=False)
+@dataclass
 class ScenarioInstance:
     """A selected origin and its fixed role/insertion plan, plus a fresh-backend factory."""
 
@@ -26,35 +26,6 @@ class ScenarioInstance:
     provenance: dict[str, Any] = field(default_factory=dict)
     selection: dict[str, Any] = field(default_factory=dict)
 
-    def __init__(
-        self,
-        make_backend: Callable[[], WorldBackend],
-        match: ScenarioMatch | None = None,
-        provenance: dict[str, Any] | None = None,
-        selection: dict[str, Any] | None = None,
-        *,
-        target: ScenarioMatch | None = None,
-    ):
-        # Keep both positional construction and the original target= keyword working.
-        if match is not None and target is not None:
-            raise TypeError("Provide match or its compatibility alias target, not both")
-        if match is None:
-            match = target
-        if match is None:
-            raise TypeError("ScenarioInstance requires a match")
-        self.make_backend = make_backend
-        self.match = match
-        self.provenance = {} if provenance is None else provenance
-        self.selection = {} if selection is None else selection
-
-    @property
-    def target(self) -> ScenarioMatch:
-        """Compatibility alias for :attr:`match`."""
-        return self.match
-
-    @target.setter
-    def target(self, value: ScenarioMatch) -> None:
-        self.match = value
 
 
 class ScenarioSource(ABC):

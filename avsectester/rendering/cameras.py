@@ -1,18 +1,10 @@
-"""Camera models + poses for **world-anchored** insertion — project a 3-D point to a pixel and back.
+"""Camera lens models and pose transforms for geometry-based insertion.
 
-The planar-warp path (:func:`avsectester.simulators.patch_insertion.warp_patch`) needs only an image
-quad, which is enough when the target is found in image space (a detector box). Anchoring an inserted
-object at a fixed *world* position (a sign on the roadside, seen from a moving ego) instead needs the
-real camera: its lens model (``project`` / ``unproject``) and its pose. Both models here use the
-standard camera frame (x right, y down, z forward):
-
-  * :class:`PinholeCamera` — ``K`` intrinsics (nuScenes, CARLA).
-  * :class:`FThetaCamera` — NVIDIA's f-theta fisheye (NuRec / AlpaSim wide cameras): pixel distance
-    from the principal point is a polynomial of the ray's angle to the optical axis. A 120-deg lens is
-    far from pinhole, so a 4-corner homography is not exact; rendering by per-pixel ray casting
-    (:func:`avsectester.simulators.patch_insertion.render_plane`) is exact for any model here.
-
-Pure numpy; no simulator imports.
+Both models use optical axes: X right, Y down, Z forward. ``PinholeCamera``
+represents calibrated CARLA and nuScenes cameras. ``FThetaCamera`` represents
+NuRec wide-angle lenses using angle-to-pixel polynomials. Per-pixel ray casting
+supports distorted lenses whose projection cannot be described by a homography.
+The module depends only on NumPy and standard-library types.
 """
 
 from __future__ import annotations

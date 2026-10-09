@@ -1,32 +1,13 @@
 #!/usr/bin/env python
-"""Insert a real object at an invalid location into a NuRec (AlpaSim) reconstructed scene — clean vs attacked, side by side.
+"""Compare clean and inserted-object NuRec drives at a constant ego speed.
 
-Objects (``--object``), all camera-facing *natural physical object* attacks:
+Roadside objects have explicit world coordinates. Vehicle objects attach to a stable
+``--host`` from the matching ``--usdz`` metadata, using current 3D poses every frame.
+Both modes perturb the camera observation supplied to the stack. Visibility uses
+known cuboids and does not measure exact neural-rendered occlusion.
 
-  * ``stop``      — a public-domain MUTCD STOP sign (:mod:`avsectester.attacks.object_insertion.sign_spoof`);
-  * ``standee``   — a life-size cut-out of a real person (:mod:`avsectester.attacks.object_insertion.person_poster`);
-  * ``billboard`` — the same person printed on a roadside poster board.
-
-Placements (``--mode``):
-
-  * ``roadside`` — at a fixed scene position (``--x/--y``), rendered by ray casting through the NuRec
-    camera's f-theta model, so perspective/scale stay correct as the ego drives up;
-  * ``vehicle``  — on the rear of the lead vehicle (a quad from a COCO detection box): the STOP sign,
-    or for the person objects a poster of the person.
-
-Each variant is a ``perturb(Observation)`` (the stack sees the object); the ego cruises at a constant
-speed (``--speed``, ~the recorded speed) so both runs see the same poses and frames pair up. ``--eval``
-scores whether a COCO detector picks the object up (``stop sign`` / ``person``).
-
-Run with an nre-ga server serving the scene (see docs/SETUP.md §4b):
-
-    python scripts/nurec_object_demo.py --endpoint 127.0.0.1:50051 --object stop \
-        --mode roadside vehicle --harmonizer classic chroma libcom --frames 50 --eval
-    python scripts/nurec_object_demo.py --endpoint 127.0.0.1:50051 --object standee \
-        --asset <cutouts>/person_000.png --mode roadside --harmonizer chroma libcom --eval
-
-Outputs under ``tmp/nurec_<object>/``: ``clean/`` frames, and per variant ``<mode>_<harmonizer>/`` with
-the attacked frames, ``side_by_side.gif`` (clean | attacked), a filmstrip, and ``zoom_XXXX.png`` crops.
+Use ``--mode roadside`` or ``--mode vehicle --host ID``. ``--eval`` enables auxiliary
+COCO detection scores. Outputs include clean/attacked images and side-by-side GIFs.
 """
 
 import argparse
@@ -35,80 +16,16 @@ import sys
 from pathlib import Path
 
 import numpy as np
-from avsectester.attacks.object_insertion.person_poster import billboard, load_cutout, poster_rgba, standee
-from avsectester.attacks.object_insertion.sign_spoof import (
-    RoadsideSign,
-    quad_insert,
-    roadside_sign_insert,
-    sign_rgba,
-    vehicle_sign_quad,
-)
-from avsectester.rendering.harmonizers import ClassicHarmonizer, Harmonizer, PCTNetHarmonizer
 from avsectester.simulators.nurec import NuRecBackend, NuRecRenderer
 from avsectester.simulators.patch_insertion import PatchCompositor, frame_perturbation
 from avsectester.simulators.viz import filmstrip, record_run, save_gif, save_image
-from demo_common import (  # shared demo glue
-    COCO_PERSON,
-    COCO_STOP_SIGN,
-    COCO_TRAFFIC_LIGHT,
-    CruiseStack,
-    build_coco_detector,
+from demo_common import (
+    OBJECTS, CruiseStack, build_coco_detector, build_object, make_harmonizer,
+    nurec_rear_insertion, nurec_source,
 )
 
 REPO = Path(__file__).resolve().parents[1]
 CAM = "camera_front_wide_120fov"
-# per object: default roadside position (x ahead, y lateral; m), what COCO class it should trigger
-OBJECTS = {
-    "stop": {"x": 28.0, "y": -6.5, "label": (COCO_STOP_SIGN, "stop sign")},
-    "standee": {"x": 25.0, "y": -3.2, "label": (COCO_PERSON, "person")},
-    "billboard": {"x": 28.0, "y": -7.0, "label": (COCO_PERSON, "person")},
-    "trafficlights": {"x": 26.0, "y": -6.0, "label": (COCO_TRAFFIC_LIGHT, "traffic light")},
-}
-
-
-def build_object(args):
-    """-> (roadside RoadsideSign, vehicle-rear face RGBA, its height/width aspect) for ``args.object``."""
-    spec = OBJECTS[args.object]
-    x = spec["x"] if args.x is None else args.x
-    y = spec["y"] if args.y is None else args.y
-    if args.object == "stop":
-        face = sign_rgba()
-        sign = RoadsideSign(x=x, y=y, face=face, width=args.size or 0.9, yaw=args.yaw,
-                            mount_height=1.5 if args.mount is None else args.mount, ground_z=args.ground_z)
-        return sign, face, 1.0
-    if args.object == "trafficlights":
-        from avsectester.attacks.object_insertion.traffic_light import aspect_of, roadside_rig, traffic_lights_rgba
-        face = traffic_lights_rgba(n=3, lit="red")
-        sign = roadside_rig(face, x, y, width=args.size or 2.4, yaw=args.yaw, ground_z=args.ground_z,
-                            mount_height=2.2 if args.mount is None else args.mount)
-        return sign, face, aspect_of(face)
-    if not args.asset:
-        raise SystemExit(f"--object {args.object} needs --asset <person cut-out PNG>")
-    person = load_cutout(args.asset)
-    poster = poster_rgba(person)
-    if args.object == "standee":
-        sign = standee(person, x, y, height=args.size or 1.75, yaw=args.yaw, ground_z=args.ground_z)
-    else:
-        sign = billboard(person, x, y, width=args.size or 1.4, yaw=args.yaw, ground_z=args.ground_z,
-                         mount_height=0.6 if args.mount is None else args.mount)
-    return sign, poster, poster.shape[0] / poster.shape[1]
-
-
-class NoHarmonizer(Harmonizer):
-    """Plain alpha paste — the un-harmonized baseline."""
-
-    def __call__(self, composite_rgb, mask, background_rgb):
-        return composite_rgb
-
-
-def make_harmonizer(name: str, gpu: int) -> Harmonizer:
-    """Use the requested method; a libcom failure must not become a classic experiment."""
-    return {
-        "none": NoHarmonizer,
-        "classic": ClassicHarmonizer,  # original: Lab mean/std transfer + Poisson
-        "chroma": lambda: ClassicHarmonizer(preserve_chroma=True, blend="feather"),  # keep the sign's red
-        "libcom": lambda: PCTNetHarmonizer(device=gpu, strict=True),
-    }[name]()
 
 
 def side_by_side(a: np.ndarray, b: np.ndarray, scale: float = 0.5) -> np.ndarray:
@@ -190,13 +107,14 @@ def plot_eval(results: dict, path: Path, label: str) -> None:
     plt.close(fig)
 
 
-def drive(endpoint: str, scene: str, frames: int, speed: float, out_dir: Path, perturb=None):
-    renderer = NuRecRenderer(endpoint=endpoint, scene_id=scene, cameras=[CAM])
+def drive(endpoint: str, scene, frames: int, speed: float, out_dir: Path, perturb=None):
+    renderer = NuRecRenderer(endpoint=endpoint, scene_id=scene.source["scene_id"], cameras=[CAM],
+                             start_timestamp_us=scene.source["timestamp_us"])
     backend = NuRecBackend({"dt": 0.1, "ego0": {"speed": speed}}, renderer=renderer)
     try:
         # the perturbation needs the loaded scene's camera (model + rig extrinsic): load it up front
-        renderer.load_scene(scene)
-        p = perturb(renderer) if perturb is not None else None
+        renderer.load_scene(scene.source["scene_id"])
+        p = perturb(backend) if perturb is not None else None
         return record_run(backend, CruiseStack(throttle=0.0), frames, out_dir=out_dir, perturb=p,
                           collect=True).frames
     finally:
@@ -207,15 +125,17 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--frames", type=int, default=50)
     ap.add_argument("--speed", type=float, default=3.7, help="constant ego speed (m/s)")
-    ap.add_argument("--scene", default="01d503d4", help="NuRec scene id substring")
+    ap.add_argument("--scene", default=None, help="optional scene ID substring matching --usdz")
+    ap.add_argument("--usdz", required=True, help="matching NuRec scene archive with actor metadata")
+    ap.add_argument("--host", help="stable vehicle track ID, required for vehicle mode")
     ap.add_argument("--endpoint", default="127.0.0.1:50051")
     ap.add_argument("--object", choices=sorted(OBJECTS), default="stop")
     ap.add_argument("--asset", default=None, help="person cut-out PNG (standee / billboard)")
     ap.add_argument("--mode", nargs="+", choices=["roadside", "vehicle"], default=["roadside", "vehicle"])
     ap.add_argument("--harmonizer", nargs="+", choices=["none", "classic", "chroma", "libcom"],
                     default=["classic", "chroma", "libcom"])
-    ap.add_argument("--x", type=float, default=None, help="roadside: metres ahead of the start pose")
-    ap.add_argument("--y", type=float, default=None, help="roadside: lateral metres (+left, -right)")
+    ap.add_argument("--x", type=float, default=None, help="roadside: absolute scene X coordinate (m)")
+    ap.add_argument("--y", type=float, default=None, help="roadside: absolute scene Y coordinate (m)")
     ap.add_argument("--yaw", type=float, default=0.15, help="roadside: face turned toward the road (rad)")
     ap.add_argument("--size", type=float, default=None,
                     help="roadside size (m): sign/board width, standee height (default 0.9 / 1.4 / 1.75)")
@@ -227,37 +147,35 @@ def main() -> int:
     ap.add_argument("--gpu", type=int, default=0)
     ap.add_argument("--out", default=None, help="output dir (default tmp/nurec_<object>)")
     args = ap.parse_args()
+    if args.frames < 1:
+        ap.error("--frames must be positive")
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     out = Path(args.out or REPO / "tmp" / f"nurec_{args.object}")
-    sign, face, aspect = build_object(args)
+    payload = build_object(args)
+    dataset, scene = nurec_source(args.usdz, args.scene)
+    insertions = {"roadside": payload.roadside}
+    if "vehicle" in args.mode:
+        if args.host is None:
+            ap.error("--mode vehicle requires --host <recorded vehicle track ID>")
+        insertions["vehicle"] = nurec_rear_insertion(payload, scene, args.host)
     label_id, label = OBJECTS[args.object]["label"]
 
     print(f"[demo] clean drive: {args.frames} frames at {args.speed} m/s")
-    clean = drive(args.endpoint, args.scene, args.frames, args.speed, out / "clean")
-    detect = build_coco_detector(args.gpu) if "vehicle" in args.mode else None
+    clean = drive(args.endpoint, scene, args.frames, args.speed, out / "clean")
     obj_detect = build_coco_detector(args.gpu, threshold=0.05, labels={label_id: label}) if args.eval else None
     evals: dict = {}
 
     for mode in args.mode:
         for hname in args.harmonizer:
-            compositor = PatchCompositor(make_harmonizer(hname, args.gpu))
-            if mode == "roadside":
-                def perturb(r, compositor=compositor):
-                    insert = roadside_sign_insert(sign, compositor, r.camera_model(),
-                                                  lambda o: r.cam_from_world(o.vehicle_state),
-                                                  soften=args.soften)
-                    return frame_perturbation(insert, camera=CAM)
-            else:
-                # a wide board (aspect<1, e.g. traffic lights) fills more of the rear; a tall poster less
-                wf = 0.6 if aspect < 0.95 else (0.4 if aspect == 1.0 else 0.3)
+            compositor = PatchCompositor(make_harmonizer(hname, args.gpu), soften=args.soften)
 
-                def perturb(r, compositor=compositor, wf=wf):
-                    quad_of = vehicle_sign_quad(detect, width_frac=wf, aspect=aspect)
-                    return frame_perturbation(quad_insert(quad_of, compositor, face), camera=CAM)
+            def perturb(backend, compositor=compositor, insertion=insertions[mode]):
+                insert = dataset.insertion_renderer(scene, backend, [insertion], compositor=compositor)
+                return frame_perturbation(insert, camera=CAM)
 
             tag = f"{mode}_{hname}"
             print(f"[demo] attacked drive: {tag}")
-            attacked = drive(args.endpoint, args.scene, args.frames, args.speed, out / tag / "seq",
+            attacked = drive(args.endpoint, scene, args.frames, args.speed, out / tag / "seq",
                              perturb=perturb)
             pairs = [side_by_side(c, a) for c, a in zip(clean, attacked)]
             save_gif(pairs, out / tag / "side_by_side.gif", fps=10)

@@ -12,8 +12,7 @@ Each family owns its attack payload and target; simulation helpers own rendering
     the vehicle so the camera renders it in-scene) and *sensor-level* (composite it onto the rendered
     frame). The attack owns only the payload (which texture) + the target; the realistic-insertion
     mechanics (warp + harmonize) live in :mod:`avsectester.simulators.patch_insertion` because that is
-    a simulation/rendering concern, wired per backend by ``carla.lead_rear_quad`` /
-    ``patch_insertion.detector_quad`` + ``patch_insertion.composite_view`` / ``carla.camera_patch_perturbation``.
+    a simulation/rendering concern, wired through ``InsertionRenderer`` and backend observation adapters.
 
   * **Object insertion** (``object_insertion``) — insert standard traffic signs, pedestrian images
     or traffic lights at invalid locations in camera frames, using shared simulation helpers.

@@ -22,11 +22,12 @@ from pathlib import Path
 
 import numpy as np
 from avsectester.attacks.object_insertion.person_poster import billboard, load_cutout, standee
-from avsectester.attacks.object_insertion.sign_spoof import RoadsideSign, sign_rgba
+from avsectester.attacks.object_insertion.sign_spoof import SignAsset, sign_rgba
 from avsectester.rendering.cameras import PinholeCamera, make_pose, quat_to_matrix
-from avsectester.simulators.patch_insertion import PatchCompositor, render_plane
-from demo_common import COCO_PERSON, COCO_STOP_SIGN, build_coco_detector
-from nurec_object_demo import make_harmonizer
+from avsectester.simulators.patch_insertion import PatchCompositor, render_resolved
+from avsectester.insertion import ActorPose, Insertion, resolve_insertion
+from avsectester.rendering.geometry import insertion_image
+from demo_common import COCO_PERSON, COCO_STOP_SIGN, build_coco_detector, make_harmonizer, world_object
 
 REPO = Path(__file__).resolve().parents[1]
 # candidate spots (x ahead, y lateral) per object, nearest-first; the first unoccluded one is used
@@ -39,20 +40,25 @@ LABELS = {"stop": (COCO_STOP_SIGN, "stop sign"), "standee": (COCO_PERSON, "perso
           "billboard": (COCO_PERSON, "person")}
 
 
-def make_object(name: str, x: float, y: float, person: np.ndarray) -> RoadsideSign:
+def make_object(name: str, x: float, y: float, person: np.ndarray) -> Insertion:
     if name == "stop":
-        return RoadsideSign(x=x, y=y, face=sign_rgba(), width=0.75, yaw=0.15 if y < 0 else -0.15)
-    if name == "standee":
-        return standee(person, x, y, height=1.75, yaw=0.1 if y < 0 else -0.1)
-    return billboard(person, x, y, width=1.4, yaw=0.2 if y < 0 else -0.2)
+        asset, yaw = SignAsset(face=sign_rgba(), width=0.75), 0.15
+    elif name == "standee":
+        asset, yaw = standee(person, height=1.75), 0.1
+    else:
+        asset, yaw = billboard(person, width=1.4), 0.2
+    return world_object(asset, x, y, yaw=yaw if y < 0 else -yaw)
+
+
+def resolved_object(obj):
+    # In this offline demo the scene frame is the sample's ego frame.
+    return resolve_insertion(obj, {}, ActorPose(np.eye(4)))
 
 
 def footprint(frame, cam, cam_from_ego, obj):
-    """Union mask of the object's planes in the image (no harmonization)."""
-    m = np.zeros(frame.shape[:2], np.uint8)
-    for corners, tex in obj.planes():
-        m |= render_plane(frame, cam, cam_from_ego, corners, tex)[1]
-    return m
+    """Shared opaque footprint used by the candidate-placement check."""
+    _, depth = insertion_image(resolved_object(obj), cam, cam_from_ego)
+    return np.isfinite(depth).astype(np.uint8) * 255
 
 
 def free_spot(name, frame, cam, cam_from_ego, boxes, person):
@@ -107,7 +113,7 @@ def main() -> int:
     for a in coco["annotations"]:
         boxes_of.setdefault(a["image_id"], []).append(a["bbox"])
     person = load_cutout(args.asset)
-    compositor = PatchCompositor(make_harmonizer(args.harmonizer, args.gpu))
+    compositor = PatchCompositor(make_harmonizer(args.harmonizer, args.gpu), soften=0.5)
     detectors = {k: build_coco_detector(args.gpu, threshold=0.05, labels={i: n}) for k, (i, n) in
                  {"stop sign": LABELS["stop"], "person": LABELS["standee"]}.items()} if args.eval else {}
 
@@ -130,13 +136,13 @@ def main() -> int:
         n_day += not night
         row, rec = [frame], {"image": im["file_name"], "night": bool(night)}
         for name, obj in objs.items():
-            att = compositor.apply_planes(frame, cam, cam_from_ego, obj.planes(), soften=0.5)
+            att, _ = render_resolved(frame, cam, cam_from_ego, resolved_object(obj), compositor=compositor)
             row.append(att)
             if detectors:
                 ys, xs = np.where(np.abs(att.astype(np.int16) - frame.astype(np.int16)).max(axis=2) > 12)
                 box = (xs.min() - 4, ys.min() - 4, xs.max() + 4, ys.max() + 4)
                 det = detectors[LABELS[name][1]]
-                rec[name] = {"at": [obj.x, obj.y], "clean": _best(det(frame), box), "attacked": _best(det(att), box)}
+                rec[name] = {"at": list(obj.placement.position_m[:2]), "clean": _best(det(frame), box), "attacked": _best(det(att), box)}
         rows.append(row)
         evals.append(rec)
         stem = Path(im["file_name"]).stem

@@ -193,8 +193,8 @@ def test_independent_insertions_occlude_by_depth_and_keep_holes(camera, method):
 
     clean = np.full((80, 100, 3), [0, 60, 0], np.uint8)
     results = []
-    # Named and legacy tuple geometry callbacks support the same rendering contract.
-    for order, geometry in [(items, state), (items[::-1], tuple(state))]:
+    # Insertion order must not change occlusion results.
+    for order, geometry in [(items, state), (items[::-1], state)]:
         renderer = InsertionRenderer(
             order,
             camera,
@@ -209,3 +209,24 @@ def test_independent_insertions_occlude_by_depth_and_keep_holes(camera, method):
     np.testing.assert_array_equal(results[0][40, 50], [0, 0, 255])
     np.testing.assert_array_equal(results[0][40, 56], [255, 0, 0])
     np.testing.assert_array_equal(results[0][0, 0], clean[0, 0])
+
+
+def test_appearance_softening_preserves_visibility_and_foreground_pixels(camera):
+    from avsectester.simulators.patch_insertion import PatchCompositor
+
+    texture = np.full((32, 32, 4), [240, 20, 30, 255], np.uint8)
+    texture[:, 16:, :3] = [20, 30, 240]
+    item = panel(texture)
+    clean = np.full((camera.height, camera.width, 3), 70, np.uint8)
+    depth = np.full(clean.shape[:2], 100.0)
+    depth[:, :50] = 1
+    evidence = DepthVisibilityEstimator().estimate(
+        item, camera, CAM_FROM_WORLD, scene_depth=depth, depth_convention="z", camera_name="front",
+    )
+    original_samples = evidence.sampled_rgba.copy()
+    compositor = PatchCompositor(lambda image, mask, background: image, soften=.6)
+    image, mask = render_resolved(clean, camera, CAM_FROM_WORLD, item, evidence, compositor=compositor)
+    np.testing.assert_array_equal(mask > 0, evidence.visible_mask)
+    np.testing.assert_array_equal(image[~evidence.visible_mask], clean[~evidence.visible_mask])
+    np.testing.assert_array_equal(evidence.sampled_rgba, original_samples)
+    assert np.any(image[evidence.visible_mask] != clean[evidence.visible_mask])

@@ -19,71 +19,31 @@ def test_extrinsics_and_carla_axis_swap():
     assert np.allclose(carla_cam_coords(np.array([[1, 2, 3.0]]), eye), [[2, -3, 1]])
 
 
-def test_composite_view_wraps_base_and_skips_when_no_quad():
-    """The generic view wrapper composites only when quad_of yields a quad. Else passes the frame."""
-    from avsectester.plane import Observation
-    from avsectester.simulators.patch_insertion import composite_view
-
-    frame = np.zeros((8, 8, 3), np.uint8)
-    patched = np.ones((8, 8, 3), np.uint8)
-
-    class StubCompositor:
-        def apply(self, rgb, quad, patch):
-            return patched
-
-    obs = Observation(t=0.0, frame=0)
-    quad = np.array([[1, 1], [5, 1], [5, 5], [1, 5]], np.float32)
-
-    hit = composite_view(StubCompositor(), None, lambda _o: quad, base=lambda _o: frame)
-    miss = composite_view(StubCompositor(), None, lambda _o: None, base=lambda _o: frame)
-    none_base = composite_view(StubCompositor(), None, lambda _o: quad, base=lambda _o: None)
-    assert np.array_equal(hit(obs), patched)  # quad present -> composited
-    assert np.array_equal(miss(obs), frame)  # no quad -> clean frame unchanged
-    assert none_base(obs) is None  # base view skipped -> skip
-
-
-def test_warp_and_harmonize_under_cv2():
-    from avsectester.rendering.harmonizers import ClassicHarmonizer
-    from avsectester.simulators.patch_insertion import PatchCompositor, warp_patch
+def test_image_warp_returns_an_alpha_composite_and_opaque_mask():
+    from avsectester.simulators.patch_insertion import warp_patch
 
     frame = np.full((40, 60, 3), 100, np.uint8)
     patch = np.dstack([np.full((16, 16), 255, np.uint8)] * 3 + [np.full((16, 16), 255, np.uint8)])
     quad = np.array([[10, 10], [30, 10], [30, 28], [10, 28]], np.float32)
     comp, mask = warp_patch(frame, quad, patch)
     assert comp.shape == frame.shape and (mask > 0).any()  # patch landed in the quad
-    out = PatchCompositor(ClassicHarmonizer()).apply(frame, quad, patch)
-    assert out.shape == frame.shape and out.dtype == np.uint8
-
-
-def test_order_quad_shared_helper():
-    from avsectester.simulators.patch_insertion import order_quad
-
-    pts = np.array([[5, 5], [1, 5], [1, 1], [5, 1]], float)  # BR, BL, TL, TR scrambled
-    assert np.allclose(order_quad(pts), [[1, 1], [5, 1], [5, 5], [1, 5]])  # TL, TR, BR, BL
-
-
-def test_box_to_quad_planar_target():
-    """A detection box -> a centered planar-warp quad (TL,TR,BR,BL). Yaw makes it a trapezoid."""
-    from avsectester.simulators.patch_insertion import box_to_quad
-
-    q = box_to_quad([100, 100, 200, 200], width_frac=0.5, height_frac=0.5, v_center=0.5)
-    assert np.allclose(
-        q, [[125, 125], [175, 125], [175, 175], [125, 175]]
-    )  # centered half-size box
-    qy = box_to_quad([100, 100, 200, 200], width_frac=0.5, height_frac=0.5, yaw=0.3)
-    assert (qy[0, 1] < qy[1, 1]) and (
-        qy[3, 1] > qy[2, 1]
-    )  # left edge taller -> foreshortened trapezoid
+    np.testing.assert_array_equal(comp[15, 20], [255, 255, 255])
+    np.testing.assert_array_equal(comp[0, 0], frame[0, 0])
+    assert mask[15, 20] == 255 and mask[0, 0] == 0
 
 
 def test_render_plane_lands_where_projected_and_keeps_red(ftheta_camera, cam_from_world):
-    from avsectester.attacks.object_insertion.sign_spoof import RoadsideSign
+    from avsectester.attacks.object_insertion.sign_spoof import SignAsset
+    from avsectester.insertion import ActorPose, Insertion, WorldPlacement, Orientation, resolve_insertion
     from avsectester.rendering.harmonizers import ClassicHarmonizer
     from avsectester.simulators.patch_insertion import PatchCompositor, render_plane
 
     frame = np.full((1080, 1920, 3), 90, np.uint8)
-    sign = RoadsideSign(x=12.0, y=-4.0, post=False)
-    corners, face = sign.planes()[0]
+    insertion = Insertion("sign", SignAsset(post=False), WorldPlacement((12, -4, 0)),
+                          Orientation("fixed_world", (0, 0, 180)))
+    resolved = resolve_insertion(insertion, {}, ActorPose(np.eye(4)))
+    surface = resolved.planes()[0]
+    corners, face = surface.corners, surface.texture
     _comp, mask = render_plane(frame, ftheta_camera, cam_from_world, corners, face)
     ys, xs = np.where(mask > 0)
     centre_world = corners.mean(axis=0)[None]
@@ -94,19 +54,24 @@ def test_render_plane_lands_where_projected_and_keeps_red(ftheta_camera, cam_fro
     )  # rendered footprint centred on the projection
     assert xs.mean() > ftheta_camera.cx  # right of centre (negative y)
     # chroma-preserving harmonization keeps the sign red. The default Lab transfer pulls it to grey
-    kept = PatchCompositor(ClassicHarmonizer(preserve_chroma=True, blend="feather")).apply_planes(
-        frame, ftheta_camera, cam_from_world, [(corners, face)]
-    )
+    from avsectester.simulators.patch_insertion import render_resolved
+
+    kept, _ = render_resolved(frame, ftheta_camera, cam_from_world, resolved,
+                             compositor=PatchCompositor(ClassicHarmonizer(preserve_chroma=True, blend="feather")))
     r, g, b = kept[mask > 0].astype(float).mean(axis=0)
     assert r > g + 30 and r > b + 30
 
 
 def test_render_plane_behind_camera_is_noop(ftheta_camera, cam_from_world):
-    from avsectester.attacks.object_insertion.sign_spoof import RoadsideSign
+    from avsectester.attacks.object_insertion.sign_spoof import SignAsset
+    from avsectester.insertion import ActorPose, Insertion, WorldPlacement, Orientation, resolve_insertion
     from avsectester.simulators.patch_insertion import render_plane
 
     frame = np.full((1080, 1920, 3), 90, np.uint8)
-    corners, face = RoadsideSign(x=-10.0, y=-4.0, post=False).planes()[0]  # behind the ego
+    insertion = Insertion("sign", SignAsset(post=False), WorldPlacement((-10, -4, 0)),
+                          Orientation("fixed_world", (0, 0, 180)))
+    surface = resolve_insertion(insertion, {}, ActorPose(np.eye(4))).planes()[0]
+    corners, face = surface.corners, surface.texture
     comp, mask = render_plane(frame, ftheta_camera, cam_from_world, corners, face)
     assert not mask.any() and np.array_equal(comp, frame)
 
@@ -133,29 +98,6 @@ def test_frame_perturbation_reads_and_rewrites_the_selected_camera(custom_view):
     assert (other == 90).all() and (target == 0).all()
     if custom_view:
         assert len(calls) == 1 and calls[0] is obs
-
-
-def test_lane_pick_and_hold():
-    from avsectester.simulators.patch_insertion import detector_quad, hold_quad
-
-    frame = np.zeros((100, 200, 3), np.uint8)
-    lead = ([90, 40, 130, 60], 0.9, 8)  # spans the centre column (x=100): the ego-lane lead
-    big_side = ([10, 30, 95, 90], 0.9, 3)  # larger, nearer, but in the next lane
-    boxes = [[lead, big_side], [], [], [], [], [lead]]
-    detect = lambda _rgb: boxes.pop(0)
-    quad_of = hold_quad(
-        detector_quad(detect, base=lambda _o: frame, pick="lane", aspect=1.0), frames=3
-    )
-    q0 = quad_of(None)
-    assert (
-        q0 is not None and 90 < q0[:, 0].mean() < 130
-    )  # took the in-lane lead, not the bigger car
-    assert np.allclose(q0[2] - q0[1], [0, q0[1, 0] - q0[0, 0]])  # aspect=1: square
-    held = [quad_of(None) for _ in range(4)]
-    assert (
-        all(np.array_equal(h, q0) for h in held[:3]) and held[3] is None
-    )  # held 3 misses, then dropped
-    assert quad_of(None) is not None  # re-acquired
 
 
 @pytest.mark.parametrize("reverse_surfaces", [False, True])

@@ -203,6 +203,8 @@ The camera patch scripts explicitly request Faster R-CNN with that dataset.
 
 ### COCO detector
 
+NuRec and nuScenes object demos use this auxiliary detector with `--eval` to score inserted objects.
+
 `scripts/demo_common.py:build_coco_detector` constructs torchvision's
 `fasterrcnn_resnet50_fpn(weights=FasterRCNN_ResNet50_FPN_Weights.DEFAULT)`. Torchvision downloads
 missing weights into its Torch Hub cache on first use. Set `TORCH_HOME` before launching the

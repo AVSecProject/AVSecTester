@@ -4,7 +4,6 @@ from copy import deepcopy
 from dataclasses import replace
 
 import numpy as np
-import pytest
 
 from avsectester.backend import AVStack, WorldBackend
 from avsectester.evaluation.robustness import evaluate_robustness
@@ -18,7 +17,6 @@ from avsectester.scenarios import (
     RoleSpec,
     ScenarioRequirement,
 )
-from avsectester.scenarios.source import ScenarioInstance
 
 
 def test_selected_case_drives_a_pair_from_the_same_origin(scene, patch):
@@ -122,16 +120,3 @@ def test_selected_case_drives_a_pair_from_the_same_origin(scene, patch):
     assert all(c.brake == 1 for c in controls[4:])
     assert len(report.rows) == 1 and report.rows[0].scenario_id == "selected-clip"
     assert report.per_condition["clean"].n == 1
-
-
-def test_scenario_instance_match_preserves_target_alias(scene):
-    match = ScenarioRequirement("scene").match(scene())
-    factory = lambda: None
-    for case in (ScenarioInstance(factory, match), ScenarioInstance(factory, target=match)):
-        assert case.match is match and case.target is match
-        other = replace(match, camera="rear")
-        case.target = other
-        assert case.match is other
-        assert replace(case, match=match).target is match
-    with pytest.raises(TypeError, match="Provide match"):
-        ScenarioInstance(factory, match=match, target=match)

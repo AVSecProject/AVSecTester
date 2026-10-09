@@ -1,26 +1,10 @@
-"""Inserted traffic lights — a camera-facing *natural physical object* attack (image family).
-
-The "truck with multiple traffic lights on it" example of docs/PROJECT.md: real signal heads mounted
-where the ego's camera reads them as live traffic lights, e.g. carried on the rear of the lead
-vehicle, or on a roadside board. Like :mod:`avsectester.attacks.object_insertion.sign_spoof`, the attack owns only the
-**payload** (the signal-head image) and the **target** (where); how it renders is shared simulation in
-:mod:`avsectester.simulators.patch_insertion`.
-
-The payload is drawn procedurally (numpy/PIL, no external asset): one or more standard 3-lens signal
-heads in black housings, on a board, with a chosen lens lit (red / yellow / green). Reuse it as:
-
-  * a board carried on the lead vehicle's rear — image-anchored via
-    :func:`avsectester.attacks.object_insertion.sign_spoof.vehicle_sign_quad` (pass this module's ``aspect``);
-  * a roadside rig — world-anchored via :class:`avsectester.attacks.object_insertion.sign_spoof.RoadsideSign`.
-
-Only numpy/PIL here; no simulator imports.
-"""
+"""Procedural traffic-light payloads for world-fixed or host-bound insertions."""
 
 from __future__ import annotations
 
 import numpy as np
 
-from avsectester.attacks.object_insertion.sign_spoof import RoadsideSign
+from avsectester.attacks.object_insertion.sign_spoof import SignAsset
 
 # (housing, lens-off, red, yellow, green) BGR-agnostic RGB; drawn on transparent background
 _HOUSING = (28, 28, 30)
@@ -79,12 +63,10 @@ def traffic_lights_rgba(n: int = 3, lit: str = "red", height: int = 300, gap_fra
 
 
 def aspect_of(face: np.ndarray) -> float:
-    """height / width of a payload, for the vehicle-rear quad."""
+    """height / width of a payload, for sizing a host-bound plane."""
     return face.shape[0] / face.shape[1]
 
 
-def roadside_rig(face: np.ndarray, x: float, y: float, width: float = 2.4, mount_height: float = 2.2,
-                 yaw: float = 0.0, ground_z: float = 0.0) -> RoadsideSign:
-    """The traffic-light board on a roadside post (bottom edge ``mount_height`` up — overhead-ish)."""
-    return RoadsideSign(x=x, y=y, face=face, width=width, mount_height=mount_height, ground_z=ground_z,
-                        yaw=yaw, post=True, post_width=0.12)
+def roadside_rig(face: np.ndarray, width: float = 2.4, mount_height: float = 2.2) -> SignAsset:
+    """Local traffic-light board and post, with its bottom edge at ``mount_height``."""
+    return SignAsset(face=face, width=width, mount_height=mount_height, post_width=0.12)
