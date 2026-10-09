@@ -377,8 +377,9 @@ class NuRecDataset(Dataset):
         """Build a host-bound sensor insertion callable after the backend has been reset.
 
         ``bindings`` accepts a selected match's role-to-track-ID tuples. Actor poses are sampled at
-        each observation's absolute scene timestamp, while the camera follows the backend's actual
-        ego pose. This updates attachment geometry without invoking selection filters.
+        the effective render timestamp and camera pose. Model-visible time and localization do
+        not move the geometry. An explicit render-viewpoint change updates camera geometry while
+        the victim's physical pose still comes from backend ground truth.
         """
         from avsectester.insertion import ActorPose
         from avsectester.rendering.types import InsertionGeometry
@@ -400,17 +401,21 @@ class NuRecDataset(Dataset):
         path = scene.source["usdz_path"]
 
         def geometry(observation):
-            pose = observation.vehicle_state
-            actors = self.actor_poses(path, renderer.timestamp_us(pose))
+            pose = backend.ground_truth().vehicle_state
+            request = backend.render_request(self.sensor)
+            adapter.camera = renderer.camera_model(request.camera)
+            actors = self.actor_poses(path, renderer.timestamp_us(request.pose))
             for alias, track_id in aliases.items():
                 if track_id in actors:
                     if alias in actors and alias != track_id:
                         raise ValueError(f"Role {alias!r} conflicts with an actor track ID")
                     actors[alias] = actors[track_id]
             victim = ActorPose(renderer.rig_transform(pose) @ local_center, scene.ego.extent)
-            return InsertionGeometry(actors, victim, renderer.cam_from_world(pose, self.sensor))
+            return InsertionGeometry(
+                actors, victim, renderer.cam_from_world(request.pose, request.camera),
+            )
 
-        return NuRecInsertions(
+        adapter = NuRecInsertions(
             insertions,
             renderer.camera_model(self.sensor),
             geometry,
@@ -418,3 +423,4 @@ class NuRecDataset(Dataset):
             visibility_estimator=CuboidVisibilityEstimator(),
             camera_name=self.camera,
         )
+        return adapter

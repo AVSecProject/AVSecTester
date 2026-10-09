@@ -42,7 +42,7 @@ def run(
     """Run a scenario clean then attacked in real CARLA and report the attack's driving impact.
 
     Needs a running CARLA server (docs/DOCKER.md) and the carla-vehicle weights
-    (scripts/fetch_models.sh). This is the end-to-end demo.
+    (scripts/preparation/fetch_models.sh). This is the end-to-end demo.
     """
     from .metric import impact
     from .scenario import run_scenario

@@ -61,7 +61,8 @@ def test_perturb_replacement_controls_the_drive_but_not_recorded_state():
     attacked = run(ThrottleBackend(), stack, frames=3, perturb=perturb)
 
     assert [r.speed for r in clean.records] == [1, 2, 1]
-    assert stack.initial is originals[0]  # reset sees the initial backend observation
+    assert stack.initial is stack.seen[0]  # reset sees the same attacked input as the first decision
+    assert stack.initial.ego_speed == 100
     assert [o.frame for o in originals] == [0, 1, 2]
     assert [o.frame for o in stack.seen] == [0, 1, 2]
     assert all(seen is not original for seen, original in zip(stack.seen, originals))

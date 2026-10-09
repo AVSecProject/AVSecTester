@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from avsectester.rendering.cameras import PinholeCamera
+from avsectester.rendering.cameras import PinholeCamera, carla_cam_coords
 
 
 def test_ftheta_project_unproject_roundtrip(ftheta_camera):
@@ -17,6 +17,7 @@ def test_ftheta_project_unproject_roundtrip(ftheta_camera):
 def test_pinhole_roundtrip():
     cam = PinholeCamera(np.array([[500.0, 0, 320], [0, 500.0, 240], [0, 0, 1]]), 640, 480)
     pts = np.array([[1.0, -0.5, 4.0], [0.0, 0.0, 2.0]])
+    np.testing.assert_allclose(cam.project(pts), [[445, 177.5], [320, 240]])
     rays = cam.unproject(cam.project(pts))
     assert np.allclose(rays, pts / np.linalg.norm(pts, axis=1, keepdims=True))
 
@@ -29,3 +30,5 @@ def test_rig_extrinsic_is_forward_looking(ftheta_camera, cam_from_world):
     assert cam[0, 2] > 17  # in front
     u, v = ftheta_camera.project(cam)[0]
     assert abs(u - ftheta_camera.cx) < 20 and v > ftheta_camera.cy
+    # CARLA's forward/right/up axes become optical right/down/forward axes.
+    np.testing.assert_allclose(carla_cam_coords([[1, 2, 3]], np.eye(4)), [[2, -3, 1]])

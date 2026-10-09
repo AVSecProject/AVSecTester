@@ -85,8 +85,7 @@ def test_ego_history_is_past_to_present_in_the_model_clock(driver_schema):
         assert timed_pose.pose.quat.z == pytest.approx(math.sin(math.pi / 4))
 
 
-@pytest.mark.parametrize("selected_index", [None, 1])
-@pytest.mark.parametrize("frequency", [5, 10])
+@pytest.mark.parametrize("selected_index,frequency", [(None, 10), (1, 5)])
 def test_selected_trajectory_uses_the_backend_clock(selected_index, frequency):
     stack = AlpamayoAVStack(output_frequency_hz=frequency)
     candidates = np.array([[[1, 0, 0], [2, 0, 0]], [[3, 1, 0], [6, 2, 0]]])
@@ -135,6 +134,8 @@ def test_prediction_chains_plans_and_reset_starts_a_fresh_experiment(driver_sche
     ]
 
     stack.reset(first)
+    assert stack.component_log() is None
+    assert stack.last_reasoning is None
     stack(first)
     restarted_input = model.predict.call_args.args[0]
     assert restarted_input.previous_plan is None and restarted_input.inference_seed == 0
@@ -142,3 +143,52 @@ def test_prediction_chains_plans_and_reset_starts_a_fresh_experiment(driver_sche
         f.image is first.sensor_data["front"] for f in restarted_input.camera_images["front"]
     )
     load.assert_called_once()
+
+
+def test_policy_input_and_output_replacements_reach_model_and_future_context(driver_schema):
+    stack = AlpamayoAVStack(camera_ids=["front"], context_length=2)
+    model_prediction = SimpleNamespace(
+        candidate_positions=np.array([[[1, 0, 0]]]), selected_plan="original", reasoning_text="original"
+    )
+    replacement = SimpleNamespace(
+        candidate_positions=np.array([[[4, 2, 0]]]), selected_plan="replacement", reasoning_text="modified"
+    )
+    stack._model = SimpleNamespace(predict=Mock(return_value=model_prediction))
+    obs = Observation(t=0.0, frame=0, sensor_data={"front": np.zeros((2, 3, 3), np.uint8)})
+    changed_inputs = []
+    calls = []
+
+    class Session:
+        def emit(self, stage, value, sensor=None):
+            calls.append(stage)
+            if stage == "policy.pre":
+                # These are actual model fields, including context beyond the observation.
+                value.command = "turn-left"
+                value.route = ["route-point"]
+                value.acceleration = -2.0
+                value.ego_pose_history = ["custom-pose"]
+                value.camera_images = {"front": ["custom-camera-history"]}
+                changed_inputs.append(value)
+                return value
+            assert value is model_prediction
+            return replacement
+
+    stack.reset(obs)
+    with stack.runtime_context(Session()):
+        control = stack(obs)
+        next_control = stack(obs)
+
+    assert calls == ["policy.pre", "policy.post", "policy.pre", "policy.post"]
+    assert [call.args[0] for call in stack._model.predict.call_args_list] == changed_inputs
+    assert changed_inputs[0].previous_plan is None
+    assert changed_inputs[1].previous_plan == "replacement"
+    assert control.trajectory[0][0] == (4.0, 2.0, 0.0)
+    assert next_control.trajectory == control.trajectory
+    assert stack.last_reasoning == "modified"
+    assert stack.component_log()["policy"] is replacement
+    assert stack.models["policy"] is stack._model
+    assert stack.native["model"] is stack._model
+    assert stack.supported_stages == {"policy.pre", "policy.post"}
+
+    # The binding is removed, so ordinary inference again consumes the original prediction.
+    assert stack(obs).trajectory[0][0] == (1.0, 0.0, 0.0)

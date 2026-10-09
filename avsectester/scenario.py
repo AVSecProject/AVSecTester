@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from typing import TYPE_CHECKING
 
 from avsectester.evaluation.component_log import run_logged
 from avsectester.plane import Trace
 from avsectester.simulators.carla import CarlaBackend
 from avsectester.stacks.modular import ModularAVStack
+
+if TYPE_CHECKING:
+    from avsectester.runtime import Runtime
 
 __all__ = ["run_scenario"]
 
@@ -18,6 +22,8 @@ def run_scenario(
     frames: int = 40,
     settle_iters: int = 100,
     patches: list[dict] | None = None,
+    *,
+    runtime: Runtime | None = None,
 ) -> Trace:
     """Run the CARLA + modular demo through the generic interface and return the driving Trace.
 
@@ -27,6 +33,7 @@ def run_scenario(
     are world-level physical-patch attacks applied by the backend at reset (pass them only for the
     attacked run). ``replay_scenario`` (actual spawn transforms) is carried on the returned Trace for a
     paired run; strict-spawn replay is always used.
+    ``runtime`` adds the same ordered stage handlers available in the generic run loop.
     """
     scenario = deepcopy(scenario)
     backend = CarlaBackend(scenario, settle_iters=settle_iters, patches=patches)
@@ -35,7 +42,7 @@ def run_scenario(
         stack.attach(atk["stage"], atk["hook"])
     stack.instrument(stages=("perception",))  # per-frame detection telemetry via the common log interface
     try:
-        trace, components = run_logged(backend, stack, frames)
+        trace, components = run_logged(backend, stack, frames, runtime=runtime)
         trace.replay_scenario = backend.replay_scenario
         for record, step in zip(trace.records, components.steps):
             record.n_detections = step.count("perception")

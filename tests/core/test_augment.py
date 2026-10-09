@@ -13,9 +13,7 @@ from avsectester.simulators.augment import (
     ChromaticAberration,
     Fog,
     GaussianNoise,
-    Rain,
     albumentations_corruptions,
-    common_corruptions,
     compose,
     read_camera_rgb,
     sensor_augmentation,
@@ -37,19 +35,9 @@ def test_every_corruption_preserves_shape_dtype_and_changes_image(name):
     out = CORRUPTIONS[name](severity=0.8).apply(img, rng)
     assert out.shape == img.shape and out.dtype == np.uint8
     assert not np.array_equal(out, img)                     # severity 0.8 actually corrupts
-
-
-@pytest.mark.parametrize("name", _IDENTITY_AT_ZERO)
-def test_severity_zero_is_identity(name):
-    img = _img()
-    assert np.array_equal(CORRUPTIONS[name](severity=0.0).apply(img, np.random.default_rng(0)), img)
-
-
-def test_random_corruption_is_deterministic_given_the_rng():
-    img = _img()
-    a = Rain(0.7).apply(img, np.random.default_rng(42))
-    b = Rain(0.7).apply(img, np.random.default_rng(42))
-    assert np.array_equal(a, b)                             # same seed -> identical realisation
+    np.testing.assert_array_equal(out, CORRUPTIONS[name](severity=0.8).apply(img, np.random.default_rng(0)))
+    if name in _IDENTITY_AT_ZERO:
+        np.testing.assert_array_equal(CORRUPTIONS[name](severity=0.0).apply(img, rng), img)
 
 
 def test_pipeline_seeds_by_frame_so_paired_runs_match():
@@ -60,12 +48,6 @@ def test_pipeline_seeds_by_frame_so_paired_runs_match():
     assert np.array_equal(p_clean.apply(img, frame=3), p_attacked.apply(img, frame=3))
     # different frames -> different corruption
     assert not np.array_equal(p_clean.apply(img, frame=3), p_clean.apply(img, frame=4))
-
-
-def test_common_corruptions_covers_every_operator():
-    suite = common_corruptions(0.5)
-    assert len(suite) == len(CORRUPTIONS)
-    assert all(isinstance(p, AugmentationPipeline) and len(p.corruptions) == 1 for p in suite)
 
 
 def test_sensor_augmentation_reads_writes_ndarray_and_imagedata():

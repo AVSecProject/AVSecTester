@@ -5,6 +5,7 @@ Fully in-process — no gRPC, no server, no scene — so it runs anywhere and is
 
 import math
 
+import numpy as np
 import pytest
 from avsectester.backend import AVStack, run
 from avsectester.plane import Control
@@ -28,7 +29,7 @@ def test_bicycle_accelerates_brakes_and_turns():
 
 
 def test_backend_loop_drives_in_process_with_stub_renderer():
-    backend = NuRecBackend({"dt": 0.1})
+    backend = NuRecBackend({"dt": 0.1}, renderer=StubRenderer(height=120, width=160))
     trace = run(backend, ThrottleStack(), frames=5)
     assert len(trace.records) == 5
     speeds = [r.speed for r in trace.records]
@@ -37,6 +38,8 @@ def test_backend_loop_drives_in_process_with_stub_renderer():
     obs = backend._observe()
     assert "camera_front" in obs.sensor_data
     assert isinstance(backend.renderer, StubRenderer)
+    image = obs.sensor_data["camera_front"]
+    assert image.shape == (120, 160, 3) and image.dtype == np.uint8
 
 
 def test_restoring_checkpoint_replays_the_same_subsequent_motion():
@@ -68,30 +71,38 @@ def test_reset_restores_configured_pose_after_a_previous_drive():
     assert restarted.vehicle_state == initial.vehicle_state
 
 
-def test_trajectory_follower_tracks_a_straight_plan_and_coasts_when_empty():
+@pytest.mark.parametrize("dt", [0.05, 0.1])
+def test_trajectory_follower_interpolates_from_current_origin_before_first_waypoint(dt):
+    from avsectester.simulators.nurec import TrajectoryFollower
+
+    pose = EgoPose(x=10.0, y=5.0, yaw=math.pi / 2, t=2.0)
+    plan = Control(trajectory=[
+        ((2.0, 0.0, 0.0), (1, 0, 0, 0), 2_100_000),
+        ((4.0, 0.0, 0.0), (1, 0, 0, 0), 2_200_000),
+    ])
+    moved = TrajectoryFollower().step(pose, plan, dt)
+
+    assert moved.x == pytest.approx(10.0)
+    assert moved.y == pytest.approx(5.0 + 20.0 * dt)
+    assert moved.speed == pytest.approx(20.0)
+    assert moved.t == pytest.approx(2.0 + dt)
+
+
+def test_trajectory_replanning_does_not_multiply_speed_when_physics_runs_faster_than_policy():
     from avsectester.simulators.nurec import TrajectoryFollower
 
     follower = TrajectoryFollower()
-    # straight rig-frame plan: +2 m forward at t=0.1 s, +4 m at 0.2 s (t in microseconds)
-    plan = Control(
-        trajectory=[
-            ((2.0, 0.0, 0.0), (1, 0, 0, 0), 100_000),
-            ((4.0, 0.0, 0.0), (1, 0, 0, 0), 200_000),
-        ]
-    )
-    p = follower.step(EgoPose(t=0.0), plan, dt=0.1)  # interp at 0.1 s -> 2 m ahead
-    assert p.x == pytest.approx(2.0) and p.y == pytest.approx(0.0)
-    assert p.speed == pytest.approx(20.0)  # 2 m / 0.1 s
-    # no plan -> coast (decelerate), not crash
+    pose = EgoPose(speed=3.0)
+    for _ in range(40):
+        plan = Control(trajectory=[
+            ((pose.speed * 0.1, 0.0, 0.0), (1, 0, 0, 0), round((pose.t + 0.1) * 1e6)),
+        ])
+        pose = follower.step(pose, plan, dt=0.05)
+
+    assert pose.speed == pytest.approx(3.0)
+    assert pose.x == pytest.approx(6.0)
+    # An absent plan coasts instead of repeating an old trajectory.
     assert follower.step(EgoPose(speed=5.0), Control(), dt=0.1).speed == pytest.approx(4.6)
-
-
-def test_stub_render_returns_a_frame_shaped_image():
-    import numpy as np
-
-    r = StubRenderer(cameras=["camera_front_wide_120fov"], height=120, width=160)
-    frame = r.render(EgoPose(x=1.0, y=2.0, yaw=math.pi, t=0.5), "camera_front_wide_120fov")
-    assert frame.shape == (120, 160, 3) and frame.dtype == np.uint8
 
 
 @pytest.mark.parametrize("yaw,expected_xy", [(0.0, (13.0, -3.0)), (math.pi / 2, (9.0, -1.0))])

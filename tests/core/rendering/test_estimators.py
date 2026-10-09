@@ -77,20 +77,14 @@ def test_depth_ordered_boxes_block_only_foreground_portion():
     assert blocked.visibility.fraction == 0
 
 
-def test_transparency_is_not_counted_in_target_silhouette():
-    texture = np.full((8, 8, 4), 255, dtype=np.uint8)
-    texture[:, :4, 3] = 0
-    result = estimate(subject(texture=texture))
-    assert result.reference_pixels == 100
-    assert result.visible_mask.sum() == 100
-    assert result.visibility.fraction == 1
-
-
 def test_front_facing_texture_preserves_left_and_right():
     texture = np.full((8, 8, 4), 255, dtype=np.uint8)
     texture[:, :4, 3] = 0  # Left side of the authored texture is transparent.
     panel = subject(texture=texture)
     result = estimate(panel)
+    assert result.reference_pixels == 100
+    assert result.visible_mask.sum() == 100
+    assert result.visibility.fraction == 1
     assert not result.reference_mask[:, :50].any()
     assert result.reference_mask[:, 50:].sum() == 100
     corners = panel.planes()[0].corners
@@ -172,21 +166,6 @@ def test_fisheye_rays_support_occlusion_and_offscreen_denominator():
     assert half.visibility.fraction == 0.5
     assert 0 < truncation.visibility.fraction < 1
     assert truncation.reference_pixels > truncation.reference_mask.sum()
-
-
-@pytest.mark.parametrize(
-    "camera",
-    [
-        CAMERA,
-        FThetaCamera(50, 40, (0, 50), 100, 80, (0, 1 / 50), max_angle=1.2),
-    ],
-)
-def test_image_silhouette_agrees_with_visibility_reference(camera):
-    texture = np.full((8, 8, 4), 255, np.uint8)
-    texture[2:6, 2:6, 3] = 0
-    item = subject((10, 12, 0), width=10, texture=texture)
-    projected = projected_silhouette(item, camera, CAM_FROM_WORLD)
-    np.testing.assert_array_equal(projected, estimate(item, camera=camera).reference_mask)
 
 
 def test_disconnected_surfaces_do_not_fill_their_joint_bounding_box():

@@ -21,7 +21,7 @@ from copy import deepcopy
 from typing import Any
 
 from avsectester.backend import WorldBackend
-from avsectester.plane import Control, Observation
+from avsectester.plane import Control, Observation, WorldSnapshot
 from avsectester.simulators.viz import as_rgb
 
 
@@ -112,8 +112,9 @@ def insertion_perturbation(backend, insertions, *, bindings=None, camera="front"
     def perturb(observation):
         nonlocal renderer, current
         current = backend.selection_context()
-        if current.scene.frame != observation.frame:
-            raise ValueError("Insertion geometry and observation must use the same frame")
+        true_frame = backend.ground_truth().frame
+        if current.scene.frame != true_frame:
+            raise ValueError("Insertion geometry and the physical world must use the same frame")
         if selected_ids:
             available = {actor.track_id: actor for actor in current.scene.objects}
             missing = {track_id for ids in selected_ids.values() for track_id in ids if track_id not in available}
@@ -129,7 +130,7 @@ def insertion_perturbation(backend, insertions, *, bindings=None, camera="front"
         payload_frame = getattr(observation.sensor_data[source_key], "frame", None)
         frame_offset = current.native.get("camera_frame_offsets", {}).get(camera)
         if payload_frame is not None and frame_offset is not None:
-            if payload_frame + frame_offset != observation.frame:
+            if payload_frame + frame_offset != true_frame:
                 raise ValueError("Insertion camera payload and geometry must use the same frame")
         got = read_camera_rgb(observation, source_key)
         if got is None:
@@ -309,6 +310,68 @@ class CarlaBackend(WorldBackend):
         self._resources = ExitStack()
         self._pair_scenario: dict | None = None
 
+    @property
+    def supported_stages(self) -> frozenset[str]:
+        # CARLA renders inside the server. Its render request cannot be intercepted here.
+        return frozenset({"world.setup", "world.step.pre", "world.step.post"})
+
+    @property
+    def native(self) -> dict[str, Any]:
+        """Expose live simulator resources for explicit world-level interventions."""
+        actors = {f"npc:{i}": npc.actor for i, npc in enumerate(self.npcs)}
+        if self.ego is not None:
+            actors["ego"] = self.ego.actor
+        if self.lead is not None:
+            actors["lead"] = self.lead
+        return {
+            "client": self.client,
+            "world": None if self.client is None else self.client.world,
+            "ego": self.ego,
+            "lead": self.lead,
+            "npcs": tuple(self.npcs),
+            "actors": actors,
+        }
+
+    def ground_truth(self) -> WorldSnapshot:
+        """Snapshot the latest completed tick, or the known spawn before the first actor tick."""
+        if self.client is None or self.ego is None:
+            raise RuntimeError("Reset the CARLA backend before requesting ground truth")
+        snapshot = self.client.world.get_snapshot()
+        self.ego.timestamp = snapshot.timestamp.elapsed_seconds
+        state = self.ego.get_object_state()
+        find = getattr(snapshot, "find", None)
+        if find is not None and find(self.ego.actor.id) is None:
+            from avcarla.geometry import carla_transform_to_pose
+
+            # A newly spawned actor is absent from CARLA's last-tick cache. Use the successful
+            # spawn request rather than interpreting its default cached origin as its location.
+            pose = carla_transform_to_pose(self.ego.spawn_transform)
+            state.position.x = pose.position.x
+            state.attitude.q = pose.attitude.q
+        return WorldSnapshot(
+            snapshot.timestamp.elapsed_seconds, snapshot.frame,
+            deepcopy(state), float(state.velocity.norm()),
+        )
+
+    def copy_observation(self, observation: Observation) -> Observation:
+        """Detach mutable payloads, calibration and reference graphs in one copy operation.
+
+        Native CARLA sensor captures cannot be deep-copied and are borrowed. Their metadata
+        properties are read-only, but SDK item assignment may modify capture points. Replace a
+        capture with a private array or measurement to preserve the original input. The Python
+        wrappers, calibration and reference graphs are copied. Capture edits do not move actors.
+        """
+        memo = {}
+        for payload in observation.sensor_data.values():
+            for candidate in (payload, getattr(payload, "data", None)):
+                if (
+                    candidate is not None
+                    and type(candidate).__module__.startswith("carla.")
+                    and hasattr(candidate, "raw_data")
+                ):
+                    memo[id(candidate)] = candidate
+        return deepcopy(observation, memo)
+
     def prepare_clean_attack_pair(self) -> None:
         """Resolve scene choices once. The first reset may fall back to an available spawn."""
         self.close()
@@ -358,12 +421,15 @@ class CarlaBackend(WorldBackend):
         self.ego.initialize(snap.timestamp.elapsed_seconds, snap.frame)
         for npc in self.npcs:
             npc.initialize(snap.timestamp.elapsed_seconds, snap.frame)
+        self._emit("world.setup", None)
         self.client.tick()  # produce the first sensor frame (ego stationary until first control)
         return self._observe()
 
     def step(self, control: Control) -> Observation:
+        self._emit("world.step.pre", None)
         self.ego.apply_control(control)  # decision from the AVStack. CARLA physics does the rest
         self.client.tick()
+        self._emit("world.step.post", None)
         return self._observe()
 
     def _observe(self) -> Observation:
@@ -381,14 +447,14 @@ class CarlaBackend(WorldBackend):
         self.ego.timestamp = t
         sensor_data = self.ego.sensor_data_manager.pop()
         state = self.ego.get_object_state()
-        return Observation(
+        return self.copy_observation(Observation(
             t=t,
             frame=snap.frame,
             sensor_data=sensor_data,
             calibration={},  # modular stack reads references off sensor_data. Kept for the contract
             vehicle_state=state,
             ego_speed=float(state.velocity.norm()),
-        )
+        ))
 
     def _apply_patches(self) -> None:
         """Attach + paint each configured physical patch onto its target vehicle (attacked run)."""

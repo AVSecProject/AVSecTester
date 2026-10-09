@@ -6,12 +6,12 @@ The sim<->stack contract is exactly two messages — **sensor data down, control
 * the AV box replies with a :class:`Control` command.
 
 The backend keeps a full *world state* internally (ground truth, used for rendering + scoring) but
-never sends it to the box — the box sees only what a real vehicle senses. An attack is a transform
-on this stream, not part of the contract (see :func:`avsectester.backend.run`'s ``perturb``).
+never sends it to the box — the box sees only its observations. Runtime stage handlers can modify
+model-visible messages or explicitly access native world operations through their context.
 
 This module is **pure data** — no avstack / avcarla / carla imports — so the interface does not
-depend on any backend, does not assume the AV stack is modular vs end-to-end, and the messages
-serialize cleanly across a process boundary (e.g. AlpaSim's gRPC services).
+depend on any backend or assume a modular vs end-to-end stack. Sensor and state payloads retain
+adapter-specific types, so transport across a process boundary requires appropriate codecs.
 """
 
 from __future__ import annotations
@@ -50,7 +50,29 @@ class Observation:
     sensor_data: dict[str, Any] = field(default_factory=dict)  # sensor_id -> sensor payload
     calibration: dict[str, Any] = field(default_factory=dict)  # sensor_id -> intrinsics + extrinsic
     vehicle_state: Any = None  # ego pose/velocity (what localization reports)
-    ego_speed: float = 0.0  # convenience scalar (m/s) the backend fills, for scoring
+    ego_speed: float = 0.0  # reported speed (m/s), available to the driving model
+
+
+@dataclass(frozen=True)
+class WorldSnapshot:
+    """An independent snapshot of the backend's actual ego state.
+
+    Nested state objects belong to this snapshot. Editing them does not actuate the world.
+    Native backend operations are the explicit interface for changing physical state.
+    """
+
+    t: float
+    frame: int
+    vehicle_state: Any = None
+    ego_speed: float = 0.0
+
+
+@dataclass
+class StateEstimate:
+    """Model-visible ego state and speed produced by a localization adapter."""
+
+    vehicle_state: Any = None
+    ego_speed: float = 0.0
 
 
 @dataclass

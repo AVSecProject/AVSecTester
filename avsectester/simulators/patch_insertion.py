@@ -86,13 +86,22 @@ class PatchCompositor:
 
     ``soften`` is the Gaussian sigma in pixels for resolved insertion rendering.
     It does not change geometry or expand visibility masks.
+    ``harmonize`` enables the selected harmonizer. When disabled, it is not called
+    or loaded, and the same geometry, alpha compositing and softening still apply.
     """
 
-    def __init__(self, harmonizer: Harmonizer | None = None, *, soften: float = 0.0) -> None:
+    def __init__(
+        self, harmonizer: Harmonizer | None = None, *, soften: float = 0.0,
+        harmonize: bool = True,
+    ) -> None:
+        if not isinstance(harmonize, bool):
+            raise TypeError("harmonize must be a bool")
         if not np.isfinite(soften) or soften < 0:
             raise ValueError("soften must be finite and nonnegative")
         self.soften = float(soften)
-        self.harmonizer = harmonizer or ClassicHarmonizer()
+        self.harmonize = harmonize
+        self.harmonizer = harmonizer if harmonizer is not None else ClassicHarmonizer()
+
 
 def render_resolved(
     frame: np.ndarray,
@@ -139,7 +148,7 @@ def render_resolved(
     alpha = rgba[active, 3:4].astype(np.float32) / 255
     output[active] = (frame[active] * (1 - alpha) + rgba[active, :3] * alpha).astype(np.uint8)
     union = active.astype(np.uint8) * 255
-    if compositor is not None and active.any():
+    if compositor is not None and compositor.harmonize and active.any():
         harmonized = compositor.harmonizer(output, union, frame)
         output[active] = harmonized[active]
     return output, union

@@ -12,11 +12,14 @@ from abc import ABC, abstractmethod
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from itertools import pairwise
-from typing import Any, ClassVar
+from typing import Any, ClassVar, TYPE_CHECKING
 
 from avsectester.backend import WorldBackend
-from avsectester.plane import Control, Observation
+from avsectester.plane import Control, Observation, WorldSnapshot
 from avsectester.simulators.patch_insertion import InsertionRenderer
+
+if TYPE_CHECKING:
+    from avsectester.runtime import RenderRequest
 
 
 @dataclass
@@ -74,7 +77,7 @@ class TrajectoryFollower:
         if not traj:
             speed = max(0.0, pose.speed - self.decel * dt)
             return EgoPose(pose.x, pose.y, pose.yaw, speed, pose.t + dt)
-        dx, dy = self._interp_rig_xy(traj, (pose.t + dt) * 1e6)
+        dx, dy = self._interp_rig_xy(traj, (pose.t + dt) * 1e6, pose.t * 1e6)
         c, s = math.cos(pose.yaw), math.sin(pose.yaw)
         dist = math.hypot(dx, dy)
         yaw = pose.yaw + math.atan2(dy, dx) if dist > 1e-3 else pose.yaw
@@ -87,10 +90,17 @@ class TrajectoryFollower:
         )
 
     @staticmethod
-    def _interp_rig_xy(traj: list, target_us: float) -> tuple[float, float]:
+    def _interp_rig_xy(traj: list, target_us: float, origin_us: float) -> tuple[float, float]:
         pts = [(t_us, xyz[0], xyz[1]) for xyz, _quat, t_us in traj]
         if target_us <= pts[0][0]:
-            return pts[0][1], pts[0][2]
+            # Rig-frame displacements start at the current ego position. A physics
+            # substep before the first waypoint must cover only part of that segment.
+            interval = pts[0][0] - origin_us
+            fraction = (
+                min(1.0, max(0.0, (target_us - origin_us) / interval))
+                if interval > 0 else 1.0
+            )
+            return fraction * pts[0][1], fraction * pts[0][2]
         for (t0, x0, y0), (t1, x1, y1) in pairwise(pts):
             if target_us <= t1:
                 a = (target_us - t0) / (t1 - t0) if t1 > t0 else 0.0
@@ -152,32 +162,83 @@ class NuRecBackend(WorldBackend):
         self.dt = float(self.config.get("dt", 0.05))
         self.pose = EgoPose()
         self.frame = 0
+        self._render_requests: dict[str, RenderRequest] = {}
+
+    @property
+    def supported_stages(self) -> frozenset[str]:
+        return frozenset({
+            "world.setup", "world.step.pre", "world.step.post", "render.pre", "render.post",
+        })
+
+    @property
+    def native(self) -> dict[str, Any]:
+        """Native resources for explicit world changes or custom renderer operations."""
+        return {
+            "renderer": self.renderer,
+            "dynamics": self.dynamics,
+            "render_requests": deepcopy(self._render_requests),
+        }
+
+    def render_request(self, camera: str) -> RenderRequest:
+        """Return the effective request that produced this camera's current observation.
+
+        Both native camera names and configured output aliases are accepted. The returned
+        request is independent of the stored geometry, including its ego pose.
+        """
+        aliases = self.config.get("camera_aliases", {})
+        native_camera = next((key for key, alias in aliases.items() if alias == camera), camera)
+        if native_camera not in self._render_requests:
+            raise RuntimeError(f"No current render request for camera {camera!r}")
+        return deepcopy(self._render_requests[native_camera])
+
+    def ground_truth(self) -> WorldSnapshot:
+        """Return the physical ego state, independent of any model-visible estimate."""
+        return WorldSnapshot(self.pose.t, self.frame, deepcopy(self.pose), self.pose.speed)
 
     def reset(self) -> Observation:
         self.renderer.load_scene(self.config.get("scene"))
         self.pose = EgoPose(**self.config.get("ego0", {}))
         self.frame = 0
+        self._render_requests.clear()
+        self._emit("world.setup", None)
         return self._observe()
 
     def step(self, control: Control) -> Observation:
+        self._emit("world.step.pre", None)
         self.pose = self.dynamics.step(self.pose, control, self.dt)  # shared physics, in-process
         self.frame += 1
+        self._emit("world.step.post", None)
         return self._observe()
 
     def _observe(self) -> Observation:
+        from avsectester.runtime import RenderRequest
+
         aliases = self.config.get("camera_aliases", {})
-        sensor_data = {
-            aliases.get(cam, cam): self.renderer.render(self.pose, cam)
-            for cam in self.renderer.cameras
-        }
-        return Observation(
+        sensor_data = {}
+        calibration = {aliases.get(key, key): value for key, value in self.renderer.calibration.items()}
+        for camera in self.renderer.cameras:
+            # A render request may use a false viewpoint without moving the physical ego.
+            request = self._emit(
+                "render.pre", RenderRequest(deepcopy(self.pose), camera), sensor=camera,
+            )
+            self._render_requests[camera] = deepcopy(request)
+            if request.camera != camera:
+                output_key = aliases.get(camera, camera)
+                calibration.pop(output_key, None)
+                if request.camera in self.renderer.calibration:
+                    calibration[output_key] = self.renderer.calibration[request.camera]
+            image = self.renderer.render(request.pose, request.camera)
+            sensor_data[aliases.get(camera, camera)] = self._emit(
+                "render.post", image, sensor=camera,
+            )
+        return self.copy_observation(Observation(
             t=self.pose.t,
             frame=self.frame,
             sensor_data=sensor_data,
-            calibration={aliases.get(k, k): v for k, v in self.renderer.calibration.items()},
+            calibration=calibration,
             vehicle_state=self.pose,
             ego_speed=self.pose.speed,
-        )
+        ))
 
     def close(self) -> None:
         self.renderer.close()
@@ -190,6 +251,7 @@ class NuRecBackend(WorldBackend):
     def restore(self, ckpt: dict) -> None:
         self.pose = EgoPose(**ckpt["pose"])
         self.frame = ckpt["frame"]
+        self._render_requests.clear()
 
 
 def _compose_pose(a, b, pb):
@@ -426,7 +488,7 @@ class NuRecInsertions(InsertionRenderer):
             return {
                 item.id: visibility_estimator.estimate(
                     item,
-                    camera,
+                    self.camera,
                     state.cam_from_world,
                     occluders=state.actors,
                     other_insertions=tuple(other for other in resolved if other.id != item.id),

@@ -3,7 +3,7 @@
 The stack already knows how to expose its component outputs (``ModularAVStack.instrument`` attaches an
 avstack post-hook per stage and ``component_log()`` returns ``{stage: output}``). This module just
 *gathers* those per-frame snapshots across a run and *processes* them. :func:`run_logged` is the
-instrumented twin of :func:`avstack.backend.run` — same loop (via its ``on_step`` hook), but it also
+instrumented twin of :func:`avsectester.backend.run` — same loop (via its ``on_step`` hook), but it also
 collects the stack's ``component_log()`` each frame into a :class:`ComponentTrace`.
 
 The analysis is deliberately thin and reuses avstack: per-stage **counts** come from ``len()`` of the raw
@@ -25,6 +25,7 @@ from avsectester.backend import run as _run_loop
 if TYPE_CHECKING:
     from avsectester.backend import AVStack, WorldBackend
     from avsectester.plane import Observation, Trace
+    from avsectester.runtime import Runtime
 
 
 @runtime_checkable
@@ -110,8 +111,10 @@ def run_logged(
     stack: AVStack,
     frames: int,
     perturb: Callable[[Observation], Observation] | None = None,
+    *,
+    runtime: Runtime | None = None,
 ) -> tuple[Trace, ComponentTrace]:
-    """Drive the scenario like :func:`avstack.backend.run`, additionally collecting the stack's
+    """Drive the scenario like :func:`avsectester.backend.run`, additionally collecting the stack's
     ``component_log()`` each frame. Returns the driving :class:`Trace` and the :class:`ComponentTrace`
     (empty when the stack is not instrumented, so the call site is uniform)."""
     component = ComponentTrace()
@@ -123,5 +126,5 @@ def run_logged(
             # complete output graph now, while preserving shared references within this step.
             component.steps.append(StepLog(frame=i, stages=deepcopy(stack.component_log() or {})))
 
-    trace = _run_loop(backend, stack, frames, perturb=perturb, on_step=_capture)
+    trace = _run_loop(backend, stack, frames, perturb=perturb, on_step=_capture, runtime=runtime)
     return trace, component

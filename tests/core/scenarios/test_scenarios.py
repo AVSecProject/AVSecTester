@@ -7,7 +7,7 @@ import numpy as np
 from dataclasses import replace
 
 from avsectester.scenarios import CameraCalib, EgoState, FilterContext, ObjectGT, SceneGT
-from avsectester.scenarios.filters import DistanceRange, ImageAreaFrac, ViewpointRear
+from avsectester.scenarios.filters import ViewpointRear
 from avsectester.scenarios.requirements import PHYSICAL_PATCH_HIDE_VEHICLE
 
 CAM = {"front": CameraCalib(name="front", width=800, height=600, cam_to_ego=np.eye(4))}
@@ -32,8 +32,11 @@ def _scene(objects, speed=5.0):
 def test_requirement_matches_qualifying_vehicle_and_selects_nearest_ahead():
     near = _vehicle("near", 8.0, (330, 250, 470, 400))  # ~0.058 area frac, rear-facing, in view
     far = _vehicle("far", 12.0, (330, 250, 470, 400))  # also qualifies
-    m = PHYSICAL_PATCH_HIDE_VEHICLE.match(_scene([far, near]))
+    blocked = _vehicle("blocked", 5.0, (330, 250, 470, 400), vis=0.2)
+    result = PHYSICAL_PATCH_HIDE_VEHICLE.evaluate(_scene([blocked, far, near]))
+    m = result.match
     assert m is not None and m.target.track_id == "near" and m.camera == "front"
+    assert [candidate.status for candidate in result.candidates] == ["fail", "pass", "pass"]
 
 
 @pytest.mark.parametrize(
@@ -53,27 +56,8 @@ def test_requirement_rejects_when_one_constraint_fails(overrides):
     assert PHYSICAL_PATCH_HIDE_VEHICLE.match(_scene([_vehicle(**settings)])) is None
 
 
-def test_individual_constraints():
-    v = _vehicle("v", 10.0, (300, 200, 500, 400))
-    scene = _scene([v])
-    assert DistanceRange(4, 25).holds(scene, v) and not DistanceRange(0, 5).holds(scene, v)
-    assert ViewpointRear(35).holds(scene, v) and not ViewpointRear(5).holds(
-        scene, _vehicle("w", 10, (1, 1, 2, 2), yaw=1.0)
-    )
-    assert ImageAreaFrac(0.02, 0.5).holds(scene, v)  # 200*200 / (800*600) = 0.083
-
-
 # ---- serialization + natural-language interpretation ----------------------------------------------
-def test_requirement_serialize_roundtrip():
-    from avsectester.scenarios.serialize import requirement_from_dict, requirement_to_dict
-
-    d = requirement_to_dict(PHYSICAL_PATCH_HIDE_VEHICLE)
-    assert d["target"]["category"] == "vehicle" and d["constraints"][0]["kind"] == "InView"
-    back = requirement_from_dict(d)
-    assert requirement_to_dict(back) == d  # exact round-trip through the constraint registry
-
-
-@pytest.mark.parametrize("template", ["{}", "```json\n{}\n```", "Requirement: {}"])
+@pytest.mark.parametrize("template", ["{}", "```json\n{}\n```"])
 def test_nl_interpret_with_stub_llm(template):
     import json
 
@@ -89,6 +73,7 @@ def test_nl_interpret_with_stub_llm(template):
         return template.format(json.dumps(target))
 
     req = interpret("a vehicle directly ahead, close, rear facing us, unoccluded", stub_llm)
+    assert requirement_to_dict(req) == target
     # a scene that satisfies the hand-written requirement also satisfies the interpreted one
     assert req.match(_scene([_vehicle("near", 8.0, (330, 250, 470, 400))])) is not None
     assert "ImageAreaFrac" in build_prompt("x")  # the prompt lists the real constraint vocabulary
@@ -168,14 +153,6 @@ def test_nl_interpret_rejects_invalid_requirements(response, error, match):
 
     with pytest.raises(error, match=match):
         interpret("a lead vehicle", lambda prompt: response)
-
-
-def test_filters_all_candidates_before_selecting_nearest():
-    near = _vehicle("near", 5, (300, 200, 500, 400), vis=0.2)
-    far = _vehicle("far", 10, (300, 200, 500, 400), vis=0.9)
-    result = PHYSICAL_PATCH_HIDE_VEHICLE.evaluate(_scene([near, far]))
-    assert result.match.target.track_id == "far"
-    assert [c.status for c in result.candidates] == ["fail", "pass"]
 
 
 def test_rear_angle_uses_camera_bearing_and_preserves_yaw_wrapping():

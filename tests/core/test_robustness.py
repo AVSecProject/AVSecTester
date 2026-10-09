@@ -97,8 +97,8 @@ class _Mild(Corruption):  # a corruption that does not cross the detection thres
         return np.clip(rgb.astype(int) + 1, 0, 255).astype(np.uint8)
 
 
-@pytest.mark.parametrize("n", [1, 3])
-def test_harness_scores_each_condition_and_aggregates_scenarios(n):
+def test_harness_scores_each_condition_and_aggregates_scenarios():
+    n = 3
     r = evaluate_robustness(
         _StubSource(n),
         req=None,

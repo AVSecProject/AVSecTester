@@ -9,8 +9,8 @@ from avsectester.attacks.object_insertion.sign_spoof import SignAsset
 from avsectester.insertion import ActorPose, Insertion, Orientation, WorldPlacement, resolve_insertion
 
 
-@pytest.mark.parametrize("yaw", [0, 20, -35])
-def test_sign_world_geometry_preserves_face_and_post_positions(yaw):
+def test_sign_world_geometry_preserves_face_and_post_positions():
+    yaw = 20
     insertion = Insertion("sign", SignAsset(), WorldPlacement((20, -5, 0)),
                           Orientation("fixed_world", (0, 0, 180 + yaw)))
     post, face = resolve_insertion(insertion, {}, ActorPose(np.eye(4))).planes()

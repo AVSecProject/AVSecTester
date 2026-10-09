@@ -19,9 +19,9 @@ from avsectester.simulators.patch_insertion import render_plane, render_resolved
 CAM_FROM_WORLD = np.array([[0, -1, 0, 0], [0, 0, -1, 0], [1, 0, 0, 0], [0, 0, 0, 1.0]])
 
 
-@pytest.fixture(params=["pinhole", "fisheye"])
+@pytest.fixture
 def camera(request):
-    if request.param == "fisheye":
+    if getattr(request, "param", "pinhole") == "fisheye":
         return FThetaCamera(50, 40, (0, 50), 100, 80, (0, 1 / 50), max_angle=1.5)
     return PinholeCamera(np.array([[50.0, 0, 50], [0, 50, 40], [0, 0, 1]]), 100, 80)
 
@@ -40,6 +40,7 @@ def panel(texture, position=(10, 0, 0), width=4, height=2, id="panel"):
 
 
 @pytest.mark.parametrize("position", [(10, 0, 0), (20, 0, 0), (10, 10, 0)])
+@pytest.mark.parametrize("camera", ["pinhole", "fisheye"], indirect=True)
 def test_minified_cutout_uses_the_rendered_silhouette(camera, position):
     texture = np.full((512, 512, 4), [240, 40, 20, 255], np.uint8)
     texture[:, :, 3] = (np.arange(512)[None, :] % 8 >= 4) * 255
@@ -125,6 +126,7 @@ def test_custom_evidence_can_omit_color_samples(camera):
         )
 
 
+@pytest.mark.parametrize("camera", ["pinhole", "fisheye"], indirect=True)
 def test_camera_crop_does_not_change_texture_sampling(camera):
     from dataclasses import replace
 
@@ -147,6 +149,7 @@ def test_camera_crop_does_not_change_texture_sampling(camera):
 
 
 @pytest.mark.parametrize("method", ["depth", "cuboid"])
+@pytest.mark.parametrize("camera", ["pinhole", "fisheye"], indirect=True)
 def test_independent_insertions_occlude_by_depth_and_keep_holes(camera, method):
     from avsectester.plane import Observation
     from avsectester.rendering.types import InsertionGeometry
@@ -230,3 +233,69 @@ def test_appearance_softening_preserves_visibility_and_foreground_pixels(camera)
     np.testing.assert_array_equal(image[~evidence.visible_mask], clean[~evidence.visible_mask])
     np.testing.assert_array_equal(evidence.sampled_rgba, original_samples)
     assert np.any(image[evidence.visible_mask] != clean[evidence.visible_mask])
+
+
+def test_harmonization_can_be_toggled_without_changing_visibility_or_occluders(camera):
+    from avsectester.simulators.patch_insertion import PatchCompositor
+
+    item = panel(np.full((32, 32, 4), [240, 20, 30, 255], np.uint8))
+    clean = np.full((camera.height, camera.width, 3), 70, np.uint8)
+    depth = np.full(clean.shape[:2], 100.0)
+    depth[:, :50] = 1.0
+    evidence = DepthVisibilityEstimator().estimate(
+        item, camera, CAM_FROM_WORLD, scene_depth=depth, depth_convention="z", camera_name="front",
+    )
+    calls = []
+
+    def harmonizer(image, mask, background):
+        calls.append(mask.copy())
+        # Only visible insertion pixels may change even if a custom module
+        # returns changes outside its input mask.
+        return np.full_like(image, 211)
+
+    compositor = PatchCompositor(harmonizer, soften=0.6)
+    enabled, mask = render_resolved(
+        clean, camera, CAM_FROM_WORLD, item, evidence, compositor=compositor,
+    )
+    assert len(calls) == 1
+    np.testing.assert_array_equal(mask > 0, evidence.visible_mask)
+    np.testing.assert_array_equal(enabled[~evidence.visible_mask], clean[~evidence.visible_mask])
+    assert (enabled[evidence.visible_mask] == 211).all()
+
+    compositor.harmonize = False
+    disabled, disabled_mask = render_resolved(
+        clean, camera, CAM_FROM_WORLD, item, evidence, compositor=compositor,
+    )
+    plain, _ = render_resolved(
+        clean, camera, CAM_FROM_WORLD, item, evidence,
+        compositor=PatchCompositor(harmonize=False, soften=0.6),
+    )
+    assert len(calls) == 1
+    np.testing.assert_array_equal(disabled, plain)
+    np.testing.assert_array_equal(disabled_mask, mask)
+    assert np.any(disabled[evidence.visible_mask] != enabled[evidence.visible_mask])
+
+    compositor.harmonize = True
+    restored, _ = render_resolved(
+        clean, camera, CAM_FROM_WORLD, item, evidence, compositor=compositor,
+    )
+    assert len(calls) == 2
+    np.testing.assert_array_equal(restored, enabled)
+    assert (clean == 70).all()
+
+
+def test_disabled_pctnet_does_not_load_weights(camera, monkeypatch):
+    from avsectester.rendering.harmonizers import PCTNetHarmonizer
+    from avsectester.simulators.patch_insertion import PatchCompositor
+
+    harmonizer = PCTNetHarmonizer(strict=True)
+    monkeypatch.setattr(harmonizer, "_load", lambda: pytest.fail("Disabled PCTNet must not load"))
+    compositor = PatchCompositor(harmonizer, harmonize=False)
+    clean = np.zeros((camera.height, camera.width, 3), np.uint8)
+    item = panel(np.full((32, 32, 4), [240, 20, 30, 255], np.uint8))
+
+    disabled, mask = render_resolved(clean, camera, CAM_FROM_WORLD, item, compositor=compositor)
+    plain, plain_mask = render_resolved(clean, camera, CAM_FROM_WORLD, item)
+    assert mask.any()
+    np.testing.assert_array_equal(disabled, plain)
+    np.testing.assert_array_equal(mask, plain_mask)

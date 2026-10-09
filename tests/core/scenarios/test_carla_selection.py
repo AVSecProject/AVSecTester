@@ -290,6 +290,7 @@ def test_insertion_updates_model_input_with_attached_and_world_positions():
         states[frame] = FilterContext(scene, native={"depth": {"front": np.full((80, 100), 100)}})
     backend = SimpleNamespace(frame=10)
     backend.selection_context = lambda: states[backend.frame]
+    backend.ground_truth = lambda: SimpleNamespace(frame=backend.frame)
     perturb = insertion_perturbation(backend, items, bindings={"attacker": ("host",)})
     images = []
     for frame in (10, 11):
@@ -312,8 +313,11 @@ def test_insertion_updates_model_input_with_attached_and_world_positions():
     larger = perturb(Observation(1.1, 11, {"front": np.zeros((160, 200, 3), np.uint8)}))
     assert larger.sensor_data["front"].shape == (160, 200, 3)
     assert larger.sensor_data["front"].any()
+    # Reject stale physical geometry, independent of the model-visible frame number.
+    backend.ground_truth = lambda: SimpleNamespace(frame=10)
     with pytest.raises(ValueError, match="same frame"):
         perturb(Observation(1, 10, {"front": np.zeros((80, 100, 3), np.uint8)}))
+    backend.ground_truth = lambda: SimpleNamespace(frame=11)
     states[11].scene.objects.clear()
     with pytest.raises(KeyError, match="Selected insertion actors unavailable"):
         perturb(Observation(1.1, 11, {"front": np.zeros((80, 100, 3), np.uint8)}))
@@ -349,9 +353,12 @@ def test_insertion_uses_selected_sensor_source_and_its_absolute_frame():
     )
     texture = np.full((8, 8, 4), [255, 0, 0, 255], np.uint8)
     item = Insertion("sign", PlaneAsset(texture, 1, 1), WorldPlacement((10, 0, 0)))
-    perturb = insertion_perturbation(SimpleNamespace(selection_context=lambda: context), (item,))
+    perturb = insertion_perturbation(SimpleNamespace(
+        selection_context=lambda: context,
+        ground_truth=lambda: SimpleNamespace(frame=10),
+    ), (item,))
     other = np.full((80, 100, 3), 77, np.uint8)
-    original = Observation(1, 10, {"other-camera": other, "camera-0-0": ImagePayload(frame=3)})
+    original = Observation(999, 999, {"other-camera": other, "camera-0-0": ImagePayload(frame=3)})
     changed = perturb(original)
     assert changed.sensor_data["other-camera"] is other
     assert not original.sensor_data["camera-0-0"].rgb_image.any()

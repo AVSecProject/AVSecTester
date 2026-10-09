@@ -17,9 +17,11 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from copy import deepcopy
 
-from avsectester.backend import AVStack, WorldBackend
-from avsectester.plane import FrameRecord, Observation, Trace
+from avsectester.backend import AVStack, WorldBackend, run
+from avsectester.plane import Observation, Trace
+from avsectester.runtime import Runtime
 
 View = Callable[[Observation], Any]  # Observation -> HWC-uint8 RGB ndarray, or None to skip
 REPO_TMP = Path(__file__).resolve().parents[2] / "tmp"  # <repo>/tmp (gitignored)
@@ -277,6 +279,7 @@ def record_run(
     perturb: Callable[[Observation], Observation] | None = None,
     prefix: str = "frame",
     collect: bool = False,
+    runtime: Runtime | None = None,
 ) -> Trace:
     """Drive ``stack`` in ``backend`` for ``frames`` steps, saving ``visualize(seen)`` per frame.
 
@@ -287,29 +290,16 @@ def record_run(
     """
     out = Path(out_dir) if out_dir is not None else REPO_TMP / "frames"
     out.mkdir(parents=True, exist_ok=True)
-    obs = backend.reset()
-    stack.reset(obs)
-    trace = Trace()
     collected: list = []
-    for i in range(frames):
-        seen = perturb(obs) if perturb is not None else obs
-        control = stack(seen)
+
+    def capture(i, seen, control):
         image = visualize(seen)  # visualize what the stack perceives (== obs when no perturb)
         if image is not None:
             save_image(image, out / f"{prefix}_{i:04d}.png")
             if collect:
-                collected.append(image)
-        obs = backend.step(control)
-        trace.records.append(
-            FrameRecord(
-                frame=i,
-                t=obs.t,
-                speed=obs.ego_speed,
-                throttle=control.throttle,
-                brake=control.brake,
-                steer=control.steer,
-            )
-        )
+                collected.append(deepcopy(image))
+
+    trace = run(backend, stack, frames, perturb=perturb, on_step=capture, runtime=runtime)
     if collect:
         trace.frames = collected  # the saved RGB frames, for filmstrip()/save_gif()
     return trace

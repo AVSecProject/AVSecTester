@@ -25,11 +25,8 @@ def test_build_patch_defaults_and_strips_target_keys():
     assert isinstance(p, PhysicalPatch)
     assert p.prop == DEFAULT_PROP  # target/gap/lead_vehicle are the backend's concern, not the patch
     assert p.rotation == (90.0, 0.0, 0.0)  # stands the plank vertical, facing the ego
-
-
-def test_build_patch_passes_through_a_patch_object():
-    p = PhysicalPatch(prop="static.prop.box01")
-    assert build_patch(p) is p
+    custom = PhysicalPatch(prop="static.prop.box01")
+    assert build_patch(custom) is custom
 
 
 def test_image_rgba_resizes_to_square(tmp_path):

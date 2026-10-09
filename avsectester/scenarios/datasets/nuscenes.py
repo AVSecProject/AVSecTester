@@ -17,7 +17,7 @@ from collections.abc import Iterator
 import numpy as np
 
 from avsectester.backend import WorldBackend
-from avsectester.plane import Control, Observation
+from avsectester.plane import Control, Observation, WorldSnapshot
 from avsectester.rendering.types import Visibility
 from avsectester.scenarios.context import FilterContext
 from avsectester.scenarios.scene import CameraCalib, EgoState, ObjectGT, SceneGT
@@ -100,7 +100,13 @@ class RecordedFrameBackend(WorldBackend):
             import cv2
             bgr = cv2.imread(self.image_path)
             self._rgb = bgr[:, :, ::-1].copy() if bgr is not None else None
-        return Observation(t=self.t, frame=self.frame, sensor_data={self.sensor_id: self._rgb})
+        return self.copy_observation(Observation(
+            t=self.t, frame=self.frame, sensor_data={self.sensor_id: self._rgb},
+        ))
+
+    def ground_truth(self) -> WorldSnapshot:
+        """Return the recorded frame's fixed clock. This backend has no physical ego state."""
+        return WorldSnapshot(t=self.t, frame=self.frame)
 
     def reset(self) -> Observation:
         return self._observe()

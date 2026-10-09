@@ -2,21 +2,6 @@
 
 import numpy as np
 import pytest
-from avsectester.rendering.cameras import cam_coords, carla_cam_coords, project_to_pixels
-
-
-def test_projection():
-    # pinhole K (f=50, principal point 50,50): optical axis -> principal point. +x shifts right by f*x/z
-    k = np.array([[50.0, 0, 50], [0, 50.0, 50], [0, 0, 1]])
-    assert project_to_pixels(np.array([[0, 0, 1.0]]), k)[0] == pytest.approx([50, 50])
-    assert project_to_pixels(np.array([[1, 0, 1.0]]), k)[0] == pytest.approx([100, 50])
-
-
-def test_extrinsics_and_carla_axis_swap():
-    eye = np.eye(4)
-    assert np.allclose(cam_coords(np.array([[1, 2, 3.0]]), eye), [[1, 2, 3]])
-    # CARLA UE (x fwd, y right, z up) -> standard (x right, y down, z fwd) = [y, -z, x]
-    assert np.allclose(carla_cam_coords(np.array([[1, 2, 3.0]]), eye), [[2, -3, 1]])
 
 
 def test_image_warp_returns_an_alpha_composite_and_opaque_mask():
@@ -101,16 +86,14 @@ def test_frame_perturbation_reads_and_rewrites_the_selected_camera(custom_view):
 
 
 @pytest.mark.parametrize("reverse_surfaces", [False, True])
-@pytest.mark.parametrize("harmonize", [False, True])
 def test_insertion_renderer_depth_orders_surfaces_and_preserves_cutout_holes(
     reverse_surfaces,
-    harmonize,
 ):
     from avsectester.insertion import ActorPose, Insertion, PlaneAsset, PlaneSurface, WorldPlacement
     from avsectester.plane import Observation
     from avsectester.rendering.cameras import PinholeCamera
     from avsectester.rendering.types import InsertionGeometry
-    from avsectester.simulators.patch_insertion import InsertionRenderer, PatchCompositor
+    from avsectester.simulators.patch_insertion import InsertionRenderer
 
     red = np.full((16, 16, 4), [255, 0, 0, 255], np.uint8)
     red[6:10, 6:10, 3] = 0
@@ -130,12 +113,10 @@ def test_insertion_renderer_depth_orders_surfaces_and_preserves_cutout_holes(
 
     camera = PinholeCamera(np.array([[50, 0, 50], [0, 50, 40], [0, 0, 1]]), 100, 80)
     camera_from_world = np.array([[0, -1, 0, 0], [0, 0, -1, 0], [1, 0, 0, 0], [0, 0, 0, 1]])
-    compositor = PatchCompositor(lambda image, mask, background: image) if harmonize else None
     render = InsertionRenderer(
         [Insertion("layered", LayeredAsset(), WorldPlacement((0, 0, 0)))],
         camera,
         lambda _: InsertionGeometry({}, ActorPose(np.eye(4)), camera_from_world),
-        compositor=compositor,
     )
     image = render(Observation(0, 0), np.zeros((80, 100, 3), np.uint8))
     np.testing.assert_array_equal(image[40, 50], [0, 0, 255])

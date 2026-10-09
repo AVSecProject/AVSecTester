@@ -161,3 +161,152 @@ def test_modular_stack_counts_detections_after_attack(pipeline_config, make_dete
         counts.append(len(stack.component_log()["perception"]))
 
     assert counts == [2, 2, 2]  # original object plus injected phantom, every frame
+
+
+def test_runtime_bridges_replace_real_stage_data_and_capture_final_outputs(
+    pipeline_config, make_detections, make_ego
+):
+    from types import SimpleNamespace
+
+    from avstack.datastructs import DataContainer
+    from avsectester.plane import Observation
+    from avsectester.runtime import CallInputs
+    from avsectester.stacks.modular import ModularAVStack
+
+    stack = ModularAVStack(pipeline_config)
+    stack.instrument(("perception", "control"))
+    stack.attach("perception", {"type": "PhantomInjection"})
+    modules = {name: getattr(stack.pipeline, name) for name in ("perception", "tracking", "planning", "control")}
+    original_hooks = {name: (tuple(module.pre_hooks), tuple(module.post_hooks)) for name, module in modules.items()}
+    calls = []
+
+    class Session:
+        def emit(self, stage, value, sensor=None):
+            calls.append(stage)
+            if stage.endswith(".pre"):
+                assert isinstance(value, CallInputs)
+            if stage == "perception.pre":
+                return CallInputs(args=(make_detections([(30, 8, 0)]),), kwargs=value.kwargs)
+            if stage == "perception.post":
+                assert len(value) == 2  # configured native phantom ran before the runtime transform
+                return DataContainer(value.frame, value.timestamp, [], value.source_identifier)
+            if stage == "tracking.pre":
+                assert len(value.args[0]) == 0
+                assert "platform" in value.kwargs
+            if stage == "control.post":
+                return SimpleNamespace(throttle=0.0, steer=0.2, brake=0.8)
+            return value
+
+    observation = Observation(t=0.0, frame=0, sensor_data=make_detections(), vehicle_state=make_ego())
+    with stack.runtime_context(Session()):
+        control = stack(observation)
+
+    assert calls == [f"{stage}.{phase}" for stage in modules for phase in ("pre", "post")]
+    assert control.throttle == 0.0 and control.brake == 0.8 and control.steer == 0.2
+    assert len(stack.component_log()["perception"]) == 0
+    assert stack.component_log()["control"].brake == 0.8
+    for name, module in modules.items():
+        assert (tuple(module.pre_hooks), tuple(module.post_hooks)) == original_hooks[name]
+    assert stack.native["pipeline"] is stack.pipeline
+    assert stack.models["perception"] is stack.pipeline.perception
+
+
+def test_runtime_bridges_cleanup_after_invalid_pre_result(pipeline_config, make_detections, make_ego):
+    from avsectester.plane import Observation
+    from avsectester.stacks.modular import ModularAVStack
+
+    stack = ModularAVStack(pipeline_config)
+
+    class Session:
+        def emit(self, stage, value, sensor=None):
+            return object()
+
+    observation = Observation(t=0.0, frame=0, sensor_data=make_detections(), vehicle_state=make_ego())
+    with pytest.raises(TypeError, match="perception.pre must return CallInputs"):
+        with stack.runtime_context(Session()):
+            stack(observation)
+    assert all(not module.pre_hooks and not module.post_hooks for module in stack.native.values() if hasattr(module, "pre_hooks"))
+
+
+def test_native_hook_attached_during_reset_runs_before_runtime_defense_and_capture(
+    pipeline_config, make_detections, make_ego
+):
+    from avstack.datastructs import DataContainer
+    from avsectester.backend import WorldBackend, run
+    from avsectester.plane import Observation
+    from avsectester.runtime import Hook, Plugin, Runtime
+    from avsectester.stacks.modular import ModularAVStack
+
+    class Backend(WorldBackend):
+        def observation(self, frame):
+            return Observation(
+                t=frame * 0.05, frame=frame,
+                sensor_data=make_detections([(30, 8, 0)], frame=frame),
+                vehicle_state=make_ego(t=frame * 0.05), ego_speed=5.0,
+            )
+
+        def reset(self):
+            return self.observation(0)
+
+        def step(self, control):
+            return self.observation(1)
+
+    class InstallNativeAttack(Plugin):
+        def reset(self, context):
+            context.stack.attach("perception", {"type": "PhantomInjection"})
+
+        def transform(self, observation, context):
+            return observation
+
+    defense_inputs = []
+
+    def hide_detections(detections, context):
+        defense_inputs.append(len(detections))
+        return DataContainer(
+            detections.frame, detections.timestamp, [], detections.source_identifier,
+            source_reference=detections.source_reference,
+        )
+
+    stack = ModularAVStack(pipeline_config)
+    stack.instrument(("perception",))
+    runtime = Runtime([
+        Hook("observation", InstallNativeAttack()),
+        Hook("perception.post", hide_detections),
+    ])
+    run(Backend(), stack, frames=1, runtime=runtime)
+
+    assert defense_inputs == [2]  # real detection plus the newly installed phantom
+    assert len(stack.component_log()["perception"]) == 0
+    assert len(stack.pipeline.perception.post_hooks) == 2  # native attack and capture survive
+
+
+def test_instrumentation_is_idempotent_and_reset_clears_telemetry(
+    pipeline_config, make_detections, make_ego
+):
+    from avsectester.plane import Observation
+    from avsectester.stacks.modular import ModularAVStack
+
+    stack = ModularAVStack(pipeline_config)
+    stack.instrument(("perception",))
+    stack.instrument(("perception",))
+    assert len(stack.pipeline.perception.post_hooks) == 1
+    obs = Observation(t=0.0, frame=0, sensor_data=make_detections(), vehicle_state=make_ego())
+    stack(obs)
+    assert stack.component_log()["perception"] is not None
+    stack.reset(obs)
+    assert stack.component_log()["perception"] is None
+
+
+def test_stage_capabilities_exclude_modules_without_actual_hook_dispatch(pipeline_config):
+    from avsectester.stacks.modular import ModularAVStack
+
+    pipeline_config["tracking"] = {"type": "GroundTruthTracker"}
+    stack = ModularAVStack(pipeline_config)
+    # GroundTruthTracker inherits hook lists but bypasses the decorated call.
+    assert "tracking.pre" not in stack.supported_stages
+    assert "tracking.post" not in stack.supported_stages
+    assert "perception.pre" in stack.supported_stages
+    with pytest.raises(ValueError, match="Cannot instrument unavailable stages"):
+        stack.instrument(("tracking",))
+    with pytest.raises(ValueError, match="No hookable"):
+        stack.attach("tracking", {"type": "PhantomInjection"})

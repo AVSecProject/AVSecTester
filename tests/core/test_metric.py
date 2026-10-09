@@ -8,14 +8,6 @@ import pytest
 from avsectester.metric import impact
 
 
-def test_real_induced_stop_is_success(make_trace):
-    clean = make_trace([0, 1, 2, 3, 4, 5], [0, 0, 0, 0, 0, 0])  # cruises to 5 m/s, never brakes
-    attacked = make_trace([0, 1, 2, 1, 0, 0], [0, 0, 1, 1, 1, 1])  # braked to a stop
-    r = impact(clean, attacked)
-    assert r.clean_drove and r.induced_stop and r.attack_succeeded
-    assert "forced an unsafe stop" in r.verdict
-
-
 def test_clean_never_drove_is_inconclusive_not_success(make_trace):
     # the exact case that motivated this: both runs ~stationary, attacked has brake frames
     clean = make_trace([0.1, 0.15, 0.15, 0.15], [0, 0, 0, 0])
@@ -92,6 +84,8 @@ def test_impact_reports_measurements_from_each_run(make_trace):
     assert result.clean_brake_frames == 0
     assert result.attacked_brake_frames == 2
     assert result.clean_drove and result.induced_braking and result.induced_stop
+    assert result.attack_succeeded
+    assert "forced an unsafe stop" in result.verdict
     assert "ATTACK SUCCEEDED" in str(result)
 
 

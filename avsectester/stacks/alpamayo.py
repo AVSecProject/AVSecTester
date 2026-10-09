@@ -10,13 +10,14 @@ of camera frames + ego poses (the model's context) and emit the selected candida
 ``Control.trajectory``; the world backend's trajectory follower turns that into motion.
 
 Runs in the AlpaSim **driver env** (Python 3.12 + ``alpasim_driver`` and the Alpamayo repos), NOT the
-CARLA/avsec 3.10 env — so all heavy imports are lazy and this module imports fine without them. The
+CARLA/avsec 3.11 env — so all heavy imports are lazy and this module imports fine without them. The
 checkpoint defaults to the already-downloaded local model to avoid any re-download.
 """
 
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Mapping
 from typing import Any
 
 from avsectester.backend import AVStack
@@ -45,6 +46,21 @@ class AlpamayoAVStack(AVStack):
         self._prev_plan = None
         self._iseed = 0
         self.last_reasoning: str | None = None
+        self._last_log: dict[str, Any] | None = None
+
+    @property
+    def supported_stages(self) -> frozenset[str]:
+        """The end-to-end policy has no separate perception or tracking stage."""
+        return frozenset(("policy.pre", "policy.post"))
+
+    @property
+    def native(self) -> Mapping[str, Any]:
+        return {"model": self._model, "camera_history": self._frames}
+
+    @property
+    def models(self) -> Mapping[str, Any]:
+        """The loaded policy model. Empty until reset or the first inference loads it."""
+        return {} if self._model is None else {"policy": self._model}
 
     def _load(self):
         """Lazily build the Alpamayo model from the driver package (heavy: torch + a 10B checkpoint)."""
@@ -73,6 +89,8 @@ class AlpamayoAVStack(AVStack):
             buf.clear()
         self._prev_plan = None
         self._iseed = 0
+        self.last_reasoning = None
+        self._last_log = None
 
     HISTORY_SPAN_S = 1.6  # must exceed the model's required 1.5 s ego-history span
     EPOCH_US = 10_000_000  # offset so backward-history timestamps stay positive (proto fixed64)
@@ -141,7 +159,8 @@ class AlpamayoAVStack(AVStack):
     def __call__(self, observation: Observation) -> Control:
         if self._model is None:
             self._load()
-        prediction = self._model.predict(self._prediction_input(observation))
+        inputs = self._emit("policy.pre", self._prediction_input(observation))
+        prediction = self._emit("policy.post", self._model.predict(inputs))
         self._iseed += 1
         self._prev_plan = getattr(prediction, "selected_plan", None)
         self.last_reasoning = getattr(prediction, "reasoning_text", None)  # chain-of-causation text, if any

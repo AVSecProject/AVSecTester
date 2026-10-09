@@ -180,3 +180,34 @@ def test_record_run_saves_a_frame_per_step(tmp_path):
     assert len(trace.records) == 4
     saved = sorted(tmp_path.glob("frame_*.png"))
     assert [p.name for p in saved] == ["frame_0000.png", "frame_0001.png", "frame_0002.png", "frame_0003.png"]
+
+
+def test_record_run_uses_processed_input_and_snapshots_reused_view_buffers(tmp_path):
+    import numpy as np
+
+    from avsectester.runtime import Hook, Runtime
+
+    speeds = []
+    image = np.zeros((2, 3, 3), np.uint8)
+
+    def attack(observation, context):
+        observation.sensor_data["camera_front"][:] = 10 + context.step
+        observation.ego_speed = 8.0
+        return observation
+
+    def view(observation):
+        speeds.append(observation.ego_speed)
+        image[:] = observation.sensor_data["camera_front"]
+        return image
+
+    backend = NuRecBackend({}, renderer=StubRenderer(height=2, width=3))
+    trace = record_run(
+        backend, Cruise(), frames=2, out_dir=tmp_path, visualize=view, collect=True,
+        runtime=Runtime([Hook("observation", attack)]),
+    )
+    image[:] = 99
+
+    assert speeds == [8.0, 8.0]
+    assert all(record.speed < 8.0 for record in trace.records)
+    for index, frame in enumerate(trace.frames):
+        np.testing.assert_array_equal(frame, np.full_like(image, 10 + index))

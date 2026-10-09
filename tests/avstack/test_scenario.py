@@ -18,6 +18,7 @@ from avsectester import scenario
 from avsectester.simulators import carla as carla_backend
 from avstack.config import HOOKS, PIPELINE
 from avstack.modules.base import BaseModule
+from avstack.utils.decorators import apply_hooks
 
 
 @pytest.fixture
@@ -39,15 +40,19 @@ def simulation(monkeypatch):
         close=Mock(),
     )
 
-    # --- the AV stack pipeline (what PIPELINE.build returns): a callable that fires perception's
-    #     post-hooks on a real detection and returns a fixed control ---
-    perception = BaseModule(name="test-perception")
-    tracking = BaseModule(name="test-tracking")
+    class Stage(BaseModule):
+        @apply_hooks
+        def __call__(self, data):
+            return data
+
+    # Exercise the real hook dispatcher so advertised capabilities match invocation.
+    perception = Stage(name="test-perception")
+    tracking = Stage(name="test-tracking")
     control = SimpleNamespace(throttle=0.0, brake=0.7, steer=-0.2)
     stage_outputs = []
 
     def pipeline_call(sensor_data, vehicle_state):
-        stage_outputs.append(perception._apply_post_hooks(["real-detection"]))
+        stage_outputs.append(perception(["real-detection"]))
         return control
 
     pipeline = Mock(side_effect=pipeline_call)
@@ -145,6 +150,24 @@ def test_runner_records_requested_frames_and_initializes_actors(simulation):
         npc.destroy.assert_called_once_with()
     sim.client.close.assert_called_once()
     sim.sleep.assert_not_called()
+
+
+def test_runner_consumes_runtime_component_and_command_replacements(simulation):
+    from avsectester.plane import Control
+    from avsectester.runtime import Hook, Runtime
+
+    sim = simulation
+    runtime = Runtime([
+        Hook("perception.post", lambda value, context: [*value, "runtime-detection"]),
+        Hook("command", lambda value, context: Control(throttle=0.3, steer=0.1)),
+    ])
+    trace = scenario.run_scenario(sim.config, frames=2, runtime=runtime)
+
+    assert sim.stage_outputs == [["real-detection", "runtime-detection"]] * 2
+    assert [record.n_detections for record in trace.records] == [2, 2]
+    assert [record.throttle for record in trace.records] == [0.3, 0.3]
+    assert all(call.args[0].throttle == 0.3 for call in sim.ego.apply_control.call_args_list)
+    sim.client.close.assert_called_once()
 
 
 def test_runner_preserves_hook_order_and_counts_attacked_output(simulation, monkeypatch):
