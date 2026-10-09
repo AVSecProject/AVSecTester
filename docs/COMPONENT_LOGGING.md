@@ -1,69 +1,35 @@
-# Component-level logging — in-system analysis of an attack
+# Component logging
 
-## Why
+Component logging captures intermediate outputs to help researchers examine how an intervention
+propagates through a driving system. It collects already-produced outputs without running
+additional model inference.
 
-The black-box metrics so far — `metric.impact` (did the drive change?) and `evaluation.robustness`
-(does the attack survive corruption?) — see only the *outcome* at the ego's wheels. They cannot say
-**where inside the stack** an attack takes effect. For a hide-a-vehicle patch the story is the
-*propagation*: perception misses the target → tracking drops it → planning doesn't slow → action holds
-throttle. A phantom injection is the dual. Component-level logging records each stage's per-frame output
-so that chain is visible.
+## Stack interface
 
-## Design: reuse what avstack already provides
-
-avstack supports component logging through `BaseModule.register_post_hook` and the `@apply_hooks`
-decorator. This implementation uses those hooks to capture already-produced outputs and reuses
-avstack's matching metrics for analysis.
-
-### The common interface (both stack shapes)
-
-One contract, defined in `evaluation/component_log.py`:
+A stack can expose its latest outputs through this protocol, defined in
+`avsectester.evaluation.component_log`:
 
 ```python
 class InstrumentedStack(Protocol):
-    def component_log(self) -> dict[str, Any] | None: ...   # {component_name: free_output}, or None
+    def component_log(self) -> dict[str, Any] | None: ...
 ```
 
-A plain dict of the stack's *already-produced* outputs — no bespoke schema — so it fits either shape:
-- **modular** (`ModularAVStack`): `{"perception": detections, "tracking": tracks, "planning": plan,
-  "control": control}` (the stage outputs, captured via avstack post-hooks).
-- **end-to-end** (`AlpamayoAVStack`): `{"policy": prediction, "action": control}` — just what `predict()`
-  already returns (candidate trajectories `(K,T,3)` + `selected_index`) and the emitted command.
+| Stack | Outputs |
+|---|---|
+| `ModularAVStack` | Outputs of configured stages. `stack.instrument()` requests `perception`, `tracking`, `planning` and `control`. Pass `stages=(...)` for a smaller set. Requested stages must support effective native hooks. |
+| `AlpamayoAVStack` | `policy`: the driver prediction, and `action`: the resulting `Control`. These are available without calling `instrument()`. |
+| Custom stack | Any named outputs returned by `component_log()`. The collector does not require a fixed component schema. |
 
-The collector accepts additional component keys if the E2E adapter later exposes more outputs.
+For modular stacks, attach native attack hooks before instrumentation. Capture hooks observe
+returned outputs, including runtime replacements. An uninstrumented stack yields an empty
+`ComponentTrace`.
 
-Three small pieces:
+Instrumentation raises `ValueError` for unavailable stages. For a custom pipeline, select
+only the components whose post-stages appear in `stack.supported_stages`.
 
-1. **Capture (stack side, `stacks/`).** Modular: `_StageCapture` — a single generic avstack post-hook that
-   remembers a stage's output and returns it unchanged. `ModularAVStack.instrument(stages)` attaches one per
-   stage **last** (so it observes the *attacked* output). The same mechanism captures one stage
-   (`instrument(("perception",))`) or all configured stages. Read detection counts from
-   `ComponentTrace.counts("perception")`. `run_logged` does not populate `FrameRecord.n_detections`
-   from these captures. E2E: `AlpamayoAVStack.component_log()`
-   returns the prediction + control it already computed in `__call__`. Both satisfy `InstrumentedStack`.
+## Collect outputs
 
-2. **Gather (`evaluation/component_log.py`).** `run_logged(backend, stack, frames, perturb)` is the
-   instrumented twin of `backend.run`: it reuses the *same* loop via `run`'s `on_step` callback, and
-   each frame deep-copies the stack's `component_log()` into a `ComponentTrace` (a list of
-   `StepLog{frame, stages}`). The snapshot includes mutable tracks, plans and reference frames so
-   subsequent steps cannot rewrite earlier outputs. A stack without the component logging interface
-   yields an empty `ComponentTrace`.
-
-3. **Process (`evaluation/component_log.py`).** Deliberately thin, computed from the raw outputs:
-   - `ComponentTrace.counts(stage)` — per-frame output size (`len`), e.g. n_detections / n_tracks.
-   - `ComponentTrace.degradation(other, stage)` — per-frame count delta between two runs, without
-     requiring ground truth. Counts alone cannot measure position errors or trajectory changes.
-   - `ComponentTrace.performance(stage, truths)` — per-frame TP/FP/FN vs ground truth, reusing
-     `avstack.metrics.get_instantaneous_metrics` (nearest-neighbour assignment). Works on detections or
-     tracks alike.
-
-The sim↔stack contract (`plane.Observation`/`Control`) is untouched — component logs are a side channel
-pulled through `component_log()`. `evaluation` never imports `stacks`.
-
-## Collect and read outputs
-
-Given a selected `case` and a modular `pipeline_config`, instrument the stack and call `run_logged`.
-Attach any attack hooks before instrumentation so the capture observes their returned outputs:
+Given a selected `case` and a modular `pipeline_config` compatible with its sensors:
 
 ```python
 from avsectester.evaluation.component_log import run_logged
@@ -80,41 +46,40 @@ finally:
     backend.close()
 ```
 
-Use a pipeline configured for the backend's sensors. For Alpamayo, supply an `AlpamayoAVStack`
-instead, without calling `instrument()`. It exposes `policy` and `action` through the same collector.
+`run_logged(backend, stack, frames, perturb=None, *, runtime=None)` reuses the shared driving
+loop. Supply `runtime=runtime` to execute attack and defense handlers as described in
+[Interventions](INTERVENTIONS.md). Use an `AlpamayoAVStack` instead for the end-to-end path.
 
-`components.steps[i]` captures outputs computed from the input to decision step `i`.
-`trace.records[i]` records the state after executing that decision. These refer to different
-instants. Ground truth supplied to `performance(stage, truths)` must match the component output's
-input frame and reference coordinates, not the post-control state. Counts alone cannot establish
-attack success. Both traces are returned in memory, and this API does not automatically export
-all raw stage objects or generate a paper-ready report.
+Each `StepLog` contains the zero-based decision-step index in `frame` and a `stages` dictionary.
+The collector deep-copies the output graph, including mutable state and reference frames, so
+later updates do not change historical entries. Native outputs must support this copying.
 
-## How it feeds the end goal (paper-style report)
+## Read and compare outputs
 
-The planned report has five sections, each with a source module:
+| API | Meaning |
+|---|---|
+| `components.stage_names` | Component names from the first logged step |
+| `components.steps[i].stages[name]` | Raw output snapshot for the named component at decision step `i` |
+| `components.counts(name)` | Per-step `len(output)`, 0 for missing/`None`, or 1 for a scalar without `len` |
+| `clean_components.degradation(attacked_components, name)` | Clean count minus attacked count at corresponding list indices, up to the shorter trace |
+| `components.performance(name, truths, assign_radius=4.0)` | Per-step detection/tracking metrics from `avstack.metrics.get_instantaneous_metrics`, using nearest-neighbour assignment |
 
-| Report section            | Source |
-|---------------------------|--------|
-| Attack effectiveness      | `metric.impact` / robustness baseline ASR |
-| Robustness                | `evaluation.robustness` (ASR + resilience vs corruptions) |
-| Impacting-factor analysis | scenario factors (`SceneGT`: distance/viewpoint/visibility) × outcome — *future* |
-| Ablation                  | attack-config variants × outcome — *future* |
-| **In-system analysis**    | **this component logging** (clean-vs-attacked per-layer propagation) |
+Count differences do not measure position error or establish attack success. For `performance`,
+supply one ground-truth collection per decision step, with compatible native object types,
+reference coordinates and input time. The caller aligns both traces before comparing them.
+`run_logged` does not fill `FrameRecord.n_detections` from component captures.
 
-A later `evaluation/report.py` assembles all five.
+## Timing and executed commands
 
-## Status / phasing
+`components.steps[i]` describes inference from the input to decision step `i`.
+`trace.records[i]` describes the physical state after executing that decision. These are different
+instants. Match ground truth to the component input rather than the post-control state.
 
-1. **Implemented: component interfaces, collection and basic processing.** CPU tests cover collection
-   with synthetic backends, the real modular pipeline, and the Alpamayo adapter with controlled model
-   predictions. See `tests/core/test_component_log.py`, `tests/core/test_alpamayo.py` and
-   `tests/avstack/test_component_log_real.py`. These tests do not require a simulator or model weights.
-2. **Prediction stage + GT plumbing + plots.** Map a `prediction` stage when the pipeline has one (just
-   another stage key). Feed per-frame `truths` (from `SceneGT` / live CARLA GT) into `performance`. Add a
-   propagation figure + the clean-vs-attacked in-system diff to the report.
-3. **E2E processing.** The E2E `policy`/`action` logs are collected now. Later add processing of them
-   (e.g. clean-vs-attacked trajectory divergence / planned-speed delta) — no new model internals, no
-   speculative probes.
-4. **`evaluation/report.py`** — assemble all five sections (tables + plots, reusing `simulators.viz` /
-   `metric.plot_impact`).
+A component's `control` or `action` output is captured before final `command` handlers.
+Those handlers can change the command that is executed and recorded in `Trace`. Use the driving
+trace when inspecting executed throttle, brake and steer.
+
+Both traces are returned in memory. This API does not automatically serialize every native
+output or generate a complete experiment report. Use `simulators.viz.record_run` and
+`simulators.viz.save_gif` for scene recording. The [script index](../scripts/README.md) lists
+examples that save images and animations.

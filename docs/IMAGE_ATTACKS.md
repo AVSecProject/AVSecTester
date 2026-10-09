@@ -20,7 +20,7 @@ not required.
 
 The STOP face is included in `avsectester/assets/signs/`. Its source and license are recorded in
 [SOURCES.md](../avsectester/assets/signs/SOURCES.md). Person payloads take a caller-supplied RGBA
-asset. `scripts/extract_person_cutouts.py` can extract them from annotated nuScenes images using SAM.
+asset. `scripts/preparation/extract_person_cutouts.py` can extract them from annotated nuScenes images using SAM.
 These cutouts are derived dataset assets and are not bundled with the repository. The extraction
 script records their nuScenes source and license in `index.json`.
 
@@ -35,11 +35,14 @@ and `face_victim`. See [SCENARIOS.md](SCENARIOS.md) for the coordinate conventio
 examples, initial-scene selection and visibility providers.
 
 `InsertionRenderer` takes resolved actor poses and camera calibration, projects the surfaces,
-applies visibility masks, and optionally harmonizes their appearance. Its output is connected to
-`perturb(Observation)` so the driving model receives the inserted image. A visualization callback
+applies visibility masks, and optionally harmonizes their appearance. Connect its output at the `observation` runtime stage, or through the
+`perturb(Observation)` shorthand, so the driving model receives the inserted image. A visualization callback
 alone changes only displayed/saved images and must not be used as the input attack.
+See [INTERVENTIONS.md](INTERVENTIONS.md) for lifecycle, handler ordering and world/render stages.
 
-Geometry callbacks return `InsertionGeometry(actors, victim, cam_from_world)`.
+Geometry callbacks return `InsertionGeometry(actors, victim, cam_from_world)`. Built-in adapters
+use the effective rendering viewpoint and scene time, independently of model-visible localization
+or clock changes. NuRec `render.pre` request changes are reflected in insertion geometry.
 See [custom rendering adapters](SCENARIOS.md#custom-rendering-adapters) for coordinate conventions,
 camera protocols and visibility evidence. The built-in estimators and compositor share texture
 prefiltering and alpha samples, so visibility clips the same silhouette that is rendered.
@@ -108,12 +111,36 @@ Import harmonizers from `avsectester.rendering.harmonizers`.
 | Harmonizer | Behavior |
 |---|---|
 | `InsertionRenderer(..., compositor=None)` | Preserve the texture's colors |
+| `PatchCompositor(harmonize=False)` | Skip harmonization while keeping alpha compositing and any configured softening |
 | `ClassicHarmonizer()` | Color transfer and Poisson blending |
 | `ClassicHarmonizer(preserve_chroma=True, blend="feather")` | Adjust lightness while preserving hue |
 | `PCTNetHarmonizer(strict=True)` | Learned color transformation, with loading/inference errors propagated |
 
 Pass a harmonizer through `PatchCompositor(harmonizer)` to `InsertionRenderer`. Calling
 `PatchCompositor()` without a harmonizer selects `ClassicHarmonizer`, not a plain alpha paste.
+
+`harmonize` is a boolean switch, enabled by default for a supplied compositor. Set it at
+construction or change it before the next frame:
+
+```python
+from avsectester.rendering.harmonizers import PCTNetHarmonizer
+from avsectester.simulators.patch_insertion import InsertionRenderer, PatchCompositor
+
+compositor = PatchCompositor(PCTNetHarmonizer(strict=True), harmonize=False)
+renderer = InsertionRenderer(insertions, camera, geometry, compositor=compositor)
+
+compositor.harmonize = True   # Enable for subsequent frames.
+compositor.harmonize = False  # Disable without replacing the renderer or harmonizer.
+```
+
+When disabled, the harmonizer is not called and PCTNet weights are not loaded by rendering.
+The insertion pipeline is `resolve placement → sample surfaces → apply visibility → alpha
+composite → optional harmonization → model input`. Harmonization does not run automatically
+for all attacks. It only runs for image insertions with an enabled compositor.
+
+The object-composition demos and `patch_driving_demo.py` expose the same choice through
+`--harmonizer none`. Select `classic`, `chroma` where supported, or `libcom` to enable the
+corresponding method. The motion/visibility attachment demos preserve diagnostic colors.
 
 The compositor accepts `soften` as a nonnegative Gaussian blur sigma in image pixels:
 `PatchCompositor(harmonizer, soften=0.6)`. Softening changes appearance within the geometric
@@ -145,17 +172,16 @@ images but do not run a driving policy. For clean/attacked driving runs, use the
 adapters in [SCENARIOS.md](SCENARIOS.md#feed-insertions-to-the-driving-model).
 
 ```bash
-python scripts/carla_insertion_demo.py --port 2300 --frames 30 --output tmp/carla-insertions
+python -m scripts.demos.carla.carla_insertion_demo --port 2300 --frames 30 --output tmp/carla-insertions
 
-python scripts/nurec_insertion_demo.py --usdz /path/to/scene.usdz \
+python -m scripts.demos.nurec.nurec_insertion_demo --usdz /path/to/scene.usdz \
     --endpoint 127.0.0.1:50051 --host 15 --frames 30 --out tmp/nurec-insertion
 
-python scripts/nurec_patch_demo.py --usdz /path/to/scene.usdz \
+python -m scripts.demos.nurec.nurec_patch_demo --usdz /path/to/scene.usdz \
     --endpoint 127.0.0.1:50051 --host 15 --texture /path/to/patch.png --frames 30
 ```
 
-These demos inspect geometry and visibility using prescribed motion or recorded trajectories.
-They do not run a driving-policy evaluation. They save model-input frames, annotated comparisons,
+The demos save model-input frames, annotated comparisons,
 a GIF animation, and per-frame placement/visibility measurements. NuRec `--host` is the track
 ID in the supplied USDZ. `--world-position X Y Z` sets the sign's explicit world position.
 
@@ -170,16 +196,16 @@ Its candidate spots are checked against annotated 2D boxes, not exact scene dept
 These scripts inspect payload appearance and do not exercise case selection.
 
 ```bash
-python scripts/extract_person_cutouts.py --nuscenes /path/to/nuscenes \
+python -m scripts.preparation.extract_person_cutouts --nuscenes /path/to/nuscenes \
     --out /path/to/pedestrians
 
-python scripts/nurec_object_demo.py --usdz /path/to/scene.usdz --endpoint 127.0.0.1:50051 --object stop \
+python -m scripts.demos.nurec.nurec_object_demo --usdz /path/to/scene.usdz --endpoint 127.0.0.1:50051 --object stop \
     --mode roadside vehicle --host 15 --harmonizer none classic chroma libcom --frames 50 --eval
 
-python scripts/nurec_object_demo.py --usdz /path/to/scene.usdz --endpoint 127.0.0.1:50051 --object billboard \
+python -m scripts.demos.nurec.nurec_object_demo --usdz /path/to/scene.usdz --endpoint 127.0.0.1:50051 --object billboard \
     --asset /path/to/person.png --mode roadside --eval
 
-python scripts/nuscenes_object_demo.py --nuscenes /path/to/nuscenes \
+python -m scripts.demos.nuscenes.nuscenes_object_demo --nuscenes /path/to/nuscenes \
     --asset /path/to/person.png --n 8 --harmonizer libcom --eval
 ```
 
@@ -188,7 +214,7 @@ The pedestrian variants require `--asset`. Roadside placement uses these options
 
 | Option | Meaning |
 |---|---|
-| `--x`, `--y` | Absolute coordinates in the NuRec scene frame, X forward and Y left |
+| `--x`, `--y` | Absolute coordinates in the NuRec scene frame, in metres |
 | `--yaw` | Surface orientation in radians |
 | `--size` | Sign/board width or standee height in metres |
 | `--mount` | Bottom edge height above the specified ground in metres |
@@ -218,11 +244,11 @@ The geometric selection API does not use detector success as a prerequisite.
 
 ## Driving evaluation output
 
-`scripts/alpamayo_attack_demo.py` runs clean and attacked driving experiments with the same
+`scripts/demos/nurec/alpamayo_attack_demo.py` runs clean and attacked driving experiments with the same
 metadata start time and world-fixed insertion path. For example:
 
 ```bash
-python scripts/alpamayo_attack_demo.py --usdz /path/to/scene.usdz \
+python -m scripts.demos.nurec.alpamayo_attack_demo --usdz /path/to/scene.usdz \
     --endpoint 127.0.0.1:50051 --object stop --harmonizer libcom --frames 30 --gpu 1 --harm-gpu 0
 ```
 

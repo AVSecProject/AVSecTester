@@ -60,6 +60,8 @@ pytest/CI collect their subdirectories recursively.
 | Tests | Behavior exercised |
 |---|---|
 | `core/test_interface.py` | Per-step controls affect subsequent true state. Replacement attack observations reach the stack without falsifying the recorded state |
+| `core/test_runtime.py` | Ordered attacks/defenses, plugin lifecycle, localization, unsupported stages, command execution and exception cleanup |
+| `core/runtime/test_backend_stages.py`, `avstack/test_backend_state.py` | Native backend stages, effective render requests, independent true state and copied sensor/reference graphs |
 | `core/test_component_log.py` | Output snapshots, named component collection and count differences |
 | `core/test_robustness.py` | Clean/attack preparation, corruption alignment, status accounting, valid denominators and failure cleanup |
 | `core/test_metric.py` | Induced stops, suppressed safe stops, duration/speed thresholds, late stops, inconclusive baselines |
@@ -74,11 +76,13 @@ pytest/CI collect their subdirectories recursively.
 | `core/attacks/patch/test_physical_patch.py` | Texture construction and patch configuration |
 | `core/attacks/object_insertion/` | Sign geometry, pedestrian standees/posters and traffic light payloads |
 | `core/simulators/test_camera_models.py` | Camera projection/inverse projection and camera-to-rig axes |
-| `core/simulators/test_patch_insertion.py` | Projection, compositing, target selection and camera perturbation callbacks |
+| `core/simulators/test_patch_insertion.py` | Compositing, surface ordering and camera perturbation callbacks |
 | `core/scripts/test_image_attack_demos.py` | Rear attachment geometry, shared metadata start time, strict PCTNet errors and saved driving transitions |
+| `core/scripts/test_entrypoints.py` | Representative module entry points resolve shared imports and show help without servers or weights |
+| `core/test_mmdet3d_registration.py` | Automatic CARLA dataset registration, existing user registrations and isolated dependency loading |
 | `core/test_augment.py` | Image corruptions, seeded paired experiments, sensor write-back, composition, real Albumentations operators |
 | `core/scenarios/test_scenarios.py`, `core/test_recorded_backend.py` | Scene constraints/filtering and recorded-image playback without full datasets |
-| `core/test_sim_viz.py` | Camera/LiDAR views, projected labels/boxes and saved frames |
+| `core/test_sim_viz.py` | Camera/LiDAR views, projected labels/boxes, processed input views and independent saved frames |
 | `avstack/attacks/pipeline/test_phantom.py` | Attack registration, detection preservation, moving/empty source frames and phantom geometry |
 | `avstack/test_component_log_real.py` | Historical plans/tracks/reference frames, unchanged controls under logging, attack hook ordering and matching metrics |
 | `avstack/test_pipeline.py` | Real tracking/planning/PID propagation, hook output replacement and the `ModularAVStack` adapter |
@@ -94,13 +98,13 @@ The offline suites cover the existing interfaces and the regressions described a
 establish full system coverage. CARLA physics and sensor timing need live runs.
 
 Case-filter tests also cover eligible-target selection, camera-relative rear angles, unknown visibility,
-custom conditions and selected-state transfer. `scripts/validate_carla_visibility.py` performs a
+custom conditions and selected-state transfer. `scripts/validation/validate_carla_visibility.py` performs a
 road-scene reference-depth validation for vehicles and physical patches on a dedicated server,
 including image truncation and occlusion. Use a dedicated CARLA server with a matching Python client,
 since the script changes that server's scene:
 
 ```bash
-PYTHONPATH=. python scripts/validate_carla_visibility.py --port 2300 \
+python -m scripts.validation.validate_carla_visibility --port 2300 \
   --output tmp/visibility-road
 ```
 
@@ -117,7 +121,7 @@ It uses Ubuntu 22.04 / Python 3.11 with three parallel checks:
 - `core-tests`: core suite, then wheel build and CLI startup from a fresh installation outside
   the checkout, without the source tree on `PYTHONPATH`.
 - `avstack-tests`: avstack suite at the main repository's recorded submodule revisions.
-- `lint`: Ruff correctness checks on `avsectester/` and `tests/`. No third-party lint or formatting gate.
+- `lint`: Ruff correctness checks on `avsectester/`, `scripts/` and `tests/`. No third-party lint or formatting gate.
 
 The workflow caches downloaded dependencies and cancels superseded runs on the same PR/branch.
 JUnit and coverage reports remain available as artifacts for seven days, including after a test

@@ -1,22 +1,31 @@
 # Docker — reproducible GPU + CARLA end-to-end
 
 `Dockerfile` reproduces the full stack (torch 2.1.0+cu121, mmcv 2.1.0 / mmdet 3.2.0 / mmdet3d 1.4.0 —
-prebuilt, no ops compile, avstack + CARLA client) and `docker-compose.yml` wires it to a
+with prebuilt MMCV CUDA operators, avstack and the CARLA client) and `docker-compose.yml` wires it to a
 `carlasim/carla:0.9.16` server. Together they run the **real** end-to-end path: a CARLA-trained
 PointPillars detector on a live CarlaLidar in a closed-loop drive, attacked by a phantom detection.
 
+The AVSecTester image includes the Python environment and CARLA/avstack dependencies, including
+`lyft-dataset-sdk`. No host Conda environment or separate Python-package installation is required
+for this path. Model weights remain separate, and CARLA runs in its own server container.
+Alpamayo and the NuRec renderer client use the separate AlpaSim driver environment described in
+[SETUP.md §4](SETUP.md#4-nurec--alpamayo-the-end-to-end-path). They are not installed by this
+Dockerfile.
+
 ## Prerequisites
 
-- An NVIDIA GPU with the nvidia container runtime.
+- NVIDIA GPUs and Docker with the NVIDIA runtime configured as its default runtime.
+  The supplied Compose file selects physical GPU 2 for CARLA and GPU 1 for AVSecTester.
+  Adjust `NVIDIA_VISIBLE_DEVICES` in that file to match your machine before starting it.
 - The nested mmdet/mmdet3d submodules on the host (checkpoint-symlink roots, not a build step) and the
   CARLA-trained weights:
 
 ```bash
-git clone --recurse-submodules <this-repo> && cd AVSecTester
+git clone --recurse-submodules https://github.com/AVSecProject/AVSecTester.git && cd AVSecTester
 git submodule update --init third_party/avstack-core
 cd third_party/avstack-core && \
   git submodule update --init --depth 1 third_party/mmdetection third_party/mmdetection3d && cd -
-./scripts/fetch_models.sh          # pull carla-vehicle weights → ./models (bind-mounted into the image)
+./scripts/preparation/fetch_models.sh          # pull carla-vehicle weights → ./models (bind-mounted into the image)
 ```
 
 ## Run the end-to-end attack
@@ -43,10 +52,13 @@ whether the baseline establishes driving.
 See [INTERFACE.md](INTERFACE.md#3-metric-clean-vs-attacked--verdict) for the criterion.
 
 Add `--plot results/impact.png` to also save a **driving-impact figure** (ego speed + brake over
-time, clean vs attacked). `results/` is bind-mounted, so the PNG appears on the host:
+time, clean vs attacked). The default Compose file mounts `models/`, not the output directory.
+Copy the generated image from the container to retain it on the host:
 
 ```bash
 docker compose exec avsectester avsectester run configs/carla_scenario.yaml --frames 40 --plot results/impact.png
+mkdir -p results
+docker compose cp avsectester:/app/results/impact.png results/impact.png
 ```
 
 The container defaults to a **shell** — open one, or run anything else, with `exec`:
@@ -59,14 +71,16 @@ When you're done: `docker compose down`.
 
 ## Notes
 
-- Everything installs from prebuilt wheels — no CUDA compile. The version pins and the numpy<2
+- MMCV's CUDA operators use a prebuilt wheel. The version pins and the NumPy <2
   constraint are explained in [`SETUP.md`](SETUP.md).
 - `.dockerignore` drops VCS/data/model/output trees.
-- `./models` is a bind mount, so weights are shared with the host rather than baked into the image;
+- `./models` is a bind mount, so weights are shared with the host rather than baked into the image.
   `fetch_models.sh` runs at container start to (re)create the mmdet/mmdet3d checkpoint symlinks.
-- Both services use `network_mode: host`, so the client reaches the server at `127.0.0.1:2000`; the
+- Both services use `network_mode: host`, so the client reaches the server at `127.0.0.1:2000`. The
   default docker runtime is nvidia, so both containers get GPUs (CARLA on GPU 2, AVSecTester on 1).
-  This is why the scenario config targets `gpu: 0` (the ego container's dedicated GPU). Running the
-  demo directly on the host instead shares GPU 2 with CARLA, so pass `--gpu 1` there
+  This is why the scenario config targets `gpu: 0` (the inference container's dedicated GPU).
+  When running directly on the host, pass `--gpu 1` to select that same physical inference device
   (`avsectester run configs/carla_scenario.yaml --gpu 1`) to run neural inference on a free device.
-- The manual (conda) install is documented in [`SETUP.md`](SETUP.md).
+- The alternative manual Python installation is documented in [`SETUP.md`](SETUP.md).
+- After changing the Dockerfile, rebuild with `docker compose build avsectester`. Pulling Git
+  changes does not update an existing image.

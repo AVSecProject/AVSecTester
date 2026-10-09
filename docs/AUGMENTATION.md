@@ -1,20 +1,15 @@
 # Scenario augmentation — perturbing the world to test attack robustness
 
-## The problem
-
-An attack that succeeds on one clean rendering is not necessarily a *robust* attack. A physical patch
-that hides a vehicle in clear noon light may wash out in fog, break under a night-time colour cast, or
-survive sensor noise but not motion blur. To claim an attack is real we must show it survives the
-**nuisance variation** a deployed AV actually sees: weather, lighting, and sensor/optics degradation.
-
-So alongside the *attack* transform we need an *augmentation* transform — a controlled corruption of the
-scene — and a protocol that measures how the attack's success degrades as the augmentation gets harsher.
+Augmentation applies controlled weather, lighting and sensor corruptions to examine how an
+attack behaves across conditions. The evaluation harness compares clean and attacked runs
+under the same corruption settings.
 
 ## Where it plugs in — the same seam as an attack
 
-The sim↔stack contract carries exactly one perturbable stream: the `Observation`. `run(backend, stack,
-frames, perturb)` applies `perturb: Observation -> Observation` before the box sees each frame. **An
-attack is a `perturb`; an augmentation is also a `perturb`.** They therefore compose:
+Image-space attacks and augmentations can both use `perturb: Observation -> Observation` before
+the driving model receives each frame. The shorthand remains available alongside runtime stage
+handlers. See [INTERVENTIONS.md](INTERVENTIONS.md) for additional stages and lifecycle management.
+These input transforms compose as follows:
 
 ```
 clean      :  run(backend, stack, N)                         # no perturb
@@ -22,9 +17,9 @@ attacked   :  run(backend, stack, N, perturb=attack)         # patch only
 robustness :  run(backend, stack, N, perturb=compose(attack, augment))  # patch, then corruption
 ```
 
-`compose(a, b)` applies `a` then `b`, so `compose(attack, augment)` inserts the patch and *then* corrupts
-the frame — the patch is fogged/blurred/noised along with the rest of the scene, as it would be in
-reality.
+`compose(a, b)` applies `a` then `b`. `compose(attack, augment)` inserts the patch before
+corrupting the frame, so the corruption also affects its pixels. This is an image-space
+approximation rather than a simulation of physical light transport.
 
 ## Two tiers of fidelity
 
@@ -36,9 +31,8 @@ reality.
    while recorded-frame replay returns captured images.
 2. **CARLA world-weather** — `carla.py`. A `weather` key in the scenario config sets native
    `carla.WeatherParameters` (cloud, precipitation, sun altitude, fog, wetness) at `reset`, so the whole
-   scene — including a *world-level* physical patch — is re-rendered under that weather. Higher fidelity
-   (real light transport, wet-road reflections), CARLA-only. The image-space tier is the portable
-   workhorse; the world tier is the faithful option when running in CARLA.
+   scene, including native physical actors, is rendered under that weather. Post-render image
+   insertions do not automatically receive native weather effects. This option is CARLA-only.
 
 ## Operators (`augment.py`)
 
@@ -52,19 +46,18 @@ to the clean and attacked runs of a pair.
 | lighting  | `Brightness`, `LowLight`, `Contrast`, `Gamma`, `ColorTemp`           |
 | sensor    | `GaussianNoise`, `ShotNoise`, `MotionBlur`, `DefocusBlur`, `JPEGCompression`, `ChromaticAberration` |
 
-`CORRUPTIONS` is a name→class registry; `common_corruptions(severity)` returns a standard suite (one of
-each) for benchmarking — the AV analogue of ImageNet-C's common-corruptions set, plus driving weather.
+`CORRUPTIONS` is a name-to-class registry. `common_corruptions(severity)` returns one pipeline
+per built-in operator. This is the framework's default condition set, not an implementation
+of a published benchmark.
 
 ### Backends: hand-rolled (default) or Albumentations (optional)
 
-The operators above are **zero-dependency** (numpy + cv2) and are the default. For battle-tested
-implementations there is an optional **Albumentations** backend (`AlbumentationsCorruption`,
+The default operators use NumPy and OpenCV without a learned model. An optional
+**Albumentations** backend (`AlbumentationsCorruption`,
 `albumentations_corruptions(severity)`, `augment` extra) that wraps `A.RandomFog/RandomRain/RandomSnow/
 GaussNoise/ISONoise/MotionBlur/Defocus/ImageCompression` behind the same `Corruption` interface, seeding
-`A.Compose` from our own RNG so the `(seed, frame)` pairing still holds. It is **classic albumentations**
-(`>=1.4,<2`, MIT) — AlbumentationsX/2.x needs numpy≥2, which this stack's numpy<2 / torch-2.1 pin
-excludes (see [`SETUP.md`](SETUP.md)); the classic API (`import albumentations as A`, params
-`blur_limit`/`radius`/`color_shift`) is otherwise identical.
+`A.Compose` from our own RNG so the `(seed, frame)` pairing still holds. The `augment` extra
+selects classic Albumentations (`>=1.4,<2`). See [SETUP.md](SETUP.md) for the dependency set.
 
 ## Determinism across the pair (the subtle bit)
 

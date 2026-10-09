@@ -1,74 +1,91 @@
 # Interfaces
 
-AVSecTester is two roles joined by a **pure data plane**. A **world backend** senses and actuates; an
-**AV stack** (the box under test) turns observations into control. An attack is a transform on the
-stream between them. Scenario selection prepares the initial case before that loop. Simulator
-and driving-model implementations come from avstack, avcarla and NVIDIA services, connected
-through this repository's adapters.
+AVSecTester is two roles joined by a **pure data plane**. A **world backend** senses and actuates. An
+**AV stack** (the box under test) turns observations into control. Attack and defense handlers
+modify supported runtime stages. Scenario selection prepares the initial case before that loop.
+Simulator and driving-model implementations come from avstack, avcarla and NVIDIA services,
+connected through this repository's adapters.
 
 ## 0. The spine: data plane + interfaces
 
-Two files, both pure — no `carla`/`avcarla`/`torch`/`avstack` imports, serializable so the loop can
-run over gRPC if ever split across processes.
+The data and base interfaces have no simulator or neural-model imports.
 
-**`avsectester/plane.py`** — the sim↔stack contract, two messages plus the driving record:
+| Interface | Contract |
+|---|---|
+| `Observation` | Model-visible `sensor_data`, `calibration`, `vehicle_state`, `ego_speed`, `t` and `frame` |
+| `Control` | `throttle`, `steer`, `brake` and optional `trajectory` |
+| `WorldSnapshot` | Independent physical-state snapshot: `t`, `frame`, `vehicle_state`, `ego_speed` |
+| `StateEstimate` | Localization output: `vehicle_state`, `ego_speed` |
+| `WorldBackend` | `reset() -> Observation`, `step(control) -> Observation`, `ground_truth() -> WorldSnapshot` |
+| `AVStack` | `reset(observation)` and `__call__(observation) -> Control` |
+| `Trace` / `FrameRecord` | Driving records from the physical post-step state and executed control |
 
-- **`Observation`** (down): `sensor_data` dict + `calibration` + ego `vehicle_state` + `ego_speed`.
-  World state stays hidden in the backend.
-- **`Control`** (up): `throttle` / `steer` / `brake`, plus an optional `trajectory` (rig-frame
-  waypoints) for stacks that plan rather than actuate directly.
-- **`Trace`** / **`FrameRecord`** — the per-frame driving record the metric reads
-  (`final_speed`, `peak_speed`, `braking_frames`, `mean_detections`).
+`backend.copy_observation(observation)` detaches mutable model-visible data from backend state.
+Changing the observation's state estimate does not move the physical ego. World changes are
+explicit backend/native operations.
 
-**`avsectester/backend.py`** — the interfaces:
+`run(backend, stack, frames, perturb=None, on_step=None, *, runtime=None) -> Trace` owns the
+execution order. `record_run(..., runtime=...)` and `run_logged(..., runtime=...)` use the same loop.
+The CARLA/modular convenience entry point `run_scenario(..., runtime=...)` forwards that runtime.
 
-- **`WorldBackend`**: `reset() -> Observation` and `step(control) -> Observation`. Owns the world
-  state and the shared vehicle dynamics.
-- **`AVStack`**: `__call__(observation) -> Control`. The box; it knows nothing of modular vs
-  end-to-end. `reset(obs)` lets it clear per-episode history.
-- **`run(backend, stack, frames, perturb=None, on_step=None) -> Trace`** drives the loop:
+```text
+reset handlers → reset world → process initial observation → stack.reset(processed input)
 
-  ```python
-  obs = backend.reset()
-  stack.reset(obs)
-  for i in range(frames):
-      seen = perturb(obs) if perturb else obs      # the single attack seam
-      control = stack(seen)
-      if on_step:
-          on_step(i, seen, control)               # side-channel hook (e.g. component logging)
-      obs = backend.step(control)
-      trace.records.append(FrameRecord(
-          frame=i, t=obs.t, speed=obs.ego_speed,
-          throttle=control.throttle, brake=control.brake, steer=control.steer,
-      ))  # State after applying control, taken from the backend observation.
-  ```
+for each driving step:
+    stack(processed input), including supported component hooks
+    → command handlers → on_step → backend.step
+    → record physical state → handler feedback
+    → process next observation if another driving step remains
 
-  **Causal invariant:** control at *t* affects only *t+1*, so the loop serializes cleanly.
-  `perturb: Observation -> Observation` is the **single universal attack seam** — it works against
-  any stack, black-box included.
+close handlers
+```
 
-## 1. The 2×2: any backend × any stack
+Observation processing includes sensor hooks, optional localization, estimated-state hooks and
+final input handlers. The initial input is processed once before stack initialization. `on_step`
+receives copied observation and control values and cannot change the applied command through
+those copies. Native CARLA captures remain borrowed as documented in
+[INTERVENTIONS.md](INTERVENTIONS.md#truth-observations-and-native-resources). The caller closes
+backend resources.
+
+**Causal invariant:** control at *t* affects subsequent observations. Records use the backend's
+physical state, even when the stack sees spoofed speed, pose or clock metadata.
+
+See [INTERVENTIONS.md](INTERVENTIONS.md) for stage payloads, lifecycle, context, native access
+and custom adapter requirements. `perturb(Observation) -> Observation` remains a shorthand for
+final observation processing.
+
+## 1. Backend and stack compatibility
+
+The shared loop supports different adapters, but does not convert arbitrary native sensor,
+state or command formats. The current combinations are:
 
 | | **ModularAVStack** | **AlpamayoAVStack** |
 |---|---|---|
-| **CarlaBackend** | phantom-injection demo (`avsectester run`) | Alpamayo in a CARLA world |
-| **NuRecBackend** | modular stack on reconstructed sensors | ✔ Alpamayo on photoreal NuRec frames |
+| **CarlaBackend** | Supplied phantom-injection driving demo (`avsectester run`) | Requires a trajectory-to-actuator controller and compatible camera inputs |
+| **NuRecBackend** | Requires compatible modules and avstack sensor/state adapters | Supplied Alpamayo driving demo with `TrajectoryFollower` |
+
+CARLA currently executes `throttle`, `brake` and `steer`, not `Control.trajectory`.
+NuRec provides ndarray camera images and `EgoPose`, while the standard modular pipeline expects
+avstack sensor wrappers and an avstack ego state. A common interface alone does not supply
+these missing conversions. Native observation payloads also need appropriate codecs if
+transported between processes.
 
 ### 1a. CarlaBackend (`simulators/carla.py`) + ModularAVStack (`stacks/modular.py`)
 
 `CarlaBackend` owns an avcarla `CarlaClient` + ego (`CarlaMobileActor` with a no-op internal pipeline
 — driving is external, done by the `AVStack`) + `CarlaNpc` traffic. `reset()` spawns actors and
-captures a strict-spawn `replay_scenario`; `step(control)` applies the `Control` through CARLA
-physics; `_observe()` reads sensors + ego into an `Observation`. `ModularAVStack` wraps an avstack
+captures a strict-spawn `replay_scenario`. `step(control)` applies the `Control` through CARLA
+physics. `_observe()` reads sensors + ego into an `Observation`. `ModularAVStack` wraps an avstack
 `ModularDrivingPipeline` (perception → tracking → planning → control) and returns a `Control`.
 
-`run_scenario` = `run(CarlaBackend, ModularAVStack, frames)` with a clean/attacked pairing (the CLI
-does it automatically): `prepare_scenario(config)` resolves the random choices **once** (vehicle
-models, spawn indices, destinations, seeds — explicit values preserved; a missing `client.seed`
-generated once for the pair) into an in-memory config without mutating the input; clean runs from that,
+`run_scenario` builds a CARLA backend and modular stack and executes one run. The CLI pairs a
+clean run with an attacked run. `prepare_scenario(config)` resolves random choices **once**
+(vehicle models, spawn indices, destinations and seeds, preserving explicit values) into an
+in-memory config without mutating the input. A missing `client.seed` is generated once for the
+pair. Clean runs from that configuration,
 then attacked replays `clean.replay_scenario` — the actual successful spawn transforms. Each run needs
 a dedicated CARLA server (it reloads the world into synchronous fixed-step physics, then rebuilds
-actors and pipeline). The clean run may relocate vehicles when a spawn fails; the attacked run
+actors and pipeline). The clean run may relocate vehicles when a spawn fails. The attacked run
 reproduces the clean spawns strictly. NPC traffic keeps reacting to the ego after the shared start, so
 an attack can change NPC trajectories as part of its driving consequence.
 
@@ -82,33 +99,33 @@ avsectester run configs/carla_scenario.yaml --frames 40 --gpu 0
 ```
 
 Each command runs one experiment pair: clean first, then attacked. `--frames` overrides YAML
-`frames` for each run; `--gpu` overrides `ego.pipeline.perception.gpu` and does not select the CARLA
+`frames` for each run. `--gpu` overrides `ego.pipeline.perception.gpu` and does not select the CARLA
 server's GPU. The following YAML snippets are edits to the complete example, not standalone files.
 
 | Field | Meaning |
 | --- | --- |
-| `frames` | Simulation steps per run; 40 steps at `client.rate: 20.0` represent 2 seconds per run. |
+| `frames` | Simulation steps per run. 40 steps at `client.rate: 20.0` represent 2 seconds per run. |
 | `client.connect_ip`, `connect_port` | Address of the running CARLA server. |
 | `client.traffic_manager_port` | Traffic Manager used by NPC autopilot. |
-| `client.synchronous`, `rate` | Use `true` for paired experiments; `rate` sets simulation steps per second. |
+| `client.synchronous`, `rate` | Use `true` for paired experiments. `rate` sets simulation steps per second. |
 | `ego.vehicle`, `ego.spawn` | Vehicle blueprint ID and map spawn-point index, or `random` for either field. Spawn indices depend on the selected map. |
 | `ego.autopilot` | Keep `false` to let the configured AV pipeline control the ego. |
-| `ego.sensors` | Sensor settings; the example uses a LiDAR with `sensor_tick: 0.05` and `rotation_frequency: 20`. |
-| `ego.pipeline` | Perception, tracking, planning and control modules. The default planner drives straight and brakes for obstacles; `target_speed` is in m/s, and `brake_distance` and `brake_corridor` are in meters. |
-| `npcs` | Background vehicles, using the compact form or explicit list below; omit it or use `[]` for none. |
-| `attacks` | Hooks attached only during the attacked run. The supplied `PhantomInjection` is used at `stage: perception`; see the attack section for its coordinate convention. |
+| `ego.sensors` | Sensor settings. The example uses a LiDAR with `sensor_tick: 0.05` and `rotation_frequency: 20`. |
+| `ego.pipeline` | Perception, tracking, planning and control modules. The default planner drives straight and brakes for obstacles. `target_speed` is in m/s, and `brake_distance` and `brake_corridor` are in meters. |
+| `npcs` | Background vehicles, using the compact form or explicit list below. Omit it or use `[]` for none. |
+| `attacks` | Hooks attached only during the attacked run. The supplied `PhantomInjection` is used at `stage: perception`. See the attack section for its coordinate convention. |
 
 #### Fixed choices and random choices
 
 Random choices are resolved **once per experiment pair**. Both runs use those choices, even when
-each new command starts with a fresh seed. Explicit vehicle models and seeds are preserved; explicit
+each new command starts with a fresh seed. Explicit vehicle models and seeds are preserved. Explicit
 spawn points are the first positions attempted, with retries as described below. Omitting a field
 does not generally mean random: fields can have defaults or be required.
 
 | Setting | Behavior across separate commands |
 | --- | --- |
 | `client.seed: 0` (the example default), or another fixed integer | Repeats seeded scene choices with the same configuration and map/blueprint candidates. This is not a guarantee of identical model outputs or complete driving traces. |
-| `client.seed: null`, or omit `seed` | Generates a fresh seed for each pair and selects random items again; individual choices can still repeat by chance. |
+| `client.seed: null`, or omit `seed` | Generates a fresh seed for each pair and selects random items again. Individual choices can still repeat by chance. |
 | A concrete value such as `ego.spawn: 0` | Always attempts this spawn point first, regardless of the seed. |
 
 To select a new random ego model and spawn point for each command, edit these fields while keeping
@@ -125,13 +142,13 @@ ego:
 
 An omitted or `null` `traffic_manager_seed` follows the resolved `client.seed`. The complete example
 explicitly sets both seeds to `0`: changing only `seed` leaves the Traffic Manager seed fixed.
-Similarly, an omitted or `null` LiDAR `noise_seed` is derived during preparation; an explicit
-`noise_seed` is preserved. The CLI prints `[scenario] seed=...`; set `client.seed` to that integer
+Similarly, an omitted or `null` LiDAR `noise_seed` is derived during preparation. An explicit
+`noise_seed` is preserved. The CLI prints `[scenario] seed=...`. Set `client.seed` to that integer
 to repeat the seeded choices with the same remaining configuration and environment.
 
 The seed does not randomly change every field. NPC count, map, weather, sensor specifications and
 attack parameters are not automatically randomized. `map_name` and `weather` can be set explicitly
-under `client`; when omitted, they come from the selected world's initial environment. Traffic
+under `client`. When omitted, they come from the selected world's initial environment. Traffic
 lights use the client's seeded `randomize_lights` behavior unless explicit light settings are given.
 
 #### Configuring NPCs and spawn positions
@@ -147,7 +164,7 @@ npcs:
 ```
 
 To mix fixed and random NPC choices, replace the compact form with a list. Each entry creates one
-NPC; `count` and `spawn_start` apply only to the compact form:
+NPC. `count` and `spawn_start` apply only to the compact form:
 
 ```yaml
 npcs:
@@ -186,28 +203,36 @@ attacked = run_scenario(clean.replay_scenario, attacks=prepared.get("attacks", [
 ```
 
 `Trace.replay_scenario` is an in-memory configuration, not a generated file. Each actor's
-`spawn_transform` contains native CARLA world coordinates (`location`: x/y/z in meters;
+`spawn_transform` contains native CARLA world coordinates (`location`: x/y/z in meters,
 `rotation`: pitch/yaw/roll in degrees). It already includes `reference_to_spawn` and any retry
-displacement. The runner produces this field; users normally configure `spawn` instead.
+displacement. The runner produces this field. Users normally configure `spawn` instead.
 
 ### 1b. NuRecBackend (`avsectester/simulators/nurec.py`)
 
-An in-process world driven by an NVIDIA **NuRec** neural reconstruction (a 3D `.usdz` scene rendered
-per pose, not a pre-baked video). The backend owns an `EgoPose`, transparent dynamics
+The backend advances an in-process ego within an NVIDIA **NuRec** reconstructed scene
+(a 3D `.usdz` scene rendered per pose). Other actors follow recorded trajectories rather than
+reacting to the ego. This adapter does not run the full AlpaSim simulation. It owns an `EgoPose`, dynamics
 (`KinematicBicycle` for throttle/steer control, or `TrajectoryFollower` to track a rig-frame
 `Control.trajectory`), and a pluggable `Renderer`:
 
-- **`StubRenderer`** — deterministic black `HWC-uint8` frames; **no server or GPU**, so it runs the
+- **`StubRenderer`** — deterministic black `HWC-uint8` frames. **no server or GPU**, so it runs the
   whole loop in CI and every `tests/core/test_nurec.py` case.
-- **`NuRecRenderer`** — one stateless `SensorsimService.render_rgb(pose)` gRPC call per frame to an
+- **`NuRecRenderer`** — a `SensorsimService.render_rgb` gRPC call per camera and observation to an
   `nre-ga` renderer. The render pose is `world_rig @ rig_to_camera` (the camera extrinsic is composed
-  in, matching AlpaSim's `construct_rgb_render_request`); the returned JPEG is decoded to `HWC-uint8`.
+  in, matching AlpaSim's `construct_rgb_render_request`). The returned JPEG is decoded to `HWC-uint8`.
 
 `step(control)` integrates dynamics → pose → `renderer.render(pose, camera)` → `Observation`.
+The backend's `config["dt"]` is the physics and observation interval in seconds (default
+`0.05`). It is independent of the policy's waypoint interval. For Alpamayo's 10 Hz output,
+waypoints are 0.1 seconds apart. `TrajectoryFollower` interpolates from the current rig origin
+to the first waypoint and between subsequent waypoints, so a 0.05-second physics step is valid.
+Set `dt=0.1` for a simple loop aligned with the waypoint spacing. Do not rescale predicted
+positions to change the simulation rate. The current runner invokes the stack once per step,
+so `dt` also sets the policy-call rate rather than introducing a separate policy scheduler.
 `checkpoint()`/`restore()` save and restore the local ego pose and frame counter.
 They do not checkpoint a remote rendering service. Bringing up the
-renderer + a scene is covered in [`SETUP.md`](SETUP.md); the runnable demo is
-[`scripts/alpamayo_nurec_demo.py`](../scripts/alpamayo_nurec_demo.py).
+renderer + a scene is covered in [`SETUP.md`](SETUP.md). The runnable demo is
+[`scripts/demos/nurec/alpamayo_nurec_demo.py`](../scripts/demos/nurec/alpamayo_nurec_demo.py).
 
 ### 1c. AlpamayoAVStack (`avsectester/stacks/alpamayo.py`)
 
@@ -217,7 +242,7 @@ Wraps NVIDIA's real **Alpamayo-1.5-10B** end-to-end policy
 `ModelPrediction.candidate_positions` (K×T×3 rig-frame waypoints) → `Control.trajectory`, which a
 `TrajectoryFollower` backend then tracks. The model input contract requires
 `context_length` camera frames (padded at startup) and ≥1.5 s of backward ego history (synthesized
-constant-velocity); model-facing timestamps carry an epoch offset while waypoints stay in the
+constant-velocity). Model-facing timestamps carry an epoch offset while waypoints stay in the
 backend's sim clock. Torch / `alpasim_driver` imports are **lazy**, so importing AVSecTester and
 running the offline suite need only the base env. It runs in a dedicated Python-3.12 driver env — see
 [`SETUP.md`](SETUP.md).
@@ -231,10 +256,10 @@ They are not all stages of one pipeline:
 |---|---|---|
 | Alpamayo-1.5-10B | End-to-end camera policy through `AlpamayoAVStack` | Yes, outputs a trajectory |
 | PointPillars, CARLA vehicle weights | LiDAR perception in `configs/carla_scenario.yaml` through `ModularAVStack` | Yes, detections feed tracking, planning and control |
-| Faster R-CNN, CARLA vehicle weights, MMDetection | `scripts/demo_common.py:build_detector` and patch optimization scripts | In `patch_driving_demo.py`, detections feed a rule-based braking policy. Other uses inspect or optimize detector response |
-| Faster R-CNN ResNet-50 FPN, COCO weights, torchvision | `scripts/demo_common.py:build_coco_detector`, used by NuRec/nuScenes object demos | No, provides auxiliary detection scores only with `--eval` |
+| Faster R-CNN, CARLA vehicle weights, MMDetection | `scripts/common/demo_common.py:build_detector` and patch optimization scripts | In `patch_driving_demo.py`, detections feed a rule-based braking policy. Other uses inspect or optimize detector response |
+| Faster R-CNN ResNet-50 FPN, COCO weights, torchvision | `scripts/common/demo_common.py:build_coco_detector`, used by NuRec/nuScenes object demos | No, provides auxiliary detection scores only with `--eval` |
 | PCTNet | `PCTNetHarmonizer` adjusts inserted image appearance | No, optional image harmonization |
-| SAM, default `facebook/sam-vit-huge` | `scripts/extract_person_cutouts.py` prepares pedestrian RGBA assets | No, offline segmentation |
+| SAM, default `facebook/sam-vit-huge` | `scripts/preparation/extract_person_cutouts.py` prepares pedestrian RGBA assets | No, offline segmentation |
 | NuRec through `nre-ga` | `NuRecRenderer` obtains images at the requested camera pose | No, scene rendering rather than a driving policy |
 
 COCO names the detector's pretraining dataset. Using these weights does not add a COCO scene
@@ -250,17 +275,32 @@ See [SETUP.md](SETUP.md#5-model-dependencies-and-weights)
 for loading, [IMAGE_ATTACKS.md](IMAGE_ATTACKS.md#auxiliary-models) for image-processing use, and
 the [script index](../scripts/README.md) for each entry point's actual components.
 
-## 2. Attack — a stream transform, or an avstack hook
+## 2. Attack and defense
 
-Two seams, chosen by how much of the stack the attack needs to see:
+Use `Runtime` to register ordered handlers at supported stages. Attack and defense are optional
+and use the same contract. Every returned replacement is passed to the next handler and
+consumed downstream.
 
-**Universal — `perturb(Observation) -> Observation`.** The `run(...)` seam. A sensor/camera/world
-perturbation that works against *any* stack, black-box end-to-end policies included. The `Trace`
-still records the backend's true ego state, so the metric measures the real driving consequence of a
-perturbed *view*. This is where the AlpaSim adversarial-render camera attacks go.
+```python
+from dataclasses import replace
 
-**Modular white-box — an avstack `HOOKS` hook.** For `ModularAVStack`, an attack can attach to a
-pipeline stage's pre/post hooks and see its internal tensors:
+from avsectester.backend import run
+from avsectester.runtime import Hook, Runtime
+
+def modify_estimate(estimate, context):
+    return replace(estimate, ego_speed=20.0)
+
+runtime = Runtime([Hook("localization.post", modify_estimate)], seed=0)
+trace = run(backend, stack, frames=30, runtime=runtime)
+```
+
+The loop exposes captured observations, localization, final model input and executable commands.
+Backend adapters expose world and rendering stages where supported. Stack adapters expose their
+actual component inputs and outputs. Registration at an unavailable stage raises an error before
+world reset. [INTERVENTIONS.md](INTERVENTIONS.md) specifies all stages, modifiable values,
+resource ownership and stateful handler methods.
+
+For existing avstack-registered post-hooks, `ModularAVStack.attach` remains available:
 
 ```python
 from avsectester.stacks.modular import ModularAVStack
@@ -272,22 +312,18 @@ stack.attach("perception", {
 })
 ```
 
-Here `pipeline_config` is the modular pipeline configuration, such as the `ego.pipeline` mapping
-in the CARLA YAML. A custom post-hook registers with `avstack.config.HOOKS` and returns its updated
-stage output as a one-element tuple, `(output,)`.
-
-The scenario attaches each configured attack with avstack's own
-`stage.register_post_hook(HOOKS.build(hook_cfg))`. To act on a different stage, name it in the
-config (`stage: tracking`, `stage: planning`, …); to write a pre-hook attack, use
-`register_pre_hook`. A defense is the same thing — a hook that sanitizes a stage's output.
+Here `pipeline_config` is the `ego.pipeline` mapping from the CARLA YAML. A native avstack
+post-hook returns its output as `(output,)`. A runtime handler returns the output directly.
+Runtime bridges adapt the native hook convention and preserve component logging after output
+modifications. Runtime hooks are installed for the duration of the run and removed afterwards.
 
 `PhantomInjection.target_xyz` is expressed in the source sensor's coordinates (forward, left, up).
 It requires `detections.source_reference`, including when there are no detections. The perception
 base class copies the input reference before inference and attaches it to the output before
 post-hooks run, so later ego motion does not move an earlier phantom. Passthrough detector inputs
 must supply `DataContainer(..., source_reference=reference)` explicitly. Missing source metadata
-raises `ValueError`; the attack never guesses the frame from a box or falls back to world origin.
-Container copy, filter, mapping, addition and serialization retain the source reference.
+raises `ValueError`. Container copy, filter, mapping, addition and serialization retain the source
+reference.
 
 ## 3. Metric (clean vs attacked → verdict)
 
@@ -333,10 +369,10 @@ AVSecTester provides the shared interfaces, backend/stack adapters, attack integ
 scenario selection and visualization. The underlying simulator and model components include:
 
 - **`ModularDrivingPipeline`** (`avstack.modules.pipeline`) — maps `(sensor_data, ego_state)` →
-  control by running perception → tracking → planning → control; the modular counterpart to
+  control by running perception → tracking → planning → control. The modular counterpart to
   end-to-end / foundation-model stacks. Attacks/defenses attach as hooks on any stage.
 - **`ForwardCollisionPlanner`** (`avstack.modules.planning.vehicle`) — drive straight, brake to a
-  stop when a track occupies the forward corridor (body-frame check); the driving consequence a
+  stop when a track occupies the forward corridor (body-frame check). The driving consequence a
   perception attack triggers.
 - **`CarlaMobileActor`** (`avcarla`) — the CARLA closed-loop actor: `apply_control` + feeding ego
   state into the pipeline each tick. (These closed-loop pieces were contributed *into* the

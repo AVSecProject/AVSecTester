@@ -1,7 +1,10 @@
 # Benchmarks
 
-Standardized, reproducible security-experiment suites (PLAN.md Phase 10).
+This directory does not yet contain a bundled benchmark suite or a published benchmark adapter.
 
-Flagship target (PROJECT.md 8.5): **LiDAR-spoof → phantom track → unsafe brake in CARLA,
-with and without a temporal-consistency defense.** See `configs/example_experiment.yaml`
-for the spec shape. Populated once the closed-loop runner lands (Phase 2+).
+Researchers can define case sets with [scenario selection](../docs/SCENARIOS.md) and run
+[corruption-condition evaluation](../docs/AUGMENTATION.md). A benchmark additionally needs a
+specified case source, selection conditions, driving system, intervention settings and scoring
+criterion. The existing stop-based impact metric does not define success for every attack.
+
+See the [project overview](../docs/PROJECT.md) for current capabilities and longer-term goals.

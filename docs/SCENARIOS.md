@@ -46,8 +46,9 @@ writes these checks as JSON, without copying native clients or image arrays.
 ## Specify inserted objects
 
 Positions are explicit. The framework does not search for a patch location or move an insertion
-to make a filter pass. World and object coordinates use metres and right-handed axes: X forward,
-Y left, Z up. The CARLA adapter converts Unreal coordinates at the boundary.
+to make a filter pass. Coordinates use metres and right-handed axes. Actor-local axes are
+X forward, Y left and Z up. World coordinates refer to the provider's absolute scene frame.
+The CARLA adapter converts Unreal coordinates at the boundary.
 
 ```python
 import numpy as np
@@ -346,7 +347,7 @@ or query information not represented by `SceneGT`.
 | Provider | Native access examples |
 |---|---|
 | CARLA | `context.native["world"]`, `["actors"]`, `["client"]`, `["depth"][camera]` |
-| NuRec | `context.metadata` contains raw JSON records, `context.native["open_archive"]()` opens the USDZ, `["actor_poses"](timestamp_us)` interpolates actor poses |
+| NuRec | `context.metadata` contains raw JSON records, `context.native["open_archive"]()` opens the USDZ, `context.native["actor_poses"](timestamp_us)` interpolates actor poses |
 | nuScenes | `context.native["nusc"]` exposes the SDK, `context.metadata` contains source records |
 
 These capabilities are provider-specific. A filter that needs unavailable information should
@@ -400,6 +401,19 @@ directly, use `with dataset.context(scene) as context:` or call `context.close()
 NuRec's context owns its lazy renderer. Selected backend factories create fresh resources and must
 not capture preview clients. `register_constraint` is needed only for dictionary serialization and the optional
 natural-language vocabulary. Direct Python composition does not require registration.
+
+For optional natural-language interpretation, provide your own completion function:
+
+```python
+from avsectester.scenarios.nl import interpret
+
+# complete(prompt) must return text containing a requirement JSON object.
+requirement = interpret("a rear-facing vehicle within 20 metres", complete)
+```
+
+`interpret` builds a prompt from the registered filter vocabulary and parses the returned
+requirement. It does not supply an AI provider, API credentials or an experiment-running agent.
+Use the resulting requirement with the same scenario-source API.
 `requirement_to_dict` and `requirement_from_dict` support groups, roles, windows and `PlaneAsset` insertions.
 
 ## Feed insertions to the driving model

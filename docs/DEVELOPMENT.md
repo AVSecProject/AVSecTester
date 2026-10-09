@@ -5,9 +5,9 @@
 AVSecTester is a **security layer** on avstack + AlpaSim, not a re-implementation of either. The rule
 that shapes the codebase: if an upstream project already defines something (the world, the ego,
 sensors, the perception/tracking/planning/control modules, the Alpamayo policy, the config
-registries, the pre/post-hook mechanism), we use it directly — we do not invent a parallel
-`Environment`/`System`/`Seam`/`Attack` hierarchy in front of it. When avstack is missing a piece the
-closed loop needs, we add it **into the avstack fork** where it belongs, not as glue here.
+registries and pre/post hooks), adapters use it directly. The shared runtime coordinates callbacks
+and lifecycle across those adapters. It does not replace simulator actors or model components.
+When a missing capability belongs to avstack, add it to the avstack fork.
 
 Concretely:
 
@@ -17,36 +17,39 @@ Concretely:
   They reuse provider state and do not replace simulator actors or driving-model modules.
 - The modular AV system is an **avcarla `CarlaMobileActor`** driven by an **avstack
   `ModularDrivingPipeline`**; the end-to-end one is NVIDIA's real **Alpamayo-1.5** model.
-- The CARLA world/traffic/ticking is **avcarla `CarlaClient` / `CarlaNpc`**; the NuRec world is
-  NVIDIA's **`nre-ga`** renderer serving a reconstructed scene.
-- A universal attack is a **`perturb(Observation)`** transform; a modular white-box attack is an
-  **avstack `HOOKS` hook** attached with **`register_post_hook`**.
+- CARLA world, traffic and ticking use **avcarla `CarlaClient` / `CarlaNpc`**. The NuRec adapter
+  advances the ego with local planar dynamics and requests reconstructed views from NVIDIA's
+  **`nre-ga`** renderer. Other actors follow recorded trajectories.
+- Attack and defense use **`Runtime`** stage handlers with shared lifecycle management. Modular
+  handlers bridge avstack pre/post hooks. `perturb(Observation)` remains an input shorthand.
 
 ## Architecture
 
-The spine is one loop over a pure data plane; any world backend composes with any AV stack (the 2×2).
+The spine is one loop over a data plane. Adapters compose when their sensor, state and command
+formats agree. The supported combinations and remaining adaptation work are listed in
+[INTERFACE.md](INTERFACE.md#1-backend-and-stack-compatibility).
 
 Before that loop, `ScenarioSource.scenarios(requirement)` prepares candidates and returns
 `ScenarioInstance` objects. `case.make_backend()` reconstructs the selected origin for a paired
 experiment. Selection filters stop at this boundary. Runtime insertion uses fixed actor bindings
 and updates placement from the current pose. See [SCENARIOS.md](SCENARIOS.md) for the full workflow.
 
+```mermaid
+flowchart LR
+    BE[WorldBackend] -->|Observation| RUN[Shared driving loop]
+    RUN -->|Processed input| ST[AVStack]
+    ST -->|Control| RUN
+    RUN -->|Executed command| BE
+    RT[Runtime stage handlers] -. world and render .-> BE
+    RT -. sensors, localization, observation, command .-> RUN
+    RT -. component input and output .-> ST
+    BE -->|Physical snapshot| TRACE[Trace]
 ```
-      perturb(Observation)  ── the single universal attack seam ──┐
-                                                                  ▼
-  WorldBackend.reset()/step(Control) ──Observation──►  run(backend, stack, frames) ──►  AVStack(obs)──►Control
-       │                                                     │                                │
-       ├─ CarlaBackend        (simulators/carla.py)          └──── Trace (TRUE ego state) ────┤
-       │    avcarla CarlaClient · CarlaMobileActor · CarlaNpc                                  ├─ ModularAVStack (stacks/modular.py)
-       │                                                                                       │    avstack ModularDrivingPipeline
-       └─ NuRecBackend        (simulators/nurec.py)                                            │    perception►tracking►planning►control
-            EgoPose · KinematicBicycle/TrajectoryFollower · Renderer                          │      ▲ attack: avstack HOOKS hook
-              StubRenderer (CI)  |  NuRecRenderer ─gRPC─► nre-ga (NuRec scene)                 └─ AlpamayoAVStack (stacks/alpamayo.py)
-                                                                                                    real Alpamayo-1.5-10B → trajectory
 
-  scoring:  impact(clean_trace, attacked_trace)   # induced braking / unsafe stop?
-  viz:      metric.plot_impact (metric)  ·  simulators/viz.record_run (per-frame scene → ./tmp/)
-```
+`run`, visualization recording and component logging share this loop. Runtime handlers replace
+stage values before downstream consumption. Unsupported stages fail before reset. Observation
+state and physical state remain independent. See [INTERVENTIONS.md](INTERVENTIONS.md) for
+callback types, lifecycle and native resources.
 
 The CARLA closed-loop driving pieces were contributed upstream into the forks (see
 [`INTERFACE.md`](INTERFACE.md) §"What comes from avstack / AlpaSim"): `ModularDrivingPipeline`,
@@ -58,8 +61,9 @@ Alpamayo model come from NVIDIA AlpaSim (`nre-ga`, `alpasim_driver`); `NuRecRend
 
 ```
 avsectester/
-  plane.py            Observation · Control · Trace · FrameRecord   (pure data)
+  plane.py            Observation · Control · WorldSnapshot · StateEstimate · Trace   (pure data)
   backend.py          WorldBackend · AVStack · run(...)             (interfaces + loop)
+  runtime.py          Runtime · Hook · Plugin · contexts            (intervention execution)
   insertion.py        Insertion · placement/orientation · asset surfaces · pose resolution
   scenario.py         run_scenario   (compose a CARLA backend + modular stack)
   simulators/                                            (WorldBackend implementations)
@@ -89,12 +93,15 @@ in `avsectester.attacks.pipeline.phantom`.
 
 ## Extending
 
-- **A new world backend** — subclass `WorldBackend` (`reset`/`step`); it composes with every existing
-  stack through `run(...)` unchanged.
+- **A new world backend** — subclass `WorldBackend` (`reset`/`step`) and implement an independent
+  `ground_truth()` snapshot. Use `run(...)` with a stack that consumes the provided observations
+  and produces controls the backend can execute.
 - **A new AV stack** — subclass `AVStack` (`__call__(obs) -> Control`); keep heavy imports lazy (as
   `AlpamayoAVStack` does) so the offline suite still imports in the base env.
-- **A universal attack** — write `perturb(Observation) -> Observation` and pass it to `run(..., perturb=)`;
-  it works against any stack, black-box policies included.
+- **An attack or defense** — register `Hook(stage, handler)` through `Runtime`. Handlers return
+  replacement values. Stateful handlers provide lifecycle methods. See
+  [INTERVENTIONS.md](INTERVENTIONS.md) for supported stages and custom adapter requirements.
+  For a simple input-only function, `run(..., perturb=...)` remains available.
 - **A modular white-box attack** — write a callable, `@HOOKS.register_module()` it (see
   `avsectester/attacks/pipeline/phantom.py`), and reference it in a scenario's `attacks:` list with the
   `stage` to hook. Removal, tracking-stage, and pre-hook (sensor-input) attacks use the same seam.
@@ -109,8 +116,8 @@ in `avsectester.attacks.pipeline.phantom`.
 - **An inserted asset** — implement `planes()` with asset-local `PlaneSurface` rectangles and use
   `Insertion` for placement. Reuse pose resolution, projection and visibility instead of defining
   a second attachment mechanism in an attack module.
-- **A defense** — a sanitizing hook (modular) or an input filter (universal); compare impact with and
-  without it.
+- **A defense** — a handler at the effective stage, using the same lifecycle and return-value
+  convention as an attack. Handler order is explicit and either category may be absent.
 
 ## Testing
 
@@ -120,7 +127,7 @@ Install the dependencies described in [tests/README.md](../tests/README.md). The
 ```bash
 python -m pytest -q        # offline: interface + attack hook + pipeline + NuRec + viz, no CARLA/GPU
 avsectester run configs/carla_scenario.yaml --frames 40   # CARLA end-to-end: needs a server + weights
-python scripts/alpamayo_nurec_demo.py 8 --save-frames     # Alpamayo+NuRec (driver env; needs nre-ga + a scene)
+python -m scripts.demos.nurec.alpamayo_nurec_demo 8 --save-frames     # Alpamayo+NuRec (driver env; needs nre-ga + a scene)
 ```
 
 `tests/core/test_interface.py` exercises the `run` loop and the `perturb` seam on an in-memory
@@ -135,7 +142,7 @@ CARLA, a GPU, or the NuRec renderer.
 
 - More attacks: universal camera perturbations (the AlpaSim adversarial-render seam) against the
   end-to-end stack; modular detection removal, tracking-stage spoofing, sensor-input LiDAR spoofing.
-- Defense hooks + a mitigation metric (impact with vs without the defense).
+- Extend defense implementations and add mitigation metrics appropriate to their experiment goals.
 - A scenario-search engine: sweep worlds / traffic / attack parameters for the worst driving impact.
-- The remaining 2×2 corners end-to-end (Alpamayo in CARLA; the modular stack on NuRec sensors) and
+- Additional backend/stack combinations (Alpamayo in CARLA, the modular stack on NuRec sensors) and
   hardware-in-the-loop at the same `WorldBackend` seam.
