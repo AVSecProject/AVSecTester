@@ -13,9 +13,9 @@ Prerequisites (see docs / prior setup):
          nvcr.io/nvidia/nre/nre-ga:26.04 serve-grpc --host=0.0.0.0 --port=50051 \
          '--artifact-glob=/mnt/nre-data/**/*.usdz' --cache-size=2 --enable-editing-actors
   2. Run in the AlpaSim driver env (Python 3.12 + alpasim_driver + the local Alpamayo checkpoint):
-       cd /workspace/nvme/qzzhang/alpasim
-       HF_HOME=/workspace/hdd/models/huggingface PYTHONPATH=<AVSecTester> \
-         uv run python scripts/alpamayo_nurec_demo.py            # or --stub for black frames
+       cd /path/to/AVSecTester
+       /path/to/alpasim/.venv/bin/python -m scripts.demos.nurec.alpamayo_nurec_demo
+       # Add --stub for black frames instead of NuRec rendering.
 
 Pass --stub to swap NuRecRenderer for StubRenderer (black frames; no renderer needed).
 """

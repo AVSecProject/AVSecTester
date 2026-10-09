@@ -3,7 +3,6 @@
 import importlib
 import json
 from dataclasses import asdict
-from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -14,10 +13,8 @@ from avsectester.simulators.nurec import StubRenderer
 
 
 @pytest.fixture
-def demo(monkeypatch):
-    # Scripts import shared helpers as siblings, just as when invoked from the CLI.
-    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[3] / "scripts"))
-    return importlib.import_module("alpamayo_attack_demo")
+def demo():
+    return importlib.import_module("scripts.demos.nurec.alpamayo_attack_demo")
 
 
 @pytest.mark.parametrize("failure_stage", ["load", "inference"])
@@ -67,7 +64,11 @@ def test_saved_steps_pair_reasoning_with_post_step_trace(demo, monkeypatch, tmp_
     monkeypatch.setattr(demo, "NuRecRenderer", Renderer)
     monkeypatch.setattr(demo.AlpamayoAVStack, "_load", load_model)
     monkeypatch.setattr(demo.AlpamayoAVStack, "_prediction_input", lambda self, obs: obs)
-    dataset = SimpleNamespace(insertion_renderer=lambda *a, **kw: lambda obs, rgb: rgb + 10)
+    def insertion_renderer(*args, compositor, **kwargs):
+        assert compositor.harmonize is False
+        return lambda obs, rgb: rgb + 10
+
+    dataset = SimpleNamespace(insertion_renderer=insertion_renderer)
     monkeypatch.setattr(demo, "nurec_source", lambda *a: (dataset, SimpleNamespace(source={"scene_id": "test", "timestamp_us": 12345})))
     plotted = {}
 
@@ -97,7 +98,7 @@ def test_saved_steps_pair_reasoning_with_post_step_trace(demo, monkeypatch, tmp_
 
 @pytest.mark.parametrize("yaw", [0, 0.3, -0.5])
 def test_rear_attachment_preserves_vehicle_local_mount_and_texture_orientation(demo, yaw):
-    from demo_common import rear_insertion
+    from scripts.common.demo_common import rear_insertion
     from avsectester.insertion import ActorPose, resolve_insertion
     from avsectester.rendering.cameras import planar_rig_pose
 
@@ -115,7 +116,7 @@ def test_rear_attachment_preserves_vehicle_local_mount_and_texture_orientation(d
 
 
 def test_carla_demo_binds_after_reset_and_keeps_the_same_host(demo, monkeypatch):
-    from demo_common import carla_rear_perturbation, NoHarmonizer
+    from scripts.common.demo_common import carla_rear_perturbation
     from avsectester.insertion import ActorPose, resolve_insertion
     from avsectester.plane import Observation
     from avsectester.rendering.cameras import planar_rig_pose
@@ -132,7 +133,7 @@ def test_carla_demo_binds_after_reset_and_keeps_the_same_host(demo, monkeypatch)
 
     monkeypatch.setattr(carla, "insertion_perturbation", adapter)
     perturb = carla_rear_perturbation(backend, np.full((8, 8, 4), 255, np.uint8),
-                                     PatchCompositor(NoHarmonizer()))
+                                     PatchCompositor(harmonize=False))
     # Constructing the demo callback must not require actors before backend.reset().
     assert received == []
     state["lead"] = ActorPose(planar_rig_pose(10, 0, 0), (4, 2, 2))
@@ -147,7 +148,7 @@ def test_carla_demo_binds_after_reset_and_keeps_the_same_host(demo, monkeypatch)
 
 
 def test_nurec_demo_uses_metadata_start_time_without_changing_cruise_dynamics(demo, monkeypatch, tmp_path):
-    import nurec_object_demo as objects
+    from scripts.demos.nurec import nurec_object_demo as objects
 
     calls = []
 
@@ -177,7 +178,7 @@ def test_nurec_demo_uses_metadata_start_time_without_changing_cruise_dynamics(de
 
 @pytest.mark.parametrize("name", ["stop", "standee", "billboard"])
 def test_nuscenes_demo_keeps_candidate_positions_and_rejects_annotated_overlap(demo, name):
-    import nuscenes_object_demo as objects
+    from scripts.demos.nuscenes import nuscenes_object_demo as objects
     from avsectester.rendering.cameras import PinholeCamera
     from avsectester.simulators.patch_insertion import render_resolved
 

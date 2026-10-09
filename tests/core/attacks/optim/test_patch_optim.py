@@ -1,6 +1,6 @@
 """Adversarial optimization: objective/geometry and CPU PGD/NES on small synthetic inputs.
 
-The white-box detector + CARLA capture live in scripts/optimize_patch.py (needs GPU + a server). Here
+The white-box detector + CARLA capture live in scripts/optimization/optimize_patch.py (needs GPU + a server). Here
 we cover the parts that run without them.
 """
 

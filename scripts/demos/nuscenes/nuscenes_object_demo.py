@@ -8,7 +8,7 @@ axle) and rendered through the image's calibrated pinhole camera
 (:class:`avsectester.rendering.cameras.PinholeCamera`). A placement is used only if its image
 footprint overlaps no annotated object (a crude occlusion check); several candidate spots are tried.
 
-    python scripts/nuscenes_object_demo.py --nuscenes /workspace/hdd/datasets/nuscenes \
+    python -m scripts.demos.nuscenes.nuscenes_object_demo --nuscenes /workspace/hdd/datasets/nuscenes \
         --asset <cutouts>/person_001.png --n 8 --harmonizer libcom --eval
 
 Writes ``tmp/nuscenes_objects/``: ``grid.png`` (rows = images; columns = clean + each object),
@@ -27,9 +27,9 @@ from avsectester.rendering.cameras import PinholeCamera, make_pose, quat_to_matr
 from avsectester.simulators.patch_insertion import PatchCompositor, render_resolved
 from avsectester.insertion import ActorPose, Insertion, resolve_insertion
 from avsectester.rendering.geometry import insertion_image
-from demo_common import COCO_PERSON, COCO_STOP_SIGN, build_coco_detector, make_harmonizer, world_object
+from scripts.common.demo_common import COCO_PERSON, COCO_STOP_SIGN, build_coco_detector, make_harmonizer, world_object
 
-REPO = Path(__file__).resolve().parents[1]
+from scripts import REPO_ROOT as REPO
 # candidate spots (x ahead, y lateral) per object, nearest-first; the first unoccluded one is used
 SPOTS = {
     "stop": [(16.0, -4.5), (20.0, -5.0), (14.0, -4.0), (18.0, 4.5), (24.0, -5.5)],
@@ -113,7 +113,10 @@ def main() -> int:
     for a in coco["annotations"]:
         boxes_of.setdefault(a["image_id"], []).append(a["bbox"])
     person = load_cutout(args.asset)
-    compositor = PatchCompositor(make_harmonizer(args.harmonizer, args.gpu), soften=0.5)
+    compositor = PatchCompositor(
+        make_harmonizer(args.harmonizer, args.gpu), soften=0.5,
+        harmonize=args.harmonizer != "none",
+    )
     detectors = {k: build_coco_detector(args.gpu, threshold=0.05, labels={i: n}) for k, (i, n) in
                  {"stop sign": LABELS["stop"], "person": LABELS["standee"]}.items()} if args.eval else {}
 

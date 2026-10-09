@@ -10,7 +10,7 @@ Per step we record the resulting ego state and the reasoning that produced its c
 
 Run in an AlpaSim driver env (Python 3.12 + alpasim_driver) with an nre-ga server (docs/SETUP.md §4):
 
-    python scripts/alpamayo_attack_demo.py --usdz /data/scene.usdz --endpoint 127.0.0.1:50051 --object stop --frames 60 \
+    python -m scripts.demos.nurec.alpamayo_attack_demo --usdz /data/scene.usdz --endpoint 127.0.0.1:50051 --object stop --frames 60 \
         --gpu 1 --harm-gpu 0
 
 Outputs under ``tmp/alpamayo_<object>/``: ``speed.png`` (clean vs attacked), ``side_by_side.gif``,
@@ -29,10 +29,11 @@ from avsectester.simulators.nurec import NuRecBackend, NuRecRenderer, Trajectory
 from avsectester.simulators.patch_insertion import PatchCompositor, frame_perturbation
 from avsectester.simulators.viz import record_run, save_gif
 from avsectester.stacks.alpamayo import AlpamayoAVStack
-from demo_common import OBJECTS, build_object, make_harmonizer, nurec_source
-from nurec_object_demo import side_by_side
+from scripts.common.demo_common import OBJECTS, build_object, make_harmonizer, nurec_source
+from scripts.demos.nurec.nurec_object_demo import side_by_side
 
-REPO = Path(__file__).resolve().parents[1]
+from scripts import REPO_ROOT as REPO
+
 CAM = "camera_front_wide_120fov"
 
 
@@ -117,7 +118,10 @@ def main() -> int:
     dataset, scene = nurec_source(args.usdz, args.scene)
     args.scene = scene.source["scene_id"]
     args.start_timestamp_us = scene.source["timestamp_us"]
-    compositor = PatchCompositor(make_harmonizer(args.harmonizer, args.harm_gpu), soften=args.soften)
+    compositor = PatchCompositor(
+        make_harmonizer(args.harmonizer, args.harm_gpu), soften=args.soften,
+        harmonize=args.harmonizer != "none",
+    )
 
     def perturb_of(backend):
         insert = dataset.insertion_renderer(scene, backend, [payload.roadside], compositor=compositor)

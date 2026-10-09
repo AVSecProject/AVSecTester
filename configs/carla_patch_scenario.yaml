@@ -3,10 +3,10 @@
 # A world-level attack (distinct from the perception-hook attack in carla_scenario.yaml): the backend
 # spawns a stationary `lead` car directly ahead of the ego (scene content, present in BOTH runs) and,
 # in the attacked run only, attaches + paints an `ironplank` panel on its rear so the ego's RGB camera
-# renders it in-scene. Run clean vs patched and compare the camera views (scripts/carla_patch_demo.py).
+# renders it in-scene. Compare camera views with scripts/demos/carla/carla_patch_demo.py.
 #
-# Slice 1 proves the physical substrate (patch renders through the framework). Feeding the camera into
-# a detector so the patch changes perception/driving is the next slice.
+# The physical panel is rendered by CARLA. Camera-based perception and driving comparisons are
+# provided by the patch demos listed in scripts/README.md.
 
 frames: 20
 

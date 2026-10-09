@@ -127,4 +127,4 @@ jobs:
         with:
           python-version: "3.11"
       - run: python -m pip install ruff==0.15.22
-      - run: python -m ruff check avsectester tests
+      - run: python -m ruff check avsectester scripts tests

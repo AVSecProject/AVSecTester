@@ -1,0 +1,1 @@
+"""Recorded nuScenes image examples."""

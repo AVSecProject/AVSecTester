@@ -7,14 +7,13 @@ to optimize a patch on the lead car's rear that suppresses its detection. Valida
 detector's actual final confidence (clean vs patched) and saves the texture for CARLA transfer via
 PhysicalPatch(texture={"image": ...}).
 
-Run in the `avsec` conda env with a CARLA 0.9.15 server on :2000 (GPU 2):
-    conda run -n avsec python scripts/optimize_patch.py [--steps 300] [--gpu 1]
+Run in the CARLA/model environment described in docs/SETUP.md with a matching server on :2000:
+    python -m scripts.optimization.optimize_patch [--steps 300] [--gpu 1]
 """
 
 import argparse
 import queue
 import sys
-from pathlib import Path
 
 import numpy as np
 import torch
@@ -25,7 +24,8 @@ from avsectester.attacks.optim.geometry import rear_panel_homography
 from avsectester.attacks.optim.perturbations import PatchPerturbation
 from avsectester.attacks.optim.scorers import MMDetRPNObjectnessScorer
 
-REPO = Path(__file__).resolve().parents[1]
+from scripts import REPO_ROOT as REPO
+
 OUT = REPO / "tmp" / "patch_optim"
 
 

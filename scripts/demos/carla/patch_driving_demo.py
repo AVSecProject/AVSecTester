@@ -2,7 +2,8 @@
 """Complete closed-loop patch attack in CARLA: clean vs patched, driving impact + visualization.
 
 The full end-to-end (not a view-only overlay): the patch is composited into the ego *camera
-observation* (warp + harmonize), so a camera forward-collision stack acts on the patched frame. The
+observation* (geometry-based compositing and optional harmonization), so a camera forward-collision
+stack acts on the patched frame. The
 attack HIDES the parked lead car from the detector, so the ego that safely brakes in the clean run
 fails to brake in the patched run — an object-hiding attack with a driving consequence.
 
@@ -12,10 +13,10 @@ Runs the identical scene twice (clean, then patched), diffs the two driving Trac
   * ``clean_filmstrip.png`` / ``patched_filmstrip.png`` — detector overlay per frame (scene view)
   * ``clean.gif`` / ``patched.gif``
 
-    python scripts/patch_driving_demo.py --frames 40 \
+    python -m scripts.demos.carla.patch_driving_demo --frames 40 \
         --texture tmp/patch_optim/phys_texture.png --harmonizer libcom
 
---harmonizer classic (fast) | libcom (learned PCTNet, in-process). Needs a CARLA server
+--harmonizer none (disabled) | classic (fast) | libcom (learned PCTNet, in-process). Needs a CARLA server
 at the configured endpoint and matched RGB/depth sensors.
 Detector and optional PCTNet inference use --gpu (default 1).
 """
@@ -30,14 +31,14 @@ from avsectester.attacks.patch.physical_patch import checkerboard_rgba, image_rg
 from avsectester.backend import AVStack
 from avsectester.metric import impact, plot_impact
 from avsectester.plane import Control
-from avsectester.rendering.harmonizers import ClassicHarmonizer, PCTNetHarmonizer
 from avsectester.simulators import carla as carla_sim
 from avsectester.scenarios.carla_provider import CarlaSelectionBackend
 from avsectester.simulators.patch_insertion import PatchCompositor
 from avsectester.simulators.viz import detections_view, record_run, save_sequence
-from demo_common import build_detector, plausible_detector, carla_rear_perturbation  # shared demo glue
+from scripts.common.demo_common import build_detector, plausible_detector, carla_rear_perturbation, make_harmonizer
 
-REPO = Path(__file__).resolve().parents[1]
+from scripts import REPO_ROOT as REPO
+
 OUT = REPO / "tmp" / "patch_driving"
 
 
@@ -74,7 +75,7 @@ def main() -> int:
     ap.add_argument("--gap", type=float, default=8.0, help="lead distance (m) — room to approach")
     ap.add_argument("--texture", default=None, help="adversarial patch image (else benign checkerboard)")
     ap.add_argument("--tex", type=int, default=256)
-    ap.add_argument("--harmonizer", choices=["classic", "libcom"], default="classic")
+    ap.add_argument("--harmonizer", choices=["none", "classic", "libcom"], default="classic")
     ap.add_argument("--area-brake", type=float, default=0.03)
     ap.add_argument("--gpu", type=int, default=1)
     args = ap.parse_args()
@@ -86,8 +87,9 @@ def main() -> int:
 
     patch = (image_rgba(args.texture, args.tex) if args.texture
              else checkerboard_rgba(args.tex, squares=8))
-    harmonizer = PCTNetHarmonizer(device=args.gpu, strict=True) if args.harmonizer == "libcom" else ClassicHarmonizer()
-    compositor = PatchCompositor(harmonizer)
+    compositor = PatchCompositor(
+        make_harmonizer(args.harmonizer, args.gpu), harmonize=args.harmonizer != "none",
+    )
     detect = plausible_detector(build_detector(args.gpu))  # gate phantom boxes; feeds stack + overlay
     overlay = detections_view(detect, base=carla_sim.camera_view)
 

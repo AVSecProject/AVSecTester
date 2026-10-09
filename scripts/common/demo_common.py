@@ -121,17 +121,10 @@ OBJECTS = {
 }
 
 
-class NoHarmonizer(Harmonizer):
-    """Plain alpha compositing, without appearance harmonization."""
-
-    def __call__(self, composite_rgb, mask, background_rgb):
-        return composite_rgb
-
-
-def make_harmonizer(name: str, gpu: int) -> Harmonizer:
-    """Load the requested method. Model failures remain errors in experiments."""
+def make_harmonizer(name: str, gpu: int) -> Harmonizer | None:
+    """Select an appearance method. ``none`` disables the compositor's harmonize switch."""
     return {
-        "none": NoHarmonizer,
+        "none": lambda: None,
         "classic": ClassicHarmonizer,
         "chroma": lambda: ClassicHarmonizer(preserve_chroma=True, blend="feather"),
         "libcom": lambda: PCTNetHarmonizer(device=gpu, strict=True),

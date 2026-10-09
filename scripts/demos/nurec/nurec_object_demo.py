@@ -19,12 +19,13 @@ import numpy as np
 from avsectester.simulators.nurec import NuRecBackend, NuRecRenderer
 from avsectester.simulators.patch_insertion import PatchCompositor, frame_perturbation
 from avsectester.simulators.viz import filmstrip, record_run, save_gif, save_image
-from demo_common import (
+from scripts.common.demo_common import (
     OBJECTS, CruiseStack, build_coco_detector, build_object, make_harmonizer,
     nurec_rear_insertion, nurec_source,
 )
 
-REPO = Path(__file__).resolve().parents[1]
+from scripts import REPO_ROOT as REPO
+
 CAM = "camera_front_wide_120fov"
 
 
@@ -167,7 +168,9 @@ def main() -> int:
 
     for mode in args.mode:
         for hname in args.harmonizer:
-            compositor = PatchCompositor(make_harmonizer(hname, args.gpu), soften=args.soften)
+            compositor = PatchCompositor(
+                make_harmonizer(hname, args.gpu), soften=args.soften, harmonize=hname != "none",
+            )
 
             def perturb(backend, compositor=compositor, insertion=insertions[mode]):
                 insert = dataset.insertion_renderer(scene, backend, [insertion], compositor=compositor)

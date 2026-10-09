@@ -8,7 +8,6 @@ which deployment actually hides the car (< 0.3 threshold) before a full driving 
 import argparse
 import logging
 import sys
-from pathlib import Path
 
 import yaml
 from avsectester.attacks.patch.physical_patch import image_rgba
@@ -17,10 +16,11 @@ from avsectester.rendering.harmonizers import ClassicHarmonizer, PCTNetHarmonize
 from avsectester.simulators import carla as carla_sim
 from avsectester.scenarios.carla_provider import CarlaSelectionBackend
 from avsectester.simulators.patch_insertion import PatchCompositor
-from demo_common import build_detector, carla_rear_perturbation, NoHarmonizer
+from scripts.common.demo_common import build_detector, carla_rear_perturbation
 from PIL import Image
 
-REPO = Path(__file__).resolve().parents[1]
+from scripts import REPO_ROOT as REPO
+
 OUT = REPO / "tmp" / "patch_probe"
 
 
@@ -58,21 +58,23 @@ def main():
         print(f"\n=== lead-car top confidence (threshold 0.3), gap {args.gap} m, frame {args.approach} ===")
         print(f"no patch                 : {base:.3f}")
         variants = [
-            ("patch + none", 0.85, 0.6, NoHarmonizer()),
+            ("patch + none", 0.85, 0.6, None),
             ("patch + classic", 0.85, 0.6, ClassicHarmonizer()),
             ("patch + libcom PCTNet", 0.85, 0.6, PCTNetHarmonizer(device=args.gpu, strict=True)),
-            ("BIG patch + none", 1.0, 0.95, NoHarmonizer()),
+            ("BIG patch + none", 1.0, 0.95, None),
             ("BIG patch + libcom", 1.0, 0.95, PCTNetHarmonizer(device=args.gpu, strict=True)),
         ]
         for name, width_frac, height_frac, harm in variants:
-            perturb = carla_rear_perturbation(backend, patch, PatchCompositor(harm),
-                                              width_frac=width_frac, height_frac=height_frac)
+            compositor = PatchCompositor(harm, harmonize=harm is not None)
+            perturb = carla_rear_perturbation(
+                backend, patch, compositor, width_frac=width_frac, height_frac=height_frac,
+            )
             comp = carla_sim.camera_view(perturb(obs))
             conf = top_car_conf(detect, comp)
             tag = "HIDDEN" if conf < 0.3 else ""
             print(f"{name:25s}: {conf:.3f}  {tag}")
             size = "big" if "BIG" in name else "std"
-            method = "raw" if isinstance(harm, NoHarmonizer) else type(harm).__name__
+            method = "raw" if harm is None else type(harm).__name__
             Image.fromarray(comp).save(OUT / f"probe_{name.split()[0]}_{size}_{method}.png")
     finally:
         backend.close()

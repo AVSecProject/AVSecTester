@@ -196,13 +196,13 @@ class RoadValidation:
 
 
 def main():
-    import carla
-    from avsectester.attacks.patch.physical_patch import PhysicalPatch
-
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=2300)
     parser.add_argument("--output", type=Path, default=Path("tmp/visibility-road"))
     args = parser.parse_args()
+    import carla
+    from avsectester.attacks.patch.physical_patch import PhysicalPatch
+
     args.output.mkdir(parents=True, exist_ok=True)
     client = carla.Client("127.0.0.1", args.port)
     client.set_timeout(60)

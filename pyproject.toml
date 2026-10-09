@@ -76,7 +76,7 @@ line-length = 100
 target-version = "py311"
 # Vendored upstream code lives under third_party/ (populated git submodules); only lint our package.
 extend-exclude = ["third_party", "dev"]
-src = ["avsectester", "tests"]
+src = ["avsectester", "scripts", "tests"]
 
 [tool.ruff.lint]
 # Start with correctness checks; formatting and unused imports are not CI gates.

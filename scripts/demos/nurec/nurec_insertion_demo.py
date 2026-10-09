@@ -24,19 +24,11 @@ from avsectester.insertion import (
     WorldPlacement,
 )
 from avsectester.plane import Observation
-from avsectester.rendering.harmonizers import Harmonizer
 from avsectester.rendering.types import InsertionGeometry
 from avsectester.rendering.visibility import CuboidVisibilityEstimator
 from avsectester.scenarios.datasets.nurec import NuRecDataset
 from avsectester.simulators.nurec import NuRecInsertions
 from avsectester.simulators.patch_insertion import PatchCompositor, frame_perturbation
-
-
-class UnchangedColors(Harmonizer):
-    """Preserve diagnostic texture colors so motion and masks remain easy to inspect."""
-
-    def __call__(self, composite_rgb, mask, background_rgb):
-        return composite_rgb
 
 
 class MountedSign:
@@ -188,7 +180,7 @@ def main(patch_only=False):
             items,
             camera,
             geometry,
-            PatchCompositor(UnchangedColors()),
+            PatchCompositor(harmonize=False),
             visibility_estimator=CuboidVisibilityEstimator(),
             camera_name=dataset.camera,
         )

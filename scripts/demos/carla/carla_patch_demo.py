@@ -6,7 +6,7 @@ lead car, recording a sequence through :func:`avsectester.simulators.viz.record_
 pipeline every simulator uses). Each frame is overlaid with the detector's output (``detections_view``)
 so the attack's effect is visible over the sequence, then assembled into a filmstrip + GIF.
 
-    python scripts/carla_patch_demo.py --frames 16 --gap 6 \
+    python -m scripts.demos.carla.carla_patch_demo --frames 16 --gap 6 \
         --texture tmp/patch_optim/phys_texture.png       # the PGD-optimized adversarial patch
 
 Omit --texture for the benign checkerboard patch. Use a CARLA server matching the installed client
@@ -22,9 +22,10 @@ import yaml
 from avsectester.simulators import carla as carla_view  # CarlaBackend + CARLA view adapters
 from avsectester.simulators.carla import CarlaBackend
 from avsectester.simulators.viz import detections_view, record_run, save_sequence
-from demo_common import CruiseStack, build_detector  # shared demo glue
+from scripts.common.demo_common import CruiseStack, build_detector  # shared demo glue
 
-REPO = Path(__file__).resolve().parents[1]
+from scripts import REPO_ROOT as REPO
+
 OUT = REPO / "tmp" / "carla_patch"
 
 

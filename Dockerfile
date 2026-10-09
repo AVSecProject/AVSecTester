@@ -35,7 +35,7 @@ RUN pip install --no-cache-dir --no-deps mmdet==3.2.0 mmdet3d==1.4.0 \
 RUN pip install --no-cache-dir -e third_party/avstack-core -c constraints.txt \
  && pip install --no-cache-dir -e third_party/avstack-api  --no-deps \
  && pip install --no-cache-dir -e third_party/lib-avstack-carla --no-deps \
- && pip install --no-cache-dir "carla==0.9.16" pygame ipywidgets nuscenes-devkit -c constraints.txt
+ && pip install --no-cache-dir "carla==0.9.16" pygame ipywidgets nuscenes-devkit lyft-dataset-sdk==0.0.8 -c constraints.txt
 # 5. AVSecTester (+ viz extra for the --plot driving-impact figure, augment for the corruption backend)
 RUN pip install --no-cache-dir -e ".[dev,viz,augment]"
 

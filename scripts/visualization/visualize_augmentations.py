@@ -4,7 +4,7 @@ Applies each :class:`Corruption` (at a fixed severity) to one real nuRec ``.mp4`
 results into a labelled :func:`filmstrip`, so the weather/lighting/sensor corruptions used for attack-
 robustness testing can be eyeballed. Writes ``tmp/compare/augmentations.png``.
 
-Run: ``python scripts/visualize_augmentations.py [--severity 0.6]``.
+Run: ``python -m scripts.visualization.visualize_augmentations [--severity 0.6]``.
 """
 
 from __future__ import annotations

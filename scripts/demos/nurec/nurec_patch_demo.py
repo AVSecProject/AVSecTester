@@ -5,7 +5,7 @@ Use ``--usdz`` for the scene archive and ``--host`` for a stable recorded vehicl
 The saved RGB frames are the perturbed observation supplied at the driving-model input seam.
 """
 
-from nurec_insertion_demo import main
+from scripts.demos.nurec.nurec_insertion_demo import main
 
 
 if __name__ == "__main__":

@@ -10,13 +10,12 @@ Pipeline (the acceptance test is the CARLA-RENDERED patch, not a digital paste):
   4. render and re-run the detector: report the CARLA-rendered detection confidence.
 
 Use the CARLA/model environment in docs/SETUP.md with a matching server at the configured endpoint:
-    python scripts/optimize_patch_physical.py [--steps 250] [--gpu 1]
+    python -m scripts.optimization.optimize_patch_physical [--steps 250] [--gpu 1]
 """
 
 import argparse
 import queue
 import sys
-from pathlib import Path
 
 import numpy as np
 from avsectester.attacks.optim.attacks import PGD
@@ -27,7 +26,8 @@ from avsectester.attacks.optim.perturbations import PatchPerturbation
 from avsectester.attacks.optim.scorers import MMDetRPNObjectnessScorer
 from avsectester.attacks.patch.physical_patch import PhysicalPatch, to_carla_texture
 
-REPO = Path(__file__).resolve().parents[1]
+from scripts import REPO_ROOT as REPO
+
 OUT = REPO / "tmp" / "patch_optim"
 
 

@@ -9,7 +9,7 @@ subdivided so they render correctly curved under the nuRec fisheye), using only 
 * nuScenes: the full backend path — ``labels_view(...)`` wrapping ``camera_view`` over a
   ``RecordedFrameBackend``, exactly as a run would visualize a frame.
 
-Writes PNGs under ``tmp/compare/``. Run: ``python scripts/visualize_scene_labels.py [--nuscenes]``.
+Writes PNGs under ``tmp/compare/``. Run: ``python -m scripts.visualization.visualize_scene_labels [--nuscenes]``.
 """
 
 from __future__ import annotations

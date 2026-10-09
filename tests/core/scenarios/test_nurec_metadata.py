@@ -124,8 +124,9 @@ def test_dataset_selection_releases_lazy_renderer(recorded_dataset, monkeypatch)
 def test_runtime_adapter_uses_scene_time_stable_alias_and_current_ego(recorded_dataset):
     from types import SimpleNamespace
     from avsectester.insertion import AttachedPlacement, Insertion, Orientation, PlaneAsset
-    from avsectester.plane import Observation
+    from avsectester.plane import Observation, WorldSnapshot
     from avsectester.rendering.cameras import PinholeCamera, planar_rig_pose
+    from avsectester.runtime import RenderRequest
     from avsectester.simulators.nurec import EgoPose
 
     dataset, _path = recorded_dataset
@@ -147,7 +148,12 @@ def test_runtime_adapter_uses_scene_time_stable_alias_and_current_ego(recorded_d
         def cam_from_world(self, pose, _):
             return np.linalg.inv(self.rig_transform(pose))
 
-    backend = SimpleNamespace(renderer=Renderer())
+    true_pose = EgoPose(2, 3, 0.2, t=0.25)
+    backend = SimpleNamespace(
+        renderer=Renderer(),
+        ground_truth=lambda: WorldSnapshot(true_pose.t, 1, true_pose, true_pose.speed),
+        render_request=lambda _: RenderRequest(true_pose, dataset.sensor),
+    )
     item = Insertion(
         "patch",
         PlaneAsset(np.full((4, 4, 4), 255, np.uint8), 1, 1),
@@ -155,7 +161,8 @@ def test_runtime_adapter_uses_scene_time_stable_alias_and_current_ego(recorded_d
         Orientation("follow_host", (0, 0, 180)),
     )
     adapter = dataset.insertion_renderer(scene, backend, [item], bindings={"hosts": ("host",)})
-    obs = Observation(0.25, 1, vehicle_state=EgoPose(2, 3, 0.2, t=0.25))
+    # A localization/time attack must not move the actual camera or metadata actors.
+    obs = Observation(10.0, 99, vehicle_state=EgoPose(100, -100, 2.0, t=10.0))
     actors, victim, transform = adapter.geometry(obs)
     assert actors["hosts[0]"] is actors["host"]
     np.testing.assert_allclose(actors["hosts"].transform[:3, 3], [11, 0, 1])
@@ -226,13 +233,80 @@ def test_insertion_pipeline_survives_backend_reset_and_drives_from_modified_inpu
     assert adapter.evidence["patch"].visibility.source == "cuboid_estimate"
 
 
-def test_demo_source_and_rear_attachment_use_the_explicit_recorded_host(recorded_dataset, monkeypatch):
-    from pathlib import Path
+def test_insertion_uses_effective_render_view_and_time_but_true_victim_pose(recorded_dataset):
+    from avsectester.backend import AVStack
+    from avsectester.insertion import Insertion, PlaneAsset, WorldPlacement
+    from avsectester.plane import Control
+    from avsectester.rendering.cameras import PinholeCamera, planar_rig_pose
+    from avsectester.runtime import Hook, RenderRequest, Runtime
+    from avsectester.simulators.nurec import EgoPose, NuRecBackend, StubRenderer
+
+    dataset, _ = recorded_dataset
+    scene = next(dataset.scenes())
+    lens = PinholeCamera(np.array([[200, 0, 320], [0, 200, 240], [0, 0, 1]]), 640, 480)
+
+    class Renderer(StubRenderer):
+        service = object()
+
+        def camera_model(self, camera):
+            assert camera == dataset.sensor
+            return lens
+
+        def timestamp_us(self, pose):
+            return round(pose.t * 1e6)
+
+        def rig_transform(self, pose):
+            return planar_rig_pose(pose.x, pose.y, pose.yaw)
+
+        def cam_from_world(self, pose, camera):
+            assert camera == dataset.sensor
+            return np.linalg.inv(self.rig_transform(pose))
+
+    class Stack(AVStack):
+        def __call__(self, _):
+            return Control()
+
+    backend = NuRecBackend({
+        "ego0": {"x": 2, "y": 3, "t": 0.25},
+        "camera_aliases": {dataset.sensor: dataset.camera},
+    }, renderer=Renderer(cameras=[dataset.sensor]))
+
+    def viewpoint(request, context):
+        return RenderRequest(EgoPose(4, 5, 0.3, t=0.5), request.camera)
+
+    def localization(observation, context):
+        observation.vehicle_state = EgoPose(99, -99, 2, t=99)
+        observation.frame = 999
+        observation.t = 99
+        return observation
+
+    runtime = Runtime([
+        Hook("render.pre", viewpoint), Hook("observation", localization),
+    ])
+    session = runtime.session(backend, Stack())
+    with session.activate():
+        observation = session.observe(backend.reset())
+        item = Insertion(
+            "object", PlaneAsset(np.full((4, 4, 4), 255, np.uint8), 1, 1),
+            WorldPlacement((10, 0, 0)),
+        )
+        adapter = dataset.insertion_renderer(scene, backend, [item])
+        actors, victim, transform = adapter.geometry(observation)
+
+        np.testing.assert_allclose(actors["host"].transform[:3, 3], [12, 0, 1])
+        np.testing.assert_allclose(victim.transform[:3, 3], [2, 3, 0])
+        np.testing.assert_allclose(transform, np.linalg.inv(planar_rig_pose(4, 5, 0.3)))
+        assert adapter.camera is lens
+        request = backend.render_request(dataset.camera)
+        request.pose.x = -10
+        assert backend.render_request(dataset.sensor).pose.x == 4
+
+
+def test_demo_source_and_rear_attachment_use_the_explicit_recorded_host(recorded_dataset):
     from types import SimpleNamespace
     from avsectester.insertion import ActorPose, resolve_insertion
 
-    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[3] / "scripts"))
-    from demo_common import nurec_rear_insertion, nurec_source
+    from scripts.common.demo_common import nurec_rear_insertion, nurec_source
 
     _, path = recorded_dataset
     dataset, scene = nurec_source(path, "test")

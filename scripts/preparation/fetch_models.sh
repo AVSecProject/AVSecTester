@@ -15,7 +15,7 @@
 # cascade-joint 2D are 404 and intentionally omitted).
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 MODELS="$ROOT/models"
 WD3="$MODELS/work_dirs"        # LiDAR (mmdet3d) work_dirs
 WD2="$MODELS/work_dirs_2d"     # 2D (mmdet) work_dirs

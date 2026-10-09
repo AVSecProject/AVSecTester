@@ -28,7 +28,7 @@ from avsectester.rendering.visibility import DepthVisibilityEstimator
 from avsectester.scenarios.carla_gt import carla_actor_pose
 from avsectester.scenarios.carla_provider import carla_filter_context
 from avsectester.simulators.carla import insertion_perturbation
-from validate_carla_visibility import FOCAL, HEIGHT, WIDTH, RoadValidation
+from scripts.validation.validate_carla_visibility import FOCAL, HEIGHT, WIDTH, RoadValidation
 
 
 def textures():
@@ -53,8 +53,6 @@ def textures():
 
 
 def main():
-    import carla
-
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=2300)
     parser.add_argument("--frames", type=int, default=30)
@@ -62,6 +60,8 @@ def main():
     args = parser.parse_args()
     if args.frames < 1:
         parser.error("--frames must be positive")
+    import carla
+
     args.output.mkdir(parents=True, exist_ok=True)
     client = carla.Client("127.0.0.1", args.port)
     client.set_timeout(60)

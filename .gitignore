@@ -224,7 +224,7 @@ __marimo__/
 third_party/lib-avstack-core
 third_party/lib-avstack-api
 
-# Model weights are fetched via scripts/fetch_models.sh (kept out of git).
+# Model weights are fetched via scripts/preparation/fetch_models.sh (kept out of git).
 # The ./models structure + README are tracked; the binaries are not.
 /models/**/*.pth
 /models/**/*.onnx
