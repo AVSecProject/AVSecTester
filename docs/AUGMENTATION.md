@@ -4,28 +4,46 @@ Augmentation applies controlled weather, lighting and sensor corruptions to exam
 attack behaves across conditions. The evaluation harness compares clean and attacked runs
 under the same corruption settings.
 
-## Where it plugs in — the same seam as an attack
+## Register attacks and corruptions in Runtime
 
-Image-space attacks and augmentations can both use `perturb: Observation -> Observation` before
-the driving model receives each frame. The shorthand remains available alongside runtime stage
-handlers. See [INTERVENTIONS.md](INTERVENTIONS.md) for additional stages and lifecycle management.
-These input transforms compose as follows:
+Image-space attacks and corruptions use ordered `observation` hooks before the driving model
+receives each frame. Apply the same corruption to both treatments and add the attack only to
+the attacked treatment:
 
+```python
+from avsectester.interventions import ObservationTransform
+from avsectester.runner import run_pair
+from avsectester.runtime import Hook, Runtime
+
+# attack, clean_corruption and attacked_corruption are Observation -> Observation functions.
+# Create the two corruption transforms with identical settings and seeds.
+clean_runtime = Runtime([
+    Hook("observation", ObservationTransform(clean_corruption)),
+])
+attacked_runtime = Runtime([
+    Hook("observation", ObservationTransform(attack)),
+    Hook("observation", ObservationTransform(attacked_corruption)),
+])
+clean, attacked = run_pair(
+    backend, stack_factory, frames=30,
+    clean_runtime=clean_runtime, attacked_runtime=attacked_runtime,
+)
 ```
-clean      :  run(backend, stack, N)                         # no perturb
-attacked   :  run(backend, stack, N, perturb=attack)         # patch only
-robustness :  run(backend, stack, N, perturb=compose(attack, augment))  # patch, then corruption
-```
 
-`compose(a, b)` applies `a` then `b`. `compose(attack, augment)` inserts the patch before
-corrupting the frame, so the corruption also affects its pixels. This is an image-space
-approximation rather than a simulation of physical light transport.
+Hooks run in registration order, so corruption also affects the inserted attack pixels.
+This is an image-space approximation rather than a simulation of physical light transport.
+World attacks and component attacks use their own stages in the same runtime. See
+[INTERVENTIONS.md](INTERVENTIONS.md) for the stage and lifecycle contracts.
+
+For a single run, `run(..., perturb=compose(attack, augment))` remains a shorthand for
+one-argument observation transforms. `compose(a, b)` applies `a` then `b`. The shorthand is
+adapted into the same runtime hook chain, rather than a separate execution path.
 
 ## Two tiers of fidelity
 
 1. **Image-space corruptions** — `avsectester.perturbations.image`, backend-agnostic. Each `Corruption` is an
    `apply(rgb, rng) -> rgb` on the camera image; an `AugmentationPipeline` chains several and
-   `sensor_augmentation(pipeline)` lifts it to a `perturb`. Because it operates on pixels it works on
+   `sensor_augmentation(pipeline)` lifts it to an observation transform. Because it operates on pixels it works on
    camera images from CARLA, NuRec reconstructed-scene rendering (`NuRecBackend`), and recorded-frame
    replay (`RecordedFrameBackend`, used by nuScenes). NuRec generates new views from the ego pose,
    while recorded-frame replay returns captured images.
@@ -90,8 +108,15 @@ Construct `source` and `req` using [scenario selection](SCENARIOS.md#select-a-ca
 loaded camera calibration, initialize it lazily on the first attacked observation. Its returned
 value can be a `Runtime`, a one-argument observation transform, or `None` to skip. Native
 hooks, world plugins and user handlers can therefore use the same evaluation entry point.
-The default clean runtime shares the attack runtime's localizer and seed, without its hooks.
-Handler and localizer state resets per treatment. Preserve `match.binding_ids` and
+The default clean runtime shares the attack runtime's localizer object and seed, without its hooks.
+The framework calls each handler's and localizer's `reset(context)` when that method exists.
+Stateful components must implement their own reset logic. In particular, a stateful localizer
+shared by this evaluator must provide `reset(context)` to clear its history between treatments.
+For a localizer closure without reset support, use `run_pair` with independent clean and attacked
+runtimes and construct the condition grid in the caller. This evaluator does not accept a
+separate baseline runtime factory. See
+[stateful attacks and defenses](INTERVENTIONS.md#stateful-attack-or-defense).
+Preserve `match.binding_ids` and
 `match.insertions`, rather than selecting a new target. Source filters run before this grid, not on every corrupted observation.
 
 `RobustnessReport.rows` retains each attempt's status and reason:

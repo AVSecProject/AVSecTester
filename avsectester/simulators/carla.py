@@ -7,7 +7,8 @@ package import without a CARLA stack (the pure view adapters and config helpers 
   * View adapters (:func:`camera_view`, :func:`lidar_bev`) feed the simulator-agnostic pipeline in
     :mod:`avsectester.simulators.viz`. They duck-type avstack ``ImageData`` / ``LidarData``.
   * :class:`CarlaBackend` owns the client, ego (+ sensors), traffic, an optional scene ``lead`` car,
-    and applies physical-patch attacks at reset. Compose it with a stack via
+    and exposes world stages. ``PhysicalPatchPlugin`` deploys panels at ``world.setup``.
+    Compose the backend with a stack via
     :func:`avsectester.carla_runner.run_scenario`.
 """
 
@@ -179,6 +180,14 @@ def _npc_specs(spec: Any) -> list[dict]:
     return list(spec)
 
 
+def resolve_scenario_seed(scenario: dict) -> dict:
+    """Copy a scene and supply a missing client seed without contacting CARLA."""
+    resolved = deepcopy(scenario)
+    if resolved["client"].get("seed") is None:
+        resolved["client"]["seed"] = secrets.randbelow(2**31)
+    return resolved
+
+
 def prepare_scenario(scenario: dict) -> dict:
     """Resolve random choices once for a pair of runs on a dedicated CARLA server.
 
@@ -188,10 +197,8 @@ def prepare_scenario(scenario: dict) -> dict:
     import numpy as np
     from avcarla.config import CARLA
 
-    resolved = deepcopy(scenario)
+    resolved = resolve_scenario_seed(scenario)
     config = resolved["client"]
-    if config.get("seed") is None:
-        config["seed"] = secrets.randbelow(2**31)
     if config.get("traffic_manager_seed") is None:
         config["traffic_manager_seed"] = config["seed"]
     if config.get("reset_world") is False:

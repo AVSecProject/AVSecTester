@@ -7,7 +7,7 @@ from copy import deepcopy
 
 from avsectester.backend import AVStack
 from avsectester.evaluation.component_log import run_logged
-from avsectester.interventions import configured_runtime
+from avsectester.interventions import configured_runtime, configured_runtime_pair
 from avsectester.plane import Trace
 from avsectester.runner import run_pair
 from avsectester.runtime import Runtime
@@ -73,21 +73,9 @@ def run_scenario_pair(
     Explicit Python runtime arguments replace the corresponding YAML treatment configuration.
     """
     scenario = deepcopy(scenario)
-    explicit_attacked_runtime = attacked_runtime is not None
-    if attacked_runtime is None:
-        attacked_runtime = configured_runtime(scenario)
-    if clean_runtime is None:
-        common = scenario.get("runtime") or {}
-        if "clean_runtime" in scenario or not explicit_attacked_runtime:
-            baseline = scenario.get("clean_runtime", {
-                key: value for key, value in common.items() if key in {"localizer", "seed"}
-            })
-            clean_runtime = Runtime.from_config(baseline)
-        else:
-            clean_runtime = Runtime(
-                localizer=attacked_runtime.localizer, case=attacked_runtime.case,
-                seed=attacked_runtime.seed,
-            )
+    clean_runtime, attacked_runtime = configured_runtime_pair(
+        scenario, clean_runtime=clean_runtime, attacked_runtime=attacked_runtime,
+    )
     backend = CarlaBackend(scenario, settle_iters=settle_iters)
     return run_pair(
         backend, stack_factory or (lambda: _stack(scenario)), frames,

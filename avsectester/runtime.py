@@ -140,11 +140,12 @@ def _invoke(handler: Any, value: Any, context: StageContext) -> Any:
 
 
 class Runtime:
-    """A reusable execution configuration. Handler history resets for each run.
+    """A reusable configuration that invokes handler lifecycle methods for each run.
 
     Hooks execute in registration order at each stage. ``localizer`` consumes an Observation
     and returns StateEstimate. Without one, the backend's reported state is the initial estimate.
     A fixed seed initializes a fresh RNG for every run, without changing simulator/model seeds.
+    Stateful handlers must implement reset or be constructed afresh for each run.
     """
 
     def __init__(
@@ -175,6 +176,18 @@ class Runtime:
         ordered = extra + self.hooks if prepend else self.hooks + extra
         return Runtime(ordered, localizer=self.localizer, case=self.case, seed=self.seed)
 
+    def validate_stages(self, backend: WorldBackend, stack: AVStack) -> frozenset[str]:
+        """Check adapter capabilities without binding a session or invoking handlers."""
+        available = RuntimeSession.CORE_STAGES | backend.supported_stages | stack.supported_stages
+        if self.localizer is not None:
+            available |= {"localization.pre"}
+        unknown = {hook.stage for hook in self.hooks} - available
+        if unknown:
+            raise UnsupportedStageError(
+                f"Unsupported runtime stages: {sorted(unknown)}. Available: {sorted(available)}"
+            )
+        return available
+
     @property
     def setup_ticks(self) -> int:
         """Required deployment ticks, shared by both runs of a pair when supported."""
@@ -204,13 +217,7 @@ class RuntimeSession:
         self.step = 0
         self.observation: Observation | None = None
         self.control: Control | None = None
-        available = self.CORE_STAGES | backend.supported_stages | stack.supported_stages
-        if runtime.localizer is not None:
-            available |= {"localization.pre"}
-        unknown = {hook.stage for hook in runtime.hooks} - available
-        if unknown:
-            raise UnsupportedStageError(f"Unsupported runtime stages: {sorted(unknown)}. Available: {sorted(available)}")
-        self.available = available
+        self.available = runtime.validate_stages(backend, stack)
         self._handlers: dict[str, list[Any]] = {}
         for hook in runtime.hooks:
             self._handlers.setdefault(hook.stage, []).append(hook.handler)

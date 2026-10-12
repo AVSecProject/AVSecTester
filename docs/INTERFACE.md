@@ -149,8 +149,10 @@ ego:
 An omitted or `null` `traffic_manager_seed` follows the resolved `client.seed`. The complete example
 explicitly sets both seeds to `0`: changing only `seed` leaves the Traffic Manager seed fixed.
 Similarly, an omitted or `null` LiDAR `noise_seed` is derived during preparation. An explicit
-`noise_seed` is preserved. The CLI prints `[scenario] seed=...`. Set `client.seed` to that integer
-to repeat the seeded choices with the same remaining configuration and environment.
+`noise_seed` is preserved. The CLI prints `[scenario] seed=...` before its first server operation,
+including when preparation or execution later fails. Set `client.seed` to that integer to repeat
+the seeded choices with the same remaining configuration and environment. This is separate from
+`runtime.seed`, which initializes the handlers' `context.rng` and does not seed the simulator.
 
 The seed does not randomly change every field. NPC count, map, weather, sensor specifications and
 attack parameters are not automatically randomized. `map_name` and `weather` can be set explicitly

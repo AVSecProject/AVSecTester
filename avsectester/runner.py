@@ -44,6 +44,8 @@ def run_pair(
     Runtime factories receive the backend before reset. Resolve live actors in world hooks,
     not in those factories. Each runtime gets its own session and lifecycle. Initial deployment
     ticks are matched across runs. The caller owns the backend when ``close_backend=False``.
+    Both runtimes are checked against the first stack before clean execution. Stack factories
+    must provide the same capabilities for both runs. Each run also checks its actual stack.
     No metric is computed here. ``run_fn`` may use the common recorder or component logger.
     """
     previous_ticks = backend.setup_ticks
@@ -51,6 +53,12 @@ def run_pair(
     try:
         if not isinstance(frames, int) or isinstance(frames, bool) or frames < 0:
             raise ValueError("frames must be a nonnegative integer")
+        stack = stack_factory()
+        for configured in (clean_runtime, attacked_runtime):
+            if isinstance(configured, Runtime):
+                configured.validate_stages(backend, stack)
+            elif configured is not None and not callable(configured):
+                raise TypeError("Expected Runtime or a runtime factory")
         backend.prepare_clean_attack_pair()
         runtimes = []
         for configured in (clean_runtime, attacked_runtime):
@@ -59,11 +67,14 @@ def run_pair(
                 runtime = Runtime()
             if not isinstance(runtime, Runtime):
                 raise TypeError("A runtime factory must return Runtime")
+            runtime.validate_stages(backend, stack)
             runtimes.append(runtime)
         backend.setup_ticks = max(previous_ticks, *(runtime.setup_ticks for runtime in runtimes))
         results: list[Any] = []
-        for runtime in runtimes:
-            results.append((run_fn or run)(backend, stack_factory(), frames, runtime=runtime))
+        for index, runtime in enumerate(runtimes):
+            if index:
+                stack = stack_factory()
+            results.append((run_fn or run)(backend, stack, frames, runtime=runtime))
         return results[0], results[1]
     except BaseException as error:
         failure = error

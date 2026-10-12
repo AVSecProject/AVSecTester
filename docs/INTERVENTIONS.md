@@ -8,6 +8,42 @@ No attack or defense is required. `run`, `record_run` and `run_logged` use the s
 order. `run_scenario(..., runtime=...)` forwards the same runtime for the CARLA/modular entry point.
 Optimization algorithms and scenario selection are separate from this interface.
 
+## Write your first attack
+
+This example needs the [core installation](SETUP.md#1-core-only-install-fast-ci-friendly).
+It runs offline using a stub renderer, without a GPU, simulator server or model weights.
+The driver is a minimal example policy, not an autonomous-driving model.
+
+```python
+from dataclasses import replace
+
+from avsectester.backend import AVStack, run
+from avsectester.plane import Control
+from avsectester.runtime import Hook, Runtime
+from avsectester.simulators.nurec import NuRecBackend, StubRenderer
+
+class Driver(AVStack):
+    def __call__(self, observation):
+        return Control(brake=float(observation.ego_speed > 5.0))
+
+def spoof_speed(observation, context):
+    return replace(observation, ego_speed=20.0)
+
+backend = NuRecBackend({"ego0": {"speed": 2.0}}, renderer=StubRenderer(height=8, width=8))
+runtime = Runtime([Hook("observation", spoof_speed)])
+try:
+    trace = run(backend, Driver(), frames=3, runtime=runtime)
+    print(trace.braking_frames)
+finally:
+    backend.close()
+```
+
+The handler changes the speed received by the driver, not the physical speed directly.
+The returned command changes the physical state through the backend. Use `Runtime()` for a
+clean run. Add a defense after the attack to process its output, as shown below. For live
+experiments, replace the example backend and driver with the adapters in
+[INTERFACE.md](INTERFACE.md#1-backend-and-stack-compatibility).
+
 ## Register handlers
 
 ```python
@@ -60,6 +96,8 @@ runtime:
 A factory is an importable class or function called with `options` as keyword arguments. It
 returns a handler with the callback and lifecycle contract described here. `factory` and
 `avstack` are mutually exclusive. Unknown runtime keys and unavailable stages raise errors.
+Loading a configuration imports and executes its Python factories. Use configurations and
+factory implementations you trust.
 An optional `localizer` uses the same `factory`/`options` format. Its result must implement the
 localizer interface below. Factories are constructed before world reset, so actors are resolved
 in `world.setup` or later callbacks.
@@ -82,7 +120,13 @@ creates native component `.post` hooks. The convenience `patches` list creates o
 an explicit defense to process a native attack's output. Use `runtime.hooks` alone when a
 different order or a `.pre` hook is needed. The default clean treatment retains `runtime.seed`
 and `runtime.localizer` and has no hooks. An explicit `clean_runtime` mapping replaces that
-baseline treatment. See [DOCKER.md](DOCKER.md) for CLI exit codes.
+baseline treatment. YAML localizer factories construct independent instances for the two
+treatments. The CLI and Python convenience entry point use the same
+`interventions.configured_runtime_pair(config, ...)` builder. Explicit Python runtime arguments
+take precedence over their YAML treatment settings. If only `attacked_runtime` is supplied
+and there is no YAML `clean_runtime`, the default clean runtime shares its localizer object,
+case and seed without its hooks. Shared stateful localizers must implement `reset` or callers
+must supply an independent `clean_runtime`. See [DOCKER.md](DOCKER.md) for CLI exit codes.
 
 ## Single and paired execution
 
@@ -106,6 +150,13 @@ Each runtime argument also accepts a `backend -> Runtime` factory, called after 
 preparation and before the first reset. `run_fn` can select `run_logged` or another recorder
 that accepts `runtime`. It returns that recorder's results without computing a metric.
 
+Before preparing the scene, the paired runner constructs the first stack and checks directly
+supplied runtimes against its capabilities. It checks factory-produced runtimes immediately
+after constructing them. Both treatments must pass before clean execution begins. The first
+stack is used for clean execution, and a fresh stack is constructed for attacked execution.
+The factory must provide the same stages in both instances. Each run still validates its
+actual adapters before reset.
+
 CARLA pair preparation resolves random choices once and replays the first run's actual actor
 spawns. NuRec reset restores its configured origin. Subsequent trajectories may differ because
 the treatments produce different controls. These are shared initial conditions, not a guarantee
@@ -124,6 +175,8 @@ The default is zero. Other world plugins that require CARLA setup ticks must dec
 `backend.supported_stages` and `stack.supported_stages` declare adapter-specific stages.
 The loop provides the common observation and command stages. Registration is checked before
 the world is reset. An unavailable stage raises an error instead of accepting an inactive hook.
+`runtime.validate_stages(backend, stack)` performs the same capability check without creating
+a session or invoking handlers. `localization.pre` additionally requires that runtime's localizer.
 
 | Stage | Value passed to the handler | Availability and effect |
 |---|---|---|

@@ -140,3 +140,33 @@ def configured_runtime(scenario: Mapping[str, Any], *, case: Any = None) -> Runt
 
         hooks.append(Hook("world.setup", PhysicalPatchPlugin(patches)))
     return runtime.with_hooks(hooks, prepend=True)
+
+
+def configured_runtime_pair(
+    scenario: Mapping[str, Any],
+    *,
+    clean_runtime: Runtime | None = None,
+    attacked_runtime: Runtime | None = None,
+) -> tuple[Runtime, Runtime]:
+    """Build CARLA treatments, with explicit Python runtimes overriding YAML defaults.
+
+    YAML localizer factories build independent instances for each treatment. An explicit
+    attacked runtime shares its localizer with the default clean runtime, so a stateful
+    localizer must reset itself or the caller must supply an independent clean runtime.
+    """
+    explicit_attacked_runtime = attacked_runtime is not None
+    if attacked_runtime is None:
+        attacked_runtime = configured_runtime(scenario)
+    if clean_runtime is None:
+        if "clean_runtime" in scenario or not explicit_attacked_runtime:
+            common = scenario.get("runtime") or {}
+            baseline = scenario.get("clean_runtime", {
+                key: value for key, value in common.items() if key in {"localizer", "seed"}
+            })
+            clean_runtime = Runtime.from_config(baseline)
+        else:
+            clean_runtime = Runtime(
+                localizer=attacked_runtime.localizer, case=attacked_runtime.case,
+                seed=attacked_runtime.seed,
+            )
+    return clean_runtime, attacked_runtime

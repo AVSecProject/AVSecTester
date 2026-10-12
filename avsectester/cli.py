@@ -8,8 +8,7 @@ import typer
 import yaml
 
 from . import __version__
-from .interventions import configured_runtime
-from .runtime import Runtime
+from .interventions import configured_runtime_pair
 
 app = typer.Typer(help="Adversarial security testing for AV systems.")
 
@@ -33,7 +32,7 @@ def run(
     """Run one prepared clean/attacked pair in CARLA, including configured runtime hooks."""
     from .carla_runner import run_scenario_pair
     from .metric import impact, plot_impact
-    from .simulators.carla import set_perception_gpu
+    from .simulators.carla import resolve_scenario_seed, set_perception_gpu
 
     try:
         scenario = yaml.safe_load(config.read_text())
@@ -47,12 +46,8 @@ def run(
         n = frames if frames is not None else scenario.get("frames", 40)
         if not isinstance(n, int) or isinstance(n, bool) or n < 0:
             raise ValueError("frames must be a nonnegative integer")
-        scenario = set_perception_gpu(scenario, gpu)
-        attacked_runtime = configured_runtime(scenario)
-        common = scenario.get("runtime") or {}
-        clean_runtime = Runtime.from_config(scenario.get("clean_runtime", {
-            key: value for key, value in common.items() if key in {"localizer", "seed"}
-        }))
+        scenario = resolve_scenario_seed(set_perception_gpu(scenario, gpu))
+        clean_runtime, attacked_runtime = configured_runtime_pair(scenario)
     except (ValueError, TypeError, KeyError, yaml.YAMLError) as error:
         typer.echo(f"Configuration error: {error}", err=True)
         raise typer.Exit(2) from error
@@ -61,15 +56,13 @@ def run(
         raise typer.Exit(2) from error
 
     try:
+        typer.echo(f"[scenario] seed={scenario['client']['seed']}")
         typer.echo(f"[pair] {n} frames per run, {len(attacked_runtime.hooks)} intervention hook(s)")
         if not attacked_runtime.hooks:
             typer.echo("[pair] No intervention hooks configured. Comparing two baseline runs.")
         clean, attacked = run_scenario_pair(
             scenario, frames=n, clean_runtime=clean_runtime, attacked_runtime=attacked_runtime,
         )
-        replay_seed = (clean.replay_scenario or {}).get("client", {}).get("seed")
-        if replay_seed is not None:
-            typer.echo(f"[scenario] seed={replay_seed}")
         typer.echo(
             f"[clean]    mean_detections={clean.mean_detections:.1f} "
             f"peak_speed={clean.peak_speed:.2f} final_speed={clean.final_speed:.2f} "

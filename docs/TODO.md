@@ -30,9 +30,3 @@ This file tracks deferred development work. Unchecked entries are not implemente
   defense-only and attack-with-defense runs. Define the behavior when a comparison has no
   intervention configured. Determine active interventions from the unified runtime configuration,
   rather than only the legacy `attacks` list.
-
-## Attack quick start
-
-- [ ] Add a concise, runnable first-attack guide showing backend and stack construction, a
-  `Hook`, runtime registration, execution and resource cleanup. Link to `INTERVENTIONS.md` for
-  the complete stage and lifecycle reference. State the required environment and services.
