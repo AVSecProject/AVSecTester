@@ -491,7 +491,7 @@ In this example, implement `read_native_geometry` using your simulator or datase
 ```python
 from avsectester.rendering.types import InsertionGeometry
 from avsectester.rendering.visibility import CuboidVisibilityEstimator
-from avsectester.rendering.insertion import InsertionRenderer
+from avsectester.rendering.compositor import InsertionRenderer
 
 def geometry(observation) -> InsertionGeometry:
     actors, victim, cam_from_world = read_native_geometry(observation)

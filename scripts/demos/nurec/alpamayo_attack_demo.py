@@ -26,7 +26,7 @@ from pathlib import Path
 
 from avsectester.metric import impact
 from avsectester.simulators.nurec import NuRecBackend, NuRecRenderer, TrajectoryFollower
-from avsectester.rendering.insertion import PatchCompositor
+from avsectester.rendering.compositor import PatchCompositor
 from avsectester.perturbations.image import frame_perturbation
 from avsectester.simulators.viz import record_run, save_gif
 from avsectester.stacks.alpamayo import AlpamayoAVStack

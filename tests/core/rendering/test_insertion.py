@@ -5,7 +5,7 @@ import pytest
 
 
 def test_image_warp_returns_an_alpha_composite_and_opaque_mask():
-    from avsectester.rendering.insertion import warp_patch
+    from avsectester.rendering.compositor import warp_patch
 
     frame = np.full((40, 60, 3), 100, np.uint8)
     patch = np.dstack([np.full((16, 16), 255, np.uint8)] * 3 + [np.full((16, 16), 255, np.uint8)])
@@ -21,7 +21,7 @@ def test_render_plane_lands_where_projected_and_keeps_red(ftheta_camera, cam_fro
     from avsectester.attacks.object_insertion.sign_spoof import SignAsset
     from avsectester.insertion import ActorPose, Insertion, WorldPlacement, Orientation, resolve_insertion
     from avsectester.rendering.harmonizers import ClassicHarmonizer
-    from avsectester.rendering.insertion import PatchCompositor, render_plane
+    from avsectester.rendering.compositor import PatchCompositor, render_plane
 
     frame = np.full((1080, 1920, 3), 90, np.uint8)
     insertion = Insertion("sign", SignAsset(post=False), WorldPlacement((12, -4, 0)),
@@ -39,7 +39,7 @@ def test_render_plane_lands_where_projected_and_keeps_red(ftheta_camera, cam_fro
     )  # rendered footprint centred on the projection
     assert xs.mean() > ftheta_camera.cx  # right of centre (negative y)
     # chroma-preserving harmonization keeps the sign red. The default Lab transfer pulls it to grey
-    from avsectester.rendering.insertion import render_resolved
+    from avsectester.rendering.compositor import render_resolved
 
     kept, _ = render_resolved(frame, ftheta_camera, cam_from_world, resolved,
                              compositor=PatchCompositor(ClassicHarmonizer(preserve_chroma=True, blend="feather")))
@@ -50,7 +50,7 @@ def test_render_plane_lands_where_projected_and_keeps_red(ftheta_camera, cam_fro
 def test_render_plane_behind_camera_is_noop(ftheta_camera, cam_from_world):
     from avsectester.attacks.object_insertion.sign_spoof import SignAsset
     from avsectester.insertion import ActorPose, Insertion, WorldPlacement, Orientation, resolve_insertion
-    from avsectester.rendering.insertion import render_plane
+    from avsectester.rendering.compositor import render_plane
 
     frame = np.full((1080, 1920, 3), 90, np.uint8)
     insertion = Insertion("sign", SignAsset(post=False), WorldPlacement((-10, -4, 0)),
@@ -93,7 +93,7 @@ def test_insertion_renderer_depth_orders_surfaces_and_preserves_cutout_holes(
     from avsectester.plane import Observation
     from avsectester.rendering.cameras import PinholeCamera
     from avsectester.rendering.types import InsertionGeometry
-    from avsectester.rendering.insertion import InsertionRenderer
+    from avsectester.rendering.compositor import InsertionRenderer
 
     red = np.full((16, 16, 4), [255, 0, 0, 255], np.uint8)
     red[6:10, 6:10, 3] = 0

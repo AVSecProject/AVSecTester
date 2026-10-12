@@ -3,7 +3,7 @@
 Image attacks choose a payload and a placement. The simulation layer projects and composites the
 payload into camera observations before they reach the driving stack. Shared camera geometry,
 surface sampling, visibility and harmonization live in `avsectester/rendering/`.
-`avsectester/rendering/insertion.py` supplies the compositor and observation/view wrappers.
+`avsectester/rendering/compositor.py` supplies the compositor and observation/view wrappers.
 
 Object-insertion attacks can use an ordinary sign, pedestrian image or signal board. The attack
 comes from placing that visual cue where it does not belong. An optimized adversarial texture is
@@ -139,7 +139,7 @@ construction or change it before the next frame:
 
 ```python
 from avsectester.rendering.harmonizers import PCTNetHarmonizer
-from avsectester.rendering.insertion import InsertionRenderer, PatchCompositor
+from avsectester.rendering.compositor import InsertionRenderer, PatchCompositor
 
 compositor = PatchCompositor(PCTNetHarmonizer(strict=True), harmonize=False)
 renderer = InsertionRenderer(insertions, camera, geometry, compositor=compositor)

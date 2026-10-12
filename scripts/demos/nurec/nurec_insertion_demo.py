@@ -28,7 +28,7 @@ from avsectester.rendering.types import InsertionGeometry
 from avsectester.rendering.visibility import CuboidVisibilityEstimator
 from avsectester.scenarios.datasets.nurec import NuRecDataset
 from avsectester.simulators.nurec import NuRecInsertions
-from avsectester.rendering.insertion import PatchCompositor
+from avsectester.rendering.compositor import PatchCompositor
 from avsectester.perturbations.image import frame_perturbation
 
 

@@ -262,7 +262,7 @@ To use an existing local checkpoint:
 
 ```python
 from avsectester.rendering.harmonizers import PCTNetHarmonizer
-from avsectester.rendering.insertion import PatchCompositor
+from avsectester.rendering.compositor import PatchCompositor
 
 harmonizer = PCTNetHarmonizer(device=0, weights="/path/to/PCTNet.pth", strict=True)
 compositor = PatchCompositor(harmonizer)

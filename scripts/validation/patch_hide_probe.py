@@ -15,7 +15,7 @@ from avsectester.plane import Control
 from avsectester.rendering.harmonizers import ClassicHarmonizer, PCTNetHarmonizer
 from avsectester.simulators import carla as carla_sim
 from avsectester.scenarios.carla_provider import CarlaSelectionBackend
-from avsectester.rendering.insertion import PatchCompositor
+from avsectester.rendering.compositor import PatchCompositor
 from scripts.common.demo_common import build_detector, carla_rear_perturbation
 from PIL import Image
 

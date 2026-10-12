@@ -80,7 +80,7 @@ def insertion_perturbation(backend, insertions, *, bindings=None, camera="front"
     from avsectester.rendering.visibility import DepthVisibilityEstimator
     from avsectester.rendering.types import InsertionGeometry
     from avsectester.perturbations.image import read_camera_rgb, write_camera_rgb
-    from avsectester.rendering.insertion import InsertionRenderer
+    from avsectester.rendering.compositor import InsertionRenderer
 
     renderer = None
     current = None

@@ -13,7 +13,7 @@ from avsectester.insertion import (
 )
 from avsectester.rendering.cameras import FThetaCamera, PinholeCamera
 from avsectester.rendering.visibility import CuboidVisibilityEstimator, DepthVisibilityEstimator
-from avsectester.rendering.insertion import render_plane, render_resolved
+from avsectester.rendering.compositor import render_plane, render_resolved
 
 
 CAM_FROM_WORLD = np.array([[0, -1, 0, 0], [0, 0, -1, 0], [1, 0, 0, 0], [0, 0, 0, 1.0]])
@@ -153,7 +153,7 @@ def test_camera_crop_does_not_change_texture_sampling(camera):
 def test_independent_insertions_occlude_by_depth_and_keep_holes(camera, method):
     from avsectester.plane import Observation
     from avsectester.rendering.types import InsertionGeometry
-    from avsectester.rendering.insertion import InsertionRenderer, PatchCompositor
+    from avsectester.rendering.compositor import InsertionRenderer, PatchCompositor
 
     red = np.full((16, 16, 4), [255, 0, 0, 255], np.uint8)
     red[6:10, 6:10, 3] = 0
@@ -215,7 +215,7 @@ def test_independent_insertions_occlude_by_depth_and_keep_holes(camera, method):
 
 
 def test_appearance_softening_preserves_visibility_and_foreground_pixels(camera):
-    from avsectester.rendering.insertion import PatchCompositor
+    from avsectester.rendering.compositor import PatchCompositor
 
     texture = np.full((32, 32, 4), [240, 20, 30, 255], np.uint8)
     texture[:, 16:, :3] = [20, 30, 240]
@@ -236,7 +236,7 @@ def test_appearance_softening_preserves_visibility_and_foreground_pixels(camera)
 
 
 def test_harmonization_can_be_toggled_without_changing_visibility_or_occluders(camera):
-    from avsectester.rendering.insertion import PatchCompositor
+    from avsectester.rendering.compositor import PatchCompositor
 
     item = panel(np.full((32, 32, 4), [240, 20, 30, 255], np.uint8))
     clean = np.full((camera.height, camera.width, 3), 70, np.uint8)
@@ -286,7 +286,7 @@ def test_harmonization_can_be_toggled_without_changing_visibility_or_occluders(c
 
 def test_disabled_pctnet_does_not_load_weights(camera, monkeypatch):
     from avsectester.rendering.harmonizers import PCTNetHarmonizer
-    from avsectester.rendering.insertion import PatchCompositor
+    from avsectester.rendering.compositor import PatchCompositor
 
     harmonizer = PCTNetHarmonizer(strict=True)
     monkeypatch.setattr(harmonizer, "_load", lambda: pytest.fail("Disabled PCTNet must not load"))

@@ -17,7 +17,7 @@ from pathlib import Path
 
 import numpy as np
 from avsectester.simulators.nurec import NuRecBackend, NuRecRenderer
-from avsectester.rendering.insertion import PatchCompositor
+from avsectester.rendering.compositor import PatchCompositor
 from avsectester.perturbations.image import frame_perturbation
 from avsectester.simulators.viz import filmstrip, record_run, save_gif, save_image
 from scripts.common.demo_common import (

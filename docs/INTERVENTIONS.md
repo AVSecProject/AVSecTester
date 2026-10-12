@@ -73,7 +73,7 @@ in `world.setup` or later callbacks.
 `frame_perturbation` and CARLA `insertion_perturbation` construct observation transforms. Pass
 them through `ObservationTransform` at `observation`, or use the `perturb` shorthand, which is
 internally converted into the same hook chain. They do not establish separate run loops.
-Pure insertion rendering and compositing live in `avsectester.rendering.insertion`. Image
+Pure insertion rendering and compositing live in `avsectester.rendering.compositor`. Image
 observation transforms and corruptions live in `avsectester.perturbations.image`.
 
 The CARLA CLI consumes `runtime`, `attacks` and `patches`. The convenience `attacks` list
