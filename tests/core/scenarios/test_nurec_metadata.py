@@ -176,7 +176,7 @@ def test_insertion_pipeline_survives_backend_reset_and_drives_from_modified_inpu
     from avsectester.plane import Control
     from avsectester.rendering.cameras import PinholeCamera, planar_rig_pose
     from avsectester.simulators.nurec import NuRecBackend, StubRenderer
-    from avsectester.simulators.patch_insertion import frame_perturbation
+    from avsectester.perturbations.image import frame_perturbation
 
     dataset, _ = recorded_dataset
     scene = next(dataset.scenes())

@@ -9,6 +9,7 @@ control representations can be composed through the same driving loop:
   ``AVStack`` (``__call__(obs) -> Control``), and ``run`` which drives the loop.
 * :mod:`avsectester.runtime` — ordered stage handlers and optional per-run lifecycle for attacks,
   defenses and localization adapters. Only stages supported by the selected adapters can be used.
+* :mod:`avsectester.runner` — paired execution with one prepared origin, fresh stacks and cleanup.
 
 The supplied backend and stack adapters:
 
@@ -17,7 +18,7 @@ The supplied backend and stack adapters:
   reconstructed views from an external rendering service).
 * AV stacks (:mod:`avsectester.stacks`) — ``ModularAVStack`` (``stacks.modular``; an avstack
   ``ModularDrivingPipeline``) and ``AlpamayoAVStack`` (``stacks.alpamayo``; end-to-end Alpamayo-1.5).
-* Composition — :mod:`avsectester.scenario` wires a CARLA backend + modular stack into one run.
+* Composition — :mod:`avsectester.carla_runner` wires a CARLA backend + modular stack into one run.
   The CLI pairs clean and attacked runs using the prepared scenario and actual spawn replay.
 
 Plus :mod:`avsectester.attacks` (avstack ``HOOKS`` hooks — the modular white-box seam),

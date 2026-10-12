@@ -14,7 +14,7 @@ from unittest.mock import Mock
 
 import pytest
 from avcarla.config import CARLA
-from avsectester import scenario
+from avsectester import carla_runner as scenario
 from avsectester.simulators import carla as carla_backend
 from avstack.config import HOOKS, PIPELINE
 from avstack.modules.base import BaseModule
@@ -191,7 +191,7 @@ def test_runner_preserves_hook_order_and_counts_attacked_output(simulation, monk
     trace = scenario.run_scenario(sim.config, attacks=attacks, frames=2)
     assert sim.stage_outputs == [["real-detection", "phantom-a", "phantom-b"]] * 2
     assert [r.n_detections for r in trace.records] == [3, 3]
-    assert sim.pipeline.tracking.post_hooks == [hooks[2]]
+    assert sim.pipeline.tracking.post_hooks == []  # runtime attacks do not persist on the model
     assert [call.args[0] for call in build_hook.call_args_list] == [a["hook"] for a in attacks]
 
 
@@ -369,4 +369,106 @@ def test_paired_backend_replays_actual_spawns_and_releases_old_actors(simulation
             npc.destroy.assert_called_once()
     assert backend.ego is None and backend.npcs == []
     backend.close()  # cleanup is idempotent
+    assert sim.client.close.call_count == 2
+
+
+def test_pair_default_baseline_retains_explicit_runtime_localizer_and_seed(simulation, monkeypatch):
+    from avsectester.backend import AVStack
+    from avsectester.plane import Control, StateEstimate
+    from avsectester.runtime import Hook, Plugin, Runtime
+
+    sim = simulation
+    monkeypatch.setattr(carla_backend, "prepare_scenario", deepcopy)
+    config = deepcopy(sim.config)
+    config["npcs"] = []
+    seeds, inputs = [], []
+    case = object()
+
+    class Localizer(Plugin):
+        def reset(self, context):
+            assert context.case is case
+            seeds.append(context.rng.random())
+
+        def transform(self, observation, context):
+            return StateEstimate(observation.vehicle_state, 12)
+
+    class Stack(AVStack):
+        def __call__(self, observation):
+            inputs.append(observation.ego_speed)
+            return Control()
+
+    def attack(observation, context):
+        assert observation.ego_speed == 12
+        observation.ego_speed = 20
+        return observation
+
+    scenario.run_scenario_pair(
+        config, frames=1, stack_factory=Stack,
+        attacked_runtime=Runtime([Hook("observation", attack)], localizer=Localizer(), case=case, seed=17),
+    )
+    assert inputs == [12, 20]
+    assert len(seeds) == 2 and seeds[0] == seeds[1]
+
+
+def test_configured_native_pre_hook_replaces_component_input(simulation, monkeypatch):
+    from avsectester.runtime import Runtime
+
+    class RemoveInput:
+        def __call__(self, objects, **kwargs):
+            assert objects == ["real-detection"]
+            return ([],), kwargs
+
+    monkeypatch.setitem(HOOKS.module_dict, "RemoveInputForTest", RemoveInput)
+    runtime = Runtime.from_config({"hooks": [
+        {"stage": "perception.pre", "avstack": {"type": "RemoveInputForTest"}},
+    ]})
+    trace = scenario.run_scenario(simulation.config, frames=2, runtime=runtime)
+    assert simulation.stage_outputs == [[], []]
+    assert [record.n_detections for record in trace.records] == [0, 0]
+
+
+@pytest.mark.parametrize("deployment_fails", [False, True])
+def test_pair_world_deployment_matches_setup_ticks_and_cleans_panels(
+    simulation, monkeypatch, deployment_fails,
+):
+    from avsectester.attacks.patch import physical_patch
+    from avsectester.backend import AVStack
+    from avsectester.plane import Control
+
+    sim = simulation
+    ticks, initialization_ticks, panels = [], [], []
+
+    class Stack(AVStack):
+        def reset(self, observation):
+            initialization_ticks.append(sim.client.tick.call_count)
+
+        def __call__(self, observation):
+            return Control()
+
+    def apply(world, target, *, tick, on_spawn):
+        panel = Mock(is_alive=True)
+        panels.append(panel)
+        on_spawn(panel)
+        tick()
+        ticks.append(world.get_snapshot().frame)
+        if deployment_fails:
+            raise RuntimeError("texture deployment failed")
+        return [panel]
+
+    monkeypatch.setattr(physical_patch, "build_patch", lambda spec: SimpleNamespace(apply=apply))
+    monkeypatch.setattr(carla_backend, "prepare_scenario", deepcopy)
+    config = deepcopy(sim.config)
+    config["npcs"] = []
+    config["patches"] = [{"target": "ego"}]
+    if deployment_fails:
+        with pytest.raises(RuntimeError, match="texture deployment failed"):
+            scenario.run_scenario_pair(config, frames=1, stack_factory=Stack)
+        assert initialization_ticks == [2]
+    else:
+        clean, attacked = scenario.run_scenario_pair(config, frames=1, stack_factory=Stack)
+        # Each reset takes one deployment tick and one observation tick. Frame IDs may differ.
+        assert initialization_ticks == [2, 5]
+        assert len(clean.records) == len(attacked.records) == 1
+    assert len(ticks) == len(panels) == 1
+    panels[0].destroy.assert_called_once()
     assert sim.client.close.call_count == 2

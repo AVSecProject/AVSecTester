@@ -146,19 +146,36 @@ def test_modular_stack_forwards_observation_and_converts_control(monkeypatch, pi
 
 
 def test_modular_stack_counts_detections_after_attack(pipeline_config, make_detections, make_ego):
-    from avsectester.plane import Control, Observation
+    from avsectester.plane import Observation
     from avsectester.stacks.modular import ModularAVStack
 
     stack = ModularAVStack(pipeline_config)
-    stack.attach("perception", {"type": "PhantomInjection"})
-    stack.instrument(stages=("perception",))  # capture last, so it sees the attacked output
+    from avsectester.backend import WorldBackend, run
+    from avsectester.interventions import NativeHook
+    from avsectester.runtime import Hook, Runtime
+
+    stack.instrument(stages=("perception",))
     counts = []
-    for frame in range(3):
-        detections = make_detections([(30, 8, 0)], frame=frame)
-        observation = Observation(t=frame * 0.05, frame=frame, sensor_data=detections,
-                                  vehicle_state=make_ego(t=frame * 0.05))
-        assert isinstance(stack(observation), Control)
-        counts.append(len(stack.component_log()["perception"]))
+
+    class Backend(WorldBackend):
+        def reset(self):
+            self.frame = 0
+            return self.observation()
+
+        def observation(self):
+            return Observation(
+                t=self.frame * 0.05, frame=self.frame,
+                sensor_data=make_detections([(30, 8, 0)], frame=self.frame),
+                vehicle_state=make_ego(t=self.frame * 0.05),
+            )
+
+        def step(self, control):
+            self.frame += 1
+            return self.observation()
+
+    run(Backend(), stack, 3, runtime=Runtime([
+        Hook("perception.post", NativeHook({"type": "PhantomInjection"})),
+    ]), on_step=lambda *args: counts.append(len(stack.component_log()["perception"])))
 
     assert counts == [2, 2, 2]  # original object plus injected phantom, every frame
 
@@ -175,7 +192,6 @@ def test_runtime_bridges_replace_real_stage_data_and_capture_final_outputs(
 
     stack = ModularAVStack(pipeline_config)
     stack.instrument(("perception", "control"))
-    stack.attach("perception", {"type": "PhantomInjection"})
     modules = {name: getattr(stack.pipeline, name) for name in ("perception", "tracking", "planning", "control")}
     original_hooks = {name: (tuple(module.pre_hooks), tuple(module.post_hooks)) for name, module in modules.items()}
     calls = []
@@ -188,7 +204,7 @@ def test_runtime_bridges_replace_real_stage_data_and_capture_final_outputs(
             if stage == "perception.pre":
                 return CallInputs(args=(make_detections([(30, 8, 0)]),), kwargs=value.kwargs)
             if stage == "perception.post":
-                assert len(value) == 2  # configured native phantom ran before the runtime transform
+                assert len(value) == 1  # input replacement reaches the real perception module
                 return DataContainer(value.frame, value.timestamp, [], value.source_identifier)
             if stage == "tracking.pre":
                 assert len(value.args[0]) == 0
@@ -228,13 +244,15 @@ def test_runtime_bridges_cleanup_after_invalid_pre_result(pipeline_config, make_
     assert all(not module.pre_hooks and not module.post_hooks for module in stack.native.values() if hasattr(module, "pre_hooks"))
 
 
-def test_native_hook_attached_during_reset_runs_before_runtime_defense_and_capture(
-    pipeline_config, make_detections, make_ego
+@pytest.mark.parametrize("attack_first", [True, False])
+def test_native_runtime_adapter_preserves_order_before_capture(
+    pipeline_config, make_detections, make_ego, attack_first,
 ):
     from avstack.datastructs import DataContainer
     from avsectester.backend import WorldBackend, run
     from avsectester.plane import Observation
-    from avsectester.runtime import Hook, Plugin, Runtime
+    from avsectester.runtime import Hook, Runtime
+    from avsectester.interventions import NativeHook
     from avsectester.stacks.modular import ModularAVStack
 
     class Backend(WorldBackend):
@@ -251,13 +269,6 @@ def test_native_hook_attached_during_reset_runs_before_runtime_defense_and_captu
         def step(self, control):
             return self.observation(1)
 
-    class InstallNativeAttack(Plugin):
-        def reset(self, context):
-            context.stack.attach("perception", {"type": "PhantomInjection"})
-
-        def transform(self, observation, context):
-            return observation
-
     defense_inputs = []
 
     def hide_detections(detections, context):
@@ -269,15 +280,16 @@ def test_native_hook_attached_during_reset_runs_before_runtime_defense_and_captu
 
     stack = ModularAVStack(pipeline_config)
     stack.instrument(("perception",))
-    runtime = Runtime([
-        Hook("observation", InstallNativeAttack()),
+    hooks = [
+        Hook("perception.post", NativeHook({"type": "PhantomInjection"})),
         Hook("perception.post", hide_detections),
-    ])
+    ]
+    runtime = Runtime(hooks if attack_first else reversed(hooks))
     run(Backend(), stack, frames=1, runtime=runtime)
 
-    assert defense_inputs == [2]  # real detection plus the newly installed phantom
-    assert len(stack.component_log()["perception"]) == 0
-    assert len(stack.pipeline.perception.post_hooks) == 2  # native attack and capture survive
+    assert defense_inputs == [2 if attack_first else 1]
+    assert len(stack.component_log()["perception"]) == (0 if attack_first else 1)
+    assert len(stack.pipeline.perception.post_hooks) == 1  # only capture remains after runtime cleanup
 
 
 def test_instrumentation_is_idempotent_and_reset_clears_telemetry(
@@ -308,5 +320,21 @@ def test_stage_capabilities_exclude_modules_without_actual_hook_dispatch(pipelin
     assert "perception.pre" in stack.supported_stages
     with pytest.raises(ValueError, match="Cannot instrument unavailable stages"):
         stack.instrument(("tracking",))
-    with pytest.raises(ValueError, match="No hookable"):
-        stack.attach("tracking", {"type": "PhantomInjection"})
+    from avsectester.runtime import Hook, Runtime, UnsupportedStageError
+    from avsectester.simulators.nurec import NuRecBackend, StubRenderer
+
+    with pytest.raises(UnsupportedStageError, match="tracking.post"):
+        Runtime([Hook("tracking.post", lambda value, context: value)]).session(
+            NuRecBackend({}, renderer=StubRenderer(height=2, width=2)),
+            stack,
+        )
+
+
+def test_stage_capability_marker_does_not_depend_on_callable_name(pipeline_config, monkeypatch):
+    from avsectester.stacks.modular import ModularAVStack
+
+    stack = ModularAVStack(pipeline_config)
+    call = type(stack.pipeline.perception).__call__
+    monkeypatch.setattr(call, "__name__", "renamed_dispatcher")
+    assert getattr(call, "__avstack_hooks__", False)
+    assert "perception.post" in stack.supported_stages

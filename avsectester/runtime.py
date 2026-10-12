@@ -7,7 +7,7 @@ value. World stages receive ``None`` and use explicit native backend operations 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import ExitStack, contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
@@ -21,6 +21,10 @@ if TYPE_CHECKING:
     from avsectester.backend import AVStack, WorldBackend
 
 
+class UnsupportedStageError(ValueError):
+    """A requested intervention stage is absent from the selected adapters."""
+
+
 @dataclass
 class CallInputs:
     """Inputs to a component pre-hook, retaining positional and keyword arguments."""
@@ -28,7 +32,7 @@ class CallInputs:
     args: tuple = ()
     kwargs: dict[str, Any] = field(default_factory=dict)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if not isinstance(self.args, tuple) or not isinstance(self.kwargs, dict):
             raise TypeError("CallInputs requires tuple args and dict kwargs")
 
@@ -40,7 +44,7 @@ class RenderRequest:
     pose: Any
     camera: str
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if not isinstance(self.camera, str) or not self.camera:
             raise ValueError("RenderRequest camera must be a nonempty sensor name")
 
@@ -76,23 +80,23 @@ class StageContext:
     control: Control | None = None
 
     @property
-    def backend(self):
+    def backend(self) -> WorldBackend:
         return self.run.backend
 
     @property
-    def stack(self):
+    def stack(self) -> AVStack:
         return self.run.stack
 
     @property
-    def case(self):
+    def case(self) -> Any:
         return self.run.case
 
     @property
-    def rng(self):
+    def rng(self) -> np.random.Generator:
         return self.run.rng
 
     @property
-    def native(self):
+    def native(self) -> Mapping[str, Mapping[str, Any]]:
         return self.run.native
 
     @property
@@ -124,14 +128,14 @@ class Hook:
     stage: str
     handler: Any
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if not isinstance(self.stage, str) or not self.stage:
             raise ValueError("Hook stage must be a nonempty string")
         if not callable(getattr(self.handler, "transform", self.handler)):
             raise TypeError("Hook handler must be callable or provide transform(value, context)")
 
 
-def _invoke(handler, value, context):
+def _invoke(handler: Any, value: Any, context: StageContext) -> Any:
     return getattr(handler, "transform", handler)(value, context)
 
 
@@ -150,7 +154,7 @@ class Runtime:
         localizer: Callable[[Observation, StageContext], StateEstimate] | Plugin | None = None,
         case: Any = None,
         seed: int | None = 0,
-    ):
+    ) -> None:
         self.hooks = tuple(hooks)
         if any(not isinstance(hook, Hook) for hook in self.hooks):
             raise TypeError("Runtime hooks must be Hook instances")
@@ -158,46 +162,75 @@ class Runtime:
             raise TypeError("localizer must be callable or provide transform(value, context)")
         self.localizer, self.case, self.seed = localizer, case, seed
 
-    def session(self, backend: WorldBackend, stack: AVStack, perturb=None) -> RuntimeSession:
+    @classmethod
+    def from_config(cls, config: Mapping[str, Any] | None = None, *, case: Any = None) -> Runtime:
+        """Load stage handlers from importable factories or native avstack configurations."""
+        from .interventions import runtime_from_config
+
+        return runtime_from_config(config, case=case)
+
+    def with_hooks(self, hooks: Iterable[Hook], *, prepend: bool = False) -> Runtime:
+        """Return a new configuration, preserving the original hook list and common settings."""
+        extra = tuple(hooks)
+        ordered = extra + self.hooks if prepend else self.hooks + extra
+        return Runtime(ordered, localizer=self.localizer, case=self.case, seed=self.seed)
+
+    @property
+    def setup_ticks(self) -> int:
+        """Required deployment ticks, shared by both runs of a pair when supported."""
+        handlers = {id(hook.handler): hook.handler for hook in self.hooks if hook.stage == "world.setup"}
+        counts = [getattr(handler, "setup_ticks", 0) for handler in handlers.values()]
+        if any(not isinstance(n, int) or isinstance(n, bool) or n < 0 for n in counts):
+            raise ValueError("Plugin setup_ticks must be nonnegative integers")
+        return sum(counts)
+
+    def session(self, backend: WorldBackend, stack: AVStack, perturb: Callable[[Observation], Observation] | None = None) -> RuntimeSession:
         """Create one execution session, validating capabilities before resetting the world."""
-        return RuntimeSession(self, backend, stack, perturb)
+        runtime = self
+        if perturb is not None:
+            from .interventions import ObservationTransform
+
+            runtime = self.with_hooks([Hook("observation", ObservationTransform(perturb))], prepend=True)
+        return RuntimeSession(runtime, backend, stack)
 
 
 class RuntimeSession:
     """One bound run. Custom adapters publish supported stages through ``emit``."""
     CORE_STAGES = frozenset({"sensors.post", "localization.post", "observation", "command"})
 
-    def __init__(self, runtime, backend, stack, perturb):
+    def __init__(self, runtime: Runtime, backend: WorldBackend, stack: AVStack) -> None:
         self.runtime = runtime
         self.context = RunContext(backend, stack, runtime.case, np.random.default_rng(runtime.seed))
         self.step = 0
-        self.observation = None
-        self.control = None
-        self.perturb = perturb
+        self.observation: Observation | None = None
+        self.control: Control | None = None
         available = self.CORE_STAGES | backend.supported_stages | stack.supported_stages
         if runtime.localizer is not None:
             available |= {"localization.pre"}
         unknown = {hook.stage for hook in runtime.hooks} - available
         if unknown:
-            raise ValueError(f"Unsupported runtime stages: {sorted(unknown)}. Available: {sorted(available)}")
+            raise UnsupportedStageError(f"Unsupported runtime stages: {sorted(unknown)}. Available: {sorted(available)}")
         self.available = available
-        self._handlers = {}
+        self._handlers: dict[str, list[Any]] = {}
         for hook in runtime.hooks:
             self._handlers.setdefault(hook.stage, []).append(hook.handler)
         participants = [hook.handler for hook in runtime.hooks]
         if runtime.localizer is not None:
             participants.append(runtime.localizer)
-        if perturb is not None:
-            participants.append(perturb)
         # A single plugin can be bound to several stages but owns one lifecycle per run.
-        self.participants = tuple({id(value): value for value in participants}.values())
+        owners = [getattr(value, "lifecycle_owner", value) for value in participants]
+        self.participants = tuple({id(value): value for value in owners}.values())
 
     @contextmanager
-    def activate(self):
+    def activate(self) -> Iterator[RuntimeSession]:
         resources = ExitStack()
         failure = None
         try:
-            resources.enter_context(self.context.backend.runtime_context(self))
+            backend = self.context.backend
+            previous_ticks = backend.setup_ticks
+            backend.setup_ticks = max(previous_ticks, self.runtime.setup_ticks)
+            resources.callback(setattr, backend, "setup_ticks", previous_ticks)
+            resources.enter_context(backend.runtime_context(self))
             resources.enter_context(self.context.stack.runtime_context(self))
             for handler in self.participants:
                 close = getattr(handler, "close", None)
@@ -218,18 +251,17 @@ class RuntimeSession:
                     raise
                 failure.add_note(f"Runtime cleanup also failed: {error!r}")
 
-    def stage_context(self, stage, sensor=None):
+    def stage_context(self, stage: str, sensor: str | None = None) -> StageContext:
         truth = self.context.backend.ground_truth()
         return StageContext(
             self.context, self.step, stage, truth, sensor,
             self.observation, self.control if stage == "command" else deepcopy(self.control),
         )
 
-    def emit(self, stage, value, sensor=None):
+    def emit(self, stage: str, value: Any, sensor: str | None = None) -> Any:
         if stage not in self.available:
             raise ValueError(f"Adapter emitted an unsupported stage: {stage!r}")
-        # Context must describe the current input, including localization or legacy
-        # perturbation replacements made before entering this stage.
+        # Context describes the current input, including replacements by earlier handlers.
         if isinstance(value, Observation):
             self.observation = value
         elif isinstance(value, Control):
@@ -257,7 +289,7 @@ class RuntimeSession:
                 self.control = value
         return value
 
-    def observe(self, observation):
+    def observe(self, observation: Observation) -> Observation:
         self.control = None  # The next decision has not produced a command yet.
         seen = self.context.backend.copy_observation(observation)
         self.observation = seen
@@ -277,15 +309,12 @@ class RuntimeSession:
         estimate = self.emit("localization.post", estimate)
         self._require(estimate, StateEstimate, "localization.post")
         seen = replace(seen, vehicle_state=estimate.vehicle_state, ego_speed=estimate.ego_speed)
-        if self.perturb is not None:
-            seen = self.perturb(seen)
-            self._require(seen, Observation, "perturb")
         seen = self.emit("observation", seen)
         self._require(seen, Observation, "observation")
         self.observation = seen
         return seen
 
-    def command(self, control):
+    def command(self, control: Control) -> Control:
         self._require(control, Control, "stack")
         self.control = control
         control = self.emit("command", control)
@@ -293,7 +322,7 @@ class RuntimeSession:
         self.control = control
         return control
 
-    def after_step(self, observation):
+    def after_step(self, observation: Observation) -> None:
         # Feedback sees the next raw measurement, before input transforms for the next decision.
         self.observation = self.context.backend.copy_observation(observation)
         for handler in self.participants:
@@ -308,6 +337,6 @@ class RuntimeSession:
                 ))
 
     @staticmethod
-    def _require(value, expected, stage):
+    def _require(value: Any, expected: type, stage: str) -> None:
         if not isinstance(value, expected):
             raise TypeError(f"{stage} must return {expected.__name__}, got {type(value).__name__}")

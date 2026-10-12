@@ -44,6 +44,7 @@ def main() -> int:
     ap.add_argument("--scene", default="01d503d4", help="NuRec scene id substring")
     ap.add_argument("--endpoint", default="127.0.0.1:50051", help="nre-ga renderer endpoint")
     ap.add_argument("--gpu", type=int, default=1, help="CUDA device for Alpamayo")
+    ap.add_argument("--checkpoint", help="Alpamayo weights directory (or set AVSECTESTER_ALPAMAYO_CHECKPOINT)")
     ap.add_argument("--save-frames", nargs="?", const=str(REPO_TMP / "alpamayo_nurec"),
                     default=None, help="save each rendered frame (default <repo>/tmp/alpamayo_nurec)")
     args = ap.parse_args()
@@ -56,7 +57,7 @@ def main() -> int:
     backend = NuRecBackend(
         {"dt": 0.1, "ego0": {"speed": 5.0}}, renderer=renderer, dynamics=TrajectoryFollower()
     )
-    stack = AlpamayoAVStack(device=f"cuda:{args.gpu}", camera_ids=[CAM])
+    stack = AlpamayoAVStack(checkpoint_path=args.checkpoint, device=f"cuda:{args.gpu}", camera_ids=[CAM])
 
     kind = "stub (black)" if args.stub else "NuRec"
     print(f"[demo] Alpamayo + {kind} renderer, {args.frames} frames ...")

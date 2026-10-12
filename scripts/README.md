@@ -2,8 +2,8 @@
 
 Run scripts from the repository root in the environment described in [SETUP.md](../docs/SETUP.md).
 Python entry points use `python -m scripts.<group>.<module>` so shared imports and repository-relative
-configuration paths resolve consistently. These tools are part of the checkout, not the installed
-`avsectester` wheel. Shell tools are invoked by their paths.
+configuration paths resolve consistently. Run these tools from the checkout. Shell tools are
+invoked by their paths.
 
 Use a matching CARLA client/server for CARLA scripts, and a running `nre-ga` service for rendered
 NuRec examples. Models are loaded only by the entry points that use them. See the
@@ -49,10 +49,12 @@ python -m scripts.demos.nurec.nurec_insertion_demo --usdz /path/to/scene.usdz \
 Run Alpamayo examples in the AlpaSim driver environment, with this repository importable:
 
 ```bash
-python -m scripts.demos.nurec.alpamayo_nurec_demo 8 --endpoint 127.0.0.1:50051 --gpu 1 --save-frames
+python -m scripts.demos.nurec.alpamayo_nurec_demo 8 --endpoint 127.0.0.1:50051 --gpu 1 --save-frames \
+    --checkpoint /path/to/Alpamayo-1.5-10B
 ```
 
-`--stub` replaces NuRec rendering with black frames. It still loads Alpamayo and needs its model
+Both Alpamayo entry points accept `--checkpoint` or the `AVSECTESTER_ALPAMAYO_CHECKPOINT`
+environment variable. `--stub` replaces NuRec rendering with black frames. It still loads Alpamayo and needs its model
 weights. Current checkpoint-path behavior is documented in
 [SETUP.md](../docs/SETUP.md#sam-assets-and-alpamayo-checkpoints).
 

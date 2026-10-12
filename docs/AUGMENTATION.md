@@ -23,7 +23,7 @@ approximation rather than a simulation of physical light transport.
 
 ## Two tiers of fidelity
 
-1. **Image-space corruptions** — `augment.py`, backend-agnostic. Each `Corruption` is an
+1. **Image-space corruptions** — `avsectester.perturbations.image`, backend-agnostic. Each `Corruption` is an
    `apply(rgb, rng) -> rgb` on the camera image; an `AugmentationPipeline` chains several and
    `sensor_augmentation(pipeline)` lifts it to a `perturb`. Because it operates on pixels it works on
    camera images from CARLA, NuRec reconstructed-scene rendering (`NuRecBackend`), and recorded-frame
@@ -34,7 +34,7 @@ approximation rather than a simulation of physical light transport.
    scene, including native physical actors, is rendered under that weather. Post-render image
    insertions do not automatically receive native weather effects. This option is CARLA-only.
 
-## Operators (`augment.py`)
+## Operators (`avsectester.perturbations.image`)
 
 Every operator takes a `severity` in `[0, 1]` (0 ≈ identity, 1 = strong) and is driven by a seeded
 `numpy.random.Generator`, so runs are reproducible and — crucially — the *same* corruption can be applied
@@ -82,14 +82,17 @@ print(report.summary())
 ```
 
 The harness includes a no-corruption baseline plus the corruption suite. For each scenario and
-condition it creates a backend, calls `prepare_clean_attack_pair()`, runs clean and attacked with
-aligned corruption, and closes the backend. The attacked run applies the attack before corruption.
+condition it creates a backend and delegates preparation, paired execution and teardown to
+`runner.run_pair`, with aligned corruption. The attacked run applies the attack before corruption.
 
 Construct `source` and `req` using [scenario selection](SCENARIOS.md#select-a-case).
 `attack_for(match, backend)` is called before the backend is reset. If an insertion adapter needs
 loaded camera calibration, initialize it lazily on the first attacked observation. Its returned
-callable must preserve `match.binding_ids` and `match.insertions`, rather than selecting a new
-target. Source filters run before this grid, not on every corrupted observation.
+value can be a `Runtime`, a one-argument observation transform, or `None` to skip. Native
+hooks, world plugins and user handlers can therefore use the same evaluation entry point.
+The default clean runtime shares the attack runtime's localizer and seed, without its hooks.
+Handler and localizer state resets per treatment. Preserve `match.binding_ids` and
+`match.insertions`, rather than selecting a new target. Source filters run before this grid, not on every corrupted observation.
 
 `RobustnessReport.rows` retains each attempt's status and reason:
 

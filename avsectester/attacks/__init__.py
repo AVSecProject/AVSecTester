@@ -11,7 +11,7 @@ Each family owns its attack payload and target; simulation helpers own rendering
     vehicle's rear). One attack, two render substrates: *world-level* (CARLA: attach + paint a panel on
     the vehicle so the camera renders it in-scene) and *sensor-level* (composite it onto the rendered
     frame). The attack owns only the payload (which texture) + the target; the realistic-insertion
-    mechanics (warp + harmonize) live in :mod:`avsectester.simulators.patch_insertion` because that is
+    mechanics (warp + harmonize) live in :mod:`avsectester.rendering.insertion` because that is
     a simulation/rendering concern, wired through ``InsertionRenderer`` and backend observation adapters.
 
   * **Object insertion** (``object_insertion``) — insert standard traffic signs, pedestrian images

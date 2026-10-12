@@ -1,4 +1,4 @@
-"""Shared geometry-based insertion rendering and observation adapters.
+"""Shared geometry-based insertion rendering and compositing.
 
 ``InsertionRenderer`` resolves explicit placements against current actor poses.
 ``render_resolved`` uses the same sampling and visibility evidence as selection.
@@ -7,7 +7,7 @@ The image-space warp primitive is also available for user-defined image operatio
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
@@ -16,7 +16,6 @@ from avsectester.plane import Observation
 from avsectester.insertion import Insertion, ResolvedInsertion
 from avsectester.rendering.cameras import Camera
 from avsectester.rendering.types import InsertionGeometry, GeometryProvider, EvidenceProvider, VisibilityEvidence
-from avsectester.simulators.viz import View, camera_view
 
 from avsectester.rendering.harmonizers import Harmonizer, ClassicHarmonizer
 
@@ -154,30 +153,6 @@ def render_resolved(
     return output, union
 
 
-def frame_perturbation(
-    insert: Callable[[Observation, Any], Any], camera: str | None = None, base: View | None = None
-) -> Callable[[Observation], Observation]:
-    """Return ``perturb(obs) -> obs`` that rewrites one camera's frame with ``insert(obs, rgb) -> rgb``.
-
-    The sensor-plane attack seam for backends whose camera payload is a raw RGB ndarray (NuRec): the
-    AV stack itself perceives the inserted object. ``carla.insertion_perturbation`` is the
-    CARLA ``ImageData`` analogue. A visualization callback alone does not change model input.
-    """
-    from dataclasses import replace
-
-    def _perturb(observation: Observation) -> Observation:
-        data = observation.sensor_data
-        if not data:
-            return observation
-        key = camera if camera in data else next(iter(data))
-        rgb = camera_view(observation, key) if base is None else base(observation)
-        if rgb is None:
-            return observation
-        new_data = dict(data)
-        new_data[key] = insert(observation, rgb)
-        return replace(observation, sensor_data=new_data)
-
-    return _perturb
 
 
 class InsertionRenderer:
@@ -185,7 +160,7 @@ class InsertionRenderer:
 
     ``geometry(observation)`` returns :class:`InsertionGeometry`. An optional
     ``evidence_provider(observation, resolved, geometry)`` returns visibility evidence by insertion
-    ID. No filters run here. Use ``frame_perturbation`` or a backend adapter to update model inputs.
+    ID. No filters run here. Use an observation transform or a backend adapter to update model inputs.
     """
 
     def __init__(

@@ -3,7 +3,7 @@
 Image attacks choose a payload and a placement. The simulation layer projects and composites the
 payload into camera observations before they reach the driving stack. Shared camera geometry,
 surface sampling, visibility and harmonization live in `avsectester/rendering/`.
-`avsectester/simulators/patch_insertion.py` supplies the compositor and observation/view wrappers.
+`avsectester/rendering/insertion.py` supplies the compositor and observation/view wrappers.
 
 Object-insertion attacks can use an ordinary sign, pedestrian image or signal board. The attack
 comes from placing that visual cue where it does not belong. An optimized adversarial texture is
@@ -24,8 +24,23 @@ asset. `scripts/preparation/extract_person_cutouts.py` can extract them from ann
 These cutouts are derived dataset assets and are not bundled with the repository. The extraction
 script records their nuScenes source and license in `index.json`.
 
-CARLA physical panels are a separate world-level insertion path. The image-space renderers below
-modify camera observations without spawning a physical actor.
+CARLA physical panels change the world through `PhysicalPatchPlugin` at `world.setup`. The
+image-space renderers below change observations at `observation`. Both use the same runtime
+and lifecycle. Image-space insertion does not spawn a physical actor.
+
+```python
+from avsectester.attacks.patch.physical_patch import PhysicalPatchPlugin
+from avsectester.runtime import Hook, Runtime
+
+runtime = Runtime([Hook("world.setup", PhysicalPatchPlugin([
+    {"target": "lead", "location": [-2.3, 0.0, 1.0],
+     "texture": {"pattern": "checkerboard"}},
+]))])
+```
+
+The CARLA YAML `patches` list is shorthand for this plugin. `target` uses `ego`, `lead` or
+`npc:<index>`. The plugin removes its panels when the run ends, including deployment failures.
+The example configuration is `configs/carla_patch_scenario.yaml`.
 
 ## Placement and model input
 
@@ -124,7 +139,7 @@ construction or change it before the next frame:
 
 ```python
 from avsectester.rendering.harmonizers import PCTNetHarmonizer
-from avsectester.simulators.patch_insertion import InsertionRenderer, PatchCompositor
+from avsectester.rendering.insertion import InsertionRenderer, PatchCompositor
 
 compositor = PatchCompositor(PCTNetHarmonizer(strict=True), harmonize=False)
 renderer = InsertionRenderer(insertions, camera, geometry, compositor=compositor)

@@ -40,6 +40,85 @@ Use `Runtime()` for an empty chain, or omit `runtime`. The existing
 `observation`. When both are supplied, `perturb` runs before the registered `observation`
 handlers. Prefer `Hook` when a handler needs context or lifecycle management.
 
+## Configuration and adapters
+
+`Runtime.from_config(mapping, case=None)` loads the same Python interface from a configuration:
+
+```yaml
+runtime:
+  seed: 0
+  hooks:
+    - stage: perception.post
+      avstack:
+        type: PhantomInjection
+        target_xyz: [6.0, 0.0, -1.5]
+    - stage: observation
+      factory: my_research.defenses:SpeedFilter
+      options: {max_speed: 10.0}
+```
+
+A factory is an importable class or function called with `options` as keyword arguments. It
+returns a handler with the callback and lifecycle contract described here. `factory` and
+`avstack` are mutually exclusive. Unknown runtime keys and unavailable stages raise errors.
+An optional `localizer` uses the same `factory`/`options` format. Its result must implement the
+localizer interface below. Factories are constructed before world reset, so actors are resolved
+in `world.setup` or later callbacks.
+
+| Adapter | Purpose |
+|---|---|
+| `ObservationTransform(function)` | Converts a one-argument `Observation -> Observation` function into a contextual runtime handler, retaining the function's optional lifecycle methods |
+| `NativeHook(config, phase="post")` | Builds an avstack hook afresh per run and adapts its tuple return convention. Use `phase="pre"` with a component `.pre` stage |
+| `PhysicalPatchPlugin(patches)` | Deploys native CARLA panels at `world.setup` and owns their teardown |
+
+`frame_perturbation` and CARLA `insertion_perturbation` construct observation transforms. Pass
+them through `ObservationTransform` at `observation`, or use the `perturb` shorthand, which is
+internally converted into the same hook chain. They do not establish separate run loops.
+Pure insertion rendering and compositing live in `avsectester.rendering.insertion`. Image
+observation transforms and corruptions live in `avsectester.perturbations.image`.
+
+The CARLA CLI consumes `runtime`, `attacks` and `patches`. The convenience `attacks` list
+creates native component `.post` hooks. The convenience `patches` list creates one
+`world.setup` plugin. Convenience hooks precede explicit runtime hooks within a stage, allowing
+an explicit defense to process a native attack's output. Use `runtime.hooks` alone when a
+different order or a `.pre` hook is needed. The default clean treatment retains `runtime.seed`
+and `runtime.localizer` and has no hooks. An explicit `clean_runtime` mapping replaces that
+baseline treatment. See [DOCKER.md](DOCKER.md) for CLI exit codes.
+
+## Single and paired execution
+
+`run(backend, stack, frames, runtime=...)` runs one treatment and leaves backend ownership with
+the caller. Omitting the runtime produces a run without interventions. For a comparison, use:
+
+```python
+from avsectester.runner import run_pair
+from avsectester.runtime import Runtime
+
+clean, attacked = run_pair(
+    backend, stack_factory, frames=30,
+    clean_runtime=Runtime(), attacked_runtime=runtime,
+)
+```
+
+`stack_factory()` creates a fresh compatible stack for each run. The paired runner calls
+`backend.prepare_clean_attack_pair()` once, uses the same single-run loop twice and closes the
+backend on success or failure. Pass `close_backend=False` when the caller owns teardown.
+Each runtime argument also accepts a `backend -> Runtime` factory, called after pair
+preparation and before the first reset. `run_fn` can select `run_logged` or another recorder
+that accepts `runtime`. It returns that recorder's results without computing a metric.
+
+CARLA pair preparation resolves random choices once and replays the first run's actual actor
+spawns. NuRec reset restores its configured origin. Subsequent trajectories may differ because
+the treatments produce different controls. These are shared initial conditions, not a guarantee
+of identical model outputs or physics trajectories. The CARLA convenience entry point
+`carla_runner.run_scenario_pair(config, ...)` supplies backend and modular-stack construction.
+`run_scenario(config, ...)` remains single-run, with interventions passed explicitly.
+
+Native CARLA panel deployment needs one setup tick per panel before texturing. The plugin
+declares `setup_ticks` and calls `backend.setup_tick()` only during `world.setup`. Paired
+execution gives both resets the larger treatment's required setup count. These deployment
+ticks precede driving decisions and are not additional sensor warmup or recorded driving steps.
+The default is zero. Other world plugins that require CARLA setup ticks must declare their count.
+
 ## Supported stages
 
 `backend.supported_stages` and `stack.supported_stages` declare adapter-specific stages.
@@ -154,9 +233,18 @@ The follower interpolates from the current rig origin to the first waypoint, so 
 step can be shorter than the waypoint interval without advancing to that waypoint early.
 
 The modular stack consumes calibration and reference frames carried by avstack sensor wrappers.
-Editing a separate `Observation.calibration` entry does not change a component that ignores that
-mapping. For such a component, modify the wrapper's calibration/reference or its effective
-input through a component pre-hook. Custom stacks may consume the canonical mapping directly.
+CARLA exposes that same calibration object in `observation.calibration[sensor_id]`. Its native
+camera calibration includes `P`, image shape and `reference`. LiDAR calibration includes its
+`reference`. Fields retain avstack types and coordinates. Sensors without calibration need not
+have an entry. NuRec uses its adapter's calibration representation.
+
+To replace a sensor's calibration, call `observation.set_calibration(sensor_id, calibration)`.
+This updates both the mapping and a wrapped payload's calibration reference. In-place edits of
+the shared object are also visible through both paths. Replacing only a dictionary entry can
+leave the wrapper pointing to the previous object, so use the setter for replacement. Unknown
+sensor IDs raise `KeyError`. Copies preserve aliases within the observation and isolate them
+from physical sensor settings, subject to the native capture rules below. Editing calibration
+does not move the physical sensor.
 
 ## Execution order
 
@@ -221,17 +309,57 @@ holders of that capture, including instrumentation copies. To preserve the origi
 replace the capture in the copied wrapper with a private array or measurement supported by the
 downstream component. This exception does not let observation edits move simulator actors.
 
-| Interface | Meaning |
-|---|---|
-| Observation/state hooks | Change the model's measurements or estimated state |
-| `context.ground_truth` | Read an independent physical-state snapshot at callback time |
-| World callbacks and `context.backend.native` | Deliberately change the physical world using backend operations |
-| Render callbacks | Change a rendering request or output without changing physical state |
-| `context.stack.native`, `context.stack.models` | Access components, loaded models and adapter resources |
+### Read and write interfaces
+
+| Data | Read interface | Write interface |
+|---|---|---|
+| Sensor measurements | `observation.sensor_data[sensor_id]` in a `sensors.post` handler | Return an `Observation` with the selected payload replaced. Subsequent handlers, the localizer and the stack consume the returned data. |
+| Model-visible state | `estimate.vehicle_state` and `estimate.ego_speed` at `localization.post`, or the corresponding observation fields | Return a modified `StateEstimate` at `localization.post` or `Observation` at `observation`. |
+| Physical ego state | `context.ground_truth`, or `context.backend.ground_truth()` for a fresh snapshot | Use a world callback with backend state/SDK operations, as shown below. Editing the snapshot does not change physical state. |
+| Other actors and environment | Backend-specific native resources, such as CARLA actor getters and `world.get_weather()` | Use supported native operations in a world callback, such as CARLA `actor.set_transform()` or `world.set_weather()`. Availability depends on the backend. |
+| Rendering | `RenderRequest` at `render.pre` and the image at `render.post` | Return a modified request or image. This does not change physical ego state. NuRec supports these stages. |
+| Final control | The `Control` argument at `command` | Return the command that the backend should execute. |
+
+The handler argument is the current value in its processing chain, including changes made by
+earlier handlers. Read it when deciding a measurement or state intervention. `context.observation`
+is available once an observation has been captured. It is `None` during the initial world setup
+and rendering, and can still refer to the previous observation while the world advances.
+Use `context.ground_truth` for physical state at callback time. `after_step(context)` receives
+the next raw observation before the next decision's input handlers run.
+
+For a NuRec RGB-array camera named `front`, this attack reads the current measurement and true
+speed, then blacks out part of the image only while the physical ego speed is at least 5 m/s:
+
+```python
+from dataclasses import replace
+from avsectester.runtime import Hook, Runtime
+
+def camera_attack(observation, context):
+    image = observation.sensor_data["front"]
+    true_speed = context.ground_truth.ego_speed
+    if true_speed < 5.0:
+        return observation
+
+    changed = image.copy()
+    changed[:32, :32] = 0
+    return replace(
+        observation,
+        sensor_data={**observation.sensor_data, "front": changed},
+    )
+
+runtime = Runtime([Hook("sensors.post", camera_attack)])
+```
+
+Pass this runtime to `run(backend, stack, frames=30, runtime=runtime)`. The callback runs before
+each driving decision and can make a different choice from the current data each time. Replace
+the image operation with your attack or defense. For wrapped CARLA measurements, use the native
+payload format consumed by the configured stack and follow the capture ownership rules above.
+For history-dependent decisions, use a plugin's lifecycle methods below.
 
 Access is not restricted by attack category. Native handles are borrowed live resources. The
 framework does not sandbox their operations or automatically undo arbitrary user changes.
-`models` exposes model/component handles without forcing lazy model loading.
+`context.stack.native` and `context.stack.models` expose component/model handles. Accessing
+`models` does not force lazy model loading.
 
 Insertion geometry uses the effective camera rendering pose and scene time. Victim placement
 uses the physical ego pose. Spoofing a model-visible position, orientation or timestamp does not
@@ -357,7 +485,34 @@ actually uses it. A stateful localizer can expose the same lifecycle methods as 
 
 ## World changes and custom adapters
 
-World callbacks make explicit native changes and return `None`. For a NuRec ego-world change:
+World callbacks make explicit native changes and return `None`. These writes modify the world
+that later snapshots, dynamics and sensor captures observe. Backend-specific operations preserve
+the native state formats and supported simulator behavior:
+
+| Backend | Read physical state | Change physical state |
+|---|---|---|
+| CARLA | `context.backend.native["actors"][name].get_transform()` or `.get_velocity()`. Use `"ego"`, `"lead"` or `"npc:0"` for configured actors. | Call the raw actor's `.set_transform(...)` or other supported CARLA methods. For weather, use `native["world"].set_weather(...)`. Coordinates here are native CARLA coordinates. |
+| NuRec | `context.ground_truth.vehicle_state` for an independent ego pose, or `context.backend.pose` for the live ego state. | Update `context.backend.pose.x`, `.y`, `.yaw` or `.speed` in a world callback. Position is in metres, yaw in radians and speed in m/s. Non-ego actors still follow recorded trajectories. |
+
+To read and shift the CARLA ego by one metre along the native world's X axis before the first
+control step, after the initial sensor capture:
+
+```python
+from avsectester.runtime import Hook, Runtime
+
+def move_carla_ego(value, context):
+    if context.step != 0:
+        return None
+    actor = context.backend.native["actors"]["ego"]
+    transform = actor.get_transform()
+    transform.location.x += 1.0
+    actor.set_transform(transform)
+    return None
+
+runtime = Runtime([Hook("world.step.pre", move_carla_ego)])
+```
+
+For a NuRec ego-world change:
 
 ```python
 def move_initial_ego(value, context):
@@ -367,11 +522,10 @@ def move_initial_ego(value, context):
 runtime = Runtime([Hook("world.setup", move_initial_ego)])
 ```
 
-The new physical position is used by subsequent rendering and dynamics. For CARLA, the native
-mapping exposes `client`, `world`, `ego`, `lead`, `npcs` and `actors`. The `actors` mapping holds
-raw actors under logical names such as `ego`, `lead` and `npc:0`. Use CARLA operations such as
-actor pose updates or `world.set_weather(...)`. NuRec exposes `renderer` and `dynamics` and its
-owned `pose`. A native modification only works when that backend supports the operation.
+The new physical position is used by subsequent rendering and dynamics. CARLA's native mapping
+also exposes `client`, `world`, `ego`, `lead` and `npcs`. NuRec's mapping exposes `renderer` and
+`dynamics`, while `pose` is an owned backend field. A native modification only works when that
+backend supports the operation. Follow the capture timing described under Supported stages.
 
 `NuRecBackend.render_request(camera)` accepts a native camera name or configured alias and returns
 an independent copy of the request that produced the current image. `native["render_requests"]`

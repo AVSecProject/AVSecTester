@@ -22,8 +22,9 @@ same scene conditions.
 | Outputs and metrics | Physical driving traces, component snapshots, images/GIFs, a stop-based impact metric and corruption-condition summaries. See [Component logging](COMPONENT_LOGGING.md) and [Robustness evaluation](AUGMENTATION.md). |
 
 The supplied driving paths are CARLA with the modular pipeline and NuRec with Alpamayo.
-The Python interfaces also support custom adapters. The YAML CLI currently runs CARLA/modular
-clean and attacked pairs, rather than configuring every backend and runtime feature.
+The Python interfaces also support custom adapters. The YAML CLI runs CARLA/modular pairs and
+loads runtime handlers from user factories or native avstack configurations. Native physical
+panels use the same runtime. NuRec backend selection remains a Python API.
 
 ## Experiment workflow
 

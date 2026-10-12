@@ -57,10 +57,12 @@ def main() -> int:
     )
 
     print(f"[demo] {kind} physical patch, {args.frames}-frame sequence via record_run ...")
-    backend = CarlaBackend(scenario, patches=patches)
+    from avsectester.interventions import configured_runtime
+    runtime = configured_runtime({"patches": patches or []})
+    backend = CarlaBackend(scenario)
     try:
         trace = record_run(backend, CruiseStack(), args.frames, out_dir=OUT / "seq",
-                           visualize=visualize, collect=True)
+                           visualize=visualize, collect=True, runtime=runtime)
     finally:
         backend.close()
 

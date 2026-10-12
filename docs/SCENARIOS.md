@@ -422,54 +422,45 @@ Insertion rendering must modify the observation passed to the stack. A visualiza
 does not constitute an input attack. `InsertionRenderer` resolves stable hosts each frame and
 uses the same visibility evidence to mask the composite. It never reruns selection filters.
 
-The following helper runs a selected case twice and returns both `Trace` objects. Supply a
-`stack_factory()` returning a fresh `AVStack` compatible with the case's sensors. `run()` resets
-the backend at the start of each run. The attack adapter is constructed after the clean run so
-camera calibration is available, then follows the backend through the attacked reset:
-
-```python
-from avsectester.backend import run
-
-def run_pair(case, stack_factory, make_perturb, frames=30):
-    backend = case.make_backend()
-    try:
-        backend.prepare_clean_attack_pair()
-        clean = run(backend, stack_factory(), frames=frames)
-        perturb = make_perturb(case, backend)
-        attacked = run(backend, stack_factory(), frames=frames, perturb=perturb)
-        return clean, attacked
-    finally:
-        backend.close()
-```
+Use the library's paired runner with a fresh compatible stack per treatment. It prepares the
+shared origin and owns backend teardown, including failed runs. Runtime factories receive the
+backend before reset. Camera and actor-dependent initialization belongs in a lifecycle callback
+or a lazy observation transform, not in the factory itself.
 
 For a case selected by `CarlaScenarioBuilder` using `CarlaSelectionBackend`:
 
 ```python
+from avsectester.interventions import ObservationTransform
+from avsectester.runner import run_pair
+from avsectester.runtime import Hook, Runtime
 from avsectester.simulators.carla import insertion_perturbation
 
-def make_carla_perturb(case, backend):
-    return insertion_perturbation(
+def attacked_runtime(backend):
+    perturb = insertion_perturbation(
         backend, case.match.insertions, bindings=case.match.binding_ids,
         camera=case.match.camera,
     )
+    return Runtime([Hook("observation", ObservationTransform(perturb))], case=case.match)
 
-# clean, attacked = run_pair(case, stack_factory, make_carla_perturb)
+clean, attacked = run_pair(
+    case.make_backend(), stack_factory, frames=30,
+    clean_runtime=Runtime(case=case.match), attacked_runtime=attacked_runtime,
+)
 ```
 
 CARLA logical host names `lead` and `npc:<index>` survive paired resets. For a case selected from
-the `NuRecDataset` instance named `dataset`:
+the `NuRecDataset` instance named `dataset`, use this attacked runtime factory instead:
 
 ```python
-from avsectester.simulators.patch_insertion import frame_perturbation
+from avsectester.perturbations.image import frame_perturbation
 
-def make_nurec_perturb(case, backend):
+def attacked_runtime(backend):
     insert = dataset.insertion_renderer(
         case.match.scene, backend, case.match.insertions,
         bindings=case.match.binding_ids,
     )
-    return frame_perturbation(insert, camera=dataset.camera)
-
-# clean, attacked = run_pair(case, stack_factory, make_nurec_perturb)
+    perturb = frame_perturbation(insert, camera=dataset.camera)
+    return Runtime([Hook("observation", ObservationTransform(perturb))], case=case.match)
 ```
 
 Use [component logging](COMPONENT_LOGGING.md) to capture stack outputs, or
@@ -500,7 +491,7 @@ In this example, implement `read_native_geometry` using your simulator or datase
 ```python
 from avsectester.rendering.types import InsertionGeometry
 from avsectester.rendering.visibility import CuboidVisibilityEstimator
-from avsectester.simulators.patch_insertion import InsertionRenderer
+from avsectester.rendering.insertion import InsertionRenderer
 
 def geometry(observation) -> InsertionGeometry:
     actors, victim, cam_from_world = read_native_geometry(observation)

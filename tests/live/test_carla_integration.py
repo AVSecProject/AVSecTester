@@ -12,7 +12,7 @@ def test_clean_spawn_relocation_is_replayed_in_reset_world(request):
     """Exercise real spawning only. No driving steps or neural inference are needed."""
     import yaml
     from avsectester.simulators.carla import prepare_scenario
-    from avsectester.scenario import run_scenario
+    from avsectester.carla_runner import run_scenario
 
     config = yaml.safe_load(Path(request.config.getoption("--carla-config")).read_text())
     config["client"]["strict_spawn"] = False
@@ -46,7 +46,7 @@ def test_neural_phantom_changes_closed_loop_drive(request, tmp_path, monkeypatch
     from avcarla.actor import CarlaMobileActor
     from avsectester.metric import impact
     from avsectester.simulators.carla import prepare_scenario, set_perception_gpu
-    from avsectester.scenario import run_scenario
+    from avsectester.carla_runner import run_scenario
 
     config = yaml.safe_load(Path(request.config.getoption("--carla-config")).read_text())
     set_perception_gpu(config, request.config.getoption("--carla-gpu"))

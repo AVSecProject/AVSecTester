@@ -443,3 +443,29 @@ def albumentations_corruptions(severity: float = 0.5) -> list[AugmentationPipeli
         raise RuntimeError("Albumentations backend not installed; `pip install 'albumentations>=1.4,<2'`")
     return [AugmentationPipeline([AlbumentationsCorruption(build, severity, cat, label=name)])
             for name, (cat, build) in _albumentations_builders().items()]
+
+
+def frame_perturbation(
+    insert: Callable[[Observation, Any], Any], camera: str | None = None, base: Callable[[Observation], Any] | None = None
+) -> Callable[[Observation], Observation]:
+    """Return ``perturb(obs) -> obs`` that rewrites one camera's frame with ``insert(obs, rgb) -> rgb``.
+
+    The sensor-plane attack seam for backends whose camera payload is a raw RGB ndarray (NuRec): the
+    AV stack itself perceives the inserted object. ``carla.insertion_perturbation`` is the
+    CARLA ``ImageData`` analogue. A visualization callback alone does not change model input.
+    """
+    from avsectester.simulators.viz import camera_view
+
+    def _perturb(observation: Observation) -> Observation:
+        data = observation.sensor_data
+        if not data:
+            return observation
+        key = camera if camera in data else next(iter(data))
+        rgb = camera_view(observation, key) if base is None else base(observation)
+        if rgb is None:
+            return observation
+        new_data = dict(data)
+        new_data[key] = insert(observation, rgb)
+        return replace(observation, sensor_data=new_data)
+
+    return _perturb

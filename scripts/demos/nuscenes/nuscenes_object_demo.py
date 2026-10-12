@@ -24,7 +24,7 @@ import numpy as np
 from avsectester.attacks.object_insertion.person_poster import billboard, load_cutout, standee
 from avsectester.attacks.object_insertion.sign_spoof import SignAsset, sign_rgba
 from avsectester.rendering.cameras import PinholeCamera, make_pose, quat_to_matrix
-from avsectester.simulators.patch_insertion import PatchCompositor, render_resolved
+from avsectester.rendering.insertion import PatchCompositor, render_resolved
 from avsectester.insertion import ActorPose, Insertion, resolve_insertion
 from avsectester.rendering.geometry import insertion_image
 from scripts.common.demo_common import COCO_PERSON, COCO_STOP_SIGN, build_coco_detector, make_harmonizer, world_object

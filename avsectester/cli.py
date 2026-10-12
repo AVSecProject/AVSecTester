@@ -1,12 +1,4 @@
-"""AVSecTester command-line interface — the one entry point for the demo.
-
-``avsectester run <scenario.yaml>`` is the whole thing: it builds the scenario from config (an
-avcarla ego running an avstack ``ModularDrivingPipeline`` in real CARLA), drives it **clean** then
-**attacked**, scores the difference with the impact metric, optionally saves a driving-impact plot,
-and exits 0 (attack succeeded) / 2 (inconclusive) / 1 (no impact). The scenario is built entirely
-from avstack/avcarla registries (see :mod:`avsectester.scenario`); attacks are avstack hooks declared
-in the config.
-"""
+"""Run configured CARLA comparisons through the shared runtime and paired runner."""
 
 from __future__ import annotations
 
@@ -16,72 +8,97 @@ import typer
 import yaml
 
 from . import __version__
+from .interventions import configured_runtime
+from .runtime import Runtime
 
 app = typer.Typer(help="Adversarial security testing for AV systems.")
 
 
 @app.command()
 def version() -> None:
-    """Print the AVSecTester version."""
+    """Print the installed AVSecTester version."""
     typer.echo(f"avsectester {__version__}")
 
 
 @app.command()
 def run(
-    config: Path = typer.Argument(..., help="Scenario YAML (see configs/carla_scenario.yaml)."),
-    frames: int = typer.Option(None, help="Override the scenario frame count (default 40)."),
-    gpu: int = typer.Option(
-        None, help="Override the perception CUDA device (e.g. 1 on a host where CARLA holds GPU 0)."
+    config: Path = typer.Argument(
+        ..., exists=True, dir_okay=False, readable=True,
+        help="Scenario YAML (see configs/carla_scenario.yaml).",
     ),
-    plot: str = typer.Option(
-        None,
-        "--plot",
-        help="Save a clean-vs-attacked driving-impact plot (e.g. results/impact.png).",
-    ),
+    frames: int | None = typer.Option(None, min=0, help="Override the scenario frame count."),
+    gpu: int | None = typer.Option(None, min=0, help="Override the perception CUDA device."),
+    plot: str | None = typer.Option(None, help="Save a clean-vs-attacked driving-impact plot."),
 ) -> None:
-    """Run a scenario clean then attacked in real CARLA and report the attack's driving impact.
+    """Run one prepared clean/attacked pair in CARLA, including configured runtime hooks."""
+    from .carla_runner import run_scenario_pair
+    from .metric import impact, plot_impact
+    from .simulators.carla import set_perception_gpu
 
-    Needs a running CARLA server (docs/DOCKER.md) and the carla-vehicle weights
-    (scripts/preparation/fetch_models.sh). This is the end-to-end demo.
-    """
-    from .metric import impact
-    from .scenario import run_scenario
-    from .simulators.carla import prepare_scenario, set_perception_gpu
+    try:
+        scenario = yaml.safe_load(config.read_text())
+        if not isinstance(scenario, dict):
+            raise ValueError("Scenario YAML must contain a mapping")
+        for key in ("client", "ego"):
+            if not isinstance(scenario.get(key), dict):
+                raise ValueError(f"Scenario requires a {key!r} configuration mapping")
+        if not isinstance(scenario["ego"].get("pipeline"), dict):
+            raise ValueError("Scenario ego requires a pipeline configuration mapping")
+        n = frames if frames is not None else scenario.get("frames", 40)
+        if not isinstance(n, int) or isinstance(n, bool) or n < 0:
+            raise ValueError("frames must be a nonnegative integer")
+        scenario = set_perception_gpu(scenario, gpu)
+        attacked_runtime = configured_runtime(scenario)
+        common = scenario.get("runtime") or {}
+        clean_runtime = Runtime.from_config(scenario.get("clean_runtime", {
+            key: value for key, value in common.items() if key in {"localizer", "seed"}
+        }))
+    except (ValueError, TypeError, KeyError, yaml.YAMLError) as error:
+        typer.echo(f"Configuration error: {error}", err=True)
+        raise typer.Exit(2) from error
+    except OSError as error:
+        typer.echo(f"Cannot read scenario: {error}", err=True)
+        raise typer.Exit(2) from error
 
-    scenario = set_perception_gpu(yaml.safe_load(Path(config).read_text()), gpu)
-    n = frames or scenario.get("frames", 40)
-    attacks = scenario.get("attacks", [])
-    scenario = prepare_scenario(scenario)
-    typer.echo(f"[scenario] seed={scenario['client'].get('seed')}")
+    try:
+        typer.echo(f"[pair] {n} frames per run, {len(attacked_runtime.hooks)} intervention hook(s)")
+        if not attacked_runtime.hooks:
+            typer.echo("[pair] No intervention hooks configured. Comparing two baseline runs.")
+        clean, attacked = run_scenario_pair(
+            scenario, frames=n, clean_runtime=clean_runtime, attacked_runtime=attacked_runtime,
+        )
+        replay_seed = (clean.replay_scenario or {}).get("client", {}).get("seed")
+        if replay_seed is not None:
+            typer.echo(f"[scenario] seed={replay_seed}")
+        typer.echo(
+            f"[clean]    mean_detections={clean.mean_detections:.1f} "
+            f"peak_speed={clean.peak_speed:.2f} final_speed={clean.final_speed:.2f} "
+            f"brake_frames={clean.braking_frames}"
+        )
+        typer.echo(
+            f"[attacked] mean_detections={attacked.mean_detections:.1f} "
+            f"final_speed={attacked.final_speed:.2f} brake_frames={attacked.braking_frames}"
+        )
+        result = impact(clean, attacked)
+        saved = plot_impact(clean, attacked, plot, result=result) if plot else None
+        typer.echo(str(result))
+        if saved:
+            typer.echo(f"[output] wrote driving-impact figure: {saved}")
+    except ValueError as error:
+        # Stage validation precedes reset and identifies configuration errors explicitly.
+        from .runtime import UnsupportedStageError
 
-    typer.echo(f"[clean]    {n} frames ...")
-    clean = run_scenario(scenario, attacks=None, frames=n)
-    typer.echo(
-        f"[clean]    mean_detections={clean.mean_detections:.1f} peak_speed={clean.peak_speed:.2f} "
-        f"final_speed={clean.final_speed:.2f} brake_frames={clean.braking_frames}"
-    )
+        if isinstance(error, UnsupportedStageError):
+            typer.echo(f"Configuration error: {error}", err=True)
+            raise typer.Exit(2) from error
+        typer.echo(f"Execution error: {error}", err=True)
+        raise typer.Exit(1) from error
+    except Exception as error:
+        typer.echo(f"Execution error: {error}", err=True)
+        raise typer.Exit(1) from error
 
-    typer.echo(f"[attacked] {n} frames with {len(attacks)} attack hook(s) ...")
-    attacked = run_scenario(clean.replay_scenario, attacks=attacks, frames=n)
-    typer.echo(
-        f"[attacked] mean_detections={attacked.mean_detections:.1f} "
-        f"final_speed={attacked.final_speed:.2f} brake_frames={attacked.braking_frames}"
-    )
-
-    result = impact(clean, attacked)
-
-    saved_path = None
-    if plot:
-        from .metric import plot_impact
-
-        saved_path = plot_impact(clean, attacked, plot, result=result)
-
-    typer.echo(str(result))  # ends in "=> <verdict>"
-    if saved_path:
-        typer.echo(f"[output]   wrote driving-impact figure to file: {saved_path}")
-
-    # exit code encodes the verdict for scripting: 0 success, 2 inconclusive, 1 no meaningful impact
-    raise typer.Exit(0 if result.attack_succeeded else 2 if not result.clean_drove else 1)
+    # Keep experiment outcomes distinct from runtime (1) and configuration (2) failures.
+    raise typer.Exit(0 if result.attack_succeeded else 4 if not result.clean_drove else 3)
 
 
 if __name__ == "__main__":

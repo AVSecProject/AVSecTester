@@ -15,7 +15,7 @@ from avsectester.plane import Control
 from avsectester.rendering.harmonizers import ClassicHarmonizer, PCTNetHarmonizer
 from avsectester.simulators import carla as carla_sim
 from avsectester.scenarios.carla_provider import CarlaSelectionBackend
-from avsectester.simulators.patch_insertion import PatchCompositor
+from avsectester.rendering.insertion import PatchCompositor
 from scripts.common.demo_common import build_detector, carla_rear_perturbation
 from PIL import Image
 
@@ -41,7 +41,7 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     OUT.mkdir(parents=True, exist_ok=True)
 
-    scen = yaml.safe_load((REPO/"configs"/"carla_patch_scenario.yaml").read_text())
+    scen = yaml.safe_load((REPO / "configs" / "carla_patch_scenario.yaml").read_text())
     scen.setdefault("lead", {})["gap"] = args.gap
     scen.pop("patches", None)
     detect = build_detector(args.gpu)

@@ -10,7 +10,7 @@ import os
 
 import pytest
 from avsectester.scenarios.datasets.nurec import NuRecDataset
-from avsectester.scenarios.requirements import PHYSICAL_PATCH_HIDE_VEHICLE as REQ
+from avsectester.scenarios.presets import PHYSICAL_PATCH_HIDE_VEHICLE as REQ
 
 _ROOT = os.environ.get(
     "AVSECTESTER_NUREC_ROOT",

@@ -12,7 +12,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from avsectester.simulators.augment import CORRUPTIONS, albumentations_corruptions
+from avsectester.perturbations.image import CORRUPTIONS, albumentations_corruptions
 from avsectester.simulators.viz import filmstrip, save_image
 
 OUT = Path("tmp/compare")

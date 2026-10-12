@@ -8,7 +8,7 @@ from dataclasses import replace
 
 from avsectester.scenarios import CameraCalib, EgoState, FilterContext, ObjectGT, SceneGT
 from avsectester.scenarios.filters import ViewpointRear
-from avsectester.scenarios.requirements import PHYSICAL_PATCH_HIDE_VEHICLE
+from avsectester.scenarios.presets import PHYSICAL_PATCH_HIDE_VEHICLE
 
 CAM = {"front": CameraCalib(name="front", width=800, height=600, cam_to_ego=np.eye(4))}
 

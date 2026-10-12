@@ -1,31 +1,35 @@
 """Physical adversarial patch — a *world-level* attack for CARLA.
 
-Unlike the two existing attack seams (``perturb(Observation)`` in :func:`avsectester.backend.run`,
-and avstack ``HOOKS`` hooks on a pipeline stage), a physical patch modifies the **world itself**: a
+A physical patch modifies the simulated world through a ``world.setup`` runtime plugin: a
 textured panel is rigidly attached to a target vehicle (e.g. the rear of the lead car) so the ego's
-camera renders it in-scene, with correct perspective, lighting and occlusion. It is therefore applied
-by the backend at ``reset`` (see :class:`avsectester.simulators.carla.CarlaBackend`), not by the run loop.
+camera renders it in-scene, with perspective, lighting and occlusion before the first driving
+observation. The plugin owns the spawned panels and removes them when the run ends.
 
-Mechanism (validated against CARLA 0.9.15):
+Mechanism:
   * spawn a flat prop (``static.prop.ironplank``) with ``attach_to=<target>, AttachmentType.Rigid``;
   * a freshly spawned prop registers a new ``StaticMeshActor_<id>`` name in
     ``world.get_names_of_all_objects()`` — that name (not the actor id/type) is what the texture API
     paints;
   * paint it with ``world.apply_color_texture_to_object(name, MaterialParameter.Diffuse, texture)``.
 
-The pixel generation (:func:`checkerboard_rgba`, :func:`image_rgba`) is plain numpy/PIL and unit-tested
-without CARLA; only :func:`to_carla_texture` and :meth:`PhysicalPatch.apply` touch ``carla`` (imported
+The pixel generation (:func:`checkerboard_rgba`, :func:`image_rgba`) is plain numpy/PIL.
+Only :func:`to_carla_texture` and :meth:`PhysicalPatch.apply` touch ``carla`` (imported
 lazily, so this module imports fine in the base env).
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
+from contextlib import ExitStack
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
 
-# The validated flat patch prop + its pose on a car rear (relative to the target actor).
+from avsectester.runtime import Plugin, RunContext, StageContext
+
+# Flat patch prop and its default pose on a car rear, relative to the target actor.
 DEFAULT_PROP = "static.prop.ironplank"
 DEFAULT_LOCATION = (-2.3, 0.0, 1.0)  # x back, y lateral, z up (metres) in the target's frame
 DEFAULT_ROTATION = (90.0, 0.0, 0.0)  # pitch, yaw, roll (deg) — stands the plank vertical, facing aft
@@ -108,7 +112,11 @@ class PhysicalPatch:
             color_b=tuple(spec.get("color_b", (255, 255, 255))),
         )
 
-    def apply(self, world: Any, target_actor: Any) -> list:
+    def apply(
+        self, world: Any, target_actor: Any, *,
+        tick: Callable[[], Any] | None = None,
+        on_spawn: Callable[[Any], None] | None = None,
+    ) -> list:
         """Spawn the panel on ``target_actor`` in ``world`` and paint it; return spawned actors."""
         import carla
 
@@ -124,7 +132,9 @@ class PhysicalPatch:
         prop = world.spawn_actor(
             hits[0], rel, attach_to=target_actor, attachment_type=carla.AttachmentType.Rigid
         )
-        world.tick()  # let the prop register as a nameable StaticMeshActor
+        if on_spawn is not None:
+            on_spawn(prop)  # register ownership before any later deployment operation can fail
+        (tick or world.tick)()  # let the prop register as a nameable StaticMeshActor
         new_names = list(set(world.get_names_of_all_objects()) - names_before)
         if not new_names:
             prop.destroy()
@@ -157,7 +167,53 @@ def build_patch(cfg: dict | PhysicalPatch) -> PhysicalPatch:
         return cfg
     cfg = dict(cfg)
     cfg.pop("type", None)
-    cfg.pop("target", None)  # target selection is the backend's concern, not the patch's
+    cfg.pop("target", None)  # the world plugin resolves the target
     cfg.pop("gap", None)
     cfg.pop("lead_vehicle", None)
     return PhysicalPatch(**cfg)
+
+
+class PhysicalPatchPlugin(Plugin):
+    """Deploy native CARLA panels at world setup and release them after each run.
+
+    ``target`` uses the backend's logical actor names: ``ego``, ``lead`` or ``npc:<index>``.
+    Each panel needs one backend-managed setup tick before its mesh can be painted.
+    """
+
+    def __init__(self, patches: Sequence[dict]) -> None:
+        self.patches = deepcopy(list(patches))
+        if any(not isinstance(spec, dict) for spec in self.patches):
+            raise ValueError("Physical patches must be configuration mappings")
+        self.setup_ticks = len(self.patches)
+        self._resources = ExitStack()
+
+    def reset(self, context: RunContext) -> None:
+        if not callable(getattr(context.backend, "setup_tick", None)):
+            raise ValueError("PhysicalPatchPlugin requires a backend with native CARLA setup ticks")
+        self._resources = ExitStack()
+
+    def transform(self, value: Any, context: StageContext) -> None:
+        native = context.backend.native
+        actors = native.get("actors", {})
+        world = native.get("world")
+        if world is None:
+            raise ValueError("PhysicalPatchPlugin requires a live CARLA world")
+        for spec in self.patches:
+            target = spec.get("target", "lead")
+            if target not in actors:
+                raise ValueError(f"Physical patch target {target!r} is unavailable")
+            build_patch(spec).apply(
+                world, actors[target], tick=context.backend.setup_tick,
+                on_spawn=lambda actor: self._resources.callback(_destroy_panel, actor),
+            )
+
+    def close(self) -> None:
+        self._resources.close()
+
+
+def _destroy_panel(actor: Any) -> None:
+    try:
+        if getattr(actor, "is_alive", True):
+            actor.destroy()
+    except RuntimeError:
+        pass  # the simulator may already have removed the actor

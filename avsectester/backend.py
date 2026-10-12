@@ -13,30 +13,32 @@ avstack/avcarla/carla — the backend and stack *implementations* carry those de
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from copy import deepcopy
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from .plane import Control, FrameRecord, Observation, Trace, WorldSnapshot
 
 if TYPE_CHECKING:
-    from .runtime import Runtime
+    from .runtime import Runtime, RuntimeSession
 
 
 class _RuntimeAdapter:
     """Shared stage binding for backend and stack adapters."""
+
+    _runtime: RuntimeSession | None = None
 
     @property
     def supported_stages(self) -> frozenset[str]:
         return frozenset()
 
     @property
-    def native(self) -> dict:
+    def native(self) -> Mapping[str, Any]:
         return {}
 
     @contextmanager
-    def runtime_context(self, session):
+    def runtime_context(self, session: RuntimeSession) -> Iterator[None]:
         if getattr(self, "_runtime", None) is not None:
             raise RuntimeError("Adapter is already bound to an active run")
         self._runtime = session
@@ -45,7 +47,7 @@ class _RuntimeAdapter:
         finally:
             self._runtime = None
 
-    def _emit(self, stage, value, sensor=None):
+    def _emit(self, stage: str, value: Any, sensor: str | None = None) -> Any:
         session = getattr(self, "_runtime", None)
         return session.emit(stage, value, sensor=sensor) if session is not None else value
 
@@ -59,6 +61,10 @@ class WorldBackend(_RuntimeAdapter, ABC):
     the next Observation. The causal invariant (so the loop serializes over gRPC): a control at
     frame *t* affects frame *t+1*, never the already-emitted sensors of frame *t*.
     """
+
+    # Backend initialization steps required by world-deployment plugins. These do not
+    # produce driving records and must be matched across comparison runs.
+    setup_ticks: int = 0
 
     @abstractmethod
     def reset(self) -> Observation:
@@ -116,7 +122,7 @@ class AVStack(_RuntimeAdapter, ABC):
         """Optional warmup from the first Observation (e.g. seed a planner). Default no-op."""
 
     @property
-    def models(self) -> dict:
+    def models(self) -> Mapping[str, Any]:
         """Loaded native models available to user handlers. Adapters expose their own names."""
         return {}
 

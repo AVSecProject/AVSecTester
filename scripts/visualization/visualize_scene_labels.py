@@ -18,7 +18,7 @@ import argparse
 from pathlib import Path
 
 from avsectester.scenarios.datasets.nurec import NuRecDataset
-from avsectester.scenarios.requirements import PHYSICAL_PATCH_HIDE_VEHICLE as REQ
+from avsectester.scenarios.presets import PHYSICAL_PATCH_HIDE_VEHICLE as REQ
 from avsectester.simulators.viz import draw_boxes3d, filmstrip, labels_view, save_image
 
 OUT = Path("tmp/compare")

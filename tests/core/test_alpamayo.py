@@ -15,6 +15,23 @@ from avsectester.plane import Observation
 from avsectester.stacks.alpamayo import AlpamayoAVStack
 
 
+@pytest.mark.parametrize("explicit,environment,expected", [
+    ("/models/explicit", "/models/environment", "/models/explicit"),
+    (None, "/models/environment", "/models/environment"),
+    (None, None, None),
+])
+def test_checkpoint_location_is_user_configured(monkeypatch, explicit, environment, expected):
+    if environment is None:
+        monkeypatch.delenv("AVSECTESTER_ALPAMAYO_CHECKPOINT", raising=False)
+    else:
+        monkeypatch.setenv("AVSECTESTER_ALPAMAYO_CHECKPOINT", environment)
+    stack = AlpamayoAVStack(checkpoint_path=explicit)
+    assert stack.checkpoint_path == expected
+    if expected is None:
+        with pytest.raises(ValueError, match="Provide checkpoint_path"):
+            stack._load()
+
+
 @pytest.fixture
 def driver_schema(monkeypatch):
     # Supply only the external records used at the adapter boundary. No checkpoint is loaded.

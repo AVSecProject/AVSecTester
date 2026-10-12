@@ -33,7 +33,7 @@ from avsectester.metric import impact, plot_impact
 from avsectester.plane import Control
 from avsectester.simulators import carla as carla_sim
 from avsectester.scenarios.carla_provider import CarlaSelectionBackend
-from avsectester.simulators.patch_insertion import PatchCompositor
+from avsectester.rendering.insertion import PatchCompositor
 from avsectester.simulators.viz import detections_view, record_run, save_sequence
 from scripts.common.demo_common import build_detector, plausible_detector, carla_rear_perturbation, make_harmonizer
 

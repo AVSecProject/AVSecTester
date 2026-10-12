@@ -10,7 +10,7 @@ import os
 
 import pytest
 from avsectester.scenarios.datasets.nuscenes import NuScenesDataset
-from avsectester.scenarios.requirements import PHYSICAL_PATCH_HIDE_VEHICLE as REQ
+from avsectester.scenarios.presets import PHYSICAL_PATCH_HIDE_VEHICLE as REQ
 from avsectester.scenarios.source import DatasetFilter
 
 _ROOT = os.environ.get("AVSECTESTER_NUSCENES_ROOT", "/workspace/hdd/datasets/nuscenes")

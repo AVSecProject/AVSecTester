@@ -23,6 +23,9 @@ The data and base interfaces have no simulator or neural-model imports.
 `backend.copy_observation(observation)` detaches mutable model-visible data from backend state.
 Changing the observation's state estimate does not move the physical ego. World changes are
 explicit backend/native operations.
+See the [read and write interfaces](INTERVENTIONS.md#read-and-write-interfaces) for runtime
+measurement and truth access, and [world changes](INTERVENTIONS.md#world-changes-and-custom-adapters)
+for backend-specific physical-state writes.
 
 `run(backend, stack, frames, perturb=None, on_step=None, *, runtime=None) -> Trace` owns the
 execution order. `record_run(..., runtime=...)` and `run_logged(..., runtime=...)` use the same loop.
@@ -114,6 +117,9 @@ server's GPU. The following YAML snippets are edits to the complete example, not
 | `ego.pipeline` | Perception, tracking, planning and control modules. The default planner drives straight and brakes for obstacles. `target_speed` is in m/s, and `brake_distance` and `brake_corridor` are in meters. |
 | `npcs` | Background vehicles, using the compact form or explicit list below. Omit it or use `[]` for none. |
 | `attacks` | Hooks attached only during the attacked run. The supplied `PhantomInjection` is used at `stage: perception`. See the attack section for its coordinate convention. |
+| `patches` | Native physical panel specifications, adapted to a `world.setup` runtime plugin. |
+| `runtime` | Ordered hooks, optional localizer and handler RNG seed. Factory and native-hook configuration are described in [INTERVENTIONS.md](INTERVENTIONS.md#configuration-and-adapters). |
+| `clean_runtime` | Optional explicit baseline runtime. Otherwise it retains the configured localizer and handler seed without attack hooks. |
 
 #### Fixed choices and random choices
 
@@ -194,12 +200,11 @@ pipeline does not use it to navigate to a destination.
 ##### CARLA Python interface
 
 ```python
-from avsectester.scenario import run_scenario
-from avsectester.simulators.carla import prepare_scenario
+from avsectester.carla_runner import run_scenario, run_scenario_pair
 
-prepared = prepare_scenario(config)
-clean = run_scenario(prepared, frames=40)
-attacked = run_scenario(clean.replay_scenario, attacks=prepared.get("attacks", []), frames=40)
+clean, attacked = run_scenario_pair(config, frames=40)
+# An independent clean run is also available:
+single = run_scenario(config, frames=40)
 ```
 
 `Trace.replay_scenario` is an in-memory configuration, not a generated file. Each actor's
@@ -300,22 +305,28 @@ actual component inputs and outputs. Registration at an unavailable stage raises
 world reset. [INTERVENTIONS.md](INTERVENTIONS.md) specifies all stages, modifiable values,
 resource ownership and stateful handler methods.
 
-For existing avstack-registered post-hooks, `ModularAVStack.attach` remains available:
+Wrap an existing avstack-registered hook with `NativeHook`:
 
 ```python
+from avsectester.backend import run
 from avsectester.stacks.modular import ModularAVStack
+from avsectester.interventions import NativeHook
+from avsectester.runtime import Hook, Runtime
 
 stack = ModularAVStack(pipeline_config)
-stack.attach("perception", {
+runtime = Runtime([Hook("perception.post", NativeHook({
     "type": "PhantomInjection", "target_xyz": (6.0, 0.0, -1.5),
     "obj_type": "Car", "score": 0.9,
-})
+}))])
+trace = run(backend, stack, frames=30, runtime=runtime)
 ```
 
 Here `pipeline_config` is the `ego.pipeline` mapping from the CARLA YAML. A native avstack
 post-hook returns its output as `(output,)`. A runtime handler returns the output directly.
-Runtime bridges adapt the native hook convention and preserve component logging after output
-modifications. Runtime hooks are installed for the duration of the run and removed afterwards.
+`NativeHook` adapts the tuple convention, creates a fresh native hook per run and preserves
+component logging after modifications. Runtime bridges are removed when the run ends.
+The YAML CLI accepts ordered factory hooks, native hooks and physical panels through the same
+runtime. See [INTERVENTIONS.md](INTERVENTIONS.md#configuration-and-adapters) for configuration.
 
 `PhantomInjection.target_xyz` is expressed in the source sensor's coordinates (forward, left, up).
 It requires `detections.source_reference`, including when there are no detections. The perception

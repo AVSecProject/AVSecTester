@@ -19,7 +19,7 @@ from avsectester.backend import AVStack, WorldBackend
 from avsectester.evaluation.robustness import ConditionResult, RobustnessReport, evaluate_robustness
 from avsectester.plane import Control, Observation
 from avsectester.scenarios.source import ScenarioInstance, ScenarioSource
-from avsectester.simulators.augment import AugmentationPipeline, Corruption
+from avsectester.perturbations.image import AugmentationPipeline, Corruption
 
 
 class _ApproachBackend(WorldBackend):
@@ -97,12 +97,26 @@ class _Mild(Corruption):  # a corruption that does not cross the detection thres
         return np.clip(rgb.astype(int) + 1, 0, 255).astype(np.uint8)
 
 
-def test_harness_scores_each_condition_and_aggregates_scenarios():
+@pytest.mark.parametrize("use_runtime", [False, True])
+def test_harness_scores_each_condition_and_aggregates_scenarios(use_runtime):
+    from avsectester.runtime import Hook, Runtime
+
+    def attack_for(match, backend):
+        attack = _hide_attack(match, backend)
+        if not use_runtime:
+            return attack
+
+        def hide(observation, context):
+            assert context.case is match
+            return attack(observation)
+
+        return Runtime([Hook("observation", hide)])
+
     n = 3
     r = evaluate_robustness(
         _StubSource(n),
         req=None,
-        attack_for=_hide_attack,
+        attack_for=attack_for,
         stack=_BrakeIfLeadSeen,
         frames=8,
         conditions=[AugmentationPipeline([_LiftBlack()]), AugmentationPipeline([_Mild()])],
@@ -130,7 +144,7 @@ def test_default_conditions_use_common_corruptions():
         frames=8,
         severity=0.5,
     )
-    from avsectester.simulators.augment import CORRUPTIONS
+    from avsectester.perturbations.image import CORRUPTIONS
 
     assert len(r.per_condition) == len(CORRUPTIONS) + 1  # + clean baseline
     assert r.baseline_asr == 1.0
@@ -202,7 +216,7 @@ def test_backend_is_closed_when_either_run_fails(fail_run):
 
 
 def test_harness_pairs_corruptions_across_different_simulator_frame_ids():
-    from avsectester.simulators.augment import GaussianNoise
+    from avsectester.perturbations.image import GaussianNoise
 
     class OffsetBackend(_ApproachBackend):
         def __init__(self):

@@ -1,6 +1,7 @@
 """Real avstack sensor/reference objects remain independent of simulator state."""
 
 from types import SimpleNamespace
+from copy import deepcopy
 
 import carla
 import numpy as np
@@ -54,6 +55,11 @@ def test_carla_sensor_copy_detaches_real_avstack_reference_graph(kind, make_ego)
     np.testing.assert_array_equal(state.position.x, [1, 2, 0])
     if kind == "lidar":
         assert copied_sensor.flipy is True
+    replacement = deepcopy(copied.calibration[kind])
+    copied.set_calibration(kind, replacement)
+    assert copied_sensor.calibration is copied.calibration[kind] is replacement
+    assert copied_sensor.reference is replacement.reference
+    assert sensor.calibration is calibration
 
 
 @pytest.fixture

@@ -3,7 +3,7 @@
 The scenario layer yields *which* scenes qualify for an attack. The augmentation layer yields *under
 which conditions* to test it. This harness runs the grid: for every qualifying
 :class:`~avsectester.scenarios.source.ScenarioInstance`, and every corruption condition (a clean baseline
-plus each :class:`~avsectester.simulators.augment.AugmentationPipeline`), it drives the scenario twice —
+plus each :class:`~avsectester.perturbations.image.AugmentationPipeline`), it drives the scenario twice —
 
 * **clean-under-condition**   : ``run(backend, stack, frames, perturb=aug)``            (corruption only)
 * **attacked-under-condition**: ``run(backend, stack, frames, perturb=compose(attack, aug))``
@@ -15,8 +15,8 @@ corruption's **resilience** = ``ASR(corruption) / ASR(clean)`` — the attack an
 retention rate (cf. Robo3D's mRR): 1.0 means the corruption did not blunt the attack, 0.0 means it
 neutralised it.
 
-The attack itself is injected as ``attack_for(match, backend) -> perturb`` so the harness is
-attack-agnostic. The corruption suite defaults to :func:`~avsectester.simulators.augment.common_corruptions`.
+The attack itself is injected as ``attack_for(match, backend) -> Runtime | perturb | None`` so the harness is
+attack-agnostic. The corruption suite defaults to :func:`~avsectester.perturbations.image.common_corruptions`.
 """
 
 from __future__ import annotations
@@ -27,22 +27,24 @@ from math import isnan
 from typing import TYPE_CHECKING, Literal
 
 from avsectester.backend import run as _run_loop
+from avsectester.runner import run_pair
+from avsectester.runtime import Runtime, Hook
+from avsectester.interventions import ObservationTransform
 from avsectester.metric import impact
-from avsectester.simulators.augment import (
+from avsectester.perturbations.image import (
     AugmentationPipeline,
     common_corruptions,
-    compose,
     sensor_augmentation,
 )
 
 if TYPE_CHECKING:
-    from avsectester.backend import AVStack
+    from avsectester.backend import AVStack, WorldBackend
     from avsectester.plane import Observation, Trace
     from avsectester.scenarios.requirement import ScenarioMatch, ScenarioRequirement
     from avsectester.scenarios.source import ScenarioSource
 
 Perturb = Callable[["Observation"], "Observation"]
-AttackFor = Callable[["ScenarioMatch", object], Perturb | None]
+AttackFor = Callable[["ScenarioMatch", "WorldBackend"], Runtime | Perturb | None]
 _CLEAN = "clean"
 OutcomeStatus = Literal["success", "failure", "skipped", "inconclusive"]
 
@@ -175,7 +177,7 @@ def evaluate_robustness(
     build a fresh backend, prepare a repeatable pair, and run clean-vs-attacked under that condition.
     Skipped attacks and inconclusive driving baselines are excluded from the valid-pair count.
     ``stack`` is a factory (a fresh AV box per run). ``attack_for`` maps
-    a scenario's target + its backend to the attack ``perturb`` (or None to skip). ``run_fn`` is injectable
+    a scenario's target + its backend to the attack Runtime or one-argument ``perturb`` (or None to skip). ``run_fn`` is injectable
     for testing.
     """
     pipelines = list(conditions) if conditions is not None else common_corruptions(severity)
@@ -196,12 +198,31 @@ def evaluate_robustness(
                 if attack is None:
                     report.record(scenario_id, name, "skipped", "Attack factory returned None")
                     continue
-                backend.prepare_clean_attack_pair()
-                clean = run_fn(backend, stack(), frames,
-                               perturb=_condition_perturbation(pipeline, match.camera))
-                attacked = run_fn(
-                    backend, stack(), frames,
-                    perturb=compose(attack, _condition_perturbation(pipeline, match.camera)),
+                attacked_runtime = attack if isinstance(attack, Runtime) else Runtime([
+                    Hook("observation", ObservationTransform(attack)),
+                ], case=match)
+                if attacked_runtime.case is None:
+                    attacked_runtime = Runtime(
+                        attacked_runtime.hooks, localizer=attacked_runtime.localizer,
+                        case=match, seed=attacked_runtime.seed,
+                    )
+                # Preserve attack-then-corruption ordering at the observation stage.
+                clean_condition = _condition_perturbation(pipeline, match.camera)
+                attacked_condition = _condition_perturbation(pipeline, match.camera)
+                clean_runtime = Runtime(
+                    localizer=attacked_runtime.localizer, case=match, seed=attacked_runtime.seed,
+                )
+                if clean_condition is not None:
+                    clean_runtime = clean_runtime.with_hooks([
+                        Hook("observation", ObservationTransform(clean_condition)),
+                    ])
+                if attacked_condition is not None:
+                    attacked_runtime = attacked_runtime.with_hooks([
+                        Hook("observation", ObservationTransform(attacked_condition)),
+                    ])
+                clean, attacked = run_pair(
+                    backend, stack, frames, clean_runtime=clean_runtime,
+                    attacked_runtime=attacked_runtime, run_fn=run_fn, close_backend=False,
                 )
             finally:
                 backend.close()

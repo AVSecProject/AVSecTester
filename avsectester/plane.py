@@ -53,6 +53,20 @@ class Observation:
     ego_speed: float = 0.0  # reported speed (m/s), available to the driving model
 
 
+    def set_calibration(self, sensor_id: str, calibration: Any) -> None:
+        """Replace model-visible calibration and its native payload reference together.
+
+        Operates on this observation only. A backend or runtime copy isolates it from
+        physical sensor configuration. Native calibration types and units are preserved.
+        """
+        if sensor_id not in self.sensor_data:
+            raise KeyError(f"Unknown observation sensor: {sensor_id!r}")
+        payload = self.sensor_data[sensor_id]
+        if hasattr(payload, "calibration"):
+            payload.calibration = calibration
+        self.calibration[sensor_id] = calibration
+
+
 @dataclass(frozen=True)
 class WorldSnapshot:
     """An independent snapshot of the backend's actual ego state.

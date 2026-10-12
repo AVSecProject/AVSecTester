@@ -136,14 +136,16 @@ Download them into a directory of your choice:
 hf download nvidia/Alpamayo-1.5-10B --local-dir /path/to/Alpamayo-1.5-10B
 ```
 
-Pass that directory as `AlpamayoAVStack(checkpoint_path="/path/to/Alpamayo-1.5-10B")`.
-The adapter's current default, `/workspace/hdd/models/huggingface/nvidia/Alpamayo-1.5-10B`, is a
-workstation-specific shared location, not a path created by package installation. Run from the
-AVSecTester checkout using the driver environment's Python interpreter:
+Pass that directory as `AlpamayoAVStack(checkpoint_path="/path/to/Alpamayo-1.5-10B")`,
+use the demos' `--checkpoint` option, or set `AVSECTESTER_ALPAMAYO_CHECKPOINT`.
+An explicit argument takes precedence over the environment variable. A missing location raises
+an error before loading the driver. Run from the AVSecTester checkout using the driver
+environment's Python interpreter:
 
 ```bash
 cd /path/to/AVSecTester
-/path/to/alpasim/.venv/bin/python -m scripts.demos.nurec.alpamayo_nurec_demo 8 --gpu 1
+/path/to/alpasim/.venv/bin/python -m scripts.demos.nurec.alpamayo_nurec_demo 8 --gpu 1 \
+    --checkpoint /path/to/Alpamayo-1.5-10B
 ```
 
 Add `--stub` to use black frames without a rendering service. This still loads the real driving
@@ -260,7 +262,7 @@ To use an existing local checkpoint:
 
 ```python
 from avsectester.rendering.harmonizers import PCTNetHarmonizer
-from avsectester.simulators.patch_insertion import PatchCompositor
+from avsectester.rendering.insertion import PatchCompositor
 
 harmonizer = PCTNetHarmonizer(device=0, weights="/path/to/PCTNet.pth", strict=True)
 compositor = PatchCompositor(harmonizer)
@@ -286,6 +288,6 @@ from avsectester.stacks.alpamayo import AlpamayoAVStack
 stack = AlpamayoAVStack(checkpoint_path="/path/to/Alpamayo-1.5-10B", device="cuda:1")
 ```
 
-The current Alpamayo demo scripts use the adapter's default checkpoint path and do not expose a
-checkpoint CLI option. `scripts/preparation/fetch_models.sh` does not download Alpamayo, SAM, PCTNet or the
-torchvision COCO detector.
+The Alpamayo demo scripts accept `--checkpoint /path/to/Alpamayo-1.5-10B`. Alternatively, set
+`AVSECTESTER_ALPAMAYO_CHECKPOINT`. `scripts/preparation/fetch_models.sh` does not download Alpamayo,
+SAM, PCTNet or the torchvision COCO detector.

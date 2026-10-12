@@ -11,11 +11,12 @@ of camera frames + ego poses (the model's context) and emit the selected candida
 
 Runs in the AlpaSim **driver env** (Python 3.12 + ``alpasim_driver`` and the Alpamayo repos), NOT the
 CARLA/avsec 3.11 env — so all heavy imports are lazy and this module imports fine without them. The
-checkpoint defaults to the already-downloaded local model to avoid any re-download.
+checkpoint is supplied explicitly or through ``AVSECTESTER_ALPAMAYO_CHECKPOINT``.
 """
 
 from __future__ import annotations
 
+import os
 from collections import deque
 from collections.abc import Mapping
 from typing import Any
@@ -23,20 +24,20 @@ from typing import Any
 from avsectester.backend import AVStack
 from avsectester.plane import Control, Observation
 
-# already on disk (see /workspace/hdd/models/huggingface); a local path skips any HF download
-DEFAULT_CHECKPOINT = "/workspace/hdd/models/huggingface/nvidia/Alpamayo-1.5-10B"
-
 
 class AlpamayoAVStack(AVStack):
     def __init__(
         self,
-        checkpoint_path: str = DEFAULT_CHECKPOINT,
+        checkpoint_path: str | None = None,
         camera_ids: list[str] | None = None,
         device: str = "cuda:0",
         context_length: int = 4,
         output_frequency_hz: int = 10,
     ) -> None:
-        self.checkpoint_path = checkpoint_path
+        self.checkpoint_path = (
+            checkpoint_path if checkpoint_path is not None
+            else os.environ.get("AVSECTESTER_ALPAMAYO_CHECKPOINT")
+        )
         self.camera_ids = camera_ids or ["camera_front_wide_120fov"]
         self.device = device
         self.context_length = context_length
@@ -64,6 +65,10 @@ class AlpamayoAVStack(AVStack):
 
     def _load(self):
         """Lazily build the Alpamayo model from the driver package (heavy: torch + a 10B checkpoint)."""
+        if not self.checkpoint_path:
+            raise ValueError(
+                "Provide checkpoint_path or set AVSECTESTER_ALPAMAYO_CHECKPOINT to the model location"
+            )
         import torch
         from alpasim_driver.models.alpamayo1_5_model import Alpamayo15Model
         from alpasim_driver.schema import ModelConfig

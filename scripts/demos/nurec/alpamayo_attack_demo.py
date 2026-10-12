@@ -26,7 +26,8 @@ from pathlib import Path
 
 from avsectester.metric import impact
 from avsectester.simulators.nurec import NuRecBackend, NuRecRenderer, TrajectoryFollower
-from avsectester.simulators.patch_insertion import PatchCompositor, frame_perturbation
+from avsectester.rendering.insertion import PatchCompositor
+from avsectester.perturbations.image import frame_perturbation
 from avsectester.simulators.viz import record_run, save_gif
 from avsectester.stacks.alpamayo import AlpamayoAVStack
 from scripts.common.demo_common import OBJECTS, build_object, make_harmonizer, nurec_source
@@ -106,6 +107,7 @@ def main() -> int:
     ap.add_argument("--ground-z", type=float, default=0.0)
     ap.add_argument("--soften", type=float, default=0.6)
     ap.add_argument("--gpu", type=int, default=1, help="CUDA device for Alpamayo")
+    ap.add_argument("--checkpoint", help="Alpamayo weights directory (or set AVSECTESTER_ALPAMAYO_CHECKPOINT)")
     ap.add_argument("--harm-gpu", type=int, default=0, help="CUDA device for the PCTNet harmonizer")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
@@ -128,7 +130,7 @@ def main() -> int:
         return frame_perturbation(insert, camera=CAM)
 
     position = payload.roadside.placement.position_m
-    stack = Recording(device=f"cuda:{args.gpu}", camera_ids=[CAM])
+    stack = Recording(checkpoint_path=args.checkpoint, device=f"cuda:{args.gpu}", camera_ids=[CAM])
     t0 = time.time()
     print(f"[alpamayo] clean drive, {args.frames} frames")
     clean, clean_steps = drive(args, stack)

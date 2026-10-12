@@ -121,7 +121,7 @@ def test_carla_demo_binds_after_reset_and_keeps_the_same_host(demo, monkeypatch)
     from avsectester.plane import Observation
     from avsectester.rendering.cameras import planar_rig_pose
     from avsectester.simulators import carla
-    from avsectester.simulators.patch_insertion import PatchCompositor
+    from avsectester.rendering.insertion import PatchCompositor
 
     state = {}
     received = []
@@ -180,7 +180,7 @@ def test_nurec_demo_uses_metadata_start_time_without_changing_cruise_dynamics(de
 def test_nuscenes_demo_keeps_candidate_positions_and_rejects_annotated_overlap(demo, name):
     from scripts.demos.nuscenes import nuscenes_object_demo as objects
     from avsectester.rendering.cameras import PinholeCamera
-    from avsectester.simulators.patch_insertion import render_resolved
+    from avsectester.rendering.insertion import render_resolved
 
     camera = PinholeCamera(np.array([[400, 0, 400], [0, 400, 300], [0, 0, 1]]), 800, 600)
     transform = np.array([[0, -1, 0, 0], [0, 0, -1, 1.5], [1, 0, 0, 0], [0, 0, 0, 1.]])

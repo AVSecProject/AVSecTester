@@ -166,6 +166,7 @@ def test_carla_observation_detaches_shared_sensor_and_state_reference_graph():
     observation = backend._observe()
     truth = backend.ground_truth()
 
+    assert observation.calibration["lidar"] is observation.sensor_data["lidar"].calibration
     copied_reference = observation.sensor_data["lidar"].calibration.reference
     assert copied_reference is observation.vehicle_state.reference
     copied_reference.x[:] = 90
@@ -176,6 +177,13 @@ def test_carla_observation_detaches_shared_sensor_and_state_reference_graph():
     assert not payload.data.any()
     assert backend.ground_truth().ego_speed == 5
     assert truth.frame == 12 and truth.t == 1.5
+    replacement = SimpleNamespace(reference=SimpleNamespace(x=np.zeros(3)))
+    observation.set_calibration("lidar", replacement)
+    assert observation.calibration["lidar"] is replacement
+    assert observation.sensor_data["lidar"].calibration is replacement
+    assert payload.calibration is calibration
+    with pytest.raises(KeyError):
+        observation.set_calibration("missing", replacement)
 
 
 def test_carla_copy_borrows_native_capture_and_detaches_its_wrapper():

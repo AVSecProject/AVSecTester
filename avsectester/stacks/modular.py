@@ -79,8 +79,8 @@ class ModularAVStack(AVStack):
     Observation -> the pipeline (perception -> tracking -> planning -> control) -> a Control command.
     CARLA-trained MMDetection3D checkpoint configurations register their dataset metadata
     automatically before the pipeline is built.
-    Runtime transforms can replace each available stage's inputs and outputs. Native avstack
-    hooks remain supported via :meth:`attach` (e.g. ``PhantomInjection`` on ``perception``).
+    Runtime transforms replace each available stage's inputs and outputs. Use NativeHook
+    to adapt registered avstack attacks to this same runtime chain.
     :meth:`instrument` captures per-stage outputs (the common
     :class:`~avsectester.evaluation.component_log.InstrumentedStack` interface, read via
     :meth:`component_log`) — the single source of both per-frame telemetry (n_detections) and in-system
@@ -122,11 +122,10 @@ class ModularAVStack(AVStack):
         for name in ("perception", "tracking", "planning", "control"):
             module = getattr(self.pipeline, name, None)
             # BaseModule owns hook lists even when a subclass bypasses apply_hooks.
-            # The installed avstack decorator has no capability marker, so inspect
-            # the effective call wrapper rather than advertising inactive lists.
+            # Only effective calls marked by the hook dispatcher advertise support.
             call = getattr(type(module), "__call__", None)
             if (
-                getattr(call, "__name__", None) == "_apply_hooks"
+                getattr(call, "__avstack_hooks__", False)
                 and isinstance(getattr(module, "pre_hooks", None), list)
                 and isinstance(getattr(module, "post_hooks", None), list)
             ):
@@ -183,23 +182,6 @@ class ModularAVStack(AVStack):
             finally:
                 for hooks, hook in installed:
                     _remove_hook(hooks, hook)
-
-    def attach(self, stage: str, hook_cfg: dict) -> None:
-        from avstack.config import HOOKS
-
-        modules = self._stage_modules()
-        if stage not in modules:
-            raise ValueError(f"No hookable {stage!r} stage in this pipeline")
-        hooks = modules[stage].post_hooks
-        # A hook installed during reset still precedes runtime processing and logging.
-        index = next(
-            (
-                i for i, hook in enumerate(hooks)
-                if isinstance(hook, (_RuntimePostHook, _StageCapture))
-            ),
-            len(hooks),
-        )
-        hooks.insert(index, HOOKS.build(deepcopy(hook_cfg)))
 
     def instrument(self, stages: tuple[str, ...] = ("perception", "tracking", "planning", "control")) -> None:
         """Capture each named stage's per-frame output, reusing avstack's post-hook mechanism (a

@@ -71,6 +71,9 @@ retain adapter-specific types and require appropriate codecs for transport betwe
   `Runtime` registers ordered attack/defense handlers at supported input, component, world and
   command stages. `perturb(Observation)` remains a shorthand for final input processing.
   `Trace` records physical state independently of the attacked view.
+- **`run_pair(backend, stack_factory, frames, ...)`** prepares one shared initial scene, creates
+  a fresh stack per treatment and closes the backend on success or failure. Clean and attacked
+  runtimes can be configured independently.
 
 Backend and stack adapters compose when their sensor, state and control formats are compatible:
 
@@ -87,7 +90,7 @@ from avsectester.stacks import AlpamayoAVStack
 backend = NuRecBackend({"dt": 0.1, "ego0": {"speed": 5.0}},
                        renderer=NuRecRenderer(endpoint="127.0.0.1:50051", scene_id="01d503d4"),
                        dynamics=TrajectoryFollower())
-trace = run(backend, AlpamayoAVStack(device="cuda:1"), frames=8)   # real Alpamayo on real NuRec imagery
+trace = run(backend, AlpamayoAVStack(checkpoint_path="/path/to/Alpamayo-1.5-10B", device="cuda:1"), frames=8)   # real Alpamayo on real NuRec imagery
 ```
 
 See [`docs/INTERFACE.md`](docs/INTERFACE.md) for the backend/stack contract,
@@ -100,7 +103,7 @@ See [`docs/INTERFACE.md`](docs/INTERFACE.md) for the backend/stack contract,
 |-------|------------|
 | **Data plane** (`avsectester/plane.py`) | `Observation` / `Control` / `Trace` — the pure sim↔stack contract. |
 | **Interfaces** (`avsectester/backend.py`) | `WorldBackend`, `AVStack`, and one driving loop. `Runtime` adds ordered handlers and lifecycle management. |
-| **CarlaBackend + ModularAVStack** (`avsectester/scenario.py`) | avcarla `CarlaClient`/`CarlaMobileActor`/`CarlaNpc` + an avstack `ModularDrivingPipeline` (perception → tracking → planning → control), built from config. |
+| **CarlaBackend + ModularAVStack** (`avsectester/carla_runner.py`) | avcarla `CarlaClient`/`CarlaMobileActor`/`CarlaNpc` + an avstack `ModularDrivingPipeline` (perception → tracking → planning → control), built from config. |
 | **NuRecBackend** (`avsectester/simulators/nurec.py`) | Local planar ego dynamics with a pluggable renderer (`StubRenderer` for offline use, `NuRecRenderer` for the external `nre-ga` service). Other actors follow recorded trajectories. Supports `checkpoint()`/`restore()`. |
 | **AlpamayoAVStack** (`avsectester/stacks/alpamayo.py`) | Wraps the real **Alpamayo-1.5-10B** end-to-end policy as an `AVStack`: camera frames → trajectory `Control`. |
 | **Attacks** (`avsectester/attacks/`) | Stage handlers through `Runtime`, native avstack hooks, physical patches and image insertion. Attack and defense share the handler contract. |

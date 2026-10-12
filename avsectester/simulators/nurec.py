@@ -16,7 +16,7 @@ from typing import Any, ClassVar, TYPE_CHECKING
 
 from avsectester.backend import WorldBackend
 from avsectester.plane import Control, Observation, WorldSnapshot
-from avsectester.simulators.patch_insertion import InsertionRenderer
+from avsectester.rendering.insertion import InsertionRenderer
 
 if TYPE_CHECKING:
     from avsectester.runtime import RenderRequest

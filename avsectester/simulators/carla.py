@@ -8,7 +8,7 @@ package import without a CARLA stack (the pure view adapters and config helpers 
     :mod:`avsectester.simulators.viz`. They duck-type avstack ``ImageData`` / ``LidarData``.
   * :class:`CarlaBackend` owns the client, ego (+ sensors), traffic, an optional scene ``lead`` car,
     and applies physical-patch attacks at reset. Compose it with a stack via
-    :func:`avsectester.scenario.run_scenario`.
+    :func:`avsectester.carla_runner.run_scenario`.
 """
 
 from __future__ import annotations
@@ -79,8 +79,8 @@ def insertion_perturbation(backend, insertions, *, bindings=None, camera="front"
     from avsectester.rendering.cameras import camera_from_calibration
     from avsectester.rendering.visibility import DepthVisibilityEstimator
     from avsectester.rendering.types import InsertionGeometry
-    from avsectester.simulators.augment import read_camera_rgb, write_camera_rgb
-    from avsectester.simulators.patch_insertion import InsertionRenderer
+    from avsectester.perturbations.image import read_camera_rgb, write_camera_rgb
+    from avsectester.rendering.insertion import InsertionRenderer
 
     renderer = None
     current = None
@@ -245,7 +245,7 @@ def _destroy_npc(npc):
 
 
 def _destroy_actor(actor):
-    """Best-effort teardown for a raw CARLA actor (patch prop or a synthesized lead vehicle)."""
+    """Best-effort teardown for a raw CARLA actor such as the synthesized lead vehicle."""
     try:
         actor.destroy()
     except Exception:
@@ -285,18 +285,14 @@ class CarlaBackend(WorldBackend):
     CARLA's shared physics. The ego's own avcarla pipeline is a no-op placeholder: driving is
     *external* (the :class:`~avsectester.backend.AVStack`), so this backend only senses (``_observe``)
     and actuates (``step`` -> ``apply_control``). ``reset`` also captures a strict-spawn
-    ``replay_scenario`` so a paired run reproduces the same scene, and applies any physical patches.
+    ``replay_scenario`` so a paired run reproduces the same initial scene.
     """
 
     def __init__(
-        self, scenario: dict, settle_iters: int = 100, patches: list[dict] | None = None
+        self, scenario: dict, settle_iters: int = 100
     ) -> None:
         self.scenario = deepcopy(scenario)
         self.settle_iters = settle_iters
-        # Physical-patch attacks are a WORLD-level seam applied at reset (attached to a target
-        # vehicle), distinct from perturb(Observation) and the modular hooks. `patches` is passed
-        # explicitly for the attacked run so a paired clean run stays clean. None means no patch.
-        self.patch_specs = list(patches) if patches else []
         # An optional stationary lead vehicle spawned directly ahead of the ego, present in BOTH the
         # clean and attacked runs (scene content). A physical patch (attacked run) attaches to it, so
         # the only difference between the paired runs is the patch itself.
@@ -309,6 +305,8 @@ class CarlaBackend(WorldBackend):
         self._t0: float | None = None
         self._resources = ExitStack()
         self._pair_scenario: dict | None = None
+        self._in_setup = False
+        self._setup_ticks_used = 0
 
     @property
     def supported_stages(self) -> frozenset[str]:
@@ -415,13 +413,19 @@ class CarlaBackend(WorldBackend):
         if self.lead_cfg is not None:  # scene content: a stationary lead ahead of the ego (both runs)
             self.lead = self._spawn_lead(self.lead_cfg)
         self._apply_weather(scenario.get("weather"))  # world-level augmentation (both runs, same weather)
-        self._apply_patches()  # world-level physical patches (attacked run only)
 
         snap = self.client.world.get_snapshot()
         self.ego.initialize(snap.timestamp.elapsed_seconds, snap.frame)
         for npc in self.npcs:
             npc.initialize(snap.timestamp.elapsed_seconds, snap.frame)
-        self._emit("world.setup", None)
+        self._in_setup = True
+        self._setup_ticks_used = 0
+        try:
+            self._emit("world.setup", None)
+            while self._setup_ticks_used < self.setup_ticks:
+                self.setup_tick()
+        finally:
+            self._in_setup = False
         self.client.tick()  # produce the first sensor frame (ego stationary until first control)
         return self._observe()
 
@@ -451,24 +455,24 @@ class CarlaBackend(WorldBackend):
             t=t,
             frame=snap.frame,
             sensor_data=sensor_data,
-            calibration={},  # modular stack reads references off sensor_data. Kept for the contract
+            calibration={
+                key: payload.calibration for key, payload in sensor_data.items()
+                if getattr(payload, "calibration", None) is not None
+            },
             vehicle_state=state,
             ego_speed=float(state.velocity.norm()),
         ))
 
-    def _apply_patches(self) -> None:
-        """Attach + paint each configured physical patch onto its target vehicle (attacked run)."""
-        if not self.patch_specs:
-            return
-        from avsectester.attacks.patch.physical_patch import build_patch
+    def setup_tick(self) -> None:
+        """Advance one deployment tick, only inside the world-setup stage.
 
-        world = self.client.world
-        for spec in self.patch_specs:
-            spec = dict(spec)
-            target = self._resolve_patch_target(spec)
-            spawned = build_patch(spec).apply(world, target)
-            for actor in spawned:
-                self._resources.callback(_destroy_actor, actor)
+        Paired runs reserve the same number of deployment ticks. These are initialization
+        steps, not sensor warmup or driving decisions.
+        """
+        if not self._in_setup:
+            raise RuntimeError("setup_tick is only available during world.setup")
+        self.client.tick()
+        self._setup_ticks_used += 1
 
     def _apply_weather(self, weather: Any) -> None:
         """Set the world weather (the CARLA-native, world-level augmentation tier). ``weather`` is a
@@ -487,19 +491,6 @@ class CarlaBackend(WorldBackend):
         else:
             params = carla.WeatherParameters(**dict(weather))
         self.client.world.set_weather(params)
-
-    def _resolve_patch_target(self, spec: dict) -> Any:
-        """Resolve a patch's ``target``: the scene ``lead`` car, the ``ego``, or ``npc:<i>``."""
-        target = spec.get("target", "lead")
-        if target == "ego":
-            return self.ego.actor
-        if target.startswith("npc:"):
-            return self.npcs[int(target.split(":", 1)[1])].actor
-        if target == "lead":
-            if self.lead is None:
-                raise ValueError("patch target 'lead' needs a `lead:` section in the scenario")
-            return self.lead
-        raise ValueError(f"unknown patch target {target!r} (use 'lead', 'ego', or 'npc:<i>')")
 
     def _spawn_lead(self, cfg: dict) -> Any:
         """Spawn a stationary lead vehicle ``cfg['gap']`` metres directly ahead of the ego."""
@@ -536,3 +527,4 @@ class CarlaBackend(WorldBackend):
             self.client = self.ego = self.lead = None
             self.npcs.clear()
             self._t0 = None
+            self._in_setup = False

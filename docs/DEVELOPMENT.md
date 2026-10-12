@@ -64,8 +64,12 @@ avsectester/
   plane.py            Observation · Control · WorldSnapshot · StateEstimate · Trace   (pure data)
   backend.py          WorldBackend · AVStack · run(...)             (interfaces + loop)
   runtime.py          Runtime · Hook · Plugin · contexts            (intervention execution)
+  interventions.py    ObservationTransform · NativeHook · YAML runtime adapters
+  runner.py           run_pair   (shared origin, fresh stacks, runtime lifecycle)
   insertion.py        Insertion · placement/orientation · asset surfaces · pose resolution
-  scenario.py         run_scenario   (compose a CARLA backend + modular stack)
+  carla_runner.py     run_scenario · run_scenario_pair   (CARLA + modular stack assembly)
+  perturbations/      image corruptions · frame_perturbation   (observation transforms)
+  rendering/          insertion/compositing · cameras · shared visibility geometry
   simulators/                                            (WorldBackend implementations)
     carla.py          CarlaBackend + camera_view (ImageData) · lidar_bev   (CARLA + its view adapters)
     nurec.py          NuRecBackend · Renderer · StubRenderer · NuRecRenderer · dynamics
@@ -85,7 +89,7 @@ avsectester/
 ```
 
 Attack modules are grouped by function. Shared geometry and harmonization live in `rendering`,
-while backend observation adapters and composition live in `simulators`.
+while backend adapters live in `simulators`. Observation transforms live in `perturbations`.
 For example, import `PhysicalPatch` from `avsectester.attacks.patch.physical_patch` and `SignAsset`
 from `avsectester.attacks.object_insertion.sign_spoof`. The top-level
 `from avsectester.attacks import PhantomInjection` entry point remains lazy; its implementation is
@@ -125,6 +129,8 @@ Install the dependencies described in [tests/README.md](../tests/README.md). The
 `avstack` directories run in CI; live tests are selected explicitly.
 
 ```bash
+python -m ruff check avsectester scripts tests
+python -m mypy            # data contracts and runtime
 python -m pytest -q        # offline: interface + attack hook + pipeline + NuRec + viz, no CARLA/GPU
 avsectester run configs/carla_scenario.yaml --frames 40   # CARLA end-to-end: needs a server + weights
 python -m scripts.demos.nurec.alpamayo_nurec_demo 8 --save-frames     # Alpamayo+NuRec (driver env; needs nre-ga + a scene)
@@ -139,6 +145,8 @@ against `StubRenderer`. `tests/core/test_sim_viz.py` checks the per-simulation s
 CARLA, a GPU, or the NuRec renderer.
 
 ## Roadmap
+
+Deferred implementation issues are tracked in [TODO.md](TODO.md).
 
 - More attacks: universal camera perturbations (the AlpaSim adversarial-render seam) against the
   end-to-end stack; modular detection removal, tracking-stage spoofing, sensor-input LiDAR spoofing.

@@ -28,7 +28,8 @@ from avsectester.rendering.types import InsertionGeometry
 from avsectester.rendering.visibility import CuboidVisibilityEstimator
 from avsectester.scenarios.datasets.nurec import NuRecDataset
 from avsectester.simulators.nurec import NuRecInsertions
-from avsectester.simulators.patch_insertion import PatchCompositor, frame_perturbation
+from avsectester.rendering.insertion import PatchCompositor
+from avsectester.perturbations.image import frame_perturbation
 
 
 class MountedSign:

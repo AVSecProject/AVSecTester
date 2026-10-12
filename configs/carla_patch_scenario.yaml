@@ -1,6 +1,6 @@
 # Physical adversarial-patch scenario (CARLA) — a textured panel on the rear of the lead car.
 #
-# A world-level attack (distinct from the perception-hook attack in carla_scenario.yaml): the backend
+# A world.setup attack (distinct from the perception-hook attack in carla_scenario.yaml): the backend
 # spawns a stationary `lead` car directly ahead of the ego (scene content, present in BOTH runs) and,
 # in the attacked run only, attaches + paints an `ironplank` panel on its rear so the ego's RGB camera
 # renders it in-scene. Compare camera views with scripts/demos/carla/carla_patch_demo.py.
@@ -29,13 +29,21 @@ ego:
   sensors:
     - type: CarlaRgbCamera
       name: camera-0
+      source_ID: 0
       image_size_x: 800
       image_size_y: 600
       fov: 90
       sensor_tick: 0.05
-  # The backend replaces the ego's own pipeline with a no-op; driving comes from the AVStack.
+    - type: CarlaLidar
+      name: lidar-0
+      source_ID: 0
+      rotation_frequency: 20
+      sensor_tick: 0.05
+      range: 70.0
+  # The backend replaces the ego's own pipeline with a no-op. Driving comes from the AVStack.
   pipeline:
     type: ModularDrivingPipeline
+    perception_input: lidar-0-0
     perception: {type: MMDetObjectDetector3D, model: pointpillars, dataset: carla-vehicle, gpu: 0, threshold: 0.3}
     tracking: {type: BasicBoxTracker3D}
     planning: {type: ForwardCollisionPlanner, target_speed: 6.0, brake_distance: 12.0, brake_corridor: 2.5}
