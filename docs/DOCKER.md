@@ -72,12 +72,29 @@ docker compose exec avsectester bash                                       # a s
 
 When you're done: `docker compose down`.
 
+## Run offline tests in the container
+
+After building `avsectester:latest`, mount the current checkout to test local changes using
+the image's installed dependencies. No host Python environment or running CARLA server is needed:
+
+```bash
+docker run --rm -u "$(id -u):$(id -g)" \
+  -v "$PWD":/app -w /app \
+  -e HOME=/tmp -e PYTHONDONTWRITEBYTECODE=1 \
+  -e MPLBACKEND=Agg -e NO_ALBUMENTATIONS_UPDATE=1 \
+  --entrypoint python avsectester:latest \
+  -m pytest tests/core tests/avstack -q -p no:cacheprovider
+```
+
+Run this from the repository root with the avstack submodules initialized. The mounted
+checkout supplies the code, and the image supplies the dependencies. Rebuild the image when
+those dependencies change. This runs the same offline test suites as CI using the Docker
+environment. CI itself installs CPU dependencies rather than using this image.
+
 ## Notes
 
 - MMCV's CUDA operators use a prebuilt wheel. The version pins and the NumPy <2
   constraint are explained in [`SETUP.md`](SETUP.md).
-- `.dockerignore` excludes VCS files, data, model weights, outputs and the repository's `tmp/`
-  directory from the build context. Containers can still create temporary files while running.
 - `./models` is a bind mount, so weights are shared with the host rather than baked into the image.
   `fetch_models.sh` runs at container start to (re)create the mmdet/mmdet3d checkpoint symlinks.
 - Both services use `network_mode: host`, so the client reaches the server at `127.0.0.1:2000`. The

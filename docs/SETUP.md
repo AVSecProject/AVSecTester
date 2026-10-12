@@ -26,15 +26,24 @@ git submodule update --init            # top-level avstack repos (NOT their nest
 
 ## 1. Core-only install (fast, CI-friendly)
 
-Use an isolated Python 3.11 environment. Conda is optional. For example, with Python's venv:
+Use an isolated environment with a stable Python 3.11 release. Avoid prerelease interpreters,
+including the Python 3.11 release candidate available in some Ubuntu 22.04 installations.
+That interpreter can fail during TorchScript initialization. The Docker image uses 3.11.13.
+For the same interpreter locally, use [uv](https://docs.astral.sh/uv/getting-started/installation/):
 
 ```bash
-python3.11 -m venv .venv
+uv python install 3.11.13
+uv venv --python 3.11.13 --seed .venv
 source .venv/bin/activate
 pip install torch==2.1.0 --index-url https://download.pytorch.org/whl/cpu
 pip install -e ".[dev,test]" -c constraints.txt
 python -m pytest tests/core -q    # no avstack, CARLA server or checkpoints
 ```
+
+Install uv first if it is unavailable, or use Conda with
+`conda create -n avsec311 python=3.11.13 pip` and `conda activate avsec311`, then run the same
+package-installation commands. If a stable Python 3.11 interpreter is already installed,
+`python3.11 -m venv .venv` is also sufficient. Check `python --version` in the active environment.
 
 See [tests/README.md](../tests/README.md) for the offline avstack suite and CI environment.
 
