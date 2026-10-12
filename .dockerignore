@@ -10,3 +10,4 @@ results
 dev
 third_party/nuCarla
 docs/*.pdf
+tmp/

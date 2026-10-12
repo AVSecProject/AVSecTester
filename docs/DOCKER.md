@@ -5,8 +5,9 @@ with prebuilt MMCV CUDA operators, avstack and the CARLA client) and `docker-com
 `carlasim/carla:0.9.16` server. Together they run the **real** end-to-end path: a CARLA-trained
 PointPillars detector on a live CarlaLidar in a closed-loop drive, attacked by a phantom detection.
 
-The AVSecTester image includes the Python environment and CARLA/avstack dependencies, including
-`lyft-dataset-sdk`. No host Conda environment or separate Python-package installation is required
+The AVSecTester image includes a Python 3.11.13 environment and CARLA/avstack dependencies,
+including `lyft-dataset-sdk`. The interpreter is installed with uv inside the image. No host
+Conda environment or separate Python-package installation is required
 for this path. Model weights remain separate, and CARLA runs in its own server container.
 Alpamayo and the NuRec renderer client use the separate AlpaSim driver environment described in
 [SETUP.md §4](SETUP.md#4-nurec--alpamayo-the-end-to-end-path). They are not installed by this
@@ -46,8 +47,10 @@ whether the baseline establishes driving.
 | Exit code | Meaning |
 |---|---|
 | `0` | Attack succeeded under the current driving-impact criterion |
-| `1` | A valid baseline was established, but the attack did not meet that criterion |
-| `2` | Inconclusive because the clean run did not establish driving |
+| `1` | Execution failed, such as a server or handler exception |
+| `2` | Invalid configuration, parameters or unavailable stage |
+| `3` | A valid baseline was established, but the attack did not meet that criterion |
+| `4` | Inconclusive because the clean run did not establish driving |
 
 See [INTERFACE.md](INTERFACE.md#3-metric-clean-vs-attacked--verdict) for the criterion.
 
@@ -73,7 +76,8 @@ When you're done: `docker compose down`.
 
 - MMCV's CUDA operators use a prebuilt wheel. The version pins and the NumPy <2
   constraint are explained in [`SETUP.md`](SETUP.md).
-- `.dockerignore` drops VCS/data/model/output trees.
+- `.dockerignore` excludes VCS files, data, model weights, outputs and the repository's `tmp/`
+  directory from the build context. Containers can still create temporary files while running.
 - `./models` is a bind mount, so weights are shared with the host rather than baked into the image.
   `fetch_models.sh` runs at container start to (re)create the mmdet/mmdet3d checkpoint symlinks.
 - Both services use `network_mode: host`, so the client reaches the server at `127.0.0.1:2000`. The

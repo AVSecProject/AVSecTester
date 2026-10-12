@@ -1,6 +1,6 @@
 [project]
 name = "avsectester"
-version = "0.0.1"
+dynamic = ["version"]
 description = "Closed-loop adversarial stress-testing framework for autonomous-vehicle systems"
 authors = [{ name = "zqzqz", email = "fszqz001@gmail.com" }]
 readme = "README.md"
@@ -54,7 +54,7 @@ test = [
 viz = [
     "matplotlib>=3.6",
 ]
-# Battle-tested augmentation backend for avsectester.simulators.augment (weather/sensor corruptions).
+# Battle-tested augmentation backend for avsectester.perturbations.image (weather/sensor corruptions).
 # Classic albumentations 1.4 (MIT): this stack is numpy<2 (torch 2.1 / OpenMMLab-official), and
 # AlbumentationsX/2.x require numpy>=2. Same `import albumentations as A` API + transforms. The
 # hand-rolled operators remain the zero-dependency fallback.
@@ -79,8 +79,8 @@ extend-exclude = ["third_party", "dev"]
 src = ["avsectester", "scripts", "tests"]
 
 [tool.ruff.lint]
-# Start with correctness checks; formatting and unused imports are not CI gates.
-select = ["E9", "F63", "F7", "F82"]
+# Check syntax, undefined names and unused imports. Formatting is not a CI gate.
+select = ["E9", "F"]
 # C408: allow the `dict(type=...)` config idiom (avstack/mmengine build-from-config convention).
 # B008: typer requires `typer.Argument(...)`/`typer.Option(...)` calls in CLI arg defaults.
 ignore = ["C408", "B008"]
@@ -96,5 +96,13 @@ markers = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-[tool.hatch.build.targets.wheel]
-packages = ["avsectester"]
+[tool.hatch.version]
+path = "avsectester/__init__.py"
+
+[tool.mypy]
+files = ["avsectester/plane.py", "avsectester/backend.py", "avsectester/runtime.py", "avsectester/runner.py"]
+python_version = "3.11"
+follow_imports = "skip"
+ignore_missing_imports = true
+check_untyped_defs = true
+disallow_untyped_defs = true
