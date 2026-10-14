@@ -17,6 +17,10 @@ from pathlib import Path
 
 import numpy as np
 from avsectester.simulators.nurec import NuRecBackend, NuRecRenderer
+from avsectester.interventions import ObservationTransform
+from avsectester.runner import run_prepared
+from avsectester.runtime import Hook, Runtime
+from avsectester.scenarios.setup import scenario_from_config
 from avsectester.rendering.compositor import PatchCompositor
 from avsectester.perturbations.image import frame_perturbation
 from avsectester.simulators.viz import filmstrip, record_run, save_gif, save_image
@@ -112,15 +116,22 @@ def plot_eval(results: dict, path: Path, label: str) -> None:
 def drive(endpoint: str, scene, frames: int, speed: float, out_dir: Path, perturb=None):
     renderer = NuRecRenderer(endpoint=endpoint, scene_id=scene.source["scene_id"], cameras=[CAM],
                              start_timestamp_us=scene.source["timestamp_us"])
-    backend = NuRecBackend({"dt": 0.1, "ego0": {"speed": speed}}, renderer=renderer)
-    try:
-        # the perturbation needs the loaded scene's camera (model + rig extrinsic): load it up front
-        renderer.load_scene(scene.source["scene_id"])
-        p = perturb(backend) if perturb is not None else None
-        return record_run(backend, CruiseStack(throttle=0.0), frames, out_dir=out_dir, perturb=p,
-                          collect=True).frames
-    finally:
-        backend.close()
+    instance = scenario_from_config(
+        {"dt": 0.1, "ego0": {"speed": speed}},
+        backend_factory=lambda config: NuRecBackend(config, renderer=renderer),
+        provenance=scene.source,
+    )
+    runtime = None if perturb is None else lambda backend: Runtime([
+        Hook("observation", ObservationTransform(perturb(backend))),
+    ])
+
+    def record(backend, stack, frames, *, runtime):
+        return record_run(backend, stack, frames, out_dir=out_dir, runtime=runtime, collect=True)
+
+    return run_prepared(
+        instance, lambda: CruiseStack(throttle=0.0), frames,
+        runtimes={"drive": runtime}, run_fn=record,
+    )["drive"].frames
 
 
 def main() -> int:

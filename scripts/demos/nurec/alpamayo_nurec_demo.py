@@ -25,6 +25,8 @@ import sys
 import time
 
 from avsectester.backend import run
+from avsectester.runner import run_prepared
+from avsectester.scenarios.setup import scenario_from_config
 from avsectester.simulators.nurec import (
     NuRecBackend,
     NuRecRenderer,
@@ -54,18 +56,26 @@ def main() -> int:
         if args.stub
         else NuRecRenderer(endpoint=args.endpoint, scene_id=args.scene, cameras=[CAM])
     )
-    backend = NuRecBackend(
-        {"dt": 0.1, "ego0": {"speed": 5.0}}, renderer=renderer, dynamics=TrajectoryFollower()
+    scenario = scenario_from_config(
+        {"dt": 0.1, "ego0": {"speed": 5.0}},
+        backend_factory=lambda config: NuRecBackend(config, renderer=renderer, dynamics=TrajectoryFollower()),
+        provenance={"scene_id": args.scene, "renderer": "stub" if args.stub else "nurec"},
     )
-    stack = AlpamayoAVStack(checkpoint_path=args.checkpoint, device=f"cuda:{args.gpu}", camera_ids=[CAM])
 
     kind = "stub (black)" if args.stub else "NuRec"
     print(f"[demo] Alpamayo + {kind} renderer, {args.frames} frames ...")
     t0 = time.time()
-    if args.save_frames:
-        trace = record_run(backend, stack, args.frames, out_dir=args.save_frames, visualize=camera_view)
-    else:
-        trace = run(backend, stack, args.frames)
+    def record(backend, stack, frames, *, runtime):
+        if args.save_frames:
+            return record_run(backend, stack, frames, runtime=runtime,
+                              out_dir=args.save_frames, visualize=camera_view)
+        return run(backend, stack, frames, runtime=runtime)
+
+    trace = run_prepared(
+        scenario,
+        lambda: AlpamayoAVStack(checkpoint_path=args.checkpoint, device=f"cuda:{args.gpu}", camera_ids=[CAM]),
+        args.frames, run_fn=record,
+    )["clean"]
     for r in trace.records:
         print(f"  f{r.frame:02d} t={r.t:.1f}s  speed={r.speed:5.2f} m/s")
     print(

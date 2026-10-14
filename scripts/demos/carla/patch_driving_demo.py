@@ -29,10 +29,14 @@ from pathlib import Path
 import yaml
 from avsectester.attacks.patch.physical_patch import checkerboard_rgba, image_rgba
 from avsectester.backend import AVStack
+from avsectester.interventions import ObservationTransform
 from avsectester.metric import impact, plot_impact
 from avsectester.plane import Control
+from avsectester.runner import run_prepared
+from avsectester.runtime import Hook, Runtime
 from avsectester.simulators import carla as carla_sim
 from avsectester.scenarios.carla_provider import CarlaSelectionBackend
+from avsectester.scenarios.setup import scenario_from_config
 from avsectester.rendering.compositor import PatchCompositor
 from avsectester.simulators.viz import detections_view, record_run, save_sequence
 from scripts.common.demo_common import build_detector, plausible_detector, carla_rear_perturbation, make_harmonizer
@@ -83,7 +87,7 @@ def main() -> int:
 
     scenario = yaml.safe_load(Path(args.config).read_text())
     scenario.setdefault("lead", {})["gap"] = args.gap
-    scenario.pop("patches", None)  # composite is a 2D insert on the clean render, not a world prop
+    scenario.pop("patches", None)  # Project the host-bound patch into the camera input.
 
     patch = (image_rgba(args.texture, args.tex) if args.texture
              else checkerboard_rgba(args.tex, squares=8))
@@ -93,23 +97,31 @@ def main() -> int:
     detect = plausible_detector(build_detector(args.gpu))  # gate phantom boxes; feeds stack + overlay
     overlay = detections_view(detect, base=carla_sim.camera_view)
 
-    backend = CarlaSelectionBackend(scenario)
-    backend.prepare_clean_attack_pair()
+    instance = scenario_from_config(scenario, backend_factory=CarlaSelectionBackend)
 
-    def drive(patched: bool):
-        stack = CameraForwardCollisionStack(detect, area_brake=args.area_brake)
-        perturb = carla_rear_perturbation(backend, patch, compositor) if patched else None
-        return record_run(backend, stack, args.frames, out_dir=OUT / ("patched" if patched else "clean"),
-                          visualize=overlay, perturb=perturb, collect=True)
+    def attacked_runtime(backend):
+        transform = carla_rear_perturbation(backend, patch, compositor)
+        return Runtime([Hook("observation", ObservationTransform(transform))])
 
-    try:
-        print(f"[demo] CLEAN run ({args.frames} frames, lead {args.gap} m) ...")
-        clean = drive(patched=False)
-        print(f"[demo] PATCHED run ({'adversarial' if args.texture else 'checkerboard'} / "
-              f"{args.harmonizer} harmonizer) ...")
-        attacked = drive(patched=True)
-    finally:
-        backend.close()
+    labels = iter(("clean", "patched"))
+
+    def record(backend, stack, frames, *, runtime):
+        label = next(labels)
+        if label == "clean":
+            print(f"[demo] CLEAN run ({frames} frames, lead {args.gap} m) ...")
+        else:
+            print(f"[demo] PATCHED run ({'adversarial' if args.texture else 'checkerboard'} / "
+                  f"{args.harmonizer} harmonizer) ...")
+        return record_run(
+            backend, stack, frames, out_dir=OUT / label,
+            visualize=overlay, runtime=runtime, collect=True,
+        )
+
+    traces = run_prepared(
+        instance, lambda: CameraForwardCollisionStack(detect, area_brake=args.area_brake),
+        args.frames, runtimes={"clean": None, "attacked": attacked_runtime}, run_fn=record,
+    )
+    clean, attacked = traces["clean"], traces["attacked"]
 
     result = impact(clean, attacked)
     print("\n" + str(result) + "\n")

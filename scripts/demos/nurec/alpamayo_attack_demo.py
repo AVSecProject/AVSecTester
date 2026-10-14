@@ -25,6 +25,10 @@ from dataclasses import asdict
 from pathlib import Path
 
 from avsectester.metric import impact
+from avsectester.interventions import ObservationTransform
+from avsectester.runner import run_prepared
+from avsectester.runtime import Hook, Runtime
+from avsectester.scenarios.setup import scenario_from_config
 from avsectester.simulators.nurec import NuRecBackend, NuRecRenderer, TrajectoryFollower
 from avsectester.rendering.compositor import PatchCompositor
 from avsectester.perturbations.image import frame_perturbation
@@ -51,24 +55,42 @@ class Recording(AlpamayoAVStack):
         return control
 
 
-def drive(args, stack, perturb_of=None):
-    renderer = NuRecRenderer(endpoint=args.endpoint, scene_id=args.scene, cameras=[CAM],
-                             start_timestamp_us=args.start_timestamp_us)
-    backend = NuRecBackend({"dt": 0.1, "ego0": {"speed": args.speed}}, renderer=renderer,
-                           dynamics=TrajectoryFollower())
-    try:
-        renderer.load_scene(args.scene)
-        perturb = perturb_of(backend) if perturb_of else None
-        trace = record_run(backend, stack, args.frames, out_dir=args.out / ("attacked" if perturb else "clean"),
-                           perturb=perturb, collect=True)
+def drive_pair(args, perturb_of):
+    def make_backend(config):
+        renderer = NuRecRenderer(endpoint=args.endpoint, scene_id=args.scene, cameras=[CAM],
+                                 start_timestamp_us=args.start_timestamp_us)
+        return NuRecBackend(config, renderer=renderer, dynamics=TrajectoryFollower())
+
+    scenario = scenario_from_config(
+        {"dt": 0.1, "ego0": {"speed": args.speed}}, backend_factory=make_backend,
+        provenance={"scene_id": args.scene, "timestamp_us": args.start_timestamp_us},
+    )
+    loaded_model = None
+
+    def make_stack():
+        return Recording(checkpoint_path=args.checkpoint, device=f"cuda:{args.gpu}",
+                         camera_ids=[CAM], model=loaded_model)
+
+    def record(backend, stack, frames, *, runtime):
+        nonlocal loaded_model
+        label = "attacked" if runtime.hooks else "clean"
+        print(f"[alpamayo] {label} drive, {frames} frames")
+        trace = record_run(backend, stack, frames, out_dir=args.out / label,
+                           runtime=runtime, collect=True)
+        loaded_model = stack.models["policy"]
         # Each decision uses the input at t; its Trace record holds the outcome at t + dt.
         steps = [
             {**asdict(record), **decision}
             for record, decision in zip(trace.records, stack.decisions, strict=True)
         ]
         return trace, steps
-    finally:
-        backend.close()
+
+    return run_prepared(
+        scenario, make_stack, args.frames,
+        runtimes={"clean": None, "attacked": lambda backend: Runtime([
+            Hook("observation", ObservationTransform(perturb_of(backend))),
+        ])}, run_fn=record,
+    )
 
 
 def plot_speed(clean, attacked, path: Path, title: str) -> None:
@@ -130,12 +152,10 @@ def main() -> int:
         return frame_perturbation(insert, camera=CAM)
 
     position = payload.roadside.placement.position_m
-    stack = Recording(checkpoint_path=args.checkpoint, device=f"cuda:{args.gpu}", camera_ids=[CAM])
     t0 = time.time()
-    print(f"[alpamayo] clean drive, {args.frames} frames")
-    clean, clean_steps = drive(args, stack)
-    print(f"[alpamayo] attacked drive ({args.object} at x={position[0]}, y={position[1]}; {args.harmonizer})")
-    attacked, attacked_steps = drive(args, stack, perturb_of)
+    results = drive_pair(args, perturb_of)
+    clean, clean_steps = results["clean"]
+    attacked, attacked_steps = results["attacked"]
     verdict = impact(clean, attacked)
     print(f"[alpamayo] {time.time() - t0:.0f}s; clean final {clean.records[-1].speed:.2f} m/s, "
           f"attacked final {attacked.records[-1].speed:.2f} m/s; verdict: {verdict}")

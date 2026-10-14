@@ -19,6 +19,9 @@ import sys
 from pathlib import Path
 
 import yaml
+from avsectester.interventions import configured_runtime
+from avsectester.runner import run_prepared
+from avsectester.scenarios.setup import scenario_from_config
 from avsectester.simulators import carla as carla_view  # CarlaBackend + CARLA view adapters
 from avsectester.simulators.carla import CarlaBackend
 from avsectester.simulators.viz import detections_view, record_run, save_sequence
@@ -57,14 +60,18 @@ def main() -> int:
     )
 
     print(f"[demo] {kind} physical patch, {args.frames}-frame sequence via record_run ...")
-    from avsectester.interventions import configured_runtime
-    runtime = configured_runtime({"patches": patches or []})
-    backend = CarlaBackend(scenario)
-    try:
-        trace = record_run(backend, CruiseStack(), args.frames, out_dir=OUT / "seq",
-                           visualize=visualize, collect=True, runtime=runtime)
-    finally:
-        backend.close()
+    instance = scenario_from_config(scenario, backend_factory=CarlaBackend)
+    runtime = configured_runtime({"patches": patches or []}, instance=instance)
+
+    def record(backend, stack, frames, *, runtime):
+        return record_run(
+            backend, stack, frames, out_dir=OUT / "seq",
+            visualize=visualize, collect=True, runtime=runtime,
+        )
+
+    trace = run_prepared(
+        instance, CruiseStack, args.frames, runtimes={"attack": runtime}, run_fn=record,
+    )["attack"]
 
     out = save_sequence(trace.frames, OUT, name="patch")
     if out:
