@@ -22,12 +22,17 @@ Dockerfile.
   CARLA-trained weights:
 
 ```bash
-git clone --recurse-submodules https://github.com/AVSecProject/AVSecTester.git && cd AVSecTester
-git submodule update --init third_party/avstack-core
-cd third_party/avstack-core && \
-  git submodule update --init --depth 1 third_party/mmdetection third_party/mmdetection3d && cd -
+git clone https://github.com/AVSecProject/AVSecTester.git
+cd AVSecTester
+git -c url.https://github.com/.insteadOf=git@github.com: submodule update --init --depth 1 -- \
+  third_party/avstack-core third_party/avstack-api third_party/lib-avstack-carla
+git -C third_party/avstack-core -c url.https://github.com/.insteadOf=git@github.com: \
+  submodule update --init --depth 1 -- third_party/mmdetection third_party/mmdetection3d
 ./scripts/preparation/fetch_models.sh          # pull carla-vehicle weights → ./models (bind-mounted into the image)
 ```
+
+The command-scoped HTTPS rewrite avoids requiring SSH keys for these submodules and matches
+CI. See [Setup](SETUP.md#0-clone-with-submodules) for the dependency groups.
 
 ## Run the end-to-end attack
 
@@ -43,6 +48,18 @@ docker compose exec avsectester avsectester run configs/carla_scenario.yaml --fr
 phantom-attacked pass, and compares their driving traces. It prints detection counts, peak and
 final speeds, braking-frame counts and a verdict. Results depend on the configured scene and
 whether the baseline establishes driving.
+
+Choose a mode and treatment with CLI options, overriding YAML `mode` and `treatment`:
+
+```bash
+docker compose exec avsectester avsectester run configs/carla_scenario.yaml --mode single --treatment clean
+# Use a configuration containing both attack and defense methods for a combined pair:
+docker compose exec avsectester avsectester run configs/carla_scenario.yaml --mode pair --treatment attack-defense
+```
+
+The supplied configuration contains an attack only. Add a defense method before using the second
+command. See [YAML configuration](INTERFACE.md#configuring-a-yaml-scenario) for enabled methods,
+runtime ordering and frame/device overrides.
 
 Pair treatments `attack` and `attack-defense` produce an attack verdict when an attack is
 enabled. Defense-only pairs report driving side effects. Clean pairs and empty attack pairs

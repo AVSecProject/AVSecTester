@@ -1,10 +1,11 @@
-# Scenario augmentation — perturbing the world to test attack robustness
+# Scenario conditions and attack robustness
 
 Augmentation applies controlled weather, lighting and sensor corruptions to examine how an
-attack behaves across conditions. The evaluation harness compares clean and attacked runs
-under the same corruption settings.
+attack behaves across corruption settings. The evaluation harness compares clean and attacked
+runs under each setting. `ScenarioConditions` holds the shared world and sensor environment.
+The robustness grid adds image corruptions to that environment.
 
-## Register attacks and corruptions in Runtime
+## Apply corruptions as scenario conditions
 
 Attach operating conditions to a `ScenarioInstance`. The prepared runner constructs a fresh
 condition handler for every treatment and applies the same settings and relative-step seeds.
@@ -31,24 +32,30 @@ traces = run_prepared(conditioned, stack_factory, frames=30, runtimes={
 })
 ```
 
-`SensorCondition` defaults to `stage="observation", order="after"`: corruption affects the
-inserted attack pixels. Set `order="before"` to corrupt the measurement before interventions at
-that same stage. Hooks at different stages retain the pipeline's stage order. Conditions have
-independent random streams, so an attack consuming `context.rng` does not change condition noise.
+`SensorCondition` defaults to `stage="observation", order="after"`: corruption runs after all
+observation attacks and defenses, including inserted attack pixels. Set `order="before"` to
+corrupt the measurement before all interventions at that same stage. Hooks at different stages
+retain the pipeline's stage order. Conditions have independent random streams, so an attack
+consuming `context.rng` does not change condition noise.
 Custom sensor-condition factories can implement the same handler/Plugin interface. World conditions
 are applied before reset. See [SCENARIOS.md](SCENARIOS.md#scenario-conditions) for Python and YAML
 configuration, selection measurements and supported backend properties.
 
-Direct callers can also register ordered `observation` hooks in Runtime and use `run_pair`.
-For a single run, `run(..., perturb=compose(attack, augment))` remains a shorthand for
-one-argument observation transforms. `compose(a, b)` applies `a` then `b`. The shorthand is
-adapted into the same runtime hook chain.
+For direct `run` or `run_pair` calls, build the backend with `scenario.make_backend()` and wrap
+each Runtime with `scenario.conditions.apply_runtime(runtime)`. Otherwise sensor conditions
+are not applied. See the [lower-level execution example](SCENARIOS.md#lower-level-execution).
+
+For a single run, `sensor_augmentation(pipeline)` creates a one-argument observation transform,
+and `run(..., perturb=compose(attack, augment))` composes such transforms. `compose(a, b)` applies
+`a` then `b`, through the same Runtime chain. `sensor_augmentation` seeds the pipeline from
+absolute `observation.frame`, so it does not guarantee matching noise across resets. Use
+`SensorCondition.image(...)` or YAML `conditions.sensors` for paired experiments.
 
 ## Two tiers of fidelity
 
 1. **Image-space corruptions** — `avsectester.perturbations.image`, backend-agnostic. Each `Corruption` is an
-   `apply(rgb, rng) -> rgb` on the camera image; an `AugmentationPipeline` chains several and
-   `sensor_augmentation(pipeline)` lifts it to an observation transform. Because it operates on pixels it works on
+   `apply(rgb, rng) -> rgb` on the camera image. An `AugmentationPipeline` chains several operators.
+   Attach it with `SensorCondition.image(...)` or configure YAML `conditions.sensors`. It works on
    camera images from CARLA, NuRec reconstructed-scene rendering (`NuRecBackend`), and recorded-frame
    replay (`RecordedFrameBackend`, used by nuScenes). NuRec generates new views from the ego pose,
    while recorded-frame replay returns captured images.
@@ -59,9 +66,9 @@ adapted into the same runtime hook chain.
 
 ## Operators (`avsectester.perturbations.image`)
 
-Every operator takes a `severity` in `[0, 1]` (0 ≈ identity, 1 = strong) and is driven by a seeded
-`numpy.random.Generator`, so runs are reproducible and — crucially — the *same* corruption can be applied
-to the clean and attacked runs of a pair.
+Every operator takes a `severity` in `[0, 1]` (0 ≈ identity, 1 = strong) and a
+`numpy.random.Generator`. `SensorCondition.image` supplies matching seeds at corresponding
+driving steps in clean and attacked runs.
 
 | category  | operators                                                             |
 |-----------|-----------------------------------------------------------------------|
@@ -70,7 +77,7 @@ to the clean and attacked runs of a pair.
 | sensor    | `GaussianNoise`, `ShotNoise`, `MotionBlur`, `DefocusBlur`, `JPEGCompression`, `ChromaticAberration` |
 
 `CORRUPTIONS` is a name-to-class registry. `common_corruptions(severity)` returns one pipeline
-per built-in operator. This is the framework's default condition set, not an implementation
+per built-in operator. This is the framework's default corruption grid, not an implementation
 of a published benchmark.
 
 ### Backends: hand-rolled (default) or Albumentations (optional)
@@ -79,22 +86,28 @@ The default operators use NumPy and OpenCV without a learned model. An optional
 **Albumentations** backend (`AlbumentationsCorruption`,
 `albumentations_corruptions(severity)`, `augment` extra) that wraps `A.RandomFog/RandomRain/RandomSnow/
 GaussNoise/ISONoise/MotionBlur/Defocus/ImageCompression` behind the same `Corruption` interface, seeding
-`A.Compose` from our own RNG so the `(seed, frame)` pairing still holds. The `augment` extra
+`A.Compose` from the supplied RNG. With `SensorCondition.image`, that RNG is seeded by the
+pipeline seed and relative driving step. The `augment` extra
 selects classic Albumentations (`>=1.4,<2`). See [SETUP.md](SETUP.md) for the dependency set.
 
-## Determinism across the pair (the subtle bit)
+## Randomness across treatments
 
-Robustness is measured by *diffing* a clean run and an attacked run **under the same condition**. If the
-fog pattern or noise realisation differed between the two, the diff would conflate the attack with the
-corruption. `AugmentationPipeline.apply(rgb, frame)` seeds its RNG from `(seed, frame)`. The condition handler uses the same pipeline seed and relative driving step, since absolute
-simulator frame IDs can differ after reset. Corresponding steps therefore use the same random draws,
-even when their input images differ because of the attack or subsequent driving.
+Each comparison holds the corruption settings fixed. `AugmentationPipeline.apply(rgb, frame)`
+seeds its RNG from `(seed, frame)`. `SensorCondition.image` supplies relative `context.step` as
+that frame index, because absolute simulator frame IDs can differ after reset. Corresponding
+steps with the same image dimensions use the same random draws. Their output images can differ
+because the attack or subsequent driving changes the input.
 
-## Robustness evaluation protocol (implemented: `avsectester.evaluation.robustness`)
+Custom sensor handlers receive independent condition RNG streams. Use `context.rng` and reset
+run-local state to preserve matching random choices. The framework does not seed arbitrary
+external libraries or reset state hidden in a user closure.
+
+## Robustness evaluation
 
 `evaluate_robustness(source, req, attack_for, stack, frames, ...)` runs the grid and returns a
-`RobustnessReport` (ASR + resilience per condition). `stack` is a **factory** (`Callable[[], AVStack]`)
-so each run gets a fresh box. Given a scenario source, requirement, attack method and stack factory:
+`RobustnessReport` (ASR and resilience per corruption setting). `stack` is a factory
+(`Callable[[], AVStack]`) so each run gets a fresh stack. Given a scenario source, requirement,
+attack method and stack factory:
 
 ```python
 from avsectester.evaluation.robustness import evaluate_robustness
@@ -103,9 +116,18 @@ report = evaluate_robustness(source, req, method, stack_factory, frames=30, seve
 print(report.summary())
 ```
 
-The harness includes a no-extra-corruption baseline plus the corruption suite. Existing scenario
-conditions still apply to that baseline. For each scenario and condition it delegates execution and
-teardown to `runner.run_prepared`. The added image corruption follows observation attacks.
+| Parameter | Meaning |
+|---|---|
+| `conditions` | Iterable of `AugmentationPipeline`, not `ScenarioConditions`. `None` uses `common_corruptions(severity)`. Supply `albumentations_corruptions(...)` for that implementation, or `[]` for the baseline only |
+| `severity` | Strength of the default corruption grid, default `0.5` |
+| `limit` | Maximum number of accepted scenarios from the source, or `None` for all |
+| `run_fn` | Per-treatment recorder accepting `runtime` and returning a driving `Trace`. Defaults to the shared loop |
+
+The grid always includes a no-extra-corruption baseline, labelled `clean`, followed by the
+specified corruption pipelines. Existing `ScenarioConditions` still apply to that baseline.
+Every grid entry contains its own clean and attacked treatment. For each pair the harness uses
+the shared prepared-run execution and cleanup. Added image corruptions follow all observation
+interventions.
 
 `method` may be an `Intervention` or a `PreparedIntervention` of kind `attack`. An Intervention
 prepares once per selected scenario, and its artifacts are reused across conditions. Execution
@@ -113,9 +135,13 @@ handlers are constructed separately for each attacked run. Passing a PreparedInt
 its supplied artifacts explicitly, including across scenarios. Preparation is never inferred from
 an artifact filename or a previous run. See [INTERVENTIONS.md](INTERVENTIONS.md#preparation-and-execution).
 
-Construct `source` and `req` using [scenario selection](SCENARIOS.md#select-a-case).
+Construct `source` and `req` using [scenario selection](SCENARIOS.md#select-a-case). For a source
+from `source_from_config`, pass `req=None` to use its configured requirement, or to run its
+unfiltered scenario. An independently constructed `DatasetFilter` or `CarlaScenarioBuilder`
+receives the requirement explicitly as in the example above.
 Source filters run before this grid, not on every corrupted observation. To filter by conditioned
-measurements, configure conditions on the source before selecting its cases.
+measurements, configure [conditions on the source](SCENARIOS.md#conditions-during-selection)
+before selecting its cases. Changing conditions after selection does not recheck filters.
 
 The legacy `attack_for(match, backend)` callback also remains supported. It is called once per pair,
 after world conditions are configured and before origin preparation or backend reset. It returns
@@ -134,19 +160,23 @@ and resolve current camera/actor information during execution. Preserve `match.b
 - `skipped`: `attack_for(match, backend)` returned `None`.
 - `inconclusive`: the clean run did not establish a driving baseline.
 
-**ASR per condition** is `successes / (successes + failures)`. Skipped and inconclusive attempts are
+**ASR per corruption setting** is `successes / (successes + failures)`. Skipped and inconclusive attempts are
 reported separately and excluded from the denominator. With no valid pairs, ASR is `NaN` and the
 summary displays `N/A`. Direct callers of `report.record()` must pass a status string, not a boolean.
 
-**Resilience** is `ASR(corruption) / ASR(clean)`, capped at 1. It is `NaN` if either condition has no
-valid pairs, and 0 when the valid baseline ASR is 0. These are the current implementation's conventions.
+**Resilience** is `ASR(corruption) / ASR(clean)`, capped at 1. Here `ASR(clean)` refers to the
+grid's no-extra-corruption baseline, not to a clean treatment's success rate.
+It is `NaN` if either setting has no valid pairs, and 0 when the valid baseline ASR is 0.
+These are the current implementation's conventions.
 The current success criterion covers induced or suppressed stops. Experiment-specific criteria remain
-a TODO in the harness, so this is not a universal definition of attack success.
+tracked in [TODO.md](TODO.md#driving-impact-metrics), so this is not a universal definition of
+attack success.
 
 ## Fidelity and extensions
 
 - Image-space weather is a *2-D approximation*: fog is uniform airlight (no per-pixel depth), rain/snow
   are procedural overlays. It is a stress test of the *perception+attack* pipeline, not a physically
   exact renderer. Use the CARLA world tier when physical light transport matters.
-- Corruptions act on the **camera** stream. Lidar/other-modality corruptions are a later addition (a
-  `Corruption` on those payloads slots into the same registry).
+- `Corruption.apply` consumes an RGB camera image. LiDAR, radar and navigation conditions can
+  use custom `SensorCondition` factories operating on their native payloads. They do not use
+  the image-corruption registry, and no built-in algorithms for those modalities are supplied.

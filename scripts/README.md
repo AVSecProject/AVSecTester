@@ -29,7 +29,7 @@ NuRec examples. Models are loaded only by the entry points that use them. See th
 |---|---|---|
 | `avsectester run configs/carla_scenario.yaml` | Paired clean/phantom-attacked CARLA drive | Modular stack with CARLA-trained PointPillars, tracking, collision planning and PID control |
 | [alpamayo_nurec_demo.py](demos/nurec/alpamayo_nurec_demo.py) | Drive in a rendered NuRec scene | Alpamayo-1.5-10B |
-| [alpamayo_attack_demo.py](demos/nurec/alpamayo_attack_demo.py) | Compare clean and object-inserted driving, saving traces, reasoning and imagery | Alpamayo, plus PCTNet when `--harmonizer libcom` is selected. No COCO detector |
+| [alpamayo_attack_demo.py](demos/nurec/alpamayo_attack_demo.py) | Compare clean and object-inserted driving, saving traces, reasoning and imagery | Alpamayo and PCTNet by default. No COCO detector |
 | [carla_insertion_demo.py](demos/carla/carla_insertion_demo.py) | Inspect three attachment orientations, a world-fixed sign and depth visibility | No learned driving policy or detector, prescribed actor motion |
 | [nurec_insertion_demo.py](demos/nurec/nurec_insertion_demo.py) | Inspect recorded host attachments, a world-fixed sign and cuboid visibility estimates | No learned driving policy or detector, recorded poses and NuRec rendering |
 | [nurec_patch_demo.py](demos/nurec/nurec_patch_demo.py) | Patch-only version of the NuRec insertion example | Same components as `nurec_insertion_demo.py` |
@@ -62,8 +62,8 @@ weights. Current checkpoint-path behavior is documented in
 
 | Script | Function | Models |
 |---|---|---|
-| [nurec_object_demo.py](demos/nurec/nurec_object_demo.py) | Insert a STOP sign, standee, billboard or traffic-signal board in NuRec frames | COCO Faster R-CNN only with `--eval`, optional PCTNet |
-| [nuscenes_object_demo.py](demos/nuscenes/nuscenes_object_demo.py) | Insert objects into recorded nuScenes `CAM_FRONT` photographs | COCO Faster R-CNN only with `--eval`, optional PCTNet |
+| [nurec_object_demo.py](demos/nurec/nurec_object_demo.py) | Insert a STOP sign, standee, billboard or traffic-signal board in NuRec frames | COCO Faster R-CNN only with `--eval`. Compares classic, chroma and PCTNet harmonization by default |
+| [nuscenes_object_demo.py](demos/nuscenes/nuscenes_object_demo.py) | Insert objects into recorded nuScenes `CAM_FRONT` photographs | COCO Faster R-CNN only with `--eval`, PCTNet by default |
 | [patch_hide_probe.py](validation/patch_hide_probe.py) | Inspect detector response to different patch sizes and harmonization choices on a CARLA image | CARLA-trained Faster R-CNN and PCTNet |
 
 `nurec_object_demo.py` requires the matching `--usdz`. Roadside mode uses fixed world insertions.
@@ -93,6 +93,9 @@ For composited objects and `patch_driving_demo.py`, use `--harmonizer none` to d
 harmonization. This preserves insertion geometry and visibility. `classic` and `libcom` select
 classic and PCTNet harmonization respectively. Direct API callers use
 `PatchCompositor(..., harmonize=False)` and may toggle `compositor.harmonize` between frames.
+The NuRec/nuScenes object scripts and Alpamayo attack demo also offer `chroma`. Select
+`none`, `classic` or `chroma` to run those scripts without PCTNet. `patch_driving_demo.py`
+defaults to `classic` and does not offer `chroma`.
 
 COCO names the auxiliary detector's pretraining dataset. It does not provide scenes or drive the
 vehicle. See [IMAGE_ATTACKS.md](../docs/IMAGE_ATTACKS.md#payload-composition-examples) for options,
@@ -134,22 +137,13 @@ available inference device with `--gpu`. `--frames` controls steps per run. `--p
 impact figure and requires the `viz` extra. No particular attack result is guaranteed.
 
 The CLI supports `--mode single|pair` and `--treatment clean|attack|defense|attack-defense`.
-A single run finishes with exit code `0` and does not compute a comparison verdict. Attack and
-attack-defense pairs with an enabled attack use `0` for success under the current stop criterion,
-`3` for no impact and `4` for an inconclusive baseline. Defense pairs report side effects, while
-clean/empty-attack pairs report baseline comparisons. These pairs have no attack verdict and exit
-with `0` after successful execution. Execution errors use `1` and configuration errors use `2`.
+Single runs do not compute a comparison verdict. Pairs with an enabled attack report an attack
+verdict. Defense pairs report side effects, while clean/empty-attack pairs report baseline comparisons.
+See the [CLI exit-code table](../docs/DOCKER.md#run-the-end-to-end-attack) for outcome and error codes.
 `--plot` requires pair mode and uses treatment-specific labels and captions. See
 [INTERFACE.md](../docs/INTERFACE.md#3-metric-clean-vs-attacked--verdict) for that criterion and
 [tests/README.md](../tests/README.md) for offline and opt-in simulator tests.
 
-The NuRec configuration can also be run in the AlpaSim driver environment:
-
-```bash
-avsectester run configs/nurec_scenario.yaml --mode single --treatment clean
-```
-
-This example uses stub images by default. Set the renderer to `nurec` and provide the scene and
-endpoint for rendered images. Alpamayo always requires its driver dependencies and checkpoint.
-`--gpu` applies to the CARLA modular perception configuration. Custom stacks and Alpamayo select
-their device through `stack.options`.
+`--gpu` applies to the CARLA modular perception configuration. A custom stack selects its device
+through `stack.options`. For NuRec with Alpamayo, use the demo scripts and environment in
+[Setup](../docs/SETUP.md#4-nurec--alpamayo-the-end-to-end-path).

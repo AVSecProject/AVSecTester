@@ -66,7 +66,7 @@ final observation processing.
 | `run(backend, stack, ..., runtime=...)` | One run with caller-owned backend resources |
 | `run_pair(backend, stack_factory, ..., clean_runtime=..., attacked_runtime=...)` | Two runs from one origin, with a fresh stack per run |
 | `run_prepared(scenario, stack_factory, ..., runtimes={name: runtime})` | Named treatments of a `ScenarioInstance`, including shared conditions and backend cleanup |
-| `run_configured(config, ..., mode=..., treatment=...)` | Prepare a configured scenario and enabled interventions, then execute selected treatments |
+| `run_configured(config, ..., scenario=None, mode=..., treatment=...)` | Prepare enabled interventions and execute selected treatments. Use the supplied scenario or prepare one from the configuration |
 
 `scenario_from_config(config)` returns a `ScenarioInstance`. Without selection it wraps one
 configured case without opening a preview world, and its `match` is `None`. With selection it
@@ -74,11 +74,36 @@ prepares and checks candidate scenes. `scenario.match` is the selected `Scenario
 Runtime's `context.case` holds that optional match. Intervention preparation receives the complete
 scenario. See [SCENARIOS.md](SCENARIOS.md#prepare-configured-scenarios) for the field contracts.
 
-`run_prepared` runs once for one named treatment and shares the origin when several are supplied.
+`run_prepared` runs once for one named treatment and shares the starting scene and actor setup
+when several are supplied.
 Its Runtime factories receive the backend before reset. Live camera/actor initialization belongs
 in lifecycle callbacks or lazy transforms. Non-None Runtime cases are preserved. Otherwise the scenario match is supplied.
 Stateful reused handlers must reset their state, or their factories must construct fresh handlers.
-`run_configured` adds preparation and treatment selection. Both return results keyed by treatment.
+`run_prepared` returns results under the names supplied in `runtimes`. With `runtimes=None`, it
+returns `{"clean": trace}`. `run_configured` adds preparation and treatment selection:
+
+| Mode and treatment | Result keys |
+|---|---|
+| Single | The selected treatment: `clean`, `attack`, `defense` or `attack-defense` |
+| Pair with attack, defense or combined treatment | `clean` and the selected treatment |
+| Pair with clean treatment | `clean` and `baseline` |
+
+These functions return recorder results without computing a metric, verdict or exit code.
+To combine Python selection with configured methods:
+
+```python
+from avsectester.experiment import run_configured
+
+# scenario is a selected ScenarioInstance. config defines compatible stack and intervention settings.
+results = run_configured(config, frames=30, scenario=scenario, mode="pair", treatment="attack")
+```
+
+The supplied scenario retains its factory, match and conditions. Scene and selection settings
+from the configuration are not reapplied, and the `backend_factory` and `provenance` arguments
+do not override it. For custom
+multi-treatment experiments, see [Runtime composition](INTERVENTIONS.md#single-and-paired-execution).
+Direct `run` and `run_pair` callers apply scenario conditions themselves, as shown in
+[lower-level execution](SCENARIOS.md#lower-level-execution).
 
 ## 1. Backend and stack compatibility
 
@@ -113,7 +138,7 @@ stack:
     checkpoint: /path/to/model
 ```
 
-The factory receives `options` and returns an `AVStack`. Without `stack`, configured CARLA runs
+The factory is called as `factory(**options)` and must return an `AVStack`. Without `stack`, configured CARLA runs
 use `ego.pipeline`. The supplied end-to-end adapter is selected with `stack.type: AlpamayoAVStack`
 and its constructor arguments under `stack.options`. For custom world adapters, provide
 `backend_factory(scene_config)` to the Python setup/configured-run APIs. The observation and
@@ -183,11 +208,9 @@ defense/combined modes require the corresponding configured kinds. An explicit P
 Repeated clean comparisons construct independent YAML baseline components. An explicit Python
 `clean_runtime` is used in both runs and must reset any shared state correctly.
 
-Only pairs containing an enabled attack produce an attack verdict. Defense-only pairs report
-side effects, and clean/empty-attack pairs report baseline comparisons. Those pairs return `0`
-after successful execution, even when the clean vehicle remained stationary. Attack pairs retain
-the `0`/`3`/`4` outcome codes. Configuration and execution errors retain `2` and `1` respectively.
-See [DOCKER.md](DOCKER.md#run-the-end-to-end-attack) for the exit-code table.
+The CLI computes an attack verdict only for pairs containing an enabled attack. Defense-only
+pairs report side effects, and clean/empty-attack pairs report baseline comparisons. See
+[DOCKER.md](DOCKER.md#run-the-end-to-end-attack) for CLI outcome and error exit codes.
 
 
 #### Fixed choices and random choices
@@ -311,6 +334,28 @@ They do not checkpoint a remote rendering service. Bringing up the
 renderer + a scene is covered in [`SETUP.md`](SETUP.md). The runnable demo is
 [`scripts/demos/nurec/alpamayo_nurec_demo.py`](../scripts/demos/nurec/alpamayo_nurec_demo.py).
 
+Python scenario setup also accepts a `backend` mapping with these fields:
+
+| Field | Value |
+|---|---|
+| `type` | `NuRecBackend` or `nurec` |
+| `scene` | Scene identifier passed to the renderer during reset |
+| `renderer` | `stub`, `nurec`, or a mapping with `type` and renderer constructor options |
+| `dynamics` | Mapping with `type: actuator` (default) or `type: trajectory`, followed by the selected dynamics' constructor options |
+| `ego0` | Initial `EgoPose` fields: `x`, `y`, `yaw`, `speed`, `t` |
+| `dt` | Physics/observation interval in seconds, default `0.05` |
+| `camera_aliases` | Mapping from native renderer camera names to model-visible sensor IDs, such as `{"camera_front": "front"}` |
+
+For example, `scenario_from_config` accepts
+`{"backend": {"type": "NuRecBackend", "renderer": "stub", "dynamics": {"type": "trajectory"}}}`.
+`StubRenderer` names its default camera `camera_front`. Configure its `cameras` option or
+`camera_aliases` when handlers and stacks expect a different sensor name.
+Alpamayo requires trajectory-compatible dynamics, normally `dynamics.type: trajectory`.
+Actuator dynamics with Alpamayo raises `CommandCompatibilityError` before reset unless the
+Runtime supplies a command-conversion hook. Such a hook must return a compatible final command.
+Use the [NuRec/Alpamayo demo instructions](SETUP.md#4-nurec--alpamayo-the-end-to-end-path)
+for the real model and rendering service.
+
 ### 1c. AlpamayoAVStack (`avsectester/stacks/alpamayo.py`)
 
 Wraps NVIDIA's real **Alpamayo-1.5-10B** end-to-end policy
@@ -321,8 +366,8 @@ Wraps NVIDIA's real **Alpamayo-1.5-10B** end-to-end policy
 `context_length` camera frames (padded at startup) and ≥1.5 s of backward ego history (synthesized
 constant-velocity). Model-facing timestamps carry an epoch offset while waypoints stay in the
 backend's sim clock. Torch / `alpasim_driver` imports are **lazy**, so importing AVSecTester and
-running the offline suite need only the base env. It runs in a dedicated Python-3.12 driver env — see
-[`SETUP.md`](SETUP.md).
+testing this adapter does not require the real model. Runtime dependencies and checkpoint
+setup are described in [SETUP.md](SETUP.md#4-nurec--alpamayo-the-end-to-end-path).
 
 ### 1d. Models and supporting components
 
@@ -418,13 +463,15 @@ reference.
 `Intervention.prepare(scenario)` creates reusable artifacts. `Intervention.hooks(artifacts)`
 constructs the execution hooks. This contract applies to offline attacks, adaptive attacks and
 defenses. Preparation may use independently supplied models/renderers and does not require the
-formal run's backend to be active. Existing `Runtime` and raw hook factories remain usable without
+driving backend to be active. Existing `Runtime` and raw hook factories remain usable without
 implementing an Intervention.
 
 `prepare_intervention` returns a `PreparedIntervention`. Pass existing artifacts to skip preparation,
 or save/load them using the method's explicit JSON export/import functions. `Treatment` preserves
-the method order and builds a Runtime for selected attack/defense kinds. Legacy convenience hooks
-precede raw `runtime.hooks`, followed by configured `interventions` in their definition order.
+the method order and builds a Runtime for selected attack/defense kinds. `PreparedIntervention.position`
+places its hooks before or after the base Runtime's hooks, with default `after`.
+`prepare_intervention(..., position="before")` selects the earlier position. Legacy convenience hooks
+use `before` and precede raw `runtime.hooks`, followed by configured `interventions` in definition order.
 The framework does not reorder defenses after attacks automatically.
 
 | Treatment | Enabled configured methods |
@@ -437,7 +484,8 @@ The framework does not reorder defenses after attacks automatically.
 Baseline and treated runs share the scenario conditions. The configured localizer and handler
 seed are retained unless the baseline is explicitly overridden. Explicit Python Runtime arguments
 can replace configured interventions. Pair mode with a clean treatment compares two baseline runs.
-Single mode returns one driving trace without computing a differential verdict. See
+`run_configured` returns named driving traces without computing a differential verdict in either
+mode. See
 [INTERVENTIONS.md](INTERVENTIONS.md) for preparation, artifact storage and lifecycle examples.
 
 During a callback, `context.record_output(name, value)` saves an independent copy of a diagnostic
@@ -506,9 +554,9 @@ scenario selection and visualization. The underlying simulator and model compone
 - **`ForwardCollisionPlanner`** (`avstack.modules.planning.vehicle`) — drive straight, brake to a
   stop when a track occupies the forward corridor (body-frame check). The driving consequence a
   perception attack triggers.
-- **`CarlaMobileActor`** (`avcarla`) — the CARLA closed-loop actor: `apply_control` + feeding ego
-  state into the pipeline each tick. (These closed-loop pieces were contributed *into* the
-  avstack-core / lib-avstack-carla forks, not kept here.)
+- **`CarlaMobileActor`** (`avcarla`) — supplies ego state, sensors and `apply_control`. This
+  backend gives it an empty internal pipeline. `ModularAVStack` runs the driving pipeline
+  outside the actor, and the shared loop sends its commands back to the backend.
 - **`nre-ga` NuRec renderer** and **`alpasim_driver` / Alpamayo-1.5** — NVIDIA
   [AlpaSim](https://github.com/NVlabs/alpasim) pieces that `NuRecRenderer` and `AlpamayoAVStack`
   wrap. See [`SETUP.md`](SETUP.md) for standing them up.

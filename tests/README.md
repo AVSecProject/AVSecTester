@@ -5,7 +5,7 @@ test modules, so the core suite does not need avstack installed.
 
 | Directory | What runs | Requirements |
 |---|---|---|
-| `core/` | Run loop, metrics, CPU attack optimization, images, scenario selection, NuRec dynamics, Alpamayo adapter, CLI | CPU test dependencies below |
+| `core/` | Run loop, scenario/intervention preparation, configured treatments, command modes, outputs, shared conditions, metrics, CPU optimization, rendering, selection, NuRec/Alpamayo adapters and CLI | CPU test dependencies below |
 | `avstack/` | Phantom geometry, real tracking/planning/control, modular adapter, scenario orchestration | Core dependencies plus the three avstack packages and CARLA Python client |
 | `live/` | Real CARLA driving and real NuRec/nuScenes datasets | Explicit selection and the corresponding server, models or datasets |
 
@@ -77,12 +77,15 @@ pytest/CI collect their subdirectories recursively.
 | `core/test_insertions.py`, `core/rendering/test_estimators.py` | Host/world placement, orientation modes, complete silhouettes, depth and cuboid occlusion |
 | `core/scenarios/test_initial_selection.py`, `core/scenarios/test_carla_selection.py` | Fixed role bindings, initial windows, native API access, CARLA lifecycle and observation insertion |
 | `core/scenarios/test_nurec_metadata.py` | Native metadata, full actor poses, recorded windows and insertions reaching a driving stack |
+| `core/scenarios/test_scenario_adapters.py` | Selected pose, metadata time and camera survive backend construction/reset. Renderer preserves initial height and tilt |
 | `core/attacks/optim/test_patch_optim.py` | PGD/NES optimization direction, patch footprint, valid pixels and L-infinity budget |
 | `core/attacks/patch/test_physical_patch.py` | Texture construction and patch configuration |
 | `core/attacks/object_insertion/` | Sign geometry, pedestrian standees/posters and traffic light payloads |
 | `core/rendering/test_cameras.py` | Camera projection/inverse projection and camera-to-rig axes |
+| `core/rendering/test_visibility.py` | Complete-silhouette denominators, image truncation, depth/mask agreement and missing evidence |
 | `core/rendering/test_insertion.py` | Compositing, surface ordering and camera perturbation callbacks |
 | `core/scripts/test_image_attack_demos.py` | Rear attachment geometry, shared metadata start time, strict PCTNet errors and saved driving transitions |
+| `core/scripts/test_carla_driving_demos.py` | Physical panel deployment, shared prepared scenes, input patches reaching the driving policy and saved processed camera images |
 | `core/scripts/test_entrypoints.py` | Representative module entry points resolve shared imports and show help without servers or weights |
 | `core/test_mmdet3d_registration.py` | Automatic CARLA dataset registration, existing user registrations and isolated dependency loading |
 | `core/perturbations/test_image.py` | Image corruptions, seeded paired experiments, sensor write-back, composition, real Albumentations operators |

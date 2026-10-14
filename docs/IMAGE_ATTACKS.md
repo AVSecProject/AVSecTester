@@ -38,9 +38,12 @@ runtime = Runtime([Hook("world.setup", PhysicalPatchPlugin([
 ]))])
 ```
 
-The CARLA YAML `patches` list is shorthand for this plugin. `target` uses `ego`, `lead` or
-`npc:<index>`. The plugin removes its panels when the run ends, including deployment failures.
-The example configuration is `configs/carla_patch_scenario.yaml`.
+The CARLA YAML `patches` list prepares this plugin as an attack method, enabled in `attack` and
+`attack-defense` treatments. `target` accepts backend logical names (`ego`, `lead`, `npc:<index>`),
+explicit actor IDs or roles from `context.case.binding_ids`. Use a single-host role directly,
+or an indexed alias such as `hosts[0]` for a role with several hosts. The plugin removes its panels
+when the run ends, including deployment failures. The example configuration is
+`configs/carla_patch_scenario.yaml`.
 
 ## Placement and model input
 
@@ -209,6 +212,10 @@ installs the face on the rear of an explicitly selected recorded vehicle.
 `nuscenes_object_demo.py` places payloads in recorded photographs, without a closed-loop drive.
 Its candidate spots are checked against annotated 2D boxes, not exact scene depth.
 These scripts inspect payload appearance and do not exercise case selection.
+
+`nurec_object_demo.py` compares `classic`, `chroma` and `libcom` harmonizers by default.
+`nuscenes_object_demo.py` defaults to `libcom` (PCTNet). Pass `--harmonizer none` to disable
+harmonization or choose the other listed methods explicitly.
 
 ```bash
 python -m scripts.preparation.extract_person_cutouts --nuscenes /path/to/nuscenes \

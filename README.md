@@ -21,7 +21,7 @@ geometry, attack integration and evaluation.
 | Install dependencies and start simulator services | [Setup](docs/SETUP.md), [Docker](docs/DOCKER.md) |
 | Understand backend, stack and attack contracts | [Interfaces](docs/INTERFACE.md) |
 | Implement and combine custom attacks or defenses | [Attack and defense interfaces](docs/INTERVENTIONS.md) |
-| Select initial cases, bind actors and add custom filters | [Scenario selection](docs/SCENARIOS.md) |
+| Prepare scenes and conditions, select cases and bind actors | [Scenario preparation and selection](docs/SCENARIOS.md) |
 | Insert patches or objects and inspect visibility | [Image attacks](docs/IMAGE_ATTACKS.md) |
 | Run corruption conditions and interpret outcome summaries | [Robustness evaluation](docs/AUGMENTATION.md) |
 | Capture intermediate component outputs | [Component logging](docs/COMPONENT_LOGGING.md) |
@@ -33,10 +33,12 @@ Bring up a CARLA server + the GPU image and run a phantom-detection attack again
 perception** in a closed-loop drive:
 
 ```bash
-git clone --recurse-submodules https://github.com/AVSecProject/AVSecTester.git && cd AVSecTester
-git submodule update --init third_party/avstack-core
-cd third_party/avstack-core && git submodule update --init --depth 1 \
-  third_party/mmdetection third_party/mmdetection3d third_party/mmsegmentation && cd -
+git clone https://github.com/AVSecProject/AVSecTester.git
+cd AVSecTester
+git -c url.https://github.com/.insteadOf=git@github.com: submodule update --init --depth 1 -- \
+  third_party/avstack-core third_party/avstack-api third_party/lib-avstack-carla
+git -C third_party/avstack-core -c url.https://github.com/.insteadOf=git@github.com: \
+  submodule update --init --depth 1 -- third_party/mmdetection third_party/mmdetection3d
 ./scripts/preparation/fetch_models.sh          # CARLA-trained weights → ./models
 docker compose up -d --build       # start a CARLA 0.9.16 server + the AVSecTester shell
 docker compose exec avsectester avsectester run configs/carla_scenario.yaml --frames 40   # run it
@@ -86,6 +88,9 @@ Backend and stack adapters compose when their sensor, state and control formats 
 | **CarlaBackend** (CARLA closed loop) | Supplied driving path, with phantom injection at perception | Requires a trajectory-to-actuator controller and compatible camera inputs |
 | **NuRecBackend** (NuRec neural reconstruction) | Requires compatible modules and avstack sensor/state adapters | Supplied driving path, using `TrajectoryFollower` |
 
+For NuRec/Alpamayo, use the driver environment described in [Setup](docs/SETUP.md#4-nurec--alpamayo-the-end-to-end-path)
+and run Python examples from the checkout:
+
 ```python
 from avsectester.experiment import run_configured
 
@@ -134,16 +139,18 @@ Vendored under `third_party/` as git submodules (forked so the closed-loop piece
 
 The NuRec + Alpamayo halves reuse NVIDIA's [AlpaSim](https://github.com/NVlabs/alpasim) pieces: the
 `nre-ga` NuRec renderer serves reconstructed scenes from a separate container over gRPC, and
-`alpasim_driver` provides Alpamayo in a dedicated Python 3.12 environment. This integration does
+`alpasim_driver` provides Alpamayo in a separate driver environment. This integration does
 not run the full AlpaSim simulation. See [`docs/SETUP.md`](docs/SETUP.md).
 
 ## Status
 
 **Early alpha.** The repository provides CARLA and NuRec backends, modular and Alpamayo stack
 adapters, initial-case selection, insertion rendering and component logging. Backend/stack
-combinations require compatible sensor inputs and model dependencies. Python sources and optional YAML selection produce prepared cases. The CLI runs CARLA or NuRec
-with single or paired treatments. Runtime output records can carry user-defined alarms and scores. Automated searches
-for worst-case driving outcomes and broader reporting remain development work. See
+combinations require compatible sensor inputs and model dependencies. Python sources and optional
+YAML selection produce prepared cases. The CLI runs YAML-configured CARLA experiments with single or
+paired treatments. NuRec with Alpamayo runs through the demo scripts. Runtime output records can
+carry user-defined alarms and scores. Automated searches for worst-case driving outcomes and broader
+reporting remain development work. See
 [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) and [test instructions](tests/README.md).
 
 ## License

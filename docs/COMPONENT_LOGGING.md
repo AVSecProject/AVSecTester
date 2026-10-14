@@ -20,35 +20,59 @@ class InstrumentedStack(Protocol):
 | `AlpamayoAVStack` | `policy`: the driver prediction, and `action`: the resulting `Control`. These are available without calling `instrument()`. |
 | Custom stack | Any named outputs returned by `component_log()`. The collector does not require a fixed component schema. |
 
-For modular stacks, attach native attack hooks before instrumentation. Capture hooks observe
-returned outputs, including runtime replacements. An uninstrumented stack yields an empty
-`ComponentTrace`.
+Register attacks through Runtime. Capture hooks observe returned outputs, including runtime
+replacements. An uninstrumented modular stack yields an empty `ComponentTrace`.
 
 Instrumentation raises `ValueError` for unavailable stages. For a custom pipeline, select
 only the components whose post-stages appear in `stack.supported_stages`.
 
 ## Collect outputs
 
-Given a selected `case` and a modular `pipeline_config` compatible with its sensors:
+Given a CARLA configuration with a modular pipeline compatible with its sensors:
 
 ```python
 from avsectester.evaluation.component_log import run_logged
+from avsectester.runner import run_prepared
+from avsectester.scenarios import scenario_from_config
 from avsectester.stacks.modular import ModularAVStack
 
-backend = case.make_backend()
-try:
-    stack = ModularAVStack(pipeline_config)
+scenario = scenario_from_config(config)
+
+def make_stack():
+    stack = ModularAVStack(config["ego"]["pipeline"])
     stack.instrument()
-    trace, components = run_logged(backend, stack, frames=30)
-    perception_counts = components.counts("perception")
-    first_outputs = components.steps[0].stages
-finally:
-    backend.close()
+    return stack
+
+results = run_prepared(scenario, make_stack, frames=30, run_fn=run_logged)
+trace, components = results["clean"]
+perception_counts = components.counts("perception")
+first_outputs = components.steps[0].stages
 ```
 
-`run_logged(backend, stack, frames, perturb=None, *, runtime=None)` reuses the shared driving
-loop. Supply `runtime=runtime` to execute attack and defense handlers as described in
-[Interventions](INTERVENTIONS.md). Use an `AlpamayoAVStack` instead for the end-to-end path.
+To compare both treatments with configured attacks, reuse that scenario and stack factory:
+
+```python
+from avsectester.interventions import configured_runtime
+
+attack_runtime = configured_runtime(config, instance=scenario, kinds={"attack"})
+results = run_prepared(scenario, make_stack, frames=30, runtimes={
+    "clean": None,
+    "attack": attack_runtime,
+}, run_fn=run_logged)
+clean_trace, clean_components = results["clean"]
+attacked_trace, attacked_components = results["attack"]
+count_difference = clean_components.degradation(attacked_components, "perception")
+```
+
+Each result is a `(Trace, ComponentTrace)` tuple. The prepared runner applies world and sensor
+conditions to each treatment, starts both runs from the same scene and closes the backend.
+For Python-selected cases, use the `ScenarioInstance` returned by the selection source directly.
+Use a compatible `AlpamayoAVStack` factory for the end-to-end path.
+
+`run_logged(backend, stack, frames, perturb=None, *, runtime=None)` is also available when the
+caller owns backend assembly and cleanup. Pass a Runtime with
+[scenario sensor conditions applied](SCENARIOS.md#lower-level-execution). It reuses the same
+driving loop. See [Interventions](INTERVENTIONS.md) for custom attack and defense handlers.
 
 Each `StepLog` contains the zero-based decision-step index in `frame` and a `stages` dictionary.
 The collector deep-copies the output graph, including mutable state and reference frames, so

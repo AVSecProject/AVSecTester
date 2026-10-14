@@ -19,10 +19,24 @@ archives are supplied separately from either Python environment.
 The avstack projects are vendored as git submodules under `third_party/`:
 
 ```bash
-git clone --recurse-submodules https://github.com/AVSecProject/AVSecTester.git
-# or, after a plain clone:
-git submodule update --init            # top-level avstack repos (NOT their nested mmdet submodules)
+git clone https://github.com/AVSecProject/AVSecTester.git
+cd AVSecTester
+git -c url.https://github.com/.insteadOf=git@github.com: submodule update --init --depth 1 -- \
+  third_party/avstack-core third_party/avstack-api third_party/lib-avstack-carla
 ```
+
+The command uses HTTPS for submodules whose recorded URLs use SSH, matching CI, without
+changing global Git settings. It initializes the three avstack repositories without fetching
+every nested dependency. Core-only use needs none of these submodules. For CARLA perception
+or Docker, also initialize the detector checkouts used for weights and dataset declarations:
+
+```bash
+git -C third_party/avstack-core -c url.https://github.com/.insteadOf=git@github.com: \
+  submodule update --init --depth 1 -- third_party/mmdetection third_party/mmdetection3d
+```
+
+PCTNet uses the separate `libcom` submodule described under
+[harmonizer setup](#pctnet-harmonizer).
 
 ## 1. Core-only install (fast, CI-friendly)
 
@@ -149,7 +163,9 @@ Pass that directory as `AlpamayoAVStack(checkpoint_path="/path/to/Alpamayo-1.5-1
 use the demos' `--checkpoint` option, or set `AVSECTESTER_ALPAMAYO_CHECKPOINT`.
 An explicit argument takes precedence over the environment variable. A missing location raises
 an error before loading the driver. Run from the AVSecTester checkout using the driver
-environment's Python interpreter:
+environment's Python interpreter. The supplied driving examples are the NuRec demo scripts
+listed in [scripts/README.md](../scripts/README.md#driving-and-insertion-examples). Import the
+repository from its checkout in this environment:
 
 ```bash
 cd /path/to/AVSecTester
@@ -208,9 +224,7 @@ not to the separate AlpaSim driver environment.
 From the repository root:
 
 ```bash
-git submodule update --init third_party/avstack-core
-git -C third_party/avstack-core submodule update --init --depth 1 \
-    third_party/mmdetection third_party/mmdetection3d
+# Initialize the submodules as described in §0, then fetch weights.
 ./scripts/preparation/fetch_models.sh
 ```
 
@@ -259,7 +273,8 @@ images supplied by the calling script, rather than images loaded from COCO.
 Initialize its source submodule:
 
 ```bash
-git submodule update --init third_party/libcom
+git -c url.https://github.com/.insteadOf=git@github.com: \
+  submodule update --init --depth 1 -- third_party/libcom
 pip install einops huggingface-hub -c constraints.txt
 ```
 

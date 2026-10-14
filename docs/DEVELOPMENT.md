@@ -14,8 +14,10 @@ Concretely:
   and **two interfaces** (`WorldBackend`/`AVStack` + `run` in `backend.py`). Scenario selection,
   insertion geometry and evaluation expose additional research-facing APIs in this repository.
   They reuse provider state and do not replace simulator actors or driving-model modules.
-- The modular AV system is an **avcarla `CarlaMobileActor`** driven by an **avstack
-  `ModularDrivingPipeline`**; the end-to-end one is NVIDIA's real **Alpamayo-1.5** model.
+- The CARLA ego is an **avcarla `CarlaMobileActor`** with an empty internal pipeline.
+  **`ModularAVStack`** executes the avstack **`ModularDrivingPipeline`** externally. The shared
+  loop sends its commands back through the backend. The end-to-end adapter wraps NVIDIA's
+  **Alpamayo-1.5** model.
 - CARLA world, traffic and ticking use **avcarla `CarlaClient` / `CarlaNpc`**. The NuRec adapter
   advances the ego with local planar dynamics and requests reconstructed views from NVIDIA's
   **`nre-ga`** renderer. Other actors follow recorded trajectories.
@@ -33,14 +35,16 @@ formats agree. The supported combinations and remaining adaptation work are list
 [INTERFACE.md](INTERFACE.md#1-backend-and-stack-compatibility).
 
 Configured entry points use `scenario_from_config` to prepare a `ScenarioInstance`. Without
-selection, a pass-through source yields one configuration without preview and `match=None`.
+selection, `ConfiguredScenarioSource` yields one configured scenario without preview and with
+`match=None`.
 Selection sources evaluate prescribed candidate frames and return an optional `ScenarioMatch`.
 Intervention preparation receives the complete scenario. Runtime's `context.case` carries the match.
 Filters stop at that boundary. Runtime insertion uses fixed identities and updates placement from
 the current pose.
 
 `Intervention.prepare(scenario)` creates artifacts, and `hooks(artifacts)` creates execution
-handlers. `run_prepared` executes named treatments, sharing the origin and scenario conditions.
+handlers. `run_prepared` executes named treatments from the same starting scene and actor setup,
+with shared scenario conditions.
 `run_configured` assembles this path from existing YAML/Python configuration and supports single
 or paired runs. Direct `run` and `run_pair` remain available. See [SCENARIOS.md](SCENARIOS.md) and
 [INTERVENTIONS.md](INTERVENTIONS.md) for the public preparation and execution contracts.
@@ -94,7 +98,7 @@ avsectester/
     modular.py        ModularAVStack (avstack ModularDrivingPipeline)
     alpamayo.py       AlpamayoAVStack (wraps alpasim_driver Alpamayo-1.5)
   scenarios/          configured and selected scenarios   (see SCENARIOS.md)
-    setup.py          scenario_from_config · source_from_config · pass-through source
+    setup.py          scenario_from_config · source_from_config · ConfiguredScenarioSource
     source.py         ScenarioInstance · DatasetFilter · CarlaScenarioBuilder
   evaluation/         robustness harness + component logging   (see AUGMENTATION.md, COMPONENT_LOGGING.md)
   attacks/
