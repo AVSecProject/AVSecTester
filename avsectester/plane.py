@@ -25,8 +25,9 @@ class Control:
     """The AV box's output — a vehicle control *command* (the decision).
 
     The *physical* response to the command (vehicle dynamics) is the backend's shared job, so the
-    same command drives the same car regardless of which AV stack produced it. Actuator-level by
-    default; a stack that plans a path can carry it in ``trajectory`` for a backend that follows one.
+    backend must support the command representation produced by the stack. Actuator commands use
+    ``throttle``, ``steer`` and ``brake``. Trajectory commands use ``trajectory`` in the selected
+    adapter's coordinates and time convention. Built-in backends reject fields they cannot consume.
     """
 
     throttle: float = 0.0
@@ -100,12 +101,32 @@ class FrameRecord:
     steer: float = 0.0
 
 
+@dataclass(frozen=True)
+class InterventionOutput:
+    """A named output captured by an attack, defense or localization callback.
+
+    ``step`` is the driving-decision index. ``frame`` and ``t`` describe the physical world
+    at the callback, so a ``step.end`` output belongs to the resulting frame. ``value`` is
+    copied when recorded and does not share mutable state with the originating plugin.
+    """
+
+    name: str
+    value: Any
+    step: int
+    stage: str
+    frame: int
+    t: float
+    sensor: str | None = None
+
+
 @dataclass
 class Trace:
     """The driving record of one run — the observable a security test scores."""
 
     records: list[FrameRecord] = field(default_factory=list)
     replay_scenario: dict | None = None
+    outputs: list[InterventionOutput] = field(default_factory=list)
+    provenance: dict[str, Any] = field(default_factory=dict)
 
     @property
     def final_speed(self) -> float:

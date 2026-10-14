@@ -1,24 +1,25 @@
-# In-process neural-reconstruction (NuRec) scenario — WE own the loop (no gRPC runtime).
-#
-#   backend = NuRecBackend(config, renderer=StubRenderer()|NuRecRenderer(...))
-#   run(backend, stack, frames, perturb=<camera attack>)
-#
-# Everything runs in one process behind a pluggable renderer: StubRenderer needs nothing (debug/CI);
-# NuRecRenderer makes one stateless render_rgb call per frame to an nre-ga server with a loaded scene.
-# Uniform with CarlaBackend (both own an in-process reset/step loop).
-
-frames: 40
-dt: 0.05
+# NuRec/Alpamayo single drive through the configured experiment entry point.
+# Run in the AlpaSim driver environment (docs/SETUP.md).
+# Set AVSECTESTER_ALPAMAYO_CHECKPOINT or stack.options.checkpoint_path.
+# For real rendering, change renderer.type to nurec and configure endpoint/scene_id.
+mode: single
+treatment: clean
+frames: 8
+dt: 0.1
 
 backend:
   type: NuRecBackend
-  scene: null              # NuRec scene id (nvidia/PhysicalAI-Autonomous-Vehicles-NuRec) for NuRecRenderer
-  renderer: stub           # stub | nurec
-  dynamics: {wheelbase: 2.8, max_accel: 3.0, max_brake: 8.0, max_steer: 0.6}
-  ego0: {x: 0.0, y: 0.0, yaw: 0.0, speed: 0.0}
+  renderer:
+    type: stub
+    cameras: [camera_front_wide_120fov]
+  dynamics:
+    type: trajectory
+  ego0: {x: 0.0, y: 0.0, yaw: 0.0, speed: 5.0}
 
 stack:
-  type: AlpamayoAVStack     # to build: trajectory-output camera policy (or any AVStack)
+  type: AlpamayoAVStack
+  options:
+    device: cuda:1
+    camera_ids: [camera_front_wide_120fov]
 
-# A camera/world attack is a perturb(Observation) on the rendered sensor_data (not a modular hook):
-attacks: []
+interventions: []

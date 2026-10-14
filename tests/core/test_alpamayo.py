@@ -79,6 +79,24 @@ def test_camera_context_pads_startup_then_keeps_recent_frames(driver_schema):
     assert inputs.command is driver_schema.DriveCommand.STRAIGHT
 
 
+def test_injected_model_keeps_independent_adapter_history(driver_schema):
+    prediction = SimpleNamespace(candidate_positions=np.array([[[1, 0, 0]]]), selected_plan=object())
+    model = SimpleNamespace(predict=Mock(return_value=prediction))
+    first, second = [AlpamayoAVStack(model=model, camera_ids=["front"]) for _ in range(2)]
+    observations = [Observation(0.0, 0, sensor_data={"front": np.full((2, 3, 3), i, np.uint8)})
+                    for i in (0, 1)]
+    first.reset(observations[0])
+    first(observations[0])
+    second.reset(observations[1])
+    second(observations[1])
+    inputs = model.predict.call_args.args[0]
+    assert inputs.inference_seed == 0 and inputs.previous_plan is None
+    assert all(frame.image is observations[1].sensor_data["front"]
+               for frame in inputs.camera_images["front"])
+    assert first.models["policy"] is second.models["policy"] is model
+    assert first._frames is not second._frames
+
+
 def test_ego_history_is_past_to_present_in_the_model_clock(driver_schema):
     stack = AlpamayoAVStack()
     obs = Observation(

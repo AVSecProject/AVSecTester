@@ -1,40 +1,29 @@
-"""Attack-robustness harness — does the attack still succeed under sensor corruption?
+"""Compare an attack across sensor conditions using the common prepared-scenario runner.
 
-The scenario layer yields *which* scenes qualify for an attack. The augmentation layer yields *under
-which conditions* to test it. This harness runs the grid: for every qualifying
-:class:`~avsectester.scenarios.source.ScenarioInstance`, and every corruption condition (a clean baseline
-plus each :class:`~avsectester.perturbations.image.AugmentationPipeline`), it drives the scenario twice —
-
-* **clean-under-condition**   : ``run(backend, stack, frames, perturb=aug)``            (corruption only)
-* **attacked-under-condition**: ``run(backend, stack, frames, perturb=compose(attack, aug))``
-
-and scores the pair with :func:`avsectester.metric.impact`. The *same* corruption (same pipeline seed)
-is applied to both runs, so ``impact`` measures only the attack under that condition. Aggregating
-``impact.attack_succeeded`` over scenarios gives an **attack success rate (ASR)** per condition, and each
-corruption's **resilience** = ``ASR(corruption) / ASR(clean)`` — the attack analogue of a robustness
-retention rate (cf. Robo3D's mRR): 1.0 means the corruption did not blunt the attack, 0.0 means it
-neutralised it.
-
-The attack itself is injected as ``attack_for(match, backend) -> Runtime | perturb | None`` so the harness is
-attack-agnostic. The corruption suite defaults to :func:`~avsectester.perturbations.image.common_corruptions`.
+Each condition preserves the scenario's world and sensor settings and adds its image corruption
+after digital interventions. Clean and attacked treatments use independent condition handlers.
+The attack can be a method, reusable prepared artifacts or the legacy backend-dependent callback.
+The existing stop-based impact and success-rate aggregation remain unchanged.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from math import isnan
 from typing import TYPE_CHECKING, Literal
 
 from avsectester.backend import run as _run_loop
-from avsectester.runner import run_pair
+from avsectester.conditions import ScenarioConditions, SensorCondition
+from avsectester.preparation import Intervention, PreparedIntervention, Treatment, prepare_intervention
+from avsectester.runner import _run_prepared
 from avsectester.runtime import Runtime, Hook
 from avsectester.interventions import ObservationTransform
 from avsectester.metric import impact
 from avsectester.perturbations.image import (
     AugmentationPipeline,
     common_corruptions,
-    sensor_augmentation,
 )
 
 if TYPE_CHECKING:
@@ -44,7 +33,7 @@ if TYPE_CHECKING:
     from avsectester.scenarios.source import ScenarioSource
 
 Perturb = Callable[["Observation"], "Observation"]
-AttackFor = Callable[["ScenarioMatch", "WorldBackend"], Runtime | Perturb | None]
+AttackFor = Callable[["ScenarioMatch | None", "WorldBackend"], Runtime | Perturb | None]
 _CLEAN = "clean"
 OutcomeStatus = Literal["success", "failure", "skipped", "inconclusive"]
 
@@ -139,29 +128,10 @@ class RobustnessReport:
         return "\n".join(lines)
 
 
-def _condition_perturbation(pipeline: AugmentationPipeline | None, camera: str) -> Perturb | None:
-    """Seed corruption by relative frame, since simulator frame IDs can differ after a reset."""
-    if pipeline is None:
-        return None
-    if camera is None:
-        raise ValueError("Image corruptions require a camera. Use conditions=[] for scene-only cases.")
-    augment = sensor_augmentation(pipeline, camera=camera)
-    first_frame = None
-
-    def perturb(obs: Observation) -> Observation:
-        nonlocal first_frame
-        if first_frame is None:
-            first_frame = obs.frame
-        augmented = augment(replace(obs, frame=obs.frame - first_frame))
-        return replace(augmented, frame=obs.frame)
-
-    return perturb
-
-
 def evaluate_robustness(
     source: ScenarioSource,
     req: ScenarioRequirement,
-    attack_for: AttackFor,
+    attack_for: AttackFor | Intervention | PreparedIntervention,
     stack: Callable[[], AVStack],
     frames: int,
     *,
@@ -176,11 +146,22 @@ def evaluate_robustness(
     baseline first, then each corruption pipeline — default :func:`common_corruptions` at ``severity``),
     build a fresh backend, prepare a repeatable pair, and run clean-vs-attacked under that condition.
     Skipped attacks and inconclusive driving baselines are excluded from the valid-pair count.
-    ``stack`` is a factory (a fresh AV box per run). ``attack_for`` maps
-    a scenario's target + its backend to the attack Runtime or one-argument ``perturb`` (or None to skip). ``run_fn`` is injectable
-    for testing.
+    ``stack`` is a factory for a fresh driver per run. An Intervention prepares once per selected
+    scenario and creates handlers for each condition. A PreparedIntervention explicitly reuses
+    existing artifacts. The legacy ``attack_for(match, backend)`` callback remains supported and
+    is resolved once per pair after world-condition configuration and before origin preparation.
+    It returns Runtime, a one-argument
+    perturbation or None to skip. ``run_fn`` accepts runtime and returns the driving Trace.
     """
+    if not isinstance(frames, int) or isinstance(frames, bool) or frames < 0:
+        raise ValueError("frames must be a nonnegative integer")
+    if isinstance(attack_for, PreparedIntervention) and attack_for.kind != "attack":
+        raise ValueError("Robustness evaluation requires an attack intervention")
+    if not isinstance(attack_for, (Intervention, PreparedIntervention)) and not callable(attack_for):
+        raise TypeError("Expected Intervention, PreparedIntervention or an attack callback")
     pipelines = list(conditions) if conditions is not None else common_corruptions(severity)
+    if any(not isinstance(p, AugmentationPipeline) for p in pipelines):
+        raise TypeError("Robustness conditions must be AugmentationPipeline instances")
     labelled: list[tuple[str, AugmentationPipeline | None]] = [(_CLEAN, None)]
     labelled += [(p.name, p) for p in pipelines]
 
@@ -191,41 +172,55 @@ def evaluate_robustness(
                           or instance.provenance.get("sample_token")
                           or instance.provenance.get("image_path")
                           or i)
+        prepared = (
+            prepare_intervention(attack_for, instance) if isinstance(attack_for, Intervention)
+            else attack_for if isinstance(attack_for, PreparedIntervention) else None
+        )
         for name, pipeline in labelled:
-            backend = instance.make_backend()
-            try:
-                attack = attack_for(match, backend)
-                if attack is None:
-                    report.record(scenario_id, name, "skipped", "Attack factory returned None")
-                    continue
-                attacked_runtime = attack if isinstance(attack, Runtime) else Runtime([
-                    Hook("observation", ObservationTransform(attack)),
-                ], case=match)
-                if attacked_runtime.case is None:
-                    attacked_runtime = Runtime(
-                        attacked_runtime.hooks, localizer=attacked_runtime.localizer,
-                        case=match, seed=attacked_runtime.seed,
-                    )
-                # Preserve attack-then-corruption ordering at the observation stage.
-                clean_condition = _condition_perturbation(pipeline, match.camera)
-                attacked_condition = _condition_perturbation(pipeline, match.camera)
-                clean_runtime = Runtime(
-                    localizer=attacked_runtime.localizer, case=match, seed=attacked_runtime.seed,
-                )
-                if clean_condition is not None:
-                    clean_runtime = clean_runtime.with_hooks([
-                        Hook("observation", ObservationTransform(clean_condition)),
-                    ])
-                if attacked_condition is not None:
-                    attacked_runtime = attacked_runtime.with_hooks([
-                        Hook("observation", ObservationTransform(attacked_condition)),
-                    ])
-                clean, attacked = run_pair(
-                    backend, stack, frames, clean_runtime=clean_runtime,
-                    attacked_runtime=attacked_runtime, run_fn=run_fn, close_backend=False,
-                )
-            finally:
-                backend.close()
+            base = instance.conditions
+            sensors = base.sensors
+            if pipeline is not None:
+                sensors += (SensorCondition.image(pipeline, camera=getattr(match, "camera", None)),)
+            scenario = replace(instance, conditions=ScenarioConditions(base.world, sensors, base.seed))
+            backend_ready = None
+            if prepared is not None:
+                runtimes = {"clean": Runtime(), "attack": Treatment((prepared,)).runtime(case=match)}
+            else:
+                resolved: list[Runtime] = []
+
+                def resolve_attack(backend):
+                    attack = attack_for(match, backend)
+                    if attack is None:
+                        return False
+                    runtime = attack if isinstance(attack, Runtime) else Runtime([
+                        Hook("observation", ObservationTransform(attack)),
+                    ], case=match)
+                    resolved.append(runtime)
+                    return True
+
+                backend_ready = resolve_attack
+                runtimes = {
+                    "clean": lambda backend: Runtime(
+                        localizer=resolved[0].localizer, seed=resolved[0].seed, case=match,
+                    ),
+                    "attack": lambda backend: resolved[0],
+                }
+            # The shared runner configures conditions before the callback and owns cleanup
+            # on skip, callback failure and execution failure. No scenario fields are replaced.
+            results = _run_prepared(
+                scenario, stack, frames, runtimes=runtimes, run_fn=run_fn,
+                backend_ready=backend_ready,
+            )
+            if not results:
+                report.record(scenario_id, name, "skipped", "Attack factory returned None")
+                continue
+            clean, attacked = results["clean"], results["attack"]
+            if prepared is not None:
+                clean.provenance["interventions"] = []
+                attacked.provenance["interventions"] = [{
+                    "name": prepared.name, "kind": prepared.kind,
+                    "provenance": deepcopy(prepared.provenance),
+                }]
             # TODO: Select success criteria by experiment/benchmark. impact currently only scores
             # induced/suppressed stops. It is not a universal definition of attack success.
             result = impact(clean, attacked)

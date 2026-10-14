@@ -5,7 +5,7 @@ duration boundaries. These tests describe the current stop-based criterion.
 """
 
 import pytest
-from avsectester.metric import impact
+from avsectester.metric import impact, plot_impact
 
 
 def test_clean_never_drove_is_inconclusive_not_success(make_trace):
@@ -143,3 +143,42 @@ def test_hiding_uses_custom_duration_and_speed_thresholds(make_trace):
     assert result.overdrive_frames == 2
     assert result.suppressed_stop and result.attack_succeeded
     assert not impact(clean, attacked, min_overdrive_frames=3, **options).attack_succeeded
+
+
+def test_comparison_reports_measurements_without_an_attack_verdict(make_trace):
+    result = impact(make_trace([0, 2, 5]), make_trace([0, 1, 0], [0, 1, 1]))
+    comparison = result.comparison("defense")
+    assert "defense: final_speed= 0.00" in comparison and "clean:" in comparison
+    assert "ATTACK" not in comparison and "=>" not in comparison
+    assert str(result) == f"{result.comparison('attacked')}\n=> {result.verdict}"
+
+
+@pytest.mark.parametrize("label,show_verdict", [
+    ("defense", False), ("baseline", False), ("attacked", True), ("attack+defense", True),
+])
+def test_plot_labels_and_caption_match_the_comparison(
+    monkeypatch, make_trace, tmp_path, label, show_verdict,
+):
+    from matplotlib.figure import Figure
+
+    captured = {}
+    save = Figure.savefig
+
+    def inspect(figure, *args, **kwargs):
+        captured["caption"] = [text.get_text() for text in figure.texts if text is not figure._suptitle]
+        captured["title"] = figure._suptitle.get_text()
+        captured["legends"] = [
+            [text.get_text() for text in axes.get_legend().get_texts()] for axes in figure.axes
+        ]
+        return save(figure, *args, **kwargs)
+
+    monkeypatch.setattr(Figure, "savefig", inspect)
+    clean, treated = make_trace([0, 2, 5]), make_trace([0, 1, 0], [0, 1, 1])
+    result = impact(clean, treated)
+    path = tmp_path / "comparison.png"
+    plot_impact(clean, treated, str(path), result=result, treated_label=label, show_verdict=show_verdict)
+    assert captured["caption"] == ([result.verdict] if show_verdict else [])
+    assert all(legend == ["clean", label] or legend == [label, "clean"] for legend in captured["legends"])
+    assert label in captured["title"]
+    assert ("Adversarial attack" in captured["title"]) is show_verdict
+    assert path.read_bytes().startswith(b"\x89PNG")

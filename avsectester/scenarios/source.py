@@ -9,6 +9,8 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from avsectester.conditions import ScenarioConditions
+
 from .context import FilterContext
 from .requirement import ScenarioMatch, ScenarioRequirement
 
@@ -17,15 +19,46 @@ if TYPE_CHECKING:
     from .scene import SceneGT
 
 
-@dataclass
+@dataclass(frozen=True)
 class ScenarioInstance:
-    """A selected origin and its fixed role/insertion plan, plus a fresh-backend factory."""
+    """A prepared origin, optional selection match and fresh conditioned-backend factory.
 
-    make_backend: Callable[[], WorldBackend]
-    match: ScenarioMatch
+    ``config`` contains only scene/backend settings. ``conditions`` describes the shared
+    operating environment, independent of attack and defense configuration. Without
+    selection, ``match`` is None and no roles or insertion plan are inferred.
+    ``factory`` is stored unchanged. ``make_backend`` applies conditions to each constructed
+    backend. Fields are frozen, while copied configuration/metadata dictionaries remain mutable.
+    """
+
+    factory: Callable[[], WorldBackend]
+    match: ScenarioMatch | None = None
     provenance: dict[str, Any] = field(default_factory=dict)
     selection: dict[str, Any] = field(default_factory=dict)
+    config: dict[str, Any] = field(default_factory=dict)
+    conditions: ScenarioConditions = field(default_factory=ScenarioConditions)
 
+    def __post_init__(self):
+        if not callable(self.factory):
+            raise TypeError("ScenarioInstance.factory must be callable")
+        if not isinstance(self.conditions, ScenarioConditions):
+            raise TypeError("ScenarioInstance.conditions must be ScenarioConditions")
+        object.__setattr__(self, "config", deepcopy(self.config))
+        object.__setattr__(self, "provenance", {
+            **deepcopy(self.provenance), "conditions": self.conditions.provenance(),
+        })
+
+    def make_backend(self) -> WorldBackend:
+        """Construct a backend and configure world conditions, closing it on setup failure."""
+        backend = self.factory()
+        try:
+            self.conditions.configure_backend(backend)
+        except BaseException as error:
+            try:
+                backend.close()
+            except Exception as cleanup:
+                error.add_note(f"Backend cleanup also failed: {cleanup!r}")
+            raise
+        return backend
 
 
 class ScenarioSource(ABC):
@@ -96,7 +129,12 @@ class DatasetFilter(ScenarioSource):
         dataset: Dataset,
         prepare_scene: Callable | None = None,
         prepare_context: Callable[[FilterContext], FilterContext] | None = None,
+        *,
+        conditions: ScenarioConditions | None = None,
     ):
+        self.conditions = conditions or ScenarioConditions()
+        if self.conditions.world:
+            raise ValueError("Recorded dataset selection cannot impose world conditions. Use a condition-aware source.")
         self.dataset = dataset
         self.prepare_scene = prepare_scene
         self.prepare_context = prepare_context
@@ -134,9 +172,11 @@ class DatasetFilter(ScenarioSource):
                 sequence = tuple(self.prepare_scene(scene) for scene in sequence)
             scene = sequence[0]
             with ExitStack() as resources:
+                condition_context = resources.enter_context(self.conditions.selection_scope())
 
                 def frame_context(frame):
-                    return self._context(frame, resources)
+                    index = next(i for i, item in enumerate(sequence) if item is frame)
+                    return condition_context(self._context(frame, resources), index)
 
                 context = frame_context(scene).derive(
                     sequence=sequence, frame_context=frame_context
@@ -148,7 +188,10 @@ class DatasetFilter(ScenarioSource):
                 if factory is None:
                     factory = lambda s=scene: self.dataset.make_backend(s)
             # Release preview clients before yielding a case, even if enumeration stops here.
-            yield ScenarioInstance(factory, result.match, dict(scene.source), result.summary())
+            yield ScenarioInstance(
+                factory, result.match, dict(scene.source), result.summary(),
+                conditions=self.conditions,
+            )
             accepted += 1
             if limit is not None and accepted >= limit:
                 return
@@ -181,7 +224,12 @@ class CarlaScenarioBuilder(ScenarioSource):
         sample_scene: bool = False,
         analytic_preview: bool = False,
         prepare_context: Callable[[FilterContext], FilterContext] | None = None,
+        conditions: ScenarioConditions | None = None,
     ):
+        from .setup import _configuration
+
+        base_conditions = _configuration(base_scenario)[1] if base_scenario is not None else ScenarioConditions()
+        self.conditions = conditions if conditions is not None else base_conditions
         if not isinstance(samples, int) or isinstance(samples, bool) or samples < 1:
             raise ValueError("samples must be a positive integer")
         if ego_speed != 0:
@@ -216,7 +264,14 @@ class CarlaScenarioBuilder(ScenarioSource):
 
     def _configs(self, req):
         base = self._base()
-        base.pop("patches", None)
+        from .setup import _configuration
+
+        base, _ = _configuration(base)
+        if self.conditions.world:
+            unsupported = set(self.conditions.world) - {"weather"}
+            if unsupported:
+                raise ValueError(f"CARLA scenario builder does not support world conditions: {sorted(unsupported)}")
+            base["weather"] = deepcopy(self.conditions.world["weather"])
         if not self.sample_scene:
             yield base
             return
@@ -238,6 +293,8 @@ class CarlaScenarioBuilder(ScenarioSource):
             yield config
 
     def scenarios(self, req, limit=None):
+        from .setup import _configuration
+
         _check_limit(limit)
         self.selection_log = []
         if limit == 0:
@@ -246,7 +303,9 @@ class CarlaScenarioBuilder(ScenarioSource):
         if provider is None and not self.analytic_preview:
             from .carla_provider import CarlaCandidateProvider
 
-            provider = CarlaCandidateProvider(initial_frames=req.window.frames)
+            provider = CarlaCandidateProvider(
+                initial_frames=req.window.frames, conditions=self.conditions,
+            )
         accepted = 0
         for config in self._configs(req):
             if self.analytic_preview:
@@ -259,6 +318,7 @@ class CarlaScenarioBuilder(ScenarioSource):
                 context_manager = provider(config)
             instance = None
             with ExitStack() as resources:
+                condition_context = resources.enter_context(self.conditions.selection_scope())
                 context = resources.enter_context(context_manager)
                 if not isinstance(context, FilterContext):
                     raise TypeError("CARLA candidate providers must yield FilterContext")
@@ -270,18 +330,31 @@ class CarlaScenarioBuilder(ScenarioSource):
                     if not isinstance(context, FilterContext):
                         raise TypeError("Context preparation must return FilterContext")
                     resources.enter_context(context)
+                initial_contexts = context.initial_contexts
+                if initial_contexts is not None:
+                    def conditioned_frames():
+                        for index, frame in enumerate(initial_contexts()):
+                            yield condition_context(frame, index)
+
+                    context = context.derive(initial_contexts=conditioned_frames)
+                else:
+                    context = condition_context(context)
                 result = self._evaluate(req, context)
                 if result.match is not None:
                     factory = context.native.get("make_backend")
                     if factory is None:
-                        replay = (context.metadata or {}).get("replay_scenario", config)
+                        replay = _configuration((context.metadata or {}).get("replay_scenario", config))[0]
                         factory = lambda c=deepcopy(replay): _carla_backend(c)
                     provenance = {
                         **context.scene.source,
                         "backend": "carla",
                         "validation": "analytic_preview" if self.analytic_preview else "prepared",
                     }
-                    instance = ScenarioInstance(factory, result.match, provenance, result.summary())
+                    instance = ScenarioInstance(
+                        factory, result.match, provenance, result.summary(),
+                        config=_configuration((context.metadata or {}).get("replay_scenario", config))[0],
+                        conditions=self.conditions,
+                    )
             # Release the preparation world before a consumer starts the actual experiment.
             if instance is not None:
                 yield instance

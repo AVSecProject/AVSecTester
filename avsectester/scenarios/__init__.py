@@ -1,5 +1,6 @@
 """Initial scenario selection with composable filters and native provider access."""
 
+from avsectester.conditions import ScenarioConditions, SensorCondition
 from avsectester.rendering.types import Visibility
 from avsectester.scenarios.context import FilterContext
 from avsectester.scenarios.nl import interpret
@@ -32,7 +33,18 @@ from avsectester.scenarios.source import (
     ScenarioSource,
 )
 
+from avsectester.scenarios.setup import (
+    ConfiguredScenarioSource,
+    scenario_from_config,
+    source_from_config,
+)
+
 __all__ = [
+    "ConfiguredScenarioSource",
+    "ScenarioConditions",
+    "SensorCondition",
+    "scenario_from_config",
+    "source_from_config",
     "FilterContext",
     "All",
     "Any",

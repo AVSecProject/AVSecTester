@@ -133,6 +133,10 @@ class ModularAVStack(AVStack):
         return stages
 
     @property
+    def command_modes(self) -> frozenset[str]:
+        return frozenset({"actuator"})
+
+    @property
     def supported_stages(self) -> frozenset[str]:
         return frozenset(
             f"{name}.{phase}"

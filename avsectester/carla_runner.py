@@ -7,9 +7,8 @@ from copy import deepcopy
 
 from avsectester.backend import AVStack
 from avsectester.evaluation.component_log import run_logged
-from avsectester.interventions import configured_runtime, configured_runtime_pair
+from avsectester.experiment import ExecutionMode, TreatmentMode, configured_stack, run_configured
 from avsectester.plane import Trace
-from avsectester.runner import run_pair
 from avsectester.runtime import Runtime
 from avsectester.simulators.carla import CarlaBackend
 from avsectester.stacks.modular import ModularAVStack
@@ -17,7 +16,9 @@ from avsectester.stacks.modular import ModularAVStack
 __all__ = ["run_scenario", "run_scenario_pair"]
 
 
-def _stack(scenario: dict) -> ModularAVStack:
+def _stack(scenario: dict) -> AVStack:
+    if scenario.get("stack") is not None:
+        return configured_stack(scenario)
     stack = ModularAVStack(scenario["ego"]["pipeline"])
     stack.instrument(stages=("perception",))
     return stack
@@ -47,13 +48,31 @@ def run_scenario(
     configured YAML comparison with shared initial conditions and fresh stacks.
     """
     scenario = deepcopy(scenario)
-    adapted = configured_runtime({"attacks": attacks or [], "patches": patches or []})
-    runtime = (runtime or Runtime()).with_hooks(adapted.hooks, prepend=True)
-    backend = CarlaBackend(scenario, settle_iters=settle_iters)
-    try:
-        return _logged_run(backend, _stack(scenario), frames, runtime=runtime)
-    finally:
-        backend.close()
+    # Signature adapters still enable only explicitly supplied interventions for one run.
+    scenario["attacks"], scenario["patches"] = attacks or [], patches or []
+    scenario.pop("interventions", None)
+    scenario.pop("runtime", None)
+    scenario.pop("clean_runtime", None)
+    from avsectester.scenarios.setup import scenario_from_config
+
+    instance = scenario_from_config(
+        scenario,
+        backend_factory=None if scenario.get("selection") is not None else
+        lambda config: CarlaBackend(config, settle_iters=settle_iters),
+    )
+    if runtime is not None:
+        # Prepare the convenience methods and prepend them to the caller's Runtime.
+        from avsectester.interventions import prepare_from_config
+        runtime = prepare_from_config(scenario, instance).runtime(runtime, runtime.case)
+    treatment = TreatmentMode.ATTACK if runtime is not None or attacks or patches else TreatmentMode.CLEAN
+    results = run_configured(
+        scenario, frames, mode=ExecutionMode.SINGLE,
+        treatment=treatment, treated_runtime=runtime,
+        backend_factory=lambda config: CarlaBackend(config, settle_iters=settle_iters),
+        stack_factory=lambda: _stack(scenario), run_fn=_logged_run,
+        scenario=instance,
+    )
+    return results[treatment.value]
 
 
 def run_scenario_pair(
@@ -73,11 +92,11 @@ def run_scenario_pair(
     Explicit Python runtime arguments replace the corresponding YAML treatment configuration.
     """
     scenario = deepcopy(scenario)
-    clean_runtime, attacked_runtime = configured_runtime_pair(
-        scenario, clean_runtime=clean_runtime, attacked_runtime=attacked_runtime,
+    results = run_configured(
+        scenario, frames, mode=ExecutionMode.PAIR, treatment=TreatmentMode.ATTACK,
+        clean_runtime=clean_runtime, treated_runtime=attacked_runtime,
+        backend_factory=None if scenario.get("selection") is not None else
+        lambda config: CarlaBackend(config, settle_iters=settle_iters),
+        stack_factory=stack_factory or (lambda: _stack(scenario)), run_fn=_logged_run,
     )
-    backend = CarlaBackend(scenario, settle_iters=settle_iters)
-    return run_pair(
-        backend, stack_factory or (lambda: _stack(scenario)), frames,
-        clean_runtime=clean_runtime, attacked_runtime=attacked_runtime, run_fn=_logged_run,
-    )
+    return results["clean"], results["attack"]

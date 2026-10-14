@@ -233,6 +233,80 @@ def test_insertion_pipeline_survives_backend_reset_and_drives_from_modified_inpu
     assert adapter.evidence["patch"].visibility.source == "cuboid_estimate"
 
 
+def test_pair_registers_insertion_before_render_service_loads(recorded_dataset):
+    from avsectester.backend import AVStack
+    from avsectester.insertion import AttachedPlacement, Insertion, Orientation, PlaneAsset
+    from avsectester.interventions import ObservationTransform
+    from avsectester.plane import Control
+    from avsectester.perturbations.image import frame_perturbation
+    from avsectester.rendering.cameras import PinholeCamera, planar_rig_pose
+    from avsectester.runner import run_pair
+    from avsectester.runtime import Hook, Runtime
+    from avsectester.simulators.nurec import NuRecBackend, StubRenderer
+
+    dataset, _ = recorded_dataset
+    scene = next(dataset.scenes())
+    camera_to_rig = np.asarray(scene.cameras[dataset.camera].cam_to_ego)
+
+    class Renderer(StubRenderer):
+        loads = 0
+
+        def load_scene(self, _):
+            self.loads += 1
+            self.lens = PinholeCamera(
+                np.array([[200 + self.loads, 0, 320], [0, 200, 240], [0, 0, 1]]), 640, 480,
+            )
+
+        @property
+        def service(self):
+            raise AssertionError("Construction must not ask for a loaded service")
+
+        def camera_model(self, _):
+            assert self.loads, "Calibration is unavailable before reset"
+            return self.lens
+
+        def timestamp_us(self, pose):
+            return round(pose.t * 1e6)
+
+        def rig_transform(self, pose):
+            return planar_rig_pose(pose.x, pose.y, pose.yaw)
+
+        def cam_from_world(self, pose, _):
+            return np.linalg.inv(self.rig_transform(pose) @ camera_to_rig)
+
+    class Driver(AVStack):
+        def __call__(self, observation):
+            return Control(throttle=float(observation.sensor_data[dataset.camera].any()))
+
+    renderer = Renderer(cameras=[dataset.sensor])
+    backend = NuRecBackend(
+        {"dt": 0.1, "camera_aliases": {dataset.sensor: dataset.camera}}, renderer=renderer,
+    )
+    patch = Insertion(
+        "patch", PlaneAsset(np.full((16, 16, 4), [240, 20, 30, 255], np.uint8), 1, 1),
+        AttachedPlacement("lead", "rear_center", (-0.1, 0, 0)),
+        Orientation("follow_host", (0, 0, 180)),
+    )
+    adapters = []
+
+    def attacked_runtime(prepared_backend):
+        assert renderer.loads == 0
+        adapter = dataset.insertion_renderer(
+            scene, prepared_backend, [patch], bindings={"lead": ("host",)},
+        )
+        adapters.append(adapter)
+        return Runtime([Hook("sensors.post", ObservationTransform(
+            frame_perturbation(adapter, camera=dataset.camera),
+        ))])
+
+    clean, attacked = run_pair(backend, Driver, 2, attacked_runtime=attacked_runtime)
+    assert renderer.loads == 2
+    assert [record.throttle for record in clean.records] == [0, 0]
+    assert [record.throttle for record in attacked.records] == [1, 1]
+    assert adapters[0].camera is renderer.lens
+    assert adapters[0].resolved[0].host_id == "lead"
+
+
 def test_insertion_uses_effective_render_view_and_time_but_true_victim_pose(recorded_dataset):
     from avsectester.backend import AVStack
     from avsectester.insertion import Insertion, PlaneAsset, WorldPlacement

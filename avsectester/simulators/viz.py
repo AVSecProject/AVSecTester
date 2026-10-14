@@ -9,7 +9,7 @@ provides its own view adapter in ``simulators/<sim>.py`` (e.g. :mod:`avsectester
 extracts an avstack ``ImageData`` and draws a CARLA lidar BEV). Pass whichever view fits the backend.
 
 (This is the *scene* view; the clean-vs-attacked driving-impact plot is the metric view in
-:mod:`avsectester.viz`.)
+:mod:`avsectester.metric`.)
 """
 
 from __future__ import annotations

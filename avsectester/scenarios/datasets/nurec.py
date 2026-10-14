@@ -374,7 +374,7 @@ class NuRecDataset(Dataset):
         )
 
     def insertion_renderer(self, scene, backend, insertions, bindings=None, compositor=None):
-        """Build a host-bound sensor insertion callable after the backend has been reset.
+        """Configure a host-bound insertion callable without connecting to the renderer.
 
         ``bindings`` accepts a selected match's role-to-track-ID tuples. Actor poses are sampled at
         the effective render timestamp and camera pose. Model-visible time and localization do
@@ -387,13 +387,13 @@ class NuRecDataset(Dataset):
         from avsectester.simulators.nurec import NuRecInsertions
 
         renderer = backend.renderer
-        renderer.service  # Validate that calibration has been loaded before constructing the adapter.
         objects = {obj.track_id: obj for obj in scene.objects}
         selected = {
             role: tuple(objects[track_id] for track_id in ids)
             for role, ids in (bindings or {}).items()
         }
         from avsectester.scenarios.context import FilterContext
+        from avsectester.rendering.cameras import FThetaCamera as Lens
 
         aliases = FilterContext(scene, bindings=selected).actor_aliases
         local_center = np.eye(4)
@@ -415,9 +415,18 @@ class NuRecDataset(Dataset):
                 actors, victim, renderer.cam_from_world(request.pose, request.camera),
             )
 
+        # Recorded intrinsics let the adapter be registered before reset. Each geometry
+        # call then selects the loaded camera that produced the actual render request.
+        recorded = scene.cameras[self.camera].model
+        camera = Lens(
+            cx=float(recorded.principal_point[0]), cy=float(recorded.principal_point[1]),
+            angle_to_pixeldist=tuple(recorded.angle_to_pixeldist),
+            width=recorded.width, height=recorded.height, max_angle=recorded.max_angle,
+            linear_cde=tuple(recorded.linear_cde),
+        )
         adapter = NuRecInsertions(
             insertions,
-            renderer.camera_model(self.sensor),
+            camera,
             geometry,
             compositor,
             visibility_estimator=CuboidVisibilityEstimator(),

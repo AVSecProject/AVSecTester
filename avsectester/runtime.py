@@ -15,7 +15,7 @@ from typing import Any, TYPE_CHECKING
 
 import numpy as np
 
-from avsectester.plane import Control, Observation, StateEstimate, WorldSnapshot
+from avsectester.plane import Control, InterventionOutput, Observation, StateEstimate, WorldSnapshot
 
 if TYPE_CHECKING:
     from avsectester.backend import AVStack, WorldBackend
@@ -78,6 +78,21 @@ class StageContext:
     sensor: str | None = None
     observation: Observation | None = None
     control: Control | None = None
+    _output_recorder: Callable[[StageContext, str, Any], None] | None = field(
+        default=None, repr=False, compare=False,
+    )
+
+    def record_output(self, name: str, value: Any) -> None:
+        """Save a named, independent output in this run's Trace with callback timing.
+
+        Use this for attack decisions, defense alarms or estimator telemetry. Outputs
+        supplement the transformed value and never replace the downstream input.
+        """
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("Output name must be a nonempty string")
+        if self._output_recorder is None:
+            raise RuntimeError("Outputs can only be recorded from an active runtime callback")
+        self._output_recorder(self, name, value)
 
     @property
     def backend(self) -> WorldBackend:
@@ -178,6 +193,9 @@ class Runtime:
 
     def validate_stages(self, backend: WorldBackend, stack: AVStack) -> frozenset[str]:
         """Check adapter capabilities without binding a session or invoking handlers."""
+        from .backend import validate_command_compatibility
+
+        validate_command_compatibility(backend, stack, self)
         available = RuntimeSession.CORE_STAGES | backend.supported_stages | stack.supported_stages
         if self.localizer is not None:
             available |= {"localization.pre"}
@@ -217,6 +235,8 @@ class RuntimeSession:
         self.step = 0
         self.observation: Observation | None = None
         self.control: Control | None = None
+        self.outputs: list[InterventionOutput] = []
+        self._active = False
         self.available = runtime.validate_stages(backend, stack)
         self._handlers: dict[str, list[Any]] = {}
         for hook in runtime.hooks:
@@ -230,6 +250,8 @@ class RuntimeSession:
 
     @contextmanager
     def activate(self) -> Iterator[RuntimeSession]:
+        if self._active:
+            raise RuntimeError("Runtime session is already active")
         resources = ExitStack()
         failure = None
         try:
@@ -246,11 +268,13 @@ class RuntimeSession:
                 reset = getattr(handler, "reset", None)
                 if reset is not None:
                     reset(self.context)
+            self._active = True
             yield self
         except BaseException as error:
             failure = error
             raise
         finally:
+            self._active = False
             try:
                 resources.close()
             except Exception as error:
@@ -263,7 +287,16 @@ class RuntimeSession:
         return StageContext(
             self.context, self.step, stage, truth, sensor,
             self.observation, self.control if stage == "command" else deepcopy(self.control),
+            self.record_output,
         )
+
+    def record_output(self, context: StageContext, name: str, value: Any) -> None:
+        if not self._active:
+            raise RuntimeError("Outputs can only be recorded from an active runtime callback")
+        self.outputs.append(InterventionOutput(
+            name=name, value=deepcopy(value), step=context.step, stage=context.stage,
+            frame=context.ground_truth.frame, t=context.sim_time, sensor=context.sensor,
+        ))
 
     def emit(self, stage: str, value: Any, sensor: str | None = None) -> Any:
         if stage not in self.available:
@@ -326,6 +359,7 @@ class RuntimeSession:
         self.control = control
         control = self.emit("command", control)
         self._require(control, Control, "command")
+        self.context.backend.validate_command(control)
         self.control = control
         return control
 

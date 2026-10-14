@@ -12,9 +12,9 @@ from abc import ABC, abstractmethod
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from itertools import pairwise
-from typing import Any, ClassVar, TYPE_CHECKING
+from typing import Any, ClassVar, Protocol, TYPE_CHECKING
 
-from avsectester.backend import WorldBackend
+from avsectester.backend import WorldBackend, validate_command_modes
 from avsectester.plane import Control, Observation, WorldSnapshot
 from avsectester.rendering.compositor import InsertionRenderer
 
@@ -33,6 +33,14 @@ class EgoPose:
     t: float = 0.0  # s
 
 
+class EgoDynamics(Protocol):
+    """A custom ego-motion implementation, with an optional ``command_modes`` declaration."""
+
+    def step(self, pose: EgoPose, control: Control, dt: float) -> EgoPose:
+        """Advance the physical ego pose by ``dt`` seconds using the final command."""
+        ...
+
+
 @dataclass
 class KinematicBicycle:
     """A simple, transparent ego dynamics model — the shared 'physical control' for NuRec worlds.
@@ -45,8 +53,10 @@ class KinematicBicycle:
     max_accel: float = 3.0  # m/s^2 at full throttle
     max_brake: float = 8.0  # m/s^2 at full brake
     max_steer: float = 0.6  # rad at full steer
+    command_modes: ClassVar[frozenset[str]] = frozenset({"actuator"})
 
     def step(self, pose: EgoPose, control: Control, dt: float) -> EgoPose:
+        validate_command_modes(control, self.command_modes)
         accel = control.throttle * self.max_accel - control.brake * self.max_brake
         speed = max(0.0, pose.speed + accel * dt)
         steer = control.steer * self.max_steer
@@ -71,8 +81,10 @@ class TrajectoryFollower:
     """
 
     decel: float = 4.0  # m/s^2 when coasting with no plan
+    command_modes: ClassVar[frozenset[str]] = frozenset({"trajectory"})
 
     def step(self, pose: EgoPose, control: Control, dt: float) -> EgoPose:
+        validate_command_modes(control, self.command_modes)
         traj = control.trajectory or []
         if not traj:
             speed = max(0.0, pose.speed - self.decel * dt)
@@ -154,7 +166,7 @@ class NuRecBackend(WorldBackend):
         self,
         config: dict,
         renderer: Renderer | None = None,
-        dynamics: KinematicBicycle | None = None,
+        dynamics: EgoDynamics | None = None,
     ) -> None:
         self.config = deepcopy(config)
         self.renderer = renderer or StubRenderer()
@@ -169,6 +181,11 @@ class NuRecBackend(WorldBackend):
         return frozenset({
             "world.setup", "world.step.pre", "world.step.post", "render.pre", "render.post",
         })
+
+    @property
+    def command_modes(self) -> frozenset[str] | None:
+        """Delegate command capabilities to the selected ego dynamics implementation."""
+        return getattr(self.dynamics, "command_modes", None)
 
     @property
     def native(self) -> dict[str, Any]:
@@ -204,6 +221,7 @@ class NuRecBackend(WorldBackend):
         return self._observe()
 
     def step(self, control: Control) -> Observation:
+        self.validate_command(control)
         self._emit("world.step.pre", None)
         self.pose = self.dynamics.step(self.pose, control, self.dt)  # shared physics, in-process
         self.frame += 1

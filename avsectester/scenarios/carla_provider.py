@@ -90,7 +90,7 @@ def depth_visibility(context, insertion_id, camera):
     )
 
 
-def carla_filter_context(backend, *, camera="front", depth=None):
+def carla_filter_context(backend, *, camera="front", depth=None, observation=None):
     """Expose normalized geometry and the original backend, world and actors.
 
     ``depth`` must belong to the current world snapshot and the selected RGB camera's
@@ -104,6 +104,7 @@ def carla_filter_context(backend, *, camera="front", depth=None):
         backend=backend,
         metadata={"scenario": backend.scenario, "replay_scenario": backend.replay_scenario},
         native={
+            **({"observation": observation} if observation is not None else {}),
             "world": world,
             "actors": world.get_actors(),
             "client": backend.client,
@@ -192,12 +193,16 @@ class CarlaSelectionBackend(CarlaBackend):
                 raise RuntimeError("CARLA depth and observation frames differ")
             self.depth = decode_carla_depth(sample)
             self.depth_frame = sample.frame
+        self._selection_observation = observation
         return observation
 
     def selection_context(self):
         if self.depth_frame != self.client.world.get_snapshot().frame:
             raise RuntimeError("Refresh the backend observation before requesting a context")
-        return carla_filter_context(self, camera=self.selection_camera, depth=self.depth)
+        return carla_filter_context(
+            self, camera=self.selection_camera, depth=self.depth,
+            observation=self._selection_observation,
+        )
 
     def close(self):
         try:
@@ -217,7 +222,7 @@ class CarlaCandidateProvider:
     prescribed frame is advanced, including filters that call native CARLA APIs.
     """
 
-    def __init__(self, *, initial_frames=1, advance_initial=None, backend_factory=None):
+    def __init__(self, *, initial_frames=1, advance_initial=None, backend_factory=None, conditions=None):
         if (
             isinstance(initial_frames, bool)
             or not isinstance(initial_frames, int)
@@ -228,6 +233,9 @@ class CarlaCandidateProvider:
             raise ValueError(
                 "Multiple initial frames require a prescribed advance_initial callback"
             )
+        from avsectester.conditions import ScenarioConditions
+
+        self.conditions = conditions or ScenarioConditions()
         self.initial_frames = initial_frames
         self.advance_initial = advance_initial
         self.backend_factory = backend_factory or CarlaSelectionBackend
@@ -236,6 +244,7 @@ class CarlaCandidateProvider:
     def __call__(self, scenario):
         backend = self.backend_factory(deepcopy(scenario))
         try:
+            self.conditions.configure_backend(backend)
             backend.prepare_clean_attack_pair()
             backend.reset()
             replay = deepcopy(backend.replay_scenario)
@@ -254,9 +263,12 @@ class CarlaCandidateProvider:
 
             first.initial_contexts = initial_contexts
             # Capture configuration, not the temporary live backend that closes on exit.
+            replay_config = deepcopy(replay)
+            if "weather" in self.conditions.world:
+                replay_config.pop("weather", None)
             first.native = {
                 **first.native,
-                "make_backend": lambda: self.backend_factory(deepcopy(replay)),
+                "make_backend": lambda: self.backend_factory(deepcopy(replay_config)),
             }
             yield first
         finally:

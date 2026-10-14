@@ -28,6 +28,7 @@ from typing import Any
 import numpy as np
 
 from avsectester.runtime import Plugin, RunContext, StageContext
+from avsectester.preparation import Intervention
 
 # Flat patch prop and its default pose on a car rear, relative to the target actor.
 DEFAULT_PROP = "static.prop.ironplank"
@@ -176,7 +177,9 @@ def build_patch(cfg: dict | PhysicalPatch) -> PhysicalPatch:
 class PhysicalPatchPlugin(Plugin):
     """Deploy native CARLA panels at world setup and release them after each run.
 
-    ``target`` uses the backend's logical actor names: ``ego``, ``lead`` or ``npc:<index>``.
+    ``target`` uses an explicit actor ID, a selected single-host role or an indexed role
+    such as ``hosts[0]``. Backend logical names such as ``ego``, ``lead`` and ``npc:<index>``
+    remain available without a selected match.
     Each panel needs one backend-managed setup tick before its mesh can be painted.
     """
 
@@ -200,15 +203,50 @@ class PhysicalPatchPlugin(Plugin):
             raise ValueError("PhysicalPatchPlugin requires a live CARLA world")
         for spec in self.patches:
             target = spec.get("target", "lead")
-            if target not in actors:
-                raise ValueError(f"Physical patch target {target!r} is unavailable")
+            actor = _target_actor(target, context.case, actors)
             build_patch(spec).apply(
-                world, actors[target], tick=context.backend.setup_tick,
+                world, actor, tick=context.backend.setup_tick,
                 on_spawn=lambda actor: self._resources.callback(_destroy_panel, actor),
             )
 
     def close(self) -> None:
         self._resources.close()
+
+
+class PhysicalPatchIntervention(Intervention):
+    """Prepare physical panel configuration and construct a fresh world plugin per run."""
+
+    def __init__(self, patches: Sequence[dict]) -> None:
+        self.patches = deepcopy(list(patches))
+
+    def prepare(self, scenario) -> list[dict]:
+        # Validate configuration without creating simulator actors or loading a server.
+        PhysicalPatchPlugin(self.patches)
+        return deepcopy(self.patches)
+
+    def hooks(self, artifacts):
+        from avsectester.runtime import Hook
+
+        return (Hook("world.setup", PhysicalPatchPlugin(artifacts)),)
+
+
+def _target_actor(target: str | int, case: Any, actors: dict[str, Any]) -> Any:
+    """Resolve selected aliases against current actors without changing host selection."""
+    bindings = getattr(case, "binding_ids", {}) if case is not None else {}
+    aliases = {}
+    for role, ids in bindings.items():
+        if len(ids) == 1:
+            aliases[role] = ids[0]
+        aliases.update({f"{role}[{index}]": identity for index, identity in enumerate(ids)})
+    if isinstance(target, str) and target in bindings and target not in aliases:
+        raise ValueError(f"Physical patch role {target!r} needs an explicit index")
+    identity = aliases.get(target, target)
+    if identity in actors:
+        return actors[identity]
+    found = [actor for actor in actors.values() if str(getattr(actor, "id", "")) == str(identity)]
+    if len(found) == 1:
+        return found[0]
+    raise ValueError(f"Physical patch target {target!r} is unavailable")
 
 
 def _destroy_panel(actor: Any) -> None:

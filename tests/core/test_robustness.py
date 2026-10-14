@@ -16,10 +16,13 @@ import numpy as np
 import pytest
 
 from avsectester.backend import AVStack, WorldBackend
+from avsectester.conditions import ScenarioConditions, SensorCondition
 from avsectester.evaluation.robustness import ConditionResult, RobustnessReport, evaluate_robustness
 from avsectester.plane import Control, Observation
 from avsectester.scenarios.source import ScenarioInstance, ScenarioSource
 from avsectester.perturbations.image import AugmentationPipeline, Corruption
+from avsectester.preparation import Intervention, prepare_intervention
+from avsectester.runtime import Hook, Plugin
 
 
 class _ApproachBackend(WorldBackend):
@@ -81,7 +84,7 @@ class _StubSource(ScenarioSource):
     def scenarios(self, req, limit=None):
         for i in range(self.n if limit is None else min(self.n, limit)):
             yield ScenarioInstance(
-                make_backend=self.backend_factory,
+                factory=self.backend_factory,
                 match=_Match(),
                 provenance={"scene_id": f"stub-{i}"},
             )
@@ -261,3 +264,138 @@ def test_harness_pairs_corruptions_across_different_simulator_frame_ids():
     for c, a in zip(clean, attacked, strict=True):
         np.testing.assert_array_equal(c.sensor_data["front"], a.sensor_data["front"])
     assert not np.array_equal(clean[0].sensor_data["front"], clean[1].sensor_data["front"])
+
+
+@pytest.mark.parametrize("reuse_artifacts", [False, True])
+def test_method_prepares_once_per_case_and_creates_fresh_handlers_across_conditions(reuse_artifacts):
+    class HideMethod(Intervention):
+        def __init__(self):
+            self.prepared, self.handlers = [], []
+
+        def prepare(self, scenario):
+            self.prepared.append(scenario)
+            return {"camera": scenario.match.camera}
+
+        def hooks(self, artifacts):
+            class Handler(Plugin):
+                def reset(self, context):
+                    self.steps = []
+
+                def transform(self, observation, context):
+                    self.steps.append(context.step)
+                    return replace(observation, sensor_data={
+                        **observation.sensor_data,
+                        artifacts["camera"]: np.zeros_like(observation.sensor_data[artifacts["camera"]]),
+                    })
+
+            handler = Handler()
+            self.handlers.append(handler)
+            return [Hook("observation", handler)]
+
+    method = HideMethod()
+    attack = method
+    if reuse_artifacts:
+        attack = prepare_intervention(method, next(_StubSource().scenarios(None)))
+    report = evaluate_robustness(
+        _StubSource(2), None, attack, _BrakeIfLeadSeen, 8,
+        conditions=[AugmentationPipeline([_Mild()])],
+    )
+    assert len(method.prepared) == (1 if reuse_artifacts else 2)
+    assert len(method.handlers) == 4 and len({id(handler) for handler in method.handlers}) == 4
+    assert all(handler.steps == list(range(8)) for handler in method.handlers)
+    assert all(row.status == "success" for row in report.rows)
+
+
+def test_robustness_preserves_world_conditions_and_independent_sensor_state():
+    configured, histories, traces, events = [], [], [], []
+
+    class Backend(_ApproachBackend):
+        def configure_conditions(self, world):
+            configured.append(dict(world))
+            self.weather = world["weather"]
+            events.append("conditions")
+
+        def prepare_clean_attack_pair(self):
+            events.append("prepare")
+
+        def reset(self):
+            events.append("reset")
+            return super().reset()
+
+    class Condition(Plugin):
+        def reset(self, context):
+            self.steps = []
+            histories.append(self.steps)
+
+        def transform(self, observation, context):
+            self.steps.append(context.step)
+            return observation
+
+    class Source(_StubSource):
+        def scenarios(self, req, limit=None):
+            for scenario in super().scenarios(req, limit):
+                yield replace(scenario, conditions=ScenarioConditions(
+                    world={"weather": "cloudy"}, sensors=(SensorCondition(Condition),), seed=21,
+                ))
+
+    def capture(*args, **kwargs):
+        from avsectester.backend import run
+
+        trace = run(*args, **kwargs)
+        traces.append(trace)
+        return trace
+
+    def callback(match, backend):
+        assert backend.weather == "cloudy"
+        events.append("callback")
+        return _hide_attack(match, backend)
+
+    evaluate_robustness(
+        Source(backend_factory=Backend), None, callback, _BrakeIfLeadSeen, 3,
+        conditions=[AugmentationPipeline([_Mild()], seed=7)], run_fn=capture,
+    )
+    # Each condition constructs one world. Its existing condition layer is not applied twice.
+    assert configured == [{"weather": "cloudy"}] * 2
+    assert events == ["conditions", "callback", "prepare", "reset", "reset"] * 2
+    assert len(histories) == 4 and all(history == [0, 1, 2] for history in histories)
+    assert all(trace.provenance["conditions"]["world"] == {"weather": "cloudy"} for trace in traces)
+    assert len(traces[0].provenance["conditions"]["sensors"]) == 1
+    assert len(traces[2].provenance["conditions"]["sensors"]) == 2
+    assert traces[2].provenance["conditions"]["sensors"][-1]["seed"] == 7
+
+
+def test_callback_failure_is_closed_once_before_pair_preparation():
+    backend = _ApproachBackend()
+    backend.prepare_clean_attack_pair = Mock()
+    backend.close = Mock()
+    callback = Mock(side_effect=RuntimeError("cannot construct attack"))
+    with pytest.raises(RuntimeError, match="cannot construct attack"):
+        evaluate_robustness(
+            _StubSource(backend_factory=lambda: backend), None, callback,
+            _BrakeIfLeadSeen, 3, conditions=[],
+        )
+    callback.assert_called_once()
+    backend.prepare_clean_attack_pair.assert_not_called()
+    backend.close.assert_called_once()
+
+
+def test_skipped_callback_cleanup_failure_is_not_reported_as_a_skipped_experiment():
+    backend = _ApproachBackend()
+    backend.close = Mock(side_effect=RuntimeError("cleanup failed"))
+    backend.prepare_clean_attack_pair = Mock()
+    with pytest.raises(RuntimeError, match="cleanup failed"):
+        evaluate_robustness(
+            _StubSource(backend_factory=lambda: backend), None, lambda *args: None,
+            _BrakeIfLeadSeen, 3, conditions=[],
+        )
+    backend.close.assert_called_once()
+    backend.prepare_clean_attack_pair.assert_not_called()
+
+
+def test_robustness_rejects_defense_prepared_definition():
+    from avsectester.attacks.adaptive import SpeedFeedbackAttack
+
+    scenario = next(_StubSource().scenarios(None))
+    definition = prepare_intervention(SpeedFeedbackAttack(5), scenario, kind="defense")
+    with pytest.raises(ValueError, match="requires an attack"):
+        evaluate_robustness(_StubSource(), None, definition, _BrakeIfLeadSeen, 3, conditions=[])

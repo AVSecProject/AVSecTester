@@ -1,6 +1,6 @@
 """The two interfaces the data plane connects — and the loop that drives them.
 
-    WorldBackend : reset() / step(control) -> Observation      (CARLA, AlpaSim, dataset replay)
+    WorldBackend : reset() / step(command) -> Observation      (CARLA, NuRec, custom worlds)
     AVStack      : (observation) -> Control                     (modular pipeline OR end-to-end model)
 
 Both are deliberately ignorant of each other's internals. The backend owns world state and the
@@ -66,6 +66,28 @@ class WorldBackend(_RuntimeAdapter, ABC):
     # produce driving records and must be matched across comparison runs.
     setup_ticks: int = 0
 
+    @property
+    def command_modes(self) -> frozenset[str] | None:
+        """Command representations consumed by this backend, or None if undeclared.
+
+        Built-in modes are ``actuator`` and ``trajectory``. A custom adapter can retain
+        its existing command semantics by leaving the declaration unset.
+        """
+        return None
+
+    def validate_command(self, command: Control) -> None:
+        """Reject active command fields that this backend would silently ignore."""
+        validate_command_modes(command, self.command_modes)
+
+    def configure_conditions(self, world: Mapping[str, Any]) -> None:
+        """Configure supported world conditions for subsequent resets.
+
+        Custom backends override this method to validate and apply their own world
+        parameters. Unimplemented conditions fail instead of silently doing nothing.
+        """
+        if world:
+            raise ValueError(f"{type(self).__name__} does not support world conditions: {sorted(world)}")
+
     @abstractmethod
     def reset(self) -> Observation:
         """Build the world, spawn the ego + traffic, and return the first Observation."""
@@ -122,6 +144,11 @@ class AVStack(_RuntimeAdapter, ABC):
         """Optional warmup from the first Observation (e.g. seed a planner). Default no-op."""
 
     @property
+    def command_modes(self) -> frozenset[str] | None:
+        """Possible output command representations, or None for an undeclared adapter."""
+        return None
+
+    @property
     def models(self) -> Mapping[str, Any]:
         """Loaded native models available to user handlers. Adapters expose their own names."""
         return {}
@@ -129,6 +156,44 @@ class AVStack(_RuntimeAdapter, ABC):
     @abstractmethod
     def __call__(self, observation: Observation) -> Control:
         """Decide the control command for this Observation."""
+
+
+def validate_command_modes(command: Control, modes: frozenset[str] | None) -> None:
+    """Validate the fields consumed by a backend or independently called dynamics model."""
+    if not isinstance(command, Control):
+        raise TypeError(f"Expected Control, got {type(command).__name__}")
+    if modes is None:
+        return
+    if command.trajectory is not None and "trajectory" not in modes:
+        raise ValueError("Backend does not support trajectory commands")
+    active = [name for name in ("throttle", "brake", "steer") if getattr(command, name) != 0.0]
+    if active and "actuator" not in modes:
+        raise ValueError(f"Backend does not support actuator command fields: {active}")
+
+
+class CommandCompatibilityError(ValueError):
+    """Declared stack commands cannot be consumed by the selected backend."""
+
+
+def validate_command_compatibility(
+    backend: WorldBackend, stack: AVStack, runtime: Runtime | None = None,
+) -> None:
+    """Check declared commands before world setup, allowing explicit runtime conversion.
+
+    A command-stage handler may translate the stack output into a different representation.
+    In that case only the final command is checked, after all handlers have run.
+    """
+    accepted, produced = backend.command_modes, stack.command_modes
+    if accepted is None or produced is None:
+        return
+    if runtime is not None and any(hook.stage == "command" for hook in runtime.hooks):
+        return
+    missing = produced - accepted
+    if missing:
+        raise CommandCompatibilityError(
+            f"{type(stack).__name__} produces {sorted(missing)} commands unsupported by "
+            f"{type(backend).__name__}. Select compatible dynamics or add a command conversion hook."
+        )
 
 
 def run(
@@ -155,7 +220,7 @@ def run(
     if not isinstance(frames, int) or isinstance(frames, bool) or frames < 0:
         raise ValueError("frames must be a nonnegative integer")
     session = (runtime or Runtime()).session(backend, stack, perturb)
-    trace = Trace()
+    trace = Trace(outputs=session.outputs)
     with session.activate():
         obs = backend.reset()
         backend._remember_ground_truth(obs)

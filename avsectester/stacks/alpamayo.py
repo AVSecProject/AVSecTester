@@ -33,6 +33,7 @@ class AlpamayoAVStack(AVStack):
         device: str = "cuda:0",
         context_length: int = 4,
         output_frequency_hz: int = 10,
+        model: Any | None = None,
     ) -> None:
         self.checkpoint_path = (
             checkpoint_path if checkpoint_path is not None
@@ -42,12 +43,17 @@ class AlpamayoAVStack(AVStack):
         self.device = device
         self.context_length = context_length
         self.output_frequency_hz = output_frequency_hz
-        self._model = None
+        # Separate adapters may share loaded weights while retaining independent input history.
+        self._model = model
         self._frames: dict[str, deque] = {c: deque(maxlen=context_length) for c in self.camera_ids}
         self._prev_plan = None
         self._iseed = 0
         self.last_reasoning: str | None = None
         self._last_log: dict[str, Any] | None = None
+
+    @property
+    def command_modes(self) -> frozenset[str]:
+        return frozenset({"trajectory"})
 
     @property
     def supported_stages(self) -> frozenset[str]:

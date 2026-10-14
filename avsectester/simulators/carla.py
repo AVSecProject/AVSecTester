@@ -18,6 +18,7 @@ import logging
 import secrets
 import time
 from contextlib import ExitStack
+from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any
 
@@ -316,6 +317,23 @@ class CarlaBackend(WorldBackend):
         self._setup_ticks_used = 0
 
     @property
+    def command_modes(self) -> frozenset[str]:
+        return frozenset({"actuator"})
+
+    def configure_conditions(self, world: Mapping[str, Any]) -> None:
+        """Apply CARLA weather settings at every subsequent scene reset."""
+        unknown = set(world) - {"weather"}
+        if unknown:
+            raise ValueError(f"Unsupported CARLA world conditions: {sorted(unknown)}")
+        if "weather" in world:
+            weather = deepcopy(world["weather"])
+            self.scenario["weather"] = weather
+            # A prepared or previously run pair must not retain the old weather.
+            for prepared in (self._pair_scenario, self.replay_scenario):
+                if prepared is not None:
+                    prepared["weather"] = deepcopy(weather)
+
+    @property
     def supported_stages(self) -> frozenset[str]:
         # CARLA renders inside the server. Its render request cannot be intercepted here.
         return frozenset({"world.setup", "world.step.pre", "world.step.post"})
@@ -437,6 +455,7 @@ class CarlaBackend(WorldBackend):
         return self._observe()
 
     def step(self, control: Control) -> Observation:
+        self.validate_command(control)
         self._emit("world.step.pre", None)
         self.ego.apply_control(control)  # decision from the AVStack. CARLA physics does the rest
         self.client.tick()
