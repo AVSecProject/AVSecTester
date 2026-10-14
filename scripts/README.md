@@ -70,7 +70,9 @@ weights. Current checkpoint-path behavior is documented in
 Vehicle mode requires a stable `--host` track ID and updates the rear attachment from the host's
 current 3D pose. Both use known-cuboid visibility estimates and perturb the stack's camera input.
 The sequence uses constant-speed `CruiseStack`, while `alpamayo_attack_demo.py` uses Alpamayo
-and trajectory-following dynamics. Both clean and attacked runs share the metadata start timestamp.
+and trajectory-following dynamics. Both clean and attacked runs share the metadata start timestamp. Driving examples use prepared
+scenarios and the shared execution loop. Geometry inspection utilities can operate directly
+on renderers without a driving experiment.
 `nuscenes_object_demo.py` processes recorded images and checks candidate positions against
 annotated 2D boxes. It has no driving loop or exact depth visibility.
 
@@ -131,7 +133,23 @@ Start the server using [DOCKER.md](../docs/DOCKER.md) or [SETUP.md](../docs/SETU
 available inference device with `--gpu`. `--frames` controls steps per run. `--plot` saves a driving
 impact figure and requires the `viz` extra. No particular attack result is guaranteed.
 
-The CLI prints driving statistics and an impact verdict. Exit codes are `0` for attack success,
-`1` for failure under the current criterion and `2` for an inconclusive driving baseline. See
+The CLI supports `--mode single|pair` and `--treatment clean|attack|defense|attack-defense`.
+A single run finishes with exit code `0` and does not compute a comparison verdict. Attack and
+attack-defense pairs with an enabled attack use `0` for success under the current stop criterion,
+`3` for no impact and `4` for an inconclusive baseline. Defense pairs report side effects, while
+clean/empty-attack pairs report baseline comparisons. These pairs have no attack verdict and exit
+with `0` after successful execution. Execution errors use `1` and configuration errors use `2`.
+`--plot` requires pair mode and uses treatment-specific labels and captions. See
 [INTERFACE.md](../docs/INTERFACE.md#3-metric-clean-vs-attacked--verdict) for that criterion and
 [tests/README.md](../tests/README.md) for offline and opt-in simulator tests.
+
+The NuRec configuration can also be run in the AlpaSim driver environment:
+
+```bash
+avsectester run configs/nurec_scenario.yaml --mode single --treatment clean
+```
+
+This example uses stub images by default. Set the renderer to `nurec` and provide the scene and
+endpoint for rendered images. Alpamayo always requires its driver dependencies and checkpoint.
+`--gpu` applies to the CARLA modular perception configuration. Custom stacks and Alpamayo select
+their device through `stack.options`.

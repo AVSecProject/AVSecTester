@@ -6,38 +6,43 @@ under the same corruption settings.
 
 ## Register attacks and corruptions in Runtime
 
-Image-space attacks and corruptions use ordered `observation` hooks before the driving model
-receives each frame. Apply the same corruption to both treatments and add the attack only to
-the attacked treatment:
+Attach operating conditions to a `ScenarioInstance`. The prepared runner constructs a fresh
+condition handler for every treatment and applies the same settings and relative-step seeds.
+Attack and defense handlers use the ordinary Runtime interface:
 
 ```python
-from avsectester.interventions import ObservationTransform
-from avsectester.runner import run_pair
+from dataclasses import replace
+from avsectester.conditions import ScenarioConditions, SensorCondition
+from avsectester.perturbations.image import AugmentationPipeline, GaussianNoise
+from avsectester.runner import run_prepared
 from avsectester.runtime import Hook, Runtime
 
-# attack, clean_corruption and attacked_corruption are Observation -> Observation functions.
-# Create the two corruption transforms with identical settings and seeds.
-clean_runtime = Runtime([
-    Hook("observation", ObservationTransform(clean_corruption)),
-])
-attacked_runtime = Runtime([
-    Hook("observation", ObservationTransform(attack)),
-    Hook("observation", ObservationTransform(attacked_corruption)),
-])
-clean, attacked = run_pair(
-    backend, stack_factory, frames=30,
-    clean_runtime=clean_runtime, attacked_runtime=attacked_runtime,
+# scenario is a ScenarioInstance, attack(value, context) is an observation handler.
+noise = AugmentationPipeline([GaussianNoise(severity=0.2)], seed=7)
+conditions = ScenarioConditions(
+    world=scenario.conditions.world,
+    sensors=scenario.conditions.sensors + (SensorCondition.image(noise, camera="front"),),
+    seed=scenario.conditions.seed,
 )
+conditioned = replace(scenario, conditions=conditions)
+traces = run_prepared(conditioned, stack_factory, frames=30, runtimes={
+    "clean": Runtime(),
+    "attack": Runtime([Hook("observation", attack)]),
+})
 ```
 
-Hooks run in registration order, so corruption also affects the inserted attack pixels.
-This is an image-space approximation rather than a simulation of physical light transport.
-World attacks and component attacks use their own stages in the same runtime. See
-[INTERVENTIONS.md](INTERVENTIONS.md) for the stage and lifecycle contracts.
+`SensorCondition` defaults to `stage="observation", order="after"`: corruption affects the
+inserted attack pixels. Set `order="before"` to corrupt the measurement before interventions at
+that same stage. Hooks at different stages retain the pipeline's stage order. Conditions have
+independent random streams, so an attack consuming `context.rng` does not change condition noise.
+Custom sensor-condition factories can implement the same handler/Plugin interface. World conditions
+are applied before reset. See [SCENARIOS.md](SCENARIOS.md#scenario-conditions) for Python and YAML
+configuration, selection measurements and supported backend properties.
 
+Direct callers can also register ordered `observation` hooks in Runtime and use `run_pair`.
 For a single run, `run(..., perturb=compose(attack, augment))` remains a shorthand for
 one-argument observation transforms. `compose(a, b)` applies `a` then `b`. The shorthand is
-adapted into the same runtime hook chain, rather than a separate execution path.
+adapted into the same runtime hook chain.
 
 ## Two tiers of fidelity
 
@@ -47,7 +52,7 @@ adapted into the same runtime hook chain, rather than a separate execution path.
    camera images from CARLA, NuRec reconstructed-scene rendering (`NuRecBackend`), and recorded-frame
    replay (`RecordedFrameBackend`, used by nuScenes). NuRec generates new views from the ego pose,
    while recorded-frame replay returns captured images.
-2. **CARLA world-weather** — `carla.py`. A `weather` key in the scenario config sets native
+2. **CARLA world-weather** — `carla.py`. `conditions.world.weather` (or legacy `weather`) sets native
    `carla.WeatherParameters` (cloud, precipitation, sun altitude, fog, wetness) at `reset`, so the whole
    scene, including native physical actors, is rendered under that weather. Post-render image
    insertions do not automatically receive native weather effects. This option is CARLA-only.
@@ -81,8 +86,7 @@ selects classic Albumentations (`>=1.4,<2`). See [SETUP.md](SETUP.md) for the de
 
 Robustness is measured by *diffing* a clean run and an attacked run **under the same condition**. If the
 fog pattern or noise realisation differed between the two, the diff would conflate the attack with the
-corruption. `AugmentationPipeline.apply(rgb, frame)` seeds its RNG from `(seed, frame)`. The harness
-uses the same pipeline seed and aligns frames relative to each run's first observation, since absolute
+corruption. `AugmentationPipeline.apply(rgb, frame)` seeds its RNG from `(seed, frame)`. The condition handler uses the same pipeline seed and relative driving step, since absolute
 simulator frame IDs can differ after reset. Corresponding steps therefore use the same random draws,
 even when their input images differ because of the attack or subsequent driving.
 
@@ -90,34 +94,39 @@ even when their input images differ because of the attack or subsequent driving.
 
 `evaluate_robustness(source, req, attack_for, stack, frames, ...)` runs the grid and returns a
 `RobustnessReport` (ASR + resilience per condition). `stack` is a **factory** (`Callable[[], AVStack]`)
-so each run gets a fresh box. Given a scenario source, requirement, attack factory and stack factory:
+so each run gets a fresh box. Given a scenario source, requirement, attack method and stack factory:
 
 ```python
 from avsectester.evaluation.robustness import evaluate_robustness
 
-report = evaluate_robustness(source, req, attack_for, stack, frames, severity=0.5)
+report = evaluate_robustness(source, req, method, stack_factory, frames=30, severity=0.5)
 print(report.summary())
 ```
 
-The harness includes a no-corruption baseline plus the corruption suite. For each scenario and
-condition it creates a backend and delegates preparation, paired execution and teardown to
-`runner.run_pair`, with aligned corruption. The attacked run applies the attack before corruption.
+The harness includes a no-extra-corruption baseline plus the corruption suite. Existing scenario
+conditions still apply to that baseline. For each scenario and condition it delegates execution and
+teardown to `runner.run_prepared`. The added image corruption follows observation attacks.
+
+`method` may be an `Intervention` or a `PreparedIntervention` of kind `attack`. An Intervention
+prepares once per selected scenario, and its artifacts are reused across conditions. Execution
+handlers are constructed separately for each attacked run. Passing a PreparedIntervention reuses
+its supplied artifacts explicitly, including across scenarios. Preparation is never inferred from
+an artifact filename or a previous run. See [INTERVENTIONS.md](INTERVENTIONS.md#preparation-and-execution).
 
 Construct `source` and `req` using [scenario selection](SCENARIOS.md#select-a-case).
-`attack_for(match, backend)` is called before the backend is reset. If an insertion adapter needs
-loaded camera calibration, initialize it lazily on the first attacked observation. Its returned
-value can be a `Runtime`, a one-argument observation transform, or `None` to skip. Native
-hooks, world plugins and user handlers can therefore use the same evaluation entry point.
-The default clean runtime shares the attack runtime's localizer object and seed, without its hooks.
-The framework calls each handler's and localizer's `reset(context)` when that method exists.
-Stateful components must implement their own reset logic. In particular, a stateful localizer
-shared by this evaluator must provide `reset(context)` to clear its history between treatments.
-For a localizer closure without reset support, use `run_pair` with independent clean and attacked
-runtimes and construct the condition grid in the caller. This evaluator does not accept a
-separate baseline runtime factory. See
-[stateful attacks and defenses](INTERVENTIONS.md#stateful-attack-or-defense).
-Preserve `match.binding_ids` and
-`match.insertions`, rather than selecting a new target. Source filters run before this grid, not on every corrupted observation.
+Source filters run before this grid, not on every corrupted observation. To filter by conditioned
+measurements, configure conditions on the source before selecting its cases.
+
+The legacy `attack_for(match, backend)` callback also remains supported. It is called once per pair,
+after world conditions are configured and before origin preparation or backend reset. It returns
+a Runtime, an observation transform, or
+None to skip. The default clean runtime shares this Runtime's localizer and seed without its hooks.
+The framework invokes `reset(context)` only when the component implements it. Stateful localizers
+shared by the legacy callback must implement reset. For a closure without reset, construct
+independent clean/attacked localizers in `run_prepared` and build the grid in the caller. The legacy
+callback has no separate baseline factory. Insertion adapters may now be constructed before reset,
+and resolve current camera/actor information during execution. Preserve `match.binding_ids` and
+`match.insertions` rather than selecting a new target.
 
 `RobustnessReport.rows` retains each attempt's status and reason:
 
@@ -134,7 +143,7 @@ valid pairs, and 0 when the valid baseline ASR is 0. These are the current imple
 The current success criterion covers induced or suppressed stops. Experiment-specific criteria remain
 a TODO in the harness, so this is not a universal definition of attack success.
 
-## Non-goals / approximations (kept honest)
+## Fidelity and extensions
 
 - Image-space weather is a *2-D approximation*: fog is uniform airlight (no per-pixel depth), rain/snow
   are procedural overlays. It is a stress test of the *perception+attack* pipeline, not a physically

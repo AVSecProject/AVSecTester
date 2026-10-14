@@ -62,6 +62,10 @@ pytest/CI collect their subdirectories recursively.
 |---|---|
 | `core/test_interface.py` | Per-step controls affect subsequent true state. Replacement attack observations reach the stack without falsifying the recorded state |
 | `core/test_runtime.py`, `core/runtime/test_pair.py` | Ordered attacks/defenses, plugin lifecycle, localization, unsupported stages, command execution and exception cleanup |
+| `core/runtime/test_preparation.py` | Prepared artifacts, explicit export/import/reuse, enabled methods, role bindings and adaptive feedback reset |
+| `core/runtime/test_prepared_runs.py`, `core/runtime/test_configured_experiments.py` | Single and multi-treatment execution, common origin, independent localizers/conditions, factory overrides, ordering and provenance |
+| `core/runtime/test_commands_outputs.py` | Declared/final command compatibility, conversion hooks and copied diagnostic outputs |
+| `core/scenarios/test_setup.py` | Pass-through preparation without preview, optional selection, world/sensor conditions and native observation access |
 | `core/runtime/test_backend_stages.py`, `avstack/test_backend_state.py` | Native backend stages, effective render requests, independent true state and copied sensor/reference graphs |
 | `core/test_component_log.py` | Output snapshots, named component collection and count differences |
 | `core/test_robustness.py` | Clean/attack preparation, corruption alignment, status accounting, valid denominators and failure cleanup |
@@ -88,7 +92,7 @@ pytest/CI collect their subdirectories recursively.
 | `avstack/test_component_log_real.py` | Historical plans/tracks/reference frames, unchanged controls under logging, attack hook ordering and matching metrics |
 | `avstack/test_pipeline.py` | Real tracking/planning/PID propagation, hook output replacement and the `ModularAVStack` adapter |
 | `avstack/test_scenario.py`, `avstack/test_reproducibility.py` | Actor setup/cleanup, hook ordering, scene resolution and actual spawn replay |
-| `core/test_cli.py` | YAML/overrides, clean/attacked calls, verdict exit codes and plotting |
+| `core/test_cli.py` | YAML/overrides, single/pair and attack/defense modes, custom stacks, preflight errors, verdict exit codes and plotting |
 
 Alpamayo tests use small external-schema stand-ins and a model with prescribed predictions.
 They validate our adapter, not AlpaSim API compatibility, checkpoint loading or real inference.

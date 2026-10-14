@@ -6,7 +6,10 @@ per-run state, or explicitly modify the simulated world through its native API.
 
 No attack or defense is required. `run`, `record_run` and `run_logged` use the same execution
 order. `run_scenario(..., runtime=...)` forwards the same runtime for the CARLA/modular entry point.
-Optimization algorithms and scenario selection are separate from this interface.
+Methods can prepare reusable artifacts through `Intervention` and execute through the existing
+`Runtime` hooks. Preparation can include user-defined optimization or simply load a payload.
+Scenario preparation supplies the configured or selected case before method preparation or execution.
+Selection is optional.
 
 ## Write your first attack
 
@@ -43,6 +46,120 @@ The returned command changes the physical state through the backend. Use `Runtim
 clean run. Add a defense after the attack to process its output, as shown below. For live
 experiments, replace the example backend and driver with the adapters in
 [INTERFACE.md](INTERFACE.md#1-backend-and-stack-compatibility).
+
+## Preparation and execution
+
+`avsectester.preparation.Intervention` is the optional preparation interface shared by attacks
+and defenses. Direct `Hook` registration remains available for methods that need no preparation.
+
+| Interface | Purpose |
+|---|---|
+| `method.prepare(scenario: ScenarioInstance) -> artifacts` | Create a payload or policy configuration. The default returns `None`. |
+| `method.hooks(artifacts) -> Sequence[Hook]` | Create execution handlers for a run, in their required order. Implement this method. |
+| `prepare_intervention(method, scenario, kind="attack", name=None, artifacts=...)` | Prepare once, or use the explicitly supplied artifacts without calling `prepare`. Returns a `PreparedIntervention`. |
+| `Treatment((prepared, ...)).runtime(base=None, case=None, kinds=None)` | Create fresh hooks for the enabled definitions and retain the base runtime's localizer and seed. |
+| `treatment.subset({"attack"})` | Select definitions by kind without preparing them again. |
+| `prepared.save(path)` / `PreparedIntervention.load(method, path)` | Save or restore exported artifacts with their name, kind and preparation provenance. |
+
+For a custom method, implement preparation and return execution hooks:
+
+```python
+from dataclasses import replace
+from avsectester.preparation import Intervention
+from avsectester.runtime import Hook
+
+class SpeedClamp(Intervention):
+    def __init__(self, max_speed=10.0):
+        self.max_speed = max_speed
+
+    def prepare(self, scenario):
+        return {"max_speed": self.max_speed}
+
+    def hooks(self, artifacts):
+        def clamp(observation, context):
+            return replace(observation, ego_speed=min(
+                observation.ego_speed, artifacts["max_speed"],
+            ))
+        return [Hook("observation", clamp)]
+```
+
+Register it with `prepare_intervention(SpeedClamp(), scenario, kind="defense")`. Preparation may
+instead create a texture, load a trained policy or derive parameters from the prepared scenario.
+
+Preparation receives the complete `ScenarioInstance`, including `match`, `conditions`,
+`provenance` and its fresh-backend factory. The match contains selected actor roles and insertion
+specifications. A pass-through scenario has `match=None`. Explicit target IDs and world positions
+can still be used without a match. A method that requires a selected role must validate that the
+role exists.
+
+Execution receives `context.case`, which high-level runners set to `scenario.match`, not the
+complete `ScenarioInstance`. Access selected IDs through `context.case.binding_ids` when a match
+is present. A non-None `Runtime.case` is preserved. Otherwise the prepared runner supplies `scenario.match`.
+
+Preparation runs before the formal experiment backend is reset. A method may use independently
+supplied models, rendering clients or trial-run factories during preparation. Resolve actors and
+live calibration for the formal run in execution callbacks. Keep reusable payloads and parameters
+in artifacts, and per-run history in handlers. `hooks` should construct fresh handlers, or return
+handlers whose `reset` correctly clears their own state.
+
+This complete example prepares an adaptive attack and compares it with a clean run:
+
+```python
+from avsectester.attacks.adaptive import SpeedFeedbackAttack
+from avsectester.backend import AVStack
+from avsectester.plane import Control
+from avsectester.preparation import Treatment, prepare_intervention
+from avsectester.runner import run_prepared
+from avsectester.runtime import Runtime
+from avsectester.scenarios.source import ScenarioInstance
+from avsectester.simulators.nurec import NuRecBackend, StubRenderer
+
+class Driver(AVStack):
+    def __call__(self, observation):
+        return Control(brake=float(observation.ego_speed > 5.0))
+
+scenario = ScenarioInstance(
+    factory=lambda: NuRecBackend(
+        {"ego0": {"speed": 2.0}}, renderer=StubRenderer(height=8, width=8),
+    ),
+    match=None,
+    provenance={"scene": "speed-feedback-example"},
+)
+method = SpeedFeedbackAttack(target_speed=5.0, gain=0.5, max_bias=5.0)
+prepared = prepare_intervention(method, scenario, kind="attack", name="speed-feedback")
+treatment = Treatment((prepared,))
+results = run_prepared(scenario, Driver, frames=4, runtimes={
+    "clean": Runtime(),
+    "attack": treatment.runtime(case=scenario.match),
+})
+clean, attacked = results["clean"], results["attack"]
+```
+
+`run_prepared` creates the backend, applies the scenario conditions to every treatment, uses a
+fresh stack for each run and closes the backend. One named treatment runs once. Multiple named
+treatments share the prepared origin. `Runtime` still owns handler lifecycle execution.
+
+### Artifact reuse and persistence
+
+Artifacts may be universal, specific to a scenario, or specific to a scenario and its conditions.
+The caller chooses their preparation and reuse scope. Reuse a `PreparedIntervention` in another
+`Treatment`, or pass `artifacts=existing_artifacts` to `prepare_intervention`. Explicitly supplied
+`None` also skips preparation. There is no automatic artifact cache or optimization policy.
+
+```python
+from avsectester.preparation import PreparedIntervention
+
+prepared.save("artifacts/speed_feedback.json")
+restored = PreparedIntervention.load(method, "artifacts/speed_feedback.json")
+runtime = Treatment((restored,)).runtime(case=scenario.match)
+```
+
+The default artifact codec accepts JSON values: dictionaries, lists, strings, numbers, booleans
+and `None`. Store external file references as strings. Saving a reference does not copy the file.
+For textures, tensors or custom objects, implement `export_artifacts(artifacts) -> JSON data` and
+`import_artifacts(data) -> artifacts` on the method. These methods may write and read external
+payload files. The loader receives the method explicitly rather than importing code from an
+artifact file. Preparation provenance is saved with the artifact data.
 
 ## Register handlers
 
@@ -89,9 +206,15 @@ runtime:
         type: PhantomInjection
         target_xyz: [6.0, 0.0, -1.5]
     - stage: observation
-      factory: my_research.defenses:SpeedFilter
-      options: {max_speed: 10.0}
+      factory: my_research.attacks:SpeedSpoofing
+      options: {bias_mps: 5.0}
 ```
+
+In `run_configured` and the CLI, raw `runtime.hooks` are enabled as attacks, including the
+attack part of an attack-defense treatment. Declare defenses under
+[configured interventions](#configured-interventions) with `kind: defense`. Do not put a `kind`
+field in `runtime.hooks`. Direct Python Runtime construction and `Runtime.from_config` do not
+classify handlers and can combine attack and defense freely when the caller controls execution.
 
 A factory is an importable class or function called with `options` as keyword arguments. It
 returns a handler with the callback and lifecycle contract described here. `factory` and
@@ -108,21 +231,82 @@ in `world.setup` or later callbacks.
 | `NativeHook(config, phase="post")` | Builds an avstack hook afresh per run and adapts its tuple return convention. Use `phase="pre"` with a component `.pre` stage |
 | `PhysicalPatchPlugin(patches)` | Deploys native CARLA panels at `world.setup` and owns their teardown |
 
+Physical panel `target` accepts backend logical names (`ego`, `lead`, `npc:0`), explicit actor IDs
+or selected roles from `context.case.binding_ids`. A single-host role can be used directly. Use
+an indexed alias such as `hosts[0]` for a role containing several actors.
+
 `frame_perturbation` and CARLA `insertion_perturbation` construct observation transforms. Pass
 them through `ObservationTransform` at `observation`, or use the `perturb` shorthand, which is
 internally converted into the same hook chain. They do not establish separate run loops.
 Pure insertion rendering and compositing live in `avsectester.rendering.compositor`. Image
 observation transforms and corruptions live in `avsectester.perturbations.image`.
 
-The CARLA CLI consumes `runtime`, `attacks` and `patches`. The convenience `attacks` list
+`NuRecDataset.insertion_renderer` can be configured before backend reset. It starts with recorded
+camera intrinsics and obtains the effective loaded camera, actor time and rendering pose when
+processing each image. Constructing the adapter does not require a connected rendering service.
+
+### Configured interventions
+
+Configured execution consumes `runtime`, `attacks`, `patches` and `interventions`.
+The convenience `attacks` list
 creates native component `.post` hooks. The convenience `patches` list creates one
-`world.setup` plugin. Convenience hooks precede explicit runtime hooks within a stage, allowing
-an explicit defense to process a native attack's output. Use `runtime.hooks` alone when a
-different order or a `.pre` hook is needed. The default clean treatment retains `runtime.seed`
+`world.setup` plugin. Both are prepared-method adapters and retain their existing YAML syntax.
+New methods use the following format:
+
+```yaml
+interventions:
+  - factory: avsectester.attacks.adaptive:SpeedFeedbackAttack
+    kind: attack
+    name: speed-feedback
+    options: {target_speed: 5.0, gain: 0.5, max_bias: 5.0}
+  - factory: my_research.defenses:SpeedFilterMethod
+    kind: defense
+    name: speed-filter
+    options: {max_speed: 10.0}
+```
+
+An intervention factory returns a method implementing `prepare` and `hooks`. The defense method
+above is supplied by the user. `kind` defaults to `attack`. `name` defaults to the method class
+name. Optional `artifacts` contains exported data passed to `import_artifacts` and skips `prepare`.
+Options configure the method factory, while artifacts configure its prepared execution.
+To reuse an existing defense handler, wrap it in an Intervention whose `hooks` method returns
+the appropriate Hook. A handler factory alone is not an intervention factory. The `SpeedClamp`
+example in [preparation and execution](#preparation-and-execution) shows this pattern.
+
+At a shared stage, assembly preserves this order: convenience `attacks`/`patches`, explicit
+`runtime.hooks`, then the new `interventions` list. Entries in that list retain definition order,
+including interleaved attack and defense entries. To control all ordering yourself, use the
+`interventions` list or explicit Runtime hooks. The classification controls which methods are
+enabled for clean, attack, defense or combined treatments. It does not change Hook or Plugin
+behavior or regroup entries. Raw `runtime.hooks` belong to the configured attack
+treatment. Disabled methods are not constructed or prepared.
+
+`interventions.prepare_from_config(config, scenario, kinds=None)` returns the ordered `Treatment`.
+Pass `kinds={"attack"}`, `{"defense"}` or both to prepare only those methods. The high-level
+configured runner prepares enabled methods once and assembles their execution runtime. Raw
+Runtime registration remains suitable when preparation is managed separately by the user.
+
+There is no top-level `defenses:` shorthand. Configure defenses using `interventions` with
+`kind: defense`. The configured runner reads `mode` and `treatment`, unless Python keyword
+arguments explicitly override them.
+
+In pair mode, `attack` with an enabled attack and `attack-defense` produce the current
+stop-based attack verdict. Combined runs are labeled `attack+defense`. A `defense` pair reports
+driving side effects relative to clean. A `clean` pair and an empty attack pair report baseline
+comparisons. Those comparisons have no attack verdict, including in saved plots, and successful
+execution returns `0`. Single runs also return `0` on successful execution. See
+[DOCKER.md](DOCKER.md#run-the-end-to-end-attack) for the complete exit-code table.
+
+Clean versus attack+defense measures the residual attack impact. Measuring defense effectiveness
+also requires an attack-only reference. `run_prepared` can execute all three named treatments,
+while three-arm configuration/CLI support is tracked in [TODO.md](TODO.md).
+
+The default clean treatment retains `runtime.seed`
 and `runtime.localizer` and has no hooks. An explicit `clean_runtime` mapping replaces that
 baseline treatment. YAML localizer factories construct independent instances for the two
-treatments. The CLI and Python convenience entry point use the same
-`interventions.configured_runtime_pair(config, ...)` builder. Explicit Python runtime arguments
+treatments. The CLI and Python convenience entry point share
+`interventions.configured_clean_runtime(config, ...)` for baseline defaults and
+`configured_runtime_pair(config, ...)` for comparisons. Explicit Python runtime arguments
 take precedence over their YAML treatment settings. If only `attacked_runtime` is supplied
 and there is no YAML `clean_runtime`, the default clean runtime shares its localizer object,
 case and seed without its hooks. Shared stateful localizers must implement `reset` or callers
@@ -218,7 +402,7 @@ rendering.
 |---|---|
 | `Observation` | `sensor_data` maps IDs to native payloads. `calibration` holds adapter calibration. `vehicle_state` is the model-visible state estimate. `ego_speed` is the model-visible speed in m/s. `t` and `frame` are model-visible clock metadata. |
 | `StateEstimate` | `vehicle_state` and `ego_speed`, independent of the physical ego state |
-| `Control` | `throttle`, `brake`, `steer` and optional `trajectory`. CARLA uses throttle/brake in `[0, 1]` and steer in `[-1, 1]`. NuRec actuator dynamics use the same normalized convention. Handlers are responsible for suitable values. |
+| `Control` | `throttle`, `brake`, `steer` and optional `trajectory`. CARLA and NuRec actuator dynamics use throttle/brake in `[0, 1]` and steer in `[-1, 1]`. The backend must support the command fields that are used. |
 | `CallInputs` | `args` and `kwargs`, passed to the component's actual call signature. Return a new `CallInputs` to replace arguments. |
 | `RenderRequest` | `pose` and `camera`. Changing the request changes that rendering, without moving the physical ego. |
 | Alpamayo `PredictionInput` | Camera images and their history, speed, acceleration, ego pose history, command, route, inference seed and previous plan |
@@ -285,6 +469,28 @@ require a different trajectory adapter.
 The follower interpolates from the current rig origin to the first waypoint, so the physics
 step can be shorter than the waypoint interval without advancing to that waypoint early.
 
+### Command compatibility
+
+`backend.command_modes` declares consumed representations, and `stack.command_modes` declares
+possible outputs. Built-in modes are `"actuator"` and `"trajectory"`:
+
+| Adapter | Command mode |
+|---|---|
+| CARLA backend and `ModularAVStack` | `actuator` |
+| NuRec with `KinematicBicycle` | `actuator` |
+| NuRec with `TrajectoryFollower` and `AlpamayoAVStack` | `trajectory` |
+| Custom adapter | Declare a `frozenset` of supported modes, or leave `None` for undeclared semantics |
+
+Known mismatches are rejected before reset. A `command` hook may explicitly convert representations,
+so its presence defers compatibility checking to the final command. All command handlers execute
+first, then the backend validates the result. A conversion to actuator commands must clear
+`trajectory`. A trajectory-only backend rejects nonzero throttle, brake or steer, and an
+actuator-only backend rejects a non-`None` trajectory. Neutral commands remain allowed.
+Custom backends can override `validate_command` for additional constraints.
+
+Changing a field the selected dynamics cannot execute is an error, rather than an inactive attack
+or defense. Command conversion is separate from implementing more realistic vehicle dynamics.
+
 The modular stack consumes calibration and reference frames carried by avstack sensor wrappers.
 CARLA exposes that same calibration object in `observation.calibration[sensor_id]`. Its native
 camera calibration includes `P`, image shape and `reference`. LiDAR calibration includes its
@@ -314,7 +520,8 @@ flowchart TD
     INIT --> STACK[Stack inference and component hooks]
     OBS -->|Later input| STACK
     STACK --> CMD[command handlers]
-    CMD --> MON[on_step with detached input and command]
+    CMD --> VALIDATE[Validate final command]
+    VALIDATE --> MON[on_step with detached input and command]
     MON --> PRE[world.step.pre]
     PRE --> PHYS[Apply control and advance physics or CARLA tick]
     PHYS --> POST[world.step.post]
@@ -411,6 +618,10 @@ For history-dependent decisions, use a plugin's lifecycle methods below.
 
 Access is not restricted by attack category. Native handles are borrowed live resources. The
 framework does not sandbox their operations or automatically undo arbitrary user changes.
+Native availability follows adapter initialization. The first observation handler runs before
+`stack.reset`, so a lazily loaded Alpamayo model may still be absent from `stack.models` then.
+Supplying `model=...` exposes an already loaded model. NuRec's service is available after scene
+loading during reset. CARLA live actors are available in `world.setup` after actor creation.
 `context.stack.native` and `context.stack.models` expose component/model handles. Accessing
 `models` does not force lazy model loading.
 
@@ -423,7 +634,8 @@ See [IMAGE_ATTACKS.md](IMAGE_ATTACKS.md) for asset placement and rendering.
 ## Context
 
 `RunContext` is passed to lifecycle initialization. It provides `backend`, `stack`, `case`,
-`rng` and `native` resources. `Runtime(case=...)` passes the caller's case through unchanged.
+`rng` and `native` resources. `Runtime(case=...)` passes a supplied non-None case through unchanged.
+The prepared runner fills a None case from its scenario match.
 `native` groups resources under `"backend"` and `"stack"`.
 
 Stage callbacks and `after_step` receive `StageContext`:
@@ -444,6 +656,31 @@ Model-visible time and physical time can differ during a clock attack. Use `sim_
 an observation handler changes it.
 At `command`, the handler value and `context.control` are the current command in the processing
 chain. Elsewhere, editing the control snapshot does not change actuation or an executed command.
+
+## Recording intervention outputs
+
+Call `context.record_output(name, value)` inside a stage handler or `after_step` to save attack
+decisions, defense alarms, estimated values or scores in `trace.outputs`. This supplements the
+returned stage value. It does not change execution or define an attack-success metric.
+
+```python
+def speed_alarm(observation, context):
+    context.record_output("defense.speed_alarm", {
+        "alarm": observation.ego_speed > 10.0,
+        "reported_speed": observation.ego_speed,
+    })
+    return observation
+
+runtime = Runtime([Hook("observation", speed_alarm)])
+```
+
+Each `InterventionOutput` contains `name`, a copied `value`, `step`, `stage`, `frame`, `t` and
+optional `sensor`. `step` is the driving-decision index. `frame` and `t` are the physical world
+at the callback. For example, an observation-stage output is recorded before the corresponding
+command, while a `step.end` output describes the state after that command. Repeated names create
+separate entries. Later changes to the plugin's mutable values do not change past outputs.
+The common loop and recorders retain these outputs. Use meaningful names to distinguish methods
+when several plugins emit data.
 
 ## Stateful attack or defense
 
@@ -481,7 +718,9 @@ and physical snapshot. It updates handler state and does not return a replacemen
 `step.end` is a lifecycle notification, not a stage registered with `Hook`.
 Each participant receives its own copied observation and control for feedback, subject to the
 native capture ownership rules above.
-`close()` releases handler-owned resources on success or failure.
+`close()` releases handler-owned resources on success or failure after the execution session
+starts. Factories and `hooks()` should defer acquiring native resources to lifecycle callbacks.
+If preparation needs its own resources, the method owns and releases them.
 
 `Runtime(seed=...)` creates a fresh NumPy generator for each run. Use `context.rng` when the
 handler needs repeatable random choices. This seed does not configure simulator, model or
@@ -489,6 +728,28 @@ external-library randomness. Initialize those through their own APIs as needed.
 
 For a stateful closure without lifecycle methods, create a fresh closure and runtime per run.
 The framework cannot infer how arbitrary Python variables should be reset.
+
+### Adaptive reference attack
+
+`attacks.adaptive.SpeedFeedbackAttack` prepares a parameter dictionary and constructs a fresh
+`SpeedFeedbackPlugin` at `observation`. The plugin adds its current bias to reported `ego_speed`.
+After every physical step, it reads the true ego speed and updates the next bias:
+
+```text
+bias = clip(bias + gain * (target_speed - true_speed), 0, max_bias)
+```
+
+| Parameter | Meaning |
+|---|---|
+| `target_speed` | Reference speed in m/s, nonnegative |
+| `gain=0.1` | Nonnegative feedback gain per completed step |
+| `max_bias=5.0` | Maximum reported-speed bias in m/s |
+| `initial_bias=0.0` | Starting bias in m/s, between zero and `max_bias` |
+
+All parameters must be finite. `reset` clears bias and feedback history for each run. This is an
+example of real-time reading, stateful decisions and lifecycle management, rather than a sensor
+physics model. A user's adaptive attack may instead consume measurements, other actor data or
+native model outputs through the same context APIs.
 
 The caller owns backend resources and closes the backend, as with ordinary `run`:
 

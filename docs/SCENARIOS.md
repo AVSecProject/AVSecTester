@@ -1,8 +1,9 @@
 # Scenario selection and insertion
 
-Select an initial case before running an experiment. A case contains the initial scene, stable
-actor bindings and explicit insertion specifications. Clean and attacked runs use this same case.
-Filters are not installed in the driving loop and do not promise attack success.
+Prepare a scenario before running an experiment. Selection is optional. A selected scenario
+contains its origin, stable actor bindings and explicit insertion specifications. Named treatments
+use this same scenario and operating conditions. Filters run during preparation, before driving
+interactions begin, and do not promise attack success.
 
 The workflow is:
 
@@ -11,8 +12,9 @@ The workflow is:
 3. Ask a source to prepare candidates and return qualifying cases.
 4. Create a backend from a selected case and run clean and attacked experiments from that origin.
 
-Selection is a Python API. The `avsectester run` YAML command runs a configured CARLA experiment,
-but does not parse the selection API described here. See [SETUP.md](SETUP.md) for dependencies.
+The Python setup API and configured experiment entry points share the same prepared-scenario
+contract. YAML can include a serialized selection requirement. See [SETUP.md](SETUP.md) for
+dependencies and [INTERVENTIONS.md](INTERVENTIONS.md) for attack and defense execution.
 
 ## Interfaces
 
@@ -24,7 +26,11 @@ but does not parse the selection API described here. See [SETUP.md](SETUP.md) fo
 | `ScenarioRequirement` | Compose conditions and select a fixed role assignment |
 | `InitialWindow(frames=N)` | Require conditions on the first N prepared frames |
 | `DatasetFilter`, `CarlaScenarioBuilder` | Prepare candidates and yield selected cases |
-| `ScenarioInstance.make_backend()` | Create a backend starting at the selected origin |
+| `scenario_from_config`, `source_from_config` | Prepare one scenario or a source from configuration |
+| `ConfiguredScenarioSource` | Wrap one configured scenario without preview or filtering |
+| `ScenarioInstance.make_backend()` | Create a fresh backend and configure its world conditions |
+| `ScenarioConditions`, `SensorCondition` | Configure the operating environment for every treatment |
+| `run_prepared` | Run named treatments with shared conditions and backend cleanup |
 | `Insertion`, `resolve_insertion` | Specify and resolve object placement and orientation |
 
 A filter returns `pass`, `fail` or `unknown`. Missing visibility, missing bound actors and an
@@ -42,6 +48,89 @@ combinations:
 the selected `ScenarioMatch` or `None`. The match retains `binding_ids`, `insertions` and `window`.
 Sources retain accepted, rejected and unknown checks in `selection_log`. `save_selection(path)`
 writes these checks as JSON, without copying native clients or image arrays.
+
+## Prepare configured scenarios
+
+Without `selection`, setup wraps the configuration in one scenario. It does not open a simulator,
+render images or evaluate filters. Backend resources are created when the scenario is run:
+
+```python
+from avsectester.scenarios import scenario_from_config
+from avsectester.runner import run_prepared
+from avsectester.runtime import Runtime
+
+scenario = scenario_from_config(config, provenance={"config_path": "configs/carla_scenario.yaml"})
+results = run_prepared(
+    scenario, stack_factory, frames=30,
+    runtimes={"clean": Runtime()},
+)
+```
+
+`stack_factory()` creates a compatible driving system for each treatment. One named treatment
+runs once. Multiple treatments replay the same prepared origin. `run_prepared` closes the backend
+on completion or error. The lower-level `run(backend, stack, ...)` and `run_pair(...)` remain
+available when the caller manages scenario assembly and conditions explicitly.
+
+| `ScenarioInstance` field | Meaning |
+|---|---|
+| `factory` | Original callable constructing a fresh backend, without applying scenario conditions |
+| `match` | Optional `ScenarioMatch` with selected scene, roles, insertions and window |
+| `config` | Detached scene/backend configuration, when available from a configured source |
+| `conditions` | Shared `ScenarioConditions` |
+| `provenance` | Source metadata and resolved conditions, including seeds |
+| `selection` | Selection checks and reasons, empty without filtering |
+
+`scenario.make_backend()` calls `factory`, configures world conditions and returns the backend.
+It closes the backend if condition configuration fails. Experiment entry points use this method.
+Calling the raw `factory()` alone does not apply conditions.
+
+ScenarioInstance fields cannot be reassigned. Use `dataclasses.replace(scenario, factory=...)`
+or `replace(scenario, conditions=...)` to construct a modified scenario. The configuration and
+provenance dictionaries are detached copies but remain mutable, rather than deeply immutable.
+Updating configuration metadata does not rebuild a factory that already captured its settings.
+Use `factory=` for keyword construction and replacement. `make_backend()` remains the execution
+method, not a constructor field.
+
+The prepared scenario is distinct from its match. Intervention preparation receives the complete
+`ScenarioInstance`. Runtime callbacks access the optional match as `context.case`. Without
+selection both `scenario.match` and the default runtime case are `None`. No actor roles or
+insertions are inferred. A method needing a selected role must report missing selection clearly.
+Explicit world positions or native host names can still be used without selection.
+
+The flat YAML layout remains supported. Setup passes a detached scene-only view to backend
+factories. `frames`, `stack`, `runtime`, `clean_runtime`, `attacks`, `patches`, `defenses`,
+`interventions`, `selection`, `conditions`, `mode`, `treatment` and `output` stay outside that view.
+The existing `ego.pipeline` remains available in the original configuration for modular stack
+assembly. The reserved `defenses` key is rejected by intervention assembly. Use
+`interventions` with `kind: defense`. Legacy top-level `weather` is normalized into `conditions.world.weather`. Conflicting
+weather settings are rejected.
+
+For a custom adapter, provide `backend_factory(scene_config) -> WorldBackend`. Its argument is
+copied for every invocation. `ScenarioInstance.make_backend()` calls the backend's
+`configure_conditions(world)` before returning it, and closes a newly constructed backend if
+condition configuration fails. A source's factory must capture configuration, not preview clients.
+
+Direct NuRec setup accepts `backend.type: NuRecBackend` with `renderer: stub` or a renderer mapping
+such as `{type: nurec, endpoint: "127.0.0.1:50051"}`. `backend.dynamics.type` is `actuator` by
+default or `trajectory` for `TrajectoryFollower`. Other dynamics parameters accompany the type.
+No driving model is loaded by scenario setup. NuRec dataset selection is available through the
+Python `DatasetFilter` API below.
+
+To enable filtering in a configuration, serialize a requirement:
+
+```python
+from avsectester.scenarios import requirement_to_dict, scenario_from_config
+
+config["selection"] = {"requirement": requirement_to_dict(requirement)}
+scenario = scenario_from_config(config)
+```
+
+`selection.source` accepts `CarlaScenarioBuilder` options, such as `sample_scene` and `samples`.
+`scenario_from_config` returns the first accepted scenario or raises if none qualifies.
+`source_from_config(...).scenarios(limit=N)` enumerates accepted scenarios. For recorded sources,
+pass `dataset=dataset` to either setup function. Custom live candidate providers must apply the
+provided weather before yielding their context. Recorded world properties are selected by filters,
+rather than changed by a condition.
 
 ## Specify inserted objects
 
@@ -271,6 +360,89 @@ Clean uses the attack-selected case with the insertion disabled. Resolve random 
 once per pair through `prepare_clean_attack_pair()`. Neither run selects its own preferred host,
 position or start time. Trajectories may diverge after the experiment starts.
 
+## Scenario conditions
+
+A condition specifies the operating environment shared by clean, attack, defense and combined
+runs. An intervention specifies what changes between those treatments. Keep these settings
+separate even when both use observation hooks.
+
+```yaml
+conditions:
+  seed: 12
+  world:
+    weather:
+      cloudiness: 70
+      precipitation: 20
+      fog_density: 15
+  sensors:
+    - type: GaussianNoise
+      severity: 0.2
+      camera: front
+      stage: observation
+      order: after
+```
+
+| Setting | Values and effect |
+|---|---|
+| `world` | Mapping passed to `WorldBackend.configure_conditions` before reset |
+| `world.weather` | CARLA weather preset name or native weather-parameter mapping |
+| `sensors` | Ordered image-corruption or custom-handler specifications |
+| `type` | A corruption name from `perturbations.image.CORRUPTIONS` |
+| `severity` | Corruption strength in `[0, 1]`, default `0.5` |
+| `camera` | RGB sensor name, or omit to use the first readable RGB camera |
+| `factory`, `options` | Importable `module:callable` and arguments for a custom handler factory |
+| `stage` | `sensors.post` or `observation`, default `observation` |
+| `order` | `before` or `after` digital hooks at that stage, default `after` |
+| `seed` | Nonnegative random seed, default `0`, overridable per sensor condition |
+
+Each custom factory returns a fresh callable or Plugin with the normal runtime signature.
+Python code can construct `SensorCondition(factory, stage=..., order=..., seed=...)` directly,
+or use `SensorCondition.image(pipeline, camera=...)` for an `AugmentationPipeline`. Apply these
+with `ScenarioConditions(world=..., sensors=(...))` on the prepared scenario.
+
+`run_prepared` creates independent sensor handlers for each treatment. Their random streams are
+separate from attack randomness and use the relative driving-step index, so different simulator
+frame IDs do not change the configured corruption realization. Different source images can still
+produce different corrupted images. Conditions and seeds are included in scenario provenance.
+
+Physical world modifications precede sensor conditions. At one sensor stage, `order` controls
+placement around intervention hooks. Stage execution order also matters: `sensors.post` always
+runs before `observation`. The default observation condition runs after observation attacks,
+preserving attack-then-corruption behavior.
+
+CARLA currently accepts world weather. Built-in NuRec and recorded-frame backends reject imposed
+world properties. Custom backends can implement `configure_conditions` for their actual supported
+properties, and must reject unsupported ones. Traffic control, latency and other effects can be
+added through condition-aware providers and custom handlers. They are not built-in condition
+implementations. Recorded night/rain labels remain properties for filters to select.
+
+### Conditions during selection
+
+CARLA applies weather before preparing its candidate world. Sensor conditions expose a separate
+measurement to custom filters:
+
+```python
+from avsectester.scenarios import ScenarioConditions
+
+measurement = ScenarioConditions.selection_observation(context)
+# Inspect measurement.sensor_data, calibration, vehicle_state or ego_speed in your filter.
+```
+
+The provider supplies `context.native["observation"]` at the same frame and time as `context.scene`.
+Sources transform a copied measurement and expose `context.native["conditioned_observation"]`,
+while `context.native["conditions"]` describes the applied configuration. Normalized ground truth,
+raw observations and geometric visibility labels remain separate. Image-space fog does not
+replace a geometric visibility fraction with an attenuation score.
+
+The CARLA provider supplies aligned observations. Metadata-only dataset contexts, including the
+standard NuRec context, need a custom `prepare_context` or dataset adapter to supply measurements.
+`selection_observation` raises when no conditioned measurement is available. A filter may report
+that missing evidence as unknown. Multi-frame sources preserve condition-handler state throughout
+one prescribed preview sequence. Custom sources can use `conditions.selection_scope()` as a
+context manager and call its returned function with `(context, frame_index)` for each frame.
+`DatasetFilter` rejects imposed world conditions because its recorded preview cannot apply them.
+A custom source supporting world changes must configure its preview before computing filter inputs.
+
 ## Visibility
 
 For known insertion geometry, visibility is:
@@ -431,7 +603,7 @@ For a case selected by `CarlaScenarioBuilder` using `CarlaSelectionBackend`:
 
 ```python
 from avsectester.interventions import ObservationTransform
-from avsectester.runner import run_pair
+from avsectester.runner import run_prepared
 from avsectester.runtime import Hook, Runtime
 from avsectester.simulators.carla import insertion_perturbation
 
@@ -442,10 +614,11 @@ def attacked_runtime(backend):
     )
     return Runtime([Hook("observation", ObservationTransform(perturb))], case=case.match)
 
-clean, attacked = run_pair(
-    case.make_backend(), stack_factory, frames=30,
-    clean_runtime=Runtime(case=case.match), attacked_runtime=attacked_runtime,
+results = run_prepared(
+    case, stack_factory, frames=30,
+    runtimes={"clean": Runtime(), "attack": attacked_runtime},
 )
+clean, attacked = results["clean"], results["attack"]
 ```
 
 CARLA logical host names `lead` and `npc:<index>` survive paired resets. For a case selected from
@@ -462,6 +635,34 @@ def attacked_runtime(backend):
     perturb = frame_perturbation(insert, camera=dataset.camera)
     return Runtime([Hook("observation", ObservationTransform(perturb))], case=case.match)
 ```
+
+`NuRecDataset.insertion_renderer` can be configured before backend reset. It resolves camera
+calibration lazily when the first observation is processed, after the renderer has loaded the
+scene. Geometry follows the bound actor IDs and each treatment's physical ego pose.
+
+`NuRecDataset.make_backend(scene)` defaults to actuator dynamics. Alpamayo produces trajectory
+commands and needs a trajectory-compatible execution model. Configure that explicitly in the
+selected scenario's backend factory:
+
+```python
+from dataclasses import replace
+from avsectester.simulators.nurec import TrajectoryFollower
+
+def trajectory_backend():
+    backend = dataset.make_backend(case.match.scene)
+    backend.dynamics = TrajectoryFollower()
+    return backend
+
+case = replace(case, factory=trajectory_backend)
+results = run_prepared(
+    case, alpamayo_stack_factory, frames=30,
+    runtimes={"clean": Runtime(), "attack": attacked_runtime},
+)
+```
+
+The built-in follower executes the planned trajectory ideally. Selecting it does not add reactive
+traffic or realistic actuator constraints. See [INTERFACE.md](INTERFACE.md) for command-mode
+compatibility and [TODO.md](TODO.md) for deferred dynamics work.
 
 Use [component logging](COMPONENT_LOGGING.md) to capture stack outputs, or
 [robustness evaluation](AUGMENTATION.md) to run selected cases across corruption conditions.

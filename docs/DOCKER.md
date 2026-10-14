@@ -44,13 +44,18 @@ phantom-attacked pass, and compares their driving traces. It prints detection co
 final speeds, braking-frame counts and a verdict. Results depend on the configured scene and
 whether the baseline establishes driving.
 
+Pair treatments `attack` and `attack-defense` produce an attack verdict when an attack is
+enabled. Defense-only pairs report driving side effects. Clean pairs and empty attack pairs
+report baseline comparisons. These non-attack comparisons have no verdict and exit with `0`
+after successful execution. Single runs also exit with `0` after successful execution.
+
 | Exit code | Meaning |
 |---|---|
-| `0` | Attack succeeded under the current driving-impact criterion |
+| `0` | Attack pair succeeded under the current criterion, or a single/non-attack run completed successfully |
 | `1` | Execution failed, such as a server or handler exception |
 | `2` | Invalid configuration, parameters or unavailable stage |
-| `3` | A valid baseline was established, but the attack did not meet that criterion |
-| `4` | Inconclusive because the clean run did not establish driving |
+| `3` | Attack pair established a valid baseline, but the attack did not meet that criterion |
+| `4` | Attack pair was inconclusive because the clean run did not establish driving |
 
 See [INTERFACE.md](INTERFACE.md#3-metric-clean-vs-attacked--verdict) for the criterion.
 

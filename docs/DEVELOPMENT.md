@@ -2,12 +2,11 @@
 
 ## Design principle: no parallel definitions
 
-AVSecTester is a **security layer** on avstack + AlpaSim, not a re-implementation of either. The rule
-that shapes the codebase: if an upstream project already defines something (the world, the ego,
-sensors, the perception/tracking/planning/control modules, the Alpamayo policy, the config
-registries and pre/post hooks), adapters use it directly. The shared runtime coordinates callbacks
-and lifecycle across those adapters. It does not replace simulator actors or model components.
-When a missing capability belongs to avstack, add it to the avstack fork.
+AVSecTester connects simulation, driving systems and security methods through shared interfaces.
+Adapters reuse provider actors, sensors, model components, configuration registries and native
+hooks. This repository owns scenario preparation, intervention preparation/execution and the
+messages exchanged between the world and driving system. When a missing capability belongs to
+avstack, add it to the avstack fork.
 
 Concretely:
 
@@ -20,8 +19,12 @@ Concretely:
 - CARLA world, traffic and ticking use **avcarla `CarlaClient` / `CarlaNpc`**. The NuRec adapter
   advances the ego with local planar dynamics and requests reconstructed views from NVIDIA's
   **`nre-ga`** renderer. Other actors follow recorded trajectories.
-- Attack and defense use **`Runtime`** stage handlers with shared lifecycle management. Modular
-  handlers bridge avstack pre/post hooks. `perturb(Observation)` remains an input shorthand.
+- Attack and defense can implement **`Intervention`** to prepare reusable artifacts, then create
+  **`Runtime`** stage handlers with shared lifecycle management. Direct runtime handlers remain
+  available. Modular handlers bridge avstack pre/post hooks. `perturb(Observation)` remains an
+  input shorthand.
+- **`ScenarioConditions`** separates shared environment settings from interventions that vary
+  across treatments. World settings belong to backends, while sensor conditions use runtime hooks.
 
 ## Architecture
 
@@ -29,16 +32,24 @@ The spine is one loop over a data plane. Adapters compose when their sensor, sta
 formats agree. The supported combinations and remaining adaptation work are listed in
 [INTERFACE.md](INTERFACE.md#1-backend-and-stack-compatibility).
 
-Before that loop, `ScenarioSource.scenarios(requirement)` prepares candidates and returns
-`ScenarioInstance` objects. `case.make_backend()` reconstructs the selected origin for a paired
-experiment. Selection filters stop at this boundary. Runtime insertion uses fixed actor bindings
-and updates placement from the current pose. See [SCENARIOS.md](SCENARIOS.md) for the full workflow.
+Configured entry points use `scenario_from_config` to prepare a `ScenarioInstance`. Without
+selection, a pass-through source yields one configuration without preview and `match=None`.
+Selection sources evaluate prescribed candidate frames and return an optional `ScenarioMatch`.
+Intervention preparation receives the complete scenario. Runtime's `context.case` carries the match.
+Filters stop at that boundary. Runtime insertion uses fixed identities and updates placement from
+the current pose.
+
+`Intervention.prepare(scenario)` creates artifacts, and `hooks(artifacts)` creates execution
+handlers. `run_prepared` executes named treatments, sharing the origin and scenario conditions.
+`run_configured` assembles this path from existing YAML/Python configuration and supports single
+or paired runs. Direct `run` and `run_pair` remain available. See [SCENARIOS.md](SCENARIOS.md) and
+[INTERVENTIONS.md](INTERVENTIONS.md) for the public preparation and execution contracts.
 
 ```mermaid
 flowchart LR
     BE[WorldBackend] -->|Observation| RUN[Shared driving loop]
     RUN -->|Processed input| ST[AVStack]
-    ST -->|Control| RUN
+    ST -->|Commands| RUN
     RUN -->|Executed command| BE
     RT[Runtime stage handlers] -. world and render .-> BE
     RT -. sensors, localization, observation, command .-> RUN
@@ -47,9 +58,11 @@ flowchart LR
 ```
 
 `run`, visualization recording and component logging share this loop. Runtime handlers replace
-stage values before downstream consumption. Unsupported stages fail before reset. Observation
-state and physical state remain independent. See [INTERVENTIONS.md](INTERVENTIONS.md) for
-callback types, lifecycle and native resources.
+stage values before downstream consumption. Unsupported stages and declared command-mode
+incompatibilities fail before reset. A command-conversion hook defers mode checking to the final
+command. Observation state and physical state remain independent. Handler diagnostics are copied
+to `Trace.outputs` through `context.record_output(name, value)`. See
+[INTERVENTIONS.md](INTERVENTIONS.md) for callback types, lifecycle and native resources.
 
 The CARLA closed-loop driving pieces were contributed upstream into the forks (see
 [`INTERFACE.md`](INTERFACE.md) §"What comes from avstack / AlpaSim"): `ModularDrivingPipeline`,
@@ -64,8 +77,11 @@ avsectester/
   plane.py            Observation · Control · WorldSnapshot · StateEstimate · Trace   (pure data)
   backend.py          WorldBackend · AVStack · run(...)             (interfaces + loop)
   runtime.py          Runtime · Hook · Plugin · contexts            (intervention execution)
-  interventions.py    ObservationTransform · NativeHook · YAML runtime adapters
-  runner.py           run_pair   (shared origin, fresh stacks, runtime lifecycle)
+  preparation.py      Intervention · PreparedIntervention · Treatment · artifact storage
+  interventions.py    ObservationTransform · NativeHook · configuration/preparation adapters
+  conditions.py       ScenarioConditions · SensorCondition   (shared environment settings)
+  experiment.py       run_configured · driving factory · execution/treatment selection
+  runner.py           run_pair · run_prepared   (shared origin, fresh stacks, cleanup)
   insertion.py        Insertion · placement/orientation · asset surfaces · pose resolution
   carla_runner.py     run_scenario · run_scenario_pair   (CARLA + modular stack assembly)
   perturbations/      image corruptions · frame_perturbation   (observation transforms)
@@ -77,9 +93,12 @@ avsectester/
   stacks/                                                (AVStack implementations)
     modular.py        ModularAVStack (avstack ModularDrivingPipeline)
     alpamayo.py       AlpamayoAVStack (wraps alpasim_driver Alpamayo-1.5)
-  scenarios/          select/build test cases meeting an attack's preconditions   (see SCENARIOS.md)
+  scenarios/          configured and selected scenarios   (see SCENARIOS.md)
+    setup.py          scenario_from_config · source_from_config · pass-through source
+    source.py         ScenarioInstance · DatasetFilter · CarlaScenarioBuilder
   evaluation/         robustness harness + component logging   (see AUGMENTATION.md, COMPONENT_LOGGING.md)
   attacks/
+    adaptive.py       SpeedFeedbackAttack   (reference stateful intervention)
     pipeline/         Internal pipeline attacks: PhantomInjection (avstack HOOKS hook)
     patch/            Physical patch textures, configuration and deployment
     object_insertion/ Traffic signs, pedestrian images and traffic lights
@@ -97,31 +116,39 @@ in `avsectester.attacks.pipeline.phantom`.
 
 ## Extending
 
-- **A new world backend** — subclass `WorldBackend` (`reset`/`step`) and implement an independent
-  `ground_truth()` snapshot. Use `run(...)` with a stack that consumes the provided observations
-  and produces controls the backend can execute.
-- **A new AV stack** — subclass `AVStack` (`__call__(obs) -> Control`); keep heavy imports lazy (as
-  `AlpamayoAVStack` does) so the offline suite still imports in the base env.
-- **An attack or defense** — register `Hook(stage, handler)` through `Runtime`. Handlers return
-  replacement values. Stateful handlers provide lifecycle methods. See
-  [INTERVENTIONS.md](INTERVENTIONS.md) for supported stages and custom adapter requirements.
-  For a simple input-only function, `run(..., perturb=...)` remains available.
-- **A modular white-box attack** — write a callable, `@HOOKS.register_module()` it (see
-  `avsectester/attacks/pipeline/phantom.py`), and reference it in a scenario's `attacks:` list with the
-  `stage` to hook. Removal, tracking-stage, and pre-hook (sensor-input) attacks use the same seam.
-- **A new modular driving behavior** — add/replace an avstack planning or control module (in the
-  fork) and name it in the pipeline config; the scenario is unchanged.
-- **A new CARLA scenario** — copy `configs/carla_scenario.yaml`; change town/spawn/traffic/sensors/attack.
-- **A selection filter** — implement `Constraint.evaluate(context) -> FilterResult` and compose it
-  with existing filters. Native data access and resource ownership are described in
-  [SCENARIOS.md](SCENARIOS.md#custom-filters-and-native-access).
-- **A dataset or candidate provider** — expose prepared initial states and a factory that recreates
-  the selected origin. Preserve actor IDs across the initial window and paired experiment.
-- **An inserted asset** — implement `planes()` with asset-local `PlaneSurface` rectangles and use
-  `Insertion` for placement. Reuse pose resolution, projection and visibility instead of defining
-  a second attachment mechanism in an attack module.
-- **A defense** — a handler at the effective stage, using the same lifecycle and return-value
-  convention as an attack. Handler order is explicit and either category may be absent.
+| Contribution | Interface and responsibility |
+|---|---|
+| World backend | Implement `WorldBackend.reset`, `step`, independent `ground_truth`, and resource cleanup. Declare supported command modes and runtime stages. Implement `configure_conditions` for supported world settings. |
+| Driving system | Implement `AVStack.__call__(observation) -> Control`, optional reset, and `command_modes`. Expose actual component stages, models and native resources when relevant. Keep heavy imports lazy. |
+| Attack or defense | Implement `Intervention.prepare(scenario)` and `hooks(artifacts)` for reusable preparation, or register Runtime hooks directly. Return the downstream value and manage per-run history through Plugin lifecycle methods. |
+| Shared sensor condition | Supply a fresh `SensorCondition` handler factory. Keep its operating settings independent from treatment-specific attack/defense variables. |
+| Selection filter | Implement `Constraint.evaluate(context) -> FilterResult`. Use normalized state, raw metadata, native APIs or conditioned measurements as appropriate. |
+| Dataset or candidate provider | Supply prescribed candidate states, stable actor IDs, scoped native resources and a factory recreating the accepted origin. |
+| Inserted asset | Implement `planes()` using asset-local `PlaneSurface` rectangles, then use `Insertion` for placement and the shared geometry for rendering/visibility. |
+
+A custom driving system can enter Python runs through `stack_factory()` or configured runs through
+`stack.factory`/`stack.options`. Custom world adapters enter scenario setup through
+`backend_factory(scene_config)`. A shared interface does not convert incompatible sensor/state
+formats or commands automatically. Built-in command modes are `actuator` and `trajectory`.
+An explicit command hook can provide conversion. A custom adapter leaving `command_modes=None`
+retains its own validation semantics.
+
+For modular methods, `NativeHook` adapts avstack registered hooks. The `attacks:` shorthand binds
+post-hooks at `perception`, `tracking`, `planning` or `control`. Pre-hooks require an explicit
+`runtime.hooks` entry such as `perception.pre`, with `CallInputs` returned to the downstream
+component. New modular driving behavior belongs in the avstack planning/control modules and
+pipeline configuration.
+
+`SpeedFeedbackAttack` demonstrates run-local state and `after_step` feedback. Its purpose is to
+illustrate the adaptive interface, not a validated physical attack model. Runtime allows access to
+observations, true ego snapshots and native provider APIs. Record diagnostics with
+`context.record_output(name, value)` without changing the stage's output contract.
+
+For CARLA scenes, begin with `configs/carla_scenario.yaml`. For selection and custom-provider
+ownership, see [SCENARIOS.md](SCENARIOS.md). For supported stages, artifacts, state reset and
+factory configuration, see [INTERVENTIONS.md](INTERVENTIONS.md). A handler that acquires native
+resources should do so in a lifecycle callback and release them in `close`, rather than relying
+on construction-time resources being covered by an execution session that has not begun.
 
 ## Testing
 
@@ -136,21 +163,12 @@ avsectester run configs/carla_scenario.yaml --frames 40   # CARLA end-to-end: ne
 python -m scripts.demos.nurec.alpamayo_nurec_demo 8 --save-frames     # Alpamayo+NuRec (driver env; needs nre-ga + a scene)
 ```
 
-`tests/core/test_interface.py` exercises the `run` loop and the `perturb` seam on an in-memory
-backend/stack. `tests/avstack/attacks/pipeline/test_phantom.py` checks the attack hook (appends exactly one fabricated
-detection; registers in `HOOKS`). `tests/avstack/test_pipeline.py` builds `ModularDrivingPipeline` from
-config and checks `ForwardCollisionPlanner` brakes for a forward-corridor track.
-`tests/core/test_nurec.py` drives the in-process NuRec backend (dynamics, closed loop, checkpoint/restore)
-against `StubRenderer`. `tests/core/test_sim_viz.py` checks the per-simulation scene views. None need
-CARLA, a GPU, or the NuRec renderer.
+Use focused tests for the behavior changed, including downstream consumption, state reset,
+unsupported capabilities and resource cleanup. Scenario and preparation tests can use in-memory
+providers and `StubRenderer`. Live tests should establish simulator/renderer behavior that an
+offline fixture cannot verify. Test layout and environment commands are maintained in
+[tests/README.md](../tests/README.md).
 
 ## Roadmap
 
 Deferred implementation issues are tracked in [TODO.md](TODO.md).
-
-- More attacks: universal camera perturbations (the AlpaSim adversarial-render seam) against the
-  end-to-end stack; modular detection removal, tracking-stage spoofing, sensor-input LiDAR spoofing.
-- Extend defense implementations and add mitigation metrics appropriate to their experiment goals.
-- A scenario-search engine: sweep worlds / traffic / attack parameters for the worst driving impact.
-- Additional backend/stack combinations (Alpamayo in CARLA, the modular stack on NuRec sensors) and
-  hardware-in-the-loop at the same `WorldBackend` seam.

@@ -1,8 +1,9 @@
 # Interfaces
 
 AVSecTester is two roles joined by a **pure data plane**. A **world backend** senses and actuates. An
-**AV stack** (the box under test) turns observations into control. Attack and defense handlers
-modify supported runtime stages. Scenario selection prepares the initial case before that loop.
+**AV stack** (the driving system under test) turns observations into commands. Attack and defense
+handlers modify supported runtime stages. Scenario preparation supplies the case and shared
+operating conditions before that loop. Selection is optional.
 Simulator and driving-model implementations come from avstack, avcarla and NVIDIA services,
 connected through this repository's adapters.
 
@@ -18,7 +19,8 @@ The data and base interfaces have no simulator or neural-model imports.
 | `StateEstimate` | Localization output: `vehicle_state`, `ego_speed` |
 | `WorldBackend` | `reset() -> Observation`, `step(control) -> Observation`, `ground_truth() -> WorldSnapshot` |
 | `AVStack` | `reset(observation)` and `__call__(observation) -> Control` |
-| `Trace` / `FrameRecord` | Driving records from the physical post-step state and executed control |
+| `FrameRecord` | Physical post-step state and executed command telemetry |
+| `Trace` | Driving records, named intervention outputs, replay settings and provenance |
 
 `backend.copy_observation(observation)` detaches mutable model-visible data from backend state.
 Changing the observation's state estimate does not move the physical ego. World changes are
@@ -57,6 +59,27 @@ See [INTERVENTIONS.md](INTERVENTIONS.md) for stage payloads, lifecycle, context,
 and custom adapter requirements. `perturb(Observation) -> Observation` remains a shorthand for
 final observation processing.
 
+### Execution entry points
+
+| Entry point | Use |
+|---|---|
+| `run(backend, stack, ..., runtime=...)` | One run with caller-owned backend resources |
+| `run_pair(backend, stack_factory, ..., clean_runtime=..., attacked_runtime=...)` | Two runs from one origin, with a fresh stack per run |
+| `run_prepared(scenario, stack_factory, ..., runtimes={name: runtime})` | Named treatments of a `ScenarioInstance`, including shared conditions and backend cleanup |
+| `run_configured(config, ..., mode=..., treatment=...)` | Prepare a configured scenario and enabled interventions, then execute selected treatments |
+
+`scenario_from_config(config)` returns a `ScenarioInstance`. Without selection it wraps one
+configured case without opening a preview world, and its `match` is `None`. With selection it
+prepares and checks candidate scenes. `scenario.match` is the selected `ScenarioMatch`, while
+Runtime's `context.case` holds that optional match. Intervention preparation receives the complete
+scenario. See [SCENARIOS.md](SCENARIOS.md#prepare-configured-scenarios) for the field contracts.
+
+`run_prepared` runs once for one named treatment and shares the origin when several are supplied.
+Its Runtime factories receive the backend before reset. Live camera/actor initialization belongs
+in lifecycle callbacks or lazy transforms. Non-None Runtime cases are preserved. Otherwise the scenario match is supplied.
+Stateful reused handlers must reset their state, or their factories must construct fresh handlers.
+`run_configured` adds preparation and treatment selection. Both return results keyed by treatment.
+
 ## 1. Backend and stack compatibility
 
 The shared loop supports different adapters, but does not convert arbitrary native sensor,
@@ -73,6 +96,29 @@ avstack sensor wrappers and an avstack ego state. A common interface alone does 
 these missing conversions. Native observation payloads also need appropriate codecs if
 transported between processes.
 
+Both adapters may declare `command_modes` as a `frozenset` of `actuator` and/or `trajectory`.
+The runner checks declared compatibility before reset. A `command` hook can translate between
+representations, so that path validates the final command after all handlers instead. Built-in
+backends reject active fields they cannot consume, including actuator fields on a trajectory-only
+follower. An undeclared custom adapter returns `None` and retains its own validation semantics.
+Command compatibility does not supply camera, state or coordinate conversions.
+
+A Python `stack_factory()` creates an `AVStack` for each treatment. Configured entry points also
+accept an importable driving-system factory:
+
+```yaml
+stack:
+  factory: research.driver:make_stack
+  options:
+    checkpoint: /path/to/model
+```
+
+The factory receives `options` and returns an `AVStack`. Without `stack`, configured CARLA runs
+use `ego.pipeline`. The supplied end-to-end adapter is selected with `stack.type: AlpamayoAVStack`
+and its constructor arguments under `stack.options`. For custom world adapters, provide
+`backend_factory(scene_config)` to the Python setup/configured-run APIs. The observation and
+command formats must agree regardless of how these factories are loaded.
+
 ### 1a. CarlaBackend (`simulators/carla.py`) + ModularAVStack (`stacks/modular.py`)
 
 `CarlaBackend` owns an avcarla `CarlaClient` + ego (`CarlaMobileActor` with a no-op internal pipeline
@@ -81,14 +127,15 @@ captures a strict-spawn `replay_scenario`. `step(control)` applies the `Control`
 physics. `_observe()` reads sensors + ego into an `Observation`. `ModularAVStack` wraps an avstack
 `ModularDrivingPipeline` (perception → tracking → planning → control) and returns a `Control`.
 
-`run_scenario` builds a CARLA backend and modular stack and executes one run. The CLI pairs a
-clean run with an attacked run. `prepare_scenario(config)` resolves random choices **once**
+`run_scenario` prepares a CARLA case and executes one run. `run_scenario_pair` executes a
+clean/attack comparison. The CLI selects single or paired execution and the enabled treatment.
+`prepare_scenario(config)` resolves random choices **once**
 (vehicle models, spawn indices, destinations and seeds, preserving explicit values) into an
 in-memory config without mutating the input. A missing `client.seed` is generated once for the
 pair. Clean runs from that configuration,
-then attacked replays `clean.replay_scenario` — the actual successful spawn transforms. Each run needs
-a dedicated CARLA server (it reloads the world into synchronous fixed-step physics, then rebuilds
-actors and pipeline). The clean run may relocate vehicles when a spawn fails. The attacked run
+then attacked replays `clean.replay_scenario` — the actual successful spawn transforms. An experiment
+uses a dedicated CARLA server. Treatments run sequentially on it, reloading the world into
+synchronous fixed-step physics and rebuilding actors and the driving stack. The clean run may relocate vehicles when a spawn fails. The attacked run
 reproduces the clean spawns strictly. NPC traffic keeps reacting to the ego after the shared start, so
 an attack can change NPC trajectories as part of its driving consequence.
 
@@ -101,13 +148,20 @@ Start with the complete [example configuration](../configs/carla_scenario.yaml).
 avsectester run configs/carla_scenario.yaml --frames 40 --gpu 0
 ```
 
-Each command runs one experiment pair: clean first, then attacked. `--frames` overrides YAML
-`frames` for each run. `--gpu` overrides `ego.pipeline.perception.gpu` and does not select the CARLA
-server's GPU. The following YAML snippets are edits to the complete example, not standalone files.
+By default the command runs clean first, then attack. `--mode single` runs only the selected
+treatment. `--treatment` accepts `clean`, `attack`, `defense` or `attack-defense`. Both options
+override the YAML `mode` and `treatment` fields. `--frames` overrides YAML `frames` for each run.
+`--gpu` overrides CARLA modular perception and does not select the CARLA server's GPU. Configure
+other model devices in their stack options. The following YAML snippets are edits to the complete
+example, not standalone files.
 
 | Field | Meaning |
 | --- | --- |
 | `frames` | Simulation steps per run. 40 steps at `client.rate: 20.0` represent 2 seconds per run. |
+| `mode`, `treatment` | `single` or `pair`, and `clean`, `attack`, `defense` or `attack-defense`. Defaults: `pair`, `attack`. |
+| `selection` | Optional serialized requirement and source options. No selection means one configured case with `match=None`. |
+| `conditions` | Shared world and sensor environment, applied to all treatments. See [SCENARIOS.md](SCENARIOS.md#scenario-conditions). |
+| `stack` | Optional driving-system factory or supplied Alpamayo adapter configuration. Otherwise use `ego.pipeline`. |
 | `client.connect_ip`, `connect_port` | Address of the running CARLA server. |
 | `client.traffic_manager_port` | Traffic Manager used by NPC autopilot. |
 | `client.synchronous`, `rate` | Use `true` for paired experiments. `rate` sets simulation steps per second. |
@@ -116,10 +170,25 @@ server's GPU. The following YAML snippets are edits to the complete example, not
 | `ego.sensors` | Sensor settings. The example uses a LiDAR with `sensor_tick: 0.05` and `rotation_frequency: 20`. |
 | `ego.pipeline` | Perception, tracking, planning and control modules. The default planner drives straight and brakes for obstacles. `target_speed` is in m/s, and `brake_distance` and `brake_corridor` are in meters. |
 | `npcs` | Background vehicles, using the compact form or explicit list below. Omit it or use `[]` for none. |
-| `attacks` | Hooks attached only during the attacked run. The supplied `PhantomInjection` is used at `stage: perception`. See the attack section for its coordinate convention. |
-| `patches` | Native physical panel specifications, adapted to a `world.setup` runtime plugin. |
-| `runtime` | Ordered hooks, optional localizer and handler RNG seed. Factory and native-hook configuration are described in [INTERVENTIONS.md](INTERVENTIONS.md#configuration-and-adapters). |
+| `attacks` | Native modular post-hook shorthand, enabled for attack and combined treatments. `PhantomInjection` uses `stage: perception`. |
+| `patches` | Native physical panel shorthand, prepared as attack methods with a `world.setup` runtime plugin. |
+| `interventions` | Ordered preparation factories with explicit `kind: attack` or `defense`, options and optional reusable artifacts. |
+| `runtime` | Ordered hooks, optional localizer and handler RNG seed. Raw hooks belong to the attack treatment. Use typed `interventions` for mode-selectable defenses. |
 | `clean_runtime` | Optional explicit baseline runtime. Otherwise it retains the configured localizer and handler seed without attack hooks. |
+
+In the default `pair`/`attack` mode, an empty intervention configuration compares two baseline
+runs and the CLI prints a notice. `single`/`clean` needs no intervention. Single attack runs and
+defense/combined modes require the corresponding configured kinds. An explicit Python
+`treated_runtime` replaces configured interventions, and the caller determines its role.
+Repeated clean comparisons construct independent YAML baseline components. An explicit Python
+`clean_runtime` is used in both runs and must reset any shared state correctly.
+
+Only pairs containing an enabled attack produce an attack verdict. Defense-only pairs report
+side effects, and clean/empty-attack pairs report baseline comparisons. Those pairs return `0`
+after successful execution, even when the clean vehicle remained stationary. Attack pairs retain
+the `0`/`3`/`4` outcome codes. Configuration and execution errors retain `2` and `1` respectively.
+See [DOCKER.md](DOCKER.md#run-the-end-to-end-attack) for the exit-code table.
+
 
 #### Fixed choices and random choices
 
@@ -155,8 +224,9 @@ the seeded choices with the same remaining configuration and environment. This i
 `runtime.seed`, which initializes the handlers' `context.rng` and does not seed the simulator.
 
 The seed does not randomly change every field. NPC count, map, weather, sensor specifications and
-attack parameters are not automatically randomized. `map_name` and `weather` can be set explicitly
-under `client`. When omitted, they come from the selected world's initial environment. Traffic
+attack parameters are not automatically randomized. `map_name` can be set under `client`. Native world weather is set with
+`conditions.world.weather` or legacy top-level `weather`. When omitted, those properties come
+from the selected world's environment. Traffic
 lights use the client's seeded `randomize_lights` behavior unless explicit light settings are given.
 
 #### Configuring NPCs and spawn positions
@@ -269,6 +339,11 @@ They are not all stages of one pipeline:
 | SAM, default `facebook/sam-vit-huge` | `scripts/preparation/extract_person_cutouts.py` prepares pedestrian RGBA assets | No, offline segmentation |
 | NuRec through `nre-ga` | `NuRecRenderer` obtains images at the requested camera pose | No, scene rendering rather than a driving policy |
 
+`AlpamayoAVStack(model=loaded_model, ...)` can create separate adapters around an already loaded
+model, each with independent camera history and previous-plan state. Checkpoint loading is used
+when no model is supplied. The supplied model must implement the AlpaSim driver's prediction
+contract. Share it only when its own mutable state is safe for reuse.
+
 COCO names the detector's pretraining dataset. Using these weights does not add a COCO scene
 source, and the auxiliary detector's scores are not Alpamayo predictions or closed-loop outcomes.
 
@@ -338,6 +413,39 @@ must supply `DataContainer(..., source_reference=reference)` explicitly. Missing
 raises `ValueError`. Container copy, filter, mapping, addition and serialization retain the source
 reference.
 
+### Preparation, execution and outputs
+
+`Intervention.prepare(scenario)` creates reusable artifacts. `Intervention.hooks(artifacts)`
+constructs the execution hooks. This contract applies to offline attacks, adaptive attacks and
+defenses. Preparation may use independently supplied models/renderers and does not require the
+formal run's backend to be active. Existing `Runtime` and raw hook factories remain usable without
+implementing an Intervention.
+
+`prepare_intervention` returns a `PreparedIntervention`. Pass existing artifacts to skip preparation,
+or save/load them using the method's explicit JSON export/import functions. `Treatment` preserves
+the method order and builds a Runtime for selected attack/defense kinds. Legacy convenience hooks
+precede raw `runtime.hooks`, followed by configured `interventions` in their definition order.
+The framework does not reorder defenses after attacks automatically.
+
+| Treatment | Enabled configured methods |
+|---|---|
+| `clean` | Baseline Runtime only |
+| `attack` | Attack methods and raw attack Runtime hooks |
+| `defense` | Defense methods |
+| `attack-defense` | Both kinds, in their configured order |
+
+Baseline and treated runs share the scenario conditions. The configured localizer and handler
+seed are retained unless the baseline is explicitly overridden. Explicit Python Runtime arguments
+can replace configured interventions. Pair mode with a clean treatment compares two baseline runs.
+Single mode returns one driving trace without computing a differential verdict. See
+[INTERVENTIONS.md](INTERVENTIONS.md) for preparation, artifact storage and lifecycle examples.
+
+During a callback, `context.record_output(name, value)` saves an independent copy of a diagnostic
+value. `Trace.outputs` contains these `InterventionOutput` records, with step, stage, sensor and
+physical time/frame. Attacks, defenses and localization adapters use the same output interface.
+This records alarms or scores without changing the driving command. It does not define a metric
+for those values. `Trace.provenance` retains treatment and configured scenario/condition metadata.
+
 ## 3. Metric (clean vs attacked → verdict)
 
 ```python
@@ -353,28 +461,39 @@ is `clean_drove and (induced_stop or suppressed_stop)` — the clean run must ac
 frames, or stuck at the spawn) the result is **inconclusive**, not a success — "an already-stopped car
 braking" does not establish driving impact.
 
-## 4. Scenario selection
+`result.comparison(treated_label)` formats driving measurements without a verdict.
+`str(result)` retains the attacked label and attack verdict. `plot_impact` accepts
+`treated_label="attacked"` and `show_verdict=True` as keyword options. Set `show_verdict=False`
+for defense side effects or baseline comparisons. The default title follows these options, and
+an explicit `title` overrides it. Labels and display options do not change metric calculations.
 
-Selection prepares an initial case before the driving experiment:
+## 4. Scenario preparation and selection
 
+`scenario_from_config` and `source_from_config` prepare experiment inputs:
+
+- `ConfiguredScenarioSource` yields one configured `ScenarioInstance` without preview or filters.
+- `DatasetFilter` and `CarlaScenarioBuilder` select fixed actor bindings and insertion specifications.
 - `Constraint.evaluate(context) -> FilterResult` returns `pass`, `fail` or `unknown`.
   `FilterContext` exposes normalized state, raw metadata and native provider APIs.
-- `ScenarioRequirement` composes conditions and evaluates fixed actor bindings across an
-  `InitialWindow`.
-- `ScenarioSource.scenarios(requirement)` yields selected `ScenarioInstance` objects.
-  `DatasetFilter` and `CarlaScenarioBuilder` implement this interface.
-- `ScenarioInstance.make_backend()` creates a fresh backend at the selected origin. The case
-  retains the actor bindings and insertion specifications in `case.match`.
+- `ScenarioRequirement` combines predicates across a prescribed `InitialWindow`.
+- `ScenarioInstance.make_backend()` creates a fresh backend and configures its world conditions.
+  The instance stores the raw callable as `factory`. `scenario.match` contains the optional
+  selected scene, bindings and insertions. Use `dataclasses.replace` to replace its fields.
 
-`scenarios.filters` defines conditions and their combinations. `scenarios.requirement` performs
-role assignment and initial-window evaluation. Both selection and runtime insertion use the
-camera, sampling and visibility code in `rendering/`. That shared layer does not depend on the
-selection workflow or simulator SDKs. `InsertionGeometry` names the actor poses, victim pose
+`ScenarioConditions` carries environment settings shared by all treatments. World conditions are
+validated/configured before reset. Sensor conditions construct independent per-run handlers with
+separate random streams. CARLA weather is applied before candidate selection. Custom filters can
+inspect a copied conditioned measurement when their provider supplies observations. Original ground
+truth and geometric visibility remain distinct from those measurements.
+
+`scenarios.filters` defines predicates and combinations. `scenarios.requirement` performs role
+assignment and window evaluation. Both selection and runtime insertion use the camera, texture
+sampling and visibility code in `rendering/`. `InsertionGeometry` names the actor poses, victim pose
 and world-to-camera transform passed to a custom insertion renderer.
 
-Clean and attacked runs share the selected initial case, with the attack disabled for clean.
-Filters are not installed in the driving loop. See [SCENARIOS.md](SCENARIOS.md) for composition,
-custom filters, placement, visibility and resource ownership.
+Filters stop when preparation finishes. Runtime insertion uses the selected identities and never
+chooses a replacement host. See [SCENARIOS.md](SCENARIOS.md) for configuration, custom filters,
+placement, visibility, conditions and resource ownership.
 
 ## 5. What comes from avstack / AlpaSim
 

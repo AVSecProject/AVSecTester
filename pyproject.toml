@@ -50,7 +50,7 @@ test = [
     "opencv-python-headless>=4.9,<4.12",
     "albumentations==1.4.24",
 ]
-# Visualization (avsectester.viz): the clean-vs-attacked driving-impact plot.
+# Visualization (avsectester.metric.plot_impact): the clean-vs-attacked driving-impact plot.
 viz = [
     "matplotlib>=3.6",
 ]
