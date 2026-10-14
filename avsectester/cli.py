@@ -57,7 +57,7 @@ def run(
                 raise ValueError("Configure a custom stack's device in stack.options instead of --gpu")
             scenario = resolve_scenario_seed(set_perception_gpu(scenario, gpu))
         elif gpu is not None:
-            raise ValueError("--gpu overrides CARLA perception. Configure stack.options.device for NuRec.")
+            raise ValueError("--gpu overrides CARLA modular perception. Configure the stack device in stack.options.")
         n = frames if frames is not None else scenario.get("frames", 40)
         if not isinstance(n, int) or isinstance(n, bool) or n < 0:
             raise ValueError("frames must be a nonnegative integer")

@@ -22,7 +22,8 @@ The supplied backend and stack adapters:
 * AV stacks (:mod:`avsectester.stacks`) — ``ModularAVStack`` (``stacks.modular``; an avstack
   ``ModularDrivingPipeline``) and ``AlpamayoAVStack`` (``stacks.alpamayo``; end-to-end Alpamayo-1.5).
 * Composition — :mod:`avsectester.carla_runner` wires a CARLA backend + modular stack into one run.
-  The CLI runs configured CARLA or NuRec scenarios with single or paired treatments.
+  The CLI runs YAML-configured experiments with single or paired treatments. The supplied
+  configuration uses CARLA. NuRec with Alpamayo runs through the demo scripts.
 
 Plus :mod:`avsectester.attacks` (avstack ``HOOKS`` hooks — the modular white-box seam),
 :mod:`avsectester.metric` (clean-vs-attacked driving-impact verdict + its ``plot_impact`` figure), and
