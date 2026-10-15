@@ -150,7 +150,7 @@ At each driving step, the stack builds an AlpaSim `PredictionInput` from the obs
   that increases by one at each call.
 
 **Not yet implemented.** An ego history built from the states the driving system actually
-received. See [TODO](../development/TODO.md#driving-model-input-fidelity).
+received.
 
 Model-facing timestamps are `observation.t` plus a 10-second offset, so that the backward history
 keeps positive timestamps. The output waypoints use the backend clock instead.
@@ -261,7 +261,7 @@ supplied combinations are listed in
 [Supported combinations](../concepts/architecture.md#supported-combinations).
 
 **Not yet implemented.** A trajectory-to-actuator controller with vehicle dynamics, which would let
-Alpamayo drive in CARLA. See [TODO](../development/TODO.md#vehicle-dynamics).
+Alpamayo drive in CARLA.
 
 A `command` handler can convert a trajectory to actuator values so that a trajectory-producing
 stack runs with actuator dynamics. The converted command must set `trajectory` to `None`. Only the

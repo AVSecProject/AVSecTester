@@ -157,12 +157,12 @@ does not run AlpaSim's runtime, controller, physics or traffic services.
 | Component | Implemented | Not yet implemented |
 |---|---|---|
 | Scenario preparation | Configured scenarios, filter-based selection for CARLA and recorded datasets, insertions, world and sensor conditions | — |
-| Simulator | CARLA with reactive traffic. NuRec with recorded actor trajectories | Reactive traffic in NuRec ([TODO](../development/TODO.md#reactive-traffic-in-nurec)) |
-| Driving system | Modular avstack pipeline. Alpamayo with ideal trajectory following | Trajectory-to-actuator dynamics for Alpamayo ([TODO](../development/TODO.md#vehicle-dynamics)) |
-| Attacks | Shared preparation and execution interfaces. Static example attacks and one adaptive interface example | An actor-aware adaptive reference attack ([TODO](../development/TODO.md#actor-aware-adaptive-attack-ttc-phantom)) |
-| Defenses | The same interfaces as attacks, and recorded defense outputs | Reference defenses and defense-output metrics ([TODO](../development/TODO.md#defense-examples-and-output-metrics)) |
+| Simulator | CARLA with reactive traffic. NuRec with recorded actor trajectories | Reactive traffic in NuRec |
+| Driving system | Modular avstack pipeline. Alpamayo with ideal trajectory following | Trajectory-to-actuator dynamics for Alpamayo |
+| Attacks | Shared preparation and execution interfaces. Static example attacks and one adaptive interface example | An actor-aware adaptive reference attack |
+| Defenses | The same interfaces as attacks, and recorded defense outputs | Reference defenses and defense-output metrics |
 | Optimization | PGD and NES over image-space and rendered patch textures | Optimization through the closed loop, and a shared interface for defenses |
-| Evaluation | Stop-based driving-impact metric, component logging, robustness summaries | Selectable success criteria ([TODO](../development/TODO.md#driving-impact-metrics)) and a three-treatment defense comparison ([TODO](../development/TODO.md#cli-run-modes)) |
+| Evaluation | Stop-based driving-impact metric, component logging, robustness summaries | Selectable success criteria and a three-treatment defense comparison |
 
 ## Terminology
 

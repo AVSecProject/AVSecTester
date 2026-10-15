@@ -106,7 +106,7 @@ defense's effectiveness also needs an attack-only run from the same origin. Run 
 from Python, as in [Custom treatments](#custom-treatments).
 
 **Not yet implemented.** Configured and CLI runs cannot compare clean, attack and attack-defense
-treatments from one origin. See [TODO](../development/TODO.md#cli-run-modes).
+treatments from one origin.
 
 ## Run from the command line
 

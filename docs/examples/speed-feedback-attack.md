@@ -35,7 +35,6 @@ driving-system lifecycle are separate. See [Plugin lifecycle](../reference/runti
 and [Keep state and adapt](../guides/attacks.md#keep-state-and-adapt).
 
 **Not yet implemented.** An adaptive reference attack that estimates other actors during the run.
-See [TODO](../development/TODO.md#actor-aware-adaptive-attack-ttc-phantom).
 
 **Configure and run.** Add an [`interventions`](../reference/configuration.md#interventions) entry.
 Its `kind` defaults to `attack`:

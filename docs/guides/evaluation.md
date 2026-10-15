@@ -487,9 +487,9 @@ CARLA and NuRec demo scripts that save images are listed in
 
 - The driving-impact metric scores induced and suppressed stops only. `induced_stop` compares
   final speeds, so a stop followed by resumed driving is not detected.
-  **Not yet implemented.** Experiments cannot detect stopping events across a run or select another success criterion. See [TODO](../development/TODO.md#driving-impact-metrics).
-- **Not yet implemented.** No metric summarizes recorded intervention outputs, such as defense alarms. See [TODO](../development/TODO.md#defense-examples-and-output-metrics).
-- **Not yet implemented.** The CLI cannot compare clean, attack and combined treatments from one origin. See [TODO](../development/TODO.md#cli-run-modes).
+  **Not yet implemented.** Experiments cannot detect stopping events across a run or select another success criterion.
+- **Not yet implemented.** No metric summarizes recorded intervention outputs, such as defense alarms.
+- **Not yet implemented.** The CLI cannot compare clean, attack and combined treatments from one origin.
   In Python, pass three named runtimes to `run_prepared`.
 - Trajectory-command driving systems record no throttle or brake, so braking counts and the brake
   panel of `plot_impact` carry no information for them.

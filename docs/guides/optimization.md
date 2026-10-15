@@ -297,7 +297,7 @@ its capture and detector setup into the `problem` function above.
   objectives; defenses have no optimization interface.
 - **Not yet implemented.** Optimization placement does not use the insertion geometry that
   deployment uses: the scripts place patches from a detector box or an axis-aligned rendered
-  footprint. See [TODO](../development/TODO.md#unify-insertion-geometry).
+  footprint.
 - `NES` optimizes against one sample and applies no transformation sampling. No supplied script
   runs the rendering route.
 - `PGD` seeds torch's global random generator.

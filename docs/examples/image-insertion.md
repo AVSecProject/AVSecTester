@@ -176,8 +176,7 @@ results = run_prepared(
 The follower executes the planned trajectory ideally. It adds no reactive traffic and no actuator
 limits. See [Commands and compatibility](../guides/driving-systems.md#commands-and-compatibility).
 
-**Not yet implemented.** Trajectory-to-actuator dynamics for Alpamayo. See
-[TODO](../development/TODO.md#vehicle-dynamics).
+**Not yet implemented.** Trajectory-to-actuator dynamics for Alpamayo.
 
 Both adapters place insertions from the effective camera rendering pose and scene time. The victim
 pose is the physical ego pose. Spoofing the model-visible position, orientation or timestamp

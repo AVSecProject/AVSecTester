@@ -29,7 +29,7 @@ validates the panel configuration, without creating simulator actors, and return
 artifact. See [Optimize attack artifacts](../guides/optimization.md) for the optimization interfaces.
 
 **Not yet implemented.** Optimization placement derived from the same insertion geometry that
-deployment uses. See [TODO](../development/TODO.md#unify-insertion-geometry).
+deployment uses.
 
 **Execution.** `PhysicalPatchPlugin` runs at `world.setup`, before the first observation, and
 changes the world. For each configured panel it resolves the target, spawns the prop at the

@@ -173,13 +173,5 @@ Follow these rules:
 
 ## Roadmap
 
-Deferred work is tracked in [TODO.md](TODO.md). Current entries cover
-[driving-model input fidelity](TODO.md#driving-model-input-fidelity),
-[vehicle dynamics](TODO.md#vehicle-dynamics),
-[driving-impact metrics](TODO.md#driving-impact-metrics), [CLI run modes](TODO.md#cli-run-modes),
-[insertion geometry](TODO.md#unify-insertion-geometry),
-[reactive traffic in NuRec](TODO.md#reactive-traffic-in-nurec), an
-[actor-aware adaptive attack](TODO.md#actor-aware-adaptive-attack-ttc-phantom), and
-[defense examples and output metrics](TODO.md#defense-examples-and-output-metrics). Implementation
-status by component is summarized in
+Planned work is tracked in [TODO.md](TODO.md). Implementation status by component is summarized in
 [Implementation status](../concepts/architecture.md#implementation-status).

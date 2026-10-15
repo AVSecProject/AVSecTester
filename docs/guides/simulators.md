@@ -270,7 +270,7 @@ the plan exactly. Without a trajectory, the ego keeps its position and its speed
 `decel`.
 
 **Not yet implemented.** A trajectory-to-actuator controller with a vehicle dynamics model for
-this path. See [TODO](../development/TODO.md#vehicle-dynamics).
+this path.
 
 The backend's `dt` (default `0.05`) is the physics and observation interval in seconds. It is
 independent of the policy's waypoint interval. Alpamayo's 10 Hz waypoints are 0.1 seconds apart,
@@ -384,8 +384,7 @@ react to the ego, and the backend does not detect collisions with them. `backend
 no other actors. For their recorded poses, use `NuRecDataset.actor_poses(usdz_path, timestamp_us)`
 with `renderer.timestamp_us(pose)`.
 
-**Not yet implemented.** Other actors in NuRec that react to the ego. See
-[TODO](../development/TODO.md#reactive-traffic-in-nurec).
+**Not yet implemented.** Other actors in NuRec that react to the ego.
 
 ## Change the world from handlers
 

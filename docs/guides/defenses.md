@@ -277,10 +277,10 @@ successful execution. See [Exit codes](../reference/cli.md#exit-codes).
 ## Current limitations
 
 **Not yet implemented.** The repository supplies no reference defense, and no metric summarizes
-recorded defense outputs such as alarm rates. See [TODO](../development/TODO.md#defense-examples-and-output-metrics).
+recorded defense outputs such as alarm rates.
 
 **Not yet implemented.** Configured and CLI runs cannot compare clean, attack and attack-defense
-treatments from one origin. See [TODO](../development/TODO.md#cli-run-modes).
+treatments from one origin.
 
 Until then, run three-treatment comparisons with `run_prepared` as above, and compute alarm
 statistics from `trace.outputs` yourself. The supplied stop-based verdict scores only the

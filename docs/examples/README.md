@@ -32,4 +32,3 @@ No defense example is supplied. Defenses use the same preparation and execution 
 attacks above, with `kind: defense`. See [Implement a defense](../guides/defenses.md).
 
 **Not yet implemented.** Reference defense algorithms and metrics for recorded defense outputs.
-See [TODO](../development/TODO.md#defense-examples-and-output-metrics).
