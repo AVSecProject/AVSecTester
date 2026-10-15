@@ -66,5 +66,6 @@ scenario-selection or driving pipeline, and its listed models are not loaded by 
 
 The default `configs/carla_scenario.yaml` selects the CARLA vehicle PointPillars checkpoint.
 `ModularAVStack` automatically registers its custom `CarlaDataset` metadata before loading it.
-See [SETUP.md](../docs/SETUP.md#carla-perception-checkpoints) for model loading and
-[DOCKER.md](../docs/DOCKER.md) for the CARLA driving command.
+See [CARLA perception checkpoints](../docs/getting-started/installation.md#carla-perception-checkpoints)
+for model loading and the [Quickstart](../docs/getting-started/quickstart.md#run-a-carla-comparison)
+for the CARLA driving command.

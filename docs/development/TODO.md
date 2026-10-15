@@ -82,8 +82,8 @@ This file lists open development work. Entries describe planned capabilities, no
   perception output across steps, which assumes gray-box access to that output. It injects a
   phantom only while the estimated time to collision is within a configured interval, in
   contrast to the static `PhantomInjection`. `prepare` validates its options, and `hooks`
-  creates a fresh plugin for each run. Deliver it with a YAML example and a section in
-  `INTERVENTIONS.md`. The NuRec/Alpamayo path has no perception stage. Supporting it would require
+  creates a fresh plugin for each run. Deliver it with a YAML example and a page in
+  `docs/examples/`. The NuRec/Alpamayo path has no perception stage. Supporting it would require
   the attack to run its own detector on camera images, which is out of scope for this item.
 
 ## Defense examples and output metrics

@@ -1,0 +1,1949 @@
+# Python API reference
+
+> **Audience:** Users calling AVSecTester from Python.  
+> **Outcome:** Look up public classes and functions by module, with their signatures and return values.  
+> **Prerequisites:** [Architecture](../concepts/architecture.md).
+
+This reference lists the public API by module. Signatures are copied from the code. A bare `*`
+starts the keyword-only parameters. Defaults written as `{}` or `[]` in tables are per-instance
+`field(default_factory=...)` values. Usage belongs to the linked guides. The terms
+[prepared scenario, match, treatment, intervention, command and driving step](../concepts/architecture.md#terminology)
+are used as defined in the architecture document.
+
+The package root `avsectester` defines only `__version__` and has no `__all__`. Import every name
+from its module. The packages `avsectester.scenarios`, `avsectester.rendering`,
+`avsectester.evaluation`, `avsectester.simulators`, `avsectester.stacks` and
+`avsectester.attacks` re-export selected names through `__all__`. The sections below note them.
+
+## Data plane
+
+`avsectester.plane` holds the messages between the simulator and the driving system and the run
+records. It imports no simulator or model package. Sensor and state payloads keep their
+adapter-specific types.
+
+| Class | Constructor | Meaning |
+|---|---|---|
+| `Control` | `Control(throttle: float = 0.0, steer: float = 0.0, brake: float = 0.0, trajectory: Any = None)` | The command. Actuator commands use `throttle`, `steer` and `brake`. Trajectory commands use `trajectory` in the selected adapter's coordinates and time convention |
+| `Observation` | `Observation(t: float, frame: int, sensor_data: dict[str, Any] = {}, calibration: dict[str, Any] = {}, vehicle_state: Any = None, ego_speed: float = 0.0)` | The model-visible input. `sensor_data` and `calibration` are keyed by sensor ID. `vehicle_state` and `ego_speed` are the estimated state and the reported speed in m/s |
+| `WorldSnapshot` | `WorldSnapshot(t: float, frame: int, vehicle_state: Any = None, ego_speed: float = 0.0)` | Frozen. An independent snapshot of the physical ego state. Editing it never moves the vehicle |
+| `StateEstimate` | `StateEstimate(vehicle_state: Any = None, ego_speed: float = 0.0)` | Localization output. Its fields replace the observation's state before the `observation` stage |
+| `FrameRecord` | `FrameRecord(frame: int = 0, t: float = 0.0, n_detections: int = 0, speed: float = 0.0, throttle: float = 0.0, brake: float = 0.0, steer: float = 0.0)` | One driving step. `frame` is the zero-based driving-step index. `t` and `speed` are the physical time and speed after the step. The actuator fields are the executed command. `n_detections` is optional stack telemetry |
+| `InterventionOutput` | `InterventionOutput(name: str, value: Any, step: int, stage: str, frame: int, t: float, sensor: str \| None = None)` | Frozen. A value recorded by `context.record_output`. `step` is the driving-step index. `frame` and `t` describe the physical world at the callback |
+| `Trace` | `Trace(records: list[FrameRecord] = [], replay_scenario: dict \| None = None, outputs: list[InterventionOutput] = [], provenance: dict[str, Any] = {})` | The run records of one run |
+
+| Member | Returns or does |
+|---|---|
+| `Observation.set_calibration(sensor_id: str, calibration: Any) -> None` | Replaces `calibration[sensor_id]` and, when the payload has a `calibration` attribute, the payload's calibration. Raises `KeyError` for a sensor absent from `sensor_data` |
+| `Trace.final_speed` | Speed of the last record, or `0.0` without records |
+| `Trace.peak_speed` | Highest recorded speed, or `0.0` |
+| `Trace.braking_frames` | Number of records with `throttle == 0.0` and `brake > 0.0` |
+| `Trace.mean_detections` | Mean `n_detections` over the records |
+
+`record_run(..., collect=True)` also sets a `frames` attribute on the returned `Trace`. Reading
+records, outputs and provenance is described in
+[Driving traces](../guides/evaluation.md#driving-traces). Copy semantics of observations are in
+[Native resources and copying](runtime.md#native-resources-and-copying).
+
+## Driving loop and runners
+
+### Adapter interfaces
+
+`avsectester.backend` defines the abstract base classes `WorldBackend` and `AVStack`.
+[Write a custom simulator adapter](../guides/simulators.md#write-a-custom-simulator-adapter) and
+[Use a custom driving system](../guides/driving-systems.md#use-a-custom-driving-system) describe
+how to implement them.
+
+`WorldBackend` members:
+
+| Member | Returns or does |
+|---|---|
+| `reset() -> Observation` | Abstract. Builds the world, spawns the ego and traffic and returns the first observation |
+| `step(control: Control) -> Observation` | Abstract. Executes the command, advances the world and returns the next observation |
+| `close() -> None` | Releases simulator resources. The default does nothing |
+| `ground_truth() -> WorldSnapshot` | An independent physical-state snapshot. The default copies the state of the last raw `reset` or `step` observation and raises `RuntimeError` before the first one |
+| `copy_observation(observation: Observation) -> Observation` | Detaches model-visible data from backend state. The default is `deepcopy` |
+| `command_modes` | Property, `frozenset[str] \| None`. Accepted command modes (`actuator`, `trajectory`). `None`, the default, means undeclared |
+| `validate_command(command: Control) -> None` | Calls `validate_command_modes(command, self.command_modes)` |
+| `configure_conditions(world: Mapping[str, Any]) -> None` | Applies world conditions to later resets. The default raises `ValueError` for a nonempty mapping |
+| `prepare_clean_attack_pair() -> None` | Prepares consecutive resets to replay one initial scene. The default does nothing |
+| `setup_ticks: int = 0` | Class attribute. Backend-managed world-setup ticks. See [World setup ticks](runtime.md#world-setup-ticks) |
+| `supported_stages` | Property, `frozenset[str]`. Stages the adapter emits beyond the core stages. The default is empty |
+| `native` | Property, `Mapping[str, Any]`. Native resources available to handlers. The default is empty |
+| `runtime_context(session: RuntimeSession)` | Context manager that binds the adapter to one run. Raises `RuntimeError` if it is already bound |
+| `_emit(stage: str, value: Any, sensor: str \| None = None) -> Any` | Passes `value` through the handlers at `stage` of the bound run and returns the result. Returns `value` unchanged when no run is bound |
+
+`AVStack` members:
+
+| Member | Returns or does |
+|---|---|
+| `__call__(observation: Observation) -> Control` | Abstract. Decides the command |
+| `reset(observation: Observation) -> None` | Optional warmup with the first processed observation. The default does nothing |
+| `command_modes` | Property, `frozenset[str] \| None`. Produced command modes, or `None` when undeclared |
+| `models` | Property, `Mapping[str, Any]`. Loaded native models available to handlers. The default is empty |
+| `supported_stages`, `native`, `runtime_context`, `_emit` | As for `WorldBackend` |
+
+```python
+# avsectester.backend
+def validate_command_modes(command: Control, modes: frozenset[str] | None) -> None: ...
+def validate_command_compatibility(
+    backend: WorldBackend, stack: AVStack, runtime: Runtime | None = None,
+) -> None: ...
+class CommandCompatibilityError(ValueError): ...
+```
+
+`validate_command_modes` raises `TypeError` when `command` is not a `Control`. It raises
+`ValueError` when the command sets a trajectory or a nonzero actuator field that `modes` excludes.
+`validate_command_compatibility` raises `CommandCompatibilityError` when the stack declares a
+mode the backend does not accept. It skips the check when either side is undeclared or `runtime`
+has a `command` hook. The rules are in [Command compatibility](runtime.md#command-compatibility).
+
+### Run functions
+
+```python
+# avsectester.backend
+def run(
+    backend: WorldBackend,
+    stack: AVStack,
+    frames: int,
+    perturb: Callable[[Observation], Observation] | None = None,
+    on_step: Callable[[int, Observation, Control], None] | None = None,
+    *,
+    runtime: Runtime | None = None,
+) -> Trace: ...
+
+# avsectester.runner
+RuntimeFactory = Runtime | Callable[[WorldBackend], Runtime] | None
+
+def run_pair(
+    backend: WorldBackend,
+    stack_factory: Callable[[], AVStack],
+    frames: int,
+    *,
+    clean_runtime: RuntimeFactory = None,
+    attacked_runtime: RuntimeFactory = None,
+    run_fn: Callable[..., Any] | None = None,
+    close_backend: bool = True,
+) -> tuple[Any, Any]: ...
+
+def run_prepared(
+    scenario: ScenarioInstance,
+    stack_factory: Callable[[], AVStack],
+    frames: int,
+    *,
+    runtimes: Mapping[str, RuntimeFactory] | None = None,
+    run_fn: Callable[..., Any] | None = None,
+) -> dict[str, Any]: ...
+
+# avsectester.experiment
+def run_configured(
+    config: Mapping[str, Any],
+    frames: int,
+    *,
+    mode: ExecutionMode | str | None = None,
+    treatment: TreatmentMode | str | None = None,
+    backend_factory: Callable[[dict[str, Any]], WorldBackend] | None = None,
+    stack_factory: Callable[[], AVStack] | None = None,
+    clean_runtime: Runtime | None = None,
+    treated_runtime: Runtime | None = None,
+    run_fn: Callable[..., Trace] | None = None,
+    provenance: Mapping[str, Any] | None = None,
+    scenario: ScenarioInstance | None = None,
+) -> dict[str, Trace]: ...
+
+# avsectester.carla_runner
+def run_scenario(
+    scenario: dict,
+    attacks: list[dict] | None = None,
+    frames: int = 40,
+    settle_iters: int = 100,
+    patches: list[dict] | None = None,
+    *,
+    runtime: Runtime | None = None,
+) -> Trace: ...
+
+def run_scenario_pair(
+    scenario: dict,
+    frames: int = 40,
+    *,
+    clean_runtime: Runtime | None = None,
+    attacked_runtime: Runtime | None = None,
+    settle_iters: int = 100,
+    stack_factory: Callable[[], AVStack] | None = None,
+) -> tuple[Trace, Trace]: ...
+```
+
+| Function | Returns or does | Backend | Raises |
+|---|---|---|---|
+| `run` | Runs one treatment for `frames` driving steps and returns its `Trace`. `perturb` becomes an `observation` hook placed before the runtime's hooks. `on_step(i, seen, control)` receives copies after command handlers and before execution | The caller owns and closes it | `ValueError` if `frames` is not a nonnegative integer. `UnsupportedStageError` or `CommandCompatibilityError` before reset |
+| `run_pair` | Calls `backend.prepare_clean_attack_pair()`, then runs the clean and the attacked runtime, each with a fresh stack from `stack_factory`. Returns both results. A runtime factory receives the backend after pair preparation and before the first reset. `run_fn` replaces `run` and must accept `runtime=` | Closed, unless `close_backend=False` | As `run`. `TypeError` if a runtime factory does not return a `Runtime` |
+| `run_prepared` | Runs named treatments of a prepared scenario and returns results by name. Wraps every runtime with `scenario.conditions.apply_runtime` and supplies `scenario.match` as its case when the runtime has none. Prepares a shared origin only for two or more treatments | Created with `scenario.make_backend()` and closed | As `run_pair`. `ValueError` for an empty mapping or an empty or non-string name |
+| `run_configured` | Prepares the scenario, unless `scenario` is supplied, and the enabled interventions. Then runs the selected treatments through `run_prepared` | As `run_prepared` | `ConfigurationError` for an invalid configuration, including a non-clean treatment without an enabled intervention of the required kind |
+| `run_scenario` | One CARLA run of the modular stack, recorded with `run_logged`. Only the `attacks`, `patches` and `runtime` arguments enable interventions. YAML `interventions`, `runtime` and `clean_runtime` are ignored. Without them the run is clean | As `run_prepared` | As `run_configured` |
+| `run_scenario_pair` | A configured CARLA pair: mode `pair`, treatment `attack`. Returns `(clean, attack)`. The Python runtimes replace the configured treatments | As `run_prepared` | As `run_configured` |
+
+`run_configured` options:
+
+- `mode` and `treatment` override `config["mode"]` and `config["treatment"]`, which default to
+  `pair` and `attack`. The treatments are described in
+  [Treatments and modes](../guides/experiments.md#treatments-and-modes).
+- `scenario` supplies a prepared scenario. Its factory, match and conditions are kept. The
+  configuration's scene and selection settings are not reapplied, and `backend_factory` and
+  `provenance` are ignored.
+- `backend_factory(scene_config)` replaces the built-in backend construction.
+  `stack_factory` defaults to `configured_stack(config)`.
+- `clean_runtime` replaces the baseline runtime. `treated_runtime` replaces all configured
+  intervention hooks, and no intervention is prepared.
+- A pair with treatment `attack` and no attack hooks runs as a baseline comparison.
+
+`run_scenario` and `run_scenario_pair` fill `FrameRecord.n_detections` from the perception
+component and set `Trace.replay_scenario`. See
+[Python entry points](../guides/simulators.md#python-entry-points).
+
+```python
+# avsectester.experiment
+class ExecutionMode(str, Enum):
+    SINGLE = "single"
+    PAIR = "pair"
+
+class TreatmentMode(str, Enum):
+    CLEAN = "clean"
+    ATTACK = "attack"
+    DEFENSE = "defense"
+    COMBINED = "attack-defense"
+
+    @property
+    def kinds(self) -> tuple[str, ...]: ...  # (), ("attack",), ("defense",), ("attack", "defense")
+
+class ConfigurationError(ValueError): ...
+```
+
+### Result keys
+
+| Call | Result keys |
+|---|---|
+| `run_prepared(..., runtimes=None)` | `"clean"` |
+| `run_prepared(..., runtimes={...})` | The keys of `runtimes`, in the same order |
+| `run_configured`, mode `single` | The treatment value: `"clean"`, `"attack"`, `"defense"` or `"attack-defense"` |
+| `run_configured`, mode `pair`, treatment `attack`, `defense` or `attack-defense` | `"clean"` and the treatment value |
+| `run_configured`, mode `pair`, treatment `clean` | `"clean"` and `"baseline"` |
+
+Each value is the result of `run_fn`, a `Trace` by default. No runner computes a metric, a
+verdict or an exit code.
+
+### Provenance written by runners
+
+When a result is a `Trace`, or a tuple whose first element is a `Trace`, the runners update it:
+
+| Writer | `Trace` changes |
+|---|---|
+| `run_pair`, `run_prepared` | `replay_scenario` from `backend.replay_scenario` when unset. `provenance["runtime_seed"]` and `provenance["runtime_stages"]`, the stages of the effective runtime's hooks in order |
+| `run_prepared` | The scenario's `provenance` entries, then `provenance["treatment"]` (the result key) and `provenance["conditions"]` |
+| `run_configured` | `provenance["interventions"]`: a list of `{"name", "kind", "provenance"}` for the prepared interventions. Empty for `clean` and when `treated_runtime` is supplied |
+
+How to read these records is described in
+[Intervention outputs and provenance](../guides/evaluation.md#intervention-outputs-and-provenance).
+
+### Supplied adapters
+
+| Class | Constructor | Guide |
+|---|---|---|
+| `CarlaBackend` (`avsectester.simulators.carla`) | `CarlaBackend(scenario: dict, settle_iters: int = 100)` | [CARLA](../guides/simulators.md#carla) |
+| `NuRecBackend` (`avsectester.simulators.nurec`) | `NuRecBackend(config: dict, renderer: Renderer \| None = None, dynamics: EgoDynamics \| None = None)` | [NuRec](../guides/simulators.md#nurec) |
+| `StubRenderer` | `StubRenderer(cameras: list[str] \| None = None, height: int = 480, width: int = 640)` | [Renderers](../guides/simulators.md#renderers) |
+| `NuRecRenderer` | `NuRecRenderer(endpoint: str = "127.0.0.1:50051", scene_id: str \| None = None, cameras: list[str] = ["camera_front_wide_120fov"], calibration: dict = {}, image_quality: float = 95.0, start_timestamp_us: int \| None = None, start_transform: Any = None)` | [Renderers](../guides/simulators.md#renderers) |
+| `Renderer` | Abstract base: `load_scene(scene)`, `render(pose, camera)` (abstract), `close()` | [Renderers](../guides/simulators.md#renderers) |
+| `KinematicBicycle` | `KinematicBicycle(wheelbase: float = 2.8, max_accel: float = 3.0, max_brake: float = 8.0, max_steer: float = 0.6)`. Command mode `actuator` | [Dynamics and time step](../guides/simulators.md#dynamics-and-time-step) |
+| `TrajectoryFollower` | `TrajectoryFollower(decel: float = 4.0)`. Command mode `trajectory` | [Dynamics and time step](../guides/simulators.md#dynamics-and-time-step) |
+| `EgoDynamics` | Protocol: `step(pose: EgoPose, control: Control, dt: float) -> EgoPose`, with an optional `command_modes` | [Dynamics and time step](../guides/simulators.md#dynamics-and-time-step) |
+| `EgoPose` | `EgoPose(x: float = 0.0, y: float = 0.0, yaw: float = 0.0, speed: float = 0.0, t: float = 0.0)` | [NuRec](../guides/simulators.md#nurec) |
+| `ModularAVStack` (`avsectester.stacks.modular`) | `ModularAVStack(pipeline_cfg: dict)` | [Modular driving system](../guides/driving-systems.md#modular-driving-system) |
+| `AlpamayoAVStack` (`avsectester.stacks.alpamayo`) | `AlpamayoAVStack(checkpoint_path: str \| None = None, camera_ids: list[str] \| None = None, device: str = "cuda:0", context_length: int = 4, output_frequency_hz: int = 10, model: Any \| None = None)` | [Alpamayo](../guides/driving-systems.md#alpamayo) |
+
+`avsectester.simulators` re-exports `CarlaBackend`, `EgoPose`, `KinematicBicycle`,
+`NuRecBackend`, `NuRecRenderer`, `Renderer`, `StubRenderer` and `TrajectoryFollower`.
+`avsectester.stacks` re-exports `AlpamayoAVStack` and `ModularAVStack`. Both stacks provide
+`component_log()`, and `ModularAVStack.instrument(stages=("perception", "tracking", "planning",
+"control"))` selects the captured stages. See
+[Component logging interface](../guides/driving-systems.md#component-logging-interface).
+
+## Runtime
+
+`avsectester.runtime` holds the handler registration and lifecycle classes. The
+[Runtime reference](runtime.md) owns stage values, ordering, the handler contract, lifecycle,
+contexts and randomness.
+
+```python
+# avsectester.runtime
+@dataclass(frozen=True)
+class Hook:
+    stage: str
+    handler: Any
+
+class Runtime:
+    def __init__(
+        self,
+        hooks: Iterable[Hook] = (),
+        *,
+        localizer: Callable[[Observation, StageContext], StateEstimate] | Plugin | None = None,
+        case: Any = None,
+        seed: int | None = 0,
+    ) -> None: ...
+    @classmethod
+    def from_config(cls, config: Mapping[str, Any] | None = None, *, case: Any = None) -> Runtime: ...
+    def with_hooks(self, hooks: Iterable[Hook], *, prepend: bool = False) -> Runtime: ...
+    def validate_stages(self, backend: WorldBackend, stack: AVStack) -> frozenset[str]: ...
+    @property
+    def setup_ticks(self) -> int: ...
+    def session(
+        self, backend: WorldBackend, stack: AVStack,
+        perturb: Callable[[Observation], Observation] | None = None,
+    ) -> RuntimeSession: ...
+
+class Plugin(ABC):
+    def reset(self, context: RunContext) -> None: ...
+    @abstractmethod
+    def transform(self, value: Any, context: StageContext) -> Any: ...
+    def after_step(self, context: StageContext) -> None: ...
+    def close(self) -> None: ...
+```
+
+| Name | Returns or does | Raises |
+|---|---|---|
+| `Hook(stage, handler)` | Registers `handler` at `stage`. A handler is a callable `handler(value, context)` or an object with `transform(value, context)` | `ValueError` for an empty stage. `TypeError` for any other handler |
+| `Runtime(...)` | Stores `hooks` as a tuple in registration order, an optional localizer, the default `context.case` and the handler random seed, as the attributes `hooks`, `localizer`, `case` and `seed` | `TypeError` for an entry that is not a `Hook`, or a localizer that is neither callable nor has `transform` |
+| `Runtime.from_config(config, *, case)` | Builds a runtime from a `runtime` configuration mapping, not the whole document. Same as `runtime_from_config` | `ValueError`. See [runtime keys](configuration.md#runtime) |
+| `with_hooks(hooks, *, prepend)` | A new `Runtime` with `hooks` appended, or prepended, keeping localizer, case and seed | — |
+| `validate_stages(backend, stack)` | Checks command compatibility and that every hook stage is available. Returns the available stages | `CommandCompatibilityError`, `UnsupportedStageError` |
+| `setup_ticks` | Sum of `setup_ticks` declared by the distinct `world.setup` handlers | `ValueError` for a negative or non-integer count |
+| `session(backend, stack, perturb)` | A `RuntimeSession` for one run. A `perturb` function is prepended as an `ObservationTransform` at `observation` | As `validate_stages` |
+| `Plugin` | Base class for stateful handlers. Only `transform` is abstract. See [Plugin lifecycle](runtime.md#plugin-lifecycle) | — |
+
+| Class | Signature | Notes |
+|---|---|---|
+| `RunContext` | `RunContext(backend: WorldBackend, stack: AVStack, case: Any, rng: np.random.Generator)` | Frozen. Property `native`. See [Contexts](runtime.md#contexts) |
+| `StageContext` | `StageContext(run: RunContext, step: int, stage: str, ground_truth: WorldSnapshot, sensor: str \| None = None, observation: Observation \| None = None, control: Control \| None = None)` | Frozen. Method `record_output(name: str, value: Any) -> None`. Properties `backend`, `stack`, `case`, `rng`, `native` and `sim_time`. See [Contexts](runtime.md#contexts) and [Recording outputs](runtime.md#recording-outputs) |
+| `CallInputs` | `CallInputs(args: tuple = (), kwargs: dict[str, Any] = {})` | The value at component `.pre` stages. `TypeError` unless `args` is a tuple and `kwargs` a dict |
+| `RenderRequest` | `RenderRequest(pose: Any, camera: str)` | The value at `render.pre`. `ValueError` for an empty camera name |
+| `RuntimeSession` | Created by `Runtime.session` | `CORE_STAGES = frozenset({"sensors.post", "localization.post", "observation", "command"})`. `emit(stage, value, sensor=None)` runs the handlers at `stage`. Adapters reach it through `_emit` |
+| `UnsupportedStageError` | Subclass of `ValueError` | A hook uses a stage the selected adapters do not provide |
+
+`StageContext.record_output` raises `ValueError` for an empty name and `RuntimeError` outside an
+active callback.
+
+### Runtime adapters
+
+```python
+# avsectester.interventions
+class ObservationTransform:
+    def __init__(self, transform: Callable[[Observation], Observation]) -> None: ...
+
+class NativeHook(Plugin):
+    def __init__(self, config: Mapping[str, Any], *, phase: str = "post") -> None: ...
+
+# avsectester.attacks.patch.physical_patch
+class PhysicalPatchPlugin(Plugin):
+    def __init__(self, patches: Sequence[dict]) -> None: ...
+```
+
+| Adapter | Behavior | Raises |
+|---|---|---|
+| `ObservationTransform(transform)` | Wraps a one-argument `Observation -> Observation` function as a handler and calls it without the context. Its `lifecycle_owner` is the wrapped function, so the runtime calls that object's `reset`, `after_step` and `close` when they exist | — |
+| `NativeHook(config, *, phase="post")` | Builds an avstack `HOOKS` hook from a copy of `config` at every `reset`. With `phase="post"` it calls the hook on the stage value and unwraps its one-element tuple. With `phase="pre"` it calls the hook with the `CallInputs` arguments and returns `CallInputs(args, kwargs)`. `close` calls the hook's `close` when it exists. Requires avstack | `ValueError` for another phase. `TypeError` if a pre-hook value is not `CallInputs` or a post-hook does not return a one-element tuple |
+| `PhysicalPatchPlugin(patches)` | A `world.setup` plugin. Spawns and textures one CARLA panel per patch mapping on its target actor, with one `backend.setup_tick()` per panel. `setup_ticks` is `len(patches)`. `close` destroys the panels | `ValueError` for a patch that is not a dict, a backend without `setup_tick`, a missing CARLA world or an unavailable target |
+
+Patch mapping keys are in [patches](configuration.md#patches). Target resolution and panel
+behavior are in [Physical patch](../examples/physical-patch.md).
+
+## Preparation
+
+`avsectester.preparation` separates reusable artifacts from per-run execution. Writing an
+intervention is described in
+[Package the attack as an intervention](../guides/attacks.md#package-the-attack-as-an-intervention).
+
+```python
+# avsectester.preparation
+class Intervention(ABC):
+    def prepare(self, scenario: ScenarioInstance) -> Any: ...
+    @abstractmethod
+    def hooks(self, artifacts: Any) -> Sequence[Hook]: ...
+    def export_artifacts(self, artifacts: Any) -> Any: ...
+    def import_artifacts(self, data: Any) -> Any: ...
+
+@dataclass(frozen=True)
+class PreparedIntervention:
+    method: Intervention
+    artifacts: Any
+    kind: str = "attack"
+    name: str = ""
+    provenance: dict[str, Any] = field(default_factory=dict)
+    position: str = "after"
+
+    def hooks(self) -> tuple[Hook, ...]: ...
+    def save(self, path: str | Path) -> None: ...
+    @classmethod
+    def load(cls, method: Intervention, path: str | Path) -> PreparedIntervention: ...
+
+def prepare_intervention(
+    method: Intervention,
+    scenario: ScenarioInstance,
+    *,
+    kind: str = "attack",
+    name: str | None = None,
+    artifacts: Any = _UNSET,
+    position: str = "after",
+) -> PreparedIntervention: ...
+
+@dataclass(frozen=True)
+class Treatment:
+    interventions: tuple[PreparedIntervention, ...] = ()
+
+    def subset(self, kinds: Iterable[str]) -> Treatment: ...
+    def runtime(
+        self, base: Runtime | None = None, case: Any = None, *,
+        kinds: Iterable[str] | None = None,
+    ) -> Runtime: ...
+```
+
+| Name | Returns or does | Raises |
+|---|---|---|
+| `Intervention.prepare(scenario)` | Creates reusable artifacts from the complete prepared scenario, whose `match` may be `None`. The default returns `None` | — |
+| `Intervention.hooks(artifacts)` | Abstract. The ordered hooks for one run. Handlers must be fresh or reset their own state | — |
+| `Intervention.export_artifacts(artifacts)`, `import_artifacts(data)` | The artifact codec. The defaults return the value unchanged | — |
+| `PreparedIntervention(...)` | Artifacts with the method that executes them and their role. An empty `name` becomes the method's class name | `ValueError` for `kind` other than `attack` or `defense`, or `position` other than `before` or `after`. `TypeError` if `method` has no `hooks` or `name` is not a string |
+| `PreparedIntervention.hooks()` | Calls `method.hooks(artifacts)` without preparing again | `TypeError` for an entry that is not a `Hook` |
+| `prepare_intervention(...)` | Calls `method.prepare(scenario)` once, unless `artifacts` is supplied, including `None`. Sets `provenance` to `{"scenario": <copy of scenario.provenance>}`. `name` defaults to the method's class name | `ValueError` for an invalid `kind`, `position` or an empty `name`. `TypeError` if `method` lacks `hooks`, or lacks `prepare` when preparation is needed |
+| `Treatment(interventions)` | Ordered prepared interventions | `TypeError` for other entries |
+| `Treatment.subset(kinds)` | The entries whose `kind` is in `kinds`, without preparing them again | `ValueError` for kinds other than `attack` and `defense` |
+| `Treatment.runtime(base, case, *, kinds)` | Builds fresh hooks in this order: `position="before"` entries, `base.hooks`, `position="after"` entries. Keeps the localizer and seed of `base`. Uses `case` when it is not `None`, otherwise `base.case`. `kinds` selects a subset first | As `subset` |
+
+Ordering across configured sources is described in
+[Ordering at a shared stage](runtime.md#ordering-at-a-shared-stage).
+
+### Artifact codec
+
+`PreparedIntervention.save(path)` writes one JSON record and creates missing parent directories.
+`PreparedIntervention.load(method, path)` restores the record with the supplied method. No code is
+imported from the file.
+
+| Record field | Content |
+|---|---|
+| `name` | `PreparedIntervention.name` |
+| `kind` | `"attack"` or `"defense"` |
+| `provenance` | The preparation provenance, a mapping. `prepare_intervention` stores the scenario's provenance under `scenario` |
+| `position` | `"before"` or `"after"` |
+| `artifacts` | `method.export_artifacts(artifacts)`, or the artifacts when the method has no `export_artifacts` |
+
+```json
+{
+  "name": "speed-feedback",
+  "kind": "attack",
+  "provenance": {"scenario": {"scene": "example", "conditions": {"world": {}, "seed": 0, "sensors": []}}},
+  "position": "after",
+  "artifacts": {"target_speed": 5.0, "gain": 0.5, "max_bias": 5.0, "initial_bias": 0.0}
+}
+```
+
+- The default codec stores JSON values: mappings, lists, strings, finite numbers, booleans and
+  `None`. Tuples load as lists, and non-string mapping keys load as strings.
+- `save` serializes with `allow_nan=False` before it creates or replaces the file. A
+  non-serializable value raises `TypeError`, and NaN or infinity raises `ValueError`. The file is
+  then left unchanged.
+- Override `export_artifacts` and `import_artifacts` for arrays, tensors or custom objects. They
+  may write and read external files. A stored file path is not copied with the record.
+- `load` calls `method.import_artifacts`. It raises `ValueError` unless the record is a mapping with
+  exactly the five fields above and a mapping `provenance`. The restored `PreparedIntervention`
+  validates `kind` and `position` again.
+- A configured `interventions` entry with `artifacts` passes them through `import_artifacts` and
+  skips `prepare`. See [interventions](configuration.md#interventions).
+
+Usage is described in [Save and reuse artifacts](../guides/attacks.md#save-and-reuse-artifacts).
+
+### Supplied interventions
+
+| Class | Constructor | `prepare` returns | `hooks(artifacts)` returns |
+|---|---|---|---|
+| `SpeedFeedbackAttack` (`avsectester.attacks.adaptive`) | `SpeedFeedbackAttack(target_speed: float, gain: float = 0.1, max_bias: float = 5.0, initial_bias: float = 0.0)` | The four options as a dict | `(Hook("observation", SpeedFeedbackPlugin(**artifacts)),)` |
+| `PhysicalPatchIntervention` (`avsectester.attacks.patch.physical_patch`) | `PhysicalPatchIntervention(patches: Sequence[dict])` | A copy of `patches`, after validation | `(Hook("world.setup", PhysicalPatchPlugin(artifacts)),)` |
+| `NativeHookIntervention` (`avsectester.interventions`) | `NativeHookIntervention(stage: str, config: Mapping[str, Any])` | A copy of `config` | `(Hook(stage, NativeHook(artifacts)),)` |
+
+`SpeedFeedbackPlugin(target_speed: float, gain: float = 0.1, max_bias: float = 5.0,
+initial_bias: float = 0.0)` adds `bias` to the observed `ego_speed` and updates `bias` from the
+physical speed in `after_step`. It raises `ValueError` for non-finite or negative values or
+`initial_bias` outside `[0, max_bias]`. `SpeedFeedbackAttack` validates its options the same way.
+See [Speed-feedback adaptive attack](../examples/speed-feedback-attack.md).
+
+`PhantomInjection` (`avsectester.attacks.pipeline.phantom`, also importable from
+`avsectester.attacks`) is an avstack `HOOKS` hook, not an `Intervention`. Use it through
+`NativeHook` or a convenience `attacks` entry. Importing it requires avstack.
+
+```text
+PhantomInjection(
+    target_xyz: tuple[float, float, float] = (6.0, 0.0, -1.5),
+    obj_type: str = "Car",
+    score: float = 0.9,
+    extent: tuple[float, float, float] = (1.6, 1.8, 4.0),  # h, w, l
+    oid: int = 90002,
+)
+PhantomInjection.__call__(detections: Any) -> tuple[Any]
+```
+
+The call appends one phantom detection and returns `(detections,)`. It raises `ValueError` when
+`detections.source_reference` is missing. See [Phantom injection](../examples/phantom-injection.md).
+
+## Configuration helpers
+
+These functions turn configuration mappings into the objects above. Keys and validation of the
+mappings are in the [Configuration reference](configuration.md).
+
+```python
+# avsectester.interventions
+def runtime_from_config(config: Mapping[str, Any] | None, *, case: Any = None) -> Runtime: ...
+
+def prepare_from_config(
+    config: Mapping[str, Any], scenario: ScenarioInstance, *,
+    kinds: Iterable[str] | None = None,
+) -> Treatment: ...
+
+def configured_runtime(
+    scenario: Mapping[str, Any], *, case: Any = None, instance: ScenarioInstance | None = None,
+    prepared: Treatment | None = None, kinds: Iterable[str] | None = None,
+) -> Runtime: ...
+
+def configured_clean_runtime(
+    config: Mapping[str, Any], *, case: Any = None, attacked_runtime: Runtime | None = None,
+) -> Runtime: ...
+
+def configured_runtime_pair(
+    scenario: Mapping[str, Any],
+    *,
+    clean_runtime: Runtime | None = None,
+    attacked_runtime: Runtime | None = None,
+    instance: ScenarioInstance | None = None,
+    prepared: Treatment | None = None,
+    kinds: Iterable[str] | None = None,
+) -> tuple[Runtime, Runtime]: ...
+
+# avsectester.experiment
+def configured_stack(config: Mapping[str, Any]) -> AVStack: ...
+
+# avsectester.scenarios.setup
+def scene_config(config: Mapping[str, Any]) -> dict[str, Any]: ...
+
+def source_from_config(
+    config: Mapping[str, Any],
+    *,
+    backend_factory: Callable[[dict[str, Any]], WorldBackend] | None = None,
+    provenance: Mapping[str, Any] | None = None,
+    candidate_provider: Callable | None = None,
+    dataset: Dataset | None = None,
+) -> ScenarioSource: ...
+
+def scenario_from_config(
+    config: Mapping[str, Any],
+    *,
+    backend_factory: Callable[[dict[str, Any]], WorldBackend] | None = None,
+    provenance: Mapping[str, Any] | None = None,
+    candidate_provider: Callable | None = None,
+    dataset: Dataset | None = None,
+) -> ScenarioInstance: ...
+```
+
+In `configured_runtime` and `configured_runtime_pair`, the parameter `scenario` is the
+configuration mapping, and `instance` is the prepared scenario. `source_from_config` and
+`scenario_from_config` are also exported by `avsectester.scenarios`.
+
+| Function | Returns or does | Raises |
+|---|---|---|
+| `runtime_from_config(config, *, case)` | A `Runtime` from a `runtime` mapping. `None` gives `Runtime(case=case)`. `seed` defaults to `0`. A `factory` handler is imported and called with `options` as keyword arguments. An `avstack` handler becomes `NativeHook`, with `phase="pre"` at stages ending in `.pre` | `ValueError` for unknown keys, a malformed hook entry or a factory that cannot be imported |
+| `prepare_from_config(config, scenario, *, kinds)` | Prepares the configured interventions once and returns a `Treatment` in this order: each convenience `attacks` entry, one entry for all `patches`, then the `interventions` entries. Convenience entries use `position="before"`. `kinds` limits preparation to `attack`, `defense` or both. An entry with `artifacts` skips `prepare` | `ValueError` for a top-level `defenses` key, invalid entries or invalid kinds |
+| `configured_runtime(scenario, *, case, instance, prepared, kinds)` | The treated runtime: the `runtime` settings with the enabled interventions assembled by `Treatment.runtime`. Prepares again unless `prepared` is given. When `kinds` excludes `attack`, raw `runtime.hooks` are dropped. `case` defaults to `instance.match`. Without `instance`, preparation receives a placeholder scenario whose factory raises `RuntimeError` | As `prepare_from_config` |
+| `configured_clean_runtime(config, *, case, attacked_runtime)` | The baseline runtime. Uses `clean_runtime` when configured. Otherwise uses `attacked_runtime`'s localizer, seed and case without hooks. Otherwise uses the `runtime` localizer and seed without hooks | `ValueError` for an invalid `runtime` mapping |
+| `configured_runtime_pair(scenario, *, ...)` | `(clean, treated)`, building each runtime that is not supplied | As above |
+| `configured_stack(config)` | The configured stack. Without `stack`: `ModularAVStack(config["ego"]["pipeline"])` with perception instrumented. With `type: AlpamayoAVStack`: `AlpamayoAVStack(**options)`. With `factory`: the user's stack. See [Driving system keys](configuration.md#driving-system-keys) | `ConfigurationError` |
+| `scene_config(config)` | A detached copy of the configuration without experiment keys. See [File layout](configuration.md#file-layout) | `ValueError` for a non-mapping |
+| `source_from_config(config, ...)` | Without `selection`: a `ConfiguredScenarioSource`. With `selection`: a source that applies the configured requirement through `CarlaScenarioBuilder`, or `DatasetFilter` when `dataset` is given. Its `scenarios()` takes no requirement or the same one | `ValueError` for invalid selection settings, selection for a non-CARLA backend without `dataset`, or `dataset` combined with source options or `backend_factory` |
+| `scenario_from_config(config, ...)` | The first scenario from `source_from_config`. Releases selection resources before it returns. Without selection, no backend is constructed until `make_backend()` | As `source_from_config`. `ValueError` if no scenario satisfies the requirement |
+
+| Exception | Module | Raised when |
+|---|---|---|
+| `ConfigurationError(ValueError)` | `avsectester.experiment` | `run_configured` or `configured_stack` cannot prepare the configuration |
+| `ScenarioConfigurationError(ValueError)` | `avsectester.scenarios.setup` | The built-in backend factory cannot construct a backend from the scene settings. Raised when the backend is built, for example by `make_backend()` |
+| `ConditionConfigurationError(ValueError)` | `avsectester.conditions` | A backend rejects a configured world condition |
+
+## Scenarios
+
+The names in `avsectester.scenarios.__all__` can be imported from `avsectester.scenarios`. Each
+block below gives the defining module. [Prepare scenarios](../guides/scenarios.md) explains
+selection workflows.
+
+### Prepared scenario
+
+```python
+# avsectester.scenarios.source
+@dataclass(frozen=True)
+class ScenarioInstance:
+    factory: Callable[[], WorldBackend]
+    match: ScenarioMatch | None = None
+    provenance: dict[str, Any] = field(default_factory=dict)
+    selection: dict[str, Any] = field(default_factory=dict)
+    config: dict[str, Any] = field(default_factory=dict)
+    conditions: ScenarioConditions = field(default_factory=ScenarioConditions)
+
+    def make_backend(self) -> WorldBackend: ...
+```
+
+| Field | Meaning |
+|---|---|
+| `factory` | Callable that constructs a fresh backend. Stored unchanged. Calling it directly does not apply conditions |
+| `match` | The selected `ScenarioMatch`, or `None` without selection. Runtimes receive it as `context.case` |
+| `provenance` | A deep copy of the supplied metadata, with `conditions` set to `conditions.provenance()` |
+| `selection` | Selection evidence from `SelectionResult.summary()`. Empty without selection |
+| `config` | A deep copy of the scene and backend settings, when the source has them. Never contains intervention settings |
+| `conditions` | The `ScenarioConditions` shared by every treatment |
+
+Construction raises `TypeError` if `factory` is not callable or `conditions` is not a
+`ScenarioConditions`.
+
+`make_backend()` calls `factory()`, then `conditions.configure_backend(backend)`, and returns the
+backend. If configuration fails, it closes the backend and re-raises the error, a
+`ConditionConfigurationError` when the backend rejects a world condition. `run_prepared` and
+`run_configured` build backends this way.
+
+The fields are frozen. Assigning one raises `dataclasses.FrozenInstanceError`. Use
+`dataclasses.replace(scenario, factory=...)` or `replace(scenario, conditions=...)` instead.
+Replacement runs the same initialization, so `provenance["conditions"]` follows the new
+conditions. The `config`, `provenance` and `selection` dictionaries stay mutable. Changing
+`config` does not rebuild a factory that already captured its settings.
+
+| Source | `provenance` | `selection` | `config` |
+|---|---|---|---|
+| `ConfiguredScenarioSource` | The `provenance` argument | `{}` | The scene view of the configuration |
+| `DatasetFilter` | The selected scene's `source` | The selection summary | `{}` |
+| `CarlaScenarioBuilder` | The scene's `source` with `backend: "carla"` and `validation: "prepared"` or `"analytic_preview"` | The selection summary | The replayable CARLA scene settings |
+
+A source created by `source_from_config` with `selection` adds its `provenance` argument to each
+scenario. How to use the prepared scenario is described in
+[The prepared scenario](../guides/scenarios.md#the-prepared-scenario).
+
+### Sources
+
+```python
+# avsectester.scenarios.source
+class ScenarioSource(ABC):
+    selection_log: list[dict]
+    @abstractmethod
+    def scenarios(
+        self, req: ScenarioRequirement, limit: int | None = None
+    ) -> Iterator[ScenarioInstance]: ...
+    def save_selection(self, path) -> None: ...
+
+class DatasetFilter(ScenarioSource):
+    def __init__(
+        self,
+        dataset: Dataset,
+        prepare_scene: Callable | None = None,
+        prepare_context: Callable[[FilterContext], FilterContext] | None = None,
+        *,
+        conditions: ScenarioConditions | None = None,
+    ): ...
+
+class CarlaScenarioBuilder(ScenarioSource):
+    def __init__(
+        self,
+        base_scenario: dict | None = None,
+        samples: int = 1,
+        lateral_range: tuple[float, float] = (0.0, 3.0),
+        ego_speed: float = 0.0,
+        min_gap: float = 6.0,
+        seed: int = 0,
+        prepare_scene: Callable | None = None,
+        *,
+        candidate_provider: Callable | None = None,
+        sample_scene: bool = False,
+        analytic_preview: bool = False,
+        prepare_context: Callable[[FilterContext], FilterContext] | None = None,
+        conditions: ScenarioConditions | None = None,
+    ): ...
+
+class Dataset(ABC):
+    @abstractmethod
+    def scenes(self) -> Iterator[SceneGT]: ...
+    @abstractmethod
+    def make_backend(self, scene: SceneGT) -> WorldBackend: ...
+    def context(self, scene: SceneGT) -> FilterContext: ...
+    def initial_sequence(self, scene: SceneGT, frames: int) -> tuple[SceneGT, ...]: ...
+
+# avsectester.scenarios.setup
+class ConfiguredScenarioSource(ScenarioSource):
+    def __init__(
+        self,
+        config: Mapping[str, Any],
+        *,
+        backend_factory: Callable[[dict[str, Any]], WorldBackend] | None = None,
+        provenance: Mapping[str, Any] | None = None,
+    ) -> None: ...
+```
+
+| Name | Returns or does | Raises |
+|---|---|---|
+| `scenarios(req, limit=None)` | Yields qualifying prepared scenarios, at most `limit`. Clears and refills `selection_log`, one entry per evaluated candidate | `ValueError` for a negative or non-integer `limit` |
+| `save_selection(path)` | Writes `selection_log` as JSON, without native clients or images | — |
+| `ConfiguredScenarioSource` | Yields one scenario without preview or filters. `req` must be `None`. `backend_factory(scene_config)` defaults to the built-in CARLA or NuRec factory | `ValueError` when `req` is given. `TypeError` for a non-callable factory |
+| `DatasetFilter` | Evaluates `req` on recorded scenes of `dataset`. `prepare_scene` adapts each scene. `prepare_context` augments each filter context | `ValueError` if `conditions` has world settings. `TypeError` if `prepare_context` returns another type |
+| `CarlaScenarioBuilder` | Instantiates CARLA candidates and evaluates `req` on them. Without a `candidate_provider` it uses `CarlaCandidateProvider`. `sample_scene=True` samples lead distance and lateral offset. `analytic_preview=True` evaluates an analytic scene without CARLA | `ValueError` for `samples < 1`, a nonzero `ego_speed`, an unordered `lateral_range`, `analytic_preview` with a `candidate_provider`, or world conditions other than `weather` |
+| `Dataset` | Base class of a recorded-data provider. `context` returns `FilterContext(scene=scene, dataset=self)`. `initial_sequence` returns `(scene,)` | — |
+
+Supplied providers:
+
+```python
+# avsectester.scenarios.datasets.nurec
+class NuRecDataset(Dataset):
+    def __init__(
+        self,
+        usdz_paths: list[str],
+        sensor: str = "camera_front_wide_120fov",
+        camera: str = "front",
+        keyframe: float = 0.5,
+        vehicle_labels: tuple[str, ...] = _VEHICLE_LABELS,
+        max_scenes: int | None = None,
+        endpoint: str = "127.0.0.1:50051",
+    ) -> None: ...
+    @classmethod
+    def from_glob(cls, pattern: str, **kwargs) -> NuRecDataset: ...
+    def insertion_renderer(self, scene, backend, insertions, bindings=None, compositor=None): ...
+
+# avsectester.scenarios.datasets.nuscenes
+class NuScenesDataset(Dataset):
+    def __init__(self, dataroot: str, version: str = "v1.0-trainval", camera: str = "CAM_FRONT",
+                 max_samples: int | None = None) -> None: ...
+class RecordedFrameBackend(WorldBackend):
+    def __init__(self, image_path: str, sensor_id: str = "front",
+                 frame: int = 0, t: float = 0.0) -> None: ...
+
+# avsectester.scenarios.carla_provider
+class CarlaCandidateProvider:
+    def __init__(self, *, initial_frames=1, advance_initial=None, backend_factory=None, conditions=None): ...
+class CarlaSelectionBackend(CarlaBackend):
+    def __init__(self, scenario, *, camera="front", **kwargs): ...
+```
+
+`_VEHICLE_LABELS` is `("automobile", "car", "truck", "bus", "trailer", "van", "vehicle")`.
+`NuRecDataset` raises `ValueError` for `keyframe` outside `[0, 1]` or a negative `max_scenes`.
+`CarlaCandidateProvider` raises `ValueError` for `initial_frames` below 1, or above 1 without
+`advance_initial`. See [CARLA](../guides/scenarios.md#carla),
+[NuRec datasets](../guides/scenarios.md#nurec-datasets) and
+[Initial windows and providers](../guides/scenarios.md#initial-windows-and-providers).
+
+### Requirements, roles and matches
+
+```python
+# avsectester.scenarios.requirement
+@dataclass
+class ScenarioRequirement:
+    name: str
+    target: TargetSpec | None = None
+    constraints: list[Constraint] = field(default_factory=list)
+    description: str = ""
+    roles: dict[str, RoleSpec] = field(default_factory=dict)
+    insertions: tuple[Insertion, ...] = ()
+    window: InitialWindow = field(default_factory=InitialWindow)
+    max_bindings: int = 1000
+    camera: str | None = None
+
+    def evaluate(self, context: FilterContext | SceneGT) -> SelectionResult: ...
+    def match(self, context: FilterContext | SceneGT) -> ScenarioMatch | None: ...
+
+@dataclass
+class RoleSpec:
+    ids: tuple[str, ...] | None = None
+    count: int = 1
+    category: str = "vehicle"
+    select: str = "nearest_ahead"
+    camera: str | None = "front"
+
+@dataclass
+class TargetSpec:
+    category: str = "vehicle"
+    camera: str | None = "front"
+    select: str = "nearest_ahead"
+    kind: str = "object"
+
+@dataclass(frozen=True)
+class InitialWindow:
+    frames: int = 1
+
+@dataclass
+class ScenarioMatch:
+    scene: SceneGT
+    target: TargetGeometry | None
+    camera: str | None
+    bindings: dict[str, tuple[TargetGeometry, ...]] = field(default_factory=dict)
+    insertions: tuple[Insertion, ...] = ()
+    window: InitialWindow = field(default_factory=InitialWindow)
+
+    @property
+    def binding_ids(self): ...
+
+@dataclass
+class SelectionResult:
+    status: str
+    match: ScenarioMatch | None
+    candidates: list[CandidateResult]
+    reason: str = ""
+
+    def summary(self) -> dict: ...
+
+@dataclass
+class CandidateResult:
+    target_id: str | None
+    checks: list[tuple[str, FilterResult]]
+    bindings: dict[str, tuple[str, ...]] = field(default_factory=dict)
+```
+
+| Name | Returns or does | Raises |
+|---|---|---|
+| `ScenarioRequirement.evaluate(context)` | Evaluates every role assignment on every frame of the initial window and returns a `SelectionResult`. A `SceneGT` is wrapped in `FilterContext(scene)` | `ValueError` for duplicate insertion IDs or an inconsistent initial sequence. `TypeError` if a filter returns another type |
+| `ScenarioRequirement.match(context)` | `evaluate(context).match` | As `evaluate` |
+| `ScenarioRequirement(...)` | — | `ValueError` for both `target` and `roles`, a role named `victim`, `max_bindings < 1` or duplicate insertion IDs |
+| `RoleSpec(...)` | Binds explicit `ids`, or selects `count` actors of `category` ranked by `select` | `ValueError` for `count < 1`, an unknown `select`, `largest` without a camera, or `ids` that are not distinct or do not match `count` |
+| `TargetSpec(...)` | Single-target shorthand. `select` is `nearest_ahead`, `nearest` or `largest`. `kind` is `object` or `placement` | `ValueError` for other values, or `largest` without a camera |
+| `InitialWindow(frames)` | Requires filters to pass on the first `frames` prepared frames | `ValueError` unless `frames` is a positive integer |
+| `ScenarioMatch.binding_ids` | `{role: (track_id, ...)}` for the bound actors | — |
+| `SelectionResult.status` | `"pass"`, `"fail"` or `"unknown"` | — |
+| `SelectionResult.summary()` | JSON-compatible evidence with the keys `status`, `reason`, `selected_target`, `bindings`, `insertions`, `initial_frames` and `candidates` | — |
+| `CandidateResult.status` | The combined status of `checks`, or `"pass"` without checks | — |
+
+See [Compose a requirement](../guides/scenarios.md#compose-a-requirement) and
+[Roles and bindings](../guides/scenarios.md#roles-and-bindings).
+
+### Filters
+
+```python
+# avsectester.scenarios.filters
+@dataclass(frozen=True)
+class FilterResult:
+    status: Literal["pass", "fail", "unknown"]
+    reason: str = ""
+    @classmethod
+    def from_bool(cls, passed: bool, reason: str) -> FilterResult: ...
+
+class Constraint(ABC):
+    @abstractmethod
+    def evaluate(self, context: FilterContext) -> FilterResult: ...
+    def holds(self, context: FilterContext | SceneGT, target=None) -> bool: ...
+
+@dataclass
+class All(Constraint):
+    filters: list[Constraint] = field(default_factory=list)
+
+@dataclass
+class Any(Constraint):
+    filters: list[Constraint] = field(default_factory=list)
+
+@dataclass
+class Not(Constraint):
+    filter: Constraint
+```
+
+`FilterResult` raises `ValueError` for another status. `Constraint.holds` returns `True` when
+`evaluate` passes. Given a `SceneGT`, it builds a context with `target` bound as `attacker`. The
+combinator `Any` shadows `typing.Any` when imported by name.
+
+The built-in filters are `InView`, `DistanceRange`, `ImageAreaFrac`, `ViewpointRear`,
+`MinVisibility`, `EgoMoving` and `ClearLaneAhead`. Their fields, semantics and the combinator
+results are in [Filters](../guides/scenarios.md#filters).
+
+```python
+# avsectester.scenarios.serialize
+def register_constraint(cls: type[Constraint]) -> type[Constraint]: ...
+def requirement_to_dict(req: ScenarioRequirement) -> dict[str, Any]: ...
+def requirement_from_dict(value: dict[str, Any]) -> ScenarioRequirement: ...
+def constraint_vocabulary() -> list[dict[str, Any]]: ...
+
+# avsectester.scenarios.nl
+LLM = Callable[[str], str]
+def interpret(description: str, llm: LLM, name: str = "custom") -> ScenarioRequirement: ...
+```
+
+| Function | Returns or does | Raises |
+|---|---|---|
+| `register_constraint(cls)` | Registers a filter dataclass for dictionary serialization and returns it, so it works as a decorator | `TypeError` unless `cls` is a `Constraint` dataclass. `ValueError` if another class has the same name |
+| `requirement_to_dict(req)` | A dictionary of the requirement. Insertions serialize only with a `PlaneAsset` | — |
+| `requirement_from_dict(value)` | The inverse of `requirement_to_dict` | Errors of the constructors |
+| `constraint_vocabulary()` | Registered filter names, fields, defaults and first docstring lines | — |
+| `interpret(description, llm, name)` | Prompts `llm`, parses the JSON in its answer and returns the requirement via `requirement_from_dict` | `ValueError` when the answer has no JSON object. Constructor errors for invalid fields |
+
+See [Selection in YAML](../guides/scenarios.md#selection-in-yaml) and
+[Natural-language requirements](../guides/scenarios.md#natural-language-requirements).
+
+### Scene state and filter context
+
+Scene coordinates use the ego frame: x forward, y left, z up, in metres.
+
+```text
+# avsectester.scenarios.scene
+@dataclass
+class SceneGT:
+    frame: int
+    t: float
+    ego: EgoState
+    cameras: dict[str, CameraCalib]
+    objects: list[ObjectGT]
+    source: dict[str, Any] = field(default_factory=dict)
+    placements: list[PlacementCandidate] = field(default_factory=list)
+    def objects_of(self, category: str) -> list[ObjectGT]
+
+@dataclass
+class EgoState:
+    speed: float = 0.0
+    pose: Any = None
+    extent: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    center: tuple[float, float, float] = (0.0, 0.0, 0.0)
+
+@dataclass
+class CameraCalib:
+    name: str
+    width: int
+    height: int
+    model: Any = None
+    cam_to_ego: Any = None
+
+@dataclass
+class TargetGeometry:  # base class of ObjectGT and PlacementCandidate
+    track_id: str
+    category: str
+    center: tuple[float, float, float]
+    extent: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    yaw: float = 0.0
+    box2d: dict[str, tuple[float, float, float, float]] = field(default_factory=dict)
+    visibility: Visibility | None = None
+    pose: Any = None
+    @property
+    def distance(self) -> float
+    @property
+    def ahead(self) -> bool
+    def image_area_frac(self, camera: str, calib: CameraCalib) -> float | None
+```
+
+| Name | Meaning |
+|---|---|
+| `SceneGT.source` | Provenance of the scene. It becomes the scenario's `provenance` in recorded selection |
+| `EgoState.pose` | Optional 4×4 world-from-ego transform. Inserted geometry requires it. `center` locates the bounding box in ego axes |
+| `CameraCalib` | Calibration in optical axes (x right, y down, z forward). `model` is a projection model, a pinhole K or a provider lens. `cam_to_ego` maps optical coordinates into the ego frame |
+| `TargetGeometry` | An object in the ego frame. `extent` is (length, width, height). `yaw` is the heading relative to the ego. `box2d` maps camera names to `(x1, y1, x2, y2)`. `pose` is an optional 4×4 ego-from-object transform |
+| `ObjectGT`, `PlacementCandidate` | An existing object identified by `track_id`, and a proposed insertion with a stable placement ID |
+| `distance`, `ahead` | Ground-plane distance from the ego origin, and whether `center` has positive x |
+| `image_area_frac(camera, calib)` | Image-clipped `box2d` area as a fraction of the image, or `None` without a box |
+
+```python
+# avsectester.scenarios.context
+@dataclass
+class FilterContext:
+    scene: SceneGT
+    bindings: dict[str, tuple[TargetGeometry, ...]] = field(default_factory=dict)
+    insertions: tuple[Insertion, ...] = ()
+    sequence: tuple[SceneGT, ...] = ()
+    metadata: Any = None
+    dataset: Any = None
+    backend: Any = None
+    renderer: Any = None
+    native: Mapping[str, Any] = field(default_factory=dict)
+    visibility_estimator: GeometryVisibilityEstimator | None = None
+    visibility_provider: (
+        Callable[[FilterContext, str, str], Visibility | VisibilityEvidence | None] | None
+    ) = None
+    frame_context: Callable[[SceneGT], FilterContext] | None = None
+    initial_contexts: Callable[[], Iterator[FilterContext]] | None = None
+    target: TargetGeometry | None = None
+    frame_index: int = 0
+```
+
+| Member | Returns or does |
+|---|---|
+| `own(resource)` | Registers `resource.close()` for this scope and returns `resource` |
+| `close()`, `with context:` | Releases owned resources once, in reverse order |
+| `derive(**changes) -> FilterContext` | A copy with a fresh geometry cache and shared native resources |
+| `at(scene: SceneGT, frame_index: int = 0) -> FilterContext` | Rebinds the same identities in another prepared frame |
+| `actor_aliases -> dict[str, str]` | Single-member roles and indexed aliases such as `hosts[0]`, mapped to track IDs |
+| `actors -> dict` | World `ActorPose` objects keyed by track ID and role alias |
+| `world_from_ego` | `scene.ego.pose` as an array. `ValueError` without a pose |
+| `victim` | The ego `ActorPose` in the world frame |
+| `resolved_insertions -> dict` | `resolve_insertion` results keyed by insertion ID |
+| `subjects(ids: tuple[str, ...] = ()) -> tuple[TargetGeometry, ...]` | Resolved insertions when there are insertions, otherwise the target or scene placements |
+| `in_view(subject: TargetGeometry, camera: str) -> bool` | Whether opaque insertion pixels fall inside the image, ignoring occlusion |
+| `visibility(subject: TargetGeometry, camera: str) -> Visibility \| None` | Visibility from `visibility_provider`, `visibility_estimator` or the subject's own field, cached per subject and camera |
+
+See [Custom filters and native access](../guides/scenarios.md#custom-filters-and-native-access).
+
+## Conditions
+
+```python
+# avsectester.conditions (both classes are also exported by avsectester.scenarios)
+@dataclass(frozen=True)
+class ScenarioConditions:
+    world: Mapping[str, Any] = field(default_factory=dict)
+    sensors: tuple[SensorCondition, ...] = ()
+    seed: int = 0
+
+    @classmethod
+    def from_config(cls, config: Mapping[str, Any] | None = None) -> ScenarioConditions: ...
+    def configure_backend(self, backend: WorldBackend) -> None: ...
+    def apply_runtime(self, runtime: Runtime) -> Runtime: ...
+    def provenance(self) -> dict[str, Any]: ...
+    def selection_scope(self): ...
+    def selection_context(self, context: FilterContext) -> FilterContext: ...
+    @staticmethod
+    def selection_observation(context: FilterContext) -> Observation: ...
+
+@dataclass(frozen=True)
+class SensorCondition:
+    factory: Callable[[], Any]
+    stage: str = "observation"
+    order: str = "after"
+    seed: int | None = None
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def image(
+        cls,
+        pipeline: Any,
+        *,
+        camera: str | None = None,
+        stage: str = "observation",
+        order: str = "after",
+    ) -> SensorCondition: ...
+
+class ConditionConfigurationError(ValueError): ...
+```
+
+| Member | Returns or does | Raises |
+|---|---|---|
+| `ScenarioConditions(...)` | Copies `world` into a dict and `sensors` into a tuple | `ValueError` for a non-mapping `world` or a seed that is not a nonnegative integer. `TypeError` for a sensor entry that is not a `SensorCondition` |
+| `from_config(config)` | Parses a `conditions` mapping. `None` gives empty conditions. See [Condition keys](configuration.md#condition-keys) | `ValueError` for unknown keys or invalid entries |
+| `configure_backend(backend)` | Calls `backend.configure_conditions(world)` when `world` is nonempty | `ConditionConfigurationError` wrapping the backend's `ValueError` |
+| `apply_runtime(runtime)` | A new runtime with a fresh handler from every sensor condition's factory. `order="before"` handlers are prepended and `order="after"` handlers appended. Each handler gets its own random generator from its seed and the driving step | — |
+| `provenance()` | `{"world": ..., "seed": ..., "sensors": [...]}`. Each sensor entry is its metadata with `stage`, `order` and the effective `seed` | — |
+| `selection_scope()` | A context manager, callable as `(context, frame_index)`, that applies the sensor conditions to each selection frame's `native["observation"]`. The result is stored in `native["conditioned_observation"]` | `TypeError` or `ValueError` for a mismatched selection observation |
+| `selection_context(context)` | Applies the conditions to one selection frame | As `selection_scope` |
+| `selection_observation(context)` | `context.native["conditioned_observation"]` | `ValueError` when the provider supplies no observation |
+| `SensorCondition(...)` | A factory of sensor handlers at `sensors.post` or `observation`. `seed=None` uses the scenario's `seed` | `TypeError` for a non-callable factory. `ValueError` for another stage or order, or an invalid seed |
+| `SensorCondition.image(pipeline, *, camera, stage, order)` | Wraps a copy of an `AugmentationPipeline`. The pipeline's seed becomes the condition seed, and the metadata lists its corruptions. With `camera=None` the first readable RGB camera is corrupted | `TypeError` for another pipeline type. At run time, `ValueError` when the camera is missing or unreadable |
+
+How conditions are configured, ordered and seeded is described in
+[Apply operating conditions](../guides/conditions.md).
+
+### Image corruption API
+
+```python
+# avsectester.perturbations.image
+class Corruption(ABC):
+    category: str = "sensor"
+    def __init__(self, severity: float = 0.5) -> None: ...
+    @property
+    def name(self) -> str: ...
+    @abstractmethod
+    def apply(self, rgb: np.ndarray, rng: np.random.Generator) -> np.ndarray: ...
+
+CORRUPTIONS: dict[str, type[Corruption]]
+
+class AugmentationPipeline:
+    def __init__(self, corruptions: Iterable[Corruption], seed: int = 0) -> None: ...
+    @property
+    def name(self) -> str: ...
+    def apply(self, rgb: np.ndarray, frame: int = 0) -> np.ndarray: ...
+
+def common_corruptions(severity: float = 0.5) -> list[AugmentationPipeline]: ...
+def albumentations_available() -> bool: ...
+
+class AlbumentationsCorruption(Corruption):
+    def __init__(self, build: Callable[[float], Any], severity: float = 0.5,
+                 category: str = "sensor", label: str = "albumentations") -> None: ...
+
+def albumentations_corruptions(severity: float = 0.5) -> list[AugmentationPipeline]: ...
+def read_camera_rgb(observation: Observation, camera: str | None = None) -> tuple[str, np.ndarray] | None: ...
+def write_camera_rgb(observation: Observation, key: str, rgb: np.ndarray) -> Observation: ...
+def sensor_augmentation(pipeline: AugmentationPipeline | Iterable[Corruption],
+                        camera: str | None = None) -> Callable[[Observation], Observation]: ...
+def compose(*perturbs: Callable[[Observation], Observation] | None) -> Callable[[Observation], Observation]: ...
+```
+
+| Name | Returns or does |
+|---|---|
+| `Corruption` | An image operator on `(H, W, 3)` uint8 RGB. `severity` is clipped to `[0, 1]`. `name` is `"<Class>@<severity>"` |
+| `CORRUPTIONS` | Operator classes by name. The catalog is in [Built-in image corruptions](../guides/conditions.md#built-in-image-corruptions) |
+| `AugmentationPipeline` | Applies `corruptions` in order with a generator seeded from `(seed, frame)`. `name` joins the operator names with `+`, or is `"identity"` |
+| `common_corruptions(severity)` | One single-operator pipeline per `CORRUPTIONS` entry |
+| `albumentations_available()` | Whether `albumentations` can be imported |
+| `AlbumentationsCorruption` | Wraps `build(severity)`, an Albumentations transform, as a `Corruption` seeded from the pipeline's generator |
+| `albumentations_corruptions(severity)` | One pipeline per Albumentations-backed operator. Raises `RuntimeError` when Albumentations is not installed |
+| `read_camera_rgb(observation, camera)` | `(sensor_id, rgb)` for `camera`, or for the first sensor when `camera` is absent. Reads an ndarray payload or a payload's `rgb_image`. `None` when unreadable |
+| `write_camera_rgb(observation, key, rgb)` | A copy of `observation` with that sensor's image replaced. A non-ndarray payload is shallow-copied with its `data` replaced |
+| `sensor_augmentation(pipeline, camera)` | An `Observation -> Observation` function that corrupts one camera, using `observation.frame` as the frame index. Leaves the observation unchanged without a readable camera |
+| `compose(*perturbs)` | Applies the functions left to right and skips `None` |
+
+`frame_perturbation`, from the same module, is listed under
+[Insertion rendering](#insertion-rendering).
+
+## Insertion and rendering
+
+World and actor frames use metres and right-handed axes: x forward, y left, z up. An actor pose
+is centred on its bounding box. Assets use the same axes, with their front along +x and their top
+along +z. Camera geometry uses optical axes: x right, y down, z forward. Pixel `(column, row)` has
+its centre at `(column + 0.5, row + 0.5)`.
+
+How to specify insertions is described in
+[Specify inserted objects](../guides/scenarios.md#specify-inserted-objects). How to feed them to
+the driving system is described in [Image insertion](../examples/image-insertion.md).
+
+### Insertion specification
+
+```python
+# avsectester.insertion
+@dataclass(frozen=True)
+class Insertion:
+    id: str
+    asset: PlanarAsset
+    placement: AttachedPlacement | WorldPlacement
+    orientation: Orientation = field(default_factory=Orientation)
+
+@dataclass(frozen=True)
+class PlaneAsset:
+    texture: np.ndarray | str | Path
+    width_m: float
+    height_m: float
+    texture_path: str | None = field(default=None, init=False)
+    def planes(self) -> tuple[PlaneSurface, ...]: ...
+
+@dataclass(frozen=True)
+class PlaneSurface:
+    corners: np.ndarray
+    texture: np.ndarray
+
+class PlanarAsset(Protocol):
+    def planes(self) -> Sequence[PlaneSurface]: ...
+
+@dataclass(frozen=True)
+class AttachedPlacement:
+    host: str
+    anchor: str = "center"
+    offset_m: tuple[float, float, float] = (0.0, 0.0, 0.0)
+
+@dataclass(frozen=True)
+class WorldPlacement:
+    position_m: tuple[float, float, float]
+
+@dataclass(frozen=True)
+class Orientation:
+    mode: str = "fixed_world"
+    rotation_deg: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    target_offset_m: tuple[float, float, float] = (0.0, 0.0, 0.0)
+
+@dataclass(frozen=True)
+class ActorPose:
+    transform: np.ndarray
+    extent: tuple[float, float, float] = (0.0, 0.0, 0.0)
+
+@dataclass(frozen=True)
+class ResolvedInsertion:
+    id: str
+    pose: np.ndarray
+    asset: PlanarAsset
+    host_id: str | None = None
+    def planes(self) -> tuple[PlaneSurface, ...]: ...
+
+def resolve_insertion(
+    insertion: Insertion,
+    actors: Mapping[str, ActorPose],
+    victim: ActorPose,
+) -> ResolvedInsertion: ...
+
+def rotation_matrix(rotation_deg) -> np.ndarray: ...
+```
+
+| Type | Meaning | Validation |
+|---|---|---|
+| `Insertion` | One inserted object with its asset, placement and orientation. Placement is never searched or adjusted | `ValueError` for an empty `id` or `follow_host` without an `AttachedPlacement`. `TypeError` for an asset without `planes()` or another placement type |
+| `PlaneAsset` | An RGBA rectangle centred at the origin in the local yz plane, front +x, top +z. `width_m` runs along y and `height_m` along z. A path is loaded once with Pillow and kept in `texture_path`. Transparent pixels are outside the silhouette | `ValueError` for a non-finite or nonpositive size, and for the texture checks of `PlaneSurface` |
+| `PlaneSurface` | Four corners, shape `(4, 3)`, ordered top-left, top-right, bottom-right, bottom-left as seen from the front, and a uint8 RGBA texture. Both arrays are copied and read-only. Unpacks as `(corners, texture)` | `ValueError` for a wrong shape, non-finite corners, an empty, non-RGBA or non-uint8 texture, or corners that do not form a rectangle |
+| `PlanarAsset` | Protocol for custom assets. `planes()` returns surfaces in one asset-local frame | — |
+| `AttachedPlacement` | A point in the host's local frame: the anchor scaled by the host extent, plus `offset_m` in host axes. `host` is a track ID or a bound role alias | `ValueError` for an empty host, an unknown anchor or a non-finite offset |
+| `WorldPlacement` | A fixed point in the provider's world frame | `ValueError` for a non-finite position |
+| `Orientation` | The rotation mode and its parameters | `ValueError` for an unknown mode, a nonzero `rotation_deg` with `face_victim` or a nonzero `target_offset_m` with another mode |
+| `ActorPose` | A world pose of a bounding-box centre, a right-handed rigid 4×4 transform, and its extent (length, width, height) | `ValueError` for an invalid transform or a negative extent |
+| `ResolvedInsertion` | An insertion's world pose at one instant. `planes()` returns world-frame surfaces | `ValueError` for an invalid pose |
+
+| Anchor | Local point, as fractions of (length, width, height) |
+|---|---|
+| `center` | (0, 0, 0) |
+| `front_center` | (0.5, 0, 0) |
+| `rear_center` | (-0.5, 0, 0) |
+| `left_center` | (0, 0.5, 0) |
+| `right_center` | (0, -0.5, 0) |
+| `top_center` | (0, 0, 0.5) |
+| `bottom_center` | (0, 0, -0.5) |
+
+| Orientation mode | Rotation | Constraint |
+|---|---|---|
+| `fixed_world` (default) | `rotation_matrix(rotation_deg)` in the world frame | — |
+| `follow_host` | The host rotation multiplied by `rotation_matrix(rotation_deg)` | Requires `AttachedPlacement` |
+| `face_victim` | +x points at the victim-local point `target_offset_m`, with +z as close to world up as possible. A vertical direction uses world +y as the secondary reference | `rotation_deg` must be zero |
+
+`rotation_matrix(rotation_deg)` takes `(roll, pitch, yaw)` in degrees and returns
+`Rz(yaw) @ Ry(pitch) @ Rx(roll)`. `resolve_insertion` computes the pose without changing its
+inputs. It raises `KeyError` when the host is missing from `actors`, and never substitutes another
+actor. It raises `ValueError` when a `face_victim` target coincides with the insertion position.
+
+#### Payload builders
+
+```python
+# avsectester.attacks.object_insertion.sign_spoof
+STOP_SIGN: Path  # avsectester/assets/signs/mutcd_r1-1_stop.png
+def sign_rgba(path: str | Path = STOP_SIGN, size: int | None = None) -> np.ndarray: ...
+def post_rgba(height: int = 256, width: int = 16, color: tuple = (150, 152, 155)) -> np.ndarray: ...
+
+@dataclass
+class SignAsset:
+    face: np.ndarray = field(default_factory=sign_rgba, repr=False)
+    width: float = 0.9
+    mount_height: float = 1.5
+    post: bool = True
+    post_width: float = 0.07
+    n_posts: int = 1
+    def planes(self) -> Sequence[PlaneSurface]: ...
+
+# avsectester.attacks.object_insertion.person_poster
+def load_cutout(path: str | Path) -> np.ndarray: ...
+def poster_rgba(person: np.ndarray, aspect: float = 1.5, fill: float = 0.86,
+                paper: tuple = (228, 226, 218), border: tuple = (40, 40, 42),
+                border_frac: float = 0.025) -> np.ndarray: ...
+def standee(person: np.ndarray, height: float = 1.75) -> SignAsset: ...
+def billboard(person: np.ndarray, width: float = 1.4, mount_height: float = 0.6) -> SignAsset: ...
+
+# avsectester.attacks.object_insertion.traffic_light
+def signal_head_rgba(lit: str = "red", height: int = 300) -> np.ndarray: ...
+def traffic_lights_rgba(n: int = 3, lit: str = "red", height: int = 300, gap_frac: float = 0.25,
+                        board: tuple | None = (35, 37, 40)) -> np.ndarray: ...
+def aspect_of(face: np.ndarray) -> float: ...
+def roadside_rig(face: np.ndarray, width: float = 2.4, mount_height: float = 2.2) -> SignAsset: ...
+
+# avsectester.attacks.patch.physical_patch
+def checkerboard_rgba(size: int = 256, squares: int = 8,
+                      color_a: tuple = (255, 0, 0), color_b: tuple = (255, 255, 255)) -> np.ndarray: ...
+def image_rgba(path: str, size: int = 256) -> np.ndarray: ...
+```
+
+| Builder | Returns |
+|---|---|
+| `SignAsset` | A local planar sign with optional posts, usable as an `Insertion` asset. The origin is on the ground below the face. +x is the face normal, +y the viewer's right and +z up. `width` is the face width, and the face height follows the texture aspect. `mount_height` is the face's bottom edge. `planes()` raises `ValueError` for non-finite or invalid sizes or `n_posts < 1` |
+| `sign_rgba(path, size)` | A sign face as `(H, W, 4)` uint8 RGBA. The default is the STOP face. `size` resizes it to a square |
+| `post_rgba(height, width, color)` | A shaded grey post texture |
+| `load_cutout(path)` | A person cut-out as RGBA |
+| `poster_rgba(person, ...)` | An opaque framed poster, 900 px tall with height/width `aspect`, showing the person at `fill` of its height |
+| `standee(person, height)` | `SignAsset(face=person, ..., mount_height=0.0, post=False)`, with the width from the cut-out's aspect |
+| `billboard(person, width, mount_height)` | `SignAsset(face=poster_rgba(person), ..., post=True, post_width=0.09, n_posts=2)` |
+| `signal_head_rgba(lit, height)` | One vertical three-lens signal head with the `lit` lens (`red`, `yellow` or `green`) on |
+| `traffic_lights_rgba(n, lit, ...)` | `n` signal heads in a row on a board. `board=None` gives a transparent background |
+| `aspect_of(face)` | Height divided by width |
+| `roadside_rig(face, width, mount_height)` | `SignAsset(face=face, ..., post_width=0.12)` with one post |
+| `checkerboard_rgba(...)`, `image_rgba(path, size)` | Square RGBA patch textures: a checkerboard, or an image file resized to `size` |
+
+`PhysicalPatch` is the CARLA panel payload deployed by `PhysicalPatchPlugin`. It is not an
+`Insertion` asset.
+
+```python
+# avsectester.attacks.patch.physical_patch
+@dataclass
+class PhysicalPatch:
+    prop: str = DEFAULT_PROP            # "static.prop.ironplank"
+    location: tuple = DEFAULT_LOCATION  # (-2.3, 0.0, 1.0), relative to the target actor
+    rotation: tuple = DEFAULT_ROTATION  # (90.0, 0.0, 0.0), pitch, yaw, roll in degrees
+    texture: dict = field(default_factory=lambda: {"pattern": "checkerboard", "size": 256})
+    emissive: bool = False
+
+    def apply(
+        self, world: Any, target_actor: Any, *,
+        tick: Callable[[], Any] | None = None,
+        on_spawn: Callable[[Any], None] | None = None,
+    ) -> list: ...
+
+def build_patch(cfg: dict | PhysicalPatch) -> PhysicalPatch: ...
+def to_carla_texture(rgba: np.ndarray) -> Any: ...
+```
+
+`apply` spawns the panel, paints it and returns the spawned actors. It raises `ValueError` for a
+prop missing from the blueprint library and `RuntimeError` when the panel cannot be painted.
+`build_patch` drops the configuration keys `type`, `target`, `gap` and `lead_vehicle` and
+constructs a `PhysicalPatch`. See [Payloads](../examples/image-insertion.md#payloads) and
+[Physical patch](../examples/physical-patch.md).
+
+### Insertion rendering
+
+```python
+# avsectester.rendering.cameras (Camera is also exported by avsectester.rendering)
+class Camera(Protocol):
+    width: int
+    height: int
+    def project(self, pts_cam: np.ndarray) -> np.ndarray: ...
+    def unproject(self, uv: np.ndarray) -> np.ndarray: ...
+```
+
+| Member | Contract |
+|---|---|
+| `width`, `height` | Image size in pixels |
+| `project(pts_cam)` | `(N, 3)` optical-frame points to `(N, 2)` pixel coordinates |
+| `unproject(uv)` | `(N, 2)` pixel coordinates to `(N, 3)` unit rays |
+| `max_angle` | Optional. The field-of-view limit in radians from the optical axis |
+
+A custom camera needs only these members. It does not have to inherit from a supplied class.
+
+```python
+# avsectester.rendering.cameras
+@dataclass
+class PinholeCamera:
+    K: np.ndarray
+    width: int
+    height: int
+
+@dataclass
+class FThetaCamera:
+    cx: float
+    cy: float
+    angle_to_pixeldist: tuple
+    width: int
+    height: int
+    pixeldist_to_angle: tuple = ()
+    max_angle: float = math.pi / 2
+    linear_cde: tuple = (1.0, 0.0, 0.0)
+    @classmethod
+    def from_nurec(cls, spec: Any) -> FThetaCamera: ...
+    def in_view(self, pts_cam: np.ndarray) -> np.ndarray: ...
+
+def camera_from_calibration(calib) -> Camera: ...
+def quat_to_matrix(w: float, x: float, y: float, z: float) -> np.ndarray: ...
+def make_pose(rotation: np.ndarray, translation) -> np.ndarray: ...
+def pose_from_proto(pose: Any) -> np.ndarray: ...
+def planar_rig_pose(x: float, y: float, yaw: float, z: float = 0.0) -> np.ndarray: ...
+def transform(T: np.ndarray, pts: np.ndarray) -> np.ndarray: ...
+def project_to_pixels(pts_cam: np.ndarray, K: np.ndarray) -> np.ndarray: ...
+def cam_coords(pts_world: np.ndarray, world_to_cam: np.ndarray) -> np.ndarray: ...
+def carla_cam_coords(pts_world: np.ndarray, cam_inverse_matrix: np.ndarray) -> np.ndarray: ...
+```
+
+| Name | Returns or does |
+|---|---|
+| `PinholeCamera` | An ideal pinhole lens with 3×3 intrinsics `K` |
+| `FThetaCamera` | The NuRec f-theta lens. Polynomials list coefficients in increasing order. `from_nurec(spec)` builds it from a NuRec camera specification. `in_view(pts_cam)` tests z > 0 and `max_angle`. `unproject` raises `NotImplementedError` without `pixeldist_to_angle` |
+| `camera_from_calibration(calib)` | A `Camera` from a `CameraCalib`. Returns `calib.model` when it already projects and unprojects, converts a NuRec dataset lens, or builds a `PinholeCamera` from a 3×3 K or `(f, cx, cy)`. Raises `ValueError` for a missing or malformed model |
+| `quat_to_matrix`, `make_pose`, `pose_from_proto` | A 3×3 rotation from a quaternion, a 4×4 pose from rotation and translation, and a 4×4 pose from a NuRec `Pose` message |
+| `planar_rig_pose(x, y, yaw, z)` | The world-from-rig 4×4 pose of a planar ego pose |
+| `transform(T, pts)` | Applies a 4×4 transform to `(N, 3)` points |
+| `project_to_pixels`, `cam_coords`, `carla_cam_coords` | Pinhole projection, world-to-optical coordinates, and the same for a CARLA camera inverse matrix |
+
+```python
+# avsectester.rendering.types (all are also exported by avsectester.rendering)
+class InsertionGeometry(NamedTuple):
+    actors: Mapping[str, ActorPose]
+    victim: ActorPose
+    cam_from_world: np.ndarray
+
+@dataclass(frozen=True)
+class VisibilityEvidence:
+    visibility: Visibility | None
+    reference_mask: np.ndarray
+    visible_mask: np.ndarray
+    target_depth: np.ndarray
+    reference_pixels: int
+    reason: str = ""
+    sampled_rgba: np.ndarray | None = None
+
+class GeometryProvider(Protocol):
+    def __call__(self, observation: Observation) -> InsertionGeometry: ...
+
+class EvidenceProvider(Protocol):
+    def __call__(
+        self,
+        observation: Observation,
+        resolved: tuple[ResolvedInsertion, ...],
+        geometry: InsertionGeometry,
+    ) -> Mapping[str, VisibilityEvidence]: ...
+```
+
+| `InsertionGeometry` field | Contract |
+|---|---|
+| `actors` | World-frame `ActorPose` objects keyed by stable actor IDs or bound role aliases |
+| `victim` | The victim's `ActorPose` in the same world frame |
+| `cam_from_world` | 4×4 transform from world coordinates to optical camera coordinates |
+
+All values describe the current observation, in metres. Tuple unpacking is supported.
+
+| `VisibilityEvidence` field | Contract |
+|---|---|
+| `visibility` | A `Visibility`, or `None` when visibility is unknown |
+| `reference_mask` | Image-sized boolean mask of the unoccluded silhouette inside the image |
+| `visible_mask` | Image-sized boolean mask of the visible target pixels |
+| `target_depth` | Image-sized optical-axis z of the target surface in metres, infinite outside the target |
+| `reference_pixels` | Pixel count of the full silhouette, including its part outside the image |
+| `reason` | Why visibility is unknown, or an empty string |
+| `sampled_rgba` | Optional image-sized RGBA surface samples. The compositor reuses them. Custom providers may omit them |
+
+An `EvidenceProvider` returns one `VisibilityEvidence` per insertion ID, for the current camera,
+pose and frame.
+
+```python
+# avsectester.rendering.compositor
+class InsertionRenderer:
+    def __init__(
+        self,
+        insertions: Sequence[Insertion],
+        camera: Camera,
+        geometry: GeometryProvider,
+        compositor: PatchCompositor | None = None,
+        evidence_provider: EvidenceProvider | None = None,
+    ): ...
+    def __call__(self, observation: Observation, rgb: np.ndarray) -> np.ndarray: ...
+
+def render_resolved(
+    frame: np.ndarray,
+    camera: Camera,
+    cam_from_world: np.ndarray,
+    resolved: ResolvedInsertion,
+    evidence: VisibilityEvidence | None = None,
+    *,
+    compositor: PatchCompositor | None = None,
+) -> tuple[np.ndarray, np.ndarray]: ...
+
+def render_plane(
+    frame_rgb: np.ndarray,
+    camera: Any,
+    cam_from_world: np.ndarray,
+    corners_world: np.ndarray,
+    texture_rgba: np.ndarray,
+    soften: float = 0.0,
+    margin: int = 2,
+): ...
+
+def warp_patch(frame_rgb: np.ndarray, dst_quad: np.ndarray, patch_rgba: np.ndarray): ...
+
+# avsectester.rendering.geometry
+def insertion_image(subject, camera: Camera, cam_from_world) -> tuple[np.ndarray, np.ndarray]: ...
+def projected_silhouette(subject, camera: Camera, cam_from_world) -> np.ndarray: ...
+```
+
+| Name | Returns or does | Raises |
+|---|---|---|
+| `InsertionRenderer(...)` | Holds the insertions, camera, geometry provider, optional compositor and optional evidence provider | `ValueError` for duplicate insertion IDs |
+| `InsertionRenderer.__call__(observation, rgb)` | Calls `geometry(observation)`, resolves every insertion with `resolve_insertion`, gets evidence from `evidence_provider`, and composites each insertion with `render_resolved`. Returns the image. The attributes `resolved` and `evidence` keep the last frame's values, and `camera` may be replaced between frames. Runs no filters and does not change the observation | `TypeError` if `geometry` returns another type. `KeyError` for a missing host |
+| `render_resolved(...)` | Composites one resolved insertion using per-pixel surface depth. With `evidence`, paints only `visible_mask` pixels and reuses `sampled_rgba`. Without it, only the insertion's own surfaces occlude each other. The compositor's softening and harmonization act on the painted pixels only. Returns `(rgb uint8, mask uint8)`, with 255 where painted | `ValueError` when the frame size differs from the camera, `evidence.visibility` is `None`, or the mask size differs |
+| `render_plane(...)` | Ray-casts a world-space textured rectangle, corners in top-left, top-right, bottom-right, bottom-left order, through a pinhole or f-theta camera, and alpha-composites it. `soften` is a Gaussian sigma in pixels. Returns `(rgb, mask)`, with an empty mask when the plane is out of view. No scene occlusion | `ValueError` when the frame size differs from the camera |
+| `warp_patch(frame_rgb, dst_quad, patch_rgba)` | Perspective-warps an RGBA patch onto an image quad, shape `(4, 2)`, top-left, top-right, bottom-right, bottom-left, and alpha-composites it. Returns `(rgb, mask)` | — |
+| `insertion_image(subject, camera, cam_from_world)` | Image-sized RGBA and optical depth of the nearest opaque surface per pixel | — |
+| `projected_silhouette(subject, camera, cam_from_world)` | Boolean mask of opaque insertion pixels inside the image, before occlusion | — |
+
+The rendering functions need the `rendering` extra (OpenCV and Pillow).
+
+Model-input adapters return functions that change the observation passed to the driving system:
+
+```python
+# avsectester.perturbations.image
+def frame_perturbation(
+    insert: Callable[[Observation, Any], Any], camera: str | None = None,
+    base: Callable[[Observation], Any] | None = None,
+) -> Callable[[Observation], Observation]: ...
+
+# avsectester.simulators.carla
+def insertion_perturbation(backend, insertions, *, bindings=None, camera="front", compositor=None): ...
+
+# avsectester.scenarios.datasets.nurec
+NuRecDataset.insertion_renderer(self, scene, backend, insertions, bindings=None, compositor=None)
+
+# avsectester.simulators.nurec
+class NuRecInsertions(InsertionRenderer):
+    def __init__(self, insertions, camera, geometry, compositor=None,
+                 visibility_estimator=None, camera_name="front"): ...
+```
+
+| Name | Returns or does | Raises |
+|---|---|---|
+| `frame_perturbation(insert, camera, base)` | An `Observation -> Observation` function. It reads one camera frame (`camera`, or the first sensor) with `base`, by default `simulators.viz.camera_view`, and replaces the payload with `insert(observation, rgb)`. Unchanged when no frame is readable | — |
+| `insertion_perturbation(backend, insertions, *, ...)` | An `Observation -> Observation` function that renders `insertions` into a CARLA camera image at every driving step, with depth-based visibility. The backend must provide `selection_context()`, as `CarlaSelectionBackend` does. `bindings` maps roles to actor-ID tuples, normally `match.binding_ids` | `TypeError` for a string binding. `KeyError` for unavailable bound actors. `ValueError` for a missing camera or depth, or mismatched frames |
+| `NuRecDataset.insertion_renderer(...)` | A `NuRecInsertions` renderer with cuboid visibility, callable as `(observation, rgb) -> rgb`. It can be created before the backend is reset. Geometry follows the bound actor IDs at the effective render time and camera pose | `ValueError` when a role alias conflicts with a track ID |
+| `NuRecInsertions(...)` | An `InsertionRenderer` whose evidence provider calls `visibility_estimator.estimate` for each insertion. Without an estimator there is no evidence provider | — |
+
+Wrap these functions in `ObservationTransform` at the `observation` stage, or wrap a renderer with
+`frame_perturbation`. See [Insert into the model input](../examples/image-insertion.md#insert-into-the-model-input).
+
+### Compositing and harmonization
+
+```python
+# avsectester.rendering.compositor
+class PatchCompositor:
+    def __init__(
+        self, harmonizer: Harmonizer | None = None, *, soften: float = 0.0,
+        harmonize: bool = True,
+    ) -> None: ...
+
+# avsectester.rendering.harmonizers
+class Harmonizer(ABC):
+    @abstractmethod
+    def __call__(
+        self, composite_rgb: np.ndarray, mask: np.ndarray, background_rgb: np.ndarray
+    ) -> np.ndarray: ...
+
+class ClassicHarmonizer(Harmonizer):
+    def __init__(
+        self,
+        color_transfer: bool = True,
+        poisson: bool = True,
+        preserve_chroma: bool = False,
+        blend: str = "poisson",
+        feather: float = 1.2,
+        gain_range: tuple = (0.35, 1.2),
+    ) -> None: ...
+
+class PCTNetHarmonizer(Harmonizer):
+    def __init__(self, device: int = 0, weights: str | None = None, strict: bool = False) -> None: ...
+```
+
+| `PatchCompositor` attribute | Meaning |
+|---|---|
+| `harmonizer` | The harmonizer called after alpha compositing. `None` at construction selects `ClassicHarmonizer()` |
+| `harmonize` | Boolean switch. When `False`, the harmonizer is neither called nor loaded. It can change between frames |
+| `soften` | Gaussian blur sigma in pixels, applied to the sampled insertion before compositing. It never expands the visibility mask |
+
+`PatchCompositor` raises `TypeError` when `harmonize` is not a bool and `ValueError` for a
+negative or non-finite `soften`. Without a compositor, `render_resolved` and `InsertionRenderer`
+neither soften nor harmonize, so texture colors are preserved.
+
+A `Harmonizer` receives the alpha-composited image, the 0/255 mask of painted pixels and the
+original frame, and returns an RGB image. `render_resolved` copies only the painted pixels from it.
+
+| `ClassicHarmonizer` option | Default | Effect |
+|---|---|---|
+| `color_transfer` | `True` | Matches the Lab mean and standard deviation of the painted pixels to a surrounding ring (the mask dilated by a 25×25 kernel, minus the mask) |
+| `poisson` | `True` | Poisson seamless cloning with OpenCV. Active only with `blend="poisson"` |
+| `preserve_chroma` | `False` | With `color_transfer`, scales only Lab lightness by the ratio of ring mean to object mean, clipped to `gain_range`. Hue and internal contrast are kept |
+| `blend` | `"poisson"` | `"poisson"`, or `"feather"` for an edge blended with a Gaussian-blurred mask instead of Poisson cloning |
+| `feather` | `1.2` | Gaussian sigma in pixels for `blend="feather"` |
+| `gain_range` | `(0.35, 1.2)` | Lower and upper bounds of the lightness gain |
+
+| `PCTNetHarmonizer` option | Default | Effect |
+|---|---|---|
+| `device` | `0` | CUDA device index. Runs on `cuda:<device>` when CUDA is available, otherwise on the CPU |
+| `weights` | `None` | Path to `PCTNet.pth`. `None` uses `third_party/libcom/libcom/image_harmonization/pretrained_models/PCTNet.pth` and downloads it from the Hugging Face repository `BCMIZB/Libcom_pretrained_models` when missing |
+| `strict` | `False` | `False` logs a warning and falls back to `ClassicHarmonizer()` on any loading or inference error. `True` raises `RuntimeError` |
+
+`PCTNetHarmonizer` loads PCTNet in-process from the `third_party/libcom` submodule at its first
+call. It requires PyTorch. Weight setup is described in
+[PCTNet harmonizer](../getting-started/installation.md#pctnet-harmonizer), and usage in
+[Harmonization](../examples/image-insertion.md#harmonization).
+
+### Visibility
+
+```python
+# avsectester.rendering.types (Visibility is also exported by avsectester.rendering
+# and avsectester.scenarios)
+@dataclass(frozen=True)
+class Visibility:
+    fraction: float
+    source: str
+    camera: str | None = None
+    label: str | None = None
+
+class GeometryVisibilityEstimator(Protocol):
+    def estimate(
+        self,
+        subject: ResolvedInsertion,
+        camera: Camera,
+        cam_from_world: np.ndarray,
+        *,
+        occluders: Mapping[str, ActorPose],
+        camera_name: str,
+        other_insertions: Sequence[ResolvedInsertion] = (),
+    ) -> VisibilityEvidence: ...
+
+# avsectester.rendering.visibility
+# Both estimators take the constructor
+#     (self, *, tolerance_m: float = 0.002, max_reference_pixels: int = 4_000_000)
+class CuboidVisibilityEstimator:
+    def estimate(
+        self,
+        subject: ResolvedInsertion,
+        camera: Camera,
+        cam_from_world: np.ndarray,
+        *,
+        occluders: Mapping[str, ActorPose],
+        camera_name: str,
+        other_insertions: Sequence[ResolvedInsertion] = (),
+    ) -> VisibilityEvidence: ...
+
+class DepthVisibilityEstimator:
+    def estimate(
+        self,
+        subject: ResolvedInsertion,
+        camera: Camera,
+        cam_from_world: np.ndarray,
+        *,
+        scene_depth: np.ndarray,
+        depth_convention: str,
+        camera_name: str,
+        other_insertions: Sequence[ResolvedInsertion] = (),
+    ) -> VisibilityEvidence: ...
+
+def visibility_from_masks(
+    reference, visible, *, camera: str, image_bounds=None
+) -> Visibility | None: ...
+
+def visibility_from_depth(
+    footprint,
+    target_depth,
+    scene_depth,
+    *,
+    camera: str,
+    tolerance_m: float = 0.0002,
+    image_bounds=None,
+) -> Visibility | None: ...
+```
+
+| Name | `source` | Returns or does | Raises |
+|---|---|---|---|
+| `Visibility` | — | A visible fraction with its source, its camera (`None` for source-wide) and an optional label | `ValueError` unless `fraction` is finite and in `[0, 1]` |
+| `CuboidVisibilityEstimator.estimate` | `cuboid_estimate` | Tests target rays against the boxes in `occluders`, which should include the host, and against the surfaces of `other_insertions` | — |
+| `DepthVisibilityEstimator.estimate` | `depth_comparison` | Compares the target distance with `scene_depth` for the same camera pose, lens and frame. `depth_convention` is `"z"` for optical-axis depth or `"range"` for ray distance. Other insertions also occlude. Invalid depth at a target pixel makes visibility unknown | `ValueError` for another convention or a `scene_depth` shape that differs from the image |
+| `visibility_from_masks` | `rendered_masks` | Visible in-image reference pixels divided by all reference pixels. `image_bounds=(left, top, right, bottom)` limits the numerator to the real image. `None` for an empty reference | `ValueError` for misaligned masks or invalid bounds |
+| `visibility_from_depth` | `depth_comparison` | Builds the visible mask from `target_depth <= scene_depth + tolerance_m` and applies `visibility_from_masks` | `ValueError` for misaligned arrays, a negative tolerance, or invalid depth inside the in-image footprint |
+
+The estimator constructors raise `ValueError` for a negative or non-finite `tolerance_m` or a
+`max_reference_pixels` that is not a positive integer. Both estimators return
+`VisibilityEvidence`. A target fully behind the camera has visibility `0.0`. A target crossing the
+camera plane, a footprint larger than `max_reference_pixels` or an undefined projection gives
+`visibility=None` with a `reason`. The measurement definition and provider table are in
+[Visibility](../guides/scenarios.md#visibility).
+
+## Metrics and evaluation
+
+### Driving-impact metric
+
+```python
+# avsectester.metric
+@dataclass
+class Impact:
+    clean_peak_speed: float
+    clean_final_speed: float
+    attacked_final_speed: float
+    clean_brake_frames: int
+    attacked_brake_frames: int
+    clean_drove: bool
+    induced_braking: bool
+    induced_stop: bool
+    suppressed_stop: bool = False
+    overdrive_frames: int = 0
+
+    @property
+    def attack_succeeded(self) -> bool: ...
+    @property
+    def verdict(self) -> str: ...
+    def comparison(self, treated_label: str) -> str: ...
+
+def impact(
+    clean: Trace,
+    attacked: Trace,
+    stop_speed: float = 0.5,
+    baseline_speed: float = 1.0,
+    min_overdrive_frames: int = 3,
+) -> Impact: ...
+
+def plot_impact(
+    clean: Trace,
+    attacked: Trace,
+    path: str,
+    title: str | None = None,
+    result: Impact | None = None,
+    *,
+    treated_label: str = "attacked",
+    show_verdict: bool = True,
+) -> str: ...
+```
+
+| `impact` parameter | Default | Meaning |
+|---|---|---|
+| `stop_speed` | `0.5` | Speed in m/s at or below which the ego counts as stopped |
+| `baseline_speed` | `1.0` | Peak speed in m/s the clean run must reach for `clean_drove`. Also the speed above which the treated ego counts as moving for `overdrive_frames` |
+| `min_overdrive_frames` | `3` | Minimum `overdrive_frames` for `suppressed_stop` |
+
+| `Impact` field | Value |
+|---|---|
+| `clean_peak_speed`, `clean_final_speed` | `clean.peak_speed`, `clean.final_speed` |
+| `attacked_final_speed` | `attacked.final_speed` |
+| `clean_brake_frames`, `attacked_brake_frames` | `braking_frames` of each trace |
+| `clean_drove` | `clean.peak_speed >= baseline_speed` |
+| `induced_braking` | `attacked.braking_frames > clean.braking_frames` |
+| `induced_stop` | The treated final speed is at most `stop_speed` and the clean final speed is above it |
+| `suppressed_stop` | The clean final speed is at most `stop_speed` and `overdrive_frames >= min_overdrive_frames` |
+| `overdrive_frames` | Records, paired by index, where the clean speed is at most `stop_speed` and the treated speed exceeds `baseline_speed` |
+
+| `Impact` member | Returns |
+|---|---|
+| `attack_succeeded` | `clean_drove and (induced_stop or suppressed_stop)` |
+| `verdict` | A one-line verdict. It is inconclusive when `clean_drove` is `False` |
+| `comparison(treated_label)` | Two lines of measurements, labelled `clean:` and `treated_label`, without a verdict |
+| `str(impact)` | `comparison("attacked")` followed by `=> <verdict>` |
+
+`plot_impact` draws ego speed and brake command over driving steps for both traces and saves the
+figure to `path`, creating directories. It returns the absolute path. `result` defaults to
+`impact(clean, attacked)`. `treated_label` names the second trace. `show_verdict=False` omits the
+verdict caption. The default title is `Adversarial attack — driving impact (clean vs
+<treated_label>)`, or `Driving comparison (clean vs <treated_label>)` without the verdict. An
+explicit `title` replaces it. These options do not change the scores. It requires matplotlib, the
+`viz` extra. The verdict semantics are in
+[Driving-impact metric](../guides/evaluation.md#driving-impact-metric) and usage in
+[Plot a comparison](../guides/evaluation.md#plot-a-comparison).
+
+### Robustness evaluation
+
+```python
+# avsectester.evaluation.robustness (evaluate_robustness and RobustnessReport are also
+# exported by avsectester.evaluation)
+Perturb = Callable[["Observation"], "Observation"]
+AttackFor = Callable[["ScenarioMatch | None", "WorldBackend"], Runtime | Perturb | None]
+OutcomeStatus = Literal["success", "failure", "skipped", "inconclusive"]
+
+def evaluate_robustness(
+    source: ScenarioSource,
+    req: ScenarioRequirement,
+    attack_for: AttackFor | Intervention | PreparedIntervention,
+    stack: Callable[[], AVStack],
+    frames: int,
+    *,
+    conditions: Iterable[AugmentationPipeline] | None = None,
+    severity: float = 0.5,
+    limit: int | None = None,
+    run_fn: Callable[..., Trace] = _run_loop,  # avsectester.backend.run
+) -> RobustnessReport: ...
+
+@dataclass
+class RobustnessReport:
+    per_condition: dict[str, ConditionResult] = field(default_factory=dict)
+    rows: list[ScenarioResult] = field(default_factory=list)
+    baseline: str = "clean"
+
+    def record(self, scenario_id: str, condition: str, status: OutcomeStatus,
+               reason: str = "") -> None: ...
+    @property
+    def baseline_asr(self) -> float: ...
+    def resilience(self, condition: str) -> float: ...
+    @property
+    def mean_resilience(self) -> float: ...
+    def summary(self) -> str: ...
+
+@dataclass
+class ConditionResult:
+    condition: str
+    successes: int = 0
+    failures: int = 0
+    skipped: int = 0
+    inconclusive: int = 0
+    @property
+    def n(self) -> int: ...
+    @property
+    def asr(self) -> float: ...
+
+@dataclass(frozen=True)
+class ScenarioResult:
+    scenario_id: str
+    condition: str
+    status: OutcomeStatus
+    reason: str = ""
+```
+
+`evaluate_robustness` runs a clean and an attacked treatment for every scenario from
+`source.scenarios(req, limit=limit)` and every condition: first the scenario's own conditions,
+labelled `clean`, then each pipeline in `conditions` added as an image condition after the other
+handlers. `conditions=None` uses `common_corruptions(severity)`. Each pair is scored with `impact`
+and recorded in the returned `RobustnessReport`. It raises `ValueError` for an invalid `frames` or
+a `PreparedIntervention` whose kind is not `attack`, and `TypeError` for another `attack_for` type
+or a condition that is not an `AugmentationPipeline`.
+
+| `attack_for` | Behavior |
+|---|---|
+| `Intervention` | Prepared once per scenario. Fresh hooks for each attacked run |
+| `PreparedIntervention` | Its artifacts are reused for every scenario |
+| `AttackFor` callback | Called once per pair after world conditions are configured. Returns a `Runtime`, a one-argument observation function, or `None` to skip the pair |
+
+| Member | Returns |
+|---|---|
+| `RobustnessReport.record(...)` | Appends a `ScenarioResult` and updates the condition's counters |
+| `baseline_asr` | `per_condition[baseline].asr`, or NaN without that condition |
+| `resilience(condition)` | `asr(condition) / baseline_asr`, at most 1. NaN when either is NaN. `0.0` when the baseline ASR is zero |
+| `mean_resilience` | Mean resilience over the non-baseline conditions, or `0.0` without them |
+| `summary()` | A text table of valid, skipped and inconclusive counts, ASR and resilience per condition |
+| `ConditionResult.n`, `asr` | `successes + failures`, and `successes / n`, NaN when `n` is zero |
+
+The scenario ID in each row is the scenario provenance's `scene_id`, `sample_token` or
+`image_path`, or the scenario's index. Statuses, ASR and resilience are explained in
+[Statuses, ASR and resilience](../guides/evaluation.md#statuses-asr-and-resilience), and the
+parameters in [Parameters](../guides/evaluation.md#parameters).
+
+### Component logging
+
+```python
+# avsectester.evaluation.component_log (all names are also exported by avsectester.evaluation)
+def run_logged(
+    backend: WorldBackend,
+    stack: AVStack,
+    frames: int,
+    perturb: Callable[[Observation], Observation] | None = None,
+    *,
+    runtime: Runtime | None = None,
+) -> tuple[Trace, ComponentTrace]: ...
+
+@runtime_checkable
+class InstrumentedStack(Protocol):
+    def component_log(self) -> dict[str, Any] | None: ...
+
+@dataclass
+class StepLog:
+    frame: int
+    stages: dict[str, Any] = field(default_factory=dict)
+    def count(self, stage: str) -> int: ...
+
+@dataclass
+class ComponentTrace:
+    steps: list[StepLog] = field(default_factory=list)
+    @property
+    def stage_names(self) -> list[str]: ...
+    def counts(self, stage: str) -> list[int]: ...
+    def degradation(self, other: ComponentTrace, stage: str) -> list[int]: ...
+    def performance(self, stage: str, truths: list[Any], assign_radius: float = 4.0) -> list[Any]: ...
+```
+
+`run_logged` runs the same loop as `run` and, for a stack implementing `InstrumentedStack`,
+deep-copies `component_log()` into a `StepLog` at every driving step. Otherwise the
+`ComponentTrace` is empty. The caller owns the backend. `StepLog.frame` is the driving-step index.
+The `ComponentTrace` methods and timing rules are described in
+[Component outputs](../guides/evaluation.md#component-outputs).
+
+## Visualization
+
+```python
+# avsectester.simulators.viz
+View = Callable[[Observation], Any]
+REPO_TMP: Path  # <repo>/tmp
+
+def record_run(
+    backend: WorldBackend,
+    stack: AVStack,
+    frames: int,
+    *,
+    out_dir: str | Path | None = None,
+    visualize: View = camera_view,
+    perturb: Callable[[Observation], Observation] | None = None,
+    prefix: str = "frame",
+    collect: bool = False,
+    runtime: Runtime | None = None,
+) -> Trace: ...
+
+def camera_view(observation: Observation, camera: str | None = None) -> Any: ...
+def as_rgb(frame: Any) -> Any: ...
+def annotate(image: Any, detections: Any, threshold: float = 0.3) -> Any: ...
+def scene_labels(scene: Any, camera: str | None = None, target: Any = None,
+                 color=(40, 200, 40), target_color=(235, 64, 52)) -> list: ...
+def box3d_corners(center: Any, extent: Any, yaw: float) -> Any: ...
+def ego_projector(model: Any) -> Any: ...
+def draw_boxes3d(image: Any, scene: Any, camera: str | None = None, target: Any = None,
+                 subdiv: int = 8, max_distance: float | None = None,
+                 color=(40, 200, 40), target_color=(235, 64, 52)) -> Any: ...
+def labels_view(get_scene: Callable[[Observation], Any], base: View = camera_view,
+                camera: str | None = None, target: Any = None, boxes3d: bool = True,
+                max_distance: float | None = None) -> View: ...
+def detections_view(
+    detect: Callable[[Any], Any], base: View = camera_view, threshold: float = 0.3
+) -> View: ...
+def save_image(image: Any, path: Path) -> None: ...
+def filmstrip(images: list, cols: int = 4, pad: int = 6, bg=(20, 20, 20)) -> Any: ...
+def save_gif(images: list, path: str | Path, fps: int = 5) -> None: ...
+def save_sequence(frames: list, out_dir: str | Path, name: str = "sequence",
+                  cols: int = 4, fps: int = 4) -> tuple[str, str] | None: ...
+
+# avsectester.simulators.carla
+def camera_view(observation: Observation, camera: str | None = None) -> Any: ...
+def lidar_bev(observation: Observation, size: int = 800, meters: float = 60.0) -> Any: ...
+```
+
+| Function | Returns or does |
+|---|---|
+| `record_run(...)` | Runs the same loop as `run` and saves `visualize(seen)` of each driving step's model input as `<out_dir>/<prefix>_<step:04d>.png`. `out_dir` defaults to `<repo>/tmp/frames`. `collect=True` also stores the images in `trace.frames`. Returns the `Trace`. The caller owns the backend |
+| `camera_view(observation, camera)` | The RGB frame of `camera`, or of the first sensor, when the payload is an ndarray. Otherwise `None` |
+| `as_rgb(frame)` | An `(H, W, 3)` uint8 array from an ndarray payload, or `None` |
+| `annotate(image, detections, threshold)` | Draws `(xyxy, score, label)` detections, colored by `score >= threshold`, or `(xyxy, score, label, color)` labels |
+| `scene_labels(scene, camera, target, ...)` | `annotate` tuples for the 2D boxes of a `SceneGT`. `target` is drawn last in `target_color` |
+| `box3d_corners(center, extent, yaw)` | The eight corners `(8, 3)` of a box in the ego frame |
+| `ego_projector(model)` | A function mapping ego points to `(pixels, valid)` for a camera model or a 3×3 K, or `None` |
+| `draw_boxes3d(image, scene, ...)` | Draws projected 3D boxes of a `SceneGT`, skipping boxes that do not project fully. Falls back to 2D boxes when the model cannot project |
+| `labels_view(get_scene, base, ...)` | A view that overlays ground-truth boxes from `get_scene(observation)` on `base` |
+| `detections_view(detect, base, threshold)` | A view that overlays `detect(rgb)` detections on `base` |
+| `save_image(image, path)` | Writes an image with matplotlib, creating directories |
+| `filmstrip(images, cols, pad, bg)` | A grid image of the frames |
+| `save_gif(images, path, fps)` | Writes an animated GIF |
+| `save_sequence(frames, out_dir, name, cols, fps)` | Writes `<name>_filmstrip.png` and `<name>.gif` in `out_dir` and returns both paths, or `None` for no frames |
+| `simulators.carla.camera_view` | The RGB image of a CARLA `ImageData` payload |
+| `simulators.carla.lidar_bev(observation, size, meters)` | A top-down image of a CARLA lidar point cloud, or `None` |
+
+The clean-versus-treated figure is `metric.plot_impact`, listed under
+[Driving-impact metric](#driving-impact-metric). Scene recording is described in
+[Scene recordings](../guides/evaluation.md#scene-recordings).
+
+## Module map
+
+| Module | Contents | Guide |
+|---|---|---|
+| `avsectester.plane` | `Observation`, `Control`, `WorldSnapshot`, `StateEstimate`, `FrameRecord`, `InterventionOutput`, `Trace` | [Driving traces](../guides/evaluation.md#driving-traces) |
+| `avsectester.backend` | `WorldBackend`, `AVStack`, `run`, command validation | [Write a custom simulator adapter](../guides/simulators.md#write-a-custom-simulator-adapter), [Use a custom driving system](../guides/driving-systems.md#use-a-custom-driving-system) |
+| `avsectester.runtime` | `Runtime`, `Hook`, `Plugin`, `RunContext`, `StageContext`, `CallInputs`, `RenderRequest`, `RuntimeSession` | [Runtime reference](runtime.md) |
+| `avsectester.interventions` | `ObservationTransform`, `NativeHook`, `NativeHookIntervention`, configuration helpers | [Package the attack as an intervention](../guides/attacks.md#package-the-attack-as-an-intervention) |
+| `avsectester.preparation` | `Intervention`, `PreparedIntervention`, `prepare_intervention`, `Treatment` | [Package the attack as an intervention](../guides/attacks.md#package-the-attack-as-an-intervention) |
+| `avsectester.runner` | `run_pair`, `run_prepared` | [Custom treatments](../guides/experiments.md#custom-treatments), [Direct runs](../guides/experiments.md#direct-runs-and-resource-ownership) |
+| `avsectester.experiment` | `run_configured`, `configured_stack`, `ExecutionMode`, `TreatmentMode`, `ConfigurationError` | [Configured runs](../guides/experiments.md#configured-runs) |
+| `avsectester.carla_runner` | `run_scenario`, `run_scenario_pair` | [Python entry points](../guides/simulators.md#python-entry-points) |
+| `avsectester.conditions` | `ScenarioConditions`, `SensorCondition`, `ConditionConfigurationError` | [Apply operating conditions](../guides/conditions.md) |
+| `avsectester.insertion` | `Insertion`, assets, placements, `Orientation`, `ActorPose`, `resolve_insertion` | [Specify inserted objects](../guides/scenarios.md#specify-inserted-objects) |
+| `avsectester.metric` | `impact`, `Impact`, `plot_impact` | [Driving-impact metric](../guides/evaluation.md#driving-impact-metric) |
+| `avsectester.cli` | The `avsectester run` and `avsectester version` commands | [CLI reference](cli.md) |
+| `avsectester.scenarios` | Re-exports of the scenario, filter, condition and serialization API | [Prepare scenarios](../guides/scenarios.md) |
+| `avsectester.scenarios.source` | `ScenarioInstance`, `ScenarioSource`, `Dataset`, `DatasetFilter`, `CarlaScenarioBuilder` | [Select a scenario](../guides/scenarios.md#select-a-scenario) |
+| `avsectester.scenarios.setup` | `scenario_from_config`, `source_from_config`, `scene_config`, `ConfiguredScenarioSource`, `ScenarioConfigurationError` | [Configured scenarios](../guides/scenarios.md#configured-scenarios) |
+| `avsectester.scenarios.requirement` | `ScenarioRequirement`, `RoleSpec`, `TargetSpec`, `InitialWindow`, `ScenarioMatch`, `SelectionResult`, `CandidateResult` | [Compose a requirement](../guides/scenarios.md#compose-a-requirement) |
+| `avsectester.scenarios.filters` | `FilterResult`, `Constraint`, `All`, `Any`, `Not` and the built-in filters | [Filters](../guides/scenarios.md#filters) |
+| `avsectester.scenarios.context` | `FilterContext` | [Custom filters and native access](../guides/scenarios.md#custom-filters-and-native-access) |
+| `avsectester.scenarios.scene` | `SceneGT`, `EgoState`, `CameraCalib`, `TargetGeometry`, `ObjectGT`, `PlacementCandidate` | [Support another dataset or provider](../guides/scenarios.md#support-another-dataset-or-provider) |
+| `avsectester.scenarios.serialize` | `requirement_to_dict`, `requirement_from_dict`, `register_constraint`, `constraint_vocabulary` | [Selection in YAML](../guides/scenarios.md#selection-in-yaml) |
+| `avsectester.scenarios.nl` | `interpret`, `build_prompt`, `parse_response` | [Natural-language requirements](../guides/scenarios.md#natural-language-requirements) |
+| `avsectester.scenarios.presets` | `PHYSICAL_PATCH_HIDE_VEHICLE`, `REQUIREMENTS` | [Compose a requirement](../guides/scenarios.md#compose-a-requirement) |
+| `avsectester.scenarios.carla_provider` | `CarlaCandidateProvider`, `CarlaSelectionBackend`, `carla_filter_context`, `depth_visibility`, `decode_carla_depth`, `register_pinhole_camera` | [CARLA](../guides/scenarios.md#carla) |
+| `avsectester.scenarios.carla_gt` | `carla_scene_gt`, `predict_scene_gt`, `carla_actor_pose`, `carla_rgb_sensor` | [CARLA](../guides/scenarios.md#carla) |
+| `avsectester.scenarios.datasets.nurec` | `NuRecDataset` and its rig-frame `FThetaCamera` | [NuRec datasets](../guides/scenarios.md#nurec-datasets) |
+| `avsectester.scenarios.datasets.nuscenes` | `NuScenesDataset`, `RecordedFrameBackend`, `scene_from_cam_boxes` | [Support another dataset or provider](../guides/scenarios.md#support-another-dataset-or-provider) |
+| `avsectester.scenarios.estimators` | `resolved_to_target` | [Visibility](../guides/scenarios.md#visibility) |
+| `avsectester.rendering` | Re-exports `Camera`, `InsertionGeometry`, `Visibility`, `VisibilityEvidence` and the provider protocols | [Insert into the model input](../examples/image-insertion.md#insert-into-the-model-input) |
+| `avsectester.rendering.cameras` | `Camera`, `PinholeCamera`, `FThetaCamera`, `camera_from_calibration`, pose helpers | [Insert into the model input](../examples/image-insertion.md#insert-into-the-model-input) |
+| `avsectester.rendering.types` | `Visibility`, `InsertionGeometry`, `VisibilityEvidence`, `GeometryProvider`, `EvidenceProvider`, `GeometryVisibilityEstimator` | [Visibility](../guides/scenarios.md#visibility) |
+| `avsectester.rendering.geometry` | Shared surface sampling: `insertion_image`, `projected_silhouette` and internal helpers | [Rendering scope](../examples/image-insertion.md#rendering-scope) |
+| `avsectester.rendering.compositor` | `InsertionRenderer`, `PatchCompositor`, `render_resolved`, `render_plane`, `warp_patch` | [Insert into the model input](../examples/image-insertion.md#insert-into-the-model-input) |
+| `avsectester.rendering.harmonizers` | `Harmonizer`, `ClassicHarmonizer`, `PCTNetHarmonizer` | [Harmonization](../examples/image-insertion.md#harmonization) |
+| `avsectester.rendering.visibility` | `CuboidVisibilityEstimator`, `DepthVisibilityEstimator`, `visibility_from_masks`, `visibility_from_depth` | [Visibility](../guides/scenarios.md#visibility) |
+| `avsectester.perturbations.image` | Corruption operators, `CORRUPTIONS`, `AugmentationPipeline`, corruption suites, camera read and write, `sensor_augmentation`, `compose`, `frame_perturbation` | [Built-in image corruptions](../guides/conditions.md#built-in-image-corruptions) |
+| `avsectester.simulators.carla` | `CarlaBackend`, `insertion_perturbation`, `camera_view`, `lidar_bev`, `prepare_scenario`, `resolve_scenario_seed`, `set_perception_gpu` | [CARLA](../guides/simulators.md#carla) |
+| `avsectester.simulators.nurec` | `NuRecBackend`, `Renderer`, `StubRenderer`, `NuRecRenderer`, `EgoPose`, `EgoDynamics`, `KinematicBicycle`, `TrajectoryFollower`, `NuRecInsertions` | [NuRec](../guides/simulators.md#nurec) |
+| `avsectester.simulators.viz` | `record_run`, views, `filmstrip`, `save_gif`, `save_sequence` | [Scene recordings](../guides/evaluation.md#scene-recordings) |
+| `avsectester.stacks.modular` | `ModularAVStack` | [Modular driving system](../guides/driving-systems.md#modular-driving-system) |
+| `avsectester.stacks.alpamayo` | `AlpamayoAVStack` | [Alpamayo](../guides/driving-systems.md#alpamayo) |
+| `avsectester.stacks.mmdet3d` | `register_carla_dataset` | [Pipeline configuration](../guides/driving-systems.md#pipeline-configuration) |
+| `avsectester.attacks` | `PhantomInjection`, imported on first access | [Phantom injection](../examples/phantom-injection.md) |
+| `avsectester.attacks.pipeline.phantom` | `PhantomInjection` | [Phantom injection](../examples/phantom-injection.md) |
+| `avsectester.attacks.patch.physical_patch` | `PhysicalPatch`, `PhysicalPatchPlugin`, `PhysicalPatchIntervention`, `build_patch`, patch textures | [Physical patch](../examples/physical-patch.md) |
+| `avsectester.attacks.object_insertion` | `sign_spoof`, `person_poster` and `traffic_light` payload builders | [Payloads](../examples/image-insertion.md#payloads) |
+| `avsectester.attacks.adaptive` | `SpeedFeedbackAttack`, `SpeedFeedbackPlugin` | [Speed-feedback adaptive attack](../examples/speed-feedback-attack.md) |
+| `avsectester.attacks.optim` | `AdvSample`, `AttackObjective`, `AttackResult`, `DataSource`, `GradientAttack`, `HideObject`, `Perturbation`, `Scorer`, `SpoofObject`, `TargetSpec`. Submodules add `PGD`, `NES`, `PatchPerturbation`, `LinfImage`, `CarlaRenderPerturbation`, `FrameSource` and the MMDetection scorers. This `TargetSpec` differs from the scenario `TargetSpec` | [Current optimization interfaces](../guides/optimization.md#current-optimization-interfaces) |
+| `avsectester.evaluation` | `evaluate_robustness`, `RobustnessReport`, `run_logged`, `ComponentTrace`, `StepLog`, `InstrumentedStack` | [Evaluate results](../guides/evaluation.md) |
+
+The repository layout beyond the package is described in
+[Repository layout](../development/contributing.md#repository-layout).

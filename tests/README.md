@@ -48,7 +48,7 @@ NO_ALBUMENTATIONS_UPDATE=1 python -m pytest -q
 The adapters are installed with `--no-deps` because their full dataset/Open3D dependencies and
 legacy sibling-path declarations are unnecessary for this suite. The commands above install
 the imports exercised by these tests. This is an offline test environment. Use
-[SETUP.md](../docs/SETUP.md) for neural perception or real dataset workflows.
+[Installation](../docs/getting-started/installation.md) for neural perception or real dataset workflows.
 
 ## Functional coverage
 
@@ -95,6 +95,7 @@ pytest/CI collect their subdirectories recursively.
 | `avstack/test_component_log_real.py` | Historical plans/tracks/reference frames, unchanged controls under logging, attack hook ordering and matching metrics |
 | `avstack/test_pipeline.py` | Real tracking/planning/PID propagation, hook output replacement and the `ModularAVStack` adapter |
 | `avstack/test_scenario.py`, `avstack/test_reproducibility.py` | Actor setup/cleanup, hook ordering, scene resolution and actual spawn replay |
+| `core/test_docs.py` | Documentation links and anchors resolve, Python and YAML blocks parse, and examples marked `<!-- runnable -->` run offline |
 | `core/test_cli.py` | YAML/overrides, single/pair and attack/defense modes, custom stacks, preflight errors, verdict exit codes and plotting |
 
 Alpamayo tests use small external-schema stand-ins and a model with prescribed predictions.

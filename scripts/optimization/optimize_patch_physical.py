@@ -9,7 +9,7 @@ Pipeline (the acceptance test is the CARLA-RENDERED patch, not a digital paste):
      not dim it — this closes the digital->physical appearance gap);
   4. render and re-run the detector: report the CARLA-rendered detection confidence.
 
-Use the CARLA/model environment in docs/SETUP.md with a matching server at the configured endpoint:
+Use the CARLA/model environment in docs/getting-started/installation.md with a matching server at the configured endpoint:
     python -m scripts.optimization.optimize_patch_physical [--steps 250] [--gpu 1]
 """
 

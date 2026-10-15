@@ -8,7 +8,8 @@ an object inserted into its camera stream by ``perturb(Observation)`` (the same 
 Per step we record the resulting ego state and the reasoning that produced its control; the verdict is
 :func:`avsectester.metric.impact` on the two traces.
 
-Run in an AlpaSim driver env (Python 3.12 + alpasim_driver) with an nre-ga server (docs/SETUP.md §4):
+Run in an AlpaSim driver env (Python 3.12 + alpasim_driver) with an nre-ga server
+(docs/getting-started/installation.md#nurec-and-alpamayo-environment):
 
     python -m scripts.demos.nurec.alpamayo_attack_demo --usdz /data/scene.usdz --endpoint 127.0.0.1:50051 --object stop --frames 60 \
         --gpu 1 --harm-gpu 0

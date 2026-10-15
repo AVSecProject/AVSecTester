@@ -6,7 +6,7 @@
 #
 #   avsectester run configs/carla_scenario.yaml --frames 40
 # runs it clean, then attacked, and prints the impact.
-# Configuration guide: docs/INTERFACE.md#configuring-a-yaml-scenario
+# Configuration reference: docs/reference/configuration.md
 
 frames: 40
 

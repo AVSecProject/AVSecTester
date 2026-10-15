@@ -1,5 +1,6 @@
 # GPU stack for the end-to-end path: neural perception (CARLA-trained mmdet3d) in a closed-loop
-# CARLA simulation. Reproduces docs/SETUP.md §2 on a CUDA 12.1 base (mirrors the verified avsec311 env).
+# CARLA simulation. Reproduces the local full installation in docs/getting-started/installation.md
+# on a CUDA 12.1 base (mirrors the verified avsec311 env).
 #
 # Usually built via docker-compose.yml (which also runs a CARLA 0.9.16 server):
 #   docker compose up --build
@@ -50,5 +51,5 @@ RUN python -m pip install --no-cache-dir -e third_party/avstack-core -c constrai
 # Torch 2.1 and MMEngine use pkg_resources, which newer setuptools versions remove.
 RUN python -m pip install --no-cache-dir -e ".[dev,viz,augment]" "setuptools==69.5.1"
 
-# default to a shell — run attacks/recordings explicitly (see docs/DOCKER.md / docker-compose.yml)
+# default to a shell — run attacks/recordings explicitly (see docs/getting-started/installation.md#docker / docker-compose.yml)
 CMD ["bash"]

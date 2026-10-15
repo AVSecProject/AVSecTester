@@ -1,14 +1,16 @@
 # Scripts
 
-Run scripts from the repository root in the environment described in [SETUP.md](../docs/SETUP.md).
+Run scripts from the repository root in the environment described in
+[Installation](../docs/getting-started/installation.md).
 Python entry points use `python -m scripts.<group>.<module>` so shared imports and repository-relative
 configuration paths resolve consistently. Run these tools from the checkout. Shell tools are
 invoked by their paths.
 
 Use a matching CARLA client/server for CARLA scripts, and a running `nre-ga` service for rendered
 NuRec examples. Models are loaded only by the entry points that use them. See the
-[model overview](../docs/INTERFACE.md#1d-models-and-supporting-components) and
-[weight-loading guide](../docs/SETUP.md#5-model-dependencies-and-weights).
+[model overview](../docs/guides/driving-systems.md#models-used-in-this-repository) and
+[model weights](../docs/getting-started/installation.md#model-weights-and-assets). The
+[Examples](../docs/examples/README.md) page explains how the supplied attacks use the framework.
 
 ## Directory layout
 
@@ -36,9 +38,9 @@ NuRec examples. Models are loaded only by the entry points that use them. See th
 | [carla_patch_demo.py](demos/carla/carla_patch_demo.py) | Render a physical textured panel attached to the lead vehicle | Fixed-throttle `CruiseStack`. CARLA-trained Faster R-CNN for the overlay unless `--no-detect` |
 | [patch_driving_demo.py](demos/carla/patch_driving_demo.py) | Compare camera-based braking with and without a composited patch | CARLA-trained Faster R-CNN feeding a box-area braking rule, optional PCTNet |
 
-For host binding, initial-case selection and paired execution through the Python API, use
-[SCENARIOS.md](../docs/SCENARIOS.md). Geometry demos generate images/GIFs and measurements for
-inspection. They do not measure the response of an autonomous-driving policy.
+For host binding, scenario selection and paired execution through the Python API, see
+[Prepare scenarios](../docs/guides/scenarios.md). Geometry demos generate images, GIFs and
+measurements for inspection. They do not measure the response of an autonomous-driving policy.
 
 ```bash
 python -m scripts.demos.carla.carla_insertion_demo --port 2300 --frames 30 --output tmp/carla-insertions
@@ -55,8 +57,8 @@ python -m scripts.demos.nurec.alpamayo_nurec_demo 8 --endpoint 127.0.0.1:50051 -
 
 Both Alpamayo entry points accept `--checkpoint` or the `AVSECTESTER_ALPAMAYO_CHECKPOINT`
 environment variable. `--stub` replaces NuRec rendering with black frames. It still loads Alpamayo and needs its model
-weights. Current checkpoint-path behavior is documented in
-[SETUP.md](../docs/SETUP.md#sam-assets-and-alpamayo-checkpoints).
+weights. Checkpoint resolution is documented in
+[Alpamayo checkpoint](../docs/getting-started/installation.md#alpamayo-checkpoint).
 
 ## Payload composition and detector evaluation
 
@@ -85,21 +87,10 @@ python -m scripts.demos.nurec.alpamayo_attack_demo --usdz /path/to/scene.usdz \
     --endpoint 127.0.0.1:50051 --object stop --frames 30 --gpu 1 --harm-gpu 0
 ```
 
-`patch_driving_demo.py` and `patch_hide_probe.py` use a depth-equipped CARLA backend for composited
-rear attachments. Clean and attacked driving runs use the same prepared scene and pinhole RGB
-camera settings. `carla_patch_demo.py` and `optimize_patch_physical.py` retain native world panels,
-including physical lighting and their configured local installation poses.
-For composited objects and `patch_driving_demo.py`, use `--harmonizer none` to disable appearance
-harmonization. This preserves insertion geometry and visibility. `classic` and `libcom` select
-classic and PCTNet harmonization respectively. Direct API callers use
-`PatchCompositor(..., harmonize=False)` and may toggle `compositor.harmonize` between frames.
-The NuRec/nuScenes object scripts and Alpamayo attack demo also offer `chroma`. Select
-`none`, `classic` or `chroma` to run those scripts without PCTNet. `patch_driving_demo.py`
-defaults to `classic` and does not offer `chroma`.
-
-COCO names the auxiliary detector's pretraining dataset. It does not provide scenes or drive the
-vehicle. See [IMAGE_ATTACKS.md](../docs/IMAGE_ATTACKS.md#payload-composition-examples) for options,
-placement conventions and outputs.
+Harmonizer choices, output files and placement options for these scripts are described in
+[Demo scripts and outputs](../docs/examples/image-insertion.md#demo-scripts-and-outputs) and
+[Harmonization](../docs/examples/image-insertion.md#harmonization). COCO names the auxiliary detector's
+pretraining dataset. It does not provide scenes or drive the vehicle.
 
 ## Model and asset preparation
 
@@ -132,18 +123,8 @@ available dataset before running. `demo_common.py` supplies shared detector fact
 avsectester run configs/carla_scenario.yaml --frames 40 --gpu 1 --plot results/impact.png
 ```
 
-Start the server using [DOCKER.md](../docs/DOCKER.md) or [SETUP.md](../docs/SETUP.md), and select an
-available inference device with `--gpu`. `--frames` controls steps per run. `--plot` saves a driving
-impact figure and requires the `viz` extra. No particular attack result is guaranteed.
-
-The CLI supports `--mode single|pair` and `--treatment clean|attack|defense|attack-defense`.
-Single runs do not compute a comparison verdict. Pairs with an enabled attack report an attack
-verdict. Defense pairs report side effects, while clean/empty-attack pairs report baseline comparisons.
-See the [CLI exit-code table](../docs/DOCKER.md#run-the-end-to-end-attack) for outcome and error codes.
-`--plot` requires pair mode and uses treatment-specific labels and captions. See
-[INTERFACE.md](../docs/INTERFACE.md#3-metric-clean-vs-attacked--verdict) for that criterion and
-[tests/README.md](../tests/README.md) for offline and opt-in simulator tests.
-
-`--gpu` applies to the CARLA modular perception configuration. A custom stack selects its device
-through `stack.options`. For NuRec with Alpamayo, use the demo scripts and environment in
-[Setup](../docs/SETUP.md#4-nurec--alpamayo-the-end-to-end-path).
+Start the CARLA server as described in [Installation](../docs/getting-started/installation.md#docker)
+or [Start a CARLA server](../docs/getting-started/installation.md#start-a-carla-server). Options,
+printed output and exit codes are listed in the [CLI reference](../docs/reference/cli.md). NuRec
+with Alpamayo has no CLI path. Use the NuRec demo scripts in the
+[driver environment](../docs/getting-started/installation.md#nurec-and-alpamayo-environment).

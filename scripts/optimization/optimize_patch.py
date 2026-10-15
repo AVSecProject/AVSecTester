@@ -7,7 +7,7 @@ to optimize a patch on the lead car's rear that suppresses its detection. Valida
 detector's actual final confidence (clean vs patched) and saves the texture for CARLA transfer via
 PhysicalPatch(texture={"image": ...}).
 
-Run in the CARLA/model environment described in docs/SETUP.md with a matching server on :2000:
+Run in the CARLA/model environment described in docs/getting-started/installation.md with a matching server on :2000:
     python -m scripts.optimization.optimize_patch [--steps 300] [--gpu 1]
 """
 

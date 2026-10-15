@@ -15,7 +15,7 @@ classifiers = [
 ]
 
 # Lightweight core deps only. The heavy AV stack (torch/mmdet/avstack/carla) is installed
-# via the `avstack` extra + the submodules under third_party/ — see docs/SETUP.md.
+# via the `avstack` extra + the submodules under third_party/ — see docs/getting-started/installation.md.
 dependencies = [
     "pyyaml>=6,<7",            # scenario config
     "numpy>=1.26,<2",         # numpy 1.26 (torch 2.1 / OpenMMLab-official stack; see dependency-upgrade)
@@ -29,7 +29,7 @@ rendering = [
     "Pillow>=10",
 ]
 # The avstack backend stack. Installed as editable path deps from the git submodules.
-# NOTE: install order and the heavy torch/mmcv/mmdet wheels are documented in docs/SETUP.md.
+# NOTE: install order and the heavy torch/mmcv/mmdet wheels are documented in docs/getting-started/installation.md.
 avstack = [
     "avstack-core",
     "avstack-api",
