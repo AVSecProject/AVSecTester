@@ -353,7 +353,6 @@ inference metadata. No CARLA training data is needed. `ModularAVStack` registers
 it builds a non-deployed `MMDetObjectDetector3D` with a `carla-*` dataset. When you build these
 models outside `ModularAVStack`, register it first:
 
-<!-- runnable -->
 ```python
 from avsectester.stacks.mmdet3d import register_carla_dataset
 
