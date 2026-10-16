@@ -18,10 +18,11 @@ from contextlib import contextmanager
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any
 
-from .plane import Control, FrameRecord, Observation, Trace, WorldSnapshot
+from .plane import Control, Observation, Trace, WorldSnapshot
 
 if TYPE_CHECKING:
-    from .runtime import Runtime, RuntimeSession
+    from .runtime import HookSet, RuntimeSession
+    from .vehicle_io import VehicleIO
 
 
 class _RuntimeAdapter:
@@ -140,6 +141,23 @@ class AVStack(_RuntimeAdapter, ABC):
     own machinery (e.g. an avstack ``ModularDrivingPipeline``, or a camera end-to-end policy).
     """
 
+    @property
+    def vehicle_io(self) -> VehicleIO:
+        """Driving-system input processing, including its localizer lifecycle."""
+        from .vehicle_io import VehicleIO
+
+        if "_vehicle_io" not in self.__dict__:
+            self._vehicle_io = VehicleIO()
+        return self._vehicle_io
+
+    @vehicle_io.setter
+    def vehicle_io(self, value: VehicleIO) -> None:
+        from .vehicle_io import VehicleIO
+
+        if not isinstance(value, VehicleIO):
+            raise TypeError("vehicle_io must be VehicleIO")
+        self._vehicle_io = value
+
     def reset(self, observation: Observation) -> None:
         """Optional warmup from the first Observation (e.g. seed a planner). Default no-op."""
 
@@ -176,7 +194,7 @@ class CommandCompatibilityError(ValueError):
 
 
 def validate_command_compatibility(
-    backend: WorldBackend, stack: AVStack, runtime: Runtime | None = None,
+    backend: WorldBackend, stack: AVStack, runtime: HookSet | None = None,
 ) -> None:
     """Check declared commands before world setup, allowing explicit runtime conversion.
 
@@ -203,7 +221,7 @@ def run(
     perturb: Callable[[Observation], Observation] | None = None,
     on_step: Callable[[int, Observation, Control], None] | None = None,
     *,
-    runtime: Runtime | None = None,
+    runtime: HookSet | None = None,
 ) -> Trace:
     """Drive ``stack`` in ``backend`` for ``frames`` steps and return the driving :class:`Trace`.
 
@@ -215,33 +233,6 @@ def run(
     ``on_step(i, seen, control)`` receives independent copies after command handlers and before
     actuation. The caller retains ownership of the backend and is responsible for closing it.
     """
-    from .runtime import Runtime
+    from .closed_loop import run_trace
 
-    if not isinstance(frames, int) or isinstance(frames, bool) or frames < 0:
-        raise ValueError("frames must be a nonnegative integer")
-    session = (runtime or Runtime()).session(backend, stack, perturb)
-    trace = Trace(outputs=session.outputs)
-    with session.activate():
-        obs = backend.reset()
-        backend._remember_ground_truth(obs)
-        # The initial input is transformed once and shared by reset and the first decision.
-        seen = session.observe(obs) if frames else backend.copy_observation(obs)
-        stack.reset(seen)
-        for i in range(frames):
-            session.step = i
-            control = session.command(stack(seen))
-            if on_step is not None:
-                # Instrumentation cannot accidentally mutate the command or model input.
-                on_step(i, backend.copy_observation(seen), deepcopy(control))
-            obs = backend.step(control)
-            backend._remember_ground_truth(obs)
-            truth = backend.ground_truth()
-            trace.records.append(FrameRecord(
-                frame=i, t=truth.t, speed=truth.ego_speed,
-                throttle=control.throttle, brake=control.brake, steer=control.steer,
-            ))
-            session.after_step(obs)
-            if i + 1 < frames:
-                session.step = i + 1
-                seen = session.observe(obs)
-    return trace
+    return run_trace(backend, stack, frames, perturb, on_step, runtime=runtime)

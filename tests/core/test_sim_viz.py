@@ -180,6 +180,28 @@ def test_record_run_saves_a_frame_per_step(tmp_path):
     assert len(trace.records) == 4
     saved = sorted(tmp_path.glob("frame_*.png"))
     assert [p.name for p in saved] == ["frame_0000.png", "frame_0001.png", "frame_0002.png", "frame_0003.png"]
+    assert not hasattr(trace, "frames")
+    assert [step.telemetry["views"]["scene"] for step in trace.run_log.steps] == [
+        {"path": str(path.resolve()), "format": "png"} for path in saved
+    ]
+
+
+def test_record_run_exports_completed_views_before_a_later_failure(tmp_path):
+    import pytest
+
+    class FailingPolicy(Cruise):
+        def __call__(self, observation):
+            if observation.frame == 1:
+                assert (tmp_path / "frame_0000.png").is_file()
+                raise RuntimeError("later decision failed")
+            return super().__call__(observation)
+
+    backend = NuRecBackend({}, renderer=StubRenderer(height=2, width=3))
+    with pytest.raises(RuntimeError, match="later decision failed") as caught:
+        record_run(backend, FailingPolicy(), frames=3, out_dir=tmp_path, collect=False)
+    assert [path.name for path in tmp_path.glob("frame_*.png")] == ["frame_0000.png"]
+    logged = caught.value.run_log.steps[0].telemetry["views"]["scene"]
+    assert logged == {"path": str((tmp_path / "frame_0000.png").resolve()), "format": "png"}
 
 
 def test_record_run_uses_processed_input_and_snapshots_reused_view_buffers(tmp_path):

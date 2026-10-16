@@ -4,10 +4,27 @@
 > **Outcome:** Look up stages, stage values, execution order, ordering rules, handler lifecycle and the context available to handlers.  
 > **Prerequisites:** [Implement an attack](../guides/attacks.md).
 
-A `Runtime` holds the ordered [hooks](../concepts/architecture.md#terminology) of one run, an
-optional localizer and a seed for handler randomness. Every driving loop (`run`, `record_run`,
-`run_logged`, `run_pair`, `run_prepared`, `run_configured`) executes a `Runtime` with the rules on
-this page. Class signatures are in the [Python API reference](python-api.md#runtime).
+A `HookSet` holds ordered [hooks](../concepts/architecture.md#terminology), a case and a seed for
+handler randomness. `HookDispatcher` binds it to one run. The driving system owns localization
+through `VehicleIO`. `Runtime` is a compatibility facade accepting `localizer=`, and
+`RuntimeSession` remains an alias for `HookDispatcher`. Existing `Runtime` calls retain their
+processing order and lifecycle. The runner behind `run`, `record_run`, `run_logged`, `run_pair`,
+`run_prepared` and `run_configured` applies the rules on this page.
+
+## Hook configuration and Vehicle I/O
+
+| Interface | Purpose |
+|---|---|
+| `HookSet(hooks=(), *, case=None, seed=0)` | Ordered handlers without a localization algorithm |
+| `hooks.with_hooks(extra, prepend=False)` | Copy the configuration and append or prepend handlers; preserve compatibility-facade settings |
+| `hooks.validate_stages(backend, stack)` | Validate stages and command modes before reset |
+| `hooks.session(backend, stack, perturb=None)` | Construct one internal `HookDispatcher` |
+| `stack.vehicle_io = VehicleIO(localizer=None)` | Configure the driving system's input processing and localization |
+| `Runtime(hooks=(), *, localizer=None, case=None, seed=0)` | Preserve the legacy constructor using a Vehicle I/O adapter |
+
+A legacy runtime localizer does not mutate `stack.vehicle_io`. Configuring two different
+localizers on the stack and the runtime raises an error before reset. A localizer also registered
+as a hook receives one lifecycle per run. See [Vehicle I/O](../guides/driving-systems.md#vehicle-io).
 
 ## Stages
 
@@ -22,7 +39,7 @@ value and return the value passed downstream.
 | `render.pre` | `RenderRequest` | `NuRecBackend` | Before each camera is rendered, at reset and after each `world.step.post` |
 | `render.post` | RGB image (`ndarray`) | `NuRecBackend` | After each camera is rendered |
 | `sensors.post` | `Observation` | Driving loop (always) | First stage of observation processing, on a copy of the raw observation |
-| `localization.pre` | `Observation` | Driving loop, only with `Runtime(localizer=...)` | Before the localizer |
+| `localization.pre` | `Observation` | Driving loop, with a Vehicle I/O or legacy Runtime localizer | Before the localizer |
 | `localization.post` | `StateEstimate` | Driving loop (always) | After the localizer, or after the ideal estimate is taken from the observation |
 | `observation` | `Observation` | Driving loop (always) | Last stage before the stack. The result is the model input |
 | `perception.pre`, `tracking.pre`, `planning.pre`, `control.pre` | `CallInputs` | `ModularAVStack` | Before the module is called |
@@ -207,7 +224,8 @@ flowchart TD
     WORLD --> SETUP[world.setup]
     SETUP --> TICKS[CARLA setup ticks]
     TICKS --> CAPTURE["Capture first sensor data (NuRec: render.pre, render.post per camera)"]
-    CAPTURE --> SENSOR[sensors.post]
+    CAPTURE --> ASTEP["AttackRuntime.step, if configured"]
+    ASTEP --> SENSOR[sensors.post]
     SENSOR --> LOCQ{Localizer configured?}
     LOCQ -->|Yes| LPRE[localization.pre, then localizer]
     LOCQ -->|No| IDEAL[Estimate taken from the observation]
@@ -227,8 +245,9 @@ flowchart TD
     NEXT --> REC[Record physical state and command]
     REC --> FEEDBACK["Handler after_step (step.end)"]
     FEEDBACK --> MORE{Another driving step?}
-    MORE -->|Yes| SENSOR
-    MORE -->|No| CLOSE[Handler close]
+    MORE -->|Yes| ASTEP
+    MORE -->|No| STOP["AttackRuntime.stop, if configured"]
+    STOP --> CLOSE[Handler close]
 ```
 
 - The first observation is processed once. `stack.reset` and the first stack call receive the
@@ -244,6 +263,58 @@ flowchart TD
   after command validation and before the world advances. Use it for instrumentation. Its copies
   cannot change execution.
 - Handler `close` runs on success and on failure. See [Plugin lifecycle](#plugin-lifecycle).
+
+## Online attack runtime
+
+`RunRequest(attacks=[...])` accepts fresh `AttackRuntime` instances from
+`avsectester.attack_runtime`. `ClosedLoopRunner` binds their callbacks to the same instances;
+component callbacks do not create a separate attack state owner.
+
+| Member | Meaning |
+|---|---|
+| `reads` | Sequence of `ResultSubscription` declarations, validated before reset |
+| `start(context)` | Initialize this run; return a sequence of `StageAction` |
+| `step(context)` | Called once per decision, before Vehicle I/O; return actions |
+| `on_component(context)` | Called at each subscribed component output stage; return actions |
+| `stop(context)` | Release resources; called in reverse order, including after a partial start |
+
+`ResultSubscription("observation")` requests the raw decision input.
+`ResultSubscription("physical_state")` requests a physical `WorldSnapshot`.
+`ResultSubscription("component", "perception.post")` requests that component's output when the
+stage occurs. Component subscriptions support the supplied `perception`, `tracking`, `planning`,
+`control` and `policy` `.post` stages, subject to adapter availability.
+
+`AttackContext` contains `step`, `stage`, read-only `sim_time` and `frame`, and the subscribed
+`observation`, `physical_state` and `component_output`. Unrequested or not-yet-available results
+are `None`. It contains no simulator, stack or time-advancing service. Observation copies follow
+the backend's native-copy contract; other result data is deep-copied for each callback.
+
+`StageAction(stage, value)` replaces a pipeline value at the current or a later stage of the same
+decision. Returning `()` means no action. An elapsed or unsupported target raises an error.
+An action targeting a declared stage that never runs also fails before world advancement.
+Attack callbacks run after existing HookSet handlers at the corresponding stage. Only one
+replacement may be pending for a stage: a second raises `ValueError` naming both issuing
+attacks and callbacks, including conflicts between `start` and the first `step`.
+Subscribed component callbacks still run in registration order. Each current-stage replacement
+is consumed before the next callback, which receives the already replaced value.
+
+Action requests and receipts have a shared per-run `action_id`. Requests record when an action
+was emitted; receipts record the decision, stage and physical clock when its pipeline value was
+replaced. An `applied` receipt does not imply that the world subsequently executed a command.
+Cleanup records pending actions as `not_applied`, including startup actions in a zero-step run.
+
+`start` runs before the first capture when the simulator provides that initialization capability;
+otherwise it runs after reset and before the first decision. No raw observation is supplied to
+`start`. With zero decisions, `start` and `stop` still run, but `step` does not.
+
+**Not yet implemented.** Typed world insertion actions, selection and the complete attack
+definition/preparation API are not available through `AttackRuntime`. See
+[TODO](../development/TODO.md#online-attack-runtime).
+
+Use existing `world.setup` and `world.step.pre` hooks for physical deployment. A `StageAction`
+cannot invoke world operations or alter an already captured image through a physical change.
+An executable component-output example is in
+[Keep component decisions in one runtime](../guides/attacks.md#keep-component-decisions-in-one-runtime).
 
 ## Ordering at a shared stage
 

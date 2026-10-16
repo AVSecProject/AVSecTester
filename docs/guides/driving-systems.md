@@ -10,6 +10,41 @@ driving loop through a stack, an `AVStack` adapter. The supplied stacks are `Mod
 (`avsectester/stacks/modular.py`) and `AlpamayoAVStack` (`avsectester/stacks/alpamayo.py`).
 Configured runs select one with the `stack` key. Python runs pass a `stack_factory`.
 
+## Vehicle I/O
+
+Each `AVStack` owns `vehicle_io`, a `VehicleIO` that applies sensor hooks, localization and
+observation hooks in that order. Set its localizer when constructing the driving adapter:
+
+<!-- runnable -->
+```python
+from avsectester.backend import AVStack
+from avsectester.plane import Control, StateEstimate
+from avsectester.vehicle_io import VehicleIO
+
+class Driver(AVStack):
+    def __init__(self):
+        self.vehicle_io = VehicleIO(self.localize)
+
+    def localize(self, observation, context):
+        return StateEstimate(observation.vehicle_state, observation.ego_speed)
+
+    def __call__(self, observation):
+        return Control()
+
+driver = Driver()
+assert driver.vehicle_io.localizer == driver.localize
+```
+
+The example keeps the provided state estimate; replace `localize` with your estimator. A stateful
+localizer may implement the [plugin lifecycle](../reference/runtime.md#plugin-lifecycle).
+The dispatcher resets it once before world initialization. `stack.reset` receives the first
+processed input once and must not reset localization or process that input again.
+
+Without a localizer, Vehicle I/O uses the observation's reported state after sensor hooks.
+Existing `Runtime(localizer=...)` remains supported through a compatibility adapter. Configure
+one localizer per run; different localizers on the stack and legacy runtime are rejected before
+reset. Stage values and ordering are in the [runtime reference](../reference/runtime.md#stages).
+
 ## Modular driving system
 
 `ModularAVStack` runs an avstack `ModularDrivingPipeline` (`avstack.modules.pipeline`). The

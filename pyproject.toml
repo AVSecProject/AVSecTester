@@ -14,12 +14,14 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
 ]
 
-# Lightweight core deps only. The heavy AV stack (torch/mmdet/avstack/carla) is installed
+# Framework dependencies only. PyArrow is loaded when a persistent run log is opened.
+# The heavy AV stack (torch/mmdet/avstack/carla) is installed
 # via the `avstack` extra + the submodules under third_party/ — see docs/getting-started/installation.md.
 dependencies = [
     "pyyaml>=6,<7",            # scenario config
     "numpy>=1.26,<2",         # numpy 1.26 (torch 2.1 / OpenMMLab-official stack; see dependency-upgrade)
     "typer>=0.15,<0.17",      # CLI (>=0.15 for click 8.2+ compatibility)
+    "pyarrow==21.0.0",       # Parquet RunLog; same pin in the Python 3.12 driver environment
 ]
 
 [project.optional-dependencies]
@@ -100,7 +102,12 @@ build-backend = "hatchling.build"
 path = "avsectester/__init__.py"
 
 [tool.mypy]
-files = ["avsectester/plane.py", "avsectester/backend.py", "avsectester/runtime.py", "avsectester/runner.py"]
+files = [
+    "avsectester/plane.py", "avsectester/backend.py", "avsectester/runtime.py",
+    "avsectester/runner.py", "avsectester/closed_loop.py", "avsectester/attack_runtime.py",
+    "avsectester/simulator_runtime.py", "avsectester/vehicle_io.py",
+    "avsectester/runlog.py", "avsectester/log_codecs.py",
+]
 python_version = "3.11"
 follow_imports = "skip"
 ignore_missing_imports = true

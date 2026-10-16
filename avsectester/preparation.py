@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
-from avsectester.runtime import Hook, Runtime
+from avsectester.runtime import Hook, HookSet, Runtime
 
 if TYPE_CHECKING:
     from avsectester.scenarios.source import ScenarioInstance
@@ -163,14 +163,16 @@ class Treatment:
         return Treatment(tuple(item for item in self.interventions if item.kind in selected))
 
     def runtime(
-        self, base: Runtime | None = None, case: Any = None, *,
+        self, base: HookSet | None = None, case: Any = None, *,
         kinds: Iterable[str] | None = None,
-    ) -> Runtime:
+    ) -> HookSet:
         """Create execution hooks afresh while retaining the base localizer and RNG seed."""
         treatment = self if kinds is None else self.subset(kinds)
         early, late = [], []
         for item in treatment.interventions:
             (early if item.position == "before" else late).extend(item.hooks())
         runtime = base or Runtime()
-        return Runtime((*early, *runtime.hooks, *late), localizer=runtime.localizer,
-                       seed=runtime.seed, case=case if case is not None else runtime.case)
+        result = runtime.with_hooks(early, prepend=True).with_hooks(late)
+        if case is not None:
+            result.case = case
+        return result

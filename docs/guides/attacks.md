@@ -191,11 +191,68 @@ generator rules in [Randomness](../reference/runtime.md#randomness). The supplie
 [speed-feedback adaptive attack](../examples/speed-feedback-attack.md) uses the same
 pattern with a feedback controller.
 
+## Keep component decisions in one runtime
+
+Use `AttackRuntime` when one online attack reads both a step's state and a component result.
+Declare the results in `reads`; `step` and `on_component` operate on the same instance. This
+offline example uses a toy perception output and keeps its TTC history in that instance:
+
+<!-- runnable -->
+```python
+from avsectester.attack_runtime import AttackRuntime, ResultSubscription, StageAction
+from avsectester.backend import AVStack
+from avsectester.closed_loop import ClosedLoopRunner, RunRequest
+from avsectester.plane import Control
+from avsectester.simulators.nurec import NuRecBackend, StubRenderer
+
+class TTCPhantom(AttackRuntime):
+    reads = (ResultSubscription("physical_state"),
+             ResultSubscription("component", "perception.post"))
+
+    def start(self, context):
+        self.history = []
+        return ()
+
+    def step(self, context):
+        self.speed = max(context.physical_state.ego_speed, 0.1)
+        return ()
+
+    def on_component(self, context):
+        ttc = context.component_output[0]["distance"] / self.speed
+        self.history.append(ttc)
+        if ttc < 2.0:
+            return (StageAction("perception.post", [{"distance": 0.0}]),)
+        return ()
+
+class ToyDriver(AVStack):
+    supported_stages = frozenset({"perception.post"})
+
+    def __call__(self, observation):
+        detections = self._emit("perception.post", [{"distance": 0.1}])
+        return Control(brake=1.0 if detections[0]["distance"] == 0.0 else 0.0)
+
+attack = TTCPhantom()
+backend = NuRecBackend({"dt": 0.1}, renderer=StubRenderer(height=8, width=8))
+try:
+    log = ClosedLoopRunner().run(backend, ToyDriver(), RunRequest(2, attacks=[attack]))
+finally:
+    backend.close()
+assert attack.history == [1.0, 1.0]
+assert all(step.executed_command.brake == 1.0 for step in log.steps)
+```
+
+The real driving adapter determines its native component-output schema. Create a fresh runtime
+for each independent run. Callbacks receive subscribed data and a read-only physical clock;
+they do not receive a simulator handle. `StageAction` can replace a current or later pipeline
+value. Physical insertions still use existing world hooks. See
+[Online attack runtime](../reference/runtime.md#online-attack-runtime) for lifecycle and limits.
+
 ## Attack localization
 
 Without a localizer, the state estimate is taken from the observation after `sensors.post`, so a
 change to `vehicle_state` or `ego_speed` there is kept. To test a measurement attack against a
-localization algorithm, pass the algorithm as `Runtime(localizer=...)`. It is called as
+localization algorithm, configure [Vehicle I/O](driving-systems.md#vehicle-io) on the driving
+adapter. The compatibility form `Runtime(localizer=...)` below remains supported. It is called as
 `localizer(observation, context)` and returns a `StateEstimate`:
 
 ```python

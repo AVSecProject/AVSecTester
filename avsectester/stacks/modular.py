@@ -51,14 +51,19 @@ class _StageCapture:
     """A generic avstack post-hook that keeps a pipeline stage's most recent output (pass-through).
 
     One capture mechanism for every per-stage need — telemetry (how many detections perception emitted)
-    and in-system analysis (each stage's output) alike: it stores the stage's output so the stack can
-    report per-layer results, and returns it unchanged so the pipeline is unaffected."""
+    and in-system analysis (each stage's output) alike: it snapshots the stage's output before
+    downstream modules can mutate it, and returns the original so the pipeline is unaffected."""
 
     def __init__(self) -> None:
+        from avsectester.log_codecs import default_codecs
+        from avsectester.runlog import Recorder
+
+        # Reuse the canonical snapshot path without creating a writer or retaining a run.
+        self._recorder = Recorder(codecs=default_codecs())
         self.last: Any = None
 
     def __call__(self, output: Any, *args: Any, **kwargs: Any) -> tuple[Any]:
-        self.last = output
+        self.last = self._recorder.capture(output)
         return (output,)
 
 

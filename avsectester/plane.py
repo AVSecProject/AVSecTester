@@ -127,6 +127,7 @@ class Trace:
     replay_scenario: dict | None = None
     outputs: list[InterventionOutput] = field(default_factory=list)
     provenance: dict[str, Any] = field(default_factory=dict)
+    run_log: Any = field(default=None, repr=False, compare=False)
 
     @property
     def final_speed(self) -> float:

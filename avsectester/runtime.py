@@ -9,9 +9,9 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import ExitStack, contextmanager
-from copy import deepcopy
+from copy import copy, deepcopy
 from dataclasses import dataclass, field, replace
-from typing import Any, TYPE_CHECKING
+from typing import Any, Self, TYPE_CHECKING
 
 import numpy as np
 
@@ -19,6 +19,7 @@ from avsectester.plane import Control, InterventionOutput, Observation, StateEst
 
 if TYPE_CHECKING:
     from avsectester.backend import AVStack, WorldBackend
+    from avsectester.vehicle_io import VehicleIO
 
 
 class UnsupportedStageError(ValueError):
@@ -154,50 +155,51 @@ def _invoke(handler: Any, value: Any, context: StageContext) -> Any:
     return getattr(handler, "transform", handler)(value, context)
 
 
-class Runtime:
-    """A reusable configuration that invokes handler lifecycle methods for each run.
+class HookSet:
+    """Reusable ordered hooks, independent of the driving system's Vehicle I/O.
 
-    Hooks execute in registration order at each stage. ``localizer`` consumes an Observation
-    and returns StateEstimate. Without one, the backend's reported state is the initial estimate.
-    A fixed seed initializes a fresh RNG for every run, without changing simulator/model seeds.
-    Stateful handlers must implement reset or be constructed afresh for each run.
+    A fixed seed starts a fresh RNG for each run. Stateful handlers must implement
+    ``reset`` or be constructed afresh. ``Runtime`` retains the legacy localizer argument.
     """
 
     def __init__(
         self,
         hooks: Iterable[Hook] = (),
         *,
-        localizer: Callable[[Observation, StageContext], StateEstimate] | Plugin | None = None,
         case: Any = None,
         seed: int | None = 0,
     ) -> None:
         self.hooks = tuple(hooks)
         if any(not isinstance(hook, Hook) for hook in self.hooks):
-            raise TypeError("Runtime hooks must be Hook instances")
-        if localizer is not None and not callable(getattr(localizer, "transform", localizer)):
-            raise TypeError("localizer must be callable or provide transform(value, context)")
-        self.localizer, self.case, self.seed = localizer, case, seed
+            raise TypeError("HookSet hooks must be Hook instances")
+        self.case, self.seed = case, seed
 
-    @classmethod
-    def from_config(cls, config: Mapping[str, Any] | None = None, *, case: Any = None) -> Runtime:
-        """Load stage handlers from importable factories or native avstack configurations."""
-        from .interventions import runtime_from_config
-
-        return runtime_from_config(config, case=case)
-
-    def with_hooks(self, hooks: Iterable[Hook], *, prepend: bool = False) -> Runtime:
-        """Return a new configuration, preserving the original hook list and common settings."""
+    def with_hooks(self, hooks: Iterable[Hook], *, prepend: bool = False) -> Self:
+        """Copy this configuration while retaining compatibility-facade settings."""
         extra = tuple(hooks)
-        ordered = extra + self.hooks if prepend else self.hooks + extra
-        return Runtime(ordered, localizer=self.localizer, case=self.case, seed=self.seed)
+        if any(not isinstance(hook, Hook) for hook in extra):
+            raise TypeError("HookSet hooks must be Hook instances")
+        result = copy(self)
+        result.hooks = extra + self.hooks if prepend else self.hooks + extra
+        return result
+
+    def _vehicle_io(self, stack: AVStack) -> VehicleIO:
+        from .vehicle_io import VehicleIO
+
+        result = getattr(stack, "vehicle_io", None)
+        if result is None:
+            return VehicleIO()
+        if not isinstance(result, VehicleIO):
+            raise TypeError("stack.vehicle_io must be VehicleIO")
+        return result
 
     def validate_stages(self, backend: WorldBackend, stack: AVStack) -> frozenset[str]:
         """Check adapter capabilities without binding a session or invoking handlers."""
         from .backend import validate_command_compatibility
 
         validate_command_compatibility(backend, stack, self)
-        available = RuntimeSession.CORE_STAGES | backend.supported_stages | stack.supported_stages
-        if self.localizer is not None:
+        available = HookDispatcher.CORE_STAGES | backend.supported_stages | stack.supported_stages
+        if self._vehicle_io(stack).localizer is not None:
             available |= {"localization.pre"}
         unknown = {hook.stage for hook in self.hooks} - available
         if unknown:
@@ -215,23 +217,70 @@ class Runtime:
             raise ValueError("Plugin setup_ticks must be nonnegative integers")
         return sum(counts)
 
-    def session(self, backend: WorldBackend, stack: AVStack, perturb: Callable[[Observation], Observation] | None = None) -> RuntimeSession:
+    def session(self, backend: WorldBackend, stack: AVStack, perturb: Callable[[Observation], Observation] | None = None) -> HookDispatcher:
         """Create one execution session, validating capabilities before resetting the world."""
         runtime = self
         if perturb is not None:
             from .interventions import ObservationTransform
 
             runtime = self.with_hooks([Hook("observation", ObservationTransform(perturb))], prepend=True)
-        return RuntimeSession(runtime, backend, stack)
+        return HookDispatcher(runtime, backend, stack)
 
 
-class RuntimeSession:
+class Runtime(HookSet):
+    """Compatibility facade for ``Runtime(..., localizer=...)``.
+
+    New driving adapters own ``VehicleIO``. A legacy localizer is held by a VehicleIO
+    adapter for this run without mutating the caller's driving-system configuration.
+    """
+
+    def __init__(
+        self,
+        hooks: Iterable[Hook] = (),
+        *,
+        localizer: Callable[[Observation, StageContext], StateEstimate] | Plugin | None = None,
+        case: Any = None,
+        seed: int | None = 0,
+    ) -> None:
+        from .vehicle_io import VehicleIO
+
+        super().__init__(hooks, case=case, seed=seed)
+        self._legacy_vehicle_io = VehicleIO(localizer)
+
+    @property
+    def localizer(self) -> Any:
+        return self._legacy_vehicle_io.localizer
+
+    @localizer.setter
+    def localizer(self, value: Any) -> None:
+        from .vehicle_io import VehicleIO
+
+        self._legacy_vehicle_io = VehicleIO(value)
+
+    def _vehicle_io(self, stack: AVStack) -> VehicleIO:
+        driving_io = super()._vehicle_io(stack)
+        if self.localizer is None:
+            return driving_io
+        if driving_io.localizer is not None and driving_io.localizer is not self.localizer:
+            raise ValueError("Specify a localizer on VehicleIO or legacy Runtime, not both")
+        return self._legacy_vehicle_io
+
+    @classmethod
+    def from_config(cls, config: Mapping[str, Any] | None = None, *, case: Any = None) -> Runtime:
+        """Load legacy stage handlers and localization configuration."""
+        from .interventions import runtime_from_config
+
+        return runtime_from_config(config, case=case)
+
+
+class HookDispatcher:
     """One bound run. Custom adapters publish supported stages through ``emit``."""
     CORE_STAGES = frozenset({"sensors.post", "localization.post", "observation", "command"})
 
-    def __init__(self, runtime: Runtime, backend: WorldBackend, stack: AVStack) -> None:
+    def __init__(self, runtime: HookSet, backend: WorldBackend, stack: AVStack) -> None:
         self.runtime = runtime
         self.context = RunContext(backend, stack, runtime.case, np.random.default_rng(runtime.seed))
+        self.vehicle_io = runtime._vehicle_io(stack)
         self.step = 0
         self.observation: Observation | None = None
         self.control: Control | None = None
@@ -242,14 +291,14 @@ class RuntimeSession:
         for hook in runtime.hooks:
             self._handlers.setdefault(hook.stage, []).append(hook.handler)
         participants = [hook.handler for hook in runtime.hooks]
-        if runtime.localizer is not None:
-            participants.append(runtime.localizer)
+        if self.vehicle_io.localizer is not None:
+            participants.append(self.vehicle_io.localizer)
         # A single plugin can be bound to several stages but owns one lifecycle per run.
         owners = [getattr(value, "lifecycle_owner", value) for value in participants]
         self.participants = tuple({id(value): value for value in owners}.values())
 
     @contextmanager
-    def activate(self) -> Iterator[RuntimeSession]:
+    def activate(self) -> Iterator[HookDispatcher]:
         if self._active:
             raise RuntimeError("Runtime session is already active")
         resources = ExitStack()
@@ -298,6 +347,16 @@ class RuntimeSession:
             frame=context.ground_truth.frame, t=context.sim_time, sensor=context.sensor,
         ))
 
+    def drain_outputs(self) -> list[InterventionOutput]:
+        """Transfer recorded outputs to a consumer without retaining the run's history.
+
+        Direct session callers keep the existing accumulating ``outputs`` view until they
+        explicitly drain it. Keep that list's identity for callers holding a reference.
+        """
+        result = list(self.outputs)
+        self.outputs.clear()
+        return result
+
     def emit(self, stage: str, value: Any, sensor: str | None = None) -> Any:
         if stage not in self.available:
             raise ValueError(f"Adapter emitted an unsupported stage: {stage!r}")
@@ -330,29 +389,8 @@ class RuntimeSession:
         return value
 
     def observe(self, observation: Observation) -> Observation:
-        self.control = None  # The next decision has not produced a command yet.
-        seen = self.context.backend.copy_observation(observation)
-        self.observation = seen
-        seen = self.emit("sensors.post", seen)
-        self._require(seen, Observation, "sensors.post")
-        if self.runtime.localizer is not None:
-            seen = self.emit("localization.pre", seen)
-            self._require(seen, Observation, "localization.pre")
-            estimate = _invoke(self.runtime.localizer, seen, self.stage_context("localization"))
-            self._require(estimate, StateEstimate, "localizer")
-            # Estimators often return their own cached state. Downstream attacks
-            # must not rewrite that history or a borrowed backend pose.
-            estimate = deepcopy(estimate)
-        else:
-            estimate = StateEstimate(seen.vehicle_state, seen.ego_speed)
-        self._require(estimate, StateEstimate, "localizer")
-        estimate = self.emit("localization.post", estimate)
-        self._require(estimate, StateEstimate, "localization.post")
-        seen = replace(seen, vehicle_state=estimate.vehicle_state, ego_speed=estimate.ego_speed)
-        seen = self.emit("observation", seen)
-        self._require(seen, Observation, "observation")
-        self.observation = seen
-        return seen
+        """Apply the driving system's Vehicle I/O with this run's ordered hooks."""
+        return self.vehicle_io.process(observation, self)
 
     def command(self, control: Control) -> Control:
         self._require(control, Control, "stack")
@@ -381,3 +419,7 @@ class RuntimeSession:
     def _require(value: Any, expected: type, stage: str) -> None:
         if not isinstance(value, expected):
             raise TypeError(f"{stage} must return {expected.__name__}, got {type(value).__name__}")
+
+
+# The session name was public to custom adapters; it remains the same implementation.
+RuntimeSession = HookDispatcher

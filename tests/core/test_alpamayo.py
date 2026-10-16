@@ -156,10 +156,13 @@ def test_prediction_chains_plans_and_reset_starts_a_fresh_experiment(driver_sche
     assert stack.component_log() is None
     stack.reset(first)
     control = stack(first)
-    assert stack.component_log()["policy"] is prediction
-    assert stack.component_log()["action"] is control
+    recorded = stack.component_log()
+    assert recorded["policy"] is not prediction
+    np.testing.assert_array_equal(recorded["policy"].candidate_positions, prediction.candidate_positions)
+    assert recorded["action"] == control and recorded["action"] is not control
     next_control = stack(second)
-    assert stack.component_log()["action"] is next_control
+    assert stack.component_log()["action"] == next_control
+    assert stack.component_log()["action"] is not next_control
     initial_input, next_input = [c.args[0] for c in model.predict.call_args_list]
     assert initial_input.previous_plan is None and initial_input.inference_seed == 0
     assert next_input.previous_plan is prediction.selected_plan and next_input.inference_seed == 1
@@ -220,10 +223,29 @@ def test_policy_input_and_output_replacements_reach_model_and_future_context(dri
     assert control.trajectory[0][0] == (4.0, 2.0, 0.0)
     assert next_control.trajectory == control.trajectory
     assert stack.last_reasoning == "modified"
-    assert stack.component_log()["policy"] is replacement
+    recorded = stack.component_log()["policy"]
+    assert recorded is not replacement and recorded.selected_plan == replacement.selected_plan
+    np.testing.assert_array_equal(recorded.candidate_positions, replacement.candidate_positions)
     assert stack.models["policy"] is stack._model
     assert stack.native["model"] is stack._model
     assert stack.supported_stages == {"policy.pre", "policy.post"}
 
     # The binding is removed, so ordinary inference again consumes the original prediction.
     assert stack(obs).trajectory[0][0] == (1.0, 0.0, 0.0)
+
+
+def test_component_snapshots_survive_prediction_reuse_and_command_mutation(driver_schema):
+    prediction = SimpleNamespace(candidate_positions=np.array([[[1.0, 2.0, 3.0]]]))
+    stack = AlpamayoAVStack(model=SimpleNamespace(predict=lambda _: prediction), camera_ids=["front"])
+    observation = Observation(0.0, 0, sensor_data={"front": np.zeros((2, 3, 3), np.uint8)})
+    stack.reset(observation)
+    command = stack(observation)
+    # A command handler is allowed to change the emitted command in place.
+    command.trajectory.clear()
+    command.brake = 1.0
+    # Models can reuse their output buffers at the next inference.
+    prediction.candidate_positions[:] = 99
+    recorded = stack.component_log()
+    np.testing.assert_array_equal(recorded["policy"].candidate_positions, [[[1.0, 2.0, 3.0]]])
+    assert recorded["action"].brake == 0.0
+    assert recorded["action"].trajectory == [((1.0, 2.0, 3.0), (1.0, 0.0, 0.0, 0.0), 100000)]

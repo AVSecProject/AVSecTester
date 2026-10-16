@@ -1,21 +1,122 @@
 # Evaluate results
 
 > **Audience:** Users who interpret experiment outputs.  
-> **Outcome:** Read driving traces and intervention outputs, compute the driving-impact metric, compare component outputs and run robustness evaluations.  
+> **Outcome:** Read RunLog records and compatibility traces, compute the driving-impact metric,
+> compare component outputs and run robustness evaluations.
 > **Prerequisites:** [Run experiments](experiments.md).
 
+## Run logs and saved results
+
+`ClosedLoopRunner.run(...)` returns a `RunLog` containing one `StepRecord` per completed decision,
+initialization/termination events, metadata and a final status. The records distinguish raw and
+model-visible observations, physical pre/post-state, produced and executed commands, component
+outputs and attack actions. The existing `run`, `run_logged` and visualization helpers use this
+same loop; their `Trace` and `ComponentTrace` results are views of its captured records.
+
+Configure a direct run with `RunRequest` and `RecordingPolicy` from `avsectester.closed_loop`.
+By default, the run retains its records in memory and records no sensor payloads. Set
+`output_path` to an empty or new directory to save Parquet records and separate array/image
+payload shards. Set `retain_steps=False` as well to stream records without keeping the full run
+in memory. In that mode, returned `log.steps` and `log.events` are empty; analyze `log.path`.
+The default `retain_steps=True` preserves in-memory access and compatibility traces.
+
+This small example needs no simulator server, model or dataset:
+
+<!-- runnable -->
+```python
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+import numpy as np
+
+from avsectester.backend import AVStack, WorldBackend
+from avsectester.closed_loop import ClosedLoopRunner, RecordingPolicy, RunRequest
+from avsectester.plane import Control, Observation
+from avsectester.runlog import RunLog, read_table
+
+
+class ExampleWorld(WorldBackend):
+    def reset(self):
+        self.frame = 0
+        return self.capture()
+
+    def capture(self):
+        return Observation(self.frame * 0.1, self.frame,
+                           sensor_data={"front": np.zeros((2, 3, 3), dtype=np.uint8)})
+
+    def step(self, control):
+        self.frame += 1
+        return self.capture()
+
+
+class Coast(AVStack):
+    def __call__(self, observation):
+        return Control()
+
+
+with TemporaryDirectory() as directory:
+    world = ExampleWorld()
+    try:
+        log = ClosedLoopRunner().run(world, Coast(), RunRequest(
+            decision_steps=3,
+            output_path=Path(directory) / "run",
+            retain_steps=False,
+            recording=RecordingPolicy(sensor_ids=("front",), every_n_steps=2),
+        ))
+    finally:
+        world.close()  # The direct runner leaves caller-owned resources open.
+
+    assert log.status == "completed" and log.steps == []
+    table = read_table(log.path, columns=["step", "physical_post", "executed_command"])
+    assert table.column("step").to_pylist() == [0, 1, 2]
+
+    saved = RunLog.read(log.path, load_payloads=False)
+    reference = saved.steps[0].model_observation.sensor_data["front"]
+    assert reference["shape"] == [2, 3, 3] and reference["chunks"]
+    assert saved.steps[1].model_observation.sensor_data == {}  # Payload sampling only.
+```
+
+`RecordingPolicy.sensor_ids` selects payloads. `representations` accepts `"raw"`,
+`"model_input"` or both; its default is `("model_input",)`. `every_n_steps` samples those
+payloads from decision 0. Physical state, commands, actions and available component outputs are
+still recorded at every completed decision. Missing requested sensors fail explicitly.
+
+Use `read_table(path, columns=...)` for selected top-level Parquet columns; it returns an Arrow
+table with typed nested data and payload references, without loading the payload bytes. Use
+`RunLog.read(path)` for decoded records and arrays. `load_payloads=False` retains references
+containing dtype/shape and shard locations instead of loading arrays. This option still loads
+all step/event records; it is not a streaming reader.
+
+The writer publishes closed `part-*.parquet` chunks after their payloads are available and writes
+completion metadata last. Readers ignore unfinished `.open` files and reject unknown schema
+versions. Interrupted runs remain `incomplete`; completed chunks can be inspected without
+claiming that the whole experiment finished.
+
+The runner supplies lazy `default_codecs()` from `avsectester.log_codecs` for supported Modular
+and Alpamayo native outputs. Creating the registry imports no simulator or model package. Saved
+native objects decode to ordinary data, so reading a log does not reconstruct live model or
+simulator objects. Unknown native types need an explicit codec before disk recording. To customize
+chunk limits or codecs, pass a `Recorder` to the runner; the supplied recorder controls its own
+path, metadata and retention. See [RunLog and recording API](../reference/python-api.md#runlog-and-recording).
+
+**Not yet implemented.** Dataset-driven candidate services and the complete selection/preparation
+experiment API belong to later migration phases. The direct runner currently uses already
+configured backend/stack instances; `RunRequest.source` and `initialization` must remain `None`.
 
 ## Driving traces
 
-Every run returns its [run records](../concepts/architecture.md#terminology) as a `Trace`
-(`avsectester.plane`). `run_configured` returns a `dict[str, Trace]` keyed by treatment name.
+The compatibility runners return [run records](../concepts/architecture.md#terminology) as a
+`Trace` (`avsectester.plane`), derived from the unified RunLog. `run_configured` returns a
+`dict[str, Trace]` keyed by treatment name.
 `run_prepared` returns the result of its `run_fn` for each named treatment, which is a `Trace` by
-default. The CLI prints a summary of each trace and does not save it. Traces are held in memory.
-Save the values you need yourself. See [Run from Python](experiments.md#run-from-python).
+default. Their CLI summary and existing export options are unchanged. Traces are held in memory;
+use the direct runner's `output_path` for persisted RunLog records. See
+[Run from Python](experiments.md#run-from-python).
 
 | `Trace` member | Content |
 |---|---|
 | `records` | One `FrameRecord` per driving step |
+| `run_log` | The source `RunLog` on traces returned by the shared runner; `None` on manually constructed traces |
 | `outputs` | `InterventionOutput` records from handlers. See [Intervention outputs and provenance](#intervention-outputs-and-provenance) |
 | `provenance` | How the run was produced, as a dictionary |
 | `replay_scenario` | For CARLA, the resolved scene configuration with the actual spawn settings of the run. `None` for other simulators. See [Random choices and seeds](simulators.md#random-choices-and-seeds) |
@@ -30,7 +131,7 @@ A `FrameRecord` describes the physical outcome of one driving step:
 | `frame` | Zero-based driving-step index. It is not the simulator frame ID |
 | `t`, `speed` | Physical time (s) and ego speed (m/s) after the command was executed |
 | `throttle`, `brake`, `steer` | The executed command, after all `command` handlers |
-| `n_detections` | Perception output count. Only the CARLA configured runner fills it. It is 0 elsewhere |
+| `n_detections` | Count from the available `perception` component output. It is 0 when that output is unavailable |
 
 Records contain the physical state, not the model-visible observation. A spoofed speed or an
 attacked image does not appear in them. Only its effect on the executed command and the resulting
@@ -294,12 +395,15 @@ the runtime yourself, as described in [Lower-level execution](conditions.md#lowe
 | `clean_components.degradation(attacked_components, name)` | Clean count minus attacked count per step, up to the shorter trace |
 | `components.performance(name, truths, assign_radius=4.0)` | Per-step detection or tracking metrics from `avstack.metrics.get_instantaneous_metrics`, with nearest-neighbour assignment |
 
-The collector deep-copies each step's output graph, so later updates do not change earlier
-entries. Native outputs must support `copy.deepcopy`. A stack without `component_log()` yields
+The shared recorder snapshots each step's output graph, so later updates do not change earlier
+entries; `ComponentTrace` reads those snapshots rather than running a second collector.
+Native in-memory outputs must support copying. A stack without `component_log()` yields
 no steps. An uninstrumented `ModularAVStack` yields steps with empty `stages`. Count differences do
 not measure position errors and do not establish attack success. For `performance`, supply one
 ground-truth collection per driving step, with compatible object types, reference frames and
-input times. `run_logged` does not fill `FrameRecord.n_detections`.
+input times. When a `perception` output is present, the compatibility driving record also carries
+its count. Disk-decoded native component outputs are plain data; native-object performance
+helpers require an explicit compatible decoder or a metric that consumes that data representation.
 
 **Timing.** `components.steps[i]` describes inference on the input of driving step `i`.
 `trace.records[i]` describes the physical state after that step's command was executed. These

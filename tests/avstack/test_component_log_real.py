@@ -4,6 +4,8 @@ Covers snapshot isolation, hook ordering and matching metrics with CPU tracking,
 This suite requires avstack and fails if it is missing.
 """
 
+from dataclasses import replace
+
 import pytest
 
 from avsectester.backend import WorldBackend, run
@@ -81,7 +83,10 @@ def test_component_snapshots_preserve_pipeline_history_and_driving(
     plain_trace = run(
         _backend(make_detections, make_ego, leads), ModularAVStack(pipeline_config), frames=8
     )
-    assert trace.records == plain_trace.records
+    # Instrumentation adds measured detection telemetry; every driving field must match.
+    assert [replace(record, n_detections=0) for record in trace.records] == plain_trace.records
+    assert [record.n_detections for record in trace.records] == [1] * 8
+    assert [record.n_detections for record in plain_trace.records] == [0] * 8
     assert comp.stage_names == ["perception", "tracking", "planning", "control"]
     assert comp.counts("perception") == [1] * 8
     assert comp.counts("tracking")[0] == 0

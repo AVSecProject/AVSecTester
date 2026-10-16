@@ -17,9 +17,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
-from copy import deepcopy
 
-from avsectester.backend import AVStack, WorldBackend, run
+from avsectester.backend import AVStack, WorldBackend
 from avsectester.plane import Observation, Trace
 from avsectester.runtime import Runtime
 
@@ -286,20 +285,30 @@ def record_run(
     Same loop and Trace as :func:`avsectester.backend.run`; the only addition is writing each frame's
     scene view to ``out_dir`` (default ``<repo>/tmp/frames``). ``visualize`` is any backend's view.
     With ``collect=True`` the RGB frames are also kept on ``trace.frames`` for :func:`filmstrip` /
-    :func:`save_gif`. Returns the driving Trace.
+    :func:`save_gif`. Each captured view is exported immediately; the RunLog retains its file
+    reference, so ``collect=False`` does not accumulate a second image sequence in memory.
+    Completed exports remain available if a later decision fails. Returns the driving Trace.
     """
     out = Path(out_dir) if out_dir is not None else REPO_TMP / "frames"
     out.mkdir(parents=True, exist_ok=True)
-    collected: list = []
+    from avsectester.closed_loop import ClosedLoopRunner, RunRequest, trace_from_log
 
-    def capture(i, seen, control):
-        image = visualize(seen)  # visualize what the stack perceives (== obs when no perturb)
-        if image is not None:
-            save_image(image, out / f"{prefix}_{i:04d}.png")
-            if collect:
-                collected.append(deepcopy(image))
+    collected = []
 
-    trace = run(backend, stack, frames, perturb=perturb, on_step=capture, runtime=runtime)
+    def export_view(step: int, name: str, image: Any) -> Any:
+        if image is None:
+            return None
+        path = out / f"{prefix}_{step:04d}.png"
+        save_image(image, path)
+        if collect:
+            collected.append(image)
+        return {"path": str(path.resolve()), "format": "png"}
+
+    log = ClosedLoopRunner().run(
+        backend, stack, RunRequest(frames, hooks=runtime), perturb=perturb,
+        record_views={"scene": visualize}, view_sink=export_view,
+    )
+    trace = trace_from_log(log)
     if collect:
-        trace.frames = collected  # the saved RGB frames, for filmstrip()/save_gif()
+        trace.frames = collected
     return trace

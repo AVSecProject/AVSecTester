@@ -5,8 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from copy import deepcopy
 
-from avsectester.backend import AVStack
-from avsectester.evaluation.component_log import run_logged
+from avsectester.backend import AVStack, run
 from avsectester.experiment import ExecutionMode, TreatmentMode, configured_stack, run_configured
 from avsectester.plane import Trace
 from avsectester.runtime import Runtime
@@ -25,10 +24,8 @@ def _stack(scenario: dict) -> AVStack:
 
 
 def _logged_run(backend, stack, frames, *, runtime) -> Trace:
-    trace, components = run_logged(backend, stack, frames, runtime=runtime)
+    trace = run(backend, stack, frames, runtime=runtime)
     trace.replay_scenario = deepcopy(backend.replay_scenario)
-    for record, step in zip(trace.records, components.steps):
-        record.n_detections = step.count("perception")
     return trace
 
 

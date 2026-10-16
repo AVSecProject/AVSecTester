@@ -107,6 +107,43 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  runlog-python312:
+    name: runlog-python312
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install recording dependencies from the shared pin
+        # The AlpaSim driver imports this checkout; the full avstack package requires Python 3.11.
+        run: |
+          python - <<'PY'
+          import subprocess
+          import sys
+          import tomllib
+
+          with open("pyproject.toml", "rb") as source:
+              dependencies = tomllib.load(source)["project"]["dependencies"]
+          recording = [d for d in dependencies if d.startswith(("pyarrow==", "numpy"))]
+          subprocess.run([sys.executable, "-m", "pip", "install", "pytest>=8,<9", *recording], check=True)
+          PY
+      - name: Test Parquet records under the driver interpreter version
+        run: python -m pytest tests/core/test_runlog.py -q --junitxml=reports/runlog-python312.xml
+      - name: Save recording test results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: runlog-python312-results
+          path: reports/
+          if-no-files-found: ignore
+          retention-days: 7
+
   lint:
     name: lint
     runs-on: ubuntu-22.04

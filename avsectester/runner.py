@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from copy import deepcopy
+from copy import copy, deepcopy
 from typing import Any, TYPE_CHECKING, TypeVar, overload
 
 from avsectester.backend import AVStack, WorldBackend, run
-from avsectester.runtime import Runtime
+from avsectester.runtime import HookSet, Runtime
 from avsectester.plane import Trace
 
 Result = TypeVar("Result")
-RuntimeFactory = Runtime | Callable[[WorldBackend], Runtime] | None
+RuntimeFactory = HookSet | Callable[[WorldBackend], HookSet] | None
 
 if TYPE_CHECKING:
     from avsectester.scenarios.source import ScenarioInstance
@@ -85,7 +85,7 @@ def _execute_runs(
             raise ValueError("frames must be a nonnegative integer")
         stack = stack_factory()
         for configured in configured_runtimes:
-            if isinstance(configured, Runtime):
+            if isinstance(configured, HookSet):
                 configured.validate_stages(backend, stack)
             elif configured is None:
                 Runtime().validate_stages(backend, stack)
@@ -98,7 +98,7 @@ def _execute_runs(
             runtime = configured(backend) if callable(configured) else configured
             if runtime is None:
                 runtime = Runtime()
-            if not isinstance(runtime, Runtime):
+            if not isinstance(runtime, HookSet):
                 raise TypeError("A runtime factory must return Runtime")
             runtime.validate_stages(backend, stack)
             runtimes.append(runtime)
@@ -170,24 +170,24 @@ def _run_prepared(
     if not configured or any(not isinstance(name, str) or not name for name in configured):
         raise ValueError("Provide at least one named treatment")
 
-    def adapt(runtime: Runtime | None) -> Runtime:
+    def adapt(runtime: HookSet | None) -> HookSet:
         runtime = runtime or Runtime()
-        if not isinstance(runtime, Runtime):
+        if not isinstance(runtime, HookSet):
             raise TypeError("A runtime factory must return Runtime")
         if runtime.case is None:
-            runtime = Runtime(runtime.hooks, localizer=runtime.localizer,
-                              seed=runtime.seed, case=scenario.match)
+            runtime = copy(runtime)
+            runtime.case = scenario.match
         return scenario.conditions.apply_runtime(runtime)
 
     effective: list[RuntimeFactory] = []
 
-    def adapt_factory(factory: Callable[[WorldBackend], Runtime]) -> Callable[[WorldBackend], Runtime]:
-        def build(backend: WorldBackend) -> Runtime:
+    def adapt_factory(factory: Callable[[WorldBackend], HookSet]) -> Callable[[WorldBackend], HookSet]:
+        def build(backend: WorldBackend) -> HookSet:
             return adapt(factory(backend))
         return build
 
     for runtime in configured.values():
-        if runtime is None or isinstance(runtime, Runtime):
+        if runtime is None or isinstance(runtime, HookSet):
             effective.append(adapt(runtime))
         elif callable(runtime):
             effective.append(adapt_factory(runtime))

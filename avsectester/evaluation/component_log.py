@@ -16,11 +16,10 @@ how it ripples forward — which needs no ground truth.
 from __future__ import annotations
 
 from collections.abc import Callable
-from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from avsectester.backend import run as _run_loop
+from avsectester.closed_loop import ClosedLoopRunner, RunRequest, trace_from_log
 
 if TYPE_CHECKING:
     from avsectester.backend import AVStack, WorldBackend
@@ -117,14 +116,11 @@ def run_logged(
     """Drive the scenario like :func:`avsectester.backend.run`, additionally collecting the stack's
     ``component_log()`` each frame. Returns the driving :class:`Trace` and the :class:`ComponentTrace`
     (empty when the stack is not instrumented, so the call site is uniform)."""
-    component = ComponentTrace()
-    instrumented = isinstance(stack, InstrumentedStack)
-
-    def _capture(i: int, seen: Observation, control: Any) -> None:
-        if instrumented:
-            # Tracks, plans and their reference frames are mutable across steps. Copy the
-            # complete output graph now, while preserving shared references within this step.
-            component.steps.append(StepLog(frame=i, stages=deepcopy(stack.component_log() or {})))
-
-    trace = _run_loop(backend, stack, frames, perturb=perturb, on_step=_capture, runtime=runtime)
-    return trace, component
+    log = ClosedLoopRunner().run(
+        backend, stack, RunRequest(frames, hooks=runtime), perturb=perturb,
+    )
+    component = ComponentTrace(
+        [StepLog(frame=record.step, stages=record.components) for record in log.steps]
+        if isinstance(stack, InstrumentedStack) else []
+    )
+    return trace_from_log(log), component

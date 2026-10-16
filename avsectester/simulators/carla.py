@@ -18,7 +18,7 @@ import logging
 import secrets
 import time
 from contextlib import ExitStack
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from copy import deepcopy
 from typing import Any
 
@@ -315,6 +315,8 @@ class CarlaBackend(WorldBackend):
         self._pair_scenario: dict | None = None
         self._in_setup = False
         self._setup_ticks_used = 0
+        self._capture: Observation | None = None
+        self._world_initialized = False
 
     @property
     def command_modes(self) -> frozenset[str]:
@@ -403,6 +405,12 @@ class CarlaBackend(WorldBackend):
         self.replay_scenario = None
 
     def reset(self) -> Observation:
+        """Compatibility entry point returning the first capture."""
+        self.reset_world()
+        return self.observe()
+
+    def reset_world(self, *, before_first_capture: Callable[[], None] | None = None) -> None:
+        """Initialize the native world and run deployment before the first sensor capture."""
         from avcarla.config import CARLA
 
         # Destroy old actors before reloading the world, including after partial setup failures.
@@ -447,20 +455,40 @@ class CarlaBackend(WorldBackend):
         self._setup_ticks_used = 0
         try:
             self._emit("world.setup", None)
+            if before_first_capture is not None:
+                before_first_capture()
             while self._setup_ticks_used < self.setup_ticks:
                 self.setup_tick()
         finally:
             self._in_setup = False
         self.client.tick()  # produce the first sensor frame (ego stationary until first control)
-        return self._observe()
+        self._capture = self._observe()
+        self._world_initialized = True
 
     def step(self, control: Control) -> Observation:
+        """Compatibility entry point advancing once and returning its capture."""
+        self.advance(control)
+        return self.observe()
+
+    def advance(self, control: Control) -> None:
+        """Apply a control and advance one native tick, capturing its sensors once."""
         self.validate_command(control)
+        if not self._world_initialized:
+            raise RuntimeError("Reset the CARLA backend before advancing")
+        self._world_initialized = False
+        self._capture = None
         self._emit("world.step.pre", None)
         self.ego.apply_control(control)  # decision from the AVStack. CARLA physics does the rest
         self.client.tick()
         self._emit("world.step.post", None)
-        return self._observe()
+        self._capture = self._observe()
+        self._world_initialized = True
+
+    def observe(self) -> Observation:
+        """Read the current capture without another native tick or sensor queue pop."""
+        if not self._world_initialized or self._capture is None:
+            raise RuntimeError("Reset the CARLA backend before observing")
+        return self.copy_observation(self._capture)
 
     def _observe(self) -> Observation:
         for _ in range(self.settle_iters):  # await asynchronous sensor delivery for this frame
@@ -554,3 +582,5 @@ class CarlaBackend(WorldBackend):
             self.npcs.clear()
             self._t0 = None
             self._in_setup = False
+            self._capture = None
+            self._world_initialized = False

@@ -35,6 +35,9 @@ class AlpamayoAVStack(AVStack):
         output_frequency_hz: int = 10,
         model: Any | None = None,
     ) -> None:
+        from avsectester.log_codecs import default_codecs
+        from avsectester.runlog import Recorder
+
         self.checkpoint_path = (
             checkpoint_path if checkpoint_path is not None
             else os.environ.get("AVSECTESTER_ALPAMAYO_CHECKPOINT")
@@ -50,6 +53,7 @@ class AlpamayoAVStack(AVStack):
         self._iseed = 0
         self.last_reasoning: str | None = None
         self._last_log: dict[str, Any] | None = None
+        self._log_capture = Recorder(codecs=default_codecs())
 
     @property
     def command_modes(self) -> frozenset[str]:
@@ -172,12 +176,13 @@ class AlpamayoAVStack(AVStack):
             self._load()
         inputs = self._emit("policy.pre", self._prediction_input(observation))
         prediction = self._emit("policy.post", self._model.predict(inputs))
+        policy_record = self._log_capture.capture(prediction)
         self._iseed += 1
         self._prev_plan = getattr(prediction, "selected_plan", None)
         self.last_reasoning = getattr(prediction, "reasoning_text", None)  # chain-of-causation text, if any
         control = Control(trajectory=self._to_waypoints(prediction, observation))
         # free end-to-end component log: what predict() already returns + the emitted command
-        self._last_log = {"policy": prediction, "action": control}
+        self._last_log = {"policy": policy_record, "action": self._log_capture.capture(control)}
         return control
 
     def component_log(self) -> dict[str, Any] | None:

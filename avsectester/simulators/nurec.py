@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from itertools import pairwise
@@ -175,6 +176,8 @@ class NuRecBackend(WorldBackend):
         self.pose = EgoPose()
         self.frame = 0
         self._render_requests: dict[str, RenderRequest] = {}
+        self._capture: Observation | None = None
+        self._world_initialized = False
 
     @property
     def supported_stages(self) -> frozenset[str]:
@@ -213,20 +216,51 @@ class NuRecBackend(WorldBackend):
         return WorldSnapshot(self.pose.t, self.frame, deepcopy(self.pose), self.pose.speed)
 
     def reset(self) -> Observation:
+        """Compatibility entry point returning the first capture."""
+        self.reset_world()
+        return self.observe()
+
+    def reset_world(self, *, before_first_capture: Callable[[], None] | None = None) -> None:
+        """Reset physical state, run initialization once, and capture without a driving step."""
+        self._world_initialized = False
+        self._capture = None
+        self._render_requests.clear()
         self.renderer.load_scene(self.config.get("scene"))
         self.pose = EgoPose(**self.config.get("ego0", {}))
         self.frame = 0
-        self._render_requests.clear()
         self._emit("world.setup", None)
-        return self._observe()
+        if before_first_capture is not None:
+            before_first_capture()
+        self._capture = self._observe()
+        self._world_initialized = True
 
     def step(self, control: Control) -> Observation:
+        """Compatibility entry point advancing once and returning the resulting capture."""
+        self.advance(control)
+        return self.observe()
+
+    def advance(self, control: Control) -> None:
+        """Advance the world once; capture once after world-step callbacks complete."""
         self.validate_command(control)
+        if not self._world_initialized:
+            raise RuntimeError("Reset the NuRec backend before advancing")
+        self._world_initialized = False
+        self._capture = None
+        self._render_requests.clear()
         self._emit("world.step.pre", None)
         self.pose = self.dynamics.step(self.pose, control, self.dt)  # shared physics, in-process
         self.frame += 1
         self._emit("world.step.post", None)
-        return self._observe()
+        self._capture = self._observe()
+        self._world_initialized = True
+
+    def observe(self) -> Observation:
+        """Read the current capture without advancing time or re-running render hooks."""
+        if not self._world_initialized:
+            raise RuntimeError("Reset the NuRec backend before observing")
+        if self._capture is None:  # restore invalidates a capture without advancing the world
+            self._capture = self._observe()
+        return self.copy_observation(self._capture)
 
     def _observe(self) -> Observation:
         from avsectester.runtime import RenderRequest
@@ -259,6 +293,8 @@ class NuRecBackend(WorldBackend):
         ))
 
     def close(self) -> None:
+        self._capture = None
+        self._world_initialized = False
         self.renderer.close()
 
     # -- checkpointing: the whole world state is a small picklable dict --------------------------
@@ -270,6 +306,8 @@ class NuRecBackend(WorldBackend):
         self.pose = EgoPose(**ckpt["pose"])
         self.frame = ckpt["frame"]
         self._render_requests.clear()
+        self._capture = None
+        self._world_initialized = True
 
 
 def _compose_pose(a, b, pb):

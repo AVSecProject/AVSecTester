@@ -60,7 +60,8 @@ image next to a `carlasim/carla:0.9.16` server container.
 The image contains a Python 3.11.13 environment installed with uv, PyTorch 2.1.0 for CUDA 12.1,
 torchvision 0.16.0, MMCV 2.1.0 with prebuilt CUDA operators, MMDetection 3.2.0, MMDetection3D
 1.4.0, the three avstack packages, the CARLA 0.9.16 Python client, `nuscenes-devkit`,
-`lyft-dataset-sdk` and AVSecTester with its `dev`, `viz` and `augment` extras. No host Python
+`lyft-dataset-sdk`, the pinned PyArrow dependency for Parquet logs, and AVSecTester with its
+`dev`, `viz` and `augment` extras. No host Python
 environment is needed. The image does not contain the AlpaSim driver environment, Alpamayo or the
 NuRec renderer client. Those use the [NuRec and Alpamayo environment](#nurec-and-alpamayo-environment).
 
@@ -153,7 +154,10 @@ then `conda activate avsec311`) or with an installed stable interpreter
 (`python3.11 -m venv .venv`). Then run the same `pip` commands. Check `python --version` in the
 active environment.
 
-The core dependencies are PyYAML, NumPy and Typer. `constraints.txt` keeps NumPy below 2. The CPU
+The core dependencies are PyYAML, NumPy, Typer and PyArrow. The exact PyArrow version is pinned in
+`pyproject.toml` and installed by the package commands above; it is imported when opening a
+persistent run log, so importing the driving interfaces does not load Arrow.
+`constraints.txt` keeps NumPy below 2. The CPU
 build of PyTorch is installed separately for the offline tests, so that no CUDA packages are
 downloaded. Optional extras add the following:
 
@@ -246,6 +250,22 @@ environment's interpreter.
    (`uv sync --package alpasim_driver` in the AlpaSim checkout). The environment uses Python 3.12
    and provides `alpasim_driver`, the Alpamayo model packages and the `alpasim_grpc` client
    stubs that `NuRecRenderer` imports.
+
+   Install AVSecTester's Parquet dependency into that interpreter. Run this from the AVSecTester
+   checkout; the command reads the same exact pin used by Docker and the Python 3.11 installations:
+
+   ```bash
+   cd /path/to/AVSecTester
+   arrow_requirement=$(/path/to/alpasim/.venv/bin/python -c \
+     'import tomllib; print(next(d for d in tomllib.load(open("pyproject.toml", "rb"))["project"]["dependencies"] if d.startswith("pyarrow==")))')
+   uv pip install --python /path/to/alpasim/.venv/bin/python "$arrow_requirement"
+   /path/to/alpasim/.venv/bin/python -c 'import pyarrow; import pyarrow.parquet; print(pyarrow.__version__)'
+   ```
+
+   Repeat this step after `uv sync`, which may remove dependencies outside AlpaSim's lockfile.
+   This installs PyArrow without installing AVSecTester's Python 3.11 package or changing the
+   driver's model dependencies.
+
 2. Download the Alpamayo weights into a directory of your choice:
 
    ```bash

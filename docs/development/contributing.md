@@ -98,8 +98,9 @@ NO_ALBUMENTATIONS_UPDATE=1 python -m pytest -q              # core and avstack g
 ```
 
 - Ruff selects only the `E9` and `F` rules. Formatting is not checked.
-- mypy checks the files listed in `pyproject.toml`: `plane.py`, `backend.py`, `runtime.py` and
-  `runner.py`. Imports outside these files are not followed.
+- mypy checks the data plane, backend, hooks, runner, simulator boundary, Vehicle I/O,
+  attack runtime, RunLog and adapter codecs listed in `pyproject.toml`.
+  Imports outside these files are not followed.
 - `python -m pytest` runs the `core` and `avstack` groups. The `avstack` group needs the avstack
   packages, installed as in [tests/README.md](../../tests/README.md#offline-avstack-tests).
 - Live tests need a CARLA server, models or datasets. Select them explicitly, for example with
@@ -122,8 +123,9 @@ The mounted checkout supplies the code. The image supplies the dependencies, so 
 they change.
 
 [CI](../../.github/workflows/ci.yml) runs on pull requests, pushes to `main` and manual dispatch,
-on Ubuntu 22.04 with Python 3.11. It runs three jobs: `core-tests`, `avstack-tests` and `lint`
-(Ruff 0.15.22 and mypy 1.20.2). CI installs CPU dependencies and does not use the Docker image.
+on Ubuntu 22.04. It runs four jobs: `core-tests`, `avstack-tests` and `lint` with Python 3.11,
+and `runlog-python312` for Parquet recording under the AlpaSim driver's interpreter version.
+Lint uses Ruff 0.15.22 and mypy 1.20.2. CI installs CPU dependencies and does not use the Docker image.
 Details are in [GitHub Actions](../../tests/README.md#github-actions).
 
 When you write tests:

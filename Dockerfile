@@ -10,6 +10,50 @@
 # OpenMMLab-official stack: torch 2.1.0+cu121, mmcv 2.1.0, mmdet 3.2.0, mmdet3d 1.4.0 — every version
 # cap is satisfied, so no source build and no cap patching. mmcv ships the CUDA ops (prebuilt wheel).
 FROM ghcr.io/astral-sh/uv:0.8.22 AS uv
+# AlpaSim's uv settings use a relative exclude-newer, which uv 0.8 cannot parse.
+FROM ghcr.io/astral-sh/uv:0.9.30 AS uv-nurec
+
+# NuRec + Alpamayo image. AlpaSim's driver requires Python 3.12, so it cannot share the Python 3.11
+# environment below. This target installs only the AlpaSim packages AVSecTester imports
+# (alpasim_driver with its model dependencies, and alpasim_grpc) plus the shared PyArrow pin.
+# AVSecTester itself is not installed: mount the checkout at /app and run from it.
+#   docker build --target nurec -t avsectester:nurec .
+# It is defined before the default stage, so `docker build .` and docker compose still build the
+# CARLA image. The same base and apt layer are shared with that image.
+FROM nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04 AS nurec
+
+COPY --from=uv-nurec /uv /usr/local/bin/uv
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      git build-essential ninja-build \
+      libgl1 libglib2.0-0 curl wget ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+# utils_rs, required by the driver through alpasim_utils[geometry], is a Rust extension built here.
+ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH="/opt/cargo/bin:${PATH}"
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+      | sh -s -- -y --profile minimal --default-toolchain 1.90.0
+
+ARG ALPASIM_COMMIT=affc2eab209fa43bdfa2f26c0f8d437922d78a68
+RUN git clone https://github.com/NVlabs/alpasim /opt/alpasim \
+ && git -C /opt/alpasim checkout --quiet "${ALPASIM_COMMIT}"
+WORKDIR /opt/alpasim
+ENV UV_PYTHON_INSTALL_DIR=/opt/python UV_LINK_MODE=copy UV_NO_CACHE=1
+RUN uv sync --python 3.12 --package alpasim_driver --no-dev \
+ && uv run --no-sync compile-protos
+ENV PATH="/opt/alpasim/.venv/bin:${PATH}"
+
+# The same exact PyArrow pin as the Python 3.11 image, read from pyproject.toml.
+COPY pyproject.toml /tmp/avsectester-pyproject.toml
+RUN arrow=$(python -c 'import tomllib; deps = tomllib.load(open("/tmp/avsectester-pyproject.toml", "rb"))["project"]["dependencies"]; print(next(d for d in deps if d.startswith("pyarrow==")))') \
+ && uv pip install --python /opt/alpasim/.venv/bin/python "$arrow" \
+ && python -c "import pyarrow.parquet, alpasim_grpc; from alpasim_driver.models.alpamayo1_5_model import Alpamayo15Model"
+
+WORKDIR /app
+ENV PYTHONPATH=/app
+CMD ["bash"]
+
 FROM nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
 
 COPY --from=uv /uv /usr/local/bin/uv
@@ -47,9 +91,11 @@ RUN python -m pip install --no-cache-dir -e third_party/avstack-core -c constrai
  && python -m pip install --no-cache-dir -e third_party/avstack-api  --no-deps \
  && python -m pip install --no-cache-dir -e third_party/lib-avstack-carla --no-deps \
  && python -m pip install --no-cache-dir "carla==0.9.16" pygame ipywidgets nuscenes-devkit lyft-dataset-sdk==0.0.8 -c constraints.txt
-# 5. AVSecTester (+ viz extra for the --plot driving-impact figure, augment for the corruption backend)
+# 5. AVSecTester (includes the pinned Parquet dependency from pyproject.toml;
+# viz adds the --plot driving-impact figure, augment adds the corruption backend).
 # Torch 2.1 and MMEngine use pkg_resources, which newer setuptools versions remove.
-RUN python -m pip install --no-cache-dir -e ".[dev,viz,augment]" "setuptools==69.5.1"
+RUN python -m pip install --no-cache-dir -e ".[dev,viz,augment]" "setuptools==69.5.1" \
+ && python -c "import pyarrow.parquet"
 
 # default to a shell — run attacks/recordings explicitly (see docs/getting-started/installation.md#docker / docker-compose.yml)
 CMD ["bash"]

@@ -29,7 +29,7 @@ adapter-specific types.
 | `StateEstimate` | `StateEstimate(vehicle_state: Any = None, ego_speed: float = 0.0)` | Localization output. Its fields replace the observation's state before the `observation` stage |
 | `FrameRecord` | `FrameRecord(frame: int = 0, t: float = 0.0, n_detections: int = 0, speed: float = 0.0, throttle: float = 0.0, brake: float = 0.0, steer: float = 0.0)` | One driving step. `frame` is the zero-based driving-step index. `t` and `speed` are the physical time and speed after the step. The actuator fields are the executed command. `n_detections` is optional stack telemetry |
 | `InterventionOutput` | `InterventionOutput(name: str, value: Any, step: int, stage: str, frame: int, t: float, sensor: str \| None = None)` | Frozen. A value recorded by `context.record_output`. `step` is the driving-step index. `frame` and `t` describe the physical world at the callback |
-| `Trace` | `Trace(records: list[FrameRecord] = [], replay_scenario: dict \| None = None, outputs: list[InterventionOutput] = [], provenance: dict[str, Any] = {})` | The run records of one run |
+| `Trace` | `Trace(records: list[FrameRecord] = [], replay_scenario: dict \| None = None, outputs: list[InterventionOutput] = [], provenance: dict[str, Any] = {}, run_log: Any = None)` | Compatibility view of one run; `run_log` references the captured RunLog on shared-runner results |
 
 | Member | Returns or does |
 |---|---|
@@ -38,6 +38,7 @@ adapter-specific types.
 | `Trace.peak_speed` | Highest recorded speed, or `0.0` |
 | `Trace.braking_frames` | Number of records with `throttle == 0.0` and `brake > 0.0` |
 | `Trace.mean_detections` | Mean `n_detections` over the records |
+| `Trace.run_log` | Source `RunLog` when returned by the shared runner; `None` by default for manually constructed traces |
 
 `record_run(..., collect=True)` also sets a `frames` attribute on the returned `Trace`. Reading
 records, outputs and provenance is described in
@@ -96,6 +97,100 @@ class CommandCompatibilityError(ValueError): ...
 `validate_command_compatibility` raises `CommandCompatibilityError` when the stack declares a
 mode the backend does not accept. It skips the check when either side is undeclared or `runtime`
 has a `command` hook. The rules are in [Command compatibility](runtime.md#command-compatibility).
+
+### Separated simulator operations
+
+`avsectester.simulator_runtime.SimulatorRuntime(backend: WorldBackend)` borrows the backend's
+existing world. CARLA and NuRec implement the separated operations natively; older backends are
+bridged by caching the observations returned from their existing `reset`/`step` methods.
+
+| Member | Returns or does |
+|---|---|
+| `backend` | Borrowed `WorldBackend`; it remains caller-owned |
+| `reset(source: Any = None, initialization: Any = None, *, before_first_capture: Callable[[], None] \| None = None) -> None` | Resets the configured world. Non-`None` source/initialization values are not supported in this phase |
+| `supports_before_first_capture` | Whether the adapter supports the callback before its first capture. Legacy reset overrides without a migrated primary method remain on the compatibility path |
+| `clock` | Frozen `ClockSnapshot(t: float, frame: int)` using physical simulator time/frame |
+| `state() -> WorldSnapshot` | Independent physical state, without advancing time |
+| `observe() -> Observation` | Independent view of the current capture, without a tick or repeated render hooks |
+| `step(command: Control) -> None` | Advances once and retains the resulting capture |
+| `close() -> None` | Releases bridge-held data; does not close the borrowed backend |
+
+Call `reset` before observing or stepping. Unsupported pre-capture callbacks fail explicitly.
+NuRec checkpoint restoration invalidates its capture; the next observation renders the restored
+state without advancing it. The built-in backends retain their old `reset/step -> Observation`
+interfaces for existing callers.
+
+### Closed-loop requests
+
+`avsectester.closed_loop` provides the shared scheduler and direct-run configuration:
+
+```python
+@dataclass(frozen=True)
+class RecordingPolicy:
+    sensor_ids: tuple[str, ...] = ()
+    representations: tuple[str, ...] = ("model_input",)
+    every_n_steps: int = 1
+
+@dataclass(frozen=True)
+class RunRequest:
+    decision_steps: int
+    hooks: HookSet | None = None
+    attacks: Sequence[Any] = ()
+    recording: RecordingPolicy = field(default_factory=RecordingPolicy)
+    output_path: str | Path | None = None
+    retain_steps: bool = True
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+    source: Any = None
+    initialization: Any = None
+
+class ClosedLoopRunner:
+    def run(
+        self,
+        simulator: SimulatorRuntime | WorldBackend,
+        driving_system: AVStack,
+        request: RunRequest,
+        *,
+        recorder: Recorder | None = None,
+        perturb: Callable[[Observation], Observation] | None = None,
+        on_step: Callable[[int, Observation, Control], None] | None = None,
+        record_views: Mapping[str, Callable[[Observation], Any]] | None = None,
+        view_sink: Callable[[int, str, Any], Any] | None = None,
+    ) -> RunLog: ...
+
+def trace_from_log(log: RunLog) -> Trace: ...
+```
+
+`decision_steps` must be a nonnegative integer. `hooks` accepts `HookSet` (and its `Runtime`
+compatibility name). `attacks` supplies already-created online `AttackRuntime` instances. The
+runner owns the per-run lifecycle, while simulator and driving-system instances remain
+caller-owned. It checks stages/command compatibility, transforms the first input once, resets
+driving history with that same input and records each completed decision.
+
+`RecordingPolicy` selects named sensors and `"raw"`/`"model_input"` representations. It records
+those payloads every `every_n_steps`, starting at decision 0; commands, state and available
+component outputs are recorded every decision. No sensor payload is selected by default. The
+interval must be a positive integer; unknown requested sensors fail at capture.
+
+`output_path` enables Parquet persistence. `retain_steps=False` requires an output path and leaves
+returned `RunLog.steps` and `events` empty; use the path for analysis. The default `True` keeps
+in-memory records, including when a path is supplied. Passing an explicit `recorder` makes that
+recorder's path, retention, codecs and metadata authoritative. The default recorder uses
+`avsectester.log_codecs.default_codecs()`.
+
+`record_views` supplies named functions of the processed input. A `view_sink`, when supplied,
+receives `(step, name, captured_view)` and returns the reference stored in the log. `on_step`
+receives independent input/command copies before actuation. Failures preserve the original
+exception and attach the partial `run_log` when possible; failure/cancellation is recorded.
+
+`trace_from_log` derives `FrameRecord` values from physical post-state and executed commands,
+and gathers recorded intervention outputs. It uses retained records; for a streamed run, first
+call `RunLog.read(path, load_payloads=False)` or analyze selected columns directly. See
+[Run logs and saved results](../guides/evaluation.md#run-logs-and-saved-results).
+
+**Not yet implemented.** The phase-2 Dataset/SourceData services and candidate rollout types,
+and the phase-3 complete attack selection/preparation and experiment interfaces, are not exposed
+by this direct-run API. Leave `source` and `initialization` as `None`; use existing configured
+backend/stack instances and preparation entry points during migration.
 
 ### Run functions
 
@@ -195,8 +290,8 @@ def run_scenario_pair(
   intervention hooks, and no intervention is prepared.
 - A pair with treatment `attack` and no attack hooks runs as a baseline comparison.
 
-`run_scenario` and `run_scenario_pair` fill `FrameRecord.n_detections` from the perception
-component and set `Trace.replay_scenario`. See
+The shared loop fills `FrameRecord.n_detections` when a perception component output is available.
+`run_scenario` and `run_scenario_pair` also set `Trace.replay_scenario`. See
 [Python entry points](../guides/simulators.md#python-entry-points).
 
 ```python
@@ -265,6 +360,119 @@ How to read these records is described in
 `component_log()`, and `ModularAVStack.instrument(stages=("perception", "tracking", "planning",
 "control"))` selects the captured stages. See
 [Component logging interface](../guides/driving-systems.md#component-logging-interface).
+
+## RunLog and recording
+
+`avsectester.runlog` captures independent snapshots and optionally writes incremental Parquet
+records. Sensor arrays and byte payloads are stored in separate bounded shards.
+
+| Record | Fields |
+|---|---|
+| `StepRecord` | Required `step`; optional `raw_observation`, `model_observation`, `physical_pre`, `physical_post`, `produced_command`, `executed_command`; dictionaries `components`, `telemetry`; lists `actions`, `outputs` |
+| `EventRecord` | Required `kind`; optional `step=None`; `data={}` |
+| `RunLog` | `metadata={}`, `steps=[]`, `events=[]`, `status="incomplete"`, `path=None` |
+
+`StepRecord.step` is a decision index. Each observation/state carries its own frame and time, so
+the physical post-state is not confused with the preceding model input. Missing component data
+remain missing; the recorder does not trigger inference to produce them.
+
+```python
+class Recorder:
+    def __init__(
+        self,
+        path: str | Path | None = None,
+        *,
+        metadata: dict[str, Any] | None = None,
+        codecs: CodecRegistry | None = None,
+        chunk_steps: int = 128,
+        chunk_bytes: int = 8 * 1024 * 1024,
+        payload_shard_bytes: int = 64 * 1024 * 1024,
+        retain_steps: bool = True,
+    ) -> None: ...
+
+class RunLog:
+    @classmethod
+    def read(
+        cls,
+        path: str | Path,
+        *,
+        codecs: CodecRegistry | None = None,
+        load_payloads: bool = True,
+    ) -> RunLog: ...
+
+def read_table(
+    path: str | Path,
+    columns: Sequence[str] | None = None,
+    *,
+    stream: str = "steps",
+) -> Any: ...  # pyarrow.Table
+```
+
+| Recorder member | Behavior |
+|---|---|
+| `log` | Current `RunLog` with path, status and retained records |
+| `capture(value: Any) -> Any` | Static method. Snapshots mutable data immediately; tensor values are detached |
+| `record_step(record: StepRecord) -> StepRecord` | Snapshots and writes one record; decision indices must be nonnegative and strictly increasing |
+| `record_event(kind: str, *, step: int \| None = None, **data) -> EventRecord` | Snapshots an initialization, termination or other event |
+| `flush() -> None` | Publishes current chunks without marking the run complete |
+| `finish(status="completed", **details) -> RunLog` | Records termination, publishes pending chunks and writes final metadata; accepts `completed`, `failed` or `cancelled` |
+| `abort() -> None` | Discards unpublished chunks; completed parts remain readable with incomplete status |
+| Context manager | Finishes on normal exit; records failure/cancellation on exceptional exit |
+
+The output directory must be empty or absent. Set `retain_steps=False` with a path to avoid
+retaining the full run: both `log.steps` and `log.events` remain empty. Retention defaults to
+`True` for compatibility. Chunk limits bound buffered disk records and shard sizes, not the size
+of a single input value supplied to `capture`. Neither recorder cleanup nor runner cleanup closes
+caller-owned simulator/model resources.
+
+`read_table` returns selected top-level columns with typed struct/list values and disk payload
+references; it does not decode native objects or load payload bytes. `stream` is `"steps"` or
+`"events"`. Unknown columns raise `ValueError`. `RunLog.read` reconstructs core plane records and,
+by default, loads arrays. With `load_payloads=False`, arrays/bytes remain reference dictionaries
+with shard chunks and array dtype/shape where applicable. It still loads all published records
+into memory. Both readers ignore unpublished `.open` files and reject unknown schema versions.
+
+This executable example records and reads data without a simulator:
+
+<!-- runnable -->
+```python
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from avsectester.closed_loop import trace_from_log
+from avsectester.log_codecs import default_codecs
+from avsectester.plane import Control, WorldSnapshot
+from avsectester.runlog import Recorder, RunLog, StepRecord, read_table
+
+with TemporaryDirectory() as directory:
+    path = Path(directory) / "run"
+    with Recorder(path, codecs=default_codecs(), retain_steps=False, chunk_steps=1) as recorder:
+        recorder.record_step(StepRecord(
+            step=0,
+            physical_post=WorldSnapshot(t=0.1, frame=1, ego_speed=2.0),
+            executed_command=Control(throttle=0.5),
+        ))
+    assert recorder.log.steps == [] and recorder.log.status == "completed"
+    assert read_table(path, columns=["step"]).num_rows == 1
+    restored = RunLog.read(path, load_payloads=False)
+    assert trace_from_log(restored).final_speed == 2.0
+```
+
+### Native adapter codecs
+
+`avsectester.log_codecs.default_codecs() -> CodecRegistry` creates lazy, data-only encoders for
+supported Modular and Alpamayo outputs. Registry creation does not import AVStack, AlpaSim,
+Torch or simulators; types are registered from adapter modules when those modules become loaded.
+The default runner installs this registry. A directly constructed `Recorder` uses an empty
+registry unless `codecs` is supplied.
+
+Register additional native values with
+`CodecRegistry.register(native_type, encode, *, name=None, decode=None) -> CodecRegistry`.
+Encoders return plain data, core records or arrays. Unknown native objects raise `TypeError`
+during persistence instead of being pickled or stringified. Stable codec names identify their
+representation. A decoder is optional; default native codecs deliberately decode to ordinary
+data, allowing offline analysis without importing native model classes. In-memory snapshots
+retain their native types. Custom native-object metrics must account for this distinction.
 
 ## Runtime
 
@@ -1816,9 +2024,10 @@ class ComponentTrace:
     def performance(self, stage: str, truths: list[Any], assign_radius: float = 4.0) -> list[Any]: ...
 ```
 
-`run_logged` runs the same loop as `run` and, for a stack implementing `InstrumentedStack`,
-deep-copies `component_log()` into a `StepLog` at every driving step. Otherwise the
-`ComponentTrace` is empty. The caller owns the backend. `StepLog.frame` is the driving-step index.
+`run_logged` uses `ClosedLoopRunner` and returns compatibility views of the captured RunLog.
+For a stack implementing `InstrumentedStack`, each `StepLog` reads the corresponding record's
+snapshotted `components`; no second collector or inference runs. Otherwise the `ComponentTrace`
+is empty. The caller owns the backend. `StepLog.frame` is the driving-step index.
 The `ComponentTrace` methods and timing rules are described in
 [Component outputs](../guides/evaluation.md#component-outputs).
 
@@ -1898,7 +2107,11 @@ The clean-versus-treated figure is `metric.plot_impact`, listed under
 |---|---|---|
 | `avsectester.plane` | `Observation`, `Control`, `WorldSnapshot`, `StateEstimate`, `FrameRecord`, `InterventionOutput`, `Trace` | [Driving traces](../guides/evaluation.md#driving-traces) |
 | `avsectester.backend` | `WorldBackend`, `AVStack`, `run`, command validation | [Write a custom simulator adapter](../guides/simulators.md#write-a-custom-simulator-adapter), [Use a custom driving system](../guides/driving-systems.md#use-a-custom-driving-system) |
-| `avsectester.runtime` | `Runtime`, `Hook`, `Plugin`, `RunContext`, `StageContext`, `CallInputs`, `RenderRequest`, `RuntimeSession` | [Runtime reference](runtime.md) |
+| `avsectester.simulator_runtime` | `SimulatorRuntime`, `ClockSnapshot` | [Separated simulator operations](#separated-simulator-operations) |
+| `avsectester.closed_loop` | `ClosedLoopRunner`, `RunRequest`, `RecordingPolicy`, `trace_from_log` | [Run logs and saved results](../guides/evaluation.md#run-logs-and-saved-results) |
+| `avsectester.runlog` | `RunLog`, `StepRecord`, `EventRecord`, `Recorder`, `CodecRegistry`, `read_table` | [RunLog and recording](#runlog-and-recording) |
+| `avsectester.log_codecs` | `default_codecs` | [Native adapter codecs](#native-adapter-codecs) |
+| `avsectester.runtime` | `HookSet`, `Runtime`, `Hook`, `Plugin`, `RunContext`, `StageContext`, `CallInputs`, `RenderRequest`, `RuntimeSession` | [Runtime reference](runtime.md) |
 | `avsectester.interventions` | `ObservationTransform`, `NativeHook`, `NativeHookIntervention`, configuration helpers | [Package the attack as an intervention](../guides/attacks.md#package-the-attack-as-an-intervention) |
 | `avsectester.preparation` | `Intervention`, `PreparedIntervention`, `prepare_intervention`, `Treatment` | [Package the attack as an intervention](../guides/attacks.md#package-the-attack-as-an-intervention) |
 | `avsectester.runner` | `run_pair`, `run_prepared` | [Custom treatments](../guides/experiments.md#custom-treatments), [Direct runs](../guides/experiments.md#direct-runs-and-resource-ownership) |
