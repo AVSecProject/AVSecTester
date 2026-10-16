@@ -1,0 +1,52 @@
+# Blackwell (RTX 50xx / RTX PRO 6000 Blackwell, sm_120) variant of Dockerfile: same OpenMMLab stack
+# (mmcv 2.1.0 / mmdet 3.2.0 / mmdet3d 1.4.0, numpy 1.26.4, CARLA 0.9.16 client) on torch 2.7.1+cu128,
+# since the cu121 wheels in Dockerfile carry no sm_120 kernels. mmcv has no prebuilt wheel for
+# torch 2.7, so its CUDA ops are compiled from source here.
+#
+# Used by docker-compose.override.yml:
+#   docker compose up -d --build
+FROM pytorch/pytorch:2.7.1-cuda12.8-cudnn9-devel
+
+ENV DEBIAN_FRONTEND=noninteractive PIP_DISABLE_PIP_VERSION_CHECK=1 TORCH_CUDA_ARCH_LIST=12.0 MMCV_WITH_OPS=1 FORCE_CUDA=1 MAX_JOBS=8
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      git build-essential ninja-build libgl1 libglib2.0-0 curl wget ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+# 1. build prerequisites; the base image already ships torch 2.7.1 + torchvision 0.22.1 (cu128)
+RUN python -m pip install --no-cache-dir --upgrade pip "setuptools<81" \
+ && python -m pip install --no-cache-dir \
+      "numpy==1.26.4" "opencv-python<4.12" "mmengine>=0.10,<1" \
+      addict packaging Pillow pyyaml "yapf==0.40.1" ninja psutil \
+ && python -c 'import sys, torch; assert sys.version_info[:2] == (3, 11), sys.version; assert torch.__version__.startswith("2.7.1"), torch.__version__'
+# 2. mmcv 2.1.0 from source (compiles the CUDA ops for sm_120)
+RUN git clone --depth 1 --branch v2.1.0 https://github.com/open-mmlab/mmcv.git /tmp/mmcv \
+ && python -m pip install --no-cache-dir --no-build-isolation -v /tmp/mmcv \
+ && rm -rf /tmp/mmcv \
+ && python -c 'import mmcv, mmcv.ops; assert mmcv.__version__ == "2.1.0", mmcv.__version__'
+# 3. mmdet 3.2.0 + mmdet3d 1.4.0; keep numpy<2 (deps may pull numpy>=2)
+RUN python -m pip install --no-cache-dir --no-deps mmdet==3.2.0 mmdet3d==1.4.0 \
+ && python -m pip install --no-cache-dir \
+      "numpy==1.26.4" "scikit-image>=0.21,<0.24" "pandas>=2,<3" \
+      pycocotools terminaltables "plyfile<1.1.5" \
+      trimesh tensorboard networkx
+
+WORKDIR /app
+COPY . /app
+# name-shim symlinks avcarla's metadata expects (avstack-core/api are our submodule names)
+RUN ln -sf avstack-core third_party/lib-avstack-core \
+ && ln -sf avstack-api third_party/lib-avstack-api
+
+# 4. avstack packages + CARLA 0.9.16 client + AVSecTester
+RUN python -m pip install --no-cache-dir -e third_party/avstack-core -c constraints.txt \
+ && python -m pip install --no-cache-dir -e third_party/avstack-api --no-deps \
+ && python -m pip install --no-cache-dir -e third_party/lib-avstack-carla --no-deps \
+ && python -m pip install --no-cache-dir \
+      "carla==0.9.16" pygame ipywidgets "nuscenes-devkit==1.2.0" \
+      lyft-dataset-sdk "tabulate~=0.9.0" \
+      -c constraints.txt \
+ && python -m pip install --no-cache-dir -e ".[dev,viz,augment]"
+
+# the CARLA-trained checkpoints are full pickles; torch>=2.6 defaults torch.load to weights_only=True
+ENV TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1
+
+CMD ["bash"]

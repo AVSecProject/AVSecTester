@@ -40,6 +40,35 @@ def _register_avstack_modules() -> None:
     import avsectester.attacks.pipeline.phantom  # noqa: F401  (registers PhantomInjection in avstack HOOKS)
 
 
+def _register_carla_dataset(pipeline_cfg: dict) -> None:
+    """Provide the CARLA dataset metadata class missing from the mmdet3d wheel.
+
+    AVStack's CARLA checkpoints were trained with a patched mmdet3d tree whose
+    ``CarlaDataset`` only matters during inference so ``init_model`` can recover
+    class metadata from the config.  The published mmdet3d 1.4 wheel does not
+    include that class, while its generic ``Det3DDataset`` supplies all behavior
+    needed by the lazy metadata-only instance.
+    """
+    perception = pipeline_cfg.get("perception", {})
+    if not (
+        perception.get("type") == "MMDetObjectDetector3D"
+        and str(perception.get("dataset", "")).startswith("carla-")
+    ):
+        return
+
+    from mmdet3d.datasets import Det3DDataset
+    from mmdet3d.registry import DATASETS
+
+    if DATASETS.get("CarlaDataset") is None:
+
+        @DATASETS.register_module()
+        class CarlaDataset(Det3DDataset):
+            METAINFO = {
+                "classes": ("car", "bicycle", "truck", "motorcycle"),
+                "version": "v1.0-trainval",
+            }
+
+
 class ModularAVStack(AVStack):
     """An :class:`~avsectester.backend.AVStack` backed by an avstack ``ModularDrivingPipeline``.
 
@@ -54,6 +83,7 @@ class ModularAVStack(AVStack):
 
     def __init__(self, pipeline_cfg: dict) -> None:
         _register_avstack_modules()
+        _register_carla_dataset(pipeline_cfg)
         from avstack.config import PIPELINE
 
         self.pipeline = PIPELINE.build(deepcopy(pipeline_cfg))

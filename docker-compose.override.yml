@@ -1,0 +1,29 @@
+# Per-user overlay for sapphire2 (2x RTX PRO 6000 Blackwell, shared docker daemon). Compose merges
+# this file over docker-compose.yml automatically, so the usual commands work unchanged:
+#   docker compose up -d --build
+#   docker compose exec avsectester avsectester run configs/carla_scenario.yaml --frames 40
+#
+# - own project name + image tag, so we never touch other users' avsectester containers/images
+# - Dockerfile.blackwell (torch 2.7.1+cu128) instead of the cu121 Dockerfile
+# - runtime: nvidia is explicit (the daemon's default runtime here is runc)
+# - the box has GPUs 0 and 1 only: CARLA on 0, AVSecTester on 1
+name: avsectester-zhangz42
+
+services:
+  carla:
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=0
+
+  avsectester:
+    build:
+      context: .
+      dockerfile: Dockerfile.blackwell
+    image: avsectester:zhangz42
+    runtime: nvidia
+    # compose's entrypoint override drops the image CMD, so `exec "$@"` would get nothing and exit
+    command: ["bash"]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=1
+    volumes:
+      - ./results:/app/results        # --plot output lands on the host
