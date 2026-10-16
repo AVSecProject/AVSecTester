@@ -107,6 +107,8 @@ files = [
     "avsectester/runner.py", "avsectester/closed_loop.py", "avsectester/attack_runtime.py",
     "avsectester/simulator_runtime.py", "avsectester/vehicle_io.py",
     "avsectester/runlog.py", "avsectester/log_codecs.py",
+    "avsectester/datasets/base.py", "avsectester/reference.py",
+    "avsectester/services.py", "avsectester/resources.py", "avsectester/capture.py",
 ]
 python_version = "3.11"
 follow_imports = "skip"

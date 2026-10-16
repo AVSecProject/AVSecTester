@@ -7,11 +7,13 @@ resources. Old custom backends are supported by caching the captures returned by
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Protocol, cast
+from typing import Any
 
 from .backend import WorldBackend
+from .capture import CaptureBackend, DeploymentPlan
 from .plane import Control, Observation, WorldSnapshot
 
 
@@ -23,55 +25,35 @@ class ClockSnapshot:
     frame: int
 
 
-class _SeparatedBackend(Protocol):
-    """Operations checked by the legacy migration bridge before native dispatch."""
-
-    def reset_world(self, *, before_first_capture: Callable[[], None] | None = None) -> None: ...
-
-    def observe(self) -> Observation: ...
-
-    def advance(self, command: Control) -> None: ...
-
-
-def _owner(backend: WorldBackend, name: str) -> type | None:
-    """Find the implementation owner, preserving legacy subclass overrides."""
-    if name in vars(backend):
-        return None
-    return next((cls for cls in type(backend).__mro__ if name in vars(cls)), None)
-
-
-def _migrated(backend: WorldBackend, old: str, new: str) -> bool:
-    legacy_owner, primary_owner = _owner(backend, old), _owner(backend, new)
-    if legacy_owner is None or primary_owner is None:
-        return False
-    hierarchy = type(backend).__mro__
-    return (
-        callable(getattr(backend, new, None))
-        and hierarchy.index(primary_owner) <= hierarchy.index(legacy_owner)
-    )
-
-
 class SimulatorRuntime:
     """Expose separated operations while borrowing a caller-owned ``WorldBackend``.
 
-    A legacy subclass that overrides reset/step without migrating their separated counterparts
-    stays on the compatibility path. In particular, additional setup performed by an old reset
-    override must not be silently skipped. Such adapters cannot promise a pre-capture callback.
+    CaptureBackend implementations share the capture lifecycle. Other WorldBackend
+    implementations use the compatibility bridge, including their reset/step overrides.
     """
 
-    def __init__(self, backend: WorldBackend) -> None:
+    def __init__(self, backend: WorldBackend, *, resource_owner: object | None = None) -> None:
         self.backend = backend
-        self._native = all(
-            _migrated(backend, old, new)
-            for old, new in (("reset", "reset_world"), ("step", "advance"))
-        ) and callable(getattr(backend, "observe", None))
+        self._native = isinstance(backend, CaptureBackend)
         self._capture: Observation | None = None
         self._ready = False
         self._initializing = False
+        self._resource_owner = resource_owner if resource_owner is not None else self
+        self._active = False
 
-    @property
-    def supports_before_first_capture(self) -> bool:
-        return self._native
+    @contextmanager
+    def exclusive(self) -> Iterator[None]:
+        """Reserve this world for a run; nested independent runs are never allowed."""
+        from .resources import backend_key, reserve
+
+        if self._active:
+            raise RuntimeError("SimulatorRuntime already has an active operation")
+        with reserve(backend_key(self.backend), self._resource_owner):
+            self._active = True
+            try:
+                yield
+            finally:
+                self._active = False
 
     @property
     def clock(self) -> ClockSnapshot:
@@ -84,36 +66,27 @@ class SimulatorRuntime:
             raise RuntimeError("Reset the simulator before requesting its state")
         return self.backend.ground_truth()
 
-    def reset(
-        self,
-        source: Any = None,
-        initialization: Any = None,
-        *,
-        before_first_capture: Callable[[], None] | None = None,
-    ) -> None:
-        """Initialize the existing configured world and capture its first observation.
+    def reset(self, source: Any = None, initialization: Any = None, *,
+              deployment: DeploymentPlan | None = None, environment: Any = None) -> None:
+        """Source-aware capture backends use one path; legacy worlds retain reset/step."""
+        if source is not None:
+            from .datasets.base import SourceData
 
-        SourceData/initialization-plan translation belongs to the next migration phase; reject
-        it explicitly here rather than silently ignoring it. A legacy backend cannot run a
-        callback after reset and present it as a before-capture deployment.
-        """
-        if source is not None or initialization is not None:
-            raise NotImplementedError("SourceData and initialization plans are not supported yet")
-        if before_first_capture is not None and not self.supports_before_first_capture:
-            raise NotImplementedError(
-                "This legacy backend does not support a before-first-capture callback"
-            )
+            if not isinstance(source, SourceData):
+                raise TypeError("Simulator reset requires SourceData, never selection metadata")
+        elif initialization is not None:
+            raise ValueError("An initialization plan requires SourceData")
         self._ready = False
         self._capture = None
         self._initializing = True
         try:
-            if self._native:
-                cast(_SeparatedBackend, self.backend).reset_world(
-                    before_first_capture=before_first_capture,
-                )
+            if isinstance(self.backend, CaptureBackend):
+                self.backend.reset_world(source, initialization, deployment=deployment,
+                                         environment=environment)
             else:
-                capture = self.backend.reset()
-                self._remember(capture)
+                if source is not None or initialization is not None or deployment is not None or environment:
+                    raise NotImplementedError("Legacy backend does not support SourceData initialization")
+                self._remember(self.backend.reset())
             self._ready = True
         finally:
             self._initializing = False
@@ -122,8 +95,8 @@ class SimulatorRuntime:
         """Return an independent view of the current capture; never advance or recapture."""
         if not self._ready:
             raise RuntimeError("Reset the simulator before requesting an observation")
-        if self._native:
-            return cast(_SeparatedBackend, self.backend).observe()
+        if isinstance(self.backend, CaptureBackend):
+            return self.backend.observe()
         assert self._capture is not None
         return self.backend.copy_observation(self._capture)
 
@@ -134,8 +107,8 @@ class SimulatorRuntime:
         self.backend.validate_command(command)
         # A failed advance must not leave a stale observation available as a successful result.
         self._ready = False
-        if self._native:
-            cast(_SeparatedBackend, self.backend).advance(command)
+        if isinstance(self.backend, CaptureBackend):
+            self.backend.advance(command)
         else:
             self._capture = None
             self._remember(self.backend.step(command))

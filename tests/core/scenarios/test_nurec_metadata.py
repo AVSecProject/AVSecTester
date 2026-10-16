@@ -59,6 +59,8 @@ def recorded_dataset(tmp_path):
         archive.writestr("rig_trajectories.json", json.dumps(rig))
         archive.writestr("sequence_tracks.json", json.dumps(tracks))
         archive.writestr("extra.json", '{"user_data": true}')
+    # The default 0.1 s decision timeline differs from these 0.25 s camera frames, so legacy
+    # keyframe tests prove that the compatibility API stays on recorded camera frames.
     return NuRecDataset([str(path)], keyframe=0), str(path)
 
 
@@ -160,7 +162,8 @@ def test_runtime_adapter_uses_scene_time_stable_alias_and_current_ego(recorded_d
         AttachedPlacement("hosts[0]", "rear_center"),
         Orientation("follow_host", (0, 0, 180)),
     )
-    adapter = dataset.insertion_renderer(scene, backend, [item], bindings={"hosts": ("host",)})
+    from avsectester.simulators.nurec import NuRecBackend
+    adapter = NuRecBackend._insertion_renderer(backend, scene, dataset, [item], bindings={"hosts": ("host",)})
     # A localization/time attack must not move the actual camera or metadata actors.
     obs = Observation(10.0, 99, vehicle_state=EgoPose(100, -100, 2.0, t=10.0))
     actors, victim, transform = adapter.geometry(obs)
@@ -233,7 +236,7 @@ def test_insertion_pipeline_survives_backend_reset_and_drives_from_modified_inpu
     assert adapter.evidence["patch"].visibility.source == "cuboid_estimate"
 
 
-def test_pair_registers_insertion_before_render_service_loads(recorded_dataset):
+def test_pair_registers_insertion_before_render_service_loads(recorded_dataset, monkeypatch):
     from avsectester.backend import AVStack
     from avsectester.insertion import AttachedPlacement, Insertion, Orientation, PlaneAsset
     from avsectester.interventions import ObservationTransform
@@ -246,6 +249,14 @@ def test_pair_registers_insertion_before_render_service_loads(recorded_dataset):
 
     dataset, _ = recorded_dataset
     scene = next(dataset.scenes())
+    from avsectester.datasets.nurec import NuRecDataset as SourceDataset
+
+    archive_reads = []
+    open_archive = SourceDataset.open_archive
+    def counted_archive(path):
+        archive_reads.append(path)
+        return open_archive(path)
+    monkeypatch.setattr(SourceDataset, "open_archive", staticmethod(counted_archive))
     camera_to_rig = np.asarray(scene.cameras[dataset.camera].cam_to_ego)
 
     class Renderer(StubRenderer):
@@ -305,6 +316,7 @@ def test_pair_registers_insertion_before_render_service_loads(recorded_dataset):
     assert [record.throttle for record in attacked.records] == [1, 1]
     assert adapters[0].camera is renderer.lens
     assert adapters[0].resolved[0].host_id == "lead"
+    assert archive_reads == [scene.source["usdz_path"]]
 
 
 def test_insertion_uses_effective_render_view_and_time_but_true_victim_pose(recorded_dataset):
@@ -364,7 +376,7 @@ def test_insertion_uses_effective_render_view_and_time_but_true_victim_pose(reco
             "object", PlaneAsset(np.full((4, 4, 4), 255, np.uint8), 1, 1),
             WorldPlacement((10, 0, 0)),
         )
-        adapter = dataset.insertion_renderer(scene, backend, [item])
+        adapter = backend._insertion_renderer(scene, dataset, [item])
         actors, victim, transform = adapter.geometry(observation)
 
         np.testing.assert_allclose(actors["host"].transform[:3, 3], [12, 0, 1])

@@ -273,7 +273,7 @@ def test_cli_consumes_physical_patches_through_world_setup(monkeypatch, cli_conf
         def native(self):
             return {"world": world, "actors": {"lead": lead}}
 
-        def setup_tick(self):
+        def _hold_tick(self):
             pass
 
     def deploy(patch, supplied_world, target, *, tick, on_spawn):

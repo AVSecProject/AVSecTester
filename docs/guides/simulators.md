@@ -533,8 +533,17 @@ Rules for emitting stages with `self._emit(stage, value, sensor=None)`:
 Fill every `Observation` field: `t`, `frame`, `sensor_data`, `calibration`, `vehicle_state` and
 `ego_speed`. Return observations that share no mutable objects with the physical state. If the
 backend supports deployment ticks, implement `setup_tick()` to advance one tick only during
-`world.setup`, and advance until `setup_ticks` have been used after emitting `world.setup`, as
-`CarlaBackend.reset` does. A deterministic backend needs no `prepare_clean_attack_pair`.
+`world.setup`, and advance until `setup_ticks` have been used after emitting `world.setup`.
+A deterministic backend needs no `prepare_clean_attack_pair`.
+
+Source-aware simulators instead subclass `avsectester.capture.CaptureBackend`, as CARLA, NuRec
+and recorded replay do. It owns `reset_world`, `advance`, `observe`, the deployment tick budget
+and the legacy `reset`/`step` wrappers. Implement `_initialize_world`, `_advance_native` and
+`_observe`; CARLA also implements `_replay_tick` and `_hold_tick`. Declare `source_kinds`,
+`decision_time_step` and simulator identity on the backend. Overriding the legacy `reset` or
+`step` in a `CaptureBackend` subclass raises `TypeError` at class definition. Plain
+`WorldBackend` subclasses keep the compatibility path above. See
+[selected-origin initialization](scenarios.md#selected-origin-deployment-and-reset-ownership).
 
 Custom backends enter scenario setup through `backend_factory(scene_config)`, accepted by
 `scenario_from_config`, `source_from_config` and `run_configured`. The argument is a fresh copy

@@ -9,13 +9,13 @@ from __future__ import annotations
 
 import math
 from abc import ABC, abstractmethod
-from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from itertools import pairwise
 from typing import Any, ClassVar, Protocol, TYPE_CHECKING
 
-from avsectester.backend import WorldBackend, validate_command_modes
+from avsectester.backend import validate_command_modes
+from avsectester.capture import CaptureBackend
 from avsectester.plane import Control, Observation, WorldSnapshot
 from avsectester.rendering.compositor import InsertionRenderer
 
@@ -127,6 +127,28 @@ class Renderer(ABC):
     cameras: ClassVar[list[str]] = ["camera_front"]
     calibration: ClassVar[dict] = {}
 
+    def reset_origin(self, source=None):
+        """Replace runtime origin without modifying configured renderer defaults."""
+        self._origin_transform = deepcopy(getattr(self, "start_transform", None))
+        self._origin_timestamp_us = getattr(self, "start_timestamp_us", None)
+        self._origin_bounds = getattr(self, "source_time_bounds", None)
+        if source is not None:
+            self._origin_transform = deepcopy(source.payload["scene"].ego.pose)
+            self._origin_timestamp_us = round(source.start.timestamp * 1e6)
+            self._origin_bounds = (source.payload["first_timestamp"], source.payload["terminal_timestamp"])
+
+    @property
+    def origin_transform(self):
+        return deepcopy(getattr(self, "_origin_transform", getattr(self, "start_transform", None)))
+
+    @property
+    def origin_timestamp_us(self):
+        return getattr(self, "_origin_timestamp_us", getattr(self, "start_timestamp_us", None))
+
+    @property
+    def origin_bounds(self):
+        return getattr(self, "_origin_bounds", getattr(self, "source_time_bounds", None))
+
     def load_scene(self, scene: Any) -> None:
         """Load a reconstruction once (no-op for the stub)."""
 
@@ -156,7 +178,7 @@ class StubRenderer(Renderer):
         return np.zeros((self.height, self.width, 3), dtype=np.uint8)
 
 
-class NuRecBackend(WorldBackend):
+class NuRecBackend(CaptureBackend):
     """In-process neural-reconstruction world: own the ego dynamics + loop, render each frame.
 
     Mirrors ``CarlaBackend``'s shape (reset spawns/loads, step actuates+advances+senses) but keeps
@@ -169,15 +191,19 @@ class NuRecBackend(WorldBackend):
         renderer: Renderer | None = None,
         dynamics: EgoDynamics | None = None,
     ) -> None:
+        super().__init__()
         self.config = deepcopy(config)
+        self.simulator_version = str(self.config.get("simulator_version", "1"))
         self.renderer = renderer or StubRenderer()
         self.dynamics = dynamics or KinematicBicycle(**self.config.get("dynamics", {}))
         self.dt = float(self.config.get("dt", 0.05))
+        if not math.isfinite(self.dt) or self.dt <= 0:
+            raise ValueError("NuRec decision time step must be positive and finite")
         self.pose = EgoPose()
         self.frame = 0
         self._render_requests: dict[str, RenderRequest] = {}
-        self._capture: Observation | None = None
-        self._world_initialized = False
+        self._insertion_data: dict[tuple, Any] = {}
+        self._source_end: float | None = None
 
     @property
     def supported_stages(self) -> frozenset[str]:
@@ -215,52 +241,147 @@ class NuRecBackend(WorldBackend):
         """Return the physical ego state, independent of any model-visible estimate."""
         return WorldSnapshot(self.pose.t, self.frame, deepcopy(self.pose), self.pose.speed)
 
-    def reset(self) -> Observation:
-        """Compatibility entry point returning the first capture."""
-        self.reset_world()
-        return self.observe()
+    source_kinds = ("nurec",)
+    can_render = True
 
-    def reset_world(self, *, before_first_capture: Callable[[], None] | None = None) -> None:
-        """Reset physical state, run initialization once, and capture without a driving step."""
-        self._world_initialized = False
-        self._capture = None
+    @property
+    def decision_time_step(self):
+        return self.dt
+
+    @property
+    def identity(self):
+        return {**super().identity, "config": deepcopy(self.config),
+                "renderer": type(self.renderer).__name__,
+                "endpoint": getattr(self.renderer, "endpoint", None)}
+
+    def _initialize_world(self, source, initialization, environment):
+        if initialization is not None:
+            raise ValueError("CARLA replay initialization does not apply to NuRec")
+        if environment:
+            raise ValueError(f"Unsupported NuRec environment overrides: {sorted(environment)}")
         self._render_requests.clear()
-        self.renderer.load_scene(self.config.get("scene"))
-        self.pose = EgoPose(**self.config.get("ego0", {}))
+        self._insertion_data.clear()
+        self._source_end = None
+        config = deepcopy(self.config)
+        if source is not None:
+            scene = source.payload["scene"]
+            import numpy as np
+
+            pose = np.asarray(scene.ego.pose, dtype=float)
+            config["scene"] = scene.source.get("scene_id")
+            config["ego0"] = {
+                "x": float(pose[0, 3]), "y": float(pose[1, 3]),
+                "yaw": math.atan2(pose[1, 0], pose[0, 0]), "speed": scene.ego.speed,
+            }
+            self._source_end = source.payload["terminal_timestamp"] - source.start.timestamp
+            self.initialization_report = {
+                "kind": "recorded", "source": asdict(source.start),
+                "time_step": source.payload.get("time_step"),
+                "interpolation": source.payload.get("interpolation"),
+                "terminal_timestamp": source.payload["terminal_timestamp"], "pre_roll_steps": 0,
+            }
+        reset_origin = getattr(self.renderer, "reset_origin", None)
+        if callable(reset_origin):
+            reset_origin(source)
+        elif source is not None:
+            raise TypeError("Source initialization requires renderer.reset_origin(SourceData)")
+        self.renderer.load_scene(config.get("scene"))
+        self.pose = EgoPose(**config.get("ego0", {}))
         self.frame = 0
-        self._emit("world.setup", None)
-        if before_first_capture is not None:
-            before_first_capture()
-        self._capture = self._observe()
-        self._world_initialized = True
 
-    def step(self, control: Control) -> Observation:
-        """Compatibility entry point advancing once and returning the resulting capture."""
-        self.advance(control)
-        return self.observe()
-
-    def advance(self, control: Control) -> None:
-        """Advance the world once; capture once after world-step callbacks complete."""
-        self.validate_command(control)
-        if not self._world_initialized:
-            raise RuntimeError("Reset the NuRec backend before advancing")
-        self._world_initialized = False
-        self._capture = None
+    def _advance_native(self, control):
+        if self._source_end is not None and round((self.pose.t + self.dt) * 1e6) > round(self._source_end * 1e6):
+            raise ValueError("NuRec step exceeds terminal source support")
         self._render_requests.clear()
-        self._emit("world.step.pre", None)
-        self.pose = self.dynamics.step(self.pose, control, self.dt)  # shared physics, in-process
+        self.pose = self.dynamics.step(self.pose, control, self.dt)
         self.frame += 1
-        self._emit("world.step.post", None)
-        self._capture = self._observe()
-        self._world_initialized = True
 
-    def observe(self) -> Observation:
-        """Read the current capture without advancing time or re-running render hooks."""
-        if not self._world_initialized:
-            raise RuntimeError("Reset the NuRec backend before observing")
-        if self._capture is None:  # restore invalidates a capture without advancing the world
-            self._capture = self._observe()
-        return self.copy_observation(self._capture)
+    def render(self, observation, request):
+        from avsectester.datasets.nurec import NuRecDataset
+        from avsectester.perturbations.image import read_camera_rgb, write_camera_rgb
+        from avsectester.services import RenderResult
+
+        scene = request.scene if request.scene is not None else (
+            self._source.payload["scene"] if self._source is not None else None)
+        if scene is None:
+            raise ValueError("NuRec insertion rendering requires source scene geometry")
+        key = (scene.source["usdz_path"], scene.source["sensor"], request.sensor_id,
+               scene.source.get("time_step", 0.1))
+        if key not in self._insertion_data:
+            self._insertion_data[key] = NuRecDataset(
+                [key[0]], sensor=key[1], camera=key[2], time_step=key[3])
+        data = self._insertion_data[key]
+        adapter = self._insertion_renderer(scene, data, request.insertions,
+                                          request.roles, request.compositor)
+        sample = read_camera_rgb(observation, request.sensor_id)
+        if sample is None:
+            raise ValueError(f"Missing NuRec camera {request.sensor_id!r}")
+        key, image = sample
+        result = write_camera_rgb(observation, key, adapter(observation, image))
+        return RenderResult(request.frame, result, {}, deepcopy(adapter.evidence),
+                            deepcopy(adapter.resolved))
+
+    def _insertion_renderer(self, scene, data, insertions, bindings=None, compositor=None):
+        """Configure a host-bound insertion callable without connecting to the renderer.
+
+        ``bindings`` accepts a selected match's role-to-track-ID tuples. Actor poses are sampled at
+        the effective render timestamp and camera pose. Model-visible time and localization do
+        not move the geometry. An explicit render-viewpoint change updates camera geometry while
+        the victim's physical pose still comes from backend ground truth.
+        """
+        backend = self
+        import numpy as np
+        from avsectester.insertion import ActorPose
+        from avsectester.rendering.types import InsertionGeometry
+        from avsectester.rendering.visibility import CuboidVisibilityEstimator
+
+        renderer = backend.renderer
+        objects = {obj.track_id: obj for obj in scene.objects}
+        selected = {
+            role: tuple(objects[track_id] for track_id in ids)
+            for role, ids in (bindings or {}).items()
+        }
+        from avsectester.scenarios.context import FilterContext
+        from avsectester.rendering.cameras import FThetaCamera as Lens
+
+        aliases = FilterContext(scene, bindings=selected).actor_aliases
+        local_center = np.eye(4)
+        local_center[:3, 3] = scene.ego.center
+        path = scene.source["usdz_path"]
+
+        def geometry(observation):
+            pose = backend.ground_truth().vehicle_state
+            request = backend.render_request(data.sensor)
+            adapter.camera = renderer.camera_model(request.camera)
+            actors = data.actor_poses(path, renderer.timestamp_us(request.pose))
+            for alias, track_id in aliases.items():
+                if track_id in actors:
+                    if alias in actors and alias != track_id:
+                        raise ValueError(f"Role {alias!r} conflicts with an actor track ID")
+                    actors[alias] = actors[track_id]
+            victim = ActorPose(renderer.rig_transform(pose) @ local_center, scene.ego.extent)
+            return InsertionGeometry(
+                actors, victim, renderer.cam_from_world(request.pose, request.camera),
+            )
+
+        # Recorded intrinsics let the adapter be registered before reset. Each geometry
+        # call then selects the loaded camera that produced the actual render request.
+        recorded = scene.cameras[data.camera].model
+        camera = Lens(
+            cx=float(recorded.principal_point[0]), cy=float(recorded.principal_point[1]),
+            angle_to_pixeldist=tuple(recorded.angle_to_pixeldist),
+            width=recorded.width, height=recorded.height, max_angle=recorded.max_angle,
+            linear_cde=tuple(recorded.linear_cde),
+        )
+        adapter = NuRecInsertions(
+            insertions,
+            camera,
+            geometry,
+            compositor,
+            visibility_estimator=CuboidVisibilityEstimator(),
+            camera_name=data.camera,
+        )
+        return adapter
 
     def _observe(self) -> Observation:
         from avsectester.runtime import RenderRequest
@@ -306,7 +427,9 @@ class NuRecBackend(WorldBackend):
         self.pose = EgoPose(**ckpt["pose"])
         self.frame = ckpt["frame"]
         self._render_requests.clear()
+        self._world_initialized = False
         self._capture = None
+        self._capture = self._observe()
         self._world_initialized = True
 
 
@@ -355,6 +478,7 @@ class NuRecRenderer(Renderer):
 
     start_timestamp_us: int | None = None
     start_transform: Any = None
+    source_time_bounds: tuple[float, float] | None = None
 
     def __post_init__(self) -> None:
         self._stub = None
@@ -380,42 +504,42 @@ class NuRecRenderer(Renderer):
         want = scene or self.scene_id
         matches = [s for s in available if want and want in s]
         if want in available:
-            self.scene_id = want
+            self._loaded_scene_id = want
         elif want and len(matches) == 1:
-            self.scene_id = matches[0]
+            self._loaded_scene_id = matches[0]
         elif want or not available:
             raise ValueError(f"Scene {want!r} did not resolve to exactly one renderer scene")
         else:
-            self.scene_id = available[0]
+            self._loaded_scene_id = available[0]
         cams = self._stub.get_available_cameras(
-            sensorsim_pb2.AvailableCamerasRequest(scene_id=self.scene_id)
+            sensorsim_pb2.AvailableCamerasRequest(scene_id=self._loaded_scene_id)
         )
         native_cameras = {c.logical_id: c for c in cams.available_cameras}
         for name in self.cameras:
             if name not in native_cameras:
-                raise ValueError(f"Camera {name!r} is not available in {self.scene_id!r}")
+                raise ValueError(f"Camera {name!r} is not available in {self._loaded_scene_id!r}")
         self._camera_specs = {name: native_cameras[name].intrinsics for name in self.cameras}
         self._camera_poses = {name: native_cameras[name].rig_to_camera for name in self.cameras}
         self._spec = self._camera_specs[self.cameras[0]]
         self._rig_to_camera = self._camera_poses[self.cameras[0]]
         poses = (
             self._stub.get_available_trajectories(
-                sensorsim_pb2.AvailableTrajectoriesRequest(scene_id=self.scene_id)
+                sensorsim_pb2.AvailableTrajectoriesRequest(scene_id=self._loaded_scene_id)
             )
             .available_trajectories[0]
             .trajectory.poses
         )
         self._start_pose = poses[0].pose  # scene world-frame origin for the ego
         self._t0 = (
-            poses[0].timestamp_us if self.start_timestamp_us is None else self.start_timestamp_us
+            poses[0].timestamp_us if self.origin_timestamp_us is None else self.origin_timestamp_us
         )
 
     def start_pose(self):
         """Scene-frame (x, y, yaw) the backend should spawn the ego at. None until load_scene."""
         import math
 
-        if self.start_transform is not None:
-            transform = self.start_transform
+        if self.origin_transform is not None:
+            transform = self.origin_transform
             return {
                 "x": float(transform[0][3]),
                 "y": float(transform[1][3]),
@@ -455,10 +579,10 @@ class NuRecRenderer(Renderer):
         import numpy as np
         from avsectester.rendering.cameras import planar_rig_pose
 
-        if self.start_transform is None:
+        if self.origin_transform is None:
             z = self._start_pose.vec.z if self._start_pose is not None else 0.0
             return planar_rig_pose(pose.x, pose.y, pose.yaw, z)
-        anchor = np.asarray(self.start_transform, dtype=float)
+        anchor = np.asarray(self.origin_transform, dtype=float)
         anchor_yaw = math.atan2(anchor[1, 0], anchor[0, 0])
         current = planar_rig_pose(pose.x, pose.y, pose.yaw, anchor[2, 3])
         initial_flat = planar_rig_pose(0, 0, anchor_yaw)
@@ -487,6 +611,10 @@ class NuRecRenderer(Renderer):
 
     def render_at(self, world_from_rig, timestamp_us: int, camera: str):
         """Render a recorded or user-provided SE(3) pose at an absolute scene timestamp."""
+        if self.origin_bounds is not None:
+            first, last = self.origin_bounds
+            if not first - 1e-6 <= timestamp_us / 1e6 <= last + 1e-6:
+                raise ValueError("NuRec render timestamp exceeds source support")
 
         import cv2
         import numpy as np
@@ -508,7 +636,7 @@ class NuRecRenderer(Renderer):
         cam = _compose_pose(rig, self._camera_poses[camera], common_pb2)
         frame_us = int(timestamp_us)
         req = sensorsim_pb2.RGBRenderRequest(
-            scene_id=self.scene_id,
+            scene_id=self._loaded_scene_id,
             resolution_h=spec.resolution_h,
             resolution_w=spec.resolution_w,
             camera_intrinsics=spec,

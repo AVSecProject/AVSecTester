@@ -7,7 +7,7 @@ subdivided so they render correctly curved under the nuRec fisheye), using only 
 * nuRec: ``draw_boxes3d(frame, scene, target=...)`` on the scene's rendered ``.mp4`` frame, plus a
   :func:`filmstrip` across several frames;
 * nuScenes: the full backend path — ``labels_view(...)`` wrapping ``camera_view`` over a
-  ``RecordedFrameBackend``, exactly as a run would visualize a frame.
+  ``RecordedSequenceBackend``, exactly as a run would visualize a frame.
 
 Writes PNGs under ``tmp/compare/``. Run: ``python -m scripts.visualization.visualize_scene_labels [--nuscenes]``.
 """
@@ -58,13 +58,13 @@ def nurec_examples(uuid: str = "023b7fcc-671c-40e3-9bd2-c66b0b073fbc") -> None:
 
 
 def nuscenes_example() -> None:
-    from avsectester.scenarios.datasets.nuscenes import NuScenesDataset, RecordedFrameBackend
+    from avsectester.scenarios.datasets.nuscenes import NuScenesDataset
     ds = NuScenesDataset("/workspace/hdd/datasets/nuscenes", max_samples=60)
     for scene in ds.scenes():
         match = REQ.match(scene)
         if match is None:
             continue
-        backend = RecordedFrameBackend(scene.source["image_path"])
+        backend = ds.context(scene).native["make_backend"]()
         # the standard view path: labels_view wraps camera_view, overlaying this frame's GT
         view = labels_view(lambda _obs, s=scene: s, camera="front", target=match.target, max_distance=40.0)
         save_image(view(backend.reset()), OUT / "labels_nuscenes_target.png")

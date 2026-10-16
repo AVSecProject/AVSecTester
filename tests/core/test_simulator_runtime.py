@@ -50,7 +50,6 @@ class CountingRenderer(StubRenderer):
 def test_legacy_bridge_caches_captures_without_extra_backend_calls():
     backend = LegacyBackend()
     simulator = SimulatorRuntime(backend)
-    assert not simulator.supports_before_first_capture
     assert simulator.reset() is None
     first = simulator.observe()
     first.sensor_data["sample"].append(99)
@@ -85,7 +84,6 @@ def test_nurec_observe_reuses_capture_and_isolates_caller_mutation():
     backend = NuRecBackend({"dt": 0.1}, renderer=renderer)
     simulator = SimulatorRuntime(backend)
     simulator.reset()
-    assert simulator.supports_before_first_capture
     observation = simulator.observe()
     observation.sensor_data["camera_front"][:] = 100
     observation.vehicle_state.x = 100
@@ -101,33 +99,32 @@ def test_nurec_observe_reuses_capture_and_isolates_caller_mutation():
     assert len(renderer.positions) == 2
 
 
-def test_nurec_initialization_runs_once_after_setup_before_capture():
+def test_nurec_setup_precedes_capture_and_start_sees_selected_state():
+    from avsectester.attack_runtime import AttackRuntime, ResultSubscription
+    from avsectester.closed_loop import ClosedLoopRunner, RunRequest
+    from avsectester.backend import AVStack
+    from avsectester.runtime import Hook, HookSet
+
     renderer = CountingRenderer()
     backend = NuRecBackend({}, renderer=renderer)
     events = []
-
-    def emit(stage, value, sensor=None):
-        if stage == "world.setup":
-            backend.pose.x = 4
-            events.append("setup")
-        return value
-
-    backend._emit = emit
-    simulator = SimulatorRuntime(backend)
-
-    def initialize():
+    def setup(value, context):
         assert not renderer.positions
-        assert simulator.state().vehicle_state.x == 4
-        assert simulator.clock.frame == 0
         backend.pose.x = 7
-        events.append("initialize")
-
-    simulator.reset(before_first_capture=initialize)
-    simulator.observe()
-    simulator.observe()
-    assert events == ["setup", "initialize"]
-    assert renderer.positions == [(0.0, 7)]
-    assert simulator.observe().vehicle_state.x == 7
+        events.append("setup")
+    class Attack(AttackRuntime):
+        reads = (ResultSubscription("physical_state"),)
+        def start(self, context):
+            assert renderer.positions == [(0, 7)]
+            assert context.physical_state.vehicle_state.x == 7
+            events.append("start")
+            return ()
+    class Driver(AVStack):
+        def __call__(self, observation):
+            return Control()
+    ClosedLoopRunner().run(backend, Driver(), RunRequest(
+        0, hooks=HookSet((Hook("world.setup", setup),)), attacks=(Attack(),)))
+    assert events == ["setup", "start"]
 
 
 def test_restore_invalidates_capture_without_advancing_restored_world():
@@ -147,45 +144,30 @@ def test_restore_invalidates_capture_without_advancing_restored_world():
     assert len(renderer.positions) == 3
 
 
-def test_legacy_subclass_reset_override_is_not_bypassed():
-    class ExtraInitialization(NuRecBackend):
-        def reset(self):
-            super().reset()
-            self.pose.x = 19
-            return self._observe()
-
-    backend = ExtraInitialization({}, renderer=CountingRenderer())
-    simulator = SimulatorRuntime(backend)
-    assert not simulator.supports_before_first_capture
-    simulator.reset()
-    assert simulator.observe().vehicle_state.x == 19
-    simulator.step(Control())
-    assert simulator.observe().frame == 1
+@pytest.mark.parametrize("method", ["reset", "step"])
+def test_capture_backend_rejects_legacy_overrides_at_class_definition(method):
+    with pytest.raises(TypeError, match="legacy reset/step"):
+        type("InvalidBackend", (NuRecBackend,), {method: lambda self: None})
 
 
-def test_primary_method_subclass_keeps_native_initialization_capability():
+def test_native_initialization_extension_preserves_config():
     class NewInitialization(NuRecBackend):
-        def reset_world(self, *, before_first_capture=None):
-            self.config["ego0"] = {"x": 6}
-            super().reset_world(before_first_capture=before_first_capture)
-
+        def _initialize_world(self, source, initialization, environment):
+            super()._initialize_world(source, initialization, environment)
+            self.pose.x = 6
     backend = NewInitialization({}, renderer=CountingRenderer())
     simulator = SimulatorRuntime(backend)
-    starts = []
-    assert simulator.supports_before_first_capture
-    simulator.reset(before_first_capture=lambda: starts.append(simulator.state().vehicle_state.x))
-    assert starts == [6]
+    simulator.reset()
     assert simulator.observe().vehicle_state.x == 6
+    assert backend.config == {}
 
 
 def test_unsupported_initialization_rejects_before_reset_side_effects():
     backend = LegacyBackend()
     simulator = SimulatorRuntime(backend)
-    with pytest.raises(NotImplementedError, match="before-first-capture"):
-        simulator.reset(before_first_capture=lambda: pytest.fail("must not run"))
-    with pytest.raises(NotImplementedError, match="SourceData"):
+    with pytest.raises(TypeError, match="SourceData"):
         simulator.reset(source={"scene": "unsupported"})
-    with pytest.raises(NotImplementedError, match="initialization"):
+    with pytest.raises(ValueError, match="initialization"):
         simulator.reset(initialization={"ticks": 2})
     assert backend.resets == 0
 
@@ -234,15 +216,17 @@ def test_failed_start_cannot_leave_previous_capture_readable():
     simulator = SimulatorRuntime(backend)
     simulator.reset()
 
-    def fail():
+    def fail(*args, **kwargs):
         raise RuntimeError("deployment failed")
 
     with pytest.raises(RuntimeError, match="deployment failed"):
-        simulator.reset(before_first_capture=fail)
+        backend._emit = fail
+        simulator.reset()
     assert len(renderer.positions) == 1
     for observe in (simulator.observe, backend.observe):
         with pytest.raises(RuntimeError, match="Reset"):
             observe()
+    del backend._emit
     simulator.reset()
     assert len(renderer.positions) == 2
 
@@ -258,7 +242,7 @@ def test_bridge_close_does_not_close_borrowed_backend():
 
 
 @pytest.mark.parametrize("setup_ticks", [0, 2])
-def test_carla_callback_precedes_first_capture_and_observe_never_ticks(monkeypatch, setup_ticks):
+def test_carla_plain_reset_ticks_after_world_setup_and_observe_never_ticks(monkeypatch, setup_ticks):
     events = []
     snapshot = SimpleNamespace(frame=0, timestamp=SimpleNamespace(elapsed_seconds=0.0))
 
@@ -268,7 +252,7 @@ def test_carla_callback_precedes_first_capture_and_observe_never_ticks(monkeypat
         snapshot.timestamp.elapsed_seconds += 0.05
 
     client = SimpleNamespace(
-        world=SimpleNamespace(get_snapshot=lambda: snapshot), tick=tick, close=lambda: None,
+        world=SimpleNamespace(get_snapshot=lambda: snapshot, get_actors=lambda: []), tick=tick, close=lambda: None,
     )
     transform = SimpleNamespace(
         location=SimpleNamespace(x=0, y=0, z=0),
@@ -302,12 +286,21 @@ def test_carla_callback_precedes_first_capture_and_observe_never_ticks(monkeypat
 
     def initialize():
         events.append("initialize")
+        # Plain resets keep the original order: no native tick before world.setup.
         assert simulator.state().frame == 0
         # An allocated deployment tick consumes the shared budget, not an extra decision.
         if setup_ticks:
             backend.setup_tick()
 
-    simulator.reset(before_first_capture=initialize)
+    original_emit = backend._emit
+    def setup_emit(stage, value, **kwargs):
+        result = original_emit(stage, value, **kwargs)
+        if stage == "world.setup":
+            initialize()
+        return result
+    backend._emit = setup_emit
+    simulator.reset()
+    # world.setup, its k deployment ticks, then the capture tick that makes them visible.
     assert events == ["world.setup", "initialize", *(["tick"] * (setup_ticks + 1)), "capture"]
     assert simulator.observe().frame == simulator.observe().frame == setup_ticks + 1
     assert events.count("capture") == 1

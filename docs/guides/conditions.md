@@ -99,7 +99,7 @@ every reset. All treatments therefore render the same weather, including on the 
 and objects in the scene.
 
 Only CARLA accepts a world condition, and only `weather`. The built-in NuRec and recorded-frame
-(`RecordedFrameBackend`, used by nuScenes) backends accept none. CARLA weather is either a
+(`RecordedSequenceBackend`, used by nuScenes) backends accept none. CARLA weather is either a
 `carla.WeatherParameters` preset name, such as `weather: HardRainNoon`, or a mapping of CARLA's own
 parameter names, such as `cloudiness`, `precipitation`, `sun_altitude_angle`, `fog_density` and
 `wetness`. `CARLA_WEATHER_PRESETS` in `avsectester.simulators.carla` lists presets from `ClearNoon`

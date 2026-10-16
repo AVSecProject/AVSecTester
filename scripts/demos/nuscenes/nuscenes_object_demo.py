@@ -12,7 +12,7 @@ footprint overlaps no annotated object (a crude occlusion check); several candid
         --asset <cutouts>/person_001.png --n 8 --harmonizer libcom --eval
 
 Writes ``tmp/nuscenes_objects/``: ``grid.png`` (rows = images; columns = clean + each object),
-per-image PNGs, and with ``--eval`` ``perception_eval.json`` (COCO detector scores per object).
+per-image PNGs and subsequent recorded decision inputs (N decisions require N+1 frames), and with ``--eval`` ``perception_eval.json`` (COCO detector scores per object).
 """
 
 import argparse
@@ -91,11 +91,35 @@ def pick_images(coco: dict, n: int) -> list[dict]:
     return out
 
 
+def recorded_window(dataset, image_path, decision_steps):
+    """Resolve a keyframe to N+1 linked source states, or None too close to the end of its scene."""
+    from avsectester.simulators.recorded import RecordedSequenceBackend
+
+    nusc = dataset._load()
+    if not hasattr(dataset, "_demo_images"):
+        dataset._demo_images = {str(Path(row["filename"])): row for row in nusc.sample_data
+                                if row.get("is_key_frame")}
+    key = str(Path(image_path))
+    if key not in dataset._demo_images:
+        raise ValueError(f"Image is not a recorded keyframe: {key}")
+    sample = nusc.get("sample", dataset._demo_images[key]["sample_token"])
+    scenario = sample["scene_token"]
+    frames = dataset.frames(scenario)
+    start = next(f for f in frames if f.frame_id == sample["token"])
+    if start.position + decision_steps >= len(frames):
+        return None  # too close to the end of its scene for N decisions plus the terminal frame
+    window = dataset.decision_window(scenario, start, decision_steps)
+    source = dataset.source_data(scenario, start)
+    return RecordedSequenceBackend(source), source.payload["references"][:len(window)]
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--nuscenes", required=True)
     ap.add_argument("--ann", default="nuscenes_infos_val_mono3d.coco.json")
     ap.add_argument("--asset", required=True, help="person cut-out PNG")
+    ap.add_argument("--decision-steps", type=int, default=1, help="decisions per sequence; requires N+1 recorded frames")
+    ap.add_argument("--version", default="v1.0-trainval")
     ap.add_argument("--n", type=int, default=8, help="images to show")
     ap.add_argument("--harmonizer", choices=["none", "classic", "chroma", "libcom"], default="libcom")
     ap.add_argument("--night", type=int, default=2, help="how many of the images should be dark (night)")
@@ -105,6 +129,12 @@ def main() -> int:
     args = ap.parse_args()
 
     import cv2
+    from avsectester.datasets.nuscenes import NuScenesDataset
+    from avsectester.plane import Control
+
+    if args.decision_steps < 1:
+        ap.error("--decision-steps must be positive")
+    dataset = NuScenesDataset(args.nuscenes, version=args.version)
 
     root, out = Path(args.nuscenes), Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -124,7 +154,18 @@ def main() -> int:
     for im in pick_images(coco, args.n):
         if len(rows) >= args.n:
             break
-        frame = cv2.cvtColor(cv2.imread(str(root / im["file_name"])), cv2.COLOR_BGR2RGB)
+        recorded = recorded_window(dataset, im["file_name"], args.decision_steps)
+        if recorded is None:
+            continue
+        backend, references = recorded
+        try:
+            observation = backend.reset()
+            captures = [observation]
+            for _ in range(args.decision_steps):
+                captures.append(backend.step(Control()))
+        finally:
+            backend.close()
+        frame = captures[0].sensor_data["front"]
         night = frame.mean() < 55
         if night and n_night >= args.night or not night and n_day >= args.n - args.night:
             continue
@@ -146,6 +187,21 @@ def main() -> int:
                 box = (xs.min() - 4, ys.min() - 4, xs.max() + 4, ys.max() + 4)
                 det = detectors[LABELS[name][1]]
                 rec[name] = {"at": list(obj.placement.position_m[:2]), "clean": _best(det(frame), box), "attacked": _best(det(att), box)}
+        # Preserve the initial-frame grid and export the actual subsequent decision inputs.
+        initial_pose = np.asarray(references[0].scene.ego.pose)
+        for decision, (capture, reference) in enumerate(zip(captures[:args.decision_steps], references)):
+            if decision == 0:
+                continue
+            calibration = reference.scene.cameras["front"]
+            lens = PinholeCamera(np.asarray(calibration.model), calibration.width, calibration.height)
+            view = np.linalg.inv(np.asarray(reference.scene.ego.pose) @ np.asarray(calibration.cam_to_ego)) @ initial_pose
+            current = capture.sensor_data["front"]
+            sequence_row = [current] + [render_resolved(current, lens, view, resolved_object(obj),
+                                                       compositor=compositor)[0] for obj in objs.values()]
+            target = out / f"{Path(im['file_name']).stem}-decision-{decision:04d}.png"
+            cv2.imwrite(str(target), cv2.cvtColor(_row_image(sequence_row), cv2.COLOR_RGB2BGR))
+        rec["decision_steps"] = args.decision_steps
+        rec["reference_timestamps"] = [ref.frame.timestamp for ref in references]
         rows.append(row)
         evals.append(rec)
         stem = Path(im["file_name"]).stem

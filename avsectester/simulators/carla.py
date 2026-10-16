@@ -18,11 +18,17 @@ import logging
 import secrets
 import time
 from contextlib import ExitStack
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any
 
-from avsectester.backend import WorldBackend
+from avsectester.capture import CaptureBackend
+from dataclasses import asdict, replace
+import math
+import numpy as np
+from avsectester.datasets.base import ActorState, DataReference, ReferenceFrame
+from avsectester.datasets.carla import CarlaRecipe
+from avsectester.reference import Initialization, ReferenceSequence
 from avsectester.plane import Control, Observation, WorldSnapshot
 from avsectester.simulators.viz import as_rgb
 
@@ -68,6 +74,22 @@ def lidar_bev(observation: Observation, size: int = 800, meters: float = 60.0) -
 
 
 def insertion_perturbation(backend, insertions, *, bindings=None, camera="front", compositor=None):
+    """Compatibility callable delegating to the simulator's insertion renderer."""
+    from avsectester.services import RenderRequest
+    from avsectester.datasets.base import FrameRef
+
+    def perturb(observation):
+        frame = FrameRef("live", observation.frame, observation.frame, observation.t)
+        render = getattr(backend, "render", None) or (lambda obs, req: CarlaBackend.render(backend, obs, req))
+        result = render(observation, RenderRequest(
+            "live", frame, camera, insertions, bindings or {}, compositor=compositor))
+        perturb.evidence, perturb.resolved = result.evidence, result.resolved
+        return result.observation
+    perturb.evidence, perturb.resolved = {}, ()
+    return perturb
+
+
+def _insertion_renderer(backend, insertions, *, bindings=None, camera="front", compositor=None):
     """Insert explicit, stable host-bound or world-fixed surfaces into model input.
 
     The backend must provide ``selection_context()`` with current same-frame depth,
@@ -146,7 +168,10 @@ def insertion_perturbation(backend, insertions, *, bindings=None, camera="front"
         else:
             # A paired reset recreates sensors. Never retain a previous sensor's calibration.
             renderer.camera = camera_from_calibration(current.scene.cameras[camera])
-        return write_camera_rgb(observation, key, renderer(observation, rgb))
+        rendered = renderer(observation, rgb)
+        perturb.evidence = renderer.evidence
+        perturb.resolved = renderer.resolved
+        return write_camera_rgb(observation, key, rendered)
 
     return perturb
 
@@ -286,7 +311,15 @@ CARLA_WEATHER_PRESETS = (
 # ---------------------------------------------------------------------------------------------------
 # The CARLA WorldBackend
 # ---------------------------------------------------------------------------------------------------
-class CarlaBackend(WorldBackend):
+class SensorAlignmentError(RuntimeError):
+    """A configured sensor has no capture for the current world frame."""
+
+    def __init__(self, report: Mapping[str, Any]) -> None:
+        self.report = deepcopy(dict(report))
+        super().__init__("Sensor capture is not aligned: " + "; ".join(report["failures"]))
+
+
+class CarlaBackend(CaptureBackend):
     """A CARLA :class:`~avsectester.backend.WorldBackend`.
 
     Owns the client, the ego vehicle + its sensors, and the NPC traffic, and applies control through
@@ -296,9 +329,15 @@ class CarlaBackend(WorldBackend):
     ``replay_scenario`` so a paired run reproduces the same initial scene.
     """
 
+    source_kinds = ("carla",)
+    capture_ticks = 1  # CARLA renders on ticks; the first capture follows world.setup
+    can_render = True
+
     def __init__(
-        self, scenario: dict, settle_iters: int = 100
+        self, scenario: dict, settle_iters: int = 100, *, simulator_version="0.9.16"
     ) -> None:
+        super().__init__()
+        self.simulator_version = simulator_version
         self.scenario = deepcopy(scenario)
         self.settle_iters = settle_iters
         # An optional stationary lead vehicle spawned directly ahead of the ego, present in BOTH the
@@ -313,10 +352,18 @@ class CarlaBackend(WorldBackend):
         self._t0: float | None = None
         self._resources = ExitStack()
         self._pair_scenario: dict | None = None
-        self._in_setup = False
-        self._setup_ticks_used = 0
-        self._capture: Observation | None = None
-        self._world_initialized = False
+        self._pair_replay: dict | None = None
+        self._materializing = False
+        self._recipe = None
+        self._recipe_replay = None
+
+    @property
+    def resource_key(self):
+        client = self.scenario["client"]
+        host = client.get("connect_ip", "127.0.0.1")
+        if host in {"localhost", "127.0.0.1", "::1"}:
+            host = "localhost"
+        return ("carla", host, client.get("connect_port", 2000))
 
     @property
     def command_modes(self) -> frozenset[str]:
@@ -331,7 +378,7 @@ class CarlaBackend(WorldBackend):
             weather = deepcopy(world["weather"])
             self.scenario["weather"] = weather
             # A prepared or previously run pair must not retain the old weather.
-            for prepared in (self._pair_scenario, self.replay_scenario):
+            for prepared in (self._pair_scenario, self._pair_replay, self.replay_scenario):
                 if prepared is not None:
                     prepared["weather"] = deepcopy(weather)
 
@@ -402,35 +449,80 @@ class CarlaBackend(WorldBackend):
         self.close()
         # Keep the original config so preparing another pair can resolve random choices afresh.
         self._pair_scenario = prepare_scenario(self.scenario)
+        self._pair_replay = None
         self.replay_scenario = None
 
-    def reset(self) -> Observation:
-        """Compatibility entry point returning the first capture."""
-        self.reset_world()
-        return self.observe()
+    @property
+    def decision_time_step(self):
+        return 1 / float(self.scenario["client"]["rate"])
 
-    def reset_world(self, *, before_first_capture: Callable[[], None] | None = None) -> None:
-        """Initialize the native world and run deployment before the first sensor capture."""
+    @property
+    def identity(self):
+        return {**super().identity, "scenario": deepcopy(self.scenario),
+                "camera": getattr(self, "selection_camera", None),
+                "source_sensor_setup_ticks": 1}
+
+    def validate_source(self, source):
+        super().validate_source(source)
+        if source is not None:
+            recipe = source.payload.get("recipe")
+            if not isinstance(recipe, CarlaRecipe):
+                raise TypeError("CARLA SourceData requires an explicit CarlaRecipe")
+            if not math.isclose(recipe.time_step, self.decision_time_step, abs_tol=1e-9):
+                raise ValueError("Dataset time_step differs from simulator decision time step")
+            if source.start.position > recipe.decision_steps:
+                raise ValueError("Selected start exceeds recipe support")
+
+    def _replay_position(self, source):
+        return source.start.position if source is not None else 0
+
+    def _resolve_scenario(self, source, initialization, environment):
+        if set(environment) - {"weather"}:
+            raise ValueError("CARLA environment overrides support weather only")
+        if source is not None:
+            if initialization is None and source.start.position:
+                raise ValueError("A selected CARLA start requires materialized reference evidence")
+            if initialization is not None:
+                if not isinstance(initialization, Initialization) or initialization.expected.frame != source.start:
+                    raise ValueError("Initialization evidence does not match the selected source boundary")
+                scenario = deepcopy(initialization.resolved_scenario)
+            else:
+                scenario = deepcopy(source.payload["recipe"].scenario)
+                if "seed" in self.scenario["client"]:
+                    scenario["client"]["seed"] = self.scenario["client"]["seed"]
+                # prepare_scenario connects to resolve spawns, so it must use the factory's
+                # server, never the one written in the recipe.
+                self._apply_connection(scenario)
+                scenario = prepare_scenario(scenario)
+            # Connection settings come from the factory; source recipes do not choose a server.
+            self._apply_connection(scenario)
+        else:
+            scenario = deepcopy(self._pair_replay or self._pair_scenario) if self._pair_scenario is not None else deepcopy(self.scenario)
+        scenario.update(deepcopy(dict(environment)))
+        return scenario
+
+    def _apply_connection(self, scenario):
+        for key in ("connect_ip", "connect_port", "traffic_manager_port"):
+            if key in self.scenario["client"]:
+                scenario["client"][key] = self.scenario["client"][key]
+
+    def _initialize_world(self, source, initialization, environment):
         from avcarla.config import CARLA
 
-        # Destroy old actors before reloading the world, including after partial setup failures.
+        scenario = self._resolve_scenario(source, initialization, environment)
         self.close()
-        if self._pair_scenario is not None:
-            scenario = deepcopy(self.replay_scenario or self._pair_scenario)
-        else:
-            scenario = deepcopy(self.scenario)
+        self._recipe = source.payload["recipe"] if source is not None else None
+        # Plain resets always use the configured origin, never a previous source's resolved world.
+        self._source_t0 = None
+        self._trajectory_setup_ticks = 0
         client_config = scenario["client"]
         client_config.setdefault("reset_world", True)
         client_config.setdefault("strict_spawn", False)
         replay = deepcopy(scenario)
         replay["client"]["strict_spawn"] = True
         replay["npcs"] = []
-
-        # Register teardown as we build, so a failure mid-setup still cleans up (LIFO): npcs (best
-        # effort) then ego (propagates) then client -- matching the paired-run cleanup contract.
         self.client = CARLA.build(client_config)
         self._resources.callback(self.client.close)
-        # Driving is external: give the CARLA ego an empty pipeline so its own _tick never drives.
         ego_cfg = deepcopy(scenario["ego"])
         ego_cfg["pipeline"] = {"type": "SerialPipeline", "modules": []}
         self.ego = CARLA.build(ego_cfg, default_args={"client": self.client})
@@ -438,57 +530,162 @@ class CarlaBackend(WorldBackend):
         replay["ego"] = _spawn_config(scenario["ego"], self.ego, "vehicle")
         for spec in _npc_specs(scenario.get("npcs")):
             npc = CARLA.build(dict(spec), default_args={"client": self.client})
+            if self._recipe is not None:
+                npc.actor.set_autopilot(False, self.client.traffic_manager_port)
             self.npcs.append(npc)
             self._resources.callback(_destroy_npc, npc)
             replay["npcs"].append(_spawn_config(spec, npc, "npc_type"))
+        if self._recipe is not None:
+            # Source sensors need their clocks before _spawn_lead's tick, so queued captures
+            # are labelled correctly. Plain resets keep the original initialization order.
+            origin = self.client.world.get_snapshot()
+            self.ego.initialize(origin.timestamp.elapsed_seconds, origin.frame)
         self.replay_scenario = replay
-
-        if self.lead_cfg is not None:  # scene content: a stationary lead ahead of the ego (both runs)
-            self.lead = self._spawn_lead(self.lead_cfg)
-        self._apply_weather(scenario.get("weather"))  # world-level augmentation (both runs, same weather)
-
+        if source is None and self._pair_scenario is not None:
+            self._pair_replay = deepcopy(replay)
+        if scenario.get("lead") is not None:
+            self.lead = self._spawn_lead(scenario["lead"])
+        self._apply_weather(scenario.get("weather"))
         snap = self.client.world.get_snapshot()
-        self.ego.initialize(snap.timestamp.elapsed_seconds, snap.frame)
+        if self._recipe is None:
+            self.ego.initialize(snap.timestamp.elapsed_seconds, snap.frame)
         for npc in self.npcs:
             npc.initialize(snap.timestamp.elapsed_seconds, snap.frame)
-        self._in_setup = True
-        self._setup_ticks_used = 0
-        try:
-            self._emit("world.setup", None)
-            if before_first_capture is not None:
-                before_first_capture()
-            while self._setup_ticks_used < self.setup_ticks:
-                self.setup_tick()
-        finally:
-            self._in_setup = False
-        self.client.tick()  # produce the first sensor frame (ego stationary until first control)
-        self._capture = self._observe()
-        self._world_initialized = True
+        self._initialize_sensors()
+        if self._recipe is not None:
+            self._recipe_replay = RecipeReplay(self, self._recipe)
+            self._recipe_replay.initialize()
+            # A base-world sensor tick for source runs, before attacks and source time zero.
+            # Plain resets take their first tick after world.setup (the capture tick).
+            self.client.tick()
+        if self._recipe_replay is not None:
+            self._trajectory_setup_ticks = self._recipe_replay.activate()
+            # GPU cameras need a second base-world tick before their first aligned
+            # capture. Hold the resolved origin; this fixed preparation is identical
+            # for materialization and replay and never counts as a source decision.
+            self._hold_tick()
+            self._recipe_replay.finish_holding()
+        self._source_t0 = self.client.world.get_snapshot().timestamp.elapsed_seconds
+        self._base_actor_ids = ({actor.id for actor in self.client.world.get_actors()}
+                                if source is not None else set())
 
-    def step(self, control: Control) -> Observation:
-        """Compatibility entry point advancing once and returning its capture."""
-        self.advance(control)
-        return self.observe()
+    def _initialize_sensors(self):
+        """Subclasses create additional sensors here, before the first capture."""
 
-    def advance(self, control: Control) -> None:
-        """Apply a control and advance one native tick, capturing its sensors once."""
-        self.validate_command(control)
-        if not self._world_initialized:
-            raise RuntimeError("Reset the CARLA backend before advancing")
-        self._world_initialized = False
-        self._capture = None
-        self._emit("world.step.pre", None)
-        self.ego.apply_control(control)  # decision from the AVStack. CARLA physics does the rest
+    def _replay_tick(self):
+        replay = self._recipe_replay
+        replay.before_step()
+        self.ego.apply_control(replay.ego_command())
         self.client.tick()
-        self._emit("world.step.post", None)
-        self._capture = self._observe()
-        self._world_initialized = True
+        replay.after_step()
 
-    def observe(self) -> Observation:
-        """Read the current capture without another native tick or sensor queue pop."""
-        if not self._world_initialized or self._capture is None:
-            raise RuntimeError("Reset the CARLA backend before observing")
-        return self.copy_observation(self._capture)
+    def _hold_tick(self):
+        if self._recipe_replay is not None:
+            self._recipe_replay.hold_origin()
+        self.client.tick()
+
+    def _before_selected_capture(self, position):
+        if position == 0:
+            self._source_t0 = self.client.world.get_snapshot().timestamp.elapsed_seconds
+        if self._recipe_replay is not None:
+            self._recipe_replay.finish_holding()
+
+    def _check_initialization(self, initialization):
+        if self._source is None:
+            return
+        actual = self.capture_reference(self._source.start)
+        if initialization is not None:
+            if initialization.provenance.get("deployment_ticks", 0) != self._deployment.ticks:
+                raise ValueError("Reference and run must share the deployment tick plan")
+        base_ids = {actor.id for actor in self.native["actors"].values()}
+        self.initialization_report.update({
+            "source": asdict(self._source.start), "pre_roll_steps": self._source.start.position,
+            "deployment_ticks": self._deployment.ticks,
+            "resolved_scenario": deepcopy(self.replay_scenario),
+            "motion": asdict(self._recipe)["motion"], "actual": actual.provenance,
+            "inserted_actor_ids": [actor.id for actor in self.client.world.get_actors()
+                                   if actor.id not in self._base_actor_ids and actor.id not in base_ids],
+        })
+        if not self._materializing:
+            # Reference materialization records the prescribed ego motion; runs drive it.
+            self._recipe_replay.release_ego()
+
+    def _advance_native(self, control):
+        if self._recipe_replay is not None:
+            self._recipe_replay.before_step()
+        self.ego.apply_control(control)
+        self.client.tick()
+        if self._recipe_replay is not None:
+            self._recipe_replay.after_step()
+
+    def capture_reference(self, source_frame):
+        """Capture actual states and sensor acquisition times, preserving native IDs as evidence."""
+        from avsectester.scenarios.carla_gt import carla_scene_gt
+
+        observation = self.observe()
+        source_t0 = self._source_t0
+        actual_time = observation.t - source_t0
+        actors, aliases = {}, {}
+        for identity, actor in self.native["actors"].items():
+            pose = _FLIP @ np.asarray(actor.get_transform().get_matrix()) @ _FLIP
+            velocity = actor.get_velocity()
+            actors[identity] = ActorState(pose, (velocity.x, -velocity.y, velocity.z))
+            aliases[identity] = actor.id
+        sensors = {}
+        required_sensors = []
+        for sensor in self.ego.sensors.values():
+            name = sensor.source_identifier
+            required_sensors.append(name)
+            payload = observation.sensor_data.get(name)
+            if payload is None or getattr(payload, "timestamp", None) is None:
+                continue
+            acquisition = float(payload.timestamp) + float(sensor.t0)
+            sensors[name] = DataReference(
+                f"carla://capture/{observation.frame}/{name}", name, acquisition - source_t0,
+                {"native_frame": int(payload.frame + sensor.frame0),
+                 "native_timestamp": acquisition, "observation_frame": observation.frame},
+            )
+        # Selection geometry uses the same existing calibrated CARLA adapter as online insertion.
+        rgb = [sensor for sensor in self.ego.sensors.values()
+               if sensor.object.type_id == "sensor.camera.rgb"]
+        scene = carla_scene_gt(self, getattr(self, "selection_camera", "front")) if rgb else None
+        return ReferenceFrame(source_frame, scene, actors, sensors, {
+            "kind": "materialized", "native_frame": observation.frame,
+            "native_timestamp": observation.t, "source_t0": source_t0,
+            "actual_source_time": actual_time,
+            "actor_mapping": aliases, "required_sensors": required_sensors,
+            "setup_ticks": self.setup_ticks,
+            "trajectory_setup_ticks": getattr(self, "_trajectory_setup_ticks", 0),
+            "source_sensor_setup_ticks": 1,
+        })
+
+
+    def materialize_reference(self, source, frames, *, environment=None, deployment=None):
+        self._materializing = True
+        try:
+            self.reset_world(source, environment=environment, deployment=deployment)
+        finally:
+            self._materializing = False
+        records = []
+        for index, frame in enumerate(frames):
+            if index:
+                # Preparation never dispatches experiment hooks.
+                self._replay_tick()
+                self._capture = self._observe()
+            records.append(self.capture_reference(frame))
+        return ReferenceSequence(tuple(records), deepcopy(self.replay_scenario), {
+            "simulator": self.identity, "deployment_ticks": self._deployment.ticks,
+            "seed": self.replay_scenario["client"].get("seed"),
+        })
+
+    def render(self, observation, request):
+        from avsectester.services import RenderResult
+
+        render = _insertion_renderer(self, request.insertions, bindings=request.roles,
+                                     camera=request.sensor_id, compositor=request.compositor)
+        result = render(observation)
+        return RenderResult(request.frame, result, {}, deepcopy(render.evidence),
+                            deepcopy(render.resolved))
 
     def _observe(self) -> Observation:
         for _ in range(self.settle_iters):  # await asynchronous sensor delivery for this frame
@@ -503,7 +700,9 @@ class CarlaBackend(WorldBackend):
         t = snap.timestamp.elapsed_seconds
         self._t0 = t if self._t0 is None else self._t0
         self.ego.timestamp = t
-        sensor_data = self.ego.sensor_data_manager.pop()
+        sensor_data = (self._source_sensor_data(snap.frame)
+                       if self._recipe_replay is not None
+                       else self.ego.sensor_data_manager.pop())
         state = self.ego.get_object_state()
         return self.copy_observation(Observation(
             t=t,
@@ -517,16 +716,47 @@ class CarlaBackend(WorldBackend):
             ego_speed=float(state.velocity.norm()),
         ))
 
-    def setup_tick(self) -> None:
-        """Advance one deployment tick, only inside the world-setup stage.
-
-        Paired runs reserve the same number of deployment ticks. These are initialization
-        steps, not sensor warmup or driving decisions.
-        """
-        if not self._in_setup:
-            raise RuntimeError("setup_tick is only available during world.setup")
-        self.client.tick()
-        self._setup_ticks_used += 1
+    def _source_sensor_data(self, frame, initial=None):
+        """Wait for this tick's configured sensors, draining older queue entries without ticking."""
+        manager = self.ego.sensor_data_manager
+        pending = {sensor.source_identifier: sensor for sensor in self.ego.sensors.values()}
+        captured, seen = {}, {}
+        for name, payload in (initial or {}).items():
+            if name in pending and payload is not None:
+                native_frame = payload.frame + pending[name].frame0
+                seen[name] = native_frame
+                if native_frame > frame:
+                    raise SensorAlignmentError({
+                        "failures": [f"sensor {name} is ahead of world frame"],
+                        "expected_native_frame": frame, "observed_sensor_frames": seen,
+                    })
+                if native_frame == frame:
+                    captured[name] = payload
+                    del pending[name]
+        deadline = time.monotonic() + max(1.0, self.settle_iters * 0.005)
+        while pending:
+            for name, sensor in tuple(pending.items()):
+                while manager.has_data(name):
+                    payload = manager.pop(name)
+                    native_frame = payload.frame + sensor.frame0
+                    seen[name] = native_frame
+                    if native_frame == frame:
+                        captured[name] = payload
+                        del pending[name]
+                        break
+                    if native_frame > frame:
+                        raise SensorAlignmentError({
+                            "failures": [f"sensor {name} is ahead of world frame"],
+                            "expected_native_frame": frame, "observed_sensor_frames": seen,
+                        })
+            if pending and time.monotonic() >= deadline:
+                raise SensorAlignmentError({
+                    "failures": [f"missing aligned capture: {sorted(pending)}"],
+                    "expected_native_frame": frame, "observed_sensor_frames": seen,
+                })
+            if pending:
+                time.sleep(0.005)
+        return captured
 
     def _apply_weather(self, weather: Any) -> None:
         """Set the world weather (the CARLA-native, world-level augmentation tier). ``weather`` is a
@@ -584,3 +814,116 @@ class CarlaBackend(WorldBackend):
             self._in_setup = False
             self._capture = None
             self._world_initialized = False
+            self._recipe_replay = None
+
+
+_FLIP = np.diag([1., -1., 1., 1.])
+
+
+def _place(actor, state):
+    import carla
+
+    pose = _FLIP @ np.asarray(state.pose, dtype=float) @ _FLIP
+    if pose.shape != (4, 4) or not np.isfinite(pose).all():
+        raise ValueError("Prescribed CARLA pose must be a finite 4x4 matrix")
+    rotation = carla.Rotation(
+        pitch=math.degrees(math.asin(float(np.clip(pose[2, 0], -1, 1)))),
+        yaw=math.degrees(math.atan2(pose[1, 0], pose[0, 0])),
+        roll=math.degrees(math.atan2(-pose[2, 1], pose[2, 2])),
+    )
+    actor.set_transform(carla.Transform(carla.Location(*pose[:3, 3]), rotation))
+    vx, vy, vz = state.velocity
+    actor.set_target_velocity(carla.Vector3D(vx, -vy, vz))
+
+
+def _trajectory_tick(actor, state, dt):
+    """Apply the desired next state through a physics tick, retaining measured velocity.
+
+    CARLA reports zero velocity for a teleported actor with physics disabled. Place the
+    actor one integration interval before the requested position, then let native physics
+    advance it with the prescribed velocity. References retain the actual resulting state.
+    """
+    import carla
+
+    pose = np.asarray(state.pose, dtype=float).copy()
+    pose[:3, 3] -= np.asarray(state.velocity) * dt
+    actor.set_simulate_physics(True)
+    # A prescribed 3-D path already specifies its vertical motion. Adding gravity here
+    # would change its declared velocity by g*dt on every tick (even for a level path).
+    actor.set_enable_gravity(False)
+    actor.apply_control(carla.VehicleControl())
+    actor.set_target_angular_velocity(carla.Vector3D())
+    _place(actor, replace(state, pose=pose))
+
+
+class RecipeReplay:
+    """Prescribe background motion; release ego to driving commands after pre-roll."""
+
+    def __init__(self, backend, recipe):
+        self.backend, self.recipe = backend, recipe
+        self.index = 0
+        self.pre_roll = True
+
+    def initialize(self):
+        import carla
+        for name, spec in self.recipe.motion.items():
+            actor = self.backend.native["actors"][name]
+            actor.set_autopilot(False, self.backend.client.traffic_manager_port)
+            if spec.trajectory:
+                actor.set_simulate_physics(False)
+                _place(actor, spec.trajectory[0])
+            else:
+                actor.apply_control(carla.VehicleControl(brake=1.0))
+        self.origins = None
+
+    def activate(self):
+        trajectories = {name: spec for name, spec in self.recipe.motion.items() if spec.trajectory}
+        if trajectories:
+            for name, spec in trajectories.items():
+                _trajectory_tick(self.backend.native["actors"][name], spec.trajectory[0], self.recipe.time_step)
+            self.backend.client.tick()
+        self.origins = {}
+        for name, actor in self.backend.native["actors"].items():
+            v = actor.get_velocity()
+            self.origins[name] = ActorState(_FLIP @ np.asarray(actor.get_transform().get_matrix()) @ _FLIP,
+                                           (v.x, -v.y, v.z))
+        return int(bool(trajectories))
+
+    def hold_origin(self):
+        for name, state in self.origins.items():
+            _trajectory_tick(self.backend.native["actors"][name], state, self.recipe.time_step)
+
+    def finish_holding(self):
+        for name, spec in self.recipe.motion.items():
+            if not spec.trajectory:
+                self.backend.native["actors"][name].set_enable_gravity(True)
+
+    def before_step(self):
+        if self.index >= self.recipe.decision_steps:
+            raise ValueError("CARLA step exceeds terminal recipe support")
+        import carla
+
+        for identity, motion in self.recipe.motion.items():
+            if identity == "ego" and not self.pre_roll:
+                continue
+            actor = self.backend.native["actors"][identity]
+            if motion.trajectory:
+                _trajectory_tick(actor, motion.trajectory[self.index + 1], self.recipe.time_step)
+            elif identity != "ego":
+                control = motion.controls[self.index]
+                actor.apply_control(carla.VehicleControl(
+                    throttle=control.throttle, brake=control.brake, steer=control.steer,
+                ))
+
+    def after_step(self):
+        self.index += 1
+
+    def ego_command(self):
+        motion = self.recipe.motion["ego"]
+        return motion.controls[self.index] if motion.controls else Control()
+
+    def release_ego(self):
+        self.pre_roll = False
+        if self.recipe.motion["ego"].trajectory:
+            self.backend.ego.actor.set_simulate_physics(True)
+            self.backend.ego.actor.set_enable_gravity(True)

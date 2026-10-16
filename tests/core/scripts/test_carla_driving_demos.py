@@ -30,15 +30,15 @@ class CameraWorld(NuRecBackend):
     def prepare_clean_attack_pair(self):
         self.prepares += 1
 
-    def reset(self):
+    def _initialize_world(self, source, initialization, environment):
         self.resets += 1
-        return super().reset()
+        return super()._initialize_world(source, initialization, environment)
 
     def close(self):
         self.closes += 1
         super().close()
 
-    def setup_tick(self):
+    def _hold_tick(self):
         pass
 
     @property

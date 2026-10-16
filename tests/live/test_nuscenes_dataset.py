@@ -3,7 +3,7 @@
 Reads real ``v1.0-trainval`` ground truth through the devkit and is **skipped** when the dataset/devkit
 are absent — there is no fabricated stand-in. Asserts the adapter yields qualifying vehicles with real
 3-D extent and that the requirement filter selects a rear-facing lead in the patch band. The
-``RecordedFrameBackend`` plumbing is tested separately with a real on-disk image (no GT fabrication).
+``RecordedSequenceBackend`` plumbing is tested separately with a real on-disk image (no GT fabrication).
 """
 
 import os

@@ -119,9 +119,9 @@ def carla_filter_context(backend, *, camera="front", depth=None, observation=Non
 class CarlaSelectionBackend(CarlaBackend):
     """CARLA backend with a registered depth sensor for insertion selection/rendering.
 
-    Reset creates the ordinary scene, then advances one stationary setup frame to acquire
-    the additional sensor. Every replay uses this same preparation path. This setup frame
-    is outside the returned experiment. Depth and geometry use the same CARLA frame ID.
+    The depth camera is created during base-world initialization, before any capture.
+    It shares the ordinary sensor preparation and selected-origin replay path. Depth
+    and geometry use the same CARLA frame ID.
 
     This opt-in backend replaces stock ``CarlaRgbCamera`` configurations with
     ``PinholeRgbCamera`` in its own configuration copy. Both paired runs therefore use
@@ -140,11 +140,15 @@ class CarlaSelectionBackend(CarlaBackend):
         self.depth_frame = None
         self._depth_queue = None
 
-    def reset(self):
-        import carla
-
+    def _resolve_scenario(self, source, initialization, environment):
         register_pinhole_camera()
-        super().reset()
+        scenario = super()._resolve_scenario(source, initialization, environment)
+        for sensor in scenario["ego"].get("sensors", ()):
+            if sensor.get("type") == "CarlaRgbCamera":
+                sensor["type"] = "PinholeRgbCamera"
+        return scenario
+
+    def _initialize_sensors(self):
         rgb = carla_rgb_sensor(self, self.selection_camera)
         _require_pinhole_sensor(rgb.object)
         world = self.client.world
@@ -163,25 +167,15 @@ class CarlaSelectionBackend(CarlaBackend):
             if name in rgb.object.attributes:
                 blueprint.set_attribute(name, rgb.object.attributes[name])
         blueprint.set_attribute("sensor_tick", "0")
-        relative = np.asarray(self.ego.actor.get_transform().get_inverse_matrix()) @ np.asarray(
-            rgb.object.get_transform().get_matrix()
-        )
-        rotation = carla.Rotation(
-            pitch=float(np.rad2deg(np.arcsin(np.clip(relative[2, 0], -1, 1)))),
-            yaw=float(np.rad2deg(np.arctan2(relative[1, 0], relative[0, 0]))),
-            roll=float(np.rad2deg(np.arctan2(-relative[2, 1], relative[2, 2]))),
-        )
+        # Use the spawn-time relative calibration: native get_transform may still be stale
+        # before the first world tick, particularly in scenes without a lead spawn tick.
         sensor = world.spawn_actor(
-            blueprint,
-            carla.Transform(carla.Location(*relative[:3, 3]), rotation),
-            attach_to=self.ego.actor,
+            blueprint, rgb.reference.as_carla_transform(local=True), attach_to=self.ego.actor,
         )
         self._resources.callback(sensor.destroy)
         self._resources.callback(sensor.stop)
         self._depth_queue = Queue()
         sensor.listen(self._depth_queue.put)
-        self.client.tick()
-        return self._observe()
 
     def _observe(self):
         observation = super()._observe()

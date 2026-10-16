@@ -63,6 +63,8 @@ class RunRequest:
     metadata: Mapping[str, Any] = field(default_factory=dict)
     source: Any = None
     initialization: Any = None
+    deployment: Any = None
+    environment: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if (not isinstance(self.decision_steps, int) or isinstance(self.decision_steps, bool)
@@ -111,6 +113,7 @@ class ClosedLoopRunner:
         on_step: Callable[[int, Observation, Control], None] | None = None,
         record_views: Mapping[str, Callable[[Observation], Any]] | None = None,
         view_sink: Callable[[int, str, Any], Any] | None = None,
+        release_owned_resources: Callable[[], None] | None = None,
     ) -> RunLog:
         from .attack_runtime import AttackContext, AttackDispatcher
         from .log_codecs import default_codecs
@@ -141,6 +144,13 @@ class ClosedLoopRunner:
         current_step = -1
         last_observation: Observation | None = None
         last_attack_context: AttackContext | None = None
+        resources_released = False
+
+        def release() -> None:
+            nonlocal resources_released
+            if release_owned_resources is not None and not resources_released:
+                resources_released = True
+                release_owned_resources()
 
         def actions() -> list[dict[str, Any]]:
             return [
@@ -196,16 +206,17 @@ class ClosedLoopRunner:
             attack_dispatch.start(context("start"))
 
         try:
-            with session.activate():
+            with sim.exclusive(), session.activate():
                 try:
-                    callback = start_attacks if request.attacks and sim.supports_before_first_capture else None
-                    sim.reset(request.source, request.initialization, before_first_capture=callback)
+                    sim.reset(request.source, request.initialization,
+                              deployment=request.deployment, environment=request.environment)
                     last_observation = sim.observe()
-                    if request.attacks and not started:
+                    if request.attacks:
                         start_attacks()
                     recorder.record_event(
                         "initialization", physical_state=sim.state(),
                         clock=sim.clock, setup_ticks=backend.setup_ticks,
+                        source_initialization=getattr(backend, "initialization_report", {}),
                         outputs=session.outputs, actions=actions(),
                     )
                     drain()
@@ -299,12 +310,18 @@ class ClosedLoopRunner:
                 finally:
                     if started:
                         cleanup_attacks()
+            release()
             return recorder.finish(status="completed")
         except BaseException as error:
+            try:
+                release()
+            except BaseException as cleanup:
+                error.add_note(f"Owned resource cleanup also failed: {cleanup!r}")
             try:
                 recorder.record_event(
                     "failure", step=current_step if current_step >= 0 else None,
                     error_type=type(error).__name__, message=str(error),
+                    initialization_report=getattr(error, "report", {}),
                     cleanup_errors=list(getattr(error, "__notes__", ())),
                     actions=actions(), outputs=session.outputs,
                 )

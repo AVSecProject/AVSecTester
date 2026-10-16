@@ -303,9 +303,11 @@ was emitted; receipts record the decision, stage and physical clock when its pip
 replaced. An `applied` receipt does not imply that the world subsequently executed a command.
 Cleanup records pending actions as `not_applied`, including startup actions in a zero-step run.
 
-`start` runs before the first capture when the simulator provides that initialization capability;
-otherwise it runs after reset and before the first decision. No raw observation is supplied to
-`start`. With zero decisions, `start` and `stop` still run, but `step` does not.
+`start` runs after reset and the first capture, before the first decision, so it sees the state
+of the selected origin. Its pipeline actions apply from decision 0; it cannot change the first
+capture. World changes that must appear in the first capture belong to `world.setup`
+deployments. No raw observation is supplied to `start`. With zero decisions, `start` and `stop`
+still run, but `step` does not.
 
 **Not yet implemented.** Typed world insertion actions, selection and the complete attack
 definition/preparation API are not available through `AttackRuntime`. See

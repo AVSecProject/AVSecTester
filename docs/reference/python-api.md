@@ -107,17 +107,16 @@ bridged by caching the observations returned from their existing `reset`/`step` 
 | Member | Returns or does |
 |---|---|
 | `backend` | Borrowed `WorldBackend`; it remains caller-owned |
-| `reset(source: Any = None, initialization: Any = None, *, before_first_capture: Callable[[], None] \| None = None) -> None` | Resets the configured world. Non-`None` source/initialization values are not supported in this phase |
-| `supports_before_first_capture` | Whether the adapter supports the callback before its first capture. Legacy reset overrides without a migrated primary method remain on the compatibility path |
+| `reset(source=None, initialization=None, *, deployment=None, environment=None) -> None` | Resets a CaptureBackend from source data or its configured origin; ordinary WorldBackend subclasses use the legacy bridge |
 | `clock` | Frozen `ClockSnapshot(t: float, frame: int)` using physical simulator time/frame |
 | `state() -> WorldSnapshot` | Independent physical state, without advancing time |
 | `observe() -> Observation` | Independent view of the current capture, without a tick or repeated render hooks |
 | `step(command: Control) -> None` | Advances once and retains the resulting capture |
 | `close() -> None` | Releases bridge-held data; does not close the borrowed backend |
 
-Call `reset` before observing or stepping. Unsupported pre-capture callbacks fail explicitly.
-NuRec checkpoint restoration invalidates its capture; the next observation renders the restored
-state without advancing it. The built-in backends retain their old `reset/step -> Observation`
+Call `reset` before observing or stepping. `CaptureBackend` owns reset, advance and capture state;
+subclasses implement native operations and cannot override legacy `reset` or `step`.
+NuRec checkpoint restoration captures immediately; subsequent observations only copy that capture. The built-in backends retain their old `reset/step -> Observation`
 interfaces for existing callers.
 
 ### Closed-loop requests
@@ -915,6 +914,7 @@ class NuRecDataset(Dataset):
         vehicle_labels: tuple[str, ...] = _VEHICLE_LABELS,
         max_scenes: int | None = None,
         endpoint: str = "127.0.0.1:50051",
+        time_step: float = 0.1,
     ) -> None: ...
     @classmethod
     def from_glob(cls, pattern: str, **kwargs) -> NuRecDataset: ...
@@ -924,9 +924,9 @@ class NuRecDataset(Dataset):
 class NuScenesDataset(Dataset):
     def __init__(self, dataroot: str, version: str = "v1.0-trainval", camera: str = "CAM_FRONT",
                  max_samples: int | None = None) -> None: ...
-class RecordedFrameBackend(WorldBackend):
-    def __init__(self, image_path: str, sensor_id: str = "front",
-                 frame: int = 0, t: float = 0.0) -> None: ...
+# avsectester.simulators.recorded
+class RecordedSequenceBackend(CaptureBackend):
+    def __init__(self, source: SourceData | None = None) -> None: ...
 
 # avsectester.scenarios.carla_provider
 class CarlaCandidateProvider:
@@ -2134,7 +2134,7 @@ The clean-versus-treated figure is `metric.plot_impact`, listed under
 | `avsectester.scenarios.carla_provider` | `CarlaCandidateProvider`, `CarlaSelectionBackend`, `carla_filter_context`, `depth_visibility`, `decode_carla_depth`, `register_pinhole_camera` | [CARLA](../guides/scenarios.md#carla) |
 | `avsectester.scenarios.carla_gt` | `carla_scene_gt`, `predict_scene_gt`, `carla_actor_pose`, `carla_rgb_sensor` | [CARLA](../guides/scenarios.md#carla) |
 | `avsectester.scenarios.datasets.nurec` | `NuRecDataset` and its rig-frame `FThetaCamera` | [NuRec datasets](../guides/scenarios.md#nurec-datasets) |
-| `avsectester.scenarios.datasets.nuscenes` | `NuScenesDataset`, `RecordedFrameBackend`, `scene_from_cam_boxes` | [Support another dataset or provider](../guides/scenarios.md#support-another-dataset-or-provider) |
+| `avsectester.scenarios.datasets.nuscenes` | `NuScenesDataset`, `scene_from_cam_boxes` | [Support another dataset or provider](../guides/scenarios.md#support-another-dataset-or-provider) |
 | `avsectester.scenarios.estimators` | `resolved_to_target` | [Visibility](../guides/scenarios.md#visibility) |
 | `avsectester.rendering` | Re-exports `Camera`, `InsertionGeometry`, `Visibility`, `VisibilityEvidence` and the provider protocols | [Insert into the model input](../examples/image-insertion.md#insert-into-the-model-input) |
 | `avsectester.rendering.cameras` | `Camera`, `PinholeCamera`, `FThetaCamera`, `camera_from_calibration`, pose helpers | [Insert into the model input](../examples/image-insertion.md#insert-into-the-model-input) |

@@ -39,9 +39,9 @@ class CountingBackend(NuRecBackend):
     def prepare_clean_attack_pair(self):
         self.prepares += 1
 
-    def reset(self):
+    def _initialize_world(self, source, initialization, environment):
         self.resets += 1
-        return super().reset()
+        return super()._initialize_world(source, initialization, environment)
 
 
 @pytest.mark.parametrize("dynamics,mode", [
