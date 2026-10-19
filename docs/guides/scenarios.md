@@ -278,7 +278,7 @@ Candidates use runtimes of `CarlaSimulator(scenario, depth_camera="front")`. It 
 cameras with undistorted `PinholeRgbCamera` sensors, adds an aligned depth camera and advances one
 stationary setup frame before the first observation. The selected scenario's factory uses the same
 configuration, so paired resets match the selection. The selected RGB camera must produce a frame at
-every driving step: set `sensor_tick` to 0 or to the simulator step. `analytic_preview=True`
+every driving step: set `sensor_tick` to 0. `analytic_preview=True`
 enumerates approximate scenes offline instead. It validates no CARLA spawn and measures no rendered
 visibility.
 

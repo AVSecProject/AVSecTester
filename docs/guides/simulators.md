@@ -44,8 +44,10 @@ A CARLA scene has these groups:
 
 Keep `client.synchronous: true`. Every reset reloads the world, and avcarla requires synchronous
 mode for that. `client.rate` sets ticks per simulated second. One driving step is one tick, so
-40 steps at `rate: 20.0` cover 2 seconds. The example sets LiDAR `sensor_tick: 0.05` and
-`rotation_frequency: 20` to match that rate. When the ego carries several sensors, set
+40 steps at `rate: 20.0` cover 2 seconds. In synchronous mode, set every ego sensor's
+`sensor_tick` to 0 so that it captures on every tick. A `sensor_tick` equal to the step can skip
+ticks, because CARLA accumulates sensor time in floating point. The example also sets LiDAR
+`rotation_frequency: 20` to match the rate. When the ego carries several sensors, set
 `ego.pipeline.perception_input` to the sensor that feeds perception, as in
 [`configs/carla_patch_scenario.yaml`](../../configs/carla_patch_scenario.yaml).
 

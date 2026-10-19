@@ -33,12 +33,12 @@ ego:
       image_size_x: 800
       image_size_y: 600
       fov: 90
-      sensor_tick: 0.05
+      sensor_tick: 0.0
     - type: CarlaLidar
       name: lidar-0
       source_ID: 0
       rotation_frequency: 20
-      sensor_tick: 0.05
+      sensor_tick: 0.0
       range: 70.0
   # The backend replaces the ego's own pipeline with a no-op. Driving comes from the AVStack.
   pipeline:

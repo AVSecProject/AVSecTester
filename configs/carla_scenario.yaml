@@ -34,7 +34,7 @@ ego:
     - type: CarlaLidar
       name: lidar-0
       rotation_frequency: 20
-      sensor_tick: 0.05
+      sensor_tick: 0.0
       range: 70.0
   pipeline:
     type: ModularDrivingPipeline
