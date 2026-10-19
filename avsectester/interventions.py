@@ -2,68 +2,43 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from copy import deepcopy
 from importlib import import_module
 from typing import Any, TYPE_CHECKING
 
-from avsectester.closed_loop.datatypes import Observation
+from avsectester.closed_loop.avstacks.native_hook import NativeHook as _NativeHook
 from avsectester.preparation import Intervention, Treatment, prepare_intervention
-from avsectester.closed_loop.hooks import CallInputs, Hook, Plugin, RunContext, Runtime, StageContext
+
+# Deferred concrete attacks use the legacy observation adapter import; implementation is generic.
+from avsectester.closed_loop.hooks import (
+    Hook, ObservationTransform as ObservationTransform, RunContext, Runtime,
+)
 
 if TYPE_CHECKING:
     from avsectester.scenarios.source import ScenarioInstance
 
 
-class ObservationTransform:
-    """Adapt a one-argument observation function without losing its lifecycle."""
+class LegacyNativeHook(_NativeHook):
+    """Retained for legacy runtime configurations with explicit registration modules.
 
-    def __init__(self, transform: Callable[[Observation], Observation]) -> None:
-        self.function = transform
-
-    @property
-    def lifecycle_owner(self) -> Any:
-        return self.function
-
-    def transform(self, observation: Observation, context: StageContext) -> Observation:
-        return self.function(observation)
-
-
-class NativeHook(Plugin):
-    """Adapt an avstack hook's tuple convention to a runtime stage value.
-
-    The native hook is built afresh for every run. Its algorithm and configured arguments
-    remain unchanged. Use a runtime plugin directly when contextual feedback is required.
+    Concrete attacks still use the configured-runner path until their migration. Native
+    registration is explicit there, just as it is in the experiment API's ``hooks[].imports``.
     """
 
-    def __init__(self, config: Mapping[str, Any], *, phase: str = "post") -> None:
-        if phase not in {"pre", "post"}:
-            raise ValueError("NativeHook phase must be 'pre' or 'post'")
-        self.config = deepcopy(dict(config))
-        self.phase = phase
-        self.native: Any = None
+    def __init__(self, config: Mapping[str, Any], *, phase: str = "post",
+                 imports: Sequence[str] = ()) -> None:
+        super().__init__(config, phase=phase)
+        if not isinstance(imports, Sequence) or isinstance(imports, (str, bytes)) or any(
+            not isinstance(module, str) or not module for module in imports
+        ):
+            raise ValueError("Native hook imports must be module names")
+        self.imports = tuple(imports)
 
     def reset(self, context: RunContext) -> None:
-        from avstack.config import HOOKS
-
-        self.native = HOOKS.build(deepcopy(self.config))
-
-    def transform(self, value: Any, context: StageContext) -> Any:
-        if self.phase == "pre":
-            if not isinstance(value, CallInputs):
-                raise TypeError("Native pre-hooks require CallInputs")
-            args, kwargs = self.native(*value.args, **value.kwargs)
-            return CallInputs(args=args, kwargs=kwargs)
-        result = self.native(value)
-        if not isinstance(result, tuple) or len(result) != 1:
-            raise TypeError("Native post-hooks must return one output in a tuple")
-        return result[0]
-
-    def close(self) -> None:
-        native, self.native = self.native, None
-        close = getattr(native, "close", None)
-        if close is not None:
-            close()
+        for module in self.imports:
+            import_module(module)
+        super().reset(context)
 
 
 def _factory_definition(factory: Any, options: Any) -> tuple[str, str, dict[str, Any]]:
@@ -79,7 +54,7 @@ def _factory_definition(factory: Any, options: Any) -> tuple[str, str, dict[str,
 
 
 def _handler(spec: Mapping[str, Any], *, phase: str = "post") -> Any:
-    allowed = {"factory", "options", "avstack"}
+    allowed = {"factory", "options", "avstack", "imports"}
     unknown = set(spec) - allowed
     if unknown:
         raise ValueError(f"Unknown handler options: {sorted(unknown)}")
@@ -88,7 +63,9 @@ def _handler(spec: Mapping[str, Any], *, phase: str = "post") -> Any:
     if "avstack" in spec:
         if "options" in spec or not isinstance(spec["avstack"], Mapping):
             raise ValueError("avstack requires its native configuration mapping")
-        return NativeHook(spec["avstack"], phase=phase)
+        return LegacyNativeHook(spec["avstack"], phase=phase, imports=spec.get("imports", ()))
+    if "imports" in spec:
+        raise ValueError("imports requires an avstack native hook configuration")
     factory = spec["factory"]
     module_name, name, options = _factory_definition(factory, spec.get("options", {}))
     try:
@@ -132,15 +109,17 @@ def runtime_from_config(config: Mapping[str, Any] | None, *, case: Any = None) -
 class NativeHookIntervention(Intervention):
     """Preparation adapter for an existing avstack post-hook configuration."""
 
-    def __init__(self, stage: str, config: Mapping[str, Any]) -> None:
+    def __init__(self, stage: str, config: Mapping[str, Any], *, imports: Sequence[str] = ()) -> None:
         self.stage = stage
         self.config = deepcopy(dict(config))
+        # Validate at configuration time; defer registration to the hook's lifecycle.
+        self.imports = LegacyNativeHook(config, imports=imports).imports
 
     def prepare(self, scenario: ScenarioInstance) -> dict[str, Any]:
         return deepcopy(self.config)
 
     def hooks(self, artifacts: Any) -> Sequence[Hook]:
-        return (Hook(self.stage, NativeHook(artifacts)),)
+        return (Hook(self.stage, LegacyNativeHook(artifacts, imports=self.imports)),)
 
 
 def prepare_from_config(
@@ -168,8 +147,9 @@ def prepare_from_config(
     if not isinstance(entries, list):
         raise ValueError("interventions must be a list")
     for attack in attacks:
-        if not isinstance(attack, Mapping) or set(attack) != {"stage", "hook"}:
-            raise ValueError("Each attacks entry requires exactly 'stage' and 'hook'")
+        if (not isinstance(attack, Mapping) or not {"stage", "hook"} <= set(attack)
+                or set(attack) - {"stage", "hook", "imports"}):
+            raise ValueError("Each attacks entry requires 'stage', 'hook' and optional 'imports'")
         stage = attack["stage"]
         if stage not in {"perception", "tracking", "planning", "control"}:
             raise ValueError(f"Invalid convenience attack stage: {stage!r}")
@@ -179,7 +159,8 @@ def prepare_from_config(
             hook_type = attack["hook"].get("type", f"{stage}_attack")
             name = hook_type if isinstance(hook_type, str) else getattr(hook_type, "__name__", None)
             prepared.append(prepare_intervention(
-                NativeHookIntervention(f"{stage}.post", attack["hook"]), scenario,
+                NativeHookIntervention(f"{stage}.post", attack["hook"],
+                                       imports=attack.get("imports", ())), scenario,
                 name=name, position="before",
             ))
     if patches:

@@ -127,7 +127,7 @@ class _ImageCondition:
         self.pipeline, self.camera = pipeline, camera
 
     def __call__(self, observation: Observation, context: StageContext) -> Observation:
-        from avsectester.perturbations.image import read_camera_rgb, write_camera_rgb
+        from avsectester.closed_loop.datatypes import read_camera_rgb, write_camera_rgb
 
         if self.camera is not None and self.camera not in observation.sensor_data:
             raise ValueError(f"Sensor condition camera {self.camera!r} is absent")

@@ -74,7 +74,7 @@ class CallInputs:
 
 
 @dataclass
-class RenderRequest:
+class CameraRenderRequest:
     """A sensor render request. Its pose is independent of the simulator's true pose."""
 
     pose: Any
@@ -82,7 +82,7 @@ class RenderRequest:
 
     def __post_init__(self) -> None:
         if not isinstance(self.camera, str) or not self.camera:
-            raise ValueError("RenderRequest camera must be a nonempty sensor name")
+            raise ValueError("CameraRenderRequest camera must be a nonempty sensor name")
 
 
 @dataclass(frozen=True)
@@ -172,6 +172,20 @@ class Plugin(ABC):
         """Release resources, including partially initialized resources after an error."""
 
 
+class ObservationTransform:
+    """Adapt a one-argument observation function without losing its lifecycle."""
+
+    def __init__(self, transform: Callable[[Observation], Observation]) -> None:
+        self.function = transform
+
+    @property
+    def lifecycle_owner(self) -> Any:
+        return self.function
+
+    def transform(self, observation: Observation, context: StageContext) -> Observation:
+        return self.function(observation)
+
+
 @dataclass(frozen=True)
 class Hook:
     """Bind a function or a lifecycle plugin to an adapter-supported execution stage."""
@@ -256,8 +270,6 @@ class HookSet:
         """Create one execution session, validating capabilities before resetting the world."""
         hook_set = self
         if perturb is not None:
-            from avsectester.interventions import ObservationTransform
-
             hook_set = self.with_hooks([Hook("observation", ObservationTransform(perturb))], prepend=True)
         return HookDispatcher(hook_set, simulator_runtime, avstack)
 
@@ -303,6 +315,7 @@ class Runtime(HookSet):
     @classmethod
     def from_config(cls, config: Mapping[str, Any] | None = None, *, case: Any = None) -> Runtime:
         """Load legacy stage handlers and localization configuration."""
+        # The legacy Runtime facade still serves configured CLI and concrete attack callers.
         from avsectester.interventions import runtime_from_config
 
         return runtime_from_config(config, case=case)
@@ -412,7 +425,7 @@ class HookDispatcher:
                 "localization.post": StateEstimate,
                 "observation": Observation,
                 "command": Control,
-                "render.pre": RenderRequest,
+                "render.pre": CameraRenderRequest,
             }.get(stage)
             if expected is not None:
                 self._require(value, expected, stage)
@@ -458,4 +471,3 @@ class HookDispatcher:
     def _require(value: Any, expected: type, stage: str) -> None:
         if not isinstance(value, expected):
             raise TypeError(f"{stage} must return {expected.__name__}, got {type(value).__name__}")
-

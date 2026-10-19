@@ -105,6 +105,7 @@ path = "avsectester/__init__.py"
 files = [
     "avsectester/backend.py", "avsectester/runner.py",
     "avsectester/attack/attack.py", "avsectester/attack/runtime.py",
+    "avsectester/attack/segments.py", "avsectester/experiment/",
     "avsectester/closed_loop/datatypes.py", "avsectester/closed_loop/hooks.py",
     "avsectester/closed_loop/avstack.py", "avsectester/closed_loop/vehicle_io.py",
     "avsectester/closed_loop/simulator.py", "avsectester/closed_loop/runner.py",
@@ -112,6 +113,7 @@ files = [
     "avsectester/closed_loop/frame_data.py",
     "avsectester/runlog/log.py", "avsectester/runlog/codecs.py",
     "avsectester/datasets/base.py",
+    "avsectester/closed_loop/environment.py", "avsectester/geometry/",
 ]
 python_version = "3.11"
 follow_imports = "skip"

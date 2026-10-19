@@ -8,7 +8,7 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 from avsectester.closed_loop.avstack import AVStack
-from avsectester.experiment import run_configured
+from avsectester.legacy_experiment import run_configured
 from avsectester.closed_loop.datatypes import Control, StateEstimate
 from avsectester.preparation import Intervention
 from avsectester.closed_loop.hooks import Hook, Plugin, Runtime
@@ -307,7 +307,7 @@ def test_repeated_clean_uses_the_explicit_baseline_in_both_runs(configured_metho
 def test_missing_selected_methods_are_configuration_errors_before_backend_creation(
     configured_methods, treatment,
 ):
-    from avsectester.experiment import ConfigurationError
+    from avsectester.legacy_experiment import ConfigurationError
 
     env = configured_methods
     env.config.pop("interventions")

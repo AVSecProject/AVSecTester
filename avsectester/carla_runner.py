@@ -7,7 +7,7 @@ from copy import deepcopy
 
 from avsectester.closed_loop.avstack import AVStack
 from avsectester.backend import run
-from avsectester.experiment import ExecutionMode, TreatmentMode, configured_stack, run_configured
+from avsectester.legacy_experiment import ExecutionMode, TreatmentMode, configured_stack, run_configured
 from avsectester.closed_loop.datatypes import Trace
 from avsectester.closed_loop.hooks import Runtime
 from avsectester.closed_loop.simulators.carla import CarlaSimulator

@@ -3,15 +3,9 @@
 import numpy as np
 import pytest
 
-from avsectester.insertion import (
-    ActorPose,
-    Insertion,
-    Orientation,
-    PlaneAsset,
-    WorldPlacement,
-    resolve_insertion,
-)
-from avsectester.rendering.cameras import FThetaCamera, PinholeCamera
+from avsectester.geometry.poses import ActorPose
+from avsectester.insertion import Insertion, Orientation, PlaneAsset, WorldPlacement, resolve_insertion
+from avsectester.geometry.cameras import FThetaCamera, PinholeCamera
 from avsectester.rendering.visibility import CuboidVisibilityEstimator, DepthVisibilityEstimator
 from avsectester.rendering.compositor import render_plane, render_resolved
 

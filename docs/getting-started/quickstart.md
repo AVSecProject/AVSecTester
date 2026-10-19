@@ -96,7 +96,7 @@ To plot traces from Python, see [Plot a comparison](../guides/evaluation.md#plot
 `--mode` and `--treatment` override the YAML keys `mode` and `treatment`. `single` runs one
 treatment without a comparison. `pair` runs a clean baseline and the selected treatment. The
 treatments are `clean`, `attack`, `defense` and `attack-defense`, the
-[combined treatment](../concepts/architecture.md#terminology). Which interventions each one
+combined attack-and-defense treatment. Which interventions each one
 enables is described in [Treatments and modes](../guides/experiments.md#treatments-and-modes).
 
 With the supplied configuration:
@@ -196,8 +196,11 @@ passes 5 m/s, the zero command holds the speed. Each record holds the physical s
 driving step and the command executed in it. Reading traces is described in
 [Driving traces](../guides/evaluation.md#driving-traces).
 
-To change what the driving system sees, register a handler with a `Runtime` and pass it to `run`.
-Continue with [Write your first attack](../guides/attacks.md#write-your-first-attack).
+To implement an attack, continue with
+[Write your first attack](../guides/attacks.md#write-your-first-attack), which introduces the
+`Attack` workflow for Python experiments. To modify this direct-run example with stage handlers,
+use `Hook` and `Runtime` as described in
+[Handler contract](../reference/runtime.md#handler-contract).
 
 ## Next steps
 

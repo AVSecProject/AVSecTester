@@ -100,13 +100,14 @@ simulator objects. Unknown native types need an explicit codec before disk recor
 chunk limits or codecs, pass a `Recorder` to the runner; the supplied recorder controls its own
 path, metadata and retention. See [RunLog and recording API](../reference/python-api.md#runlog-and-recording).
 
-**Not yet implemented.** Dataset-driven candidate services and the complete selection/preparation
-experiment API belong to later migration phases. The direct runner currently uses already
-configured backend/stack instances; `RunRequest.source` and `initialization` must remain `None`.
+Dataset-driven selection, offline preparation and saved treatment runs are available through
+`Experiment.prepare` and `Experiment.execute`. See
+[Prepare and execute attacks](experiments.md#prepare-and-execute-attacks). Direct runs use
+`RunRequest.start` to select a `ScenarioStart` and accept initialization data when needed.
 
 ## Driving traces
 
-The compatibility runners return [run records](../concepts/architecture.md#terminology) as a `Trace`
+The compatibility runners return [recorded driving results](#driving-traces) as a `Trace`
 (`avsectester.closed_loop.datatypes`), derived from the unified RunLog. `run_configured` returns a
 `dict[str, Trace]` keyed by treatment name. `run_prepared` returns the result of its `run_fn` for
 each named treatment, which is a `Trace` by default. Their CLI summary and existing export options

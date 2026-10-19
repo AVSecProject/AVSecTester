@@ -1,20 +1,24 @@
-# Implement a defense
+# Implement a defense (legacy path)
 
 > **Audience:** Researchers implementing a new defense.  
 > **Outcome:** Write a defense with the shared intervention interface, order it relative to attacks and conditions, record alarms and run it in defense treatments.  
 > **Prerequisites:** [Architecture](../concepts/architecture.md) and [Implement an attack](attacks.md).
 
-This guide continues the running example of [Implement an attack](attacks.md): `CruiseControl`
-holds 5 m/s using the reported speed, and the attack reports 5 m/s more than the measured speed.
-The defense written here detects and limits that spoofed speed.
+This guide uses the legacy `Intervention` and configured-run interfaces, which support defense
+and combined treatments. The `Experiment.prepare` / `Experiment.execute` attack workflow does
+not support defense treatments. Its `Attack` classes cannot be passed as legacy interventions.
+
+The examples define their own `CruiseControl` and legacy speed-spoof intervention below. The
+driver holds 5 m/s using the reported speed, while the attack adds 5 m/s to that report. The
+defense detects and limits the spoofed speed.
 
 ## Defenses and attacks
 
-A defense is an [intervention](../concepts/architecture.md#terminology) of kind `defense`. It uses
-the same interfaces as an attack: handlers registered with `Hook`, stateful `Plugin` handlers, and
-an optional `Intervention` with `prepare` and `hooks`. Everything in
-[Implement an attack](attacks.md) about stages, contexts, lifecycle and artifacts applies
-unchanged.
+A legacy defense is an `Intervention` of kind `defense`. Like legacy attacks, it supplies
+handlers registered with `Hook`, stateful `Plugin` handlers and optional preparation through
+`Intervention.prepare` and `Intervention.hooks`. See
+[Handler contract](../reference/runtime.md#handler-contract) and
+[Plugin lifecycle](../reference/runtime.md#plugin-lifecycle).
 
 The kind is the only difference. It decides which configured treatments enable the intervention:
 `attack` enables attacks, `defense` enables defenses and the combined treatment (`attack-defense`)
@@ -32,15 +36,30 @@ trusted reference, and state that assumption in your evaluation.
 Successive reported positions imply a speed. This defense clamps the reported speed to within a
 tolerance of that odometry speed. The NuRec state estimate carries `x` and `y` in metres:
 
+<!-- runnable -->
 ```python
 import math
 from dataclasses import replace
 
 from avsectester.backend import run
+from avsectester.closed_loop.avstack import AVStack
+from avsectester.closed_loop.datatypes import Control
 from avsectester.closed_loop.hooks import Hook, Plugin, Runtime
 from avsectester.closed_loop.simulators.nurec import NuRecSimulator, StubRenderer
 
-# CruiseControl and overreport_speed are defined in Write your first attack.
+class CruiseControl(AVStack):
+    """Hold 5 m/s using the reported speed."""
+
+    @property
+    def command_modes(self):
+        return frozenset({"actuator"})
+
+    def __call__(self, observation):
+        return Control(throttle=0.5) if observation.ego_speed < 5.0 else Control()
+
+
+def overreport_speed(observation, context):
+    return replace(observation, ego_speed=observation.ego_speed + 5.0)
 
 
 class OdometryClamp(Plugin):
@@ -184,15 +203,37 @@ class SpeedClamp(Intervention):
         return [Hook("observation", OdometryClamp(artifacts["tolerance"]))]
 ```
 
-In Python, prepare it with `prepare_intervention(SpeedClamp(), scenario, kind="defense")`. In a
+Define the attack as a legacy intervention too; this class is independent of the `SpeedSpoof`
+`Attack` in [Implement an attack](attacks.md):
+
+```python
+from dataclasses import replace
+from avsectester.preparation import Intervention
+from avsectester.closed_loop.hooks import Hook
+
+
+class LegacySpeedSpoof(Intervention):
+    def __init__(self, bias=5.0):
+        self.bias = bias
+
+    def prepare(self, scenario):
+        return {"bias": self.bias}
+
+    def hooks(self, artifacts):
+        def spoof(observation, context):
+            return replace(observation, ego_speed=observation.ego_speed + artifacts["bias"])
+        return [Hook("observation", spoof)]
+```
+
+In Python, prepare the defense with
+`prepare_intervention(SpeedClamp(), scenario, kind="defense")`. In a
 configuration, add an [`interventions`](../reference/configuration.md#interventions) entry with
-`kind: defense`. With `OdometryClamp` and `SpeedClamp` in `my_research/defenses.py`, the
-`interventions` list of the attack configuration in
-[Configure and run the attack](attacks.md#configure-and-run-the-attack) becomes:
+`kind: defense`. With the three classes in `my_research/defenses.py`, the
+legacy configuration's `interventions` list can include both `LegacySpeedSpoof` and `SpeedClamp`:
 
 ```yaml
 interventions:
-  - factory: my_research.attacks:SpeedSpoof
+  - factory: my_research.defenses:LegacySpeedSpoof
     kind: attack
     name: speed-spoof
     options: {bias: 5.0}
@@ -232,12 +273,12 @@ from avsectester.closed_loop.hooks import Runtime
 from avsectester.scenarios.source import ScenarioInstance
 from avsectester.closed_loop.simulators.nurec import NuRecSimulator, StubRenderer
 
-# CruiseControl and SpeedSpoof are defined in Implement an attack. SpeedClamp is defined above.
+# CruiseControl, LegacySpeedSpoof and SpeedClamp are defined above.
 scenario = ScenarioInstance(
     factory=lambda: NuRecSimulator({"dt": 0.1}, renderer=StubRenderer(height=8, width=8)).create_runtime(),
 )
 treatment = Treatment((
-    prepare_intervention(SpeedSpoof(bias=5.0), scenario, kind="attack"),
+    prepare_intervention(LegacySpeedSpoof(bias=5.0), scenario, kind="attack"),
     prepare_intervention(SpeedClamp(tolerance=1.0), scenario, kind="defense"),
 ))
 results = run_prepared(scenario, CruiseControl, frames=80, runtimes={

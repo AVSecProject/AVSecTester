@@ -99,8 +99,9 @@ def test_saved_steps_pair_reasoning_with_post_step_trace(demo, monkeypatch, tmp_
 @pytest.mark.parametrize("yaw", [0, 0.3, -0.5])
 def test_rear_attachment_preserves_vehicle_local_mount_and_texture_orientation(demo, yaw):
     from scripts.common.demo_common import rear_insertion
-    from avsectester.insertion import ActorPose, resolve_insertion
-    from avsectester.rendering.cameras import planar_rig_pose
+    from avsectester.geometry.poses import ActorPose
+    from avsectester.insertion import resolve_insertion
+    from avsectester.geometry.cameras import planar_rig_pose
 
     host = ActorPose(planar_rig_pose(20, -3, yaw, 1), (4, 2, 1.5))
     texture = np.full((16, 16, 4), 255, np.uint8)
@@ -117,10 +118,11 @@ def test_rear_attachment_preserves_vehicle_local_mount_and_texture_orientation(d
 
 def test_carla_demo_binds_after_reset_and_keeps_the_same_host(demo, monkeypatch):
     from scripts.common.demo_common import carla_rear_perturbation
-    from avsectester.insertion import ActorPose, resolve_insertion
+    from avsectester.geometry.poses import ActorPose
+    from avsectester.insertion import resolve_insertion
     from avsectester.closed_loop.datatypes import Observation
-    from avsectester.rendering.cameras import planar_rig_pose
-    from avsectester.closed_loop.simulators import carla
+    from avsectester.geometry.cameras import planar_rig_pose
+    from avsectester.rendering import legacy_carla
     from avsectester.rendering.compositor import PatchCompositor
 
     state = {}
@@ -131,7 +133,7 @@ def test_carla_demo_binds_after_reset_and_keeps_the_same_host(demo, monkeypatch)
         received.extend(insertions)
         return lambda obs: resolve_insertion(insertions[0], state, ActorPose(np.eye(4)))
 
-    monkeypatch.setattr(carla, "insertion_perturbation", adapter)
+    monkeypatch.setattr(legacy_carla, "insertion_perturbation", adapter)
     perturb = carla_rear_perturbation(backend, np.full((8, 8, 4), 255, np.uint8),
                                      PatchCompositor(harmonize=False))
     # Constructing the demo callback must not require actors before backend.reset().
@@ -179,7 +181,7 @@ def test_nurec_demo_uses_metadata_start_time_without_changing_cruise_dynamics(de
 @pytest.mark.parametrize("name", ["stop", "standee", "billboard"])
 def test_nuscenes_demo_keeps_candidate_positions_and_rejects_annotated_overlap(demo, name):
     from scripts.demos.nuscenes import nuscenes_object_demo as objects
-    from avsectester.rendering.cameras import PinholeCamera
+    from avsectester.geometry.cameras import PinholeCamera
     from avsectester.rendering.compositor import render_resolved
 
     camera = PinholeCamera(np.array([[400, 0, 400], [0, 400, 300], [0, 0, 1]]), 800, 600)

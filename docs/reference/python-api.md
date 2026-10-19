@@ -6,14 +6,115 @@
 
 This reference lists the public API by module. Signatures are copied from the code. A bare `*`
 starts the keyword-only parameters. Defaults written as `{}` or `[]` in tables are per-instance
-`field(default_factory=...)` values. Usage belongs to the linked guides. The terms
-[prepared scenario, match, treatment, intervention, command and driving step](../concepts/architecture.md#terminology)
-are used as defined in the architecture document.
+`field(default_factory=...)` values. Usage belongs to the linked guides. Current experiment
+concepts are defined in
+[Architecture](../concepts/architecture.md). The legacy intervention and prepared-scenario
+interfaces are documented separately below.
 
 The package root `avsectester` defines only `__version__` and has no `__all__`. Import every name
 from its module. The packages `avsectester.scenarios`, `avsectester.rendering`,
 `avsectester.evaluation`, `avsectester.closed_loop.simulators`, `avsectester.closed_loop.avstacks`
 and `avsectester.attacks` re-export selected names through `__all__`. The sections below note them.
+
+## Experiment preparation and execution
+
+`avsectester.experiment` exports the experiment API below. Configuration fields and YAML
+constructor specifications are described in
+[Experiment configuration (Python API)](configuration.md#experiment-configuration-python-api).
+
+```python
+from avsectester.experiment import Experiment, PreparedExperiment
+
+prepared = Experiment.prepare("experiment.yaml")
+result = Experiment.execute(prepared)
+prepared.save("results/prepared")
+
+# Reuse saved metadata and artifacts without selection or optimization.
+restored = PreparedExperiment.load("experiment.yaml", "results/prepared")
+```
+
+| Function or method | Returns or does |
+|---|---|
+| `load_configuration(config: ExperimentConfiguration \| Mapping[str, Any] \| str \| Path) -> ExperimentConfiguration` | Loads a Python configuration or YAML file, resolves constructor specifications and validates fields. Does not instantiate an AVStack or simulator runtime |
+| `Experiment.prepare(config: ExperimentConfiguration \| Mapping[str, Any] \| str \| Path) -> PreparedExperiment` | Calls each attack's `build_metadata` once per scenario, validates its segments, then calls `run_offline` once per attack. Closes preparation services and saves preparation data when `output` is configured |
+| `PreparedExperiment.load(config, directory: str \| Path) -> PreparedExperiment` | Class method. Validates the saved configuration summary against the supplied configuration, then loads metadata, decisions and artifacts without calling `build_metadata` or `run_offline` |
+| `Experiment.execute(prepared: PreparedExperiment) -> ExperimentResult` | Runs named treatments from selected starts with fresh simulator, AVStack and attack instances. Reuses prepared artifacts and records each result as a `RunLog` |
+| `PreparedExperiment.save(directory: str \| Path) -> Path` | Writes selected segments, selection decisions and each attack's artifacts. Does not serialize model instances, factories or live resources |
+
+`ExperimentConfiguration` and `TreatmentConfiguration` are frozen dataclasses:
+
+```python
+# avsectester.experiment.config
+class TreatmentConfiguration:
+    name: str
+    attack_name: str | None = None
+    environment: Mapping[str, Any] = {}
+
+class ExperimentConfiguration:
+    dataset: Dataset
+    simulator: Simulator
+    avstack: DrivingAdapter
+    attacks: Mapping[str, Attack] = {}
+    treatments: tuple[TreatmentConfiguration, ...] = ()
+    seeds: tuple[int, ...] = (0,)
+    decision_steps: int | None = None
+    environment: Mapping[str, Any] = {}
+    recording: RecordingPolicy = RecordingPolicy()
+    output: Path | None = None
+    strict: bool = False
+    hooks: HookSet | Callable[[int], HookSet] | None = None
+    clean_hooks: HookSet | Callable[[int], HookSet] | None = None
+```
+
+Empty `treatments` creates a clean treatment and one treatment per configured attack. Names must
+be unique. Each non-clean treatment references one configured attack. `decision_steps` limits
+execution length without changing the selected metadata. `strict=False` retains selection and
+execution failures and continues, while `strict=True` propagates them.
+An offline preparation error propagates in either mode, because that attack has no usable artifacts.
+Preparation requires at least one attack to select segments. Use `ClosedLoopRunner` for a clean
+run with an explicitly supplied start.
+
+The results contain no active services or simulator runtime:
+
+| Class or property | Fields or meaning |
+|---|---|
+| `PreparedExperiment` | `configuration`, `metadata: Mapping[str, tuple[AttackSegment, ...]]`, `artifacts: Mapping[str, Any]`, `selections: tuple[SelectionDecision, ...]` |
+| `SelectionDecision` | `attack_name`, `scenario_id`, `status: Literal["selected", "not_selected", "error"]`, `reasons: tuple[str, ...]`, `error: str \| None` |
+| `TreatmentResult` | `attack_name`, `segment_index`, `segment`, `treatment`, `seed`, `log: RunLog`, `error: str \| None` |
+| `TreatmentResult.group` | `(attack_name, segment_index, seed)` identifying the comparison group |
+| `ExperimentResult` | `runs: tuple[TreatmentResult, ...]`, `selections: tuple[SelectionDecision, ...]` |
+| `ExperimentResult.groups` | Maps each comparison group to its named treatment logs |
+| `ExperimentResult.failures` | Treatment results whose logs did not complete |
+| `ExperimentResult.selection_errors` | Selection decisions with status `error` |
+
+Preparation uses the first configured seed for each attack's selection and runs its offline
+phase once. The metabuilder does not automatically inherit the experiment's base environment;
+it can request an environment explicitly through closed-loop services. Prepared metadata and
+artifacts are reused for the other seeds. At each segment's start, execution checks its role IDs
+against that seed's actors and records a failure if any are absent; it does not reselect.
+
+Each attack selects independently. A clean treatment runs on that attack's selected segments.
+Different attacks' selections are not silently combined or treated as the same comparison group.
+Each run uses its experiment seed for hooks and sensor-environment transforms. Sensor randomness
+also uses the absolute dataset frame position (`segment.start.position + decision_index`),
+so offline and online requests at the same position share the same realization. Directly supplied
+`HookSet` objects are copied without copying their handlers, whose state must reset for each run.
+`ExperimentConfiguration.configuration_summary` computes an independent summary on demand;
+configuration construction does not inspect attack parameters or enumerate dataset scenarios.
+Saving and loading request it for the dataset type and scenario list, simulator identity, and
+each attack's class, configured parameters and environment. Saving records it in `prepared.json`
+(schema version 2). Loading rejects mismatches before reading artifacts. Output location and
+recording policy can change without invalidating preparation. Models, factories and live resources
+are not serialized.
+
+If a Python attack cannot describe its parameters, saving emits a `RuntimeWarning`, records its
+type and environment, and sets `parameters: null` and `parameters_verified: false`. Its metadata
+and artifacts are still saved. Loading rejects an unverified saved or supplied description rather
+than treating matching class names as compatible parameters. Implement
+`Attack.configuration_parameters()` and save again to enable validated loading.
+
+The existing CLI still calls `avsectester.legacy_experiment`, documented under
+[Run functions](#run-functions).
 
 ## Data plane
 
@@ -25,6 +126,7 @@ adapter-specific types.
 |---|---|---|
 | `Control` | `Control(throttle: float = 0.0, steer: float = 0.0, brake: float = 0.0, trajectory: Any = None)` | The command. Actuator commands use `throttle`, `steer` and `brake`. Trajectory commands use `trajectory` in the selected adapter's coordinates and time convention |
 | `Observation` | `Observation(t: float, frame: int, sensor_data: dict[str, Any] = {}, calibration: dict[str, Any] = {}, vehicle_state: Any = None, ego_speed: float = 0.0)` | The model-visible input. `sensor_data` and `calibration` are keyed by sensor ID. `vehicle_state` and `ego_speed` are the estimated state and the reported speed in m/s |
+| `ActorState` | `ActorState(pose: Any, velocity: tuple[float, float, float] \| None = None, category: str \| None = None, extent: tuple[float, float, float] \| None = None)` | Dataset record in `avsectester.datasets`. `pose` is a world-from-actor transform; velocity is in world axes. `extent` gives full `(length, width, height)` in metres, with finite nonnegative dimensions; `None` means unknown |
 | `WorldSnapshot` | `WorldSnapshot(t: float, frame: int, vehicle_state: Any = None, ego_speed: float = 0.0, actors: Mapping[str, ActorState] = {})` | Frozen. An independent snapshot of the physical ego state and, in `actors`, the other actors' states by stable ID. Editing it never moves a vehicle |
 | `StateEstimate` | `StateEstimate(vehicle_state: Any = None, ego_speed: float = 0.0)` | Localization output. Its fields replace the observation's state before the `observation` stage |
 | `FrameRecord` | `FrameRecord(frame: int = 0, t: float = 0.0, n_detections: int = 0, speed: float = 0.0, throttle: float = 0.0, brake: float = 0.0, steer: float = 0.0)` | One driving step. `frame` is the zero-based driving-step index. `t` and `speed` are the physical time and speed after the step. The actuator fields are the executed command. `n_detections` is optional stack telemetry |
@@ -109,8 +211,9 @@ A simulator has two parts in `avsectester.closed_loop.simulator`:
 - `Simulator` is the configured simulator: settings and declarations, without world state. It can
   be reused. The supplied ones are `CarlaSimulator`, `NuRecSimulator` and `RecordedReplaySimulator`.
 - `SimulatorRuntime` is one live world of a simulator: world state, clock, current capture and
-  native connections. `Simulator.create_runtime(seed=None)` creates one for each run or service
-  operation; the creator closes it, also with `with simulator.create_runtime() as runtime:`.
+  native connections. `Simulator.create_runtime(seed=None)` creates fresh worlds for runs, renders
+  and rollouts; sequential effect-free reads within a service session may reuse a scan runtime. Its creator
+  closes it, also with `with simulator.create_runtime() as runtime:`.
   `reset` starts a run and may be called again for a further run on the same world. The supplied
   runtimes are `CarlaSimulatorRuntime`, `NuRecSimulatorRuntime` and `RecordedReplaySimulatorRuntime`.
 
@@ -120,13 +223,14 @@ A simulator has two parts in `avsectester.closed_loop.simulator`:
 |---|---|
 | `create_runtime(seed: int \| None = None) -> SimulatorRuntime` | Abstract. A new live world with this configuration. CARLA uses `seed` as the client seed when the scenario sets none; NuRec and recorded replay are deterministic and ignore it |
 | `validate_start(start) -> None` | Rejects a `ScenarioStart` of another dataset kind or time step before any world exists |
-| `dataset_kinds`, `decision_time_step`, `capture_ticks`, `can_render`, `command_modes`, `supported_stages`, `identity` | Accepted `ScenarioStart` kinds (dataset class names such as `NuRecDataset`), decision step, ticks between `simulator.setup` and the first capture, sensor-view support, accepted command modes, emitted stages, and the identity used in provenance and cache keys |
+| `validate_world_settings(world: Mapping[str, Any]) -> None` | Checks supported native world keys and values without opening a runtime. Custom simulators override it for their own value rules; world-dependent checks remain in runtime initialization |
+| `dataset_kinds`, `decision_time_step`, `capture_ticks`, `can_render`, `command_modes`, `supported_stages`, `supported_world_settings`, `identity` | Accepted `ScenarioStart` kinds (dataset class names such as `NuRecDataset`), decision step, ticks between `simulator.setup` and the first capture, sensor-view support, accepted command modes, emitted stages, supported native world-environment keys, and the identity used in provenance and cache keys |
 
 `SimulatorRuntime` members (declarations are read from its `simulator`):
 
 | Member | Returns or does |
 |---|---|
-| `reset(start=None, initialization=None, *, deployment=None, environment=None) -> None` | Starts a run from a `ScenarioStart` or the configured origin: native initialization, pre-roll, the deployment window (`simulator.setup` and its ticks), the capture ticks and the first capture. See [selected-origin initialization](../guides/scenarios.md#selected-origin-deployment-and-reset-ownership) |
+| `reset(start=None, initialization=None, *, deployment=None, world=None) -> None` | Starts a run from a `ScenarioStart` or the configured origin: native initialization, pre-roll, the deployment window (`simulator.setup` and its ticks), the capture ticks and the first capture. `world` contains native world settings only, such as `{"weather": "ClearNoon"}`; the enclosing `{world, sensors}` format and `sensors` are rejected. See [selected-origin initialization](../guides/scenarios.md#selected-origin-deployment-and-reset-ownership) |
 | `step(command: Control) -> None` | Emits `simulator.step.pre`, advances one decision, emits `simulator.step.post` and captures |
 | `observe() -> Observation` | Independent copy of the current capture, without a tick or repeated render hooks |
 | `state() -> WorldSnapshot` | Independent physical state of the ego and, in `actors`, the other actors, without advancing time. Available after a reset and during a reset or step, so stage handlers can read it |
@@ -136,11 +240,14 @@ A simulator has two parts in `avsectester.closed_loop.simulator`:
 | `control_actor(actor_id: str, control: Control) -> None` | Drives another actor with an actuator command from the next world step; it stops following its prescribed or traffic-manager motion. CARLA only; the ego is rejected |
 | `set_actor_state(actor_id: str, state: ActorState) -> None` | Places another actor at a canonical world state, visible from the next capture; it stops following its prescribed motion. CARLA only; the ego is rejected |
 | `setup_tick() -> None` | Consumes one deployment tick; only during `simulator.setup` |
-| `generate_frame_data(start, frames, *, environment=None, deployment=None) -> FrameDataSequence` | Records actual frame data by replaying the start's prescribed motion over consecutive `frames` beginning at `start.frame`, without hooks, attacks or a driving system. Shared by all runtimes; a runtime supports it by implementing `_replay_tick` and `_capture_frame_data` (CARLA and recorded replay). Used for datasets without frame data, such as CARLA recipes |
+| `generate_frame_data(start, frames, *, world=None, deployment=None) -> FrameDataSequence` | Records actual frame data by replaying the start's prescribed motion over consecutive `frames` beginning at `start.frame`, without hooks, attacks or a driving system. `world` contains native world settings only. Shared by all runtimes; a runtime supports it by implementing `_replay_tick` and `_capture_frame_data` (CARLA and recorded replay). Used for datasets without frame data, such as CARLA recipes |
 | `close() -> None` | Releases the world and native connections |
 
-Concrete runtimes implement `_initialize_world`, `_advance_native`, `_observe` and `_state`, and
-cannot override `reset` or `step`.
+Custom `Simulator` classes declare `supported_world_settings` (empty when no native overrides
+are supported) and implement value checks in `validate_world_settings`. Concrete runtimes implement
+`_initialize_world`, `_advance_native`, `_observe` and `_state`, and cannot override `reset` or
+`step`. Their reset receives only world settings; sensor-environment transforms belong to the
+runner and services.
 
 ```python
 # avsectester.closed_loop.simulator
@@ -214,8 +321,10 @@ def trace_from_log(log: RunLog) -> Trace: ...
 `decision_steps` must be a nonnegative integer. `hooks` accepts `HookSet` (and its `Runtime`
 compatibility name). `attacks` supplies already-created online `AttackRuntime` instances; the runner
 applies their attack effects at their points of action and records each request and receipt in the
-step's `effects`. `start`, `initialization`, `deployment` and `environment` are passed to
-`SimulatorRuntime.reset`. The runner owns the per-run lifecycle, while the simulator runtime and the
+step's `effects`. `start`, `initialization` and `deployment` are passed to
+`SimulatorRuntime.reset`. A request's `environment` uses `{world, sensors}`: the runner passes
+only `environment["world"]` as `reset(world=...)` and applies `environment["sensors"]` after sensor attack
+effects and before Vehicle I/O hooks. See [Experiment environment](../guides/conditions.md#experiment-environment). The runner owns the per-run lifecycle, while the simulator runtime and the
 AVStack remain caller-owned: create the runtime with `Simulator.create_runtime()` and close it. It checks stages/command compatibility, transforms the first input
 once, resets driving history with that same input and records each completed decision.
 
@@ -240,16 +349,104 @@ and gathers recorded intervention outputs. It uses retained records; for a strea
 call `RunLog.read(path, load_payloads=False)` or analyze selected columns directly. See
 [Run logs and saved results](../guides/evaluation.md#run-logs-and-saved-results).
 
+### Environment API
+
+`avsectester.closed_loop.environment` owns the shared environment structure and its application.
+Built-in image operators live separately in `avsectester.closed_loop.sensor_transforms`.
+
+| Member | Returns or does |
+|---|---|
+| `normalize_environment(value: Mapping[str, Any] \| None = None) -> dict[str, Any]` | Validates and copies `{world, sensors}`. Sensor entries use `type`, optional `options` and optional `camera` |
+| `merge_environments(*values: Mapping[str, Any]) -> dict[str, Any]` | Merges world settings recursively. Each explicit later sensor list replaces the previous list, including an empty list |
+| `validate_environment(value: Mapping[str, Any], simulator: Simulator) -> dict[str, Any]` | Normalizes settings and calls the simulator's world-setting validation before creating a runtime |
+| `SensorEnvironment(environment: Mapping[str, Any], seed: int = 0)` | Constructs one set of RGB transforms for a run or service query |
+| `SensorEnvironment.apply(observation: Observation, position: int) -> Observation` | Transforms the selected cameras. `position` is the absolute dataset frame position, not the relative decision index. Without a selected start, positions begin at zero |
+
+Sensor transforms run after sensor attack effects and before Vehicle I/O hooks. Their random
+realization is determined by the seed, absolute dataset position and transform index, matching
+service queries and formal runs at the same frame. If `camera` is omitted, the first sensor in
+`Observation.sensor_data` is used; it must have a readable RGB payload or the request fails.
+
+### Closed-loop services
+
+`avsectester.closed_loop.services` provides isolated operations to the metabuilder and offline
+phase. The [services guide](../guides/scenarios.md#shared-closed-loop-services) describes simulator
+support, gradients and selected-origin replay.
+
+| Class or member | Signature or fields |
+|---|---|
+| `ClosedLoopServices` | `(dataset: Dataset, simulator: Simulator, driving_adapter: DrivingAdapter \| None = None, frame_data_cache: FrameDataCache \| None = None, *, deployment: DeploymentPlan = DeploymentPlan())` |
+| `services.capabilities` | `ClosedLoopCapabilities(dataset_kinds, sensor_data, render, rollout, components, scorers)` |
+| `services.scenario` | `(scenario_id: str, *, seed: int) -> ScenarioView` |
+| `services.session` | `(seed: int, history: str = "fresh") -> ClosedLoopSession`. Only fresh history is supported |
+| `services.close` | `() -> None`. Closes every owned session |
+| `ensure_fresh` | `(resource: Any) -> Any`. Marks a newly constructed mutable resource and rejects reuse of an instance already used by a service or run |
+| `ScenarioView` | `scenario_id`, `services`, `seed`, `frames`, `reasons` |
+| `view.frame_data` | `(frame: FrameReference) -> FrameData`. Resolves recorded data or preparation-owned generated data |
+| `view.record_reason` | `(text: str) -> None`. Records a nonempty selection explanation |
+| `session.initialization` | `(start: ScenarioStart, environment: Mapping[str, Any]) -> Initialization \| None`. Supplies cached selected-origin data for generated CARLA scenarios |
+| `session.frame_data` | `(scenario: str, frame: FrameReference, environment: Mapping[str, Any] \| None = None) -> FrameData` |
+| `session.sensor_data` | `(request: SensorRequest) -> SensorSample` |
+| `session.render` | `(request: RenderRequest) -> RenderResult` |
+| `session.components` | `() -> Sequence[ComponentDescriptor]` |
+| `session.scorers` | `() -> Sequence[ScorerDescriptor]` |
+| `session.evaluate` | `(component_id: str, inputs: Any) -> ComponentResult` |
+| `session.score` | `(scorer_id: str, inputs: Any, target: Any, require_grad: bool = False) -> ScoreResult` |
+| `session.rollout` | `(request: CandidateRequest) -> RunLog` |
+| `session.close` | `() -> None`. Discards an active scan and releases resources |
+
+Services and sessions are context managers. Sequential effect-free sensor reads may retain one
+scan runtime. Rendering, candidate rollout and component/scorer evaluation create fresh resources.
+The factory must not return an already used instance. An active CARLA scan reserves its endpoint
+until discarded or closed. Sensor results and candidate logs carry source, simulator, environment
+and seed provenance. Component/scorer results record the query seed.
+
+Request and result dataclasses:
+
+| Record | Fields, in constructor order |
+|---|---|
+| `SensorRequest` | `scenario_id: str`, `frame: FrameReference`, `sensor_ids: tuple[str, ...]`, `environment: Mapping[str, Any] = {}` |
+| `RenderRequest` | `scenario_id: str`, `frame: FrameReference`, `sensor_id: str`, `effects: Sequence[AttackEffect] = ()`, `environment: Mapping[str, Any] = {}` |
+| `CandidateRequest` | `segment: AttackSegment`, `seed: int`, `decision_steps: int`, `environment: Mapping[str, Any]`, `recording: RecordingPolicy`, `attack: Any = None`, `artifacts: Any = None`, `output_path: str \| Path \| None = None` |
+| `SensorSample` | `frame`, `observation`, `provenance` |
+| `RenderResult` | `frame`, `observation`, `view: SensorView`, `provenance` |
+| `ComponentResult` | `value`, `descriptor: ComponentDescriptor`, `provenance` |
+| `ScoreResult` | `value`, `descriptor: ScorerDescriptor`, `provenance` |
+
+`CandidateRequest.decision_steps` must equal its segment length. Artifacts require an attack,
+which must provide `create_runtime(segment, artifacts)`.
+Candidate rollout calls that attack's `create_runtime` and uses the same effects as formal runs.
+Rendering accepts world and sensor effects, with world effects inside the declared deployment
+window. It returns the changed observation and a detached view of the capture before sensor
+effects or environment transforms. `RenderRequest` here is distinct from the hook-stage
+`CameraRenderRequest` used by `render.pre`.
+
+`DrivingAdapter(factory, *, components=(), scorers=())` stores a factory `(seed: int) -> AVStack`.
+In YAML, `avstack.type` names an AVStack class or AVStack-returning function, constructed with
+`options` only; the configuration wrapper does not pass the seed to that constructor. Optional
+`avstack.bindings.type` is called as `function(avstack_factory, **options) -> DrivingAdapter`.
+See [Driving specification](configuration.md#driving-specification).
+Each binding pairs a descriptor with a callback: `(avstack, inputs)` for components, or
+`(avstack, inputs, target)` for scorers. `ComponentDescriptor` fields are `id`, `inputs`, `outputs`,
+`codecs` and optional `differentiable_inputs=()`. `ScorerDescriptor` adds `output_shape=()` and
+`direction="minimize"` (`"maximize"` is also accepted). `require_grad=True` rejects an undeclared
+gradient path before constructing a model, and rejects detached scorer output. Returned tensors
+retain their graph.
+
 ### Attack
 
 ```python
 # avsectester.attack
 class Attack(ABC):
     assets: Any = None
+    environment: Mapping[str, Any] = {}
     @abstractmethod
     def build_metadata(self, scenario: ScenarioView) -> Sequence[AttackSegment]: ...
     def run_offline(self, context: OfflineContext) -> Any: ...       # default: self.assets
     def create_runtime(self, segment, artifacts) -> AttackRuntime: ...  # default: no effects
+    def save_artifacts(self, artifacts: Any, directory: str | Path) -> None: ...
+    def load_artifacts(self, directory: str | Path) -> Any: ...
+    def configuration_parameters(self) -> Mapping[str, Any]: ...
 
 @dataclass(frozen=True)
 class OfflineContext:
@@ -263,6 +460,9 @@ class AttackSegment:
     stop: FrameReference
     roles: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     placement: Any = None
+    selection_score: float | None = None
+    selection_rank: int | None = None
+    user_data: Mapping[str, Any] = field(default_factory=dict)
     @property
     def decision_steps(self) -> int: ...
 ```
@@ -276,13 +476,75 @@ the same record. `AttackRuntime`, its `setup`/`step`/`stop` lifecycle
 and the `WorldAttackEffect`, `SensorAttackEffect` and `AVStackAttackEffect` classes in
 `avsectester.attack.runtime` are described in [Online phase](runtime.md#online-phase).
 
-**Not yet implemented.** The framework does not yet run `build_metadata` over a dataset, store
-the metadata, or wire the offline and online phases into configured experiments.
+`selection_score` is an optional finite number, with larger values better. `selection_rank` is an
+optional zero-based rank. The framework validates their formats but does not score, sort or
+rerank segments. `user_data` is an independently copied mapping for attack-specific information.
+Preparation validates the scenario, actual frame boundaries and role IDs. Offline changes to
+artifacts do not trigger selection again. See
+[Experiment preparation and execution](#experiment-preparation-and-execution).
+
+`save_artifacts(artifacts, directory)` saves the explicitly supplied offline result. The default
+format is pickle with a content hash. `load_artifacts(directory)` returns that result without
+changing the Attack object. Override both methods to use a custom format. Prepared artifacts live
+in `PreparedExperiment.artifacts` and are passed explicitly to each runtime; Attack holds no
+second copy. Only load pickle artifacts from trusted attack implementations.
+
+`configuration_parameters()` supplies the stable parameter mapping for a directly supplied Python
+attack. It is requested only when describing saved or loaded preparations, never by ordinary
+configuration construction or an in-memory experiment. The default reads named `__init__`
+parameters from attributes of the same name and includes non-`None` assets; it does not walk
+`__dict__` or include counters and caches. Override it when constructor parameters are renamed,
+hidden, or collected in `*args`/`**kwargs`, returning configured inputs rather than execution state.
+An undescribable parameter mapping warns and produces an unverified description during saving;
+loading requires a complete description. YAML-created attacks retain their resolved `type` and
+`options` declaration, independent of changes to the constructed attack's attributes.
+
+#### Segment helper
+
+```python
+# avsectester.attack.segments, also exported by avsectester.attack
+def split_segments(
+    frames: Sequence[FrameReference],
+    eligible: Callable[[FrameReference], bool],
+    *,
+    decision_steps: int,
+    keep_tail: bool = False,
+) -> tuple[AttackSegment, ...]: ...
+```
+
+An optional helper for `build_metadata`. It only cuts segments; the attack decides which frames
+qualify. `frames` is an ordered, consecutive timeline of one scenario, normally
+`ScenarioView.frames`, and includes the terminal frame. `eligible(frame)` is called once for every
+frame except the last, in order, and returns whether an attack decision may be made at that frame.
+It can use anything available to the metabuilder, for example `ScenarioView.frame_data(frame)` or
+closed-loop sensor data. Precomputed values can be passed as `lambda frame: flags[frame.position]`.
+
+Each run of consecutive eligible frames is cut into segments of `decision_steps` decisions. A
+segment stops at the frame after its last decision frame, so it needs `decision_steps + 1` actual
+frames; the last frame of the timeline is never a decision frame. An ineligible frame ends a run;
+no segment crosses it. `keep_tail=True` also returns the shorter remainder of each run. No frame
+is padded or extrapolated.
+
+For 80 frames at positions 0–79, with frames eligible from position 5, `decision_steps=20` and
+`keep_tail=True` return `[5,25)`, `[25,45)`, `[45,65)` and `[65,79)`. The last segment has 14
+decisions. Role bindings, placements, scores and ranks remain decisions of the attack.
+
+```python
+from avsectester.attack import split_segments
+
+
+def build_metadata(self, scenario):
+    def eligible(frame):
+        actors = scenario.frame_data(frame).actors
+        return self.host in actors and actors[self.host].category == "vehicle"
+
+    return split_segments(scenario.frames, eligible, decision_steps=self.decision_steps)
+```
 
 ### Run functions
 
 ```python
-# avsectester.backend (legacy module, removed in phase 4)
+# avsectester.backend (compatibility entry point)
 def run(
     backend: WorldBackend,
     stack: AVStack,
@@ -316,7 +578,7 @@ def run_prepared(
     run_fn: Callable[..., Any] | None = None,
 ) -> dict[str, Any]: ...
 
-# avsectester.experiment
+# avsectester.legacy_experiment
 def run_configured(
     config: Mapping[str, Any],
     frames: int,
@@ -382,7 +644,7 @@ The shared loop fills `FrameRecord.n_detections` when a perception component out
 [Python entry points](../guides/simulators.md#python-entry-points).
 
 ```python
-# avsectester.experiment
+# avsectester.legacy_experiment
 class ExecutionMode(str, Enum):
     SINGLE = "single"
     PAIR = "pair"
@@ -619,7 +881,7 @@ class Plugin(ABC):
 | `RunContext` | `RunContext(simulator_runtime: SimulatorRuntime \| WorldBackend, avstack: AVStack, case: Any, rng: np.random.Generator)` | Frozen. Property `native`. See [Contexts](runtime.md#contexts) |
 | `StageContext` | `StageContext(run: RunContext, step: int, stage: str, physical_state: WorldSnapshot, sensor: str \| None = None, observation: Observation \| None = None, control: Control \| None = None)` | Frozen. Method `record_output(name: str, value: Any) -> None`. Properties `simulator_runtime`, `avstack`, `case`, `rng`, `native` and `sim_time`. See [Contexts](runtime.md#contexts) and [Recording outputs](runtime.md#recording-outputs) |
 | `CallInputs` | `CallInputs(args: tuple = (), kwargs: dict[str, Any] = {})` | The value at component `.pre` stages. `TypeError` unless `args` is a tuple and `kwargs` a dict |
-| `RenderRequest` | `RenderRequest(pose: Any, camera: str)` | The value at `render.pre`. `ValueError` for an empty camera name |
+| `CameraRenderRequest` | `CameraRenderRequest(pose: Any, camera: str)` | The value at `render.pre`. `ValueError` for an empty camera name |
 | `HookDispatcher` | Created by `HookSet.session` | `CORE_STAGES = frozenset({"sensors.post", "localization.post", "observation", "command"})`. `emit(stage, value, sensor=None)` runs the handlers at `stage`. Adapters reach it through `_emit` |
 | `UnsupportedStageError` | Subclass of `ValueError` | A hook uses a stage the selected adapters do not provide |
 
@@ -633,8 +895,14 @@ active callback.
 class ObservationTransform:
     def __init__(self, transform: Callable[[Observation], Observation]) -> None: ...
 
+# avsectester.closed_loop.avstacks.native_hook
 class NativeHook(Plugin):
     def __init__(self, config: Mapping[str, Any], *, phase: str = "post") -> None: ...
+
+# avsectester.interventions
+class LegacyNativeHook(NativeHook):
+    def __init__(self, config: Mapping[str, Any], *, phase: str = "post",
+                 imports: Sequence[str] = ()) -> None: ...
 
 # avsectester.attacks.patch.physical_patch
 class PhysicalPatchPlugin(Plugin):
@@ -646,6 +914,11 @@ class PhysicalPatchPlugin(Plugin):
 | `ObservationTransform(transform)` | Wraps a one-argument `Observation -> Observation` function as a handler and calls it without the context. Its `lifecycle_owner` is the wrapped function, so the runtime calls that object's `reset`, `after_step` and `close` when they exist | — |
 | `NativeHook(config, *, phase="post")` | Builds an avstack `HOOKS` hook from a copy of `config` at every `reset`. With `phase="post"` it calls the hook on the stage value and unwraps its one-element tuple. With `phase="pre"` it calls the hook with the `CallInputs` arguments and returns `CallInputs(args, kwargs)`. `close` calls the hook's `close` when it exists. Requires avstack | `ValueError` for another phase. `TypeError` if a pre-hook value is not `CallInputs` or a post-hook does not return a one-element tuple |
 | `PhysicalPatchPlugin(patches)` | A `simulator.setup` plugin. Spawns and textures one CARLA panel per patch mapping on its target actor, with one `backend.setup_tick()` per panel. `setup_ticks` is `len(patches)`. `close` destroys the panels | `ValueError` for a patch that is not a dict, a backend without `setup_tick`, a missing CARLA world or an unavailable target |
+
+`NativeHook` requires the implementation's registration module to be imported explicitly.
+`avsectester.interventions.LegacyNativeHook` adapts legacy intervention configurations and
+accepts an explicit `imports` list. Neither class registers `PhantomInjection` automatically:
+import `avsectester.attacks.pipeline.phantom`, or list it in a configured hook's `imports`.
 
 Patch mapping keys are in [patches](configuration.md#patches). Target resolution and panel
 behavior are in [Physical patch](../examples/physical-patch.md).
@@ -760,7 +1033,7 @@ Usage is described in [Save and reuse artifacts](../guides/attacks.md#save-and-r
 |---|---|---|---|
 | `SpeedFeedbackAttack` (`avsectester.attacks.adaptive`) | `SpeedFeedbackAttack(target_speed: float, gain: float = 0.1, max_bias: float = 5.0, initial_bias: float = 0.0)` | The four options as a dict | `(Hook("observation", SpeedFeedbackPlugin(**artifacts)),)` |
 | `PhysicalPatchIntervention` (`avsectester.attacks.patch.physical_patch`) | `PhysicalPatchIntervention(patches: Sequence[dict])` | A copy of `patches`, after validation | `(Hook("simulator.setup", PhysicalPatchPlugin(artifacts)),)` |
-| `NativeHookIntervention` (`avsectester.interventions`) | `NativeHookIntervention(stage: str, config: Mapping[str, Any])` | A copy of `config` | `(Hook(stage, NativeHook(artifacts)),)` |
+| `NativeHookIntervention` (`avsectester.interventions`) | `NativeHookIntervention(stage: str, config: Mapping[str, Any], *, imports: Sequence[str] = ())` | A copy of `config` | `(Hook(stage, LegacyNativeHook(artifacts)),)` |
 
 `SpeedFeedbackPlugin(target_speed: float, gain: float = 0.1, max_bias: float = 5.0,
 initial_bias: float = 0.0)` adds `bias` to the observed `ego_speed` and updates `bias` from the
@@ -819,7 +1092,7 @@ def configured_runtime_pair(
     kinds: Iterable[str] | None = None,
 ) -> tuple[Runtime, Runtime]: ...
 
-# avsectester.experiment
+# avsectester.legacy_experiment
 def configured_stack(config: Mapping[str, Any]) -> AVStack: ...
 
 # avsectester.scenarios.setup
@@ -850,7 +1123,7 @@ configuration mapping, and `instance` is the prepared scenario. `source_from_con
 
 | Function | Returns or does | Raises |
 |---|---|---|
-| `runtime_from_config(config, *, case)` | A `Runtime` from a `runtime` mapping. `None` gives `Runtime(case=case)`. `seed` defaults to `0`. A `factory` handler is imported and called with `options` as keyword arguments. An `avstack` handler becomes `NativeHook`, with `phase="pre"` at stages ending in `.pre` | `ValueError` for unknown keys, a malformed hook entry or a factory that cannot be imported |
+| `runtime_from_config(config, *, case)` | A `Runtime` from a `runtime` mapping. `None` gives `Runtime(case=case)`. `seed` defaults to `0`. A `factory` handler is imported and called with `options` as keyword arguments. An `avstack` handler becomes `LegacyNativeHook`, after importing its explicit `imports` modules, with `phase="pre"` at stages ending in `.pre` | `ValueError` for unknown keys, a malformed hook entry or a factory that cannot be imported |
 | `prepare_from_config(config, scenario, *, kinds)` | Prepares the configured interventions once and returns a `Treatment` in this order: each convenience `attacks` entry, one entry for all `patches`, then the `interventions` entries. Convenience entries use `position="before"`. `kinds` limits preparation to `attack`, `defense` or both. An entry with `artifacts` skips `prepare` | `ValueError` for a top-level `defenses` key, invalid entries or invalid kinds |
 | `configured_runtime(scenario, *, case, instance, prepared, kinds)` | The treated runtime: the `runtime` settings with the enabled interventions assembled by `Treatment.runtime`. Prepares again unless `prepared` is given. When `kinds` excludes `attack`, raw `runtime.hooks` are dropped. `case` defaults to `instance.match`. Without `instance`, preparation receives a placeholder scenario whose factory raises `RuntimeError` | As `prepare_from_config` |
 | `configured_clean_runtime(config, *, case, attacked_runtime)` | The baseline runtime. Uses `clean_runtime` when configured. Otherwise uses `attacked_runtime`'s localizer, seed and case without hooks. Otherwise uses the `runtime` localizer and seed without hooks | `ValueError` for an invalid `runtime` mapping |
@@ -862,7 +1135,7 @@ configuration mapping, and `instance` is the prepared scenario. `source_from_con
 
 | Exception | Module | Raised when |
 |---|---|---|
-| `ConfigurationError(ValueError)` | `avsectester.experiment` | `run_configured` or `configured_stack` cannot prepare the configuration |
+| `ConfigurationError(ValueError)` | `avsectester.legacy_experiment` | `run_configured` or `configured_stack` cannot prepare the configuration |
 | `ScenarioConfigurationError(ValueError)` | `avsectester.scenarios.setup` | The built-in backend factory cannot construct a backend from the scene settings. Raised when the backend is built, for example by `make_backend()` |
 | `ConditionConfigurationError(ValueError)` | `avsectester.conditions` | A backend rejects a configured world condition |
 
@@ -1275,6 +1548,9 @@ See [Custom filters and native access](../guides/scenarios.md#custom-filters-and
 
 ## Conditions
 
+The new Python experiment API uses [Environment API](#environment-api). `ScenarioConditions`
+below belongs to the legacy configured-runner path; its seed and ordering options are separate.
+
 ```python
 # avsectester.conditions (both classes are also exported by avsectester.scenarios)
 @dataclass(frozen=True)
@@ -1325,15 +1601,18 @@ class ConditionConfigurationError(ValueError): ...
 | `selection_context(context)` | Applies the conditions to one selection frame | As `selection_scope` |
 | `selection_observation(context)` | `context.native["conditioned_observation"]` | `ValueError` when the provider supplies no observation |
 | `SensorCondition(...)` | A factory of sensor handlers at `sensors.post` or `observation`. `seed=None` uses the scenario's `seed` | `TypeError` for a non-callable factory. `ValueError` for another stage or order, or an invalid seed |
-| `SensorCondition.image(pipeline, *, camera, stage, order)` | Wraps a copy of an `AugmentationPipeline`. The pipeline's seed becomes the condition seed, and the metadata lists its corruptions. With `camera=None` the first readable RGB camera is corrupted | `TypeError` for another pipeline type. At run time, `ValueError` when the camera is missing or unreadable |
+| `SensorCondition.image(pipeline, *, camera, stage, order)` | Wraps a copy of an `AugmentationPipeline`. The pipeline's seed becomes the condition seed, and the metadata lists its corruptions. With `camera=None` the first sensor is selected and must be readable RGB | `TypeError` for another pipeline type. At run time, `ValueError` when the camera is missing or unreadable |
 
 How conditions are configured, ordered and seeded is described in
 [Apply operating conditions](../guides/conditions.md).
 
 ### Image corruption API
 
+The corruption operators are in `avsectester.closed_loop.sensor_transforms`. The legacy image
+augmentation pipelines and robustness suites remain in `avsectester.perturbations.image`.
+
 ```python
-# avsectester.perturbations.image
+# avsectester.closed_loop.sensor_transforms
 class Corruption(ABC):
     category: str = "sensor"
     def __init__(self, severity: float = 0.5) -> None: ...
@@ -1344,6 +1623,7 @@ class Corruption(ABC):
 
 CORRUPTIONS: dict[str, type[Corruption]]
 
+# avsectester.perturbations.image
 class AugmentationPipeline:
     def __init__(self, corruptions: Iterable[Corruption], seed: int = 0) -> None: ...
     @property
@@ -1358,8 +1638,12 @@ class AlbumentationsCorruption(Corruption):
                  category: str = "sensor", label: str = "albumentations") -> None: ...
 
 def albumentations_corruptions(severity: float = 0.5) -> list[AugmentationPipeline]: ...
+
+# avsectester.closed_loop.datatypes
 def read_camera_rgb(observation: Observation, camera: str | None = None) -> tuple[str, np.ndarray] | None: ...
 def write_camera_rgb(observation: Observation, key: str, rgb: np.ndarray) -> Observation: ...
+
+# avsectester.perturbations.image
 def sensor_augmentation(pipeline: AugmentationPipeline | Iterable[Corruption],
                         camera: str | None = None) -> Callable[[Observation], Observation]: ...
 def compose(*perturbs: Callable[[Observation], Observation] | None) -> Callable[[Observation], Observation]: ...
@@ -1379,7 +1663,7 @@ def compose(*perturbs: Callable[[Observation], Observation] | None) -> Callable[
 | `sensor_augmentation(pipeline, camera)` | An `Observation -> Observation` function that corrupts one camera, using `observation.frame` as the frame index. Leaves the observation unchanged without a readable camera |
 | `compose(*perturbs)` | Applies the functions left to right and skips `None` |
 
-`frame_perturbation`, from the same module, is listed under
+`frame_perturbation`, also in `avsectester.perturbations.image`, is listed under
 [Insertion rendering](#insertion-rendering).
 
 ## Insertion and rendering
@@ -1437,11 +1721,6 @@ class Orientation:
     target_offset_m: tuple[float, float, float] = (0.0, 0.0, 0.0)
 
 @dataclass(frozen=True)
-class ActorPose:
-    transform: np.ndarray
-    extent: tuple[float, float, float] = (0.0, 0.0, 0.0)
-
-@dataclass(frozen=True)
 class ResolvedInsertion:
     id: str
     pose: np.ndarray
@@ -1455,7 +1734,15 @@ def resolve_insertion(
     victim: ActorPose,
 ) -> ResolvedInsertion: ...
 
+# avsectester.geometry.poses
+@dataclass(frozen=True)
+class ActorPose:
+    transform: np.ndarray
+    extent: tuple[float, float, float] = (0.0, 0.0, 0.0)
+
 def rotation_matrix(rotation_deg) -> np.ndarray: ...
+def validated_vector(value, name: str) -> np.ndarray: ...
+def validated_transform(value) -> np.ndarray: ...
 ```
 
 | Type | Meaning | Validation |
@@ -1467,7 +1754,9 @@ def rotation_matrix(rotation_deg) -> np.ndarray: ...
 | `AttachedPlacement` | A point in the host's local frame: the anchor scaled by the host extent, plus `offset_m` in host axes. `host` is a track ID or a bound role alias | `ValueError` for an empty host, an unknown anchor or a non-finite offset |
 | `WorldPlacement` | A fixed point in the provider's world frame | `ValueError` for a non-finite position |
 | `Orientation` | The rotation mode and its parameters | `ValueError` for an unknown mode, a nonzero `rotation_deg` with `face_victim` or a nonzero `target_offset_m` with another mode |
-| `ActorPose` | A world pose of a bounding-box centre, a right-handed rigid 4×4 transform, and its extent (length, width, height) | `ValueError` for an invalid transform or a negative extent |
+| `ActorPose` | A world pose of a bounding-box centre, a right-handed rigid 4×4 transform, and its full extent `(length, width, height)` in metres; defined in `avsectester.geometry.poses` | `ValueError` for an invalid transform or a negative extent |
+| `validated_vector(value, name)` | A finite NumPy three-vector, for canonical positions, extents or angles | `ValueError` for another shape or non-finite values |
+| `validated_transform(value)` | An independent, read-only 4×4 right-handed rigid transform | `ValueError` for an invalid shape, rotation or homogeneous last row |
 | `ResolvedInsertion` | An insertion's world pose at one instant. `planes()` returns world-frame surfaces | `ValueError` for an invalid pose |
 
 | Anchor | Local point, as fractions of (length, width, height) |
@@ -1486,7 +1775,8 @@ def rotation_matrix(rotation_deg) -> np.ndarray: ...
 | `follow_host` | The host rotation multiplied by `rotation_matrix(rotation_deg)` | Requires `AttachedPlacement` |
 | `face_victim` | +x points at the victim-local point `target_offset_m`, with +z as close to world up as possible. A vertical direction uses world +y as the secondary reference | `rotation_deg` must be zero |
 
-`rotation_matrix(rotation_deg)` takes `(roll, pitch, yaw)` in degrees and returns
+`rotation_matrix(rotation_deg)`, in `avsectester.geometry.poses`, takes `(roll, pitch, yaw)` in
+degrees and returns
 `Rz(yaw) @ Ry(pitch) @ Rx(roll)`. `resolve_insertion` computes the pose without changing its
 inputs. It raises `KeyError` when the host is missing from `actors`, and never substitutes another
 actor. It raises `ValueError` when a `face_victim` target coincides with the insertion position.
@@ -1577,7 +1867,7 @@ constructs a `PhysicalPatch`. See [Payloads](../examples/image-insertion.md#payl
 ### Insertion rendering
 
 ```python
-# avsectester.rendering.cameras (Camera is also exported by avsectester.rendering)
+# avsectester.geometry.cameras (Camera is also exported by avsectester.geometry)
 class Camera(Protocol):
     width: int
     height: int
@@ -1595,7 +1885,7 @@ class Camera(Protocol):
 A custom camera needs only these members. It does not have to inherit from a supplied class.
 
 ```python
-# avsectester.rendering.cameras
+# avsectester.geometry.cameras
 @dataclass
 class PinholeCamera:
     K: np.ndarray
@@ -1748,14 +2038,14 @@ def frame_perturbation(
     base: Callable[[Observation], Any] | None = None,
 ) -> Callable[[Observation], Observation]: ...
 
-# avsectester.closed_loop.simulators.carla
+# avsectester.rendering.legacy_carla
 def insertion_perturbation(simulator_runtime, insertions, *, bindings=None, camera="front",
                            compositor=None): ...
 
 # avsectester.scenarios.datasets.nurec
 NuRecDataset.insertion_renderer(self, scene, backend, insertions, bindings=None, compositor=None)
 
-# avsectester.closed_loop.simulators.nurec
+# avsectester.rendering.legacy_nurec
 class NuRecInsertions(InsertionRenderer):
     def __init__(self, insertions, camera, geometry, compositor=None,
                  visibility_estimator=None, camera_name="front"): ...
@@ -2196,26 +2486,29 @@ The clean-versus-treated figure is `metric.plot_impact`, listed under
 
 | Module | Contents | Guide |
 |---|---|---|
-| `avsectester.closed_loop.datatypes` | `Observation`, `Control`, `WorldSnapshot`, `StateEstimate`, `FrameRecord`, `RecordedOutput`, `Trace` | [Driving traces](../guides/evaluation.md#driving-traces) |
+| `avsectester.experiment` | `Experiment`, `ExperimentConfiguration`, `TreatmentConfiguration`, `load_configuration`, `PreparedExperiment`, `ExperimentResult`, `SelectionDecision`, `TreatmentResult` | [Experiment preparation and execution](#experiment-preparation-and-execution) |
+| `avsectester.closed_loop.datatypes` | `Observation`, `Control`, `WorldSnapshot`, `StateEstimate`, `FrameRecord`, `RecordedOutput`, `Trace`, `read_camera_rgb`, `write_camera_rgb` | [Driving traces](../guides/evaluation.md#driving-traces) |
 | `avsectester.closed_loop.avstack` | `AVStack`, `CommandCompatibilityError`, `validate_command_compatibility` | [Use a custom driving system](../guides/driving-systems.md#use-a-custom-driving-system) |
-| `avsectester.backend` | Legacy module, removed in phase 4: `run` | [Write your first attack](../guides/attacks.md#write-your-first-attack) |
+| `avsectester.backend` | Compatibility entry point `run`, returning a `Trace` from the shared loop | [Run functions](#run-functions) |
 | `avsectester.datasets` | `Dataset`, `FrameReference`, `FrameData`, `ActorState`, `SensorDataReference`, `ScenarioStart`, `ScenarioDescriptor`, `Unavailable`; `nurec`, `nuscenes` and `carla` datasets | [Stateless datasets](../guides/scenarios.md#stateless-datasets) |
 | `avsectester.closed_loop.frame_data` | `FrameDataCache`, `FrameDataSequence`, `Initialization` | [Stateless datasets](../guides/scenarios.md#stateless-datasets) |
 | `avsectester.closed_loop.simulator` | `Simulator`, `SimulatorRuntime`, `SensorView`, `DeploymentPlan`, `ClockSnapshot` | [Simulator](#simulator) |
-| `avsectester.attack` | Re-exports the user-facing attack API: `Attack`, `AttackSegment`, `OfflineContext` (module `attack.attack`) and the names of `attack.runtime` | [Attack](#attack) |
+| `avsectester.attack` | Re-exports the user-facing attack API: `Attack`, `AttackSegment`, `OfflineContext` (module `attack.attack`), `split_segments` (module `attack.segments`) and the names of `attack.runtime` | [Attack](#attack) |
 | `avsectester.attack.runtime` | `AttackRuntime`, `OnlineContext`, `ResultSubscription`, `AttackEffect`, `WorldAttackEffect`, `SensorAttackEffect`, `AVStackAttackEffect` | [Online phase](runtime.md#online-phase) |
-| `avsectester.closed_loop.services` | `ClosedLoopServices`, `ClosedLoopSession`, `ScenarioView`, `CandidateRequest`, `SensorRequest`, `RenderRequest`, `RenderResult`, `DrivingAdapter` | [Shared closed-loop services](../guides/scenarios.md#shared-closed-loop-services) |
+| `avsectester.closed_loop.environment` | `normalize_environment`, `merge_environments`, `validate_environment`, `SensorEnvironment` | [Environment API](#environment-api) |
+| `avsectester.closed_loop.sensor_transforms` | `Corruption`, `CORRUPTIONS` and the built-in RGB corruption classes | [Image corruption API](#image-corruption-api) |
+| `avsectester.closed_loop.services` | `ClosedLoopServices`, `ClosedLoopSession`, `ScenarioView`, `CandidateRequest`, `SensorRequest`, `RenderRequest`, `RenderResult`, `DrivingAdapter`, `ensure_fresh` | [Shared closed-loop services](../guides/scenarios.md#shared-closed-loop-services) |
 | `avsectester.closed_loop.runner` | `ClosedLoopRunner`, `RunRequest`, `RecordingPolicy`, `trace_from_log` | [Run logs and saved results](../guides/evaluation.md#run-logs-and-saved-results) |
 | `avsectester.runlog` | `RunLog`, `StepRecord`, `EventRecord`, `Recorder`, `CodecRegistry`, `read_table` | [RunLog and recording](#runlog-and-recording) |
 | `avsectester.runlog.codecs` | `default_codecs` | [Native adapter codecs](#native-adapter-codecs) |
-| `avsectester.closed_loop.hooks` | `HookSet`, `Runtime`, `Hook`, `Plugin`, `RunContext`, `StageContext`, `CallInputs`, `RenderRequest`, `HookDispatcher` | [Runtime reference](runtime.md) |
-| `avsectester.interventions` | `ObservationTransform`, `NativeHook`, `NativeHookIntervention`, configuration helpers | [Package the attack as an intervention](../guides/attacks.md#package-the-attack-as-an-intervention) |
+| `avsectester.closed_loop.hooks` | `HookSet`, `Runtime`, `Hook`, `Plugin`, `RunContext`, `StageContext`, `CallInputs`, `CameraRenderRequest`, `HookDispatcher` | [Runtime reference](runtime.md) |
+| `avsectester.interventions` | `ObservationTransform`, `LegacyNativeHook`, `NativeHookIntervention`, configuration helpers | [Package the attack as an intervention](../guides/attacks.md#package-the-attack-as-an-intervention) |
 | `avsectester.preparation` | `Intervention`, `PreparedIntervention`, `prepare_intervention`, `Treatment` | [Package the attack as an intervention](../guides/attacks.md#package-the-attack-as-an-intervention) |
 | `avsectester.runner` | `run_pair`, `run_prepared` | [Custom treatments](../guides/experiments.md#custom-treatments), [Direct runs](../guides/experiments.md#direct-runs-and-resource-ownership) |
-| `avsectester.experiment` | `run_configured`, `configured_stack`, `ExecutionMode`, `TreatmentMode`, `ConfigurationError` | [Configured runs](../guides/experiments.md#configured-runs) |
+| `avsectester.legacy_experiment` | `run_configured`, `configured_stack`, `ExecutionMode`, `TreatmentMode`, `ConfigurationError` | [Configured runs](../guides/experiments.md#configured-runs) |
 | `avsectester.carla_runner` | `run_scenario`, `run_scenario_pair` | [Python entry points](../guides/simulators.md#python-entry-points) |
 | `avsectester.conditions` | `ScenarioConditions`, `SensorCondition`, `ConditionConfigurationError` | [Apply operating conditions](../guides/conditions.md) |
-| `avsectester.insertion` | `Insertion`, assets, placements, `Orientation`, `ActorPose`, `resolve_insertion` | [Specify inserted objects](../guides/scenarios.md#specify-inserted-objects) |
+| `avsectester.insertion` | `Insertion`, assets, placements, `Orientation`, `resolve_insertion` | [Specify inserted objects](../guides/scenarios.md#specify-inserted-objects) |
 | `avsectester.evaluation.metric` | `impact`, `Impact`, `plot_impact` | [Driving-impact metric](../guides/evaluation.md#driving-impact-metric) |
 | `avsectester.cli` | The `avsectester run` and `avsectester version` commands | [CLI reference](cli.md) |
 | `avsectester.scenarios` | Re-exports of the scenario, filter, condition and serialization API | [Prepare scenarios](../guides/scenarios.md) |
@@ -2234,25 +2527,31 @@ The clean-versus-treated figure is `metric.plot_impact`, listed under
 | `avsectester.scenarios.datasets.nuscenes` | `NuScenesDataset`, `scene_from_cam_boxes` | [Support another dataset or provider](../guides/scenarios.md#support-another-dataset-or-provider) |
 | `avsectester.scenarios.estimators` | `resolved_to_target` | [Visibility](../guides/scenarios.md#visibility) |
 | `avsectester.rendering` | Re-exports `Camera`, `InsertionGeometry`, `Visibility`, `VisibilityEvidence` and the provider protocols | [Insert into the model input](../examples/image-insertion.md#insert-into-the-model-input) |
-| `avsectester.rendering.cameras` | `Camera`, `PinholeCamera`, `FThetaCamera`, `camera_from_calibration`, pose helpers | [Insert into the model input](../examples/image-insertion.md#insert-into-the-model-input) |
+| `avsectester.geometry` | `ActorPose`, `Camera`, `FThetaCamera`, `PinholeCamera`, `rotation_matrix` | [Insertion and rendering](#insertion-and-rendering) |
+| `avsectester.geometry.cameras` | `Camera`, `PinholeCamera`, `FThetaCamera`, `camera_from_calibration`, pose and projection helpers | [Insertion rendering](#insertion-rendering) |
+| `avsectester.geometry.poses` | `ActorPose`, `rotation_matrix`, `validated_vector`, `validated_transform` | [Insertion specification](#insertion-specification) |
 | `avsectester.rendering.types` | `Visibility`, `InsertionGeometry`, `VisibilityEvidence`, `GeometryProvider`, `EvidenceProvider`, `GeometryVisibilityEstimator` | [Visibility](../guides/scenarios.md#visibility) |
 | `avsectester.rendering.geometry` | Shared surface sampling: `insertion_image`, `projected_silhouette` and internal helpers | [Rendering scope](../examples/image-insertion.md#rendering-scope) |
+| `avsectester.rendering.legacy_carla` | `insertion_perturbation`, retained for existing concrete insertion attacks | [Insertion rendering](#insertion-rendering) |
+| `avsectester.rendering.legacy_nurec` | `NuRecInsertions`, `insertion_renderer`, retained for existing concrete insertion attacks | [Insertion rendering](#insertion-rendering) |
 | `avsectester.rendering.compositor` | `InsertionRenderer`, `PatchCompositor`, `render_resolved`, `render_plane`, `warp_patch` | [Insert into the model input](../examples/image-insertion.md#insert-into-the-model-input) |
 | `avsectester.rendering.harmonizers` | `Harmonizer`, `ClassicHarmonizer`, `PCTNetHarmonizer` | [Harmonization](../examples/image-insertion.md#harmonization) |
 | `avsectester.rendering.visibility` | `CuboidVisibilityEstimator`, `DepthVisibilityEstimator`, `visibility_from_masks`, `visibility_from_depth` | [Visibility](../guides/scenarios.md#visibility) |
-| `avsectester.perturbations.image` | Corruption operators, `CORRUPTIONS`, `AugmentationPipeline`, corruption suites, camera read and write, `sensor_augmentation`, `compose`, `frame_perturbation` | [Built-in image corruptions](../guides/conditions.md#built-in-image-corruptions) |
-| `avsectester.closed_loop.simulators.carla` | `CarlaSimulator`, `CarlaSimulatorRuntime`, `carla_sensor_view`, `register_pinhole_camera`, `decode_carla_depth`, `insertion_perturbation`, `camera_view`, `lidar_bev`, `prepare_scenario`, `resolve_scenario_seed`, `set_perception_gpu` | [CARLA](../guides/simulators.md#carla) |
-| `avsectester.closed_loop.simulators.nurec` | `NuRecSimulator`, `NuRecSimulatorRuntime`, `Renderer`, `StubRenderer`, `NuRecRenderer`, `EgoPose`, `EgoDynamics`, `KinematicBicycle`, `TrajectoryFollower`, `NuRecInsertions`, `nurec_sensor_view` | [NuRec](../guides/simulators.md#nurec) |
+| `avsectester.perturbations.image` | `AugmentationPipeline`, corruption suites, Albumentations wrappers, `sensor_augmentation`, `compose`, `frame_perturbation`; compatibility exports of sensor corruption operators | [Built-in image corruptions](../guides/conditions.md#built-in-image-corruptions) |
+| `avsectester.closed_loop.simulators.carla` | `CarlaSimulator`, `CarlaSimulatorRuntime`, `carla_sensor_view`, `register_pinhole_camera`, `decode_carla_depth`, `camera_view`, `lidar_bev`, `prepare_scenario`, `resolve_scenario_seed`, `set_perception_gpu` | [CARLA](../guides/simulators.md#carla) |
+| `avsectester.closed_loop.simulators.nurec` | `NuRecSimulator`, `NuRecSimulatorRuntime`, `Renderer`, `StubRenderer`, `NuRecRenderer`, `EgoPose`, `EgoDynamics`, `KinematicBicycle`, `TrajectoryFollower`, `nurec_sensor_view` | [NuRec](../guides/simulators.md#nurec) |
 | `avsectester.closed_loop.simulators.viz` | `record_run`, views, `filmstrip`, `save_gif`, `save_sequence` | [Scene recordings](../guides/evaluation.md#scene-recordings) |
 | `avsectester.closed_loop.avstacks.modular` | `ModularAVStack` | [Modular driving system](../guides/driving-systems.md#modular-driving-system) |
 | `avsectester.closed_loop.avstacks.alpamayo` | `AlpamayoAVStack` | [Alpamayo](../guides/driving-systems.md#alpamayo) |
+| `avsectester.closed_loop.avstacks.native_hook` | `NativeHook`, adapter for explicitly registered avstack hooks | [Runtime adapters](#runtime-adapters) |
+| `avsectester.closed_loop.avstacks.scorers` | `MMDetInferenceScorer`, `MMDetRPNObjectnessScorer`, region `TargetSpec` protocol | [Current optimization interfaces](../guides/optimization.md#current-optimization-interfaces) |
 | `avsectester.closed_loop.avstacks.mmdet3d` | `register_carla_dataset` | [Pipeline configuration](../guides/driving-systems.md#pipeline-configuration) |
 | `avsectester.attacks` | `PhantomInjection`, imported on first access | [Phantom injection](../examples/phantom-injection.md) |
 | `avsectester.attacks.pipeline.phantom` | `PhantomInjection` | [Phantom injection](../examples/phantom-injection.md) |
 | `avsectester.attacks.patch.physical_patch` | `PhysicalPatch`, `PhysicalPatchPlugin`, `PhysicalPatchIntervention`, `build_patch`, patch textures | [Physical patch](../examples/physical-patch.md) |
 | `avsectester.attacks.object_insertion` | `sign_spoof`, `person_poster` and `traffic_light` payload builders | [Payloads](../examples/image-insertion.md#payloads) |
 | `avsectester.attacks.adaptive` | `SpeedFeedbackAttack`, `SpeedFeedbackPlugin` | [Speed-feedback adaptive attack](../examples/speed-feedback-attack.md) |
-| `avsectester.attacks.optim` | `AdvSample`, `AttackObjective`, `AttackResult`, `DataSource`, `GradientAttack`, `HideObject`, `Perturbation`, `Scorer`, `SpoofObject`, `TargetSpec`. Submodules add `PGD`, `NES`, `PatchPerturbation`, `LinfImage`, `CarlaRenderPerturbation`, `FrameSource` and the MMDetection scorers. This `TargetSpec` differs from the scenario `TargetSpec` | [Current optimization interfaces](../guides/optimization.md#current-optimization-interfaces) |
+| `avsectester.attacks.optim` | `AdvSample`, `AttackObjective`, `AttackResult`, `DataSource`, `GradientAttack`, `HideObject`, `Perturbation`, `Scorer`, `SpoofObject`, `TargetSpec`. Submodules add `PGD`, `NES`, `PatchPerturbation`, `LinfImage`, `CarlaRenderPerturbation` and `FrameSource`. MMDetection scorer implementations are in `closed_loop.avstacks.scorers`. This `TargetSpec` differs from the scenario `TargetSpec` | [Current optimization interfaces](../guides/optimization.md#current-optimization-interfaces) |
 | `avsectester.evaluation` | `evaluate_robustness`, `RobustnessReport`, `run_logged`, `ComponentTrace`, `StepLog`, `InstrumentedAVStack` | [Evaluate results](../guides/evaluation.md) |
 
 The repository layout beyond the package is described in

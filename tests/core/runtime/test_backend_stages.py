@@ -78,7 +78,7 @@ def test_nurec_world_interventions_change_physics_before_sensing():
 
 
 def test_nurec_render_replacement_preserves_physical_pose_and_output_sensor_identity():
-    from avsectester.closed_loop.hooks import RenderRequest
+    from avsectester.closed_loop.hooks import CameraRenderRequest
 
     renderer = RecordingRenderer()
     renderer.calibration["alternate"] = {"intrinsic": 2 * np.eye(3)}
@@ -91,7 +91,7 @@ def test_nurec_render_replacement_preserves_physical_pose_and_output_sensor_iden
         def emit(self, stage, value, *, sensor=None):
             if stage == "render.pre":
                 sensors.append(sensor)
-                return RenderRequest(EgoPose(x=100), "alternate")
+                return CameraRenderRequest(EgoPose(x=100), "alternate")
             if stage == "render.post":
                 sensors.append(sensor)
                 return np.full((2, 3, 3), 123, dtype=np.uint8)
@@ -111,11 +111,12 @@ def test_nurec_render_replacement_preserves_physical_pose_and_output_sensor_iden
 
 
 def test_nurec_visibility_uses_the_updated_render_camera():
-    from avsectester.insertion import ActorPose, Insertion, Orientation, PlaneAsset, WorldPlacement
-    from avsectester.rendering.cameras import PinholeCamera
+    from avsectester.geometry.poses import ActorPose
+    from avsectester.insertion import Insertion, Orientation, PlaneAsset, WorldPlacement
+    from avsectester.geometry.cameras import PinholeCamera
     from avsectester.rendering.types import InsertionGeometry
     from avsectester.rendering.visibility import CuboidVisibilityEstimator
-    from avsectester.closed_loop.simulators.nurec import NuRecInsertions
+    from avsectester.rendering.legacy_nurec import NuRecInsertions
 
     original_camera = PinholeCamera(np.array([[2, 0, 2], [0, 2, 1], [0, 0, 1]]), 4, 2)
     changed_camera = PinholeCamera(np.array([[4, 0, 4], [0, 4, 2], [0, 0, 1]]), 8, 4)

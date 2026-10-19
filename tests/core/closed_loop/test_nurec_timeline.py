@@ -141,7 +141,7 @@ def test_ten_hz_rollout_accepts_alpamayo_and_trajectory_follower(timeline, monke
 
 
 def test_simulator_sensor_view_places_recorded_actors_at_the_render_time(timeline):
-    from avsectester.rendering.cameras import PinholeCamera, planar_rig_pose
+    from avsectester.geometry.cameras import PinholeCamera, planar_rig_pose
 
     data, path, _, _ = timeline
     scene = data.scene_id(path)

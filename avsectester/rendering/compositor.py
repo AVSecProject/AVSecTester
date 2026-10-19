@@ -14,7 +14,7 @@ import numpy as np
 
 from avsectester.closed_loop.datatypes import Observation
 from avsectester.insertion import Insertion, ResolvedInsertion
-from avsectester.rendering.cameras import Camera
+from avsectester.geometry.cameras import Camera
 from avsectester.rendering.types import InsertionGeometry, GeometryProvider, EvidenceProvider, VisibilityEvidence
 
 from avsectester.rendering.harmonizers import Harmonizer, ClassicHarmonizer
@@ -51,7 +51,7 @@ def render_plane(
 
     The world-anchored counterpart of :func:`warp_patch`: instead of an image quad, the target is a
     3-D rectangle ``corners_world`` (4x3, TL,TR,BR,BL as seen from the front) and a real ``camera``
-    (:mod:`avsectester.rendering.cameras` — pinhole or f-theta fisheye). Every pixel in the
+    (:mod:`avsectester.geometry.cameras` — pinhole or f-theta fisheye). Every pixel in the
     rectangle's image footprint is cast as a ray and intersected with the plane, so the result is exact
     for a distorting lens (a 4-corner homography is not). The texture is pre-filtered to its on-screen
     size (no aliasing on distant objects); ``soften`` (px sigma) optionally blurs it to match a soft

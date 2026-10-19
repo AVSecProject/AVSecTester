@@ -9,9 +9,8 @@ import numpy as np
 
 from avsectester.attacks.object_insertion.person_poster import billboard, load_cutout, poster_rgba, standee
 from avsectester.attacks.object_insertion.sign_spoof import SignAsset, sign_rgba
-from avsectester.insertion import (
-    ActorPose, AttachedPlacement, Insertion, Orientation, PlaneAsset, WorldPlacement,
-)
+from avsectester.geometry.poses import ActorPose
+from avsectester.insertion import AttachedPlacement, Insertion, Orientation, PlaneAsset, WorldPlacement
 from avsectester.rendering.harmonizers import ClassicHarmonizer, Harmonizer, PCTNetHarmonizer
 from avsectester.closed_loop.avstack import AVStack
 from avsectester.closed_loop.datatypes import Control
@@ -205,7 +204,7 @@ def nurec_rear_insertion(payload, scene, host: str) -> Insertion:
 
 def carla_rear_perturbation(backend, texture, compositor, *, width_frac=1.0, height_frac=0.95):
     """Create the attachment after reset, when the configured lead has been spawned."""
-    from avsectester.closed_loop.simulators.carla import insertion_perturbation
+    from avsectester.rendering.legacy_carla import insertion_perturbation
 
     perturb = None
 

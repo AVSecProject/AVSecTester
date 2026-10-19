@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from avsectester.rendering.cameras import FThetaCamera, make_pose, planar_rig_pose, quat_to_matrix
+from avsectester.geometry.cameras import FThetaCamera, make_pose, planar_rig_pose, quat_to_matrix
 
 
 @pytest.fixture

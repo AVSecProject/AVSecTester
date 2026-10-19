@@ -8,11 +8,12 @@ flows between them and defines the terms used in all other documents.
 | I want to… | Read, in order |
 |---|---|
 | Run a demo first | [Installation](getting-started/installation.md) → [Quickstart](getting-started/quickstart.md) |
+| Prepare and execute a Python experiment | [Run experiments](guides/experiments.md#prepare-and-execute-attacks) → [Experiment configuration (Python API)](reference/configuration.md#experiment-configuration-python-api) |
 | Implement a new attack | [Architecture](concepts/architecture.md) → [Implement an attack](guides/attacks.md). Look up details in [Runtime](reference/runtime.md) and [Configuration](reference/configuration.md). See [Examples](examples/README.md) for supplied attacks |
 | Implement a new defense | [Architecture](concepts/architecture.md) → [Implement a defense](guides/defenses.md) → [Runtime](reference/runtime.md) |
 | Optimize an attack artifact, such as a patch texture | [Implement an attack](guides/attacks.md) → [Optimize attack artifacts](guides/optimization.md) → [Physical patch example](examples/physical-patch.md) |
 | Test an attack under bad weather or sensor degradation | [Apply operating conditions](guides/conditions.md) → [Evaluate results](guides/evaluation.md) |
-| Select scenarios that meet requirements | [Prepare scenarios](guides/scenarios.md) → [Configuration](reference/configuration.md#selection-keys) |
+| Select scenarios for an attack | [Attack metabuilder](guides/attacks.md#use-the-selected-scenario) → [Dataset and closed-loop services](guides/scenarios.md#stateless-datasets) |
 | Configure CARLA or NuRec scenes | [Configure simulators](guides/simulators.md) → [Configuration](reference/configuration.md) |
 | Integrate a new simulator or driving system | [Architecture](concepts/architecture.md) → [Configure simulators](guides/simulators.md#write-a-custom-simulator-adapter) or [Configure driving systems](guides/driving-systems.md#use-a-custom-driving-system) → [Runtime](reference/runtime.md) |
 | Contribute code or documentation | [Contributing](development/contributing.md) → [Tests](../tests/README.md) → [TODO](development/TODO.md) |
@@ -36,7 +37,7 @@ flows between them and defines the terms used in all other documents.
 
 | Document | Contents |
 |---|---|
-| [Run experiments](guides/experiments.md) | Entry points, treatments and modes, configured and custom runs, reproducibility, outputs |
+| [Run experiments](guides/experiments.md) | Attack preparation, independent treatments, saved artifacts and logs, existing CLI and configured runs |
 | [Prepare scenarios](guides/scenarios.md) | Configured scenarios, inserted objects, filters and requirements, selection, visibility, custom providers |
 | [Apply operating conditions](guides/conditions.md) | World and sensor conditions, corruption operators, ordering and randomness |
 | [Configure simulators](guides/simulators.md) | CARLA and NuRec setup, seeds and spawning, world changes from handlers, custom simulators |

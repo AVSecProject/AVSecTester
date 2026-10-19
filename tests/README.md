@@ -53,7 +53,7 @@ the imports exercised by these tests. This is an offline test environment. Use
 ## Functional coverage
 
 Framework component tests mirror the packages: `core/attack/`, `core/closed_loop/`,
-`core/datasets/`, `core/runlog/` and `core/evaluation/`. `core/runtime/` and `core/scenarios/`
+`core/datasets/`, `core/experiment/`, `core/runlog/` and `core/evaluation/`. `core/runtime/` and `core/scenarios/`
 cover the legacy experiment path. Attack tests mirror the implementation families under
 `core/attacks/` and `avstack/attacks/`.
 Shared camera and compositing tests live under `core/rendering/`. Image transforms and
@@ -63,6 +63,9 @@ pytest/CI collect their subdirectories recursively.
 
 | Tests | Behavior exercised |
 |---|---|
+| `core/experiment/` | Typed/YAML configuration, per-file paths, selection decisions, one offline preparation per attack, independent treatments, metadata/artifact reload and persistent RunLog output |
+| `core/attack/test_segments.py` | Explicit decision lengths, runs of eligible decision frames, terminal frames and optional tails |
+| `core/closed_loop/test_environment.py`, `core/closed_loop/test_services.py` | Environment inheritance, simulator capabilities, sensor-effect ordering, native CARLA settings, sequential frame scans and session cleanup |
 | `core/test_interface.py` | Per-step controls affect subsequent true state. Replacement attack observations reach the stack without falsifying the recorded state |
 | `core/test_runtime.py`, `core/runtime/test_pair.py` | Ordered attacks/defenses, plugin lifecycle, localization, unsupported stages, command execution and exception cleanup |
 | `core/runtime/test_preparation.py` | Prepared artifacts, explicit export/import/reuse, enabled methods, role bindings and adaptive feedback reset |

@@ -21,8 +21,9 @@ Each family owns its attack payload and target; simulation helpers own rendering
     an adversarial patch/perturbation against a scorer; not tied to any one threat model.
 
 Only ``PhantomInjection`` needs avstack; it is imported lazily (PEP 562) so importing this package —
-or the pure image helpers — does not pull it in. The modular stack imports ``pipeline.phantom``
-explicitly (in :mod:`avsectester.closed_loop.avstacks.modular`) to run its registration.
+or the pure image helpers — does not pull it in. Import ``avsectester.attacks.pipeline.phantom`` explicitly before constructing the native
+hook, or list that module in the configured hook's ``imports``. Constructing a modular stack
+does not register attacks.
 """
 
 __all__ = ["PhantomInjection"]

@@ -339,6 +339,7 @@ def test_carla_state_reads_other_actors_from_the_latest_tick_and_actors_can_be_t
         get_velocity=lambda: SimpleNamespace(x=1.0, y=2.0, z=0.0),
     )
     npc, lead = Mock(id=7, type_id="vehicle.audi.tt"), Mock(id=8, type_id="walker.pedestrian.0001")
+    npc.bounding_box = SimpleNamespace(extent=SimpleNamespace(x=2.0, y=1.0, z=0.8))
     snapshot = SimpleNamespace(frame=3, timestamp=SimpleNamespace(elapsed_seconds=0.3),
                                find=lambda actor_id: simulated if actor_id in (1, 7) else None)
     backend = CarlaSimulator({"client": {}, "ego": {}}).create_runtime()
@@ -365,3 +366,15 @@ def test_carla_state_reads_other_actors_from_the_latest_tick_and_actors_can_be_t
         backend.control_actor("ego", Control())
     with pytest.raises(KeyError, match="Unknown CARLA actor"):
         backend.control_actor("npc:5", Control())
+
+
+def test_reset_accepts_only_native_world_settings_before_creating_the_world():
+    simulator = NuRecSimulator(config={}, renderer=StubRenderer())
+    with simulator.create_runtime() as runtime:
+        for envelope in ({"sensors": []}, {"world": {}}, {"sensors": [], "weather": "rain"}):
+            with pytest.raises(ValueError, match="world settings"):
+                runtime.reset(world=envelope)
+            with pytest.raises(RuntimeError, match="Reset"):
+                runtime.observe()
+        runtime.reset(world={})
+        assert runtime.observe() is not None

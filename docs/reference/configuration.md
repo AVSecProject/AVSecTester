@@ -4,6 +4,230 @@
 > **Outcome:** Look up every supported configuration key, its type, default and meaning.  
 > **Prerequisites:** [Run experiments](../guides/experiments.md).
 
+## Experiment configuration (Python API)
+
+`Experiment.prepare` accepts an `ExperimentConfiguration`, a Python mapping, or a YAML file.
+The Python experiment API uses the schema below. The existing CLI and its supplied
+`configs/*.yaml` files use the separate [CLI configuration](#cli-configuration) schema.
+
+```python
+from avsectester.experiment import Experiment, load_configuration
+
+configuration = load_configuration("experiment.yaml")
+prepared = Experiment.prepare(configuration)
+result = Experiment.execute(prepared)
+```
+
+### Experiment fields
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `dataset` | `Dataset` or constructor specification | required | Stateless source of scenarios, frame data and simulator starts |
+| `simulator` | `Simulator` or constructor specification | required | Reusable simulator configuration. Runs, renders and rollouts create fresh runtimes; sequential effect-free reads in one service session may reuse a scan runtime |
+| `avstack` | driving specification, YAML path or `DrivingAdapter` | required | The driving system: how to construct a fresh AVStack for every run, and optional component/scorer bindings |
+| `attacks` | mapping of names to `Attack`, attack specification or YAML path | `{}` | Each attack selects its own segments and runs its offline phase once |
+| `treatments` | list of treatment mappings or mapping of names to their settings | clean plus one treatment per attack | Each entry has `name`, optional `attack_name`, and optional `environment`. A treatment enables at most one named attack |
+| `seeds` | nonempty list of unique nonnegative integers | `[0]` | Run seeds, shared by treatments in each comparison group |
+| `decision_steps` | positive integer or `null` | `null` | Optional upper limit on decisions per selected segment. It does not change selection or create missing frames |
+| `environment` | mapping with `world` and `sensors` | `{}` | Base environment shared by all treatments |
+| `recording` | `RecordingPolicy` or mapping | default policy | `sensor_ids`, `representations` and `every_n_steps`. Physical states, commands and effects remain recorded at every decision |
+| `output` | filesystem path or `null` | `null` | Save preparation data and per-run logs here. `null` keeps preparation and logs in memory |
+| `strict` | boolean | `false` | Stop on a selection or execution error. Otherwise retain the failure and continue |
+| `hooks` | hook list, `HookSet` or `factory(seed) -> HookSet` | none | Additional stage hooks for attacked treatments |
+| `clean_hooks` | same as `hooks` | none | Additional stage hooks for clean treatments |
+
+The `attacks` mapping contains new `Attack` implementations, not native avstack hook entries.
+Unknown experiment keys are rejected. Native avstack hooks belong in `hooks` as described below.
+
+Preparation selects segments with the first entry in `seeds`, then calls each attack's offline
+phase once. The metabuilder does not automatically inherit the experiment's base `environment`:
+it sees the original scenario unless it explicitly requests an environment through its services.
+Execution reuses that metadata and those artifacts for every configured seed without reselecting.
+Before running a segment at a seed, the framework checks that its bound actors exist at its start;
+missing actors make the run fail and are recorded in its result.
+
+```yaml
+dataset:
+  type: my_project.data:MyDataset
+  options: {directory: data}
+simulator:
+  type: my_project.simulation:make_simulator
+avstack: driving.yaml
+attacks:
+  spoofing: attacks/spoofing.yaml
+treatments:
+  - {name: clean}
+  - {name: attacked, attack_name: spoofing}
+  - name: attacked_with_noise
+    attack_name: spoofing
+    environment:
+      sensors: [{type: GaussianNoise, options: {severity: 0.2}, camera: front}]
+seeds: [3, 7]
+decision_steps: 30
+recording:
+  sensor_ids: [front]
+  representations: [raw, model_input]
+  every_n_steps: 5
+output: results/spoofing
+```
+
+The `package.module:name` values in this example are user code. Each constructs the declared
+framework type. A clean treatment has no `attack_name` key, or sets it to `null`.
+Named treatment mappings are equivalent to the list form:
+
+```yaml
+treatments:
+  clean: {}
+  attacked: {attack_name: spoofing}
+```
+
+### Constructors and file references
+
+Every constructed object is selected by one key, `type`, with keyword arguments in `options`:
+
+- A value without a colon is the exact name of a built-in class, such as `type: NuRecSimulator`.
+- A value `package.module:name` is user code: a class, or a function returning an object of the
+  required type, such as `type: my_project.driving:MyAVStack`.
+
+The same rule applies to datasets, simulators, attacks, the driving system, hooks, sensor
+environment transforms and nested constructors in `options`.
+
+```yaml
+simulator:
+  type: NuRecSimulator
+  options:
+    config: {dt: 0.1, camera_aliases: {camera_front_wide_120fov: front}}
+    renderer:
+      type: NuRecRenderer
+      options: {endpoint: "127.0.0.1:50051"}
+    dynamics:
+      type: TrajectoryFollower
+```
+
+Built-in dataset types are `CarlaDataset`, `NuRecDataset` and `NuScenesDataset`. Simulator types
+are `CarlaSimulator`, `NuRecSimulator` and `RecordedReplaySimulator`. Nested constructor
+specifications support `CarlaRecipe`, `PrescribedMotion`, `Control`, `ActorState`, `StubRenderer`,
+`NuRecRenderer`, `KinematicBicycle`, `TrajectoryFollower` and `VehicleIO`. A nested mapping is
+constructed only when its `type` is one of these names or contains a colon. Other mappings, such
+as native avstack pipeline configurations whose `type` names an avstack registry entry, are
+passed through unchanged.
+
+Each dataset, simulator, attack or driving specification can instead be the path to a YAML file
+containing that same mapping. A referenced file is resolved relative to the YAML file that
+references it. Filesystem arguments inside that file use its own directory, not the experiment
+file's directory. Python mappings use the current working directory.
+
+The loader resolves these filesystem option names, including values in lists:
+`path`, `directory`, `checkpoint_path`, `checkpoint`, `dataroot`, `usdz_path`, `usdz_paths`,
+`asset_path`, `image_path`, `texture_path`, `output_path`, `model_path` and `config_path`.
+URI values containing `://` stay unchanged. Other user options are passed through. User code
+owns the interpretation of any additional path-like options it defines.
+
+Loading imports and executes the named user code. Use configuration files and modules you trust.
+
+### Attack specification
+
+An attack specification constructs an `Attack` and optionally sets its `environment`:
+
+```yaml
+# attacks/spoofing.yaml
+type: my_project.attacks:PositionSpoofing
+options:
+  offset_m: 3.0
+  decision_steps: 30
+environment:
+  sensors: [{type: GaussianNoise, options: {severity: 0.1}, camera: front}]
+```
+
+Assets, selection parameters and optimization settings are arguments of the user's Attack
+constructor. The framework calls `build_metadata`, `run_offline` and `create_runtime` in that
+order. It does not require an insertion asset, a host or an optimization algorithm.
+
+### Driving specification
+
+The driving specification describes how to construct the driving system. `type` names a built-in
+AVStack class (`ModularAVStack` or `AlpamayoAVStack`), or user code returning an AVStack. It is
+called with `options` whenever a run, rollout or component/scorer query needs an AVStack, so
+each has fresh driving history and localization state. The constructor receives only `options`; the run seed
+controls hooks, sensor environments and the simulator, not the AVStack constructor.
+
+```yaml
+# driving.yaml
+type: my_project.driving:MyAVStack
+options: {checkpoint_path: weights/model.pt}
+vehicle_io:
+  type: VehicleIO
+  options:
+    localizer: {type: my_project.localization:Localizer}
+command_modes: [actuator]
+bindings:
+  type: my_project.driving:bind_components
+  options: {components: [planner]}
+```
+
+| Key | Required | Meaning |
+|---|---|---|
+| `type`, `options` | `type` | The AVStack class or AVStack-returning function, and its keyword arguments |
+| `vehicle_io` | no | A `VehicleIO` constructor run for every new AVStack. Without it the AVStack's own `VehicleIO` is retained |
+| `command_modes` | no | Must match the AVStack's declared `actuator` and/or `trajectory` modes. It checks the declaration rather than converting commands; use a command hook for an explicit conversion |
+| `bindings` | no | Exposes driving-system components and scorers to closed-loop services, for attacks whose offline phase evaluates individual components. `type` names a function called as `function(avstack_factory, **options)` that returns a `DrivingAdapter`, such as `modular_driving_adapter` or `alpamayo_driving_adapter` in `avsectester.closed_loop.driving_adapters` |
+
+Python callers can instead pass a `DrivingAdapter` object as `avstack`.
+
+### Environment overrides and hooks
+
+All environment layers use the same structure:
+
+```yaml
+environment:
+  world: {weather: HardRainNoon}
+  sensors: [{type: GaussianNoise, options: {severity: 0.3}, camera: front}]
+```
+
+Each `sensors` entry has `type`, optional `options` and an optional `camera`. See
+[Experiment environment](../guides/conditions.md#experiment-environment) for the built-in
+transforms and custom transforms.
+
+Resolution order is experiment environment, then the enabled `Attack.environment`, then treatment
+environment. Later world settings override earlier matching settings. A later `sensors` list
+replaces the earlier list. Omitting `sensors` retains it. Explicit `sensors: []` removes inherited
+sensor transforms. World settings are checked against `Simulator.supported_world_settings`
+before preparation creates a simulator runtime. `Simulator.validate_world_settings(world)`
+also checks values that do not require a live world. World-dependent checks, such as map support
+and actor existence, run during reset. Unsupported settings raise an error, with no automatic
+conversion into image effects. The runner and services pass only the resolved `world` mapping
+to `SimulatorRuntime.reset(world=...)`; passing `sensors` there is an error.
+
+Sensor environment transforms run after `SensorAttackEffect` and before input hooks. Thus image
+noise also affects inserted attack pixels. Native sensor settings and scene content, such as a
+map or NPC spawns, remain in the dataset recipe and simulator configuration.
+
+```yaml
+hooks:
+  - stage: command
+    type: my_project.monitoring:CommandLogger
+    options: {every_n_steps: 5}
+  - stage: perception.post
+    imports: [my_project.native_hooks]
+    native_hook: {type: MyNativeHook, threshold: 0.5}
+clean_hooks: []
+```
+
+Hook entries execute in list order. Each entry has `stage` and exactly one of `type` (with
+optional `options`) and `native_hook`. A `type` handler is constructed afresh for every run.
+
+`native_hook` adapts a hook registered in the avstack library's `HOOKS` registry, such as the
+supplied `PhantomInjection`. Its value is avstack's own hook configuration, so its `type` is an
+avstack registry name, not a class name or `package.module:name`. It requires a `.pre` or `.post`
+stage. `imports` lists modules to import first so that their hooks are registered, for example
+`[avsectester.attacks.pipeline.phantom]`. Unsupported
+stages fail before simulator reset. Python callers may supply a `HookSet` directly or a
+seed-to-`HookSet` factory. A directly reused stateful handler must implement `reset` correctly.
+
+## CLI configuration
+
+The sections below describe the configuration consumed by the existing CLI and
+`avsectester.legacy_experiment.run_configured`. They do not apply to `Experiment.prepare`.
 
 ## File layout
 
@@ -56,7 +280,7 @@ Each key is read by one part of the framework:
 Loading a configuration imports and executes the Python factories it names. Use configurations
 and factory modules you trust.
 
-## Experiment keys
+## CLI experiment keys
 
 | Key | Type | Default | Meaning | Validated by |
 |---|---|---|---|---|
@@ -352,7 +576,7 @@ hooks.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `world` | mapping | `{}` | World properties passed to the backend before the first reset. CARLA accepts only `weather`. NuRec accepts none |
+| `world` | mapping | `{}` | World properties passed to the backend before the first reset. CARLA accepts `weather`, `lighting`, `map_layers` and `road_friction`; see [Native CARLA settings](../guides/conditions.md#native-carla-settings). NuRec accepts none |
 | `world.weather` | string or mapping | none | CARLA weather: a `carla.WeatherParameters` preset name, such as `ClearNoon` or `HardRainNoon`, or a mapping of weather parameters |
 | `sensors` | list | `[]` | Ordered sensor conditions |
 | `seed` | int, at least 0 | `0` | Default seed for sensor conditions. It is independent of `runtime.seed` |
@@ -363,7 +587,7 @@ A sensor condition is either a built-in image corruption or a custom handler fac
 |---|---|---|---|
 | `type` | string | required for built-ins | Corruption name. See [Built-in image corruptions](../guides/conditions.md#built-in-image-corruptions) |
 | `severity` | number in `[0, 1]` | `0.5` | Corruption strength. Built-ins only |
-| `camera` | nonempty string | first readable RGB camera | Sensor ID to corrupt. Built-ins only |
+| `camera` | nonempty string | first sensor in the observation | Sensor ID to corrupt. The selected payload must be readable RGB; no search for another camera is performed. Built-ins only |
 | `factory` | string `package.module:callable` | none | Custom handler factory, called as `factory(**options)` for every treatment. See [Custom sensor conditions](../guides/conditions.md#custom-sensor-conditions) |
 | `options` | mapping | `{}` | Corruption arguments for built-ins, or factory arguments |
 | `stage` | `sensors.post` or `observation` | `observation` | Stage of the condition handler |

@@ -6,9 +6,10 @@ from collections.abc import Mapping
 
 import numpy as np
 
-from avsectester.insertion import ActorPose, ResolvedInsertion
+from avsectester.geometry.poses import ActorPose
+from avsectester.insertion import ResolvedInsertion
 from avsectester.scenarios.scene import CameraCalib, PlacementCandidate
-from avsectester.rendering.cameras import camera_from_calibration, transform
+from avsectester.geometry.cameras import camera_from_calibration, transform
 from avsectester.rendering.geometry import edge_points
 __all__ = ["resolved_to_target"]
 

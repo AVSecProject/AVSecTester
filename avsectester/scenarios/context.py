@@ -107,7 +107,7 @@ class FilterContext:
         if "actors" not in self._cache:
             import numpy as np
 
-            from avsectester.insertion import ActorPose
+            from avsectester.geometry.poses import ActorPose
 
             world_from_ego = self.world_from_ego
             actors = {}
@@ -142,7 +142,7 @@ class FilterContext:
     def victim(self):
         import numpy as np
 
-        from avsectester.insertion import ActorPose
+        from avsectester.geometry.poses import ActorPose
 
         local = np.eye(4)
         local[:3, 3] = self.scene.ego.center
@@ -168,7 +168,7 @@ class FilterContext:
         """
         if self.insertions:
             if "subjects" not in self._cache:
-                from avsectester.insertion import ActorPose
+                from avsectester.geometry.poses import ActorPose
                 from .estimators import resolved_to_target
 
                 self._cache["subjects"] = tuple(
@@ -186,7 +186,7 @@ class FilterContext:
     def in_view(self, subject: TargetGeometry, camera: str) -> bool:
         """Test opaque insertion pixels against a calibrated image, independently of occlusion."""
         import numpy as np
-        from avsectester.rendering.cameras import camera_from_calibration
+        from avsectester.geometry.cameras import camera_from_calibration
         from avsectester.rendering.geometry import projected_silhouette
 
         key = ("in_view", subject.track_id, camera)
@@ -211,7 +211,7 @@ class FilterContext:
                 elif self.visibility_estimator is not None:
                     import numpy as np
 
-                    from avsectester.rendering.cameras import camera_from_calibration
+                    from avsectester.geometry.cameras import camera_from_calibration
 
                     calib = self.scene.cameras.get(camera)
                     if calib is None or calib.cam_to_ego is None or calib.model is None:

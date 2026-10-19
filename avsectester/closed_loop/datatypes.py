@@ -16,9 +16,12 @@ adapter-specific types, so transport across a process boundary requires appropri
 
 from __future__ import annotations
 
+import copy
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
+
+import numpy as np
 
 
 @dataclass
@@ -161,3 +164,36 @@ def validate_command_modes(command: Control, modes: frozenset[str] | None) -> No
     active = [name for name in ("throttle", "brake", "steer") if getattr(command, name) != 0.0]
     if active and "actuator" not in modes:
         raise ValueError(f"Simulator does not support actuator command fields: {active}")
+
+
+def read_camera_rgb(observation: Observation, camera: str | None = None) -> tuple[str, np.ndarray] | None:
+    """``(sensor_id, (H,W,3) uint8 RGB)`` for a camera payload, or None. Duck-typed over the canonical
+    ndarray payload (NuRec/dataset) and an avstack ``ImageData`` (``.rgb_image``) — the read side of the
+    sensor-plane seam, so an augmentation needs no backend-specific view."""
+    data = observation.sensor_data
+    if not data:
+        return None
+    key = camera if camera in data else next(iter(data))
+    payload = data[key]
+    rgb = getattr(payload, "rgb_image", None)
+    if rgb is None and isinstance(payload, np.ndarray) and payload.ndim == 3 and payload.shape[2] >= 3:
+        rgb = payload
+    if rgb is None:
+        return None
+    return key, np.asarray(rgb)[:, :, :3].astype(np.uint8)
+
+
+def write_camera_rgb(observation: Observation, key: str, rgb: np.ndarray) -> Observation:
+    """Return a copy of ``observation`` with sensor ``key``'s image replaced by ``rgb``. An ndarray
+    payload is replaced; an ``ImageData``-like payload is shallow-copied with only its pixel buffer
+    swapped (the write side of the seam, shared by attacks and augmentations)."""
+    payload = observation.sensor_data[key]
+    new_rgb = np.asarray(rgb).astype(np.uint8)
+    if isinstance(payload, np.ndarray):
+        new_payload: Any = new_rgb
+    else:
+        new_payload = copy.copy(payload)
+        new_payload.data = new_rgb
+    new_data = dict(observation.sensor_data)
+    new_data[key] = new_payload
+    return replace(observation, sensor_data=new_data)

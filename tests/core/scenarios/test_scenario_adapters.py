@@ -13,7 +13,7 @@ from avsectester.closed_loop.simulators.nurec import EgoPose, NuRecRenderer
 
 def test_nurec_factory_preserves_selected_pose_time_camera_and_reset(monkeypatch):
     import avsectester.closed_loop.simulators.nurec as module
-    from avsectester.rendering.cameras import planar_rig_pose
+    from avsectester.geometry.cameras import planar_rig_pose
 
     pose = planar_rig_pose(12, -3, 0.7, 1.8)
     scene = SceneGT(
@@ -51,7 +51,7 @@ def test_nurec_factory_preserves_selected_pose_time_camera_and_reset(monkeypatch
 
 
 def test_nurec_renderer_keeps_initial_tilt_and_height():
-    from avsectester.rendering.cameras import planar_rig_pose
+    from avsectester.geometry.cameras import planar_rig_pose
 
     anchor = planar_rig_pose(10, 20, 0.4, 2)
     tilt = np.array(
@@ -173,7 +173,7 @@ def test_nurec_rpc_uses_selected_timestamp_and_initial_pose(monkeypatch):
     import sys
     import cv2
     from scipy.spatial.transform import Rotation
-    from avsectester.rendering.cameras import planar_rig_pose, pose_from_proto
+    from avsectester.geometry.cameras import planar_rig_pose, pose_from_proto
 
     encoded = cv2.imencode(".jpg", np.zeros((2, 3, 3), np.uint8))[1].tobytes()
     common = SimpleNamespace(

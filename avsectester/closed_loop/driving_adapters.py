@@ -25,7 +25,7 @@ def modular_driving_adapter(factory, *, components=(), scorers=()):
             raise ValueError(f"Unknown built-in scorer {name!r}")
         differentiable = name == "mmdet.rpn_objectness"
         def score(avstack, inputs, target, differentiable=differentiable):
-            from avsectester.attacks.optim.scorers import MMDetInferenceScorer, MMDetRPNObjectnessScorer
+            from avsectester.closed_loop.avstacks.scorers import MMDetInferenceScorer, MMDetRPNObjectnessScorer
 
             model = avstack.models["perception"]
             scorer = MMDetRPNObjectnessScorer(model) if differentiable else MMDetInferenceScorer(model)

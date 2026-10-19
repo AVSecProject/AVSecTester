@@ -1,4 +1,4 @@
-"""Camera lens models and pose transforms for geometry-based insertion.
+"""Camera lens models and pose transforms shared by datasets and simulators.
 
 Both models use optical axes: X right, Y down, Z forward. ``PinholeCamera``
 represents calibrated CARLA and nuScenes cameras. ``FThetaCamera`` represents
@@ -11,9 +11,10 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, overload, Protocol
 
 import numpy as np
+from numpy.typing import ArrayLike
 
 
 class Camera(Protocol):
@@ -63,8 +64,8 @@ class FThetaCamera:
     ``pixeldist_to_angle`` is the inverse polynomial used by :meth:`unproject`. Polynomials are
     coefficient lists in increasing order (c0 + c1*x + c2*x^2 ...), exactly as NuRec's ``ftheta_param``
     and ``.usdz`` calibration store them. ``linear_cde`` is the small affine screen correction
-    ``[[c, d], [e, 1]]`` applied to the radial offset (identity ``(1, 0, 0)`` in NuRec); :meth:`unproject`
-    supports only the identity. This is the one f-theta lens model in the package — the scenario layer's
+    ``[[c, d], [e, 1]]`` applied to the radial offset (identity ``(1, 0, 0)`` in NuRec).
+    :meth:`unproject` inverts that affine correction before the radial polynomial. The scenario layer's
     rig-frame camera (:class:`avsectester.scenarios.datasets.nurec.FThetaCamera`) projects through it.
     """
 
@@ -94,7 +95,15 @@ class FThetaCamera:
         )
 
     @staticmethod
-    def _poly(coeffs: tuple, x: np.ndarray) -> np.ndarray:
+    @overload
+    def _poly(coeffs: tuple, x: np.ndarray) -> np.ndarray: ...
+
+    @staticmethod
+    @overload
+    def _poly(coeffs: tuple, x: float) -> float: ...
+
+    @staticmethod
+    def _poly(coeffs: tuple, x: np.ndarray | float) -> np.ndarray | float:
         return np.polynomial.polynomial.polyval(x, np.asarray(coeffs, dtype=np.float64))
 
     def project(self, pts_cam: np.ndarray) -> np.ndarray:
@@ -145,7 +154,7 @@ def quat_to_matrix(w: float, x: float, y: float, z: float) -> np.ndarray:
     )
 
 
-def make_pose(rotation: np.ndarray, translation) -> np.ndarray:
+def make_pose(rotation: np.ndarray, translation: ArrayLike) -> np.ndarray:
     T = np.eye(4)
     T[:3, :3] = rotation
     T[:3, 3] = np.asarray(translation, dtype=np.float64)
@@ -172,7 +181,7 @@ def transform(T: np.ndarray, pts: np.ndarray) -> np.ndarray:
 class _ForwardPolynomialCamera(FThetaCamera):
     """Invert a monotonic f-theta polynomial when a dataset omits the inverse calibration."""
 
-    def unproject(self, uv):
+    def unproject(self, uv: np.ndarray) -> np.ndarray:
         uv = np.asarray(uv, dtype=float)
         c, d, e = self.linear_cde
         affine = np.array([[c, d], [e, 1.0]])
@@ -194,7 +203,7 @@ class _ForwardPolynomialCamera(FThetaCamera):
         return rays
 
 
-def camera_from_calibration(calib) -> Camera:
+def camera_from_calibration(calib: Any) -> Camera:
     """Return an optical-frame project/unproject lens from the supported calibration forms."""
     model = calib.model
     if callable(getattr(model, "unproject", None)) and callable(getattr(model, "project", None)):

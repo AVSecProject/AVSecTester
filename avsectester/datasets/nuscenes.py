@@ -8,6 +8,7 @@ import numpy as np
 from avsectester.rendering.types import Visibility
 from avsectester.scenarios.scene import CameraCalib, EgoState, ObjectGT, SceneGT
 from avsectester.datasets.base import Dataset
+from avsectester.geometry.cameras import make_pose, quat_to_matrix
 
 # nuScenes visibility token (fraction of the object visible across all cameras) -> a representative value
 _VISIBILITY = {"1": 0.2, "2": 0.5, "3": 0.7, "4": 0.9}
@@ -122,16 +123,23 @@ class NuScenesDataset(Dataset):
         from .base import ActorState, SensorDataReference, FrameData
 
         nusc = self._load()
-        scene = self._sample_scene(nusc.get("sample", frame.frame_id), frame.position)
-        actors = {"ego": ActorState(scene.ego.pose)}
+        sample = nusc.get("sample", frame.frame_id)
+        scene = self._sample_scene(sample, frame.position)
+        actors = {"ego": ActorState(scene.ego.pose, category="vehicle")}
+        # The legacy scene contains only visible four-wheeled vehicles. Runtime metadata
+        # must retain every annotation, including pedestrians and actors outside this camera.
+        for annotation_id in sample.get("anns", ()):
+            annotation = nusc.get("sample_annotation", annotation_id)
+            width, length, height = annotation["size"]
+            velocity = np.asarray(nusc.box_velocity(annotation_id), dtype=float)
+            actors[annotation["instance_token"]] = ActorState(
+                make_pose(quat_to_matrix(*annotation["rotation"]), annotation["translation"]),
+                tuple(float(v) for v in velocity) if np.isfinite(velocity).all() else None,
+                annotation["category_name"], (length, width, height),
+            )
         for obj in scene.objects:
             annotation = nusc.get("sample_annotation", obj.track_id)
-            velocity = np.asarray(nusc.box_velocity(obj.track_id), dtype=float)
             obj.track_id = annotation["instance_token"]
-            actors[obj.track_id] = ActorState(
-                np.asarray(scene.ego.pose) @ np.asarray(obj.pose),
-                tuple(float(v) for v in velocity) if np.isfinite(velocity).all() else None,
-            )
         sensor = SensorDataReference(scene.source["image_path"], "front", frame.timestamp)
         return FrameData(frame, scene, actors, {"front": sensor}, {"kind": "recorded"})
 

@@ -43,7 +43,7 @@ def carla_actor_pose(actor):
     CARLA uses left-handed axes. Both world and object axes are reflected so the
     resulting rotation remains right-handed, including roll, pitch and box rotation.
     """
-    from avsectester.insertion import ActorPose
+    from avsectester.geometry.poses import ActorPose
 
     transform = actor.get_transform()
     world_from_actor = np.linalg.inv(np.asarray(transform.get_inverse_matrix()))
@@ -160,7 +160,7 @@ def carla_scene_gt(backend: Any, camera: str = "front") -> SceneGT:
     actors retain their native IDs. The complete native world is available separately
     through the selection context.
     """
-    from avsectester.rendering.cameras import carla_cam_coords, project_to_pixels
+    from avsectester.geometry.cameras import carla_cam_coords, project_to_pixels
 
     world = backend.client.world
     ego = backend.ego.actor

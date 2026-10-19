@@ -152,7 +152,8 @@ def test_modular_stack_counts_detections_after_attack(pipeline_config, make_dete
     stack = ModularAVStack(pipeline_config)
     from avsectester.closed_loop.simulator import WorldBackend
     from avsectester.backend import run
-    from avsectester.interventions import NativeHook
+    import avsectester.attacks.pipeline.phantom  # noqa: F401 -- explicit native registration
+    from avsectester.closed_loop.avstacks.native_hook import NativeHook
     from avsectester.closed_loop.hooks import Hook, Runtime
 
     stack.instrument(stages=("perception",))
@@ -254,7 +255,8 @@ def test_native_runtime_adapter_preserves_order_before_capture(
     from avsectester.backend import run
     from avsectester.closed_loop.datatypes import Observation
     from avsectester.closed_loop.hooks import Hook, Runtime
-    from avsectester.interventions import NativeHook
+    import avsectester.attacks.pipeline.phantom  # noqa: F401 -- explicit native registration
+    from avsectester.closed_loop.avstacks.native_hook import NativeHook
     from avsectester.closed_loop.avstacks.modular import ModularAVStack
 
     class Backend(WorldBackend):

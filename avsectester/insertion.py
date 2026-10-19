@@ -15,56 +15,7 @@ from typing import Protocol
 import numpy as np
 
 
-def _vector(value, name: str) -> np.ndarray:
-    array = np.asarray(value, dtype=float)
-    if array.shape != (3,) or not np.isfinite(array).all():
-        raise ValueError(f"{name} must contain three finite numbers")
-    return array
-
-
-def _transform(value) -> np.ndarray:
-    array = np.array(value, dtype=float, copy=True)
-    if array.shape != (4, 4) or not np.isfinite(array).all():
-        raise ValueError("transform must be a finite 4x4 matrix")
-    rotation = array[:3, :3]
-    if not (
-        np.allclose(array[3], [0, 0, 0, 1], atol=1e-8)
-        and np.allclose(rotation.T @ rotation, np.eye(3), atol=1e-6)
-        and np.isclose(np.linalg.det(rotation), 1.0, atol=1e-6)
-    ):
-        raise ValueError("transform must be a right-handed rigid pose")
-    array.setflags(write=False)
-    return array
-
-
-def rotation_matrix(rotation_deg) -> np.ndarray:
-    """Return Rz(yaw) @ Ry(pitch) @ Rx(roll) for right-handed degree angles."""
-    roll, pitch, yaw = np.deg2rad(_vector(rotation_deg, "rotation_deg"))
-    cr, sr = np.cos(roll), np.sin(roll)
-    cp, sp = np.cos(pitch), np.sin(pitch)
-    cy, sy = np.cos(yaw), np.sin(yaw)
-    return np.array(
-        [
-            [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
-            [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
-            [-sp, cp * sr, cp * cr],
-        ]
-    )
-
-
-@dataclass(frozen=True)
-class ActorPose:
-    """World pose of a bounding-box centre and its full (length, width, height)."""
-
-    transform: np.ndarray
-    extent: tuple[float, float, float] = (0.0, 0.0, 0.0)
-
-    def __post_init__(self):
-        extent = _vector(self.extent, "extent")
-        if (extent < 0).any():
-            raise ValueError("extent must be nonnegative")
-        object.__setattr__(self, "transform", _transform(self.transform))
-        object.__setattr__(self, "extent", tuple(float(v) for v in extent))
+from avsectester.geometry import poses
 
 
 @dataclass(frozen=True)
@@ -170,7 +121,7 @@ class AttachedPlacement:
             raise ValueError("host must be a nonempty logical actor ID")
         if self.anchor not in _ANCHORS:
             raise ValueError(f"Unknown anchor {self.anchor!r}. Choose from {tuple(_ANCHORS)}")
-        object.__setattr__(self, "offset_m", tuple(_vector(self.offset_m, "offset_m")))
+        object.__setattr__(self, "offset_m", tuple(poses.validated_vector(self.offset_m, "offset_m")))
 
 
 @dataclass(frozen=True)
@@ -180,7 +131,7 @@ class WorldPlacement:
     position_m: tuple[float, float, float]
 
     def __post_init__(self):
-        object.__setattr__(self, "position_m", tuple(_vector(self.position_m, "position_m")))
+        object.__setattr__(self, "position_m", tuple(poses.validated_vector(self.position_m, "position_m")))
 
 
 @dataclass(frozen=True)
@@ -199,8 +150,8 @@ class Orientation:
     def __post_init__(self):
         if self.mode not in {"follow_host", "fixed_world", "face_victim"}:
             raise ValueError(f"Unknown orientation mode {self.mode!r}")
-        rotation = _vector(self.rotation_deg, "rotation_deg")
-        offset = _vector(self.target_offset_m, "target_offset_m")
+        rotation = poses.validated_vector(self.rotation_deg, "rotation_deg")
+        offset = poses.validated_vector(self.target_offset_m, "target_offset_m")
         if self.mode == "face_victim" and np.any(rotation != 0):
             raise ValueError("face_victim determines orientation, so rotation_deg must be zero")
         if self.mode != "face_victim" and np.any(offset != 0):
@@ -241,7 +192,7 @@ class ResolvedInsertion:
     host_id: str | None = None
 
     def __post_init__(self):
-        object.__setattr__(self, "pose", _transform(self.pose))
+        object.__setattr__(self, "pose", poses.validated_transform(self.pose))
 
     def planes(self) -> tuple[PlaneSurface, ...]:
         rotation, translation = self.pose[:3, :3], self.pose[:3, 3]
@@ -253,8 +204,8 @@ class ResolvedInsertion:
 
 def resolve_insertion(
     insertion: Insertion,
-    actors: Mapping[str, ActorPose],
-    victim: ActorPose,
+    actors: Mapping[str, poses.ActorPose],
+    victim: poses.ActorPose,
 ) -> ResolvedInsertion:
     """Resolve a user-specified installation against current actor poses without mutation.
 
@@ -286,7 +237,7 @@ def resolve_insertion(
         left /= np.linalg.norm(left)
         rotation = np.column_stack((forward, left, np.cross(forward, left)))
     else:
-        rotation = rotation_matrix(orientation.rotation_deg)
+        rotation = poses.rotation_matrix(orientation.rotation_deg)
         if orientation.mode == "follow_host":
             rotation = host.transform[:3, :3] @ rotation
 

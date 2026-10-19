@@ -137,7 +137,8 @@ def test_treatment_filters_preserve_definition_order_and_explicit_runtime_positi
 
 def test_configuration_prepares_methods_once_and_adapts_legacy_convenience_fields():
     config = {
-        "attacks": [{"stage": "perception", "hook": {"type": "PhantomInjection"}}],
+        "attacks": [{"stage": "perception", "hook": {"type": "PhantomInjection"},
+                     "imports": ["avsectester.attacks.pipeline.phantom"]}],
         "patches": [{"target": "lead", "texture": {"pattern": "checkerboard"}}],
         "interventions": [{
             "factory": "avsectester.attacks.adaptive:SpeedFeedbackAttack",

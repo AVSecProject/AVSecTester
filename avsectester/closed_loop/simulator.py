@@ -28,8 +28,8 @@ if TYPE_CHECKING:
     from avsectester.closed_loop.frame_data import FrameDataSequence
     import numpy as np
 
-    from avsectester.insertion import ActorPose
-    from avsectester.rendering.cameras import Camera
+    from avsectester.geometry.poses import ActorPose
+    from avsectester.geometry.cameras import Camera
 
 
 class WorldBackend(_StageAdapter, ABC):
@@ -172,6 +172,7 @@ class Simulator(ABC):
 
     dataset_kinds: tuple[str, ...] = ()
     can_render: bool = False
+    supported_world_settings: frozenset[str] = frozenset()
     simulator_version = "1"
     # Native ticks that make simulator.setup effects visible in the first capture. A simulator
     # that renders on every tick (CARLA) needs one; one that renders at capture time needs none.
@@ -198,6 +199,19 @@ class Simulator(ABC):
     def identity(self) -> Mapping[str, Any]:
         return {"simulator": type(self).__name__, "version": self.simulator_version,
                 "time_step": self.decision_time_step, "capture_ticks": self.capture_ticks}
+
+    def validate_world_settings(self, settings: Mapping[str, Any]) -> None:
+        """Check world-setting names and values without creating a live world.
+
+        Simulator implementations extend this with checks that need no native connection.
+        Actor existence and other live capabilities are checked during initialization.
+        """
+        if not isinstance(settings, Mapping):
+            raise TypeError("Simulator world settings must be a mapping")
+        unsupported = set(settings) - self.supported_world_settings
+        if unsupported:
+            raise ValueError(f"{type(self).__name__} does not support world settings "
+                             f"{sorted(unsupported)}. Use explicitly configured sensors transforms instead")
 
     def validate_start(self, start: ScenarioStart | None) -> None:
         """Reject a scenario start this simulator cannot reset to, before any world exists."""
@@ -263,6 +277,10 @@ class SimulatorRuntime(_StageAdapter, ABC):
     @property
     def can_render(self) -> bool:
         return self.simulator.can_render
+
+    @property
+    def supported_world_settings(self) -> frozenset[str]:
+        return self.simulator.supported_world_settings
 
     @property
     def capture_ticks(self) -> int:
@@ -361,7 +379,7 @@ class SimulatorRuntime(_StageAdapter, ABC):
 
     def reset(self, start: ScenarioStart | None = None, initialization: Any = None, *,
               deployment: DeploymentPlan | None = None,
-              environment: Mapping[str, Any] | None = None) -> None:
+              world: Mapping[str, Any] | None = None) -> None:
         """Start a run: reset to ``start`` (or the configured origin) and capture the first frame.
 
         The order is native initialization, pre-roll to the deployment window, simulator.setup
@@ -371,6 +389,10 @@ class SimulatorRuntime(_StageAdapter, ABC):
         if start is None and initialization is not None:
             raise ValueError("An initialization plan requires ScenarioStart")
         self.validate_start(start)
+        # The simulator owns only native world settings. Sensor environments belong to
+        # the runner/services after capture; rejecting envelopes avoids silently losing them.
+        world_environment = dict(world or {})
+        self.simulator.validate_world_settings(world_environment)
         plan = deployment if deployment is not None else DeploymentPlan(self.setup_ticks)
         if plan.ticks < self.setup_ticks:
             raise ValueError("Shared deployment plan is smaller than participant setup_ticks")
@@ -386,7 +408,7 @@ class SimulatorRuntime(_StageAdapter, ABC):
         self._start, self._deployment = start, plan
         self._resetting = True
         try:
-            self._initialize_world(start, initialization, environment or {})
+            self._initialize_world(start, initialization, world_environment)
             for _ in range(max(0, position - window)):
                 self._replay_tick()
             self._setup_ticks_used = 0
@@ -445,6 +467,33 @@ class SimulatorRuntime(_StageAdapter, ABC):
             raise RuntimeError("Reset the simulator before observing")
         return self.copy_observation(self._capture)
 
+    def _reset_scan(self, start: ScenarioStart, initialization: Any = None, *,
+                    world: Mapping[str, Any] | None = None,
+                    deployment: DeploymentPlan | None = None) -> None:
+        """Initialize prescribed-motion scanning without releasing the ego to a driving model."""
+        self._generating_frame_data = True
+        try:
+            self.reset(start, initialization, world=world, deployment=deployment)
+        finally:
+            self._generating_frame_data = False
+
+    def _scan_forward(self, count: int) -> None:
+        """Continue an effect-free service scan along prescribed motion, without stage hooks."""
+        nonnegative(count, "scan steps")
+        if not self._world_initialized or self._dispatcher is not None:
+            raise RuntimeError("A sensor scan requires an initialized runtime without hooks")
+        self._generating_frame_data = True
+        try:
+            for _ in range(count):
+                self._capture = None
+                self._replay_tick()
+                self._capture = self._observe()
+        except BaseException:
+            self._world_initialized = False
+            raise
+        finally:
+            self._generating_frame_data = False
+
     def _replay_position(self, start: ScenarioStart | None) -> int:
         return 0
 
@@ -488,13 +537,14 @@ class SimulatorRuntime(_StageAdapter, ABC):
 
     def generate_frame_data(
         self, start: ScenarioStart, frames: Sequence[FrameReference], *,
-        environment: Mapping[str, Any] | None = None, deployment: DeploymentPlan | None = None,
+        world: Mapping[str, Any] | None = None, deployment: DeploymentPlan | None = None,
     ) -> FrameDataSequence:
         """Record actual frame data by replaying ``start``'s prescribed motion over ``frames``.
 
         Used when the dataset has no frame data, such as a CARLA recipe. ``frames`` are the
-        consecutive dataset frames beginning at ``start.frame``. The runtime resets as for a
-        run (same deployment plan and environment), then advances one frame at a time along the
+        consecutive dataset frames beginning at ``start.frame``. ``world`` holds native world
+        settings only, as for ``reset``. The runtime resets as for a run (same deployment plan
+        and world settings), then advances one frame at a time along the
         prescribed motion and records each frame. No hook, attack or driving system runs.
         A runtime supports generation by implementing ``_replay_tick`` and
         ``_capture_frame_data``.
@@ -511,7 +561,7 @@ class SimulatorRuntime(_StageAdapter, ABC):
             raise ValueError("Frame data generation needs consecutive frames of the start's scenario")
         self._generating_frame_data = True
         try:
-            self.reset(start, environment=environment, deployment=deployment)
+            self.reset(start, world=world, deployment=deployment)
             records = [self._capture_frame_data(frames[0])]
             for frame in frames[1:]:
                 self._replay_tick()
@@ -586,12 +636,12 @@ class LegacySimulatorAdapter:
         raise NotImplementedError(f"{type(self.backend).__name__} does not provide sensor views")
 
     def reset(self, start: Any = None, initialization: Any = None, *,
-              deployment: DeploymentPlan | None = None, environment: Any = None) -> None:
+              deployment: DeploymentPlan | None = None, world: Any = None) -> None:
         if start is not None and not isinstance(start, ScenarioStart):
             raise TypeError("Simulator reset requires ScenarioStart, never selection metadata")
         if start is None and initialization is not None:
             raise ValueError("An initialization plan requires ScenarioStart")
-        if start is not None or initialization is not None or deployment is not None or environment:
+        if start is not None or initialization is not None or deployment is not None or world:
             raise NotImplementedError("Legacy backend does not support ScenarioStart initialization")
         self._ready = False
         self._capture = None

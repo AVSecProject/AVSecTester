@@ -5,8 +5,9 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 import numpy as np
 
-from avsectester.insertion import ActorPose, ResolvedInsertion
-from .cameras import Camera
+from avsectester.geometry.poses import ActorPose
+from avsectester.insertion import ResolvedInsertion
+from avsectester.geometry.cameras import Camera
 from .geometry import box_intersections, prepare_surface, rasterize
 from .types import Visibility, VisibilityEvidence
 

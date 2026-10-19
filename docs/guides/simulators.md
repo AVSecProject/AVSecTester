@@ -345,7 +345,7 @@ For the rendering service and Alpamayo, replace the renderer and the driving sys
 the [driver environment](../getting-started/installation.md#driver-environment):
 
 ```python
-from avsectester.experiment import run_configured
+from avsectester.legacy_experiment import run_configured
 
 traces = run_configured({
     "dt": 0.1,
@@ -512,7 +512,8 @@ A simulator has two classes, as CARLA, NuRec and recorded replay do:
 - A subclass of `avsectester.closed_loop.simulator.Simulator` holds the configuration and the
   declarations: `dataset_kinds` (accepted dataset class names, such as `("CarlaDataset",)`),
   `decision_time_step`, `capture_ticks`, `can_render`, `command_modes`, `supported_stages`,
-  `identity` and `validate_start`. Its `create_runtime(seed=None)` returns a new runtime. Copy
+  `supported_world_settings`, `identity` and `validate_start`. Override
+  `validate_world_settings(settings)` to validate supported values without opening a world. Its `create_runtime(seed=None)` returns a new runtime. Copy
   any mutable template it holds into each runtime, as NuRec does with its renderer and ego
   dynamics, so that one run cannot change another.
 - A subclass of `avsectester.closed_loop.simulator.SimulatorRuntime` is one live world. The base
@@ -520,6 +521,11 @@ A simulator has two classes, as CARLA, NuRec and recorded replay do:
   the process-local `exclusive()` reservation and closing as a context manager. It reads the
   declarations from its `simulator`. Overriding `reset` or `step` in a subclass raises
   `TypeError` at class definition.
+
+The runtime's `reset(..., world=world_settings)` accepts only the native world mapping, such as
+`{"weather": "ClearNoon"}`. The runner and closed-loop services handle the experiment's
+`environment["sensors"]` after capture and pass only `environment["world"]` to reset. Passing
+`sensors` or a nested `{world, sensors}` mapping to reset is an error.
 
 A runtime implements:
 
@@ -530,7 +536,7 @@ A runtime implements:
 | `_observe() -> Observation` | Abstract. Capture the sensor data. Fill every field: `t`, `frame`, `sensor_data`, `calibration`, `vehicle_state` and `ego_speed`, sharing no mutable objects with the physical state |
 | `_state() -> WorldSnapshot` | Abstract. An independent snapshot of the physical state, read by `state()`. Every handler call reads it, so it must work at each stage, including `simulator.setup` during reset |
 | `_replay_tick()`, `_hold_tick()` | Advance one tick along the start's prescribed motion, or one tick holding the origin. The defaults raise. Needed to start at a later frame or to support deployment ticks, as in CARLA |
-| `_check_initialization(initialization)` | Compare the initialized world with the expected frame data. The default rejects any initialization plan |
+| `_check_initialization(initialization)` | Handle simulator-specific initialization data and record state/provenance in `initialization_report`. The default rejects nonempty initialization; no replay-deviation tolerance is imposed |
 | `_capture_frame_data(frame) -> FrameData` | Record the current state as `FrameData`, used by `generate_frame_data` |
 | `sensor_view(sensor) -> SensorView` | Required when the simulator sets `can_render = True`. The view of the current capture: the RGB data, the camera model, `cam_from_world`, actor and ego cuboid poses, time and, when measured, depth |
 | `native` | Live simulator resources for handlers. The default is empty |
@@ -572,7 +578,7 @@ Rules for emitting stages with `self._emit(stage, value, sensor=None)`:
   raises `ValueError`, even without registered handlers. Registering a handler at an undeclared
   stage fails before reset.
 - Use the returned value: `value = self._emit(stage, value)`. World stages pass and return
-  `None`. `render.pre` passes a `RenderRequest`. Pass `sensor=` for per-sensor stages.
+  `None`. `render.pre` passes a `CameraRenderRequest`. Pass `sensor=` for per-sensor stages.
 - Emit `simulator.setup` after the world is built and before the first sensor capture,
   `simulator.step.pre` before actuation and `simulator.step.post` after the world has advanced. Document
   whether sensors are rendered during the advance, as in CARLA, or after `simulator.step.post`, as in

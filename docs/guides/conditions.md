@@ -4,10 +4,106 @@
 > **Outcome:** Configure world and sensor conditions shared by every treatment, and control their order and randomness.  
 > **Prerequisites:** [Architecture](../concepts/architecture.md) and [Prepare scenarios](scenarios.md).
 
-A [condition](../concepts/architecture.md#terminology) sets the operating environment of a prepared
-scenario, such as rain, fog, low light or camera noise. Every
-[treatment](../concepts/architecture.md#terminology) of the scenario runs under the same
-conditions, so a comparison between treatments measures only the enabled interventions.
+An environment sets weather, lighting or sensor degradation. The experiment applies its base
+settings to every treatment. An attack can declare additional environment settings, and a
+treatment can explicitly override them.
+
+## Experiment environment
+
+The experiment, `Attack.environment` and treatment overrides use the same structure:
+
+```yaml
+environment:
+  world:
+    weather: {cloudiness: 70, precipitation: 20}
+  sensors:
+    - {type: GaussianNoise, options: {severity: 0.2}, camera: front}
+    - {type: LowLight, options: {severity: 0.4}, camera: front}
+    - {type: my_project.sensors:LensGlare, options: {strength: 0.5}, camera: front}
+```
+
+The precedence is experiment base → enabled attack → treatment override. World mappings merge
+recursively. A later explicit `sensors` list replaces the previous list, including `sensors: []`
+to disable sensor transforms. Omitting a setting preserves the earlier value. Resolved settings
+are recorded with each run.
+
+| Section | Execution | Supported values |
+|---|---|---|
+| `world` | Native simulator settings at reset | Keys declared by `Simulator.supported_world_settings` |
+| `sensors` | Ordered transforms of the captured RGB image | Entries with `type`, optional `options` and optional `camera`. `type` is a built-in transform class name, or `package.module:name` for a custom transform |
+
+The per-decision order is:
+
+```text
+capture → SensorAttackEffect → sensors environment → Vehicle I/O hooks → AVStack
+```
+
+Thus image degradation also affects inserted attack content. `session.render` follows the same
+ordering. `session.sensor_data` applies the environment to the captured image without deploying
+an attack. `SensorView` returned by rendering describes the original capture and geometry,
+before sensor effects and environment transforms.
+
+Built-in sensor transforms are `Fog`, `Rain`, `Snow`, `Brightness`, `LowLight`, `Contrast`, `Gamma`,
+`ColorTemp`, `GaussianNoise`, `ShotNoise`, `MotionBlur`, `DefocusBlur`, `JPEGCompression` and
+`ChromaticAberration`. Each accepts the option `severity` in `[0, 1]` (default `0.5`). `ColorTemp`
+also accepts the option `warm` (default `true`). `camera` identifies a key of
+`Observation.sensor_data`. When omitted, the first item in that mapping is selected; it must
+contain a readable RGB image. A missing or non-RGB selected sensor fails, including when it was
+selected by default. Randomness uses the run seed and absolute dataset timeline position
+(`start.frame.position + decision_step` during a selected run). Offline reads, renders and
+online execution therefore use the same random realization at the same source position.
+
+A custom sensor transform, named by `type: package.module:name`, is constructed once per run as
+`name(**options)`. It supplies
+`apply(rgb, rng)` or is callable as `(rgb, rng)`, returning a `uint8` RGB array of unchanged shape.
+Use the provided NumPy generator for controlled randomness. `SensorEnvironment` is in
+`avsectester.closed_loop.environment`; built-in operators are in
+`avsectester.closed_loop.sensor_transforms`.
+
+### Native CARLA settings
+
+CARLA declares `weather`, `lighting`, `map_layers` and `road_friction`. NuRec and recorded replay
+declare no world settings, but accept the same sensor transforms. Unsupported world settings
+fail before opening simulator resources. The framework does not translate native weather into
+an image-space approximation.
+
+```yaml
+environment:
+  world:
+    weather: ClearSunset
+    lighting:
+      street_lights:
+        group: Street
+        enabled: true
+        intensity: 30
+        color: [255, 210, 170]
+      vehicle_lights:
+        all: [Position, LowBeam]
+        ego: [Position, LowBeam, Fog]
+    map_layers:
+      unload: [Foliage, ParkedVehicles]
+      load: [Buildings]
+    road_friction:
+      tire_friction: 0.8
+      actors: [ego, lead]
+```
+
+| Setting | Fields and meaning |
+|---|---|
+| `weather` | A `carla.WeatherParameters` preset name or mapping of native weather parameters |
+| `lighting.street_lights` | `group`: `Street` (default), `Building`, `Other` or `None` for all scene groups. Optional `enabled`, nonnegative `intensity` in lumens and RGB `color` values in `[0,255]`. Explicit control disables automatic day/night switching |
+| `lighting.vehicle_lights` | Stable vehicle IDs (`ego`, `lead`, `npc:0`, …), or `all`, mapped to lists of `carla.VehicleLightState` flag names. An individual ID overrides `all` |
+| `map_layers` | `load` and `unload` lists. Requires an `_Opt` map. Supported layers: `Buildings`, `Decals`, `Foliage`, `Ground`, `ParkedVehicles`, `Particles`, `Props`, `StreetLights`, `Walls` |
+| `road_friction` | Positive `tire_friction` coefficient, applied to every wheel of the listed `actors`, or all spawned vehicles if omitted. Other vehicle physics fields are preserved |
+
+Weather wetness and puddles affect appearance. Tire friction controls physical grip separately.
+Map, spawn points, traffic signals and NPC behavior belong to the scenario recipe. Sensor
+blueprint attributes, such as exposure or LiDAR drop rate, belong to sensor configuration.
+
+## Legacy ScenarioConditions
+
+The remaining sections describe the existing `ScenarioConditions` interface used by legacy
+configuration and demo entry points. New experiment configurations use `environment` above.
 
 ## Conditions and filters
 
@@ -17,7 +113,7 @@ Conditions and filters both mention weather, but they do different things:
 |---|---|---|
 | Purpose | Imposes an environment on every treatment | Chooses among candidate initial states |
 | When it acts | During every run, and optionally during selection | Only during selection, never inside a run |
-| Effect | Changes the world (world condition) or the sensor data (sensor condition) | Never changes a state. Returns pass, fail or unknown |
+| Effect | Changes the world (world condition) or the sensor data (sensor condition) | Reads candidate information and returns pass, fail or unknown |
 | Code | `ScenarioConditions`, `SensorCondition` | `Constraint`, `FilterResult` |
 
 A recorded night or rain label is a property of the recording. Select it with a filter (see
@@ -98,7 +194,7 @@ the backend's `configure_conditions` method before the first reset, and the back
 every reset. All treatments therefore render the same weather, including on the physical actors
 and objects in the scene.
 
-Only CARLA accepts a world condition, and only `weather`. The built-in NuRec and recorded-frame
+CARLA accepts the native world settings listed above. The following legacy example uses `weather`. The built-in NuRec and recorded-frame
 (`RecordedReplaySimulator`, used by nuScenes) backends accept none. CARLA weather is either a
 `carla.WeatherParameters` preset name, such as `weather: HardRainNoon`, or a mapping of CARLA's own
 parameter names, such as `cloudiness`, `precipitation`, `sun_altitude_angle`, `fog_density` and
@@ -141,7 +237,7 @@ replay. LiDAR, radar and other modalities need a custom sensor condition.
 
 ### Built-in image corruptions
 
-The operators are in `avsectester.perturbations.image`. Each one is a `Corruption` with a
+The operators are in `avsectester.closed_loop.sensor_transforms`. Each one is a `Corruption` with a
 `severity` in `[0, 1]`, where 0 is close to the identity and 1 is strong. Values outside the range
 are clipped in Python and rejected in YAML. The operators use NumPy and, where noted, OpenCV
 (install the `rendering` extra, see
@@ -167,8 +263,9 @@ model.
 
 `CORRUPTIONS` maps these names to their classes. A YAML `type` must be one of these names, and
 `options` passes extra constructor arguments, such as `{warm: false}` for `ColorTemp`.
-`AugmentationPipeline(corruptions, seed=0)` applies several operators in order.
-`common_corruptions(severity)` returns one single-operator pipeline per entry of `CORRUPTIONS`.
+`AugmentationPipeline(corruptions, seed=0)` in `avsectester.perturbations.image` applies several
+operators in order. That module's `common_corruptions(severity)` returns one single-operator
+pipeline per entry of `CORRUPTIONS`.
 It is the framework's default corruption grid, not an implementation of a published benchmark.
 
 **Albumentations backend.** The optional `augment` extra installs Albumentations 1.x
@@ -196,7 +293,7 @@ delayed camera would:
 
 <!-- runnable -->
 ```python
-from avsectester.perturbations.image import read_camera_rgb, write_camera_rgb
+from avsectester.closed_loop.datatypes import read_camera_rgb, write_camera_rgb
 from avsectester.closed_loop.hooks import Plugin
 
 

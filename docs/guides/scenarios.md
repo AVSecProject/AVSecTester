@@ -11,9 +11,13 @@ prepared scenario directly. With it, a scenario source evaluates
 qualifying scenarios, with fixed role bindings and insertions. Filters run during preparation,
 never inside a run, and do not promise attack success.
 
-The CLI and examples below retain the initial-selection compatibility API. New source readers
-can use the [stateless data interface](#stateless-datasets), which separates reading data
-from constructing simulator resources.
+For new experiments, selection belongs to `Attack.build_metadata(ScenarioView)`. Use the
+[attack guide](attacks.md#use-the-selected-scenario) to select segments and the
+[stateless data interface](#stateless-datasets) below to read dataset information and open
+closed-loop services. The optional helper `split_segments` cuts a timeline into segments from the
+attack's own per-frame condition. No separate selection configuration is needed.
+
+The CLI and examples below retain the initial-selection compatibility API.
 
 ## Configured scenarios
 
@@ -94,7 +98,7 @@ already captured its settings. Replacing `conditions` does not rerun filters (se
 
 ## Specify inserted objects
 
-An [insertion](../concepts/architecture.md#terminology) has an explicit asset, placement and
+An [insertion](#specify-inserted-objects) has an explicit asset, placement and
 orientation. Positions are never searched or adjusted to make a filter pass, and a missing host is
 never replaced by another actor. Coordinates are metres on right-handed axes. Actor-local axes are
 X forward, Y left and Z up. World coordinates are the provider's absolute scene frame. The CARLA
@@ -151,7 +155,7 @@ one asset-local frame, with corners ordered top-left, top-right, bottom-right, b
 
 ## Compose a requirement
 
-A `ScenarioRequirement` combines filters, [roles](../concepts/architecture.md#terminology),
+A `ScenarioRequirement` combines filters, actor role bindings,
 insertions and an initial window. This requirement selects a vehicle ahead whose rear can carry
 the patch from the previous section:
 
@@ -315,7 +319,7 @@ frames, including the terminal frame; requests past the sequence end fail.
 To run configured interventions and a configured stack on a Python-selected scenario:
 
 ```python
-from avsectester.experiment import run_configured
+from avsectester.legacy_experiment import run_configured
 
 # config enables an attack. scenario comes from a selection source.
 results = run_configured(config, frames=30, scenario=scenario, mode="pair", treatment="attack")
@@ -639,9 +643,10 @@ preparation-owned `FrameDataCache`. Calling the simulator never changes `Dataset
 attaches records to a Dataset.
 
 Construct services with a pure Dataset, a configured `Simulator` and an optional `DrivingAdapter`.
-Each operation creates its own runtime with `simulator.create_runtime(seed)` (the session seed),
-resets it inside a reserved operation and closes it when the operation ends; one rollout uses one
-runtime for all its decisions. Simulator identity, dataset kinds, rendering and decision time step
+Each render or rollout creates its own runtime with `simulator.create_runtime(seed)` (the session
+seed) and closes it when the operation ends. Effect-free forward sensor scans can reuse a
+session-owned runtime. One rollout uses one runtime for all its decisions.
+Simulator identity, dataset kinds, rendering and decision time step
 are declared by the simulator. Driving bindings live in
 `avsectester.closed_loop.driving_adapters`.
 
@@ -698,7 +703,7 @@ with services.session(seed=7) as session:
 ```
 
 `AttackSegment.roles` may be empty. Role bindings map names to tuples of stable actor IDs;
-placement is optional. A candidate has no selection score or rank. Its start and stop must be
+placement, selection score and rank are optional. Its start and stop must be
 actual source boundaries, and `stop` must exist. A missing terminal frame is never silently
 corrected. The framework passes only `ScenarioStart` and replay
 initialization evidence to the simulator, never `AttackSegment`.
@@ -707,12 +712,14 @@ To render attack effects, call `session.render(RenderRequest(scenario_id, frame,
 effects))`. World attack effects are applied at the simulator's `simulator.setup` within the
 services' deployment plan and appear in the capture; sensor attack effects then change the
 captured data in the simulator's `SensorView`. `RenderResult` contains the changed observation
-and the camera's detached `SensorView` before its sensor effects. A new operation uses new
-simulator state, so different candidates cannot reuse another candidate's result.
+and the camera's detached `SensorView` before its sensor effects. Renders and rollouts always use fresh simulator state.
 
 Requests use original source poses and environment unless supported overrides are explicit.
-CARLA currently accepts `weather`; other overrides fail. Source, environment, simulator identity
-and seed are retained in result provenance and candidate RunLog metadata. A candidate attack is
+The `{world, sensors}` structure is described in
+[Operating conditions](conditions.md#experiment-environment). CARLA supports native weather,
+lighting, map layers and road friction. NuRec and recorded replay accept sensor transforms but
+no world overrides. Source, environment, simulator identity and seed are retained in result
+provenance and candidate RunLog metadata. A candidate attack is
 an `Attack`: each rollout calls `attack.create_runtime(segment, artifacts)` and stops its own
 `AttackRuntime`. Metabuilder orchestration, the offline phase and treatment orchestration remain
 separate from this candidate service.
@@ -720,7 +727,7 @@ separate from this candidate service.
 ### Driving components and gradients
 
 `DrivingAdapter(factory, components=..., scorers=...)` receives a factory called with the session
-seed. It must return a fresh driving adapter and configure any model-specific random seed.
+seed. It must return a fresh `AVStack` and configure any model-specific random seed.
 Component bindings pair a `ComponentDescriptor` with `(stack, inputs) -> value`; scorer bindings
 pair a `ScorerDescriptor` with `(stack, inputs, target) -> value`. Descriptors declare input and
 output schemas, codecs and differentiable input names. Scorers also declare output shape and
@@ -739,8 +746,14 @@ snapshots before the user can differentiate them.
 
 ### Resource and replay guarantees
 
-Use sessions as context managers. Each independent operation creates fresh simulator and driving
-state and releases owned resources on success, failure or cancellation. Factories returning an
+Use services and sessions as context managers. Closing `ClosedLoopServices` also closes sessions
+that user code left open, including when `build_metadata` fails. Renders and rollouts create
+fresh simulator and driving state and release resources on success, failure or cancellation.
+Within one session, forward `sensor_data` scans reuse an effect-free runtime when the simulator
+supports prescribed-motion replay (CARLA and recorded replay). Reading the same frame does not
+advance it. CARLA rendering is not bitwise deterministic, so a reused scan and a fresh read of
+the same frame can differ in a few pixels. A backwards request, different scenario/environment, render or rollout closes the
+scan. NuRec reads continue to use fresh runtimes. Scans never instantiate an AVStack. Factories returning an
 active or previously used instance are rejected. The same session cannot execute overlapping
 operations. Read-only model weights may be shared behind independent adapters only when the
 adapter author can guarantee isolation of all mutable model state.
@@ -774,7 +787,7 @@ and driving. Base-world preparation and p=0 deployment temporarily hold their re
 
 ### Selected-origin deployment and reset ownership
 
-`SimulatorRuntime.reset(start, initialization, deployment=DeploymentPlan(k), environment=...)`
+`SimulatorRuntime.reset(start, initialization, deployment=DeploymentPlan(k), world=...)`
 recomputes runtime state from configured defaults and the optional start. A subsequent plain reset
 returns to those defaults. It does not retain the preceding start's scene, origin or bounds.
 
@@ -801,5 +814,6 @@ needs no capture tick.
 `AttackRuntime.setup` runs at `simulator.setup`, before the selected capture, with the live state at
 that point; its world attack effects are visible in the selected capture. NuRec needs no physical
 deployment ticks or pre-roll (k=0); its closed-loop vehicle dynamics still advance during driving
-decisions. A session holds no server reservation between operations. Concurrent operations on the
-same server are rejected; completion, failure and cancellation release each operation's resources.
+decisions. A retained sensor scan reserves its CARLA endpoint until the scan is discarded or the
+session closes. Other operations release reservations when they finish. Concurrent operations on
+the same server are rejected. Completion, failure and cancellation release owned resources.

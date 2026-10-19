@@ -4,17 +4,13 @@ from copy import deepcopy
 from queue import Queue
 from types import SimpleNamespace
 
+from avsectester.rendering.legacy_carla import insertion_perturbation
+
 import numpy as np
 import pytest
 
-from avsectester.insertion import (
-    AttachedPlacement,
-    Insertion,
-    Orientation,
-    PlaneAsset,
-    WorldPlacement,
-    rotation_matrix,
-)
+from avsectester.geometry.poses import rotation_matrix
+from avsectester.insertion import AttachedPlacement, Insertion, Orientation, PlaneAsset, WorldPlacement
 from avsectester.closed_loop.datatypes import Observation
 from avsectester.scenarios.carla_gt import carla_actor_pose
 from avsectester.scenarios.carla_provider import (
@@ -29,7 +25,7 @@ from avsectester.scenarios.filters import Constraint, FilterResult
 from avsectester.scenarios.requirement import InitialWindow, ScenarioRequirement
 from avsectester.scenarios.scene import CameraCalib, EgoState, ObjectGT, SceneGT
 from avsectester.closed_loop.simulators.carla import (
-    CarlaSimulator, CarlaSimulatorRuntime, insertion_perturbation,
+    CarlaSimulator, CarlaSimulatorRuntime,
 )
 
 

@@ -1,7 +1,8 @@
 """The metabuilder and the offline phase share one isolated closed-loop service boundary.
 
-Plain factories construct fresh resources for each operation. This module orchestrates them; it
-never implements another simulator clock, driving loop, scoring objective or selector.
+Factories construct independent resources for rendering and rollouts. Effect-free forward sensor
+scans share one runtime within a session. This module implements no separate simulator clock,
+driving loop, scoring objective or selector.
 """
 from __future__ import annotations
 
@@ -18,7 +19,8 @@ from avsectester.attack.runtime import AttackEffect, SensorAttackEffect, WorldAt
 from avsectester.closed_loop.avstack import AVStack
 from avsectester.closed_loop.runner import ClosedLoopRunner, RecordingPolicy, RunRequest
 from avsectester.datasets.base import Dataset, FrameReference, FrameData, ScenarioStart, Unavailable, nonnegative
-from avsectester.perturbations.image import write_camera_rgb
+from avsectester.closed_loop.environment import SensorEnvironment, normalize_environment, validate_environment
+from avsectester.closed_loop.datatypes import write_camera_rgb
 from avsectester.closed_loop.datatypes import Observation
 from avsectester.closed_loop.frame_data import Initialization, FrameDataCache, FrameDataSequence
 from avsectester.closed_loop.resources import reserve, simulator_key
@@ -49,7 +51,7 @@ class CandidateRequest:
             raise ValueError("Candidate artifacts require an attack")
         if self.attack is not None and not callable(getattr(self.attack, "create_runtime", None)):
             raise TypeError("Candidate attack must provide create_runtime(segment, artifacts)")
-        object.__setattr__(self, "environment", deepcopy(dict(self.environment)))
+        object.__setattr__(self, "environment", normalize_environment(self.environment))
 
 
 @dataclass(frozen=True)
@@ -58,6 +60,9 @@ class SensorRequest:
     frame: FrameReference
     sensor_ids: tuple[str, ...]
     environment: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "environment", normalize_environment(self.environment))
 
 
 @dataclass(frozen=True)
@@ -80,6 +85,7 @@ class RenderRequest:
         if any(not isinstance(e, (WorldAttackEffect, SensorAttackEffect)) for e in effects):
             raise TypeError("Render requests take world and sensor attack effects only")
         object.__setattr__(self, "effects", effects)
+        object.__setattr__(self, "environment", normalize_environment(self.environment))
 
 
 @dataclass(frozen=True)
@@ -191,7 +197,8 @@ class _WorldSetup:
         return value
 
 
-def _fresh(resource: Any) -> Any:
+def ensure_fresh(resource: Any) -> Any:
+    """Claim a newly constructed resource; reject reused or active mutable instances."""
     if getattr(resource, "_services_used", False) or getattr(resource, "_dispatcher", None) is not None:
         raise RuntimeError("Resource factory returned a reused or active instance")
     resource._services_used = True
@@ -210,7 +217,7 @@ class ClosedLoopServices:
         driving_adapter: DrivingAdapter | None = None, frame_data_cache: FrameDataCache | None = None,
         *, deployment: DeploymentPlan = DeploymentPlan(),
     ) -> None:
-        """``simulator`` is a configured ``Simulator``; each operation runs in its own runtime."""
+        """Own session resources; rendering and rollouts always use fresh simulator runtimes."""
         self.dataset = dataset
         if not isinstance(simulator, Simulator):
             raise TypeError("Services require a configured Simulator")
@@ -218,6 +225,26 @@ class ClosedLoopServices:
         self.deployment = deployment
         self.driving_adapter = driving_adapter
         self.frame_data_cache = frame_data_cache if frame_data_cache is not None else FrameDataCache()
+        self._sessions: set[ClosedLoopSession] = set()
+        self._closed = False
+
+    def __enter__(self) -> ClosedLoopServices:
+        if self._closed:
+            raise RuntimeError("Closed-loop services are closed")
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.close()
+
+    def close(self) -> None:
+        """Close all sessions, including sessions a metabuilder left open on error."""
+        resources = ExitStack()
+        for session in tuple(self._sessions):
+            resources.callback(session.close)
+        try:
+            resources.close()
+        finally:
+            self._closed = True
 
     @property
     def capabilities(self) -> ClosedLoopCapabilities:
@@ -233,7 +260,11 @@ class ClosedLoopServices:
         nonnegative(seed, "seed")
         if history != "fresh":
             raise ValueError("Candidate scopes require fresh history")
-        return ClosedLoopSession(self, seed)
+        if self._closed:
+            raise RuntimeError("Closed-loop services are closed")
+        scope = ClosedLoopSession(self, seed)
+        self._sessions.add(scope)
+        return scope
 
     def scenario(self, scenario_id: str, *, seed: int) -> ScenarioView:
         self.dataset.frames(scenario_id)  # validate without generating anything
@@ -246,6 +277,11 @@ class ClosedLoopSession:
         self.services, self.seed = services, seed
         self._closed = False
         self._busy = Lock()
+        self._scan_resources = ExitStack()
+        self._scan_runtime: SimulatorRuntime | None = None
+        self._scan_key: tuple[str, Mapping[str, Any]] | None = None
+        self._scan_position = -1
+        self._scan_environment: SensorEnvironment | None = None
 
     def __enter__(self) -> ClosedLoopSession:
         self._check()
@@ -283,19 +319,33 @@ class ClosedLoopSession:
             raise RuntimeError("Cannot close a scope while its operation is active")
         try:
             if not self._closed:
-                self._closed = True
+                try:
+                    self._discard_scan()
+                finally:
+                    self._closed = True
+                    self.services._sessions.discard(self)
 
         finally:
             self._busy.release()
 
+    def _discard_scan(self) -> None:
+        resources, self._scan_resources = self._scan_resources, ExitStack()
+        self._scan_runtime, self._scan_key, self._scan_position = None, None, -1
+        self._scan_environment = None
+        resources.close()
+
     def _scenario_start(self, scenario: str, frame: FrameReference,
                         environment: Mapping[str, Any]) -> ScenarioStart:
+        validate_environment(environment, self.services.simulator)
         return self.services.dataset.scenario_start(scenario, frame)
 
-    def _simulator_runtime(self, resources: ExitStack, start: ScenarioStart) -> SimulatorRuntime:
-        # Every operation gets a new runtime. Native world creation happens at reset.
+    def _simulator_runtime(self, resources: ExitStack, start: ScenarioStart, *,
+                           scanning: bool = False) -> SimulatorRuntime:
+        if not scanning:
+            self._discard_scan()
+        # Renders and rollouts always start fresh. Only an effect-free frame scan is retained.
         self.services.simulator.validate_start(start)
-        simulator_runtime = _fresh(self.services.simulator.create_runtime(self.seed))
+        simulator_runtime = ensure_fresh(self.services.simulator.create_runtime(self.seed))
         if not isinstance(simulator_runtime, SimulatorRuntime):
             raise TypeError("Simulator.create_runtime must return a SimulatorRuntime")
         # Callbacks run in reverse order: close the runtime, then release its reservation, so no
@@ -308,25 +358,26 @@ class ClosedLoopSession:
         return simulator_runtime
 
     def _sequence(self, scenario: str, environment: Mapping[str, Any]) -> FrameDataSequence:
+        environment = normalize_environment(environment)
         dataset = self.services.dataset
         frames = tuple(dataset.frames(scenario))
         start = self._scenario_start(scenario, frames[0], environment)
-        with self._operation() as resources:
-            simulator_runtime = self._simulator_runtime(resources, start)
-            key = FrameDataCache.key(start, {
-                **simulator_runtime.identity, "environment": dict(environment),
-                "deployment_ticks": self.services.deployment.ticks,
-            }, self.seed)
+        key = FrameDataCache.key(start, {
+            **self.services.simulator.identity, "environment": dict(environment),
+            "deployment_ticks": self.services.deployment.ticks,
+        }, self.seed)
 
-            def generate() -> FrameDataSequence:
+        def generate() -> FrameDataSequence:
+            with self._operation() as resources:
+                simulator_runtime = self._simulator_runtime(resources, start)
                 with simulator_runtime.exclusive():
                     sequence = simulator_runtime.generate_frame_data(
-                        start, frames, environment=environment, deployment=self.services.deployment)
+                        start, frames, world=environment["world"], deployment=self.services.deployment)
                 if tuple(record.frame for record in sequence.frames) != frames:
                     raise ValueError("Frame data generation must preserve every dataset frame")
                 return sequence
 
-            return self.services.frame_data_cache.get_or_generate(key, generate)
+        return self.services.frame_data_cache.get_or_generate(key, generate)
 
     def frame_data(self, scenario: str, frame: FrameReference,
                   environment: Mapping[str, Any] | None = None) -> FrameData:
@@ -334,11 +385,13 @@ class ClosedLoopSession:
         record = self.services.dataset.frame_data(scenario, frame)
         if isinstance(record, Unavailable):
             return self._sequence(scenario, environment or {}).at(frame)
-        if environment:
+        if any(normalize_environment(environment).values()):
             raise ValueError("Recorded frame data describes the recorded environment")
         return record
 
-    def _initialization(self, start: ScenarioStart, environment: Mapping[str, Any]) -> Initialization | None:
+    def initialization(self, start: ScenarioStart, environment: Mapping[str, Any]) -> Initialization | None:
+        """Resolve replay inputs for a selected start, using the preparation-owned cache."""
+        self._check()
         if start.kind != "CarlaDataset":
             return None
         sequence = self._sequence(start.scenario_id, environment)
@@ -355,14 +408,41 @@ class ClosedLoopSession:
                 "interpolation": start.payload.get("interpolation")}
 
     def sensor_data(self, request: SensorRequest) -> SensorSample:
+        """Read prescribed source motion, reusing one effect-free runtime for forward scans.
+
+        A different scenario/environment, a backwards frame request, render or rollout closes
+        the scan. Repeated reads of a frame do not advance the simulator.
+        """
+        self._check()
         start = self._scenario_start(request.scenario_id, request.frame, request.environment)
-        initialization = self._initialization(start, request.environment)
-        with self._operation() as resources:
-            simulator_runtime = self._simulator_runtime(resources, start)
-            with simulator_runtime.exclusive():
-                simulator_runtime.reset(start, initialization, environment=request.environment,
-                                        deployment=self.services.deployment)
+        key = (start.scenario_id, request.environment)
+        reusable = (self._scan_runtime is not None and self._scan_key == key
+                    and request.frame.position >= self._scan_position
+                    and type(self._scan_runtime)._replay_tick is not SimulatorRuntime._replay_tick)
+        if not reusable:
+            self._discard_scan()
+            initialization = self.initialization(start, request.environment)
+        else:
+            initialization = None
+        with self._operation():
+            try:
+                if self._scan_runtime is None:
+                    simulator_runtime = self._simulator_runtime(self._scan_resources, start, scanning=True)
+                    with simulator_runtime.exclusive():
+                        simulator_runtime._reset_scan(start, initialization, world=request.environment["world"],
+                                                      deployment=self.services.deployment)
+                    self._scan_runtime = simulator_runtime
+                    self._scan_key = key
+                    self._scan_position = request.frame.position
+                    self._scan_environment = SensorEnvironment(request.environment, self.seed)
+                else:
+                    simulator_runtime = self._scan_runtime
+                    with simulator_runtime.exclusive():
+                        simulator_runtime._scan_forward(request.frame.position - self._scan_position)
+                    self._scan_position = request.frame.position
                 observation = simulator_runtime.observe()
+                assert self._scan_environment is not None
+                observation = self._scan_environment.apply(observation, request.frame.position)
                 missing = set(request.sensor_ids) - observation.sensor_data.keys()
                 if missing:
                     raise ValueError(f"Unavailable sensors: {sorted(missing)}")
@@ -371,6 +451,12 @@ class ClosedLoopSession:
                                            if key in request.sensor_ids}
                 return SensorSample(start.frame, observation,
                                     self._provenance(start, request.environment, simulator_runtime))
+            except BaseException as error:
+                try:
+                    self._discard_scan()
+                except BaseException as cleanup:
+                    error.add_note(f"Sensor scan cleanup also failed: {cleanup!r}")
+                raise
 
     def render(self, request: RenderRequest) -> RenderResult:
         if not self.services.simulator.can_render:
@@ -380,13 +466,13 @@ class ClosedLoopSession:
         if sum(effect.setup_ticks for effect in world) > self.services.deployment.ticks:
             raise ValueError("World effects need more setup ticks than the deployment plan")
         start = self._scenario_start(request.scenario_id, request.frame, request.environment)
-        initialization = self._initialization(start, request.environment)
+        initialization = self.initialization(start, request.environment)
         with self._operation() as resources:
             simulator_runtime = self._simulator_runtime(resources, start)
             with simulator_runtime.exclusive():
                 # Effects register their removal on resources, which close before the runtime.
                 with simulator_runtime.bind_hooks(_WorldSetup(simulator_runtime, world, resources)):
-                    simulator_runtime.reset(start, initialization, environment=request.environment,
+                    simulator_runtime.reset(start, initialization, world=request.environment["world"],
                                             deployment=self.services.deployment)
                 observation = simulator_runtime.observe()
                 views = {request.sensor_id: simulator_runtime.sensor_view(request.sensor_id)}
@@ -398,6 +484,8 @@ class ClosedLoopSession:
                     data[effect.sensor] = effect.apply(data.get(effect.sensor, view.data), view)
                 for name, value in data.items():
                     observation = write_camera_rgb(observation, views[name].sensor, value)
+                observation = SensorEnvironment(request.environment, self.seed).apply(
+                    observation, request.frame.position)
                 return RenderResult(
                     start.frame, observation, replace(views[request.sensor_id], native={}),
                     self._provenance(start, request.environment, simulator_runtime))
@@ -414,7 +502,7 @@ class ClosedLoopSession:
         adapter = self.services.driving_adapter
         if adapter is None:
             raise ValueError("This service has no driving-system adapter")
-        avstack = _fresh(adapter.factory(self.seed))
+        avstack = ensure_fresh(adapter.factory(self.seed))
         resources.callback(_close, avstack)
         return avstack
 
@@ -451,7 +539,7 @@ class ClosedLoopSession:
             raise ValueError("Candidate stop does not match the requested terminal frame")
         start = self._scenario_start(segment.scenario_id, segment.start, request.environment)
         try:
-            initialization = self._initialization(start, request.environment)
+            initialization = self.initialization(start, request.environment)
         except BaseException as error:
             # Frame data generation precedes runner construction, but failed generation evidence
             # still belongs to the requested run and must survive without a live simulator runtime.
@@ -483,7 +571,7 @@ class ClosedLoopSession:
             avstack = self._avstack(resources)
             attacks: tuple[Any, ...] = ()
             if request.attack is not None:
-                attack_runtime = _fresh(request.attack.create_runtime(segment, request.artifacts))
+                attack_runtime = ensure_fresh(request.attack.create_runtime(segment, request.artifacts))
                 attacks = (attack_runtime,)
             return ClosedLoopRunner().run(simulator_runtime, avstack, RunRequest(
                 request.decision_steps, hooks=HookSet(seed=self.seed),
@@ -499,6 +587,17 @@ class ScenarioView:
     scenario_id: str
     services: ClosedLoopServices
     seed: int
+    _reasons: list[str] = field(default_factory=list, repr=False, compare=False)
+
+    def record_reason(self, text: str) -> None:
+        """Attach a user-supplied selection explanation to this scenario's preparation record."""
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("A selection reason must be nonempty text")
+        self._reasons.append(text)
+
+    @property
+    def reasons(self) -> tuple[str, ...]:
+        return tuple(self._reasons)
 
     @property
     def frames(self) -> Sequence[FrameReference]:

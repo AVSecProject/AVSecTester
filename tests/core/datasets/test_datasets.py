@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from avsectester.datasets.base import FrameReference, Unavailable
+from avsectester.datasets.base import ActorState, FrameReference, Unavailable
 from avsectester.datasets.carla import CarlaDataset, CarlaRecipe, PrescribedMotion
 from avsectester.datasets.nurec import NuRecDataset
 from avsectester.datasets.nuscenes import NuScenesDataset
@@ -93,6 +93,9 @@ def test_nurec_records_cover_entire_source_and_use_nurec_scene_ids(nurec_usdz_pa
     assert [frame.timestamp for frame in frames] == [0, 0.25, 0.5]
     reference = dataset.frame_data(identity, frames[1])
     np.testing.assert_allclose(reference.actors["host"].pose[:3, 3], [11, 0, 1])
+    assert reference.actors["host"].category == "vehicle"
+    assert reference.actors["host"].extent == (4.0, 2.0, 2.0)
+    np.testing.assert_allclose(reference.actors["host"].velocity, [4, 0, 0])
     reference.scene.objects.clear()
     native = dataset.native(identity)
     native["rig_trajectories.json"].clear()
@@ -145,9 +148,9 @@ def test_legacy_nuscenes_keeps_global_sample_range_order_and_annotation_ids():
 
     # Two scenes; the SDK's global sample list interleaves them, as nusc.sample may.
     samples = [
-        {"token": "a0", "scene_token": "s", "next": "a1", "data": {"CAM_FRONT": "ca0"}},
-        {"token": "b0", "scene_token": "t", "next": "", "data": {"CAM_FRONT": "cb0"}},
-        {"token": "a1", "scene_token": "s", "next": "", "data": {"CAM_FRONT": "ca1"}},
+        {"token": "a0", "scene_token": "s", "next": "a1", "data": {"CAM_FRONT": "ca0"}, "anns": ["ann-a0"]},
+        {"token": "b0", "scene_token": "t", "next": "", "data": {"CAM_FRONT": "cb0"}, "anns": ["ann-b0"]},
+        {"token": "a1", "scene_token": "s", "next": "", "data": {"CAM_FRONT": "ca1"}, "anns": ["ann-a1"]},
     ]
     scenes = [{"token": "s", "name": "one", "first_sample_token": "a0"},
               {"token": "t", "name": "two", "first_sample_token": "b0"}]
@@ -155,7 +158,10 @@ def test_legacy_nuscenes_keeps_global_sample_range_order_and_annotation_ids():
         "scene": {scene["token"]: scene for scene in scenes},
         "sample": {sample["token"]: sample for sample in samples},
         "sample_data": {f"c{s['token']}": {"timestamp": 1000000 * (i + 1)} for i, s in enumerate(samples)},
-        "sample_annotation": {f"ann-{s['token']}": {"instance_token": f"inst-{s['token']}"}
+        "sample_annotation": {f"ann-{s['token']}": {
+            "instance_token": f"inst-{s['token']}", "translation": [5, 0, 0],
+            "rotation": [1, 0, 0, 0], "size": [2, 4, 1.5], "category_name": "vehicle.car",
+        }
                               for s in samples},
     }
     nusc = SimpleNamespace(scene=scenes, sample=samples, box_velocity=lambda token: (0, 0, 0),
@@ -185,6 +191,41 @@ def test_legacy_nuscenes_keeps_global_sample_range_order_and_annotation_ids():
     assert [frame.frame_id for frame in frames] == ["a0", "a1"]
     assert legacy.frames("s") == frames
     assert "inst-a1" in source.frame_data("s", frames[1]).actors
+
+
+def test_nuscenes_actor_states_include_annotations_outside_selected_camera():
+    sample = {"token": "sample", "anns": ["car", "pedestrian", "barrier"]}
+    annotations = {
+        token: {"instance_token": f"stable-{token}", "category_name": category,
+                "translation": translation, "rotation": [1, 0, 0, 0], "size": [1, 2, 3]}
+        for token, category, translation in (
+            ("car", "vehicle.car", [10, 0, 0]),
+            ("pedestrian", "human.pedestrian.adult", [-4, 0, 0]),
+            ("barrier", "movable_object.barrier", [0, 20, 0]),
+        )
+    }
+    records = {"sample": {"sample": sample}, "sample_annotation": annotations}
+    dataset = NuScenesDataset("/source")
+    dataset._nusc = SimpleNamespace(
+        get=lambda table, token: records[table][token],
+        box_velocity=lambda token: [float("nan"), 0, 0] if token == "barrier" else [1, 2, 0],
+    )
+    dataset._sample_scene = lambda sample, index: SceneGT(
+        index, 0, EgoState(pose=np.eye(4)), {}, [], source={"image_path": "/image.jpg"},
+    )
+    data = dataset._frame_data(FrameReference("s", 0, "sample", 0))
+    assert set(data.actors) == {"ego", "stable-car", "stable-pedestrian", "stable-barrier"}
+    assert data.actors["stable-pedestrian"].category == "human.pedestrian.adult"
+    assert data.actors["stable-car"].extent == (2.0, 1.0, 3.0)
+    assert data.actors["stable-barrier"].velocity is None
+    np.testing.assert_array_equal(data.actors["stable-pedestrian"].pose[:3, 3], [-4, 0, 0])
+
+
+def test_actor_extent_is_optional_and_rejects_invalid_dimensions():
+    assert ActorState(np.eye(4)).extent is None
+    for extent in ((1, 2), (1, -2, 3), (1, float("nan"), 3)):
+        with pytest.raises(ValueError, match="extent"):
+            ActorState(np.eye(4), extent=extent)
 
 
 def test_decision_window_accepts_recorded_timestamp_jitter(nurec_usdz_path):

@@ -5,7 +5,8 @@ The algorithm-facing contract is in :mod:`~avsectester.attacks.optim.interface` 
 ``LinfImage`` / ``PatchPerturbation``), ``Scorer`` (model access) and ``AttackObjective`` (goal).
 
 Concrete pieces are torch-backed and added incrementally: ``perturbations.py`` (LinfImage,
-PatchPerturbation with the differentiable EoT paste), ``scorers.py`` (white-box mmdet detector), and
+PatchPerturbation with the differentiable EoT paste), the driving-system scorers in
+:mod:`avsectester.closed_loop.avstacks.scorers`, and
 ``attacks.py`` (the PGD loop). A ``PatchPerturbation``'s ``export`` yields the texture that
 :class:`avsectester.attacks.patch.physical_patch.PhysicalPatch` deploys in CARLA.
 """

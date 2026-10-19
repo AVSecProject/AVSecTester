@@ -14,7 +14,7 @@ import numpy as np
 
 from avsectester.scenarios.carla_gt import carla_rgb_sensor, carla_scene_gt
 from avsectester.scenarios.context import FilterContext
-from avsectester.rendering.cameras import camera_from_calibration
+from avsectester.geometry.cameras import camera_from_calibration
 from avsectester.rendering.visibility import DepthVisibilityEstimator
 from avsectester.closed_loop.simulators.carla import (  # noqa: F401  (re-exported)
     CarlaSimulator, _require_pinhole_sensor, decode_carla_depth, register_pinhole_camera,

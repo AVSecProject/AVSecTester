@@ -51,7 +51,7 @@ reported speed:
 <!-- runnable -->
 ```python
 from avsectester.closed_loop.avstack import AVStack
-from avsectester.experiment import run_configured
+from avsectester.legacy_experiment import run_configured
 from avsectester.closed_loop.datatypes import Control
 
 

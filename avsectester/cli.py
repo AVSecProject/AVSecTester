@@ -8,7 +8,7 @@ import typer
 import yaml
 
 from avsectester import __version__
-from avsectester.experiment import ConfigurationError, ExecutionMode, TreatmentMode, run_configured
+from avsectester.legacy_experiment import ConfigurationError, ExecutionMode, TreatmentMode, run_configured
 
 app = typer.Typer(help="Adversarial security testing for AV systems.")
 

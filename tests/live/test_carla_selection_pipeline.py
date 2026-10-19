@@ -18,7 +18,8 @@ def test_selected_case_replays_and_inserts_into_same_frame_observation(request, 
     from avsectester.closed_loop.simulators.carla import CarlaSimulator
     from avsectester.scenarios.requirement import InitialWindow
     from avsectester.scenarios.filters import MinVisibility
-    from avsectester.closed_loop.simulators.carla import camera_view, insertion_perturbation
+    from avsectester.closed_loop.simulators.carla import camera_view
+    from avsectester.rendering.legacy_carla import insertion_perturbation
 
     config = yaml.safe_load(Path(request.config.getoption("--carla-config")).read_text())
     config.pop("patches", None)

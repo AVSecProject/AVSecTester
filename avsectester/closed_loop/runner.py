@@ -8,6 +8,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+from avsectester.closed_loop.environment import SensorEnvironment, normalize_environment, validate_environment
 from avsectester.closed_loop.avstack import AVStack
 from avsectester.closed_loop.simulator import WorldBackend
 from avsectester.closed_loop.datatypes import Control, FrameRecord, Observation, RecordedOutput, Trace
@@ -72,6 +73,7 @@ class RunRequest:
         if (not isinstance(self.decision_steps, int) or isinstance(self.decision_steps, bool)
                 or self.decision_steps < 0):
             raise ValueError("decision_steps must be a nonnegative integer")
+        object.__setattr__(self, "environment", normalize_environment(self.environment))
         if not self.retain_steps and self.output_path is None:
             raise ValueError("retain_steps=False requires an output_path")
 
@@ -126,7 +128,10 @@ class ClosedLoopRunner:
             simulator_runtime if isinstance(simulator_runtime, SimulatorRuntime)
             else LegacySimulatorAdapter(simulator_runtime)
         )
+        if isinstance(simulator_runtime, SimulatorRuntime):
+            validate_environment(request.environment, simulator_runtime.simulator)
         hooks = request.hooks or HookSet()
+        sensor_environment = SensorEnvironment(request.environment, seed=hooks.seed or 0)
         def record_attack_output(context: OnlineContext, name: str, value: Any) -> None:
             # Attack outputs join the hook outputs, so both are logged with their decision.
             session.outputs.append(RecordedOutput(
@@ -147,6 +152,7 @@ class ClosedLoopRunner:
         recorder = recorder or Recorder(path=request.output_path, codecs=default_codecs(),
                                         retain_steps=request.retain_steps, metadata={
             **dict(request.metadata),
+            "environment": deepcopy(dict(request.environment)),
             "decision_steps": request.decision_steps,
             "recording_policy": {
                 "sensor_ids": list(request.recording.sensor_ids),
@@ -209,7 +215,7 @@ class ClosedLoopRunner:
                 try:
                     # AttackRuntime.setup runs inside the reset, at the simulator.setup stage.
                     sim.reset(request.start, request.initialization,
-                              deployment=request.deployment, environment=request.environment)
+                              deployment=request.deployment, world=request.environment["world"])
                     if request.attacks and not attack_dispatch.applies_setup_in_reset:
                         attack_dispatch.setup(context("setup"), None)
                     last_observation = sim.observe()
@@ -233,7 +239,9 @@ class ClosedLoopRunner:
                         if request.attacks:
                             attack_dispatch.step(context("step", raw))
                             attacked = attack_dispatch.apply_sensor_effects(raw, sim)
-                        seen = session.observe(attacked)
+                        position = (request.start.frame.position if request.start is not None else 0) + current_step
+                        conditioned = sensor_environment.apply(attacked, position)
+                        seen = session.observe(conditioned)
                         model_record = recorder.capture(
                             request.recording.observation(seen, current_step, "model_input")
                         )

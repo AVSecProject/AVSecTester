@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from numbers import Real
 from abc import ABC, abstractmethod
 from collections.abc import Iterator, Mapping, Sequence
 from copy import deepcopy
@@ -60,12 +61,23 @@ class SensorDataReference:
 class ActorState:
     """World-from-actor SE(3), world velocity, stable identity in canonical right-handed axes.
 
-    ``category`` is the actor's class, such as ``vehicle`` or ``walker``, when known.
+    ``category`` is the actor's class, such as ``vehicle`` or a dataset-native category,
+    when known. ``extent`` is the full (length, width, height) in metres, not half extents.
     """
 
     pose: Any
     velocity: tuple[float, float, float] | None = None
     category: str | None = None
+    extent: tuple[float, float, float] | None = None
+
+    def __post_init__(self) -> None:
+        if self.extent is not None:
+            if (len(self.extent) != 3 or any(
+                isinstance(value, bool) or not isinstance(value, Real)
+                or not math.isfinite(value) or value < 0 for value in self.extent
+            )):
+                raise ValueError("Actor extent must be three finite nonnegative dimensions")
+            object.__setattr__(self, "extent", tuple(float(value) for value in self.extent))
 
 
 @dataclass(frozen=True)

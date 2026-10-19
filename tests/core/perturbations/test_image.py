@@ -6,7 +6,7 @@ shape/dtype invariants, severity-0 identity, determinism, and the write-back, no
 
 import numpy as np
 import pytest
-from avsectester.closed_loop.datatypes import Observation
+from avsectester.closed_loop.datatypes import Observation, read_camera_rgb, write_camera_rgb
 from avsectester.perturbations.image import (
     CORRUPTIONS,
     AugmentationPipeline,
@@ -15,9 +15,7 @@ from avsectester.perturbations.image import (
     GaussianNoise,
     albumentations_corruptions,
     compose,
-    read_camera_rgb,
     sensor_augmentation,
-    write_camera_rgb,
 )
 
 # operators whose effect vanishes exactly at severity 0 (no base noise / minimum kernel)

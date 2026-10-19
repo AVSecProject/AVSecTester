@@ -47,6 +47,7 @@ environments, including NuRec with Alpamayo.
 |---|---|
 | Install and run a first experiment | [Installation](docs/getting-started/installation.md), [Quickstart](docs/getting-started/quickstart.md) |
 | Understand the components and terms | [Architecture](docs/concepts/architecture.md) |
+| Prepare attacks and execute experiments from Python | [Run experiments](docs/guides/experiments.md#prepare-and-execute-attacks), [Configuration](docs/reference/configuration.md#experiment-configuration-python-api) |
 | Implement an attack or a defense | [Implement an attack](docs/guides/attacks.md), [Implement a defense](docs/guides/defenses.md) |
 | See how the supplied attacks work | [Examples](docs/examples/README.md) |
 | Look up configuration keys, CLI options or runtime stages | [Reference](docs/README.md#all-documents) |
@@ -58,15 +59,20 @@ The [documentation index](docs/README.md) lists every document and a reading pat
 
 **Early alpha.** The repository supplies CARLA and NuRec simulators, the modular and Alpamayo
 driving systems, scenario preparation and selection, world and sensor conditions, shared attack and
-defense interfaces with example attacks, and evaluation tools. Reference defenses, optimization
-through the closed loop and selectable success criteria are not implemented yet. See
+defense interfaces with example attacks, and evaluation tools. The Python experiment API supports
+attack-defined selection, offline preparation and independent treatments with reusable artifacts.
+The CLI and supplied examples use the existing configured-run API. Built-in optimizers still use
+their existing data path. See
 [Implementation status](docs/concepts/architecture.md#implementation-status) and
 [TODO](docs/development/TODO.md).
 
-The broader project aims to provide complete experiment reports, attack-propagation analysis,
-reusable vulnerability records and automation through an AI harness. Component testing,
-hardware-in-the-loop, in-vehicle network and V2X adapters are possible extensions. These are
-project goals, not features of this repository.
+**Not yet implemented.** Reference defense algorithms and selectable success criteria. See
+[TODO](docs/development/TODO.md#defense-examples-and-output-metrics) and
+[driving-impact metrics](docs/development/TODO.md#driving-impact-metrics).
+
+**Not yet implemented.** Broader project goals include complete experiment reports,
+attack-propagation analysis, reusable vulnerability records and automation through an AI harness.
+Component testing, hardware-in-the-loop, in-vehicle network and V2X adapters are possible extensions.
 
 ## License
 

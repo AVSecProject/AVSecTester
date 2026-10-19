@@ -35,7 +35,7 @@ value and return the value passed downstream.
 | `simulator.setup` | `None` | `CarlaSimulator`, `NuRecSimulator` | Once per run, after the world and actors are created and before the first sensor capture |
 | `simulator.step.pre` | `None` | `CarlaSimulator`, `NuRecSimulator` | Each driving step, after the final command is validated and before it is applied |
 | `simulator.step.post` | `None` | `CarlaSimulator`, `NuRecSimulator` | Each driving step, after physics advances and before the next observation is read |
-| `render.pre` | `RenderRequest` | `NuRecSimulator` | Before each camera is rendered, at reset and after each `simulator.step.post` |
+| `render.pre` | `CameraRenderRequest` | `NuRecSimulator` | Before each camera is rendered, at reset and after each `simulator.step.post` |
 | `render.post` | RGB image (`ndarray`) | `NuRecSimulator` | After each camera is rendered |
 | `sensors.post` | `Observation` | Driving loop (always) | First stage of observation processing, on a copy of the raw observation |
 | `localization.pre` | `Observation` | Driving loop, with a Vehicle I/O or legacy Runtime localizer | Before the localizer |
@@ -80,7 +80,7 @@ Sensor capture timing differs between simulators:
 | `StateEstimate` | `vehicle_state` and `ego_speed`, independent of the physical ego state |
 | `Control` | `throttle`, `steer`, `brake` and optional `trajectory`. See [Command compatibility](#command-compatibility) |
 | `CallInputs` | `args` (a tuple) and `kwargs` (a dict), passed to the module's call. Return a new `CallInputs` to replace arguments |
-| `RenderRequest` | `pose` (a copy of the NuRec `EgoPose`) and `camera` (a native camera name). Changing the request changes that rendering without moving the physical ego |
+| `CameraRenderRequest` | `pose` (a copy of the NuRec `EgoPose`) and `camera` (a native camera name). Changing the request changes that rendering without moving the physical ego |
 | RGB image | The NuRec renderer's image for one camera. `context.sensor` names the native camera |
 | AlpaSim `PredictionInput` | `camera_images`, `command`, `speed`, `acceleration`, `ego_pose_history`, `inference_seed`, `previous_plan` and `route`, as built by `AlpamayoAVStack` |
 | AlpaSim `ModelPrediction` | The installed driver's output schema, including `candidate_positions` and `selected_index`. `AlpamayoAVStack` also reads `selected_plan` and `reasoning_text` when present |
@@ -117,7 +117,7 @@ described in [Component stages](../guides/driving-systems.md#component-stages).
 | NuRec `vehicle_state.yaw` | Heading about +Z, in radians |
 | NuRec `vehicle_state.speed` | Speed in m/s |
 | NuRec `vehicle_state.t` | Simulation time in seconds |
-| NuRec `RenderRequest.pose` | An `EgoPose` with the same fields, used for rendering only |
+| NuRec `CameraRenderRequest.pose` | An `EgoPose` with the same fields, used for rendering only |
 | CARLA `vehicle_state.position.x` | Three position coordinates in metres, expressed in `position.reference` |
 | CARLA `vehicle_state.velocity.x` | Three velocity components in m/s, expressed in `velocity.reference` |
 | CARLA `vehicle_state.acceleration.x` | Three acceleration components in m/s², expressed in `acceleration.reference` |
@@ -225,7 +225,8 @@ flowchart TD
     TICKS --> CAPTURE["Capture first sensor data (NuRec: render.pre, render.post per camera)"]
     CAPTURE --> ASTEP["AttackRuntime.step, if configured"]
     ASTEP --> SEFFECT[Sensor attack effects on the capture]
-    SEFFECT --> SENSOR[sensors.post]
+    SEFFECT --> ENV[Sensor-environment transforms]
+    ENV --> SENSOR[sensors.post]
     SENSOR --> LOCQ{Localizer configured?}
     LOCQ -->|Yes| LPRE[localization.pre, then localizer]
     LOCQ -->|No| IDEAL[Estimate taken from the observation]
@@ -281,7 +282,8 @@ owner of its per-run state.
 
 `ResultSubscription("observation")` requests the raw decision input.
 `ResultSubscription("physical_state")` requests a physical `WorldSnapshot`: the ego state and,
-in `actors`, every other actor's `ActorState` (canonical world pose, velocity and category) by
+in `actors`, every other actor's `ActorState` (canonical world pose, velocity, category and
+optional full `extent` in length, width and height, in metres) by
 stable actor ID. Driving-system component outputs are delivered to AV stack attack effects, not
 subscribed.
 
@@ -383,7 +385,7 @@ The runtime checks the returned type at these stages and raises `TypeError` on a
 | `sensors.post`, `localization.pre`, `observation` | `Observation` |
 | `localization.post` | `StateEstimate` |
 | `command` | `Control` |
-| `render.pre` | `RenderRequest` |
+| `render.pre` | `CameraRenderRequest` |
 | Modular `.pre` stages | `CallInputs` |
 | `simulator.setup`, `simulator.step.pre`, `simulator.step.post` | `None`. World handlers act through native operations |
 | `render.post`, modular `.post` stages, `policy.pre`, `policy.post` | Not checked. Return a value the downstream consumer accepts |
@@ -484,7 +486,7 @@ specifications through `context.case.insertions`. See
 | Driving-system components | The stage value at component stages. `context.avstack.native` and `context.avstack.models` for handles | Return a replacement value, or mutate a component output |
 | Physical state | `context.physical_state`, or `context.simulator_runtime.state()` for a new snapshot | Native simulator operations in a world-stage handler. Editing a snapshot changes nothing |
 | Other actors and environment | Simulator native resources in `context.simulator_runtime.native` | Native operations in a world-stage handler. See [Change the world from handlers](../guides/simulators.md#change-the-world-from-handlers) |
-| Rendering (NuRec) | `RenderRequest` at `render.pre`, the image at `render.post` | Return a modified request or image. The physical ego does not move |
+| Rendering (NuRec) | `CameraRenderRequest` at `render.pre`, the image at `render.post` | Return a modified request or image. The physical ego does not move |
 | Final command | The `Control` at `command` | Return the `Control` the simulator executes |
 | Selected scenario | `context.case` | — |
 
@@ -556,7 +558,11 @@ outputs is described in
   handler that draws numbers changes the numbers later handlers receive.
 - The seed does not configure simulator, driving-model or external-library randomness. Seed
   those through their own APIs.
-- Sensor conditions use their own generators, independent of `Runtime.seed`. See
+- Sensor-environment transforms use the run seed and absolute dataset timeline position:
+  `start.frame.position + decision_step` for a selected run, or `decision_step` without a start.
+  Offline sensor reads and renders use the same position, so the same frame and seed receive
+  the same random realization. These generators are independent of hook random draws.
+- Legacy sensor conditions use their own generators, independent of `Runtime.seed`. See
   [Randomness across treatments](../guides/conditions.md#randomness-across-treatments).
 - `run_pair`, `run_prepared` and `run_configured` record the seed as `runtime_seed`, and the
   registered stages as `runtime_stages`, in `trace.provenance`.

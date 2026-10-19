@@ -9,9 +9,10 @@ from typing import NamedTuple, Protocol
 
 import numpy as np
 
-from avsectester.insertion import ActorPose, ResolvedInsertion
+from avsectester.geometry.poses import ActorPose
+from avsectester.insertion import ResolvedInsertion
 from avsectester.closed_loop.datatypes import Observation
-from .cameras import Camera
+from avsectester.geometry.cameras import Camera
 
 
 @dataclass(frozen=True)

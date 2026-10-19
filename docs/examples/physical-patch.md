@@ -90,7 +90,7 @@ directly:
 import yaml
 
 from avsectester.attacks.patch.physical_patch import PhysicalPatchPlugin
-from avsectester.experiment import configured_stack
+from avsectester.legacy_experiment import configured_stack
 from avsectester.runner import run_prepared
 from avsectester.closed_loop.hooks import Hook, Runtime
 from avsectester.scenarios.setup import scenario_from_config

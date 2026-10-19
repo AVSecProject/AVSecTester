@@ -19,10 +19,9 @@ from typing import Any, ClassVar, Protocol, TYPE_CHECKING
 from avsectester.closed_loop.datatypes import validate_command_modes
 from avsectester.closed_loop.simulator import Simulator, SimulatorRuntime
 from avsectester.closed_loop.datatypes import Control, Observation, WorldSnapshot
-from avsectester.rendering.compositor import InsertionRenderer
 
 if TYPE_CHECKING:
-    from avsectester.closed_loop.hooks import RenderRequest
+    from avsectester.closed_loop.hooks import CameraRenderRequest
     from avsectester.closed_loop.simulator import SensorView
 
 
@@ -254,7 +253,7 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
         self.dt = simulator.dt
         self.pose = EgoPose()
         self.frame = 0
-        self._render_requests: dict[str, RenderRequest] = {}
+        self._render_requests: dict[str, CameraRenderRequest] = {}
         # Recorded actor tracks, by archive; recorded files are immutable.
         self._track_datasets: dict[tuple, Any] = {}
         self._actor_states: tuple[int, dict] | None = None
@@ -269,7 +268,7 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
             "render_requests": deepcopy(self._render_requests),
         }
 
-    def render_request(self, camera: str) -> RenderRequest:
+    def render_request(self, camera: str) -> CameraRenderRequest:
         """Return the effective request that produced this camera's current observation.
 
         Both native camera names and configured output aliases are accepted. The returned
@@ -357,69 +356,8 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
         scene, dataset = self._tracks()
         return nurec_sensor_view(self, scene, dataset, sensor)
 
-    def _insertion_renderer(self, scene, data, insertions, bindings=None, compositor=None):
-        """Configure a host-bound insertion callable without connecting to the renderer.
-
-        ``bindings`` accepts a selected match's role-to-track-ID tuples. Actor poses are sampled at
-        the effective render timestamp and camera pose. Model-visible time and localization do
-        not move the geometry. An explicit render-viewpoint change updates camera geometry while
-        the victim's physical pose still comes from the runtime's physical state.
-        """
-        import numpy as np
-        from avsectester.insertion import ActorPose
-        from avsectester.rendering.types import InsertionGeometry
-        from avsectester.rendering.visibility import CuboidVisibilityEstimator
-
-        renderer = self.renderer
-        objects = {obj.track_id: obj for obj in scene.objects}
-        selected = {
-            role: tuple(objects[track_id] for track_id in ids)
-            for role, ids in (bindings or {}).items()
-        }
-        from avsectester.scenarios.context import FilterContext
-        from avsectester.rendering.cameras import FThetaCamera as Lens
-
-        aliases = FilterContext(scene, bindings=selected).actor_aliases
-        local_center = np.eye(4)
-        local_center[:3, 3] = scene.ego.center
-        path = scene.source["usdz_path"]
-
-        def geometry(observation):
-            pose = self.state().vehicle_state
-            request = self.render_request(data.camera_id)
-            adapter.camera = renderer.camera_model(request.camera)
-            actors = data.actor_poses(path, renderer.timestamp_us(request.pose))
-            for alias, track_id in aliases.items():
-                if track_id in actors:
-                    if alias in actors and alias != track_id:
-                        raise ValueError(f"Role {alias!r} conflicts with an actor track ID")
-                    actors[alias] = actors[track_id]
-            victim = ActorPose(renderer.rig_transform(pose) @ local_center, scene.ego.extent)
-            return InsertionGeometry(
-                actors, victim, renderer.cam_from_world(request.pose, request.camera),
-            )
-
-        # Recorded intrinsics let the adapter be registered before reset. Each geometry
-        # call then selects the loaded camera that produced the actual render request.
-        recorded = scene.cameras[data.camera_alias].model
-        camera = Lens(
-            cx=float(recorded.principal_point[0]), cy=float(recorded.principal_point[1]),
-            angle_to_pixeldist=tuple(recorded.angle_to_pixeldist),
-            width=recorded.width, height=recorded.height, max_angle=recorded.max_angle,
-            linear_cde=tuple(recorded.linear_cde),
-        )
-        adapter = NuRecInsertions(
-            insertions,
-            camera,
-            geometry,
-            compositor,
-            visibility_estimator=CuboidVisibilityEstimator(),
-            camera_name=data.camera_alias,
-        )
-        return adapter
-
     def _observe(self) -> Observation:
-        from avsectester.closed_loop.hooks import RenderRequest
+        from avsectester.closed_loop.hooks import CameraRenderRequest
 
         aliases = self.config.get("camera_aliases", {})
         sensor_data = {}
@@ -427,7 +365,7 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
         for camera in self.renderer.cameras:
             # A render request may use a false viewpoint without moving the physical ego.
             request = self._emit(
-                "render.pre", RenderRequest(deepcopy(self.pose), camera), sensor=camera,
+                "render.pre", CameraRenderRequest(deepcopy(self.pose), camera), sensor=camera,
             )
             self._render_requests[camera] = deepcopy(request)
             if request.camera != camera:
@@ -608,16 +546,16 @@ class NuRecRenderer(Renderer):
         return self._t0 + round(pose.t * 1e6)
 
     def camera_model(self, camera: str | None = None):
-        """The rendered camera's lens model (:class:`~avsectester.rendering.cameras.FThetaCamera`)
+        """The rendered camera's lens model (:class:`~avsectester.geometry.cameras.FThetaCamera`)
         for world-anchored insertion, available after :meth:`load_scene`."""
-        from avsectester.rendering.cameras import FThetaCamera
+        from avsectester.geometry.cameras import FThetaCamera
 
         return FThetaCamera.from_nurec(self._camera_specs.get(camera, self._spec))
 
     def rig_transform(self, pose: EgoPose):
         """Preserve the selected frame's height/tilt while evolving planar position and heading."""
         import numpy as np
-        from avsectester.rendering.cameras import planar_rig_pose
+        from avsectester.geometry.cameras import planar_rig_pose
 
         if self.origin_transform is None:
             z = self._start_pose.vec.z if self._start_pose is not None else 0.0
@@ -632,7 +570,7 @@ class NuRecRenderer(Renderer):
     def cam_from_world(self, pose: EgoPose, camera: str | None = None):
         """The same camera pose used by the render request, including selected-frame tilt."""
         import numpy as np
-        from avsectester.rendering.cameras import pose_from_proto
+        from avsectester.geometry.cameras import pose_from_proto
 
         extrinsic = self._camera_poses.get(camera, self._rig_to_camera)
         return np.linalg.inv(self.rig_transform(pose) @ pose_from_proto(extrinsic))
@@ -640,7 +578,7 @@ class NuRecRenderer(Renderer):
     def camera_transform(self, world_from_rig, camera: str | None = None):
         """World-to-optical-camera transform for an explicit recorded rig pose."""
         import numpy as np
-        from avsectester.rendering.cameras import pose_from_proto
+        from avsectester.geometry.cameras import pose_from_proto
 
         extrinsic = self._camera_poses.get(camera, self._rig_to_camera)
         return np.linalg.inv(np.asarray(world_from_rig) @ pose_from_proto(extrinsic))
@@ -692,44 +630,6 @@ class NuRecRenderer(Renderer):
         return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)  # HWC uint8 RGB for the AV stack
 
 
-class NuRecInsertions(InsertionRenderer):
-    """Insertion renderer with optional known-cuboid visibility for NuRec observations.
-
-    ``geometry(observation)`` returns InsertionGeometry with actor/victim poses and the
-    world-to-camera matrix. Use with ``frame_perturbation`` to change the model input.
-    """
-
-    def __init__(
-        self,
-        insertions,
-        camera,
-        geometry,
-        compositor=None,
-        visibility_estimator=None,
-        camera_name="front",
-    ):
-        def evidence(observation, resolved, state):
-            return {
-                item.id: visibility_estimator.estimate(
-                    item,
-                    self.camera,
-                    state.cam_from_world,
-                    occluders=state.actors,
-                    other_insertions=tuple(other for other in resolved if other.id != item.id),
-                    camera_name=camera_name,
-                )
-                for item in resolved
-            }
-
-        super().__init__(
-            insertions,
-            camera,
-            geometry,
-            compositor,
-            evidence_provider=evidence if visibility_estimator is not None else None,
-        )
-
-
 def nurec_sensor_view(simulator_runtime, scene, dataset, sensor=None, data=None):
     """Build the sensor view of one NuRec camera capture.
 
@@ -741,8 +641,8 @@ def nurec_sensor_view(simulator_runtime, scene, dataset, sensor=None, data=None)
     """
     import numpy as np
 
-    from avsectester.insertion import ActorPose
-    from avsectester.perturbations.image import read_camera_rgb
+    from avsectester.geometry.poses import ActorPose
+    from avsectester.closed_loop.datatypes import read_camera_rgb
     from avsectester.closed_loop.simulator import SensorView
 
     renderer = simulator_runtime.renderer

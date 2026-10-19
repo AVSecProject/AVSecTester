@@ -3,17 +3,8 @@
 import numpy as np
 import pytest
 
-from avsectester.insertion import (
-    ActorPose,
-    AttachedPlacement,
-    Insertion,
-    Orientation,
-    PlaneAsset,
-    PlaneSurface,
-    WorldPlacement,
-    resolve_insertion,
-    rotation_matrix,
-)
+from avsectester.geometry.poses import ActorPose, rotation_matrix
+from avsectester.insertion import AttachedPlacement, Insertion, Orientation, PlaneAsset, PlaneSurface, WorldPlacement, resolve_insertion
 
 
 def actor(position=(0, 0, 0), angles=(0, 0, 0), extent=(4, 2, 2)):

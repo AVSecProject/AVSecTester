@@ -78,7 +78,7 @@ class FThetaCamera:
 
     def project(self, pts_rig: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Project ego/rig-frame points ``(N, 3)`` -> pixels ``(N, 2)`` + a validity mask ``(N,)``."""
-        from avsectester.rendering.cameras import FThetaCamera as Lens
+        from avsectester.geometry.cameras import FThetaCamera as Lens
 
         pts = np.atleast_2d(np.asarray(pts_rig, dtype=np.float64))
         homo = np.c_[pts, np.ones(len(pts))]
@@ -283,9 +283,8 @@ class NuRecDataset(Dataset):
         self.checked_frame(scenario_id, frame)
         path = self._path(scenario_id)
         scene = self._timeline_scene(scenario_id, frame.position)
-        actors = {"ego": ActorState(scene.ego.pose)}
-        for actor in self.actor_poses(path, round(frame.timestamp * 1e6)).items():
-            actors[actor[0]] = ActorState(actor[1].transform)
+        actors = {"ego": ActorState(scene.ego.pose, category="vehicle", extent=scene.ego.extent)}
+        actors.update(self.actor_states(path, round(frame.timestamp * 1e6)))
         return FrameData(frame, scene, actors,
                               provenance={"kind": "interpolated", "usdz_path": path,
                                           "time_step": self.time_step,
@@ -352,7 +351,7 @@ class NuRecDataset(Dataset):
 
     def actor_poses(self, path: str, timestamp_us: int):
         """World poses and full cuboid dimensions for every actor present at this timestamp."""
-        from avsectester.insertion import ActorPose
+        from avsectester.geometry import ActorPose
 
         tracks = self._raw_metadata(str(path))["sequence_tracks.json"]
         return {
@@ -371,7 +370,7 @@ class NuRecDataset(Dataset):
         before = {tid: pose for tid, _, _, pose in self._track_states(tracks, timestamp_us - step_us)}
         after = {tid: pose for tid, _, _, pose in self._track_states(tracks, timestamp_us + step_us)}
         states = {}
-        for tid, label, _extent, pose in self._track_states(tracks, timestamp_us):
+        for tid, label, extent, pose in self._track_states(tracks, timestamp_us):
             velocity = None
             if tid in before:
                 velocity = (pose[:3, 3] - before[tid][:3, 3]) / self.time_step
@@ -382,6 +381,7 @@ class NuRecDataset(Dataset):
                 np.array(pose, dtype=float),
                 None if velocity is None else tuple(float(v) for v in velocity),
                 "vehicle" if vehicle else label,
+                tuple(float(value) for value in extent),
             )
         return states
 

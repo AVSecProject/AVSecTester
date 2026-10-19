@@ -19,7 +19,8 @@ def test_image_warp_returns_an_alpha_composite_and_opaque_mask():
 
 def test_render_plane_lands_where_projected_and_keeps_red(ftheta_camera, cam_from_world):
     from avsectester.attacks.object_insertion.sign_spoof import SignAsset
-    from avsectester.insertion import ActorPose, Insertion, WorldPlacement, Orientation, resolve_insertion
+    from avsectester.geometry.poses import ActorPose
+    from avsectester.insertion import Insertion, WorldPlacement, Orientation, resolve_insertion
     from avsectester.rendering.harmonizers import ClassicHarmonizer
     from avsectester.rendering.compositor import PatchCompositor, render_plane
 
@@ -49,7 +50,8 @@ def test_render_plane_lands_where_projected_and_keeps_red(ftheta_camera, cam_fro
 
 def test_render_plane_behind_camera_is_noop(ftheta_camera, cam_from_world):
     from avsectester.attacks.object_insertion.sign_spoof import SignAsset
-    from avsectester.insertion import ActorPose, Insertion, WorldPlacement, Orientation, resolve_insertion
+    from avsectester.geometry.poses import ActorPose
+    from avsectester.insertion import Insertion, WorldPlacement, Orientation, resolve_insertion
     from avsectester.rendering.compositor import render_plane
 
     frame = np.full((1080, 1920, 3), 90, np.uint8)
@@ -89,9 +91,10 @@ def test_frame_perturbation_reads_and_rewrites_the_selected_camera(custom_view):
 def test_insertion_renderer_depth_orders_surfaces_and_preserves_cutout_holes(
     reverse_surfaces,
 ):
-    from avsectester.insertion import ActorPose, Insertion, PlaneAsset, PlaneSurface, WorldPlacement
+    from avsectester.geometry.poses import ActorPose
+    from avsectester.insertion import Insertion, PlaneAsset, PlaneSurface, WorldPlacement
     from avsectester.closed_loop.datatypes import Observation
-    from avsectester.rendering.cameras import PinholeCamera
+    from avsectester.geometry.cameras import PinholeCamera
     from avsectester.rendering.types import InsertionGeometry
     from avsectester.rendering.compositor import InsertionRenderer
 

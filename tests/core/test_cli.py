@@ -13,7 +13,7 @@ from typer.testing import CliRunner
 from avsectester import carla_runner
 from avsectester import cli
 from avsectester.closed_loop.avstack import AVStack
-from avsectester.experiment import ExecutionMode, TreatmentMode
+from avsectester.legacy_experiment import ExecutionMode, TreatmentMode
 from avsectester.closed_loop.datatypes import Control, StateEstimate
 from avsectester.preparation import Intervention
 from avsectester.closed_loop.hooks import Hook, Plugin
@@ -38,7 +38,8 @@ def cli_config(tmp_path):
             "type": "CarlaMobileActor",
             "pipeline": {"perception": {"type": "MMDetObjectDetector3D", "gpu": 1}},
         },
-        "attacks": [{"stage": "perception", "hook": {"type": "PhantomInjection"}}],
+        "attacks": [{"stage": "perception", "hook": {"type": "PhantomInjection"},
+                     "imports": ["avsectester.attacks.pipeline.phantom"]}],
     }
     path = tmp_path / "scenario.yaml"
     path.write_text(yaml.safe_dump(config))

@@ -79,8 +79,8 @@ def test_runtime_adapter_uses_scene_time_stable_alias_and_current_ego(recorded_d
     from types import SimpleNamespace
     from avsectester.insertion import AttachedPlacement, Insertion, Orientation, PlaneAsset
     from avsectester.closed_loop.datatypes import Observation, WorldSnapshot
-    from avsectester.rendering.cameras import PinholeCamera, planar_rig_pose
-    from avsectester.closed_loop.hooks import RenderRequest
+    from avsectester.geometry.cameras import PinholeCamera, planar_rig_pose
+    from avsectester.closed_loop.hooks import CameraRenderRequest
     from avsectester.closed_loop.simulators.nurec import EgoPose
 
     dataset, _path = recorded_dataset
@@ -106,7 +106,7 @@ def test_runtime_adapter_uses_scene_time_stable_alias_and_current_ego(recorded_d
     backend = SimpleNamespace(
         renderer=Renderer(),
         state=lambda: WorldSnapshot(true_pose.t, 1, true_pose, true_pose.speed),
-        render_request=lambda _: RenderRequest(true_pose, dataset.sensor),
+        render_request=lambda _: CameraRenderRequest(true_pose, dataset.sensor),
     )
     item = Insertion(
         "patch",
@@ -114,8 +114,8 @@ def test_runtime_adapter_uses_scene_time_stable_alias_and_current_ego(recorded_d
         AttachedPlacement("hosts[0]", "rear_center"),
         Orientation("follow_host", (0, 0, 180)),
     )
-    from avsectester.closed_loop.simulators.nurec import NuRecSimulatorRuntime
-    adapter = NuRecSimulatorRuntime._insertion_renderer(backend, scene, dataset, [item], bindings={"hosts": ("host",)})
+    from avsectester.rendering.legacy_nurec import insertion_renderer
+    adapter = insertion_renderer(backend, scene, dataset, [item], bindings={"hosts": ("host",)})
     # A localization/time attack must not move the actual camera or metadata actors.
     obs = Observation(10.0, 99, vehicle_state=EgoPose(100, -100, 2.0, t=10.0))
     actors, victim, transform = adapter.geometry(obs)
@@ -130,7 +130,7 @@ def test_insertion_pipeline_survives_backend_reset_and_drives_from_modified_inpu
     from avsectester.backend import run
     from avsectester.insertion import AttachedPlacement, Insertion, Orientation, PlaneAsset
     from avsectester.closed_loop.datatypes import Control
-    from avsectester.rendering.cameras import PinholeCamera, planar_rig_pose
+    from avsectester.geometry.cameras import PinholeCamera, planar_rig_pose
     from avsectester.closed_loop.simulators.nurec import NuRecSimulator, StubRenderer
     from avsectester.perturbations.image import frame_perturbation
 
@@ -197,7 +197,7 @@ def test_pair_registers_insertion_before_render_service_loads(recorded_dataset, 
     from avsectester.interventions import ObservationTransform
     from avsectester.closed_loop.datatypes import Control
     from avsectester.perturbations.image import frame_perturbation
-    from avsectester.rendering.cameras import PinholeCamera, planar_rig_pose
+    from avsectester.geometry.cameras import PinholeCamera, planar_rig_pose
     from avsectester.runner import run_pair
     from avsectester.closed_loop.hooks import Hook, Runtime
     from avsectester.closed_loop.simulators.nurec import NuRecSimulator, StubRenderer
@@ -279,8 +279,8 @@ def test_insertion_uses_effective_render_view_and_time_but_true_victim_pose(reco
     from avsectester.closed_loop.avstack import AVStack
     from avsectester.insertion import Insertion, PlaneAsset, WorldPlacement
     from avsectester.closed_loop.datatypes import Control
-    from avsectester.rendering.cameras import PinholeCamera, planar_rig_pose
-    from avsectester.closed_loop.hooks import Hook, RenderRequest, Runtime
+    from avsectester.geometry.cameras import PinholeCamera, planar_rig_pose
+    from avsectester.closed_loop.hooks import Hook, CameraRenderRequest, Runtime
     from avsectester.closed_loop.simulators.nurec import EgoPose, NuRecSimulator, StubRenderer
 
     dataset, _ = recorded_dataset
@@ -314,7 +314,7 @@ def test_insertion_uses_effective_render_view_and_time_but_true_victim_pose(reco
     }, renderer=Renderer(cameras=[dataset.sensor])).create_runtime()
 
     def viewpoint(request, context):
-        return RenderRequest(EgoPose(4, 5, 0.3, t=0.5), request.camera)
+        return CameraRenderRequest(EgoPose(4, 5, 0.3, t=0.5), request.camera)
 
     def localization(observation, context):
         observation.vehicle_state = EgoPose(99, -99, 2, t=99)
@@ -333,7 +333,9 @@ def test_insertion_uses_effective_render_view_and_time_but_true_victim_pose(reco
             "object", PlaneAsset(np.full((4, 4, 4), 255, np.uint8), 1, 1),
             WorldPlacement((10, 0, 0)),
         )
-        adapter = backend._insertion_renderer(scene, dataset, [item])
+        from avsectester.rendering.legacy_nurec import insertion_renderer
+
+        adapter = insertion_renderer(backend, scene, dataset, [item])
         actors, victim, transform = adapter.geometry(observation)
 
         np.testing.assert_allclose(actors["host"].transform[:3, 3], [12, 0, 1])
@@ -347,7 +349,8 @@ def test_insertion_uses_effective_render_view_and_time_but_true_victim_pose(reco
 
 def test_demo_source_and_rear_attachment_use_the_explicit_recorded_host(recorded_dataset):
     from types import SimpleNamespace
-    from avsectester.insertion import ActorPose, resolve_insertion
+    from avsectester.geometry.poses import ActorPose
+    from avsectester.insertion import resolve_insertion
 
     from scripts.common.demo_common import nurec_rear_insertion, nurec_source
 

@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from avsectester.rendering.cameras import PinholeCamera, carla_cam_coords
+from avsectester.geometry.cameras import PinholeCamera, carla_cam_coords
 
 
 def test_ftheta_project_unproject_roundtrip(ftheta_camera):

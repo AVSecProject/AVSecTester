@@ -15,8 +15,9 @@ clean run does not make. Besides `target_xyz`, its options are `obj_type` (defau
 configuration as its artifact.
 
 **Execution.** The attack acts at `perception.post`, inside the modular driving system.
-`PhantomInjection` is a native avstack post-hook. Constructing a `ModularAVStack` registers it in
-avstack's `HOOKS` registry. The `NativeHook` adapter connects it to the runtime:
+`PhantomInjection` is a native avstack post-hook. Explicitly import
+`avsectester.attacks.pipeline.phantom` to register it in avstack's `HOOKS` registry; constructing
+`ModularAVStack` does not register attacks. The `NativeHook` adapter connects it to the runtime:
 
 - It builds a fresh native hook from the configuration at the start of every run.
 - A native post-hook returns `(output,)`. `NativeHook` unwraps the tuple, because runtime
@@ -38,6 +39,7 @@ run, then prints their [driving-impact](../guides/evaluation.md#driving-impact-m
 ```yaml
 attacks:
   - stage: perception
+    imports: [avsectester.attacks.pipeline.phantom]
     hook:
       type: PhantomInjection
       target_xyz: [6.0, 0.0, -1.5]
@@ -51,13 +53,16 @@ avsectester run configs/carla_scenario.yaml --frames 40
 
 The same hook can be written as a [`runtime.hooks`](../reference/configuration.md#runtime) entry with
 `stage: perception.post` and an `avstack:` mapping. Both forms are enabled in the `attack` and
-combined (`attack-defense`) treatments. From Python, register `NativeHook` directly:
+combined (`attack-defense`) treatments. Python experiment hook entries instead use
+`native_hook` with `imports: [avsectester.attacks.pipeline.phantom]`. From Python, import the
+registration module and register `NativeHook` directly:
 
 ```python
 import yaml
 
-from avsectester.experiment import configured_stack
-from avsectester.interventions import NativeHook
+from avsectester.legacy_experiment import configured_stack
+import avsectester.attacks.pipeline.phantom  # Register PhantomInjection explicitly.
+from avsectester.closed_loop.avstacks.native_hook import NativeHook
 from avsectester.runner import run_prepared
 from avsectester.closed_loop.hooks import Hook, Runtime
 from avsectester.scenarios.setup import scenario_from_config
@@ -75,5 +80,6 @@ results = run_prepared(
 ```
 
 **Code.** `avsectester/attacks/pipeline/phantom.py` (`PhantomInjection`),
-`avsectester/interventions.py` (`NativeHook`, `NativeHookIntervention`). Adapter signatures are in
+`avsectester/closed_loop/avstacks/native_hook.py` (`NativeHook`) and
+`avsectester/interventions.py` (`NativeHookIntervention`, legacy configuration). Adapter signatures are in
 [Runtime](../reference/python-api.md#runtime).

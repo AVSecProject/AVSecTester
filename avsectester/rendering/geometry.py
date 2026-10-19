@@ -10,8 +10,9 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from avsectester.insertion import ActorPose, PlaneSurface
-from .cameras import Camera, transform
+from avsectester.geometry.poses import ActorPose
+from avsectester.insertion import PlaneSurface
+from avsectester.geometry.cameras import Camera, transform
 
 NEAR_Z = 1e-5
 

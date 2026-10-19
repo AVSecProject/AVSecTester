@@ -4,12 +4,146 @@
 > **Outcome:** Choose an entry point, select treatments, run single or paired experiments, and find their outputs.  
 > **Prerequisites:** [Architecture](../concepts/architecture.md) and [Quickstart](../getting-started/quickstart.md).
 
+## Prepare and execute attacks
 
-## Choose an entry point
+Use `Experiment` for new Python experiments. Each attack owns its selection logic, optional
+offline preparation and online behavior. The framework executes this fixed sequence:
 
-An experiment runs one [prepared scenario](../concepts/architecture.md#terminology) under one or
-more [treatments](../concepts/architecture.md#terminology) that differ only in their enabled
-[interventions](../concepts/architecture.md#terminology). Every entry point follows the same
+```text
+Dataset scenarios → Attack.build_metadata → Attack.run_offline → saved metadata and artifacts
+                                                                   ↓
+                         selected segment × seed × treatment → independent RunLog
+```
+
+```python
+from avsectester.experiment import Experiment
+
+prepared = Experiment.prepare("experiment.yaml")
+results = Experiment.execute(prepared)
+
+for group, logs in results.groups.items():
+    print(group, {name: log.status for name, log in logs.items()})
+```
+
+The [configuration reference](../reference/configuration.md#experiment-configuration-python-api)
+describes inline and file-based configurations. Python also accepts an
+`ExperimentConfiguration` or a mapping containing configured `Dataset`, `Simulator`,
+`DrivingAdapter` and `Attack` objects. Loading configuration does not load a driving model or
+start a simulator. The adapter's factory constructs a fresh `AVStack` for each operation.
+
+### Selection and offline preparation
+
+`prepare` calls `build_metadata(view)` once per scenario for each configured attack, collects its
+`AttackSegment` records, then calls that attack's `run_offline(context)` once with all of them.
+Use `view.record_reason(text)` to explain acceptance or rejection. Each decision appears in
+`prepared.selections`, including scenarios with no selected segments and scenarios that failed.
+Preparation uses the first configured seed. The metabuilder does not inherit the experiment's
+base environment: it requests its own environment explicitly through the services. Preparation
+checks segment identity, actual frame boundaries and actor role bindings at the start. It does
+not add filters or choose candidates on the attack's behalf.
+
+Selection errors are recorded and preparation continues by default. Set `strict: true` to raise
+on the first error. An error in offline preparation stops preparation, since no artifacts are
+available for that attack. Opened service sessions are closed on success and failure. The returned
+object contains configuration, metadata and artifacts, without live service sessions.
+
+Artifacts are shared by all treatments of that attack. They may have different geometry from the
+original assets. The framework does not select again or reassess selection conditions after offline
+preparation. Attacks without assets use the same workflow, with `None` as the default artifacts.
+See [Write an attack](attacks.md) for the extension interfaces.
+
+### Treatments and independent runs
+
+Each treatment enables at most one attack and may override environment settings. Its
+`attack_name` references an entry in the configured attacks. Treatments with no attack name are
+clean baselines. Multiple configured attacks select and prepare independently.
+For each attack's selected segment and each seed, `execute` runs its treatments and all configured
+clean baselines from the same start, with the same number of decisions. It never combines attacks.
+Write a composite `Attack` if one run needs several attack behaviors.
+
+Every formal run creates a fresh simulator runtime, `AVStack` and, when enabled, `AttackRuntime`.
+Resources are closed at the end of the run. CARLA resolves actual spawn positions once per
+comparison group and replays them for each treatment. The shared deployment window accounts for
+the largest setup tick budget in the group. `Attack.create_runtime` and configured hook
+constructors must create independent mutable state for each run.
+A Python `HookSet` supplied directly retains its caller-owned handlers, which must implement
+the documented reset lifecycle. Its configuration shell is copied for each run and uses the
+experiment seed, as do sensor-environment transforms. The supplied `HookSet` is not mutated.
+Before a seed's treatments start, the framework checks that every segment role still exists at
+that seed's start. Missing actors fail the run; selection is not repeated.
+
+`decision_steps=N` needs `N+1` actual dataset frames. The segment's `stop` identifies the terminal
+state, and is excluded from the decision inputs. An optional experiment-level `decision_steps`
+caps execution explicitly. Both selected and executed lengths are recorded. Missing terminal
+frames are never padded or silently shortened.
+
+Environment settings merge in the order experiment → enabled attack → treatment. Sensor
+corruptions run after sensor attack effects and before hooks. See
+[Environment settings](conditions.md#experiment-environment).
+
+`results.groups` maps `(attack_name, segment_index, seed)` to treatment logs. Failed formal runs
+retain their partial log and error in `results.failures`. Set `strict: true` to raise instead of
+continuing after an execution error. Selection failures remain available as
+`results.selection_errors`. A treatment construction error is recorded against that treatment.
+If a shared start cannot be resolved, the group's runnable treatments receive failed logs and
+execution continues with the next group.
+
+### Save and resume
+
+Set `output` in the configuration to save preparation and each run automatically, or save
+preparation explicitly:
+
+```python
+from avsectester.experiment import PreparedExperiment
+
+prepared.save("results/prepared")
+restored = PreparedExperiment.load("experiment.yaml", "results/prepared")
+results = Experiment.execute(restored)
+```
+
+`PreparedExperiment.load` reads metadata and artifacts without invoking `build_metadata` or
+`run_offline`.
+It takes the configuration again, rather than serializing factories, model instances or SDK
+handles. Summaries are computed only when saving or loading; configuration construction does not enumerate
+scenarios or inspect attack parameters. Saved summaries identify the dataset, scenario list,
+simulator and attack definitions. Loading rejects incompatible configuration; the supplied dataset
+must also contain the saved frame references. If parameter description is unavailable, saving warns
+and marks the description as unverified; loading requires a complete, verified description. See
+[Preparation identity](../reference/python-api.md#experiment-preparation-and-execution).
+
+```text
+OUTPUT/
+  prepared.json
+  attacks/ATTACK_NAME/
+    metadata.json
+    artifacts.pkl
+    manifest.json
+  runs/ATTACK_NAME/segment-00000/seed-0/TREATMENT_NAME/
+    manifest.json
+    ... RunLog tables and payloads ...
+```
+
+`Attack.save_artifacts(artifacts, directory)` and `load_artifacts(directory)` can override the
+default pickle storage. Artifacts belong to the prepared experiment, not to mutable Attack
+state. The default manifest records the artifact content hash. Load pickle artifacts only from trusted sources.
+Metadata accepts JSON values, frame references, supported placement records and NumPy arrays.
+Convert custom metadata objects to data before saving. A run directory must be new, so use a new
+`output` location when repeating a saved experiment. With `output: null`, results remain in memory.
+
+`Experiment.prepare` needs at least one attack to supply selected segments. For an individual
+clean run, use `ClosedLoopRunner` and an explicit `RunRequest`.
+
+## Existing CLI and configured runners
+
+The CLI and the entry points below still accept the existing configuration format. They do not
+read the `Experiment` schema above. Their Python imports are under `legacy_experiment` while
+these entry points remain in use.
+
+### Choose an entry point
+
+These entry points run one [prepared scenario](../concepts/architecture.md#terminology) under one or
+more [treatments](../concepts/architecture.md#terminology) that differ in their enabled
+legacy interventions. Each follows the same
 workflow: prepare the scenario, prepare the enabled interventions, run each treatment from the
 same origin with a fresh driving system, and evaluate the recorded runs. The entry points differ
 in how much of this workflow they do for you:
@@ -27,7 +161,7 @@ same loop as `run`. Signatures, options and result keys are in
 `run_scenario` and `run_scenario_pair` also assemble the backend and the modular driving system.
 See [Python entry points](simulators.md#python-entry-points).
 
-## Experiment configuration
+### Experiment configuration
 
 `avsectester run` and `run_configured` read one flat mapping. The supplied
 [`configs/carla_scenario.yaml`](../../configs/carla_scenario.yaml) is a complete example. Its
@@ -35,7 +169,7 @@ top-level keys fall into these groups:
 
 | Group | Keys | Reference |
 |---|---|---|
-| Execution | `frames`, `mode`, `treatment` | [Experiment keys](../reference/configuration.md#experiment-keys) |
+| Execution | `frames`, `mode`, `treatment` | [Experiment keys](../reference/configuration.md#cli-experiment-keys) |
 | Scene | `client`, `ego`, `npcs`, `lead` for CARLA. `backend` for NuRec | [CARLA scene keys](../reference/configuration.md#carla-scene-keys), [NuRec backend keys](../reference/configuration.md#nurec-backend-keys) |
 | Driving system | `stack`, or `ego.pipeline` for the modular driving system | [Driving system keys](../reference/configuration.md#driving-system-keys) |
 | Interventions | `attacks`, `patches`, `interventions`, `runtime`, `clean_runtime` | [Intervention keys](../reference/configuration.md#intervention-keys) |
@@ -49,7 +183,7 @@ configuration before the first reset, in the order given in
 simulator and the models are checked only when the runs start. Loading a configuration imports
 the Python factories it names, so use configurations you trust.
 
-## Treatments and modes
+### Treatments and modes
 
 The mode decides how many runs an experiment has:
 
@@ -108,7 +242,7 @@ from Python, as in [Custom treatments](#custom-treatments).
 **Not yet implemented.** Configured and CLI runs cannot compare clean, attack and attack-defense
 treatments from one origin.
 
-## Run from the command line
+### Run from the command line
 
 `avsectester run` runs a configured experiment and prints its results:
 
@@ -122,13 +256,13 @@ reports the outcome as its exit code. Options, output lines and exit codes are l
 [CLI reference](../reference/cli.md). A first run is walked through in the
 [Quickstart](../getting-started/quickstart.md#run-a-carla-comparison).
 
-## Run from Python
+### Run from Python
 
 The Python entry points return traces and compute no verdict. Evaluate the traces as described in
 [Evaluate results](evaluation.md). The examples in this section run offline in the core
 installation, with NuRec and the stub renderer.
 
-### Configured runs
+#### Configured runs
 
 `run_configured(config, frames, ...)` runs a configured experiment and returns a
 `dict[str, Trace]` keyed by treatment name. This example configures the supplied
@@ -138,7 +272,7 @@ as `stack_factory`:
 <!-- runnable -->
 ```python
 from avsectester.closed_loop.avstack import AVStack
-from avsectester.experiment import run_configured
+from avsectester.legacy_experiment import run_configured
 from avsectester.closed_loop.datatypes import Control, Observation
 
 
@@ -186,7 +320,7 @@ conditions are used unchanged, and the configuration's scene, selection and cond
 not reapplied. See
 [Use a selected scenario in an experiment](scenarios.md#use-a-selected-scenario-in-an-experiment).
 
-### Custom treatments
+#### Custom treatments
 
 For treatments that `run_configured` does not offer, build the runtimes from the configuration
 and pass them to `run_prepared`. This example adds a toy defense to the previous configuration and
@@ -257,7 +391,7 @@ scenario's conditions to every runtime and starts all three runs from one origin
 defense restores driving but overcorrects: the defended ego exceeds the 5 m/s that the clean run
 holds. The attack-only run is the reference that shows how much of the attack the defense removes.
 
-### Direct runs and resource ownership
+#### Direct runs and resource ownership
 
 `run` and `run_pair` take a backend that you construct:
 
@@ -320,7 +454,7 @@ prepared scenario, see [Lower-level execution](conditions.md#lower-level-executi
 `run_prepared`. What the shared origin covers for each simulator is described in
 [Paired runs on one server](simulators.md#paired-runs-on-one-server).
 
-## Reproducibility
+### Reproducibility
 
 Treatments of a configured experiment share the initial scene, conditions and seeds. Separate
 experiments repeat only what their seeds fix:
@@ -339,7 +473,7 @@ Model inference and simulator physics can still differ between runs. A fixed see
 starting point, not the complete driving trace. To reproduce a run later, keep its configuration
 together with its provenance, described below.
 
-## Outputs and provenance
+### Outputs and provenance
 
 Each run produces a `Trace` with:
 

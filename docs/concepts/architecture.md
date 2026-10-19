@@ -1,239 +1,237 @@
 # Architecture
 
 > **Audience:** Everyone. Read this before any guide.  
-> **Outcome:** Know the framework's components, how data flows between them, what is implemented and the terms used throughout the documentation.  
+> **Outcome:** Understand the components, the attack workflow, resource ownership and supported paths.<br>
 > **Prerequisites:** None.
 
 ## Overview
 
-AVSecTester is a framework for testing attacks and defenses against autonomous-driving systems in
-closed-loop simulation. Researchers supply the driving system, the scenario and the attack or
-defense logic. The framework connects these parts, runs the same scenario under different
-[treatments](#terminology), records what happened and compares the runs.
+AVSecTester connects datasets, simulators, AV stacks and researcher-supplied attacks. It selects
+attack segments, prepares artifacts, runs controlled treatments and records each driving decision.
+Researchers can replace the attack, driving adapter, simulator or dataset through public interfaces.
 
-The framework does not reimplement simulators or driving models. The modular driving system is an
-[avstack](https://github.com/avstack-lab) pipeline, the end-to-end driving system is NVIDIA's
-Alpamayo model, and the simulators are CARLA and NVIDIA NuRec. AVSecTester provides the interfaces
-between them, scenario preparation, attack and defense integration, and evaluation.
-
-It does not define a universal attack-success criterion. The supplied metric scores induced and
-suppressed stops. Experiments interpret results according to their own success definition.
+The modular driving system uses [avstack](https://github.com/avstack-lab). The end-to-end path uses
+NVIDIA Alpamayo. CARLA simulates worlds and traffic. NVIDIA NuRec renders reconstructed scenes,
+with other actors following recorded trajectories. The framework runs its own driving loop.
 
 ## Components
 
 ### Scenario preparation
 
-Scenario preparation produces the origin of an experiment: a [prepared scenario](#terminology).
-A scenario comes from a dataset or a simulator scene. Setup can apply [filters](#terminology) to
-select qualifying initial states, fix actor [role bindings](#terminology), declare
-[insertions](#terminology) and attach [conditions](#terminology). Selection is optional. Without
-selection, a configuration becomes one prepared scenario directly. Attack and defense preparation
-can read the prepared scenario, for example to find the actor that carries a patch.
+A `Dataset` supplies scenario descriptions, frame references, recorded `FrameData` or a scene
+recipe, and `ScenarioStart` records. It owns no simulator. CARLA supplies recipes whose frame data
+is generated into a preparation-owned cache. NuRec and nuScenes supply recorded metadata.
+`FrameData.actors` uses stable IDs and canonical world poses, with velocity, category and full
+(length, width, height) when available. nuScenes includes every annotation, not only actors visible
+in the selected camera. Its legacy scene representation remains limited to camera-visible vehicles.
 
-Guide: [Prepare scenarios](../guides/scenarios.md) and [Apply operating conditions](../guides/conditions.md).
+The attack's metabuilder, `build_metadata(ScenarioView)`, selects intervals and actor roles. The
+experiment traverses scenarios and collects the resulting `AttackSegment` records. Selection
+reasons include rejected and failed scenarios. Assets, hosts, placement and scores are optional.
+An attack can select a segment using only its scenario identity and frame boundaries.
+
+Guide: [Implement an attack](../guides/attacks.md#use-the-selected-scenario).
+
+### Experiment
+
+`Experiment.prepare` executes the fixed sequence of metadata selection and one offline phase per
+attack. It closes preparation resources and returns a `PreparedExperiment`. Each attack's metadata
+and artifacts can be saved and loaded without repeating selection or optimization.
+
+`Experiment.execute` runs treatments grouped by attack, selected segment and seed. Treatments in
+one group share the start and decision length. Every treatment gets a fresh simulator runtime,
+AVStack and, when enabled, AttackRuntime. Each treatment enables at most one attack. Combinations
+of attacks belong inside a user-defined attack.
+
+Attack and driving configurations can be inline or referenced from other YAML files. Experiment
+configuration selects the dataset, simulator, named attacks, treatments, seeds, environment and
+recording. Environment layers resolve in order: experiment base, enabled attack, treatment override.
+World settings retain their physical meaning. Unsupported world settings raise an error rather
+than becoming image-space approximations.
+
+Guide: [Experiments](../guides/experiments.md).
 
 ### Simulator
 
-The simulator owns the world: physical state, vehicle dynamics, other actors and sensor rendering.
-It produces observations and executes commands. The supplied simulators are CARLA, with reactive
-traffic, and NuRec, which renders reconstructed real-world scenes while other actors follow their
-recorded trajectories. In code, a `Simulator` holds a simulator's configuration, and each
-`SimulatorRuntime` it creates is one live world that the driving loop resets and steps.
+`Simulator` is reusable configuration and capability declarations. `create_runtime(seed)` creates
+one `SimulatorRuntime` with a world, clock, sensors and native connections. The runtime initializes
+from `ScenarioStart`, observes without advancing and advances when given a command. Its creator
+closes it.
+
+CARLA supports generated worlds and reactive traffic. Selected intermediate recipe starts require
+explicit prescribed motion. NuRec renders camera views along the ego's simulated path while other
+actors follow recorded tracks. `RecordedReplaySimulator` serves recorded frames for datasets such
+as nuScenes. It is open-loop playback: commands do not change its recorded trajectory.
 
 Guide: [Configure simulators](../guides/simulators.md).
 
 ### Vehicle I/O
 
-Vehicle I/O is the interface between the simulator and the driving system. Downward it carries
-sensor data, the estimated vehicle state and the final model input. Upward it carries the
-driving command. It makes no decisions, but attacks and defenses can act on every value that
-passes through it. These values are exposed as the runtime stages `sensors.post`,
-`localization.pre`, `localization.post`, `observation` and `command`.
+Vehicle I/O processes captured sensors into model input and carries commands back to the simulator.
+It can apply sensor transforms, localization and observation transforms. Its stages include
+`sensors.post`, `localization.pre`, `localization.post`, `observation` and `command`.
+
+Sensor-environment transforms act after attack sensor effects and before Vehicle I/O hooks. A
+measurement attack reaches localization only when the selected localizer consumes that measurement.
 
 Reference: [Runtime stages](../reference/runtime.md#stages).
 
 ### Driving system
 
-The driving system is the system under test. It turns observations into commands. The supplied
-driving systems are a modular avstack pipeline (perception, tracking, planning and control), which
-outputs actuator commands, and Alpamayo, an end-to-end model that outputs a planned trajectory.
-In code, a driving system is connected through an `AVStack` adapter.
+An `AVStack` turns an `Observation` into a `Control`. The supplied modular adapter runs perception,
+tracking, planning and control and produces actuator commands. Alpamayo produces a planned trajectory.
+The simulator must support the command representation, sensor data and state format of the adapter.
+
+`DrivingAdapter` holds a factory and explicit component/scorer bindings. It creates a fresh AVStack
+for each run or closed-loop service evaluation. It is not a second driving runtime. Model weights
+may be shared only behind a factory that preserves independent mutable driving histories.
 
 Guide: [Configure driving systems](../guides/driving-systems.md).
 
 ### Attacks and defenses
 
-Attacks and defenses share one interface. Each has two phases:
+An `Attack` defines three parts:
 
-- **Preparation** runs before the experiment. It configures the method and can produce reusable
-  [artifacts](#terminology), such as an optimized patch texture or a trained policy.
-- **Execution** acts during each run through runtime [handlers](#terminology) registered at
-  [stages](#terminology). An attack can act on the world, on Vehicle I/O or inside the driving
-  system. A defense acts on Vehicle I/O or inside the driving system. Execution can be static or
-  [adaptive](#terminology).
+1. `build_metadata(scenario)` selects `AttackSegment` records, optionally with scores and ranks.
+2. `run_offline(context)` returns reusable artifacts. Its default returns `assets` unchanged.
+3. `create_runtime(segment, artifacts)` creates the online instance for one run.
 
-Treatments decide which attacks and defenses are enabled in each run.
+`AttackRuntime` owns the attack's per-run history. It declares observation and physical-state
+subscriptions and returns effects from `setup` and `step`. Effects change the world, a captured
+sensor or an AVStack stage. Component-dependent callbacks can be bound methods of the same runtime.
+The framework calls `stop` when the run ends.
 
-Guides: [Implement an attack](../guides/attacks.md) and [Implement a defense](../guides/defenses.md).
-Worked examples: [Examples](../examples/README.md).
+Stage hooks remain available for custom processing and defense logic. The supplied concrete
+attacks, defenses and CLI retain `Intervention`/`Runtime` compatibility orchestration. That path
+uses the same underlying driving loop but does not automatically execute the three Attack methods.
+**Not yet implemented.** A dedicated defense workflow and migration of concrete examples.
+
+Guides: [Implement an attack](../guides/attacks.md), [Implement a defense](../guides/defenses.md).
 
 ### Optimization
 
-Optimization searches for artifact parameters on behalf of preparation. Preparation supplies the
-problem and data. The current interfaces optimize attack artifacts by rendering candidates in CARLA
-or querying a driving-system component directly. Optimization returns the artifacts to preparation.
+The attack designs its offline objective and algorithm. `OfflineContext` provides all selected
+metadata and the same `ClosedLoopServices` available to the metabuilder. Services supply sensor
+captures, sensor views, attack-effect rendering, driving-component evaluation, scoring and candidate
+rollout. Differentiable component/scorer capabilities are declared explicitly.
 
-**Not yet implemented.** No optimization route scores closed-loop driving outcomes, and defenses
-have no optimization interface.
+Candidate rollout uses `Attack.create_runtime`, just as formal execution does. Each candidate uses
+an isolated session and fresh world, driving history and attack state. Online attacks receive no
+service that can advance the active experiment. Sequential, effect-free sensor reads within one
+session can reuse a scan runtime.
+
+Existing PGD/NES patch tools remain separate concrete implementations.
+
+**Not yet implemented.** Migration of these concrete optimizers to the complete Attack workflow.
 
 Guide: [Optimize attack artifacts](../guides/optimization.md).
 
 ### Evaluation
 
-Evaluation reads the [run records](#terminology) of an experiment: physical driving state,
-executed commands, intervention outputs and provenance. The supplied tools compare a clean run
-with a treated run, capture intermediate component outputs and summarize attack success across
-corruption settings.
+`RunLog` stores decision records, physical pre/post states, model-visible inputs, produced/executed
+commands, component outputs, attack-effect receipts and termination status. Persistent logs use
+Parquet records and separate payload shards.
+
+Existing evaluation utilities still accept compatibility traces and compare stops, component
+outputs and robustness across conditions. The framework does not define one success criterion
+for every attack.
+
+**Not yet implemented.** Unified analysis directly from experiment RunLogs and configurable
+success criteria. See [TODO](../development/TODO.md#driving-impact-metrics).
 
 Guide: [Evaluate results](../guides/evaluation.md).
 
 ## One run, step by step
 
-Every run uses the same loop, regardless of the simulator or driving system:
+1. Create independent simulator and driving instances and initialize the selected `ScenarioStart`.
+   Attack setup effects apply before the first capture.
+2. Capture the current observation without advancing the world. Call `AttackRuntime.step` once.
+3. Apply sensor attack effects, then sensor-environment transforms and Vehicle I/O processing.
+4. Run the AVStack. At each targeted stage, apply AVStack attack effects before downstream use.
+5. Record the produced command, apply command transforms and validate the executed command.
+6. Apply world attack effects before advancing the simulator. Record the resulting physical state
+   and effect receipts. Repeat for the requested decisions, then stop and close owned resources.
 
-1. Handlers are initialized, and the simulator builds the world. World-setup handlers run.
-2. The simulator captures sensor data. Vehicle I/O handlers process it into the model input.
-3. The driving system decides a command. Handlers registered inside the driving system can
-   replace component inputs and outputs.
-4. Command handlers can replace the command. The simulator validates and executes it, then
-   advances the world.
-5. The physical state after the step is recorded. Handlers receive feedback.
-6. Steps 2–5 repeat for the requested number of driving steps. Handlers are closed.
+The final world state requires one frame beyond the last decision input. A segment with `N`
+decisions therefore requires `N+1` frame records. The framework does not pad missing frames or
+silently shorten a selected interval.
 
-A command at one step affects only later observations. The exact order, including each stage, is
-in [Execution order](../reference/runtime.md#execution-order).
+Reference: [Execution order](../reference/runtime.md#execution-order).
 
 ## Physical state and model-visible data
 
-The framework keeps two views of the ego vehicle separate:
+`WorldSnapshot` describes true ego and other-actor states. `Observation` carries the sensors,
+estimated vehicle state, reported speed, calibration and clock available to the driving system.
+Changing an observation never directly moves the world. World changes require simulator operations.
 
-- **Physical state** is the simulator's actual state. It is available to handlers as
-  `context.physical_state` and is what the run records contain.
-- **Model-visible data** is what the driving system receives: sensor data, the estimated state,
-  the reported speed and the clock in the `Observation`.
+`OnlineContext` supplies independent snapshots of the results declared by an attack's subscriptions.
+It has no simulator, AVStack or time-advancing session. Sensor effects receive a capture's SensorView,
+AVStack effects receive their stage value, and world effects receive the live simulator when applied.
+Stage-hook contexts retain their explicit native access for adapter-specific integrations.
 
-Changing model-visible data never moves the vehicle. A spoofed speed changes what the driving
-system believes. Only the command it then issues changes the physical state. Changes to the
-world itself, such as moving an actor or changing the weather, use explicit simulator operations.
-See [Read and write interfaces](../reference/runtime.md#read-and-write-interfaces).
+Reference: [Read and write interfaces](../reference/runtime.md#read-and-write-interfaces).
 
 ## Supported combinations
 
-Simulators and driving systems compose only when their sensor data, state formats and command
-types are compatible. The interfaces do not convert between incompatible formats.
-
-| | Modular driving system | Alpamayo |
+| | Modular AVStack | Alpamayo |
 |---|---|---|
-| **CARLA** | Supplied path. The CLI demo runs this combination | Requires a trajectory-to-actuator controller and compatible camera inputs |
-| **NuRec** | Requires compatible modules and avstack sensor and state adapters | Supplied path, with trajectory-following dynamics |
+| CARLA | Supplied path | Requires compatible camera inputs and trajectory-to-actuator conversion |
+| NuRec | Requires compatible modules and sensor/state adapters | Supplied path with trajectory-following dynamics |
 
+The interfaces do not automatically convert incompatible sensor, state or command formats.
 See [Commands and compatibility](../guides/driving-systems.md#commands-and-compatibility).
 
 ## Built on avstack and AlpaSim
 
-The avstack projects are included under `third_party/` as Git submodules:
+Git submodules under `third_party/` provide avstack-core (driving modules, geometry, sensors,
+registries and hooks), lib-avstack-carla (CARLA actors and sensors) and avstack-api (dataset adapters).
 
-- **avstack-core**: reconfigurable driving modules, geometry, sensors, configuration registries
-  and hooks.
-- **lib-avstack-carla** (`avcarla`): the CARLA 0.9.16 client, actors and sensors.
-- **avstack-api**: KITTI, nuScenes and CARLA dataset adapters.
-
-The NuRec and Alpamayo path uses two parts of NVIDIA [AlpaSim](https://github.com/NVlabs/alpasim):
-the `nre-ga` rendering service, which serves reconstructed scenes over gRPC, and `alpasim_driver`,
-which provides the Alpamayo model. AVSecTester runs its own driving loop and vehicle dynamics. It
-does not run AlpaSim's runtime, controller, physics or traffic services.
+The NuRec/Alpamayo path uses AlpaSim's `nre-ga` rendering service and `alpasim_driver` model adapter.
+AVSecTester does not run AlpaSim's runtime, controller, physics or traffic services.
 
 ## Implementation status
 
-| Component | Implemented | Not yet implemented |
+| Component | Available | Remaining boundary |
 |---|---|---|
-| Scenario preparation | Configured scenarios, filter-based selection for CARLA and recorded datasets, insertions, world and sensor conditions | — |
-| Simulator | CARLA with reactive traffic. NuRec with recorded actor trajectories | Reactive traffic in NuRec |
-| Driving system | Modular avstack pipeline. Alpamayo with ideal trajectory following | Trajectory-to-actuator dynamics for Alpamayo |
-| Attacks | Shared preparation and execution interfaces. Static example attacks and one adaptive interface example | An actor-aware adaptive reference attack |
-| Defenses | The same interfaces as attacks, and recorded defense outputs | Reference defenses and defense-output metrics |
-| Optimization | PGD and NES over image-space and rendered patch textures | Optimization through the closed loop, and a shared interface for defenses |
-| Evaluation | Stop-based driving-impact metric, component logging, robustness summaries | Selectable success criteria and a three-treatment defense comparison |
+| Dataset and selection | Stateless datasets, prepared CARLA frame data, attack-selected segments and reasons | Compatibility SceneGT and scenario-selection APIs remain |
+| Experiment | Three configuration types, prepare/execute, saved metadata/artifacts, isolated treatments | CLI, concrete attack examples and legacy evaluation still use compatibility orchestration |
+| Simulator | CARLA and NuRec adapters, sensor views, selected starts, supported world settings | NuRec traffic follows recorded tracks |
+| Driving system | Modular AVStack and Alpamayo, component/scorer declarations | Alpamayo uses ideal trajectory-following dynamics |
+| Attack | Fixed three-part workflow, per-run state and three effect types | Concrete attack migration and cross-platform patch example |
+| Defense | Custom stage hooks and compatibility interventions | Dedicated defense workflow and reference defense algorithms |
+| Optimization | Closed-loop service boundary, existing PGD/NES implementations | Concrete patch optimizer migration |
+| Evaluation | RunLog and compatibility metrics/logging | Unified RunLog-based result analysis and configurable success criteria |
 
 ## Terminology
 
-The documentation uses these terms consistently. Code names are given where a term corresponds to
-a specific class or value.
-
-**Experiments**
-
-| Term | Meaning | Code |
+| Term | Meaning | Interface |
 |---|---|---|
-| Experiment | Runs of one prepared scenario under shared conditions that differ only in their enabled interventions | `run_configured`, `run_prepared` |
-| Run | One closed-loop execution from world reset for a requested number of driving steps | `run(...)` |
-| Driving step | One decision cycle: process the observation, decide a command, execute it and advance the world. The `frames` argument counts driving steps | `frames` |
-| Treatment | A named run within an experiment, defined by its enabled interventions. Configured treatments are `clean`, `attack`, `defense` and `attack-defense` (the combined treatment) | `TreatmentMode`, `runtimes` keys |
-| Mode | `single` runs one treatment. `pair` runs a clean baseline and one selected treatment from the same origin | `ExecutionMode` |
-| Baseline | The clean run used as the comparison reference. In a clean pair, the second clean run is named `baseline` | `"clean"`, `"baseline"` |
-
-**Scenarios**
-
-| Term | Meaning | Code |
-|---|---|---|
-| Prepared scenario | The origin of an experiment: a backend factory, an optional selection match, the scene configuration, conditions and provenance. "Scenario" means a prepared scenario unless stated otherwise | `ScenarioInstance` |
-| Scenario source | An object that produces prepared scenarios, with or without selection | `ScenarioSource` |
-| Selection | Optional evaluation of filters over candidate initial states, choosing qualifying scenarios and fixing role bindings | `ScenarioRequirement` |
-| Filter | A check on a candidate initial state that returns pass, fail or unknown. Filters choose among states and never change them | `Constraint`, `FilterResult` |
-| Requirement | The filters, roles, insertions and initial window used for selection | `ScenarioRequirement` |
-| Role, binding | A named actor slot, such as `attacker`, and the fixed actor IDs assigned to it | `RoleSpec`, `binding_ids` |
-| Match | The result of selection: selected scene, bindings, insertions and initial window. Handlers receive it as `context.case`, which is `None` without selection | `ScenarioMatch` |
-| Insertion | An object with an explicit asset, placement and orientation, rendered into camera images | `Insertion` |
-| Condition | An environment setting applied identically to every treatment of a scenario. A world condition is applied by the simulator before reset. A sensor condition is a handler at `sensors.post` or `observation` | `ScenarioConditions`, `SensorCondition` |
-
-**Simulation and driving**
-
-| Term | Meaning | Code |
-|---|---|---|
-| Simulator | The configured simulator: settings and declarations for the world, ego dynamics and sensor rendering, without world state. It can be reused | `Simulator`, `CarlaSimulator`, `NuRecSimulator` |
-| Simulator runtime | One live world of a simulator: world state, clock, current capture and native connections. Created by `Simulator.create_runtime`; the driving loop resets and steps it | `SimulatorRuntime`, `CarlaSimulatorRuntime`, `NuRecSimulatorRuntime` |
-| Backend | Earlier name for the simulator adapter, still used by the `backend` configuration key and the legacy single-class interface | `WorldBackend` |
-| Driving system | The system under test, which turns observations into commands | — |
-| Stack | The Python adapter that connects a driving system to the driving loop | `AVStack`, `ModularAVStack`, `AlpamayoAVStack` |
-| Vehicle I/O | The interface between simulator and driving system: sensor data, state estimate, model input and command | Stages `sensors.post`, `localization.*`, `observation`, `command` |
-| Observation | The model-visible input: sensor data, calibration, estimated state, reported speed and clock | `Observation` |
-| Physical state | The simulator's actual ego state, independent of the observation | `WorldSnapshot`, `context.physical_state`, `SimulatorRuntime.state()` |
-| Command | The driving system's output: actuator values or a planned trajectory | `Control` |
-| Command mode | The command representation a backend accepts or a stack produces: `actuator` or `trajectory` | `command_modes` |
-| Localizer | An optional component that estimates the vehicle state from sensor data | `Runtime(localizer=...)` |
-
-**Attacks and defenses**
-
-| Term | Meaning | Code |
-|---|---|---|
-| Intervention | An attack or a defense, with optional preparation and per-run execution | `Intervention`, `PreparedIntervention` |
-| Kind | Whether an intervention is an `attack` or a `defense`. The kind decides which treatments enable it | `kind` |
-| Preparation | Work done before runs that produces reusable artifacts, such as configuring, optimizing or training | `Intervention.prepare` |
-| Artifact | A reusable result of preparation, such as a texture or a set of parameters | Return value of `prepare` |
-| Execution | An intervention's per-run behavior, implemented by runtime handlers | `Intervention.hooks` |
-| Runtime | The ordered handlers of one run, with an optional localizer and a random seed for handlers | `Runtime` |
-| Stage | A named point in the driving loop where handlers receive a value and may replace it | `"observation"`, `"perception.post"`, ... |
-| Hook | The registration of a handler at a stage | `Hook(stage, handler)` |
-| Handler | A function or object called as `handler(value, context)` that returns the value passed downstream | Function, `Plugin` |
-| Plugin | A handler with lifecycle methods for per-run state and feedback | `Plugin` |
-| Static, adaptive | Execution properties. An adaptive handler changes its behavior based on information observed during the run. A static handler does not | — |
-
-**Optimization and evaluation**
-
-| Term | Meaning | Code |
-|---|---|---|
-| Optimization | A search for artifact parameters that evaluates candidates through rendering, a driving-system component or the closed loop | `avsectester.attacks.optim` |
-| Run records | The physical state and executed command at each driving step, with intervention outputs and provenance | `Trace`, `FrameRecord` |
-| Intervention output | A named diagnostic value recorded by a handler, such as a defense alarm | `context.record_output`, `RecordedOutput` |
-| Provenance | Metadata describing how a run was produced: scenario source, treatment, conditions, seeds and prepared interventions | `Trace.provenance` |
-| Component outputs | Intermediate driving-system outputs captured during a run | `ComponentTrace` |
-| Verdict | The interpretation of a clean and attacked pair under the supplied stop-based criterion | `Impact.verdict` |
+| Dataset | Recorded scenario data or generation recipes, without simulator ownership | `Dataset` |
+| Frame reference | Position, native identifier and time of an actual frame | `FrameReference` |
+| Frame data | Recorded/generated information at a frame, including stable actor states | `FrameData`, `ActorState` |
+| Scenario start | Dataset information required to initialize a simulator at a frame | `ScenarioStart` |
+| Metabuilder | Attack-defined selection performed once for each scenario | `Attack.build_metadata` |
+| Attack segment | Selected scenario, decision interval and optional roles, placement and selection fields | `AttackSegment` |
+| Metadata | All segments selected by an attack | `OfflineContext.metadata` |
+| Asset | Original attack input, such as a patch texture | `Attack.assets` |
+| Artifact | Offline return value reused during execution | `PreparedExperiment.artifacts` |
+| Treatment | A named run enabling at most one attack, with explicit environment overrides | `TreatmentConfiguration` |
+| Simulator | Reusable simulator configuration and capabilities | `Simulator` |
+| Simulator runtime | One live world and its resources | `SimulatorRuntime` |
+| Driving system / AV stack | The system under test, connected through an adapter | `AVStack`, `DrivingAdapter` |
+| Vehicle I/O | Sensor, localization, observation and command processing | `VehicleIO` |
+| Physical state | True ego and other-actor state | `WorldSnapshot` |
+| Observation | Model-visible sensors, calibration, state estimate, speed and clock | `Observation` |
+| Command | Actuator values or a planned trajectory | `Control` |
+| Command mode | Command representation produced/accepted | `command_modes` |
+| Attack runtime | One attack's online state and lifecycle | `AttackRuntime` |
+| Effect | A change applied at the world, sensor or AVStack boundary | `WorldAttackEffect`, `SensorAttackEffect`, `AVStackAttackEffect` |
+| Stage / hook / handler | A named processing point, its registration and the callback replacing its value | `HookSet`, `Hook`, `Plugin` |
+| Environment | World settings and post-capture sensor transforms | `environment: {world, sensors}` |
+| Run log | Decision records, events and payload references | `RunLog` |
+| Recorded output | Named diagnostic value recorded by an attack or hook | `record_output`, `RecordedOutput` |
+| Prepared scenario / match | Compatibility scenario factory and initial-selection result | `ScenarioInstance`, `ScenarioMatch` |
+| Filter / requirement | Compatibility composable checks and role-selection specification | `Constraint`, `ScenarioRequirement` |
+| Insertion | Explicit asset, placement and orientation used by concrete image attacks | `Insertion` |
+| Intervention / Runtime | Compatibility preparation and ordered stage-hook integration | `Intervention`, `Runtime` |
+| Trace / component outputs | Compatibility views used by existing evaluation | `Trace`, `ComponentTrace` |

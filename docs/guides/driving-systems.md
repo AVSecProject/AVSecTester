@@ -8,8 +8,9 @@ The [driving system](../concepts/architecture.md#terminology) is the system unde
 each observation into a [command](../concepts/architecture.md#terminology). It is connected to the
 driving loop through a stack, an `AVStack` adapter. The supplied stacks are `ModularAVStack`
 (`avsectester/closed_loop/avstacks/modular.py`) and `AlpamayoAVStack`
-(`avsectester/closed_loop/avstacks/alpamayo.py`). Configured runs select one with the `stack` key.
-Python runs pass a `stack_factory`.
+(`avsectester/closed_loop/avstacks/alpamayo.py`). Python experiment configurations select an
+AVStack with `avstack.type` and constructor `options`; optional `avstack.bindings` declares its
+component and scorer bindings. The legacy CLI uses `stack` and `stack_factory`.
 
 ## Vehicle I/O
 
@@ -116,9 +117,11 @@ nested `third_party/mmdetection3d` submodule of avstack-core. It raises `FileNot
 neither is available. The checkpoints are downloaded as described in [CARLA perception
 checkpoints](../getting-started/installation.md#carla-perception-checkpoints).
 
-Constructing a `ModularAVStack` imports the avstack modules and registers the supplied avstack
-hooks, such as `PhantomInjection`. Importing `avsectester.closed_loop.avstacks` does not require
-avstack.
+Constructing a `ModularAVStack` imports avstack modules but does not register attacks. Import
+a native hook's registration module explicitly before constructing it, for example
+`import avsectester.attacks.pipeline.phantom` for `PhantomInjection`. In experiment configuration,
+use the hook entry's `imports: [avsectester.attacks.pipeline.phantom]`. Importing
+`avsectester.closed_loop.avstacks` does not require avstack.
 
 `stack.reset` clears only the component-logging captures. It does not rebuild the state of the
 avstack tracker, planner or controller, which have no common reset contract. Use a fresh
@@ -143,9 +146,11 @@ The arguments of each component are listed in
 and `control` to the built objects, including modules without hook dispatch. `stack.models` maps
 each component to its loaded `model` attribute, or to the module itself when it has none.
 
-`NativeHook` (`avsectester.interventions`) adapts a registered avstack hook to these stages. The
-`attacks` shorthand binds avstack post-hooks at `<component>.post`. A native pre-hook needs a
-`runtime.hooks` entry with an `avstack` mapping at a `.pre` stage. See
+`NativeHook` (`avsectester.closed_loop.avstacks.native_hook`) adapts an explicitly registered
+avstack hook to these stages. Python experiment hook entries use `native_hook` and optional
+`imports`; a `.pre` stage selects the native pre-hook convention. The legacy CLI
+`attacks` shorthand binds native post-hooks at `<component>.post`; its `runtime.hooks` entries
+retain the legacy `avstack` mapping. See
 [`attacks`](../reference/configuration.md#attacks) and
 [`runtime`](../reference/configuration.md#runtime).
 
@@ -397,8 +402,22 @@ class TwoStageStack(AVStack):
         return self.latest
 ```
 
-In Python, pass a `stack_factory`, a callable without arguments that returns a new stack. The
-runners call it for every treatment:
+For the Python experiment API, configure the class under `avstack.type`:
+
+```yaml
+avstack:
+  type: my_driver:TwoStageStack
+  options: {throttle: 0.3}
+```
+
+`type` can name a class or a function returning an `AVStack`. Each run constructs it as
+`type(**options)`, without a seed argument. Optional `avstack.bindings` exposes components and
+scorers through a `DrivingAdapter`; see
+[Driving specification](../reference/configuration.md#driving-specification). The module must be
+importable, for example through `PYTHONPATH`.
+
+For the legacy runners, pass a `stack_factory`, a callable without arguments that returns a fresh
+stack. The runners call it for every treatment:
 
 ```python
 from avsectester.evaluation.component_log import run_logged
@@ -429,7 +448,7 @@ print([record.brake for record in trace.records[8:12]])
 The logged planning output changes at the same step as the perception output, and the executed
 command brakes from that step.
 
-In a configuration, name an importable factory under `stack.factory` as `package.module:callable`.
+In a legacy CLI configuration, name an importable factory under `stack.factory` as `package.module:callable`.
 It is called as `factory(**options)` and must return an `AVStack`. A stack class is such a
 factory. The module must be importable, for example from a directory on `PYTHONPATH`:
 

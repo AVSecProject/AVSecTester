@@ -369,7 +369,7 @@ class AttackDispatcher:
         """Apply this decision's sensor effects to the captured observation, in issue order."""
         if not self._sensor:
             return observation
-        from avsectester.perturbations.image import write_camera_rgb
+        from avsectester.closed_loop.datatypes import write_camera_rgb
 
         views: dict[str, SensorView] = {}
         data: dict[str, Any] = {}

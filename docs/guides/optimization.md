@@ -7,21 +7,32 @@
 
 ## Where optimization fits
 
-[Optimization](../concepts/architecture.md#terminology) searches for the parameters of an
+[Optimization](../concepts/architecture.md#optimization) searches for the parameters of an
 [artifact](../concepts/architecture.md#terminology), such as a patch texture. It works on behalf
-of [preparation](../concepts/architecture.md#terminology): preparation supplies the problem and the
-data, optimization evaluates candidates and returns the optimized artifact, and preparation
-returns that artifact to the experiment. Execution then deploys it in every run of the attack
-treatments. No runner, CLI command or configuration key starts an optimization directly. It runs
-inside `Intervention.prepare` or in a standalone script.
+of an attack's offline phase: `Attack.run_offline(context)` receives the selected metadata and
+closed-loop services, evaluates candidates and returns artifacts. `Experiment.prepare` calls it
+once per attack. Execution reuses those artifacts without repeating selection or optimization.
+The attack chooses its algorithm and objective.
 
-The architecture names three ways to evaluate a candidate. Only the first two exist today:
+The service boundary supports three ways to evaluate a candidate:
 
 | Evaluation route | How a candidate is scored | Current support |
 |---|---|---|
-| Render through the simulator | Paint the candidate into the world, render the camera frame and score it | `CarlaRenderPerturbation` with `NES` and `MMDetInferenceScorer`. No supplied script uses this route |
-| Query a driving-system component | Apply the candidate to a captured image and score it with a perception model outside the driving loop | `PatchPerturbation` or `LinfImage` with `PGD` and `MMDetRPNObjectnessScorer`. Both supplied scripts use this route |
-| Roll out in the closed loop | Run driving steps with the candidate deployed and score the driving outcome | Not available. See [Current limitations](#current-limitations) |
+| Render a candidate | Apply the attack's world or sensor effects to a simulator capture | `session.render(RenderRequest(...))` returns the observation and sensor view. The attack supplies its rendering effect |
+| Query a driving-system component | Evaluate a component or scorer through a fresh AVStack | `session.evaluate(...)` and `session.score(...)` use explicitly declared bindings and gradient capabilities |
+| Roll out in the closed loop | Deploy candidate artifacts and inspect the recorded decisions and physical states | `session.rollout(CandidateRequest(...))` creates a fresh world, AVStack and attack runtime, returning a RunLog |
+
+The [closed-loop service reference](../reference/python-api.md#closed-loop-services) lists request
+fields, component descriptors and resource ownership. Candidate rollout invokes the same
+`Attack.create_runtime(segment, artifacts)` used for formal execution. Set `require_grad=True`
+when scoring requires gradients. The service rejects undeclared or detached gradient paths.
+Simulator rendering itself is not made differentiable: the attack implements any differentiable
+sensor composition it needs.
+
+The supplied PGD/NES tools below retain their existing interfaces and scripts. They are not
+automatically connected to `run_offline`. Their component-scoring route uses `PatchPerturbation`
+or `LinfImage` with `MMDetRPNObjectnessScorer`. A separate rendering wrapper,
+`CarlaRenderPerturbation`, can be combined with `NES` and `MMDetInferenceScorer`.
 
 The supplied scripts also use CARLA around the second route: to capture the clean frame and, in
 `optimize_patch_physical.py`, to measure where the panel renders and to re-detect after
@@ -155,7 +166,7 @@ and returns the camera frame:
 # CARLA and MMDetection are required.
 from avsectester.attacks.optim.blackbox import NES
 from avsectester.attacks.optim.render import CarlaRenderPerturbation
-from avsectester.attacks.optim.scorers import MMDetInferenceScorer
+from avsectester.closed_loop.avstacks.scorers import MMDetInferenceScorer
 
 data = FrameSource([AdvSample(x=None, target=TargetSpec(box))])
 perturbation = CarlaRenderPerturbation(paint, render, size=(64, 64))
@@ -169,6 +180,15 @@ Every loss evaluation paints and renders once, so a run renders
 previous example can serve as a warm start: `init_texture=result.delta.cpu().numpy()`.
 
 ## Use optimization in attack preparation
+
+For the Attack API, implement `run_offline(context)` and return the optimizer's result in the
+form expected by `create_runtime`. `context.metadata` contains all selected segments and
+`context.services` opens isolated candidate operations. `context.services.capabilities`
+describes available components and scorers without loading a model. No framework rule requires
+an optimized asset to keep its original dimensions. The optimizer is responsible for any
+visibility or placement assumptions it changes.
+
+The examples below use the existing `Intervention` API employed by the supplied patch scripts.
 
 ### Optimize inside `prepare`
 
@@ -237,8 +257,7 @@ results = run_prepared(
 )
 ```
 
-The preparation part of this example was run offline with a synthetic problem. The CARLA run was
-checked against the API only. `PreparedIntervention.load(method, path)` restores the record
+`PreparedIntervention.load(method, path)` restores the record
 without optimizing again. The record stores the texture path, not the image, so keep the file.
 See [Save and reuse artifacts](attacks.md#save-and-reuse-artifacts) and
 [Artifact codec](../reference/python-api.md#artifact-codec). Panel keys and target resolution are
@@ -289,9 +308,9 @@ its capture and detector setup into the `problem` function above.
 
 ## Current limitations
 
-- **Not yet implemented.** No evaluation route scores candidates by rolling them out in the closed
-  loop, so no objective can use commands or driving outcomes.
-- **Not yet implemented.** The supplied scorers and `TargetSpec` cover camera images and 2D target
+- The supplied optimizers do not call closed-loop services automatically. To optimize using
+  driving outcomes, call `session.rollout` and define the objective in `run_offline`.
+- The supplied scorers and `TargetSpec` cover camera images and 2D target
   boxes only; no scorer reads other sensors or later driving-system outputs.
 - **Not yet implemented.** The interfaces are specific to attacks, with object-hiding and spoofing
   objectives; defenses have no optimization interface.
@@ -305,8 +324,7 @@ its capture and detector setup into the `problem` function above.
 ## Next steps
 
 - [Physical patch](../examples/physical-patch.md) to deploy an optimized texture in CARLA.
-- [Package the attack as an intervention](attacks.md#package-the-attack-as-an-intervention) for
-  the preparation interface.
+- [Save and reuse artifacts](attacks.md#save-and-reuse-artifacts) for the Attack preparation interface.
 - [Evaluate results](evaluation.md) to measure the driving impact of the deployed artifact.
 - [Implementation status](../concepts/architecture.md#implementation-status) for planned
   optimization routes.

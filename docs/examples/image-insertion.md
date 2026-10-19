@@ -10,7 +10,7 @@ The attack comes from placing that visual cue where it does not belong, so an op
 not required. No physical actor is spawned.
 
 **Preparation.** Build a payload asset and give it an explicit placement and orientation as an
-[insertion](../concepts/architecture.md#terminology). Selection is optional. A selection requirement
+[insertion](../guides/scenarios.md#specify-inserted-objects). Selection is optional. A selection requirement
 can declare insertions, bind their host roles and apply visibility filters. Person payloads can be
 extracted beforehand from nuScenes images.
 
@@ -26,7 +26,7 @@ adapter in a Python runtime factory, as shown in
 
 **Code.** `avsectester/attacks/object_insertion/` (payloads), `avsectester/insertion.py` (insertion
 types), `avsectester/rendering/` (camera geometry, surface sampling, visibility, compositing and
-harmonization), `avsectester/closed_loop/simulators/carla.py` (`insertion_perturbation`),
+harmonization), `avsectester/rendering/legacy_carla.py` (`insertion_perturbation`),
 `avsectester/scenarios/datasets/nurec.py` (`NuRecDataset.insertion_renderer`) and
 `avsectester/perturbations/image.py` (`frame_perturbation`).
 
@@ -108,7 +108,7 @@ For a scenario selected by `CarlaScenarioBuilder` (its candidates use `CarlaSimu
 from avsectester.interventions import ObservationTransform
 from avsectester.runner import run_prepared
 from avsectester.closed_loop.hooks import Hook, Runtime
-from avsectester.closed_loop.simulators.carla import insertion_perturbation
+from avsectester.rendering.legacy_carla import insertion_perturbation
 
 # scenario and stack_factory are supplied by the caller.
 def attacked_runtime(backend):

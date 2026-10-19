@@ -63,6 +63,7 @@ npcs:
 # The attack: a fabricated detection injected at the perception stage (an avstack HOOKS post-hook).
 attacks:
   - stage: perception
+    imports: [avsectester.attacks.pipeline.phantom]
     hook:
       type: PhantomInjection
       target_xyz: [6.0, 0.0, -1.5]

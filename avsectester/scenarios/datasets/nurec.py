@@ -126,4 +126,7 @@ class NuRecDataset(SourceDataset, LegacyDataset):
 
     def insertion_renderer(self, scene, backend, insertions, bindings=None, compositor=None):
         """Legacy ``(observation, rgb) -> rgb`` insertion renderer for this recorded scene."""
-        return backend._insertion_renderer(scene, self, insertions, bindings, compositor)
+        # Concrete insertion attacks still use the legacy renderer until their migration.
+        from avsectester.rendering.legacy_nurec import insertion_renderer
+
+        return insertion_renderer(backend, scene, self, insertions, bindings, compositor)

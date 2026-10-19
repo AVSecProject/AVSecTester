@@ -6,7 +6,8 @@ import numpy as np
 import pytest
 
 from avsectester.attacks.object_insertion.sign_spoof import SignAsset
-from avsectester.insertion import ActorPose, Insertion, Orientation, WorldPlacement, resolve_insertion
+from avsectester.geometry.poses import ActorPose
+from avsectester.insertion import Insertion, Orientation, WorldPlacement, resolve_insertion
 
 
 def test_sign_world_geometry_preserves_face_and_post_positions():

@@ -85,7 +85,7 @@ class World(SimulatorRuntime):
                                  {"resolved": True}, {"seed": 7})
 
     def sensor_view(self, sensor):
-        from avsectester.insertion import ActorPose
+        from avsectester.geometry.poses import ActorPose
         from avsectester.closed_loop.simulator import SensorView
 
         data = self.observe().sensor_data[sensor]
@@ -404,7 +404,7 @@ def test_car_source_factory_uses_actual_connection_fields_and_detached_recipe():
     assert backend.resource_key == ("carla", "localhost", 2300)
     assert source.payload["recipe"].scenario["client"]["connect_port"] == 2000
     assert "weather" not in data.native("s").scenario
-    with pytest.raises(ValueError, match="weather only"):
+    with pytest.raises(ValueError, match="does not support world settings"):
         backend._resolve_scenario(source, None, {"teleport": True})
 
 
@@ -464,3 +464,87 @@ def test_backend_closes_before_its_server_reservation_is_released(monkeypatch):
         scope.sensor_data(SensorRequest("s", svc.dataset.refs[1], ("front",)))
     assert held_during_close == [True]
     assert key not in resources._owners
+
+
+def test_forward_sensor_scan_reuses_runtime_and_restarts_for_world_operations():
+    svc, simulator, drivers = services(key=("scan", 1))
+
+    modes = []
+    class ScannedWorld(World):
+        def _check_initialization(self, initialization):
+            modes.append(self._generating_frame_data)
+
+        def _replay_tick(self):
+            self.i += 1
+
+    simulator.create_runtime = lambda seed=None: make(seed)
+    def make(seed):
+        world = ScannedWorld(simulator.resource_key, simulator)
+        simulator.worlds.append(world)
+        return world
+
+    with svc.session(7) as scope:
+        frames = svc.dataset.refs
+        first = scope.sensor_data(SensorRequest("s", frames[0], ("front",)))
+        second = scope.sensor_data(SensorRequest("s", frames[2], ("front",)))
+        same = scope.sensor_data(SensorRequest("s", frames[2], ("front",)))
+        assert len(simulator.worlds) == 1
+        assert modes == [True]  # Scans must retain prescribed ego motion.
+        assert not simulator.worlds[0].closed
+        assert second.observation.frame == same.observation.frame == 2
+        assert first.observation.sensor_data["front"].max() == 0
+        assert second.observation.sensor_data["front"].max() == 2
+        assert not drivers  # A scan never constructs a driving system.
+        scope.render(RenderRequest("s", frames[2], "front"))
+        assert len(simulator.worlds) == 2 and all(w.closed for w in simulator.worlds)
+        assert modes == [True, False]  # The independent render uses an ordinary reset.
+        scope.sensor_data(SensorRequest("s", frames[2], ("front",)))
+        scope.sensor_data(SensorRequest("s", frames[1], ("front",)))
+        assert len(simulator.worlds) == 4 and simulator.worlds[2].closed
+    assert all(w.closed for w in simulator.worlds)
+
+
+def test_services_close_builder_sessions_and_keep_selection_reasons():
+    svc, simulator, _ = services()
+    view = svc.scenario("s", seed=7)
+    view.record_reason("The requested host is visible")
+    assert view.reasons == ("The requested host is visible",)
+    with pytest.raises(ValueError, match="nonempty"):
+        view.record_reason(" ")
+    with pytest.raises(RuntimeError, match="builder failed"):
+        with svc:
+            scope = view.services.session(7)
+            scope.sensor_data(SensorRequest("s", svc.dataset.refs[0], ("front",)))
+            raise RuntimeError("builder failed")
+    assert all(world.closed for world in simulator.worlds)
+    with pytest.raises(RuntimeError, match="closed"):
+        scope.sensor_data(SensorRequest("s", svc.dataset.refs[1], ("front",)))
+
+
+def test_sensor_environment_is_identical_offline_and_online_at_absolute_frame_positions(monkeypatch):
+    # Identical scene content at each position isolates the noise's frame-index contract.
+    def capture(self):
+        return Observation(self.source.frame.timestamp + self.i * .1,
+                           self.source.frame.position + self.i,
+                           {"front": np.full((16, 16, 3), 100, dtype=np.uint8)})
+
+    monkeypatch.setattr(World, "_observe", capture)
+    svc, _, _ = services()
+    environment = {"sensors": [{"type": "GaussianNoise", "options": {"severity": .3},
+                                "camera": "front"}]}
+
+    class SensorRuntime(AttackRuntime):
+        def step(self, context):
+            return (Fill(),)
+
+    segment = AttackSegment("s", svc.dataset.refs[1], svc.dataset.refs[3])
+    with svc, svc.session(7) as session:
+        offline = [session.render(RenderRequest("s", frame, "front", (Fill(),), environment))
+                   .observation.sensor_data["front"] for frame in svc.dataset.refs[1:3]]
+        online = session.rollout(CandidateRequest(
+            segment, 7, 2, environment, RecordingPolicy(("front",)),
+            attack=SimpleNamespace(create_runtime=lambda segment, artifacts: SensorRuntime()),
+        ))
+    for expected, record in zip(offline, online.steps):
+        np.testing.assert_array_equal(record.model_observation.sensor_data["front"], expected)
+    assert not np.array_equal(offline[0], offline[1])

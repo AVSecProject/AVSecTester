@@ -23,11 +23,11 @@ from avsectester.insertion import (
     resolve_insertion,
 )
 from avsectester.closed_loop.datatypes import Observation
-from avsectester.rendering.cameras import PinholeCamera
+from avsectester.geometry.cameras import PinholeCamera
 from avsectester.rendering.visibility import DepthVisibilityEstimator
 from avsectester.scenarios.carla_gt import carla_actor_pose
 from avsectester.scenarios.carla_provider import carla_filter_context
-from avsectester.closed_loop.simulators.carla import insertion_perturbation
+from avsectester.rendering.legacy_carla import insertion_perturbation
 from scripts.validation.validate_carla_visibility import FOCAL, HEIGHT, WIDTH, RoadValidation
 
 

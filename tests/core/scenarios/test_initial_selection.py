@@ -501,7 +501,7 @@ def test_insertion_camera_selection_is_explicit_when_multiple_nonfront_cameras_e
 
 def test_nuscenes_box_adapter_preserves_full_orientation_for_attached_objects():
     from types import SimpleNamespace
-    from avsectester.insertion import rotation_matrix
+    from avsectester.geometry.poses import rotation_matrix
     from avsectester.scenarios.datasets.nuscenes import scene_from_cam_boxes
 
     rotation = rotation_matrix((20, 15, 35))

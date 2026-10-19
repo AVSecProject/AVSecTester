@@ -11,13 +11,20 @@ from __future__ import annotations
 
 import torch
 
-from .interface import Scorer, TargetSpec
+from typing import Protocol
+
+
+class TargetSpec(Protocol):
+    """A target region in image-space pixels, independent of an attack implementation."""
+
+    box: tuple[float, float, float, float]
+
 
 # ResNet-FPN P2..P6 strides for the RPN cls_score levels (matches faster_rcnn_r50_fpn).
 FPN_STRIDES = (4, 8, 16, 32, 64)
 
 
-class MMDetRPNObjectnessScorer(Scorer):
+class MMDetRPNObjectnessScorer:
     """RPN-objectness confidence in the target box for an mmdet two-stage detector (white-box)."""
 
     differentiable = True
@@ -56,7 +63,7 @@ class MMDetRPNObjectnessScorer(Scorer):
         return torch.cat(vals).mean()
 
 
-class MMDetInferenceScorer(Scorer):
+class MMDetInferenceScorer:
     """Black-box (non-differentiable) scorer: the detector's actual max confidence in the target box.
 
     Runs the full ``inference_detector`` on a rendered ``(H,W,3)`` uint8 RGB frame — the true metric an

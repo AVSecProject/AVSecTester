@@ -6,8 +6,9 @@
 
 ## How to read these examples
 
-The supplied attacks use the same [intervention](../concepts/architecture.md#terminology) interfaces
-as attacks you write yourself. Each example is described in the same five parts:
+The supplied concrete attacks use the legacy `Intervention` and stage-hook interfaces. They
+are separate from the `Attack` workflow described in [Implement an attack](../guides/attacks.md).
+Each example is described in the same five parts:
 
 - **What it does:** the attack's effect.
 - **Preparation:** the work done before runs and the artifact it produces.
@@ -28,7 +29,7 @@ every script.
 
 ## Defenses
 
-No defense example is supplied. Defenses use the same preparation and execution interfaces as the
-attacks above, with `kind: defense`. See [Implement a defense](../guides/defenses.md).
+No reference defense example is supplied. The legacy path supports defenses through the same
+preparation and execution interfaces as the attacks above, with `kind: defense`. See [Implement a defense](../guides/defenses.md).
 
 **Not yet implemented.** Reference defense algorithms and metrics for recorded defense outputs.

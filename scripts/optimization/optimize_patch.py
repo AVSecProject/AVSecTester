@@ -22,7 +22,7 @@ from avsectester.attacks.optim.data import FrameSource
 from avsectester.attacks.optim.interface import AdvSample, HideObject, TargetSpec
 from avsectester.attacks.optim.geometry import rear_panel_homography
 from avsectester.attacks.optim.perturbations import PatchPerturbation
-from avsectester.attacks.optim.scorers import MMDetRPNObjectnessScorer
+from avsectester.closed_loop.avstacks.scorers import MMDetRPNObjectnessScorer
 
 from scripts import REPO_ROOT as REPO
 

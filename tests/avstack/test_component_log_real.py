@@ -46,6 +46,7 @@ def _backend(make_detections, make_ego, leads_per_frame):
 def test_component_log_captures_phantom_after_attack_hooks(
     pipeline_config, make_detections, make_ego
 ):
+    import avsectester.attacks.pipeline.phantom  # noqa: F401 -- explicit native registration
     from avstack.config import HOOKS
 
     empty = [[] for _ in range(10)]  # no real object anywhere
