@@ -9,10 +9,10 @@ from PIL import Image
 import pytest
 import yaml
 
-from avsectester.closed_loop.simulators.nurec import NuRecSimulator, StubRenderer
+from avsectester.closed_loop.simulators.nurec import NuRecSimulatorRuntime, NuRecSimulator, StubRenderer
 
 
-class CameraWorld(NuRecSimulator):
+class CameraWorld(NuRecSimulatorRuntime):
     def __init__(self, config, initial_color=0):
         class Renderer(StubRenderer):
             def __init__(self):
@@ -22,7 +22,7 @@ class CameraWorld(NuRecSimulator):
             def render(self, pose, camera):
                 return np.full((4, 6, 3), self.color, np.uint8)
 
-        super().__init__({"dt": 0.1}, renderer=Renderer())
+        super().__init__(NuRecSimulator({"dt": 0.1}, renderer=Renderer()))
         self.original_config = config
         self.prepares = self.resets = self.closes = 0
         self.lead = object()
@@ -139,7 +139,15 @@ def test_camera_patch_demo_pairs_initial_scene_and_changes_model_input_before_dr
 
     output = tmp_path / "driving"
     monkeypatch.setattr(demo, "OUT", output)
-    monkeypatch.setattr(demo, "CarlaSelectionSimulator", make_world)
+    class DepthCarla:
+        def __init__(self, config, depth_camera=None):
+            assert depth_camera == "front"
+            self.config = config
+
+        def create_runtime(self, seed=None):
+            return make_world(self.config)
+
+    monkeypatch.setattr(demo, "CarlaSimulator", DepthCarla)
     monkeypatch.setattr(demo, "carla_rear_perturbation", make_patch)
     monkeypatch.setattr(demo, "build_detector", lambda gpu: detect)
     monkeypatch.setattr(demo, "plot_impact", plot)

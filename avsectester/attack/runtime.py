@@ -23,7 +23,7 @@ from avsectester.closed_loop.datatypes import Observation, WorldSnapshot
 from avsectester.closed_loop.hooks import Hook, StageContext, UnsupportedStageError
 
 if TYPE_CHECKING:
-    from avsectester.closed_loop.simulator import SensorView, Simulator
+    from avsectester.closed_loop.simulator import SensorView, SimulatorRuntime
 
 
 @dataclass(frozen=True)
@@ -80,7 +80,7 @@ class WorldAttackEffect(AttackEffect, ABC):
     setup_ticks: int = 0
 
     @abstractmethod
-    def apply(self, simulator: Simulator, resources: ExitStack) -> None:
+    def apply(self, simulator_runtime: SimulatorRuntime, resources: ExitStack) -> None:
         """Change the world through the simulator's native access."""
 
 
@@ -165,13 +165,13 @@ class _SetupHook:
         self.setup_ticks = dispatcher.setup_ticks
 
     def __call__(self, value: None, context: StageContext) -> None:
-        from avsectester.closed_loop.simulator import Simulator
+        from avsectester.closed_loop.simulator import SimulatorRuntime
 
-        truth = context.ground_truth
-        simulator = context.simulator
+        truth = context.physical_state
+        simulator_runtime = context.simulator_runtime
         self.dispatcher.setup(
             OnlineContext(0, "setup", truth.t, truth.frame, physical_state=truth),
-            simulator if isinstance(simulator, Simulator) else None,
+            simulator_runtime if isinstance(simulator_runtime, SimulatorRuntime) else None,
         )
 
 
@@ -301,7 +301,7 @@ class AttackDispatcher:
         self.receipts.clear()
         return result
 
-    def setup(self, context: OnlineContext, simulator: Simulator | None) -> None:
+    def setup(self, context: OnlineContext, simulator_runtime: SimulatorRuntime | None) -> None:
         """Run every ``setup`` and apply its world effects; ``None`` means a legacy world."""
         if self._available is None:
             raise RuntimeError("Validate attack runtimes before setup")
@@ -318,12 +318,12 @@ class AttackDispatcher:
             for effect in tuple(effects):
                 if not isinstance(effect, WorldAttackEffect):
                     raise TypeError("AttackRuntime.setup returns only WorldAttackEffect instances")
-                if simulator is None:
+                if simulator_runtime is None:
                     raise UnsupportedStageError(
                         "This simulator cannot apply world attack effects before the first capture")
                 effect_id = self._request(effect, context, attack, "setup")
-                effect.apply(simulator, self._resources)
-                truth = simulator.ground_truth()
+                effect.apply(simulator_runtime, self._resources)
+                truth = simulator_runtime.state()
                 self._receipt(effect_id, effect, context.step, "simulator.setup", truth.t, truth.frame)
 
     def step(self, context: OnlineContext) -> None:
@@ -365,7 +365,7 @@ class AttackDispatcher:
         """Remember the post-step clock for a later stop context."""
         self._last_context = context
 
-    def apply_sensor_effects(self, observation: Observation, simulator: Any) -> Observation:
+    def apply_sensor_effects(self, observation: Observation, simulator_runtime: Any) -> Observation:
         """Apply this decision's sensor effects to the captured observation, in issue order."""
         if not self._sensor:
             return observation
@@ -378,7 +378,7 @@ class AttackDispatcher:
         assert context is not None
         for effect_id, effect, _attack in pending:
             if effect.sensor not in views:
-                views[effect.sensor] = simulator.sensor_view(effect.sensor)
+                views[effect.sensor] = simulator_runtime.sensor_view(effect.sensor)
             view = views[effect.sensor]
             data[effect.sensor] = effect.apply(data.get(effect.sensor, view.data), view)
             self._receipt(effect_id, effect, context.step, "capture", context.sim_time, context.frame)
@@ -398,7 +398,7 @@ class AttackDispatcher:
             if effect.stage != context.stage:
                 remaining.append((effect_id, effect, attack))
                 continue
-            truth = context.ground_truth
+            truth = context.physical_state
             base = self._step_contexts[id(attack)]
             value = effect.apply(value, replace(
                 base, stage=context.stage, sim_time=truth.t, frame=truth.frame,
@@ -409,17 +409,17 @@ class AttackDispatcher:
         return value
 
     def _at_world_step(self, value: None, context: StageContext) -> None:
-        from avsectester.closed_loop.simulator import Simulator
+        from avsectester.closed_loop.simulator import SimulatorRuntime
 
         pending, self._world = self._world, []
         if not pending:
             return
-        simulator = context.simulator
-        if not isinstance(simulator, Simulator):
+        simulator_runtime = context.simulator_runtime
+        if not isinstance(simulator_runtime, SimulatorRuntime):
             raise UnsupportedStageError("This simulator cannot apply world attack effects")
         for effect_id, effect, _attack in pending:
-            effect.apply(simulator, self._resources)
-            truth = context.ground_truth
+            effect.apply(simulator_runtime, self._resources)
+            truth = context.physical_state
             self._receipt(effect_id, effect, context.step, context.stage, truth.t, truth.frame)
 
     def stop(self) -> None:

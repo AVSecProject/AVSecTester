@@ -15,7 +15,7 @@ from avsectester.closed_loop.simulators.nurec import NuRecSimulator, StubRendere
 
 
 def test_pair_uses_prepared_origin_fresh_stacks_and_separate_runtime_sessions():
-    backend = NuRecSimulator({"ego0": {"x": 7, "speed": 2}}, renderer=StubRenderer(height=2, width=2))
+    backend = NuRecSimulator({"ego0": {"x": 7, "speed": 2}}, renderer=StubRenderer(height=2, width=2)).create_runtime()
     backend.prepare_clean_attack_pair = Mock()
     backend.close = Mock(wraps=backend.close)
     histories = []
@@ -41,7 +41,7 @@ def test_pair_uses_prepared_origin_fresh_stacks_and_separate_runtime_sessions():
 
 @pytest.mark.parametrize("fail_run", [1, 2])
 def test_pair_releases_backend_if_either_run_fails(fail_run):
-    backend = NuRecSimulator({}, renderer=StubRenderer(height=2, width=2))
+    backend = NuRecSimulator({}, renderer=StubRenderer(height=2, width=2)).create_runtime()
     backend.close = Mock(side_effect=RuntimeError("cleanup failed"))
     calls = 0
 
@@ -65,7 +65,7 @@ def test_pair_releases_backend_if_either_run_fails(fail_run):
 @pytest.mark.parametrize("treatment", ["clean", "attacked"])
 @pytest.mark.parametrize("from_factory", [False, True])
 def test_pair_rejects_unsupported_stages_before_any_run(treatment, from_factory):
-    backend = NuRecSimulator({}, renderer=StubRenderer(height=2, width=2))
+    backend = NuRecSimulator({}, renderer=StubRenderer(height=2, width=2)).create_runtime()
     backend.prepare_clean_attack_pair = Mock()
     backend.reset = Mock(wraps=backend.reset)
     backend.close = Mock()
@@ -96,7 +96,7 @@ def test_pair_rejects_unsupported_stages_before_any_run(treatment, from_factory)
 
 
 def test_pair_validates_all_stage_sources_without_reusing_stack_or_handler_history():
-    backend = NuRecSimulator({}, renderer=StubRenderer(height=2, width=2))
+    backend = NuRecSimulator({}, renderer=StubRenderer(height=2, width=2)).create_runtime()
     backend.prepare_clean_attack_pair = Mock()
     constructed, resets, events = [], [], []
 

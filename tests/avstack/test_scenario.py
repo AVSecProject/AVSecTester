@@ -342,7 +342,7 @@ def test_paired_backend_replays_actual_spawns_and_releases_old_actors(simulation
         return npc
 
     sim.registry.side_effect = build
-    backend = carla_backend.CarlaSimulator(sim.config)
+    backend = carla_backend.CarlaSimulator(sim.config).create_runtime()
     try:
         backend.prepare_clean_attack_pair()
         assert backend.scenario == sim.config  # pair preparation preserves the user's random config

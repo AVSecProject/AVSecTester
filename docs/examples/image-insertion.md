@@ -94,7 +94,7 @@ images and is not an input attack.
 
 | Simulator | Adapter | Visibility evidence |
 |---|---|---|
-| CARLA | `insertion_perturbation(simulator, insertions, ...)` with a `CarlaSelectionSimulator` | Aligned depth from the simulator's depth camera |
+| CARLA | `insertion_perturbation(simulator_runtime, insertions, ...)` with a runtime of `CarlaSimulator(depth_camera=...)` | Aligned depth from the simulator's depth camera |
 | NuRec | `NuRecDataset.insertion_renderer(...)` wrapped by `frame_perturbation` | Labeled actor cuboids |
 
 Use `run_prepared` with a fresh compatible driving system per treatment. It prepares the shared
@@ -102,7 +102,7 @@ origin and closes the backend, including after failed runs. Runtime factories re
 before reset, so camera- and actor-dependent setup must happen lazily. Both supplied adapters read
 the camera and actor poses only when they process an image.
 
-For a scenario selected by `CarlaScenarioBuilder` with `CarlaSelectionSimulator`:
+For a scenario selected by `CarlaScenarioBuilder` (its candidates use `CarlaSimulator(depth_camera="front")`):
 
 ```python
 from avsectester.interventions import ObservationTransform

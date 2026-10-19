@@ -102,9 +102,7 @@ def test_timestep_mismatch_fails_before_world_or_model_start(timeline):
     class Renderer(StubRenderer):
         def load_scene(self, scene):
             pytest.fail("world started despite timestep mismatch")
-    def factory(source, seed):
-        return NuRecSimulator({"dt": .05}, Renderer(height=2, width=2))
-    services = ClosedLoopServices(data, factory, simulator_type=NuRecSimulator)
+    services = ClosedLoopServices(data, NuRecSimulator({"dt": .05}, Renderer(height=2, width=2)))
     f = data.frames(scene)
     with services.session(0) as scope, pytest.raises(ValueError, match="time_step"):
         scope.rollout(CandidateRequest(AttackSegment(scene, f[0], f[1]), 0, 1, {}, RecordingPolicy()))
@@ -128,13 +126,13 @@ def test_ten_hz_rollout_accepts_alpamayo_and_trajectory_follower(timeline, monke
         setattr(modules["alpasim_grpc.v0.common_pb2"], name, SimpleNamespace)
     data, path, _, _ = timeline
     scene = data.scene_id(path)
-    def backend(source, seed):
-        return NuRecSimulator({"dt": .1}, StubRenderer(cameras=["front"], height=2, width=2), TrajectoryFollower())
+    simulator = NuRecSimulator({"dt": .1}, StubRenderer(cameras=["front"], height=2, width=2),
+                               TrajectoryFollower())
     def driver(seed):
         model = SimpleNamespace(predict=lambda _: SimpleNamespace(
             candidate_positions=np.array([[[.1, 0, 0], [.2, 0, 0]]]), selected_plan=object()))
         return AlpamayoAVStack(model=model, camera_ids=["front"])
-    services = ClosedLoopServices(data, backend, alpamayo_driving_adapter(driver), simulator_type=NuRecSimulator)
+    services = ClosedLoopServices(data, simulator, alpamayo_driving_adapter(driver))
     f = data.frames(scene)
     with services.session(0) as scope:
         log = scope.rollout(CandidateRequest(AttackSegment(scene, f[0], f[2]), 0, 2, {}, RecordingPolicy()))
@@ -163,8 +161,8 @@ def test_simulator_sensor_view_places_recorded_actors_at_the_render_time(timelin
         def cam_from_world(self, pose, camera):
             return np.linalg.inv(self.rig_transform(pose))
 
-    simulator = NuRecSimulator({"dt": .1}, Renderer(cameras=[data.camera_id], height=480, width=640))
-    simulator.reset_world(source)
+    simulator = NuRecSimulator({"dt": .1}, Renderer(cameras=[data.camera_id], height=480, width=640)).create_runtime()
+    simulator.reset(source)
     view = simulator.sensor_view(data.camera_id)
     expected = data.actor_poses(path, 100000)
     np.testing.assert_allclose(view.actors["host"].transform, expected["host"].transform)
@@ -172,7 +170,7 @@ def test_simulator_sensor_view_places_recorded_actors_at_the_render_time(timelin
     assert view.native["timestamp_us"] == 100000 and view.depth is None
     from avsectester.closed_loop.datatypes import Control
 
-    simulator.advance(Control())
+    simulator.step(Control())
     assert simulator.sensor_view(data.camera_id).native["timestamp_us"] == 200000
 
 
@@ -182,8 +180,8 @@ def test_simulator_state_includes_recorded_actors_and_rejects_actor_control(time
 
     data, path, _, _ = timeline
     scene = data.scene_id(path)
-    simulator = NuRecSimulator({"dt": .1}, StubRenderer(cameras=[data.camera_id], height=2, width=2))
-    simulator.reset_world(data.scenario_start(scene, data.frames(scene)[1]))
+    simulator = NuRecSimulator({"dt": .1}, StubRenderer(cameras=[data.camera_id], height=2, width=2)).create_runtime()
+    simulator.reset(data.scenario_start(scene, data.frames(scene)[1]))
     actors = simulator.state().actors
     np.testing.assert_allclose(actors["host"].pose, data.actor_poses(path, 100000)["host"].transform)
     assert actors["host"].velocity[0] == pytest.approx(3, rel=0.05)  # 0.3 m in 0.1 s

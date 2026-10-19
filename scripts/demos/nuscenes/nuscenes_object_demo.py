@@ -110,7 +110,7 @@ def recorded_window(dataset, image_path, decision_steps):
         return None  # too close to the end of its scene for N decisions plus the terminal frame
     window = dataset.decision_window(scenario, start, decision_steps)
     source = dataset.scenario_start(scenario, start)
-    return RecordedReplaySimulator(source), source.payload["frame_data"][:len(window)]
+    return RecordedReplaySimulator(source).create_runtime(), source.payload["frame_data"][:len(window)]
 
 
 def main() -> int:
@@ -159,10 +159,11 @@ def main() -> int:
             continue
         backend, references = recorded
         try:
-            observation = backend.reset()
-            captures = [observation]
+            backend.reset()
+            captures = [backend.observe()]
             for _ in range(args.decision_steps):
-                captures.append(backend.step(Control()))
+                backend.step(Control())
+                captures.append(backend.observe())
         finally:
             backend.close()
         frame = captures[0].sensor_data["front"]

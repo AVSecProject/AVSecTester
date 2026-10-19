@@ -274,12 +274,13 @@ within the requirement's `DistanceRange` (otherwise up to 20 m), never below `mi
 lateral offset within `lateral_range=(0.0, 3.0)`. Sampling never moves insertions. The ego starts
 stationary, so `ego_speed` must be 0.
 
-Candidates use `CarlaSelectionSimulator`. It replaces stock RGB cameras with undistorted
-`PinholeRgbCamera` sensors, adds an aligned depth camera and advances one stationary setup frame
-before the first observation. The selected scenario's factory uses the same backend, so paired
-resets match the selection. The selected RGB camera must produce a frame at every driving step:
-set `sensor_tick` to 0 or to the simulator step. `analytic_preview=True` enumerates approximate
-scenes offline instead. It validates no CARLA spawn and measures no rendered visibility.
+Candidates use runtimes of `CarlaSimulator(scenario, depth_camera="front")`. It replaces stock RGB
+cameras with undistorted `PinholeRgbCamera` sensors, adds an aligned depth camera and advances one
+stationary setup frame before the first observation. The selected scenario's factory uses the same
+configuration, so paired resets match the selection. The selected RGB camera must produce a frame at
+every driving step: set `sensor_tick` to 0 or to the simulator step. `analytic_preview=True`
+enumerates approximate scenes offline instead. It validates no CARLA spawn and measures no rendered
+visibility.
 
 ### NuRec datasets
 
@@ -580,7 +581,7 @@ class ToyDataset(Dataset):
 
     def make_backend(self, scene):
         return NuRecSimulator({"camera_aliases": {"camera_front": "front"}},
-                              renderer=StubRenderer())
+                              renderer=StubRenderer()).create_runtime()
 
 
 source = DatasetFilter(ToyDataset())
@@ -637,17 +638,18 @@ comes from the Dataset. CARLA frame data is generated from explicit motion recip
 preparation-owned `FrameDataCache`. Calling the simulator never changes `Dataset.frame_data()` or
 attaches records to a Dataset.
 
-Construct services with a pure Dataset, a lazy factory `(start, seed) -> Simulator`,
-its `simulator_type`, and an optional `DrivingAdapter`. A factory creates configuration-only objects;
-native connections/world resets happen inside a reserved operation. Simulator identity, dataset
-kinds, rendering and decision time step belong to the simulator. Driving bindings live in
+Construct services with a pure Dataset, a configured `Simulator` and an optional `DrivingAdapter`.
+Each operation creates its own runtime with `simulator.create_runtime(seed)` (the session seed),
+resets it inside a reserved operation and closes it when the operation ends; one rollout uses one
+runtime for all its decisions. Simulator identity, dataset kinds, rendering and decision time step
+are declared by the simulator. Driving bindings live in
 `avsectester.closed_loop.driving_adapters`.
 
 | Simulator | Dataset | Behavior |
 |---|---|---|
-| `CarlaSelectionSimulator` | CARLA recipe | Explicit-motion replay, selected-origin initialization and sensor views with measured depth |
+| `CarlaSimulator` | CARLA recipe | Explicit-motion replay and selected-origin initialization; sensor views with measured depth when `depth_camera` is set |
 | `NuRecSimulator` | NuRec USDZ | Interpolated-origin initialization, renderer, sensor views with recorded actors, configurable ego dynamics |
-| `RecordedReplaySimulator` | nuScenes | Bounded recorded replay; commands do not change recorded actor motion |
+| `RecordedReplaySimulator` | nuScenes | Bounded open-loop replay of recorded frames; commands do not change recorded motion |
 
 CARLA uses the configured client's `connect_ip`, `connect_port` and explicit `simulator_version`.
 NuRec declares its renderer version via `simulator_version`, endpoint and decision `dt`.
@@ -661,15 +663,14 @@ from avsectester.closed_loop.simulators.nurec import (
     NuRecRenderer, NuRecSimulator, TrajectoryFollower,
 )
 
-def make_simulator(start, seed):
-    camera_id, camera_alias = start.payload["camera_id"], start.payload["camera_alias"]
-    return NuRecSimulator(
-        {"dt": 0.1, "simulator_version": "26.04", "camera_aliases": {camera_id: camera_alias}},
-        NuRecRenderer(endpoint="127.0.0.1:50051", cameras=[camera_id]),
-        TrajectoryFollower(),
-    )
-
-services = ClosedLoopServices(dataset, make_simulator, driving_adapter, simulator_type=NuRecSimulator)
+# dataset is a NuRecDataset; its camera ID and alias configure the simulator.
+simulator = NuRecSimulator(
+    {"dt": 0.1, "simulator_version": "26.04",
+     "camera_aliases": {dataset.camera_id: dataset.camera_alias}},
+    NuRecRenderer(endpoint="127.0.0.1:50051", cameras=[dataset.camera_id]),
+    TrajectoryFollower(),
+)
+services = ClosedLoopServices(dataset, simulator, driving_adapter)
 ```
 
 ### A user request
@@ -773,7 +774,7 @@ and driving. Base-world preparation and p=0 deployment temporarily hold their re
 
 ### Selected-origin deployment and reset ownership
 
-`Simulator.reset_world(start, initialization, deployment=DeploymentPlan(k), environment=...)`
+`SimulatorRuntime.reset(start, initialization, deployment=DeploymentPlan(k), environment=...)`
 recomputes runtime state from configured defaults and the optional start. A subsequent plain reset
 returns to those defaults. It does not retain the preceding start's scene, origin or bounds.
 

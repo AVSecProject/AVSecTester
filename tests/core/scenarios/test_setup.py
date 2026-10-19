@@ -155,7 +155,8 @@ def test_nurec_configuration_supports_actuator_and_trajectory_without_model_impo
         backend = case.make_backend()
         try:
             assert isinstance(backend.dynamics, dynamics)
-            observation = backend.reset()
+            backend.reset()
+            observation = backend.observe()
             assert observation.sensor_data["camera_front"].shape == (8, 10, 3)
             assert observation.ego_speed == 2
         finally:
@@ -295,8 +296,8 @@ def test_selection_conditions_preserve_labels_and_state_with_current_provider_da
 
         def transform(self, observation, context):
             self.count += 1
-            self.frames.append(context.native["simulator"]["provider_frame"])
-            assert context.ground_truth.frame == observation.frame
+            self.frames.append(context.native["simulator_runtime"]["provider_frame"])
+            assert context.physical_state.frame == observation.frame
             observation.ego_speed = self.count
             return observation
 
@@ -361,7 +362,7 @@ def test_selection_conditions_use_native_capture_copier_and_preserve_raw_measure
         def apply(self, rgb, rng):
             return rgb + 10
 
-    backend = CarlaSimulator({})
+    backend = CarlaSimulator({}).create_runtime()
     backend.copy_observation = Mock(wraps=backend.copy_observation)
     current = scene()
     calibration = {"focal": 10.0}

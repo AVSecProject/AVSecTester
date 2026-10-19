@@ -153,7 +153,7 @@ class CruiseControl(AVStack):
         return Control()
 
 
-backend = NuRecSimulator({"dt": 0.1}, renderer=StubRenderer())
+backend = NuRecSimulator({"dt": 0.1}, renderer=StubRenderer()).create_runtime()
 try:
     trace = run(backend, CruiseControl(), frames=50)
 finally:

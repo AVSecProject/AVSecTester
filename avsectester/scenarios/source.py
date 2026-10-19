@@ -366,4 +366,4 @@ class CarlaScenarioBuilder(ScenarioSource):
 def _carla_backend(config):
     from avsectester.closed_loop.simulators.carla import CarlaSimulator
 
-    return CarlaSimulator(config)
+    return CarlaSimulator(config).create_runtime()

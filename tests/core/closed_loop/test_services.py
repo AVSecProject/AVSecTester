@@ -10,10 +10,10 @@ from avsectester.attack.runtime import (
     AttackRuntime, AVStackAttackEffect, SensorAttackEffect, WorldAttackEffect,
 )
 from avsectester.closed_loop.avstack import AVStack
-from avsectester.closed_loop.simulator import Simulator
+from avsectester.closed_loop.simulator import Simulator, SimulatorRuntime
 from avsectester.closed_loop.runner import ClosedLoopRunner, RecordingPolicy, RunRequest
 from avsectester.datasets.base import Dataset, FrameReference, FrameData, ScenarioStart, Unavailable
-from avsectester.closed_loop.datatypes import Control, Observation
+from avsectester.closed_loop.datatypes import Control, Observation, WorldSnapshot
 from avsectester.closed_loop.frame_data import FrameDataSequence
 from avsectester.attack import AttackSegment
 from avsectester.closed_loop.services import (
@@ -46,14 +46,10 @@ class Data(Dataset):
         return ScenarioStart(self.kind, scenario_id, frame, self.native(scenario_id))
 
 
-class World(Simulator):
-    dataset_kinds = ("memory", "CarlaDataset")
-    can_render = True
-    identity = {"simulator": "test", "version": 1}
-
+class World(SimulatorRuntime):
     def __init__(self, key=None, factory=None):
-        super().__init__()
-        self.factory = factory
+        super().__init__(factory if factory is not None else Factory(key))
+        self.factory = self.simulator
         self.closed = False
         self.resource_key = key if key is not None else ("memory", id(self))
         self.resets = 0
@@ -64,7 +60,6 @@ class World(Simulator):
             self.source = deepcopy(source)
         self.resets += 1
         self.i = 0
-        self._remember_ground_truth(self._observe())
 
     def _check_initialization(self, initialization):
         pass
@@ -76,13 +71,16 @@ class World(Simulator):
 
     def _advance_native(self, control):
         self.i += 1
-        self._remember_ground_truth(self._observe())
+
+    def _state(self):
+        observation = self._observe()
+        return WorldSnapshot(observation.t, observation.frame)
 
     def generate_frame_data(self, source, frames, **kwargs):
         if self.factory.materialize is not None:
             return self.factory.materialize(source, frames)
         self.factory.generations += 1
-        self.reset_world(source)
+        self.reset(source)
         return FrameDataSequence(tuple(FrameData(f, None) for f in frames),
                                  {"resolved": True}, {"seed": 7})
 
@@ -98,16 +96,27 @@ class World(Simulator):
         self.closed = True
 
 
-class Factory:
+class Factory(Simulator):
+    """The configured test simulator; it records every runtime it creates."""
+
+    dataset_kinds = ("memory", "CarlaDataset")
+    can_render = True
+
     def __init__(self, key=None):
         self.resource_key = key
         self.worlds = []
+        self.seeds = []
         self.generations = 0
         self.materialize = None
 
-    def __call__(self, source, seed):
+    @property
+    def identity(self):
+        return {"simulator": "test", "version": 1}
+
+    def create_runtime(self, seed=None):
         world = World(self.resource_key, self)
         self.worlds.append(world)
+        self.seeds.append(seed)
         return world
 
 
@@ -131,7 +140,7 @@ def services(kind="memory", key=None):
         driver = Driver()
         drivers.append(driver)
         return driver
-    return ClosedLoopServices(data, adapter, DrivingAdapter(factory), simulator_type=World), adapter, drivers
+    return ClosedLoopServices(data, adapter, DrivingAdapter(factory)), adapter, drivers
 
 
 def candidate(data, **kwargs):
@@ -161,7 +170,9 @@ def test_sensor_render_and_rollout_have_fresh_worlds_and_no_data_side_effects():
         first = scope.sensor_data(SensorRequest("s", svc.dataset.refs[1], ("front",)))
         rendered = scope.render(RenderRequest("s", svc.dataset.refs[1], "front", (Fill(),)))
         logs = [scope.rollout(candidate(svc.dataset)) for _ in range(2)]
+    # Each operation runs in a new runtime seeded with the session seed, and closes it.
     assert len(adapter.worlds) == 4 and all(w.closed for w in adapter.worlds)
+    assert adapter.seeds == [7, 7, 7, 7]
     assert all(d.closed and d.calls == 2 for d in drivers)
     assert first.observation.sensor_data["front"].max() == 0
     assert rendered.observation.sensor_data["front"].min() == 123
@@ -248,7 +259,7 @@ def test_overlapping_operations_in_two_scopes_are_rejected():
     svc, adapter, _ = services(key=("test-server", 9))
     a, b = svc.session(7), svc.session(7)
     with a._operation() as resources:
-        a._simulator(resources, svc.dataset.scenario_start("s", svc.dataset.refs[0]))
+        a._simulator_runtime(resources, svc.dataset.scenario_start("s", svc.dataset.refs[0]))
         with pytest.raises(RuntimeError, match="already in use"):
             b.rollout(candidate(svc.dataset))
     assert b.rollout(candidate(svc.dataset)).status == "completed"
@@ -312,6 +323,17 @@ def test_reused_factory_object_is_rejected_without_closing_an_active_borrower():
         with pytest.raises(RuntimeError, match="reused"):
             scope.rollout(candidate(svc.dataset))
     assert not shared.closed
+
+
+def test_create_runtime_returning_a_used_runtime_is_rejected():
+    svc, adapter, _ = services()
+    cached = World(factory=adapter)
+    adapter.create_runtime = lambda seed=None: cached
+    request = SensorRequest("s", svc.dataset.refs[1], ("front",))
+    with svc.session(7) as scope:
+        scope.sensor_data(request)
+        with pytest.raises(RuntimeError, match="reused"):
+            scope.sensor_data(request)
 
 
 def test_components_and_scorers_get_fresh_state_and_gradients_fail_early():
@@ -378,7 +400,7 @@ def test_car_source_factory_uses_actual_connection_fields_and_detached_recipe():
     source = data.scenario_start("s", data.frames("s")[0])
     config = deepcopy(recipe.scenario)
     config["client"].update(connect_ip="127.0.0.1", connect_port=2300)
-    backend = CarlaSimulator(config)
+    backend = CarlaSimulator(config).create_runtime()
     assert backend.resource_key == ("carla", "localhost", 2300)
     assert source.payload["recipe"].scenario["client"]["connect_port"] == 2000
     assert "weather" not in data.native("s").scenario

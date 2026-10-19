@@ -1,19 +1,37 @@
-"""Bounded replay of recorded frames. Commands never change recorded trajectories."""
+"""Bounded open-loop replay of recorded frames. Commands never change recorded trajectories.
+
+Recorded datasets without a reconstruction (nuScenes) use it so their sensor data reaches the
+closed loop through a simulator, like every other dataset. It is not a closed-loop simulation.
+"""
 
 from __future__ import annotations
 
 from copy import deepcopy
 
-from avsectester.closed_loop.simulator import Simulator
+from avsectester.closed_loop.simulator import Simulator, SimulatorRuntime
 from avsectester.datasets.base import ScenarioStart
 from avsectester.closed_loop.datatypes import Observation, WorldSnapshot
 
 
 class RecordedReplaySimulator(Simulator):
+    """Open-loop replay of recorded frames; ``start`` is used by resets without a start."""
+
     dataset_kinds = ("NuScenesDataset",)
-    def __init__(self, start=None):
-        super().__init__()
-        self._configured_start = deepcopy(start)
+
+    def __init__(self, start: ScenarioStart | None = None) -> None:
+        self.start = deepcopy(start)
+
+    def create_runtime(self, seed: int | None = None) -> RecordedReplaySimulatorRuntime:
+        """A new replay; recorded frames are fixed, so ``seed`` is unused."""
+        return RecordedReplaySimulatorRuntime(self)
+
+
+class RecordedReplaySimulatorRuntime(SimulatorRuntime):
+    """One replay of recorded frames."""
+
+    def __init__(self, simulator: RecordedReplaySimulator) -> None:
+        super().__init__(simulator)
+        self._configured_start = deepcopy(simulator.start)
         self._frames = ()
         self._index = 0
 
@@ -53,7 +71,7 @@ class RecordedReplaySimulator(Simulator):
                            vehicle_state=deepcopy(data.actors.get("ego")),
                            ego_speed=scene.ego.speed)
 
-    def ground_truth(self):
+    def _state(self):
         if not self._frames:
             raise RuntimeError("Initialize recorded replay before requesting state")
         data = self._frames[self._index]

@@ -20,22 +20,26 @@ def source(tmp_path):
 
 
 def test_recorded_backend_advances_actual_images_and_resets_configured_origin(tmp_path):
-    backend = RecordedReplaySimulator(source(tmp_path))
-    assert np.all(backend.reset().sensor_data["front"] == 100)
-    advanced = backend.step(Control(throttle=1, steer=.5))
+    backend = RecordedReplaySimulator(source(tmp_path)).create_runtime()
+    backend.reset()
+    assert np.all(backend.observe().sensor_data["front"] == 100)
+    backend.step(Control(throttle=1, steer=.5))
+    advanced = backend.observe()
     assert advanced.frame == 13 and advanced.t == 4.5
     assert np.all(advanced.sensor_data["front"] == 101)
     backend.step(Control())
     with pytest.raises(ValueError, match="terminal recorded"):
         backend.step(Control())
-    assert backend.reset().frame == 12
+    backend.reset()
+    assert backend.observe().frame == 12
 
 
 def test_recorded_observation_edits_do_not_change_source_or_clock(tmp_path):
-    backend = RecordedReplaySimulator(source(tmp_path))
-    observation = backend.reset()
+    backend = RecordedReplaySimulator(source(tmp_path)).create_runtime()
+    backend.reset()
+    observation = backend.observe()
     observation.sensor_data["front"][:] = 0
     observation.frame, observation.t = -1, -2
-    assert backend.ground_truth().frame == 12
-    assert backend.ground_truth().t == 4
+    assert backend.state().frame == 12
+    assert backend.state().t == 4
     assert np.all(backend.observe().sensor_data["front"] == 100)

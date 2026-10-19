@@ -294,7 +294,7 @@ from avsectester.closed_loop.hooks import Hook, Runtime
 from avsectester.closed_loop.simulators.nurec import NuRecSimulator, StubRenderer
 
 
-backend = NuRecSimulator({"dt": 0.1}, renderer=StubRenderer())
+backend = NuRecSimulator({"dt": 0.1}, renderer=StubRenderer()).create_runtime()
 try:
     for bias in (1.0, 3.0):
         def spoof_speed(observation, context):  # report `bias` m/s more than estimated

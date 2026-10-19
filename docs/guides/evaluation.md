@@ -382,7 +382,7 @@ def make_stack():  # config is a CARLA configuration with a modular pipeline.
 ```
 
 Use a compatible `AlpamayoAVStack` factory for the end-to-end path. When you own simulator
-assembly, call `run_logged(simulator, avstack, frames, perturb=None, *, hooks=None)` directly. It
+assembly, call `run_logged(simulator_runtime, avstack, frames, perturb=None, *, hooks=None)` directly. It
 uses the same driving loop and leaves the simulator open. Apply the scenario's sensor conditions to
 the hooks yourself, as described in [Lower-level execution](conditions.md#lower-level-execution).
 

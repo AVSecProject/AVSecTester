@@ -72,7 +72,7 @@ def overreport_speed(observation, context):
     return replace(observation, ego_speed=observation.ego_speed + 5.0)
 
 
-backend = NuRecSimulator({"dt": 0.1}, renderer=StubRenderer(height=8, width=8))
+backend = NuRecSimulator({"dt": 0.1}, renderer=StubRenderer(height=8, width=8)).create_runtime()
 try:
     clean = run(backend, CruiseControl(), frames=80)
     attacked = run(backend, CruiseControl(), frames=80,
@@ -113,9 +113,9 @@ A handler can read four kinds of data:
   earlier handlers. Base measurement and state attacks on it.
 - **`context.observation`** is the current observation when one exists. It is `None` during
   `simulator.setup` and the first sensor capture.
-- **`context.ground_truth`** is a fresh snapshot of the physical ego state, independent of what
+- **`context.physical_state`** is a fresh snapshot of the physical state, independent of what
   the driving system sees. Editing it changes nothing.
-- **Native resources** in `context.simulator.native` and `context.avstack.native` give access to
+- **Native resources** in `context.simulator_runtime.native` and `context.avstack.native` give access to
   simulator actors, the renderer and driving-system components. They are live and unsandboxed.
 
 The physical state and the
@@ -131,7 +131,7 @@ from avsectester.closed_loop.hooks import Hook, Runtime
 
 def camera_attack(observation, context):
     """Paint a white square into the front camera while the vehicle moves at 2 m/s or more."""
-    if context.ground_truth.ego_speed < 2.0:  # physical speed, not the reported one
+    if context.physical_state.ego_speed < 2.0:  # physical speed, not the reported one
         return observation
     image = observation.sensor_data["camera_front"].copy()
     image[:4, :4] = 255
@@ -174,7 +174,7 @@ class StaleSpeed(Plugin):
         return replace(observation, ego_speed=self.history[-self.delay])
 
     def after_step(self, context):
-        self.history.append(context.ground_truth.ego_speed)  # feedback after each step
+        self.history.append(context.physical_state.ego_speed)  # feedback after each step
 
 runtime = Runtime([Hook("observation", StaleSpeed())], seed=0)
 ```
@@ -232,10 +232,8 @@ class ToyDriver(AVStack):
 
 attack = TTCPhantom()
 simulator = NuRecSimulator({"dt": 0.1}, renderer=StubRenderer(height=8, width=8))
-try:
-    log = ClosedLoopRunner().run(simulator, ToyDriver(), RunRequest(2, attacks=[attack]))
-finally:
-    simulator.close()
+with simulator.create_runtime() as simulator_runtime:
+    log = ClosedLoopRunner().run(simulator_runtime, ToyDriver(), RunRequest(2, attacks=[attack]))
 assert attack.history == [1.0, 1.0]
 assert all(step.executed_command.brake == 1.0 for step in log.steps)
 ```
@@ -277,8 +275,8 @@ A configured localizer uses the `localizer` key of [`runtime`](../reference/conf
 ## Change the world
 
 World handlers at `simulator.setup`, `simulator.step.pre` and `simulator.step.post` receive `None`, return
-`None` and change the world through native operations in `context.simulator.native`. Editing an
-observation or `context.ground_truth` never moves anything. Simulators capture sensor data at
+`None` and change the world through native operations in `context.simulator_runtime.native`. Editing an
+observation or `context.physical_state` never moves anything. Simulators capture sensor data at
 different times: in CARLA, a change at `simulator.step.post` appears only from the observation after
 next, so use `simulator.setup` or `simulator.step.pre` when the next observation must show it. Resolve
 actors in `simulator.setup` or later, because the world reset creates them after the handlers' `reset`
@@ -334,7 +332,7 @@ from avsectester.closed_loop.simulators.nurec import NuRecSimulator, StubRendere
 
 # CruiseControl is defined in the first example. SpeedSpoof is defined above.
 scenario = ScenarioInstance(
-    factory=lambda: NuRecSimulator({"dt": 0.1}, renderer=StubRenderer(height=8, width=8)),
+    factory=lambda: NuRecSimulator({"dt": 0.1}, renderer=StubRenderer(height=8, width=8)).create_runtime(),
     provenance={"scene": "offline-example"},
 )
 prepared = prepare_intervention(SpeedSpoof(bias=5.0), scenario, kind="attack", name="speed-spoof")
@@ -387,7 +385,7 @@ class TargetedAttack(Intervention):
         def locate(value, context):
             actor_ids = context.case.binding_ids[artifacts["role"]]
             context.record_output("attack.target", actor_ids)
-            return None  # Look up and change the actor through context.simulator.native here.
+            return None  # Look up and change the actor through context.simulator_runtime.native here.
         return [Hook("simulator.setup", locate)]
 ```
 

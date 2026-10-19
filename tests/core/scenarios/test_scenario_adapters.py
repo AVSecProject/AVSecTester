@@ -41,7 +41,8 @@ def test_nurec_factory_preserves_selected_pose_time_camera_and_reset(monkeypatch
 
     monkeypatch.setattr(module, "NuRecRenderer", CaptureRenderer)
     backend = NuRecDataset([], sensor="native-camera", camera="front").make_backend(scene)
-    initial = backend.reset()
+    backend.reset()
+    initial = backend.observe()
     backend.reset()
     assert requests[0] == requests[1] == (12, -3, 0.7, 5, 0.0, "native-camera")
     assert backend.renderer.kwargs["start_timestamp_us"] == 123400000

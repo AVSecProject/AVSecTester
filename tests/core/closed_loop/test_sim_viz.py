@@ -175,7 +175,7 @@ def test_draw_boxes3d_skips_out_of_view_and_far_boxes():
 
 
 def test_record_run_saves_a_frame_per_step(tmp_path):
-    backend = NuRecSimulator({"dt": 0.1}, renderer=StubRenderer(cameras=["camera_front"], height=16, width=24))
+    backend = NuRecSimulator({"dt": 0.1}, renderer=StubRenderer(cameras=["camera_front"], height=16, width=24)).create_runtime()
     trace = record_run(backend, Cruise(), frames=4, out_dir=tmp_path, visualize=camera_view)
     assert len(trace.records) == 4
     saved = sorted(tmp_path.glob("frame_*.png"))
@@ -196,7 +196,7 @@ def test_record_run_exports_completed_views_before_a_later_failure(tmp_path):
                 raise RuntimeError("later decision failed")
             return super().__call__(observation)
 
-    backend = NuRecSimulator({}, renderer=StubRenderer(height=2, width=3))
+    backend = NuRecSimulator({}, renderer=StubRenderer(height=2, width=3)).create_runtime()
     with pytest.raises(RuntimeError, match="later decision failed") as caught:
         record_run(backend, FailingPolicy(), frames=3, out_dir=tmp_path, collect=False)
     assert [path.name for path in tmp_path.glob("frame_*.png")] == ["frame_0000.png"]
@@ -222,7 +222,7 @@ def test_record_run_uses_processed_input_and_snapshots_reused_view_buffers(tmp_p
         image[:] = observation.sensor_data["camera_front"]
         return image
 
-    backend = NuRecSimulator({}, renderer=StubRenderer(height=2, width=3))
+    backend = NuRecSimulator({}, renderer=StubRenderer(height=2, width=3)).create_runtime()
     trace = record_run(
         backend, Cruise(), frames=2, out_dir=tmp_path, visualize=view, collect=True,
         hooks=Runtime([Hook("observation", attack)]),

@@ -1,13 +1,14 @@
-"""Everything CARLA: the :class:`CarlaSimulator` simulator + its view adapters for the viz pipeline.
+"""Everything CARLA: :class:`CarlaSimulator`, its live :class:`CarlaSimulatorRuntime`, and view adapters.
 
 Heavy imports (``avcarla`` / ``carla`` / the avstack CARLA registry) are lazy — done inside
-``prepare_scenario`` and ``CarlaSimulator.reset`` — so this module and the ``avsectester.closed_loop.simulators``
-package import without a CARLA stack (the pure view adapters and config helpers stay offline-usable).
+``prepare_scenario`` and ``CarlaSimulatorRuntime.reset`` — so this module and the
+``avsectester.closed_loop.simulators`` package import without a CARLA stack (the pure view
+adapters and config helpers stay offline-usable).
 
   * View adapters (:func:`camera_view`, :func:`lidar_bev`) feed the simulator-agnostic pipeline in
     :mod:`avsectester.closed_loop.simulators.viz`. They duck-type avstack ``ImageData`` / ``LidarData``.
-  * :class:`CarlaSimulator` owns the client, ego (+ sensors), traffic, an optional scene ``lead`` car,
-    and exposes world stages. ``PhysicalPatchPlugin`` deploys panels at ``simulator.setup``.
+  * :class:`CarlaSimulatorRuntime` owns the client, ego (+ sensors), traffic, an optional scene
+    ``lead`` car, and exposes simulator stages. ``PhysicalPatchEffect`` deploys panels at ``simulator.setup``.
     Compose the simulator with an AVStack via
     :func:`avsectester.carla_runner.run_scenario`.
 """
@@ -22,7 +23,7 @@ from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any
 
-from avsectester.closed_loop.simulator import Simulator
+from avsectester.closed_loop.simulator import Simulator, SimulatorRuntime
 from dataclasses import asdict, replace
 import math
 import numpy as np
@@ -108,17 +109,19 @@ def carla_sensor_view(context, camera, observation, true_frame):
     )
 
 
-def insertion_perturbation(simulator, insertions, *, bindings=None, camera="front", compositor=None):
+def insertion_perturbation(simulator_runtime, insertions, *, bindings=None, camera="front",
+                           compositor=None):
     """Legacy observation transform rendering explicit insertions into a CARLA camera image."""
-    return _insertion_renderer(simulator, insertions, bindings=bindings, camera=camera,
+    return _insertion_renderer(simulator_runtime, insertions, bindings=bindings, camera=camera,
                                compositor=compositor)
 
 
-def _insertion_renderer(simulator, insertions, *, bindings=None, camera="front", compositor=None):
+def _insertion_renderer(simulator_runtime, insertions, *, bindings=None, camera="front",
+                        compositor=None):
     """Insert explicit, stable host-bound or world-fixed surfaces into model input.
 
-    The simulator must provide ``selection_context()`` with current same-frame depth,
-    as :class:`avsectester.scenarios.carla_provider.CarlaSelectionSimulator` does.
+    The runtime must provide ``selection_context()`` with current same-frame depth, as a
+    runtime of ``CarlaSimulator(depth_camera=...)`` does.
     Geometry is updated each frame. Selection filters are never rerun here.
     Pass ``bindings=case.match.binding_ids`` to preserve selected role aliases across
     resets. Native logical host names such as ``lead`` need no additional mapping.
@@ -160,8 +163,8 @@ def _insertion_renderer(simulator, insertions, *, bindings=None, camera="front",
 
     def perturb(observation):
         nonlocal renderer, current
-        current = simulator.selection_context()
-        true_frame = simulator.ground_truth().frame
+        current = simulator_runtime.selection_context()
+        true_frame = simulator_runtime.state().frame
         if current.scene.frame != true_frame:
             raise ValueError("Insertion geometry and the physical world must use the same frame")
         if selected_ids:
@@ -344,14 +347,73 @@ class SensorAlignmentError(RuntimeError):
         super().__init__("Sensor capture is not aligned: " + "; ".join(report["failures"]))
 
 
-class CarlaSimulator(Simulator):
-    """A CARLA :class:`~avsectester.closed_loop.simulator.WorldBackend`.
+_PINHOLE_ATTRIBUTES = {"lens_k": "0", "lens_kcube": "0", "lens_circle_multiplier": "0"}
 
-    Owns the client, the ego vehicle + its sensors, and the NPC traffic, and applies control through
-    CARLA's shared physics. The ego's own avcarla pipeline is a no-op placeholder: driving is
-    *external* (the :class:`~avsectester.closed_loop.avstack.AVStack`), so this simulator only senses (``_observe``)
-    and actuates (``step`` -> ``apply_control``). ``reset`` also captures a strict-spawn
-    ``replay_scenario`` so a paired run reproduces the same initial scene.
+
+def register_pinhole_camera():
+    """Register the undistorted RGB sensor used with a depth camera, without importing CARLA eagerly.
+
+    The class stays in this repository. The ordinary avcarla RGB sensor keeps its original
+    behavior. Sensor factories reuse the registered subclass and its calibration.
+    """
+    from avcarla.config import CARLA
+    from avcarla.sensors import CarlaRgbCamera
+
+    existing = CARLA.module_dict.get("PinholeRgbCamera")
+    if existing is not None:
+        if existing.__module__ != __name__:
+            raise ValueError("PinholeRgbCamera is already registered by another module")
+        return existing
+
+    @CARLA.register_module()
+    class PinholeRgbCamera(CarlaRgbCamera):
+        """An ideal pinhole RGB sensor for calibrated depth-based insertion."""
+
+        def __init__(self, *args, do_spawn=True, **kwargs):
+            super().__init__(*args, do_spawn=False, **kwargs)
+            for name, value in _PINHOLE_ATTRIBUTES.items():
+                self.bp.set_attribute(name, value)
+            if do_spawn:
+                self.spawn()
+
+    return PinholeRgbCamera
+
+
+def _use_pinhole_cameras(scenario):
+    """Replace stock RGB cameras with the undistorted subclass; custom classes are kept."""
+    for sensor in scenario.get("ego", {}).get("sensors", ()):
+        if sensor.get("type") == "CarlaRgbCamera":
+            sensor["type"] = "PinholeRgbCamera"
+    return scenario
+
+
+def _require_pinhole_sensor(sensor):
+    """Reject camera geometry that the pinhole visibility provider cannot represent."""
+    for name in _PINHOLE_ATTRIBUTES:
+        value = float(sensor.attributes.get(name, -1 if name == "lens_k" else 0))
+        if not np.isfinite(value) or value != 0:
+            raise ValueError(
+                f"Selection requires an undistorted camera ({name}=0), got {value}. "
+                "Use PinholeRgbCamera or supply a custom calibrated visibility provider."
+            )
+
+
+def decode_carla_depth(image):
+    """Decode CARLA's 24-bit depth image to forward camera depth in metres."""
+    bgra = np.frombuffer(image.raw_data, np.uint8).reshape(image.height, image.width, 4)
+    channels = bgra.astype(np.float64)
+    return (channels[..., 2] + 256 * channels[..., 1] + 65536 * channels[..., 0]) * (
+        1000.0 / 16777215
+    )
+
+
+class CarlaSimulator(Simulator):
+    """CARLA configured by an avcarla scenario: client, ego and its sensors, NPCs and a lead.
+
+    ``create_runtime`` connects a new live world. ``depth_camera`` names an ego RGB camera that
+    gets an aligned depth camera, so sensor views of it carry measured depth; stock RGB cameras
+    are then replaced by undistorted ``PinholeRgbCamera`` sensors matching the pinhole
+    projection. Custom RGB classes are kept and must expose zero lens distortion.
     """
 
     dataset_kinds = ("CarlaDataset",)
@@ -359,12 +421,65 @@ class CarlaSimulator(Simulator):
     can_render = True
 
     def __init__(
-        self, scenario: dict, settle_iters: int = 100, *, simulator_version="0.9.16"
+        self, scenario: dict, settle_iters: int = 100, *, simulator_version="0.9.16",
+        depth_camera: str | None = None,
     ) -> None:
-        super().__init__()
-        self.simulator_version = simulator_version
-        self.scenario = deepcopy(scenario)
+        scenario = deepcopy(scenario)
+        self.scenario = _use_pinhole_cameras(scenario) if depth_camera is not None else scenario
         self.settle_iters = settle_iters
+        self.simulator_version = simulator_version
+        self.depth_camera = depth_camera
+
+    def create_runtime(self, seed: int | None = None) -> CarlaSimulatorRuntime:
+        """A new live world; ``seed`` becomes the client seed when the scenario sets none."""
+        return CarlaSimulatorRuntime(self, seed)
+
+    @property
+    def command_modes(self) -> frozenset[str]:
+        return frozenset({"actuator"})
+
+    @property
+    def decision_time_step(self):
+        return 1 / float(self.scenario["client"]["rate"])
+
+    @property
+    def identity(self):
+        return {**super().identity, "scenario": deepcopy(self.scenario),
+                "depth_camera": self.depth_camera, "start_sensor_setup_ticks": 1}
+
+    def validate_start(self, start):
+        super().validate_start(start)
+        if start is not None:
+            recipe = start.payload.get("recipe")
+            if not isinstance(recipe, CarlaRecipe):
+                raise TypeError("CARLA ScenarioStart requires an explicit CarlaRecipe")
+            if not math.isclose(recipe.time_step, self.decision_time_step, abs_tol=1e-9):
+                raise ValueError("Dataset time_step differs from simulator decision time step")
+            if start.frame.position > recipe.decision_steps:
+                raise ValueError("Selected start exceeds recipe support")
+
+
+class CarlaSimulatorRuntime(SimulatorRuntime):
+    """One live CARLA world of a :class:`CarlaSimulator`.
+
+    Owns the client, the ego vehicle + its sensors, and the NPC traffic, and applies control through
+    CARLA's shared physics. The ego's own avcarla pipeline is a no-op placeholder: driving is
+    *external* (the :class:`~avsectester.closed_loop.avstack.AVStack`), so this runtime only senses (``_observe``)
+    and actuates (``step`` -> ``apply_control``). ``reset`` also captures a strict-spawn
+    ``replay_scenario`` so a paired run reproduces the same initial scene.
+    """
+
+    def __init__(self, simulator: CarlaSimulator, seed: int | None = None) -> None:
+        super().__init__(simulator)
+        self.scenario = deepcopy(simulator.scenario)
+        if seed is not None and self.scenario["client"].get("seed") is None:
+            self.scenario["client"]["seed"] = seed
+        self.settle_iters = simulator.settle_iters
+        self.depth_camera = simulator.depth_camera
+        self.depth = None
+        self.depth_frame = None
+        self._depth_queue = None
+        self._depth_observation = None
         # An optional stationary lead vehicle spawned directly ahead of the ego, present in BOTH the
         # clean and attacked runs (scene content). A physical patch (attacked run) attaches to it, so
         # the only difference between the paired runs is the patch itself.
@@ -389,10 +504,6 @@ class CarlaSimulator(Simulator):
             host = "localhost"
         return ("carla", host, client.get("connect_port", 2000))
 
-    @property
-    def command_modes(self) -> frozenset[str]:
-        return frozenset({"actuator"})
-
     def configure_conditions(self, world: Mapping[str, Any]) -> None:
         """Apply CARLA weather settings at every subsequent scene reset."""
         unknown = set(world) - {"weather"}
@@ -405,11 +516,6 @@ class CarlaSimulator(Simulator):
             for prepared in (self._pair_scenario, self._pair_replay, self.replay_scenario):
                 if prepared is not None:
                     prepared["weather"] = deepcopy(weather)
-
-    @property
-    def supported_stages(self) -> frozenset[str]:
-        # CARLA renders inside the server. Its render request cannot be intercepted here.
-        return frozenset({"simulator.setup", "simulator.step.pre", "simulator.step.post"})
 
     @property
     def native(self) -> dict[str, Any]:
@@ -428,10 +534,10 @@ class CarlaSimulator(Simulator):
             "actors": actors,
         }
 
-    def ground_truth(self) -> WorldSnapshot:
+    def _state(self) -> WorldSnapshot:
         """Snapshot the latest completed tick, or the known spawn before the first actor tick."""
         if self.client is None or self.ego is None:
-            raise RuntimeError("Reset the CARLA simulator before requesting ground truth")
+            raise RuntimeError("Reset the CARLA simulator before requesting its state")
         snapshot = self.client.world.get_snapshot()
         self.ego.timestamp = snapshot.timestamp.elapsed_seconds
         state = self.ego.get_object_state()
@@ -511,27 +617,6 @@ class CarlaSimulator(Simulator):
         self._pair_replay = None
         self.replay_scenario = None
 
-    @property
-    def decision_time_step(self):
-        return 1 / float(self.scenario["client"]["rate"])
-
-    @property
-    def identity(self):
-        return {**super().identity, "scenario": deepcopy(self.scenario),
-                "camera": getattr(self, "selection_camera", None),
-                "start_sensor_setup_ticks": 1}
-
-    def validate_start(self, start):
-        super().validate_start(start)
-        if start is not None:
-            recipe = start.payload.get("recipe")
-            if not isinstance(recipe, CarlaRecipe):
-                raise TypeError("CARLA ScenarioStart requires an explicit CarlaRecipe")
-            if not math.isclose(recipe.time_step, self.decision_time_step, abs_tol=1e-9):
-                raise ValueError("Dataset time_step differs from simulator decision time step")
-            if start.frame.position > recipe.decision_steps:
-                raise ValueError("Selected start exceeds recipe support")
-
     def _replay_position(self, start):
         return start.frame.position if start is not None else 0
 
@@ -558,6 +643,9 @@ class CarlaSimulator(Simulator):
         else:
             scenario = deepcopy(self._pair_replay or self._pair_scenario) if self._pair_scenario is not None else deepcopy(self.scenario)
         scenario.update(deepcopy(dict(environment)))
+        if self.depth_camera is not None:
+            register_pinhole_camera()
+            _use_pinhole_cameras(scenario)
         return scenario
 
     def _apply_connection(self, scenario):
@@ -629,7 +717,31 @@ class CarlaSimulator(Simulator):
                                 if start is not None else set())
 
     def _initialize_sensors(self):
-        """Subclasses create additional sensors here, before the first capture."""
+        """Create the aligned depth camera, if configured, before the first capture."""
+        if self.depth_camera is None:
+            return
+        from queue import Queue
+
+        from avsectester.scenarios.carla_gt import carla_rgb_sensor
+
+        rgb = carla_rgb_sensor(self, self.depth_camera)
+        _require_pinhole_sensor(rgb.object)
+        world = self.client.world
+        blueprint = world.get_blueprint_library().find("sensor.camera.depth")
+        for name in ("image_size_x", "image_size_y", "fov", "lens_k", "lens_kcube",
+                     "lens_circle_falloff", "lens_circle_multiplier", "lens_x_size", "lens_y_size"):
+            if name in rgb.object.attributes:
+                blueprint.set_attribute(name, rgb.object.attributes[name])
+        blueprint.set_attribute("sensor_tick", "0")
+        # Use the spawn-time relative calibration: native get_transform may still be stale
+        # before the first world tick, particularly in scenes without a lead spawn tick.
+        sensor = world.spawn_actor(
+            blueprint, rgb.reference.as_carla_transform(local=True), attach_to=self.ego.actor,
+        )
+        self._resources.callback(sensor.destroy)
+        self._resources.callback(sensor.stop)
+        self._depth_queue = Queue()
+        sensor.listen(self._depth_queue.put)
 
     def _replay_tick(self):
         replay = self._recipe_replay
@@ -732,13 +844,42 @@ class CarlaSimulator(Simulator):
         name = names.get(sensor, sensor)
         carla_rgb_sensor(self, name)  # reject an ambiguous or missing camera
         context = carla_filter_context(self, camera=name, depth=self._view_depth(name))
-        return carla_sensor_view(context, name, self.observe(), self.ground_truth().frame)
+        return carla_sensor_view(context, name, self.observe(), self.state().frame)
 
     def _view_depth(self, camera):
-        """Aligned depth for ``camera``, if this simulator measures it."""
-        return None
+        """Aligned depth for ``camera``, if this runtime measures it."""
+        if camera != self.depth_camera:
+            return None
+        if self.depth_frame != self.client.world.get_snapshot().frame:
+            raise RuntimeError("Refresh the observation before requesting a view")
+        return self.depth
+
+    def selection_context(self):
+        """Legacy: a same-frame filter context with the depth camera's depth."""
+        from avsectester.scenarios.carla_provider import carla_filter_context
+
+        if self.depth_camera is None:
+            raise RuntimeError("selection_context requires CarlaSimulator(depth_camera=...)")
+        if self.depth_frame != self.client.world.get_snapshot().frame:
+            raise RuntimeError("Refresh the observation before requesting a context")
+        return carla_filter_context(
+            self, camera=self.depth_camera, depth=self.depth, observation=self._depth_observation,
+        )
 
     def _observe(self) -> Observation:
+        observation = self._capture_sensors()
+        if self._depth_queue is not None:
+            sample = self._depth_queue.get(timeout=30)
+            while sample.frame < observation.frame:
+                sample = self._depth_queue.get(timeout=30)
+            if sample.frame != observation.frame:
+                raise RuntimeError("CARLA depth and observation frames differ")
+            self.depth = decode_carla_depth(sample)
+            self.depth_frame = sample.frame
+            self._depth_observation = observation
+        return observation
+
+    def _capture_sensors(self) -> Observation:
         for _ in range(self.settle_iters):  # await asynchronous sensor delivery for this frame
             if not self.ego.sensor_data_manager.empty():
                 break
@@ -866,6 +1007,8 @@ class CarlaSimulator(Simulator):
             self._capture = None
             self._world_initialized = False
             self._recipe_replay = None
+            self._depth_queue = None
+            self.depth = self.depth_frame = self._depth_observation = None
 
 
 _FLIP = np.diag([1., -1., 1., 1.])
@@ -917,8 +1060,8 @@ def _trajectory_tick(actor, state, dt):
 class RecipeReplay:
     """Prescribe background motion; release ego to driving commands after pre-roll."""
 
-    def __init__(self, simulator, recipe):
-        self.simulator, self.recipe = simulator, recipe
+    def __init__(self, simulator_runtime, recipe):
+        self.simulator_runtime, self.recipe = simulator_runtime, recipe
         self.index = 0
         self.pre_roll = True
         self.released: set[str] = set()  # actors an attack now controls
@@ -926,8 +1069,8 @@ class RecipeReplay:
     def initialize(self):
         import carla
         for name, spec in self.recipe.motion.items():
-            actor = self.simulator.native["actors"][name]
-            actor.set_autopilot(False, self.simulator.client.traffic_manager_port)
+            actor = self.simulator_runtime.native["actors"][name]
+            actor.set_autopilot(False, self.simulator_runtime.client.traffic_manager_port)
             if spec.trajectory:
                 actor.set_simulate_physics(False)
                 _place(actor, spec.trajectory[0])
@@ -939,10 +1082,10 @@ class RecipeReplay:
         trajectories = {name: spec for name, spec in self.recipe.motion.items() if spec.trajectory}
         if trajectories:
             for name, spec in trajectories.items():
-                _trajectory_tick(self.simulator.native["actors"][name], spec.trajectory[0], self.recipe.time_step)
-            self.simulator.client.tick()
+                _trajectory_tick(self.simulator_runtime.native["actors"][name], spec.trajectory[0], self.recipe.time_step)
+            self.simulator_runtime.client.tick()
         self.origins = {}
-        for name, actor in self.simulator.native["actors"].items():
+        for name, actor in self.simulator_runtime.native["actors"].items():
             v = actor.get_velocity()
             self.origins[name] = ActorState(_FLIP @ np.asarray(actor.get_transform().get_matrix()) @ _FLIP,
                                            (v.x, -v.y, v.z))
@@ -951,12 +1094,12 @@ class RecipeReplay:
     def hold_origin(self):
         for name, state in self.origins.items():
             if name not in self.released:
-                _trajectory_tick(self.simulator.native["actors"][name], state, self.recipe.time_step)
+                _trajectory_tick(self.simulator_runtime.native["actors"][name], state, self.recipe.time_step)
 
     def finish_holding(self):
         for name, spec in self.recipe.motion.items():
             if not spec.trajectory:
-                self.simulator.native["actors"][name].set_enable_gravity(True)
+                self.simulator_runtime.native["actors"][name].set_enable_gravity(True)
 
     def before_step(self):
         if self.index >= self.recipe.decision_steps:
@@ -966,7 +1109,7 @@ class RecipeReplay:
         for identity, motion in self.recipe.motion.items():
             if identity == "ego" and not self.pre_roll or identity in self.released:
                 continue
-            actor = self.simulator.native["actors"][identity]
+            actor = self.simulator_runtime.native["actors"][identity]
             if motion.trajectory:
                 _trajectory_tick(actor, motion.trajectory[self.index + 1], self.recipe.time_step)
             elif identity != "ego":
@@ -987,12 +1130,12 @@ class RecipeReplay:
         self.released.add(identity)
         motion = self.recipe.motion.get(identity)
         if motion is not None and motion.trajectory:
-            actor = self.simulator.native["actors"][identity]
+            actor = self.simulator_runtime.native["actors"][identity]
             actor.set_simulate_physics(True)
             actor.set_enable_gravity(True)
 
     def release_ego(self):
         self.pre_roll = False
         if self.recipe.motion["ego"].trajectory:
-            self.simulator.ego.actor.set_simulate_physics(True)
-            self.simulator.ego.actor.set_enable_gravity(True)
+            self.simulator_runtime.ego.actor.set_simulate_physics(True)
+            self.simulator_runtime.ego.actor.set_enable_gravity(True)

@@ -243,7 +243,7 @@ def test_disk_streaming_releases_consumed_callback_records(tmp_path):
     sizes = []
     def output(obs, ctx):
         ctx.record_output("size", np.ones(1000))
-        sizes.append(len(ctx.simulator._dispatcher.outputs))
+        sizes.append(len(ctx.simulator_runtime._dispatcher.outputs))
         return obs
 
     path = tmp_path / "stream"

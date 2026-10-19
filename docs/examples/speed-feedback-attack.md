@@ -30,7 +30,7 @@ All parameters must be finite.
 
 **Execution.** `hooks` creates a fresh `SpeedFeedbackPlugin` at `observation` for each run. The
 plugin's `reset` clears the bias and feedback history, `transform` adds the bias to `ego_speed`,
-and `after_step` reads `context.ground_truth.ego_speed` and updates the bias. Handler lifecycle and
+and `after_step` reads `context.physical_state.ego_speed` and updates the bias. Handler lifecycle and
 driving-system lifecycle are separate. See [Plugin lifecycle](../reference/runtime.md#plugin-lifecycle)
 and [Keep state and adapt](../guides/attacks.md#keep-state-and-adapt).
 

@@ -105,7 +105,7 @@ def test_runtime_adapter_uses_scene_time_stable_alias_and_current_ego(recorded_d
     true_pose = EgoPose(2, 3, 0.2, t=0.25)
     backend = SimpleNamespace(
         renderer=Renderer(),
-        ground_truth=lambda: WorldSnapshot(true_pose.t, 1, true_pose, true_pose.speed),
+        state=lambda: WorldSnapshot(true_pose.t, 1, true_pose, true_pose.speed),
         render_request=lambda _: RenderRequest(true_pose, dataset.sensor),
     )
     item = Insertion(
@@ -114,8 +114,8 @@ def test_runtime_adapter_uses_scene_time_stable_alias_and_current_ego(recorded_d
         AttachedPlacement("hosts[0]", "rear_center"),
         Orientation("follow_host", (0, 0, 180)),
     )
-    from avsectester.closed_loop.simulators.nurec import NuRecSimulator
-    adapter = NuRecSimulator._insertion_renderer(backend, scene, dataset, [item], bindings={"hosts": ("host",)})
+    from avsectester.closed_loop.simulators.nurec import NuRecSimulatorRuntime
+    adapter = NuRecSimulatorRuntime._insertion_renderer(backend, scene, dataset, [item], bindings={"hosts": ("host",)})
     # A localization/time attack must not move the actual camera or metadata actors.
     obs = Observation(10.0, 99, vehicle_state=EgoPose(100, -100, 2.0, t=10.0))
     actors, victim, transform = adapter.geometry(obs)
@@ -168,8 +168,9 @@ def test_insertion_pipeline_survives_backend_reset_and_drives_from_modified_inpu
     renderer = RecordedRenderer(cameras=[dataset.sensor])
     backend = NuRecSimulator(
         {"dt": 0.1, "camera_aliases": {dataset.sensor: dataset.camera}}, renderer=renderer
-    )
-    clean = backend.reset()
+    ).create_runtime()
+    backend.reset()
+    clean = backend.observe()
     patch = Insertion(
         "patch",
         PlaneAsset(np.full((16, 16, 4), [240, 20, 30, 255], np.uint8), 1, 1),
@@ -181,7 +182,8 @@ def test_insertion_pipeline_survives_backend_reset_and_drives_from_modified_inpu
     trace = run(
         backend, stack, frames=2, perturb=frame_perturbation(adapter, camera=dataset.camera)
     )
-    assert renderer.loads == 2
+    # The runtime renders through its own copy of the configured renderer.
+    assert backend.renderer.loads == 2 and renderer.loads == 0
     assert all(record.throttle == 1 for record in trace.records)
     assert len(stack.received) == 2 and all(image.any() for image in stack.received)
     assert not clean.sensor_data[dataset.camera].any()
@@ -245,7 +247,7 @@ def test_pair_registers_insertion_before_render_service_loads(recorded_dataset, 
     renderer = Renderer(cameras=[dataset.sensor])
     backend = NuRecSimulator(
         {"dt": 0.1, "camera_aliases": {dataset.sensor: dataset.camera}}, renderer=renderer,
-    )
+    ).create_runtime()
     patch = Insertion(
         "patch", PlaneAsset(np.full((16, 16, 4), [240, 20, 30, 255], np.uint8), 1, 1),
         AttachedPlacement("lead", "rear_center", (-0.1, 0, 0)),
@@ -254,7 +256,7 @@ def test_pair_registers_insertion_before_render_service_loads(recorded_dataset, 
     adapters = []
 
     def attacked_runtime(prepared_backend):
-        assert renderer.loads == 0
+        assert prepared_backend.renderer.loads == 0
         adapter = dataset.insertion_renderer(
             scene, prepared_backend, [patch], bindings={"lead": ("host",)},
         )
@@ -264,10 +266,10 @@ def test_pair_registers_insertion_before_render_service_loads(recorded_dataset, 
         ))])
 
     clean, attacked = run_pair(backend, Driver, 2, attacked_runtime=attacked_runtime)
-    assert renderer.loads == 2
+    assert backend.renderer.loads == 2
     assert [record.throttle for record in clean.records] == [0, 0]
     assert [record.throttle for record in attacked.records] == [1, 1]
-    assert adapters[0].camera is renderer.lens
+    assert adapters[0].camera is backend.renderer.lens
     assert adapters[0].resolved[0].host_id == "lead"
     # The recorded clip is read at most once across both runs.
     assert archive_reads in ([], [scene.source["usdz_path"]])
@@ -309,7 +311,7 @@ def test_insertion_uses_effective_render_view_and_time_but_true_victim_pose(reco
     backend = NuRecSimulator({
         "ego0": {"x": 2, "y": 3, "t": 0.25},
         "camera_aliases": {dataset.sensor: dataset.camera},
-    }, renderer=Renderer(cameras=[dataset.sensor]))
+    }, renderer=Renderer(cameras=[dataset.sensor])).create_runtime()
 
     def viewpoint(request, context):
         return RenderRequest(EgoPose(4, 5, 0.3, t=0.5), request.camera)
@@ -325,7 +327,8 @@ def test_insertion_uses_effective_render_view_and_time_but_true_victim_pose(reco
     ])
     session = runtime.session(backend, Stack())
     with session.activate():
-        observation = session.observe(backend.reset())
+        backend.reset()
+        observation = session.observe(backend.observe())
         item = Insertion(
             "object", PlaneAsset(np.full((4, 4, 4), 255, np.uint8), 1, 1),
             WorldPlacement((10, 0, 0)),

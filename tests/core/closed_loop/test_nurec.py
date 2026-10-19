@@ -30,7 +30,7 @@ def test_bicycle_accelerates_brakes_and_turns():
 
 
 def test_backend_loop_drives_in_process_with_stub_renderer():
-    backend = NuRecSimulator({"dt": 0.1}, renderer=StubRenderer(height=120, width=160))
+    backend = NuRecSimulator({"dt": 0.1}, renderer=StubRenderer(height=120, width=160)).create_runtime()
     trace = run(backend, ThrottleStack(), frames=5)
     assert len(trace.records) == 5
     speeds = [r.speed for r in trace.records]
@@ -44,15 +44,20 @@ def test_backend_loop_drives_in_process_with_stub_renderer():
 
 
 def test_restoring_checkpoint_replays_the_same_subsequent_motion():
-    backend = NuRecSimulator({"dt": 0.1, "ego0": {"x": 10.0, "y": -3.0, "yaw": 0.4}})
+    backend = NuRecSimulator({"dt": 0.1, "ego0": {"x": 10.0, "y": -3.0, "yaw": 0.4}}).create_runtime()
     run(backend, ThrottleStack(), frames=3)
     checkpoint = backend.checkpoint()
     controls = [Control(throttle=0.7, steer=0.3), Control(brake=0.2, steer=-0.1)]
-    expected = [backend.step(control) for control in controls]
+
+    def step(control):
+        backend.step(control)
+        return backend.observe()
+
+    expected = [step(control) for control in controls]
 
     backend.restore(checkpoint)
     assert backend.checkpoint() == checkpoint
-    replayed = [backend.step(control) for control in controls]
+    replayed = [step(control) for control in controls]
 
     for actual, original in zip(replayed, expected):
         assert actual.vehicle_state == original.vehicle_state
@@ -62,12 +67,14 @@ def test_restoring_checkpoint_replays_the_same_subsequent_motion():
 
 
 def test_reset_restores_configured_pose_after_a_previous_drive():
-    backend = NuRecSimulator({"dt": 0.1, "ego0": {"x": 10.0, "y": -3.0, "yaw": 0.4}})
-    initial = backend.reset()
+    backend = NuRecSimulator({"dt": 0.1, "ego0": {"x": 10.0, "y": -3.0, "yaw": 0.4}}).create_runtime()
+    backend.reset()
+    initial = backend.observe()
     backend.step(Control(throttle=1.0, steer=0.5))
 
-    restarted = backend.reset()
+    backend.reset()
 
+    restarted = backend.observe()
     assert restarted.frame == 0
     assert restarted.vehicle_state == initial.vehicle_state
 
@@ -125,3 +132,10 @@ def test_trajectory_follower_interpolates_in_rig_then_transforms_to_world(yaw, e
     assert moved.t == pytest.approx(2.15)
     assert moved.speed == pytest.approx(math.sqrt(10) / 0.15)
     assert moved.yaw == pytest.approx(yaw + math.atan2(1, 3))
+
+
+def test_dynamics_changes_stay_in_their_runtime():
+    simulator = NuRecSimulator({"dt": 0.1})
+    changed, other = simulator.create_runtime(), simulator.create_runtime()
+    changed.dynamics.max_brake = 0.0  # what a handler may do through native["dynamics"]
+    assert other.dynamics.max_brake == simulator.dynamics.max_brake == 8.0

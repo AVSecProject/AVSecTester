@@ -19,7 +19,7 @@ from avsectester.closed_loop.datatypes import Control, Observation, RecordedOutp
 
 if TYPE_CHECKING:
     from avsectester.closed_loop.avstack import AVStack
-    from avsectester.closed_loop.simulator import WorldBackend
+    from avsectester.closed_loop.simulator import SimulatorRuntime, WorldBackend
     from avsectester.closed_loop.vehicle_io import VehicleIO
 
 
@@ -89,19 +89,19 @@ class RenderRequest:
 class RunContext:
     """Borrowed run resources. Model, native SDK and metadata access is unrestricted."""
 
-    simulator: WorldBackend
+    simulator_runtime: SimulatorRuntime | WorldBackend
     avstack: AVStack
     case: Any
     rng: np.random.Generator
 
     @property
     def native(self) -> Mapping[str, Mapping[str, Any]]:
-        return {"simulator": self.simulator.native, "avstack": self.avstack.native}
+        return {"simulator_runtime": self.simulator_runtime.native, "avstack": self.avstack.native}
 
 
 @dataclass(frozen=True)
 class StageContext:
-    """One callback invocation and an independent snapshot of its true world state.
+    """One callback invocation and an independent snapshot of the physical state at it.
 
     ``step`` counts driving decisions from zero, independently of simulator frame IDs.
     ``sensor`` identifies a render callback's output sensor. Native resources remain borrowed.
@@ -110,7 +110,7 @@ class StageContext:
     run: RunContext
     step: int
     stage: str
-    ground_truth: WorldSnapshot
+    physical_state: WorldSnapshot
     sensor: str | None = None
     observation: Observation | None = None
     control: Control | None = None
@@ -131,8 +131,8 @@ class StageContext:
         self._output_recorder(self, name, value)
 
     @property
-    def simulator(self) -> WorldBackend:
-        return self.run.simulator
+    def simulator_runtime(self) -> SimulatorRuntime | WorldBackend:
+        return self.run.simulator_runtime
 
     @property
     def avstack(self) -> AVStack:
@@ -152,7 +152,7 @@ class StageContext:
 
     @property
     def sim_time(self) -> float:
-        return self.ground_truth.t
+        return self.physical_state.t
 
 
 class Plugin(ABC):
@@ -228,12 +228,12 @@ class HookSet:
             raise TypeError("avstack.vehicle_io must be VehicleIO")
         return result
 
-    def validate_stages(self, simulator: WorldBackend, avstack: AVStack) -> frozenset[str]:
+    def validate_stages(self, simulator_runtime: SimulatorRuntime | WorldBackend, avstack: AVStack) -> frozenset[str]:
         """Check adapter capabilities without binding a dispatcher or invoking handlers."""
         from avsectester.closed_loop.avstack import validate_command_compatibility
 
-        validate_command_compatibility(simulator, avstack, self)
-        available = HookDispatcher.CORE_STAGES | simulator.supported_stages | avstack.supported_stages
+        validate_command_compatibility(simulator_runtime, avstack, self)
+        available = HookDispatcher.CORE_STAGES | simulator_runtime.supported_stages | avstack.supported_stages
         if self._vehicle_io(avstack).localizer is not None:
             available |= {"localization.pre"}
         unknown = {hook.stage for hook in self.hooks} - available
@@ -252,14 +252,14 @@ class HookSet:
             raise ValueError("Plugin setup_ticks must be nonnegative integers")
         return sum(counts)
 
-    def session(self, simulator: WorldBackend, avstack: AVStack, perturb: Callable[[Observation], Observation] | None = None) -> HookDispatcher:
+    def session(self, simulator_runtime: SimulatorRuntime | WorldBackend, avstack: AVStack, perturb: Callable[[Observation], Observation] | None = None) -> HookDispatcher:
         """Create one execution session, validating capabilities before resetting the world."""
         hook_set = self
         if perturb is not None:
             from avsectester.interventions import ObservationTransform
 
             hook_set = self.with_hooks([Hook("observation", ObservationTransform(perturb))], prepend=True)
-        return HookDispatcher(hook_set, simulator, avstack)
+        return HookDispatcher(hook_set, simulator_runtime, avstack)
 
 
 class Runtime(HookSet):
@@ -312,16 +312,16 @@ class HookDispatcher:
     """One bound run. Custom adapters publish supported stages through ``emit``."""
     CORE_STAGES = frozenset({"sensors.post", "localization.post", "observation", "command"})
 
-    def __init__(self, hook_set: HookSet, simulator: WorldBackend, avstack: AVStack) -> None:
+    def __init__(self, hook_set: HookSet, simulator_runtime: SimulatorRuntime | WorldBackend, avstack: AVStack) -> None:
         self.hook_set = hook_set
-        self.context = RunContext(simulator, avstack, hook_set.case, np.random.default_rng(hook_set.seed))
+        self.context = RunContext(simulator_runtime, avstack, hook_set.case, np.random.default_rng(hook_set.seed))
         self.vehicle_io = hook_set._vehicle_io(avstack)
         self.step = 0
         self.observation: Observation | None = None
         self.control: Control | None = None
         self.outputs: list[RecordedOutput] = []
         self._active = False
-        self.available = hook_set.validate_stages(simulator, avstack)
+        self.available = hook_set.validate_stages(simulator_runtime, avstack)
         self._handlers: dict[str, list[Any]] = {}
         for hook in hook_set.hooks:
             self._handlers.setdefault(hook.stage, []).append(hook.handler)
@@ -339,11 +339,11 @@ class HookDispatcher:
         resources = ExitStack()
         failure = None
         try:
-            simulator = self.context.simulator
-            previous_ticks = simulator.setup_ticks
-            simulator.setup_ticks = max(previous_ticks, self.hook_set.setup_ticks)
-            resources.callback(setattr, simulator, "setup_ticks", previous_ticks)
-            resources.enter_context(simulator.bind_hooks(self))
+            simulator_runtime = self.context.simulator_runtime
+            previous_ticks = simulator_runtime.setup_ticks
+            simulator_runtime.setup_ticks = max(previous_ticks, self.hook_set.setup_ticks)
+            resources.callback(setattr, simulator_runtime, "setup_ticks", previous_ticks)
+            resources.enter_context(simulator_runtime.bind_hooks(self))
             resources.enter_context(self.context.avstack.bind_hooks(self))
             for handler in self.participants:
                 close = getattr(handler, "close", None)
@@ -367,9 +367,13 @@ class HookDispatcher:
                 failure.add_note(f"Hook cleanup also failed: {error!r}")
 
     def stage_context(self, stage: str, sensor: str | None = None) -> StageContext:
-        truth = self.context.simulator.ground_truth()
+        from avsectester.closed_loop.simulator import SimulatorRuntime
+
+        simulator_runtime = self.context.simulator_runtime
+        physical_state = (simulator_runtime.state() if isinstance(simulator_runtime, SimulatorRuntime)
+                          else simulator_runtime.ground_truth())  # legacy WorldBackend
         return StageContext(
-            self.context, self.step, stage, truth, sensor,
+            self.context, self.step, stage, physical_state, sensor,
             self.observation, self.control if stage == "command" else deepcopy(self.control),
             self.record_output,
         )
@@ -379,7 +383,7 @@ class HookDispatcher:
             raise RuntimeError("Outputs can only be recorded from an active hook callback")
         self.outputs.append(RecordedOutput(
             name=name, value=deepcopy(value), step=context.step, stage=context.stage,
-            frame=context.ground_truth.frame, t=context.sim_time, sensor=context.sensor,
+            frame=context.physical_state.frame, t=context.sim_time, sensor=context.sensor,
         ))
 
     def drain_outputs(self) -> list[RecordedOutput]:
@@ -432,13 +436,13 @@ class HookDispatcher:
         self.control = control
         control = self.emit("command", control)
         self._require(control, Control, "command")
-        self.context.simulator.validate_command(control)
+        self.context.simulator_runtime.validate_command(control)
         self.control = control
         return control
 
     def after_step(self, observation: Observation) -> None:
         # Feedback sees the next raw measurement, before input transforms for the next decision.
-        self.observation = self.context.simulator.copy_observation(observation)
+        self.observation = self.context.simulator_runtime.copy_observation(observation)
         for handler in self.participants:
             callback = getattr(handler, "after_step", None)
             if callback is not None:
@@ -447,7 +451,7 @@ class HookDispatcher:
                 context = self.stage_context("step.end")
                 callback(replace(
                     context,
-                    observation=self.context.simulator.copy_observation(self.observation),
+                    observation=self.context.simulator_runtime.copy_observation(self.observation),
                 ))
 
     @staticmethod

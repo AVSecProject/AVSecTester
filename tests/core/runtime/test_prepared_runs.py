@@ -12,12 +12,12 @@ from avsectester.closed_loop.hooks import Hook, Plugin, Runtime
 from avsectester.scenarios.requirement import ScenarioMatch
 from avsectester.scenarios.scene import EgoState, ObjectGT, SceneGT
 from avsectester.scenarios.source import ScenarioInstance
-from avsectester.closed_loop.simulators.nurec import NuRecSimulator, StubRenderer
+from avsectester.closed_loop.simulators.nurec import NuRecSimulatorRuntime, NuRecSimulator, StubRenderer
 
 
-class MemoryWorld(NuRecSimulator):
+class MemoryWorld(NuRecSimulatorRuntime):
     def __init__(self):
-        super().__init__({"dt": 0.1}, renderer=StubRenderer(height=2, width=3))
+        super().__init__(NuRecSimulator({"dt": 0.1}, renderer=StubRenderer(height=2, width=3)))
         self.prepares = self.resets = self.closes = 0
 
     def prepare_clean_attack_pair(self):

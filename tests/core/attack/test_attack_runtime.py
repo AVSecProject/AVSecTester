@@ -13,7 +13,7 @@ from avsectester.attack.runtime import (
 )
 from avsectester.closed_loop.datatypes import Control, Observation, WorldSnapshot
 from avsectester.closed_loop.hooks import HookDispatcher, UnsupportedStageError
-from avsectester.closed_loop.simulator import SensorView, Simulator
+from avsectester.closed_loop.simulator import SensorView, Simulator, SimulatorRuntime
 
 
 AVAILABLE = HookDispatcher.CORE_STAGES | {
@@ -29,14 +29,21 @@ def data(step=0, stage="step"):
     )
 
 
-class World(Simulator):
-    """A simulator double with native access and a deployment tick counter."""
+class WorldSimulator(Simulator):
+    def create_runtime(self, seed=None):
+        return World()
+
+
+class World(SimulatorRuntime):
+    """A simulator runtime double with native access and a deployment tick counter."""
 
     def __init__(self):
-        super().__init__()
+        super().__init__(WorldSimulator())
         self._native = {"objects": []}
         self.ticks = 0
         self.frame = 41
+        # Tests drive dispatcher.setup directly, as if inside reset's simulator.setup.
+        self._resetting = True
 
     @property
     def native(self):
@@ -46,18 +53,27 @@ class World(Simulator):
         self.ticks += 1
         self.frame += 1
 
-    def ground_truth(self):
+    def _state(self):
         return WorldSnapshot(7.0, self.frame)
 
     def sensor_view(self, sensor):
         return SensorView(sensor, np.zeros((2, 2, 3), np.uint8), None, np.eye(4), {}, None, 7.0, 41)
 
+    def _initialize_world(self, start, initialization, environment):
+        pass
 
-def emit(dispatcher, stage, value, context, simulator=None):
+    def _advance_native(self, control):
+        pass
+
+    def _observe(self):
+        return Observation(7.0, self.frame)
+
+
+def emit(dispatcher, stage, value, context, simulator_runtime=None):
     native = SimpleNamespace(
         step=context.step, stage=stage, sim_time=context.sim_time,
-        ground_truth=context.physical_state or WorldSnapshot(context.sim_time, context.frame),
-        simulator=simulator,
+        physical_state=context.physical_state or WorldSnapshot(context.sim_time, context.frame),
+        simulator_runtime=simulator_runtime,
     )
     for hook in dispatcher.hooks:
         if hook.stage == stage:
@@ -242,7 +258,7 @@ def test_world_effects_from_step_apply_before_the_world_step():
     dispatcher.step(data())
     dispatcher.finish_decision()
     assert world.native["objects"] == []
-    emit(dispatcher, "simulator.step.pre", None, data(), simulator=world)
+    emit(dispatcher, "simulator.step.pre", None, data(), simulator_runtime=world)
     assert world.native["objects"] == ["moved"]
     assert dispatcher.receipts[-1]["stage"] == "simulator.step.pre"
     dispatcher.stop()

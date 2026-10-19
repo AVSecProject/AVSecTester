@@ -24,7 +24,7 @@ from avsectester.closed_loop.frame_data import Initialization, FrameDataCache, F
 from avsectester.closed_loop.resources import reserve, simulator_key
 from avsectester.runlog import Recorder, RunLog
 from avsectester.closed_loop.hooks import HookSet
-from avsectester.closed_loop.simulator import DeploymentPlan, SensorView, Simulator
+from avsectester.closed_loop.simulator import DeploymentPlan, SensorView, Simulator, SimulatorRuntime
 
 
 @dataclass(frozen=True)
@@ -64,7 +64,7 @@ class SensorRequest:
 class RenderRequest:
     """Capture ``sensor_id`` at ``frame`` with attack effects applied.
 
-    World attack effects are applied at the simulator's simulator.setup, within the services'
+    World attack effects are applied at the simulator.setup stage, within the services'
     deployment plan, so they are visible in the capture. Sensor attack effects then change the
     captured data. Component attack effects need a rollout and are rejected.
     """
@@ -178,16 +178,16 @@ class DrivingAdapter:
 
 
 class _WorldSetup:
-    """Apply world attack effects at simulator.setup when no driving run binds the simulator."""
+    """Apply world attack effects at simulator.setup when no driving run binds the runtime."""
 
-    def __init__(self, simulator: Simulator, effects: Sequence[WorldAttackEffect],
+    def __init__(self, simulator_runtime: SimulatorRuntime, effects: Sequence[WorldAttackEffect],
                  resources: ExitStack) -> None:
-        self.simulator, self.effects, self.resources = simulator, tuple(effects), resources
+        self.simulator_runtime, self.effects, self.resources = simulator_runtime, tuple(effects), resources
 
     def emit(self, stage: str, value: Any, sensor: str | None = None) -> Any:
         if stage == "simulator.setup":
             for effect in self.effects:
-                effect.apply(self.simulator, self.resources)
+                effect.apply(self.simulator_runtime, self.resources)
         return value
 
 
@@ -206,16 +206,15 @@ def _close(resource: Any) -> None:
 
 class ClosedLoopServices:
     def __init__(
-        self, dataset: Dataset, simulator_factory: Callable[[ScenarioStart, int], Simulator],
+        self, dataset: Dataset, simulator: Simulator,
         driving_adapter: DrivingAdapter | None = None, frame_data_cache: FrameDataCache | None = None,
-        *, simulator_type: type[Simulator],
-        deployment: DeploymentPlan = DeploymentPlan(),
+        *, deployment: DeploymentPlan = DeploymentPlan(),
     ) -> None:
+        """``simulator`` is a configured ``Simulator``; each operation runs in its own runtime."""
         self.dataset = dataset
-        if not issubclass(simulator_type, Simulator):
-            raise TypeError("Services require a Simulator class and a lazy simulator factory")
-        self.simulator_factory = simulator_factory
-        self.simulator_type = simulator_type
+        if not isinstance(simulator, Simulator):
+            raise TypeError("Services require a configured Simulator")
+        self.simulator = simulator
         self.deployment = deployment
         self.driving_adapter = driving_adapter
         self.frame_data_cache = frame_data_cache if frame_data_cache is not None else FrameDataCache()
@@ -224,7 +223,7 @@ class ClosedLoopServices:
     def capabilities(self) -> ClosedLoopCapabilities:
         driver = self.driving_adapter
         return ClosedLoopCapabilities(
-            self.simulator_type.dataset_kinds, True, self.simulator_type.can_render,
+            self.simulator.dataset_kinds, True, self.simulator.can_render,
             driver is not None,
             tuple(deepcopy(pair[0]) for pair in driver.component_bindings.values()) if driver else (),
             tuple(deepcopy(pair[0]) for pair in driver.scorer_bindings.values()) if driver else (),
@@ -293,35 +292,35 @@ class ClosedLoopSession:
                         environment: Mapping[str, Any]) -> ScenarioStart:
         return self.services.dataset.scenario_start(scenario, frame)
 
-    def _simulator(self, resources: ExitStack, start: ScenarioStart) -> Simulator:
-        # Factories construct configuration-only objects. Native world creation happens at reset.
-        simulator = _fresh(self.services.simulator_factory(start, self.seed))
-        if not isinstance(simulator, self.services.simulator_type):
-            raise TypeError("Simulator factory returned a different simulator type")
-        # Callbacks run in reverse order: close the simulator, then release its reservation, so no
+    def _simulator_runtime(self, resources: ExitStack, start: ScenarioStart) -> SimulatorRuntime:
+        # Every operation gets a new runtime. Native world creation happens at reset.
+        self.services.simulator.validate_start(start)
+        simulator_runtime = _fresh(self.services.simulator.create_runtime(self.seed))
+        if not isinstance(simulator_runtime, SimulatorRuntime):
+            raise TypeError("Simulator.create_runtime must return a SimulatorRuntime")
+        # Callbacks run in reverse order: close the runtime, then release its reservation, so no
         # other operation can reset this server while its actors are still being destroyed.
         reservation = ExitStack()
         resources.callback(reservation.close)
-        resources.callback(_close, simulator)
-        simulator.validate_start(start)
-        reservation.enter_context(reserve(simulator_key(simulator), self))
-        simulator.resource_owner = self
-        return simulator
+        resources.callback(_close, simulator_runtime)
+        reservation.enter_context(reserve(simulator_key(simulator_runtime), self))
+        simulator_runtime.resource_owner = self
+        return simulator_runtime
 
     def _sequence(self, scenario: str, environment: Mapping[str, Any]) -> FrameDataSequence:
         dataset = self.services.dataset
         frames = tuple(dataset.frames(scenario))
         start = self._scenario_start(scenario, frames[0], environment)
         with self._operation() as resources:
-            simulator = self._simulator(resources, start)
+            simulator_runtime = self._simulator_runtime(resources, start)
             key = FrameDataCache.key(start, {
-                **simulator.identity, "environment": dict(environment),
+                **simulator_runtime.identity, "environment": dict(environment),
                 "deployment_ticks": self.services.deployment.ticks,
             }, self.seed)
 
             def generate() -> FrameDataSequence:
-                with simulator.exclusive():
-                    sequence = simulator.generate_frame_data(
+                with simulator_runtime.exclusive():
+                    sequence = simulator_runtime.generate_frame_data(
                         start, frames, environment=environment, deployment=self.services.deployment)
                 if tuple(record.frame for record in sequence.frames) != frames:
                     raise ValueError("Frame data generation must preserve every dataset frame")
@@ -347,11 +346,11 @@ class ClosedLoopSession:
                               provenance=sequence.provenance)
 
     def _provenance(self, start: ScenarioStart, environment: Mapping[str, Any],
-                    simulator: Simulator | None = None) -> dict[str, Any]:
+                    simulator_runtime: SimulatorRuntime | None = None) -> dict[str, Any]:
         return {"start_frame": asdict(start.frame), "seed": self.seed,
                 "environment": deepcopy(dict(environment)),
-                "simulator": deepcopy(dict(simulator.identity)) if simulator is not None else {
-                    "simulator": self.services.simulator_type.__name__},
+                "simulator": deepcopy(dict(simulator_runtime.identity)) if simulator_runtime is not None else {
+                    "simulator": type(self.services.simulator).__name__},
                 "dataset_time_step": start.payload.get("time_step"),
                 "interpolation": start.payload.get("interpolation")}
 
@@ -359,21 +358,22 @@ class ClosedLoopSession:
         start = self._scenario_start(request.scenario_id, request.frame, request.environment)
         initialization = self._initialization(start, request.environment)
         with self._operation() as resources:
-            simulator = self._simulator(resources, start)
-            with simulator.exclusive():
-                simulator.reset_world(start, initialization, environment=request.environment,
-                                    deployment=self.services.deployment)
-                observation = simulator.observe()
+            simulator_runtime = self._simulator_runtime(resources, start)
+            with simulator_runtime.exclusive():
+                simulator_runtime.reset(start, initialization, environment=request.environment,
+                                        deployment=self.services.deployment)
+                observation = simulator_runtime.observe()
                 missing = set(request.sensor_ids) - observation.sensor_data.keys()
                 if missing:
                     raise ValueError(f"Unavailable sensors: {sorted(missing)}")
                 observation.sensor_data = {key: observation.sensor_data[key] for key in request.sensor_ids}
                 observation.calibration = {key: value for key, value in observation.calibration.items()
                                            if key in request.sensor_ids}
-                return SensorSample(start.frame, observation, self._provenance(start, request.environment, simulator))
+                return SensorSample(start.frame, observation,
+                                    self._provenance(start, request.environment, simulator_runtime))
 
     def render(self, request: RenderRequest) -> RenderResult:
-        if not self.services.simulator_type.can_render:
+        if not self.services.simulator.can_render:
             raise NotImplementedError("The simulator does not provide sensor views")
         world = [e for e in request.effects if isinstance(e, WorldAttackEffect)]
         sensor = [e for e in request.effects if isinstance(e, SensorAttackEffect)]
@@ -382,25 +382,25 @@ class ClosedLoopSession:
         start = self._scenario_start(request.scenario_id, request.frame, request.environment)
         initialization = self._initialization(start, request.environment)
         with self._operation() as resources:
-            simulator = self._simulator(resources, start)
-            with simulator.exclusive():
-                # Effects register their removal on resources, which close before the simulator.
-                with simulator.bind_hooks(_WorldSetup(simulator, world, resources)):
-                    simulator.reset_world(start, initialization, environment=request.environment,
-                                        deployment=self.services.deployment)
-                observation = simulator.observe()
-                views = {request.sensor_id: simulator.sensor_view(request.sensor_id)}
+            simulator_runtime = self._simulator_runtime(resources, start)
+            with simulator_runtime.exclusive():
+                # Effects register their removal on resources, which close before the runtime.
+                with simulator_runtime.bind_hooks(_WorldSetup(simulator_runtime, world, resources)):
+                    simulator_runtime.reset(start, initialization, environment=request.environment,
+                                            deployment=self.services.deployment)
+                observation = simulator_runtime.observe()
+                views = {request.sensor_id: simulator_runtime.sensor_view(request.sensor_id)}
                 data: dict[str, Any] = {}
                 for effect in sensor:
                     if effect.sensor not in views:
-                        views[effect.sensor] = simulator.sensor_view(effect.sensor)
+                        views[effect.sensor] = simulator_runtime.sensor_view(effect.sensor)
                     view = views[effect.sensor]
                     data[effect.sensor] = effect.apply(data.get(effect.sensor, view.data), view)
                 for name, value in data.items():
                     observation = write_camera_rgb(observation, views[name].sensor, value)
                 return RenderResult(
                     start.frame, observation, replace(views[request.sensor_id], native={}),
-                    self._provenance(start, request.environment, simulator))
+                    self._provenance(start, request.environment, simulator_runtime))
 
     def components(self) -> Sequence[ComponentDescriptor]:
         self._check()
@@ -454,7 +454,7 @@ class ClosedLoopSession:
             initialization = self._initialization(start, request.environment)
         except BaseException as error:
             # Frame data generation precedes runner construction, but failed generation evidence
-            # still belongs to the requested run and must survive without a live simulator.
+            # still belongs to the requested run and must survive without a live simulator runtime.
             recorder = None
             try:
                 from avsectester.runlog.codecs import default_codecs
@@ -479,18 +479,18 @@ class ClosedLoopSession:
                         error.add_note(f"Reference log cleanup also failed: {abort_error!r}")
             raise
         with self._operation() as resources:
-            simulator = self._simulator(resources, start)
+            simulator_runtime = self._simulator_runtime(resources, start)
             avstack = self._avstack(resources)
             attacks: tuple[Any, ...] = ()
             if request.attack is not None:
                 attack_runtime = _fresh(request.attack.create_runtime(segment, request.artifacts))
                 attacks = (attack_runtime,)
-            return ClosedLoopRunner().run(simulator, avstack, RunRequest(
+            return ClosedLoopRunner().run(simulator_runtime, avstack, RunRequest(
                 request.decision_steps, hooks=HookSet(seed=self.seed),
                 attacks=attacks, recording=request.recording,
                 output_path=request.output_path, start=start, initialization=initialization,
                 environment=request.environment, deployment=self.services.deployment,
-                metadata={**self._provenance(start, request.environment, simulator), "candidate": asdict(segment)},
+                metadata={**self._provenance(start, request.environment, simulator_runtime), "candidate": asdict(segment)},
             ), release_owned_resources=resources.close)
 
 

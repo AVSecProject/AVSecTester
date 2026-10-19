@@ -17,7 +17,7 @@ from avsectester.closed_loop.hooks import _StageAdapter
 
 if TYPE_CHECKING:
     from avsectester.closed_loop.hooks import HookSet
-    from avsectester.closed_loop.simulator import WorldBackend
+    from avsectester.closed_loop.simulator import SimulatorRuntime, WorldBackend
     from avsectester.closed_loop.vehicle_io import VehicleIO
 
 
@@ -69,14 +69,14 @@ class CommandCompatibilityError(ValueError):
 
 
 def validate_command_compatibility(
-    simulator: WorldBackend, avstack: AVStack, hooks: HookSet | None = None,
+    simulator_runtime: SimulatorRuntime | WorldBackend, avstack: AVStack, hooks: HookSet | None = None,
 ) -> None:
     """Check declared commands before world setup, allowing explicit hook conversion.
 
     A command-stage handler may translate the AVStack output into a different representation.
     In that case only the final command is checked, after all handlers have run.
     """
-    accepted, produced = simulator.command_modes, avstack.command_modes
+    accepted, produced = simulator_runtime.command_modes, avstack.command_modes
     if accepted is None or produced is None:
         return
     if hooks is not None and any(hook.stage == "command" for hook in hooks.hooks):
@@ -85,5 +85,5 @@ def validate_command_compatibility(
     if missing:
         raise CommandCompatibilityError(
             f"{type(avstack).__name__} produces {sorted(missing)} commands unsupported by "
-            f"{type(simulator).__name__}. Select compatible dynamics or add a command conversion hook."
+            f"{type(simulator_runtime).__name__}. Select compatible dynamics or add a command conversion hook."
         )

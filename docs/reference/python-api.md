@@ -49,13 +49,14 @@ records, outputs and provenance is described in
 
 ### Adapter interfaces
 
-`avsectester.closed_loop.simulator` defines `WorldBackend`, the legacy world interface and the
-base of `Simulator`, and `avsectester.closed_loop.avstack` defines `AVStack`.
+`avsectester.closed_loop.simulator` defines the simulator interface, `Simulator` and
+`SimulatorRuntime` (see [Simulator](#simulator)), and the legacy single-class `WorldBackend`, which
+the runner still accepts. `avsectester.closed_loop.avstack` defines `AVStack`.
 [Write a custom simulator adapter](../guides/simulators.md#write-a-custom-simulator-adapter) and
 [Use a custom driving system](../guides/driving-systems.md#use-a-custom-driving-system) describe
 how to implement them.
 
-`WorldBackend` members:
+Legacy `WorldBackend` members:
 
 | Member | Returns or does |
 |---|---|
@@ -90,7 +91,7 @@ def validate_command_modes(command: Control, modes: frozenset[str] | None) -> No
 
 # avsectester.closed_loop.avstack
 def validate_command_compatibility(
-    simulator: WorldBackend, avstack: AVStack, hooks: HookSet | None = None,
+    simulator_runtime: SimulatorRuntime | WorldBackend, avstack: AVStack, hooks: HookSet | None = None,
 ) -> None: ...
 class CommandCompatibilityError(ValueError): ...
 ```
@@ -103,25 +104,43 @@ has a `command` hook. The rules are in [Command compatibility](runtime.md#comman
 
 ### Simulator
 
-`avsectester.closed_loop.simulator.Simulator` is the base of every supplied simulator
-(`CarlaSimulator`, `NuRecSimulator`, `RecordedReplaySimulator`). It subclasses `WorldBackend` and
-owns the shared capture lifecycle; subclasses implement native initialization, one native advance
-and one native capture, and cannot override the legacy `reset` or `step`.
+A simulator has two parts in `avsectester.closed_loop.simulator`:
+
+- `Simulator` is the configured simulator: settings and declarations, without world state. It can
+  be reused. The supplied ones are `CarlaSimulator`, `NuRecSimulator` and `RecordedReplaySimulator`.
+- `SimulatorRuntime` is one live world of a simulator: world state, clock, current capture and
+  native connections. `Simulator.create_runtime(seed=None)` creates one for each run or service
+  operation; the creator closes it, also with `with simulator.create_runtime() as runtime:`.
+  `reset` starts a run and may be called again for a further run on the same world. The supplied
+  runtimes are `CarlaSimulatorRuntime`, `NuRecSimulatorRuntime` and `RecordedReplaySimulatorRuntime`.
+
+`Simulator` members:
 
 | Member | Returns or does |
 |---|---|
-| `reset_world(start=None, initialization=None, *, deployment=None, environment=None) -> None` | Resets from a `ScenarioStart` or the configured origin, runs the pre-roll and the deployment window (`simulator.setup` and its ticks), then captures. See [selected-origin initialization](../guides/scenarios.md#selected-origin-deployment-and-reset-ownership) |
-| `observe() -> Observation` | Independent view of the current capture, without a tick or repeated render hooks |
-| `advance(command: Control) -> None` | Emits `simulator.step.pre`, advances once, emits `simulator.step.post` and captures |
-| `state() -> WorldSnapshot` | Independent physical state without advancing time; also available during a reset |
+| `create_runtime(seed: int \| None = None) -> SimulatorRuntime` | Abstract. A new live world with this configuration. CARLA uses `seed` as the client seed when the scenario sets none; NuRec and recorded replay are deterministic and ignore it |
+| `validate_start(start) -> None` | Rejects a `ScenarioStart` of another dataset kind or time step before any world exists |
+| `dataset_kinds`, `decision_time_step`, `capture_ticks`, `can_render`, `command_modes`, `supported_stages`, `identity` | Accepted `ScenarioStart` kinds (dataset class names such as `NuRecDataset`), decision step, ticks between `simulator.setup` and the first capture, sensor-view support, accepted command modes, emitted stages, and the identity used in provenance and cache keys |
+
+`SimulatorRuntime` members (declarations are read from its `simulator`):
+
+| Member | Returns or does |
+|---|---|
+| `reset(start=None, initialization=None, *, deployment=None, environment=None) -> None` | Starts a run from a `ScenarioStart` or the configured origin: native initialization, pre-roll, the deployment window (`simulator.setup` and its ticks), the capture ticks and the first capture. See [selected-origin initialization](../guides/scenarios.md#selected-origin-deployment-and-reset-ownership) |
+| `step(command: Control) -> None` | Emits `simulator.step.pre`, advances one decision, emits `simulator.step.post` and captures |
+| `observe() -> Observation` | Independent copy of the current capture, without a tick or repeated render hooks |
+| `state() -> WorldSnapshot` | Independent physical state of the ego and, in `actors`, the other actors, without advancing time. Available after a reset and during a reset or step, so stage handlers can read it |
 | `clock` | Frozen `ClockSnapshot(t: float, frame: int)` of physical simulator time and frame |
 | `exclusive()` | Context manager reserving the world in this process; nested operations raise `RuntimeError`. `resource_owner`, when set, owns the reservation |
-| `sensor_view(sensor: str) -> SensorView` | The view of the current capture of `sensor`. The base raises `NotImplementedError`; CARLA and NuRec implement it and set `can_render = True` |
+| `sensor_view(sensor: str) -> SensorView` | The view of the current capture of `sensor`. The base raises `NotImplementedError`; CARLA and NuRec implement it |
 | `control_actor(actor_id: str, control: Control) -> None` | Drives another actor with an actuator command from the next world step; it stops following its prescribed or traffic-manager motion. CARLA only; the ego is rejected |
 | `set_actor_state(actor_id: str, state: ActorState) -> None` | Places another actor at a canonical world state, visible from the next capture; it stops following its prescribed motion. CARLA only; the ego is rejected |
 | `setup_tick() -> None` | Consumes one deployment tick; only during `simulator.setup` |
-| `generate_frame_data(start, frames, *, environment=None, deployment=None) -> FrameDataSequence` | Records actual frame data by replaying the start's prescribed motion over consecutive `frames` beginning at `start.frame`, without hooks, attacks or a driving system. Shared by all simulators; a simulator supports it by implementing `_replay_tick` and `_capture_frame_data` (CARLA and recorded replay). Used for datasets without frame data, such as CARLA recipes |
-| `dataset_kinds`, `decision_time_step`, `capture_ticks`, `identity` | Accepted `ScenarioStart` kinds (dataset class names such as `NuRecDataset`), decision step, ticks between `simulator.setup` and the first capture, and the identity used in provenance and cache keys |
+| `generate_frame_data(start, frames, *, environment=None, deployment=None) -> FrameDataSequence` | Records actual frame data by replaying the start's prescribed motion over consecutive `frames` beginning at `start.frame`, without hooks, attacks or a driving system. Shared by all runtimes; a runtime supports it by implementing `_replay_tick` and `_capture_frame_data` (CARLA and recorded replay). Used for datasets without frame data, such as CARLA recipes |
+| `close() -> None` | Releases the world and native connections |
+
+Concrete runtimes implement `_initialize_world`, `_advance_native`, `_observe` and `_state`, and
+cannot override `reset` or `step`.
 
 ```python
 # avsectester.closed_loop.simulator
@@ -177,8 +196,8 @@ class RunRequest:
 class ClosedLoopRunner:
     def run(
         self,
-        simulator: Simulator | WorldBackend,
-        driving_system: AVStack,
+        simulator_runtime: SimulatorRuntime | WorldBackend,
+        avstack: AVStack,
         request: RunRequest,
         *,
         recorder: Recorder | None = None,
@@ -196,8 +215,8 @@ def trace_from_log(log: RunLog) -> Trace: ...
 compatibility name). `attacks` supplies already-created online `AttackRuntime` instances; the runner
 applies their attack effects at their points of action and records each request and receipt in the
 step's `effects`. `start`, `initialization`, `deployment` and `environment` are passed to
-`Simulator.reset_world`. The runner owns the per-run lifecycle, while simulator and driving-system
-instances remain caller-owned. It checks stages/command compatibility, transforms the first input
+`SimulatorRuntime.reset`. The runner owns the per-run lifecycle, while the simulator runtime and the
+AVStack remain caller-owned: create the runtime with `Simulator.create_runtime()` and close it. It checks stages/command compatibility, transforms the first input
 once, resets driving history with that same input and records each completed decision.
 
 `RecordingPolicy` selects named sensors and `"raw"`/`"model_input"` representations. It records
@@ -410,8 +429,8 @@ How to read these records is described in
 
 | Class | Constructor | Guide |
 |---|---|---|
-| `CarlaSimulator` (`avsectester.closed_loop.simulators.carla`) | `CarlaSimulator(scenario: dict, settle_iters: int = 100)` | [CARLA](../guides/simulators.md#carla) |
-| `NuRecSimulator` (`avsectester.closed_loop.simulators.nurec`) | `NuRecSimulator(config: dict, renderer: Renderer \| None = None, dynamics: EgoDynamics \| None = None)` | [NuRec](../guides/simulators.md#nurec) |
+| `CarlaSimulator` (`avsectester.closed_loop.simulators.carla`) | `CarlaSimulator(scenario: dict, settle_iters: int = 100, *, simulator_version="0.9.16", depth_camera: str \| None = None)`. `depth_camera` adds an aligned depth camera to that ego RGB camera and replaces stock RGB cameras with undistorted `PinholeRgbCamera` sensors | [CARLA](../guides/simulators.md#carla) |
+| `NuRecSimulator` (`avsectester.closed_loop.simulators.nurec`) | `NuRecSimulator(config: dict, renderer: Renderer \| None = None, dynamics: EgoDynamics \| None = None)`. `renderer` is a configuration template: each runtime renders through its own `renderer.copy()` | [NuRec](../guides/simulators.md#nurec) |
 | `StubRenderer` | `StubRenderer(cameras: list[str] \| None = None, height: int = 480, width: int = 640)` | [Renderers](../guides/simulators.md#renderers) |
 | `NuRecRenderer` | `NuRecRenderer(endpoint: str = "127.0.0.1:50051", scene_id: str \| None = None, cameras: list[str] = ["camera_front_wide_120fov"], calibration: dict = {}, image_quality: float = 95.0, start_timestamp_us: int \| None = None, start_transform: Any = None)` | [Renderers](../guides/simulators.md#renderers) |
 | `Renderer` | Abstract base: `load_scene(scene)`, `render(pose, camera)` (abstract), `close()` | [Renderers](../guides/simulators.md#renderers) |
@@ -590,15 +609,15 @@ class Plugin(ABC):
 | `Runtime(...)` | Stores `hooks` as a tuple in registration order, an optional localizer, the default `context.case` and the handler random seed, as the attributes `hooks`, `localizer`, `case` and `seed` | `TypeError` for an entry that is not a `Hook`, or a localizer that is neither callable nor has `transform` |
 | `Runtime.from_config(config, *, case)` | Builds a runtime from a `runtime` configuration mapping, not the whole document. Same as `runtime_from_config` | `ValueError`. See [runtime keys](configuration.md#runtime) |
 | `with_hooks(hooks, *, prepend)` | A new `Runtime` with `hooks` appended, or prepended, keeping localizer, case and seed | — |
-| `validate_stages(simulator, avstack)` | Checks command compatibility and that every hook stage is available. Returns the available stages | `CommandCompatibilityError`, `UnsupportedStageError` |
+| `validate_stages(simulator_runtime, avstack)` | Checks command compatibility and that every hook stage is available. Returns the available stages | `CommandCompatibilityError`, `UnsupportedStageError` |
 | `setup_ticks` | Sum of `setup_ticks` declared by the distinct `simulator.setup` handlers | `ValueError` for a negative or non-integer count |
-| `session(simulator, avstack, perturb)` | A `HookDispatcher` for one run. A `perturb` function is prepended as an `ObservationTransform` at `observation` | As `validate_stages` |
+| `session(simulator_runtime, avstack, perturb)` | A `HookDispatcher` for one run. A `perturb` function is prepended as an `ObservationTransform` at `observation` | As `validate_stages` |
 | `Plugin` | Base class for stateful handlers. Only `transform` is abstract. See [Plugin lifecycle](runtime.md#plugin-lifecycle) | — |
 
 | Class | Signature | Notes |
 |---|---|---|
-| `RunContext` | `RunContext(simulator: WorldBackend, avstack: AVStack, case: Any, rng: np.random.Generator)` | Frozen. Property `native`. See [Contexts](runtime.md#contexts) |
-| `StageContext` | `StageContext(run: RunContext, step: int, stage: str, ground_truth: WorldSnapshot, sensor: str \| None = None, observation: Observation \| None = None, control: Control \| None = None)` | Frozen. Method `record_output(name: str, value: Any) -> None`. Properties `simulator`, `avstack`, `case`, `rng`, `native` and `sim_time`. See [Contexts](runtime.md#contexts) and [Recording outputs](runtime.md#recording-outputs) |
+| `RunContext` | `RunContext(simulator_runtime: SimulatorRuntime \| WorldBackend, avstack: AVStack, case: Any, rng: np.random.Generator)` | Frozen. Property `native`. See [Contexts](runtime.md#contexts) |
+| `StageContext` | `StageContext(run: RunContext, step: int, stage: str, physical_state: WorldSnapshot, sensor: str \| None = None, observation: Observation \| None = None, control: Control \| None = None)` | Frozen. Method `record_output(name: str, value: Any) -> None`. Properties `simulator_runtime`, `avstack`, `case`, `rng`, `native` and `sim_time`. See [Contexts](runtime.md#contexts) and [Recording outputs](runtime.md#recording-outputs) |
 | `CallInputs` | `CallInputs(args: tuple = (), kwargs: dict[str, Any] = {})` | The value at component `.pre` stages. `TypeError` unless `args` is a tuple and `kwargs` a dict |
 | `RenderRequest` | `RenderRequest(pose: Any, camera: str)` | The value at `render.pre`. `ValueError` for an empty camera name |
 | `HookDispatcher` | Created by `HookSet.session` | `CORE_STAGES = frozenset({"sensors.post", "localization.post", "observation", "command"})`. `emit(stage, value, sensor=None)` runs the handlers at `stage`. Adapters reach it through `_emit` |
@@ -995,15 +1014,16 @@ class NuScenesDataset(Dataset):
     def __init__(self, dataroot: str, version: str = "v1.0-trainval", camera: str = "CAM_FRONT",
                  max_samples: int | None = None) -> None: ...
 # avsectester.closed_loop.simulators.recorded
-class RecordedReplaySimulator(Simulator):
+class RecordedReplaySimulator(Simulator):  # open-loop replay; creates RecordedReplaySimulatorRuntime
     def __init__(self, start: ScenarioStart | None = None) -> None: ...
 
 # avsectester.scenarios.carla_provider
 class CarlaCandidateProvider:
     def __init__(self, *, initial_frames=1, advance_initial=None, backend_factory=None, conditions=None): ...
-class CarlaSelectionSimulator(CarlaSimulator):
-    def __init__(self, scenario, *, camera="front", **kwargs): ...
 ```
+
+`CarlaCandidateProvider` creates runtimes of `CarlaSimulator(scenario, depth_camera="front")` unless
+`backend_factory` is given.
 
 `_VEHICLE_LABELS` is `("automobile", "car", "truck", "bus", "trailer", "van", "vehicle")`.
 `NuRecDataset` raises `ValueError` for `keyframe` outside `[0, 1]` or a negative `max_scenes`.
@@ -1729,7 +1749,8 @@ def frame_perturbation(
 ) -> Callable[[Observation], Observation]: ...
 
 # avsectester.closed_loop.simulators.carla
-def insertion_perturbation(simulator, insertions, *, bindings=None, camera="front", compositor=None): ...
+def insertion_perturbation(simulator_runtime, insertions, *, bindings=None, camera="front",
+                           compositor=None): ...
 
 # avsectester.scenarios.datasets.nurec
 NuRecDataset.insertion_renderer(self, scene, backend, insertions, bindings=None, compositor=None)
@@ -1743,7 +1764,7 @@ class NuRecInsertions(InsertionRenderer):
 | Name | Returns or does | Raises |
 |---|---|---|
 | `frame_perturbation(insert, camera, base)` | An `Observation -> Observation` function. It reads one camera frame (`camera`, or the first sensor) with `base`, by default `simulators.viz.camera_view`, and replaces the payload with `insert(observation, rgb)`. Unchanged when no frame is readable | — |
-| `insertion_perturbation(simulator, insertions, *, ...)` | An `Observation -> Observation` function that renders `insertions` into a CARLA camera image at every driving step, with depth-based visibility. The simulator must provide `selection_context()`, as `CarlaSelectionSimulator` does. `bindings` maps roles to actor-ID tuples, normally `match.binding_ids` | `TypeError` for a string binding. `KeyError` for unavailable bound actors. `ValueError` for a missing camera or depth, or mismatched frames |
+| `insertion_perturbation(simulator_runtime, insertions, *, ...)` | An `Observation -> Observation` function that renders `insertions` into a CARLA camera image at every driving step, with depth-based visibility. The runtime must provide `selection_context()`, as a runtime of `CarlaSimulator(depth_camera=...)` does. `bindings` maps roles to actor-ID tuples, normally `match.binding_ids` | `TypeError` for a string binding. `KeyError` for unavailable bound actors. `ValueError` for a missing camera or depth, or mismatched frames |
 | `NuRecDataset.insertion_renderer(...)` | A `NuRecInsertions` renderer with cuboid visibility, callable as `(observation, rgb) -> rgb`. It can be created before the backend is reset. Geometry follows the bound actor IDs at the effective render time and camera pose | `ValueError` when a role alias conflicts with a track ID |
 | `NuRecInsertions(...)` | An `InsertionRenderer` whose evidence provider calls `visibility_estimator.estimate` for each insertion. Without an estimator there is no evidence provider | — |
 
@@ -2180,7 +2201,7 @@ The clean-versus-treated figure is `metric.plot_impact`, listed under
 | `avsectester.backend` | Legacy module, removed in phase 4: `run` | [Write your first attack](../guides/attacks.md#write-your-first-attack) |
 | `avsectester.datasets` | `Dataset`, `FrameReference`, `FrameData`, `ActorState`, `SensorDataReference`, `ScenarioStart`, `ScenarioDescriptor`, `Unavailable`; `nurec`, `nuscenes` and `carla` datasets | [Stateless datasets](../guides/scenarios.md#stateless-datasets) |
 | `avsectester.closed_loop.frame_data` | `FrameDataCache`, `FrameDataSequence`, `Initialization` | [Stateless datasets](../guides/scenarios.md#stateless-datasets) |
-| `avsectester.closed_loop.simulator` | `Simulator`, `SensorView`, `DeploymentPlan`, `ClockSnapshot` | [Simulator](#simulator) |
+| `avsectester.closed_loop.simulator` | `Simulator`, `SimulatorRuntime`, `SensorView`, `DeploymentPlan`, `ClockSnapshot` | [Simulator](#simulator) |
 | `avsectester.attack` | Re-exports the user-facing attack API: `Attack`, `AttackSegment`, `OfflineContext` (module `attack.attack`) and the names of `attack.runtime` | [Attack](#attack) |
 | `avsectester.attack.runtime` | `AttackRuntime`, `OnlineContext`, `ResultSubscription`, `AttackEffect`, `WorldAttackEffect`, `SensorAttackEffect`, `AVStackAttackEffect` | [Online phase](runtime.md#online-phase) |
 | `avsectester.closed_loop.services` | `ClosedLoopServices`, `ClosedLoopSession`, `ScenarioView`, `CandidateRequest`, `SensorRequest`, `RenderRequest`, `RenderResult`, `DrivingAdapter` | [Shared closed-loop services](../guides/scenarios.md#shared-closed-loop-services) |
@@ -2207,7 +2228,7 @@ The clean-versus-treated figure is `metric.plot_impact`, listed under
 | `avsectester.scenarios.serialize` | `requirement_to_dict`, `requirement_from_dict`, `register_constraint`, `constraint_vocabulary` | [Selection in YAML](../guides/scenarios.md#selection-in-yaml) |
 | `avsectester.scenarios.nl` | `interpret`, `build_prompt`, `parse_response` | [Natural-language requirements](../guides/scenarios.md#natural-language-requirements) |
 | `avsectester.scenarios.presets` | `PHYSICAL_PATCH_HIDE_VEHICLE`, `REQUIREMENTS` | [Compose a requirement](../guides/scenarios.md#compose-a-requirement) |
-| `avsectester.scenarios.carla_provider` | `CarlaCandidateProvider`, `CarlaSelectionSimulator`, `carla_filter_context`, `depth_visibility`, `decode_carla_depth`, `register_pinhole_camera` | [CARLA](../guides/scenarios.md#carla) |
+| `avsectester.scenarios.carla_provider` | `CarlaCandidateProvider`, `carla_filter_context`, `depth_visibility` | [CARLA](../guides/scenarios.md#carla) |
 | `avsectester.scenarios.carla_gt` | `carla_scene_gt`, `predict_scene_gt`, `carla_actor_pose`, `carla_rgb_sensor` | [CARLA](../guides/scenarios.md#carla) |
 | `avsectester.scenarios.datasets.nurec` | `NuRecDataset` and its rig-frame `FThetaCamera` | [NuRec datasets](../guides/scenarios.md#nurec-datasets) |
 | `avsectester.scenarios.datasets.nuscenes` | `NuScenesDataset`, `scene_from_cam_boxes` | [Support another dataset or provider](../guides/scenarios.md#support-another-dataset-or-provider) |
@@ -2220,8 +2241,8 @@ The clean-versus-treated figure is `metric.plot_impact`, listed under
 | `avsectester.rendering.harmonizers` | `Harmonizer`, `ClassicHarmonizer`, `PCTNetHarmonizer` | [Harmonization](../examples/image-insertion.md#harmonization) |
 | `avsectester.rendering.visibility` | `CuboidVisibilityEstimator`, `DepthVisibilityEstimator`, `visibility_from_masks`, `visibility_from_depth` | [Visibility](../guides/scenarios.md#visibility) |
 | `avsectester.perturbations.image` | Corruption operators, `CORRUPTIONS`, `AugmentationPipeline`, corruption suites, camera read and write, `sensor_augmentation`, `compose`, `frame_perturbation` | [Built-in image corruptions](../guides/conditions.md#built-in-image-corruptions) |
-| `avsectester.closed_loop.simulators.carla` | `CarlaSimulator`, `carla_sensor_view`, `insertion_perturbation`, `camera_view`, `lidar_bev`, `prepare_scenario`, `resolve_scenario_seed`, `set_perception_gpu` | [CARLA](../guides/simulators.md#carla) |
-| `avsectester.closed_loop.simulators.nurec` | `NuRecSimulator`, `Renderer`, `StubRenderer`, `NuRecRenderer`, `EgoPose`, `EgoDynamics`, `KinematicBicycle`, `TrajectoryFollower`, `NuRecInsertions`, `nurec_sensor_view` | [NuRec](../guides/simulators.md#nurec) |
+| `avsectester.closed_loop.simulators.carla` | `CarlaSimulator`, `CarlaSimulatorRuntime`, `carla_sensor_view`, `register_pinhole_camera`, `decode_carla_depth`, `insertion_perturbation`, `camera_view`, `lidar_bev`, `prepare_scenario`, `resolve_scenario_seed`, `set_perception_gpu` | [CARLA](../guides/simulators.md#carla) |
+| `avsectester.closed_loop.simulators.nurec` | `NuRecSimulator`, `NuRecSimulatorRuntime`, `Renderer`, `StubRenderer`, `NuRecRenderer`, `EgoPose`, `EgoDynamics`, `KinematicBicycle`, `TrajectoryFollower`, `NuRecInsertions`, `nurec_sensor_view` | [NuRec](../guides/simulators.md#nurec) |
 | `avsectester.closed_loop.simulators.viz` | `record_run`, views, `filmstrip`, `save_gif`, `save_sequence` | [Scene recordings](../guides/evaluation.md#scene-recordings) |
 | `avsectester.closed_loop.avstacks.modular` | `ModularAVStack` | [Modular driving system](../guides/driving-systems.md#modular-driving-system) |
 | `avsectester.closed_loop.avstacks.alpamayo` | `AlpamayoAVStack` | [Alpamayo](../guides/driving-systems.md#alpamayo) |

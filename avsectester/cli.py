@@ -77,7 +77,7 @@ def run(
             from avsectester import carla_runner
             options = {
                 "backend_factory": None if scenario.get("selection") is not None else
-                    lambda config: carla_runner.CarlaSimulator(config),
+                    lambda config: carla_runner.CarlaSimulator(config).create_runtime(),
                 "stack_factory": lambda: carla_runner._stack(scenario),
                 "run_fn": carla_runner._logged_run,
             }

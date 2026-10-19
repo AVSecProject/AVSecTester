@@ -79,7 +79,7 @@ def _build_backend(config: dict[str, Any]) -> WorldBackend:
             raise ValueError("CARLA settings belong in client/ego/npcs/lead, not backend")
         from avsectester.closed_loop.simulators.carla import CarlaSimulator
 
-        return CarlaSimulator(config)
+        return CarlaSimulator(config).create_runtime()
     if kind != "NuRecSimulator":
         raise ValueError(
             f"Unknown backend type {kind!r}: expected CarlaSimulator or NuRecSimulator. "
@@ -125,7 +125,7 @@ def _build_backend(config: dict[str, Any]) -> WorldBackend:
                 f"Unknown NuRec dynamics type {dynamics_type!r}: "
                 "expected KinematicBicycle or TrajectoryFollower"
             )
-        return NuRecSimulator(backend_config, renderer=renderer, dynamics=dynamics)
+        return NuRecSimulator(backend_config, renderer=renderer, dynamics=dynamics).create_runtime()
     except BaseException:
         renderer.close()
         raise

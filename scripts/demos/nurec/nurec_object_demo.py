@@ -118,7 +118,7 @@ def drive(endpoint: str, scene, frames: int, speed: float, out_dir: Path, pertur
                              start_timestamp_us=scene.source["timestamp_us"])
     instance = scenario_from_config(
         {"dt": 0.1, "ego0": {"speed": speed}},
-        backend_factory=lambda config: NuRecSimulator(config, renderer=renderer),
+        backend_factory=lambda config: NuRecSimulator(config, renderer=renderer).create_runtime(),
         provenance=scene.source,
     )
     runtime = None if perturb is None else lambda backend: Runtime([

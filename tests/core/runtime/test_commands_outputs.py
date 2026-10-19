@@ -11,6 +11,7 @@ from avsectester.runner import run_pair
 from avsectester.closed_loop.hooks import Hook, Plugin, Runtime
 from avsectester.closed_loop.simulators.carla import CarlaSimulator
 from avsectester.closed_loop.simulators.nurec import (
+    NuRecSimulatorRuntime,
     EgoPose, KinematicBicycle, NuRecSimulator, StubRenderer, TrajectoryFollower,
 )
 from avsectester.closed_loop.avstacks.alpamayo import AlpamayoAVStack
@@ -32,9 +33,9 @@ class CommandStack(AVStack):
         return replace(self.command)
 
 
-class CountingBackend(NuRecSimulator):
+class CountingBackend(NuRecSimulatorRuntime):
     def __init__(self, dynamics=None):
-        super().__init__({"dt": 0.1}, StubRenderer(height=2, width=3), dynamics)
+        super().__init__(NuRecSimulator({"dt": 0.1}, StubRenderer(height=2, width=3), dynamics))
         self.prepares = self.resets = 0
 
     def prepare_clean_attack_pair(self):
@@ -81,9 +82,9 @@ def test_final_command_is_checked_after_attack_and_defense_handlers():
 
 
 @pytest.mark.parametrize("backend,command", [
-    (CarlaSimulator({}), Control(trajectory=PLAN)),
-    (NuRecSimulator({}), Control(trajectory=PLAN)),
-    (NuRecSimulator({}, dynamics=TrajectoryFollower()), Control(steer=0.2)),
+    (CarlaSimulator({}).create_runtime(), Control(trajectory=PLAN)),
+    (NuRecSimulator({}).create_runtime(), Control(trajectory=PLAN)),
+    (NuRecSimulator({}, dynamics=TrajectoryFollower()).create_runtime(), Control(steer=0.2)),
 ])
 def test_direct_backend_calls_reject_ignored_fields_before_world_changes(backend, command):
     with pytest.raises(ValueError, match="does not support"):
@@ -163,7 +164,7 @@ def test_render_outputs_include_sensor_and_zero_step_run_setup():
         return image
 
     def setup(value, context):
-        context.record_output("setup", {"x": context.ground_truth.vehicle_state.x})
+        context.record_output("setup", {"x": context.physical_state.vehicle_state.x})
         with pytest.raises(ValueError, match="nonempty"):
             context.record_output(" ", {})
 
@@ -178,7 +179,7 @@ def test_render_outputs_include_sensor_and_zero_step_run_setup():
 
 
 def test_world_conditions_are_explicit_detached_and_backend_specific():
-    backend = CarlaSimulator({"weather": "ClearNoon"})
+    backend = CarlaSimulator({"weather": "ClearNoon"}).create_runtime()
     backend._pair_scenario = {"weather": "ClearNoon"}
     backend.replay_scenario = {"weather": "ClearNoon"}
     settings = {"weather": {"fog_density": 50}}

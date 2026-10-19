@@ -16,8 +16,8 @@ through `VehicleIO`. `Runtime` is a compatibility facade accepting `localizer=`.
 |---|---|
 | `HookSet(hooks=(), *, case=None, seed=0)` | Ordered handlers without a localization algorithm |
 | `hooks.with_hooks(extra, prepend=False)` | Copy the configuration and append or prepend handlers; preserve compatibility-facade settings |
-| `hooks.validate_stages(simulator, avstack)` | Validate stages and command modes before reset |
-| `hooks.session(simulator, avstack, perturb=None)` | Construct one internal `HookDispatcher` |
+| `hooks.validate_stages(simulator_runtime, avstack)` | Validate stages and command modes before reset |
+| `hooks.session(simulator_runtime, avstack, perturb=None)` | Construct one internal `HookDispatcher` |
 | `stack.vehicle_io = VehicleIO(localizer=None)` | Configure the driving system's input processing and localization |
 | `Runtime(hooks=(), *, localizer=None, case=None, seed=0)` | Preserve the legacy constructor using a Vehicle I/O adapter |
 
@@ -56,7 +56,7 @@ Availability rules:
   avstack hooks. Alpamayo has no separate perception, tracking, planning or control modules.
 - CARLA renders inside its server and does not expose `render.pre` or `render.post`.
 - Registration is checked before the world is reset. An unavailable stage raises
-  `UnsupportedStageError` (a `ValueError`). `hooks.validate_stages(simulator, avstack)` performs the
+  `UnsupportedStageError` (a `ValueError`). `hooks.validate_stages(simulator_runtime, avstack)` performs the
   same check, plus the [command compatibility](#command-compatibility) check, without creating a
   session or invoking handlers. It returns the set of available stages.
 - `step.end` is a lifecycle notification for `after_step`, not a stage that a `Hook` can use.
@@ -296,14 +296,14 @@ Attack effects are classified by where they act:
 
 | Effect | Applied | Takes effect |
 |---|---|---|
-| `WorldAttackEffect.apply(simulator, resources)` | By the simulator: at `simulator.setup` when returned by `setup`, at `simulator.step.pre` when returned by `step` | From the next capture |
+| `WorldAttackEffect.apply(simulator_runtime, resources)` | By the simulator: at `simulator.setup` when returned by `setup`, at `simulator.step.pre` when returned by `step` | From the next capture |
 | `SensorAttackEffect.apply(data, view)` | To the named `sensor`'s capture, with its `SensorView`, before Vehicle I/O | In the current decision |
 | `AVStackAttackEffect(stage, apply)` | At a stage of the `AVStack`, including its Vehicle I/O and command, as `apply(value, context)` | In the current decision |
 
-A world effect may call `simulator.setup_tick()` only at setup, within `setup_ticks`, and
+A world effect may call `simulator_runtime.setup_tick()` only at setup, within `setup_ticks`, and
 registers the removal of created world objects on `resources`; removal runs after `stop`. It
-moves other actors through `simulator.control_actor(actor_id, control)` (an actuator command
-from the next world step) or `simulator.set_actor_state(actor_id, state)` (a placement visible
+moves other actors through `simulator_runtime.control_actor(actor_id, control)` (an actuator command
+from the next world step) or `simulator_runtime.set_actor_state(actor_id, state)` (a placement visible
 from the next capture); the actor then stops following its prescribed or traffic-manager
 motion. CARLA supports both; NuRec and recorded replay raise `NotImplementedError`, because
 their actors follow recorded tracks.
@@ -436,11 +436,11 @@ The runners do this with `stack_factory`.
 
 | Field | Meaning |
 |---|---|
-| `simulator` | The simulator (`Simulator`, or a legacy `WorldBackend`) of this run |
+| `simulator_runtime` | The live world of this run (`SimulatorRuntime`, or a legacy `WorldBackend`) |
 | `avstack` | The `AVStack` of this run |
 | `case` | The [match](../concepts/architecture.md#terminology) (`ScenarioMatch`) or `None`. See below |
 | `rng` | The run's NumPy generator. See [Randomness](#randomness) |
-| `native` | `{"simulator": simulator.native, "avstack": avstack.native}` |
+| `native` | `{"simulator_runtime": simulator_runtime.native, "avstack": avstack.native}` |
 
 `StageContext` is passed to stage handlers, the localizer and `after_step`:
 
@@ -450,15 +450,15 @@ The runners do this with `stack_factory`.
 | `step` | Zero-based driving-step index. Stages inside the simulator step and `after_step` use the index of the step being executed |
 | `stage` | The current stage, `localization` for the localizer, or `step.end` in `after_step` |
 | `sensor` | The native camera name for `render.pre` and `render.post`, otherwise `None` |
-| `ground_truth` | A fresh, independent `WorldSnapshot` of the physical ego state, taken for each handler call |
-| `sim_time` | `ground_truth.t` |
+| `physical_state` | A fresh, independent `WorldSnapshot` of the physical state, taken for each handler call |
+| `sim_time` | `physical_state.t` |
 | `observation` | The current observation in the processing chain. `None` during `simulator.setup` and the first capture. During the simulator step it is the processed observation of the current step. In `after_step`, the next raw observation |
 | `control` | At `command`, the current command in the chain. Elsewhere a copy of the latest command, or `None` before the stack has returned one in the current step |
-| `simulator`, `avstack`, `case`, `rng`, `native` | Shortcuts to the `RunContext` fields |
+| `simulator_runtime`, `avstack`, `case`, `rng`, `native` | Shortcuts to the `RunContext` fields |
 | `record_output(name, value)` | See [Recording outputs](#recording-outputs) |
 
 Model-visible time and physical time can differ during a clock attack. Use `context.sim_time` or
-`context.ground_truth.t` for physical scheduling, not `observation.t`. Editing the `control` copy
+`context.physical_state.t` for physical scheduling, not `observation.t`. Editing the `control` copy
 outside `command` does not change the executed command.
 
 The `case` is set as follows:
@@ -482,8 +482,8 @@ specifications through `context.case.insertions`. See
 | Model-visible clock | `observation.t` and `observation.frame` | Return a modified `Observation` |
 | Calibration | `observation.calibration[sensor_id]` | `observation.set_calibration(sensor_id, calibration)`, then return the observation |
 | Driving-system components | The stage value at component stages. `context.avstack.native` and `context.avstack.models` for handles | Return a replacement value, or mutate a component output |
-| Physical ego state | `context.ground_truth`, or `context.simulator.ground_truth()` for a new snapshot | Native simulator operations in a world-stage handler. Editing a snapshot changes nothing |
-| Other actors and environment | Simulator native resources in `context.simulator.native` | Native operations in a world-stage handler. See [Change the world from handlers](../guides/simulators.md#change-the-world-from-handlers) |
+| Physical state | `context.physical_state`, or `context.simulator_runtime.state()` for a new snapshot | Native simulator operations in a world-stage handler. Editing a snapshot changes nothing |
+| Other actors and environment | Simulator native resources in `context.simulator_runtime.native` | Native operations in a world-stage handler. See [Change the world from handlers](../guides/simulators.md#change-the-world-from-handlers) |
 | Rendering (NuRec) | `RenderRequest` at `render.pre`, the image at `render.post` | Return a modified request or image. The physical ego does not move |
 | Final command | The `Control` at `command` | Return the `Control` the simulator executes |
 | Selected scenario | `context.case` | — |
@@ -501,9 +501,10 @@ Native availability follows adapter initialization:
 
 ## Native resources and copying
 
-- `backend.ground_truth()` returns an independent `WorldSnapshot` with `t`, `frame`,
-  `vehicle_state` and `ego_speed` of the physical ego. Editing it does not move the ego. Other
-  actors and metadata are available only through native resources.
+- `simulator_runtime.state()` returns an independent `WorldSnapshot` with `t`, `frame`,
+  `vehicle_state` and `ego_speed` of the physical ego and, in `actors`, the other actors' states
+  by stable ID. Editing it moves nothing. Other metadata are available only through native
+  resources.
 - CARLA getters reflect the latest completed tick. Native CARLA commands can be asynchronous, so a
   requested world change need not appear immediately in a snapshot or sensor measurement. The NuRec
   ego state is updated synchronously in process.
@@ -537,7 +538,7 @@ Each record is a `RecordedOutput`:
 | `value` | A deep copy of the value at the time of the call |
 | `step` | Driving-step index |
 | `stage` | Stage of the callback, `localization` or `step.end` |
-| `frame`, `t` | Physical frame and time from `ground_truth` at the callback |
+| `frame`, `t` | Physical frame and time from `physical_state` at the callback |
 | `sensor` | Camera name for render stages, otherwise `None` |
 
 An `observation`-stage output is recorded before the command of its step. A `step.end` output

@@ -5,9 +5,10 @@
 > **Prerequisites:** [Architecture](../concepts/architecture.md) and [Installation](../getting-started/installation.md).
 
 A [simulator](../concepts/architecture.md#terminology) owns the world: physical state, vehicle
-dynamics, other actors and sensor rendering. It is connected to the driving loop through a
-backend, a `WorldBackend` adapter. The supplied backends are `CarlaSimulator` and `NuRecSimulator`.
-A configuration selects one with `backend.type`. Without `backend`, the scene is a CARLA scene.
+dynamics, other actors and sensor rendering. In code it has two parts: a `Simulator` holds the
+configuration, and each `SimulatorRuntime` it creates is one live world. The supplied simulators
+are `CarlaSimulator` and `NuRecSimulator`. A configuration selects one with `backend.type`.
+Without `backend`, the scene is a CARLA scene.
 
 ## CARLA
 
@@ -49,8 +50,8 @@ mode for that. `client.rate` sets ticks per simulated second. One driving step i
 [`configs/carla_patch_scenario.yaml`](../../configs/carla_patch_scenario.yaml).
 
 World weather is a scenario condition. See [World conditions](conditions.md#world-conditions).
-Selected CARLA scenarios use `CarlaSelectionSimulator`, a subclass with an additional depth sensor.
-See [Select a scenario](scenarios.md#carla).
+Selected CARLA scenarios use `CarlaSimulator(scenario, depth_camera="front")`, which adds a depth
+camera aligned with that RGB camera. See [Select a scenario](scenarios.md#carla).
 
 To check a scene, run one clean treatment:
 
@@ -258,10 +259,10 @@ A custom renderer subclasses `Renderer` and implements `render(pose, camera)`. I
 The dynamics model turns the final command into ego motion and decides the backend's command
 mode:
 
-| `dynamics.type` | Class | Command mode | Behavior |
-|---|---|---|---|
-| `actuator` (default) | `KinematicBicycle` | `actuator` | Kinematic bicycle model. Options `wheelbase` (2.8 m), `max_accel` (3.0 m/s²), `max_brake` (8.0 m/s²) and `max_steer` (0.6 rad) scale the command |
-| `trajectory` | `TrajectoryFollower` | `trajectory` | Places the ego on the planned trajectory at the end of each step. Option `decel` (4.0 m/s²) applies without a trajectory |
+| `dynamics.type` (class) | Command mode | Behavior |
+|---|---|---|
+| `KinematicBicycle` (default) | `actuator` | Kinematic bicycle model. Options `wheelbase` (2.8 m), `max_accel` (3.0 m/s²), `max_brake` (8.0 m/s²) and `max_steer` (0.6 rad) scale the command |
+| `TrajectoryFollower` | `trajectory` | Places the ego on the planned trajectory at the end of each step. Option `decel` (4.0 m/s²) applies without a trajectory |
 
 `TrajectoryFollower` reads `Control.trajectory` as rig-frame waypoints with absolute microsecond
 timestamps on the backend clock. See [Trajectory commands](../reference/runtime.md#trajectory-commands).
@@ -373,6 +374,11 @@ stages report the native name in `context.sensor`. Unknown backend keys raise
 
 When you construct `NuRecSimulator(config, renderer=..., dynamics=...)` directly, pass renderer and
 dynamics objects. The string and mapping forms are interpreted only by the `backend` mapping.
+`NuRecSimulator` is the configuration; `create_runtime()` creates a live world. The renderer you
+pass is a template that is never connected itself: each runtime renders through its own
+`renderer.copy()`, with its own connection, loaded scene and origin, so access the live renderer as
+`runtime.renderer`. A custom renderer that holds resources a shallow copy would share overrides
+`copy()`.
 The demo [`scripts/demos/nurec/alpamayo_nurec_demo.py`](../../scripts/demos/nurec/alpamayo_nurec_demo.py)
 supplies such a backend through `backend_factory`. Scenarios selected from recorded NuRec scenes
 come from `NuRecDataset`, whose `make_backend(scene)` sets `ego0` from the selected frame. See
@@ -391,8 +397,8 @@ with `renderer.timestamp_us(pose)`.
 ## Change the world from handlers
 
 Handlers at `simulator.setup`, `simulator.step.pre` and `simulator.step.post` receive `None`, must return
-`None`, and change the world through the simulator's native resources in `context.simulator.native`.
-Editing `context.ground_truth` or an observation never moves anything. The general read and
+`None`, and change the world through the simulator's native resources in `context.simulator_runtime.native`.
+Editing `context.physical_state` or an observation never moves anything. The general read and
 write rules are in [Read and write interfaces](../reference/runtime.md#read-and-write-interfaces)
 and [Native resources and copying](../reference/runtime.md#native-resources-and-copying).
 
@@ -424,7 +430,7 @@ from avsectester.closed_loop.hooks import Hook, Runtime
 def move_carla_ego(value, context):
     if context.step != 0:
         return None
-    actor = context.simulator.native["actors"]["ego"]
+    actor = context.simulator_runtime.native["actors"]["ego"]
     transform = actor.get_transform()
     transform.location.x += 1.0
     actor.set_transform(transform)
@@ -435,17 +441,17 @@ runtime = Runtime([Hook("simulator.step.pre", move_carla_ego)])
 ```
 
 A world plugin that needs extra ticks before driving, such as the physical panel, calls
-`simulator.setup_tick()` during `simulator.setup`. See
+`context.simulator_runtime.setup_tick()` during `simulator.setup`. See
 [World setup ticks](../reference/runtime.md#world-setup-ticks).
 
 **NuRec**
 
 | Data | Read | Change |
 |---|---|---|
-| Ego | `context.ground_truth.vehicle_state` (an independent copy) or `context.simulator.pose` (live) | Set `context.simulator.pose.x`, `.y`, `.yaw` or `.speed` |
-| Ego dynamics | `native["dynamics"]` | Change its attributes, such as `max_brake`, for later steps |
+| Ego | `context.physical_state.vehicle_state` (an independent copy) or `context.simulator_runtime.pose` (live) | Set `context.simulator_runtime.pose.x`, `.y`, `.yaw` or `.speed` |
+| Ego dynamics | `native["dynamics"]` | Change its attributes, such as `max_brake`, for later steps. The dynamics belong to this runtime, so other runs keep the configured values |
 | Renderer | `native["renderer"]`, including `service` for `NuRecRenderer` | Renderer-specific operations |
-| Render requests | `context.simulator.render_request(camera)` and `native["render_requests"]` | Read-only copies. Use a `render.pre` handler to change the next request |
+| Render requests | `context.simulator_runtime.render_request(camera)` and `native["render_requests"]` | Read-only copies. Use a `render.pre` handler to change the next request |
 
 NuRec renders after `simulator.step.post`, so a change at that stage appears in the next
 observation. Other actors follow their recordings and cannot be moved.
@@ -473,12 +479,12 @@ class Cruise(AVStack):
 
 
 def move_initial_ego(value, context):
-    context.simulator.pose.x += 1.0  # metres along the scene's x axis
+    context.simulator_runtime.pose.x += 1.0  # metres along the scene's x axis
     return None
 
 
 def record_render_x(observation, context):
-    request = context.simulator.render_request("camera_front")  # an independent copy
+    request = context.simulator_runtime.render_request("camera_front")  # an independent copy
     context.record_output("render_x", request.pose.x)
     return observation
 
@@ -499,8 +505,49 @@ For a world-changing attack packaged as an intervention, see
 
 ## Write a custom simulator adapter
 
-Subclass `avsectester.closed_loop.simulator.WorldBackend`. Only `reset` and `step` are abstract.
-Override the other members your simulator needs:
+A simulator has two classes, as CARLA, NuRec and recorded replay do:
+
+- A subclass of `avsectester.closed_loop.simulator.Simulator` holds the configuration and the
+  declarations: `dataset_kinds` (accepted dataset class names, such as `("CarlaDataset",)`),
+  `decision_time_step`, `capture_ticks`, `can_render`, `command_modes`, `supported_stages`,
+  `identity` and `validate_start`. Its `create_runtime(seed=None)` returns a new runtime. Copy
+  any mutable template it holds into each runtime, as NuRec does with its renderer and ego
+  dynamics, so that one run cannot change another.
+- A subclass of `avsectester.closed_loop.simulator.SimulatorRuntime` is one live world. The base
+  owns `reset`, `step`, `observe`, `state()`, the deployment tick budget, the read-only `clock`,
+  the process-local `exclusive()` reservation and closing as a context manager. It reads the
+  declarations from its `simulator`. Overriding `reset` or `step` in a subclass raises
+  `TypeError` at class definition.
+
+A runtime implements:
+
+| Member | Contract |
+|---|---|
+| `_initialize_world(start, initialization, environment)` | Abstract. Build the world at `start`, or at the configured origin when `start` is `None`. Recompute all run state, so a later plain reset keeps nothing of the previous start |
+| `_advance_native(control)` | Abstract. Apply the command and advance the world by one decision |
+| `_observe() -> Observation` | Abstract. Capture the sensor data. Fill every field: `t`, `frame`, `sensor_data`, `calibration`, `vehicle_state` and `ego_speed`, sharing no mutable objects with the physical state |
+| `_state() -> WorldSnapshot` | Abstract. An independent snapshot of the physical state, read by `state()`. Every handler call reads it, so it must work at each stage, including `simulator.setup` during reset |
+| `_replay_tick()`, `_hold_tick()` | Advance one tick along the start's prescribed motion, or one tick holding the origin. The defaults raise. Needed to start at a later frame or to support deployment ticks, as in CARLA |
+| `_check_initialization(initialization)` | Compare the initialized world with the expected frame data. The default rejects any initialization plan |
+| `_capture_frame_data(frame) -> FrameData` | Record the current state as `FrameData`, used by `generate_frame_data` |
+| `sensor_view(sensor) -> SensorView` | Required when the simulator sets `can_render = True`. The view of the current capture: the RGB data, the camera model, `cam_from_world`, actor and ego cuboid poses, time and, when measured, depth |
+| `native` | Live simulator resources for handlers. The default is empty |
+| `close()` | Release the world and native connections. It can be called more than once |
+
+The base emits `simulator.setup`, `simulator.step.pre` and `simulator.step.post`. Emit any further
+stage with `value = self._emit(stage, value, sensor=None)` and declare it in the simulator's
+`supported_stages`, as NuRec does for `render.pre` and `render.post`. `generate_frame_data(start,
+frames)` is shared: it resets as for a run, then alternates `_replay_tick()` and
+`_capture_frame_data(frame)`. A runtime that implements both can generate frame data for datasets
+without it, as CARLA and recorded replay do. See [selected-origin
+initialization](scenarios.md#selected-origin-deployment-and-reset-ownership).
+
+### Legacy `WorldBackend` adapters
+
+`WorldBackend` is the earlier single-class interface. `ClosedLoopRunner` and the legacy experiment
+path still run it through an internal adapter, with plain resets only and without sensor views. It
+is removed together with the legacy paths. Subclass `avsectester.closed_loop.simulator.WorldBackend`.
+Only `reset` and `step` are abstract. Override the other members your simulator needs:
 
 | Member | Default | Contract |
 |---|---|---|
@@ -538,29 +585,13 @@ backend supports deployment ticks, implement `setup_tick()` to advance one tick 
 `simulator.setup`, and advance until `setup_ticks` have been used after emitting `simulator.setup`.
 A deterministic backend needs no `prepare_clean_attack_pair`.
 
-Source-aware simulators instead subclass `avsectester.closed_loop.simulator.Simulator`, as CARLA,
-NuRec and recorded replay do. It owns `reset_world`, `advance`, `observe`, the deployment tick
-budget, the read-only `clock` and `state()`, the process-local `exclusive()` reservation and the
-legacy `reset`/`step` wrappers. Implement `_initialize_world`, `_advance_native` and `_observe`;
-CARLA also implements `_replay_tick` and `_hold_tick`. Declare `dataset_kinds` (accepted dataset
-class names, such as `("CarlaDataset",)`), `decision_time_step`
-and simulator identity on the simulator. `generate_frame_data(start, frames)` is shared: it resets
-as for a run, then alternates `_replay_tick()` (advance one frame along the start's prescribed
-motion) and `_capture_frame_data(frame)` (record the current state as `FrameData`). A simulator that
-implements these two methods can generate frame data for datasets without it; CARLA and recorded
-replay do. A simulator that can render insertions sets `can_render = True` and implements
-`sensor_view(sensor)`, returning a `SensorView` of the current capture: the RGB data, the camera
-model, `cam_from_world`, actor and ego cuboid poses, time and, when measured, depth. Overriding the
-legacy `reset` or `step` in a `Simulator` subclass raises `TypeError` at class definition. Plain
-`WorldBackend` subclasses keep the compatibility path above. See [selected-origin
-initialization](scenarios.md#selected-origin-deployment-and-reset-ownership).
-
 Custom backends enter scenario setup through `backend_factory(scene_config)`, accepted by
 `scenario_from_config`, `source_from_config` and `run_configured`. The argument is a fresh copy
 of the scene view of the configuration, without experiment keys such as `frames`, `stack` or
 `conditions`. See [File layout](../reference/configuration.md#file-layout). The YAML
-`backend.type` accepts only the supplied simulators. `ScenarioInstance.make_backend()` calls
-`configure_conditions` when the scenario has world conditions.
+`backend.type` accepts only the supplied simulators. The factory returns a live world, for
+example `lambda config: CarlaSimulator(config).create_runtime()`. `ScenarioInstance.make_backend()`
+calls `configure_conditions` when the scenario has world conditions.
 
 This example runs offline. It implements a straight road with a stopped obstacle, a range sensor
 and a world condition:

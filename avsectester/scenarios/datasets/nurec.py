@@ -122,7 +122,7 @@ class NuRecDataset(SourceDataset, LegacyDataset):
                 "camera_aliases": {self.sensor: self.camera},
             },
             renderer=self.make_renderer(scene),
-        )
+        ).create_runtime()
 
     def insertion_renderer(self, scene, backend, insertions, bindings=None, compositor=None):
         """Legacy ``(observation, rgb) -> rgb`` insertion renderer for this recorded scene."""

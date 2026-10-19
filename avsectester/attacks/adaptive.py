@@ -40,7 +40,7 @@ class SpeedFeedbackPlugin(Plugin):
         return replace(value, ego_speed=value.ego_speed + self.bias)
 
     def after_step(self, context: StageContext) -> None:
-        speed = context.ground_truth.ego_speed
+        speed = context.physical_state.ego_speed
         self.feedback.append(speed)
         self.bias = max(0.0, min(self.max_bias, self.bias + self.gain * (
             self.target_speed - speed

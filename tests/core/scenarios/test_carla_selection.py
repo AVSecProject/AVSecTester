@@ -19,7 +19,6 @@ from avsectester.closed_loop.datatypes import Observation
 from avsectester.scenarios.carla_gt import carla_actor_pose
 from avsectester.scenarios.carla_provider import (
     CarlaCandidateProvider,
-    CarlaSelectionSimulator,
     decode_carla_depth,
     depth_visibility,
     register_pinhole_camera,
@@ -29,7 +28,9 @@ from avsectester.scenarios.context import FilterContext
 from avsectester.scenarios.filters import Constraint, FilterResult
 from avsectester.scenarios.requirement import InitialWindow, ScenarioRequirement
 from avsectester.scenarios.scene import CameraCalib, EgoState, ObjectGT, SceneGT
-from avsectester.closed_loop.simulators.carla import CarlaSimulator, insertion_perturbation
+from avsectester.closed_loop.simulators.carla import (
+    CarlaSimulator, CarlaSimulatorRuntime, insertion_perturbation,
+)
 
 
 def depth_image(value, frame=1):
@@ -45,7 +46,7 @@ def test_depth_decode_channel_order_and_range():
 
 def test_selection_camera_configuration_is_explicit_and_does_not_modify_input():
     config = {"ego": {"sensors": [{"type": "CarlaRgbCamera"}, {"type": "CustomCamera"}]}}
-    backend = CarlaSelectionSimulator(config)
+    backend = CarlaSimulator(config, depth_camera="front")
     assert config["ego"]["sensors"][0]["type"] == "CarlaRgbCamera"
     assert backend.scenario["ego"]["sensors"][0]["type"] == "PinholeRgbCamera"
     assert backend.scenario["ego"]["sensors"][1]["type"] == "CustomCamera"
@@ -95,8 +96,8 @@ def test_pinhole_registration_sets_lens_before_spawn_and_remains_lazy(monkeypatc
 
 
 def test_selection_observation_consumes_matching_depth_frame(monkeypatch):
-    monkeypatch.setattr(CarlaSimulator, "_observe", lambda _: Observation(1.0, 12))
-    backend = object.__new__(CarlaSelectionSimulator)
+    monkeypatch.setattr(CarlaSimulatorRuntime, "_capture_sensors", lambda _: Observation(1.0, 12))
+    backend = object.__new__(CarlaSimulatorRuntime)
     backend._depth_queue = Queue()
     backend._depth_queue.put(depth_image(3, frame=11))
     backend._depth_queue.put(depth_image(8, frame=12))
@@ -290,7 +291,7 @@ def test_insertion_updates_model_input_with_attached_and_world_positions():
         states[frame] = FilterContext(scene, native={"depth": {"front": np.full((80, 100), 100)}})
     backend = SimpleNamespace(frame=10)
     backend.selection_context = lambda: states[backend.frame]
-    backend.ground_truth = lambda: SimpleNamespace(frame=backend.frame)
+    backend.state = lambda: SimpleNamespace(frame=backend.frame)
     perturb = insertion_perturbation(backend, items, bindings={"attacker": ("host",)})
     images = []
     for frame in (10, 11):
@@ -314,10 +315,10 @@ def test_insertion_updates_model_input_with_attached_and_world_positions():
     assert larger.sensor_data["front"].shape == (160, 200, 3)
     assert larger.sensor_data["front"].any()
     # Reject stale physical geometry, independent of the model-visible frame number.
-    backend.ground_truth = lambda: SimpleNamespace(frame=10)
+    backend.state = lambda: SimpleNamespace(frame=10)
     with pytest.raises(ValueError, match="same frame"):
         perturb(Observation(1, 10, {"front": np.zeros((80, 100, 3), np.uint8)}))
-    backend.ground_truth = lambda: SimpleNamespace(frame=11)
+    backend.state = lambda: SimpleNamespace(frame=11)
     states[11].scene.objects.clear()
     with pytest.raises(KeyError, match="Selected insertion actors unavailable"):
         perturb(Observation(1.1, 11, {"front": np.zeros((80, 100, 3), np.uint8)}))
@@ -355,7 +356,7 @@ def test_insertion_uses_selected_sensor_source_and_its_absolute_frame():
     item = Insertion("sign", PlaneAsset(texture, 1, 1), WorldPlacement((10, 0, 0)))
     perturb = insertion_perturbation(SimpleNamespace(
         selection_context=lambda: context,
-        ground_truth=lambda: SimpleNamespace(frame=10),
+        state=lambda: SimpleNamespace(frame=10),
     ), (item,))
     other = np.full((80, 100, 3), 77, np.uint8)
     original = Observation(999, 999, {"other-camera": other, "camera-0-0": ImagePayload(frame=3)})

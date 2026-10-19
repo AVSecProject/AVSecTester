@@ -71,8 +71,8 @@ This file lists open development work. Entries describe planned capabilities, no
 - [ ] Add a reference adaptive attack that estimates other actors from information available
   during the run and changes its behavior accordingly. `SpeedFeedbackAttack` does not satisfy
   this item: it estimates no other actor. This example must estimate other actors from model
-  outputs rather than backend truth (`context.native`, other CARLA handles or `carla_scene_gt`).
-  `context.ground_truth` contains only the ego snapshot. The method must reset per-run state,
+  outputs rather than simulator truth (`context.native`, `context.physical_state.actors`, other
+  CARLA handles or `carla_scene_gt`). The method must reset per-run state,
   record its decisions with `context.record_output`, and have offline tests for its decisions
   and reset behavior.
   This is an example method that uses the existing interfaces (`Intervention`, `Plugin.reset`,

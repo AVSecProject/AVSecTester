@@ -24,7 +24,7 @@ freely.
 
 A defense acts on Vehicle I/O or inside the driving system. It should base its decisions on data
 the vehicle could have: the handler's value, the observation and the driving-system components.
-`context.ground_truth` is the simulator's physical state. Use it in a defense only to model a
+`context.physical_state` is the simulator's physical state. Use it in a defense only to model a
 trusted reference, and state that assumption in your evaluation.
 
 ## Write a defense handler
@@ -70,7 +70,7 @@ chains = {
     "defense, then attack": [Hook("observation", OdometryClamp()),
                              Hook("observation", overreport_speed)],
 }
-backend = NuRecSimulator({"dt": 0.1}, renderer=StubRenderer(height=8, width=8))
+backend = NuRecSimulator({"dt": 0.1}, renderer=StubRenderer(height=8, width=8)).create_runtime()
 try:
     for name, hooks in chains.items():
         trace = run(backend, CruiseControl(), frames=80, runtime=Runtime(hooks))
@@ -135,7 +135,7 @@ Then count the alarms of the attack-then-defense run:
 
 ```python
 # CruiseControl, overreport_speed and OdometryClamp are defined above.
-backend = NuRecSimulator({"dt": 0.1}, renderer=StubRenderer(height=8, width=8))
+backend = NuRecSimulator({"dt": 0.1}, renderer=StubRenderer(height=8, width=8)).create_runtime()
 try:
     trace = run(backend, CruiseControl(), frames=80, runtime=Runtime([
         Hook("observation", overreport_speed), Hook("observation", OdometryClamp()),
@@ -234,7 +234,7 @@ from avsectester.closed_loop.simulators.nurec import NuRecSimulator, StubRendere
 
 # CruiseControl and SpeedSpoof are defined in Implement an attack. SpeedClamp is defined above.
 scenario = ScenarioInstance(
-    factory=lambda: NuRecSimulator({"dt": 0.1}, renderer=StubRenderer(height=8, width=8)),
+    factory=lambda: NuRecSimulator({"dt": 0.1}, renderer=StubRenderer(height=8, width=8)).create_runtime(),
 )
 treatment = Treatment((
     prepare_intervention(SpeedSpoof(bias=5.0), scenario, kind="attack"),

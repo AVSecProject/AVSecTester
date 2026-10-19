@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from avsectester.closed_loop.avstack import AVStack
-from avsectester.closed_loop.simulator import WorldBackend
+from avsectester.closed_loop.simulator import SimulatorRuntime, WorldBackend
 from avsectester.closed_loop.datatypes import Observation, Trace
 from avsectester.closed_loop.hooks import HookSet
 
@@ -270,7 +270,7 @@ def save_sequence(frames: list, out_dir: str | Path, name: str = "sequence",
 
 
 def record_run(
-    simulator: WorldBackend,
+    simulator_runtime: SimulatorRuntime | WorldBackend,
     avstack: AVStack,
     frames: int,
     *,
@@ -306,7 +306,7 @@ def record_run(
         return {"path": str(path.resolve()), "format": "png"}
 
     log = ClosedLoopRunner().run(
-        simulator, avstack, RunRequest(frames, hooks=hooks), perturb=perturb,
+        simulator_runtime, avstack, RunRequest(frames, hooks=hooks), perturb=perturb,
         record_views={"scene": visualize}, view_sink=export_view,
     )
     trace = trace_from_log(log)

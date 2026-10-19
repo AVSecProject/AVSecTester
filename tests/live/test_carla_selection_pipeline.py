@@ -14,7 +14,8 @@ def test_selected_case_replays_and_inserts_into_same_frame_observation(request, 
     from avsectester.insertion import AttachedPlacement, Insertion, Orientation, PlaneAsset
     from avsectester.closed_loop.datatypes import Control
     from avsectester.scenarios import CarlaScenarioBuilder, RoleSpec, ScenarioRequirement
-    from avsectester.scenarios.carla_provider import CarlaCandidateProvider, CarlaSelectionSimulator
+    from avsectester.scenarios.carla_provider import CarlaCandidateProvider
+    from avsectester.closed_loop.simulators.carla import CarlaSimulator
     from avsectester.scenarios.requirement import InitialWindow
     from avsectester.scenarios.filters import MinVisibility
     from avsectester.closed_loop.simulators.carla import camera_view, insertion_perturbation
@@ -44,7 +45,7 @@ def test_selected_case_replays_and_inserts_into_same_frame_observation(request, 
     previews = []
 
     def backend_factory(scenario):
-        backend = CarlaSelectionSimulator(scenario)
+        backend = CarlaSimulator(scenario, depth_camera="front").create_runtime()
         previews.append(backend)
         return backend
 
@@ -72,7 +73,8 @@ def test_selected_case_replays_and_inserts_into_same_frame_observation(request, 
     try:
         # Both resets must reconstruct the selected origin, including the same setup ticks.
         for replay_index in range(2):
-            observation = backend.reset()
+            backend.reset()
+            observation = backend.observe()
             context = backend.selection_context()
             np.testing.assert_allclose(
                 context.scene.ego.pose, case.match.scene.ego.pose, atol=1e-4
@@ -95,7 +97,8 @@ def test_selected_case_replays_and_inserts_into_same_frame_observation(request, 
                 if step == 0:
                     Image.fromarray(original).save(tmp_path / f"clean-{replay_index}.png")
                     Image.fromarray(rendered).save(tmp_path / f"inserted-{replay_index}.png")
-                observation = backend.step(Control(brake=1))
+                backend.step(Control(brake=1))
+                observation = backend.observe()
     finally:
         backend.close()
     assert backend.client is None

@@ -12,7 +12,7 @@ from avsectester.experiment import run_configured
 from avsectester.closed_loop.datatypes import Control, StateEstimate
 from avsectester.preparation import Intervention
 from avsectester.closed_loop.hooks import Hook, Plugin, Runtime
-from avsectester.closed_loop.simulators.nurec import NuRecSimulator, StubRenderer
+from avsectester.closed_loop.simulators.nurec import NuRecSimulatorRuntime, NuRecSimulator, StubRenderer
 
 
 @pytest.fixture
@@ -21,9 +21,9 @@ def configured_methods(monkeypatch):
     methods, handlers, worlds, stacks, localizers, noises = [], [], [], [], [], []
     created = Counter()
 
-    class World(NuRecSimulator):
+    class World(NuRecSimulatorRuntime):
         def __init__(self, config):
-            super().__init__(config, renderer=StubRenderer(height=2, width=3))
+            super().__init__(NuRecSimulator(config, renderer=StubRenderer(height=2, width=3)))
             self.prepares = self.resets = self.closes = 0
             self.world_conditions = {}
 

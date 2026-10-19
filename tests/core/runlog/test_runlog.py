@@ -447,7 +447,7 @@ def test_nurec_runner_persists_and_restores_driving_log(tmp_path):
         def __call__(self, observation):
             return Control(throttle=0.2)
 
-    backend = NuRecSimulator({}, renderer=StubRenderer(height=2, width=3))
+    backend = NuRecSimulator({}, renderer=StubRenderer(height=2, width=3)).create_runtime()
     try:
         log = ClosedLoopRunner().run(backend, Driver(), RunRequest(3, output_path=tmp_path))
     finally:

@@ -31,5 +31,5 @@ def reserve(key: Hashable, owner: object) -> Iterator[None]:
                 _owners[key] = (owner, depth - 1)
 
 
-def simulator_key(simulator: object) -> Hashable:
-    return getattr(simulator, "resource_key", ("simulator", id(simulator)))
+def simulator_key(simulator_runtime: object) -> Hashable:
+    return getattr(simulator_runtime, "resource_key", ("simulator", id(simulator_runtime)))

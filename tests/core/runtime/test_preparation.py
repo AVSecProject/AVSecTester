@@ -22,7 +22,7 @@ from avsectester.closed_loop.simulators.nurec import NuRecSimulator, StubRendere
 
 def scene_instance():
     return ScenarioInstance(
-        lambda: NuRecSimulator({}, renderer=StubRenderer(height=2, width=2)),
+        lambda: NuRecSimulator({}, renderer=StubRenderer(height=2, width=2)).create_runtime(),
         None, {"scene": "example"},
     )
 
@@ -213,7 +213,7 @@ def test_intervention_configuration_rejects_invalid_contracts(entry, match):
 
 
 def test_adaptive_attack_uses_step_feedback_and_resets_between_runs():
-    backend = NuRecSimulator({"ego0": {"speed": 2}}, renderer=StubRenderer(height=2, width=2))
+    backend = NuRecSimulator({"ego0": {"speed": 2}}, renderer=StubRenderer(height=2, width=2)).create_runtime()
     prepared = prepare_intervention(SpeedFeedbackAttack(5, gain=0.5), scene_instance())
     runtime = Treatment((prepared,)).runtime()
     handler = runtime.hooks[0].handler
@@ -241,7 +241,7 @@ def test_physical_panel_uses_selected_role_and_rejects_ambiguous_hosts(monkeypat
     apply = Mock()
     monkeypatch.setattr(PhysicalPatch, "apply", apply)
     plugin = PhysicalPatchPlugin([{"target": "hosts[0]"}])
-    context = SimpleNamespace(simulator=backend, case=SimpleNamespace(binding_ids={
+    context = SimpleNamespace(simulator_runtime=backend, case=SimpleNamespace(binding_ids={
         "hosts": ("lead", "other"),
     }))
     plugin.transform(None, context)
@@ -250,5 +250,5 @@ def test_physical_panel_uses_selected_role_and_rejects_ambiguous_hosts(monkeypat
     with pytest.raises(ValueError, match="explicit index"):
         plugin.transform(None, context)
     plugin.patches[0]["target"] = 10
-    plugin.transform(None, SimpleNamespace(simulator=backend, case=None))
+    plugin.transform(None, SimpleNamespace(simulator_runtime=backend, case=None))
     assert apply.call_count == 2

@@ -29,7 +29,7 @@ class VehicleIO:
         from avsectester.closed_loop.hooks import _invoke
 
         dispatcher.control = None
-        seen = dispatcher.context.simulator.copy_observation(observation)
+        seen = dispatcher.context.simulator_runtime.copy_observation(observation)
         dispatcher.observation = seen
         seen = dispatcher.emit("sensors.post", seen)
         dispatcher._require(seen, Observation, "sensors.post")

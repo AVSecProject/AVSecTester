@@ -58,7 +58,8 @@ def main() -> int:
     )
     scenario = scenario_from_config(
         {"dt": 0.1, "ego0": {"speed": 5.0}},
-        backend_factory=lambda config: NuRecSimulator(config, renderer=renderer, dynamics=TrajectoryFollower()),
+        backend_factory=lambda config: NuRecSimulator(
+            config, renderer=renderer, dynamics=TrajectoryFollower()).create_runtime(),
         provenance={"scene_id": args.scene, "renderer": "stub" if args.stub else "nurec"},
     )
 

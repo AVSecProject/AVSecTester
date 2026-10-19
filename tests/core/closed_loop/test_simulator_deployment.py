@@ -14,14 +14,14 @@ from avsectester.datasets.carla import CarlaDataset, CarlaRecipe, PrescribedMoti
 from avsectester.closed_loop.datatypes import Control, Observation, WorldSnapshot
 from avsectester.closed_loop.frame_data import Initialization
 from avsectester.closed_loop.hooks import Hook, HookSet
-from avsectester.closed_loop.simulators.carla import CarlaSimulator
+from avsectester.closed_loop.simulators.carla import CarlaSimulator, CarlaSimulatorRuntime
 from avsectester.closed_loop.simulators.nurec import NuRecSimulator, StubRenderer
 
 
-class FakeCarla(CarlaSimulator):
+class FakeCarla(CarlaSimulatorRuntime):
     """Fake only native operations; use the real capture lifecycle."""
     def __init__(self):
-        super().__init__({"client": {"rate": 10}, "ego": {"x": 42}, "lead": {"gap": 9}})
+        super().__init__(CarlaSimulator({"client": {"rate": 10}, "ego": {"x": 42}, "lead": {"gap": 9}}))
         self.events = []
 
     def _initialize_world(self, source, initialization, environment):
@@ -62,7 +62,7 @@ class FakeCarla(CarlaSimulator):
         self.events.append(("capture", self.position))
         return Observation(self.position*.1, self.position, ego_speed=0, vehicle_state=self.rendered)
 
-    def ground_truth(self):
+    def _state(self):
         return WorldSnapshot(self.position*.1, self.position, self.x, 0)
 
     def _capture_frame_data(self, frame):
@@ -99,7 +99,7 @@ def test_pre_roll_is_hook_free_and_deployment_preserves_boundary(position, k):
     clean, attacked = FakeCarla(), FakeCarla()
     counts = []
     def setup(value, context):
-        backend = context.simulator
+        backend = context.simulator_runtime
         # The window is k participant ticks plus CARLA's capture tick, carved out of pre-roll.
         assert backend.position == max(0, position-k-1)
         backend.events.append("setup")
@@ -136,12 +136,12 @@ def test_rejects_short_boundary_before_world_creation_and_tick_budget_overrun():
     backend = FakeCarla()
     source, initialization = inputs(1, 2)
     with pytest.raises(ValueError, match="deployment window"):
-        backend.reset_world(source, initialization, deployment=DeploymentPlan(2))
+        backend.reset(source, initialization, deployment=DeploymentPlan(2))
     assert backend.events == []
     source, initialization = inputs(3, 1)
     def overrun(value, context):
-        context.simulator.setup_tick()
-        context.simulator.setup_tick()
+        context.simulator_runtime.setup_tick()
+        context.simulator_runtime.setup_tick()
     with pytest.raises(RuntimeError, match="budget"):
         ClosedLoopRunner().run(backend, Driver(), RunRequest(0, start=source,
             initialization=initialization, deployment=DeploymentPlan(1),
@@ -152,7 +152,7 @@ def test_fake_carla_source_then_plain_reset_uses_configured_origin():
     backend = FakeCarla()
     config = deepcopy(backend.scenario)
     source, initialization = inputs(4, 0)
-    backend.reset_world(source, initialization)
+    backend.reset(source, initialization)
     assert backend.observe().vehicle_state == 4
     backend.reset()
     assert backend.observe().vehicle_state == 42
@@ -167,22 +167,22 @@ def test_nurec_source_then_plain_reset_restores_origin_bounds_and_renderer_defau
     renderer.start_transform = np.eye(4)
     renderer.start_timestamp_us = 7000000
     renderer.recorded_time_bounds = (7, 9)
-    backend = NuRecSimulator({"scene": "default", "ego0": {"x": 2}, "dt": .05}, renderer)
+    backend = NuRecSimulator({"scene": "default", "ego0": {"x": 2}, "dt": .05}, renderer).create_runtime()
     original = deepcopy(backend.config)
-    backend.reset_world(nurec_source())
+    backend.reset(nurec_source())
     assert backend.observe().vehicle_state.x == 12
-    assert renderer.origin_timestamp_us == 100500000
+    assert backend.renderer.origin_timestamp_us == 100500000
     backend.reset()
     assert backend.observe().vehicle_state.x == 2
     assert backend._recorded_end is None and backend.initialization_report == {}
-    assert renderer.origin_timestamp_us == renderer.start_timestamp_us == 7000000
-    assert renderer.origin_bounds == renderer.recorded_time_bounds == (7, 9)
-    np.testing.assert_array_equal(renderer.origin_transform, renderer.start_transform)
+    assert backend.renderer.origin_timestamp_us == backend.renderer.start_timestamp_us == 7000000
+    assert backend.renderer.origin_bounds == backend.renderer.recorded_time_bounds == (7, 9)
+    np.testing.assert_array_equal(backend.renderer.origin_transform, backend.renderer.start_transform)
     assert backend.config == original
 
 
 def test_restore_captures_before_observe_without_render_hook_reentry():
-    backend = NuRecSimulator({}, StubRenderer(height=2, width=2))
+    backend = NuRecSimulator({}, StubRenderer(height=2, width=2)).create_runtime()
     calls = []
     original = backend._emit
     def emit(stage, value, sensor=None):
@@ -203,8 +203,8 @@ def test_restore_captures_before_observe_without_render_hook_reentry():
 def test_zero_tick_setup_change_is_in_first_capture_without_moving_boundary(position):
     backend = FakeCarla()
     def move(value, context):
-        context.simulator.events.append("setup")
-        context.simulator.x += 100  # a simulator.setup change that declares no deployment ticks
+        context.simulator_runtime.events.append("setup")
+        context.simulator_runtime.x += 100  # a simulator.setup change that declares no deployment ticks
     source, initialization = inputs(position, 0) if position is not None else (None, None)
     ClosedLoopRunner().run(backend, Driver(), RunRequest(
         0, start=source, initialization=initialization, deployment=DeploymentPlan(0),
@@ -220,9 +220,9 @@ def test_zero_tick_setup_change_is_in_first_capture_without_moving_boundary(posi
 def test_plain_reset_ticks_world_setup_deployment_then_capture():
     backend = FakeCarla()
     def deploy(value, context):
-        context.simulator.events.append("setup")
-        context.simulator.setup_tick()
-        context.simulator.setup_tick()
+        context.simulator_runtime.events.append("setup")
+        context.simulator_runtime.setup_tick()
+        context.simulator_runtime.setup_tick()
     ClosedLoopRunner().run(backend, Driver(), RunRequest(
         0, deployment=DeploymentPlan(2), hooks=HookSet((Hook("simulator.setup", deploy),))))
     assert backend.events == ["base", "setup", ("hold", 0), ("hold", 0), ("hold", 0), ("capture", 0)]
@@ -232,7 +232,7 @@ def test_capture_tick_counts_toward_the_deployment_window():
     backend = FakeCarla()
     source, initialization = inputs(1, 1)
     with pytest.raises(ValueError, match="deployment window"):
-        backend.reset_world(source, initialization, deployment=DeploymentPlan(1))
+        backend.reset(source, initialization, deployment=DeploymentPlan(1))
     assert backend.events == []
 
 
@@ -246,7 +246,7 @@ def test_runs_release_the_ego_but_frame_data_generation_keeps_it_prescribed(monk
     monkeypatch.setattr("avsectester.closed_loop.simulators.carla.prepare_scenario", lambda scenario: scenario)
     source, _ = inputs(0, 0)
     run = Recording()
-    run.reset_world(source)  # p=0 needs no materialized evidence, but the run still drives the ego
+    run.reset(source)  # p=0 needs no materialized evidence, but the run still drives the ego
     assert "release" in run.events
     materialized = Recording()
     materialized.generate_frame_data(source, (source.frame,))

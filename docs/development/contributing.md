@@ -12,10 +12,12 @@
   driving-model modules. This repository owns scenario preparation, intervention preparation and
   execution, and the messages exchanged between the simulator and the driving system. When a
   missing capability belongs to avstack, add it to the avstack fork.
-- **One driving loop over a pure data plane.** `plane.py` defines the messages (`Observation`,
-  `Control`, `Trace`) and imports no simulator or model package. `backend.py` defines the two
-  adapter interfaces, `WorldBackend` and `AVStack`, and the loop `run`. Paired runners, component
-  logging and scene recording all drive this same loop.
+- **One driving loop over plain data types.** `closed_loop/datatypes.py` defines the messages
+  (`Observation`, `Control`, `WorldSnapshot`) and imports no simulator or model package.
+  `closed_loop/simulator.py` defines the simulator interface (`Simulator`, `SimulatorRuntime`),
+  `closed_loop/avstack.py` the driving-system interface (`AVStack`), and `ClosedLoopRunner` in
+  `closed_loop/runner.py` drives the loop. Paired runners, component logging and scene recording
+  all drive this same loop.
 - **Physical state stays separate from model-visible data.** Handlers that change the observation
   never move the vehicle. World changes use explicit simulator operations. See
   [Physical state and model-visible data](../concepts/architecture.md#physical-state-and-model-visible-data).
@@ -41,8 +43,8 @@ list with public names is in [Module map](../reference/python-api.md#module-map)
 |---|---|---|
 | `avsectester/datasets/` | Dataset | `Dataset`, `FrameReference`, `FrameData`, `ScenarioStart`; NuRec, nuScenes and CARLA datasets |
 | `avsectester/attack/` | Attack | `Attack`, `AttackSegment`, `OfflineContext` (`attack.py`); `AttackRuntime`, `OnlineContext` and the attack effects (`runtime.py`) |
-| `avsectester/closed_loop/` | Closed loop | `datatypes.py` (`Observation`, `Control`, `WorldSnapshot`, `Trace`), `simulator.py` (`Simulator`, `SensorView`, `WorldBackend`), `avstack.py` (`AVStack`), `vehicle_io.py`, `hooks.py` (`HookSet`, `Runtime`, `Hook`, `Plugin`, contexts), `runner.py` (`ClosedLoopRunner`), `services.py` and `driving_adapters.py` (closed-loop services), `frame_data.py`, `resources.py` |
-| `avsectester/closed_loop/simulators/` | Closed loop (simulator) | `CarlaSimulator`, `NuRecSimulator`, `RecordedReplaySimulator`, renderers and ego dynamics, scene visualization |
+| `avsectester/closed_loop/` | Closed loop | `datatypes.py` (`Observation`, `Control`, `WorldSnapshot`, `Trace`), `simulator.py` (`Simulator`, `SimulatorRuntime`, `SensorView`, legacy `WorldBackend`), `avstack.py` (`AVStack`), `vehicle_io.py`, `hooks.py` (`HookSet`, `Runtime`, `Hook`, `Plugin`, contexts), `runner.py` (`ClosedLoopRunner`), `services.py` and `driving_adapters.py` (closed-loop services), `frame_data.py`, `resources.py` |
+| `avsectester/closed_loop/simulators/` | Closed loop (simulator) | `CarlaSimulator`, `NuRecSimulator`, `RecordedReplaySimulator` and their runtimes (`CarlaSimulatorRuntime`, `NuRecSimulatorRuntime`, `RecordedReplaySimulatorRuntime`), renderers and ego dynamics, scene visualization |
 | `avsectester/closed_loop/avstacks/` | Closed loop (driving system) | `ModularAVStack`, `AlpamayoAVStack`, CARLA dataset registration |
 | `avsectester/runlog/` | Run log | `RunLog`, `Recorder` and readers (`log.py`); native-object codecs (`codecs.py`) |
 | `avsectester/evaluation/` | Evaluation | Driving-impact metric and plot (`metric.py`), component logging, robustness evaluation |
@@ -68,7 +70,7 @@ Each extension point is documented in the guide that owns it. Start from that se
 
 | To add | Implement | Guide |
 |---|---|---|
-| Simulator | A `WorldBackend` adapter | [Write a custom simulator adapter](../guides/simulators.md#write-a-custom-simulator-adapter) |
+| Simulator | A `Simulator` and its `SimulatorRuntime` | [Write a custom simulator adapter](../guides/simulators.md#write-a-custom-simulator-adapter) |
 | Driving system | An `AVStack` adapter, used through `stack_factory` or `stack.factory` | [Use a custom driving system](../guides/driving-systems.md#use-a-custom-driving-system) |
 | Component outputs of a driving system | The component-logging stack interface | [Component logging interface](../guides/driving-systems.md#component-logging-interface) |
 | Attack | Runtime handlers, packaged as an `Intervention` | [Write your first attack](../guides/attacks.md#write-your-first-attack), [Package the attack as an intervention](../guides/attacks.md#package-the-attack-as-an-intervention) |

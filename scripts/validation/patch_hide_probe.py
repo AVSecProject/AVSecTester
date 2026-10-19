@@ -14,7 +14,7 @@ from avsectester.attacks.patch.physical_patch import image_rgba
 from avsectester.closed_loop.datatypes import Control
 from avsectester.rendering.harmonizers import ClassicHarmonizer, PCTNetHarmonizer
 from avsectester.closed_loop.simulators import carla as carla_sim
-from avsectester.scenarios.carla_provider import CarlaSelectionSimulator
+from avsectester.closed_loop.simulators.carla import CarlaSimulator
 from avsectester.rendering.compositor import PatchCompositor
 from scripts.common.demo_common import build_detector, carla_rear_perturbation
 from PIL import Image
@@ -47,11 +47,12 @@ def main():
     detect = build_detector(args.gpu)
     patch = image_rgba(args.texture, 256)
 
-    backend = CarlaSelectionSimulator(scen)
+    backend = CarlaSimulator(scen, depth_camera="front").create_runtime()
     try:
-        obs = backend.reset()
+        backend.reset()
         for _ in range(args.approach):
-            obs = backend.step(Control(throttle=0.55))
+            backend.step(Control(throttle=0.55))
+        obs = backend.observe()
         rgb = carla_sim.camera_view(obs)
         Image.fromarray(rgb).save(OUT/"probe_clean.png")
         base = top_car_conf(detect, rgb)

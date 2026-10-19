@@ -53,7 +53,7 @@ class NuScenesDataset(SourceDataset):
         def make_backend():
             scenario = sample["scene_token"]
             frame = next(frame for frame in self.frames(scenario) if frame.frame_id == sample["token"])
-            return RecordedReplaySimulator(self.scenario_start(scenario, frame))
+            return RecordedReplaySimulator(self.scenario_start(scenario, frame)).create_runtime()
         return FilterContext(scene, dataset=self, metadata=metadata, native={
             "nusc": nusc, "make_backend": make_backend,
         })

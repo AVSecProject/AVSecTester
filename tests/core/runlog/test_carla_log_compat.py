@@ -19,7 +19,7 @@ def test_carla_compatibility_detection_metric_survives_runlog_round_trip(tmp_pat
             return {"perception": self.detections}
 
     # _logged_run needs no CARLA SDK: it consumes an instrumented stack and replay metadata.
-    backend = NuRecSimulator({}, renderer=StubRenderer(height=2, width=3))
+    backend = NuRecSimulator({}, renderer=StubRenderer(height=2, width=3)).create_runtime()
     backend.replay_scenario = {"seed": 7}
     trace = _logged_run(backend, DetectedCruise(), 3, runtime=HookSet())
     assert [record.n_detections for record in trace.records] == [1, 2, 3]

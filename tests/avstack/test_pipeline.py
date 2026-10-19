@@ -327,7 +327,7 @@ def test_stage_capabilities_exclude_modules_without_actual_hook_dispatch(pipelin
 
     with pytest.raises(UnsupportedStageError, match="tracking.post"):
         Runtime([Hook("tracking.post", lambda value, context: value)]).session(
-            NuRecSimulator({}, renderer=StubRenderer(height=2, width=2)),
+            NuRecSimulator({}, renderer=StubRenderer(height=2, width=2)).create_runtime(),
             stack,
         )
 

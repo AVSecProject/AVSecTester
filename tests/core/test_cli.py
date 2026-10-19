@@ -17,7 +17,7 @@ from avsectester.experiment import ExecutionMode, TreatmentMode
 from avsectester.closed_loop.datatypes import Control, StateEstimate
 from avsectester.preparation import Intervention
 from avsectester.closed_loop.hooks import Hook, Plugin
-from avsectester.closed_loop.simulators.nurec import NuRecSimulator, StubRenderer
+from avsectester.closed_loop.simulators.nurec import NuRecSimulatorRuntime, NuRecSimulator, StubRenderer
 
 
 @pytest.fixture
@@ -66,7 +66,7 @@ def user_methods(monkeypatch):
             events.append(("reset", self.speed))
 
         def transform(self, observation, context):
-            assert context.ground_truth.ego_speed == 2
+            assert context.physical_state.ego_speed == 2
             events.append(("input", observation.ego_speed))
             return replace(observation, ego_speed=self.speed)
 
@@ -266,7 +266,10 @@ def test_cli_consumes_physical_patches_through_world_setup(monkeypatch, cli_conf
     world, lead, panel = object(), object(), SimpleNamespace(destroy=Mock(), is_alive=True)
     deployed = []
 
-    class Backend(NuRecSimulator):
+    class Backend(NuRecSimulatorRuntime):
+        def __init__(self, *args, **kwargs):
+            super().__init__(NuRecSimulator(*args, **kwargs))
+
         replay_scenario = config
 
         @property
@@ -283,9 +286,10 @@ def test_cli_consumes_physical_patches_through_world_setup(monkeypatch, cli_conf
         return [panel]
 
     monkeypatch.setattr(PhysicalPatch, "apply", deploy)
-    monkeypatch.setattr(carla_runner, "CarlaSimulator", lambda _: Backend(
-        {"ego0": {"speed": 2}}, renderer=StubRenderer(height=2, width=2),
-    ))
+    monkeypatch.setattr(carla_runner, "CarlaSimulator", lambda _: SimpleNamespace(
+        create_runtime=lambda seed=None: Backend(
+            {"ego0": {"speed": 2}}, renderer=StubRenderer(height=2, width=2),
+        )))
     monkeypatch.setattr(carla_runner, "_stack", lambda _: NeutralStack())
     result = CliRunner().invoke(cli.app, ["run", str(path), "--frames", "1"])
     assert result.exit_code == 3, result.output
@@ -338,9 +342,9 @@ def test_cli_custom_carla_stack_needs_no_embedded_modular_pipeline(
     config["interventions"] = [{"kind": "defense", "factory": user_methods.path + "Defense"}]
     config.update(mode="single", treatment="defense")
     path.write_text(yaml.safe_dump(config))
-    backend = NuRecSimulator({"ego0": {"speed": 2}}, renderer=StubRenderer(height=2, width=2))
+    backend = NuRecSimulator({"ego0": {"speed": 2}}, renderer=StubRenderer(height=2, width=2)).create_runtime()
     backend.replay_scenario = config
-    monkeypatch.setattr(carla_runner, "CarlaSimulator", lambda _: backend)
+    monkeypatch.setattr(carla_runner, "CarlaSimulator", lambda _: SimpleNamespace(create_runtime=lambda seed=None: backend))
     result = CliRunner().invoke(cli.app, ["run", str(path), "--frames", "2"])
     assert result.exit_code == 0, result.output
     assert user_methods.inputs == [[2, 1.6]]
@@ -463,7 +467,7 @@ def test_cli_classifies_preflight_errors_before_reset(monkeypatch, user_methods,
     path = tmp_path / "invalid.yaml"
     path.write_text(yaml.safe_dump(config))
     reset = Mock(side_effect=AssertionError("World must not reset"))
-    monkeypatch.setattr(NuRecSimulator, "reset", reset)
+    monkeypatch.setattr(NuRecSimulatorRuntime, "reset", reset)
     result = CliRunner().invoke(cli.app, ["run", str(path), "--frames", "1"])
     assert result.exit_code == 2, result.output
     assert "Configuration error" in result.output

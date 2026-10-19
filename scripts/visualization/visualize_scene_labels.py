@@ -67,7 +67,8 @@ def nuscenes_example() -> None:
         backend = ds.context(scene).native["make_backend"]()
         # the standard view path: labels_view wraps camera_view, overlaying this frame's GT
         view = labels_view(lambda _obs, s=scene: s, camera="front", target=match.target, max_distance=40.0)
-        save_image(view(backend.reset()), OUT / "labels_nuscenes_target.png")
+        backend.reset()
+        save_image(view(backend.observe()), OUT / "labels_nuscenes_target.png")
         print("saved", OUT / "labels_nuscenes_target.png",
               f"(target vehicle d={match.target.distance:.1f}m)")
         return

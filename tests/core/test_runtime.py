@@ -258,7 +258,7 @@ def test_localizer_cached_state_is_detached_before_downstream_estimate_edits(sta
     cache = SimpleNamespace(x=2.0)
 
     def localize(observation, context):
-        state = cache if state_source == "estimator" else context.simulator.pose
+        state = cache if state_source == "estimator" else context.simulator_runtime.pose
         return StateEstimate(state, 0.0)
 
     def attack(estimate, context):
@@ -301,9 +301,9 @@ def test_world_setup_changes_scene_before_initial_render():
 
     def setup(value, context):
         assert value is None
-        context.simulator.pose.x = 12.0
+        context.simulator_runtime.pose.x = 12.0
 
-    backend = NuRecSimulator({"dt": 0.1}, renderer=Renderer(height=2, width=3))
+    backend = NuRecSimulator({"dt": 0.1}, renderer=Renderer(height=2, width=3)).create_runtime()
     stack = RecordingStack()
     run(backend, stack, frames=1, runtime=Runtime([Hook("simulator.setup", setup)]))
 
@@ -349,7 +349,7 @@ def test_feedback_receives_next_unattacked_state_and_true_clock():
         def after_step(self, context):
             feedback.append(context)
             # A saved or mutated context snapshot must not affect later physics.
-            context.ground_truth.vehicle_state.x = 100.0
+            context.physical_state.vehicle_state.x = 100.0
             context.observation.vehicle_state.x = 100.0
 
     backend = MemoryBackend()
@@ -359,7 +359,7 @@ def test_feedback_receives_next_unattacked_state_and_true_clock():
     assert [context.observation.frame for context in feedback] == [42, 43]
     assert [context.observation.ego_speed for context in feedback] == [1.0, 2.0]
     assert [context.sim_time for context in feedback] == pytest.approx([7.1, 7.2])
-    assert [context.ground_truth.frame for context in feedback] == [42, 43]
+    assert [context.physical_state.frame for context in feedback] == [42, 43]
     assert backend.pose.x == 3.0
 
 
@@ -392,7 +392,7 @@ def test_world_post_context_cannot_rewrite_the_executed_command():
         context.control.throttle = 0.0
         return None
 
-    backend = NuRecSimulator({"dt": 0.1}, renderer=StubRenderer(height=2, width=3))
+    backend = NuRecSimulator({"dt": 0.1}, renderer=StubRenderer(height=2, width=3)).create_runtime()
     trace = run(
         backend, RecordingStack(), frames=2,
         runtime=Runtime([Hook("simulator.step.post", world_post)]),

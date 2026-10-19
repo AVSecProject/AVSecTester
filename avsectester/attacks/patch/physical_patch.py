@@ -191,12 +191,12 @@ class PhysicalPatchPlugin(Plugin):
         self._resources = ExitStack()
 
     def reset(self, context: RunContext) -> None:
-        if not callable(getattr(context.simulator, "setup_tick", None)):
+        if not callable(getattr(context.simulator_runtime, "setup_tick", None)):
             raise ValueError("PhysicalPatchPlugin requires a simulator with native CARLA setup ticks")
         self._resources = ExitStack()
 
     def transform(self, value: Any, context: StageContext) -> None:
-        native = context.simulator.native
+        native = context.simulator_runtime.native
         actors = native.get("actors", {})
         world = native.get("world")
         if world is None:
@@ -205,7 +205,7 @@ class PhysicalPatchPlugin(Plugin):
             target = spec.get("target", "lead")
             actor = _target_actor(target, context.case, actors)
             build_patch(spec).apply(
-                world, actor, tick=context.simulator.setup_tick,
+                world, actor, tick=context.simulator_runtime.setup_tick,
                 on_spawn=lambda actor: self._resources.callback(_destroy_panel, actor),
             )
 

@@ -35,7 +35,7 @@ from avsectester.closed_loop.datatypes import Control
 from avsectester.runner import run_prepared
 from avsectester.closed_loop.hooks import Hook, Runtime
 from avsectester.closed_loop.simulators import carla as carla_sim
-from avsectester.scenarios.carla_provider import CarlaSelectionSimulator
+from avsectester.closed_loop.simulators.carla import CarlaSimulator
 from avsectester.scenarios.setup import scenario_from_config
 from avsectester.rendering.compositor import PatchCompositor
 from avsectester.closed_loop.simulators.viz import detections_view, record_run, save_sequence
@@ -97,7 +97,10 @@ def main() -> int:
     detect = plausible_detector(build_detector(args.gpu))  # gate phantom boxes; feeds stack + overlay
     overlay = detections_view(detect, base=carla_sim.camera_view)
 
-    instance = scenario_from_config(scenario, backend_factory=CarlaSelectionSimulator)
+    instance = scenario_from_config(
+        scenario,
+        backend_factory=lambda config: CarlaSimulator(config, depth_camera="front").create_runtime(),
+    )
 
     def attacked_runtime(backend):
         transform = carla_rear_perturbation(backend, patch, compositor)

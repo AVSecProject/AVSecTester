@@ -7,6 +7,8 @@ client for metadata access. Host-bound insertions use the shared geometric inser
 
 from __future__ import annotations
 
+import copy
+import dataclasses
 import math
 from abc import ABC, abstractmethod
 from copy import deepcopy
@@ -15,7 +17,7 @@ from itertools import pairwise
 from typing import Any, ClassVar, Protocol, TYPE_CHECKING
 
 from avsectester.closed_loop.datatypes import validate_command_modes
-from avsectester.closed_loop.simulator import Simulator
+from avsectester.closed_loop.simulator import Simulator, SimulatorRuntime
 from avsectester.closed_loop.datatypes import Control, Observation, WorldSnapshot
 from avsectester.rendering.compositor import InsertionRenderer
 
@@ -128,6 +130,14 @@ class Renderer(ABC):
     cameras: ClassVar[list[str]] = ["camera_front"]
     calibration: ClassVar[dict] = {}
 
+    def copy(self) -> Renderer:
+        """A renderer with this configuration and no connection, loaded scene or run origin.
+
+        Every simulator runtime renders through its own copy. Override this when a renderer
+        holds resources that a shallow copy would share.
+        """
+        return copy.copy(self)
+
     def reset_origin(self, start=None):
         """Replace runtime origin without modifying configured renderer defaults."""
         self._origin_transform = deepcopy(getattr(self, "start_transform", None))
@@ -180,11 +190,16 @@ class StubRenderer(Renderer):
 
 
 class NuRecSimulator(Simulator):
-    """In-process neural-reconstruction world: own the ego dynamics + loop, render each frame.
+    """A NuRec neural reconstruction with in-process ego dynamics and a pluggable renderer.
 
-    Mirrors ``CarlaSimulator``'s shape (reset spawns/loads, step actuates+advances+senses) but keeps
-    everything in one process behind a pluggable :class:`Renderer`.
+    ``renderer`` is a configuration template that is never connected itself: every runtime
+    renders through its own copy (``Renderer.copy``), with its own connection, loaded scene and
+    origin. ``dynamics`` is also a template: every runtime integrates with its own copy, so a
+    handler that changes it, for example ``max_brake``, changes only that runtime.
     """
+
+    dataset_kinds = ("NuRecDataset",)
+    can_render = True
 
     def __init__(
         self,
@@ -192,7 +207,6 @@ class NuRecSimulator(Simulator):
         renderer: Renderer | None = None,
         dynamics: EgoDynamics | None = None,
     ) -> None:
-        super().__init__()
         self.config = deepcopy(config)
         self.simulator_version = str(self.config.get("simulator_version", "1"))
         self.renderer = renderer or StubRenderer()
@@ -200,13 +214,10 @@ class NuRecSimulator(Simulator):
         self.dt = float(self.config.get("dt", 0.05))
         if not math.isfinite(self.dt) or self.dt <= 0:
             raise ValueError("NuRec decision time step must be positive and finite")
-        self.pose = EgoPose()
-        self.frame = 0
-        self._render_requests: dict[str, RenderRequest] = {}
-        # Recorded actor tracks, by archive; recorded files are immutable.
-        self._track_datasets: dict[tuple, Any] = {}
-        self._actor_states: tuple[int, dict] | None = None
-        self._recorded_end: float | None = None
+
+    def create_runtime(self, seed: int | None = None) -> NuRecSimulatorRuntime:
+        """A new live world; NuRec rendering and ego dynamics are deterministic, so ``seed`` is unused."""
+        return NuRecSimulatorRuntime(self)
 
     @property
     def supported_stages(self) -> frozenset[str]:
@@ -218,6 +229,36 @@ class NuRecSimulator(Simulator):
     def command_modes(self) -> frozenset[str] | None:
         """Delegate command capabilities to the selected ego dynamics implementation."""
         return getattr(self.dynamics, "command_modes", None)
+
+    @property
+    def decision_time_step(self):
+        return self.dt
+
+    @property
+    def identity(self):
+        return {**super().identity, "config": deepcopy(self.config),
+                "renderer": type(self.renderer).__name__,
+                "endpoint": getattr(self.renderer, "endpoint", None)}
+
+
+class NuRecSimulatorRuntime(SimulatorRuntime):
+    """One live NuRec world: the ego pose and dynamics loop, and its own renderer connection."""
+
+    def __init__(self, simulator: NuRecSimulator) -> None:
+        super().__init__(simulator)
+        self.config = deepcopy(simulator.config)
+        # Duck-typed renderers without ``copy`` are copied shallowly, like Renderer.copy.
+        copy_renderer = getattr(simulator.renderer, "copy", None)
+        self.renderer = copy_renderer() if callable(copy_renderer) else copy.copy(simulator.renderer)
+        self.dynamics = deepcopy(simulator.dynamics)
+        self.dt = simulator.dt
+        self.pose = EgoPose()
+        self.frame = 0
+        self._render_requests: dict[str, RenderRequest] = {}
+        # Recorded actor tracks, by archive; recorded files are immutable.
+        self._track_datasets: dict[tuple, Any] = {}
+        self._actor_states: tuple[int, dict] | None = None
+        self._recorded_end: float | None = None
 
     @property
     def native(self) -> dict[str, Any]:
@@ -240,7 +281,7 @@ class NuRecSimulator(Simulator):
             raise RuntimeError(f"No current render request for camera {camera!r}")
         return deepcopy(self._render_requests[native_camera])
 
-    def ground_truth(self) -> WorldSnapshot:
+    def _state(self) -> WorldSnapshot:
         """Return the physical ego state, independent of any model-visible estimate.
 
         Other actors follow their recorded tracks, so their states come from the start's
@@ -266,19 +307,6 @@ class NuRecSimulator(Simulator):
             timestamp = round((self._start.frame.timestamp + self.pose.t) * 1e6)
             self._actor_states = (self.frame, dataset.actor_states(scene.source["usdz_path"], timestamp))
         return self._actor_states[1]
-
-    dataset_kinds = ("NuRecDataset",)
-    can_render = True
-
-    @property
-    def decision_time_step(self):
-        return self.dt
-
-    @property
-    def identity(self):
-        return {**super().identity, "config": deepcopy(self.config),
-                "renderer": type(self.renderer).__name__,
-                "endpoint": getattr(self.renderer, "endpoint", None)}
 
     def _initialize_world(self, start, initialization, environment):
         if initialization is not None:
@@ -335,15 +363,14 @@ class NuRecSimulator(Simulator):
         ``bindings`` accepts a selected match's role-to-track-ID tuples. Actor poses are sampled at
         the effective render timestamp and camera pose. Model-visible time and localization do
         not move the geometry. An explicit render-viewpoint change updates camera geometry while
-        the victim's physical pose still comes from simulator ground truth.
+        the victim's physical pose still comes from the runtime's physical state.
         """
-        simulator = self
         import numpy as np
         from avsectester.insertion import ActorPose
         from avsectester.rendering.types import InsertionGeometry
         from avsectester.rendering.visibility import CuboidVisibilityEstimator
 
-        renderer = simulator.renderer
+        renderer = self.renderer
         objects = {obj.track_id: obj for obj in scene.objects}
         selected = {
             role: tuple(objects[track_id] for track_id in ids)
@@ -358,8 +385,8 @@ class NuRecSimulator(Simulator):
         path = scene.source["usdz_path"]
 
         def geometry(observation):
-            pose = simulator.ground_truth().vehicle_state
-            request = simulator.render_request(data.camera_id)
+            pose = self.state().vehicle_state
+            request = self.render_request(data.camera_id)
             adapter.camera = renderer.camera_model(request.camera)
             actors = data.actor_poses(path, renderer.timestamp_us(request.pose))
             for alias, track_id in aliases.items():
@@ -488,6 +515,10 @@ class NuRecRenderer(Renderer):
     start_timestamp_us: int | None = None
     start_transform: Any = None
     recorded_time_bounds: tuple[float, float] | None = None
+
+    def copy(self) -> NuRecRenderer:
+        """The same configuration without a connection, loaded scene or run origin."""
+        return dataclasses.replace(self)
 
     def __post_init__(self) -> None:
         self._stub = None
@@ -699,7 +730,7 @@ class NuRecInsertions(InsertionRenderer):
         )
 
 
-def nurec_sensor_view(simulator, scene, dataset, sensor=None, data=None):
+def nurec_sensor_view(simulator_runtime, scene, dataset, sensor=None, data=None):
     """Build the sensor view of one NuRec camera capture.
 
     Actors are sampled at the effective render timestamp and the camera at the effective render
@@ -714,20 +745,20 @@ def nurec_sensor_view(simulator, scene, dataset, sensor=None, data=None):
     from avsectester.perturbations.image import read_camera_rgb
     from avsectester.closed_loop.simulator import SensorView
 
-    renderer = simulator.renderer
-    aliases = getattr(simulator, "config", {}).get("camera_aliases", {})
+    renderer = simulator_runtime.renderer
+    aliases = getattr(simulator_runtime, "config", {}).get("camera_aliases", {})
     native_camera = sensor if sensor is not None else dataset.camera_id
     native_camera = next((key for key, alias in aliases.items() if alias == native_camera),
                          native_camera)
     output_key = aliases.get(native_camera, native_camera)
-    request = simulator.render_request(native_camera)
-    truth = simulator.ground_truth()
+    request = simulator_runtime.render_request(native_camera)
+    truth = simulator_runtime.state()
     timestamp = renderer.timestamp_us(request.pose)
     local_center = np.eye(4)
     local_center[:3, 3] = scene.ego.center
     ego = ActorPose(renderer.rig_transform(truth.vehicle_state) @ local_center, scene.ego.extent)
     if data is None:
-        captured = read_camera_rgb(simulator.observe(), output_key)
+        captured = read_camera_rgb(simulator_runtime.observe(), output_key)
         if captured is None:
             raise ValueError(f"Missing NuRec camera {output_key!r}")
         data = captured[1]

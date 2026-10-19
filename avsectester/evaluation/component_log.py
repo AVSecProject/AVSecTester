@@ -23,7 +23,7 @@ from avsectester.closed_loop.runner import ClosedLoopRunner, RunRequest, trace_f
 
 if TYPE_CHECKING:
     from avsectester.closed_loop.avstack import AVStack
-    from avsectester.closed_loop.simulator import WorldBackend
+    from avsectester.closed_loop.simulator import SimulatorRuntime, WorldBackend
     from avsectester.closed_loop.datatypes import Observation, Trace
     from avsectester.closed_loop.hooks import HookSet
 
@@ -107,7 +107,7 @@ class ComponentTrace:
 
 
 def run_logged(
-    simulator: WorldBackend,
+    simulator_runtime: SimulatorRuntime | WorldBackend,
     avstack: AVStack,
     frames: int,
     perturb: Callable[[Observation], Observation] | None = None,
@@ -118,7 +118,7 @@ def run_logged(
     ``component_log()`` each frame. Returns the driving :class:`Trace` and the :class:`ComponentTrace`
     (empty when the AVStack is not instrumented, so the call site is uniform)."""
     log = ClosedLoopRunner().run(
-        simulator, avstack, RunRequest(frames, hooks=hooks), perturb=perturb,
+        simulator_runtime, avstack, RunRequest(frames, hooks=hooks), perturb=perturb,
     )
     component = ComponentTrace(
         [StepLog(frame=record.step, stages=record.components) for record in log.steps]

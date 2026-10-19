@@ -25,9 +25,10 @@ class RecordingRenderer(StubRenderer):
 
 def test_nurec_observations_detach_pose_images_and_calibration():
     renderer = RecordingRenderer()
-    backend = NuRecSimulator({"ego0": {"x": 2.0, "speed": 4.0}}, renderer=renderer)
-    observation = backend.reset()
-    truth = backend.ground_truth()
+    backend = NuRecSimulator({"ego0": {"x": 2.0, "speed": 4.0}}, renderer=renderer).create_runtime()
+    backend.reset()
+    observation = backend.observe()
+    truth = backend.state()
 
     observation.vehicle_state.x = 90
     observation.ego_speed = 100
@@ -39,14 +40,15 @@ def test_nurec_observations_detach_pose_images_and_calibration():
     assert backend.pose.speed == 4
     assert not renderer.image.any()
     np.testing.assert_array_equal(renderer.calibration["front"]["intrinsic"], np.eye(3))
-    later = backend.step(Control())
+    backend.step(Control())
+    later = backend.observe()
     assert later.vehicle_state.x == pytest.approx(2.2)
     assert observation.vehicle_state.x == 90
-    assert backend.ground_truth().vehicle_state is not backend.pose
+    assert backend.state().vehicle_state is not backend.pose
 
 
 def test_nurec_world_interventions_change_physics_before_sensing():
-    backend = NuRecSimulator({"dt": 0.1, "ego0": {"speed": 2.0}}, renderer=RecordingRenderer())
+    backend = NuRecSimulator({"dt": 0.1, "ego0": {"speed": 2.0}}, renderer=RecordingRenderer()).create_runtime()
     emitted = []
 
     class Runtime:
@@ -61,9 +63,10 @@ def test_nurec_world_interventions_change_physics_before_sensing():
             return value
 
     backend._dispatcher = Runtime()
-    initial = backend.reset()
-    moved = backend.step(Control())
-
+    backend.reset()
+    initial = backend.observe()
+    backend.step(Control())
+    moved = backend.observe()
     assert initial.vehicle_state.x == 10
     assert moved.vehicle_state.x == pytest.approx(10.4)
     assert moved.vehicle_state.y == 3
@@ -81,7 +84,7 @@ def test_nurec_render_replacement_preserves_physical_pose_and_output_sensor_iden
     renderer.calibration["alternate"] = {"intrinsic": 2 * np.eye(3)}
     backend = NuRecSimulator(
         {"ego0": {"x": 2.0}, "camera_aliases": {"front": "camera"}}, renderer=renderer,
-    )
+    ).create_runtime()
     sensors = []
 
     class Runtime:
@@ -95,8 +98,8 @@ def test_nurec_render_replacement_preserves_physical_pose_and_output_sensor_iden
             return value
 
     backend._dispatcher = Runtime()
-    observation = backend.reset()
-
+    backend.reset()
+    observation = backend.observe()
     assert renderer.requests[0][0].x == 100
     assert renderer.requests[0][1] == "alternate"
     assert backend.pose.x == 2
@@ -147,7 +150,7 @@ class Velocity:
 
 
 def test_carla_observation_detaches_shared_sensor_and_state_reference_graph():
-    backend = CarlaSimulator({}, settle_iters=1)
+    backend = CarlaSimulator({}, settle_iters=1).create_runtime()
     reference = SimpleNamespace(x=np.array([1.0, 2.0, 3.0]), q=np.array([1.0, 0, 0, 0]))
     calibration = SimpleNamespace(reference=reference)
     payload = SimpleNamespace(data=np.zeros((2, 3)), calibration=calibration)
@@ -164,7 +167,7 @@ def test_carla_observation_detaches_shared_sensor_and_state_reference_graph():
         sensor_data_manager=SimpleNamespace(empty=lambda: False, pop=lambda: {"lidar": payload}),
     )
     observation = backend._observe()
-    truth = backend.ground_truth()
+    truth = backend._state()
 
     assert observation.calibration["lidar"] is observation.sensor_data["lidar"].calibration
     copied_reference = observation.sensor_data["lidar"].calibration.reference
@@ -175,7 +178,7 @@ def test_carla_observation_detaches_shared_sensor_and_state_reference_graph():
 
     np.testing.assert_array_equal(reference.x, [1, 2, 3])
     assert not payload.data.any()
-    assert backend.ground_truth().ego_speed == 5
+    assert backend._state().ego_speed == 5
     assert truth.frame == 12 and truth.t == 1.5
     replacement = SimpleNamespace(reference=SimpleNamespace(x=np.zeros(3)))
     observation.set_calibration("lidar", replacement)
@@ -200,7 +203,7 @@ def test_carla_copy_borrows_native_capture_and_detaches_its_wrapper():
     capture = NativeCapture()
     payload = SimpleNamespace(data=capture, calibration={"matrix": np.eye(3)})
     observation = Observation(0, 0, {"lidar": payload}, vehicle_state=EgoPose())
-    copied = CarlaSimulator({}).copy_observation(observation)
+    copied = CarlaSimulator({}).create_runtime().copy_observation(observation)
 
     assert copied.sensor_data["lidar"] is not payload
     assert copied.sensor_data["lidar"].data is capture

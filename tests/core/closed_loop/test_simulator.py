@@ -11,7 +11,7 @@ from avsectester.closed_loop.simulator import WorldBackend
 from avsectester.closed_loop.datatypes import Control, Observation, WorldSnapshot
 from avsectester.closed_loop.simulator import LegacySimulatorAdapter
 from avsectester.closed_loop.simulators.carla import CarlaSimulator
-from avsectester.closed_loop.simulators.nurec import NuRecSimulator, StubRenderer
+from avsectester.closed_loop.simulators.nurec import NuRecSimulatorRuntime, NuRecSimulator, StubRenderer
 
 
 class LegacyBackend(WorldBackend):
@@ -50,7 +50,7 @@ class CountingRenderer(StubRenderer):
 def test_legacy_adapter_caches_captures_without_extra_backend_calls():
     backend = LegacyBackend()
     simulator = LegacySimulatorAdapter(backend)
-    assert simulator.reset_world() is None
+    assert simulator.reset() is None
     first = simulator.observe()
     first.sensor_data["sample"].append(99)
     first.t = -1
@@ -58,32 +58,32 @@ def test_legacy_adapter_caches_captures_without_extra_backend_calls():
     assert simulator.observe().sensor_data == {"sample": [0]}
     assert simulator.clock.t == 8
     assert backend.resets == 1 and backend.steps == 0
-    assert simulator.advance(Control()) is None
+    assert simulator.step(Control()) is None
     assert simulator.clock.frame == 1 and simulator.clock.t == 8.1
     assert simulator.observe().frame == 1
     assert backend.steps == 1
 
 
 def test_clock_and_state_are_independent_snapshots():
-    backend = NuRecSimulator({"ego0": {"speed": 4.0}}, renderer=CountingRenderer())
+    backend = NuRecSimulator({"ego0": {"speed": 4.0}}, renderer=CountingRenderer()).create_runtime()
     simulator = backend
-    simulator.reset_world()
+    simulator.reset()
     clock = simulator.clock
     with pytest.raises(FrozenInstanceError):
         clock.t = -1
     state = simulator.state()
     state.vehicle_state.speed = -100
     assert simulator.state().ego_speed == 4
-    simulator.advance(Control())
+    simulator.step(Control())
     assert clock.t == 0 and clock.frame == 0
     assert simulator.clock.frame == 1
 
 
 def test_nurec_observe_reuses_capture_and_isolates_caller_mutation():
     renderer = CountingRenderer()
-    backend = NuRecSimulator({"dt": 0.1}, renderer=renderer)
+    backend = NuRecSimulator({"dt": 0.1}, renderer=renderer).create_runtime()
     simulator = backend
-    simulator.reset_world()
+    simulator.reset()
     observation = simulator.observe()
     observation.sensor_data["camera_front"][:] = 100
     observation.vehicle_state.x = 100
@@ -92,7 +92,7 @@ def test_nurec_observe_reuses_capture_and_isolates_caller_mutation():
         assert simulator.observe().vehicle_state.x == 0
     assert len(renderer.positions) == 1
 
-    simulator.advance(Control(throttle=1.0))
+    simulator.step(Control(throttle=1.0))
     assert len(renderer.positions) == 2
     assert simulator.clock.t == pytest.approx(0.1)
     assert (simulator.observe().sensor_data["camera_front"] == 2).all()
@@ -106,7 +106,7 @@ def test_attack_setup_world_effect_is_visible_in_the_first_capture():
     from avsectester.closed_loop.hooks import Hook, HookSet
 
     renderer = CountingRenderer()
-    backend = NuRecSimulator({}, renderer=renderer)
+    backend = NuRecSimulator({}, renderer=renderer).create_runtime()
     events = []
     def setup(value, context):
         assert not renderer.positions
@@ -137,11 +137,11 @@ def test_attack_setup_world_effect_is_visible_in_the_first_capture():
 
 def test_restore_invalidates_capture_without_advancing_restored_world():
     renderer = CountingRenderer()
-    backend = NuRecSimulator({"dt": 0.1}, renderer=renderer)
+    backend = NuRecSimulator({"dt": 0.1}, renderer=renderer).create_runtime()
     simulator = backend
-    simulator.reset_world()
+    simulator.reset()
     checkpoint = backend.checkpoint()
-    simulator.advance(Control(throttle=1))
+    simulator.step(Control(throttle=1))
     backend.restore(checkpoint)
 
     assert simulator.clock.frame == 0 and simulator.clock.t == 0
@@ -154,18 +154,21 @@ def test_restore_invalidates_capture_without_advancing_restored_world():
 
 @pytest.mark.parametrize("method", ["reset", "step"])
 def test_simulator_rejects_legacy_overrides_at_class_definition(method):
-    with pytest.raises(TypeError, match="legacy reset/step"):
-        type("InvalidBackend", (NuRecSimulator,), {method: lambda self: None})
+    with pytest.raises(TypeError, match="not reset/step"):
+        type("InvalidRuntime", (NuRecSimulatorRuntime,), {method: lambda self: None})
 
 
 def test_native_initialization_extension_preserves_config():
-    class NewInitialization(NuRecSimulator):
+    class NewInitialization(NuRecSimulatorRuntime):
+        def __init__(self, *args, **kwargs):
+            super().__init__(NuRecSimulator(*args, **kwargs))
+
         def _initialize_world(self, source, initialization, environment):
             super()._initialize_world(source, initialization, environment)
             self.pose.x = 6
     backend = NewInitialization({}, renderer=CountingRenderer())
     simulator = backend
-    simulator.reset_world()
+    simulator.reset()
     assert simulator.observe().vehicle_state.x == 6
     assert backend.config == {}
 
@@ -174,9 +177,9 @@ def test_unsupported_initialization_rejects_before_reset_side_effects():
     backend = LegacyBackend()
     simulator = LegacySimulatorAdapter(backend)
     with pytest.raises(TypeError, match="ScenarioStart"):
-        simulator.reset_world(start={"scene": "unsupported"})
+        simulator.reset(start={"scene": "unsupported"})
     with pytest.raises(ValueError, match="initialization"):
-        simulator.reset_world(initialization={"ticks": 2})
+        simulator.reset(initialization={"ticks": 2})
     assert backend.resets == 0
 
 
@@ -187,12 +190,12 @@ def test_uninitialized_and_failed_advances_do_not_expose_stale_capture():
             raise RuntimeError("capture failed")
 
     simulator = LegacySimulatorAdapter(FailingBackend())
-    for operation in (simulator.observe, simulator.state, lambda: simulator.advance(Control())):
+    for operation in (simulator.observe, simulator.state, lambda: simulator.step(Control())):
         with pytest.raises(RuntimeError, match="Reset"):
             operation()
-    simulator.reset_world()
+    simulator.reset()
     with pytest.raises(RuntimeError, match="capture failed"):
-        simulator.advance(Control())
+        simulator.step(Control())
     with pytest.raises(RuntimeError, match="Reset"):
         simulator.observe()
 
@@ -204,45 +207,46 @@ def test_native_capture_failure_requires_reset_and_preserves_physical_state():
                 raise RuntimeError("renderer disconnected")
             return super().render(pose, camera)
 
-    backend = NuRecSimulator({"dt": 0.1}, renderer=FailingRenderer())
+    backend = NuRecSimulator({"dt": 0.1}, renderer=FailingRenderer()).create_runtime()
     simulator = backend
-    simulator.reset_world()
+    simulator.reset()
     with pytest.raises(RuntimeError, match="renderer disconnected"):
-        simulator.advance(Control(throttle=1))
-    assert backend.ground_truth().frame == 1
-    assert backend.ground_truth().t == pytest.approx(0.1)
+        simulator.step(Control(throttle=1))
+    # A failed capture leaves no observable world; the advanced physical state remains.
+    assert backend._state().frame == 1
+    assert backend._state().t == pytest.approx(0.1)
     for observe in (simulator.observe, backend.observe):
         with pytest.raises(RuntimeError, match="Reset"):
             observe()
-    simulator.reset_world()
+    simulator.reset()
     assert simulator.observe().frame == 0
 
 
 def test_failed_start_cannot_leave_previous_capture_readable():
     renderer = CountingRenderer()
-    backend = NuRecSimulator({}, renderer=renderer)
+    backend = NuRecSimulator({}, renderer=renderer).create_runtime()
     simulator = backend
-    simulator.reset_world()
+    simulator.reset()
 
     def fail(*args, **kwargs):
         raise RuntimeError("deployment failed")
 
     with pytest.raises(RuntimeError, match="deployment failed"):
         backend._emit = fail
-        simulator.reset_world()
+        simulator.reset()
     assert len(renderer.positions) == 1
     for observe in (simulator.observe, backend.observe):
         with pytest.raises(RuntimeError, match="Reset"):
             observe()
     del backend._emit
-    simulator.reset_world()
+    simulator.reset()
     assert len(renderer.positions) == 2
 
 
 def test_adapter_close_does_not_close_borrowed_backend():
     backend = LegacyBackend()
     simulator = LegacySimulatorAdapter(backend)
-    simulator.reset_world()
+    simulator.reset()
     simulator.close()
     assert backend.closes == 0
     backend.close()
@@ -273,7 +277,7 @@ def test_carla_plain_reset_ticks_after_world_setup_and_observe_never_ticks(monke
     )
     registry = SimpleNamespace(build=lambda config, **kwargs: ego if kwargs else client)
     monkeypatch.setitem(sys.modules, "avcarla.config", SimpleNamespace(CARLA=registry))
-    backend = CarlaSimulator({"client": {}, "ego": {"spawn": 0}})
+    backend = CarlaSimulator({"client": {}, "ego": {"spawn": 0}}).create_runtime()
 
     def capture():
         events.append("capture")
@@ -286,7 +290,7 @@ def test_carla_plain_reset_ticks_after_world_setup_and_observe_never_ticks(monke
     monkeypatch.setattr(backend, "_observe", capture)
     monkeypatch.setattr(backend, "_emit", emit)
     monkeypatch.setattr(
-        backend, "ground_truth",
+        backend, "_state",
         lambda: WorldSnapshot(snapshot.timestamp.elapsed_seconds, snapshot.frame),
     )
     backend.setup_ticks = setup_ticks
@@ -307,13 +311,13 @@ def test_carla_plain_reset_ticks_after_world_setup_and_observe_never_ticks(monke
             initialize()
         return result
     backend._emit = setup_emit
-    simulator.reset_world()
+    simulator.reset()
     # simulator.setup, its k deployment ticks, then the capture tick that makes them visible.
     assert events == ["simulator.setup", "initialize", *(["tick"] * (setup_ticks + 1)), "capture"]
     assert simulator.observe().frame == simulator.observe().frame == setup_ticks + 1
     assert events.count("capture") == 1
     assert events.count("tick") == setup_ticks + 1
-    simulator.advance(Control())
+    simulator.step(Control())
     assert events[-5:] == ["simulator.step.pre", "control", "tick", "simulator.step.post", "capture"]
     assert simulator.observe().frame == setup_ticks + 2
     assert events.count("capture") == 2
@@ -337,7 +341,7 @@ def test_carla_state_reads_other_actors_from_the_latest_tick_and_actors_can_be_t
     npc, lead = Mock(id=7, type_id="vehicle.audi.tt"), Mock(id=8, type_id="walker.pedestrian.0001")
     snapshot = SimpleNamespace(frame=3, timestamp=SimpleNamespace(elapsed_seconds=0.3),
                                find=lambda actor_id: simulated if actor_id in (1, 7) else None)
-    backend = CarlaSimulator({"client": {}, "ego": {}})
+    backend = CarlaSimulator({"client": {}, "ego": {}}).create_runtime()
     backend.client = SimpleNamespace(world=SimpleNamespace(get_snapshot=lambda: snapshot),
                                      traffic_manager_port=8000)
     state = SimpleNamespace(velocity=SimpleNamespace(norm=lambda: 0.0))
@@ -346,7 +350,7 @@ def test_carla_state_reads_other_actors_from_the_latest_tick_and_actors_can_be_t
     backend.lead = lead
     backend._recipe_replay = Mock()
 
-    actors = backend.ground_truth().actors
+    actors = backend._state().actors
     # The lead was spawned after the latest tick, so it has no simulated state yet.
     assert set(actors) == {"npc:0"}
     assert actors["npc:0"].velocity == (1.0, -2.0, 0.0) and actors["npc:0"].category == "vehicle"

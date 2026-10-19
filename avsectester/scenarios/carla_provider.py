@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from copy import deepcopy
-from queue import Queue
 
 import numpy as np
 
@@ -17,59 +16,9 @@ from avsectester.scenarios.carla_gt import carla_rgb_sensor, carla_scene_gt
 from avsectester.scenarios.context import FilterContext
 from avsectester.rendering.cameras import camera_from_calibration
 from avsectester.rendering.visibility import DepthVisibilityEstimator
-from avsectester.closed_loop.simulators.carla import CarlaSimulator
-
-
-_PINHOLE_ATTRIBUTES = {"lens_k": "0", "lens_kcube": "0", "lens_circle_multiplier": "0"}
-
-
-def register_pinhole_camera():
-    """Register the selection backend's undistorted RGB sensor without importing CARLA eagerly.
-
-    The class stays in this repository. The ordinary avcarla RGB sensor and other backends keep
-    their original behavior. Sensor factories reuse the registered subclass and its calibration.
-    """
-    from avcarla.config import CARLA
-    from avcarla.sensors import CarlaRgbCamera
-
-    existing = CARLA.module_dict.get("PinholeRgbCamera")
-    if existing is not None:
-        if existing.__module__ != __name__:
-            raise ValueError("PinholeRgbCamera is already registered by another module")
-        return existing
-
-    @CARLA.register_module()
-    class PinholeRgbCamera(CarlaRgbCamera):
-        """An ideal pinhole RGB sensor for calibrated depth-based insertion."""
-
-        def __init__(self, *args, do_spawn=True, **kwargs):
-            super().__init__(*args, do_spawn=False, **kwargs)
-            for name, value in _PINHOLE_ATTRIBUTES.items():
-                self.bp.set_attribute(name, value)
-            if do_spawn:
-                self.spawn()
-
-    return PinholeRgbCamera
-
-
-def _require_pinhole_sensor(sensor):
-    """Reject camera geometry that the pinhole visibility provider cannot represent."""
-    for name in _PINHOLE_ATTRIBUTES:
-        value = float(sensor.attributes.get(name, -1 if name == "lens_k" else 0))
-        if not np.isfinite(value) or value != 0:
-            raise ValueError(
-                f"Selection requires an undistorted camera ({name}=0), got {value}. "
-                "Use PinholeRgbCamera or supply a custom calibrated visibility provider."
-            )
-
-
-def decode_carla_depth(image):
-    """Decode CARLA's 24-bit depth image to forward camera depth in metres."""
-    bgra = np.frombuffer(image.raw_data, np.uint8).reshape(image.height, image.width, 4)
-    channels = bgra.astype(np.float64)
-    return (channels[..., 2] + 256 * channels[..., 1] + 65536 * channels[..., 0]) * (
-        1000.0 / 16777215
-    )
+from avsectester.closed_loop.simulators.carla import (  # noqa: F401  (re-exported)
+    CarlaSimulator, _require_pinhole_sensor, decode_carla_depth, register_pinhole_camera,
+)
 
 
 def depth_visibility(context, insertion_id, camera):
@@ -94,7 +43,7 @@ def carla_filter_context(backend, *, camera="front", depth=None, observation=Non
     """Expose normalized geometry and the original backend, world and actors.
 
     ``depth`` must belong to the current world snapshot and the selected RGB camera's
-    optical pose and calibration. :class:`CarlaSelectionSimulator` acquires it explicitly.
+    optical pose and calibration. A ``CarlaSimulator(depth_camera=...)`` runtime acquires it explicitly.
     Custom providers can instead supply their own renderer or visibility callback.
     """
     world = backend.client.world
@@ -114,103 +63,6 @@ def carla_filter_context(backend, *, camera="front", depth=None, observation=Non
         },
         visibility_provider=depth_visibility,
     )
-
-
-class CarlaSelectionSimulator(CarlaSimulator):
-    """CARLA simulator with a depth sensor, so insertion views of its camera have measured depth.
-
-    The depth camera is created during base-world initialization, before any capture.
-    It shares the ordinary sensor preparation and selected-origin replay path. Depth
-    and geometry use the same CARLA frame ID.
-
-    This opt-in backend replaces stock ``CarlaRgbCamera`` configurations with
-    ``PinholeRgbCamera`` in its own configuration copy. Both paired runs therefore use
-    undistorted cameras matching the pinhole projection. Custom RGB classes are preserved
-    and must expose zero lens distortion or use a different visibility provider.
-    """
-
-    def __init__(self, scenario, *, camera="front", **kwargs):
-        scenario = deepcopy(scenario)
-        for sensor in scenario.get("ego", {}).get("sensors", ()):
-            if sensor.get("type") == "CarlaRgbCamera":
-                sensor["type"] = "PinholeRgbCamera"
-        super().__init__(scenario, **kwargs)
-        self.selection_camera = camera
-        self.depth = None
-        self.depth_frame = None
-        self._depth_queue = None
-
-    def _resolve_scenario(self, source, initialization, environment):
-        register_pinhole_camera()
-        scenario = super()._resolve_scenario(source, initialization, environment)
-        for sensor in scenario["ego"].get("sensors", ()):
-            if sensor.get("type") == "CarlaRgbCamera":
-                sensor["type"] = "PinholeRgbCamera"
-        return scenario
-
-    def _initialize_sensors(self):
-        rgb = carla_rgb_sensor(self, self.selection_camera)
-        _require_pinhole_sensor(rgb.object)
-        world = self.client.world
-        blueprint = world.get_blueprint_library().find("sensor.camera.depth")
-        for name in (
-            "image_size_x",
-            "image_size_y",
-            "fov",
-            "lens_k",
-            "lens_kcube",
-            "lens_circle_falloff",
-            "lens_circle_multiplier",
-            "lens_x_size",
-            "lens_y_size",
-        ):
-            if name in rgb.object.attributes:
-                blueprint.set_attribute(name, rgb.object.attributes[name])
-        blueprint.set_attribute("sensor_tick", "0")
-        # Use the spawn-time relative calibration: native get_transform may still be stale
-        # before the first world tick, particularly in scenes without a lead spawn tick.
-        sensor = world.spawn_actor(
-            blueprint, rgb.reference.as_carla_transform(local=True), attach_to=self.ego.actor,
-        )
-        self._resources.callback(sensor.destroy)
-        self._resources.callback(sensor.stop)
-        self._depth_queue = Queue()
-        sensor.listen(self._depth_queue.put)
-
-    def _observe(self):
-        observation = super()._observe()
-        if self._depth_queue is not None:
-            sample = self._depth_queue.get(timeout=30)
-            while sample.frame < observation.frame:
-                sample = self._depth_queue.get(timeout=30)
-            if sample.frame != observation.frame:
-                raise RuntimeError("CARLA depth and observation frames differ")
-            self.depth = decode_carla_depth(sample)
-            self.depth_frame = sample.frame
-        self._selection_observation = observation
-        return observation
-
-    def _view_depth(self, camera):
-        if camera != self.selection_camera:
-            return None
-        if self.depth_frame != self.client.world.get_snapshot().frame:
-            raise RuntimeError("Refresh the backend observation before requesting a view")
-        return self.depth
-
-    def selection_context(self):
-        if self.depth_frame != self.client.world.get_snapshot().frame:
-            raise RuntimeError("Refresh the backend observation before requesting a context")
-        return carla_filter_context(
-            self, camera=self.selection_camera, depth=self.depth,
-            observation=self._selection_observation,
-        )
-
-    def close(self):
-        try:
-            super().close()
-        finally:
-            self._depth_queue = None
-            self.depth = self.depth_frame = None
 
 
 class CarlaCandidateProvider:
@@ -239,7 +91,7 @@ class CarlaCandidateProvider:
         self.conditions = conditions or ScenarioConditions()
         self.initial_frames = initial_frames
         self.advance_initial = advance_initial
-        self.backend_factory = backend_factory or CarlaSelectionSimulator
+        self.backend_factory = backend_factory or _depth_runtime
 
     @contextmanager
     def __call__(self, scenario):
@@ -274,3 +126,8 @@ class CarlaCandidateProvider:
             yield first
         finally:
             backend.close()
+
+
+def _depth_runtime(scenario):
+    """A live CARLA world whose front camera has aligned depth, for selection and insertion."""
+    return CarlaSimulator(scenario, depth_camera="front").create_runtime()

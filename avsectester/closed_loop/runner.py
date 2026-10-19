@@ -13,7 +13,7 @@ from avsectester.closed_loop.simulator import WorldBackend
 from avsectester.closed_loop.datatypes import Control, FrameRecord, Observation, RecordedOutput, Trace
 from avsectester.runlog import Recorder, RunLog, StepRecord
 from avsectester.closed_loop.hooks import HookSet
-from avsectester.closed_loop.simulator import LegacySimulatorAdapter, Simulator
+from avsectester.closed_loop.simulator import LegacySimulatorAdapter, SimulatorRuntime
 
 
 @dataclass(frozen=True)
@@ -106,7 +106,7 @@ class ClosedLoopRunner:
 
     def run(
         self,
-        simulator: Simulator | WorldBackend,
+        simulator_runtime: SimulatorRuntime | WorldBackend,
         avstack: AVStack,
         request: RunRequest,
         *,
@@ -120,10 +120,11 @@ class ClosedLoopRunner:
         from avsectester.attack.runtime import OnlineContext, AttackDispatcher
         from avsectester.runlog.codecs import default_codecs
 
-        # ``sim`` is the Simulator interface of ``simulator``; a legacy WorldBackend is adapted.
-        # Hooks and attacks receive ``simulator`` itself.
-        sim: Simulator | LegacySimulatorAdapter = (
-            simulator if isinstance(simulator, Simulator) else LegacySimulatorAdapter(simulator)
+        # ``sim`` is the runtime interface of ``simulator_runtime``; a legacy WorldBackend is
+        # adapted. Hooks and attacks receive ``simulator_runtime`` itself.
+        sim: SimulatorRuntime | LegacySimulatorAdapter = (
+            simulator_runtime if isinstance(simulator_runtime, SimulatorRuntime)
+            else LegacySimulatorAdapter(simulator_runtime)
         )
         hooks = request.hooks or HookSet()
         def record_attack_output(context: OnlineContext, name: str, value: Any) -> None:
@@ -134,15 +135,15 @@ class ClosedLoopRunner:
             ))
 
         attack_dispatch = AttackDispatcher(
-            request.attacks, observation_copy=simulator.copy_observation,
+            request.attacks, observation_copy=simulator_runtime.copy_observation,
             output_recorder=record_attack_output,
         )
         # Validate before world reset or handlers acquire native resources.
-        available = hooks.validate_stages(simulator, avstack)
+        available = hooks.validate_stages(simulator_runtime, avstack)
         attack_dispatch.validate(available)
         if request.attacks:
             hooks = hooks.with_hooks(attack_dispatch.hooks)
-        session = hooks.session(simulator, avstack, perturb)
+        session = hooks.session(simulator_runtime, avstack, perturb)
         recorder = recorder or Recorder(path=request.output_path, codecs=default_codecs(),
                                         retain_steps=request.retain_steps, metadata={
             **dict(request.metadata),
@@ -206,22 +207,22 @@ class ClosedLoopRunner:
         try:
             with sim.exclusive(), session.activate():
                 try:
-                    # AttackRuntime.setup runs inside the reset, at the simulator's simulator.setup.
-                    sim.reset_world(request.start, request.initialization,
-                                    deployment=request.deployment, environment=request.environment)
+                    # AttackRuntime.setup runs inside the reset, at the simulator.setup stage.
+                    sim.reset(request.start, request.initialization,
+                              deployment=request.deployment, environment=request.environment)
                     if request.attacks and not attack_dispatch.applies_setup_in_reset:
                         attack_dispatch.setup(context("setup"), None)
                     last_observation = sim.observe()
                     recorder.record_event(
                         "initialization", physical_state=sim.state(),
-                        clock=sim.clock, setup_ticks=simulator.setup_ticks,
-                        initialization_report=getattr(simulator, "initialization_report", {}),
+                        clock=sim.clock, setup_ticks=simulator_runtime.setup_ticks,
+                        initialization_report=getattr(simulator_runtime, "initialization_report", {}),
                         outputs=session.outputs, effects=effects(),
                     )
                     drain()
                     if request.decision_steps == 0:
                         # Historical callers still receive the initial raw reset input.
-                        avstack.reset(simulator.copy_observation(last_observation))
+                        avstack.reset(simulator_runtime.copy_observation(last_observation))
                     for current_step in range(request.decision_steps):
                         session.step = current_step
                         raw = sim.observe()
@@ -266,15 +267,15 @@ class ClosedLoopRunner:
                         if record_views:
                             telemetry["views"] = {}
                             for name, view in record_views.items():
-                                captured_view = recorder.capture(view(simulator.copy_observation(seen)))
+                                captured_view = recorder.capture(view(simulator_runtime.copy_observation(seen)))
                                 telemetry["views"][name] = (
                                     view_sink(current_step, name, captured_view)
                                     if view_sink is not None else captured_view
                                 )
                         if on_step is not None:
-                            on_step(current_step, simulator.copy_observation(seen),
+                            on_step(current_step, simulator_runtime.copy_observation(seen),
                                     recorder.capture(control))
-                        sim.advance(control)
+                        sim.step(control)
                         post = recorder.capture(sim.state())
                         last_observation = sim.observe()
                         if request.attacks:
@@ -346,7 +347,7 @@ class ClosedLoopRunner:
 
 
 def run_trace(
-    simulator: WorldBackend,
+    simulator_runtime: SimulatorRuntime | WorldBackend,
     avstack: AVStack,
     frames: int,
     perturb: Callable[[Observation], Observation] | None = None,
@@ -358,6 +359,6 @@ def run_trace(
     if not isinstance(frames, int) or isinstance(frames, bool) or frames < 0:
         raise ValueError("frames must be a nonnegative integer")
     log = ClosedLoopRunner().run(
-        simulator, avstack, RunRequest(frames, hooks=hooks), perturb=perturb, on_step=on_step,
+        simulator_runtime, avstack, RunRequest(frames, hooks=hooks), perturb=perturb, on_step=on_step,
     )
     return trace_from_log(log)

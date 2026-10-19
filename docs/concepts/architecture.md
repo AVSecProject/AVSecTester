@@ -37,7 +37,8 @@ Guide: [Prepare scenarios](../guides/scenarios.md) and [Apply operating conditio
 The simulator owns the world: physical state, vehicle dynamics, other actors and sensor rendering.
 It produces observations and executes commands. The supplied simulators are CARLA, with reactive
 traffic, and NuRec, which renders reconstructed real-world scenes while other actors follow their
-recorded trajectories. In code, a simulator is connected through a `WorldBackend` adapter.
+recorded trajectories. In code, a `Simulator` holds a simulator's configuration, and each
+`SimulatorRuntime` it creates is one live world that the driving loop resets and steps.
 
 Guide: [Configure simulators](../guides/simulators.md).
 
@@ -117,7 +118,7 @@ in [Execution order](../reference/runtime.md#execution-order).
 The framework keeps two views of the ego vehicle separate:
 
 - **Physical state** is the simulator's actual state. It is available to handlers as
-  `context.ground_truth` and is what the run records contain.
+  `context.physical_state` and is what the run records contain.
 - **Model-visible data** is what the driving system receives: sensor data, the estimated state,
   the reported speed and the clock in the `Observation`.
 
@@ -198,13 +199,14 @@ a specific class or value.
 
 | Term | Meaning | Code |
 |---|---|---|
-| Simulator | The component that owns world state, dynamics and sensor rendering | — |
-| Backend | The Python adapter that connects a simulator to the driving loop | `WorldBackend`, `CarlaSimulator`, `NuRecSimulator` |
+| Simulator | The configured simulator: settings and declarations for the world, ego dynamics and sensor rendering, without world state. It can be reused | `Simulator`, `CarlaSimulator`, `NuRecSimulator` |
+| Simulator runtime | One live world of a simulator: world state, clock, current capture and native connections. Created by `Simulator.create_runtime`; the driving loop resets and steps it | `SimulatorRuntime`, `CarlaSimulatorRuntime`, `NuRecSimulatorRuntime` |
+| Backend | Earlier name for the simulator adapter, still used by the `backend` configuration key and the legacy single-class interface | `WorldBackend` |
 | Driving system | The system under test, which turns observations into commands | — |
 | Stack | The Python adapter that connects a driving system to the driving loop | `AVStack`, `ModularAVStack`, `AlpamayoAVStack` |
 | Vehicle I/O | The interface between simulator and driving system: sensor data, state estimate, model input and command | Stages `sensors.post`, `localization.*`, `observation`, `command` |
 | Observation | The model-visible input: sensor data, calibration, estimated state, reported speed and clock | `Observation` |
-| Physical state | The simulator's actual ego state, independent of the observation | `WorldSnapshot`, `context.ground_truth` |
+| Physical state | The simulator's actual ego state, independent of the observation | `WorldSnapshot`, `context.physical_state`, `SimulatorRuntime.state()` |
 | Command | The driving system's output: actuator values or a planned trajectory | `Control` |
 | Command mode | The command representation a backend accepts or a stack produces: `actuator` or `trajectory` | `command_modes` |
 | Localizer | An optional component that estimates the vehicle state from sensor data | `Runtime(localizer=...)` |

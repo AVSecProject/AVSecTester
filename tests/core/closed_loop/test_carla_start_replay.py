@@ -13,7 +13,7 @@ from avsectester.closed_loop.simulators.carla import CarlaSimulator, SensorAlign
 
 def backend_with_queue(values):
     queue = deque(values)
-    backend = CarlaSimulator({"client": {}, "ego": {}})
+    backend = CarlaSimulator({"client": {}, "ego": {}}).create_runtime()
     backend.ego = SimpleNamespace(
         sensors={"front": SimpleNamespace(source_identifier="front", frame0=100)},
         sensor_data_manager=SimpleNamespace(
@@ -71,7 +71,7 @@ def test_source_spawn_resolution_connects_to_the_factory_server(monkeypatch):
     monkeypatch.setattr("avsectester.closed_loop.simulators.carla.prepare_scenario", prepare)
     source = recipe_source({"rate": 10, "connect_ip": "127.0.0.1", "connect_port": 2000})
     backend = CarlaSimulator({"client": {"rate": 10, "connect_ip": "10.0.0.5", "connect_port": 3000},
-                            "ego": {}})
+                            "ego": {}}).create_runtime()
     resolved = backend._resolve_scenario(source, None, {})
     assert [(c["connect_ip"], c["connect_port"]) for c in seen] == [("10.0.0.5", 3000)]
     assert (resolved["client"]["connect_ip"], resolved["client"]["connect_port"]) == ("10.0.0.5", 3000)
@@ -79,11 +79,11 @@ def test_source_spawn_resolution_connects_to_the_factory_server(monkeypatch):
 
 def test_recipe_time_step_is_compared_like_recipe_validation():
     source = recipe_source({"rate": 30}, steps=1, time_step=0.0333333333)
-    CarlaSimulator({"client": {"rate": 30}, "ego": {}}).validate_start(source)
+    CarlaSimulator({"client": {"rate": 30}, "ego": {}}).create_runtime().validate_start(source)
 
 
 def test_weather_change_reaches_a_resolved_pair_replay():
-    backend = CarlaSimulator({"client": {}, "ego": {}, "weather": "ClearNoon"})
+    backend = CarlaSimulator({"client": {}, "ego": {}, "weather": "ClearNoon"}).create_runtime()
     backend._pair_scenario = {"client": {}, "ego": {}, "weather": "ClearNoon"}
     backend._pair_replay = {"client": {}, "ego": {}, "weather": "ClearNoon"}
     backend.configure_conditions({"weather": "HardRainNoon"})

@@ -60,7 +60,7 @@ def drive_pair(args, perturb_of):
     def make_backend(config):
         renderer = NuRecRenderer(endpoint=args.endpoint, scene_id=args.scene, cameras=[CAM],
                                  start_timestamp_us=args.start_timestamp_us)
-        return NuRecSimulator(config, renderer=renderer, dynamics=TrajectoryFollower())
+        return NuRecSimulator(config, renderer=renderer, dynamics=TrajectoryFollower()).create_runtime()
 
     scenario = scenario_from_config(
         {"dt": 0.1, "ego0": {"speed": args.speed}}, backend_factory=make_backend,
