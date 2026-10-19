@@ -12,7 +12,7 @@ from typing import Any
 
 import numpy as np
 
-from avsectester.plane import Observation
+from avsectester.closed_loop.datatypes import Observation
 from avsectester.insertion import Insertion, ResolvedInsertion
 from avsectester.rendering.cameras import Camera
 from avsectester.rendering.types import InsertionGeometry, GeometryProvider, EvidenceProvider, VisibilityEvidence

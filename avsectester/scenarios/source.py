@@ -15,7 +15,7 @@ from .context import FilterContext
 from .requirement import ScenarioMatch, ScenarioRequirement
 
 if TYPE_CHECKING:
-    from avsectester.backend import WorldBackend
+    from avsectester.closed_loop.simulator import WorldBackend
     from .scene import SceneGT
 
 
@@ -364,6 +364,6 @@ class CarlaScenarioBuilder(ScenarioSource):
 
 
 def _carla_backend(config):
-    from avsectester.simulators.carla import CarlaBackend
+    from avsectester.closed_loop.simulators.carla import CarlaSimulator
 
-    return CarlaBackend(config)
+    return CarlaSimulator(config)

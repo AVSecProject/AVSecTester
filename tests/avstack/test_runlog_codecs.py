@@ -7,14 +7,14 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from avsectester.log_codecs import default_codecs
-from avsectester.plane import Observation
+from avsectester.runlog.codecs import default_codecs
+from avsectester.closed_loop.datatypes import Observation
 from avsectester.runlog import Recorder, RunLog, StepRecord, read_table
 
 
 def test_registry_does_not_load_adapter_dependencies():
     subprocess.run(
-        [sys.executable, "-c", "from avsectester.log_codecs import default_codecs; "
+        [sys.executable, "-c", "from avsectester.runlog.codecs import default_codecs; "
          "r = default_codecs(); assert r.encoder(object()) is None; "
          "import sys; assert not any(m in sys.modules for m in "
          "('avstack', 'torch', 'carla', 'alpasim_driver', 'pyarrow'))"],
@@ -73,7 +73,7 @@ def test_native_observation_and_detection_round_trip(tmp_path, make_ego, make_de
 def test_real_pipeline_records_tracking_planning_and_control(
     tmp_path, pipeline_config, make_detections, make_ego,
 ):
-    from avsectester.stacks.modular import ModularAVStack
+    from avsectester.closed_loop.avstacks.modular import ModularAVStack
 
     # Build the registry before the model imports its planning/tracking types.
     recorder = Recorder(tmp_path, codecs=default_codecs(), chunk_steps=3)

@@ -52,7 +52,10 @@ the imports exercised by these tests. This is an offline test environment. Use
 
 ## Functional coverage
 
-Attack tests mirror the implementation families under `core/attacks/` and `avstack/attacks/`.
+Framework component tests mirror the packages: `core/attack/`, `core/closed_loop/`,
+`core/datasets/`, `core/runlog/` and `core/evaluation/`. `core/runtime/` and `core/scenarios/`
+cover the legacy experiment path. Attack tests mirror the implementation families under
+`core/attacks/` and `avstack/attacks/`.
 Shared camera and compositing tests live under `core/rendering/`. Image transforms and
 corruptions live under `core/perturbations/`. Experiment-script tests live
 under `core/scripts/`. The `core`, `avstack` and `live` dependency groups remain unchanged, and
@@ -66,12 +69,12 @@ pytest/CI collect their subdirectories recursively.
 | `core/runtime/test_prepared_runs.py`, `core/runtime/test_configured_experiments.py` | Single and multi-treatment execution, common origin, independent localizers/conditions, factory overrides, ordering and provenance |
 | `core/runtime/test_commands_outputs.py` | Declared/final command compatibility, conversion hooks and copied diagnostic outputs |
 | `core/scenarios/test_setup.py` | Pass-through preparation without preview, optional selection, world/sensor conditions and native observation access |
-| `core/runtime/test_backend_stages.py`, `avstack/test_backend_state.py` | Native backend stages, effective render requests, independent true state and copied sensor/reference graphs |
-| `core/test_component_log.py` | Output snapshots, named component collection and count differences |
-| `core/test_robustness.py` | Clean/attack preparation, corruption alignment, status accounting, valid denominators and failure cleanup |
-| `core/test_metric.py` | Induced stops, suppressed safe stops, duration/speed thresholds, late stops, inconclusive baselines |
-| `core/test_alpamayo.py` | Camera history padding/order, ego history, model vs simulation clocks, candidate selection, plan chaining, experiment reset |
-| `core/test_nurec.py` | Dynamics, stub-rendered closed loop, reset, checkpoint replay, trajectory interpolation and rig-to-world conversion |
+| `core/runtime/test_backend_stages.py`, `avstack/test_carla_simulator_state.py` | Native backend stages, effective render requests, independent true state and copied sensor/reference graphs |
+| `core/evaluation/test_component_log.py` | Output snapshots, named component collection and count differences |
+| `core/evaluation/test_robustness.py` | Clean/attack preparation, corruption alignment, status accounting, valid denominators and failure cleanup |
+| `core/evaluation/test_metric.py` | Induced stops, suppressed safe stops, duration/speed thresholds, late stops, inconclusive baselines |
+| `core/closed_loop/test_alpamayo.py` | Camera history padding/order, ego history, model vs simulation clocks, candidate selection, plan chaining, experiment reset |
+| `core/closed_loop/test_nurec.py` | Dynamics, stub-rendered closed loop, reset, checkpoint replay, trajectory interpolation and rig-to-world conversion |
 | `core/rendering/test_visibility_rendering.py` | Shared alpha samples across scale/cropping, depth masking and independent insertion ordering |
 | `core/scenarios/test_selected_experiment.py` | Selected origin and role bindings reach clean/attack evaluation without runtime filtering |
 | `core/test_insertions.py`, `core/rendering/test_estimators.py` | Host/world placement, orientation modes, complete silhouettes, depth and cuboid occlusion |
@@ -87,10 +90,10 @@ pytest/CI collect their subdirectories recursively.
 | `core/scripts/test_image_attack_demos.py` | Rear attachment geometry, shared metadata start time, strict PCTNet errors and saved driving transitions |
 | `core/scripts/test_carla_driving_demos.py` | Physical panel deployment, shared prepared scenes, input patches reaching the driving policy and saved processed camera images |
 | `core/scripts/test_entrypoints.py` | Representative module entry points resolve shared imports and show help without servers or weights |
-| `core/test_mmdet3d_registration.py` | Automatic CARLA dataset registration, existing user registrations and isolated dependency loading |
+| `core/closed_loop/test_mmdet3d_registration.py` | Automatic CARLA dataset registration, existing user registrations and isolated dependency loading |
 | `core/perturbations/test_image.py` | Image corruptions, seeded paired experiments, sensor write-back, composition, real Albumentations operators |
-| `core/scenarios/test_scenarios.py`, `core/test_recorded_backend.py` | Scene constraints/filtering and recorded-image playback without full datasets |
-| `core/test_sim_viz.py` | Camera/LiDAR views, projected labels/boxes, processed input views and independent saved frames |
+| `core/scenarios/test_scenarios.py`, `core/closed_loop/test_recorded_replay_simulator.py` | Scene constraints/filtering and recorded-image playback without full datasets |
+| `core/closed_loop/test_sim_viz.py` | Camera/LiDAR views, projected labels/boxes, processed input views and independent saved frames |
 | `avstack/attacks/pipeline/test_phantom.py` | Attack registration, detection preservation, moving/empty source frames and phantom geometry |
 | `avstack/test_component_log_real.py` | Historical plans/tracks/reference frames, unchanged controls under logging, attack hook ordering and matching metrics |
 | `avstack/test_pipeline.py` | Real tracking/planning/PID propagation, hook output replacement and the `ModularAVStack` adapter |
@@ -130,7 +133,7 @@ It uses Ubuntu 22.04 / Python 3.11 with three parallel checks:
 - `core-tests`: offline core functionality tests.
 - `avstack-tests`: avstack suite at the main repository's recorded submodule revisions.
 - `lint`: Ruff syntax, name and unused-import checks on `avsectester/`, `scripts/` and `tests/`.
-  Mypy checks `plane.py`, `backend.py`, `runtime.py` and `runner.py`. Third-party code and
+  Mypy checks the files listed in `pyproject.toml`. Third-party code and
   dynamically typed SDK implementations are outside this type-checking scope.
 
 The workflow caches downloaded dependencies and cancels superseded runs on the same PR/branch.

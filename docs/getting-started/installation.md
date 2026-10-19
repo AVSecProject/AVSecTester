@@ -374,7 +374,7 @@ it builds a non-deployed `MMDetObjectDetector3D` with a `carla-*` dataset. When 
 models outside `ModularAVStack`, register it first:
 
 ```python
-from avsectester.stacks.mmdet3d import register_carla_dataset
+from avsectester.closed_loop.avstacks.mmdet3d import register_carla_dataset
 
 register_carla_dataset()
 ```
@@ -446,7 +446,7 @@ lazily. A missing location raises an error before the driver package is imported
 <!-- runnable -->
 ```python
 # Run in the AlpaSim driver environment from the repository root.
-from avsectester.stacks.alpamayo import AlpamayoAVStack
+from avsectester.closed_loop.avstacks.alpamayo import AlpamayoAVStack
 
 stack = AlpamayoAVStack(checkpoint_path="/path/to/Alpamayo-1.5-10B", device="cuda:1")
 ```

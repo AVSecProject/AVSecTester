@@ -27,7 +27,7 @@ def test_stage_capture_records_real_gpu_detector_output():
     pytest.importorskip("mmdet")
     pytest.importorskip("nuscenes.nuscenes")
     import numpy as np
-    from avsectester.stacks.modular import _StageCapture
+    from avsectester.closed_loop.avstacks.modular import _StageCapture
     from avstack.calibration import CameraCalibration
     from avstack.modules.perception.object2dfv import MMDetObjectDetector2D
     from avstack.geometry import GlobalOrigin3D

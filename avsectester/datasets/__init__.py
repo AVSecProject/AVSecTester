@@ -4,11 +4,11 @@ The old ``scenarios.datasets`` imports remain compatibility adapters during migr
 """
 
 from .base import (
-    ActorState, DataReference, Dataset, FrameRef, ReferenceFrame, ScenarioDescriptor,
-    SourceData, Unavailable,
+    ActorState, SensorDataReference, Dataset, FrameReference, FrameData, ScenarioDescriptor,
+    ScenarioStart, Unavailable,
 )
 
 __all__ = [
-    "ActorState", "DataReference", "Dataset", "FrameRef", "ReferenceFrame",
-    "ScenarioDescriptor", "SourceData", "Unavailable",
+    "ActorState", "SensorDataReference", "Dataset", "FrameReference", "FrameData",
+    "ScenarioDescriptor", "ScenarioStart", "Unavailable",
 ]

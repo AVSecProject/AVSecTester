@@ -8,8 +8,8 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from avsectester.metric import impact
-from avsectester.simulators.nurec import StubRenderer
+from avsectester.evaluation.metric import impact
+from avsectester.closed_loop.simulators.nurec import StubRenderer
 
 
 @pytest.fixture
@@ -118,9 +118,9 @@ def test_rear_attachment_preserves_vehicle_local_mount_and_texture_orientation(d
 def test_carla_demo_binds_after_reset_and_keeps_the_same_host(demo, monkeypatch):
     from scripts.common.demo_common import carla_rear_perturbation
     from avsectester.insertion import ActorPose, resolve_insertion
-    from avsectester.plane import Observation
+    from avsectester.closed_loop.datatypes import Observation
     from avsectester.rendering.cameras import planar_rig_pose
-    from avsectester.simulators import carla
+    from avsectester.closed_loop.simulators import carla
     from avsectester.rendering.compositor import PatchCompositor
 
     state = {}

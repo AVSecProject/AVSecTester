@@ -21,7 +21,7 @@ from avsectester.scenarios.source import (
 )
 
 if TYPE_CHECKING:
-    from avsectester.backend import WorldBackend
+    from avsectester.closed_loop.simulator import WorldBackend
     from avsectester.scenarios.requirement import ScenarioRequirement
     from avsectester.scenarios.source import Dataset
 
@@ -73,21 +73,24 @@ def _build_backend(config: dict[str, Any]) -> WorldBackend:
     spec = config.get("backend", {})
     if not isinstance(spec, Mapping):
         raise ValueError("backend must be a mapping")
-    kind = spec.get("type", "CarlaBackend")
-    if kind in {"carla", "CarlaBackend"}:
+    kind = spec.get("type", "CarlaSimulator")
+    if kind == "CarlaSimulator":
         if set(spec) - {"type"}:
             raise ValueError("CARLA settings belong in client/ego/npcs/lead, not backend")
-        from avsectester.simulators.carla import CarlaBackend
+        from avsectester.closed_loop.simulators.carla import CarlaSimulator
 
-        return CarlaBackend(config)
-    if kind not in {"nurec", "NuRecBackend"}:
-        raise ValueError(f"Unknown backend {kind!r}. Supply backend_factory for a custom adapter.")
+        return CarlaSimulator(config)
+    if kind != "NuRecSimulator":
+        raise ValueError(
+            f"Unknown backend type {kind!r}: expected CarlaSimulator or NuRecSimulator. "
+            "Supply backend_factory for a custom adapter."
+        )
     unknown = set(spec) - {"type", "scene", "renderer", "dynamics", "ego0", "dt", "camera_aliases"}
     if unknown:
         raise ValueError(f"Unknown NuRec backend options: {sorted(unknown)}")
-    from avsectester.simulators.nurec import (
+    from avsectester.closed_loop.simulators.nurec import (
         KinematicBicycle,
-        NuRecBackend,
+        NuRecSimulator,
         NuRecRenderer,
         StubRenderer,
         TrajectoryFollower,
@@ -95,29 +98,34 @@ def _build_backend(config: dict[str, Any]) -> WorldBackend:
 
     backend_config = {key: deepcopy(value) for key, value in config.items() if key != "backend"}
     backend_config.update({key: deepcopy(value) for key, value in spec.items() if key != "type"})
-    renderer_spec = backend_config.pop("renderer", "stub")
+    renderer_spec = backend_config.pop("renderer", "StubRenderer")
     if isinstance(renderer_spec, str):
         renderer_spec = {"type": renderer_spec}
     if not isinstance(renderer_spec, Mapping):
-        raise ValueError("NuRec renderer must be 'stub', 'nurec', or a mapping")
+        raise ValueError("NuRec renderer must be 'StubRenderer', 'NuRecRenderer', or a mapping")
     renderer_options = dict(renderer_spec)
-    renderer_kind = renderer_options.pop("type", "stub")
-    if renderer_kind == "stub":
+    renderer_type = renderer_options.pop("type", "StubRenderer")
+    if renderer_type == "StubRenderer":
         renderer = StubRenderer(**renderer_options)
-    elif renderer_kind == "nurec":
+    elif renderer_type == "NuRecRenderer":
         renderer = NuRecRenderer(**renderer_options)
     else:
-        raise ValueError(f"Unknown NuRec renderer {renderer_kind!r}")
+        raise ValueError(
+            f"Unknown NuRec renderer type {renderer_type!r}: expected StubRenderer or NuRecRenderer"
+        )
     dynamics_options = dict(backend_config.pop("dynamics", {}))
-    dynamics_kind = dynamics_options.pop("type", "actuator")
+    dynamics_type = dynamics_options.pop("type", "KinematicBicycle")
     try:
-        if dynamics_kind == "trajectory":
+        if dynamics_type == "TrajectoryFollower":
             dynamics = TrajectoryFollower(**dynamics_options)
-        elif dynamics_kind == "actuator":
+        elif dynamics_type == "KinematicBicycle":
             dynamics = KinematicBicycle(**dynamics_options)
         else:
-            raise ValueError(f"Unknown NuRec dynamics {dynamics_kind!r}")
-        return NuRecBackend(backend_config, renderer=renderer, dynamics=dynamics)
+            raise ValueError(
+                f"Unknown NuRec dynamics type {dynamics_type!r}: "
+                "expected KinematicBicycle or TrajectoryFollower"
+            )
+        return NuRecSimulator(backend_config, renderer=renderer, dynamics=dynamics)
     except BaseException:
         renderer.close()
         raise
@@ -213,8 +221,8 @@ def source_from_config(
             raise ValueError("Dataset selection uses its provider's backend factory and context")
         source = DatasetFilter(dataset, conditions=conditions)
     else:
-        backend_kind = scene.get("backend", {}).get("type", "CarlaBackend")
-        if backend_kind not in {"carla", "CarlaBackend"}:
+        backend_kind = scene.get("backend", {}).get("type", "CarlaSimulator")
+        if backend_kind != "CarlaSimulator":
             raise ValueError("Recorded NuRec selection requires a Dataset. Direct NuRec config needs no selection.")
         source = CarlaScenarioBuilder(
             base_scenario=scene,

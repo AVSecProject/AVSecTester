@@ -6,9 +6,9 @@ import math
 from dataclasses import replace
 from typing import Any
 
-from avsectester.plane import Observation
+from avsectester.closed_loop.datatypes import Observation
 from avsectester.preparation import Intervention
-from avsectester.runtime import Hook, Plugin, RunContext, StageContext
+from avsectester.closed_loop.hooks import Hook, Plugin, RunContext, StageContext
 
 
 class SpeedFeedbackPlugin(Plugin):

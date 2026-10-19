@@ -13,8 +13,8 @@ from avsectester.insertion import (
     ActorPose, AttachedPlacement, Insertion, Orientation, PlaneAsset, WorldPlacement,
 )
 from avsectester.rendering.harmonizers import ClassicHarmonizer, Harmonizer, PCTNetHarmonizer
-from avsectester.backend import AVStack
-from avsectester.plane import Control
+from avsectester.closed_loop.avstack import AVStack
+from avsectester.closed_loop.datatypes import Control
 
 
 class CruiseStack(AVStack):
@@ -205,7 +205,7 @@ def nurec_rear_insertion(payload, scene, host: str) -> Insertion:
 
 def carla_rear_perturbation(backend, texture, compositor, *, width_frac=1.0, height_frac=0.95):
     """Create the attachment after reset, when the configured lead has been spawned."""
-    from avsectester.simulators.carla import insertion_perturbation
+    from avsectester.closed_loop.simulators.carla import insertion_perturbation
 
     perturb = None
 

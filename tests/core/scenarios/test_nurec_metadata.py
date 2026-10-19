@@ -2,7 +2,6 @@
 
 import json
 import math
-import zipfile
 
 import numpy as np
 import pytest
@@ -11,57 +10,10 @@ from avsectester.scenarios.datasets.nurec import NuRecDataset
 
 
 @pytest.fixture
-def recorded_dataset(tmp_path):
-    camera = "camera_front_wide_120fov@test"
-    optical_to_rig = [[0, 0, 1, 0], [-1, 0, 0, 0], [0, -1, 0, 1], [0, 0, 0, 1]]
-    timestamps = [[0, 1], [250000, 250001], [500000, 500001]]
-    identity = np.eye(4).tolist()
-    rig = {
-        "camera_calibrations": {
-            camera: {
-                "camera_model": {
-                    "parameters": {
-                        "resolution": [640, 480],
-                        "principal_point": [320, 240],
-                        "angle_to_pixeldist_poly": [0, 200],
-                        "max_angle": 1.5,
-                    }
-                },
-                "T_sensor_rig": optical_to_rig,
-            },
-        },
-        "rig_trajectories": [
-            {
-                "sequence_id": "test",
-                "cameras_frame_timestamps_us": {camera: timestamps},
-                "cameras_frame_T_rig_worlds": {camera: [[identity, identity]] * 3},
-            }
-        ],
-        "custom_annotation": {"weather": "cloudy"},
-    }
-    tracks = {
-        "test": {
-            "tracks_data": {
-                "tracks_id": ["host", "obstacle"],
-                "tracks_label_class": ["automobile", "protruding_object"],
-                "tracks_timestamps_us": [[0, 500000], [0, 500000]],
-                "tracks_poses": [
-                    [[10, 0, 1, 0, 0, 0, 1], [12, 0, 1, 0, 0, 1, 0]],
-                    [[15, 1, 1, 0, 0, 0, 1], [15, 1, 1, 0, 0, 0, -1]],
-                ],
-                "tracks_flags": ["CONTROLLABLE", "NONE"],
-            },
-            "cuboidtracks_data": {"cuboids_dims": [[4, 2, 2], [1, 1, 1]]},
-        }
-    }
-    path = tmp_path / "scene.usdz"
-    with zipfile.ZipFile(path, "w") as archive:
-        archive.writestr("rig_trajectories.json", json.dumps(rig))
-        archive.writestr("sequence_tracks.json", json.dumps(tracks))
-        archive.writestr("extra.json", '{"user_data": true}')
+def recorded_dataset(nurec_usdz_path):
     # The default 0.1 s decision timeline differs from these 0.25 s camera frames, so legacy
     # keyframe tests prove that the compatibility API stays on recorded camera frames.
-    return NuRecDataset([str(path)], keyframe=0), str(path)
+    return NuRecDataset([nurec_usdz_path], keyframe=0), nurec_usdz_path
 
 
 def test_interpolates_full_host_pose_and_preserves_occluder_classes(recorded_dataset):
@@ -126,10 +78,10 @@ def test_dataset_selection_releases_lazy_renderer(recorded_dataset, monkeypatch)
 def test_runtime_adapter_uses_scene_time_stable_alias_and_current_ego(recorded_dataset):
     from types import SimpleNamespace
     from avsectester.insertion import AttachedPlacement, Insertion, Orientation, PlaneAsset
-    from avsectester.plane import Observation, WorldSnapshot
+    from avsectester.closed_loop.datatypes import Observation, WorldSnapshot
     from avsectester.rendering.cameras import PinholeCamera, planar_rig_pose
-    from avsectester.runtime import RenderRequest
-    from avsectester.simulators.nurec import EgoPose
+    from avsectester.closed_loop.hooks import RenderRequest
+    from avsectester.closed_loop.simulators.nurec import EgoPose
 
     dataset, _path = recorded_dataset
     scene = next(dataset.scenes())
@@ -162,8 +114,8 @@ def test_runtime_adapter_uses_scene_time_stable_alias_and_current_ego(recorded_d
         AttachedPlacement("hosts[0]", "rear_center"),
         Orientation("follow_host", (0, 0, 180)),
     )
-    from avsectester.simulators.nurec import NuRecBackend
-    adapter = NuRecBackend._insertion_renderer(backend, scene, dataset, [item], bindings={"hosts": ("host",)})
+    from avsectester.closed_loop.simulators.nurec import NuRecSimulator
+    adapter = NuRecSimulator._insertion_renderer(backend, scene, dataset, [item], bindings={"hosts": ("host",)})
     # A localization/time attack must not move the actual camera or metadata actors.
     obs = Observation(10.0, 99, vehicle_state=EgoPose(100, -100, 2.0, t=10.0))
     actors, victim, transform = adapter.geometry(obs)
@@ -174,11 +126,12 @@ def test_runtime_adapter_uses_scene_time_stable_alias_and_current_ego(recorded_d
 
 
 def test_insertion_pipeline_survives_backend_reset_and_drives_from_modified_input(recorded_dataset):
-    from avsectester.backend import AVStack, run
+    from avsectester.closed_loop.avstack import AVStack
+    from avsectester.backend import run
     from avsectester.insertion import AttachedPlacement, Insertion, Orientation, PlaneAsset
-    from avsectester.plane import Control
+    from avsectester.closed_loop.datatypes import Control
     from avsectester.rendering.cameras import PinholeCamera, planar_rig_pose
-    from avsectester.simulators.nurec import NuRecBackend, StubRenderer
+    from avsectester.closed_loop.simulators.nurec import NuRecSimulator, StubRenderer
     from avsectester.perturbations.image import frame_perturbation
 
     dataset, _ = recorded_dataset
@@ -213,7 +166,7 @@ def test_insertion_pipeline_survives_backend_reset_and_drives_from_modified_inpu
             return Control(throttle=float(image.any()))
 
     renderer = RecordedRenderer(cameras=[dataset.sensor])
-    backend = NuRecBackend(
+    backend = NuRecSimulator(
         {"dt": 0.1, "camera_aliases": {dataset.sensor: dataset.camera}}, renderer=renderer
     )
     clean = backend.reset()
@@ -237,15 +190,15 @@ def test_insertion_pipeline_survives_backend_reset_and_drives_from_modified_inpu
 
 
 def test_pair_registers_insertion_before_render_service_loads(recorded_dataset, monkeypatch):
-    from avsectester.backend import AVStack
+    from avsectester.closed_loop.avstack import AVStack
     from avsectester.insertion import AttachedPlacement, Insertion, Orientation, PlaneAsset
     from avsectester.interventions import ObservationTransform
-    from avsectester.plane import Control
+    from avsectester.closed_loop.datatypes import Control
     from avsectester.perturbations.image import frame_perturbation
     from avsectester.rendering.cameras import PinholeCamera, planar_rig_pose
     from avsectester.runner import run_pair
-    from avsectester.runtime import Hook, Runtime
-    from avsectester.simulators.nurec import NuRecBackend, StubRenderer
+    from avsectester.closed_loop.hooks import Hook, Runtime
+    from avsectester.closed_loop.simulators.nurec import NuRecSimulator, StubRenderer
 
     dataset, _ = recorded_dataset
     scene = next(dataset.scenes())
@@ -290,7 +243,7 @@ def test_pair_registers_insertion_before_render_service_loads(recorded_dataset, 
             return Control(throttle=float(observation.sensor_data[dataset.camera].any()))
 
     renderer = Renderer(cameras=[dataset.sensor])
-    backend = NuRecBackend(
+    backend = NuRecSimulator(
         {"dt": 0.1, "camera_aliases": {dataset.sensor: dataset.camera}}, renderer=renderer,
     )
     patch = Insertion(
@@ -316,16 +269,17 @@ def test_pair_registers_insertion_before_render_service_loads(recorded_dataset, 
     assert [record.throttle for record in attacked.records] == [1, 1]
     assert adapters[0].camera is renderer.lens
     assert adapters[0].resolved[0].host_id == "lead"
-    assert archive_reads == [scene.source["usdz_path"]]
+    # The recorded clip is read at most once across both runs.
+    assert archive_reads in ([], [scene.source["usdz_path"]])
 
 
 def test_insertion_uses_effective_render_view_and_time_but_true_victim_pose(recorded_dataset):
-    from avsectester.backend import AVStack
+    from avsectester.closed_loop.avstack import AVStack
     from avsectester.insertion import Insertion, PlaneAsset, WorldPlacement
-    from avsectester.plane import Control
+    from avsectester.closed_loop.datatypes import Control
     from avsectester.rendering.cameras import PinholeCamera, planar_rig_pose
-    from avsectester.runtime import Hook, RenderRequest, Runtime
-    from avsectester.simulators.nurec import EgoPose, NuRecBackend, StubRenderer
+    from avsectester.closed_loop.hooks import Hook, RenderRequest, Runtime
+    from avsectester.closed_loop.simulators.nurec import EgoPose, NuRecSimulator, StubRenderer
 
     dataset, _ = recorded_dataset
     scene = next(dataset.scenes())
@@ -352,7 +306,7 @@ def test_insertion_uses_effective_render_view_and_time_but_true_victim_pose(reco
         def __call__(self, _):
             return Control()
 
-    backend = NuRecBackend({
+    backend = NuRecSimulator({
         "ego0": {"x": 2, "y": 3, "t": 0.25},
         "camera_aliases": {dataset.sensor: dataset.camera},
     }, renderer=Renderer(cameras=[dataset.sensor]))

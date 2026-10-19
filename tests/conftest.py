@@ -29,7 +29,7 @@ def pytest_collection_modifyitems(config, items):
 
 @pytest.fixture
 def make_trace():
-    from avsectester.plane import FrameRecord, Trace
+    from avsectester.closed_loop.datatypes import FrameRecord, Trace
 
     def make(speeds, brakes=None):
         brakes = [0.0] * len(speeds) if brakes is None else brakes
@@ -117,7 +117,7 @@ def pipeline_config():
 
 @pytest.fixture
 def make_pipeline(pipeline_config):
-    from avsectester.stacks.modular import ModularAVStack
+    from avsectester.closed_loop.avstacks.modular import ModularAVStack
 
     def make():
         # Register modules explicitly, so an individual test also works in a fresh process.

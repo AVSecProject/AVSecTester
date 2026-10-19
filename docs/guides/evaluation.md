@@ -10,15 +10,15 @@
 `ClosedLoopRunner.run(...)` returns a `RunLog` containing one `StepRecord` per completed decision,
 initialization/termination events, metadata and a final status. The records distinguish raw and
 model-visible observations, physical pre/post-state, produced and executed commands, component
-outputs and attack actions. The existing `run`, `run_logged` and visualization helpers use this
+outputs and attack effects. The existing `run`, `run_logged` and visualization helpers use this
 same loop; their `Trace` and `ComponentTrace` results are views of its captured records.
 
-Configure a direct run with `RunRequest` and `RecordingPolicy` from `avsectester.closed_loop`.
-By default, the run retains its records in memory and records no sensor payloads. Set
-`output_path` to an empty or new directory to save Parquet records and separate array/image
-payload shards. Set `retain_steps=False` as well to stream records without keeping the full run
-in memory. In that mode, returned `log.steps` and `log.events` are empty; analyze `log.path`.
-The default `retain_steps=True` preserves in-memory access and compatibility traces.
+Configure a direct run with `RunRequest` and `RecordingPolicy` from
+`avsectester.closed_loop.runner`. By default, the run retains its records in memory and records no
+sensor payloads. Set `output_path` to an empty or new directory to save Parquet records and separate
+array/image payload shards. Set `retain_steps=False` as well to stream records without keeping the
+full run in memory. In that mode, returned `log.steps` and `log.events` are empty; analyze
+`log.path`. The default `retain_steps=True` preserves in-memory access and compatibility traces.
 
 This small example needs no simulator server, model or dataset:
 
@@ -29,9 +29,10 @@ from tempfile import TemporaryDirectory
 
 import numpy as np
 
-from avsectester.backend import AVStack, WorldBackend
-from avsectester.closed_loop import ClosedLoopRunner, RecordingPolicy, RunRequest
-from avsectester.plane import Control, Observation
+from avsectester.closed_loop.avstack import AVStack
+from avsectester.closed_loop.simulator import WorldBackend
+from avsectester.closed_loop.runner import ClosedLoopRunner, RecordingPolicy, RunRequest
+from avsectester.closed_loop.datatypes import Control, Observation
 from avsectester.runlog import RunLog, read_table
 
 
@@ -76,10 +77,10 @@ with TemporaryDirectory() as directory:
     assert saved.steps[1].model_observation.sensor_data == {}  # Payload sampling only.
 ```
 
-`RecordingPolicy.sensor_ids` selects payloads. `representations` accepts `"raw"`,
-`"model_input"` or both; its default is `("model_input",)`. `every_n_steps` samples those
-payloads from decision 0. Physical state, commands, actions and available component outputs are
-still recorded at every completed decision. Missing requested sensors fail explicitly.
+`RecordingPolicy.sensor_ids` selects payloads. `representations` accepts `"raw"`, `"model_input"` or
+both; its default is `("model_input",)`. `every_n_steps` samples those payloads from decision 0.
+Physical state, commands, attack effects and available component outputs are still recorded at every
+completed decision. Missing requested sensors fail explicitly.
 
 Use `read_table(path, columns=...)` for selected top-level Parquet columns; it returns an Arrow
 table with typed nested data and payload references, without loading the payload bytes. Use
@@ -92,7 +93,7 @@ completion metadata last. Readers ignore unfinished `.open` files and reject unk
 versions. Interrupted runs remain `incomplete`; completed chunks can be inspected without
 claiming that the whole experiment finished.
 
-The runner supplies lazy `default_codecs()` from `avsectester.log_codecs` for supported Modular
+The runner supplies lazy `default_codecs()` from `avsectester.runlog.codecs` for supported Modular
 and Alpamayo native outputs. Creating the registry imports no simulator or model package. Saved
 native objects decode to ordinary data, so reading a log does not reconstruct live model or
 simulator objects. Unknown native types need an explicit codec before disk recording. To customize
@@ -105,19 +106,18 @@ configured backend/stack instances; `RunRequest.source` and `initialization` mus
 
 ## Driving traces
 
-The compatibility runners return [run records](../concepts/architecture.md#terminology) as a
-`Trace` (`avsectester.plane`), derived from the unified RunLog. `run_configured` returns a
-`dict[str, Trace]` keyed by treatment name.
-`run_prepared` returns the result of its `run_fn` for each named treatment, which is a `Trace` by
-default. Their CLI summary and existing export options are unchanged. Traces are held in memory;
-use the direct runner's `output_path` for persisted RunLog records. See
-[Run from Python](experiments.md#run-from-python).
+The compatibility runners return [run records](../concepts/architecture.md#terminology) as a `Trace`
+(`avsectester.closed_loop.datatypes`), derived from the unified RunLog. `run_configured` returns a
+`dict[str, Trace]` keyed by treatment name. `run_prepared` returns the result of its `run_fn` for
+each named treatment, which is a `Trace` by default. Their CLI summary and existing export options
+are unchanged. Traces are held in memory; use the direct runner's `output_path` for persisted RunLog
+records. See [Run from Python](experiments.md#run-from-python).
 
 | `Trace` member | Content |
 |---|---|
 | `records` | One `FrameRecord` per driving step |
 | `run_log` | The source `RunLog` on traces returned by the shared runner; `None` on manually constructed traces |
-| `outputs` | `InterventionOutput` records from handlers. See [Intervention outputs and provenance](#intervention-outputs-and-provenance) |
+| `outputs` | `RecordedOutput` records from handlers. See [Intervention outputs and provenance](#intervention-outputs-and-provenance) |
 | `provenance` | How the run was produced, as a dictionary |
 | `replay_scenario` | For CARLA, the resolved scene configuration with the actual spawn settings of the run. `None` for other simulators. See [Random choices and seeds](simulators.md#random-choices-and-seeds) |
 | `peak_speed`, `final_speed` | Maximum and last recorded speed, in m/s |
@@ -142,10 +142,10 @@ black camera frames, a toy driving system and a toy observation attack:
 
 <!-- runnable -->
 ```python
-from avsectester.backend import AVStack
-from avsectester.plane import Control
+from avsectester.closed_loop.avstack import AVStack
+from avsectester.closed_loop.datatypes import Control
 from avsectester.runner import run_prepared
-from avsectester.runtime import Hook, Runtime
+from avsectester.closed_loop.hooks import Hook, Runtime
 from avsectester.scenarios import scenario_from_config
 
 
@@ -174,7 +174,7 @@ def paint_obstacle(observation, context):
 
 
 # NuRec with the offline stub renderer, which returns black 640x480 camera frames.
-scenario = scenario_from_config({"backend": {"type": "nurec"}})
+scenario = scenario_from_config({"backend": {"type": "NuRecSimulator"}})
 runtimes = {"clean": None, "attack": Runtime([Hook("observation", paint_obstacle)])}
 traces = run_prepared(scenario, BrightSpotStack, frames=40, runtimes=runtimes)
 clean, attacked = traces["clean"], traces["attack"]
@@ -201,12 +201,12 @@ information.
 
 ## Driving-impact metric
 
-`impact(clean, attacked)` in `avsectester.metric` compares a clean and a treated trace and returns
-an `Impact`. It measures stops: an attack either forces a stop that the clean run did not make,
-or prevents a stop that the clean run made.
+`impact(clean, attacked)` in `avsectester.evaluation.metric` compares a clean and a treated trace
+and returns an `Impact`. It measures stops: an attack either forces a stop that the clean run did
+not make, or prevents a stop that the clean run made.
 
 ```python
-from avsectester.metric import impact
+from avsectester.evaluation.metric import impact
 
 result = impact(clean, attacked)
 print(result)
@@ -257,7 +257,7 @@ success. Experiments that need other criteria compute them from the traces.
 returns the absolute path of the saved figure and requires matplotlib (the `viz` extra).
 
 ```python
-from avsectester.metric import plot_impact
+from avsectester.evaluation.metric import plot_impact
 
 print(plot_impact(clean, attacked, "tmp/evaluation/impact.png", result=result))
 ```
@@ -274,7 +274,7 @@ produces the same figure. See [Save a plot](../getting-started/quickstart.md#sav
 
 Handlers record diagnostic values with `context.record_output(name, value)`. See
 [Recording outputs](../reference/runtime.md#recording-outputs). Each call appends an
-`InterventionOutput` to `Trace.outputs`, in recording order:
+`RecordedOutput` to `Trace.outputs`, in recording order:
 
 | Field | Meaning |
 |---|---|
@@ -372,7 +372,7 @@ is negative. For the modular driving system, instrument the stack in its factory
 
 <!-- runnable -->
 ```python
-from avsectester.stacks.modular import ModularAVStack
+from avsectester.closed_loop.avstacks.modular import ModularAVStack
 
 
 def make_stack():  # config is a CARLA configuration with a modular pipeline.
@@ -381,10 +381,10 @@ def make_stack():  # config is a CARLA configuration with a modular pipeline.
     return stack
 ```
 
-Use a compatible `AlpamayoAVStack` factory for the end-to-end path. When you own backend
-assembly, call `run_logged(backend, stack, frames, perturb=None, *, runtime=None)` directly. It
-uses the same driving loop and leaves the backend open. Apply the scenario's sensor conditions to
-the runtime yourself, as described in [Lower-level execution](conditions.md#lower-level-execution).
+Use a compatible `AlpamayoAVStack` factory for the end-to-end path. When you own simulator
+assembly, call `run_logged(simulator, avstack, frames, perturb=None, *, hooks=None)` directly. It
+uses the same driving loop and leaves the simulator open. Apply the scenario's sensor conditions to
+the hooks yourself, as described in [Lower-level execution](conditions.md#lower-level-execution).
 
 | API | Meaning |
 |---|---|
@@ -434,7 +434,7 @@ class PaintObstacle(Intervention):
         return (Hook("observation", paint_obstacle),)
 
 
-source = source_from_config({"backend": {"type": "nurec"}})
+source = source_from_config({"backend": {"type": "NuRecSimulator"}})
 report = evaluate_robustness(source, None, PaintObstacle(), BrightSpotStack, frames=40)
 print(report.summary())
 ```
@@ -539,7 +539,7 @@ string. Success follows the stop-based criterion of [the metric](#driving-impact
 
 ## Scene recordings
 
-`avsectester.simulators.viz` saves what the driving system saw at each driving step.
+`avsectester.closed_loop.simulators.viz` saves what the driving system saw at each driving step.
 `record_run` runs the same loop as `run` and saves each image returned by `visualize(observation)`
 as `frame_0000.png`, `frame_0001.png`, ... in `out_dir` (default `<repo>/tmp/frames`). The
 `prefix` argument replaces `frame`. The observation is the model
@@ -552,14 +552,14 @@ does not pass the treatment name, but it runs treatments in the order of `runtim
 ```python
 from pathlib import Path
 
-from avsectester.simulators.viz import record_run, save_sequence
+from avsectester.closed_loop.simulators.viz import record_run, save_sequence
 
 out = Path("tmp/evaluation/scenes")
 labels = iter(runtimes)  # run_prepared runs treatments in this order
 
 
 def record(backend, stack, frames, *, runtime):
-    return record_run(backend, stack, frames, out_dir=out / next(labels), runtime=runtime,
+    return record_run(backend, stack, frames, out_dir=out / next(labels), hooks=runtime,
                       collect=True)
 
 

@@ -16,14 +16,14 @@ import sys
 from pathlib import Path
 
 import numpy as np
-from avsectester.simulators.nurec import NuRecBackend, NuRecRenderer
+from avsectester.closed_loop.simulators.nurec import NuRecSimulator, NuRecRenderer
 from avsectester.interventions import ObservationTransform
 from avsectester.runner import run_prepared
-from avsectester.runtime import Hook, Runtime
+from avsectester.closed_loop.hooks import Hook, Runtime
 from avsectester.scenarios.setup import scenario_from_config
 from avsectester.rendering.compositor import PatchCompositor
 from avsectester.perturbations.image import frame_perturbation
-from avsectester.simulators.viz import filmstrip, record_run, save_gif, save_image
+from avsectester.closed_loop.simulators.viz import filmstrip, record_run, save_gif, save_image
 from scripts.common.demo_common import (
     OBJECTS, CruiseStack, build_coco_detector, build_object, make_harmonizer,
     nurec_rear_insertion, nurec_source,
@@ -118,7 +118,7 @@ def drive(endpoint: str, scene, frames: int, speed: float, out_dir: Path, pertur
                              start_timestamp_us=scene.source["timestamp_us"])
     instance = scenario_from_config(
         {"dt": 0.1, "ego0": {"speed": speed}},
-        backend_factory=lambda config: NuRecBackend(config, renderer=renderer),
+        backend_factory=lambda config: NuRecSimulator(config, renderer=renderer),
         provenance=scene.source,
     )
     runtime = None if perturb is None else lambda backend: Runtime([
@@ -126,7 +126,7 @@ def drive(endpoint: str, scene, frames: int, speed: float, out_dir: Path, pertur
     ])
 
     def record(backend, stack, frames, *, runtime):
-        return record_run(backend, stack, frames, out_dir=out_dir, runtime=runtime, collect=True)
+        return record_run(backend, stack, frames, out_dir=out_dir, hooks=runtime, collect=True)
 
     return run_prepared(
         instance, lambda: CruiseStack(throttle=0.0), frames,

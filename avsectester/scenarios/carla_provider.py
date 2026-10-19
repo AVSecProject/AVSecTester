@@ -17,7 +17,7 @@ from avsectester.scenarios.carla_gt import carla_rgb_sensor, carla_scene_gt
 from avsectester.scenarios.context import FilterContext
 from avsectester.rendering.cameras import camera_from_calibration
 from avsectester.rendering.visibility import DepthVisibilityEstimator
-from avsectester.simulators.carla import CarlaBackend
+from avsectester.closed_loop.simulators.carla import CarlaSimulator
 
 
 _PINHOLE_ATTRIBUTES = {"lens_k": "0", "lens_kcube": "0", "lens_circle_multiplier": "0"}
@@ -94,7 +94,7 @@ def carla_filter_context(backend, *, camera="front", depth=None, observation=Non
     """Expose normalized geometry and the original backend, world and actors.
 
     ``depth`` must belong to the current world snapshot and the selected RGB camera's
-    optical pose and calibration. :class:`CarlaSelectionBackend` acquires it explicitly.
+    optical pose and calibration. :class:`CarlaSelectionSimulator` acquires it explicitly.
     Custom providers can instead supply their own renderer or visibility callback.
     """
     world = backend.client.world
@@ -116,8 +116,8 @@ def carla_filter_context(backend, *, camera="front", depth=None, observation=Non
     )
 
 
-class CarlaSelectionBackend(CarlaBackend):
-    """CARLA backend with a registered depth sensor for insertion selection/rendering.
+class CarlaSelectionSimulator(CarlaSimulator):
+    """CARLA simulator with a depth sensor, so insertion views of its camera have measured depth.
 
     The depth camera is created during base-world initialization, before any capture.
     It shares the ordinary sensor preparation and selected-origin replay path. Depth
@@ -190,6 +190,13 @@ class CarlaSelectionBackend(CarlaBackend):
         self._selection_observation = observation
         return observation
 
+    def _view_depth(self, camera):
+        if camera != self.selection_camera:
+            return None
+        if self.depth_frame != self.client.world.get_snapshot().frame:
+            raise RuntimeError("Refresh the backend observation before requesting a view")
+        return self.depth
+
     def selection_context(self):
         if self.depth_frame != self.client.world.get_snapshot().frame:
             raise RuntimeError("Refresh the backend observation before requesting a context")
@@ -232,7 +239,7 @@ class CarlaCandidateProvider:
         self.conditions = conditions or ScenarioConditions()
         self.initial_frames = initial_frames
         self.advance_initial = advance_initial
-        self.backend_factory = backend_factory or CarlaSelectionBackend
+        self.backend_factory = backend_factory or CarlaSelectionSimulator
 
     @contextmanager
     def __call__(self, scenario):

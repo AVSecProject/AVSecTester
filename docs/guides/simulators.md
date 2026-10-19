@@ -6,16 +6,16 @@
 
 A [simulator](../concepts/architecture.md#terminology) owns the world: physical state, vehicle
 dynamics, other actors and sensor rendering. It is connected to the driving loop through a
-backend, a `WorldBackend` adapter. The supplied backends are `CarlaBackend` and `NuRecBackend`.
+backend, a `WorldBackend` adapter. The supplied backends are `CarlaSimulator` and `NuRecSimulator`.
 A configuration selects one with `backend.type`. Without `backend`, the scene is a CARLA scene.
 
 ## CARLA
 
-`CarlaBackend` (`avsectester/simulators/carla.py`) connects to a running CARLA 0.9.16 server
-through avcarla. It owns the client, the ego vehicle and its sensors, NPC traffic and an optional
-stationary lead vehicle. The ego's own avcarla pipeline is replaced by an empty one. The driving
-system decides each command, and the backend applies it to the ego and advances the server by
-one fixed-length tick. CARLA accepts only actuator commands (`throttle`, `brake`, `steer`).
+`CarlaSimulator` (`avsectester/closed_loop/simulators/carla.py`) connects to a running CARLA 0.9.16
+server through avcarla. It owns the client, the ego vehicle and its sensors, NPC traffic and an
+optional stationary lead vehicle. The ego's own avcarla pipeline is replaced by an empty one. The
+driving system decides each command, and the backend applies it to the ego and advances the server
+by one fixed-length tick. CARLA accepts only actuator commands (`throttle`, `brake`, `steer`).
 
 Start the server as described in
 [Start a CARLA server](../getting-started/installation.md#start-a-carla-server).
@@ -39,7 +39,7 @@ A CARLA scene has these groups:
 - `lead` optionally spawns a stationary vehicle `gap` metres (default 9.0) directly ahead of the
   ego, with an optional `lateral` offset. It is scene content and exists in every treatment.
   The [physical patch](../examples/physical-patch.md) example attaches its panel to it.
-- `backend` is optional. For CARLA it accepts only `type: CarlaBackend` (or `carla`).
+- `backend` is optional. For CARLA it accepts only `type: CarlaSimulator`.
 
 Keep `client.synchronous: true`. Every reset reloads the world, and avcarla requires synchronous
 mode for that. `client.rate` sets ticks per simulated second. One driving step is one tick, so
@@ -49,7 +49,7 @@ mode for that. `client.rate` sets ticks per simulated second. One driving step i
 [`configs/carla_patch_scenario.yaml`](../../configs/carla_patch_scenario.yaml).
 
 World weather is a scenario condition. See [World conditions](conditions.md#world-conditions).
-Selected CARLA scenarios use `CarlaSelectionBackend`, a subclass with an additional depth sensor.
+Selected CARLA scenarios use `CarlaSelectionSimulator`, a subclass with an additional depth sensor.
 See [Select a scenario](scenarios.md#carla).
 
 To check a scene, run one clean treatment:
@@ -92,13 +92,13 @@ both seeds to `0`, so changing only `seed` leaves the Traffic Manager seed fixed
 preparation also derives an omitted or `null` LiDAR `noise_seed` from the seed. An explicit
 `noise_seed` is preserved.
 
-The CLI prints `[scenario] seed=...` before its first server operation, including when the run
-later fails. Set `client.seed` to that integer to repeat the seeded choices. In Python,
-`resolve_scenario_seed(config)` from `avsectester.simulators.carla` returns a copy with a
-generated seed, as the CLI does. The seed of a paired run is also in
-`trace.replay_scenario["client"]["seed"]`. Pair preparation and single runs resolve random
-choices with different procedures, so one seed can select different vehicles and spawn points
-in `single` and `pair` mode.
+The CLI prints `[scenario] seed=...` before its first server operation, including when the run later
+fails. Set `client.seed` to that integer to repeat the seeded choices. In Python,
+`resolve_scenario_seed(config)` from `avsectester.closed_loop.simulators.carla` returns a copy with
+a generated seed, as the CLI does. The seed of a paired run is also in
+`trace.replay_scenario["client"]["seed"]`. Pair preparation and single runs resolve random choices
+with different procedures, so one seed can select different vehicles and spawn points in `single`
+and `pair` mode.
 
 The scene seed is separate from `runtime.seed`, which seeds handlers' `context.rng` and not the
 simulator. See [Randomness](../reference/runtime.md#randomness) and the
@@ -216,15 +216,16 @@ retry displacement. The runner produces this field. Configure `spawn` instead.
 
 ## NuRec
 
-`NuRecBackend` (`avsectester/simulators/nurec.py`) renders an NVIDIA NuRec reconstructed scene
-and runs the ego in process. It owns the ego pose (`EgoPose`: `x`, `y` in metres, `yaw` in
-radians, `speed` in m/s and time `t`), a dynamics model and a renderer. It does not run a
-physics engine or traffic. NuRec runs are configured from Python. The CLI does not run them, as
-explained in [Why NuRec has no CLI path](../getting-started/installation.md#why-nurec-has-no-cli-path).
+`NuRecSimulator` (`avsectester/closed_loop/simulators/nurec.py`) renders an NVIDIA NuRec
+reconstructed scene and runs the ego in process. It owns the ego pose (`EgoPose`: `x`, `y` in
+metres, `yaw` in radians, `speed` in m/s and time `t`), a dynamics model and a renderer. It does not
+run a physics engine or traffic. NuRec runs are configured from Python. The CLI does not run them,
+as explained in [Why NuRec has no CLI
+path](../getting-started/installation.md#why-nurec-has-no-cli-path).
 
-`reset()` loads the scene in the renderer, places the ego at `ego0`, emits `world.setup` and
-renders the first observation. `step(control)` validates the command, emits `world.step.pre`,
-advances the pose with the dynamics model, emits `world.step.post` and renders every camera. Each
+`reset()` loads the scene in the renderer, places the ego at `ego0`, emits `simulator.setup` and
+renders the first observation. `step(control)` validates the command, emits `simulator.step.pre`,
+advances the pose with the dynamics model, emits `simulator.step.post` and renders every camera. Each
 camera passes through `render.pre` and `render.post`. The observation contains the rendered
 images, the renderer's calibration, a copy of the pose as `vehicle_state` and its speed as
 `ego_speed`. See [Stages](../reference/runtime.md#stages).
@@ -279,7 +280,7 @@ with the waypoints. Do not rescale predicted positions to change the simulation 
 system is called once per step, so `dt` also sets its call rate.
 
 A custom dynamics object implements `step(pose, control, dt) -> EgoPose` and can declare
-`command_modes`. Pass it as `NuRecBackend(config, dynamics=...)`. Without `command_modes`, the
+`command_modes`. Pass it as `NuRecSimulator(config, dynamics=...)`. Without `command_modes`, the
 backend's command mode is undeclared.
 
 `backend.checkpoint()` and `backend.restore(checkpoint)` save and restore the ego pose and frame
@@ -288,17 +289,18 @@ counter. They do not checkpoint the rendering service.
 ### Backend configuration
 
 Configured entry points such as `scenario_from_config` and `run_configured` build a NuRec backend
-from a `backend` mapping with `type: NuRecBackend` (or `nurec`). The keys are listed in
-[NuRec backend keys](../reference/configuration.md#nurec-backend-keys). Top-level scene keys,
-such as `dt`, are also passed to the backend. Keys inside `backend` take precedence.
+from a `backend` mapping with `type: NuRecSimulator`.
+The keys are listed in [NuRec backend keys](../reference/configuration.md#nurec-backend-keys).
+Top-level scene keys, such as `dt`, are also passed to the backend. Keys inside `backend` take
+precedence.
 
 This example runs offline with the stub renderer, trajectory dynamics and a minimal driving
 system:
 
 <!-- runnable -->
 ```python
-from avsectester.backend import AVStack
-from avsectester.plane import Control
+from avsectester.closed_loop.avstack import AVStack
+from avsectester.closed_loop.datatypes import Control
 from avsectester.runner import run_prepared
 from avsectester.scenarios import scenario_from_config
 
@@ -324,9 +326,9 @@ class StraightPlanner(AVStack):
 
 scenario = scenario_from_config({
     "backend": {
-        "type": "NuRecBackend",
-        "renderer": {"type": "stub", "cameras": ["camera_front_wide_120fov"]},
-        "dynamics": {"type": "trajectory"},
+        "type": "NuRecSimulator",
+        "renderer": {"type": "StubRenderer", "cameras": ["camera_front_wide_120fov"]},
+        "dynamics": {"type": "TrajectoryFollower"},
         "ego0": {"speed": 5.0},
         "dt": 0.05,
     },
@@ -345,11 +347,11 @@ from avsectester.experiment import run_configured
 traces = run_configured({
     "dt": 0.1,
     "backend": {
-        "type": "NuRecBackend",
+        "type": "NuRecSimulator",
         "ego0": {"speed": 5.0},
-        "renderer": {"type": "nurec", "endpoint": "127.0.0.1:50051",
+        "renderer": {"type": "NuRecRenderer", "endpoint": "127.0.0.1:50051",
                      "scene_id": "01d503d4", "cameras": ["camera_front_wide_120fov"]},
-        "dynamics": {"type": "trajectory"},
+        "dynamics": {"type": "TrajectoryFollower"},
     },
     "stack": {"type": "AlpamayoAVStack", "options": {
         "checkpoint_path": "/path/to/Alpamayo-1.5-10B", "device": "cuda:1",
@@ -358,8 +360,8 @@ traces = run_configured({
 trace = traces["clean"]
 ```
 
-Alpamayo produces trajectory commands, so it needs `dynamics.type: trajectory`. With actuator
-dynamics, the run raises `CommandCompatibilityError` before reset unless a `command` handler
+Alpamayo produces trajectory commands, so it needs `dynamics.type: TrajectoryFollower`. With
+`KinematicBicycle` dynamics, the run raises `CommandCompatibilityError` before reset unless a `command` handler
 converts the command. See [Commands and compatibility](driving-systems.md#commands-and-compatibility).
 
 `ego0` is the initial pose in the scene's world coordinates (`x`, `y`, `yaw`, `speed`, `t`). The
@@ -369,7 +371,7 @@ stages report the native name in `context.sensor`. Unknown backend keys raise
 `ScenarioConfigurationError` when the backend is built. NuRec accepts no world conditions, so a
 `conditions.world` setting raises `ConditionConfigurationError`.
 
-When you construct `NuRecBackend(config, renderer=..., dynamics=...)` directly, pass renderer and
+When you construct `NuRecSimulator(config, renderer=..., dynamics=...)` directly, pass renderer and
 dynamics objects. The string and mapping forms are interpreted only by the `backend` mapping.
 The demo [`scripts/demos/nurec/alpamayo_nurec_demo.py`](../../scripts/demos/nurec/alpamayo_nurec_demo.py)
 supplies such a backend through `backend_factory`. Scenarios selected from recorded NuRec scenes
@@ -388,8 +390,8 @@ with `renderer.timestamp_us(pose)`.
 
 ## Change the world from handlers
 
-Handlers at `world.setup`, `world.step.pre` and `world.step.post` receive `None`, must return
-`None`, and change the world through the backend's native resources in `context.backend.native`.
+Handlers at `simulator.setup`, `simulator.step.pre` and `simulator.step.post` receive `None`, must return
+`None`, and change the world through the simulator's native resources in `context.simulator.native`.
 Editing `context.ground_truth` or an observation never moves anything. The general read and
 write rules are in [Read and write interfaces](../reference/runtime.md#read-and-write-interfaces)
 and [Native resources and copying](../reference/runtime.md#native-resources-and-copying).
@@ -405,8 +407,8 @@ and [Native resources and copying](../reference/runtime.md#native-resources-and-
 ego wrapper), `lead` (the raw lead actor or `None`) and `npcs` (the avcarla NPC wrappers).
 Coordinates are native CARLA world coordinates. Getters reflect the latest completed tick, and
 native commands can take effect asynchronously. CARLA renders sensors during the tick, before
-`world.step.post`. A change at `world.step.post` therefore appears from the observation after next.
-Use `world.setup` or `world.step.pre` when the next observation must show it. At `world.setup`,
+`simulator.step.post`. A change at `simulator.step.post` therefore appears from the observation after next.
+Use `simulator.setup` or `simulator.step.pre` when the next observation must show it. At `simulator.setup`,
 no tick has completed since spawning, so `get_transform()` can still return the default origin.
 Actors are rebuilt at every reset. Look them up in `native` at each callback instead of keeping
 them across runs.
@@ -416,48 +418,48 @@ applied, after the initial sensor capture:
 
 <!-- runnable -->
 ```python
-from avsectester.runtime import Hook, Runtime
+from avsectester.closed_loop.hooks import Hook, Runtime
 
 
 def move_carla_ego(value, context):
     if context.step != 0:
         return None
-    actor = context.backend.native["actors"]["ego"]
+    actor = context.simulator.native["actors"]["ego"]
     transform = actor.get_transform()
     transform.location.x += 1.0
     actor.set_transform(transform)
     return None
 
 
-runtime = Runtime([Hook("world.step.pre", move_carla_ego)])
+runtime = Runtime([Hook("simulator.step.pre", move_carla_ego)])
 ```
 
 A world plugin that needs extra ticks before driving, such as the physical panel, calls
-`backend.setup_tick()` during `world.setup`. See
+`simulator.setup_tick()` during `simulator.setup`. See
 [World setup ticks](../reference/runtime.md#world-setup-ticks).
 
 **NuRec**
 
 | Data | Read | Change |
 |---|---|---|
-| Ego | `context.ground_truth.vehicle_state` (an independent copy) or `context.backend.pose` (live) | Set `context.backend.pose.x`, `.y`, `.yaw` or `.speed` |
+| Ego | `context.ground_truth.vehicle_state` (an independent copy) or `context.simulator.pose` (live) | Set `context.simulator.pose.x`, `.y`, `.yaw` or `.speed` |
 | Ego dynamics | `native["dynamics"]` | Change its attributes, such as `max_brake`, for later steps |
 | Renderer | `native["renderer"]`, including `service` for `NuRecRenderer` | Renderer-specific operations |
-| Render requests | `context.backend.render_request(camera)` and `native["render_requests"]` | Read-only copies. Use a `render.pre` handler to change the next request |
+| Render requests | `context.simulator.render_request(camera)` and `native["render_requests"]` | Read-only copies. Use a `render.pre` handler to change the next request |
 
-NuRec renders after `world.step.post`, so a change at that stage appears in the next
+NuRec renders after `simulator.step.post`, so a change at that stage appears in the next
 observation. Other actors follow their recordings and cannot be moved.
 `render_request(camera)` accepts a native camera name or an alias. It returns an independent copy
 of the request that produced the current image, and editing it has no effect on rendering.
 
-This example runs offline. It moves the ego at `world.setup` and records the render pose:
+This example runs offline. It moves the ego at `simulator.setup` and records the render pose:
 
 <!-- runnable -->
 ```python
-from avsectester.backend import AVStack
-from avsectester.plane import Control
+from avsectester.closed_loop.avstack import AVStack
+from avsectester.closed_loop.datatypes import Control
 from avsectester.runner import run_prepared
-from avsectester.runtime import Hook, Runtime
+from avsectester.closed_loop.hooks import Hook, Runtime
 from avsectester.scenarios import scenario_from_config
 
 
@@ -471,20 +473,20 @@ class Cruise(AVStack):
 
 
 def move_initial_ego(value, context):
-    context.backend.pose.x += 1.0  # metres along the scene's x axis
+    context.simulator.pose.x += 1.0  # metres along the scene's x axis
     return None
 
 
 def record_render_x(observation, context):
-    request = context.backend.render_request("camera_front")  # an independent copy
+    request = context.simulator.render_request("camera_front")  # an independent copy
     context.record_output("render_x", request.pose.x)
     return observation
 
 
-scenario = scenario_from_config({"backend": {"type": "NuRecBackend", "renderer": "stub"}})
+scenario = scenario_from_config({"backend": {"type": "NuRecSimulator", "renderer": "StubRenderer"}})
 results = run_prepared(scenario, Cruise, frames=1, runtimes={
     "clean": Runtime([Hook("sensors.post", record_render_x)]),
-    "moved": Runtime([Hook("world.setup", move_initial_ego), Hook("sensors.post", record_render_x)]),
+    "moved": Runtime([Hook("simulator.setup", move_initial_ego), Hook("sensors.post", record_render_x)]),
 })
 for name, trace in results.items():
     print(name, [output.value for output in trace.outputs])
@@ -497,13 +499,13 @@ For a world-changing attack packaged as an intervention, see
 
 ## Write a custom simulator adapter
 
-Subclass `avsectester.backend.WorldBackend`. Only `reset` and `step` are abstract. Override the
-other members your simulator needs:
+Subclass `avsectester.closed_loop.simulator.WorldBackend`. Only `reset` and `step` are abstract.
+Override the other members your simulator needs:
 
 | Member | Default | Contract |
 |---|---|---|
-| `reset() -> Observation` | Abstract | Build the world, emit `world.setup` if declared, and return the first observation. The ego does not move until the first command |
-| `step(control) -> Observation` | Abstract | Call `validate_command`, emit `world.step.pre`, apply the command, advance the world, emit `world.step.post` and return the next observation |
+| `reset() -> Observation` | Abstract | Build the world, emit `simulator.setup` if declared, and return the first observation. The ego does not move until the first command |
+| `step(control) -> Observation` | Abstract | Call `validate_command`, emit `simulator.step.pre`, apply the command, advance the world, emit `simulator.step.post` and return the next observation |
 | `ground_truth() -> WorldSnapshot` | Copy of the state in the last observation returned by `reset` or `step` | An independent snapshot of the physical ego state. Override it when observations carry estimated state or when the backend emits stages |
 | `close()` | No-op | Release simulator resources. It can be called more than once |
 | `copy_observation(observation)` | `deepcopy` | Detach mutable model-visible data from backend state. Override it for native captures that cannot be copied |
@@ -512,7 +514,7 @@ other members your simulator needs:
 | `validate_command(command)` | Rejects active fields outside `command_modes` | Raise `ValueError` for commands the simulator would ignore |
 | `configure_conditions(world)` | Raises `ValueError` for any setting | Validate and store world conditions for later resets |
 | `native` | Empty mapping | Live simulator resources for handlers |
-| `setup_ticks`, `setup_tick()` | `0`, absent | Deployment ticks required by world plugins, advanced during `world.setup` |
+| `setup_ticks`, `setup_tick()` | `0`, absent | Deployment ticks required by world plugins, advanced during `simulator.setup` |
 | `prepare_clean_attack_pair()` | No-op | Resolve random scene choices once, so that later resets reproduce the first run's initial scene |
 
 Rules for emitting stages with `self._emit(stage, value, sensor=None)`:
@@ -522,28 +524,36 @@ Rules for emitting stages with `self._emit(stage, value, sensor=None)`:
   stage fails before reset.
 - Use the returned value: `value = self._emit(stage, value)`. World stages pass and return
   `None`. `render.pre` passes a `RenderRequest`. Pass `sensor=` for per-sensor stages.
-- Emit `world.setup` after the world is built and before the first sensor capture,
-  `world.step.pre` before actuation and `world.step.post` after the world has advanced. Document
-  whether sensors are rendered during the advance, as in CARLA, or after `world.step.post`, as in
+- Emit `simulator.setup` after the world is built and before the first sensor capture,
+  `simulator.step.pre` before actuation and `simulator.step.post` after the world has advanced. Document
+  whether sensors are rendered during the advance, as in CARLA, or after `simulator.step.post`, as in
   NuRec.
 - Every handler call reads `ground_truth()`, so it must work at each emitted stage, including
-  `world.setup` during the first reset. The default implementation fails there.
+  `simulator.setup` during the first reset. The default implementation fails there.
 - Outside a run, `_emit` returns the value unchanged. One run binds the adapter at a time.
 
 Fill every `Observation` field: `t`, `frame`, `sensor_data`, `calibration`, `vehicle_state` and
 `ego_speed`. Return observations that share no mutable objects with the physical state. If the
 backend supports deployment ticks, implement `setup_tick()` to advance one tick only during
-`world.setup`, and advance until `setup_ticks` have been used after emitting `world.setup`.
+`simulator.setup`, and advance until `setup_ticks` have been used after emitting `simulator.setup`.
 A deterministic backend needs no `prepare_clean_attack_pair`.
 
-Source-aware simulators instead subclass `avsectester.capture.CaptureBackend`, as CARLA, NuRec
-and recorded replay do. It owns `reset_world`, `advance`, `observe`, the deployment tick budget
-and the legacy `reset`/`step` wrappers. Implement `_initialize_world`, `_advance_native` and
-`_observe`; CARLA also implements `_replay_tick` and `_hold_tick`. Declare `source_kinds`,
-`decision_time_step` and simulator identity on the backend. Overriding the legacy `reset` or
-`step` in a `CaptureBackend` subclass raises `TypeError` at class definition. Plain
-`WorldBackend` subclasses keep the compatibility path above. See
-[selected-origin initialization](scenarios.md#selected-origin-deployment-and-reset-ownership).
+Source-aware simulators instead subclass `avsectester.closed_loop.simulator.Simulator`, as CARLA,
+NuRec and recorded replay do. It owns `reset_world`, `advance`, `observe`, the deployment tick
+budget, the read-only `clock` and `state()`, the process-local `exclusive()` reservation and the
+legacy `reset`/`step` wrappers. Implement `_initialize_world`, `_advance_native` and `_observe`;
+CARLA also implements `_replay_tick` and `_hold_tick`. Declare `dataset_kinds` (accepted dataset
+class names, such as `("CarlaDataset",)`), `decision_time_step`
+and simulator identity on the simulator. `generate_frame_data(start, frames)` is shared: it resets
+as for a run, then alternates `_replay_tick()` (advance one frame along the start's prescribed
+motion) and `_capture_frame_data(frame)` (record the current state as `FrameData`). A simulator that
+implements these two methods can generate frame data for datasets without it; CARLA and recorded
+replay do. A simulator that can render insertions sets `can_render = True` and implements
+`sensor_view(sensor)`, returning a `SensorView` of the current capture: the RGB data, the camera
+model, `cam_from_world`, actor and ego cuboid poses, time and, when measured, depth. Overriding the
+legacy `reset` or `step` in a `Simulator` subclass raises `TypeError` at class definition. Plain
+`WorldBackend` subclasses keep the compatibility path above. See [selected-origin
+initialization](scenarios.md#selected-origin-deployment-and-reset-ownership).
 
 Custom backends enter scenario setup through `backend_factory(scene_config)`, accepted by
 `scenario_from_config`, `source_from_config` and `run_configured`. The argument is a fresh copy
@@ -557,8 +567,9 @@ and a world condition:
 
 <!-- runnable -->
 ```python
-from avsectester.backend import AVStack, WorldBackend
-from avsectester.plane import Control, Observation, WorldSnapshot
+from avsectester.closed_loop.avstack import AVStack
+from avsectester.closed_loop.simulator import WorldBackend
+from avsectester.closed_loop.datatypes import Control, Observation, WorldSnapshot
 from avsectester.runner import run_prepared
 from avsectester.scenarios import scenario_from_config
 
@@ -580,7 +591,7 @@ class LineWorld(WorldBackend):
 
     @property
     def supported_stages(self):
-        return frozenset({"world.setup", "world.step.pre", "world.step.post"})
+        return frozenset({"simulator.setup", "simulator.step.pre", "simulator.step.post"})
 
     @property
     def native(self):
@@ -594,18 +605,18 @@ class LineWorld(WorldBackend):
 
     def reset(self):
         self.x, self.speed, self.t, self.frame = 0.0, self.initial_speed, 0.0, 0
-        self._emit("world.setup", None)  # after building the world, before the first capture
+        self._emit("simulator.setup", None)  # after building the world, before the first capture
         return self._observe()
 
     def step(self, control):
         self.validate_command(control)
-        self._emit("world.step.pre", None)  # before actuation
+        self._emit("simulator.step.pre", None)  # before actuation
         accel = 3.0 * control.throttle - 8.0 * control.brake
         self.speed = max(0.0, self.speed + accel * self.dt)
         self.x += self.speed * self.dt
         self.t += self.dt
         self.frame += 1
-        self._emit("world.step.post", None)  # after advancing, before the next capture
+        self._emit("simulator.step.post", None)  # after advancing, before the next capture
         return self._observe()
 
     def ground_truth(self):

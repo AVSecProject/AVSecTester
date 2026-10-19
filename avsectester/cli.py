@@ -7,8 +7,8 @@ from pathlib import Path
 import typer
 import yaml
 
-from . import __version__
-from .experiment import ConfigurationError, ExecutionMode, TreatmentMode, run_configured
+from avsectester import __version__
+from avsectester.experiment import ConfigurationError, ExecutionMode, TreatmentMode, run_configured
 
 app = typer.Typer(help="Adversarial security testing for AV systems.")
 
@@ -32,8 +32,8 @@ def run(
     treatment: TreatmentMode | None = typer.Option(None, help="clean, attack, defense or attack-defense."),
 ) -> None:
     """Run a prepared scenario with the selected attack and defense treatment."""
-    from .metric import impact, plot_impact
-    from .simulators.carla import resolve_scenario_seed, set_perception_gpu
+    from avsectester.evaluation.metric import impact, plot_impact
+    from avsectester.closed_loop.simulators.carla import resolve_scenario_seed, set_perception_gpu
 
     try:
         scenario = yaml.safe_load(config.read_text())
@@ -46,7 +46,7 @@ def run(
         backend_spec = scenario.get("backend", {})
         if not isinstance(backend_spec, dict):
             raise ValueError("backend must be a mapping")
-        is_carla = backend_spec.get("type", "CarlaBackend") in {"carla", "CarlaBackend"}
+        is_carla = backend_spec.get("type", "CarlaSimulator") == "CarlaSimulator"
         if is_carla:
             for key in ("client", "ego"):
                 if not isinstance(scenario.get(key), dict):
@@ -74,10 +74,10 @@ def run(
         typer.echo(f"[{execution.value}] {n} frames per run, treatment={selected.value}")
         options = {}
         if is_carla:
-            from . import carla_runner
+            from avsectester import carla_runner
             options = {
                 "backend_factory": None if scenario.get("selection") is not None else
-                    lambda config: carla_runner.CarlaBackend(config),
+                    lambda config: carla_runner.CarlaSimulator(config),
                 "stack_factory": lambda: carla_runner._stack(scenario),
                 "run_fn": carla_runner._logged_run,
             }
@@ -127,10 +127,10 @@ def run(
             typer.echo(f"[output] wrote driving-impact figure: {saved}")
     except ValueError as error:
         # Stage validation precedes reset and identifies configuration errors explicitly.
-        from .runtime import UnsupportedStageError
-        from .backend import CommandCompatibilityError
-        from .conditions import ConditionConfigurationError
-        from .scenarios.setup import ScenarioConfigurationError
+        from avsectester.closed_loop.hooks import UnsupportedStageError
+        from avsectester.closed_loop.avstack import CommandCompatibilityError
+        from avsectester.conditions import ConditionConfigurationError
+        from avsectester.scenarios.setup import ScenarioConfigurationError
 
         if isinstance(error, (UnsupportedStageError, CommandCompatibilityError,
                               ConditionConfigurationError, ScenarioConfigurationError, ConfigurationError)):

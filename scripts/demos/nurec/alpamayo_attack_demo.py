@@ -6,7 +6,7 @@ an object inserted into its camera stream by ``perturb(Observation)`` (the same 
 ``nurec_object_demo.py``: a roadside STOP sign by default). Its planned trajectories move the ego
 (``TrajectoryFollower``), so the attacked run sees the sign from wherever the policy actually drives.
 Per step we record the resulting ego state and the reasoning that produced its control; the verdict is
-:func:`avsectester.metric.impact` on the two traces.
+:func:`avsectester.evaluation.metric.impact` on the two traces.
 
 Run in an AlpaSim driver env (Python 3.12 + alpasim_driver) with an nre-ga server
 (docs/getting-started/installation.md#nurec-and-alpamayo-environment):
@@ -25,16 +25,16 @@ import time
 from dataclasses import asdict
 from pathlib import Path
 
-from avsectester.metric import impact
+from avsectester.evaluation.metric import impact
 from avsectester.interventions import ObservationTransform
 from avsectester.runner import run_prepared
-from avsectester.runtime import Hook, Runtime
+from avsectester.closed_loop.hooks import Hook, Runtime
 from avsectester.scenarios.setup import scenario_from_config
-from avsectester.simulators.nurec import NuRecBackend, NuRecRenderer, TrajectoryFollower
+from avsectester.closed_loop.simulators.nurec import NuRecSimulator, NuRecRenderer, TrajectoryFollower
 from avsectester.rendering.compositor import PatchCompositor
 from avsectester.perturbations.image import frame_perturbation
-from avsectester.simulators.viz import record_run, save_gif
-from avsectester.stacks.alpamayo import AlpamayoAVStack
+from avsectester.closed_loop.simulators.viz import record_run, save_gif
+from avsectester.closed_loop.avstacks.alpamayo import AlpamayoAVStack
 from scripts.common.demo_common import OBJECTS, build_object, make_harmonizer, nurec_source
 from scripts.demos.nurec.nurec_object_demo import side_by_side
 
@@ -60,7 +60,7 @@ def drive_pair(args, perturb_of):
     def make_backend(config):
         renderer = NuRecRenderer(endpoint=args.endpoint, scene_id=args.scene, cameras=[CAM],
                                  start_timestamp_us=args.start_timestamp_us)
-        return NuRecBackend(config, renderer=renderer, dynamics=TrajectoryFollower())
+        return NuRecSimulator(config, renderer=renderer, dynamics=TrajectoryFollower())
 
     scenario = scenario_from_config(
         {"dt": 0.1, "ego0": {"speed": args.speed}}, backend_factory=make_backend,
@@ -77,7 +77,7 @@ def drive_pair(args, perturb_of):
         label = "attacked" if runtime.hooks else "clean"
         print(f"[alpamayo] {label} drive, {frames} frames")
         trace = record_run(backend, stack, frames, out_dir=args.out / label,
-                           runtime=runtime, collect=True)
+                           hooks=runtime, collect=True)
         loaded_model = stack.models["policy"]
         # Each decision uses the input at t; its Trace record holds the outcome at t + dt.
         steps = [

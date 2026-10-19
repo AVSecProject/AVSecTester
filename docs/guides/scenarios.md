@@ -12,7 +12,7 @@ qualifying scenarios, with fixed role bindings and insertions. Filters run durin
 never inside a run, and do not promise attack success.
 
 The CLI and examples below retain the initial-selection compatibility API. New source readers
-can use the [stateless data interface](#stateless-source-data), which separates reading data
+can use the [stateless data interface](#stateless-datasets), which separates reading data
 from constructing simulator resources.
 
 ## Configured scenarios
@@ -23,8 +23,8 @@ is created when the scenario runs. This example runs offline with the NuRec stub
 
 <!-- runnable -->
 ```python
-from avsectester.backend import AVStack
-from avsectester.plane import Control
+from avsectester.closed_loop.avstack import AVStack
+from avsectester.closed_loop.datatypes import Control
 from avsectester.runner import run_prepared
 from avsectester.scenarios import scenario_from_config
 
@@ -36,7 +36,7 @@ class Cruise(AVStack):
         return Control(throttle=0.3)
 
 
-config = {"backend": {"type": "NuRecBackend", "renderer": "stub"}}
+config = {"backend": {"type": "NuRecSimulator", "renderer": "StubRenderer"}}
 scenario = scenario_from_config(config, provenance={"config_path": "inline"})
 print(scenario.match)       # None: no selection, so no roles or insertions.
 print(scenario.provenance)  # Supplied provenance plus the resolved conditions.
@@ -45,7 +45,7 @@ results = run_prepared(scenario, Cruise, frames=10)
 print(results["clean"].provenance["treatment"])  # clean
 ```
 
-`backend.type` selects `CarlaBackend` (the default) or `NuRecBackend`; see
+`backend.type` selects `CarlaSimulator` (the default) or `NuRecSimulator`; see
 [Backend configuration](simulators.md#backend-configuration). The backend factory receives a
 detached scene view without experiment and intervention keys such as `frames`, `stack`,
 `interventions`, `conditions` and `selection` (see
@@ -78,7 +78,7 @@ Explicit world positions and native actor names still work without selection.
 ```python
 from dataclasses import replace
 
-# scenario is a ScenarioInstance whose factory returns a NuRecBackend.
+# scenario is a ScenarioInstance whose factory returns a NuRecSimulator.
 def coarse_backend():
     backend = scenario.factory()  # The original factory, without conditions.
     backend.dt = 0.1              # Use a longer simulation time step.
@@ -274,7 +274,7 @@ within the requirement's `DistanceRange` (otherwise up to 20 m), never below `mi
 lateral offset within `lateral_range=(0.0, 3.0)`. Sampling never moves insertions. The ego starts
 stationary, so `ego_speed` must be 0.
 
-Candidates use `CarlaSelectionBackend`. It replaces stock RGB cameras with undistorted
+Candidates use `CarlaSelectionSimulator`. It replaces stock RGB cameras with undistorted
 `PinholeRgbCamera` sensors, adds an aligned depth camera and advances one stationary setup frame
 before the first observation. The selected scenario's factory uses the same backend, so paired
 resets match the selection. The selected RGB camera must produce a frame at every driving step:
@@ -307,7 +307,7 @@ service serving that scene (see
 `scenes()` iterates `nusc.sample[:max_samples]` in SDK order, numbers frames globally and keeps
 sample-annotation tokens as object IDs, as before. Its backend advances through linked recorded
 frames and ignores commands. N decisions require N+1
-frames, including the terminal reference; requests past the sequence end fail.
+frames, including the terminal frame; requests past the sequence end fail.
 
 ### Use a selected scenario in an experiment
 
@@ -379,7 +379,7 @@ To search more starts, override `scenes()` and call `scene_at_frame(path, frame)
 
 ```python
 from dataclasses import replace
-from avsectester.plane import Control
+from avsectester.closed_loop.datatypes import Control
 from avsectester.scenarios import CarlaScenarioBuilder, InitialWindow
 from avsectester.scenarios.carla_provider import CarlaCandidateProvider
 
@@ -473,24 +473,26 @@ geometry. Return `unknown` when information is unavailable. Native APIs can modi
 not change a candidate inside a filter. `register_constraint` is needed only for dictionary
 serialization and the natural-language vocabulary.
 
-## Stateless source data
+## Stateless datasets
 
-`avsectester.datasets.Dataset` reads source records or recipes. It has no backend or renderer
-factory. `avsectester.datasets.nurec.NuRecDataset` reads USDZ annotations and
-`avsectester.datasets.nuscenes.NuScenesDataset` reads linked samples within each recorded scene;
-its timelines always cover the complete scene and its actor IDs are stable instance tokens.
-Their older `avsectester.scenarios.datasets` imports retain factories and keyframe iteration for
-existing callers.
+`avsectester.datasets.Dataset` reads recorded scenarios or recipes. It has no backend or renderer
+factory. `avsectester.datasets.nurec.NuRecDataset(usdz_paths, camera_id=..., camera_alias=...,
+time_step=0.1)` reads USDZ annotations. Each file is one scenario, identified by NuRec's scene ID
+(`clipgt-<uuid>`, the ID the NuRec renderer loads); `camera_id` is NuRec's camera ID and
+`camera_alias` the sensor name used in observations. `avsectester.datasets.nuscenes.NuScenesDataset`
+reads linked samples within each recorded scene; its timelines always cover the complete scene and
+its actor IDs are stable instance tokens. Their older `avsectester.scenarios.datasets` imports
+retain factories, keyframe iteration and the original `sensor`/`camera` parameters for existing
+callers.
 
 | Method | Source contract |
 |---|---|
 | `scenarios()` | Scenario descriptors with stable source identities |
-| `frames(scenario_id)` | Ordered `FrameRef` records: position, original ID and source timestamp |
-| `reference(scenario_id, frame)` | Detached reference data, or an explicit `Unavailable` result |
-| `sensor_data(scenario_id, frame, sensor)` | Recorded payload location, or `None` when absent |
-| `native(scenario_id)` | Source-specific data, without simulator resources |
-| `source_data(scenario_id, start)` | Detached `SourceData` for simulator initialization |
-| `decision_window(scenario_id, start, decision_steps)` | N+1 supported references for N decisions |
+| `frames(scenario_id)` | Ordered `FrameReference` records: position, original ID and source timestamp |
+| `frame_data(scenario_id, frame)` | Detached `FrameData` (scene ground truth, actor states, sensor data), or an explicit `Unavailable` result |
+| `native(scenario_id)` | Dataset-specific data, without simulator resources |
+| `scenario_start(scenario_id, frame)` | Detached `ScenarioStart`: what a simulator needs to start the scenario at `frame` |
+| `decision_window(scenario_id, start, decision_steps)` | N+1 actual frames for N decisions; the last is the terminal state |
 
 `decision_steps` has no default. An oversized request fails instead of repeating the last frame
 or shortening the run. nuScenes replay preserves recorded timestamps. NuRec generates a decision timeline at its configured
@@ -504,13 +506,13 @@ and explicit controls or trajectories for every actor. A stationary actor still 
 zero-motion sequence. Traffic Manager is not a prescribed-motion source. Existing Traffic Manager
 CLI scenarios keep their original from-start execution path.
 
-Reading a CARLA recipe never materializes its reference states:
+Reading a CARLA recipe never generates its frame data:
 
 <!-- runnable -->
 ```python
 from avsectester.datasets import Unavailable
 from avsectester.datasets.carla import CarlaDataset, CarlaRecipe, PrescribedMotion
-from avsectester.plane import Control
+from avsectester.closed_loop.datatypes import Control
 
 recipe = CarlaRecipe(
     scenario={
@@ -525,11 +527,11 @@ recipe = CarlaRecipe(
 dataset = CarlaDataset({"example": recipe})
 start = dataset.frames("example")[0]
 assert len(dataset.decision_window("example", start, decision_steps=3)) == 4
-assert dataset.reference("example", start) == Unavailable("recipe_only")
-assert dataset.source_data("example", start).kind == "carla"
+assert dataset.frame_data("example", start) == Unavailable("recipe_only")
+assert dataset.scenario_start("example", start).kind == "CarlaDataset"
 ```
 
-Generated CARLA references belong to the preparation layer's `ReferenceCache`; running a
+Generated CARLA frame data belongs to the preparation layer's `FrameDataCache`; running a
 simulator does not change these Dataset methods. The cache identity includes the recipe,
 simulator configuration/version and seed. Failed generation is not cached.
 
@@ -555,7 +557,7 @@ from avsectester.runner import run_prepared
 from avsectester.scenarios import (
     CameraCalib, Dataset, DatasetFilter, EgoState, FilterContext, ObjectGT, SceneGT,
 )
-from avsectester.simulators.nurec import NuRecBackend, StubRenderer
+from avsectester.closed_loop.simulators.nurec import NuRecSimulator, StubRenderer
 
 # Optical camera axes to ego axes, with the camera 1.5 m above the ego origin.
 CAM_TO_EGO = [[0, 0, 1, 0], [-1, 0, 0, 0], [0, -1, 0, 1.5], [0, 0, 0, 1]]
@@ -577,7 +579,8 @@ class ToyDataset(Dataset):
         return FilterContext(scene, dataset=self, visibility_estimator=CuboidVisibilityEstimator())
 
     def make_backend(self, scene):
-        return NuRecBackend({"camera_aliases": {"camera_front": "front"}}, renderer=StubRenderer())
+        return NuRecSimulator({"camera_aliases": {"camera_front": "front"}},
+                              renderer=StubRenderer())
 
 
 source = DatasetFilter(ToyDataset())
@@ -626,24 +629,25 @@ or agent. Use the result with any scenario source.
 
 ## Shared closed-loop services
 
-`avsectester.services.ClosedLoopServices` is the preparation and selection entry point for
-sensor captures, insertion renders, driving components, scorers and candidate rollouts.
-A `ScenarioView` exposes the same services as offline preparation and resolves references
-through `reference(frame)`. Recorded references come from the Dataset. CARLA references are
-materialized from explicit motion recipes into the preparation-owned `ReferenceCache`.
-Calling the simulator never changes `Dataset.reference()` or attaches records to a Dataset.
+`avsectester.closed_loop.services.ClosedLoopServices` is the closed-loop entry point of the
+metabuilder and the offline phase: sensor captures, sensor views with attack effects, driving
+components, scorers and candidate rollouts. A `ScenarioView` exposes the same services to
+`Attack.build_metadata` and resolves frame data through `frame_data(frame)`. Recorded frame data
+comes from the Dataset. CARLA frame data is generated from explicit motion recipes into the
+preparation-owned `FrameDataCache`. Calling the simulator never changes `Dataset.frame_data()` or
+attaches records to a Dataset.
 
-Construct services with a pure Dataset, a lazy factory `(source, seed) -> CaptureBackend`,
-its `backend_type`, and an optional `DrivingAdapter`. A factory creates configuration-only objects;
-native connections/world resets happen inside a reserved operation. Simulator identity, source kinds,
-rendering and decision time step belong to the backend. Driving bindings live in
-`avsectester.driving_adapters`.
+Construct services with a pure Dataset, a lazy factory `(start, seed) -> Simulator`,
+its `simulator_type`, and an optional `DrivingAdapter`. A factory creates configuration-only objects;
+native connections/world resets happen inside a reserved operation. Simulator identity, dataset
+kinds, rendering and decision time step belong to the simulator. Driving bindings live in
+`avsectester.closed_loop.driving_adapters`.
 
-| Backend | Source | Behavior |
+| Simulator | Dataset | Behavior |
 |---|---|---|
-| `CarlaSelectionBackend` | CARLA recipe | Explicit-motion replay, selected-origin initialization and depth-aware insertion rendering |
-| `NuRecBackend` | NuRec USDZ | Interpolated-origin initialization, renderer and configurable ego dynamics |
-| `RecordedSequenceBackend` | nuScenes | Bounded recorded replay; commands do not change recorded actor motion |
+| `CarlaSelectionSimulator` | CARLA recipe | Explicit-motion replay, selected-origin initialization and sensor views with measured depth |
+| `NuRecSimulator` | NuRec USDZ | Interpolated-origin initialization, renderer, sensor views with recorded actors, configurable ego dynamics |
+| `RecordedReplaySimulator` | nuScenes | Bounded recorded replay; commands do not change recorded actor motion |
 
 CARLA uses the configured client's `connect_ip`, `connect_port` and explicit `simulator_version`.
 NuRec declares its renderer version via `simulator_version`, endpoint and decision `dt`.
@@ -652,18 +656,20 @@ world or model initialization. No per-window cadence tolerance is applied.
 `TrajectoryFollower` remains the compatible dynamics choice for Alpamayo trajectory commands.
 
 ```python
-from avsectester.services import ClosedLoopServices
-from avsectester.simulators.nurec import NuRecBackend, NuRecRenderer, TrajectoryFollower
+from avsectester.closed_loop.services import ClosedLoopServices
+from avsectester.closed_loop.simulators.nurec import (
+    NuRecRenderer, NuRecSimulator, TrajectoryFollower,
+)
 
-def make_backend(source, seed):
-    sensor, camera = source.payload["sensor"], source.payload["camera"]
-    return NuRecBackend(
-        {"dt": 0.1, "simulator_version": "26.04", "camera_aliases": {sensor: camera}},
-        NuRecRenderer(endpoint="127.0.0.1:50051", cameras=[sensor]),
+def make_simulator(start, seed):
+    camera_id, camera_alias = start.payload["camera_id"], start.payload["camera_alias"]
+    return NuRecSimulator(
+        {"dt": 0.1, "simulator_version": "26.04", "camera_aliases": {camera_id: camera_alias}},
+        NuRecRenderer(endpoint="127.0.0.1:50051", cameras=[camera_id]),
         TrajectoryFollower(),
     )
 
-services = ClosedLoopServices(dataset, make_backend, driving_adapter, backend_type=NuRecBackend)
+services = ClosedLoopServices(dataset, make_simulator, driving_adapter, simulator_type=NuRecSimulator)
 ```
 
 ### A user request
@@ -672,46 +678,47 @@ The following example assumes `dataset` and `services` have been constructed for
 source and `scenario_id` identifies it. The positions and seed are example choices.
 
 ```python
-from avsectester.closed_loop import RecordingPolicy
-from avsectester.services import CandidateOrigin, CandidateRequest, SensorRequest
+from avsectester.closed_loop.runner import RecordingPolicy
+from avsectester.attack import AttackSegment
+from avsectester.closed_loop.services import CandidateRequest, SensorRequest
 
 frames = dataset.frames(scenario_id)
 view = services.scenario(scenario_id, seed=7)
-reference = view.reference(frames[5])
-origin = CandidateOrigin(scenario_id, frames[5], frames[7])
-assert origin.decision_steps == 2  # decisions at positions 5 and 6; terminal state at 7
+reference = view.frame_data(frames[5])
+segment = AttackSegment(scenario_id, frames[5], frames[7])
+assert segment.decision_steps == 2  # decisions at positions 5 and 6; terminal state at 7
 
-with services.open_scope(seed=7) as scope:
-    sample = scope.sensor_data(SensorRequest(scenario_id, frames[5], (camera_id,)))
-    log = scope.rollout(CandidateRequest(
-        origin=origin, seed=7, decision_steps=2, environment={},
+with services.session(seed=7) as session:
+    sample = session.sensor_data(SensorRequest(scenario_id, frames[5], (camera_id,)))
+    log = session.rollout(CandidateRequest(
+        segment=segment, seed=7, decision_steps=2, environment={},
         recording=RecordingPolicy((camera_id,), ("raw", "model_input")),
     ))
 ```
 
-`CandidateOrigin.roles` may be empty. Role bindings map names to tuples of stable actor IDs;
+`AttackSegment.roles` may be empty. Role bindings map names to tuples of stable actor IDs;
 placement is optional. A candidate has no selection score or rank. Its start and stop must be
 actual source boundaries, and `stop` must exist. A missing terminal frame is never silently
-corrected. The framework passes only `SourceData` and replay
-initialization evidence to the simulator, never `CandidateOrigin`.
+corrected. The framework passes only `ScenarioStart` and replay
+initialization evidence to the simulator, never `AttackSegment`.
 
-For insertion selection, call `scope.render(RenderRequest(...))` with existing `Insertion`
-objects, a camera ID and optional role bindings. `RenderResult` contains the resulting
-observation, resolved insertions and per-insertion visibility evidence, using the same renderer
-as the existing online insertion helpers. NuRec visibility uses known cuboids; CARLA uses aligned
-depth. This does not turn the NuRec estimate into exact rendered occlusion. A new operation uses
-new renderer state, so different textures or placements cannot reuse another candidate's result.
+To render attack effects, call `session.render(RenderRequest(scenario_id, frame, camera_id,
+effects))`. World attack effects are applied at the simulator's `simulator.setup` within the
+services' deployment plan and appear in the capture; sensor attack effects then change the
+captured data in the simulator's `SensorView`. `RenderResult` contains the changed observation
+and the camera's detached `SensorView` before its sensor effects. A new operation uses new
+simulator state, so different candidates cannot reuse another candidate's result.
 
 Requests use original source poses and environment unless supported overrides are explicit.
 CARLA currently accepts `weather`; other overrides fail. Source, environment, simulator identity
-and seed are retained in result provenance and candidate RunLog metadata. A candidate attack
-supplies `runtime_factory(attack, origin, artifacts)`; each rollout creates and stops its own
-`AttackRuntime`. Full selection, artifact preparation and treatment orchestration remain separate
-from this candidate service.
+and seed are retained in result provenance and candidate RunLog metadata. A candidate attack is
+an `Attack`: each rollout calls `attack.create_runtime(segment, artifacts)` and stops its own
+`AttackRuntime`. Metabuilder orchestration, the offline phase and treatment orchestration remain
+separate from this candidate service.
 
 ### Driving components and gradients
 
-`DrivingAdapter(factory, components=..., scorers=...)` receives a factory called with the scope
+`DrivingAdapter(factory, components=..., scorers=...)` receives a factory called with the session
 seed. It must return a fresh driving adapter and configure any model-specific random seed.
 Component bindings pair a `ComponentDescriptor` with `(stack, inputs) -> value`; scorer bindings
 pair a `ScorerDescriptor` with `(stack, inputs, target) -> value`. Descriptors declare input and
@@ -731,9 +738,9 @@ snapshots before the user can differentiate them.
 
 ### Resource and replay guarantees
 
-Use scopes as context managers. Each independent operation creates fresh backend and driving
+Use sessions as context managers. Each independent operation creates fresh simulator and driving
 state and releases owned resources on success, failure or cancellation. Factories returning an
-active or previously used instance are rejected. The same scope cannot execute overlapping
+active or previously used instance are rejected. The same session cannot execute overlapping
 operations. Read-only model weights may be shared behind independent adapters only when the
 adapter author can guarantee isolation of all mutable model state.
 
@@ -741,7 +748,7 @@ CARLA operations reserve their endpoint until resource cleanup finishes. Another
 `ClosedLoopRunner` in the same process
 cannot reset that world while it is reserved. Independent processes must still use dedicated
 servers or coordinate their ownership externally. This process-local guard does not lock other
-CARLA clients. NuRec scopes use independent backend, renderer connection and driving histories.
+CARLA clients. NuRec sessions use independent simulator, renderer connection and driving histories.
 
 CARLA pre-roll uses the cached resolved initial spawns and explicit motion, and does not count
 as driving decisions. The actual state at the selected origin is recorded in the initialization
@@ -750,9 +757,9 @@ for the current world frame; a missing or misaligned capture raises `SensorAlign
 whose report the runner records before failing.
 
 Reference cache identity includes the full recipe, simulator adapter identity and seed; failed
-materializations are not cached. A selected-origin startup callback can change pipeline inputs
-but cannot advance time or retroactively change the selected physical capture.
-Physical world changes continue to follow the runner's existing setup and step boundaries.
+generations are not cached. `AttackRuntime.setup` runs inside the deployment window, so its world
+attack effects appear in the selected capture; it cannot advance time beyond its declared
+`setup_ticks`. Later world effects apply before a world step.
 
 Explicit CARLA trajectories hold actors during sensor setup, then use one additional matched
 setup tick to establish native velocity before source time zero. During prescribed motion,
@@ -766,31 +773,32 @@ and driving. Base-world preparation and p=0 deployment temporarily hold their re
 
 ### Selected-origin deployment and reset ownership
 
-`CaptureBackend.reset_world(source, initialization, deployment=DeploymentPlan(k), environment=...)`
-recomputes runtime state from configured defaults and the optional source. A subsequent plain reset
-returns to those defaults. It does not retain the preceding source's scene, origin or bounds.
+`Simulator.reset_world(start, initialization, deployment=DeploymentPlan(k), environment=...)`
+recomputes runtime state from configured defaults and the optional start. A subsequent plain reset
+returns to those defaults. It does not retain the preceding start's scene, origin or bounds.
 
-Source-aware CARLA resets include a fixed sensor preparation tick with actors held at their
-resolved origin, before source time zero. References and runs use the same preparation;
-`source_sensor_setup_ticks` is recorded in capture provenance and simulator identity.
+CARLA resets from a `ScenarioStart` include a fixed sensor preparation tick with actors held at
+their resolved origin, before scenario time zero. Frame data generation and runs use the same
+preparation; `start_sensor_setup_ticks` is recorded in frame-data provenance and simulator identity.
 
-CARLA renders on ticks, so its first capture needs one tick after `world.setup`
+CARLA renders on ticks, so its first capture needs one tick after `simulator.setup`
 (`capture_ticks = 1`). The deployment window is therefore k participant ticks plus that capture
 tick. CARLA initializes the base world without hooks, replays to `p-k-1`, dispatches existing
-`world.setup` deployments and continues recipe motion for k+1 ticks, then captures at p. The
-window is taken from the pre-roll, so the selected boundary never moves. Legacy plugins'
-`setup_tick()` calls consume the k-tick budget; the capture tick is not available to them. Clean
+`simulator.setup` deployments and continues recipe motion for k+1 ticks, then captures at p. The
+window is taken from the pre-roll, so the selected boundary never moves. `setup_tick()` calls by
+`simulator.setup` hooks and world attack effects consume the k-tick budget; the capture tick is not
+available to them. Clean
 treatments use the same plan. An origin with `0 < p < k+1` fails; at p=0 the window holds actors
-before source time zero. Reference materialization uses the same plan, whose tick budget
+before source time zero. Reference generation uses the same plan, whose tick budget
 participates in the reference cache key. Inserted actors are logged separately.
 
-A plain CARLA reset (no `SourceData`) keeps the original order: `world.setup`, k deployment
-ticks, one capture tick, then the first capture. A `world.setup` change that declares no ticks
+A plain CARLA reset (no `ScenarioStart`) keeps the original order: `simulator.setup`, k deployment
+ticks, one capture tick, then the first capture. A `simulator.setup` change that declares no ticks
 is therefore visible in the first capture on both paths. NuRec renders at capture time and
 needs no capture tick.
 
-`AttackRuntime.start` runs after the selected capture, with the selected live
-state. It continues to return pipeline actions in this phase. NuRec needs no physical deployment
-ticks or pre-roll (k=0); its closed-loop vehicle dynamics still advance during driving decisions.
-A scope holds no server reservation between operations. Concurrent operations on the same server
-are rejected; completion, failure and cancellation release each operation's resources.
+`AttackRuntime.setup` runs at `simulator.setup`, before the selected capture, with the live state at
+that point; its world attack effects are visible in the selected capture. NuRec needs no physical
+deployment ticks or pre-roll (k=0); its closed-loop vehicle dynamics still advance during driving
+decisions. A session holds no server reservation between operations. Concurrent operations on the
+same server are rejected; completion, failure and cancellation release each operation's resources.

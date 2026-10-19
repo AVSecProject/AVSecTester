@@ -7,9 +7,11 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from avsectester.backend import AVStack, WorldBackend, run
-from avsectester.plane import Control, Observation, StateEstimate
-from avsectester.runtime import Hook, Plugin, Runtime
+from avsectester.closed_loop.avstack import AVStack
+from avsectester.closed_loop.simulator import WorldBackend
+from avsectester.backend import run
+from avsectester.closed_loop.datatypes import Control, Observation, StateEstimate
+from avsectester.closed_loop.hooks import Hook, Plugin, Runtime
 
 
 class MemoryBackend(WorldBackend):
@@ -121,14 +123,14 @@ def test_failure_cleans_resources_and_preserves_original_exception(failure_stage
     assert closed == [True]
     assert backend.reset_calls == (0 if failure_stage == "reset" else 1)
     assert backend.controls == []
-    assert backend._runtime is None and stack._runtime is None
+    assert backend._dispatcher is None and stack._dispatcher is None
 
 
 @pytest.mark.parametrize("stage", ["tracking.post", "localization.pre"])
 def test_unavailable_stage_is_rejected_before_world_reset(stage):
     backend = MemoryBackend()
     runtime = Runtime([Hook(stage, lambda value, context: value)])
-    with pytest.raises(ValueError, match="Unsupported runtime stages"):
+    with pytest.raises(ValueError, match="Unsupported hook stages"):
         run(backend, RecordingStack(), frames=1, runtime=runtime)
     assert backend.reset_calls == 0
 
@@ -256,7 +258,7 @@ def test_localizer_cached_state_is_detached_before_downstream_estimate_edits(sta
     cache = SimpleNamespace(x=2.0)
 
     def localize(observation, context):
-        state = cache if state_source == "estimator" else context.backend.pose
+        state = cache if state_source == "estimator" else context.simulator.pose
         return StateEstimate(state, 0.0)
 
     def attack(estimate, context):
@@ -282,13 +284,13 @@ def test_nested_adapter_binding_rejects_without_unbinding_active_session():
         with pytest.raises(RuntimeError, match="already bound"):
             with inner.activate():
                 pytest.fail("Nested session must not become active")
-        assert backend._runtime is outer
-        assert stack._runtime is outer
-    assert backend._runtime is None and stack._runtime is None
+        assert backend._dispatcher is outer
+        assert stack._dispatcher is outer
+    assert backend._dispatcher is None and stack._dispatcher is None
 
 
 def test_world_setup_changes_scene_before_initial_render():
-    from avsectester.simulators.nurec import NuRecBackend, StubRenderer
+    from avsectester.closed_loop.simulators.nurec import NuRecSimulator, StubRenderer
 
     rendered_positions = []
 
@@ -299,11 +301,11 @@ def test_world_setup_changes_scene_before_initial_render():
 
     def setup(value, context):
         assert value is None
-        context.backend.pose.x = 12.0
+        context.simulator.pose.x = 12.0
 
-    backend = NuRecBackend({"dt": 0.1}, renderer=Renderer(height=2, width=3))
+    backend = NuRecSimulator({"dt": 0.1}, renderer=Renderer(height=2, width=3))
     stack = RecordingStack()
-    run(backend, stack, frames=1, runtime=Runtime([Hook("world.setup", setup)]))
+    run(backend, stack, frames=1, runtime=Runtime([Hook("simulator.setup", setup)]))
 
     assert rendered_positions[0] == 12.0
     assert stack.initial.vehicle_state.x == 12.0
@@ -383,17 +385,17 @@ def test_feedback_plugins_receive_independent_raw_observations_and_executed_comm
 
 
 def test_world_post_context_cannot_rewrite_the_executed_command():
-    from avsectester.simulators.nurec import NuRecBackend, StubRenderer
+    from avsectester.closed_loop.simulators.nurec import NuRecSimulator, StubRenderer
 
     def world_post(value, context):
         assert context.control.throttle == 1.0
         context.control.throttle = 0.0
         return None
 
-    backend = NuRecBackend({"dt": 0.1}, renderer=StubRenderer(height=2, width=3))
+    backend = NuRecSimulator({"dt": 0.1}, renderer=StubRenderer(height=2, width=3))
     trace = run(
         backend, RecordingStack(), frames=2,
-        runtime=Runtime([Hook("world.step.post", world_post)]),
+        runtime=Runtime([Hook("simulator.step.post", world_post)]),
     )
     assert [record.throttle for record in trace.records] == [1.0, 1.0]
     assert trace.final_speed == pytest.approx(0.6)

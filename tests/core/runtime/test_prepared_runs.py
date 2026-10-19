@@ -4,18 +4,18 @@ from copy import deepcopy
 
 import pytest
 
-from avsectester.backend import AVStack
+from avsectester.closed_loop.avstack import AVStack
 from avsectester.conditions import ScenarioConditions, SensorCondition
-from avsectester.plane import Control
+from avsectester.closed_loop.datatypes import Control
 from avsectester.runner import run_prepared
-from avsectester.runtime import Hook, Plugin, Runtime
+from avsectester.closed_loop.hooks import Hook, Plugin, Runtime
 from avsectester.scenarios.requirement import ScenarioMatch
 from avsectester.scenarios.scene import EgoState, ObjectGT, SceneGT
 from avsectester.scenarios.source import ScenarioInstance
-from avsectester.simulators.nurec import NuRecBackend, StubRenderer
+from avsectester.closed_loop.simulators.nurec import NuRecSimulator, StubRenderer
 
 
-class MemoryWorld(NuRecBackend):
+class MemoryWorld(NuRecSimulator):
     def __init__(self):
         super().__init__({"dt": 0.1}, renderer=StubRenderer(height=2, width=3))
         self.prepares = self.resets = self.closes = 0
@@ -222,7 +222,7 @@ def test_failure_in_later_treatment_closes_plugins_and_world_with_fresh_stack_hi
     assert backend.prepares == 1 and backend.resets == 2 and backend.closes == 1
     assert len(stacks) == 2 and stacks[0] is not stacks[1]
     assert [len(stack.samples) for stack in stacks] == [2, 1]
-    assert backend._runtime is None and all(stack._runtime is None for stack in stacks)
+    assert backend._dispatcher is None and all(stack._dispatcher is None for stack in stacks)
 
 
 def test_prepared_runner_keeps_custom_recording_results():
@@ -232,7 +232,7 @@ def test_prepared_runner_keeps_custom_recording_results():
     def record(backend, stack, frames, *, runtime):
         from avsectester.evaluation.component_log import run_logged
 
-        return run_logged(backend, stack, frames, runtime=runtime)
+        return run_logged(backend, stack, frames, hooks=runtime)
 
     results = run_prepared(scenario, ReadingStack, frames=2, run_fn=record)
     trace, components = results["clean"]

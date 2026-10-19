@@ -1,6 +1,6 @@
 # Physical adversarial-patch scenario (CARLA) — a textured panel on the rear of the lead car.
 #
-# A world.setup attack (distinct from the perception-hook attack in carla_scenario.yaml): the backend
+# A simulator.setup attack (distinct from the perception-hook attack in carla_scenario.yaml): the backend
 # spawns a stationary `lead` car directly ahead of the ego (scene content, present in BOTH runs) and,
 # in the attacked run only, attaches + paints an `ironplank` panel on its rear so the ego's RGB camera
 # renders it in-scene. Compare camera views with scripts/demos/carla/carla_patch_demo.py.

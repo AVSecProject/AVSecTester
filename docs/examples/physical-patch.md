@@ -31,7 +31,7 @@ artifact. See [Optimize attack artifacts](../guides/optimization.md) for the opt
 **Not yet implemented.** Optimization placement derived from the same insertion geometry that
 deployment uses.
 
-**Execution.** `PhysicalPatchPlugin` runs at `world.setup`, before the first observation, and
+**Execution.** `PhysicalPatchPlugin` runs at `simulator.setup`, before the first observation, and
 changes the world. For each configured panel it resolves the target, spawns the prop at the
 configured offset in the target's frame, and uses one backend setup tick to register the prop's
 paintable mesh name. Each run therefore needs one setup tick per panel. In a comparison, every
@@ -92,12 +92,12 @@ import yaml
 from avsectester.attacks.patch.physical_patch import PhysicalPatchPlugin
 from avsectester.experiment import configured_stack
 from avsectester.runner import run_prepared
-from avsectester.runtime import Hook, Runtime
+from avsectester.closed_loop.hooks import Hook, Runtime
 from avsectester.scenarios.setup import scenario_from_config
 
 config = yaml.safe_load(open("configs/carla_patch_scenario.yaml"))
 scenario = scenario_from_config(config)  # The scene view ignores the patches list.
-attack = Runtime([Hook("world.setup", PhysicalPatchPlugin(config["patches"]))])
+attack = Runtime([Hook("simulator.setup", PhysicalPatchPlugin(config["patches"]))])
 results = run_prepared(
     scenario, lambda: configured_stack(config), 20,
     runtimes={"clean": Runtime(), "attack": attack},

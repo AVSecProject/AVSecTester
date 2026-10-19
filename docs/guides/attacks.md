@@ -17,7 +17,7 @@ attack can act on. Each surface corresponds to a set of stages:
 
 | Surface | Stages | What a handler can change |
 |---|---|---|
-| World | `world.setup`, `world.step.pre`, `world.step.post` | Actors, environment and the physical ego state, through native simulator operations. These handlers return `None` |
+| World | `simulator.setup`, `simulator.step.pre`, `simulator.step.post` | Actors, environment and the physical ego state, through native simulator operations. These handlers return `None` |
 | World, NuRec rendering | `render.pre`, `render.post` | The pose and camera of one rendering, and the rendered image. The physical ego does not move |
 | Vehicle I/O | `sensors.post` | Sensor payloads and their metadata |
 | | `localization.pre`, `localization.post` | The localizer's input, and the state estimate |
@@ -38,7 +38,7 @@ supplied attacks and their stages are listed in [Examples](../examples/README.md
 
 ## Write your first attack
 
-This example runs offline with `NuRecBackend` and `StubRenderer`, without a GPU, simulator server
+This example runs offline with `NuRecSimulator` and `StubRenderer`, without a GPU, simulator server
 or model weights. `CruiseControl` is a minimal `AVStack` that accelerates until the reported speed
 reaches 5 m/s. It is an example policy, not a driving model. The attack reports 5 m/s more than
 the measured speed. Save the code as `first_attack.py`:
@@ -47,10 +47,11 @@ the measured speed. Save the code as `first_attack.py`:
 ```python
 from dataclasses import replace
 
-from avsectester.backend import AVStack, run
-from avsectester.plane import Control
-from avsectester.runtime import Hook, Runtime
-from avsectester.simulators.nurec import NuRecBackend, StubRenderer
+from avsectester.closed_loop.avstack import AVStack
+from avsectester.backend import run
+from avsectester.closed_loop.datatypes import Control
+from avsectester.closed_loop.hooks import Hook, Runtime
+from avsectester.closed_loop.simulators.nurec import NuRecSimulator, StubRenderer
 
 
 class CruiseControl(AVStack):
@@ -71,7 +72,7 @@ def overreport_speed(observation, context):
     return replace(observation, ego_speed=observation.ego_speed + 5.0)
 
 
-backend = NuRecBackend({"dt": 0.1}, renderer=StubRenderer(height=8, width=8))
+backend = NuRecSimulator({"dt": 0.1}, renderer=StubRenderer(height=8, width=8))
 try:
     clean = run(backend, CruiseControl(), frames=80)
     attacked = run(backend, CruiseControl(), frames=80,
@@ -111,10 +112,10 @@ A handler can read four kinds of data:
 - **The handler's value** is the current value in its stage's chain, including changes made by
   earlier handlers. Base measurement and state attacks on it.
 - **`context.observation`** is the current observation when one exists. It is `None` during
-  `world.setup` and the first sensor capture.
+  `simulator.setup` and the first sensor capture.
 - **`context.ground_truth`** is a fresh snapshot of the physical ego state, independent of what
   the driving system sees. Editing it changes nothing.
-- **Native resources** in `context.backend.native` and `context.stack.native` give access to
+- **Native resources** in `context.simulator.native` and `context.avstack.native` give access to
   simulator actors, the renderer and driving-system components. They are live and unsandboxed.
 
 The physical state and the
@@ -126,7 +127,7 @@ image that the driving system receives. `StubRenderer` names its camera `camera_
 ```python
 from dataclasses import replace
 
-from avsectester.runtime import Hook, Runtime
+from avsectester.closed_loop.hooks import Hook, Runtime
 
 def camera_attack(observation, context):
     """Paint a white square into the front camera while the vehicle moves at 2 m/s or more."""
@@ -158,7 +159,7 @@ several driving steps ago, with a delay drawn once per run:
 ```python
 from dataclasses import replace
 
-from avsectester.runtime import Hook, Plugin, Runtime
+from avsectester.closed_loop.hooks import Hook, Plugin, Runtime
 
 class StaleSpeed(Plugin):
     """Report the physical speed of several driving steps ago."""
@@ -193,36 +194,34 @@ pattern with a feedback controller.
 
 ## Keep component decisions in one runtime
 
-Use `AttackRuntime` when one online attack reads both a step's state and a component result.
-Declare the results in `reads`; `step` and `on_component` operate on the same instance. This
-offline example uses a toy perception output and keeps its TTC history in that instance:
+Use `AttackRuntime` when one online attack reads a step's state and changes a component result.
+Declare the results it receives in `subscriptions`. `step` returns attack effects; an
+`AVStackAttackEffect` whose `apply` is a method of the runtime keeps every decision in the
+same instance. This offline example uses a toy perception output and keeps its TTC history
+there:
 
 <!-- runnable -->
 ```python
-from avsectester.attack_runtime import AttackRuntime, ResultSubscription, StageAction
-from avsectester.backend import AVStack
-from avsectester.closed_loop import ClosedLoopRunner, RunRequest
-from avsectester.plane import Control
-from avsectester.simulators.nurec import NuRecBackend, StubRenderer
+from avsectester.attack.runtime import AttackRuntime, AVStackAttackEffect, ResultSubscription
+from avsectester.closed_loop.avstack import AVStack
+from avsectester.closed_loop.runner import ClosedLoopRunner, RunRequest
+from avsectester.closed_loop.datatypes import Control
+from avsectester.closed_loop.simulators.nurec import NuRecSimulator, StubRenderer
 
 class TTCPhantom(AttackRuntime):
-    reads = (ResultSubscription("physical_state"),
-             ResultSubscription("component", "perception.post"))
+    subscriptions = (ResultSubscription("physical_state"),)
 
-    def start(self, context):
-        self.history = []
-        return ()
+    def __init__(self):
+        self.history = []  # per-run state; the framework creates one runtime per run
 
     def step(self, context):
         self.speed = max(context.physical_state.ego_speed, 0.1)
-        return ()
+        return (AVStackAttackEffect("perception.post", self.phantom),)
 
-    def on_component(self, context):
-        ttc = context.component_output[0]["distance"] / self.speed
+    def phantom(self, detections, context):
+        ttc = detections[0]["distance"] / self.speed
         self.history.append(ttc)
-        if ttc < 2.0:
-            return (StageAction("perception.post", [{"distance": 0.0}]),)
-        return ()
+        return [{"distance": 0.0}] if ttc < 2.0 else detections
 
 class ToyDriver(AVStack):
     supported_stages = frozenset({"perception.post"})
@@ -232,20 +231,20 @@ class ToyDriver(AVStack):
         return Control(brake=1.0 if detections[0]["distance"] == 0.0 else 0.0)
 
 attack = TTCPhantom()
-backend = NuRecBackend({"dt": 0.1}, renderer=StubRenderer(height=8, width=8))
+simulator = NuRecSimulator({"dt": 0.1}, renderer=StubRenderer(height=8, width=8))
 try:
-    log = ClosedLoopRunner().run(backend, ToyDriver(), RunRequest(2, attacks=[attack]))
+    log = ClosedLoopRunner().run(simulator, ToyDriver(), RunRequest(2, attacks=[attack]))
 finally:
-    backend.close()
+    simulator.close()
 assert attack.history == [1.0, 1.0]
 assert all(step.executed_command.brake == 1.0 for step in log.steps)
 ```
 
 The real driving adapter determines its native component-output schema. Create a fresh runtime
 for each independent run. Callbacks receive subscribed data and a read-only physical clock;
-they do not receive a simulator handle. `StageAction` can replace a current or later pipeline
-value. Physical insertions still use existing world hooks. See
-[Online attack runtime](../reference/runtime.md#online-attack-runtime) for lifecycle and limits.
+they do not receive a simulator handle. World changes such as physical panels are
+`WorldAttackEffect`s returned by `setup`, and image insertions are `SensorAttackEffect`s. See
+[Online phase](../reference/runtime.md#online-phase) for lifecycle and limits.
 
 ## Attack localization
 
@@ -256,8 +255,8 @@ adapter. The compatibility form `Runtime(localizer=...)` below remains supported
 `localizer(observation, context)` and returns a `StateEstimate`:
 
 ```python
-from avsectester.plane import StateEstimate
-from avsectester.runtime import Hook, Runtime
+from avsectester.closed_loop.datatypes import StateEstimate
+from avsectester.closed_loop.hooks import Hook, Runtime
 
 # estimator and measurement_attack are supplied by the caller.
 def localize(observation, context):
@@ -277,12 +276,12 @@ A configured localizer uses the `localizer` key of [`runtime`](../reference/conf
 
 ## Change the world
 
-World handlers at `world.setup`, `world.step.pre` and `world.step.post` receive `None`, return
-`None` and change the world through native operations in `context.backend.native`. Editing an
+World handlers at `simulator.setup`, `simulator.step.pre` and `simulator.step.post` receive `None`, return
+`None` and change the world through native operations in `context.simulator.native`. Editing an
 observation or `context.ground_truth` never moves anything. Simulators capture sensor data at
-different times: in CARLA, a change at `world.step.post` appears only from the observation after
-next, so use `world.setup` or `world.step.pre` when the next observation must show it. Resolve
-actors in `world.setup` or later, because the world reset creates them after the handlers' `reset`
+different times: in CARLA, a change at `simulator.step.post` appears only from the observation after
+next, so use `simulator.setup` or `simulator.step.pre` when the next observation must show it. Resolve
+actors in `simulator.setup` or later, because the world reset creates them after the handlers' `reset`
 methods run. Undo changes that outlive a run, such as dynamics parameters, and release created
 actors in `close`. A CARLA world handler that needs ticks before driving declares `setup_ticks`
 (see [World setup ticks](../reference/runtime.md#world-setup-ticks)).
@@ -304,7 +303,7 @@ or handlers whose `reset` clears their state. The first attack becomes:
 from dataclasses import replace
 
 from avsectester.preparation import Intervention
-from avsectester.runtime import Hook
+from avsectester.closed_loop.hooks import Hook
 
 class SpeedSpoof(Intervention):
     """Add a bias to the speed reported to the driving system."""
@@ -329,13 +328,13 @@ builds a `Runtime` with fresh hooks. `run_prepared` runs named treatments of one
 ```python
 from avsectester.preparation import Treatment, prepare_intervention
 from avsectester.runner import run_prepared
-from avsectester.runtime import Runtime
+from avsectester.closed_loop.hooks import Runtime
 from avsectester.scenarios.source import ScenarioInstance
-from avsectester.simulators.nurec import NuRecBackend, StubRenderer
+from avsectester.closed_loop.simulators.nurec import NuRecSimulator, StubRenderer
 
 # CruiseControl is defined in the first example. SpeedSpoof is defined above.
 scenario = ScenarioInstance(
-    factory=lambda: NuRecBackend({"dt": 0.1}, renderer=StubRenderer(height=8, width=8)),
+    factory=lambda: NuRecSimulator({"dt": 0.1}, renderer=StubRenderer(height=8, width=8)),
     provenance={"scene": "offline-example"},
 )
 prepared = prepare_intervention(SpeedSpoof(bias=5.0), scenario, kind="attack", name="speed-spoof")
@@ -374,7 +373,7 @@ checks for it during preparation:
 <!-- runnable -->
 ```python
 from avsectester.preparation import Intervention
-from avsectester.runtime import Hook
+from avsectester.closed_loop.hooks import Hook
 
 class TargetedAttack(Intervention):
     role = "attacker"
@@ -388,8 +387,8 @@ class TargetedAttack(Intervention):
         def locate(value, context):
             actor_ids = context.case.binding_ids[artifacts["role"]]
             context.record_output("attack.target", actor_ids)
-            return None  # Look up and change the actor through context.backend.native here.
-        return [Hook("world.setup", locate)]
+            return None  # Look up and change the actor through context.simulator.native here.
+        return [Hook("simulator.setup", locate)]
 ```
 
 `binding_ids` maps each role to a tuple of actor IDs, and `context.case.insertions` holds the
@@ -440,8 +439,8 @@ as a [custom driving system](../reference/configuration.md#driving-system-keys):
 
 ```yaml
 backend:
-  type: nurec
-  renderer: {type: stub, height: 8, width: 8}
+  type: NuRecSimulator
+  renderer: {type: StubRenderer, height: 8, width: 8}
   dt: 0.1
 stack:
   factory: my_research.stacks:CruiseControl

@@ -23,11 +23,11 @@ from avsectester.insertion import (
     PlaneSurface,
     WorldPlacement,
 )
-from avsectester.plane import Observation
+from avsectester.closed_loop.datatypes import Observation
 from avsectester.rendering.types import InsertionGeometry
 from avsectester.rendering.visibility import CuboidVisibilityEstimator
 from avsectester.scenarios.datasets.nurec import NuRecDataset
-from avsectester.simulators.nurec import NuRecInsertions
+from avsectester.closed_loop.simulators.nurec import NuRecInsertions
 from avsectester.rendering.compositor import PatchCompositor
 from avsectester.perturbations.image import frame_perturbation
 

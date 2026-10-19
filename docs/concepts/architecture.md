@@ -199,7 +199,7 @@ a specific class or value.
 | Term | Meaning | Code |
 |---|---|---|
 | Simulator | The component that owns world state, dynamics and sensor rendering | — |
-| Backend | The Python adapter that connects a simulator to the driving loop | `WorldBackend`, `CarlaBackend`, `NuRecBackend` |
+| Backend | The Python adapter that connects a simulator to the driving loop | `WorldBackend`, `CarlaSimulator`, `NuRecSimulator` |
 | Driving system | The system under test, which turns observations into commands | — |
 | Stack | The Python adapter that connects a driving system to the driving loop | `AVStack`, `ModularAVStack`, `AlpamayoAVStack` |
 | Vehicle I/O | The interface between simulator and driving system: sensor data, state estimate, model input and command | Stages `sensors.post`, `localization.*`, `observation`, `command` |
@@ -231,7 +231,7 @@ a specific class or value.
 |---|---|---|
 | Optimization | A search for artifact parameters that evaluates candidates through rendering, a driving-system component or the closed loop | `avsectester.attacks.optim` |
 | Run records | The physical state and executed command at each driving step, with intervention outputs and provenance | `Trace`, `FrameRecord` |
-| Intervention output | A named diagnostic value recorded by a handler, such as a defense alarm | `context.record_output`, `InterventionOutput` |
+| Intervention output | A named diagnostic value recorded by a handler, such as a defense alarm | `context.record_output`, `RecordedOutput` |
 | Provenance | Metadata describing how a run was produced: scenario source, treatment, conditions, seeds and prepared interventions | `Trace.provenance` |
 | Component outputs | Intermediate driving-system outputs captured during a run | `ComponentTrace` |
 | Verdict | The interpretation of a clean and attacked pair under the supplied stop-based criterion | `Impact.verdict` |

@@ -44,17 +44,17 @@ The command proceeds in this order:
    the absolute path of `CONFIG`, to the scenario provenance.
 5. Prints the output lines and saves the figure. See [Output](#output).
 
-A scene is a CARLA scene when `backend` is omitted or `backend.type` is `CarlaBackend` or `carla`.
+A scene is a CARLA scene when `backend` is omitted or `backend.type` is `CarlaSimulator`.
 For CARLA scenes the CLI supplies its own components to `run_configured`:
 
-- The backend is `CarlaBackend(scene_config)`, unless `selection` is configured. With
+- The backend is `CarlaSimulator(scene_config)`, unless `selection` is configured. With
   `selection`, the configured selection source builds the backend.
 - The driving system is the configured `stack`, or the modular stack from `ego.pipeline` with
   perception outputs instrumented.
 - Each run is recorded with component logging, which fills `FrameRecord.n_detections` from the
   perception outputs and sets `Trace.replay_scenario`.
 
-Other backends, such as `NuRecBackend`, use the default backend construction and
+Other backends, such as `NuRecSimulator`, use the default backend construction and
 `configured_stack` of `run_configured`. Their runs report `mean_detections=0.0`. The CLI cannot
 run Alpamayo, because the command is not installed in the Alpamayo driver environment. See
 [Why NuRec has no CLI path](../getting-started/installation.md#why-nurec-has-no-cli-path).

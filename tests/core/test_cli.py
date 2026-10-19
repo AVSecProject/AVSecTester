@@ -12,12 +12,12 @@ from typer.testing import CliRunner
 
 from avsectester import carla_runner
 from avsectester import cli
-from avsectester.backend import AVStack
+from avsectester.closed_loop.avstack import AVStack
 from avsectester.experiment import ExecutionMode, TreatmentMode
-from avsectester.plane import Control, StateEstimate
+from avsectester.closed_loop.datatypes import Control, StateEstimate
 from avsectester.preparation import Intervention
-from avsectester.runtime import Hook, Plugin
-from avsectester.simulators.nurec import NuRecBackend, StubRenderer
+from avsectester.closed_loop.hooks import Hook, Plugin
+from avsectester.closed_loop.simulators.nurec import NuRecSimulator, StubRenderer
 
 
 @pytest.fixture
@@ -116,7 +116,7 @@ def user_methods(monkeypatch):
         path=module.__name__ + ":", events=events, inputs=inputs, localizers=localizers,
         config={
             "backend": {
-                "type": "NuRecBackend", "renderer": {"type": "stub", "height": 2, "width": 2},
+                "type": "NuRecSimulator", "renderer": {"type": "StubRenderer", "height": 2, "width": 2},
                 "ego0": {"speed": 2},
             },
             "stack": {"factory": module.__name__ + ":Stack"},
@@ -203,7 +203,7 @@ def test_cli_runtime_errors_preserve_seed_and_have_execution_exit_code(
     monkeypatch, cli_config, failure, seed,
 ):
     import typer
-    from avsectester.simulators import carla
+    from avsectester.closed_loop.simulators import carla
 
     path, config = cli_config
     config["client"]["seed"] = seed
@@ -249,7 +249,7 @@ def test_cli_rejects_unknown_runtime_options_before_constructing_backend(monkeyp
     config["runtime"] = {"unused_option": True}
     path.write_text(yaml.safe_dump(config))
     construct = Mock(side_effect=AssertionError("Backend must not be created"))
-    monkeypatch.setattr(carla_runner, "CarlaBackend", construct)
+    monkeypatch.setattr(carla_runner, "CarlaSimulator", construct)
     result = CliRunner().invoke(cli.app, ["run", str(path)])
     assert result.exit_code == 2, result.output
     assert "unused_option" in result.output
@@ -266,7 +266,7 @@ def test_cli_consumes_physical_patches_through_world_setup(monkeypatch, cli_conf
     world, lead, panel = object(), object(), SimpleNamespace(destroy=Mock(), is_alive=True)
     deployed = []
 
-    class Backend(NuRecBackend):
+    class Backend(NuRecSimulator):
         replay_scenario = config
 
         @property
@@ -283,7 +283,7 @@ def test_cli_consumes_physical_patches_through_world_setup(monkeypatch, cli_conf
         return [panel]
 
     monkeypatch.setattr(PhysicalPatch, "apply", deploy)
-    monkeypatch.setattr(carla_runner, "CarlaBackend", lambda _: Backend(
+    monkeypatch.setattr(carla_runner, "CarlaSimulator", lambda _: Backend(
         {"ego0": {"speed": 2}}, renderer=StubRenderer(height=2, width=2),
     ))
     monkeypatch.setattr(carla_runner, "_stack", lambda _: NeutralStack())
@@ -302,7 +302,7 @@ def test_cli_custom_factory_runs_real_nurec_pair_and_localization(user_methods, 
     env = user_methods
     config = {
         "backend": {
-            "type": "NuRecBackend", "renderer": {"type": "stub", "height": 2, "width": 2},
+            "type": "NuRecSimulator", "renderer": {"type": "StubRenderer", "height": 2, "width": 2},
             "ego0": {"speed": 2},
         },
         "stack": {"factory": env.path + "Stack"},
@@ -338,9 +338,9 @@ def test_cli_custom_carla_stack_needs_no_embedded_modular_pipeline(
     config["interventions"] = [{"kind": "defense", "factory": user_methods.path + "Defense"}]
     config.update(mode="single", treatment="defense")
     path.write_text(yaml.safe_dump(config))
-    backend = NuRecBackend({"ego0": {"speed": 2}}, renderer=StubRenderer(height=2, width=2))
+    backend = NuRecSimulator({"ego0": {"speed": 2}}, renderer=StubRenderer(height=2, width=2))
     backend.replay_scenario = config
-    monkeypatch.setattr(carla_runner, "CarlaBackend", lambda _: backend)
+    monkeypatch.setattr(carla_runner, "CarlaSimulator", lambda _: backend)
     result = CliRunner().invoke(cli.app, ["run", str(path), "--frames", "2"])
     assert result.exit_code == 0, result.output
     assert user_methods.inputs == [[2, 1.6]]
@@ -355,7 +355,7 @@ def test_cli_custom_carla_stack_needs_no_embedded_modular_pipeline(
 def test_non_attack_pairs_report_comparisons_without_attack_outcomes(
     monkeypatch, user_methods, tmp_path, treatment, disabled_method, speed,
 ):
-    from avsectester import metric
+    from avsectester.evaluation import metric
 
     config = deepcopy(user_methods.config)
     config["backend"]["ego0"]["speed"] = speed
@@ -390,7 +390,7 @@ def test_non_attack_pairs_report_comparisons_without_attack_outcomes(
 def test_combined_pair_labels_the_attack_with_defense_and_keeps_the_verdict(
     monkeypatch, user_methods, tmp_path,
 ):
-    from avsectester import metric
+    from avsectester.evaluation import metric
 
     config = deepcopy(user_methods.config)
     config["runtime"] = {"hooks": [{"stage": "observation", "factory": user_methods.path + "NoopAttack"}]}
@@ -442,7 +442,7 @@ def test_raw_defense_configuration_points_to_the_method_format(user_methods, tmp
 ])
 def test_cli_classifies_preflight_errors_before_reset(monkeypatch, user_methods, tmp_path, invalid):
     config = {
-        "backend": {"type": "NuRecBackend"},
+        "backend": {"type": "NuRecSimulator"},
         "stack": {"factory": user_methods.path + "Stack"},
     }
     if invalid == "stage":
@@ -463,7 +463,7 @@ def test_cli_classifies_preflight_errors_before_reset(monkeypatch, user_methods,
     path = tmp_path / "invalid.yaml"
     path.write_text(yaml.safe_dump(config))
     reset = Mock(side_effect=AssertionError("World must not reset"))
-    monkeypatch.setattr(NuRecBackend, "reset", reset)
+    monkeypatch.setattr(NuRecSimulator, "reset", reset)
     result = CliRunner().invoke(cli.app, ["run", str(path), "--frames", "1"])
     assert result.exit_code == 2, result.output
     assert "Configuration error" in result.output

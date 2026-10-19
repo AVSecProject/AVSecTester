@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """End-to-end: the real Alpamayo policy driving on real NuRec imagery, via the interface's run().
 
-    NuRecBackend (in-process loop; TrajectoryFollower dynamics; NuRecRenderer -> nre-ga render_rgb)
+    NuRecSimulator (in-process loop; TrajectoryFollower dynamics; NuRecRenderer -> nre-ga render_rgb)
         --Observation(rendered camera, ego)-->  AlpamayoAVStack (real Alpamayo-1.5-10B)
         <--Control(trajectory)---------------  (rig-frame waypoints) --> follower advances the ego
 
@@ -27,14 +27,14 @@ import time
 from avsectester.backend import run
 from avsectester.runner import run_prepared
 from avsectester.scenarios.setup import scenario_from_config
-from avsectester.simulators.nurec import (
-    NuRecBackend,
+from avsectester.closed_loop.simulators.nurec import (
+    NuRecSimulator,
     NuRecRenderer,
     StubRenderer,
     TrajectoryFollower,
 )
-from avsectester.simulators.viz import REPO_TMP, camera_view, record_run
-from avsectester.stacks.alpamayo import AlpamayoAVStack
+from avsectester.closed_loop.simulators.viz import REPO_TMP, camera_view, record_run
+from avsectester.closed_loop.avstacks.alpamayo import AlpamayoAVStack
 
 CAM = "camera_front_wide_120fov"
 
@@ -58,7 +58,7 @@ def main() -> int:
     )
     scenario = scenario_from_config(
         {"dt": 0.1, "ego0": {"speed": 5.0}},
-        backend_factory=lambda config: NuRecBackend(config, renderer=renderer, dynamics=TrajectoryFollower()),
+        backend_factory=lambda config: NuRecSimulator(config, renderer=renderer, dynamics=TrajectoryFollower()),
         provenance={"scene_id": args.scene, "renderer": "stub" if args.stub else "nurec"},
     )
 
@@ -67,7 +67,7 @@ def main() -> int:
     t0 = time.time()
     def record(backend, stack, frames, *, runtime):
         if args.save_frames:
-            return record_run(backend, stack, frames, runtime=runtime,
+            return record_run(backend, stack, frames, hooks=runtime,
                               out_dir=args.save_frames, visualize=camera_view)
         return run(backend, stack, frames, runtime=runtime)
 

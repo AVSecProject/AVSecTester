@@ -8,10 +8,11 @@ from dataclasses import replace
 
 import pytest
 
-from avsectester.backend import WorldBackend, run
+from avsectester.closed_loop.simulator import WorldBackend
+from avsectester.backend import run
 from avsectester.evaluation.component_log import run_logged
-from avsectester.plane import Observation
-from avsectester.stacks.modular import ModularAVStack
+from avsectester.closed_loop.datatypes import Observation
+from avsectester.closed_loop.avstacks.modular import ModularAVStack
 
 
 def _backend(make_detections, make_ego, leads_per_frame):
@@ -120,8 +121,8 @@ def test_component_snapshots_preserve_pipeline_history_and_driving(
 def test_snapshot_detaches_mutable_sensor_reference_chain(make_detections):
     import numpy as np
     from avstack.geometry import GlobalOrigin3D, ReferenceFrame
-    from avsectester.backend import AVStack
-    from avsectester.plane import Control
+    from avsectester.closed_loop.avstack import AVStack
+    from avsectester.closed_loop.datatypes import Control
 
     ego_frame = ReferenceFrame(np.array([10.0, 0.0, 0.0]), np.quaternion(1), GlobalOrigin3D)
     sensor_frame = ReferenceFrame(np.array([1.0, 0.0, 0.0]), np.quaternion(1), ego_frame)

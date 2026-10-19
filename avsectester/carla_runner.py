@@ -5,12 +5,13 @@ from __future__ import annotations
 from collections.abc import Callable
 from copy import deepcopy
 
-from avsectester.backend import AVStack, run
+from avsectester.closed_loop.avstack import AVStack
+from avsectester.backend import run
 from avsectester.experiment import ExecutionMode, TreatmentMode, configured_stack, run_configured
-from avsectester.plane import Trace
-from avsectester.runtime import Runtime
-from avsectester.simulators.carla import CarlaBackend
-from avsectester.stacks.modular import ModularAVStack
+from avsectester.closed_loop.datatypes import Trace
+from avsectester.closed_loop.hooks import Runtime
+from avsectester.closed_loop.simulators.carla import CarlaSimulator
+from avsectester.closed_loop.avstacks.modular import ModularAVStack
 
 __all__ = ["run_scenario", "run_scenario_pair"]
 
@@ -55,7 +56,7 @@ def run_scenario(
     instance = scenario_from_config(
         scenario,
         backend_factory=None if scenario.get("selection") is not None else
-        lambda config: CarlaBackend(config, settle_iters=settle_iters),
+        lambda config: CarlaSimulator(config, settle_iters=settle_iters),
     )
     if runtime is not None:
         # Prepare the convenience methods and prepend them to the caller's Runtime.
@@ -65,7 +66,7 @@ def run_scenario(
     results = run_configured(
         scenario, frames, mode=ExecutionMode.SINGLE,
         treatment=treatment, treated_runtime=runtime,
-        backend_factory=lambda config: CarlaBackend(config, settle_iters=settle_iters),
+        backend_factory=lambda config: CarlaSimulator(config, settle_iters=settle_iters),
         stack_factory=lambda: _stack(scenario), run_fn=_logged_run,
         scenario=instance,
     )
@@ -93,7 +94,7 @@ def run_scenario_pair(
         scenario, frames, mode=ExecutionMode.PAIR, treatment=TreatmentMode.ATTACK,
         clean_runtime=clean_runtime, treated_runtime=attacked_runtime,
         backend_factory=None if scenario.get("selection") is not None else
-        lambda config: CarlaBackend(config, settle_iters=settle_iters),
+        lambda config: CarlaSimulator(config, settle_iters=settle_iters),
         stack_factory=stack_factory or (lambda: _stack(scenario)), run_fn=_logged_run,
     )
     return results["clean"], results["attack"]

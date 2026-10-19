@@ -18,17 +18,18 @@ from avsectester.backend import run as _run_loop
 from avsectester.conditions import ScenarioConditions, SensorCondition
 from avsectester.preparation import Intervention, PreparedIntervention, Treatment, prepare_intervention
 from avsectester.runner import _run_prepared
-from avsectester.runtime import Runtime, Hook
+from avsectester.closed_loop.hooks import Runtime, Hook
 from avsectester.interventions import ObservationTransform
-from avsectester.metric import impact
+from avsectester.evaluation.metric import impact
 from avsectester.perturbations.image import (
     AugmentationPipeline,
     common_corruptions,
 )
 
 if TYPE_CHECKING:
-    from avsectester.backend import AVStack, WorldBackend
-    from avsectester.plane import Observation, Trace
+    from avsectester.closed_loop.avstack import AVStack
+    from avsectester.closed_loop.simulator import WorldBackend
+    from avsectester.closed_loop.datatypes import Observation, Trace
     from avsectester.scenarios.requirement import ScenarioMatch, ScenarioRequirement
     from avsectester.scenarios.source import ScenarioSource
 

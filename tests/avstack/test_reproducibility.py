@@ -7,8 +7,8 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 from avcarla.config import CARLA
-from avsectester.simulators import carla as carla_backend
-from avsectester.simulators.carla import prepare_scenario
+from avsectester.closed_loop.simulators import carla as carla_backend
+from avsectester.closed_loop.simulators.carla import prepare_scenario
 
 
 @pytest.fixture

@@ -1,7 +1,7 @@
 """Exercise the real runner while replacing only its simulator- and stack-facing objects.
 
-After the interface split, ``run_scenario`` assembles a :class:`~avsectester.simulators.carla.CarlaBackend`
-(client + ego + traffic, senses/actuates) and a :class:`~avsectester.stacks.modular.ModularAVStack` (the AV
+After the interface split, ``run_scenario`` assembles a :class:`~avsectester.closed_loop.simulators.carla.CarlaSimulator`
+(client + ego + traffic, senses/actuates) and a :class:`~avsectester.closed_loop.avstacks.modular.ModularAVStack` (the AV
 box), and drives them with :func:`avsectester.evaluation.run_logged`. These tests mock ``CARLA.build`` (the
 simulator objects) and ``PIPELINE.build`` (the AV pipeline) so the runner's own logic — frame
 recording, hook order + attacked detection counts, replay-spawn capture, NPC handling, cleanup on
@@ -15,7 +15,7 @@ from unittest.mock import Mock
 import pytest
 from avcarla.config import CARLA
 from avsectester import carla_runner as scenario
-from avsectester.simulators import carla as carla_backend
+from avsectester.closed_loop.simulators import carla as carla_backend
 from avstack.config import HOOKS, PIPELINE
 from avstack.modules.base import BaseModule
 from avstack.utils.decorators import apply_hooks
@@ -153,8 +153,8 @@ def test_runner_records_requested_frames_and_initializes_actors(simulation):
 
 
 def test_runner_consumes_runtime_component_and_command_replacements(simulation):
-    from avsectester.plane import Control
-    from avsectester.runtime import Hook, Runtime
+    from avsectester.closed_loop.datatypes import Control
+    from avsectester.closed_loop.hooks import Hook, Runtime
 
     sim = simulation
     runtime = Runtime([
@@ -342,7 +342,7 @@ def test_paired_backend_replays_actual_spawns_and_releases_old_actors(simulation
         return npc
 
     sim.registry.side_effect = build
-    backend = carla_backend.CarlaBackend(sim.config)
+    backend = carla_backend.CarlaSimulator(sim.config)
     try:
         backend.prepare_clean_attack_pair()
         assert backend.scenario == sim.config  # pair preparation preserves the user's random config
@@ -373,9 +373,9 @@ def test_paired_backend_replays_actual_spawns_and_releases_old_actors(simulation
 
 
 def test_pair_default_baseline_retains_explicit_runtime_localizer_and_seed(simulation, monkeypatch):
-    from avsectester.backend import AVStack
-    from avsectester.plane import Control, StateEstimate
-    from avsectester.runtime import Hook, Plugin, Runtime
+    from avsectester.closed_loop.avstack import AVStack
+    from avsectester.closed_loop.datatypes import Control, StateEstimate
+    from avsectester.closed_loop.hooks import Hook, Plugin, Runtime
 
     sim = simulation
     monkeypatch.setattr(carla_backend, "prepare_scenario", deepcopy)
@@ -411,7 +411,7 @@ def test_pair_default_baseline_retains_explicit_runtime_localizer_and_seed(simul
 
 
 def test_configured_native_pre_hook_replaces_component_input(simulation, monkeypatch):
-    from avsectester.runtime import Runtime
+    from avsectester.closed_loop.hooks import Runtime
 
     class RemoveInput:
         def __call__(self, objects, **kwargs):
@@ -432,8 +432,8 @@ def test_pair_world_deployment_matches_setup_ticks_and_cleans_panels(
     simulation, monkeypatch, deployment_fails,
 ):
     from avsectester.attacks.patch import physical_patch
-    from avsectester.backend import AVStack
-    from avsectester.plane import Control
+    from avsectester.closed_loop.avstack import AVStack
+    from avsectester.closed_loop.datatypes import Control
 
     sim = simulation
     ticks, initialization_ticks, panels = [], [], []

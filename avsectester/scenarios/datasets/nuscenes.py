@@ -48,12 +48,12 @@ class NuScenesDataset(SourceDataset):
             "calibrated_sensor": nusc.get("calibrated_sensor", sample_data["calibrated_sensor_token"]),
             "ego_pose": nusc.get("ego_pose", sample_data["ego_pose_token"]),
         }
-        from avsectester.simulators.recorded import RecordedSequenceBackend
+        from avsectester.closed_loop.simulators.recorded import RecordedReplaySimulator
 
         def make_backend():
             scenario = sample["scene_token"]
             frame = next(frame for frame in self.frames(scenario) if frame.frame_id == sample["token"])
-            return RecordedSequenceBackend(self.source_data(scenario, frame))
+            return RecordedReplaySimulator(self.scenario_start(scenario, frame))
         return FilterContext(scene, dataset=self, metadata=metadata, native={
             "nusc": nusc, "make_backend": make_backend,
         })

@@ -2,13 +2,13 @@
 
 from types import SimpleNamespace
 
-from avsectester.datasets.base import FrameRef
+from avsectester.datasets.base import FrameReference
 
 
 def test_recorded_window_skips_keyframes_near_the_end_of_their_scene():
     from scripts.demos.nuscenes import nuscenes_object_demo as demo
 
-    frames = (FrameRef("s", 0, "a", 1.0), FrameRef("s", 1, "b", 1.5))
+    frames = (FrameReference("s", 0, "a", 1.0), FrameReference("s", 1, "b", 1.5))
     nusc = SimpleNamespace(
         sample_data=[{"filename": f"samples/{token}.jpg", "is_key_frame": True, "sample_token": token}
                      for token in ("a", "b")],

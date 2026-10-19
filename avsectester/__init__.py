@@ -1,36 +1,25 @@
 """AVSecTester — adversarial security-testing framework for autonomous-vehicle systems.
 
-Backend and stack adapters exchange observations and commands. Compatible sensor, state and
-command representations can be composed through the same driving loop:
+The framework packages follow its components:
 
-* :mod:`avsectester.plane`   — the sim<->stack contract, pure data: ``Observation`` (down) and
-  ``Control`` (up), plus the ``Trace``/``FrameRecord`` driving record. No avstack/torch imports.
-* :mod:`avsectester.backend` — the interfaces: ``WorldBackend`` (``reset``/``step(control)``) and
-  ``AVStack`` (``__call__(obs) -> Control``), and ``run`` which drives the loop.
-* :mod:`avsectester.runtime` — ordered stage handlers and optional per-run lifecycle for attacks,
-  defenses and localization adapters. Only stages supported by the selected adapters can be used.
-* :mod:`avsectester.runner` — named treatments with one prepared origin, fresh stacks and cleanup.
-* :mod:`avsectester.preparation` — reusable attack/defense artifacts and execution factories.
-* :mod:`avsectester.conditions` — world/sensor settings shared across treatments.
-* :mod:`avsectester.experiment` — configured scenario, intervention and driving-system assembly.
+* :mod:`avsectester.datasets` — scenarios and per-frame data from recorded datasets or CARLA
+  recipes, and the start data a simulator needs. A dataset never depends on a simulator.
+* :mod:`avsectester.attack` — the user's ``Attack`` (metabuilder and offline phase),
+  ``AttackSegment`` records, and the online ``AttackRuntime`` with its attack effects.
+* :mod:`avsectester.closed_loop` — the closed loop: data types, the ``Simulator`` base and the
+  supplied simulators (``simulators``), the ``AVStack`` interface and the supplied driving
+  systems (``avstacks``), Vehicle I/O, stage hooks, the ``ClosedLoopRunner``, and the closed-loop
+  services used by the metabuilder and the offline phase.
+* :mod:`avsectester.runlog` — the run log and its Parquet persistence.
+* :mod:`avsectester.evaluation` — driving-impact metric, component logging and robustness runs.
 
-The supplied backend and stack adapters:
+Attack implementations and their helpers live in :mod:`avsectester.attacks`,
+:mod:`avsectester.rendering`, :mod:`avsectester.perturbations` and :mod:`avsectester.insertion`.
 
-* World backends (:mod:`avsectester.simulators`) — ``CarlaBackend`` (``simulators.carla``; real
-  avcarla closed loop) and ``NuRecBackend`` (``simulators.nurec``; local ego dynamics with
-  reconstructed views from an external rendering service).
-* AV stacks (:mod:`avsectester.stacks`) — ``ModularAVStack`` (``stacks.modular``; an avstack
-  ``ModularDrivingPipeline``) and ``AlpamayoAVStack`` (``stacks.alpamayo``; end-to-end Alpamayo-1.5).
-* Composition — :mod:`avsectester.carla_runner` wires a CARLA backend + modular stack into one run.
-  The CLI runs YAML-configured experiments with single or paired treatments. The supplied
-  configuration uses CARLA. NuRec with Alpamayo runs through the demo scripts.
-
-Plus :mod:`avsectester.attacks` (avstack ``HOOKS`` hooks — the modular white-box seam),
-:mod:`avsectester.metric` (clean-vs-attacked driving-impact verdict + its ``plot_impact`` figure), and
-:mod:`avsectester.simulators.viz` (per-simulation scene views). The AV modules,
-geometry, sensors, CARLA bridge, and the Alpamayo model come from avstack/avcarla/alpasim_driver;
-AVSecTester provides the connecting interfaces, scenario selection, insertion geometry,
-intervention execution and evaluation.
+The legacy experiment path used by the CLI remains until phase 4: ``backend`` (the legacy loop
+``run``), ``preparation``, ``interventions``, ``runner``, ``carla_runner``, ``conditions``,
+``experiment`` and ``scenarios``. The AV modules, geometry, sensors, CARLA bridge and the Alpamayo
+model come from avstack, avcarla and alpasim_driver.
 """
 
 __version__ = "0.1.0"

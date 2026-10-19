@@ -8,20 +8,21 @@ import numpy as np
 import pytest
 
 from avsectester.attacks.adaptive import SpeedFeedbackAttack
-from avsectester.backend import AVStack, run
+from avsectester.closed_loop.avstack import AVStack
+from avsectester.backend import run
 from avsectester.interventions import prepare_from_config
-from avsectester.plane import Control
+from avsectester.closed_loop.datatypes import Control
 from avsectester.preparation import (
     Intervention, PreparedIntervention, Treatment, prepare_intervention,
 )
-from avsectester.runtime import Hook, Plugin, Runtime
+from avsectester.closed_loop.hooks import Hook, Plugin, Runtime
 from avsectester.scenarios.source import ScenarioInstance
-from avsectester.simulators.nurec import NuRecBackend, StubRenderer
+from avsectester.closed_loop.simulators.nurec import NuRecSimulator, StubRenderer
 
 
 def scene_instance():
     return ScenarioInstance(
-        lambda: NuRecBackend({}, renderer=StubRenderer(height=2, width=2)),
+        lambda: NuRecSimulator({}, renderer=StubRenderer(height=2, width=2)),
         None, {"scene": "example"},
     )
 
@@ -147,7 +148,7 @@ def test_configuration_prepares_methods_once_and_adapts_legacy_convenience_field
     treatment = prepare_from_config(config, scene_instance())
     first, second = treatment.runtime(), treatment.runtime()
     assert [hook.stage for hook in first.hooks] == [
-        "perception.post", "world.setup", "observation",
+        "perception.post", "simulator.setup", "observation",
     ]
     assert first.hooks[0].handler.config == {"type": "PhantomInjection"}
     assert first.hooks[1].handler.patches == config["patches"]
@@ -212,7 +213,7 @@ def test_intervention_configuration_rejects_invalid_contracts(entry, match):
 
 
 def test_adaptive_attack_uses_step_feedback_and_resets_between_runs():
-    backend = NuRecBackend({"ego0": {"speed": 2}}, renderer=StubRenderer(height=2, width=2))
+    backend = NuRecSimulator({"ego0": {"speed": 2}}, renderer=StubRenderer(height=2, width=2))
     prepared = prepare_intervention(SpeedFeedbackAttack(5, gain=0.5), scene_instance())
     runtime = Treatment((prepared,)).runtime()
     handler = runtime.hooks[0].handler
@@ -240,7 +241,7 @@ def test_physical_panel_uses_selected_role_and_rejects_ambiguous_hosts(monkeypat
     apply = Mock()
     monkeypatch.setattr(PhysicalPatch, "apply", apply)
     plugin = PhysicalPatchPlugin([{"target": "hosts[0]"}])
-    context = SimpleNamespace(backend=backend, case=SimpleNamespace(binding_ids={
+    context = SimpleNamespace(simulator=backend, case=SimpleNamespace(binding_ids={
         "hosts": ("lead", "other"),
     }))
     plugin.transform(None, context)
@@ -249,5 +250,5 @@ def test_physical_panel_uses_selected_role_and_rejects_ambiguous_hosts(monkeypat
     with pytest.raises(ValueError, match="explicit index"):
         plugin.transform(None, context)
     plugin.patches[0]["target"] = 10
-    plugin.transform(None, SimpleNamespace(backend=backend, case=None))
+    plugin.transform(None, SimpleNamespace(simulator=backend, case=None))
     assert apply.call_count == 2

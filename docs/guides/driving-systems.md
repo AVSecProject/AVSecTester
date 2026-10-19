@@ -7,8 +7,9 @@
 The [driving system](../concepts/architecture.md#terminology) is the system under test. It turns
 each observation into a [command](../concepts/architecture.md#terminology). It is connected to the
 driving loop through a stack, an `AVStack` adapter. The supplied stacks are `ModularAVStack`
-(`avsectester/stacks/modular.py`) and `AlpamayoAVStack` (`avsectester/stacks/alpamayo.py`).
-Configured runs select one with the `stack` key. Python runs pass a `stack_factory`.
+(`avsectester/closed_loop/avstacks/modular.py`) and `AlpamayoAVStack`
+(`avsectester/closed_loop/avstacks/alpamayo.py`). Configured runs select one with the `stack` key.
+Python runs pass a `stack_factory`.
 
 ## Vehicle I/O
 
@@ -17,9 +18,9 @@ observation hooks in that order. Set its localizer when constructing the driving
 
 <!-- runnable -->
 ```python
-from avsectester.backend import AVStack
-from avsectester.plane import Control, StateEstimate
-from avsectester.vehicle_io import VehicleIO
+from avsectester.closed_loop.avstack import AVStack
+from avsectester.closed_loop.datatypes import Control, StateEstimate
+from avsectester.closed_loop.vehicle_io import VehicleIO
 
 class Driver(AVStack):
     def __init__(self):
@@ -72,8 +73,8 @@ components. `ForwardCollisionPlanner` (`avstack.modules.planning.vehicle`) drive
 A perception attack that adds an object in this corridor therefore makes the ego stop. See
 [Phantom injection](../examples/phantom-injection.md).
 
-The pipeline runs outside the CARLA actor. `CarlaBackend` gives the avcarla actor an empty internal
-pipeline, and the driving loop sends the stack's command back to the backend.
+The pipeline runs outside the CARLA actor. `CarlaSimulator` gives the avcarla actor an empty
+internal pipeline, and the driving loop sends the stack's command back to the backend.
 
 ### Pipeline configuration
 
@@ -106,17 +107,18 @@ ego:
   [`ego`](../reference/configuration.md#ego).
 
 CARLA-trained PointPillars checkpoints need MMDetection3D's `CarlaDataset` metadata, even for
-inference. `ModularAVStack` calls `register_carla_dataset()` (`avsectester/stacks/mmdet3d.py`)
-before building the pipeline when perception is `MMDetObjectDetector3D` with a `dataset` starting
-with `carla-` and `deploy` unset. Call it yourself before building such a detector outside the
-stack. It keeps an existing registration. Otherwise it imports the declaration from the installed
-MMDetection3D package or, when absent there, from the nested `third_party/mmdetection3d` submodule
-of avstack-core. It raises `FileNotFoundError` when neither is available. The checkpoints are
-downloaded as described in
-[CARLA perception checkpoints](../getting-started/installation.md#carla-perception-checkpoints).
+inference. `ModularAVStack` calls `register_carla_dataset()`
+(`avsectester/closed_loop/avstacks/mmdet3d.py`) before building the pipeline when perception is
+`MMDetObjectDetector3D` with a `dataset` starting with `carla-` and `deploy` unset. Call it yourself
+before building such a detector outside the stack. It keeps an existing registration. Otherwise it
+imports the declaration from the installed MMDetection3D package or, when absent there, from the
+nested `third_party/mmdetection3d` submodule of avstack-core. It raises `FileNotFoundError` when
+neither is available. The checkpoints are downloaded as described in [CARLA perception
+checkpoints](../getting-started/installation.md#carla-perception-checkpoints).
 
 Constructing a `ModularAVStack` imports the avstack modules and registers the supplied avstack
-hooks, such as `PhantomInjection`. Importing `avsectester.stacks` does not require avstack.
+hooks, such as `PhantomInjection`. Importing `avsectester.closed_loop.avstacks` does not require
+avstack.
 
 `stack.reset` clears only the component-logging captures. It does not rebuild the state of the
 avstack tracker, planner or controller, which have no common reset contract. Use a fresh
@@ -227,7 +229,7 @@ reuse. This factory loads the model once and reuses it for every later treatment
 
 <!-- runnable -->
 ```python
-from avsectester.stacks.alpamayo import AlpamayoAVStack
+from avsectester.closed_loop.avstacks.alpamayo import AlpamayoAVStack
 
 
 class SharedAlpamayo:
@@ -275,13 +277,13 @@ script's components are listed in the [script index](../../scripts/README.md).
 
 ## Commands and compatibility
 
-A stack declares the command modes it produces in `command_modes`, and a backend declares the
+An AVStack declares the command modes it produces in `command_modes`, and a simulator declares the
 modes it accepts. `ModularAVStack` produces `actuator` commands. `AlpamayoAVStack` produces
-`trajectory` commands. `CarlaBackend` accepts `actuator`. `NuRecBackend` accepts the mode of its
+`trajectory` commands. `CarlaSimulator` accepts `actuator`. `NuRecSimulator` accepts the mode of its
 dynamics: `actuator` by default, `trajectory` with `TrajectoryFollower`. The full table and rules
 are in [Command compatibility](../reference/runtime.md#command-compatibility). In summary:
 
-- Before the world resets, every declared mode of the stack must be accepted by the backend.
+- Before the world resets, every declared mode of the AVStack must be accepted by the simulator.
   Otherwise `CommandCompatibilityError` (a `ValueError`) is raised.
 - A `command` handler may convert between modes. Its presence skips the check before reset. The
   final command is still validated after all `command` handlers.
@@ -304,11 +306,11 @@ command is converted.
 
 ## Component logging interface
 
-A stack exposes its latest intermediate outputs through the `InstrumentedStack` protocol in
+An AVStack exposes its latest intermediate outputs through the `InstrumentedAVStack` protocol in
 `avsectester.evaluation.component_log`:
 
 ```python
-class InstrumentedStack(Protocol):
+class InstrumentedAVStack(Protocol):
     def component_log(self) -> dict[str, Any] | None: ...
 ```
 
@@ -329,16 +331,16 @@ Collect the outputs with `run_logged` and analyze them with `ComponentTrace`, as
 
 ## Use a custom driving system
 
-Subclass `avsectester.backend.AVStack`. Only `__call__` is abstract:
+Subclass `avsectester.closed_loop.avstack.AVStack`. Only `__call__` is abstract:
 
 | Member | Default | Contract |
 |---|---|---|
 | `__call__(observation) -> Control` | Abstract | Decide the command for the processed observation |
 | `reset(observation)` | No-op | Called once per run with the first processed observation, before the first call. Clear per-run state here |
-| `command_modes` | `None` (undeclared) | `frozenset` of `"actuator"` and/or `"trajectory"`. Declare it so that incompatible backends fail before reset |
+| `command_modes` | `None` (undeclared) | `frozenset` of `"actuator"` and/or `"trajectory"`. Declare it so that incompatible simulators fail before reset |
 | `supported_stages` | Empty | The component stages the stack emits |
-| `models` | Empty mapping | Loaded models that handlers can read through `context.stack.models` |
-| `native` | Empty mapping | Native objects for handlers, available as `context.native["stack"]` |
+| `models` | Empty mapping | Loaded models that handlers can read through `context.avstack.models` |
+| `native` | Empty mapping | Native objects for handlers, available as `context.native["avstack"]` |
 | `component_log()` | Absent | Optional. See [Component logging interface](#component-logging-interface) |
 
 Rules for component stages, emitted with `self._emit(stage, value)`:
@@ -361,8 +363,8 @@ has a perception and a planning component, each followed by a stage, and logs bo
 <!-- runnable -->
 ```python
 # my_driver.py
-from avsectester.backend import AVStack
-from avsectester.plane import Control
+from avsectester.closed_loop.avstack import AVStack
+from avsectester.closed_loop.datatypes import Control
 
 
 class TwoStageStack(AVStack):
@@ -401,7 +403,7 @@ runners call it for every treatment:
 ```python
 from avsectester.evaluation.component_log import run_logged
 from avsectester.runner import run_prepared
-from avsectester.runtime import Hook, Runtime
+from avsectester.closed_loop.hooks import Hook, Runtime
 from avsectester.scenarios import scenario_from_config
 
 from my_driver import TwoStageStack
@@ -412,7 +414,7 @@ def phantom(detections, context):
     return [*detections, "phantom"] if context.step >= 10 else detections
 
 
-scenario = scenario_from_config({"backend": {"type": "nurec"}})  # stub renderer, black frames
+scenario = scenario_from_config({"backend": {"type": "NuRecSimulator"}})  # stub renderer, black frames
 runtimes = {"clean": None, "attack": Runtime([Hook("perception.post", phantom)])}
 results = run_prepared(scenario, TwoStageStack, frames=20, runtimes=runtimes, run_fn=run_logged)
 trace, components = results["attack"]
@@ -432,7 +434,7 @@ It is called as `factory(**options)` and must return an `AVStack`. A stack class
 factory. The module must be importable, for example from a directory on `PYTHONPATH`:
 
 ```yaml
-backend: {type: nurec}
+backend: {type: NuRecSimulator}
 stack:
   factory: my_driver:TwoStageStack
   options: {throttle: 0.3}

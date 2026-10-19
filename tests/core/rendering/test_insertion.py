@@ -63,7 +63,7 @@ def test_render_plane_behind_camera_is_noop(ftheta_camera, cam_from_world):
 
 @pytest.mark.parametrize("custom_view", [False, True], ids=["default-view", "custom-view"])
 def test_frame_perturbation_reads_and_rewrites_the_selected_camera(custom_view):
-    from avsectester.plane import Observation
+    from avsectester.closed_loop.datatypes import Observation
     from avsectester.perturbations.image import frame_perturbation
 
     other = np.full((4, 4, 3), 90, np.uint8)
@@ -90,7 +90,7 @@ def test_insertion_renderer_depth_orders_surfaces_and_preserves_cutout_holes(
     reverse_surfaces,
 ):
     from avsectester.insertion import ActorPose, Insertion, PlaneAsset, PlaneSurface, WorldPlacement
-    from avsectester.plane import Observation
+    from avsectester.closed_loop.datatypes import Observation
     from avsectester.rendering.cameras import PinholeCamera
     from avsectester.rendering.types import InsertionGeometry
     from avsectester.rendering.compositor import InsertionRenderer

@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 from collections.abc import Iterator
 import numpy as np
-from avsectester.backend import WorldBackend
+from avsectester.closed_loop.simulator import WorldBackend
 from avsectester.datasets.nurec import NuRecDataset as SourceDataset
 from avsectester.datasets.nurec import _VEHICLE_LABELS
 from avsectester.datasets.nurec import FThetaCamera, _quat_to_rot, _se3, _interpolate_pose, _box2d_from_corners  # noqa: F401
@@ -13,13 +13,31 @@ from avsectester.scenarios.source import Dataset as LegacyDataset
 
 
 class NuRecDataset(SourceDataset, LegacyDataset):
-    """Legacy factories retained until CLI migration; use datasets.nurec for pure source access."""
+    """Legacy factories retained until CLI migration; use datasets.nurec for pure source access.
+
+    Keeps the original parameters: ``sensor`` and ``camera`` are the new ``camera_id`` and
+    ``camera_alias``; ``keyframe`` and ``max_scenes`` control only the legacy ``scenes()``.
+    """
 
     def __init__(self, usdz_paths, sensor="camera_front_wide_120fov", camera="front",
                  keyframe=0.5, vehicle_labels=_VEHICLE_LABELS, max_scenes=None,
                  endpoint="127.0.0.1:50051", time_step=0.1):
-        super().__init__(usdz_paths, sensor, camera, keyframe, vehicle_labels, max_scenes, time_step)
+        if not 0 <= keyframe <= 1:
+            raise ValueError("keyframe must be in [0, 1]")
+        if max_scenes is not None and max_scenes < 0:
+            raise ValueError("max_scenes must be nonnegative")
+        super().__init__(usdz_paths, camera_id=sensor, camera_alias=camera,
+                         vehicle_labels=vehicle_labels, time_step=time_step)
+        self.keyframe, self.max_scenes = keyframe, max_scenes
         self.endpoint = endpoint
+
+    @property
+    def sensor(self) -> str:
+        return self.camera_id
+
+    @property
+    def camera(self) -> str:
+        return self.camera_alias
 
     def scenes(self) -> Iterator[SceneGT]:
         if self.max_scenes == 0:
@@ -76,7 +94,7 @@ class NuRecDataset(SourceDataset, LegacyDataset):
 
     def make_renderer(self, scene):
         """Create a renderer without opening a connection until ``load_scene`` is called."""
-        from avsectester.simulators.nurec import NuRecRenderer
+        from avsectester.closed_loop.simulators.nurec import NuRecRenderer
 
         return NuRecRenderer(
             endpoint=self.endpoint,
@@ -87,7 +105,7 @@ class NuRecDataset(SourceDataset, LegacyDataset):
         )
 
     def make_backend(self, scene: SceneGT) -> WorldBackend:
-        from avsectester.simulators.nurec import NuRecBackend
+        from avsectester.closed_loop.simulators.nurec import NuRecSimulator
 
         pose = np.asarray(scene.ego.pose)
         ego0 = {
@@ -96,7 +114,7 @@ class NuRecDataset(SourceDataset, LegacyDataset):
             "yaw": math.atan2(pose[1, 0], pose[0, 0]),
             "speed": scene.ego.speed,
         }
-        return NuRecBackend(
+        return NuRecSimulator(
             config={
                 "scene": scene.source.get("scene_id"),
                 "dt": self.time_step,
@@ -107,23 +125,5 @@ class NuRecDataset(SourceDataset, LegacyDataset):
         )
 
     def insertion_renderer(self, scene, backend, insertions, bindings=None, compositor=None):
-        """Compatibility callable delegating every frame to the simulator renderer."""
-        from avsectester.services import RenderRequest
-        from avsectester.datasets.base import FrameRef
-        from avsectester.perturbations.image import read_camera_rgb, write_camera_rgb
-
-        frame = FrameRef(str(scene.source["usdz_path"]), scene.frame, scene.frame, scene.t)
-        request = RenderRequest(frame.scenario_id, frame, self.camera, insertions,
-                                bindings or {}, scene=scene, compositor=compositor)
-        def render(observation, image):
-            sample = read_camera_rgb(observation, self.camera)
-            key = sample[0] if sample is not None else self.camera
-            result = backend.render(write_camera_rgb(observation, key, image), request)
-            render.evidence, render.resolved = result.evidence, result.resolved
-            render.camera = backend.renderer.camera_model(backend.render_request(self.sensor).camera)
-            return read_camera_rgb(result.observation, self.camera)[1]
-        # Preserve geometry inspection on the legacy callable; rendering itself delegates.
-        adapter = backend._insertion_renderer(scene, self, insertions, bindings, compositor)
-        render.geometry, render.camera = adapter.geometry, adapter.camera
-        render.evidence, render.resolved = {}, ()
-        return render
+        """Legacy ``(observation, rgb) -> rgb`` insertion renderer for this recorded scene."""
+        return backend._insertion_renderer(scene, self, insertions, bindings, compositor)

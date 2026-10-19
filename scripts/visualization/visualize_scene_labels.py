@@ -1,4 +1,4 @@
-"""Visualize ground-truth *scene labels* on real frames — reusing ``avsectester.simulators.viz``.
+"""Visualize ground-truth *scene labels* on real frames — reusing ``avsectester.closed_loop.simulators.viz``.
 
 Overlays a dataset's :class:`SceneGT` (from :class:`NuRecDataset` / :class:`NuScenesDataset`) on the real
 camera frame as projected **3-D bounding boxes** (the right representation for a 3-D scene; edges are
@@ -7,7 +7,7 @@ subdivided so they render correctly curved under the nuRec fisheye), using only 
 * nuRec: ``draw_boxes3d(frame, scene, target=...)`` on the scene's rendered ``.mp4`` frame, plus a
   :func:`filmstrip` across several frames;
 * nuScenes: the full backend path — ``labels_view(...)`` wrapping ``camera_view`` over a
-  ``RecordedSequenceBackend``, exactly as a run would visualize a frame.
+  ``RecordedReplaySimulator``, exactly as a run would visualize a frame.
 
 Writes PNGs under ``tmp/compare/``. Run: ``python -m scripts.visualization.visualize_scene_labels [--nuscenes]``.
 """
@@ -19,7 +19,7 @@ from pathlib import Path
 
 from avsectester.scenarios.datasets.nurec import NuRecDataset
 from avsectester.scenarios.presets import PHYSICAL_PATCH_HIDE_VEHICLE as REQ
-from avsectester.simulators.viz import draw_boxes3d, filmstrip, labels_view, save_image
+from avsectester.closed_loop.simulators.viz import draw_boxes3d, filmstrip, labels_view, save_image
 
 OUT = Path("tmp/compare")
 NUREC = Path("/workspace/hdd/datasets/PhysicalAI-Autonomous-Vehicles-NuRec/sample_set/26.01_release")

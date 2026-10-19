@@ -7,14 +7,15 @@ from copy import deepcopy
 from enum import Enum
 from typing import Any, TYPE_CHECKING
 
-from avsectester.backend import AVStack, WorldBackend
+from avsectester.closed_loop.avstack import AVStack
+from avsectester.closed_loop.simulator import WorldBackend
 from avsectester.interventions import (
     _handler, configured_clean_runtime, configured_runtime, configured_runtime_pair,
     prepare_from_config,
 )
-from avsectester.plane import Trace
+from avsectester.closed_loop.datatypes import Trace
 from avsectester.runner import run_prepared
-from avsectester.runtime import Runtime
+from avsectester.closed_loop.hooks import Runtime
 from avsectester.scenarios.setup import scenario_from_config
 
 if TYPE_CHECKING:
@@ -55,7 +56,7 @@ def configured_stack(config: Mapping[str, Any]) -> AVStack:
 def _build_stack(config: Mapping[str, Any]) -> AVStack:
     spec = config.get("stack")
     if spec is None:
-        from avsectester.stacks.modular import ModularAVStack
+        from avsectester.closed_loop.avstacks.modular import ModularAVStack
 
         stack = ModularAVStack(config["ego"]["pipeline"])
         stack.instrument(stages=("perception",))
@@ -70,7 +71,7 @@ def _build_stack(config: Mapping[str, Any]) -> AVStack:
         options = spec.get("options", {})
         if not isinstance(options, Mapping):
             raise ValueError("Stack options must be a mapping")
-        from avsectester.stacks.alpamayo import AlpamayoAVStack
+        from avsectester.closed_loop.avstacks.alpamayo import AlpamayoAVStack
 
         stack = AlpamayoAVStack(**deepcopy(dict(options)))
     if not isinstance(stack, AVStack):

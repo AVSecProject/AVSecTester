@@ -7,9 +7,9 @@ from copy import deepcopy
 from importlib import import_module
 from typing import Any, TYPE_CHECKING
 
-from avsectester.plane import Observation
+from avsectester.closed_loop.datatypes import Observation
 from avsectester.preparation import Intervention, Treatment, prepare_intervention
-from avsectester.runtime import CallInputs, Hook, Plugin, RunContext, Runtime, StageContext
+from avsectester.closed_loop.hooks import CallInputs, Hook, Plugin, RunContext, Runtime, StageContext
 
 if TYPE_CHECKING:
     from avsectester.scenarios.source import ScenarioInstance

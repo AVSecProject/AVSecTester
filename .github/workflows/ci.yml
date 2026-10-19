@@ -134,7 +134,7 @@ jobs:
           subprocess.run([sys.executable, "-m", "pip", "install", "pytest>=8,<9", *recording], check=True)
           PY
       - name: Test Parquet records under the driver interpreter version
-        run: python -m pytest tests/core/test_runlog.py -q --junitxml=reports/runlog-python312.xml
+        run: python -m pytest tests/core/runlog/test_runlog.py -q --junitxml=reports/runlog-python312.xml
       - name: Save recording test results
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7

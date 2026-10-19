@@ -7,10 +7,12 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 
-from avsectester.backend import AVStack, WorldBackend, run
+from avsectester.closed_loop.avstack import AVStack
+from avsectester.closed_loop.simulator import WorldBackend
+from avsectester.backend import run
 from avsectester.conditions import ScenarioConditions, SensorCondition
-from avsectester.plane import Control, Observation
-from avsectester.runtime import Hook, Plugin, Runtime
+from avsectester.closed_loop.datatypes import Control, Observation
+from avsectester.closed_loop.hooks import Hook, Plugin, Runtime
 from avsectester.scenarios import (
     ConfiguredScenarioSource,
     Dataset,
@@ -139,14 +141,14 @@ def test_condition_setup_failure_keeps_the_primary_error_and_reports_cleanup_fai
 
 
 def test_nurec_configuration_supports_actuator_and_trajectory_without_model_imports():
-    from avsectester.simulators.nurec import KinematicBicycle, TrajectoryFollower
+    from avsectester.closed_loop.simulators.nurec import KinematicBicycle, TrajectoryFollower
 
-    for mode, dynamics in [("actuator", KinematicBicycle), ("trajectory", TrajectoryFollower)]:
+    for dynamics in (KinematicBicycle, TrajectoryFollower):
         case = scenario_from_config({
             "dt": 0.1,
             "backend": {
-                "type": "NuRecBackend", "renderer": {"type": "stub", "width": 10, "height": 8},
-                "dynamics": {"type": mode}, "ego0": {"speed": 2},
+                "type": "NuRecSimulator", "renderer": {"type": "StubRenderer", "width": 10, "height": 8},
+                "dynamics": {"type": dynamics.__name__}, "ego0": {"speed": 2},
             },
             "stack": {"type": "AlpamayoAVStack"},
         })
@@ -293,7 +295,7 @@ def test_selection_conditions_preserve_labels_and_state_with_current_provider_da
 
         def transform(self, observation, context):
             self.count += 1
-            self.frames.append(context.native["backend"]["provider_frame"])
+            self.frames.append(context.native["simulator"]["provider_frame"])
             assert context.ground_truth.frame == observation.frame
             observation.ego_speed = self.count
             return observation
@@ -335,7 +337,7 @@ def test_selection_conditions_preserve_labels_and_state_with_current_provider_da
 
 def test_selection_conditions_use_native_capture_copier_and_preserve_raw_measurements(scene):
     from avsectester.perturbations.image import AugmentationPipeline, Corruption
-    from avsectester.simulators.carla import CarlaBackend
+    from avsectester.closed_loop.simulators.carla import CarlaSimulator
 
     class NativeCapture:
         # Match the actual adapter's borrowed CARLA capture detection.
@@ -359,7 +361,7 @@ def test_selection_conditions_use_native_capture_copier_and_preserve_raw_measure
         def apply(self, rgb, rng):
             return rgb + 10
 
-    backend = CarlaBackend({})
+    backend = CarlaSimulator({})
     backend.copy_observation = Mock(wraps=backend.copy_observation)
     current = scene()
     calibration = {"focal": 10.0}

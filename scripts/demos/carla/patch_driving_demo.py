@@ -8,7 +8,7 @@ attack HIDES the parked lead car from the detector, so the ego that safely brake
 fails to brake in the patched run — an object-hiding attack with a driving consequence.
 
 Runs the identical scene twice (clean, then patched), diffs the two driving Traces with
-:mod:`avsectester.metric` (the ``suppressed_stop`` verdict), and writes:
+:mod:`avsectester.evaluation.metric` (the ``suppressed_stop`` verdict), and writes:
   * ``impact.png``            — ego speed + brake, clean vs patched (metric view)
   * ``clean_filmstrip.png`` / ``patched_filmstrip.png`` — detector overlay per frame (scene view)
   * ``clean.gif`` / ``patched.gif``
@@ -28,17 +28,17 @@ from pathlib import Path
 
 import yaml
 from avsectester.attacks.patch.physical_patch import checkerboard_rgba, image_rgba
-from avsectester.backend import AVStack
+from avsectester.closed_loop.avstack import AVStack
 from avsectester.interventions import ObservationTransform
-from avsectester.metric import impact, plot_impact
-from avsectester.plane import Control
+from avsectester.evaluation.metric import impact, plot_impact
+from avsectester.closed_loop.datatypes import Control
 from avsectester.runner import run_prepared
-from avsectester.runtime import Hook, Runtime
-from avsectester.simulators import carla as carla_sim
-from avsectester.scenarios.carla_provider import CarlaSelectionBackend
+from avsectester.closed_loop.hooks import Hook, Runtime
+from avsectester.closed_loop.simulators import carla as carla_sim
+from avsectester.scenarios.carla_provider import CarlaSelectionSimulator
 from avsectester.scenarios.setup import scenario_from_config
 from avsectester.rendering.compositor import PatchCompositor
-from avsectester.simulators.viz import detections_view, record_run, save_sequence
+from avsectester.closed_loop.simulators.viz import detections_view, record_run, save_sequence
 from scripts.common.demo_common import build_detector, plausible_detector, carla_rear_perturbation, make_harmonizer
 
 from scripts import REPO_ROOT as REPO
@@ -97,7 +97,7 @@ def main() -> int:
     detect = plausible_detector(build_detector(args.gpu))  # gate phantom boxes; feeds stack + overlay
     overlay = detections_view(detect, base=carla_sim.camera_view)
 
-    instance = scenario_from_config(scenario, backend_factory=CarlaSelectionBackend)
+    instance = scenario_from_config(scenario, backend_factory=CarlaSelectionSimulator)
 
     def attacked_runtime(backend):
         transform = carla_rear_perturbation(backend, patch, compositor)
@@ -114,7 +114,7 @@ def main() -> int:
                   f"{args.harmonizer} harmonizer) ...")
         return record_run(
             backend, stack, frames, out_dir=OUT / label,
-            visualize=overlay, runtime=runtime, collect=True,
+            visualize=overlay, hooks=runtime, collect=True,
         )
 
     traces = run_prepared(

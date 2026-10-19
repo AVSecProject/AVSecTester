@@ -5,9 +5,10 @@ from dataclasses import replace
 
 import numpy as np
 
-from avsectester.backend import AVStack, WorldBackend
+from avsectester.closed_loop.avstack import AVStack
+from avsectester.closed_loop.simulator import WorldBackend
 from avsectester.evaluation.robustness import evaluate_robustness
-from avsectester.plane import Control, Observation
+from avsectester.closed_loop.datatypes import Control, Observation
 from avsectester.scenarios import (
     Constraint,
     Dataset,

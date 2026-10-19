@@ -127,8 +127,8 @@ def test_modular_stack_forwards_observation_and_converts_control(monkeypatch, pi
     from types import SimpleNamespace
     from unittest.mock import Mock
 
-    from avsectester.plane import Control, Observation
-    from avsectester.stacks.modular import ModularAVStack
+    from avsectester.closed_loop.datatypes import Control, Observation
+    from avsectester.closed_loop.avstacks.modular import ModularAVStack
     from avstack.config import PIPELINE
 
     pipeline = Mock(return_value=SimpleNamespace(
@@ -146,13 +146,14 @@ def test_modular_stack_forwards_observation_and_converts_control(monkeypatch, pi
 
 
 def test_modular_stack_counts_detections_after_attack(pipeline_config, make_detections, make_ego):
-    from avsectester.plane import Observation
-    from avsectester.stacks.modular import ModularAVStack
+    from avsectester.closed_loop.datatypes import Observation
+    from avsectester.closed_loop.avstacks.modular import ModularAVStack
 
     stack = ModularAVStack(pipeline_config)
-    from avsectester.backend import WorldBackend, run
+    from avsectester.closed_loop.simulator import WorldBackend
+    from avsectester.backend import run
     from avsectester.interventions import NativeHook
-    from avsectester.runtime import Hook, Runtime
+    from avsectester.closed_loop.hooks import Hook, Runtime
 
     stack.instrument(stages=("perception",))
     counts = []
@@ -186,9 +187,9 @@ def test_runtime_bridges_replace_real_stage_data_and_capture_final_outputs(
     from types import SimpleNamespace
 
     from avstack.datastructs import DataContainer
-    from avsectester.plane import Observation
-    from avsectester.runtime import CallInputs
-    from avsectester.stacks.modular import ModularAVStack
+    from avsectester.closed_loop.datatypes import Observation
+    from avsectester.closed_loop.hooks import CallInputs
+    from avsectester.closed_loop.avstacks.modular import ModularAVStack
 
     stack = ModularAVStack(pipeline_config)
     stack.instrument(("perception", "control"))
@@ -214,7 +215,7 @@ def test_runtime_bridges_replace_real_stage_data_and_capture_final_outputs(
             return value
 
     observation = Observation(t=0.0, frame=0, sensor_data=make_detections(), vehicle_state=make_ego())
-    with stack.runtime_context(Session()):
+    with stack.bind_hooks(Session()):
         control = stack(observation)
 
     assert calls == [f"{stage}.{phase}" for stage in modules for phase in ("pre", "post")]
@@ -228,8 +229,8 @@ def test_runtime_bridges_replace_real_stage_data_and_capture_final_outputs(
 
 
 def test_runtime_bridges_cleanup_after_invalid_pre_result(pipeline_config, make_detections, make_ego):
-    from avsectester.plane import Observation
-    from avsectester.stacks.modular import ModularAVStack
+    from avsectester.closed_loop.datatypes import Observation
+    from avsectester.closed_loop.avstacks.modular import ModularAVStack
 
     stack = ModularAVStack(pipeline_config)
 
@@ -239,7 +240,7 @@ def test_runtime_bridges_cleanup_after_invalid_pre_result(pipeline_config, make_
 
     observation = Observation(t=0.0, frame=0, sensor_data=make_detections(), vehicle_state=make_ego())
     with pytest.raises(TypeError, match="perception.pre must return CallInputs"):
-        with stack.runtime_context(Session()):
+        with stack.bind_hooks(Session()):
             stack(observation)
     assert all(not module.pre_hooks and not module.post_hooks for module in stack.native.values() if hasattr(module, "pre_hooks"))
 
@@ -249,11 +250,12 @@ def test_native_runtime_adapter_preserves_order_before_capture(
     pipeline_config, make_detections, make_ego, attack_first,
 ):
     from avstack.datastructs import DataContainer
-    from avsectester.backend import WorldBackend, run
-    from avsectester.plane import Observation
-    from avsectester.runtime import Hook, Runtime
+    from avsectester.closed_loop.simulator import WorldBackend
+    from avsectester.backend import run
+    from avsectester.closed_loop.datatypes import Observation
+    from avsectester.closed_loop.hooks import Hook, Runtime
     from avsectester.interventions import NativeHook
-    from avsectester.stacks.modular import ModularAVStack
+    from avsectester.closed_loop.avstacks.modular import ModularAVStack
 
     class Backend(WorldBackend):
         def observation(self, frame):
@@ -295,8 +297,8 @@ def test_native_runtime_adapter_preserves_order_before_capture(
 def test_instrumentation_is_idempotent_and_reset_clears_telemetry(
     pipeline_config, make_detections, make_ego
 ):
-    from avsectester.plane import Observation
-    from avsectester.stacks.modular import ModularAVStack
+    from avsectester.closed_loop.datatypes import Observation
+    from avsectester.closed_loop.avstacks.modular import ModularAVStack
 
     stack = ModularAVStack(pipeline_config)
     stack.instrument(("perception",))
@@ -310,7 +312,7 @@ def test_instrumentation_is_idempotent_and_reset_clears_telemetry(
 
 
 def test_stage_capabilities_exclude_modules_without_actual_hook_dispatch(pipeline_config):
-    from avsectester.stacks.modular import ModularAVStack
+    from avsectester.closed_loop.avstacks.modular import ModularAVStack
 
     pipeline_config["tracking"] = {"type": "GroundTruthTracker"}
     stack = ModularAVStack(pipeline_config)
@@ -320,18 +322,18 @@ def test_stage_capabilities_exclude_modules_without_actual_hook_dispatch(pipelin
     assert "perception.pre" in stack.supported_stages
     with pytest.raises(ValueError, match="Cannot instrument unavailable stages"):
         stack.instrument(("tracking",))
-    from avsectester.runtime import Hook, Runtime, UnsupportedStageError
-    from avsectester.simulators.nurec import NuRecBackend, StubRenderer
+    from avsectester.closed_loop.hooks import Hook, Runtime, UnsupportedStageError
+    from avsectester.closed_loop.simulators.nurec import NuRecSimulator, StubRenderer
 
     with pytest.raises(UnsupportedStageError, match="tracking.post"):
         Runtime([Hook("tracking.post", lambda value, context: value)]).session(
-            NuRecBackend({}, renderer=StubRenderer(height=2, width=2)),
+            NuRecSimulator({}, renderer=StubRenderer(height=2, width=2)),
             stack,
         )
 
 
 def test_stage_capability_marker_does_not_depend_on_callable_name(pipeline_config, monkeypatch):
-    from avsectester.stacks.modular import ModularAVStack
+    from avsectester.closed_loop.avstacks.modular import ModularAVStack
 
     stack = ModularAVStack(pipeline_config)
     call = type(stack.pipeline.perception).__call__

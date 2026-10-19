@@ -6,7 +6,7 @@ shape/dtype invariants, severity-0 identity, determinism, and the write-back, no
 
 import numpy as np
 import pytest
-from avsectester.plane import Observation
+from avsectester.closed_loop.datatypes import Observation
 from avsectester.perturbations.image import (
     CORRUPTIONS,
     AugmentationPipeline,

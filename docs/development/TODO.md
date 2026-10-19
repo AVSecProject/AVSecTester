@@ -61,7 +61,7 @@ This file lists open development work. Entries describe planned capabilities, no
 
 ## Reactive traffic in NuRec
 
-- [ ] Make other actors in `NuRecBackend` react to the ego. Actors currently follow the recorded
+- [ ] Make other actors in `NuRecSimulator` react to the ego. Actors currently follow the recorded
   tracks because the adapter uses only the NuRec renderer, without AlpaSim's runtime, controller,
   physics or traffic services. Evaluate AlpaSim's traffic service or add a traffic model, and
   confirm the renderer accepts per-frame actor poses.

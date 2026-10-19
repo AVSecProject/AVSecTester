@@ -39,27 +39,28 @@ list with public names is in [Module map](../reference/python-api.md#module-map)
 
 | Path | Component | Contents |
 |---|---|---|
-| `avsectester/plane.py` | Vehicle I/O | Data plane: `Observation`, `Control`, `WorldSnapshot`, `StateEstimate`, `Trace`, `FrameRecord` |
-| `avsectester/backend.py` | Closed-loop experiment | `WorldBackend`, `AVStack`, command-mode validation and the driving loop `run` |
-| `avsectester/runner.py`, `avsectester/experiment.py` | Closed-loop experiment | Named treatments from one origin (`run_prepared`, `run_pair`) and configured experiments (`run_configured`) |
-| `avsectester/carla_runner.py`, `avsectester/cli.py` | Closed-loop experiment | CARLA and modular driving-system assembly (`run_scenario`, `run_scenario_pair`) and the `avsectester` command |
-| `avsectester/scenarios/` | Scenario preparation | Scenario sources, configured setup, requirements, filters, roles, dataset and CARLA providers, natural-language requirements |
-| `avsectester/conditions.py`, `avsectester/perturbations/` | Scenario preparation (conditions) | `ScenarioConditions`, `SensorCondition`, image corruptions |
-| `avsectester/insertion.py`, `avsectester/rendering/` | Scenario preparation (insertions) | Insertion specification, cameras, compositing, harmonizers, visibility |
-| `avsectester/simulators/` | Simulator | `CarlaBackend`, `NuRecBackend`, renderers and ego dynamics, scene visualization |
-| `avsectester/stacks/` | Driving system | `ModularAVStack`, `AlpamayoAVStack`, CARLA dataset registration |
-| `avsectester/runtime.py` | Attack and defense execution | `Runtime`, `Hook`, `Plugin`, contexts, stage validation |
-| `avsectester/preparation.py`, `avsectester/interventions.py` | Attack and defense preparation | `Intervention`, `PreparedIntervention`, `Treatment`, runtime adapters and configuration helpers |
-| `avsectester/attacks/` | Attacks | Phantom injection (`pipeline/`), physical patch (`patch/`), object-insertion payloads (`object_insertion/`), speed-feedback attack (`adaptive.py`) |
-| `avsectester/attacks/optim/` | Optimization | PGD, NES, perturbations, scorers, data sources, CARLA-rendered perturbation |
-| `avsectester/metric.py`, `avsectester/evaluation/` | Evaluation | Driving-impact metric and plot, component logging, robustness evaluation |
+| `avsectester/datasets/` | Dataset | `Dataset`, `FrameReference`, `FrameData`, `ScenarioStart`; NuRec, nuScenes and CARLA datasets |
+| `avsectester/attack/` | Attack | `Attack`, `AttackSegment`, `OfflineContext` (`attack.py`); `AttackRuntime`, `OnlineContext` and the attack effects (`runtime.py`) |
+| `avsectester/closed_loop/` | Closed loop | `datatypes.py` (`Observation`, `Control`, `WorldSnapshot`, `Trace`), `simulator.py` (`Simulator`, `SensorView`, `WorldBackend`), `avstack.py` (`AVStack`), `vehicle_io.py`, `hooks.py` (`HookSet`, `Runtime`, `Hook`, `Plugin`, contexts), `runner.py` (`ClosedLoopRunner`), `services.py` and `driving_adapters.py` (closed-loop services), `frame_data.py`, `resources.py` |
+| `avsectester/closed_loop/simulators/` | Closed loop (simulator) | `CarlaSimulator`, `NuRecSimulator`, `RecordedReplaySimulator`, renderers and ego dynamics, scene visualization |
+| `avsectester/closed_loop/avstacks/` | Closed loop (driving system) | `ModularAVStack`, `AlpamayoAVStack`, CARLA dataset registration |
+| `avsectester/runlog/` | Run log | `RunLog`, `Recorder` and readers (`log.py`); native-object codecs (`codecs.py`) |
+| `avsectester/evaluation/` | Evaluation | Driving-impact metric and plot (`metric.py`), component logging, robustness evaluation |
+| `avsectester/attacks/` | Attack implementations | Phantom injection (`pipeline/`), physical patch (`patch/`), object-insertion payloads (`object_insertion/`), speed-feedback attack (`adaptive.py`) |
+| `avsectester/attacks/optim/` | Attack implementations (optimization) | PGD, NES, perturbations, scorers, data sources, CARLA-rendered perturbation |
+| `avsectester/insertion.py`, `avsectester/rendering/`, `avsectester/perturbations/` | Attack implementations (helpers) | Insertion specification, cameras, compositing, harmonizers, visibility, image corruptions |
+| `avsectester/backend.py` | Legacy loop, removed in phase 4 | `run`, still called by the legacy experiment path and evaluation |
+| `avsectester/runner.py`, `experiment.py`, `carla_runner.py`, `preparation.py`, `interventions.py`, `conditions.py`, `scenarios/` | Legacy experiment path, replaced in phases 3 and 4 | Named treatments (`run_prepared`, `run_pair`), configured experiments (`run_configured`), CARLA assembly, `Intervention`, `ScenarioConditions`, scenario selection |
+| `avsectester/cli.py` | Experiment | The `avsectester` command |
 | `configs/` | Closed-loop experiment | Supplied CARLA scenario configurations |
 | `scripts/` | All | Demos, model and asset preparation, optimization, validation and visualization entry points. See [scripts/README.md](../../scripts/README.md) |
 | `tests/` | All | `core`, `avstack` and `live` test groups. See [tests/README.md](../../tests/README.md) |
 | `third_party/` | Simulator, driving system | Git submodules: the avstack projects and `libcom` |
 
-Shared geometry, compositing and harmonization live in `rendering/`, not in an attack family.
-Simulator adapters live in `simulators/`, and observation transforms in `perturbations/`.
+Each framework component is a package whose base interfaces sit next to their implementations,
+for example `closed_loop/simulator.py` and `closed_loop/simulators/`. Shared geometry,
+compositing and harmonization live in `rendering/`, not in an attack family, and observation
+transforms in `perturbations/`.
 
 ## Add a component
 
@@ -98,8 +99,8 @@ NO_ALBUMENTATIONS_UPDATE=1 python -m pytest -q              # core and avstack g
 ```
 
 - Ruff selects only the `E9` and `F` rules. Formatting is not checked.
-- mypy checks the data plane, backend, hooks, runner, simulator boundary, Vehicle I/O,
-  attack runtime, RunLog and adapter codecs listed in `pyproject.toml`.
+- mypy checks the closed-loop data types, hooks, simulator and AVStack boundaries, Vehicle I/O,
+  runner, services, attack interfaces, RunLog, codecs and dataset base listed in `pyproject.toml`.
   Imports outside these files are not followed.
 - `python -m pytest` runs the `core` and `avstack` groups. The `avstack` group needs the avstack
   packages, installed as in [tests/README.md](../../tests/README.md#offline-avstack-tests).
@@ -164,7 +165,7 @@ Follow these rules:
   `**Not yet implemented.** <one sentence>. See [TODO](<relative path>/development/TODO.md#<anchor>).`
   Add the "See TODO" sentence only when a matching entry exists in [TODO.md](TODO.md).
 - **Runnable examples.** Code examples must run against the current API. State caller-supplied
-  placeholders in a comment. Prefer examples that run offline with `NuRecBackend`, `StubRenderer`
+  placeholders in a comment. Prefer examples that run offline with `NuRecSimulator`, `StubRenderer`
   and a minimal `AVStack`, and execute them before committing.
 - **Structure.** Start each page with its Audience, Outcome and Prerequisites block. End guides
   with `## Next steps`. Keep a guide under about 400 lines. Headings are link targets, so update

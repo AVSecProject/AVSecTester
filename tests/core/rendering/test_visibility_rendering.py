@@ -151,7 +151,7 @@ def test_camera_crop_does_not_change_texture_sampling(camera):
 @pytest.mark.parametrize("method", ["depth", "cuboid"])
 @pytest.mark.parametrize("camera", ["pinhole", "fisheye"], indirect=True)
 def test_independent_insertions_occlude_by_depth_and_keep_holes(camera, method):
-    from avsectester.plane import Observation
+    from avsectester.closed_loop.datatypes import Observation
     from avsectester.rendering.types import InsertionGeometry
     from avsectester.rendering.compositor import InsertionRenderer, PatchCompositor
 

@@ -175,7 +175,7 @@ previous example can serve as a warm start: `init_texture=result.delta.cpu().num
 Run the optimizer in `Intervention.prepare` and return the exported texture as the artifact. The
 artifact must be reusable without optimizing again, so save the texture to a file and return its
 path. The following intervention extends `PhysicalPatchIntervention`, whose `hooks` already
-deploy the artifact through `PhysicalPatchPlugin` at `world.setup`:
+deploy the artifact through `PhysicalPatchPlugin` at `simulator.setup`:
 
 <!-- runnable -->
 ```python
@@ -224,7 +224,7 @@ Prepare once and run the treatments with the prepared intervention:
 ```python
 from avsectester.preparation import Treatment, prepare_intervention
 from avsectester.runner import run_prepared
-from avsectester.runtime import Runtime
+from avsectester.closed_loop.hooks import Runtime
 
 # scenario is a CARLA prepared scenario, and stack_factory, problem and the panel list patches
 # are supplied by the caller.

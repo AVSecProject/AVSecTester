@@ -23,7 +23,7 @@ import tracemalloc
 
 import numpy as np
 
-from avsectester.plane import Control, Observation, WorldSnapshot
+from avsectester.closed_loop.datatypes import Control, Observation, WorldSnapshot
 from avsectester.runlog import Recorder, StepRecord, read_table
 
 

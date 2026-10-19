@@ -4,15 +4,16 @@ from dataclasses import replace
 
 import pytest
 
-from avsectester.backend import AVStack, run
-from avsectester.plane import Control
+from avsectester.closed_loop.avstack import AVStack
+from avsectester.backend import run
+from avsectester.closed_loop.datatypes import Control
 from avsectester.runner import run_pair
-from avsectester.runtime import Hook, Plugin, Runtime
-from avsectester.simulators.carla import CarlaBackend
-from avsectester.simulators.nurec import (
-    EgoPose, KinematicBicycle, NuRecBackend, StubRenderer, TrajectoryFollower,
+from avsectester.closed_loop.hooks import Hook, Plugin, Runtime
+from avsectester.closed_loop.simulators.carla import CarlaSimulator
+from avsectester.closed_loop.simulators.nurec import (
+    EgoPose, KinematicBicycle, NuRecSimulator, StubRenderer, TrajectoryFollower,
 )
-from avsectester.stacks.alpamayo import AlpamayoAVStack
+from avsectester.closed_loop.avstacks.alpamayo import AlpamayoAVStack
 
 
 PLAN = [((1.0, 0.0, 0.0), (1.0, 0.0, 0.0, 0.0), 100_000)]
@@ -31,7 +32,7 @@ class CommandStack(AVStack):
         return replace(self.command)
 
 
-class CountingBackend(NuRecBackend):
+class CountingBackend(NuRecSimulator):
     def __init__(self, dynamics=None):
         super().__init__({"dt": 0.1}, StubRenderer(height=2, width=3), dynamics)
         self.prepares = self.resets = 0
@@ -80,14 +81,14 @@ def test_final_command_is_checked_after_attack_and_defense_handlers():
 
 
 @pytest.mark.parametrize("backend,command", [
-    (CarlaBackend({}), Control(trajectory=PLAN)),
-    (NuRecBackend({}), Control(trajectory=PLAN)),
-    (NuRecBackend({}, dynamics=TrajectoryFollower()), Control(steer=0.2)),
+    (CarlaSimulator({}), Control(trajectory=PLAN)),
+    (NuRecSimulator({}), Control(trajectory=PLAN)),
+    (NuRecSimulator({}, dynamics=TrajectoryFollower()), Control(steer=0.2)),
 ])
 def test_direct_backend_calls_reject_ignored_fields_before_world_changes(backend, command):
     with pytest.raises(ValueError, match="does not support"):
         backend.step(command)
-    if isinstance(backend, NuRecBackend):
+    if isinstance(backend, NuRecSimulator):
         assert backend.pose == EgoPose() and backend.frame == 0
 
 
@@ -152,7 +153,7 @@ def test_intervention_outputs_capture_timing_snapshots_and_independent_runs():
     assert first.outputs[-1].value[-1] == "feedback"
     first.outputs[0].value.append("review")
     assert second.outputs[0].value == ["observation"]
-    with pytest.raises(RuntimeError, match="active runtime callback"):
+    with pytest.raises(RuntimeError, match="active hook callback"):
         recorder.last_context.record_output("late", {})
 
 
@@ -168,16 +169,16 @@ def test_render_outputs_include_sensor_and_zero_step_run_setup():
 
     backend = CountingBackend()
     trace = run(backend, CommandStack(), frames=0, runtime=Runtime([
-        Hook("world.setup", setup), Hook("render.post", render),
+        Hook("simulator.setup", setup), Hook("render.post", render),
     ]))
     assert not trace.records
     assert [(v.name, v.stage, v.sensor) for v in trace.outputs] == [
-        ("setup", "world.setup", None), ("sensor_summary", "render.post", "camera_front"),
+        ("setup", "simulator.setup", None), ("sensor_summary", "render.post", "camera_front"),
     ]
 
 
 def test_world_conditions_are_explicit_detached_and_backend_specific():
-    backend = CarlaBackend({"weather": "ClearNoon"})
+    backend = CarlaSimulator({"weather": "ClearNoon"})
     backend._pair_scenario = {"weather": "ClearNoon"}
     backend.replay_scenario = {"weather": "ClearNoon"}
     settings = {"weather": {"fog_density": 50}}

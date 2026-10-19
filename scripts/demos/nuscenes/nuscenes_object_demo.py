@@ -93,7 +93,7 @@ def pick_images(coco: dict, n: int) -> list[dict]:
 
 def recorded_window(dataset, image_path, decision_steps):
     """Resolve a keyframe to N+1 linked source states, or None too close to the end of its scene."""
-    from avsectester.simulators.recorded import RecordedSequenceBackend
+    from avsectester.closed_loop.simulators.recorded import RecordedReplaySimulator
 
     nusc = dataset._load()
     if not hasattr(dataset, "_demo_images"):
@@ -109,8 +109,8 @@ def recorded_window(dataset, image_path, decision_steps):
     if start.position + decision_steps >= len(frames):
         return None  # too close to the end of its scene for N decisions plus the terminal frame
     window = dataset.decision_window(scenario, start, decision_steps)
-    source = dataset.source_data(scenario, start)
-    return RecordedSequenceBackend(source), source.payload["references"][:len(window)]
+    source = dataset.scenario_start(scenario, start)
+    return RecordedReplaySimulator(source), source.payload["frame_data"][:len(window)]
 
 
 def main() -> int:
@@ -130,7 +130,7 @@ def main() -> int:
 
     import cv2
     from avsectester.datasets.nuscenes import NuScenesDataset
-    from avsectester.plane import Control
+    from avsectester.closed_loop.datatypes import Control
 
     if args.decision_steps < 1:
         ap.error("--decision-steps must be positive")

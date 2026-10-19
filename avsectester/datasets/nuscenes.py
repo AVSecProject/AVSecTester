@@ -1,4 +1,4 @@
-"""Read nuScenes source records without simulator dependencies."""
+"""Read nuScenes records without simulator dependencies."""
 from __future__ import annotations
 
 import math
@@ -69,7 +69,7 @@ def scene_from_cam_boxes(boxes: list, k: np.ndarray, width: int, height: int, ca
 
 
 class NuScenesDataset(Dataset):
-    """nuScenes scenes as source timelines of linked keyframes.
+    """nuScenes scenes as scenario timelines of linked keyframes.
 
     Each scene is one scenario. ``camera`` is the nuScenes sensor (exposed under the logical name
     ``front``). Actor identities are stable instance tokens. The legacy facade in
@@ -102,24 +102,24 @@ class NuScenesDataset(Dataset):
         from .base import ScenarioDescriptor
 
         for scene in self._load().scene:
-            yield ScenarioDescriptor(scene["token"], "nuscenes", {
+            yield ScenarioDescriptor(scene["token"], "NuScenesDataset", {
                 "dataroot": self.dataroot, "version": self.version, "name": scene["name"],
             })
 
     def frames(self, scenario_id):
-        from .base import FrameRef
+        from .base import FrameReference
 
         nusc = self._load()
-        return tuple(FrameRef(scenario_id, i, sample["token"],
+        return tuple(FrameReference(scenario_id, i, sample["token"],
                               nusc.get("sample_data", sample["data"][self.camera])["timestamp"] / 1e6)
                      for i, sample in enumerate(self._samples(scenario_id)))
 
-    def reference(self, scenario_id, frame):
+    def frame_data(self, scenario_id, frame):
         self.checked_frame(scenario_id, frame)
-        return self._reference(frame)
+        return self._frame_data(frame)
 
-    def _reference(self, frame):
-        from .base import ActorState, DataReference, ReferenceFrame
+    def _frame_data(self, frame):
+        from .base import ActorState, SensorDataReference, FrameData
 
         nusc = self._load()
         scene = self._sample_scene(nusc.get("sample", frame.frame_id), frame.position)
@@ -132,8 +132,8 @@ class NuScenesDataset(Dataset):
                 np.asarray(scene.ego.pose) @ np.asarray(obj.pose),
                 tuple(float(v) for v in velocity) if np.isfinite(velocity).all() else None,
             )
-        sensor = DataReference(scene.source["image_path"], "front", frame.timestamp)
-        return ReferenceFrame(frame, scene, actors, {"front": sensor}, {"kind": "recorded"})
+        sensor = SensorDataReference(scene.source["image_path"], "front", frame.timestamp)
+        return FrameData(frame, scene, actors, {"front": sensor}, {"kind": "recorded"})
 
     def native(self, scenario_id):
         from copy import deepcopy
@@ -141,15 +141,15 @@ class NuScenesDataset(Dataset):
         return deepcopy({"scene": self._load().get("scene", scenario_id),
                          "samples": self._samples(scenario_id)})
 
-    def source_data(self, scenario_id, start):
-        from .base import SourceData
+    def scenario_start(self, scenario_id, frame):
+        from .base import ScenarioStart
 
-        frames = self.frames(scenario_id)
-        if (start.scenario_id != scenario_id or start.position >= len(frames)
-                or start != frames[start.position]):
-            raise ValueError("Frame is outside or does not match the source sequence")
-        return SourceData("nuscenes", scenario_id, start, {
-            "references": tuple(self._reference(frame) for frame in frames[start.position:]),
+        frames = self.frames(scenario_id)  # read the scene's sample chain once
+        if (frame.scenario_id != scenario_id or frame.position >= len(frames)
+                or frame != frames[frame.position]):
+            raise ValueError("Frame is outside or does not match the scenario's frames")
+        return ScenarioStart("NuScenesDataset", scenario_id, frame, {
+            "frame_data": tuple(self._frame_data(item) for item in frames[frame.position:]),
         })
 
     def _sample_scene(self, sample, frame_index):

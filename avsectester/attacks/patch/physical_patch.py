@@ -1,6 +1,6 @@
 """Physical adversarial patch — a *world-level* attack for CARLA.
 
-A physical patch modifies the simulated world through a ``world.setup`` runtime plugin: a
+A physical patch modifies the simulated world through a ``simulator.setup`` runtime plugin: a
 textured panel is rigidly attached to a target vehicle (e.g. the rear of the lead car) so the ego's
 camera renders it in-scene, with perspective, lighting and occlusion before the first driving
 observation. The plugin owns the spawned panels and removes them when the run ends.
@@ -27,7 +27,7 @@ from typing import Any
 
 import numpy as np
 
-from avsectester.runtime import Plugin, RunContext, StageContext
+from avsectester.closed_loop.hooks import Plugin, RunContext, StageContext
 from avsectester.preparation import Intervention
 
 # Flat patch prop and its default pose on a car rear, relative to the target actor.
@@ -191,12 +191,12 @@ class PhysicalPatchPlugin(Plugin):
         self._resources = ExitStack()
 
     def reset(self, context: RunContext) -> None:
-        if not callable(getattr(context.backend, "setup_tick", None)):
-            raise ValueError("PhysicalPatchPlugin requires a backend with native CARLA setup ticks")
+        if not callable(getattr(context.simulator, "setup_tick", None)):
+            raise ValueError("PhysicalPatchPlugin requires a simulator with native CARLA setup ticks")
         self._resources = ExitStack()
 
     def transform(self, value: Any, context: StageContext) -> None:
-        native = context.backend.native
+        native = context.simulator.native
         actors = native.get("actors", {})
         world = native.get("world")
         if world is None:
@@ -205,7 +205,7 @@ class PhysicalPatchPlugin(Plugin):
             target = spec.get("target", "lead")
             actor = _target_actor(target, context.case, actors)
             build_patch(spec).apply(
-                world, actor, tick=context.backend.setup_tick,
+                world, actor, tick=context.simulator.setup_tick,
                 on_spawn=lambda actor: self._resources.callback(_destroy_panel, actor),
             )
 
@@ -225,9 +225,9 @@ class PhysicalPatchIntervention(Intervention):
         return deepcopy(self.patches)
 
     def hooks(self, artifacts):
-        from avsectester.runtime import Hook
+        from avsectester.closed_loop.hooks import Hook
 
-        return (Hook("world.setup", PhysicalPatchPlugin(artifacts)),)
+        return (Hook("simulator.setup", PhysicalPatchPlugin(artifacts)),)
 
 
 def _target_actor(target: str | int, case: Any, actors: dict[str, Any]) -> Any:

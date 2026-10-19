@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
-from avsectester.runtime import Hook, HookSet, Runtime
+from avsectester.closed_loop.hooks import Hook, HookSet, Runtime
 
 if TYPE_CHECKING:
     from avsectester.scenarios.source import ScenarioInstance

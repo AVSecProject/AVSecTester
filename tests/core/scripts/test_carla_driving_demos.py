@@ -9,10 +9,10 @@ from PIL import Image
 import pytest
 import yaml
 
-from avsectester.simulators.nurec import NuRecBackend, StubRenderer
+from avsectester.closed_loop.simulators.nurec import NuRecSimulator, StubRenderer
 
 
-class CameraWorld(NuRecBackend):
+class CameraWorld(NuRecSimulator):
     def __init__(self, config, initial_color=0):
         class Renderer(StubRenderer):
             def __init__(self):
@@ -82,7 +82,7 @@ def test_physical_patch_demo_prepares_once_and_deploys_texture_before_saved_came
     Image.fromarray(np.full((8, 8, 4), [120, 10, 5, 255], np.uint8)).save(texture_path)
     output = tmp_path / "physical"
     monkeypatch.setattr(demo, "OUT", output)
-    monkeypatch.setattr(demo, "CarlaBackend", make_world)
+    monkeypatch.setattr(demo, "CarlaSimulator", make_world)
     monkeypatch.setattr(PhysicalPatch, "apply", apply)
     monkeypatch.setattr(demo.sys, "argv", [
         "carla_patch_demo", "--config", str(scene_file), "--frames", "2",
@@ -139,7 +139,7 @@ def test_camera_patch_demo_pairs_initial_scene_and_changes_model_input_before_dr
 
     output = tmp_path / "driving"
     monkeypatch.setattr(demo, "OUT", output)
-    monkeypatch.setattr(demo, "CarlaSelectionBackend", make_world)
+    monkeypatch.setattr(demo, "CarlaSelectionSimulator", make_world)
     monkeypatch.setattr(demo, "carla_rear_perturbation", make_patch)
     monkeypatch.setattr(demo, "build_detector", lambda gpu: detect)
     monkeypatch.setattr(demo, "plot_impact", plot)

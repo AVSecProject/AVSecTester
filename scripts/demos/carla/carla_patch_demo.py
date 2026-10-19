@@ -2,7 +2,7 @@
 """Physical-patch CARLA scenario as a SEQUENCE — driven and visualized through the standard pipeline.
 
 Drives the ego (a cruise stack) in ``configs/carla_patch_scenario.yaml`` with a physical patch on the
-lead car, recording a sequence through :func:`avsectester.simulators.viz.record_run` (the same
+lead car, recording a sequence through :func:`avsectester.closed_loop.simulators.viz.record_run` (the same
 pipeline every simulator uses). Each frame is overlaid with the detector's output (``detections_view``)
 so the attack's effect is visible over the sequence, then assembled into a filmstrip + GIF.
 
@@ -22,9 +22,9 @@ import yaml
 from avsectester.interventions import configured_runtime
 from avsectester.runner import run_prepared
 from avsectester.scenarios.setup import scenario_from_config
-from avsectester.simulators import carla as carla_view  # CarlaBackend + CARLA view adapters
-from avsectester.simulators.carla import CarlaBackend
-from avsectester.simulators.viz import detections_view, record_run, save_sequence
+from avsectester.closed_loop.simulators import carla as carla_view  # CarlaSimulator + CARLA view adapters
+from avsectester.closed_loop.simulators.carla import CarlaSimulator
+from avsectester.closed_loop.simulators.viz import detections_view, record_run, save_sequence
 from scripts.common.demo_common import CruiseStack, build_detector  # shared demo glue
 
 from scripts import REPO_ROOT as REPO
@@ -60,13 +60,13 @@ def main() -> int:
     )
 
     print(f"[demo] {kind} physical patch, {args.frames}-frame sequence via record_run ...")
-    instance = scenario_from_config(scenario, backend_factory=CarlaBackend)
+    instance = scenario_from_config(scenario, backend_factory=CarlaSimulator)
     runtime = configured_runtime({"patches": patches or []}, instance=instance)
 
     def record(backend, stack, frames, *, runtime):
         return record_run(
             backend, stack, frames, out_dir=OUT / "seq",
-            visualize=visualize, collect=True, runtime=runtime,
+            visualize=visualize, collect=True, hooks=runtime,
         )
 
     trace = run_prepared(

@@ -59,7 +59,7 @@ import yaml
 from avsectester.experiment import configured_stack
 from avsectester.interventions import NativeHook
 from avsectester.runner import run_prepared
-from avsectester.runtime import Hook, Runtime
+from avsectester.closed_loop.hooks import Hook, Runtime
 from avsectester.scenarios.setup import scenario_from_config
 
 config = yaml.safe_load(open("configs/carla_scenario.yaml"))

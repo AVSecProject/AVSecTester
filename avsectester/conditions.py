@@ -14,12 +14,12 @@ from typing import Any, TYPE_CHECKING
 
 import numpy as np
 
-from avsectester.plane import Observation
-from avsectester.runtime import Hook, Plugin, Runtime
+from avsectester.closed_loop.datatypes import Observation
+from avsectester.closed_loop.hooks import Hook, Plugin, Runtime
 
 if TYPE_CHECKING:
-    from avsectester.backend import WorldBackend
-    from avsectester.runtime import RunContext, StageContext
+    from avsectester.closed_loop.simulator import WorldBackend
+    from avsectester.closed_loop.hooks import RunContext, StageContext
     from avsectester.scenarios.context import FilterContext
 
 
@@ -312,8 +312,9 @@ class _SelectionScope:
             native["conditioned_observation"] = observation
             return context.derive(native=native)
         if self.session is None:
-            from avsectester.backend import AVStack, WorldBackend
-            from avsectester.plane import Control
+            from avsectester.closed_loop.avstack import AVStack
+            from avsectester.closed_loop.simulator import WorldBackend
+            from avsectester.closed_loop.datatypes import Control
 
             scope = self
 

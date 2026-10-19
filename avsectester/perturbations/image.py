@@ -10,7 +10,7 @@ whether the attack still fires (see ``docs/guides/conditions.md`` and ``docs/gui
 Backend-agnostic: a :class:`Corruption` transforms an ``(H, W, 3)`` uint8 RGB array, so this works on
 CARLA, in-process NuRec, and dataset replay (nuScenes/nuRec recorded frames) alike. CARLA additionally
 supports *world-level* weather (native ``carla.WeatherParameters`` at reset) — see
-:mod:`avsectester.simulators.carla`.
+:mod:`avsectester.closed_loop.simulators.carla`.
 
 Every operator takes ``severity`` in ``[0, 1]`` (0 ≈ identity) and a seeded ``numpy.random.Generator``,
 so runs are reproducible and the *same* corruption can be applied to the clean and attacked run of a pair
@@ -27,7 +27,7 @@ from typing import Any
 
 import numpy as np
 
-from avsectester.plane import Observation
+from avsectester.closed_loop.datatypes import Observation
 
 # ----------------------------------------------------------------------------------------------------
 # Corruption operators
@@ -454,7 +454,7 @@ def frame_perturbation(
     AV stack itself perceives the inserted object. ``carla.insertion_perturbation`` is the
     CARLA ``ImageData`` analogue. A visualization callback alone does not change model input.
     """
-    from avsectester.simulators.viz import camera_view
+    from avsectester.closed_loop.simulators.viz import camera_view
 
     def _perturb(observation: Observation) -> Observation:
         data = observation.sensor_data

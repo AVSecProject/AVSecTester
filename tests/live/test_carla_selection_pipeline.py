@@ -12,12 +12,12 @@ def test_selected_case_replays_and_inserts_into_same_frame_observation(request, 
     from PIL import Image
 
     from avsectester.insertion import AttachedPlacement, Insertion, Orientation, PlaneAsset
-    from avsectester.plane import Control
+    from avsectester.closed_loop.datatypes import Control
     from avsectester.scenarios import CarlaScenarioBuilder, RoleSpec, ScenarioRequirement
-    from avsectester.scenarios.carla_provider import CarlaCandidateProvider, CarlaSelectionBackend
+    from avsectester.scenarios.carla_provider import CarlaCandidateProvider, CarlaSelectionSimulator
     from avsectester.scenarios.requirement import InitialWindow
     from avsectester.scenarios.filters import MinVisibility
-    from avsectester.simulators.carla import camera_view, insertion_perturbation
+    from avsectester.closed_loop.simulators.carla import camera_view, insertion_perturbation
 
     config = yaml.safe_load(Path(request.config.getoption("--carla-config")).read_text())
     config.pop("patches", None)
@@ -44,7 +44,7 @@ def test_selected_case_replays_and_inserts_into_same_frame_observation(request, 
     previews = []
 
     def backend_factory(scenario):
-        backend = CarlaSelectionBackend(scenario)
+        backend = CarlaSelectionSimulator(scenario)
         previews.append(backend)
         return backend
 

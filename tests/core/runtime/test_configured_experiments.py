@@ -7,12 +7,12 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-from avsectester.backend import AVStack
+from avsectester.closed_loop.avstack import AVStack
 from avsectester.experiment import run_configured
-from avsectester.plane import Control, StateEstimate
+from avsectester.closed_loop.datatypes import Control, StateEstimate
 from avsectester.preparation import Intervention
-from avsectester.runtime import Hook, Plugin, Runtime
-from avsectester.simulators.nurec import NuRecBackend, StubRenderer
+from avsectester.closed_loop.hooks import Hook, Plugin, Runtime
+from avsectester.closed_loop.simulators.nurec import NuRecSimulator, StubRenderer
 
 
 @pytest.fixture
@@ -21,7 +21,7 @@ def configured_methods(monkeypatch):
     methods, handlers, worlds, stacks, localizers, noises = [], [], [], [], [], []
     created = Counter()
 
-    class World(NuRecBackend):
+    class World(NuRecSimulator):
         def __init__(self, config):
             super().__init__(config, renderer=StubRenderer(height=2, width=3))
             self.prepares = self.resets = self.closes = 0
@@ -148,7 +148,7 @@ def configured_methods(monkeypatch):
     monkeypatch.setitem(sys.modules, module.__name__, module)
     path = module.__name__ + ":"
     config = {
-        "backend": {"type": "NuRecBackend"}, "dt": 0.1,
+        "backend": {"type": "NuRecSimulator"}, "dt": 0.1,
         "stack": {"factory": path + "make_stack"},
         "runtime": {"hooks": [{"stage": "command", "factory": path + "make_raw_hook"}]},
         "interventions": [

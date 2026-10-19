@@ -7,8 +7,10 @@ independent of both the simulator and whether the AV stack is modular or end-to-
 from dataclasses import replace
 
 import pytest
-from avsectester.backend import AVStack, WorldBackend, run
-from avsectester.plane import Control, Observation
+from avsectester.closed_loop.avstack import AVStack
+from avsectester.closed_loop.simulator import WorldBackend
+from avsectester.backend import run
+from avsectester.closed_loop.datatypes import Control, Observation
 
 
 class ThrottleBackend(WorldBackend):

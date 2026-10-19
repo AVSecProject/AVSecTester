@@ -6,9 +6,11 @@ from collections.abc import Callable, Mapping
 from copy import copy, deepcopy
 from typing import Any, TYPE_CHECKING, TypeVar, overload
 
-from avsectester.backend import AVStack, WorldBackend, run
-from avsectester.runtime import HookSet, Runtime
-from avsectester.plane import Trace
+from avsectester.closed_loop.avstack import AVStack
+from avsectester.closed_loop.simulator import WorldBackend
+from avsectester.backend import run
+from avsectester.closed_loop.hooks import HookSet, Runtime
+from avsectester.closed_loop.datatypes import Trace
 
 Result = TypeVar("Result")
 RuntimeFactory = HookSet | Callable[[WorldBackend], HookSet] | None

@@ -122,7 +122,7 @@ output, the combined treatment is labeled `attack+defense`.
 
 ## Run offline without a GPU
 
-This example runs a clean drive without CARLA, a GPU or model weights. `NuRecBackend` with
+This example runs a clean drive without CARLA, a GPU or model weights. `NuRecSimulator` with
 `StubRenderer` renders black camera frames and moves the ego vehicle with an in-process kinematic
 model. A minimal `AVStack` reads the reported speed and returns actuator commands. `run` executes
 the driving steps and returns a `Trace`.
@@ -131,9 +131,10 @@ Save this code as `offline_drive.py`:
 
 <!-- runnable -->
 ```python
-from avsectester.backend import AVStack, run
-from avsectester.plane import Control, Observation
-from avsectester.simulators.nurec import NuRecBackend, StubRenderer
+from avsectester.closed_loop.avstack import AVStack
+from avsectester.backend import run
+from avsectester.closed_loop.datatypes import Control, Observation
+from avsectester.closed_loop.simulators.nurec import NuRecSimulator, StubRenderer
 
 
 class CruiseControl(AVStack):
@@ -152,7 +153,7 @@ class CruiseControl(AVStack):
         return Control()
 
 
-backend = NuRecBackend({"dt": 0.1}, renderer=StubRenderer())
+backend = NuRecSimulator({"dt": 0.1}, renderer=StubRenderer())
 try:
     trace = run(backend, CruiseControl(), frames=50)
 finally:

@@ -13,7 +13,7 @@ import argparse
 from pathlib import Path
 
 from avsectester.perturbations.image import CORRUPTIONS, albumentations_corruptions
-from avsectester.simulators.viz import filmstrip, save_image
+from avsectester.closed_loop.simulators.viz import filmstrip, save_image
 
 OUT = Path("tmp/compare")
 NUREC = Path("/workspace/hdd/datasets/PhysicalAI-Autonomous-Vehicles-NuRec/sample_set/26.01_release")

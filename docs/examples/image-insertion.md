@@ -24,9 +24,9 @@ adapter in a Python runtime factory, as shown in
 [Insert into the model input](#insert-into-the-model-input). The demo scripts are listed in
 [Demo scripts and outputs](#demo-scripts-and-outputs).
 
-**Code.** `avsectester/attacks/object_insertion/` (payloads), `avsectester/insertion.py`
-(insertion types), `avsectester/rendering/` (camera geometry, surface sampling, visibility,
-compositing and harmonization), `avsectester/simulators/carla.py` (`insertion_perturbation`),
+**Code.** `avsectester/attacks/object_insertion/` (payloads), `avsectester/insertion.py` (insertion
+types), `avsectester/rendering/` (camera geometry, surface sampling, visibility, compositing and
+harmonization), `avsectester/closed_loop/simulators/carla.py` (`insertion_perturbation`),
 `avsectester/scenarios/datasets/nurec.py` (`NuRecDataset.insertion_renderer`) and
 `avsectester/perturbations/image.py` (`frame_perturbation`).
 
@@ -94,7 +94,7 @@ images and is not an input attack.
 
 | Simulator | Adapter | Visibility evidence |
 |---|---|---|
-| CARLA | `insertion_perturbation(backend, insertions, ...)` with a `CarlaSelectionBackend` | Aligned depth from the backend's depth camera |
+| CARLA | `insertion_perturbation(simulator, insertions, ...)` with a `CarlaSelectionSimulator` | Aligned depth from the simulator's depth camera |
 | NuRec | `NuRecDataset.insertion_renderer(...)` wrapped by `frame_perturbation` | Labeled actor cuboids |
 
 Use `run_prepared` with a fresh compatible driving system per treatment. It prepares the shared
@@ -102,13 +102,13 @@ origin and closes the backend, including after failed runs. Runtime factories re
 before reset, so camera- and actor-dependent setup must happen lazily. Both supplied adapters read
 the camera and actor poses only when they process an image.
 
-For a scenario selected by `CarlaScenarioBuilder` with `CarlaSelectionBackend`:
+For a scenario selected by `CarlaScenarioBuilder` with `CarlaSelectionSimulator`:
 
 ```python
 from avsectester.interventions import ObservationTransform
 from avsectester.runner import run_prepared
-from avsectester.runtime import Hook, Runtime
-from avsectester.simulators.carla import insertion_perturbation
+from avsectester.closed_loop.hooks import Hook, Runtime
+from avsectester.closed_loop.simulators.carla import insertion_perturbation
 
 # scenario and stack_factory are supplied by the caller.
 def attacked_runtime(backend):
@@ -158,7 +158,7 @@ so replace the backend factory of the prepared scenario with one that uses `Traj
 ```python
 from dataclasses import replace
 
-from avsectester.simulators.nurec import TrajectoryFollower
+from avsectester.closed_loop.simulators.nurec import TrajectoryFollower
 
 # alpamayo_stack_factory is supplied by the caller.
 def trajectory_backend():

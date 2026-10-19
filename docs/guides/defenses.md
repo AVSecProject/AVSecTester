@@ -37,8 +37,8 @@ import math
 from dataclasses import replace
 
 from avsectester.backend import run
-from avsectester.runtime import Hook, Plugin, Runtime
-from avsectester.simulators.nurec import NuRecBackend, StubRenderer
+from avsectester.closed_loop.hooks import Hook, Plugin, Runtime
+from avsectester.closed_loop.simulators.nurec import NuRecSimulator, StubRenderer
 
 # CruiseControl and overreport_speed are defined in Write your first attack.
 
@@ -70,7 +70,7 @@ chains = {
     "defense, then attack": [Hook("observation", OdometryClamp()),
                              Hook("observation", overreport_speed)],
 }
-backend = NuRecBackend({"dt": 0.1}, renderer=StubRenderer(height=8, width=8))
+backend = NuRecSimulator({"dt": 0.1}, renderer=StubRenderer(height=8, width=8))
 try:
     for name, hooks in chains.items():
         trace = run(backend, CruiseControl(), frames=80, runtime=Runtime(hooks))
@@ -135,7 +135,7 @@ Then count the alarms of the attack-then-defense run:
 
 ```python
 # CruiseControl, overreport_speed and OdometryClamp are defined above.
-backend = NuRecBackend({"dt": 0.1}, renderer=StubRenderer(height=8, width=8))
+backend = NuRecSimulator({"dt": 0.1}, renderer=StubRenderer(height=8, width=8))
 try:
     trace = run(backend, CruiseControl(), frames=80, runtime=Runtime([
         Hook("observation", overreport_speed), Hook("observation", OdometryClamp()),
@@ -168,7 +168,7 @@ fresh `OdometryClamp` for every run:
 <!-- runnable -->
 ```python
 from avsectester.preparation import Intervention
-from avsectester.runtime import Hook
+from avsectester.closed_loop.hooks import Hook
 
 # OdometryClamp is defined above.
 class SpeedClamp(Intervention):
@@ -225,16 +225,16 @@ A defense needs three comparisons with the clean run from the same origin:
 treatment's runtime from the same prepared interventions:
 
 ```python
-from avsectester.metric import impact
+from avsectester.evaluation.metric import impact
 from avsectester.preparation import Treatment, prepare_intervention
 from avsectester.runner import run_prepared
-from avsectester.runtime import Runtime
+from avsectester.closed_loop.hooks import Runtime
 from avsectester.scenarios.source import ScenarioInstance
-from avsectester.simulators.nurec import NuRecBackend, StubRenderer
+from avsectester.closed_loop.simulators.nurec import NuRecSimulator, StubRenderer
 
 # CruiseControl and SpeedSpoof are defined in Implement an attack. SpeedClamp is defined above.
 scenario = ScenarioInstance(
-    factory=lambda: NuRecBackend({"dt": 0.1}, renderer=StubRenderer(height=8, width=8)),
+    factory=lambda: NuRecSimulator({"dt": 0.1}, renderer=StubRenderer(height=8, width=8)),
 )
 treatment = Treatment((
     prepare_intervention(SpeedSpoof(bias=5.0), scenario, kind="attack"),

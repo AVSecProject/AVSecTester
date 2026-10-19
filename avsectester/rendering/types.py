@@ -10,7 +10,7 @@ from typing import NamedTuple, Protocol
 import numpy as np
 
 from avsectester.insertion import ActorPose, ResolvedInsertion
-from avsectester.plane import Observation
+from avsectester.closed_loop.datatypes import Observation
 from .cameras import Camera
 
 

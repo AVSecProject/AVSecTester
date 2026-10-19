@@ -17,7 +17,7 @@ from typing import Any
 import numpy as np
 
 from avsectester.scenarios.scene import CameraCalib, EgoState, ObjectGT, SceneGT
-from avsectester.datasets.base import Dataset
+from avsectester.datasets.base import ActorState, Dataset
 
 # Classification controls target selection, never which cuboids can occlude an insertion.
 _VEHICLE_LABELS = ("automobile", "car", "truck", "bus", "trailer", "van", "vehicle")
@@ -172,26 +172,22 @@ def _rig_speed(timestamps, transforms, timestamp_us):
 class NuRecDataset(Dataset):
     """Labeled NuRec scenes on a decision timeline generated at ``time_step``.
 
-    References and source data interpolate the recorded rig trajectory and actor tracks within
-    recorded support. Native annotations are available through ``raw_metadata`` and
-    ``open_archive``. ``keyframe`` is used only by the legacy facade in
-    ``avsectester.scenarios.datasets.nurec``, whose keyframe scenes stay on recorded camera frames.
+    Each USDZ file is one scenario, identified by NuRec's own scene ID (``clipgt-<uuid>``), the
+    ID the NuRec renderer loads. Frame data and scenario starts interpolate the recorded rig
+    trajectory and actor tracks within recorded support. ``camera_id`` is NuRec's camera ID
+    (for example ``camera_front_wide_120fov``); ``camera_alias`` is the sensor name used in
+    observations and scene calibration. Native annotations are available per file through
+    ``raw_metadata`` and ``open_archive``.
     """
 
     def __init__(
         self,
         usdz_paths: list[str],
-        sensor: str = "camera_front_wide_120fov",
-        camera: str = "front",
-        keyframe: float = 0.5,
+        camera_id: str = "camera_front_wide_120fov",
+        camera_alias: str = "front",
         vehicle_labels: tuple[str, ...] = _VEHICLE_LABELS,
-        max_scenes: int | None = None,
         time_step: float = 0.1,
     ) -> None:
-        if not 0 <= keyframe <= 1:
-            raise ValueError("keyframe must be in [0, 1]")
-        if max_scenes is not None and max_scenes < 0:
-            raise ValueError("max_scenes must be nonnegative")
         if isinstance(time_step, bool) or not math.isfinite(time_step) or time_step <= 0:
             raise ValueError("time_step must be positive and finite")
         self._step_us = round(time_step * 1e6)
@@ -199,8 +195,9 @@ class NuRecDataset(Dataset):
             raise ValueError("time_step must be representable in integer microseconds")
         self.time_step = self._step_us / 1e6
         self.usdz_paths = [str(p) for p in usdz_paths]
-        self.sensor, self.camera, self.keyframe = sensor, camera, keyframe
-        self.vehicle_labels, self.max_scenes = tuple(vehicle_labels), max_scenes
+        self.camera_id, self.camera_alias = camera_id, camera_alias
+        self.vehicle_labels = tuple(vehicle_labels)
+        self._paths_by_id: dict[str, str] | None = None
 
     @classmethod
     def from_glob(cls, pattern: str, **kwargs) -> NuRecDataset:
@@ -210,14 +207,14 @@ class NuRecDataset(Dataset):
 
     @staticmethod
     def open_archive(path: str) -> zipfile.ZipFile:
-        """Open the source archive read-only. The caller closes it, preferably with ``with``."""
+        """Open the scene archive read-only. The caller closes it, preferably with ``with``."""
         return zipfile.ZipFile(path, "r")
 
     @lru_cache(maxsize=8)
     def _raw_metadata(self, path: str) -> dict[str, Any]:
         """Return uncropped annotations, including fields outside the unified scene schema.
 
-        Cached dictionaries are shared between contexts. Treat them as source data rather than
+        Cached dictionaries are shared between contexts. Treat them as dataset records rather than
         mutating them. ``open_archive`` exposes additional files without loading large assets.
         """
         with self.open_archive(path) as archive:
@@ -235,63 +232,85 @@ class NuRecDataset(Dataset):
         raw = self._raw_metadata(str(path))
         rig = raw["rig_trajectories.json"]
         traj = rig["rig_trajectories"][0]
-        key = next(k for k in rig["camera_calibrations"] if k.split("@")[0] == self.sensor)
+        key = next(k for k in rig["camera_calibrations"] if k.split("@")[0] == self.camera_id)
         cam = FThetaCamera.from_calib(rig["camera_calibrations"][key])
         ts = np.asarray(traj["cameras_frame_timestamps_us"][key], dtype=np.int64)
         transforms = np.asarray(traj["cameras_frame_T_rig_worlds"][key], dtype=float)
         return raw, traj, key, cam, ts, transforms
 
+    def scene_id(self, path: str) -> str:
+        """NuRec's scene ID of a USDZ file, as used by the NuRec renderer."""
+        _raw, traj, key, *_ = self._camera_data(path)
+        scene_id = key.split("@")[1] if "@" in key else traj.get("sequence_id")
+        if not scene_id:
+            raise ValueError(f"No NuRec scene ID in {path}")
+        return scene_id
+
+    def _paths(self) -> dict[str, str]:
+        if self._paths_by_id is None:
+            paths: dict[str, str] = {}
+            for path in self.usdz_paths:
+                scene_id = self.scene_id(path)
+                if scene_id in paths:
+                    raise ValueError(f"NuRec scene {scene_id!r} occurs in {paths[scene_id]} and {path}")
+                paths[scene_id] = path
+            self._paths_by_id = paths
+        return self._paths_by_id
+
     def _path(self, scenario_id):
-        if scenario_id not in self.usdz_paths[:self.max_scenes]:
-            raise KeyError(f"Unknown NuRec scenario: {scenario_id!r}")
-        return scenario_id
+        try:
+            return self._paths()[scenario_id]
+        except KeyError:
+            raise KeyError(f"Unknown NuRec scenario: {scenario_id!r}") from None
 
     def scenarios(self):
         from .base import ScenarioDescriptor
 
-        for path in self.usdz_paths[:self.max_scenes]:
-            yield ScenarioDescriptor(path, "nurec", {"usdz_path": path})
+        for scene_id, path in self._paths().items():
+            yield ScenarioDescriptor(scene_id, "NuRecDataset", {"usdz_path": path})
 
     def frames(self, scenario_id):
-        from .base import FrameRef
+        from .base import FrameReference
 
         *_, timestamps, _ = self._camera_data(self._path(scenario_id))
         first, last = int(timestamps[0, 0]), int(timestamps[-1, 0])
-        return tuple(FrameRef(scenario_id, i, i, t / 1e6)
+        return tuple(FrameReference(scenario_id, i, i, t / 1e6)
                      for i, t in enumerate(range(first, last + 1, self._step_us)))
 
-    def reference(self, scenario_id, frame):
-        from .base import ActorState, ReferenceFrame
+    def frame_data(self, scenario_id, frame):
+        from .base import ActorState, FrameData
 
         self.checked_frame(scenario_id, frame)
+        path = self._path(scenario_id)
         scene = self._timeline_scene(scenario_id, frame.position)
         actors = {"ego": ActorState(scene.ego.pose)}
-        for actor in self.actor_poses(scenario_id, round(frame.timestamp * 1e6)).items():
+        for actor in self.actor_poses(path, round(frame.timestamp * 1e6)).items():
             actors[actor[0]] = ActorState(actor[1].transform)
-        return ReferenceFrame(frame, scene, actors,
-                              provenance={"kind": "interpolated", "usdz_path": scenario_id,
+        return FrameData(frame, scene, actors,
+                              provenance={"kind": "interpolated", "usdz_path": path,
                                           "time_step": self.time_step,
                                           "interpolation": "linear_translation_slerp_rotation"})
 
     def native(self, scenario_id):
         return self.raw_metadata(self._path(scenario_id))
 
-    def source_data(self, scenario_id, start):
-        from .base import SourceData
+    def scenario_start(self, scenario_id, frame):
+        from .base import ScenarioStart
 
-        self.checked_frame(scenario_id, start)
-        scene = self._timeline_scene(scenario_id, start.position)
-        return SourceData("nurec", scenario_id, start, {
-            "scene": scene, "sensor": self.sensor, "camera": self.camera,
+        self.checked_frame(scenario_id, frame)
+        scene = self._timeline_scene(scenario_id, frame.position)
+        return ScenarioStart("NuRecDataset", scenario_id, frame, {
+            "scene": scene, "camera_id": self.camera_id, "camera_alias": self.camera_alias,
             "time_step": self.time_step, "interpolation": "linear_translation_slerp_rotation",
             "first_timestamp": self.frames(scenario_id)[0].timestamp,
             "terminal_timestamp": self.frames(scenario_id)[-1].timestamp,
         })
 
-    def _timeline_scene(self, path: str, position: int) -> SceneGT:
+    def _timeline_scene(self, scenario_id: str, position: int) -> SceneGT:
         """The scene at a decision-timeline position, interpolated within recorded support."""
+        path = self._path(scenario_id)
         _raw, _traj, _key, _cam, timestamps, transforms = self._camera_data(path)
-        timeline = self.frames(str(path))
+        timeline = self.frames(scenario_id)
         if not 0 <= position < len(timeline):
             raise IndexError("decision position is outside the recorded sequence")
         timestamp_us = round(timeline[position].timestamp * 1e6)
@@ -307,7 +326,7 @@ class NuRecDataset(Dataset):
         rig_from_world = np.linalg.inv(world_from_rig)
         objects = self._objects(raw["sequence_tracks.json"], timestamp_us, rig_from_world, cam)
         calib = CameraCalib(
-            self.camera, cam.width, cam.height, model=cam, cam_to_ego=cam.t_sensor_rig
+            self.camera_alias, cam.width, cam.height, model=cam, cam_to_ego=cam.t_sensor_rig
         )
         return SceneGT(
             frame,
@@ -318,13 +337,13 @@ class NuRecDataset(Dataset):
                 center=tuple((traj.get("rig_bbox") or {}).get("centroid", (0, 0, 0))),
                 extent=tuple((traj.get("rig_bbox") or {}).get("dim", (0, 0, 0))),
             ),
-            {self.camera: calib},
+            {self.camera_alias: calib},
             objects,
             source={
                 "dataset": "nurec",
                 "usdz_path": str(path),
                 "scene_id": key.split("@")[1] if "@" in key else traj.get("sequence_id"),
-                "sensor": self.sensor,
+                "camera_id": self.camera_id,
                 "frame_index": frame,
                 **(extra_source or {}),
                 "timestamp_us": timestamp_us,
@@ -340,6 +359,31 @@ class NuRecDataset(Dataset):
             tid: ActorPose(pose, extent)
             for tid, _label, extent, pose in self._track_states(tracks, timestamp_us)
         }
+
+    def actor_states(self, path: str, timestamp_us: int) -> dict[str, ActorState]:
+        """Recorded actors at this timestamp: world pose, velocity and category, by track ID.
+
+        Velocity is the position difference over one ``time_step``, backward where the track
+        exists one step earlier, otherwise forward; it is ``None`` for a single-sample track.
+        """
+        tracks = self._raw_metadata(str(path))["sequence_tracks.json"]
+        step_us = round(self.time_step * 1e6)
+        before = {tid: pose for tid, _, _, pose in self._track_states(tracks, timestamp_us - step_us)}
+        after = {tid: pose for tid, _, _, pose in self._track_states(tracks, timestamp_us + step_us)}
+        states = {}
+        for tid, label, _extent, pose in self._track_states(tracks, timestamp_us):
+            velocity = None
+            if tid in before:
+                velocity = (pose[:3, 3] - before[tid][:3, 3]) / self.time_step
+            elif tid in after:
+                velocity = (after[tid][:3, 3] - pose[:3, 3]) / self.time_step
+            vehicle = any(v in label.lower() for v in self.vehicle_labels)
+            states[tid] = ActorState(
+                np.array(pose, dtype=float),
+                None if velocity is None else tuple(float(v) for v in velocity),
+                "vehicle" if vehicle else label,
+            )
+        return states
 
     @staticmethod
     def _track_states(tracks, timestamp_us):
@@ -380,7 +424,7 @@ class NuRecDataset(Dataset):
                     center=tuple(center),
                     extent=extent,
                     yaw=math.atan2(local_pose[1, 0], local_pose[0, 0]),
-                    box2d={self.camera: box} if box else {},
+                    box2d={self.camera_alias: box} if box else {},
                     pose=local_pose.tolist(),
                 )
             )

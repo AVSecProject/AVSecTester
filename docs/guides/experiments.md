@@ -137,9 +137,9 @@ as `stack_factory`:
 
 <!-- runnable -->
 ```python
-from avsectester.backend import AVStack
+from avsectester.closed_loop.avstack import AVStack
 from avsectester.experiment import run_configured
-from avsectester.plane import Control, Observation
+from avsectester.closed_loop.datatypes import Control, Observation
 
 
 class CruiseControl(AVStack):
@@ -154,7 +154,7 @@ class CruiseControl(AVStack):
 
 
 config = {
-    "backend": {"type": "NuRecBackend", "renderer": "stub", "dt": 0.1},
+    "backend": {"type": "NuRecSimulator", "renderer": "StubRenderer", "dt": 0.1},
     "interventions": [{
         "factory": "avsectester.attacks.adaptive:SpeedFeedbackAttack",
         "kind": "attack",
@@ -198,7 +198,7 @@ it as `my_defenses.py` next to your script:
 from dataclasses import replace
 
 from avsectester.preparation import Intervention
-from avsectester.runtime import Hook
+from avsectester.closed_loop.hooks import Hook
 
 
 class ReportedSpeedClamp(Intervention):
@@ -290,11 +290,11 @@ and passes the attacked runtime as a factory:
 from dataclasses import replace
 
 from avsectester.runner import run_pair
-from avsectester.runtime import Hook, Runtime
-from avsectester.simulators.nurec import NuRecBackend, StubRenderer
+from avsectester.closed_loop.hooks import Hook, Runtime
+from avsectester.closed_loop.simulators.nurec import NuRecSimulator, StubRenderer
 
 
-backend = NuRecBackend({"dt": 0.1}, renderer=StubRenderer())
+backend = NuRecSimulator({"dt": 0.1}, renderer=StubRenderer())
 try:
     for bias in (1.0, 3.0):
         def spoof_speed(observation, context):  # report `bias` m/s more than estimated

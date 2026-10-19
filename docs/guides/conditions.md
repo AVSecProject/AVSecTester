@@ -56,10 +56,10 @@ renderer, whose camera is named `camera_front`:
 ```python
 from dataclasses import replace
 
-from avsectester.backend import AVStack
+from avsectester.closed_loop.avstack import AVStack
 from avsectester.conditions import ScenarioConditions, SensorCondition
 from avsectester.perturbations.image import AugmentationPipeline, Fog, GaussianNoise
-from avsectester.plane import Control
+from avsectester.closed_loop.datatypes import Control
 from avsectester.runner import run_prepared
 from avsectester.scenarios import scenario_from_config
 
@@ -71,7 +71,7 @@ class Cruise(AVStack):
         return Control(throttle=0.3)
 
 
-scenario = scenario_from_config({"backend": {"type": "NuRecBackend", "renderer": "stub"}})
+scenario = scenario_from_config({"backend": {"type": "NuRecSimulator", "renderer": "StubRenderer"}})
 haze = AugmentationPipeline([Fog(severity=0.3), GaussianNoise(severity=0.2)], seed=7)
 conditions = ScenarioConditions(
     world=scenario.conditions.world,                # Keep any configured world conditions.
@@ -99,17 +99,17 @@ every reset. All treatments therefore render the same weather, including on the 
 and objects in the scene.
 
 Only CARLA accepts a world condition, and only `weather`. The built-in NuRec and recorded-frame
-(`RecordedSequenceBackend`, used by nuScenes) backends accept none. CARLA weather is either a
+(`RecordedReplaySimulator`, used by nuScenes) backends accept none. CARLA weather is either a
 `carla.WeatherParameters` preset name, such as `weather: HardRainNoon`, or a mapping of CARLA's own
 parameter names, such as `cloudiness`, `precipitation`, `sun_altitude_angle`, `fog_density` and
-`wetness`. `CARLA_WEATHER_PRESETS` in `avsectester.simulators.carla` lists presets from `ClearNoon`
-to `HardRainSunset`, and any other CARLA preset also works. An unknown preset name raises
-`ValueError` at reset. A top-level `weather` key is another spelling of `conditions.world.weather`
-(see [weather](../reference/configuration.md#weather)).
+`wetness`. `CARLA_WEATHER_PRESETS` in `avsectester.closed_loop.simulators.carla` lists presets from
+`ClearNoon` to `HardRainSunset`, and any other CARLA preset also works. An unknown preset name
+raises `ValueError` at reset. A top-level `weather` key is another spelling of
+`conditions.world.weather` (see [weather](../reference/configuration.md#weather)).
 
 A backend that cannot apply a world condition rejects it instead of ignoring it.
 `scenario.make_backend()` raises `ConditionConfigurationError` and closes the backend. For example,
-NuRec raises `NuRecBackend does not support world conditions: ['weather']`. Reconstructed and
+NuRec raises `NuRecSimulator does not support world conditions: ['weather']`. Reconstructed and
 recorded scenes cannot change their lighting or weather. Use sensor conditions on them instead, and
 see [Fidelity limits](#fidelity-limits).
 
@@ -197,7 +197,7 @@ delayed camera would:
 <!-- runnable -->
 ```python
 from avsectester.perturbations.image import read_camera_rgb, write_camera_rgb
-from avsectester.runtime import Plugin
+from avsectester.closed_loop.hooks import Plugin
 
 
 class StaleCamera(Plugin):
@@ -378,7 +378,7 @@ conditions must take part in the selection decision, select again with them on t
 
 ```python
 from avsectester.runner import run_pair
-from avsectester.runtime import Runtime
+from avsectester.closed_loop.hooks import Runtime
 
 # scenario, stack_factory and attack_runtime (a Runtime) are supplied by the caller.
 backend = scenario.make_backend()

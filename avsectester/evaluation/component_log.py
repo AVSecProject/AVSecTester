@@ -19,16 +19,17 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from avsectester.closed_loop import ClosedLoopRunner, RunRequest, trace_from_log
+from avsectester.closed_loop.runner import ClosedLoopRunner, RunRequest, trace_from_log
 
 if TYPE_CHECKING:
-    from avsectester.backend import AVStack, WorldBackend
-    from avsectester.plane import Observation, Trace
-    from avsectester.runtime import Runtime
+    from avsectester.closed_loop.avstack import AVStack
+    from avsectester.closed_loop.simulator import WorldBackend
+    from avsectester.closed_loop.datatypes import Observation, Trace
+    from avsectester.closed_loop.hooks import HookSet
 
 
 @runtime_checkable
-class InstrumentedStack(Protocol):
+class InstrumentedAVStack(Protocol):
     """The **common component-logging interface** — the one thing a stack adds to be loggable.
 
     ``component_log() -> {component_name: free_output} | None`` returns the latest frame's per-component
@@ -106,21 +107,21 @@ class ComponentTrace:
 
 
 def run_logged(
-    backend: WorldBackend,
-    stack: AVStack,
+    simulator: WorldBackend,
+    avstack: AVStack,
     frames: int,
     perturb: Callable[[Observation], Observation] | None = None,
     *,
-    runtime: Runtime | None = None,
+    hooks: HookSet | None = None,
 ) -> tuple[Trace, ComponentTrace]:
-    """Drive the scenario like :func:`avsectester.backend.run`, additionally collecting the stack's
+    """Drive the scenario like :func:`avsectester.backend.run`, additionally collecting the AVStack's
     ``component_log()`` each frame. Returns the driving :class:`Trace` and the :class:`ComponentTrace`
-    (empty when the stack is not instrumented, so the call site is uniform)."""
+    (empty when the AVStack is not instrumented, so the call site is uniform)."""
     log = ClosedLoopRunner().run(
-        backend, stack, RunRequest(frames, hooks=runtime), perturb=perturb,
+        simulator, avstack, RunRequest(frames, hooks=hooks), perturb=perturb,
     )
     component = ComponentTrace(
         [StepLog(frame=record.step, stages=record.components) for record in log.steps]
-        if isinstance(stack, InstrumentedStack) else []
+        if isinstance(avstack, InstrumentedAVStack) else []
     )
     return trace_from_log(log), component

@@ -50,9 +50,9 @@ reported speed:
 
 <!-- runnable -->
 ```python
-from avsectester.backend import AVStack
+from avsectester.closed_loop.avstack import AVStack
 from avsectester.experiment import run_configured
-from avsectester.plane import Control
+from avsectester.closed_loop.datatypes import Control
 
 
 class SpeedKeeper(AVStack):
@@ -65,7 +65,7 @@ class SpeedKeeper(AVStack):
 
 
 config = {
-    "backend": {"type": "nurec", "renderer": {"type": "stub", "height": 2, "width": 2}},
+    "backend": {"type": "NuRecSimulator", "renderer": {"type": "StubRenderer", "height": 2, "width": 2}},
     "interventions": [{
         "factory": "avsectester.attacks.adaptive:SpeedFeedbackAttack",
         "options": {"target_speed": 4.0, "gain": 0.2, "max_bias": 3.0},

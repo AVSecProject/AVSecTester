@@ -8,11 +8,11 @@ import pytest
 
 from avsectester.scenarios import EgoState, SceneGT
 from avsectester.scenarios.datasets.nurec import NuRecDataset
-from avsectester.simulators.nurec import EgoPose, NuRecRenderer
+from avsectester.closed_loop.simulators.nurec import EgoPose, NuRecRenderer
 
 
 def test_nurec_factory_preserves_selected_pose_time_camera_and_reset(monkeypatch):
-    import avsectester.simulators.nurec as module
+    import avsectester.closed_loop.simulators.nurec as module
     from avsectester.rendering.cameras import planar_rig_pose
 
     pose = planar_rig_pose(12, -3, 0.7, 1.8)

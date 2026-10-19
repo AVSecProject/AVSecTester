@@ -6,9 +6,9 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from avsectester.plane import Control, Observation
-from avsectester.simulators.carla import CarlaBackend
-from avsectester.simulators.nurec import EgoPose, NuRecBackend, StubRenderer
+from avsectester.closed_loop.datatypes import Control, Observation
+from avsectester.closed_loop.simulators.carla import CarlaSimulator
+from avsectester.closed_loop.simulators.nurec import EgoPose, NuRecSimulator, StubRenderer
 
 
 class RecordingRenderer(StubRenderer):
@@ -25,7 +25,7 @@ class RecordingRenderer(StubRenderer):
 
 def test_nurec_observations_detach_pose_images_and_calibration():
     renderer = RecordingRenderer()
-    backend = NuRecBackend({"ego0": {"x": 2.0, "speed": 4.0}}, renderer=renderer)
+    backend = NuRecSimulator({"ego0": {"x": 2.0, "speed": 4.0}}, renderer=renderer)
     observation = backend.reset()
     truth = backend.ground_truth()
 
@@ -46,21 +46,21 @@ def test_nurec_observations_detach_pose_images_and_calibration():
 
 
 def test_nurec_world_interventions_change_physics_before_sensing():
-    backend = NuRecBackend({"dt": 0.1, "ego0": {"speed": 2.0}}, renderer=RecordingRenderer())
+    backend = NuRecSimulator({"dt": 0.1, "ego0": {"speed": 2.0}}, renderer=RecordingRenderer())
     emitted = []
 
     class Runtime:
         def emit(self, stage, value, *, sensor=None):
             emitted.append(stage)
-            if stage == "world.setup":
+            if stage == "simulator.setup":
                 backend.pose.x = 10
-            elif stage == "world.step.pre":
+            elif stage == "simulator.step.pre":
                 backend.pose.speed = 4
-            elif stage == "world.step.post":
+            elif stage == "simulator.step.post":
                 backend.pose.y = 3
             return value
 
-    backend._runtime = Runtime()
+    backend._dispatcher = Runtime()
     initial = backend.reset()
     moved = backend.step(Control())
 
@@ -69,17 +69,17 @@ def test_nurec_world_interventions_change_physics_before_sensing():
     assert moved.vehicle_state.y == 3
     assert moved.ego_speed == 4
     assert emitted == [
-        "world.setup", "render.pre", "render.post",
-        "world.step.pre", "world.step.post", "render.pre", "render.post",
+        "simulator.setup", "render.pre", "render.post",
+        "simulator.step.pre", "simulator.step.post", "render.pre", "render.post",
     ]
 
 
 def test_nurec_render_replacement_preserves_physical_pose_and_output_sensor_identity():
-    from avsectester.runtime import RenderRequest
+    from avsectester.closed_loop.hooks import RenderRequest
 
     renderer = RecordingRenderer()
     renderer.calibration["alternate"] = {"intrinsic": 2 * np.eye(3)}
-    backend = NuRecBackend(
+    backend = NuRecSimulator(
         {"ego0": {"x": 2.0}, "camera_aliases": {"front": "camera"}}, renderer=renderer,
     )
     sensors = []
@@ -94,7 +94,7 @@ def test_nurec_render_replacement_preserves_physical_pose_and_output_sensor_iden
                 return np.full((2, 3, 3), 123, dtype=np.uint8)
             return value
 
-    backend._runtime = Runtime()
+    backend._dispatcher = Runtime()
     observation = backend.reset()
 
     assert renderer.requests[0][0].x == 100
@@ -112,7 +112,7 @@ def test_nurec_visibility_uses_the_updated_render_camera():
     from avsectester.rendering.cameras import PinholeCamera
     from avsectester.rendering.types import InsertionGeometry
     from avsectester.rendering.visibility import CuboidVisibilityEstimator
-    from avsectester.simulators.nurec import NuRecInsertions
+    from avsectester.closed_loop.simulators.nurec import NuRecInsertions
 
     original_camera = PinholeCamera(np.array([[2, 0, 2], [0, 2, 1], [0, 0, 1]]), 4, 2)
     changed_camera = PinholeCamera(np.array([[4, 0, 4], [0, 4, 2], [0, 0, 1]]), 8, 4)
@@ -147,7 +147,7 @@ class Velocity:
 
 
 def test_carla_observation_detaches_shared_sensor_and_state_reference_graph():
-    backend = CarlaBackend({}, settle_iters=1)
+    backend = CarlaSimulator({}, settle_iters=1)
     reference = SimpleNamespace(x=np.array([1.0, 2.0, 3.0]), q=np.array([1.0, 0, 0, 0]))
     calibration = SimpleNamespace(reference=reference)
     payload = SimpleNamespace(data=np.zeros((2, 3)), calibration=calibration)
@@ -200,7 +200,7 @@ def test_carla_copy_borrows_native_capture_and_detaches_its_wrapper():
     capture = NativeCapture()
     payload = SimpleNamespace(data=capture, calibration={"matrix": np.eye(3)})
     observation = Observation(0, 0, {"lidar": payload}, vehicle_state=EgoPose())
-    copied = CarlaBackend({}).copy_observation(observation)
+    copied = CarlaSimulator({}).copy_observation(observation)
 
     assert copied.sensor_data["lidar"] is not payload
     assert copied.sensor_data["lidar"].data is capture

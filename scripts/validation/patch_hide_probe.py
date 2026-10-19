@@ -11,10 +11,10 @@ import sys
 
 import yaml
 from avsectester.attacks.patch.physical_patch import image_rgba
-from avsectester.plane import Control
+from avsectester.closed_loop.datatypes import Control
 from avsectester.rendering.harmonizers import ClassicHarmonizer, PCTNetHarmonizer
-from avsectester.simulators import carla as carla_sim
-from avsectester.scenarios.carla_provider import CarlaSelectionBackend
+from avsectester.closed_loop.simulators import carla as carla_sim
+from avsectester.scenarios.carla_provider import CarlaSelectionSimulator
 from avsectester.rendering.compositor import PatchCompositor
 from scripts.common.demo_common import build_detector, carla_rear_perturbation
 from PIL import Image
@@ -47,7 +47,7 @@ def main():
     detect = build_detector(args.gpu)
     patch = image_rgba(args.texture, 256)
 
-    backend = CarlaSelectionBackend(scen)
+    backend = CarlaSelectionSimulator(scen)
     try:
         obs = backend.reset()
         for _ in range(args.approach):

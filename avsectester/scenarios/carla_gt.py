@@ -2,7 +2,7 @@
 
 * :func:`predict_scene_gt` — **analytic**: given a scenario config + a lead placement (gap, lateral),
   compute an approximate scene without running CARLA. This is an offline preview only.
-* :func:`carla_scene_gt` — **live**: from a running ``CarlaBackend`` (ego + real vehicle actors +
+* :func:`carla_scene_gt` — **live**: from a running ``CarlaSimulator`` (ego + real vehicle actors +
   sensor calibration), for initial-scene selection and insertion geometry.
 
 SceneGT ego frame is (x forward, y left, z up); CARLA/UE is (x forward, y right, z up), so ``y`` flips.

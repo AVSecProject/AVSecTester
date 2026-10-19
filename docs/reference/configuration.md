@@ -75,9 +75,9 @@ NuRec, each driving step lasts `backend.dt` seconds.
 
 ## CARLA scene keys
 
-The scene is a CARLA scene when `backend` is omitted or `backend.type` is `CarlaBackend` or
-`carla`. With the default backend factory, `backend` may then contain only `type`. CARLA settings
-belong in `client`, `ego`, `npcs` and `lead`. `CarlaBackend` reads these four keys and the weather
+The scene is a CARLA scene when `backend` is omitted or `backend.type` is `CarlaSimulator`. With
+the default backend factory, `backend` may then contain only `type`. CARLA settings belong in
+`client`, `ego`, `npcs` and `lead`. `CarlaSimulator` reads these four keys and the weather
 condition. It ignores other scene keys. The CLI requires `client` and `ego` to be mappings.
 
 Most values are passed to avcarla, which builds the client and actors at each reset. Errors in
@@ -102,7 +102,7 @@ completes some of its keys during pair preparation.
 | `map_name` | string or `null` | `null` | Map to load. `null` keeps the server's current map. Pair preparation records the loaded map name |
 | `weather` | mapping or `null` | `null` | `carla.WeatherParameters` attribute values applied when the client connects. Pair preparation records the world's current weather here. A [weather condition](#condition-keys) is applied later and takes precedence |
 | `traffic_lights` | mapping or `null` | `null` | Per-light settings keyed by OpenDRIVE ID, each with `state`, `green_time`, `yellow_time`, `red_time` and `frozen`. Pair preparation records the lights here so that both runs start with the same lights |
-| `reset_world` | bool | `true` | Reload the world at every reset. `CarlaBackend` sets `true` when the key is omitted. Pair preparation rejects `false` |
+| `reset_world` | bool | `true` | Reload the world at every reset. `CarlaSimulator` sets `true` when the key is omitted. Pair preparation rejects `false` |
 | `strict_spawn` | bool | `false` | Disable relocation of failed spawns in the first run. Replayed spawns are always strict. See [NPCs and spawn positions](../guides/simulators.md#npcs-and-spawn-positions) |
 | `randomize_lights` | bool | `true` | Randomize traffic-light states with the client seed when `traffic_lights` is not set |
 | `prob_light_green` | float | `0.35` | Probability of a green light when randomizing |
@@ -111,7 +111,7 @@ completes some of its keys during pair preparation.
 
 ### ego
 
-The `ego` mapping is passed to the avcarla `CarlaMobileActor` constructor. `CarlaBackend`
+The `ego` mapping is passed to the avcarla `CarlaMobileActor` constructor. `CarlaSimulator`
 replaces `ego.pipeline` with an empty pipeline for the CARLA actor, because the driving system
 runs outside it.
 
@@ -169,16 +169,16 @@ error. Prefer `conditions.world.weather`.
 
 ## NuRec backend keys
 
-A NuRec scene is selected with `backend.type: NuRecBackend` or `nurec`. The default backend
-factory accepts only the keys below under `backend`. Any other key raises an error when the
-backend is constructed. Usage is explained in [NuRec](../guides/simulators.md#nurec).
+A NuRec scene is selected with `backend.type: NuRecSimulator`.
+The default backend factory accepts only the keys below under `backend`. Any other key raises an
+error when the backend is constructed. Usage is explained in [NuRec](../guides/simulators.md#nurec).
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `type` | string | required | `NuRecBackend` or `nurec` |
+| `type` | string | required | `NuRecSimulator` |
 | `scene` | any | `null` | Scene passed to the renderer at every reset. `NuRecRenderer` accepts a scene ID or a unique substring. Without one it uses its `scene_id` option, then the first available scene. `StubRenderer` ignores it |
-| `renderer` | `stub`, `nurec` or mapping | `stub` | Renderer selection. A mapping has `type` (`stub` or `nurec`) and the renderer's options, listed below |
-| `dynamics` | mapping | `{type: actuator}` | Ego dynamics. `type` is `actuator` (`KinematicBicycle`) or `trajectory` (`TrajectoryFollower`). The other keys are that model's options, listed below |
+| `renderer` | `StubRenderer`, `NuRecRenderer` or mapping | `StubRenderer` | Renderer selection. A mapping has `type` (`StubRenderer` or `NuRecRenderer`) and the renderer's options, listed below |
+| `dynamics` | mapping | `{type: KinematicBicycle}` | Ego dynamics. `type` is `KinematicBicycle` (actuator commands) or `TrajectoryFollower` (trajectory commands). The other keys are that model's options, listed below |
 | `ego0` | mapping | all zero | Initial ego pose: `x` and `y` in meters, `yaw` in radians, `speed` in m/s and `t` in seconds |
 | `dt` | float | `0.05` | Seconds per driving step, for both physics and observations. See [Dynamics and time step](../guides/simulators.md#dynamics-and-time-step) |
 | `camera_aliases` | mapping | `{}` | Native renderer camera name to the sensor ID used in `Observation.sensor_data`, for example `{camera_front: front}` |
@@ -188,10 +188,10 @@ top-level key such as `dt` is therefore also read. Keys under `backend` take pre
 
 | Renderer or dynamics | Options and defaults |
 |---|---|
-| `renderer.type: stub` | `cameras` (`[camera_front]`), `height` (`480`), `width` (`640`). Returns black images and needs no service |
-| `renderer.type: nurec` | `endpoint` (`127.0.0.1:50051`), `scene_id` (`null`), `cameras` (`[camera_front_wide_120fov]`), `calibration` (`{}`), `image_quality` (`95.0`), `start_timestamp_us` (`null`) and `start_transform` (`null`). The last two override the recorded start time and ego pose |
-| `dynamics.type: actuator` | `wheelbase` (`2.8`), `max_accel` (`3.0`), `max_brake` (`8.0`), `max_steer` (`0.6`). Accepts actuator commands |
-| `dynamics.type: trajectory` | `decel` (`4.0`), the deceleration in m/s² without a plan. Accepts trajectory commands |
+| `renderer.type: StubRenderer` | `cameras` (`[camera_front]`), `height` (`480`), `width` (`640`). Returns black images and needs no service |
+| `renderer.type: NuRecRenderer` | `endpoint` (`127.0.0.1:50051`), `scene_id` (`null`), `cameras` (`[camera_front_wide_120fov]`), `calibration` (`{}`), `image_quality` (`95.0`), `start_timestamp_us` (`null`) and `start_transform` (`null`). The last two override the recorded start time and ego pose |
+| `dynamics.type: KinematicBicycle` | `wheelbase` (`2.8`), `max_accel` (`3.0`), `max_brake` (`8.0`), `max_steer` (`0.6`). Accepts actuator commands |
+| `dynamics.type: TrajectoryFollower` | `decel` (`4.0`), the deceleration in m/s² without a plan. Accepts trajectory commands |
 
 NuRec backends accept no world conditions. Configured selection with a NuRec backend raises an
 error. Recorded NuRec selection uses a Python `Dataset`. See
@@ -251,7 +251,7 @@ a type. The driving system must provide the component stage, as the modular stac
 ### patches
 
 `patches` is a list of physical panels for CARLA. All entries form one attack intervention named
-`PhysicalPatchIntervention`, which deploys the panels at `world.setup`. The backend must provide
+`PhysicalPatchIntervention`, which deploys the panels at `simulator.setup`. The backend must provide
 CARLA setup ticks. Each panel uses one setup tick. See [Physical patch](../examples/physical-patch.md).
 
 | Key | Type | Default | Meaning |

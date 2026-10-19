@@ -18,7 +18,7 @@ as attacks you write yourself. Each example is described in the same five parts:
 | Example | Stage | Attack surface | Simulator and driving system | Execution |
 |---|---|---|---|---|
 | [Phantom injection](phantom-injection.md) | `perception.post` | Perception output inside the driving system | CARLA with the modular driving system | Static |
-| [Physical patch](physical-patch.md) | `world.setup` | The world: a textured panel on a vehicle | CARLA | Static |
+| [Physical patch](physical-patch.md) | `simulator.setup` | The world: a textured panel on a vehicle | CARLA | Static |
 | [Image insertion](image-insertion.md) | `observation` | Camera images in the model input | CARLA and NuRec | Static. Placement follows current poses |
 | [Speed-feedback adaptive attack](speed-feedback-attack.md) | `observation` | Reported speed in the model input | Any simulator | Adaptive |
 
