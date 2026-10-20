@@ -55,8 +55,9 @@
 | World setting | Simulator declarations/value validation; [Native CARLA settings](../guides/environments.md#native-carla-settings) |
 | Metric | Metric.evaluate over ComparisonGroup; [Evaluation](../guides/evaluation.md#add-a-metric) |
 
-Every added component needs tests for its observable behavior and documentation at the owning
-interface. Preserve effect timing, caller-owned resource cleanup and fresh per-run histories.
+Every added component joins its family's template test, gets tests for behavior unique to it and
+is documented at the owning interface. Preserve effect timing, caller-owned resource cleanup and
+fresh per-run histories.
 
 ## Tests and CI
 
@@ -64,12 +65,16 @@ interface. Preserve effect timing, caller-owned resource cleanup and fresh per-r
 python -m ruff check avsectester scripts tests
 python -m mypy
 NO_ALBUMENTATIONS_UPDATE=1 python -m pytest tests/core -q
-NO_ALBUMENTATIONS_UPDATE=1 python -m pytest tests/avstack -q
+NO_ALBUMENTATIONS_UPDATE=1 python -m pytest tests/avstack tests/core/closed_loop/avstacks \
+  tests/core/attack/implemented_attacks/test_implemented_attacks.py -q
 ```
 
 The core tests need CPU dependencies; avstack tests additionally need native avstack packages and
 the CARLA Python client. Neither offline group starts a simulator. Ruff checks E9 and F; mypy uses
-the explicit file list in pyproject.toml. See [Tests](../../tests/README.md).
+the explicit file list in pyproject.toml.
+
+Write as many tests as you need to verify a change, but keep them outside the repository. Commit
+only tests that follow the test design in [Writing tests](../../tests/README.md#writing-tests).
 
 For image dependencies, mount the checkout into the prepared Docker image:
 

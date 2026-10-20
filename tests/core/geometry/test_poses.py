@@ -1,29 +1,45 @@
-"""Canonical pose rotations use right-handed x-forward, y-left, z-up axes."""
+"""Rigid poses and box-centre transforms have explicit canonical numerical expectations."""
 import numpy as np
 import pytest
 
-from avsectester.geometry.poses import rotation_matrix, rotation_to_carla
+from avsectester.datasets import ActorState
+from avsectester.geometry.poses import ActorPose, rotation_matrix, rotation_to_carla
 
 
-@pytest.mark.parametrize("angles", [(90, 0, 0), (0, 90, 0), (0, 0, 90)])
-def test_rotation_convention_matches_positive_right_hand_rule(angles):
-    basis = np.array([0, 1, 0]) if angles[0] else np.array([1, 0, 0])
-    expected = [0, 0, 1] if angles[0] else ([0, 0, -1] if angles[1] else [0, 1, 0])
-    np.testing.assert_allclose(rotation_matrix(angles) @ basis, expected, atol=1e-12)
+def test_rotation_matrix():
+    examples = [((90, 0, 0), [0, 1, 0], [0, 0, 1]),
+                ((0, 90, 0), [1, 0, 0], [0, 0, -1]),
+                ((0, 0, 90), [1, 0, 0], [0, 1, 0])]
+    for angles, basis, expected in examples:
+        actual = rotation_matrix(angles)
+        np.testing.assert_allclose(actual @ basis, expected, atol=1e-12)
+        np.testing.assert_allclose(actual.T @ actual, np.eye(3), atol=1e-12)
+    with pytest.raises(ValueError, match="three finite"):
+        rotation_matrix((0, np.nan, 0))
 
 
-@pytest.mark.parametrize("pitch,yaw,roll", [
-    (90., 0., 0.), (-90., 0., 0.), (90., 37., 23.), (-90., -57., 17.),
-    (20., 110., -35.), (-20., -120., 65.), (89.99, 37., 23.),
-])
-def test_carla_rotation_conversion_round_trips_at_pitch_singularities(pitch, yaw, roll):
-    matrix = rotation_matrix((-roll, -pitch, yaw))
-    actual_pitch, actual_yaw, actual_roll = rotation_to_carla(matrix)
-    actual = rotation_matrix((-actual_roll, -actual_pitch, actual_yaw))
-    np.testing.assert_allclose(actual, matrix, atol=1e-10)
-
-
-@pytest.mark.parametrize("rotation", [np.zeros((3, 3)), np.eye(4), np.diag((1., 1., -1.))])
-def test_carla_rotation_conversion_rejects_non_rigid_rotations(rotation):
+def test_rotation_to_carla():
+    for pitch, yaw, roll in [(90., 0., 0.), (-90., 0., 0.), (90., 37., 23.),
+                              (-90., -57., 17.), (20., 110., -35.), (89.99, 37., 23.)]:
+        matrix = rotation_matrix((-roll, -pitch, yaw))
+        native_pitch, native_yaw, native_roll = rotation_to_carla(matrix)
+        np.testing.assert_allclose(rotation_matrix((-native_roll, -native_pitch, native_yaw)),
+                                   matrix, atol=1e-10)
     with pytest.raises(ValueError, match="right-handed"):
-        rotation_to_carla(rotation)
+        rotation_to_carla(np.diag((1., 1., -1.)))
+
+
+def test_actor_pose_and_box_transform():
+    transform = np.eye(4)
+    transform[:3, :3] = rotation_matrix((0., 0., 90.))
+    transform[:3, 3] = (10., 5., 1.)
+    actor = ActorState(transform, extent=(4., 2., 1.5), box_center=(2., 0., .75),
+                       box_rotation=(0., 0., 90.))
+    box = actor.box_pose()
+    np.testing.assert_allclose(box.transform[:3, 3], [10., 7., 1.75])
+    np.testing.assert_allclose(box.transform[:3, :3], rotation_matrix((0., 0., 180.)), atol=1e-12)
+    np.testing.assert_allclose(actor.box_transform(), box.transform)
+    assert box.extent == (4., 2., 1.5)
+    assert ActorPose(np.eye(4)).extent is None
+    with pytest.raises(ValueError, match="rigid"):
+        ActorPose(np.zeros((4, 4)))

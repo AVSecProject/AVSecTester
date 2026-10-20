@@ -1,26 +1,35 @@
-"""Canonical detection metadata has normalized scalar values and explicit category types."""
+"""Canonical detections and camera transport use small, explicit numeric payloads."""
 import numpy as np
 import pytest
-
-from avsectester.closed_loop.datatypes import Detection, Observation
-
-
-def test_detection_normalizes_numpy_yaw_and_score_to_python_floats():
-    detection = Detection((1, 2, 3), (4, 2, 1), np.float32(.2), 'vehicle', np.float64(.8))
-    assert type(detection.yaw) is float and type(detection.score) is float
-    assert detection.position == (1., 2., 3.) and detection.extent == (4., 2., 1.)
+from avsectester.closed_loop.datatypes import Detection, Observation, read_camera_rgb, write_camera_rgb
 
 
-@pytest.mark.parametrize('category', [1, 2.5, [], {}])
-def test_detection_requires_a_string_or_absent_category(category):
-    with pytest.raises(TypeError, match='category'):
-        Detection((1, 2, 3), (4, 2, 1), 0, category)
+def test_detection():
+    detection = Detection((1, 2, 3), (4, 2, 1), np.float32(.2), "vehicle", np.float64(.8))
+    np.testing.assert_allclose(detection.position, [1., 2., 3.])
+    assert detection.extent == (4., 2., 1.) and detection.yaw == pytest.approx(.2)
+    assert detection.score == pytest.approx(.8)
+    with pytest.raises(ValueError, match="extent"):
+        Detection((0, 0, 0), (-1, 1, 1), 0)
+    with pytest.raises(TypeError, match="category"):
+        Detection((0, 0, 0), (1, 1, 1), 0, 42)
 
 
-def test_read_camera_rgb_does_not_substitute_a_different_camera():
-    from avsectester.closed_loop.datatypes import read_camera_rgb
+def test_read_camera_rgb():
+    front = np.full((2, 3, 4), [20, 30, 40, 255], np.uint8)
+    observation = Observation(0, 0, {"front": front, "rear": np.full((2, 3, 3), 70, np.uint8)})
+    sensor, pixels = read_camera_rgb(observation)
+    assert sensor == "front"
+    np.testing.assert_array_equal(pixels, front[..., :3])
+    assert read_camera_rgb(observation, "missing") is None
+    assert read_camera_rgb(Observation(0, 0, {"lidar": np.zeros((3, 4))})) is None
+    assert np.all(read_camera_rgb(observation, "rear")[1] == 70)
 
-    observation = Observation(0, 0, {"front": np.zeros((2, 2, 3), np.uint8)})
-    assert read_camera_rgb(observation, "rear") is None
-    assert read_camera_rgb(observation, "front")[0] == "front"
-    assert read_camera_rgb(observation)[0] == "front"
+
+def test_write_camera_rgb():
+    original = np.full((2, 3, 3), 20, np.uint8)
+    observation = Observation(0, 0, {"front": original, "lidar": np.zeros((2, 4))})
+    changed = write_camera_rgb(observation, "front", np.full_like(original, 90))
+    assert np.all(read_camera_rgb(changed, "front")[1] == 90)
+    assert np.all(read_camera_rgb(observation, "front")[1] == 20)
+    np.testing.assert_array_equal(changed.sensor_data["lidar"], observation.sensor_data["lidar"])

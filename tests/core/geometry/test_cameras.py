@@ -1,43 +1,39 @@
-"""Camera projection, inverse projection and camera-to-rig axes."""
-
+"""Pinhole and polynomial fisheye cameras share projection and inverse-ray numerics."""
 import numpy as np
+import pytest
 
-from avsectester.geometry.cameras import PinholeCamera
-
-
-def test_ftheta_project_unproject_roundtrip():
-    from avsectester.geometry.cameras import FThetaCamera
-    ftheta_camera = FThetaCamera(50, 40, (0, 50), 100, 80, (0, .02))
-    rays = np.array([[0, 0, 1], [0.3, 0.1, 1], [-0.8, 0.3, 1], [1.2, -0.4, 1.0]])
-    rays /= np.linalg.norm(rays, axis=1, keepdims=True)
-    uv = ftheta_camera.project(rays * 7.0)
-    assert np.allclose(uv[0], [ftheta_camera.cx, ftheta_camera.cy])  # optical axis -> principal point
-    back = ftheta_camera.unproject(uv)
-    assert np.degrees(np.arccos(np.clip((back * rays).sum(1), -1, 1))).max() < 0.01
+from avsectester.geometry.cameras import FThetaCamera, PinholeCamera, make_pose, planar_rig_pose, transform
 
 
-def test_pinhole_roundtrip():
-    cam = PinholeCamera(np.array([[500.0, 0, 320], [0, 500.0, 240], [0, 0, 1]]), 640, 480)
-    pts = np.array([[1.0, -0.5, 4.0], [0.0, 0.0, 2.0]])
-    np.testing.assert_allclose(cam.project(pts), [[445, 177.5], [320, 240]])
-    rays = cam.unproject(cam.project(pts))
-    assert np.allclose(rays, pts / np.linalg.norm(pts, axis=1, keepdims=True))
+CAMERAS = [PinholeCamera(np.array([[50., 0., 50.], [0., 50., 40.], [0., 0., 1.]]), 100, 80),
+           FThetaCamera(50, 40, (0, 50), 100, 80, (0, .02), max_angle=1.5)]
 
 
-def test_calibrated_pinhole_projects_the_same_world_geometry():
-    lens = PinholeCamera(np.array([[50., 0., 50.], [0., 50., 40.], [0., 0., 1.]]), 100, 80)
-    np.testing.assert_allclose(lens.project([[0, 0, 10]]), [[50, 40]])
-    points = np.array([[10., -2., 1.], [10., 2., 1.], [10., 2., -1.], [10., -2., -1.]])
-    camera_from_world = np.array([[0., -1., 0.], [0., 0., -1.], [1., 0., 0.]])
-    pixels = lens.project(points @ camera_from_world.T)
-    np.testing.assert_allclose(pixels.min(axis=0), [40, 35])
-    np.testing.assert_allclose(pixels.max(axis=0), [60, 45])
+@pytest.mark.parametrize("camera,delta", [
+    pytest.param(CAMERAS[0], 10., id="pinhole"),
+    pytest.param(CAMERAS[1], np.arctan(.2) * 50, id="ftheta"),
+])
+def test_project(camera, delta):
+    points = np.array([[0., 0., 5.], [1., 0., 5.], [0., -1., 5.]])
+    pixels = camera.project(points)
+    np.testing.assert_allclose(pixels[0], [50, 40])
+    np.testing.assert_allclose(pixels[1], [50 + delta, 40])
+    np.testing.assert_allclose(pixels[2], [50, 40 - delta])
+    np.testing.assert_allclose(camera.project(points * 2), pixels)
 
 
-def test_fisheye_model_projects_and_unprojects_the_same_rays():
-    from avsectester.geometry.cameras import FThetaCamera
+@pytest.mark.parametrize("camera", CAMERAS, ids=["pinhole", "ftheta"])
+def test_unproject(camera):
+    points = np.array([[0., 0., 1.], [.3, -.2, 1.], [-.7, .5, 1.]])
+    rays = camera.unproject(camera.project(points))
+    np.testing.assert_allclose(rays, points / np.linalg.norm(points, axis=1, keepdims=True), atol=1e-10)
 
-    camera = FThetaCamera(50, 40, (0, 50), 100, 80, (0, 1 / 50), max_angle=1.5)
-    rays = np.array([[0, 0, 1], [0.3, -0.2, 1.0]])
-    rays /= np.linalg.norm(rays, axis=1, keepdims=True)
-    np.testing.assert_allclose(camera.unproject(camera.project(rays)), rays, atol=1e-10)
+
+def test_camera_world_transform():
+    world_from_rig = planar_rig_pose(10., 5., np.pi / 2)
+    rig_from_sensor = make_pose(np.eye(3), (1., 0., 2.))
+    world_from_sensor = world_from_rig @ rig_from_sensor
+    np.testing.assert_allclose(transform(world_from_sensor, [[0., 0., 0.]]), [[10., 6., 2.]])
+    point = np.array([[1., 2., 3.]])
+    np.testing.assert_allclose(transform(np.linalg.inv(world_from_sensor),
+                                        transform(world_from_sensor, point)), point)

@@ -1,48 +1,40 @@
-"""Generated frame data ownership and cache identity."""
-
-from dataclasses import replace
+"""FrameDataCache publishes complete generated sequences and returns independent copies."""
 
 import numpy as np
 import pytest
 
-from avsectester.datasets.base import (
-    ActorState, FrameData, FrameReference, ScenarioStart, SensorDataReference,
-)
 from avsectester.closed_loop.frame_data import FrameDataCache, FrameDataSequence
+from avsectester.datasets import ActorState, FrameData, FrameReference, ScenarioStart
 
 
-def frame_data():
-    frame = FrameReference("road", 0, 100, 0)
-    return FrameData(frame, {
-        "host": ActorState(np.eye(4), (1, 0, 0)),
-    }, {"front": SensorDataReference("capture", "front", 0)},
-        ego=ActorState(np.eye(4), (0, 0, 0)))
+def generated_sequence():
+    frames = tuple(FrameReference("scene", i, i, i * .1) for i in range(3))
+    return FrameDataSequence(tuple(FrameData(frame, ego=ActorState(np.eye(4))) for frame in frames), {}, {})
 
 
-def test_cache_key_covers_recipe_simulator_and_seed_and_reads_are_detached():
+def failed_generation():
+    raise RuntimeError("frame data generation failed")
+
+
+def test_frame_data_cache():
+    start = ScenarioStart("memory", "scene", FrameReference("scene", 0, 0, 0.), {"time_step": .1})
+    identity = {"type": "MemorySimulator", "environment": {"world": {}}}
+    key = FrameDataCache.key(start, identity, 7)
+    assert key == FrameDataCache.key(start, dict(reversed(list(identity.items()))), 7)
+    assert key != FrameDataCache.key(start, identity, 8)
+    assert key != FrameDataCache.key(start, {**identity, "environment": {"world": {"weather": "rain"}}}, 7)
+
     cache = FrameDataCache()
-    expected = frame_data()
-    source = ScenarioStart("CarlaDataset", "road", expected.frame, {"recipe": {"rate": 20}})
-    identity = {"version": "0.9.16", "camera": "pinhole"}
-    key = cache.key(source, identity, 1)
-    assert key != cache.key(source, identity, 2)
-    assert key != cache.key(source, {**identity, "version": "next"}, 1)
-    assert key != cache.key(replace(source, payload={"recipe": {"rate": 10}}), identity, 1)
-    calls = []
-
-    def generate():
-        calls.append(1)
-        return FrameDataSequence((expected,), {"actual_spawn": 5}, identity)
-
-    first = cache.get_or_generate(key, generate)
-    first.frames[0].ego.pose[0, 3] = 99
-    assert cache.get_or_generate(key, generate).frames[0].ego.pose[0, 3] == 0
-    assert calls == [1]
-
-
-def test_failed_generation_is_not_cached():
-    cache = FrameDataCache()
-    with pytest.raises(ValueError):
-        cache.get_or_generate("key", lambda: FrameDataSequence((), {}, {}))
+    with pytest.raises(RuntimeError, match="generation failed"):
+        cache.get_or_generate(key, failed_generation)
     with pytest.raises(KeyError):
-        cache.get("key")
+        cache.get(key)
+    incomplete = FrameDataSequence(generated_sequence().frames[1:], {}, {})
+    with pytest.raises(ValueError, match="contiguous frame positions"):
+        cache.get_or_generate(key, lambda: incomplete)
+    generated = cache.get_or_generate(key, generated_sequence)
+    generated.frames[0].ego.pose[:] = 0
+    np.testing.assert_array_equal(cache.get(key).frames[0].ego.pose, np.eye(4))
+    # A published sequence is reused; the failing generator is not needed again.
+    np.testing.assert_array_equal(cache.get_or_generate(key, failed_generation).frames[0].ego.pose,
+                                  np.eye(4))

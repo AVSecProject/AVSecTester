@@ -1,95 +1,76 @@
-"""The user's attack class: one metabuilder and two phases with trivial defaults."""
+"""Public attack contracts, segment selection and placement specifications."""
 
-import pytest
 import numpy as np
+import pytest
 
 from avsectester.attack import Attack, AttackSegment, OfflineContext
-from avsectester.attack.runtime import AttackRuntime
+from avsectester.attack.placement import (
+    AttachedPlacement, Orientation, WorldPlacement, orientation_from_spec, placement_from_spec,
+)
+from avsectester.attack.segments import split_segments
+from avsectester.closed_loop.services import ClosedLoopServices
 from avsectester.datasets import FrameReference
+from tests.fakes import MemoryDataset, MemorySimulator
 
 
-class Phantom(Attack):
-    def build_metadata(self, scenario):
-        return [scenario]
+def test_attack(tmp_path):
+    class SelectionOnlyAttack(Attack):
+        def build_metadata(self, scenario):
+            return split_segments(scenario.frames, lambda frame: True, decision_steps=2)
 
-
-def test_offline_and_online_defaults_are_trivial():
-    attack = Phantom()
-    assert attack.run_offline(OfflineContext(services=None, metadata=("segment",))) is None
-    attack.assets = {"patch": "texture"}
-    assert attack.run_offline(OfflineContext(None, ())) == {"patch": "texture"}
-    runtime = attack.create_runtime("segment", attack.assets)
-    assert type(runtime) is AttackRuntime
-    assert runtime.setup(None) == () and runtime.step(None) == ()
-
-
-def test_every_attack_builds_its_metadata():
-    with pytest.raises(TypeError, match="build_metadata"):
-        Attack()
-
-
-def test_segment_selection_fields_are_optional_validated_and_detached():
-    start, stop = (FrameReference("scene", index, index, float(index)) for index in (0, 2))
-    original = {"hosts": ["a", "b"]}
-    data = {"surface": {"offset": [0, 1, 2]}}
-    segment = AttackSegment("scene", start, stop, original, selection_score=0.7,
-                           selection_rank=0, user_data=data)
-    original["hosts"].clear()
-    data["surface"]["offset"].clear()
-    assert segment.roles == {"hosts": ("a", "b")}
-    assert segment.user_data["surface"]["offset"] == [0, 1, 2]
-    assert segment.decision_steps == 2
-    assert AttackSegment("scene", start, stop).selection_score is None
-    for score in (True, "good", float("nan"), float("inf")):
-        with pytest.raises(ValueError, match="selection_score"):
-            AttackSegment("scene", start, stop, selection_score=score)
-    for rank in (True, -1, 0.5):
-        with pytest.raises(ValueError, match="selection_rank"):
-            AttackSegment("scene", start, stop, selection_rank=rank)
-    with pytest.raises(ValueError, match="actor IDs"):
-        AttackSegment("scene", start, stop, roles={"hosts": iter(("a", ""))})
-
-
-def test_attack_artifacts_round_trip_does_not_change_attack_state(tmp_path):
-    attack = Phantom()
-    assert attack.environment == {} and not hasattr(attack, "artifacts")
-    with pytest.raises(TypeError):
-        attack.environment["world"] = {"weather": "rain"}
-    attack.environment = {"world": {"weather": "rain"}}
-    assert Phantom().environment == {}
-    original = {"texture": np.arange(24, dtype=np.uint8).reshape(2, 3, 4),
-                        "options": {"threshold": 0.3}}
-    attack.save_artifacts(original, tmp_path)
-    restored = Phantom()
-    artifacts = restored.load_artifacts(tmp_path)
-    assert not hasattr(restored, "artifacts") and not hasattr(attack, "artifacts")
-    np.testing.assert_array_equal(artifacts["texture"], original["texture"])
-    assert artifacts["options"] == original["options"]
-    payload = tmp_path / "artifacts.pkl"
-    payload.write_bytes(payload.read_bytes() + b"changed")
+    attack = SelectionOnlyAttack()
+    attack.assets = {"image": np.full((2, 3, 4), 120, np.uint8)}
+    with ClosedLoopServices(MemoryDataset(), MemorySimulator()) as services:
+        metadata = attack.build_metadata(services.scenario("scene", seed=0))
+        artifacts = attack.run_offline(OfflineContext(services, metadata))
+    assert metadata and metadata[0].decision_steps == 2
+    np.testing.assert_array_equal(artifacts["image"], attack.assets["image"])
+    attack.save_artifacts(artifacts, tmp_path)
+    restored = attack.load_artifacts(tmp_path)
+    np.testing.assert_array_equal(restored["image"], artifacts["image"])
+    (tmp_path / "artifacts.pkl").write_bytes(b"incomplete artifact")
     with pytest.raises(ValueError, match="hash"):
-        restored.load_artifacts(tmp_path)
+        attack.load_artifacts(tmp_path)
 
 
-def test_configuration_parameters_excludes_runtime_state_and_requires_explicit_hidden_parameters():
-    class Configured(Phantom):
-        def __init__(self, decision_steps):
-            self.decision_steps = decision_steps
-            self.calls = 0
+def test_attack_segment():
+    start = FrameReference("scene", 2, "frame-2", .2)
+    stop = FrameReference("scene", 5, "frame-5", .5)
+    segment = AttackSegment("scene", start, stop, roles={"host": ("lead",)},
+                           placement=AttachedPlacement("lead", "rear_center"),
+                           selection_score=.8, selection_rank=1, user_data={"label": "visible"})
+    assert segment.decision_steps == 3
+    assert segment.roles == {"host": ("lead",)}
+    assert segment.selection_score == .8 and segment.selection_rank == 1
+    with pytest.raises(ValueError, match="stop"):
+        AttackSegment("scene", stop, start)
 
-    attack = Configured(3)
-    attack.calls += 1
-    assert attack.configuration_parameters() == {"decision_steps": 3}
 
-    class Hidden(Phantom):
-        def __init__(self, threshold):
-            self._threshold = threshold
+def test_split_segments():
+    frames = tuple(FrameReference("scene", i, i, i * .1) for i in range(80))
+    eligible = lambda frame: frame.position >= 5
+    full = split_segments(frames, eligible, decision_steps=20)
+    assert [(segment.start.position, segment.stop.position) for segment in full] == [
+        (5, 25), (25, 45), (45, 65),
+    ]
+    with_tail = split_segments(frames, eligible, decision_steps=20, keep_tail=True)
+    assert [segment.decision_steps for segment in with_tail] == [20, 20, 20, 14]
+    separated = split_segments(frames[:8], lambda frame: frame.position != 2,
+                               decision_steps=2, keep_tail=True)
+    assert [(segment.start.position, segment.stop.position) for segment in separated] == [
+        (0, 2), (3, 5), (5, 7),
+    ]
+    with pytest.raises(ValueError, match="positive integer"):
+        split_segments(frames, eligible, decision_steps=0)
 
-    with pytest.raises(TypeError, match="configuration_parameters.*threshold"):
-        Hidden(.2).configuration_parameters()
 
-    class Explicit(Hidden):
-        def configuration_parameters(self):
-            return {"threshold": self._threshold}
-
-    assert Explicit(.3).configuration_parameters() == {"threshold": .3}
+def test_placement_from_spec():
+    attached = placement_from_spec({"type": "AttachedPlacement", "options": {
+        "host": "lead", "anchor": "rear_center", "offset_m": [-.1, 0., .2],
+    }})
+    np.testing.assert_allclose(attached.local_position((4., 2., 1.5)), [-2.1, 0., .2])
+    world = placement_from_spec({"type": "WorldPlacement", "options": {"position_m": [8., 1., 0.]}})
+    assert world == WorldPlacement((8., 1., 0.))
+    assert orientation_from_spec({"type": "Orientation", "options": {"mode": "face_ego"}}) == Orientation("face_ego")
+    with pytest.raises(ValueError, match="Unknown placement"):
+        placement_from_spec({"type": "UnknownPlacement"})

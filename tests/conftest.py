@@ -20,7 +20,7 @@ def pytest_collection_modifyitems(config, items):
     if not config.getoption("--run-carla"):
         skip = pytest.mark.skip(reason="Live simulator test: opt in with --run-carla")
         for item in items:
-            if "carla" in item.keywords:
+            if item.get_closest_marker("carla") is not None:
                 item.add_marker(skip)
 
 
@@ -96,11 +96,17 @@ def pipeline_config():
 
 
 @pytest.fixture
-def make_pipeline(pipeline_config):
-    from avsectester.closed_loop.avstacks.modular import ModularAVStack
+def native_observation(make_ego, make_detections):
+    """Construct an actual avstack capture with an explicit sensor-to-body mounting frame."""
+    def make(frame=0, xyzs=((20., 0., 0.),), *, ego=None, mount=(0., 0., 0.)):
+        import numpy as np
+        from avstack.geometry import ReferenceFrame
+        from avsectester.closed_loop.datatypes import Observation
 
-    def make():
-        # Register modules explicitly, so an individual test also works in a fresh process.
-        return ModularAVStack(pipeline_config).pipeline
+        ego = make_ego(t=frame * .05) if ego is None else ego
+        sensor = ReferenceFrame(np.asarray(mount, dtype=float), np.quaternion(1), ego.as_reference())
+        return Observation(frame * .05, frame, {
+            "lidar": make_detections(xyzs, reference=sensor, frame=frame),
+        }, vehicle_state=ego, ego_speed=float(np.linalg.norm(ego.velocity.x)))
 
     return make
