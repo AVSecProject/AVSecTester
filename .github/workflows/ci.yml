@@ -131,7 +131,7 @@ jobs:
           with open("pyproject.toml", "rb") as source:
               dependencies = tomllib.load(source)["project"]["dependencies"]
           recording = [d for d in dependencies if d.startswith(("pyarrow==", "numpy"))]
-          subprocess.run([sys.executable, "-m", "pip", "install", "pytest>=8,<9", *recording], check=True)
+          subprocess.run([sys.executable, "-m", "pip", "install", "pytest>=8,<10", *recording], check=True)
           PY
       - name: Test Parquet records under the driver interpreter version
         run: python -m pytest tests/core/runlog/test_runlog.py -q --junitxml=reports/runlog-python312.xml
