@@ -1,14 +1,15 @@
-"""Read recorded source frames from real nuScenes without scenario compatibility helpers."""
+"""Read recorded frames from real nuScenes when AVSECTESTER_NUSCENES_ROOT is set."""
 import os
 from pathlib import Path
 
 import pytest
 from avsectester.datasets.nuscenes import NuScenesDataset
 
-_ROOT = Path(os.environ.get('AVSECTESTER_NUSCENES_ROOT', '/workspace/hdd/datasets/nuscenes'))
+_ROOT = os.environ.get('AVSECTESTER_NUSCENES_ROOT')
 
 
-@pytest.mark.skipif(not (_ROOT / 'v1.0-trainval').is_dir(), reason='Real nuScenes data unavailable')
+@pytest.mark.skipif(_ROOT is None or not (Path(_ROOT) / 'v1.0-trainval').is_dir(),
+                    reason='Set AVSECTESTER_NUSCENES_ROOT to nuScenes v1.0-trainval data')
 def test_real_nuscenes_frames_have_actor_extent_and_calibration():
     pytest.importorskip('nuscenes.nuscenes')
     data = NuScenesDataset(str(_ROOT))

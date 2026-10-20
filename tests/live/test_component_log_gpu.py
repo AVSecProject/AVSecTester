@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-_ROOT = Path(os.environ.get("AVSECTESTER_NUSCENES_ROOT", "/workspace/hdd/datasets/nuscenes"))
+_ROOT = os.environ.get("AVSECTESTER_NUSCENES_ROOT")
 _WEIGHTS = (
     Path(__file__).resolve().parents[2] / "third_party/avstack-core/third_party/"
     "mmdetection/work_dirs/carla/faster_rcnn_r50_fpn_1x_carla_vehicle.pth"
@@ -21,8 +21,10 @@ def test_stage_capture_records_real_gpu_detector_output():
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available():
         pytest.skip("CUDA is unavailable")
-    if not (_ROOT.joinpath("v1.0-trainval").is_dir() and _WEIGHTS.is_file()):
-        pytest.skip("nuScenes trainval data or CARLA 2D detector weights are absent")
+    if _ROOT is None or not (Path(_ROOT) / "v1.0-trainval").is_dir() or not _WEIGHTS.is_file():
+        pytest.skip("Set AVSECTESTER_NUSCENES_ROOT to nuScenes trainval data and fetch the "
+                    "CARLA 2D detector weights")
+    root = Path(_ROOT)
     pytest.importorskip("avstack")
     pytest.importorskip("mmdet")
     pytest.importorskip("nuscenes.nuscenes")
@@ -36,13 +38,13 @@ def test_stage_capture_records_real_gpu_detector_output():
     from PIL import Image
 
     # real image + real camera intrinsics from the nuScenes devkit (no CAN-bus dependency)
-    nusc = NuScenes(version="v1.0-trainval", dataroot=str(_ROOT), verbose=False)
+    nusc = NuScenes(version="v1.0-trainval", dataroot=str(root), verbose=False)
     cam = nusc.get("sample_data", nusc.sample[0]["data"]["CAM_FRONT"])
     K = np.asarray(
         nusc.get("calibrated_sensor", cam["calibrated_sensor_token"])["camera_intrinsic"],
         dtype=float,
     )
-    rgb = np.asarray(Image.open(_ROOT / cam["filename"]).convert("RGB"))
+    rgb = np.asarray(Image.open(root / cam["filename"]).convert("RGB"))
     calib = CameraCalibration(
         GlobalOrigin3D, np.hstack([K, np.zeros((3, 1))]), img_shape=rgb.shape, channel_order="rgb"
     )
@@ -58,5 +60,11 @@ def test_stage_capture_records_real_gpu_detector_output():
 
     dets = det(img, frame=0)  # real inference on the GPU
 
-    # the capture path works on a real GPU neural stage: it recorded the detector's genuine output
-    assert cap.last is dets
+    # The hook passes the detector output on unchanged and records a detached copy of it.
+    recorded = cap.last
+    assert recorded is not dets and len(recorded) == len(dets)
+    for copy, detection in zip(recorded, dets):
+        assert copy is not detection
+        assert copy.obj_type == detection.obj_type and copy.score == detection.score
+        np.testing.assert_allclose(copy.box.box2d, detection.box.box2d)
+    assert cap(dets)[0] is dets
