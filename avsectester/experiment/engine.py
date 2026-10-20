@@ -12,14 +12,15 @@ from typing import Any
 from avsectester.attack import AttackSegment, OfflineContext
 from avsectester.datasets import FrameData, ScenarioStart
 from avsectester.datasets.base import nonnegative
-from avsectester.attack.runtime import AttackRuntime, OnlineContext
-from avsectester.closed_loop.avstack import AVStack
+from avsectester.attack.runtime import AttackRuntime
 from avsectester.closed_loop.environment import merge_environments, validate_environment
 from avsectester.closed_loop.frame_data import FrameDataCache
 from avsectester.closed_loop.hooks import HookSet
 from avsectester.closed_loop.runner import ClosedLoopRunner, RunRequest
-from avsectester.closed_loop.services import ClosedLoopServices, ensure_fresh
-from avsectester.closed_loop.simulator import DeploymentPlan, SimulatorRuntime
+from avsectester.closed_loop.services import (
+    ClosedLoopServices, create_avstack, create_simulator_runtime, ensure_fresh, stop_unstarted_attacks,
+)
+from avsectester.closed_loop.simulator import DeploymentPlan
 from avsectester.runlog import Recorder, RunLog
 
 from .config import ExperimentConfiguration, TreatmentConfiguration, load_configuration
@@ -180,16 +181,6 @@ def _deployment_plan(config: ExperimentConfiguration, attack_name: str,
     return DeploymentPlan(ticks)
 
 
-def _stop_unstarted_runtime(runtime: Any, segment: AttackSegment, error: BaseException) -> None:
-    """Release a constructed runtime when group initialization fails before the runner owns it."""
-    if not isinstance(runtime, AttackRuntime):
-        return
-    try:
-        runtime.stop(OnlineContext(0, "stop", segment.start.timestamp, segment.start.position))
-    except BaseException as cleanup:
-        error.add_note(f"Attack runtime cleanup also failed: {cleanup!r}")
-
-
 class _Execution:
     """Resources and failure accounting for one execute call, never retained by the config."""
 
@@ -273,14 +264,14 @@ class _Execution:
                 ticks = hooks.setup_ticks + (declared_ticks if runtime is not None else 0)
                 result.append(_Treatment(treatment, hooks, runtime, ticks))
             except BaseException as error:
-                _stop_unstarted_runtime(runtime, group.segment, error)
+                stop_unstarted_attacks((runtime,), group.segment.start, error)
                 if not isinstance(error, Exception):
                     for pending in result:
-                        _stop_unstarted_runtime(pending.attack_runtime, group.segment, error)
+                        stop_unstarted_attacks((pending.attack_runtime,), group.segment.start, error)
                     raise
                 if config.strict:
                     for pending in result:
-                        _stop_unstarted_runtime(pending.attack_runtime, group.segment, error)
+                        stop_unstarted_attacks((pending.attack_runtime,), group.segment.start, error)
                 self._failed(group, treatment, error)
         return tuple(result)
 
@@ -316,16 +307,8 @@ class _Execution:
         runner_owns_attack = False
         try:
             with ExitStack() as resources:
-                simulator_runtime = config.simulator.create_runtime(group.seed)
-                if not isinstance(simulator_runtime, SimulatorRuntime):
-                    raise TypeError("Simulator.create_runtime must return SimulatorRuntime")
-                ensure_fresh(simulator_runtime)
-                resources.callback(simulator_runtime.close)
-                avstack = config.avstack.factory(group.seed)
-                if not isinstance(avstack, AVStack):
-                    raise TypeError("DrivingAdapter.factory must return AVStack")
-                ensure_fresh(avstack)
-                resources.callback(avstack.close)
+                simulator_runtime = create_simulator_runtime(config.simulator, group.seed, resources)
+                avstack = create_avstack(config.avstack, group.seed, resources)
                 request = RunRequest(
                     group.decision_steps, hooks=treatment.hooks,
                     attacks=(treatment.attack_runtime,) if treatment.attack_runtime is not None else (),
@@ -342,7 +325,7 @@ class _Execution:
             ))
         except BaseException as error:
             if not runner_owns_attack:
-                _stop_unstarted_runtime(treatment.attack_runtime, group.segment, error)
+                stop_unstarted_attacks((treatment.attack_runtime,), group.segment.start, error)
             if not isinstance(error, Exception):
                 raise
             self._failed(group, treatment.configuration, error, deployment)
@@ -358,7 +341,7 @@ class _Execution:
             start, initialization = self._initialize_group(group, deployment)
         except BaseException as error:
             for treatment in treatments:
-                _stop_unstarted_runtime(treatment.attack_runtime, group.segment, error)
+                stop_unstarted_attacks((treatment.attack_runtime,), group.segment.start, error)
             if not isinstance(error, Exception):
                 raise
             for treatment in treatments:
@@ -369,7 +352,7 @@ class _Execution:
                 self._run_treatment(group, treatment, start, initialization, deployment)
             except BaseException as error:
                 for pending in treatments[index + 1:]:
-                    _stop_unstarted_runtime(pending.attack_runtime, group.segment, error)
+                    stop_unstarted_attacks((pending.attack_runtime,), group.segment.start, error)
                 raise
 
     def run(self) -> ExperimentResult:

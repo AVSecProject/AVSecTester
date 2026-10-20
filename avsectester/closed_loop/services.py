@@ -15,12 +15,13 @@ from threading import Lock
 from typing import Any
 
 from avsectester.attack import AttackSegment
-from avsectester.attack.runtime import AttackEffect, SensorAttackEffect, WorldAttackEffect
+from avsectester.attack.runtime import (
+    AttackEffect, AttackRuntime, OnlineContext, SensorAttackEffect, WorldAttackEffect, chain_sensor_effects,
+)
 from avsectester.closed_loop.avstack import AVStack
 from avsectester.closed_loop.runner import ClosedLoopRunner, RecordingPolicy, RunRequest
 from avsectester.datasets.base import Dataset, FrameReference, FrameData, ScenarioStart, Unavailable, nonnegative
 from avsectester.closed_loop.environment import SensorEnvironment, normalize_environment, validate_environment
-from avsectester.closed_loop.datatypes import write_camera_rgb
 from avsectester.closed_loop.datatypes import Observation
 from avsectester.closed_loop.frame_data import Initialization, FrameDataCache, FrameDataSequence
 from avsectester.closed_loop.resources import reserve, simulator_key
@@ -206,6 +207,37 @@ def ensure_fresh(resource: Any) -> Any:
     return resource
 
 
+def create_simulator_runtime(simulator: Simulator, seed: int | None,
+                             resources: ExitStack) -> SimulatorRuntime:
+    """Create a fresh simulator runtime and register its close on ``resources``."""
+    simulator_runtime = simulator.create_runtime(seed)
+    if not isinstance(simulator_runtime, SimulatorRuntime):
+        raise TypeError("Simulator.create_runtime must return a SimulatorRuntime")
+    ensure_fresh(simulator_runtime)
+    resources.callback(simulator_runtime.close)
+    return simulator_runtime
+
+
+def create_avstack(adapter: DrivingAdapter, seed: int, resources: ExitStack) -> AVStack:
+    """Create a fresh driving system and register its close on ``resources``."""
+    avstack = adapter.factory(seed)
+    if not isinstance(avstack, AVStack):
+        raise TypeError("DrivingAdapter.factory must return an AVStack")
+    ensure_fresh(avstack)
+    resources.callback(avstack.close)
+    return avstack
+
+
+def stop_unstarted_attacks(runtimes: Sequence[Any], frame: FrameReference,
+                           error: BaseException) -> None:
+    """Stop attack runtimes the runner never started; cleanup failures become notes on ``error``."""
+    for runtime in reversed([item for item in runtimes if isinstance(item, AttackRuntime)]):
+        try:
+            runtime.stop(OnlineContext(0, "stop", frame.timestamp, frame.position))
+        except BaseException as cleanup:
+            error.add_note(f"Attack runtime cleanup also failed: {cleanup!r}")
+
+
 class ClosedLoopServices:
     def __init__(
         self, dataset: Dataset, simulator: Simulator,
@@ -348,14 +380,11 @@ class ClosedLoopSession:
             self._discard_scan()
         # Renders and rollouts always start fresh. Only an effect-free frame scan is retained.
         self.services.simulator.validate_start(start)
-        simulator_runtime = ensure_fresh(self.services.simulator.create_runtime(self.seed))
-        if not isinstance(simulator_runtime, SimulatorRuntime):
-            raise TypeError("Simulator.create_runtime must return a SimulatorRuntime")
         # Callbacks run in reverse order: close the runtime, then release its reservation, so no
         # other operation can reset this server while its actors are still being destroyed.
         reservation = ExitStack()
         resources.callback(reservation.close)
-        resources.callback(simulator_runtime.close)
+        simulator_runtime = create_simulator_runtime(self.services.simulator, self.seed, resources)
         reservation.enter_context(reserve(simulator_key(simulator_runtime), self))
         simulator_runtime.resource_owner = self
         return simulator_runtime
@@ -491,16 +520,7 @@ class ClosedLoopSession:
                 observation = simulator_runtime.observe()
                 views = {request.sensor_id: simulator_runtime.sensor_view(request.sensor_id)}
                 detached_view = deepcopy(replace(views[request.sensor_id], native={}))
-                data: dict[str, Any] = {}
-                for effect in sensor:
-                    if effect.sensor not in views:
-                        views[effect.sensor] = simulator_runtime.sensor_view(effect.sensor)
-                    view = views[effect.sensor]
-                    if view.sensor not in data:
-                        data[view.sensor] = deepcopy(view.data)
-                    data[view.sensor] = effect.apply(data[view.sensor], view)
-                for name, value in data.items():
-                    observation = write_camera_rgb(observation, name, value)
+                observation = chain_sensor_effects(observation, simulator_runtime, sensor, views=views)
                 observation = SensorEnvironment(request.environment, self.seed).apply(
                     observation, request.frame.position)
                 return RenderResult(
@@ -519,9 +539,7 @@ class ClosedLoopSession:
         adapter = self.services.driving_adapter
         if adapter is None:
             raise ValueError("This service has no driving-system adapter")
-        avstack = ensure_fresh(adapter.factory(self.seed))
-        resources.callback(avstack.close)
-        return avstack
+        return create_avstack(adapter, self.seed, resources)
 
     def _get_scoring_avstack(self) -> AVStack:
         """Retain the session's scoring models, never component or rollout history."""
@@ -566,22 +584,12 @@ class ClosedLoopSession:
             runtime = ensure_fresh(request.attack.create_runtime(segment, request.artifacts))
             attacks = (runtime,)
         deployment = self.services.deployment
-
-        def stop_attacks(error: BaseException) -> None:
-            from avsectester.attack.runtime import OnlineContext
-
-            for runtime in reversed(attacks):
-                try:
-                    runtime.stop(OnlineContext(0, "stop", start.frame.timestamp, start.frame.position))
-                except BaseException as cleanup:
-                    error.add_note(f"Candidate attack cleanup also failed: {cleanup!r}")
-
         try:
             if sum(runtime.setup_ticks for runtime in attacks) > deployment.ticks:
                 raise ValueError("Candidate attack exceeds the shared deployment tick budget")
             initialization = self.initialization(start, request.environment, deployment)
         except BaseException as error:
-            stop_attacks(error)
+            stop_unstarted_attacks(attacks, start.frame, error)
             # Frame data generation precedes runner construction, but failed generation evidence
             # still belongs to the requested run and must survive without a live simulator runtime.
             recorder = None
@@ -624,7 +632,7 @@ class ClosedLoopSession:
                                               release_owned_resources=resources.close)
         except BaseException as error:
             if not runner_owns_attacks:
-                stop_attacks(error)
+                stop_unstarted_attacks(attacks, start.frame, error)
             raise
 
 

@@ -303,6 +303,7 @@ avsectester.attack.implemented_attacks.patch_attack import PatchAttack`.
 | `AttackRuntime.setup` | `setup(context: OnlineContext) -> Sequence[WorldAttackEffect]` |
 | `AttackRuntime.step` | `step(context: OnlineContext) -> Sequence[AttackEffect]` |
 | `AttackRuntime.stop` | `stop(context: OnlineContext) -> None` |
+| `chain_sensor_effects` | `chain_sensor_effects(observation: Observation, simulator_runtime: Any, effects: Sequence[SensorAttackEffect], *, views: dict[str, SensorView] \| None = None, on_applied: Callable[[SensorAttackEffect], None] \| None = None) -> Observation` |
 | `AttackDispatcher` | Class; see methods below |
 | `AttackDispatcher.__init__` | `__init__(attacks: Iterable[AttackRuntime] = (), *, observation_copy: Callable[[Observation], Observation] = deepcopy, output_recorder: Callable[[OnlineContext, str, Any], None] \| None = None) -> None` |
 | `AttackDispatcher.setup_ticks` | `setup_ticks: int` |
@@ -550,6 +551,9 @@ avsectester.attack.implemented_attacks.patch_attack import PatchAttack`.
 | `DrivingAdapter` | Class; see methods below |
 | `DrivingAdapter.__init__` | `__init__(factory: Callable[[int], AVStack], *, components: Sequence[tuple[ComponentDescriptor, Callable[..., Any]]] = (), scorers: Sequence[tuple[ScorerDescriptor, Callable[..., Any]]] = ()) -> None` |
 | `ensure_fresh` | `ensure_fresh(resource: Any) -> Any` |
+| `create_simulator_runtime` | `create_simulator_runtime(simulator: Simulator, seed: int \| None, resources: ExitStack) -> SimulatorRuntime` |
+| `create_avstack` | `create_avstack(adapter: DrivingAdapter, seed: int, resources: ExitStack) -> AVStack` |
+| `stop_unstarted_attacks` | `stop_unstarted_attacks(runtimes: Sequence[Any], frame: FrameReference, error: BaseException) -> None` |
 | `ClosedLoopServices` | Class; see methods below |
 | `ClosedLoopServices.__init__` | `__init__(dataset: Dataset, simulator: Simulator, driving_adapter: DrivingAdapter \| None = None, frame_data_cache: FrameDataCache \| None = None, *, deployment: DeploymentPlan = DeploymentPlan()) -> None` |
 | `ClosedLoopServices.close` | `close() -> None` |

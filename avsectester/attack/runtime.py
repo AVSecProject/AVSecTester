@@ -177,6 +177,36 @@ class _SetupHook:
         )
 
 
+def chain_sensor_effects(
+    observation: Observation, simulator_runtime: Any, effects: Sequence[SensorAttackEffect], *,
+    views: dict[str, SensorView] | None = None,
+    on_applied: Callable[[SensorAttackEffect], None] | None = None,
+) -> Observation:
+    """Apply sensor effects in issue order to copies of their captures and write them back.
+
+    Each effect receives the output of the previous effect on the same physical sensor, so
+    effects that address one camera through different names chain on a single copy; the sensor
+    view's own data is never modified. ``views`` holds sensor views already read for this
+    capture. ``on_applied(effect)`` runs after each effect.
+    """
+    from avsectester.closed_loop.datatypes import write_camera_rgb
+
+    views = {} if views is None else views
+    data: dict[str, Any] = {}
+    for effect in effects:
+        if effect.sensor not in views:
+            views[effect.sensor] = simulator_runtime.sensor_view(effect.sensor)
+        view = views[effect.sensor]
+        if view.sensor not in data:
+            data[view.sensor] = deepcopy(view.data)
+        data[view.sensor] = effect.apply(data[view.sensor], view)
+        if on_applied is not None:
+            on_applied(effect)
+    for sensor, value in data.items():
+        observation = write_camera_rgb(observation, sensor, value)
+    return observation
+
+
 class AttackDispatcher:
     """Internal: apply the effects of the run's attack runtimes at their points of action.
 
@@ -363,25 +393,18 @@ class AttackDispatcher:
         """Apply this decision's sensor effects to the captured observation, in issue order."""
         if not self._sensor:
             return observation
-        from avsectester.closed_loop.datatypes import write_camera_rgb
-
-        views: dict[str, SensorView] = {}
-        data: dict[str, Any] = {}
         pending, self._sensor = self._sensor, []
         context = self._last_context
         assert context is not None
-        for effect_id, effect, _attack in pending:
-            if effect.sensor not in views:
-                views[effect.sensor] = simulator_runtime.sensor_view(effect.sensor)
-            view = views[effect.sensor]
-            if view.sensor not in data:
-                data[view.sensor] = deepcopy(view.data)
-            data[view.sensor] = effect.apply(data[view.sensor], view)
-            self._receipt(effect_id, effect, context.step, "capture", context.sim_time, context.frame)
+        effect_ids = iter(effect_id for effect_id, _effect, _attack in pending)
+
+        def receipt(effect: SensorAttackEffect) -> None:
+            self._receipt(next(effect_ids), effect, context.step, "capture", context.sim_time,
+                          context.frame)
             self.receipts[-1]["render"] = dict(effect.render_metadata())
-        for sensor, value in data.items():
-            observation = write_camera_rgb(observation, sensor, value)
-        return observation
+
+        return chain_sensor_effects(observation, simulator_runtime,
+                                    [effect for _id, effect, _attack in pending], on_applied=receipt)
 
     def finish_decision(self) -> None:
         """Reject AVStack effects whose stage was skipped in this decision."""
