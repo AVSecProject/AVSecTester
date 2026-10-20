@@ -156,8 +156,9 @@ class DrivingAdapter:
 
     Callbacks receive (avstack, inputs), or (avstack, inputs, target) for scorers. Input
     schemas describe native argument conventions; adapters own conversion and warmup.
-    No mutable pipeline instance is shared between operations. Sharing model weights
-    behind separate stacks is permitted only when the factory guarantees isolation.
+    Component evaluations and rollouts use fresh AVStack instances. Scoring reuses one
+    AVStack per session to keep weights loaded; scorer callbacks must isolate each request
+    from driving history. Separate sessions and rollouts never share that instance.
     """
 
     def __init__(
@@ -203,12 +204,6 @@ def ensure_fresh(resource: Any) -> Any:
         raise RuntimeError("Resource factory returned a reused or active instance")
     resource._services_used = True
     return resource
-
-
-def _close(resource: Any) -> None:
-    close = getattr(resource, "close", None)
-    if callable(close):
-        close()
 
 
 class ClosedLoopServices:
@@ -282,6 +277,8 @@ class ClosedLoopSession:
         self._scan_key: tuple[str, Mapping[str, Any]] | None = None
         self._scan_position = -1
         self._scan_environment: SensorEnvironment | None = None
+        self._scoring_resources = ExitStack()
+        self._scoring_avstack: AVStack | None = None
 
     def __enter__(self) -> ClosedLoopSession:
         self._check()
@@ -320,7 +317,13 @@ class ClosedLoopSession:
         try:
             if not self._closed:
                 try:
-                    self._discard_scan()
+                    cleanup = ExitStack()
+                    cleanup.callback(self._scoring_resources.close)
+                    cleanup.callback(self._discard_scan)
+                    try:
+                        cleanup.close()
+                    finally:
+                        self._scoring_avstack = None
                 finally:
                     self._closed = True
                     self.services._sessions.discard(self)
@@ -352,19 +355,21 @@ class ClosedLoopSession:
         # other operation can reset this server while its actors are still being destroyed.
         reservation = ExitStack()
         resources.callback(reservation.close)
-        resources.callback(_close, simulator_runtime)
+        resources.callback(simulator_runtime.close)
         reservation.enter_context(reserve(simulator_key(simulator_runtime), self))
         simulator_runtime.resource_owner = self
         return simulator_runtime
 
-    def _sequence(self, scenario: str, environment: Mapping[str, Any]) -> FrameDataSequence:
+    def _sequence(self, scenario: str, environment: Mapping[str, Any],
+                  deployment: DeploymentPlan | None = None) -> FrameDataSequence:
+        deployment = self.services.deployment if deployment is None else deployment
         environment = normalize_environment(environment)
         dataset = self.services.dataset
         frames = tuple(dataset.frames(scenario))
         start = self._scenario_start(scenario, frames[0], environment)
         key = FrameDataCache.key(start, {
             **self.services.simulator.identity, "environment": dict(environment),
-            "deployment_ticks": self.services.deployment.ticks,
+            "deployment_ticks": deployment.ticks,
         }, self.seed)
 
         def generate() -> FrameDataSequence:
@@ -372,12 +377,19 @@ class ClosedLoopSession:
                 simulator_runtime = self._simulator_runtime(resources, start)
                 with simulator_runtime.exclusive():
                     sequence = simulator_runtime.generate_frame_data(
-                        start, frames, world=environment["world"], deployment=self.services.deployment)
+                        start, frames, world=environment["world"], deployment=deployment)
                 if tuple(record.frame for record in sequence.frames) != frames:
                     raise ValueError("Frame data generation must preserve every dataset frame")
                 return sequence
 
         return self.services.frame_data_cache.get_or_generate(key, generate)
+
+    def can_deploy_at(self, position: int) -> bool:
+        """Check a candidate boundary against this session's fixed deployment budget."""
+        from avsectester.closed_loop.simulator import can_deploy_at
+
+        return can_deploy_at(position, self.services.deployment,
+                             self.services.simulator.capture_ticks)
 
     def frame_data(self, scenario: str, frame: FrameReference,
                   environment: Mapping[str, Any] | None = None) -> FrameData:
@@ -389,12 +401,13 @@ class ClosedLoopSession:
             raise ValueError("Recorded frame data describes the recorded environment")
         return record
 
-    def initialization(self, start: ScenarioStart, environment: Mapping[str, Any]) -> Initialization | None:
+    def initialization(self, start: ScenarioStart, environment: Mapping[str, Any],
+                       deployment: DeploymentPlan | None = None) -> Initialization | None:
         """Resolve replay inputs for a selected start, using the preparation-owned cache."""
         self._check()
         if start.kind != "CarlaDataset":
             return None
-        sequence = self._sequence(start.scenario_id, environment)
+        sequence = self._sequence(start.scenario_id, environment, deployment)
         return Initialization(sequence.at(start.frame), sequence.resolved_scenario,
                               provenance=sequence.provenance)
 
@@ -463,31 +476,35 @@ class ClosedLoopSession:
             raise NotImplementedError("The simulator does not provide sensor views")
         world = [e for e in request.effects if isinstance(e, WorldAttackEffect)]
         sensor = [e for e in request.effects if isinstance(e, SensorAttackEffect)]
-        if sum(effect.setup_ticks for effect in world) > self.services.deployment.ticks:
-            raise ValueError("World effects need more setup ticks than the deployment plan")
+        deployment = self.services.deployment
+        if sum(effect.setup_ticks for effect in world) > deployment.ticks:
+            raise ValueError("Render effects exceed the shared deployment tick budget")
         start = self._scenario_start(request.scenario_id, request.frame, request.environment)
-        initialization = self.initialization(start, request.environment)
+        initialization = self.initialization(start, request.environment, deployment)
         with self._operation() as resources:
             simulator_runtime = self._simulator_runtime(resources, start)
             with simulator_runtime.exclusive():
                 # Effects register their removal on resources, which close before the runtime.
                 with simulator_runtime.bind_hooks(_WorldSetup(simulator_runtime, world, resources)):
                     simulator_runtime.reset(start, initialization, world=request.environment["world"],
-                                            deployment=self.services.deployment)
+                                            deployment=deployment)
                 observation = simulator_runtime.observe()
                 views = {request.sensor_id: simulator_runtime.sensor_view(request.sensor_id)}
+                detached_view = deepcopy(replace(views[request.sensor_id], native={}))
                 data: dict[str, Any] = {}
                 for effect in sensor:
                     if effect.sensor not in views:
                         views[effect.sensor] = simulator_runtime.sensor_view(effect.sensor)
                     view = views[effect.sensor]
-                    data[effect.sensor] = effect.apply(data.get(effect.sensor, view.data), view)
+                    if view.sensor not in data:
+                        data[view.sensor] = deepcopy(view.data)
+                    data[view.sensor] = effect.apply(data[view.sensor], view)
                 for name, value in data.items():
-                    observation = write_camera_rgb(observation, views[name].sensor, value)
+                    observation = write_camera_rgb(observation, name, value)
                 observation = SensorEnvironment(request.environment, self.seed).apply(
                     observation, request.frame.position)
                 return RenderResult(
-                    start.frame, observation, replace(views[request.sensor_id], native={}),
+                    start.frame, observation, detached_view,
                     self._provenance(start, request.environment, simulator_runtime))
 
     def components(self) -> Sequence[ComponentDescriptor]:
@@ -503,8 +520,14 @@ class ClosedLoopSession:
         if adapter is None:
             raise ValueError("This service has no driving-system adapter")
         avstack = ensure_fresh(adapter.factory(self.seed))
-        resources.callback(_close, avstack)
+        resources.callback(avstack.close)
         return avstack
+
+    def _get_scoring_avstack(self) -> AVStack:
+        """Retain the session's scoring models, never component or rollout history."""
+        if self._scoring_avstack is None:
+            self._scoring_avstack = self._avstack(self._scoring_resources)
+        return self._scoring_avstack
 
     def evaluate(self, component_id: str, inputs: Any) -> ComponentResult:
         adapter = self.services.driving_adapter
@@ -522,8 +545,8 @@ class ClosedLoopSession:
         descriptor, call = adapter.scorer_bindings[scorer_id]
         if require_grad and not descriptor.differentiable_inputs:
             raise ValueError(f"Scorer {scorer_id!r} does not support gradients")
-        with self._operation() as resources:
-            value = call(self._avstack(resources), inputs, target)
+        with self._operation():
+            value = call(self._get_scoring_avstack(), inputs, target)
             if require_grad and not getattr(value, "requires_grad", False):
                 raise ValueError(f"Scorer {scorer_id!r} returned a detached/non-differentiable value")
             return ScoreResult(value, deepcopy(descriptor), {"seed": self.seed, "require_grad": require_grad})
@@ -538,9 +561,27 @@ class ClosedLoopSession:
         if frames[-1] != segment.stop:
             raise ValueError("Candidate stop does not match the requested terminal frame")
         start = self._scenario_start(segment.scenario_id, segment.start, request.environment)
+        attacks: tuple[Any, ...] = ()
+        if request.attack is not None:
+            runtime = ensure_fresh(request.attack.create_runtime(segment, request.artifacts))
+            attacks = (runtime,)
+        deployment = self.services.deployment
+
+        def stop_attacks(error: BaseException) -> None:
+            from avsectester.attack.runtime import OnlineContext
+
+            for runtime in reversed(attacks):
+                try:
+                    runtime.stop(OnlineContext(0, "stop", start.frame.timestamp, start.frame.position))
+                except BaseException as cleanup:
+                    error.add_note(f"Candidate attack cleanup also failed: {cleanup!r}")
+
         try:
-            initialization = self.initialization(start, request.environment)
+            if sum(runtime.setup_ticks for runtime in attacks) > deployment.ticks:
+                raise ValueError("Candidate attack exceeds the shared deployment tick budget")
+            initialization = self.initialization(start, request.environment, deployment)
         except BaseException as error:
+            stop_attacks(error)
             # Frame data generation precedes runner construction, but failed generation evidence
             # still belongs to the requested run and must survive without a live simulator runtime.
             recorder = None
@@ -566,20 +607,29 @@ class ClosedLoopSession:
                     except BaseException as abort_error:
                         error.add_note(f"Reference log cleanup also failed: {abort_error!r}")
             raise
-        with self._operation() as resources:
-            simulator_runtime = self._simulator_runtime(resources, start)
-            avstack = self._avstack(resources)
-            attacks: tuple[Any, ...] = ()
-            if request.attack is not None:
-                attack_runtime = ensure_fresh(request.attack.create_runtime(segment, request.artifacts))
-                attacks = (attack_runtime,)
-            return ClosedLoopRunner().run(simulator_runtime, avstack, RunRequest(
-                request.decision_steps, hooks=HookSet(seed=self.seed),
-                attacks=attacks, recording=request.recording,
-                output_path=request.output_path, start=start, initialization=initialization,
-                environment=request.environment, deployment=self.services.deployment,
-                metadata={**self._provenance(start, request.environment, simulator_runtime), "candidate": asdict(segment)},
-            ), release_owned_resources=resources.close)
+        runner_owns_attacks = False
+        try:
+            with self._operation() as resources:
+                simulator_runtime = self._simulator_runtime(resources, start)
+                avstack = self._avstack(resources)
+                run_request = RunRequest(
+                    request.decision_steps, hooks=HookSet(seed=self.seed),
+                    attacks=attacks, recording=request.recording,
+                    output_path=request.output_path, start=start, initialization=initialization,
+                    environment=request.environment, deployment=deployment,
+                    metadata={**self._provenance(start, request.environment, simulator_runtime), "candidate": asdict(segment)},
+                )
+                runner_owns_attacks = True
+                return ClosedLoopRunner().run(simulator_runtime, avstack, run_request,
+                                              release_owned_resources=resources.close)
+        except BaseException as error:
+            if not runner_owns_attacks:
+                stop_attacks(error)
+            raise
+
+
+MAX_SELECTION_REASONS = 100
+OTHER_SELECTION_REASONS = "Other selection reasons"
 
 
 @dataclass(frozen=True)
@@ -587,17 +637,20 @@ class ScenarioView:
     scenario_id: str
     services: ClosedLoopServices
     seed: int
-    _reasons: list[str] = field(default_factory=list, repr=False, compare=False)
+    _reasons: dict[str, int] = field(default_factory=dict, repr=False, compare=False)
 
     def record_reason(self, text: str) -> None:
         """Attach a user-supplied selection explanation to this scenario's preparation record."""
         if not isinstance(text, str) or not text.strip():
             raise ValueError("A selection reason must be nonempty text")
-        self._reasons.append(text)
+        if text not in self._reasons and len(self._reasons) >= MAX_SELECTION_REASONS:
+            text = OTHER_SELECTION_REASONS
+        self._reasons[text] = self._reasons.get(text, 0) + 1
 
     @property
     def reasons(self) -> tuple[str, ...]:
-        return tuple(self._reasons)
+        """Bounded, insertion-ordered reason counts; repeated candidates add no entries."""
+        return tuple(f"{reason} (count={count})" for reason, count in self._reasons.items())
 
     @property
     def frames(self) -> Sequence[FrameReference]:

@@ -1,184 +1,145 @@
-"""The impact metric must not call an attack a success unless the clean run actually drove.
+"""RunLog metrics cover real measurements, unavailable evidence and pairwise comparisons."""
 
-Covers induced and suppressed stops, invalid driving baselines, and configurable speed and
-duration boundaries. These tests describe the current stop-based criterion.
-"""
-
+import numpy as np
 import pytest
-from avsectester.evaluation.metric import impact, plot_impact
 
-
-def test_clean_never_drove_is_inconclusive_not_success(make_trace):
-    # the exact case that motivated this: both runs ~stationary, attacked has brake frames
-    clean = make_trace([0.1, 0.15, 0.15, 0.15], [0, 0, 0, 0])
-    attacked = make_trace([0.1, 0.15, 0.15, 0.15], [0, 1, 1, 1])
-    r = impact(clean, attacked)
-    assert not r.clean_drove
-    assert not r.attack_succeeded  # induced_braking alone must NOT be a success
-    assert r.verdict.startswith("INCONCLUSIVE")
-
-
-def test_braking_without_stop_is_not_success(make_trace):
-    clean = make_trace([0, 2, 4, 5, 5, 5], [0, 0, 0, 0, 0, 0])  # cruising
-    attacked = make_trace([0, 2, 4, 3, 2, 2], [0, 0, 1, 1, 1, 1])  # slowed but ends at 2 m/s (> stop)
-    r = impact(clean, attacked)
-    assert r.clean_drove and r.induced_braking and not r.induced_stop
-    assert not r.attack_succeeded
-    assert "INDUCED BRAKING" in r.verdict
-
-
-@pytest.mark.parametrize(
-    "speeds,brakes",
-    [
-        ([0, 2, 5], [0, 0, 0]),
-        ([5, 2, 0], [0, 1, 1]),
-    ],
+from avsectester.closed_loop.datatypes import Control, Detection, WorldSnapshot
+from avsectester.evaluation import (
+    DetectionMetrics, DrivingMetrics, StopImpact, TrajectoryDeviation, UnavailableMetricValue,
 )
-def test_identical_drives_have_no_attack_impact(make_trace, speeds, brakes):
-    result = impact(make_trace(speeds, brakes), make_trace(speeds, brakes))
-    assert result.clean_drove
-    assert not result.induced_braking
-    assert not result.induced_stop
-    assert not result.attack_succeeded
-    assert result.verdict == "no impact (attack did not change the drive)"
 
 
-def test_both_runs_stop_naturally_is_not_attack_success(make_trace):
-    result = impact(make_trace([5, 2, 0], [0, 1, 1]), make_trace([5, 0, 0], [1, 1, 1]))
-    assert result.clean_drove and result.induced_braking
-    assert not result.induced_stop
-    assert not result.attack_succeeded
+def test_driving_uses_physical_speed_commands_and_role_centres(actor_factory, log_factory, group_factory):
+    values = DrivingMetrics().evaluate(group_factory({
+        "clean": log_factory([0, 3, .5], [0, 1, 1], actors={"host": actor_factory(10)})},
+        roles={"host": ("host",)}))["clean"]
+    assert values == dict(final_speed=.5, peak_speed=3, mean_speed=pytest.approx(3.5 / 3),
+                          brake_steps=2, stopped=True, min_distance=7, min_role_distance=7, collision=False)
 
 
-@pytest.mark.parametrize(
-    "peak,clean_final,attacked_final,expected",
-    [
-        (0.999, 0.999, 0.0, False),  # clean driving threshold is inclusive
-        (1.0, 1.0, 0.0, True),
-        (5.0, 5.0, 0.5, True),  # stopping threshold is inclusive
-        (5.0, 5.0, 0.501, False),
-        (5.0, 0.5, 0.0, False),  # baseline also stopped
-        (5.0, 0.501, 0.0, True),
-    ],
-)
-def test_verdict_speed_boundaries(make_trace, peak, clean_final, attacked_final, expected):
-    result = impact(
-        make_trace([0, peak, clean_final]),
-        make_trace([0, 0, attacked_final], [0, 1, 1]),
-    )
-    assert result.attack_succeeded is expected
+def test_collision_is_oriented_and_uses_local_box_centre(actor_factory, log_factory, group_factory):
+    def collision(actor):
+        return DrivingMetrics().evaluate(group_factory({
+            "clean": log_factory([1], actors={"other": actor})}))["clean"]["collision"]
+    assert collision(actor_factory(3.5, yaw=np.pi / 4)) is True
+    assert collision(actor_factory(20, box_center=(-18, 0, 0))) is True
+    assert collision(actor_factory(0, 4, yaw=np.pi / 2)) is False
+    assert collision(actor_factory(10, extent=None)).value_type == "boolean"
+    assert collision(actor_factory(10, extent=(0, 0, 0))) is False
+    assert collision(actor_factory(1, extent=(0, 0, 0))) is True
 
 
-def test_custom_speed_thresholds_are_used(make_trace):
-    clean, attacked = make_trace([0, 2, 2]), make_trace([0, 1, 0.75], [0, 1, 1])
-    assert impact(clean, attacked, stop_speed=0.8, baseline_speed=2.0).attack_succeeded
-    assert not impact(clean, attacked, stop_speed=0.7, baseline_speed=2.0).attack_succeeded
-    assert not impact(clean, attacked, stop_speed=0.8, baseline_speed=2.1).attack_succeeded
+def test_missing_values_carry_reasons_without_mutating_metric(log_factory, group_factory):
+    metric = DrivingMetrics()
+    empty = metric.evaluate(group_factory({"clean": log_factory([])}))["clean"]
+    assert all(isinstance(value, UnavailableMetricValue) for value in empty.values())
+    assert empty["final_speed"].reason
+    assert empty["stopped"].value_type == "boolean"
+    assert vars(metric) == {"stop_speed": .5}
+    run = log_factory([1])
+    run.steps[0].executed_command = Control(trajectory=[[1, 0, 0]])
+    unavailable = metric.evaluate(group_factory({"clean": run}))["clean"]["brake_steps"]
+    assert isinstance(unavailable, UnavailableMetricValue) and "actuator" in unavailable.reason
 
 
-def test_impact_reports_measurements_from_each_run(make_trace):
-    result = impact(make_trace([0, 6, 4]), make_trace([0, 3, 0.2], [0, 1, 1]))
-    assert result.clean_peak_speed == 6
-    assert result.clean_final_speed == 4
-    assert result.attacked_final_speed == 0.2
-    assert result.clean_brake_frames == 0
-    assert result.attacked_brake_frames == 2
-    assert result.clean_drove and result.induced_braking and result.induced_stop
-    assert result.attack_succeeded
-    assert "forced an unsafe stop" in result.verdict
-    assert "ATTACK SUCCEEDED" in str(result)
+def test_trajectory_is_symmetric_and_matches_decision_indices(log_factory, pair_factory):
+    metric = TrajectoryDeviation()
+    first, second = log_factory([1, 1]), log_factory([1, 1], shift=3)
+    values = metric.evaluate(pair_factory(first, second))
+    assert values == dict(mean_deviation=3, max_deviation=3, final_deviation=3)
+    assert metric.evaluate(pair_factory(second, first)) == values
+    second.steps[1].step = 9
+    assert isinstance(metric.evaluate(pair_factory(first, second))["mean_deviation"], UnavailableMetricValue)
 
 
-def test_empty_runs_are_inconclusive(make_trace):
-    result = impact(make_trace([]), make_trace([]))
-    assert not result.attack_succeeded
-    assert result.verdict.startswith("INCONCLUSIVE")
+def test_detection_greedy_matching_and_role_rates(actor_factory, log_factory, group_factory):
+    predictions = (Detection((10.1, 0, 0), (4, 2, 2), 0, "Car", .9),
+                   Detection((10.2, 0, 0), (4, 2, 2), 0, "Car", .8),
+                   Detection((30, 0, 0), (4, 2, 2), 0, "Car", .8))
+    run = log_factory([1], actors={"host": actor_factory(10), "miss": actor_factory(20)}, detections=predictions)
+    values = DetectionMetrics().evaluate(group_factory({"clean": run}, {
+        "host": ("host",), "missing": ("absent",)}))["clean"]
+    assert (values["tp"], values["fp"], values["fn"]) == (1, 2, 1)
+    assert values["precision"] == pytest.approx(1 / 3)
+    assert values["recall"] == .5 and values["f1"] == .4
+    assert values["role_detection_rate.host"] == 1
+    assert isinstance(values["role_detection_rate.missing"], UnavailableMetricValue)
+    assert "tn" not in values and "ap" not in values
 
 
-@pytest.mark.parametrize("overdrive_frames,success", [(2, False), (3, True)])
-def test_hiding_requires_a_sustained_suppression_of_the_clean_stop(
-    make_trace, overdrive_frames, success
-):
-    clean = make_trace([0, 3] + [0] * overdrive_frames)
-    attacked = make_trace([0, 3] + [3] * overdrive_frames)
-
-    result = impact(clean, attacked)
-
-    assert result.overdrive_frames == overdrive_frames
-    assert result.suppressed_stop is success
-    assert result.attack_succeeded is success
-    assert not result.induced_stop
-    if success:
-        assert "suppressed a safe stop" in result.verdict
+def test_detection_uses_true_ego_box_centres_and_category_mapping(actor_factory, log_factory, group_factory):
+    run = log_factory([1], shift=5,
+                      actors={"host": actor_factory(15, box_center=(1, 0, 0)), "far": actor_factory(100)},
+                      detections=(Detection((11, 0, 0), (4, 2, 2), 0, "Car", .9),))
+    metric = DetectionMetrics(category_map={"Car": "vehicle", "car": "vehicle"})
+    assert metric.evaluate(group_factory({"clean": run}))["clean"]["tp"] == 1
+    assert DetectionMetrics(category_map={"Car": "person", "car": "vehicle"}).evaluate(
+        group_factory({"clean": run}))["clean"]["fp"] == 1
+    rotated = log_factory([1], actors={"host": actor_factory(0, 10)},
+                          detections=(Detection((10, 0, 0), (4, 2, 2), 0),))
+    rotated.steps[0].physical_pre = WorldSnapshot(0, 0, ego=actor_factory(yaw=np.pi / 2),
+                                                 actors=rotated.steps[0].physical_pre.actors)
+    assert DetectionMetrics().evaluate(group_factory({"clean": rotated}))["clean"]["tp"] == 1
 
 
-def test_hiding_success_survives_a_late_stop(make_trace):
-    clean = make_trace([0, 3, 0, 0, 0, 0])
-    attacked = make_trace([0, 3, 3, 3, 3, 0])
-
-    result = impact(clean, attacked)
-
-    assert result.attacked_final_speed == 0
-    assert result.overdrive_frames == 3
-    assert result.suppressed_stop and result.attack_succeeded
-
-
-def test_hiding_without_a_driving_baseline_is_inconclusive(make_trace):
-    result = impact(make_trace([0, 0, 0, 0]), make_trace([0, 3, 3, 3]))
-
-    assert result.overdrive_frames == 3
-    assert not result.attack_succeeded
-    assert result.verdict.startswith("INCONCLUSIVE")
+def test_detection_range_filters_predictions_and_truths_in_bev(actor_factory, log_factory, group_factory):
+    run = log_factory([1], actors={"near": actor_factory(5, z=100), "far": actor_factory(100)},
+                      detections=(Detection((5, 0, 100), (0, 0, 0), 0),
+                                  Detection((100, 0, 0), (0, 0, 0), 0)))
+    assert DetectionMetrics(max_range=10).evaluate(group_factory({"run": run}))["run"]["tp"] == 1
+    assert DetectionMetrics(max_range=10).evaluate(group_factory({"run": run}))["run"]["fp"] == 0
+    assert DetectionMetrics(max_range=None).evaluate(group_factory({"run": run}))["run"]["tp"] == 2
+    metric = DetectionMetrics(category_map={"car": "car"})
+    run.steps[0].physical_pre.actors["near"] = actor_factory(5, category=None)
+    assert metric.evaluate(group_factory({"run": run}))["run"]["tp"] == 0
 
 
-def test_hiding_uses_custom_duration_and_speed_thresholds(make_trace):
-    clean = make_trace([0, 3, 0.7, 0.7, 0.7])
-    attacked = make_trace([0, 3, 2.0, 2.1, 2.1])
-    options = dict(stop_speed=0.7, baseline_speed=2.0)
-
-    result = impact(clean, attacked, min_overdrive_frames=2, **options)
-
-    # At the baseline speed the attacked ego does not count as overdriving.
-    # at the stop threshold the clean ego does count as stopped.
-    assert result.overdrive_frames == 2
-    assert result.suppressed_stop and result.attack_succeeded
-    assert not impact(clean, attacked, min_overdrive_frames=3, **options).attack_succeeded
+def test_detection_unavailable_and_empty_ratios_are_explicit(log_factory, group_factory):
+    with pytest.raises(ValueError, match="TestDriver"):
+        DetectionMetrics().evaluate(group_factory({"clean": log_factory([1], detections=None)}))
+    values = DetectionMetrics().evaluate(group_factory({"clean": log_factory([1])}))["clean"]
+    assert values["tp"] == values["fp"] == values["fn"] == 0
+    assert all(isinstance(values[name], UnavailableMetricValue) for name in ("precision", "recall", "f1"))
+    run = log_factory([1])
+    run.steps[0].physical_pre = WorldSnapshot(0, 0)
+    assert isinstance(DetectionMetrics().evaluate(group_factory({"clean": run}))["clean"]["tp"], UnavailableMetricValue)
 
 
-def test_comparison_reports_measurements_without_an_attack_verdict(make_trace):
-    result = impact(make_trace([0, 2, 5]), make_trace([0, 1, 0], [0, 1, 1]))
-    comparison = result.comparison("defense")
-    assert "defense: final_speed= 0.00" in comparison and "clean:" in comparison
-    assert "ATTACK" not in comparison and "=>" not in comparison
-    assert str(result) == f"{result.comparison('attacked')}\n=> {result.verdict}"
+def test_stop_impact_reports_both_directions_and_duration_boundaries(log_factory, pair_factory):
+    first, second = log_factory([0, 3, 0, 0, 0]), log_factory([0, 3, 2, 2, 2])
+    values = StopImpact().evaluate(pair_factory(first, second))
+    assert values["a_to_b.reference_drove"] is True
+    assert values["a_to_b.suppressed_stop"] is True
+    assert values["a_to_b.overdrive_steps"] == 3
+    assert values["b_to_a.induced_stop"] is True
+    assert StopImpact(min_overdrive_steps=4).evaluate(pair_factory(first, second))["a_to_b.suppressed_stop"] is False
+    result = StopImpact().evaluate(pair_factory(log_factory([0, 3, 3]), log_factory([0, 3, .5], [0, 1, 1])))
+    assert result["a_to_b.induced_braking"] and result["a_to_b.induced_stop"]
+    assert "attack_succeeded" not in result
 
 
-@pytest.mark.parametrize("label,show_verdict", [
-    ("defense", False), ("baseline", False), ("attacked", True), ("attack+defense", True),
+@pytest.mark.parametrize("constructor,kwargs", [
+    (DrivingMetrics, {"stop_speed": -1}), (DetectionMetrics, {"max_range": 0}),
+    (DetectionMetrics, {"match_distance": float("inf")}), (StopImpact, {"min_overdrive_steps": 0}),
 ])
-def test_plot_labels_and_caption_match_the_comparison(
-    monkeypatch, make_trace, tmp_path, label, show_verdict,
-):
-    from matplotlib.figure import Figure
+def test_metric_options_are_validated(constructor, kwargs):
+    with pytest.raises(ValueError):
+        constructor(**kwargs)
 
-    captured = {}
-    save = Figure.savefig
 
-    def inspect(figure, *args, **kwargs):
-        captured["caption"] = [text.get_text() for text in figure.texts if text is not figure._suptitle]
-        captured["title"] = figure._suptitle.get_text()
-        captured["legends"] = [
-            [text.get_text() for text in axes.get_legend().get_texts()] for axes in figure.axes
-        ]
-        return save(figure, *args, **kwargs)
+def test_missing_extent_does_not_discard_recorded_box_centre(actor_factory, log_factory, group_factory):
+    run = log_factory([1], actors={"host": actor_factory(10, extent=None, box_center=(1, 0, 0))},
+                      detections=(Detection((11, 0, 0), (4, 2, 2), 0),))
+    values = DrivingMetrics().evaluate(group_factory({"run": run}))["run"]
+    assert values["min_distance"] == 10
+    assert isinstance(values["collision"], UnavailableMetricValue)
+    assert DetectionMetrics().evaluate(group_factory({"run": run}))["run"]["tp"] == 1
 
-    monkeypatch.setattr(Figure, "savefig", inspect)
-    clean, treated = make_trace([0, 2, 5]), make_trace([0, 1, 0], [0, 1, 1])
-    result = impact(clean, treated)
-    path = tmp_path / "comparison.png"
-    plot_impact(clean, treated, str(path), result=result, treated_label=label, show_verdict=show_verdict)
-    assert captured["caption"] == ([result.verdict] if show_verdict else [])
-    assert all(legend == ["clean", label] or legend == [label, "clean"] for legend in captured["legends"])
-    assert label in captured["title"]
-    assert ("Adversarial attack" in captured["title"]) is show_verdict
-    assert path.read_bytes().startswith(b"\x89PNG")
+
+def test_empty_pair_and_missing_pose_return_explained_fields(log_factory, pair_factory):
+    values = StopImpact().evaluate(pair_factory(log_factory([]), log_factory([1])))
+    assert all(isinstance(value, UnavailableMetricValue) for value in values.values())
+    assert values["a_to_b.induced_stop"].value_type == "boolean"
+    first, second = log_factory([1]), log_factory([1])
+    second.steps[0].physical_post = None
+    assert isinstance(TrajectoryDeviation().evaluate(pair_factory(first, second))["mean_deviation"], UnavailableMetricValue)

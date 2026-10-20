@@ -6,8 +6,7 @@ runtime owns the world, clock, current capture and native connections until it i
 Concrete runtimes implement native initialization, one native advance and one native capture.
 The runtime base owns the shared order: scenario-start reset, pre-roll, deployment window,
 capture. It also owns the process-local reservation of the simulated world and its read-only
-clock. Legacy ``WorldBackend`` implementations run through an internal adapter with the same
-surface.
+clock.
 """
 from __future__ import annotations
 
@@ -32,88 +31,6 @@ if TYPE_CHECKING:
     from avsectester.geometry.cameras import Camera
 
 
-class WorldBackend(_StageAdapter, ABC):
-    """Legacy world interface and the base of ``Simulator``; removed as a public base in phase 4.
-
-    A world that renders sensor data and applies shared physical control.
-
-    Owns the world state and the ego dynamics. The AV stack never sees world state, only the
-    :class:`~avsectester.closed_loop.datatypes.Observation`. ``step`` applies a :class:`~avsectester.closed_loop.datatypes.Control`
-    through the shared physics, advances the world + traffic, renders the next sensors, and returns
-    the next Observation. The causal invariant (so the loop serializes over gRPC): a control at
-    frame *t* affects frame *t+1*, never the already-emitted sensors of frame *t*.
-    """
-
-    # Simulator initialization steps required by world-deployment plugins. These do not
-    # produce driving records and must be matched across comparison runs.
-    setup_ticks: int = 0
-
-    @property
-    def command_modes(self) -> frozenset[str] | None:
-        """Command representations consumed by this simulator, or None if undeclared.
-
-        Built-in modes are ``actuator`` and ``trajectory``. A custom adapter can retain
-        its existing command semantics by leaving the declaration unset.
-        """
-        return None
-
-    def validate_command(self, command: Control) -> None:
-        """Reject active command fields that this simulator would silently ignore."""
-        validate_command_modes(command, self.command_modes)
-
-    def configure_conditions(self, world: Mapping[str, Any]) -> None:
-        """Configure supported world conditions for subsequent resets.
-
-        Custom simulators override this method to validate and apply their own world
-        parameters. Unimplemented conditions fail instead of silently doing nothing.
-        """
-        if world:
-            raise ValueError(f"{type(self).__name__} does not support world conditions: {sorted(world)}")
-
-    @abstractmethod
-    def reset(self) -> Observation:
-        """Build the world, spawn the ego + traffic, and return the first Observation."""
-
-    @abstractmethod
-    def step(self, control: Control) -> Observation:
-        """Apply ``control`` via the shared dynamics, advance one frame, return the Observation."""
-
-    def close(self) -> None:
-        """Release simulator resources. Optional."""
-
-    def copy_observation(self, observation: Observation) -> Observation:
-        """Detach the complete mutable data graph before model-visible processing.
-
-        Native sensor captures that cannot be copied require a simulator override documenting
-        which buffers are borrowed and how to replace them safely. Do not copy SDK handles.
-        """
-        return deepcopy(observation)
-
-    def _remember_ground_truth(self, observation: Observation) -> None:
-        self._truth = deepcopy(WorldSnapshot(
-            observation.t, observation.frame, observation.vehicle_state, observation.ego_speed,
-        ))
-
-    def ground_truth(self) -> WorldSnapshot:
-        """Return an independent true-state snapshot, never an attacked Observation.
-
-        The default captures raw observations at reset/step for ideal-state custom simulators.
-        Simulators returning estimated states must override this using their physical state.
-        """
-        truth = getattr(self, "_truth", None)
-        if truth is None:
-            raise RuntimeError("Simulator has not produced a world state yet")
-        return deepcopy(truth)
-
-    def prepare_clean_attack_pair(self) -> None:
-        """Prepare consecutive resets to replay one initial scene for clean and attack.
-
-        Deterministic simulators need no extra preparation. Simulators with random scene choices or
-        spawn fallback must resolve them once and replay the first run's actual initial settings.
-        Subsequent world dynamics remain responsive to each run's controls.
-        """
-
-
 @dataclass(frozen=True)
 class DeploymentPlan:
     """Shared tick budget for all treatments, including reference generation.
@@ -130,12 +47,32 @@ class DeploymentPlan:
         nonnegative(self.ticks, "deployment ticks")
 
 
+def can_deploy_at(position: int, deployment: DeploymentPlan, capture_ticks: int) -> bool:
+    """Whether deployment can preserve this selected decision boundary.
+
+    Frame zero permits a held-origin setup; later boundaries need enough preceding ticks
+    for the shared deployment budget and the simulator's capture latency.
+    """
+    nonnegative(position, "position")
+    nonnegative(capture_ticks, "capture ticks")
+    return position == 0 or position >= deployment.ticks + capture_ticks
+
+
 @dataclass(frozen=True)
 class ClockSnapshot:
     """Physical simulator time and frame, never a model-visible timestamp."""
 
     t: float
     frame: int
+
+
+@dataclass(frozen=True)
+class SensorGeometry:
+    """Physical optical-camera geometry at one capture, without image or SDK handles."""
+
+    sensor: str
+    camera: Camera
+    cam_from_world: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -235,9 +172,6 @@ class SimulatorRuntime(_StageAdapter, ABC):
     same world. Declarations come from ``simulator``.
     """
 
-    # Simulator initialization steps required by legacy world-deployment plugins. They do not
-    # produce driving records and must be matched across comparison runs.
-    setup_ticks: int = 0
     # Owner of the process-local world reservation. Services set it so that the nested
     # operations of one session share their reservation.
     resource_owner: object | None = None
@@ -309,14 +243,6 @@ class SimulatorRuntime(_StageAdapter, ABC):
         """Reject active command fields that this simulator would silently ignore."""
         validate_command_modes(command, self.command_modes)
 
-    def configure_conditions(self, world: Mapping[str, Any]) -> None:
-        """Legacy: configure world conditions for subsequent resets of this runtime."""
-        if world:
-            raise ValueError(f"{type(self).__name__} does not support world conditions: {sorted(world)}")
-
-    def prepare_clean_attack_pair(self) -> None:
-        """Legacy: make consecutive resets replay one initial scene for clean and attack."""
-
     def copy_observation(self, observation: Observation) -> Observation:
         """Detach the complete mutable data graph before model-visible processing.
 
@@ -357,6 +283,15 @@ class SimulatorRuntime(_StageAdapter, ABC):
             raise RuntimeError("Reset the simulator before requesting its state")
         return self._state()
 
+    @property
+    def camera_sensors(self) -> frozenset[str]:
+        """Explicit camera IDs whose current physical geometry can be recorded."""
+        return frozenset()
+
+    def sensor_geometry(self, sensor: str) -> SensorGeometry:
+        """Read camera geometry without copying a capture or running render hooks."""
+        raise NotImplementedError(f"{type(self).__name__} does not provide camera geometry")
+
     def sensor_view(self, sensor: str) -> SensorView:
         """Return the view of the current capture of ``sensor``; it never advances time."""
         raise NotImplementedError(f"{type(self).__name__} does not provide sensor views")
@@ -393,14 +328,12 @@ class SimulatorRuntime(_StageAdapter, ABC):
         # the runner/services after capture; rejecting envelopes avoids silently losing them.
         world_environment = dict(world or {})
         self.simulator.validate_world_settings(world_environment)
-        plan = deployment if deployment is not None else DeploymentPlan(self.setup_ticks)
-        if plan.ticks < self.setup_ticks:
-            raise ValueError("Shared deployment plan is smaller than participant setup_ticks")
+        plan = deployment if deployment is not None else DeploymentPlan()
         position = self._replay_position(start)
         # The deployment window ends at the selected capture: participant ticks plus the
         # simulator's capture ticks. It is carved out of the pre-roll, never appended to it.
         window = plan.ticks + self.capture_ticks
-        if 0 < position < window:
+        if not can_deploy_at(position, plan, self.capture_ticks):
             raise ValueError("Selected boundary is earlier than its deployment window")
         self._world_initialized = False
         self._capture = None
@@ -587,96 +520,3 @@ class SimulatorRuntime(_StageAdapter, ABC):
     def _frame_data_provenance(self) -> Mapping[str, Any]:
         """Simulator-specific provenance of generated frame data."""
         return {}
-
-
-class LegacySimulatorAdapter:
-    """Internal: give a legacy ``WorldBackend`` the simulator surface used by the runner.
-
-    The adapter borrows the caller-owned world and caches the captures returned by its
-    reset/step. It supports plain resets only. It is removed with ``WorldBackend`` in phase 4.
-    """
-
-    def __init__(self, backend: WorldBackend) -> None:
-        if isinstance(backend, SimulatorRuntime):
-            raise TypeError("Simulator runtimes do not need the legacy adapter")
-        self.backend = backend
-        self._capture: Observation | None = None
-        self._ready = False
-        self._resetting = False
-        self._exclusive = False
-
-    @property
-    def setup_ticks(self) -> int:
-        return self.backend.setup_ticks
-
-    @contextmanager
-    def exclusive(self) -> Iterator[None]:
-        from avsectester.closed_loop.resources import reserve, simulator_key
-
-        if self._exclusive:
-            raise RuntimeError("Simulator already has an active operation")
-        with reserve(simulator_key(self.backend), self):
-            self._exclusive = True
-            try:
-                yield
-            finally:
-                self._exclusive = False
-
-    @property
-    def clock(self) -> ClockSnapshot:
-        state = self.state()
-        return ClockSnapshot(t=state.t, frame=state.frame)
-
-    def state(self) -> WorldSnapshot:
-        if not self._ready and not self._resetting:
-            raise RuntimeError("Reset the simulator before requesting its state")
-        return self.backend.ground_truth()
-
-    def sensor_view(self, sensor: str) -> SensorView:
-        raise NotImplementedError(f"{type(self.backend).__name__} does not provide sensor views")
-
-    def reset(self, start: Any = None, initialization: Any = None, *,
-              deployment: DeploymentPlan | None = None, world: Any = None) -> None:
-        if start is not None and not isinstance(start, ScenarioStart):
-            raise TypeError("Simulator reset requires ScenarioStart, never selection metadata")
-        if start is None and initialization is not None:
-            raise ValueError("An initialization plan requires ScenarioStart")
-        if start is not None or initialization is not None or deployment is not None or world:
-            raise NotImplementedError("Legacy backend does not support ScenarioStart initialization")
-        self._ready = False
-        self._capture = None
-        self._resetting = True
-        try:
-            self._remember(self.backend.reset())
-            self._ready = True
-        finally:
-            self._resetting = False
-
-    def observe(self) -> Observation:
-        """Return an independent view of the current capture; never advance or recapture."""
-        if not self._ready:
-            raise RuntimeError("Reset the simulator before requesting an observation")
-        assert self._capture is not None
-        return self.backend.copy_observation(self._capture)
-
-    def step(self, command: Control) -> None:
-        """Advance the underlying world exactly once and retain the resulting capture."""
-        if not self._ready:
-            raise RuntimeError("Reset the simulator before stepping")
-        self.backend.validate_command(command)
-        # A failed advance must not leave a stale observation available as a successful result.
-        self._ready = False
-        self._capture = None
-        self._remember(self.backend.step(command))
-        self._ready = True
-
-    def _remember(self, capture: Observation) -> None:
-        if not isinstance(capture, Observation):
-            raise TypeError("A legacy backend reset/step must return Observation")
-        self.backend._remember_ground_truth(capture)
-        self._capture = self.backend.copy_observation(capture)
-
-    def close(self) -> None:
-        """Release only this adapter's capture; the caller closes the borrowed backend."""
-        self._capture = None
-        self._ready = False

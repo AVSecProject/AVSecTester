@@ -8,9 +8,11 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterator, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-from avsectester.scenarios.scene import SceneGT
+if TYPE_CHECKING:
+    import numpy as np
+    from avsectester.geometry.poses import ActorPose
 
 
 def nonnegative(value: int, name: str) -> None:
@@ -63,14 +65,29 @@ class ActorState:
 
     ``category`` is the actor's class, such as ``vehicle`` or a dataset-native category,
     when known. ``extent`` is the full (length, width, height) in metres, not half extents.
+    ``box_center`` is the bounding-box centre in actor coordinates; ``pose`` remains the
+    actor/rig origin, so world box centres are ``pose @ [*box_center, 1]``.
+    ``box_rotation`` is the local right-handed (roll, pitch, yaw) in degrees.
     """
 
     pose: Any
     velocity: tuple[float, float, float] | None = None
     category: str | None = None
     extent: tuple[float, float, float] | None = None
+    box_center: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    box_rotation: tuple[float, float, float] = (0.0, 0.0, 0.0)
 
     def __post_init__(self) -> None:
+        if len(self.box_center) != 3 or any(
+            isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value)
+            for value in self.box_center
+        ):
+            raise ValueError("Actor box_center must be three finite coordinates")
+        object.__setattr__(self, "box_center", tuple(float(value) for value in self.box_center))
+        from avsectester.geometry.poses import validated_vector
+
+        rotation = validated_vector(self.box_rotation, "box_rotation")
+        object.__setattr__(self, "box_rotation", tuple(float(value) for value in rotation))
         if self.extent is not None:
             if (len(self.extent) != 3 or any(
                 isinstance(value, bool) or not isinstance(value, Real)
@@ -80,19 +97,36 @@ class ActorState:
             object.__setattr__(self, "extent", tuple(float(value) for value in self.extent))
 
 
+    def box_transform(self) -> np.ndarray:
+        """World-from-box-centre transform, including local roll/pitch/yaw degree rotation."""
+        import numpy as np
+        from avsectester.geometry.poses import rotation_matrix
+
+        local = np.eye(4)
+        local[:3, :3] = rotation_matrix(self.box_rotation)
+        local[:3, 3] = self.box_center
+        return np.asarray(self.pose) @ local
+
+    def box_pose(self) -> ActorPose:
+        """Return the world box-centre pose, preserving unknown dimensions as None."""
+        from avsectester.geometry.poses import ActorPose
+
+        return ActorPose(self.box_transform(), self.extent)
+
+
 @dataclass(frozen=True)
 class FrameData:
-    """The dataset's data for one frame: scene ground truth, actor states and sensor data.
+    """World-frame actor states and recorded sensor references at one dataset position.
 
-    ``scene`` is in the ego frame; ``actors`` holds world-frame states by stable actor ID;
-    ``sensor_data`` holds recorded sensor payload locations by sensor name.
+    ``ego`` holds the recorded ego state; ``actors`` excludes ego and uses stable actor IDs.
+    Sensor-reference metadata carries calibration needed by recorded replay.
     """
 
     frame: FrameReference
-    scene: SceneGT | None
     actors: Mapping[str, ActorState] = field(default_factory=dict)
     sensor_data: Mapping[str, SensorDataReference] = field(default_factory=dict)
     provenance: Mapping[str, Any] = field(default_factory=dict)
+    ego: ActorState | None = None
 
 
 @dataclass(frozen=True)

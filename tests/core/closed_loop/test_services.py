@@ -36,7 +36,7 @@ class Data(Dataset):
 
     def frame_data(self, scenario_id, frame):
         self.checked_frame(scenario_id, frame)
-        return Unavailable("recipe_only") if self.kind == "CarlaDataset" else FrameData(frame, None)
+        return Unavailable("recipe_only") if self.kind == "CarlaDataset" else FrameData(frame)
 
     def native(self, scenario_id):
         return {"recipe": "source data"}
@@ -81,7 +81,7 @@ class World(SimulatorRuntime):
             return self.factory.materialize(source, frames)
         self.factory.generations += 1
         self.reset(source)
-        return FrameDataSequence(tuple(FrameData(f, None) for f in frames),
+        return FrameDataSequence(tuple(FrameData(f) for f in frames),
                                  {"resolved": True}, {"seed": 7})
 
     def sensor_view(self, sensor):
@@ -197,7 +197,7 @@ def test_render_applies_world_effects_before_the_capture_and_rejects_component_e
                       (AVStackAttackEffect("command", lambda value, context: value),))
     heavy = Paint()
     heavy.setup_ticks = 1
-    with svc.session(7) as scope, pytest.raises(ValueError, match="setup ticks"):
+    with svc.session(7) as scope, pytest.raises(ValueError, match="deployment tick"):
         scope.render(RenderRequest("s", svc.dataset.refs[1], "front", (heavy,)))
 
 
@@ -336,7 +336,7 @@ def test_create_runtime_returning_a_used_runtime_is_rejected():
             scope.sensor_data(request)
 
 
-def test_components_and_scorers_get_fresh_state_and_gradients_fail_early():
+def test_components_keep_fresh_history_and_scorers_reuse_models_with_gradient_checks():
     svc, _, _ = services()
     builds = []
     def factory(seed):
@@ -346,8 +346,8 @@ def test_components_and_scorers_get_fresh_state_and_gradients_fail_early():
     desc = ComponentDescriptor("counts", {"x": "int"}, {"y": "int"}, {"y": "int"})
     score = ScorerDescriptor("distance", {"x": "float"}, {"y": "float"}, {"y": "float"})
     svc.driving_adapter = DrivingAdapter(factory,
-        components=((desc, lambda stack, value: (stack.calls, value)),),
-        scorers=((score, lambda stack, value, target: abs(value - target)),))
+        components=((desc, lambda avstack, value: (avstack.calls, value)),),
+        scorers=((score, lambda avstack, value, target: abs(value - target)),))
     with svc.session(7) as scope:
         assert scope.components() == (desc,)
         assert scope.scorers() == (score,)
@@ -357,6 +357,7 @@ def test_components_and_scorers_get_fresh_state_and_gradients_fail_early():
         assert scope.evaluate("counts", 8).value == (0, 8)
         assert scope.evaluate("counts", 9).value == (0, 9)
         assert scope.score("distance", 2, 5).value == 3
+        assert scope.score("distance", 4, 5).value == 1
     assert len(builds) == 3 and all(d.closed for d in builds)
     with pytest.raises(RuntimeError, match="closed"):
         scope.components()
@@ -368,7 +369,7 @@ def test_differentiable_score_preserves_graph_and_rejects_detached_result():
     descriptor = ScorerDescriptor("square", {"x": "tensor"}, {"score": "tensor"},
                                   {"score": "tensor"}, ("x",))
     svc.driving_adapter = DrivingAdapter(lambda seed: Driver(), scorers=((
-        descriptor, lambda stack, value, target: (value - target).square().sum()),))
+        descriptor, lambda avstack, value, target: (value - target).square().sum()),))
     x = torch.tensor([3.], requires_grad=True)
     with svc.session(7) as scope:
         result = scope.score("square", x, 1, require_grad=True)
@@ -390,22 +391,20 @@ def test_failed_reference_generation_is_not_cached_and_resources_close():
     assert len(adapter.worlds) == 2 and all(world.closed for world in adapter.worlds)
 
 
-def test_car_source_factory_uses_actual_connection_fields_and_detached_recipe():
+def test_carla_runtime_uses_actual_connection_fields_and_detached_recipe():
     from avsectester.datasets.carla import CarlaDataset, CarlaRecipe, PrescribedMotion
     from avsectester.closed_loop.simulators.carla import CarlaSimulator
 
-    recipe = CarlaRecipe({"client": {"synchronous": True, "rate": 20, "connect_port": 2000},
-                          "ego": {}}, 1, .05, {"ego": PrescribedMotion((Control(),))})
+    recipe = CarlaRecipe({"client": {"map_name": "Town03"}, "ego": {}}, 1, .05, {"ego": PrescribedMotion((Control(),))})
     data = CarlaDataset({"s": recipe})
     source = data.scenario_start("s", data.frames("s")[0])
-    config = deepcopy(recipe.scenario)
-    config["client"].update(connect_ip="127.0.0.1", connect_port=2300)
-    backend = CarlaSimulator(config).create_runtime()
-    assert backend.resource_key == ("carla", "localhost", 2300)
-    assert source.payload["recipe"].scenario["client"]["connect_port"] == 2000
+    config = {"connect_ip": "127.0.0.1", "connect_port": 2300}
+    simulator_runtime = CarlaSimulator(config).create_runtime()
+    assert simulator_runtime.resource_key == ("carla", "localhost", 2300)
+    assert source.payload["recipe"].scenario["client"] == {"map_name": "Town03"}
     assert "weather" not in data.native("s").scenario
     with pytest.raises(ValueError, match="does not support world settings"):
-        backend._resolve_scenario(source, None, {"teleport": True})
+        simulator_runtime.reset(source, world={"teleport": True})
 
 
 def test_owned_resource_cleanup_failure_is_recorded_before_log_completion(tmp_path):
@@ -447,7 +446,7 @@ def test_reference_failure_is_saved_before_any_driving_decision(tmp_path):
     assert saved.events[0].data["initialization_report"] == report
 
 
-def test_backend_closes_before_its_server_reservation_is_released(monkeypatch):
+def test_simulator_runtime_closes_before_its_server_reservation_is_released(monkeypatch):
     from avsectester.closed_loop import resources
 
     key = ("carla", "localhost", 2000)
@@ -508,7 +507,7 @@ def test_services_close_builder_sessions_and_keep_selection_reasons():
     svc, simulator, _ = services()
     view = svc.scenario("s", seed=7)
     view.record_reason("The requested host is visible")
-    assert view.reasons == ("The requested host is visible",)
+    assert view.reasons == ("The requested host is visible (count=1)",)
     with pytest.raises(ValueError, match="nonempty"):
         view.record_reason(" ")
     with pytest.raises(RuntimeError, match="builder failed"):
@@ -548,3 +547,150 @@ def test_sensor_environment_is_identical_offline_and_online_at_absolute_frame_po
     for expected, record in zip(offline, online.steps):
         np.testing.assert_array_equal(record.model_observation.sensor_data["front"], expected)
     assert not np.array_equal(offline[0], offline[1])
+
+
+def test_render_sensor_aliases_chain_and_write_the_canonical_output(monkeypatch):
+    class AliasWorld(World):
+        def _observe(self):
+            return Observation(self.i*.1, self.i, {"camera0": np.full((2, 2, 3), 5, np.uint8)})
+        def sensor_view(self, sensor):
+            assert sensor in {"front", "camera0"}
+            from avsectester.closed_loop.simulator import SensorView
+            from avsectester.geometry.poses import ActorPose
+            return SensorView("camera0", self._capture.sensor_data["camera0"].copy(),
+                              None, np.eye(4), {}, ActorPose(np.eye(4)), self.i*.1, self.i)
+    seen = []
+    class Add(SensorAttackEffect):
+        def __init__(self, sensor, increment):
+            self.sensor, self.increment = sensor, increment
+        def apply(self, data, view):
+            seen.append((self.sensor, int(data.min()), int(view.data.min())))
+            return data + self.increment
+    svc, configured, _ = services()
+    def factory(seed=None):
+        world = AliasWorld(factory=configured)
+        configured.worlds.append(world)
+        return world
+    monkeypatch.setattr(configured, "create_runtime", factory)
+    with svc.session(7) as session:
+        result = session.render(RenderRequest("s", svc.dataset.refs[0], "front",
+                                (Add("front", 10), Add("camera0", 20))))
+    assert seen == [("front", 5, 5), ("camera0", 15, 5)]
+    assert set(result.observation.sensor_data) == {"camera0"}
+    assert result.observation.sensor_data["camera0"].min() == 35
+
+
+def test_render_returns_original_detached_view_after_in_place_sensor_effect(monkeypatch):
+    class NativeHandle:
+        def __deepcopy__(self, memo):
+            raise AssertionError("A view's live native resources must never be deep-copied")
+
+    original_view = World.sensor_view
+    def sensor_view(self, sensor):
+        view = original_view(self, sensor)
+        return replace(view, native={**view.native, "sdk_handle": NativeHandle()})
+    monkeypatch.setattr(World, "sensor_view", sensor_view)
+
+    class InPlace(SensorAttackEffect):
+        sensor = "front"
+        def apply(self, data, view):
+            assert not np.shares_memory(data, view.data)
+            assert view.native["sdk_handle"] is not None
+            data[:] = 70
+            # Even an effect modifying its delivered view cannot alter the returned
+            # evidence of the pre-effect capture or the runtime's cached observation.
+            view.data[:] = 99
+            return data
+
+    svc, configured, _ = services()
+    with svc.session(7) as session:
+        result = session.render(RenderRequest("s", svc.dataset.refs[0], "front", (InPlace(),)))
+    assert np.all(result.observation.sensor_data["front"] == 70)
+    assert np.all(result.view.data == 0)
+    assert result.view.native == {}
+    assert np.all(configured.worlds[0].observe().sensor_data["front"] == 0)
+    assert configured.worlds[0].closed
+
+
+def test_components_stay_fresh_while_scoring_reuses_its_loaded_avstack():
+    svc, _, drivers = services()
+    component = ComponentDescriptor('echo', {'x': 'float'}, {'value': 'float'}, {'x': 'plain'})
+    scorer = ScorerDescriptor('distance', {'x': 'float'}, {'value': 'float'}, {'x': 'plain'})
+    svc.driving_adapter.component_bindings['echo'] = (component, lambda avstack, x: x)
+    svc.driving_adapter.scorer_bindings['distance'] = (scorer, lambda avstack, x, target: x - target)
+    with svc.session(7) as session:
+        assert session.evaluate('echo', 3).value == 3
+        assert session.score('distance', 5, 2).value == 3
+        assert session.score('distance', 7, 2).value == 5
+        assert len(drivers) == 2 and drivers[0].closed and not drivers[1].closed
+        session.rollout(candidate(svc.dataset))
+        assert len(drivers) == 3 and drivers[2].closed
+    assert drivers[1].closed
+
+
+def test_candidate_failure_before_runner_stops_created_runtime_without_expanding_budget(monkeypatch):
+    svc, simulator, _ = services()
+    stopped = []
+    class NeedsTicks(AttackRuntime):
+        setup_ticks = 1
+        def stop(self, context):
+            stopped.append(context.stage)
+    attack = SimpleNamespace(create_runtime=lambda *_: NeedsTicks())
+    with svc.session(7) as session:
+        with pytest.raises(ValueError, match='deployment tick budget'):
+            session.rollout(candidate(svc.dataset, attack=attack))
+    assert stopped == ['stop'] and simulator.worlds == []
+
+
+def test_stateful_component_evaluations_do_not_share_history():
+    svc, _, drivers = services()
+    descriptor = ComponentDescriptor('increment', {'x': 'int'}, {'value': 'int'}, {'x': 'plain'})
+    def increment(avstack, value):
+        avstack.calls += 1
+        return avstack.calls
+    svc.driving_adapter.component_bindings['increment'] = descriptor, increment
+    with svc.session(7) as session:
+        assert session.evaluate('increment', 1).value == 1
+        assert session.evaluate('increment', 1).value == 1
+    assert len(drivers) == 2 and all(avstack.closed for avstack in drivers)
+
+
+def test_selection_reasons_are_counted_and_bounded():
+    svc, _, _ = services()
+    view = svc.scenario("s", seed=7)
+    for _ in range(1000):
+        view.record_reason("Host is not visible")
+    assert view.reasons == ("Host is not visible (count=1000)",)
+    for index in range(150):
+        view.record_reason(f"Distinct user reason {index}")
+    assert len(view.reasons) == 101
+    assert view.reasons[-1] == "Other selection reasons (count=51)"
+
+
+def test_session_checks_origin_against_the_shared_deployment_budget():
+    from avsectester.closed_loop.simulator import DeploymentPlan
+
+    svc, simulator, _ = services()
+    svc.deployment = DeploymentPlan(2)
+    simulator.capture_ticks = 1
+    with svc.session(7) as session:
+        assert [session.can_deploy_at(position) for position in range(5)] == [True, False, False, True, True]
+    assert simulator.worlds == []
+
+
+@pytest.mark.parametrize("failure_phase", ["simulator", "avstack"])
+def test_candidate_resource_creation_failure_stops_an_already_created_attack(monkeypatch, failure_phase):
+    svc, simulator, _ = services()
+    stopped = []
+    class TrackingAttack(AttackRuntime):
+        def stop(self, context):
+            stopped.append(context.stage)
+    attack = SimpleNamespace(create_runtime=lambda *_: TrackingAttack())
+    def fail(*args, **kwargs):
+        raise RuntimeError("factory failed")
+    with svc.session(7) as session:
+        monkeypatch.setattr(session, "_simulator_runtime" if failure_phase == "simulator" else "_avstack", fail)
+        with pytest.raises(RuntimeError, match="factory failed"):
+            session.rollout(candidate(svc.dataset, attack=attack))
+    assert stopped == ["stop"]
+    assert all(world.closed for world in simulator.worlds)

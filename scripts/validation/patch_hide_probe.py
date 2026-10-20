@@ -1,86 +1,93 @@
-#!/usr/bin/env python
-"""Measure how much a composited patch drops the lead-car detection confidence, per harmonizer/size.
+"""Compare patch size and harmonization on one CARLA capture using portable insertion effects."""
+from __future__ import annotations
 
-One CARLA reset, roll the ego a few frames toward the lead, then at one frame composite the patch onto
-the host-bound rear surface under each variant and report the detector's top car-box confidence. Decides
-which deployment actually hides the car (< 0.3 threshold) before a full driving run.
-"""
 import argparse
-import logging
-import sys
+from copy import deepcopy
+from dataclasses import replace
+from pathlib import Path
 
-import yaml
-from avsectester.attacks.patch.physical_patch import image_rgba
+from avsectester.attack.insertion import Insertion, PlaneAsset
+from avsectester.attack.insertion.assets import load_rgba_image
+from avsectester.attack.insertion.compositor import PatchCompositor
+from avsectester.attack.insertion.effect import InsertionAttackEffect
+from avsectester.attack.insertion.harmonizers import ClassicHarmonizer, PCTNetHarmonizer
+from avsectester.attack.placement import AttachedPlacement, Orientation
+from avsectester.closed_loop.avstacks.camera_forward_collision import CameraForwardCollisionAVStack
 from avsectester.closed_loop.datatypes import Control
-from avsectester.rendering.harmonizers import ClassicHarmonizer, PCTNetHarmonizer
-from avsectester.closed_loop.simulators import carla as carla_sim
 from avsectester.closed_loop.simulators.carla import CarlaSimulator
-from avsectester.rendering.compositor import PatchCompositor
-from scripts.common.demo_common import build_detector, carla_rear_perturbation
-from PIL import Image
-
-from scripts import REPO_ROOT as REPO
-
-OUT = REPO / "tmp" / "patch_probe"
+from avsectester.datasets.carla import CarlaDataset
+from avsectester.evaluation.visualization import save_image
+from avsectester.experiment import load_configuration
+from scripts import REPO_ROOT
 
 
-def top_car_conf(detect, rgb):
-    best = 0.0
-    for _, sc, _ in detect(rgb):
-        best = max(best, sc)
-    return best
+def probe_configuration(path: Path, gap: float, port: int, traffic_manager_port: int | None = None):
+    """Create a dedicated simulator and recipe without mutating the loaded configuration."""
+    configuration = load_configuration(path)
+    scenario_id = next(configuration.dataset.scenarios()).id
+    recipe = configuration.dataset.native(scenario_id)
+    scenario = deepcopy(recipe.scenario)
+    scenario["lead"]["gap"] = gap
+    dataset = CarlaDataset({scenario_id: replace(recipe, scenario=scenario)})
+    simulator = CarlaSimulator({**configuration.simulator.client_config, "connect_port": port,
+                                "traffic_manager_port": port + 6000 if traffic_manager_port is None
+                                else traffic_manager_port},
+                               depth_camera="camera-0-0")
+    return dataset, simulator, scenario_id
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--gap", type=float, default=8.0)
-    ap.add_argument("--approach", type=int, default=16)
-    ap.add_argument("--texture", default="tmp/patch_optim/phys_texture.png")
-    ap.add_argument("--gpu", type=int, default=1)
-    args = ap.parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-    OUT.mkdir(parents=True, exist_ok=True)
+def patch_effect(view, texture, *, width_fraction, height_fraction, harmonizer=None):
+    host = view.actors["lead"]
+    asset = PlaneAsset(texture, host.extent[1] * width_fraction, host.extent[2] * height_fraction)
+    insertion = Insertion("probe", asset, AttachedPlacement("lead", "rear_center", (-.03, 0, 0)),
+                          Orientation("follow_host", (0, 0, 180)))
+    compositor = PatchCompositor(harmonizer, harmonize=harmonizer is not None)
+    return InsertionAttackEffect(view.sensor, insertion, compositor)
 
-    scen = yaml.safe_load((REPO / "configs" / "carla_patch_scenario.yaml").read_text())
-    scen.setdefault("lead", {})["gap"] = args.gap
-    scen.pop("patches", None)
-    detect = build_detector(args.gpu)
-    patch = image_rgba(args.texture, 256)
 
-    backend = CarlaSimulator(scen, depth_camera="front").create_runtime()
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", type=Path, default=REPO_ROOT / "configs/carla_patch.yaml")
+    parser.add_argument("--gap", type=float, default=8.)
+    parser.add_argument("--approach", type=int, default=16)
+    parser.add_argument("--texture", type=Path, required=True)
+    parser.add_argument("--gpu", type=int, default=0)
+    parser.add_argument("--port", type=int, default=2300)
+    parser.add_argument("--traffic-manager-port", type=int,
+                        help="Dedicated TM port; default is RPC port plus 6000")
+    parser.add_argument("--output", type=Path, default=Path("tmp/patch-probe"))
+    parser.add_argument("--pctnet", action="store_true", help="Also load PCTNet harmonization")
+    args = parser.parse_args()
+    dataset, simulator, scenario_id = probe_configuration(args.config, args.gap, args.port,
+                                                         args.traffic_manager_port)
+    frame = dataset.frames(scenario_id)[0]
+    texture = load_rgba_image(args.texture)
+    avstack = CameraForwardCollisionAVStack(gpu=args.gpu, camera="camera-0-0")
     try:
-        backend.reset()
-        for _ in range(args.approach):
-            backend.step(Control(throttle=0.55))
-        obs = backend.observe()
-        rgb = carla_sim.camera_view(obs)
-        Image.fromarray(rgb).save(OUT/"probe_clean.png")
-        base = top_car_conf(detect, rgb)
-        print(f"\n=== lead-car top confidence (threshold 0.3), gap {args.gap} m, frame {args.approach} ===")
-        print(f"no patch                 : {base:.3f}")
-        variants = [
-            ("patch + none", 0.85, 0.6, None),
-            ("patch + classic", 0.85, 0.6, ClassicHarmonizer()),
-            ("patch + libcom PCTNet", 0.85, 0.6, PCTNetHarmonizer(device=args.gpu, strict=True)),
-            ("BIG patch + none", 1.0, 0.95, None),
-            ("BIG patch + libcom", 1.0, 0.95, PCTNetHarmonizer(device=args.gpu, strict=True)),
-        ]
-        for name, width_frac, height_frac, harm in variants:
-            compositor = PatchCompositor(harm, harmonize=harm is not None)
-            perturb = carla_rear_perturbation(
-                backend, patch, compositor, width_frac=width_frac, height_frac=height_frac,
-            )
-            comp = carla_sim.camera_view(perturb(obs))
-            conf = top_car_conf(detect, comp)
-            tag = "HIDDEN" if conf < 0.3 else ""
-            print(f"{name:25s}: {conf:.3f}  {tag}")
-            size = "big" if "BIG" in name else "std"
-            method = "raw" if harm is None else type(harm).__name__
-            Image.fromarray(comp).save(OUT / f"probe_{name.split()[0]}_{size}_{method}.png")
+        with simulator.create_runtime() as simulator_runtime:
+            simulator_runtime.reset(dataset.scenario_start(scenario_id, frame))
+            for _ in range(args.approach):
+                simulator_runtime.step(Control(throttle=.55))
+            view = simulator_runtime.sensor_view("camera-0-0")
+            save_image(view.data, args.output / "clean.png")
+            variants = [("raw", None), ("classic", ClassicHarmonizer())]
+            if args.pctnet:
+                variants.append(("pctnet", PCTNetHarmonizer(device=args.gpu, strict=True)))
+            clean_score = max((score for _, score, _ in avstack.detect(view.data)), default=0.)
+            print(f"clean: {clean_score:.3f}")
+            for name, harmonizer in variants:
+                for size, width, height in (("standard", .85, .6), ("large", 1., .95)):
+                    effect = patch_effect(view, texture, width_fraction=width,
+                                          height_fraction=height, harmonizer=harmonizer)
+                    image = effect.apply(view.data, view)
+                    score = max((score for _, score, _ in avstack.detect(image)), default=0.)
+                    evidence = effect.evidence(view)
+                    print(f"{name}/{size}: confidence={score:.3f} visibility={evidence.visibility}")
+                    save_image(image, args.output / f"{name}-{size}.png")
     finally:
-        backend.close()
+        avstack.close()
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

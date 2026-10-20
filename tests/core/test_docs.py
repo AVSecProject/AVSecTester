@@ -1,8 +1,11 @@
 """Documentation checks: links and anchors resolve, code blocks parse, runnable examples run.
 
-Mark a self-contained Python example as runnable by placing ``<!-- runnable -->`` on the line
-directly before its code fence. Runnable examples must work offline with the core test
-dependencies, without simulator servers, GPUs or model weights.
+Mark a self-contained example as runnable by placing ``<!-- runnable -->`` on the line directly
+before its code fence. Runnable Python examples are executed. A runnable YAML example is either an
+``environment:`` mapping, validated like an experiment's environment, or a complete experiment
+configuration, loaded with ``load_configuration``. Any other runnable block fails the test. Runnable
+examples must work offline with the core test dependencies, without simulator servers, GPUs or
+model weights.
 """
 
 from __future__ import annotations
@@ -125,3 +128,41 @@ def test_runnable_examples(code, tmp_path, monkeypatch):
     module = types.ModuleType("doc_example")
     monkeypatch.setitem(sys.modules, module.__name__, module)
     exec(compile(code, "<doc example>", "exec"), module.__dict__)
+
+
+RUNNABLE_YAML_BLOCKS = [
+    pytest.param(code, id=f"{path.relative_to(ROOT)}:{line}")
+    for path in DOCS
+    for language, code, line, runnable in _blocks(path.read_text())
+    if runnable and language in {"yaml", "yml"}
+]
+RUNNABLE_LANGUAGES = {"python", "py", "yaml", "yml"}
+
+
+def test_runnable_marker_is_only_used_for_supported_languages():
+    unsupported = [f"{path.relative_to(ROOT)}:{line} ({language or 'no language'})"
+                   for path in DOCS
+                   for language, _code, line, runnable in _blocks(path.read_text())
+                   if runnable and language not in RUNNABLE_LANGUAGES]
+    assert not unsupported, f"Runnable blocks must be Python or YAML: {unsupported}"
+
+
+@pytest.mark.parametrize("code", RUNNABLE_YAML_BLOCKS)
+def test_runnable_yaml_examples_load(code, tmp_path):
+    from avsectester.closed_loop.environment import normalize_environment
+    from avsectester.experiment import load_configuration
+
+    document = yaml.safe_load(code)
+    assert isinstance(document, dict), "A runnable YAML example must be a mapping"
+    if set(document) == {"environment"}:
+        # Use the configuration loader's validation without requiring the optional augment extra.
+        # Parsing YAML alone cannot catch unsupported built-in transforms or option names.
+        normalized = normalize_environment(document["environment"])
+        assert normalized["sensors"] == document["environment"].get("sensors", [])
+    elif "dataset" in document:
+        path = tmp_path / "experiment.yaml"
+        path.write_text(code)
+        load_configuration(path)
+    else:
+        pytest.fail("A runnable YAML example must be an environment mapping or a complete "
+                    f"experiment configuration, not keys {sorted(document)}")

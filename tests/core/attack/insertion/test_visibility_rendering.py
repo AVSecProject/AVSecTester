@@ -1,0 +1,323 @@
+"""Rendered insertion pixels must agree with the visibility evidence used to clip them."""
+
+import numpy as np
+import pytest
+
+from avsectester.geometry.poses import ActorPose
+from avsectester.attack.placement import Orientation, WorldPlacement
+from avsectester.attack.insertion import Insertion, PlaneAsset, resolve_insertion
+from avsectester.geometry.cameras import FThetaCamera, PinholeCamera
+from avsectester.attack.insertion.visibility import CuboidVisibilityEstimator, DepthVisibilityEstimator
+from avsectester.attack.insertion.compositor import render_resolved
+
+
+CAM_FROM_WORLD = np.array([[0, -1, 0, 0], [0, 0, -1, 0], [1, 0, 0, 0], [0, 0, 0, 1.0]])
+
+
+@pytest.fixture
+def camera(request):
+    if getattr(request, "param", "pinhole") == "fisheye":
+        return FThetaCamera(50, 40, (0, 50), 100, 80, (0, 1 / 50), max_angle=1.5)
+    return PinholeCamera(np.array([[50.0, 0, 50], [0, 50, 40], [0, 0, 1]]), 100, 80)
+
+
+def panel(texture, position=(10, 0, 0), width=4, height=2, id="panel"):
+    return resolve_insertion(
+        Insertion(
+            id,
+            PlaneAsset(texture, width, height),
+            WorldPlacement(position),
+            Orientation("fixed_world", (0, 0, 180)),
+        ),
+        {},
+        ActorPose(np.eye(4)),
+    )
+
+
+@pytest.mark.parametrize("position", [(10, 0, 0), (20, 0, 0), (10, 10, 0)])
+@pytest.mark.parametrize("camera", ["pinhole", "fisheye"], indirect=True)
+def test_minified_cutout_uses_the_rendered_silhouette(camera, position):
+    texture = np.full((512, 512, 4), [240, 40, 20, 255], np.uint8)
+    texture[:, :, 3] = (np.arange(512)[None, :] % 8 >= 4) * 255
+    item = panel(texture, position)
+    clean = np.zeros((camera.height, camera.width, 3), np.uint8)
+    rendered, mask = render_resolved(clean, camera, CAM_FROM_WORLD, item)
+    evidence = CuboidVisibilityEstimator().estimate(
+        item,
+        camera,
+        CAM_FROM_WORLD,
+        occluders={},
+        camera_name="front",
+    )
+    np.testing.assert_array_equal(evidence.reference_mask, mask > 0)
+    clipped, clipped_mask = render_resolved(clean, camera, CAM_FROM_WORLD, item, evidence)
+    np.testing.assert_array_equal(clipped_mask, mask)
+    np.testing.assert_array_equal(clipped[mask > 0], rendered[mask > 0])
+
+    # Scene depth blocks exactly the left half of the rendered footprint.
+    depth = np.full(clean.shape[:2], 100.0)
+    depth[:, :50] = 1
+    blocked = DepthVisibilityEstimator().estimate(
+        item,
+        camera,
+        CAM_FROM_WORLD,
+        scene_depth=depth,
+        depth_convention="z",
+        camera_name="front",
+    )
+    expected = mask > 0
+    expected[:, :50] = False
+    np.testing.assert_array_equal(blocked.visible_mask, expected)
+    result, result_mask = render_resolved(clean, camera, CAM_FROM_WORLD, item, blocked)
+    np.testing.assert_array_equal(result_mask > 0, expected)
+    np.testing.assert_array_equal(result[~expected], clean[~expected])
+
+
+def test_small_surface_close_to_camera_is_not_silently_dropped(camera):
+    item = panel(np.full((16, 16, 4), 255, np.uint8), (0.03, 0, 0), 0.02, 0.01)
+    evidence = CuboidVisibilityEstimator().estimate(
+        item,
+        camera,
+        CAM_FROM_WORLD,
+        occluders={},
+        camera_name="front",
+    )
+    _, mask = render_resolved(
+        np.zeros((80, 100, 3), np.uint8), camera, CAM_FROM_WORLD, item, evidence
+    )
+    assert evidence.visibility.fraction == 1
+    np.testing.assert_array_equal(mask > 0, evidence.visible_mask)
+
+
+def test_custom_evidence_can_omit_color_samples(camera):
+    from dataclasses import replace
+
+    item = panel(np.full((16, 16, 4), [255, 20, 40, 255], np.uint8))
+    depth = np.full((80, 100), 100.0)
+    depth[:, :50] = 1
+    evidence = DepthVisibilityEstimator().estimate(
+        item,
+        camera,
+        CAM_FROM_WORLD,
+        scene_depth=depth,
+        depth_convention="z",
+        camera_name="front",
+    )
+    background = np.full((80, 100, 3), 30, np.uint8)
+    image, mask = render_resolved(background, camera, CAM_FROM_WORLD, item, evidence)
+    uncached, uncached_mask = render_resolved(
+        background,
+        camera,
+        CAM_FROM_WORLD,
+        item,
+        replace(evidence, sampled_rgba=None),
+    )
+    np.testing.assert_array_equal(image, uncached)
+    np.testing.assert_array_equal(mask, uncached_mask)
+    with pytest.raises(ValueError, match="visibility is unknown"):
+        render_resolved(
+            background, camera, CAM_FROM_WORLD, item, replace(evidence, visibility=None)
+        )
+
+
+@pytest.mark.parametrize("camera", ["pinhole", "fisheye"], indirect=True)
+def test_camera_crop_does_not_change_texture_sampling(camera):
+    from dataclasses import replace
+
+    texture = np.full((512, 512, 4), [240, 40, 20, 255], np.uint8)
+    texture[:, :, 3] = (np.arange(512)[None, :] % 8 >= 4) * 255
+    item = panel(texture)
+    if isinstance(camera, PinholeCamera):
+        intrinsic = camera.K.copy()
+        intrinsic[0, 2] -= 50
+        cropped = replace(camera, K=intrinsic)
+    else:
+        cropped = replace(camera, cx=camera.cx - 50)
+    estimator = CuboidVisibilityEstimator()
+    full = estimator.estimate(item, camera, CAM_FROM_WORLD, occluders={}, camera_name="front")
+    partial = estimator.estimate(item, cropped, CAM_FROM_WORLD, occluders={}, camera_name="front")
+    assert partial.reference_pixels == full.reference_pixels
+    assert 0 < partial.visibility.fraction < full.visibility.fraction
+    np.testing.assert_array_equal(partial.reference_mask[:, :50], full.reference_mask[:, 50:])
+    np.testing.assert_array_equal(partial.sampled_rgba[:, :50], full.sampled_rgba[:, 50:])
+
+
+@pytest.mark.parametrize("method", ["depth", "cuboid"])
+@pytest.mark.parametrize("camera", ["pinhole", "fisheye"], indirect=True)
+def test_independent_insertions_occlude_by_depth_and_keep_holes(camera, method):
+    from avsectester.attack.insertion.compositor import PatchCompositor
+
+    red = np.full((16, 16, 4), [255, 0, 0, 255], np.uint8)
+    red[6:10, 6:10, 3] = 0
+    blue = np.full((16, 16, 4), [0, 0, 255, 255], np.uint8)
+    items = (
+        Insertion(
+            "near",
+            PlaneAsset(red, 2, 2),
+            WorldPlacement((5, 0, 0)),
+            Orientation("fixed_world", (0, 0, 180)),
+        ),
+        Insertion(
+            "far",
+            PlaneAsset(blue, 4, 4),
+            WorldPlacement((10, 0, 0)),
+            Orientation("fixed_world", (0, 0, 180)),
+        ),
+    )
+    def evidence(resolved):
+        if method == "depth":
+            estimator = DepthVisibilityEstimator()
+            kwargs = dict(scene_depth=np.full((80, 100), 100.0), depth_convention="z")
+        else:
+            estimator = CuboidVisibilityEstimator()
+            kwargs = dict(occluders={})
+        return {item.id: estimator.estimate(item, camera, CAM_FROM_WORLD,
+                    camera_name="front", other_insertions=resolved, **kwargs)
+                for item in resolved}
+
+    clean = np.full((80, 100, 3), [0, 60, 0], np.uint8)
+    results = []
+    # Insertion order must not change occlusion results.
+    for order in (items, items[::-1]):
+        resolved = tuple(resolve_insertion(item, {}, ActorPose(np.eye(4))) for item in order)
+        estimates = evidence(resolved)
+        image = clean.copy()
+        for item in resolved:
+            image, _ = render_resolved(image, camera, CAM_FROM_WORLD, item, estimates[item.id],
+                                       compositor=PatchCompositor(harmonize=False))
+        results.append(image)
+        assert estimates["near"].visibility.fraction == 1
+        assert 0 < estimates["far"].visibility.fraction < 1
+    np.testing.assert_array_equal(results[0], results[1])
+    np.testing.assert_array_equal(results[0][40, 50], [0, 0, 255])
+    np.testing.assert_array_equal(results[0][40, 56], [255, 0, 0])
+    np.testing.assert_array_equal(results[0][0, 0], clean[0, 0])
+
+
+def test_appearance_softening_preserves_visibility_and_foreground_pixels(camera):
+    from avsectester.attack.insertion.compositor import PatchCompositor
+
+    texture = np.full((32, 32, 4), [240, 20, 30, 255], np.uint8)
+    texture[:, 16:, :3] = [20, 30, 240]
+    item = panel(texture)
+    clean = np.full((camera.height, camera.width, 3), 70, np.uint8)
+    depth = np.full(clean.shape[:2], 100.0)
+    depth[:, :50] = 1
+    evidence = DepthVisibilityEstimator().estimate(
+        item, camera, CAM_FROM_WORLD, scene_depth=depth, depth_convention="z", camera_name="front",
+    )
+    original_samples = evidence.sampled_rgba.copy()
+    compositor = PatchCompositor(lambda image, mask, background: image, soften=.6)
+    image, mask = render_resolved(clean, camera, CAM_FROM_WORLD, item, evidence, compositor=compositor)
+    np.testing.assert_array_equal(mask > 0, evidence.visible_mask)
+    np.testing.assert_array_equal(image[~evidence.visible_mask], clean[~evidence.visible_mask])
+    np.testing.assert_array_equal(evidence.sampled_rgba, original_samples)
+    assert np.any(image[evidence.visible_mask] != clean[evidence.visible_mask])
+
+
+def test_harmonization_can_be_toggled_without_changing_visibility_or_occluders(camera):
+    from avsectester.attack.insertion.compositor import PatchCompositor
+
+    item = panel(np.full((32, 32, 4), [240, 20, 30, 255], np.uint8))
+    clean = np.full((camera.height, camera.width, 3), 70, np.uint8)
+    depth = np.full(clean.shape[:2], 100.0)
+    depth[:, :50] = 1.0
+    evidence = DepthVisibilityEstimator().estimate(
+        item, camera, CAM_FROM_WORLD, scene_depth=depth, depth_convention="z", camera_name="front",
+    )
+    calls = []
+
+    def harmonizer(image, mask, background):
+        calls.append(mask.copy())
+        # Only visible insertion pixels may change even if a custom module
+        # returns changes outside its input mask.
+        return np.full_like(image, 211)
+
+    compositor = PatchCompositor(harmonizer, soften=0.6)
+    enabled, mask = render_resolved(
+        clean, camera, CAM_FROM_WORLD, item, evidence, compositor=compositor,
+    )
+    assert len(calls) == 1
+    np.testing.assert_array_equal(mask > 0, evidence.visible_mask)
+    np.testing.assert_array_equal(enabled[~evidence.visible_mask], clean[~evidence.visible_mask])
+    assert (enabled[evidence.visible_mask] == 211).all()
+
+    compositor.harmonize = False
+    disabled, disabled_mask = render_resolved(
+        clean, camera, CAM_FROM_WORLD, item, evidence, compositor=compositor,
+    )
+    plain, _ = render_resolved(
+        clean, camera, CAM_FROM_WORLD, item, evidence,
+        compositor=PatchCompositor(harmonize=False, soften=0.6),
+    )
+    assert len(calls) == 1
+    np.testing.assert_array_equal(disabled, plain)
+    np.testing.assert_array_equal(disabled_mask, mask)
+    assert np.any(disabled[evidence.visible_mask] != enabled[evidence.visible_mask])
+
+    compositor.harmonize = True
+    restored, _ = render_resolved(
+        clean, camera, CAM_FROM_WORLD, item, evidence, compositor=compositor,
+    )
+    assert len(calls) == 2
+    np.testing.assert_array_equal(restored, enabled)
+    assert (clean == 70).all()
+
+
+def test_disabled_pctnet_does_not_load_weights(camera, monkeypatch):
+    from avsectester.attack.insertion.harmonizers import PCTNetHarmonizer
+    from avsectester.attack.insertion.compositor import PatchCompositor
+
+    harmonizer = PCTNetHarmonizer(strict=True)
+    monkeypatch.setattr(harmonizer, "_load", lambda: pytest.fail("Disabled PCTNet must not load"))
+    compositor = PatchCompositor(harmonizer, harmonize=False)
+    clean = np.zeros((camera.height, camera.width, 3), np.uint8)
+    item = panel(np.full((32, 32, 4), [240, 20, 30, 255], np.uint8))
+
+    disabled, mask = render_resolved(clean, camera, CAM_FROM_WORLD, item, compositor=compositor)
+    plain, plain_mask = render_resolved(clean, camera, CAM_FROM_WORLD, item)
+    assert mask.any()
+    np.testing.assert_array_equal(disabled, plain)
+    np.testing.assert_array_equal(mask, plain_mask)
+
+
+def test_pctnet_strict_reports_failure_without_running_fallback(camera, monkeypatch):
+    from avsectester.attack.insertion.harmonizers import PCTNetHarmonizer
+
+    harmonizer = PCTNetHarmonizer(strict=True)
+    def unavailable():
+        raise FileNotFoundError("missing test weights")
+    monkeypatch.setattr(harmonizer, "_load", unavailable)
+    monkeypatch.setattr(harmonizer, "_fallback", lambda *args: pytest.fail("strict must not fallback"))
+    rgb = np.zeros((camera.height, camera.width, 3), np.uint8)
+    with pytest.raises(RuntimeError, match="PCTNet harmonization failed.*missing test weights"):
+        harmonizer(rgb, np.full(rgb.shape[:2], 255, np.uint8), rgb)
+
+
+@pytest.mark.parametrize("reason", ["Target crosses the camera plane", "Camera projection is undefined",
+                                    "max_reference_pixels exceeded"])
+def test_online_unknown_visibility_is_a_recorded_no_op(camera, reason, monkeypatch):
+    from dataclasses import replace
+    from avsectester.attack.insertion.effect import InsertionAttackEffect
+    from avsectester.closed_loop.simulator import SensorView
+
+    insertion = Insertion("patch", PlaneAsset(np.full((4, 4, 4), 255, np.uint8), 1., 1.),
+                          WorldPlacement((10., 0., 0.)))
+    effect = InsertionAttackEffect("front", insertion)
+    rgb = np.full((camera.height, camera.width, 3), 50, np.uint8)
+    view = SensorView("front", rgb, camera, CAM_FROM_WORLD, {}, ActorPose(np.eye(4)), 0., 0)
+    evidence = effect.evidence(view)
+    monkeypatch.setattr(effect, "evidence", lambda *_: replace(evidence, visibility=None, reason=reason))
+    assert effect.apply(rgb, view) is rgb
+    assert effect.render_metadata() == {"rendered": False, "reason": reason}
+
+
+def test_effect_render_status_cannot_be_passed_as_constructor_options():
+    from avsectester.attack.insertion import InsertionAttackEffect
+
+    insertion = Insertion("patch", PlaneAsset(np.full((2, 2, 4), 255, np.uint8), 1., 1.),
+                          WorldPlacement((10., 0., 0.)))
+    with pytest.raises(TypeError, match="rendered"):
+        InsertionAttackEffect("front", insertion, rendered=True)
+    with pytest.raises(TypeError, match="reason"):
+        InsertionAttackEffect("front", insertion, reason="pretend rendered")

@@ -77,8 +77,8 @@ def test_real_pipeline_records_tracking_planning_and_control(
 
     # Build the registry before the model imports its planning/tracking types.
     recorder = Recorder(tmp_path, codecs=default_codecs(), chunk_steps=3)
-    stack = ModularAVStack(pipeline_config)
-    stack.instrument()
+    avstack = ModularAVStack(pipeline_config)
+    avstack.instrument()
     for i in range(8):
         observation = Observation(
             t=i * 0.05, frame=i, ego_speed=5,
@@ -86,11 +86,11 @@ def test_real_pipeline_records_tracking_planning_and_control(
             vehicle_state=make_ego(speed=5, t=i * 0.05),
         )
         if i == 0:
-            stack.reset(observation)
-        command = stack(observation)
+            avstack.reset(observation)
+        command = avstack(observation)
         recorder.record_step(StepRecord(
             i, model_observation=observation, produced_command=command,
-            components=stack.component_log(),
+            components=avstack.component_log(),
         ))
     recorder.finish()
 
@@ -218,3 +218,63 @@ def test_alpasim_public_output_fields_and_late_registration(tmp_path, monkeypatc
     np.testing.assert_array_equal(result["selected_plan"]["timestamps_us"], Trajectory.timestamps_us)
     assert result["pose_local_to_rig_t0"]["q_wxyz"] == [1, 0, 0, 0]
     assert result["reasoning_text"] == "brake for lead"
+
+
+def test_native_snapshots_do_not_walk_reference_descendants_or_integrated_cache(make_detections, make_ego):
+    from avstack.geometry import GlobalOrigin3D, ReferenceFrame
+
+    class ReverseLink:
+        def __deepcopy__(self, memo):
+            raise AssertionError("Snapshot visited an unrelated reverse reference")
+
+    frame = ReferenceFrame(np.array([10., 0., 0.]), np.quaternion(1), GlobalOrigin3D)
+    irrelevant = ReverseLink()
+    frame._point_from.append(irrelevant)
+    frame._global_integrated = irrelevant
+    GlobalOrigin3D._point_from.append(irrelevant)
+    try:
+        inputs = make_detections([(5., 0., 0.)], reference=frame)
+        snapshot = Recorder(codecs=default_codecs()).capture(inputs)
+        assert type(snapshot) is type(inputs)
+        assert type(snapshot[0]) is type(inputs[0])
+        assert snapshot.source_reference is not frame
+        assert snapshot.source_reference._point_from == []
+        assert snapshot.source_reference._global_integrated is None
+        assert snapshot.source_reference.reference._point_from == []
+        np.testing.assert_allclose(
+            snapshot[0].position.change_reference(GlobalOrigin3D, inplace=False).x, [15., 0., 0.],
+        )
+        frame.x[:] = [90., 0., 0.]
+        np.testing.assert_allclose(snapshot.source_reference.x, [10., 0., 0.])
+    finally:
+        GlobalOrigin3D._point_from[:] = [child for child in GlobalOrigin3D._point_from if child is not irrelevant]
+        frame._point_from[:] = [child for child in frame._point_from if child is not irrelevant]
+        frame._global_integrated = None
+
+
+def test_real_track_snapshot_keeps_native_access_without_copying_other_frames(pipeline_config, make_detections, make_ego):
+    from avstack.geometry import GlobalOrigin3D
+    from avsectester.closed_loop.avstacks.modular import ModularAVStack
+
+    class ReverseLink:
+        def __deepcopy__(self, memo):
+            raise AssertionError("Track snapshot copied another world's coordinate frames")
+
+    unrelated = ReverseLink()
+    avstack = ModularAVStack(pipeline_config)
+    avstack.instrument()
+    GlobalOrigin3D._point_from.append(unrelated)
+    try:
+        for frame in range(20):
+            avstack(Observation(frame * .05, frame,
+                                sensor_data={"lidar": make_detections([(20., 0., 0.)], frame=frame)},
+                                vehicle_state=make_ego(t=frame * .05)))
+        track = avstack.component_log()["tracking"][0]
+        snapshot = Recorder(codecs=default_codecs()).capture(track)
+        assert type(snapshot) is type(track)
+        np.testing.assert_allclose(snapshot.x, track.x)
+        assert snapshot.reference is not track.reference
+        assert snapshot.position.reference is snapshot.reference
+        assert snapshot.box.reference is snapshot.reference
+    finally:
+        GlobalOrigin3D._point_from[:] = [child for child in GlobalOrigin3D._point_from if child is not unrelated]

@@ -32,6 +32,7 @@ from avsectester.datasets.base import FrameReference
 
 if TYPE_CHECKING:
     from avsectester.closed_loop.services import ClosedLoopServices, ScenarioView
+    from avsectester.closed_loop.simulator import DeploymentPlan
 
 
 @dataclass(frozen=True)
@@ -41,7 +42,8 @@ class AttackSegment:
     Decisions run at positions ``[start, stop)``; ``stop`` is the terminal state. ``roles`` maps
     role names (such as ``attacker`` or ``hosts``) to stable actor IDs; ``placement`` is an
     optional insertion placement. Candidate rollouts use the same record. Optional
-    ``selection_score`` is larger for better candidates and ``selection_rank`` is zero-based.
+    ``selection_score`` and ``selection_rank`` have meanings defined by the attack; the framework
+    validates only their data types and never ranks or reselects candidates.
     ``user_data`` stores attack-specific information without framework interpretation.
     """
 
@@ -93,6 +95,9 @@ class OfflineContext:
 
     services: ClosedLoopServices
     metadata: tuple[AttackSegment, ...]
+    seed: int = 0
+    environment: Mapping[str, Any] = field(default_factory=dict)
+    deployment: DeploymentPlan | None = None
 
 
 class Attack(ABC):
@@ -112,6 +117,10 @@ class Attack(ABC):
     def run_offline(self, context: OfflineContext) -> Any:
         """Return the artifacts used by the online phase. By default, the assets unchanged."""
         return self.assets
+
+    def deployment_ticks(self, segment: AttackSegment) -> int:
+        """Declare native setup ticks before preparing artifacts; default has no world deployment."""
+        return 0
 
     def create_runtime(self, segment: AttackSegment, artifacts: Any) -> AttackRuntime:
         """Create the runtime for one run. By default, a runtime without attack effects."""

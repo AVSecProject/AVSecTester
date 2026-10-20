@@ -1,7 +1,7 @@
 # Model checkpoints
 
-Perception model weights for the AV stack under test. Binaries are **not** committed
-(git-ignored); this tree tracks only the structure and this README. Populate it with:
+Perception model weights for the AV stack under test. Binaries are **not** committed (git-ignored);
+this tree tracks only the structure and this README. Populate it with:
 
 ```bash
 ./scripts/preparation/fetch_models.sh
@@ -15,18 +15,18 @@ models/
     kitti/          # public OpenMMLab LiDAR checkpoints (auto-downloaded)
     nuscenes/       # (optional) public OpenMMLab checkpoints
   work_dirs/        # CARLA-trained LiDAR (mmdet3d) run dirs
-  work_dirs_2d/     # CARLA-trained 2D camera (mmdet) run dirs
+  work_dirs_2d/     # CARLA/nuScenes-trained 2D camera (mmdet) run dirs
 ```
 
-`scripts/preparation/fetch_models.sh` downloads the checkpoints and symlinks the two vendored roots at
-these folders, which is where avstack resolves paths:
+`scripts/preparation/fetch_models.sh` downloads the checkpoints and symlinks the two vendored roots
+at these folders, which is where avstack resolves paths:
 
 - `third_party/avstack-core/third_party/mmdetection3d/{checkpoints,work_dirs}` → LiDAR (`mm3d_root`)
 - `third_party/avstack-core/third_party/mmdetection/{checkpoints,work_dirs}` → 2D (`mm2d_root`)
 
 The LiDAR and 2D `work_dirs` are kept **separate** (`work_dirs` vs `work_dirs_2d`) on purpose:
-avstack's loader probes `mm2d_root/<config>` first, so a shared tree would misroute a LiDAR
-config into the 2D branch.
+avstack's loader probes `mm2d_root/<config>` first, so a shared tree would misroute a LiDAR config
+into the 2D branch.
 
 ## avstack CARLA-trained models
 
@@ -42,30 +42,44 @@ All are trained on CARLA with classes **car / bicycle / truck / motorcycle**.
 | 2D cam | `cascadercnn` | `carla-vehicle` | 0.5 | Ego camera, cascade head. |
 | 2D cam | `cascadercnn` | `carla-infrastructure` | 0.5 | Infrastructure camera, cascade head. |
 
-Each CARLA `work_dir` holds the config `.py`, the `.pth`, and (for the epoch-`latest` path
-layouts) a `last_checkpoint` text file (absolute path to the `.pth`) that avstack reads. All
-of it is produced by `scripts/preparation/fetch_models.sh`.
+Each CARLA `work_dir` holds the config `.py`, the `.pth`, and (for the epoch-`latest` path layouts)
+a `last_checkpoint` text file (absolute path to the `.pth`) that avstack reads. All of it is
+produced by `scripts/preparation/fetch_models.sh`.
+
+## nuScenes camera detector
+
+The supplied nuscenes_object_insertion.yaml configuration uses Faster R-CNN with the nuScenes label
+set. The fetch script downloads its checkpoint from the public AVstack model mirror into:
+
+```text
+models/work_dirs_2d/nuscenes/faster_rcnn_r50_fpn_1x_nuscenes.pth
+```
+
+The mmdetection work_dirs symlink exposes it at the path expected by AVstack. The model
+configuration comes from the vendored mmdetection
+configs/nuscenes/faster_rcnn_r50_fpn_1x_nuscenes.py. It is distinct from the CARLA checkpoints and
+uses the nuScenes class mapping.
 
 ## External CARLA datasets
 
 The `nuCarla` submodule supplies external dataset resources. It is not connected to the current
-scenario-selection or driving pipeline, and its listed models are not loaded by the supplied demos.
+scenario-selection or driving pipeline, and its listed models are not loaded by the supplied
+experiments.
 
 - **nuCarla** — `third_party/nuCarla` (git submodule of
-  [michigan-traffic-lab/nuCarla](https://github.com/michigan-traffic-lab/nuCarla)). A
-  nuScenes-format, **camera-BEV** CARLA dataset (9 maps, 14 weathers, 6 classes) plus four
-  pretrained BEV detectors (BEVFormer / PETR / BEVDet / FastBEV, weights on the repo's GitHub
-  releases). The image data lives on
-  [HuggingFace](https://huggingface.co/datasets/zhijieq/nuCarla); fetch it with the repo's
-  `download.sh` (Town01–10 / Mcity / Metadata zips). Keep the downloaded data **out of git**
-  — put it under a git-ignored `data/` dir (repo root `/data/` is ignored) or inside the
-  submodule (its own `.gitignore` excludes `data/`). Note: the LiDAR files are dummy
-  placeholders — nuCarla is camera-only.
+  [michigan-traffic-lab/nuCarla](https://github.com/michigan-traffic-lab/nuCarla)). A nuScenes-format,
+  **camera-BEV** CARLA dataset (9 maps, 14 weathers, 6 classes) plus four pretrained BEV detectors
+  (BEVFormer / PETR / BEVDet / FastBEV, weights on the repo's GitHub releases). The image data lives
+  on [HuggingFace](https://huggingface.co/datasets/zhijieq/nuCarla); fetch it with the repo's
+  `download.sh` (Town01–10 / Mcity / Metadata zips). Keep the downloaded data **out of git** — put it
+  under a git-ignored `data/` dir (repo root `/data/` is ignored) or inside the submodule (its own
+  `.gitignore` excludes `data/`). Note: the LiDAR files are dummy placeholders — nuCarla is
+  camera-only.
 
 ## Usage
 
-The default `configs/carla_scenario.yaml` selects the CARLA vehicle PointPillars checkpoint.
-`ModularAVStack` automatically registers its custom `CarlaDataset` metadata before loading it.
-See [CARLA perception checkpoints](../docs/getting-started/installation.md#carla-perception-checkpoints)
+The default `configs/carla_phantom.yaml` selects the CARLA vehicle PointPillars checkpoint.
+`ModularAVStack` automatically registers its custom `CarlaDataset` metadata before loading it. See
+[CARLA perception checkpoints](../docs/getting-started/installation.md#carla-perception-checkpoints)
 for model loading and the [Quickstart](../docs/getting-started/quickstart.md#run-a-carla-comparison)
 for the CARLA driving command.

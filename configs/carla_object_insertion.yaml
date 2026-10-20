@@ -1,0 +1,110 @@
+# Run with: avsectester run configs/carla_object_insertion.yaml
+# Paths are relative to this file; set data/model paths for your machine.
+dataset:
+  type: CarlaDataset
+  options:
+    recipes:
+      town03_lead:
+        type: CarlaRecipe
+        options:
+          time_step: 0.05
+          decision_steps: 60
+          scenario:
+            client:
+              map_name: Town03
+            ego:
+              type: CarlaMobileActor
+              spawn: 0
+              vehicle: vehicle.tesla.model3
+              autopilot: false
+              destination: null
+              sensors:
+              - type: CarlaRgbCamera
+                name: camera-0
+                source_ID: 0
+                image_size_x: 800
+                image_size_y: 600
+                fov: 90
+                sensor_tick: 0.0
+              - type: CarlaLidar
+                name: lidar-0
+                rotation_frequency: 20
+                sensor_tick: 0.0
+                range: 70.0
+            lead:
+              gap: 25.0
+              vehicle: vehicle.tesla.model3
+            npcs: []
+          motion:
+            ego:
+              type: PrescribedMotion
+              options:
+                constant_control:
+                  type: Control
+                  options:
+                    throttle: 0.35
+            lead:
+              type: PrescribedMotion
+              options:
+                constant_control:
+                  type: Control
+                  options:
+                    brake: 1.0
+simulator:
+  type: CarlaSimulator
+  options:
+    client:
+      connect_ip: 127.0.0.1
+      connect_port: 2000
+      traffic_manager_port: 8000
+      rate: 20.0
+      synchronous: true
+      seed: 0
+    depth_camera: camera-0-0
+avstack:
+  type: CameraForwardCollisionAVStack
+  options:
+    gpu: 0
+    camera: camera-0-0
+    detector_dataset: carla-vehicle
+    area_brake: 0.03
+    throttle: 0.55
+seeds:
+- 0
+evaluation:
+  metrics:
+  - type: DrivingMetrics
+  - type: StopImpact
+recording:
+  sensor_ids:
+  - camera-0-0
+  representations:
+  - model_input
+  every_n_steps: 1
+output: ../results/carla_object_insertion
+attacks:
+  object:
+    type: ObjectInsertionAttack
+    options:
+      decision_steps: 20
+      max_segments: 1
+      assets:
+        type: SignAsset
+        options: {}
+      sensor: camera-0-0
+      placement:
+        type: WorldPlacement
+        options:
+          position_m:
+          - 28.0
+          - -3.0
+          - 0.0
+      orientation:
+        type: Orientation
+        options:
+          mode: face_ego
+      placement_relative_to_ego_origin: true
+treatments:
+- name: clean
+- name: object
+  attack_name: object

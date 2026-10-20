@@ -12,7 +12,7 @@ from typing import Any
 from avsectester.attack import AttackSegment, OfflineContext
 from avsectester.datasets import FrameData, ScenarioStart
 from avsectester.datasets.base import nonnegative
-from avsectester.attack.runtime import AttackRuntime
+from avsectester.attack.runtime import AttackRuntime, OnlineContext
 from avsectester.closed_loop.avstack import AVStack
 from avsectester.closed_loop.environment import merge_environments, validate_environment
 from avsectester.closed_loop.frame_data import FrameDataCache
@@ -23,7 +23,8 @@ from avsectester.closed_loop.simulator import DeploymentPlan, SimulatorRuntime
 from avsectester.runlog import Recorder, RunLog
 
 from .config import ExperimentConfiguration, TreatmentConfiguration, load_configuration
-from .models import ExperimentResult, PreparedExperiment, SelectionDecision, TreatmentResult
+from .models import (ExperimentResult, PreparedExperiment, SelectionDecision, TreatmentResult,
+                     run_directory, treatment_applies)
 
 
 def _hooks(spec: Any, seed: int) -> HookSet:
@@ -82,9 +83,6 @@ class Experiment:
     @staticmethod
     def prepare(config: ExperimentConfiguration | Mapping[str, Any] | str | Path) -> PreparedExperiment:
         configuration = load_configuration(config)
-        if not configuration.attacks:
-            raise ValueError("Experiment.prepare requires an attack to select segments; "
-                             "use ClosedLoopRunner for an individual clean run")
         validate_configuration_environment(configuration)
         metadata: dict[str, tuple[AttackSegment, ...]] = {}
         artifacts: dict[str, Any] = {}
@@ -117,11 +115,15 @@ class Experiment:
                     if configuration.strict:
                         raise
             metadata[name] = tuple(selected)
+            deployment = _deployment_plan(configuration, name, metadata[name])
+            environment = merge_environments(configuration.environment, attack.environment)
             with ClosedLoopServices(
                 configuration.dataset, configuration.simulator,
-                configuration.avstack, cache,
+                configuration.avstack, cache, deployment=deployment,
             ) as services:
-                artifacts[name] = attack.run_offline(OfflineContext(services, metadata[name]))
+                artifacts[name] = attack.run_offline(OfflineContext(
+                    services, metadata[name], seed, environment, deployment,
+                ))
         prepared = PreparedExperiment(configuration, metadata, artifacts, tuple(selections))
         if configuration.output is not None:
             prepared.save(configuration.output)
@@ -130,6 +132,10 @@ class Experiment:
     @staticmethod
     def execute(prepared: PreparedExperiment) -> ExperimentResult:
         """Execute all comparison groups with one execution-owned frame-data cache."""
+        if not isinstance(prepared, PreparedExperiment):
+            raise TypeError("Experiment.execute requires PreparedExperiment with loaded artifacts")
+        if set(prepared.artifacts) != set(prepared.metadata):
+            raise ValueError("PreparedExperiment requires artifacts for every attack before execution")
         validate_configuration_environment(prepared.configuration)
         return _Execution(prepared).run()
 
@@ -156,6 +162,34 @@ def _validate_setup_ticks(value: int) -> None:
     nonnegative(value, "setup_ticks")
 
 
+def _deployment_plan(config: ExperimentConfiguration, attack_name: str,
+                     segments: tuple[AttackSegment, ...]) -> DeploymentPlan:
+    """Use one budget across preparation, segments, seeds and comparison treatments."""
+    attack = config.attacks[attack_name]
+    ticks = 0
+    for treatment in config.treatments:
+        if not treatment_applies(treatment, attack_name):
+            continue
+        for seed in config.seeds:
+            hooks = _hooks(config.hooks, seed)
+            _validate_setup_ticks(hooks.setup_ticks)
+            for segment in segments:
+                declared = attack.deployment_ticks(segment) if treatment.attack_name is not None else 0
+                _validate_setup_ticks(declared)
+                ticks = max(ticks, hooks.setup_ticks + declared)
+    return DeploymentPlan(ticks)
+
+
+def _stop_unstarted_runtime(runtime: Any, segment: AttackSegment, error: BaseException) -> None:
+    """Release a constructed runtime when group initialization fails before the runner owns it."""
+    if not isinstance(runtime, AttackRuntime):
+        return
+    try:
+        runtime.stop(OnlineContext(0, "stop", segment.start.timestamp, segment.start.position))
+    except BaseException as cleanup:
+        error.add_note(f"Attack runtime cleanup also failed: {cleanup!r}")
+
+
 class _Execution:
     """Resources and failure accounting for one execute call, never retained by the config."""
 
@@ -164,6 +198,8 @@ class _Execution:
         self.configuration = prepared.configuration
         self.cache = FrameDataCache()
         self.runs: list[TreatmentResult] = []
+        self.deployments = {name: _deployment_plan(self.configuration, name, segments)
+                            for name, segments in prepared.metadata.items()}
 
     def _description(self, group: _Group, treatment: TreatmentConfiguration,
                      deployment: DeploymentPlan | None = None) -> tuple[dict[str, Any], Path | None]:
@@ -175,8 +211,8 @@ class _Execution:
         )
         destination = None
         if config.output is not None:
-            destination = (config.output / "runs" / group.attack_name / f"segment-{group.index:05d}"
-                           / f"seed-{group.seed}" / treatment.name)
+            destination = run_directory(config.output, group.attack_name, group.index,
+                                        group.seed, treatment.name)
         metadata: dict[str, Any] = {
             "attack_name": group.attack_name, "segment_index": group.index,
             "segment": asdict(group.segment), "treatment": treatment.name, "seed": group.seed,
@@ -216,11 +252,11 @@ class _Execution:
         config = self.configuration
         result = []
         for treatment in config.treatments:
-            if treatment.attack_name is not None and treatment.attack_name != group.attack_name:
+            if not treatment_applies(treatment, group.attack_name):
                 continue
+            runtime = None
             try:
-                hooks = _hooks(config.clean_hooks if treatment.attack_name is None else config.hooks,
-                               group.seed)
+                hooks = _hooks(config.hooks, group.seed)
                 runtime = None
                 if treatment.attack_name is not None:
                     runtime = config.attacks[group.attack_name].create_runtime(
@@ -230,9 +266,21 @@ class _Execution:
                     ensure_fresh(runtime)
                     _validate_setup_ticks(runtime.setup_ticks)
                 _validate_setup_ticks(hooks.setup_ticks)
-                ticks = hooks.setup_ticks + (runtime.setup_ticks if runtime is not None else 0)
+                declared_ticks = config.attacks[group.attack_name].deployment_ticks(group.segment)
+                _validate_setup_ticks(declared_ticks)
+                if runtime is not None and runtime.setup_ticks > declared_ticks:
+                    raise ValueError("AttackRuntime.setup_ticks exceeds Attack.deployment_ticks declaration")
+                ticks = hooks.setup_ticks + (declared_ticks if runtime is not None else 0)
                 result.append(_Treatment(treatment, hooks, runtime, ticks))
-            except Exception as error:
+            except BaseException as error:
+                _stop_unstarted_runtime(runtime, group.segment, error)
+                if not isinstance(error, Exception):
+                    for pending in result:
+                        _stop_unstarted_runtime(pending.attack_runtime, group.segment, error)
+                    raise
+                if config.strict:
+                    for pending in result:
+                        _stop_unstarted_runtime(pending.attack_runtime, group.segment, error)
                 self._failed(group, treatment, error)
         return tuple(result)
 
@@ -265,6 +313,7 @@ class _Execution:
                        start: ScenarioStart, initialization: Any, deployment: DeploymentPlan) -> None:
         config = self.configuration
         metadata, destination = self._description(group, treatment.configuration, deployment)
+        runner_owns_attack = False
         try:
             with ExitStack() as resources:
                 simulator_runtime = config.simulator.create_runtime(group.seed)
@@ -276,36 +325,52 @@ class _Execution:
                 if not isinstance(avstack, AVStack):
                     raise TypeError("DrivingAdapter.factory must return AVStack")
                 ensure_fresh(avstack)
-                close = getattr(avstack, "close", None)
-                if callable(close):
-                    resources.callback(close)
-                log = ClosedLoopRunner().run(simulator_runtime, avstack, RunRequest(
+                resources.callback(avstack.close)
+                request = RunRequest(
                     group.decision_steps, hooks=treatment.hooks,
                     attacks=(treatment.attack_runtime,) if treatment.attack_runtime is not None else (),
                     recording=config.recording, output_path=destination, metadata=metadata,
                     start=deepcopy(start), initialization=deepcopy(initialization),
                     deployment=deployment, environment=metadata["environment"],
-                ), release_owned_resources=resources.close)
+                )
+                runner_owns_attack = True
+                log = ClosedLoopRunner().run(simulator_runtime, avstack, request,
+                                             release_owned_resources=resources.close)
             self.runs.append(TreatmentResult(
                 group.attack_name, group.index, group.segment, treatment.configuration.name,
                 group.seed, log,
             ))
-        except Exception as error:
+        except BaseException as error:
+            if not runner_owns_attack:
+                _stop_unstarted_runtime(treatment.attack_runtime, group.segment, error)
+            if not isinstance(error, Exception):
+                raise
             self._failed(group, treatment.configuration, error, deployment)
 
     def _run_group(self, group: _Group) -> None:
         treatments = self._treatments(group)
         if not treatments:
             return
-        deployment = DeploymentPlan(max(t.setup_ticks for t in treatments))
+        deployment = self.deployments[group.attack_name]
         try:
+            if any(treatment.setup_ticks > deployment.ticks for treatment in treatments):
+                raise ValueError("Treatment deployment exceeds the shared offline and execution budget")
             start, initialization = self._initialize_group(group, deployment)
-        except Exception as error:
+        except BaseException as error:
+            for treatment in treatments:
+                _stop_unstarted_runtime(treatment.attack_runtime, group.segment, error)
+            if not isinstance(error, Exception):
+                raise
             for treatment in treatments:
                 self._failed(group, treatment.configuration, error, deployment)
             return
-        for treatment in treatments:
-            self._run_treatment(group, treatment, start, initialization, deployment)
+        for index, treatment in enumerate(treatments):
+            try:
+                self._run_treatment(group, treatment, start, initialization, deployment)
+            except BaseException as error:
+                for pending in treatments[index + 1:]:
+                    _stop_unstarted_runtime(pending.attack_runtime, group.segment, error)
+                raise
 
     def run(self) -> ExperimentResult:
         for attack_name, segments in self.prepared.metadata.items():

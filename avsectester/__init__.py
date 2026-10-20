@@ -11,15 +11,13 @@ The framework packages follow its components:
   systems (``avstacks``), Vehicle I/O, stage hooks, the ``ClosedLoopRunner``, and the closed-loop
   services used by the metabuilder and the offline phase.
 * :mod:`avsectester.runlog` — the run log and its Parquet persistence.
-* :mod:`avsectester.evaluation` — driving-impact metric, component logging and robustness runs.
+* :mod:`avsectester.evaluation` — metrics, reports and visualization from RunLog.
+* :mod:`avsectester.experiment` — configuration, preparation and treatment execution.
 
-Attack implementations and their helpers live in :mod:`avsectester.attacks`,
-:mod:`avsectester.rendering`, :mod:`avsectester.perturbations` and :mod:`avsectester.insertion`.
-
-The legacy experiment path used by the CLI remains until phase 4: ``backend`` (the legacy loop
-``run``), ``preparation``, ``interventions``, ``runner``, ``carla_runner``, ``conditions``,
-``experiment`` and ``scenarios``. The AV modules, geometry, sensors, CARLA bridge and the Alpamayo
-model come from avstack, avcarla and alpasim_driver.
+Concrete attacks live in :mod:`avsectester.attack.implemented_attacks`. Reusable insertion and
+optimization tools live in :mod:`avsectester.attack.insertion` and
+:mod:`avsectester.attack.optimization`. Attack interfaces do not import those tools or concrete
+implementations; concrete attacks compose the framework interfaces and tools.
 """
 
 __version__ = "0.1.0"

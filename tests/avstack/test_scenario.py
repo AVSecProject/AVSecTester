@@ -1,474 +1,172 @@
-"""Exercise the real runner while replacing only its simulator- and stack-facing objects.
+"""Run the actual modular pipeline through simulator, hook and attack lifecycles."""
 
-After the interface split, ``run_scenario`` assembles a :class:`~avsectester.closed_loop.simulators.carla.CarlaSimulator`
-(client + ego + traffic, senses/actuates) and a :class:`~avsectester.closed_loop.avstacks.modular.ModularAVStack` (the AV
-box), and drives them with :func:`avsectester.evaluation.run_logged`. These tests mock ``CARLA.build`` (the
-simulator objects) and ``PIPELINE.build`` (the AV pipeline) so the runner's own logic — frame
-recording, hook order + attacked detection counts, replay-spawn capture, NPC handling, cleanup on
-failure, and the sensor-delivery wait — is exercised without a live simulator.
-"""
-
-from copy import deepcopy
+from dataclasses import replace
 from types import SimpleNamespace
-from unittest.mock import Mock
 
+import numpy as np
 import pytest
-from avcarla.config import CARLA
-from avsectester import carla_runner as scenario
-from avsectester.closed_loop.simulators import carla as carla_backend
-from avstack.config import HOOKS, PIPELINE
-from avstack.modules.base import BaseModule
-from avstack.utils.decorators import apply_hooks
+
+from avsectester.attack.runtime import AttackRuntime, AVStackAttackEffect, WorldAttackEffect
+from avsectester.closed_loop.avstacks.modular import ModularAVStack
+from avsectester.closed_loop.avstacks.native_hook import NativeHook
+from avsectester.closed_loop.datatypes import Control, Observation, WorldSnapshot
+from avsectester.closed_loop.hooks import Hook, HookSet
+from avsectester.closed_loop.runner import ClosedLoopRunner, RunRequest
+from avsectester.closed_loop.simulator import Simulator, SimulatorRuntime
+from avsectester.datasets import ActorState
+from avsectester.runlog import Recorder
 
 
 @pytest.fixture
-def simulation(monkeypatch):
-    clock = SimpleNamespace(frame=100, t=10.0)
-
-    def snapshot():
-        return SimpleNamespace(
-            frame=clock.frame, timestamp=SimpleNamespace(elapsed_seconds=clock.t)
-        )
-
-    def tick():
-        clock.frame += 1
-        clock.t += 0.05
-
-    client = SimpleNamespace(
-        world=SimpleNamespace(get_snapshot=Mock(side_effect=snapshot)),
-        tick=Mock(side_effect=tick),
-        close=Mock(),
-    )
-
-    class Stage(BaseModule):
-        @apply_hooks
-        def __call__(self, data):
-            return data
-
-    # Exercise the real hook dispatcher so advertised capabilities match invocation.
-    perception = Stage(name="test-perception")
-    tracking = Stage(name="test-tracking")
-    control = SimpleNamespace(throttle=0.0, brake=0.7, steer=-0.2)
-    stage_outputs = []
-
-    def pipeline_call(sensor_data, vehicle_state):
-        stage_outputs.append(perception(["real-detection"]))
-        return control
-
-    pipeline = Mock(side_effect=pipeline_call)
-    pipeline.perception = perception
-    pipeline.tracking = tracking
-    monkeypatch.setattr(PIPELINE, "build", Mock(return_value=pipeline))
-
-    # --- the simulator objects (what CARLA.build returns): ego senses + actuates, no driving ---
-    def spawned_actor(index):
-        transform = SimpleNamespace(
-            location=SimpleNamespace(x=10.0 + index, y=-2.0, z=0.5),
-            rotation=SimpleNamespace(pitch=1.0, yaw=37.0, roll=-3.0),
-        )
-        return SimpleNamespace(type_id="vehicle.test", get_transform=Mock(return_value=transform))
-
-    ego = SimpleNamespace(
-        actor=spawned_actor(0),
-        initialize=Mock(),
-        destroy=Mock(),
-        apply_control=Mock(),
-        get_pose=Mock(
-            return_value=SimpleNamespace(
-                position=SimpleNamespace(x=0.0), attitude=SimpleNamespace(q=1.0)
-            )
-        ),
-        reference=SimpleNamespace(x=None, q=None),
-        sensor_data_manager=SimpleNamespace(
-            empty=Mock(return_value=False), pop=Mock(return_value={"lidar-0-0": "cloud"})
-        ),
-        get_object_state=Mock(
-            return_value=SimpleNamespace(
-                velocity=SimpleNamespace(norm=lambda: (clock.frame - 100) * 0.5)
-            )
-        ),
-    )
-    npcs = [
-        SimpleNamespace(actor=spawned_actor(i + 1), initialize=Mock(), destroy=Mock())
-        for i in range(2)
-    ]
-    built_npcs = []
-
-    def build(config, default_args=None):
-        if config["type"] == "CarlaClient":
-            return client
-        assert default_args == {"client": client}
-        if config["type"] == "CarlaMobileActor":
-            return ego
-        assert config["type"] == "CarlaNpc"
-        npc = npcs[len(built_npcs)]
-        built_npcs.append(npc)
-        return npc
-
-    for actor in [ego, *npcs]:
-        actor.spawn_transform = actor.actor.get_transform.return_value
-        actor.actor.get_transform.side_effect = AssertionError(
-            "Actor state is stale before ticking"
-        )
-
-    registry = Mock(side_effect=build)
-    monkeypatch.setattr(CARLA, "build", registry)
-    sleep = Mock()
-    monkeypatch.setattr(carla_backend.time, "sleep", sleep)
-    config = {
-        "client": {"type": "CarlaClient"},
-        "ego": {"type": "CarlaMobileActor", "pipeline": {"type": "ModularDrivingPipeline"}},
-        "npcs": {"count": 2, "npc_type": "vehicle", "spawn_start": 3},
-    }
-    return SimpleNamespace(
-        config=config,
-        client=client,
-        ego=ego,
-        npcs=npcs,
-        pipeline=pipeline,
-        registry=registry,
-        sleep=sleep,
-        stage_outputs=stage_outputs,
-    )
-
-
-def test_runner_records_requested_frames_and_initializes_actors(simulation):
-    sim = simulation
-    trace = scenario.run_scenario(sim.config, frames=3)
-    # reset ticks once (ego stationary) then each step ticks + records the post-step state.
-    assert [record.frame for record in trace.records] == [0, 1, 2]
-    assert [record.t for record in trace.records] == pytest.approx([10.10, 10.15, 10.20])
-    assert [record.speed for record in trace.records] == [1.0, 1.5, 2.0]
-    assert [record.n_detections for record in trace.records] == [1, 1, 1]
-    assert all((r.throttle, r.brake, r.steer) == (0.0, 0.7, -0.2) for r in trace.records)
-    assert sim.client.tick.call_count == 4  # 1 in reset + 3 steps
-    assert sim.ego.apply_control.call_count == 3
-    sim.ego.initialize.assert_called_once_with(10.0, 100)
-    sim.ego.destroy.assert_called_once_with()
-    for npc in sim.npcs:
-        npc.initialize.assert_called_once_with(10.0, 100)
-        npc.destroy.assert_called_once_with()
-    sim.client.close.assert_called_once()
-    sim.sleep.assert_not_called()
-
-
-def test_runner_consumes_runtime_component_and_command_replacements(simulation):
-    from avsectester.closed_loop.datatypes import Control
-    from avsectester.closed_loop.hooks import Hook, Runtime
-
-    sim = simulation
-    runtime = Runtime([
-        Hook("perception.post", lambda value, context: [*value, "runtime-detection"]),
-        Hook("command", lambda value, context: Control(throttle=0.3, steer=0.1)),
-    ])
-    trace = scenario.run_scenario(sim.config, frames=2, runtime=runtime)
-
-    assert sim.stage_outputs == [["real-detection", "runtime-detection"]] * 2
-    assert [record.n_detections for record in trace.records] == [2, 2]
-    assert [record.throttle for record in trace.records] == [0.3, 0.3]
-    assert all(call.args[0].throttle == 0.3 for call in sim.ego.apply_control.call_args_list)
-    sim.client.close.assert_called_once()
-
-
-def test_runner_preserves_hook_order_and_counts_attacked_output(simulation, monkeypatch):
-    sim = simulation
-
-    def append_hook(name):
-        def hook(data):
-            data.append(name)
-            return (data,)
-
-        return hook
-
-    hooks = [append_hook("phantom-a"), append_hook("phantom-b"), append_hook("tracking-only")]
-    build_hook = Mock(side_effect=hooks)
-    monkeypatch.setattr(HOOKS, "build", build_hook)
-    attacks = [
-        {"stage": "perception", "hook": {"type": "A"}},
-        {"stage": "perception", "hook": {"type": "B"}},
-        {"stage": "tracking", "hook": {"type": "C"}},
-    ]
-    trace = scenario.run_scenario(sim.config, attacks=attacks, frames=2)
-    assert sim.stage_outputs == [["real-detection", "phantom-a", "phantom-b"]] * 2
-    assert [r.n_detections for r in trace.records] == [3, 3]
-    assert sim.pipeline.tracking.post_hooks == []  # runtime attacks do not persist on the model
-    assert [call.args[0] for call in build_hook.call_args_list] == [a["hook"] for a in attacks]
-
-
-def test_runner_records_actual_spawns_before_driving_without_mutating_input(simulation):
-    sim = simulation
-    before = deepcopy(sim.config)
-
-    def advance_world():
-        # Moving actors after setup must not alter the recorded spawn config.
-        for actor in [sim.ego, *sim.npcs]:
-            actor.spawn_transform.location.x = 999
-
-    sim.client.tick.side_effect = advance_world
-    trace = scenario.run_scenario(sim.config, frames=2)
-    replay = trace.replay_scenario
-    for spec, x in zip([replay["ego"], *replay["npcs"]], [10.0, 11.0, 12.0]):
-        assert spec["spawn_transform"] == {
-            "location": {"x": x, "y": -2.0, "z": 0.5},
-            "rotation": {"pitch": 1.0, "yaw": 37.0, "roll": -3.0},
-        }
-    assert replay["ego"]["vehicle"] == "vehicle.test"
-    assert all(npc["npc_type"] == "vehicle.test" for npc in replay["npcs"])
-    assert replay["client"]["strict_spawn"] is True
-    assert sim.registry.call_args_list[0].args[0]["strict_spawn"] is False
-    assert sim.config == before
-    sim.ego.actor.get_transform.assert_not_called()
-
-
-def test_compact_npc_config_is_expanded(simulation):
-    sim = simulation
-    scenario.run_scenario(sim.config, frames=1)
-    configs = [call.args[0] for call in sim.registry.call_args_list]
-    assert configs[2:] == [
-        {"type": "CarlaNpc", "spawn": 3, "npc_type": "vehicle"},
-        {"type": "CarlaNpc", "spawn": 4, "npc_type": "vehicle"},
-    ]
-
-
-@pytest.mark.parametrize(
-    "npcs",
-    [
-        None,
-        [],
-        {"count": 0},
-        [{"type": "CarlaNpc", "spawn": 9, "npc_type": "vehicle"}],
-    ],
-)
-def test_optional_and_explicit_npc_config(simulation, npcs):
-    sim = simulation
-    sim.config["npcs"] = npcs
-    before = deepcopy(sim.config)
-    scenario.run_scenario(sim.config, frames=1)
-    assert sim.config == before
-    assert sim.registry.call_count == (3 if isinstance(npcs, list) and npcs else 2)
-    if isinstance(npcs, list) and npcs:
-        assert sim.registry.call_args.args[0] == npcs[0]
-
-
-@pytest.mark.parametrize("failure_site", ["world", "control"])
-def test_tick_failure_propagates_and_destroys_all_actors(simulation, failure_site):
-    sim = simulation
-    target = sim.client.tick if failure_site == "world" else sim.ego.apply_control
-    target.side_effect = RuntimeError("tick failed")
-    with pytest.raises(RuntimeError, match="tick failed"):
-        scenario.run_scenario(sim.config, frames=3)
-    sim.ego.destroy.assert_called_once_with()
-    for npc in sim.npcs:
-        npc.destroy.assert_called_once_with()
-
-
-def test_npc_destroy_failure_does_not_prevent_remaining_cleanup(simulation):
-    sim = simulation
-    sim.npcs[0].destroy.side_effect = RuntimeError("already destroyed")
-    scenario.run_scenario(sim.config, frames=1)
-    sim.npcs[1].destroy.assert_called_once_with()
-
-
-@pytest.mark.parametrize("failure_site", ["initialize", "npc_build"])
-def test_setup_failure_cleans_up_already_created_actors(simulation, failure_site):
-    sim = simulation
-    if failure_site == "initialize":
-        sim.ego.initialize.side_effect = RuntimeError("setup failed")
-    else:
-        sim.registry.side_effect = [sim.client, sim.ego, sim.npcs[0], RuntimeError("setup failed")]
-    with pytest.raises(RuntimeError, match="setup failed"):
-        scenario.run_scenario(sim.config, frames=1)
-    sim.ego.destroy.assert_called_once_with()
-    sim.npcs[0].destroy.assert_called_once_with()
-
-
-def test_ego_destroy_failure_still_cleans_up_npcs(simulation):
-    sim = simulation
-    sim.ego.destroy.side_effect = RuntimeError("ego destroy failed")
-    with pytest.raises(RuntimeError, match="ego destroy failed"):
-        scenario.run_scenario(sim.config, frames=1)
-    for npc in sim.npcs:
-        npc.destroy.assert_called_once_with()
-
-
-def test_runner_waits_for_delayed_sensor_data(simulation):
-    sim = simulation
-    # reset's observe finds data immediately. The single step's observe waits two polls for it.
-    sim.ego.sensor_data_manager.empty.side_effect = [False, True, True, False]
-    trace = scenario.run_scenario(sim.config, frames=1, settle_iters=4)
-    assert len(trace.records) == 1
-    assert sim.sleep.call_count == 2
-    sim.ego.apply_control.assert_called_once()
-
-
-@pytest.mark.parametrize("gpu", [None, 0, 2])
-def test_gpu_override_changes_only_perception_device(gpu):
-    config = {"ego": {"pipeline": {"perception": {"gpu": 1, "model": "pointpillars"}}}}
-    expected = deepcopy(config)
-    if gpu is not None:
-        expected["ego"]["pipeline"]["perception"]["gpu"] = gpu
-    assert carla_backend.set_perception_gpu(config, gpu) is config
-    assert config == expected
-
-
-def test_paired_backend_replays_actual_spawns_and_releases_old_actors(simulation, monkeypatch):
-    sim = simulation
-    prepared = deepcopy(sim.config)
-    prepared["client"].update(seed=17, traffic_manager_seed=17, reset_world=True,
-                              strict_spawn=False)
-    prepare = Mock(return_value=prepared)
-    monkeypatch.setattr(carla_backend, "prepare_scenario", prepare)
-    groups = [(sim.ego, sim.npcs), (deepcopy(sim.ego), deepcopy(sim.npcs))]
+def simulation(pipeline_config, make_detections, make_ego):
     calls = []
-    generation = -1
-    npc_index = 0
+    class World(Simulator):
+        command_modes = frozenset({"actuator"})
 
-    def build(config, default_args=None):
-        nonlocal generation, npc_index
-        calls.append(deepcopy(config))
-        if config["type"] == "CarlaClient":
-            generation += 1
-            npc_index = 0
-            if generation:
-                sim.ego.destroy.assert_called_once()
-                sim.client.close.assert_called_once()
-                for npc in sim.npcs:
-                    npc.destroy.assert_called_once()
-            return sim.client
-        if config["type"] == "CarlaMobileActor":
-            return groups[generation][0]
-        npc = groups[generation][1][npc_index]
-        npc_index += 1
-        return npc
+        def create_runtime(self, seed=None):
+            return WorldRuntime(self)
 
-    sim.registry.side_effect = build
-    backend = carla_backend.CarlaSimulator(sim.config).create_runtime()
+    class WorldRuntime(SimulatorRuntime):
+        def _initialize_world(self, start, initialization, world):
+            self.frame = 0
+            self.speed = 0.
+            self.fail = None
+            calls.append("initialize")
+
+        def _observe(self):
+            from avstack.geometry import ReferenceFrame
+
+            calls.append(("capture", self.frame))
+            ego = make_ego(speed=self.speed, t=self.frame * .05)
+            sensor_reference = ReferenceFrame(np.zeros(3), np.quaternion(1), ego.as_reference())
+            return Observation(self.frame * .05, self.frame, ego_speed=self.speed,
+                               vehicle_state=ego,
+                               sensor_data={"lidar": make_detections([(30., 8., 0.)], frame=self.frame,
+                                                                    reference=sensor_reference)})
+
+        def _state(self):
+            return WorldSnapshot(self.frame * .05, self.frame, ego_speed=self.speed,
+                                 ego=ActorState(np.eye(4), (self.speed, 0., 0.), "vehicle", (4., 2., 1.5)))
+
+        def _advance_native(self, control):
+            calls.append(("control", control))
+            if self.fail is not None:
+                raise self.fail
+            self.frame += 1
+            self.speed += .5
+
+        def close(self):
+            self._capture = None
+            self._world_initialized = False
+            calls.append("close")
+
+    return SimpleNamespace(calls=calls, runtime=World().create_runtime(),
+                           avstack=ModularAVStack(pipeline_config))
+
+
+def _run(simulation, decisions, *, hooks=None, attacks=(), recorder=None):
     try:
-        backend.prepare_clean_attack_pair()
-        assert backend.scenario == sim.config  # pair preparation preserves the user's random config
-        backend.reset()
-        replay = deepcopy(backend.replay_scenario)
-        backend.reset()
-        assert len(backend.npcs) == 2
-        assert backend.npcs == groups[1][1]
-        assert calls[0]["strict_spawn"] is False
-        assert calls[4]["strict_spawn"] is True
-        assert calls[4]["seed"] == calls[0]["seed"] == 17
-        assert calls[5]["spawn_transform"] == replay["ego"]["spawn_transform"]
-        assert calls[6]["spawn_transform"] == replay["npcs"][0]["spawn_transform"]
-        assert calls[7]["spawn_transform"] == replay["npcs"][1]["spawn_transform"]
-        # Old NPCs were initialized only during clean. Attack uses fresh actors.
-        for npc in sim.npcs:
-            npc.initialize.assert_called_once()
-        prepare.assert_called_once()
+        return ClosedLoopRunner().run(simulation.runtime, simulation.avstack,
+                                      RunRequest(decisions, hooks=hooks, attacks=attacks), recorder=recorder)
     finally:
-        backend.close()
-    for ego, npcs in groups:
-        ego.destroy.assert_called_once()
-        for npc in npcs:
-            npc.destroy.assert_called_once()
-    assert backend.ego is None and backend.npcs == []
-    backend.close()  # cleanup is idempotent
-    assert sim.client.close.call_count == 2
+        simulation.runtime.close()
 
 
-def test_pair_default_baseline_retains_explicit_runtime_localizer_and_seed(simulation, monkeypatch):
-    from avsectester.closed_loop.avstack import AVStack
-    from avsectester.closed_loop.datatypes import Control, StateEstimate
-    from avsectester.closed_loop.hooks import Hook, Plugin, Runtime
-
-    sim = simulation
-    monkeypatch.setattr(carla_backend, "prepare_scenario", deepcopy)
-    config = deepcopy(sim.config)
-    config["npcs"] = []
-    seeds, inputs = [], []
-    case = object()
-
-    class Localizer(Plugin):
-        def reset(self, context):
-            assert context.case is case
-            seeds.append(context.rng.random())
-
-        def transform(self, observation, context):
-            return StateEstimate(observation.vehicle_state, 12)
-
-    class Stack(AVStack):
-        def __call__(self, observation):
-            inputs.append(observation.ego_speed)
-            return Control()
-
-    def attack(observation, context):
-        assert observation.ego_speed == 12
-        observation.ego_speed = 20
-        return observation
-
-    scenario.run_scenario_pair(
-        config, frames=1, stack_factory=Stack,
-        attacked_runtime=Runtime([Hook("observation", attack)], localizer=Localizer(), case=case, seed=17),
-    )
-    assert inputs == [12, 20]
-    assert len(seeds) == 2 and seeds[0] == seeds[1]
+def test_runner_records_each_decision_and_canonical_outputs(simulation):
+    simulation.avstack.instrument()
+    log = _run(simulation, 3)
+    assert log.status == "completed"
+    assert [step.step for step in log.steps] == [0, 1, 2]
+    assert [step.physical_post.frame for step in log.steps] == [1, 2, 3]
+    assert [step.physical_post.t for step in log.steps] == pytest.approx([.05, .10, .15])
+    assert [step.physical_post.ego_speed for step in log.steps] == [.5, 1., 1.5]
+    assert [len(step.detections) for step in log.steps] == [1, 1, 1]
+    assert all("n_detections" not in step.telemetry for step in log.steps)
+    assert len([call for call in simulation.calls if isinstance(call, tuple) and call[0] == "control"]) == 3
+    assert simulation.calls[0] == "initialize" and simulation.calls[-1] == "close"
 
 
-def test_configured_native_pre_hook_replaces_component_input(simulation, monkeypatch):
-    from avsectester.closed_loop.hooks import Runtime
+def test_runner_consumes_component_and_command_replacements(simulation):
+    from avsectester.attack.implemented_attacks.phantom_injection_attack.attack import PhantomInjectionAttack
+
+    simulation.avstack.instrument(("perception",))
+    attack = PhantomInjectionAttack(decision_steps=2).create_runtime(None, None)
+    hooks = HookSet([Hook("command", lambda value, context: Control(throttle=.3, steer=.1))])
+    log = _run(simulation, 2, hooks=hooks, attacks=(attack,))
+    assert [len(step.components["perception"]) for step in log.steps] == [2, 2]
+    assert [len(step.detections) for step in log.steps] == [2, 2]
+    assert [step.executed_command for step in log.steps] == [Control(throttle=.3, steer=.1)] * 2
+    assert all(call[1].throttle == .3 for call in simulation.calls
+               if isinstance(call, tuple) and call[0] == "control")
+
+
+@pytest.mark.parametrize("append_first", [False, True])
+def test_explicit_native_hook_and_framework_hook_preserve_order(simulation, monkeypatch, append_first):
+    from avstack.config import HOOKS
+    from avstack.datastructs import DataContainer
+
+    class DoubleOutput:
+        def __call__(self, output):
+            return (DataContainer(output.frame, output.timestamp, list(output) * 2,
+                                  output.source_identifier, source_reference=output.source_reference),)
+
+    monkeypatch.setitem(HOOKS.module_dict, "DoubleOutputForTest", DoubleOutput)
+    observed = []
+    def count(output, context):
+        observed.append(len(output))
+        return output
+    hooks = [Hook("perception.post", NativeHook({"type": "DoubleOutputForTest"})),
+             Hook("perception.post", count)]
+    log = _run(simulation, 2, hooks=HookSet(hooks if append_first else reversed(hooks)))
+    assert observed == [2 if append_first else 1] * 2
+    assert [len(step.detections) for step in log.steps] == [2, 2]
+    assert len(simulation.avstack.pipeline.perception.post_hooks) == 1
+
+
+def test_explicit_native_pre_hook_replaces_component_input(simulation, monkeypatch):
+    from avstack.config import HOOKS
+    from avstack.datastructs import DataContainer
 
     class RemoveInput:
-        def __call__(self, objects, **kwargs):
-            assert objects == ["real-detection"]
-            return ([],), kwargs
+        def __call__(self, output, **kwargs):
+            assert len(output) == 1
+            empty = DataContainer(output.frame, output.timestamp, [], output.source_identifier,
+                                  source_reference=output.source_reference)
+            return (empty,), kwargs
 
     monkeypatch.setitem(HOOKS.module_dict, "RemoveInputForTest", RemoveInput)
-    runtime = Runtime.from_config({"hooks": [
-        {"stage": "perception.pre", "avstack": {"type": "RemoveInputForTest"}},
-    ]})
-    trace = scenario.run_scenario(simulation.config, frames=2, runtime=runtime)
-    assert simulation.stage_outputs == [[], []]
-    assert [record.n_detections for record in trace.records] == [0, 0]
+    hooks = HookSet([Hook("perception.pre", NativeHook({"type": "RemoveInputForTest"}, phase="pre"))])
+    log = _run(simulation, 2, hooks=hooks)
+    assert [len(step.detections) for step in log.steps] == [0, 0]
 
 
-@pytest.mark.parametrize("deployment_fails", [False, True])
-def test_pair_world_deployment_matches_setup_ticks_and_cleans_panels(
-    simulation, monkeypatch, deployment_fails,
-):
-    from avsectester.attacks.patch import physical_patch
-    from avsectester.closed_loop.avstack import AVStack
-    from avsectester.closed_loop.datatypes import Control
+def test_runner_failure_records_error_and_releases_native_hooks(simulation):
+    recorder = Recorder()
+    def fail(control, context):
+        raise RuntimeError("control failed")
+    with pytest.raises(RuntimeError, match="control failed"):
+        _run(simulation, 3, hooks=HookSet([Hook("command", fail)]), recorder=recorder)
+    assert recorder.log.status == "failed"
+    failure = next(event for event in recorder.log.events if event.kind == "failure")
+    assert failure.data["message"] == "control failed"
+    assert simulation.calls[-1] == "close"
+    assert all(not module.pre_hooks for module in simulation.avstack.native.values()
+               if hasattr(module, "pre_hooks"))
 
-    sim = simulation
-    ticks, initialization_ticks, panels = [], [], []
 
-    class Stack(AVStack):
-        def reset(self, observation):
-            initialization_ticks.append(sim.client.tick.call_count)
-
-        def __call__(self, observation):
-            return Control()
-
-    def apply(world, target, *, tick, on_spawn):
-        panel = Mock(is_alive=True)
-        panels.append(panel)
-        on_spawn(panel)
-        tick()
-        ticks.append(world.get_snapshot().frame)
-        if deployment_fails:
-            raise RuntimeError("texture deployment failed")
-        return [panel]
-
-    monkeypatch.setattr(physical_patch, "build_patch", lambda spec: SimpleNamespace(apply=apply))
-    monkeypatch.setattr(carla_backend, "prepare_scenario", deepcopy)
-    config = deepcopy(sim.config)
-    config["npcs"] = []
-    config["patches"] = [{"target": "ego"}]
-    if deployment_fails:
-        with pytest.raises(RuntimeError, match="texture deployment failed"):
-            scenario.run_scenario_pair(config, frames=1, stack_factory=Stack)
-        assert initialization_ticks == [2]
-    else:
-        clean, attacked = scenario.run_scenario_pair(config, frames=1, stack_factory=Stack)
-        # Each reset takes one deployment tick and one observation tick. Frame IDs may differ.
-        assert initialization_ticks == [2, 5]
-        assert len(clean.records) == len(attacked.records) == 1
-    assert len(ticks) == len(panels) == 1
-    panels[0].destroy.assert_called_once()
-    assert sim.client.close.call_count == 2
+def test_world_setup_effect_visible_in_first_observation_and_cleaned(simulation):
+    cleanup = []
+    class Speed(WorldAttackEffect):
+        def apply(self, simulator_runtime, resources):
+            simulator_runtime.speed = 9.
+            resources.callback(cleanup.append, "removed")
+    class Attack(AttackRuntime):
+        def setup(self, context):
+            return (Speed(),)
+        def step(self, context):
+            return (AVStackAttackEffect("command", lambda control, context: replace(control, brake=.8, throttle=0)),)
+    log = _run(simulation, 1, attacks=(Attack(),))
+    assert log.steps[0].raw_observation.ego_speed == 9.
+    assert log.steps[0].physical_pre.ego_speed == 9.
+    assert log.steps[0].executed_command.brake == .8
+    assert cleanup == ["removed"]

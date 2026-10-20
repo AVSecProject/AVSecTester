@@ -11,8 +11,7 @@ import numpy as np
 import pyarrow as pa
 import pytest
 
-from avsectester.evaluation.metric import impact
-from avsectester.closed_loop.datatypes import Control, FrameRecord, Observation, Trace, WorldSnapshot
+from avsectester.closed_loop.datatypes import Control, Detection, Observation, WorldSnapshot
 from avsectester.runlog import CodecRegistry, Recorder, RunLog, StepRecord, read_table
 
 
@@ -157,7 +156,8 @@ def record(step=0, *, image=None):
         components={"perception": [{"label": "car", "box": [1., 2., 3., 4.], "score": 0.9}]},
         effects=[{"stage": "command", "requested_t": step * 0.05, "applied_t": step * 0.05}],
         outputs=[{"name": "attack", "value": {"triggered": True, "image": image}}],
-        telemetry={"n_detections": 1, "optional": None},
+        telemetry={"optional": None},
+        detections=(Detection((10, 0, 1), (4, 2, 2), 0, "vehicle", .9),),
     )
 
 
@@ -195,7 +195,8 @@ def test_round_trip_nested_commands_arrays_and_timing(tmp_path):
     assert step.model_observation.t == 1.0
     assert step.physical_pre.vehicle_state == {"position": [1., 2.]}
     assert step.components == record().components
-    assert step.telemetry == {"n_detections": 1, "optional": None}
+    assert step.telemetry == {"optional": None}
+    assert step.detections == record().detections
     np.testing.assert_array_equal(step.outputs[0]["value"]["image"], image)
     assert all(path.stat().st_size <= 17 for path in (tmp_path / "payloads").glob("*.bin"))
     assert result.events[0].data == {"initial_t": 0.0, "optional": None}
@@ -361,29 +362,22 @@ def test_streaming_recorder_does_not_retain_entire_log(tmp_path):
         Recorder(tmp_path)
 
 
-def test_persisted_measurements_preserve_existing_impact_metric(tmp_path):
-    def trace(log):
-        return Trace(records=[FrameRecord(
-            frame=step.physical_post.frame, t=step.physical_post.t,
-            speed=step.physical_post.ego_speed,
-            n_detections=step.telemetry["n_detections"],
-            throttle=step.executed_command.throttle,
-            brake=step.executed_command.brake, steer=step.executed_command.steer,
-        ) for step in log.steps])
+def test_persisted_measurements_keep_evaluation_inputs(tmp_path):
+    from avsectester.datasets.base import ActorState
 
-    logs = []
-    for name, speeds in (("clean", [2., 3., 4.]), ("attack", [2., 1., 0.])):
-        recorder = Recorder(tmp_path / name)
-        for index, speed in enumerate(speeds):
-            row = record(index)
-            row.physical_post = WorldSnapshot((index + 1) * 0.05, index + 1, ego_speed=speed)
-            row.executed_command = Control(throttle=0.5) if name == "clean" else Control(brake=0.8)
-            recorder.record_step(row)
-        logs.append(recorder.finish())
-    before = impact(trace(logs[0]), trace(logs[1]))
-    after = impact(trace(RunLog.read(tmp_path / "clean")), trace(RunLog.read(tmp_path / "attack")))
-    assert before == after
-    assert after.induced_stop
+    ego = ActorState(np.eye(4), (3., 0., 0.), "vehicle", (4., 2., 1.5), (0., 0., .75))
+    with Recorder(tmp_path) as recorder:
+        row = record()
+        row.physical_pre = WorldSnapshot(0., 0, ego_speed=3., ego=ego)
+        recorder.record_step(row)
+    restored = RunLog.read(tmp_path).steps[0]
+    assert restored.detections == row.detections
+    assert isinstance(restored.physical_pre.ego, ActorState)
+    np.testing.assert_array_equal(restored.physical_pre.ego.pose, ego.pose)
+    assert restored.physical_pre.ego.extent == ego.extent
+    assert restored.physical_pre.ego.box_center == ego.box_center
+    assert restored.physical_pre.ego.velocity == ego.velocity
+    assert restored.executed_command == row.executed_command
 
 
 def test_import_in_memory_api_does_not_import_heavy_dependencies():
@@ -437,7 +431,7 @@ def test_framework_dataclasses_are_data_without_importing_native_code(tmp_path):
 
 def test_nurec_runner_persists_and_restores_driving_log(tmp_path):
     from avsectester.closed_loop.avstack import AVStack
-    from avsectester.closed_loop.runner import ClosedLoopRunner, RunRequest, trace_from_log
+    from avsectester.closed_loop.runner import ClosedLoopRunner, RunRequest
     from avsectester.closed_loop.simulators.nurec import NuRecSimulator, StubRenderer
 
     class Driver(AVStack):
@@ -447,15 +441,16 @@ def test_nurec_runner_persists_and_restores_driving_log(tmp_path):
         def __call__(self, observation):
             return Control(throttle=0.2)
 
-    backend = NuRecSimulator({}, renderer=StubRenderer(height=2, width=3)).create_runtime()
+    simulator_runtime = NuRecSimulator({}, renderer=StubRenderer(height=2, width=3)).create_runtime()
     try:
-        log = ClosedLoopRunner().run(backend, Driver(), RunRequest(3, output_path=tmp_path))
+        log = ClosedLoopRunner().run(simulator_runtime, Driver(), RunRequest(3, output_path=tmp_path))
     finally:
-        backend.close()
+        simulator_runtime.close()
     restored = RunLog.read(tmp_path)
     assert restored.status == "completed"
     assert len(restored.steps) == 3
-    assert trace_from_log(restored).records == trace_from_log(log).records
+    assert [row.executed_command for row in restored.steps] == [row.executed_command for row in log.steps]
+    assert [row.physical_post.ego_speed for row in restored.steps] == [row.physical_post.ego_speed for row in log.steps]
     assert restored.events[0].data["clock"]["frame"] == 0
 
 
@@ -528,3 +523,57 @@ def test_dynamic_output_types_can_change_across_published_chunks(tmp_path):
             ]))
     restored = RunLog.read(tmp_path)
     assert [step.outputs[0].value for step in restored.steps] == values
+
+
+def test_runlog_schema_five_rejects_version_four(tmp_path):
+    with Recorder(tmp_path) as recorder:
+        recorder.record_step(StepRecord(0, detections=[]))
+    manifest_path = tmp_path / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    assert manifest["schema_version"] == 5
+    manifest["schema_version"] = 4
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match="Unsupported RunLog schema version: 4; expected 5"):
+        RunLog.read(tmp_path)
+
+
+def test_detection_availability_survives_parquet_chunks(tmp_path):
+    detection = Detection((3, 2, 1), (4, 2, 1.5), .3, "Car", .8)
+    with Recorder(tmp_path, chunk_steps=1) as recorder:
+        recorder.record_step(StepRecord(0, detections=None))
+        recorder.record_step(StepRecord(1, detections=[]))
+        recorder.record_step(StepRecord(2, detections=[detection]))
+    values = [step.detections for step in RunLog.read(tmp_path).steps]
+    assert values == [None, [], [detection]]
+    assert isinstance(values[2][0], Detection)
+    assert pa.types.is_list(read_table(tmp_path).schema.field("detections").type)
+
+
+@pytest.mark.parametrize("options", [
+    {"position": (1, 2)}, {"extent": (1, -1, 2)}, {"yaw": float("nan")},
+    {"score": float("inf")},
+])
+def test_detection_rejects_invalid_geometry(options):
+    values = {"position": (1, 2, 3), "extent": (4, 2, 1), "yaw": 0, **options}
+    with pytest.raises(ValueError, match="Detection"):
+        Detection(**values)
+
+
+@pytest.mark.parametrize('kind', ['pinhole', 'ftheta'])
+def test_sensor_geometry_round_trip_preserves_camera_type_and_path(tmp_path, kind):
+    from pathlib import Path
+    from avsectester.closed_loop.simulator import SensorGeometry
+    from avsectester.geometry.cameras import PinholeCamera, FThetaCamera
+
+    camera = (PinholeCamera(np.eye(3), 4, 3) if kind == 'pinhole' else
+              FThetaCamera(2., 1., (0., 2.), 4, 3, (0., .5)))
+    with Recorder(tmp_path) as recorder:
+        recorder.record_step(StepRecord(0, sensor_geometry={
+            'front': SensorGeometry('front', camera, np.eye(4)),
+        }, telemetry={'asset_path': Path('assets/texture.png')}))
+    restored = RunLog.read(tmp_path).steps[0]
+    view = restored.sensor_geometry['front']
+    assert isinstance(view, SensorGeometry) and type(view.camera) is type(camera)
+    assert view.camera.width == 4 and view.camera.height == 3
+    np.testing.assert_allclose(view.cam_from_world, np.eye(4))
+    assert restored.telemetry['asset_path'] == Path('assets/texture.png')

@@ -65,8 +65,7 @@ class FThetaCamera:
     coefficient lists in increasing order (c0 + c1*x + c2*x^2 ...), exactly as NuRec's ``ftheta_param``
     and ``.usdz`` calibration store them. ``linear_cde`` is the small affine screen correction
     ``[[c, d], [e, 1]]`` applied to the radial offset (identity ``(1, 0, 0)`` in NuRec).
-    :meth:`unproject` inverts that affine correction before the radial polynomial. The scenario layer's
-    rig-frame camera (:class:`avsectester.scenarios.datasets.nurec.FThetaCamera`) projects through it.
+    :meth:`unproject` inverts that affine correction before the radial polynomial.
     """
 
     cx: float
@@ -176,78 +175,3 @@ def planar_rig_pose(x: float, y: float, yaw: float, z: float = 0.0) -> np.ndarra
 def transform(T: np.ndarray, pts: np.ndarray) -> np.ndarray:
     pts = np.asarray(pts, dtype=np.float64)
     return (T[:3, :3] @ pts.T).T + T[:3, 3]
-
-
-class _ForwardPolynomialCamera(FThetaCamera):
-    """Invert a monotonic f-theta polynomial when a dataset omits the inverse calibration."""
-
-    def unproject(self, uv: np.ndarray) -> np.ndarray:
-        uv = np.asarray(uv, dtype=float)
-        c, d, e = self.linear_cde
-        affine = np.array([[c, d], [e, 1.0]])
-        offsets = (uv - [self.cx, self.cy]) @ np.linalg.inv(affine).T
-        radius = np.linalg.norm(offsets, axis=1)
-        low, high = np.zeros(len(uv)), np.full(len(uv), np.pi / 2)
-        angles = np.linspace(0, np.pi / 2, 512)
-        if (np.diff(self._poly(self.angle_to_pixeldist, angles)) <= 0).any():
-            raise ValueError("F-theta projection must be monotonic over the front hemisphere")
-        for _ in range(48):
-            middle = (low + high) / 2
-            smaller = self._poly(self.angle_to_pixeldist, middle) < radius
-            low = np.where(smaller, middle, low)
-            high = np.where(smaller, high, middle)
-        theta = (low + high) / 2
-        scale = np.divide(np.sin(theta), radius, out=np.zeros_like(radius), where=radius > 1e-12)
-        rays = np.column_stack((offsets * scale[:, None], np.cos(theta)))
-        rays[radius > self._poly(self.angle_to_pixeldist, np.pi / 2)] = np.nan
-        return rays
-
-
-def camera_from_calibration(calib: Any) -> Camera:
-    """Return an optical-frame project/unproject lens from the supported calibration forms."""
-    model = calib.model
-    if callable(getattr(model, "unproject", None)) and callable(getattr(model, "project", None)):
-        return model
-    if hasattr(model, "t_sensor_rig") and hasattr(model, "angle_to_pixeldist"):
-        # The dataset wrapper projects rig coordinates. The estimator already applies extrinsics.
-        return _ForwardPolynomialCamera(
-            cx=float(model.principal_point[0]),
-            cy=float(model.principal_point[1]),
-            angle_to_pixeldist=tuple(model.angle_to_pixeldist),
-            width=calib.width,
-            height=calib.height,
-            max_angle=float(model.max_angle),
-            linear_cde=tuple(model.linear_cde),
-        )
-    if model is None:
-        raise ValueError(f"Camera {calib.name!r} has no projection calibration")
-    intrinsic = np.asarray(model, dtype=float)
-    if intrinsic.shape == (3,):
-        f, cx, cy = intrinsic
-        intrinsic = np.array([[f, 0, cx], [0, f, cy], [0, 0, 1]])
-    if intrinsic.shape != (3, 3) or not np.isfinite(intrinsic).all():
-        raise ValueError("Camera model must be a calibrated lens, K matrix, or (f, cx, cy)")
-    return PinholeCamera(intrinsic.copy(), calib.width, calib.height)
-
-
-def project_to_pixels(pts_cam: np.ndarray, K: np.ndarray) -> np.ndarray:
-    """Standard pinhole projection: camera-frame points (x right, y down, z forward) -> (N,2) px."""
-    uv = (K @ np.asarray(pts_cam, dtype=np.float64).T).T
-    return uv[:, :2] / uv[:, 2:3]
-
-
-def cam_coords(pts_world: np.ndarray, world_to_cam: np.ndarray) -> np.ndarray:
-    """Standard extrinsic: world points -> camera frame (x right, y down, z fwd). NuRec/pinhole."""
-    pts = np.asarray(pts_world, dtype=np.float64)
-    homog = np.c_[pts, np.ones(len(pts))]
-    return (np.asarray(world_to_cam, dtype=np.float64) @ homog.T).T[:, :3]
-
-
-def carla_cam_coords(pts_world: np.ndarray, cam_inverse_matrix: np.ndarray) -> np.ndarray:
-    """CARLA UE convention: world -> camera then reorder to standard (x right, y down, z fwd).
-
-    ``cam_inverse_matrix`` = ``camera.get_transform().get_inverse_matrix()``; UE camera axes are
-    (x fwd, y right, z up), so the standard camera frame is ``[y, -z, x]``.
-    """
-    pc = cam_coords(pts_world, cam_inverse_matrix)  # UE camera coords (x fwd, y right, z up)
-    return np.stack([pc[:, 1], -pc[:, 2], pc[:, 0]], axis=1)

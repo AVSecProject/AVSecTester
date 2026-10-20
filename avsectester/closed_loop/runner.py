@@ -1,20 +1,20 @@
-"""One closed-loop scheduler, with RunLog as the source of compatibility traces."""
+"""One closed-loop scheduler with independent RunLog captures."""
 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
+from contextlib import ExitStack
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 from avsectester.closed_loop.environment import SensorEnvironment, normalize_environment, validate_environment
 from avsectester.closed_loop.avstack import AVStack
-from avsectester.closed_loop.simulator import WorldBackend
-from avsectester.closed_loop.datatypes import Control, FrameRecord, Observation, RecordedOutput, Trace
+from avsectester.closed_loop.datatypes import Observation, RecordedOutput
 from avsectester.runlog import Recorder, RunLog, StepRecord
 from avsectester.closed_loop.hooks import HookSet
-from avsectester.closed_loop.simulator import LegacySimulatorAdapter, SimulatorRuntime
+from avsectester.closed_loop.simulator import DeploymentPlan, SimulatorRuntime
 
 
 @dataclass(frozen=True)
@@ -41,7 +41,6 @@ class RecordingPolicy:
             else set()
         )
         if not retained:
-            # Legacy adapters may expose an unnamed native sensor container.
             return replace(value, sensor_data={})
         if not isinstance(value.sensor_data, Mapping):
             raise ValueError("Named sensor recording requires an adapter sensor_data mapping")
@@ -78,88 +77,83 @@ class RunRequest:
             raise ValueError("retain_steps=False requires an output_path")
 
 
-def _field(value: Any, name: str, default: Any = None) -> Any:
-    return value.get(name, default) if isinstance(value, Mapping) else getattr(value, name, default)
-
-
-def trace_from_log(log: RunLog) -> Trace:
-    """Build the legacy scalar view from captured post-state and executed commands."""
-    records = []
-    outputs = [output for event in log.events if event.kind == "initialization"
-               for output in event.data.get("outputs", [])]
-    for record in log.steps:
-        state, command = record.physical_post, record.executed_command
-        telemetry = record.telemetry
-        records.append(FrameRecord(
-            frame=record.step, t=_field(state, "t", 0.0),
-            speed=_field(state, "ego_speed", 0.0),
-            throttle=_field(command, "throttle", 0.0),
-            brake=_field(command, "brake", 0.0), steer=_field(command, "steer", 0.0),
-            n_detections=telemetry.get("n_detections", 0),
-        ))
-        outputs.extend(record.outputs)
-    trace = Trace(records=records, outputs=outputs)
-    trace.run_log = log
-    return trace
-
-
 class ClosedLoopRunner:
     """Schedule one driving loop; never close caller-owned simulator/driving objects."""
 
     def run(
         self,
-        simulator_runtime: SimulatorRuntime | WorldBackend,
+        simulator_runtime: SimulatorRuntime,
         avstack: AVStack,
         request: RunRequest,
         *,
         recorder: Recorder | None = None,
-        perturb: Callable[[Observation], Observation] | None = None,
-        on_step: Callable[[int, Observation, Control], None] | None = None,
-        record_views: Mapping[str, Callable[[Observation], Any]] | None = None,
-        view_sink: Callable[[int, str, Any], Any] | None = None,
         release_owned_resources: Callable[[], None] | None = None,
     ) -> RunLog:
         from avsectester.attack.runtime import OnlineContext, AttackDispatcher
         from avsectester.runlog.codecs import default_codecs
 
-        # ``sim`` is the runtime interface of ``simulator_runtime``; a legacy WorldBackend is
-        # adapted. Hooks and attacks receive ``simulator_runtime`` itself.
-        sim: SimulatorRuntime | LegacySimulatorAdapter = (
-            simulator_runtime if isinstance(simulator_runtime, SimulatorRuntime)
-            else LegacySimulatorAdapter(simulator_runtime)
-        )
-        if isinstance(simulator_runtime, SimulatorRuntime):
+        try:
+            if not isinstance(simulator_runtime, SimulatorRuntime):
+                raise TypeError("ClosedLoopRunner requires SimulatorRuntime")
+            sim = simulator_runtime
             validate_environment(request.environment, simulator_runtime.simulator)
-        hooks = request.hooks or HookSet()
-        sensor_environment = SensorEnvironment(request.environment, seed=hooks.seed or 0)
-        def record_attack_output(context: OnlineContext, name: str, value: Any) -> None:
-            # Attack outputs join the hook outputs, so both are logged with their decision.
-            session.outputs.append(RecordedOutput(
-                name=name, value=deepcopy(value), step=context.step, stage=context.stage,
-                frame=context.frame, t=context.sim_time,
-            ))
+            hooks = request.hooks or HookSet()
+            sensor_environment = SensorEnvironment(request.environment, seed=hooks.seed or 0)
+            def record_attack_output(context: OnlineContext, name: str, value: Any) -> None:
+                # Attack outputs join the hook outputs, so both are logged with their decision.
+                session.outputs.append(RecordedOutput(
+                    name=name, value=deepcopy(value), step=context.step, stage=context.stage,
+                    frame=context.frame, t=context.sim_time,
+                ))
 
-        attack_dispatch = AttackDispatcher(
-            request.attacks, observation_copy=simulator_runtime.copy_observation,
-            output_recorder=record_attack_output,
-        )
-        # Validate before world reset or handlers acquire native resources.
-        available = hooks.validate_stages(simulator_runtime, avstack)
-        attack_dispatch.validate(available)
-        if request.attacks:
-            hooks = hooks.with_hooks(attack_dispatch.hooks)
-        session = hooks.session(simulator_runtime, avstack, perturb)
-        recorder = recorder or Recorder(path=request.output_path, codecs=default_codecs(),
-                                        retain_steps=request.retain_steps, metadata={
-            **dict(request.metadata),
-            "environment": deepcopy(dict(request.environment)),
-            "decision_steps": request.decision_steps,
-            "recording_policy": {
-                "sensor_ids": list(request.recording.sensor_ids),
-                "representations": list(request.recording.representations),
-                "every_n_steps": request.recording.every_n_steps,
-            },
-        })
+            attack_dispatch = AttackDispatcher(
+                request.attacks, observation_copy=simulator_runtime.copy_observation,
+                output_recorder=record_attack_output,
+            )
+            # Validate before world reset or handlers acquire native resources.
+            available = hooks.validate_stages(simulator_runtime, avstack)
+            attack_dispatch.validate(available)
+            if request.attacks:
+                hooks = hooks.with_hooks(attack_dispatch.hooks)
+            session = hooks.session(simulator_runtime, avstack)
+            deployment = request.deployment or DeploymentPlan(hooks.setup_ticks)
+            if deployment.ticks < hooks.setup_ticks:
+                raise ValueError("Deployment plan is shorter than the participants require")
+            recorder = recorder or Recorder(path=request.output_path, codecs=default_codecs(),
+                                            retain_steps=request.retain_steps, metadata={
+                **dict(request.metadata),
+                "avstack_type": type(avstack).__name__,
+                "environment": deepcopy(dict(request.environment)),
+                "decision_steps": request.decision_steps,
+                "recording_policy": {
+                    "sensor_ids": list(request.recording.sensor_ids),
+                    "representations": list(request.recording.representations),
+                    "every_n_steps": request.recording.every_n_steps,
+                },
+            })
+        except BaseException as error:
+            # Ownership transfers at entry, before capability checks or recorder allocation.
+            # These runtimes have not entered AttackDispatcher.setup yet.
+            origin = request.start.frame if request.start is not None else None
+            stopped: set[int] = set()
+            for attack in reversed(request.attacks):
+                if id(attack) in stopped:
+                    continue
+                stopped.add(id(attack))
+                stop = getattr(attack, "stop", None)
+                if not callable(stop):
+                    continue
+                try:
+                    stop(OnlineContext(0, "stop", origin.timestamp if origin else 0.0,
+                                       origin.position if origin else 0))
+                except BaseException as cleanup:
+                    error.add_note(f"Attack cleanup also failed: {cleanup!r}")
+            if release_owned_resources is not None:
+                try:
+                    release_owned_resources()
+                except BaseException as cleanup:
+                    error.add_note(f"Owned resource cleanup also failed: {cleanup!r}")
+            raise
         current_step = -1
         last_observation: Observation | None = None
         resources_released = False
@@ -211,23 +205,22 @@ class ClosedLoopRunner:
             )
 
         try:
-            with sim.exclusive(), session.activate():
+            with sim.exclusive(), ExitStack() as run_resources:
+                run_resources.callback(release)
+                run_resources.enter_context(session.activate())
                 try:
                     # AttackRuntime.setup runs inside the reset, at the simulator.setup stage.
                     sim.reset(request.start, request.initialization,
-                              deployment=request.deployment, world=request.environment["world"])
-                    if request.attacks and not attack_dispatch.applies_setup_in_reset:
-                        attack_dispatch.setup(context("setup"), None)
+                              deployment=deployment, world=request.environment["world"])
                     last_observation = sim.observe()
                     recorder.record_event(
                         "initialization", physical_state=sim.state(),
-                        clock=sim.clock, setup_ticks=simulator_runtime.setup_ticks,
-                        initialization_report=getattr(simulator_runtime, "initialization_report", {}),
+                        clock=sim.clock, setup_ticks=deployment.ticks,
+                        initialization_report=simulator_runtime.initialization_report,
                         outputs=session.outputs, effects=effects(),
                     )
                     drain()
                     if request.decision_steps == 0:
-                        # Historical callers still receive the initial raw reset input.
                         avstack.reset(simulator_runtime.copy_observation(last_observation))
                     for current_step in range(request.decision_steps):
                         session.step = current_step
@@ -235,6 +228,13 @@ class ClosedLoopRunner:
                         last_observation = raw
                         raw_record = recorder.capture(request.recording.observation(raw, current_step, "raw"))
                         pre = recorder.capture(sim.state())
+                        sensor_geometry = {}
+                        retained_sensors = (request.recording.sensor_ids
+                            if current_step % request.recording.every_n_steps == 0
+                            and request.recording.representations else ())
+                        for sensor in retained_sensors:
+                            if sensor in sim.camera_sensors:
+                                sensor_geometry[sensor] = recorder.capture(sim.sensor_geometry(sensor))
                         attacked = raw
                         if request.attacks:
                             attack_dispatch.step(context("step", raw))
@@ -248,41 +248,22 @@ class ClosedLoopRunner:
                         if current_step == 0:
                             avstack.reset(seen)
                         produced = avstack(seen)
+                        detections = recorder.capture(avstack.detections())
                         produced_record = recorder.capture(produced)
                         control = session.command(produced)
                         executed_record = recorder.capture(control)
                         attack_dispatch.finish_decision()
-                        components = {}
-                        component_log = getattr(avstack, "component_log", None)
-                        if callable(component_log):
-                            components = recorder.capture(component_log() or {})
+                        components = recorder.capture(avstack.component_log() or {})
                         telemetry: dict[str, Any] = {
                             "sensor_payloads": {
                                 "raw": {k: "recorded" if k in raw_record.sensor_data else "not_recorded"
-                                        for k in (raw.sensor_data if isinstance(raw.sensor_data, Mapping)
-                                                  else ("unnamed",))},
+                                        for k in raw.sensor_data},
                                 "model_input": {
                                     k: "recorded" if k in model_record.sensor_data else "not_recorded"
-                                    for k in (seen.sensor_data if isinstance(seen.sensor_data, Mapping)
-                                              else ("unnamed",))
+                                    for k in seen.sensor_data
                                 },
                             },
                         }
-                        if "perception" in components:
-                            from avsectester.evaluation.component_log import _count
-
-                            telemetry["n_detections"] = _count(components["perception"])
-                        if record_views:
-                            telemetry["views"] = {}
-                            for name, view in record_views.items():
-                                captured_view = recorder.capture(view(simulator_runtime.copy_observation(seen)))
-                                telemetry["views"][name] = (
-                                    view_sink(current_step, name, captured_view)
-                                    if view_sink is not None else captured_view
-                                )
-                        if on_step is not None:
-                            on_step(current_step, simulator_runtime.copy_observation(seen),
-                                    recorder.capture(control))
                         sim.step(control)
                         post = recorder.capture(sim.state())
                         last_observation = sim.observe()
@@ -298,7 +279,7 @@ class ClosedLoopRunner:
                                 step=current_step, raw_observation=raw_record,
                                 model_observation=model_record, physical_pre=pre, physical_post=post,
                                 produced_command=produced_record, executed_command=executed_record,
-                                components=components,
+                                components=components, detections=detections, sensor_geometry=sensor_geometry,
                                 effects=effects(), outputs=session.outputs,
                                 telemetry=telemetry,
                             ))
@@ -352,21 +333,3 @@ class ClosedLoopRunner:
             except (AttributeError, TypeError):
                 pass
             raise
-
-
-def run_trace(
-    simulator_runtime: SimulatorRuntime | WorldBackend,
-    avstack: AVStack,
-    frames: int,
-    perturb: Callable[[Observation], Observation] | None = None,
-    on_step: Callable[[int, Observation, Control], None] | None = None,
-    *,
-    hooks: HookSet | None = None,
-) -> Trace:
-    """Compatibility entry point backed by the single RunLog capture."""
-    if not isinstance(frames, int) or isinstance(frames, bool) or frames < 0:
-        raise ValueError("frames must be a nonnegative integer")
-    log = ClosedLoopRunner().run(
-        simulator_runtime, avstack, RunRequest(frames, hooks=hooks), perturb=perturb, on_step=on_step,
-    )
-    return trace_from_log(log)

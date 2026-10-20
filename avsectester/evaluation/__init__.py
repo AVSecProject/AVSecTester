@@ -1,19 +1,15 @@
-"""Evaluation layer — run attacks over qualifying scenarios and score them.
+"""Metrics, reports and visualization derived solely from recorded experiment logs."""
 
-:mod:`~avsectester.evaluation.robustness` is the attack-robustness harness: for each scenario a
-:class:`~avsectester.scenarios.source.ScenarioSource` yields, it runs the attack under a suite of sensor
-corruptions (:mod:`avsectester.perturbations.image`) and scores each with
-:func:`avsectester.evaluation.metric.impact`, reporting how the attack's success rate degrades with corruption.
-"""
-
-from .component_log import ComponentTrace, InstrumentedAVStack, StepLog, run_logged
-from .robustness import RobustnessReport, evaluate_robustness
+from .metric import (
+    ComparisonGroup, DetectionMetrics, DrivingMetrics, FieldMeasurements, Metric, MetricScalar,
+    PairMetric, StopImpact, TreatmentMeasurements,
+    TrajectoryDeviation, TreatmentPair, UnavailableMetricValue,
+)
+from .report import EvaluationConfiguration, EvaluationReport, evaluate
 
 __all__ = [
-    "ComponentTrace",
-    "InstrumentedAVStack",
-    "RobustnessReport",
-    "StepLog",
-    "evaluate_robustness",
-    "run_logged",
+    "ComparisonGroup", "DetectionMetrics", "DrivingMetrics", "FieldMeasurements", "Metric",
+    "MetricScalar", "PairMetric", "StopImpact", "TreatmentMeasurements",
+    "TrajectoryDeviation", "TreatmentPair", "UnavailableMetricValue", "EvaluationConfiguration",
+    "EvaluationReport", "evaluate",
 ]

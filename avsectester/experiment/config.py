@@ -22,6 +22,7 @@ from dataclasses import dataclass, field, fields, is_dataclass
 import hashlib
 from importlib import import_module
 import math
+import re
 from pathlib import Path
 from typing import Any, TypeAlias
 import warnings
@@ -37,6 +38,8 @@ from avsectester.closed_loop.services import DrivingAdapter
 from avsectester.closed_loop.simulator import Simulator
 from avsectester.closed_loop.vehicle_io import VehicleIO
 from avsectester.datasets import Dataset
+from avsectester.evaluation.report import EvaluationConfiguration
+from avsectester.evaluation.metric import Metric
 
 
 HookConfiguration: TypeAlias = HookSet | Callable[[int], HookSet] | None
@@ -80,10 +83,10 @@ class ExperimentConfiguration:
     decision_steps: int | None = None
     environment: Mapping[str, Any] = field(default_factory=dict)
     recording: RecordingPolicy = field(default_factory=RecordingPolicy)
+    evaluation: EvaluationConfiguration = field(default_factory=EvaluationConfiguration)
     output: Path | None = None
     strict: bool = False
     hooks: HookConfiguration = None
-    clean_hooks: HookConfiguration = None
     # Loader-owned constructor descriptions. Keeping the source object alongside its options
     # prevents dataclasses.replace(attacks=...) from reusing another attack's description.
     _attack_specifications: Mapping[str, tuple[Attack, Mapping[str, Any]]] = field(
@@ -94,7 +97,8 @@ class ExperimentConfiguration:
         from avsectester.closed_loop.environment import normalize_environment
 
         for name, expected in (("dataset", Dataset), ("simulator", Simulator),
-                               ("avstack", DrivingAdapter), ("recording", RecordingPolicy)):
+                               ("avstack", DrivingAdapter), ("recording", RecordingPolicy),
+                               ("evaluation", EvaluationConfiguration)):
             if not isinstance(getattr(self, name), expected):
                 raise TypeError(f"{name} must be {expected.__name__}")
         specifications = self.attacks.specifications if isinstance(self.attacks, _ConfiguredAttacks) else {}
@@ -127,10 +131,8 @@ class ExperimentConfiguration:
             raise ValueError("decision_steps must be a positive integer or None")
         if not isinstance(self.strict, bool):
             raise TypeError("strict must be boolean")
-        for name in ("hooks", "clean_hooks"):
-            value = getattr(self, name)
-            if value is not None and not isinstance(value, HookSet) and not callable(value):
-                raise TypeError(f"{name} must be HookSet or a seed-to-HookSet factory")
+        if self.hooks is not None and not isinstance(self.hooks, HookSet) and not callable(self.hooks):
+            raise TypeError("hooks must be HookSet or a seed-to-HookSet factory")
         configured_attacks = _ConfiguredAttacks(attacks, specifications)
         object.__setattr__(self, "attacks", configured_attacks)
         object.__setattr__(self, "_attack_specifications", configured_attacks.specifications)
@@ -148,6 +150,10 @@ class ExperimentConfiguration:
         to describe their parameters. Loader declarations retain their original options;
         directly supplied Python attacks describe their configured inputs on demand.
         """
+        return self.describe_configuration()
+
+    def describe_configuration(self, *, scenarios: Sequence[str] | None = None) -> dict[str, Any]:
+        """Describe preparation inputs; supplied scenario IDs avoid accessing a dataset."""
         descriptions = {}
         for name, attack in self.attacks.items():
             supplied = self._attack_specifications.get(name)
@@ -173,7 +179,8 @@ class ExperimentConfiguration:
             descriptions[name] = description
         return {
             "dataset": {"type": _type_name(self.dataset),
-                        "scenarios": [scenario.id for scenario in self.dataset.scenarios()]},
+                        "scenarios": list(scenarios) if scenarios is not None else
+                        [scenario.id for scenario in self.dataset.scenarios()]},
             "simulator": _summary_value(self.simulator.identity),
             "attacks": descriptions,
         }
@@ -188,11 +195,13 @@ def load_configuration(
     objects directly. User types are imported Python code and must be trusted.
     """
     if isinstance(config, ExperimentConfiguration):
+        _attack_count(config.attacks)
+        _validate_metric_configuration(config)
         return config
     spec, directory = _mapping(config, Path.cwd(), "Experiment")
     _keys(spec, {
         "dataset", "simulator", "avstack", "attacks", "treatments", "seeds", "decision_steps",
-        "environment", "recording", "output", "strict", "hooks", "clean_hooks",
+        "environment", "recording", "evaluation", "output", "strict", "hooks",
     }, "experiment")
     for key in ("dataset", "simulator", "avstack"):
         if key not in spec:
@@ -200,6 +209,7 @@ def load_configuration(
     attack_specs = spec.get("attacks", {})
     if not isinstance(attack_specs, Mapping):
         raise TypeError("attacks must map names to Attack objects or constructor specifications")
+    _attack_count(attack_specs)
     constructed_attacks = {name: _attack(value, directory) for name, value in attack_specs.items()}
     attacks = {name: pair[0] for name, pair in constructed_attacks.items()}
     attack_specifications = {
@@ -219,16 +229,55 @@ def load_configuration(
     output = spec.get("output")
     if output is not None:
         output = _path(output, directory)
-    return ExperimentConfiguration(
+    configuration = ExperimentConfiguration(
         dataset=_construct(spec["dataset"], directory, Dataset),
         simulator=_construct(spec["simulator"], directory, Simulator),
         avstack=_avstack(spec["avstack"], directory),
         attacks=_ConfiguredAttacks(attacks, attack_specifications), treatments=treatments,
         seeds=_sequence(spec.get("seeds", (0,)), "seeds"),
         decision_steps=spec.get("decision_steps"), environment=spec.get("environment", {}),
-        recording=recording, output=output, strict=spec.get("strict", False),
+        recording=recording, evaluation=_evaluation(spec.get("evaluation"), directory),
+        output=output, strict=spec.get("strict", False),
         hooks=_hooks(spec.get("hooks"), directory),
-        clean_hooks=_hooks(spec.get("clean_hooks"), directory),
+    )
+    _validate_metric_configuration(configuration)
+    return configuration
+
+
+def _attack_count(attacks: Mapping[str, Any]) -> None:
+    if len(attacks) != 1:
+        raise ValueError("An experiment requires exactly one attack. Comparing multiple attacks "
+                         "in one experiment is a future feature; to apply multiple effects "
+                         "together, implement a composite Attack.")
+
+
+def _validate_metric_configuration(configuration: ExperimentConfiguration) -> None:
+    from avsectester.evaluation.metric import DetectionMetrics
+
+    metrics = configuration.evaluation.metrics
+    if metrics is None:
+        return
+    constructor = getattr(configuration.avstack.factory, "avstack_type", None)
+    if (isinstance(constructor, type) and issubclass(constructor, AVStack)
+            and constructor.provides_detections is False
+            and any(isinstance(metric, DetectionMetrics) for metric in metrics)):
+        raise ValueError(f"DetectionMetrics requires detections, but {constructor.__name__} "
+                         "does not provide detection output")
+
+
+def _evaluation(value: Any, directory: Path) -> EvaluationConfiguration:
+    if value is None:
+        return EvaluationConfiguration()
+    if isinstance(value, EvaluationConfiguration):
+        return value
+    if not isinstance(value, Mapping):
+        raise TypeError("evaluation must be a mapping")
+    _keys(value, {"metrics"}, "evaluation")
+    metrics = value.get("metrics")
+    return EvaluationConfiguration(
+        metrics=None if metrics is None else tuple(
+            _construct(item, directory, Metric) for item in _sequence(metrics, "evaluation.metrics")
+        ),
     )
 
 
@@ -306,14 +355,14 @@ def _avstack(value: Any, directory: Path) -> DrivingAdapter:
                 raise ValueError("Configured command_modes differs from the AVStack declaration")
             return avstack
         except BaseException as error:
-            close = getattr(avstack, "close", None)
-            if callable(close):
-                try:
-                    close()
-                except BaseException as cleanup_error:
-                    error.add_note(f"AVStack cleanup failed: {cleanup_error}")
+            try:
+                avstack.close()
+            except BaseException as cleanup_error:
+                error.add_note(f"AVStack cleanup failed: {cleanup_error}")
             raise
 
+    # Static metadata enables validation without constructing a model or calling user code.
+    factory.avstack_type = constructor  # type: ignore[attr-defined]
     bindings = spec.get("bindings")
     if bindings is None:
         return DrivingAdapter(factory)
@@ -418,6 +467,29 @@ def _import(value: str) -> Callable[..., Any]:
 
 
 _BUILTINS = {
+    "SignAsset": "avsectester.attack.implemented_attacks.object_insertion_attack.assets:SignAsset",
+    "PersonAsset": "avsectester.attack.implemented_attacks.object_insertion_attack.assets:PersonAsset",
+    "TrafficLightAsset": "avsectester.attack.implemented_attacks.object_insertion_attack.assets:TrafficLightAsset",
+    "CheckerboardTexture": "avsectester.attack.insertion.assets:CheckerboardTexture",
+    "ImageTexture": "avsectester.attack.insertion.assets:ImageTexture",
+    "PatchCompositor": "avsectester.attack.insertion.compositor:PatchCompositor",
+    "ClassicHarmonizer": "avsectester.attack.insertion.harmonizers:ClassicHarmonizer",
+    "PCTNetHarmonizer": "avsectester.attack.insertion.harmonizers:PCTNetHarmonizer",
+    "PatchOptimization": "avsectester.attack.implemented_attacks.patch_attack.offline:PatchOptimization",
+    "PGD": "avsectester.attack.optimization.whitebox:PGD",
+    "NES": "avsectester.attack.optimization.blackbox:NES",
+    "AttachedPlacement": "avsectester.attack.placement:AttachedPlacement",
+    "WorldPlacement": "avsectester.attack.placement:WorldPlacement",
+    "Orientation": "avsectester.attack.placement:Orientation",
+    "CameraForwardCollisionAVStack": "avsectester.closed_loop.avstacks.camera_forward_collision:CameraForwardCollisionAVStack",
+    "DrivingMetrics": "avsectester.evaluation.metric:DrivingMetrics",
+    "DetectionMetrics": "avsectester.evaluation.metric:DetectionMetrics",
+    "TrajectoryDeviation": "avsectester.evaluation.metric:TrajectoryDeviation",
+    "StopImpact": "avsectester.evaluation.metric:StopImpact",
+    "PlaneAsset": "avsectester.attack.insertion:PlaneAsset",
+    "PlaneSurface": "avsectester.attack.insertion:PlaneSurface",
+    "Insertion": "avsectester.attack.insertion:Insertion",
+
     "CarlaDataset": "avsectester.datasets.carla:CarlaDataset",
     "CarlaRecipe": "avsectester.datasets.carla:CarlaRecipe",
     "PrescribedMotion": "avsectester.datasets.carla:PrescribedMotion",
@@ -438,16 +510,84 @@ _BUILTINS = {
 }
 
 
+def attack_directory_name(class_name: str) -> str:
+    """Convert PascalCase to snake_case, preserving acronym groups (MyNNAttack -> my_nn_attack)."""
+    words = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", class_name)
+    return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", words).lower()
+
+
+def _attack_class_name(name: str) -> bool:
+    return name.isidentifier() and name[0].isupper()
+
+
+def _exported_attack(module: Any, name: str, folder: str) -> type[Attack] | None:
+    """Apply the same name/class/export/folder rule to lookup and discovery."""
+    attack = getattr(module, name, None)
+    if (not _attack_class_name(name) or not isinstance(attack, type)
+            or not issubclass(attack, Attack) or attack is Attack
+            or attack.__name__ != name or attack_directory_name(name) != folder):
+        return None
+    return attack
+
+
+def _implemented_attack(value: str) -> Callable[..., Any] | None:
+    package = import_module("avsectester.attack.implemented_attacks")
+    if not _attack_class_name(value):
+        return None
+    folder = attack_directory_name(value)
+    if not any((Path(root) / folder / "__init__.py").is_file() for root in package.__path__):
+        return None
+    module = import_module(f"{package.__name__}.{folder}")
+    attack = _exported_attack(module, value, folder)
+    if attack is None:
+        raise TypeError(f"{module.__name__} must export the Attack subclass {value}")
+    return attack
+
+
+def _discover_attacks() -> tuple[tuple[str, ...], dict[str, str]]:
+    """Return accepted attack class names and the folders that failed to import."""
+    package = import_module("avsectester.attack.implemented_attacks")
+    names: set[str] = set()
+    failures: dict[str, str] = {}
+    for root in package.__path__:
+        for source in Path(root).glob("*/__init__.py"):
+            folder = source.parent.name
+            try:
+                module = import_module(f"{package.__name__}.{folder}")
+            except Exception as error:
+                failures[folder] = f"{type(error).__name__}: {error}"
+                continue
+            names.update(name for name in vars(module)
+                         if _exported_attack(module, name, folder) is not None)
+    return tuple(sorted(names)), failures
+
+
+def available_attacks() -> tuple[str, ...]:
+    """List exactly the exported Attack classes accepted by class-name lookup.
+
+    Attack folders that fail to import are omitted; an unknown type's error message names them.
+    """
+    return _discover_attacks()[0]
+
+
 def _builtin(value: str) -> Callable[..., Any]:
-    if value not in _BUILTINS:
-        raise ValueError(f"Unknown built-in type {value!r}. Use an exact built-in class name, "
-                         "or 'package.module:name' for user code")
-    return _import(_BUILTINS[value])
+    if value in _BUILTINS:
+        return _import(_BUILTINS[value])
+    attack = _implemented_attack(value)
+    if attack is not None:
+        return attack
+    names, failures = _discover_attacks()
+    message = (f"Unknown built-in type {value!r}. Use an exact class name or "
+               f"'package.module:name'. Available attacks: {', '.join(names) or 'none'}")
+    if failures:
+        message += ". Attack folders that failed to import: " + "; ".join(
+            f"{folder} ({reason})" for folder, reason in sorted(failures.items()))
+    raise ValueError(message)
 
 
 _PATH_KEYS = {
-    "path", "directory", "checkpoint_path", "checkpoint", "dataroot", "usdz_path", "usdz_paths",
-    "asset_path", "image_path", "texture_path", "output_path", "model_path", "config_path",
+    "face", "init_texture", "path", "directory", "checkpoint_path", "checkpoint", "dataroot", "usdz_path", "usdz_paths",
+    "image", "texture", "asset_path", "image_path", "texture_path", "output_path", "model_path", "config_path",
 }
 
 

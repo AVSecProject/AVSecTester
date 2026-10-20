@@ -1,8 +1,7 @@
 """Read NuRec USDZ annotations and recorded initial sequences without a rendering service.
 
-Actor poses and rig trajectories share the reconstruction world frame. Unified object geometry is
-expressed in the rig frame, with complete SE(3) poses retained for host attachment and occlusion.
-Raw annotations and archive access remain available to custom filters.
+Actor states and rig trajectories share the reconstruction world frame. Native annotations and
+archive access remain available without importing scene filters or simulator code.
 """
 
 from __future__ import annotations
@@ -16,7 +15,6 @@ from typing import Any
 
 import numpy as np
 
-from avsectester.scenarios.scene import CameraCalib, EgoState, ObjectGT, SceneGT
 from avsectester.datasets.base import ActorState, Dataset
 
 # Classification controls target selection, never which cuboids can occlude an insertion.
@@ -45,14 +43,8 @@ def _se3(rot: np.ndarray, trans: np.ndarray) -> np.ndarray:
 
 
 @dataclass
-class FThetaCamera:
-    """The nuRec f-theta (fisheye-polynomial) camera: projects rig-frame points to pixels.
-
-    ``t_sensor_rig`` is the sensor pose *in the rig* (sensor axes: x right, y down, z forward), so
-    ``inv(t_sensor_rig)`` maps rig -> sensor. ``angle_to_pixeldist`` (low->high coeffs) maps the ray angle
-    from the optical axis to a radial pixel distance from ``principal_point``. ``linear_cde`` is the small
-    affine screen correction ``[[c, d], [e, 1]]``. Points beyond ``max_angle`` or behind the sensor do not
-    project."""
+class _CameraCalibration:
+    """Native recorded camera parameters and its rig-from-optical-camera pose."""
 
     width: int
     height: int
@@ -63,7 +55,7 @@ class FThetaCamera:
     linear_cde: tuple[float, float, float] = (1.0, 0.0, 0.0)
 
     @classmethod
-    def from_calib(cls, calib: dict) -> FThetaCamera:
+    def from_calib(cls, calib: dict) -> _CameraCalibration:
         p = calib["camera_model"]["parameters"]
         w, h = p["resolution"]
         return cls(
@@ -75,44 +67,6 @@ class FThetaCamera:
             t_sensor_rig=np.asarray(calib["T_sensor_rig"], dtype=np.float64),
             linear_cde=tuple(p.get("linear_cde", (1.0, 0.0, 0.0))),
         )
-
-    def project(self, pts_rig: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Project ego/rig-frame points ``(N, 3)`` -> pixels ``(N, 2)`` + a validity mask ``(N,)``."""
-        from avsectester.geometry.cameras import FThetaCamera as Lens
-
-        pts = np.atleast_2d(np.asarray(pts_rig, dtype=np.float64))
-        homo = np.c_[pts, np.ones(len(pts))]
-        cam = (np.linalg.inv(self.t_sensor_rig) @ homo.T).T[
-            :, :3
-        ]  # sensor frame (x right, y down, z fwd)
-        lens = Lens(
-            cx=self.principal_point[0],
-            cy=self.principal_point[1],
-            angle_to_pixeldist=tuple(self.angle_to_pixeldist),
-            width=self.width,
-            height=self.height,
-            max_angle=self.max_angle,
-            linear_cde=tuple(self.linear_cde),
-        )
-        return lens.project(cam), lens.in_view(cam)
-
-
-def _box2d_from_corners(cam: FThetaCamera, corners_rig: np.ndarray) -> tuple | None:
-    """Tight 2-D box (clipped to the frame) from a cuboid's 8 rig-frame corners, or None if it does not
-    project (needs >= 2 valid corners in front of the camera)."""
-    px, valid = cam.project(corners_rig)
-    px = px[valid]
-    if len(px) < 2:
-        return None
-    x1, y1 = (
-        float(np.clip(px[:, 0].min(), 0, cam.width)),
-        float(np.clip(px[:, 1].min(), 0, cam.height)),
-    )
-    x2, y2 = (
-        float(np.clip(px[:, 0].max(), 0, cam.width)),
-        float(np.clip(px[:, 1].max(), 0, cam.height)),
-    )
-    return (x1, y1, x2, y2) if x2 > x1 and y2 > y1 else None
 
 
 def _interpolate_pose(timestamps, poses, timestamp_us: int) -> np.ndarray | None:
@@ -159,14 +113,6 @@ def _interpolate_rig(timestamps, transforms, timestamp_us):
         return transforms[i].copy()
     poses = [np.r_[m[:3, 3], _matrix_quaternion(m[:3, :3])] for m in transforms[i-1:i+1]]
     return _interpolate_pose(timestamps[i-1:i+1], poses, timestamp_us)
-
-
-def _rig_speed(timestamps, transforms, timestamp_us):
-    if len(timestamps) < 2:
-        return 0.0
-    i = min(max(1, int(np.searchsorted(timestamps, timestamp_us))), len(timestamps) - 1)
-    return float(np.linalg.norm(transforms[i, :3, 3] - transforms[i-1, :3, 3])
-                 / ((timestamps[i] - timestamps[i-1]) / 1e6))
 
 
 class NuRecDataset(Dataset):
@@ -233,10 +179,25 @@ class NuRecDataset(Dataset):
         rig = raw["rig_trajectories.json"]
         traj = rig["rig_trajectories"][0]
         key = next(k for k in rig["camera_calibrations"] if k.split("@")[0] == self.camera_id)
-        cam = FThetaCamera.from_calib(rig["camera_calibrations"][key])
+        cam = _CameraCalibration.from_calib(rig["camera_calibrations"][key])
         ts = np.asarray(traj["cameras_frame_timestamps_us"][key], dtype=np.int64)
         transforms = np.asarray(traj["cameras_frame_T_rig_worlds"][key], dtype=float)
         return raw, traj, key, cam, ts, transforms
+
+    def camera_geometry(self, path: str):
+        """Return an independent optical camera model and its rig-from-camera pose."""
+        from avsectester.geometry.cameras import FThetaCamera as Lens
+
+        _raw, _trajectory, _key, camera, _times, _poses = self._camera_data(str(path))
+        return Lens(
+            cx=float(camera.principal_point[0]), cy=float(camera.principal_point[1]),
+            angle_to_pixeldist=tuple(camera.angle_to_pixeldist), width=camera.width,
+            height=camera.height, max_angle=camera.max_angle, linear_cde=camera.linear_cde,
+        ), camera.t_sensor_rig.copy()
+
+    def camera_timestamps(self, path: str) -> np.ndarray:
+        """Recorded video-frame timestamps in seconds, distinct from decision positions."""
+        return self._camera_data(str(path))[-2][:, 0].astype(float) / 1e6
 
     def scene_id(self, path: str) -> str:
         """NuRec's scene ID of a USDZ file, as used by the NuRec renderer."""
@@ -278,17 +239,18 @@ class NuRecDataset(Dataset):
                      for i, t in enumerate(range(first, last + 1, self._step_us)))
 
     def frame_data(self, scenario_id, frame):
-        from .base import ActorState, FrameData
+        from .base import FrameData
 
         self.checked_frame(scenario_id, frame)
         path = self._path(scenario_id)
-        scene = self._timeline_scene(scenario_id, frame.position)
-        actors = {"ego": ActorState(scene.ego.pose, category="vehicle", extent=scene.ego.extent)}
-        actors.update(self.actor_states(path, round(frame.timestamp * 1e6)))
-        return FrameData(frame, scene, actors,
-                              provenance={"kind": "interpolated", "usdz_path": path,
-                                          "time_step": self.time_step,
-                                          "interpolation": "linear_translation_slerp_rotation"})
+        ego = self.ego_state(path, round(frame.timestamp * 1e6))
+        actors = self.actor_states(path, round(frame.timestamp * 1e6))
+        return FrameData(
+            frame, actors=actors, ego=ego,
+            provenance={"kind": "interpolated", "usdz_path": path,
+                        "time_step": self.time_step,
+                        "interpolation": "linear_translation_slerp_rotation"},
+        )
 
     def native(self, scenario_id):
         return self.raw_metadata(self._path(scenario_id))
@@ -297,67 +259,38 @@ class NuRecDataset(Dataset):
         from .base import ScenarioStart
 
         self.checked_frame(scenario_id, frame)
-        scene = self._timeline_scene(scenario_id, frame.position)
+        path = self._path(scenario_id)
+        timeline = self.frames(scenario_id)
         return ScenarioStart("NuRecDataset", scenario_id, frame, {
-            "scene": scene, "camera_id": self.camera_id, "camera_alias": self.camera_alias,
+            "usdz_path": path, "camera_id": self.camera_id, "camera_alias": self.camera_alias,
+            "scene_id": scenario_id, "ego": self.ego_state(path, round(frame.timestamp * 1e6)),
             "time_step": self.time_step, "interpolation": "linear_translation_slerp_rotation",
-            "first_timestamp": self.frames(scenario_id)[0].timestamp,
-            "terminal_timestamp": self.frames(scenario_id)[-1].timestamp,
+            "first_timestamp": timeline[0].timestamp,
+            "terminal_timestamp": timeline[-1].timestamp,
         })
 
-    def _timeline_scene(self, scenario_id: str, position: int) -> SceneGT:
-        """The scene at a decision-timeline position, interpolated within recorded support."""
-        path = self._path(scenario_id)
-        _raw, _traj, _key, _cam, timestamps, transforms = self._camera_data(path)
-        timeline = self.frames(scenario_id)
-        if not 0 <= position < len(timeline):
-            raise IndexError("decision position is outside the recorded sequence")
-        timestamp_us = round(timeline[position].timestamp * 1e6)
-        return self._scene(
-            path, position, timestamp_us,
-            _interpolate_rig(timestamps[:, 0], transforms[:, 0], timestamp_us),
-            _rig_speed(timestamps[:, 0], transforms[:, 0], timestamp_us),
-            {"time_step": self.time_step, "interpolation": "linear_translation_slerp_rotation"},
-        )
-
-    def _scene(self, path, frame, timestamp_us, world_from_rig, speed, extra_source=None) -> SceneGT:
-        raw, traj, key, cam, _timestamps, _transforms = self._camera_data(path)
-        rig_from_world = np.linalg.inv(world_from_rig)
-        objects = self._objects(raw["sequence_tracks.json"], timestamp_us, rig_from_world, cam)
-        calib = CameraCalib(
-            self.camera_alias, cam.width, cam.height, model=cam, cam_to_ego=cam.t_sensor_rig
-        )
-        return SceneGT(
-            frame,
-            timestamp_us / 1e6,
-            EgoState(
-                speed,
-                np.asarray(world_from_rig).tolist(),
-                center=tuple((traj.get("rig_bbox") or {}).get("centroid", (0, 0, 0))),
-                extent=tuple((traj.get("rig_bbox") or {}).get("dim", (0, 0, 0))),
-            ),
-            {self.camera_alias: calib},
-            objects,
-            source={
-                "dataset": "nurec",
-                "usdz_path": str(path),
-                "scene_id": key.split("@")[1] if "@" in key else traj.get("sequence_id"),
-                "camera_id": self.camera_id,
-                "frame_index": frame,
-                **(extra_source or {}),
-                "timestamp_us": timestamp_us,
-            },
+    def ego_state(self, path: str, timestamp_us: int) -> ActorState:
+        """Interpolate the recorded rig pose and world velocity within its support."""
+        _raw, trajectory, _key, _cam, timestamps, transforms = self._camera_data(str(path))
+        times, poses = timestamps[:, 0], transforms[:, 0]
+        pose = _interpolate_rig(times, poses, timestamp_us)
+        velocity = np.zeros(3)
+        if len(times) > 1:
+            i = min(max(1, int(np.searchsorted(times, timestamp_us))), len(times) - 1)
+            velocity = (poses[i, :3, 3] - poses[i - 1, :3, 3]) / ((times[i] - times[i - 1]) / 1e6)
+        bbox = trajectory.get("rig_bbox") or {}
+        dimensions = bbox.get("dim")
+        return ActorState(
+            pose, tuple(float(v) for v in velocity), "vehicle",
+            None if dimensions is None else tuple(float(v) for v in dimensions),
+            tuple(float(v) for v in bbox.get("centroid", (0, 0, 0))),
         )
 
     def actor_poses(self, path: str, timestamp_us: int):
         """World poses and full cuboid dimensions for every actor present at this timestamp."""
-        from avsectester.geometry import ActorPose
-
         tracks = self._raw_metadata(str(path))["sequence_tracks.json"]
-        return {
-            tid: ActorPose(pose, extent)
-            for tid, _label, extent, pose in self._track_states(tracks, timestamp_us)
-        }
+        return {actor_id: ActorState(pose, extent=extent).box_pose()
+                for actor_id, _label, extent, pose in self._track_states(tracks, timestamp_us)}
 
     def actor_states(self, path: str, timestamp_us: int) -> dict[str, ActorState]:
         """Recorded actors at this timestamp: world pose, velocity and category, by track ID.
@@ -399,43 +332,3 @@ class NuRecDataset(Dataset):
                 pose = _interpolate_pose(ts, poses, timestamp_us)
                 if pose is not None:
                     yield str(tid), str(label), tuple(float(v) for v in extent), pose
-
-    def _objects(self, tracks, timestamp_us, rig_from_world, cam):
-        objects = []
-        for tid, label, extent, pose in self._track_states(tracks, timestamp_us):
-            local_pose = rig_from_world @ pose
-            center = local_pose[:3, 3]
-            half = np.asarray(extent) / 2
-            local = np.array(
-                [
-                    [x, y, z]
-                    for x in (-half[0], half[0])
-                    for y in (-half[1], half[1])
-                    for z in (-half[2], half[2])
-                ]
-            )
-            corners = local @ local_pose[:3, :3].T + center
-            box = _box2d_from_corners(cam, corners)
-            category = "vehicle" if any(v in label.lower() for v in self.vehicle_labels) else label
-            objects.append(
-                ObjectGT(
-                    track_id=tid,
-                    category=category,
-                    center=tuple(center),
-                    extent=extent,
-                    yaw=math.atan2(local_pose[1, 0], local_pose[0, 0]),
-                    box2d={self.camera_alias: box} if box else {},
-                    pose=local_pose.tolist(),
-                )
-            )
-        return objects
-
-    @staticmethod
-    def _ego_speed(origins_world, ts_us, frame):
-        if len(ts_us) < 2:
-            return 0.0
-        other = frame + 1 if frame + 1 < len(ts_us) else frame - 1
-        dt = abs(float(ts_us[other]) - float(ts_us[frame])) / 1e6
-        return (
-            float(np.linalg.norm(origins_world[other] - origins_world[frame]) / dt) if dt else 0.0
-        )

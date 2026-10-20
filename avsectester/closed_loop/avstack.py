@@ -9,15 +9,15 @@ carla; the implementations carry those dependencies.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
-from avsectester.closed_loop.datatypes import Control, Observation
+from avsectester.closed_loop.datatypes import Control, Detection, Observation
 from avsectester.closed_loop.hooks import _StageAdapter
 
 if TYPE_CHECKING:
     from avsectester.closed_loop.hooks import HookSet
-    from avsectester.closed_loop.simulator import SimulatorRuntime, WorldBackend
+    from avsectester.closed_loop.simulator import SimulatorRuntime
     from avsectester.closed_loop.vehicle_io import VehicleIO
 
 
@@ -28,6 +28,8 @@ class AVStack(_StageAdapter, ABC):
     ->control pipeline and a single end-to-end model both satisfy it. Implementations adapt their
     own machinery (e.g. an avstack ``ModularDrivingPipeline``, or a camera end-to-end policy).
     """
+
+    provides_detections: bool | None = None
 
     @property
     def vehicle_io(self) -> VehicleIO:
@@ -59,6 +61,25 @@ class AVStack(_StageAdapter, ABC):
         """Loaded native models available to user handlers. Adapters expose their own names."""
         return {}
 
+    def component_log(self) -> Mapping[str, Any] | None:
+        """Already-produced component outputs for the current decision, or None.
+
+        Recording must never run extra inference to obtain outputs. Implementations may
+        enable their own instrumentation before the first call.
+        """
+        return None
+
+    def detections(self) -> Sequence[Detection] | None:
+        """Current decision's ego-frame detections; None means no detection output.
+
+        An empty sequence means a detector ran and found no objects. Calling this method
+        must not run inference or modify the driving system's state.
+        """
+        return None
+
+    def close(self) -> None:
+        """Release driving-system resources. The default implementation owns none."""
+
     @abstractmethod
     def __call__(self, observation: Observation) -> Control:
         """Decide the control command for this Observation."""
@@ -69,7 +90,7 @@ class CommandCompatibilityError(ValueError):
 
 
 def validate_command_compatibility(
-    simulator_runtime: SimulatorRuntime | WorldBackend, avstack: AVStack, hooks: HookSet | None = None,
+    simulator_runtime: SimulatorRuntime, avstack: AVStack, hooks: HookSet | None = None,
 ) -> None:
     """Check declared commands before world setup, allowing explicit hook conversion.
 

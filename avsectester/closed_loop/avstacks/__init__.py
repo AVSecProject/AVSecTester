@@ -9,5 +9,6 @@ lazy-import their heavy deps, so this package imports without avstack/torch.
 
 from .alpamayo import AlpamayoAVStack
 from .modular import ModularAVStack
+from .camera_forward_collision import CameraForwardCollisionAVStack
 
-__all__ = ["AlpamayoAVStack", "ModularAVStack"]
+__all__ = ["AlpamayoAVStack", "ModularAVStack", "CameraForwardCollisionAVStack"]

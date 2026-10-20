@@ -1,4 +1,4 @@
-"""The in-process NuRec backend: dynamics, the closed loop with a stub renderer, and checkpointing.
+"""The in-process NuRec simulator: dynamics, the closed loop with a stub renderer, and checkpointing.
 
 Fully in-process — no gRPC, no server, no scene — so it runs anywhere and is trivial to debug.
 """
@@ -8,12 +8,12 @@ import math
 import numpy as np
 import pytest
 from avsectester.closed_loop.avstack import AVStack
-from avsectester.backend import run
+from avsectester.closed_loop.runner import ClosedLoopRunner, RunRequest
 from avsectester.closed_loop.datatypes import Control
 from avsectester.closed_loop.simulators.nurec import EgoPose, KinematicBicycle, NuRecSimulator, StubRenderer
 
 
-class ThrottleStack(AVStack):
+class ThrottleAVStack(AVStack):
     def __call__(self, obs):
         return Control(throttle=1.0)
 
@@ -29,34 +29,34 @@ def test_bicycle_accelerates_brakes_and_turns():
     assert dyn.step(EgoPose(speed=5.0), Control(steer=1.0), dt=0.1).yaw != 0.0
 
 
-def test_backend_loop_drives_in_process_with_stub_renderer():
-    backend = NuRecSimulator({"dt": 0.1}, renderer=StubRenderer(height=120, width=160)).create_runtime()
-    trace = run(backend, ThrottleStack(), frames=5)
-    assert len(trace.records) == 5
-    speeds = [r.speed for r in trace.records]
+def test_simulator_runtime_loop_drives_in_process_with_stub_renderer():
+    simulator_runtime = NuRecSimulator({"dt": 0.1}, renderer=StubRenderer(height=120, width=160)).create_runtime()
+    log = ClosedLoopRunner().run(simulator_runtime, ThrottleAVStack(), RunRequest(5))
+    assert len(log.steps) == 5
+    speeds = [step.physical_post.ego_speed for step in log.steps]
     assert speeds == sorted(speeds) and speeds[-1] > 0  # accelerating under throttle
     # the (stub) camera really flows through the Observation
-    obs = backend._observe()
+    obs = simulator_runtime._observe()
     assert "camera_front" in obs.sensor_data
-    assert isinstance(backend.renderer, StubRenderer)
+    assert isinstance(simulator_runtime.renderer, StubRenderer)
     image = obs.sensor_data["camera_front"]
     assert image.shape == (120, 160, 3) and image.dtype == np.uint8
 
 
 def test_restoring_checkpoint_replays_the_same_subsequent_motion():
-    backend = NuRecSimulator({"dt": 0.1, "ego0": {"x": 10.0, "y": -3.0, "yaw": 0.4}}).create_runtime()
-    run(backend, ThrottleStack(), frames=3)
-    checkpoint = backend.checkpoint()
+    simulator_runtime = NuRecSimulator({"dt": 0.1, "ego0": {"x": 10.0, "y": -3.0, "yaw": 0.4}}).create_runtime()
+    ClosedLoopRunner().run(simulator_runtime, ThrottleAVStack(), RunRequest(3))
+    checkpoint = simulator_runtime.checkpoint()
     controls = [Control(throttle=0.7, steer=0.3), Control(brake=0.2, steer=-0.1)]
 
     def step(control):
-        backend.step(control)
-        return backend.observe()
+        simulator_runtime.step(control)
+        return simulator_runtime.observe()
 
     expected = [step(control) for control in controls]
 
-    backend.restore(checkpoint)
-    assert backend.checkpoint() == checkpoint
+    simulator_runtime.restore(checkpoint)
+    assert simulator_runtime.checkpoint() == checkpoint
     replayed = [step(control) for control in controls]
 
     for actual, original in zip(replayed, expected):
@@ -67,14 +67,14 @@ def test_restoring_checkpoint_replays_the_same_subsequent_motion():
 
 
 def test_reset_restores_configured_pose_after_a_previous_drive():
-    backend = NuRecSimulator({"dt": 0.1, "ego0": {"x": 10.0, "y": -3.0, "yaw": 0.4}}).create_runtime()
-    backend.reset()
-    initial = backend.observe()
-    backend.step(Control(throttle=1.0, steer=0.5))
+    simulator_runtime = NuRecSimulator({"dt": 0.1, "ego0": {"x": 10.0, "y": -3.0, "yaw": 0.4}}).create_runtime()
+    simulator_runtime.reset()
+    initial = simulator_runtime.observe()
+    simulator_runtime.step(Control(throttle=1.0, steer=0.5))
 
-    backend.reset()
+    simulator_runtime.reset()
 
-    restarted = backend.observe()
+    restarted = simulator_runtime.observe()
     assert restarted.frame == 0
     assert restarted.vehicle_state == initial.vehicle_state
 

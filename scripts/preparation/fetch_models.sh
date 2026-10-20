@@ -24,6 +24,7 @@ MM2D="$ROOT/third_party/avstack-core/third_party/mmdetection"
 
 MMDET3D_BASE="https://g-b0ef78.1d0d8d.03c0.data.globus.org/models/mmdet3d/work_dirs/carla"
 MMDET_BASE="https://g-b0ef78.1d0d8d.03c0.data.globus.org/models/mmdet/work_dirs/carla"
+NUSCENES_BASE="https://g-b0ef78.1d0d8d.03c0.data.globus.org/models/mmdet/work_dirs/nuscenes"
 
 mkdir -p "$MODELS/checkpoints/kitti" "$MODELS/checkpoints/nuscenes" "$WD3" "$WD2/carla"
 
@@ -79,6 +80,10 @@ fetch_pair "$MMDET_BASE" "faster_rcnn_r50_fpn_1x_carla_infrastructure" "$WD2"
 # faster carla-joint -> work_dirs/<name>/{<name>.py, latest.pth via last_checkpoint}
 NJ="faster_rcnn_r50_fpn_1x_carla_joint"
 fetch_pair "$MMDET_BASE" "$NJ" "$WD2/$NJ" latest
+
+echo "== avstack nuScenes-trained 2D Faster R-CNN (mmdet) =="
+fetch "$NUSCENES_BASE/faster_rcnn_r50_fpn_1x_nuscenes.pth" \
+      "$WD2/nuscenes/faster_rcnn_r50_fpn_1x_nuscenes.pth"
 
 echo "== expose ./models where avstack resolves paths =="
 if [[ -d "$MM3D" ]]; then

@@ -1,16 +1,85 @@
-"""Run configured single or paired experiments through prepared scenarios."""
+"""Prepare, execute and evaluate experiments through the public experiment API."""
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, NoReturn
 
 import typer
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 from avsectester import __version__
-from avsectester.legacy_experiment import ConfigurationError, ExecutionMode, TreatmentMode, run_configured
+from avsectester.experiment import (
+    ConfigurationMismatchError, Experiment, ExperimentConfiguration, ExperimentResult,
+    PreparedExperiment, load_configuration,
+)
+from avsectester.experiment.engine import validate_configuration_environment
+from avsectester.experiment.models import run_directory, runs_directory
 
 app = typer.Typer(help="Adversarial security testing for AV systems.")
+_CONFIGURATION_ERRORS = (ValueError, TypeError, ImportError, AttributeError, FileNotFoundError,
+                         yaml.YAMLError)
+
+
+def _configuration(path: Path) -> ExperimentConfiguration:
+    try:
+        configuration = load_configuration(path)
+        if configuration.output is None:
+            raise ValueError("CLI experiments require an output directory")
+        validate_configuration_environment(configuration)
+        return configuration
+    except _CONFIGURATION_ERRORS as error:
+        _configuration_error(error)
+    except KeyboardInterrupt:
+        typer.echo("Configuration loading interrupted.", err=True)
+        raise typer.Exit(130) from None
+    except Exception as error:
+        typer.echo(f"Configuration load error: {type(error).__name__}: {error}", err=True)
+        raise typer.Exit(1) from error
+
+
+def _configuration_error(error: Exception) -> NoReturn:
+    typer.echo(f"Configuration error: {type(error).__name__}: {error}", err=True)
+    raise typer.Exit(2) from error
+
+
+def _evaluate_result(result: ExperimentResult, configuration: ExperimentConfiguration) -> Any:
+    from avsectester.evaluation.report import evaluate
+
+    return evaluate(result, configuration)
+
+
+def _print_report(report: Any, result: ExperimentResult,
+                  configuration: ExperimentConfiguration) -> None:
+    for notice in result.notices:
+        typer.echo(notice)
+    typer.echo(report.format_summary())
+    for failure in result.failures:
+        assert configuration.output is not None
+        destination = run_directory(configuration.output, failure.attack_name, failure.segment_index,
+                                    failure.seed, failure.treatment)
+        typer.echo(f"Failed run: {destination}: {failure.error or failure.log.status}", err=True)
+    for selection in result.selection_errors:
+        typer.echo(f"Selection error: {selection.attack_name}/{selection.scenario_id}: {selection.error}",
+                   err=True)
+
+
+def _exit_code(result: ExperimentResult, report: Any) -> int:
+    return 1 if result.failures or result.selection_errors or report.metric_errors else 0
+
+
+def _partial_report(configuration: ExperimentConfiguration, saved_this_call: bool) -> None:
+    if not saved_this_call:
+        return
+    assert configuration.output is not None
+    try:
+        partial = ExperimentResult.load(configuration.output, configuration)
+        report = _evaluate_result(partial, configuration)
+        _print_report(report, partial, configuration)
+    except KeyboardInterrupt:
+        typer.echo("Partial evaluation interrupted.", err=True)
+    except Exception as error:
+        typer.echo(f"Partial evaluation unavailable: {type(error).__name__}: {error}", err=True)
 
 
 @app.command()
@@ -22,130 +91,106 @@ def version() -> None:
 @app.command()
 def run(
     config: Path = typer.Argument(
-        ..., exists=True, dir_okay=False, readable=True,
-        help="Scenario YAML (see configs/carla_scenario.yaml).",
+        ..., exists=True, dir_okay=False, readable=True, help="Experiment YAML file.",
     ),
-    frames: int | None = typer.Option(None, min=0, help="Override the scenario frame count."),
-    gpu: int | None = typer.Option(None, min=0, help="Override the perception CUDA device."),
-    plot: str | None = typer.Option(None, help="Save a paired driving-impact plot."),
-    mode: ExecutionMode | None = typer.Option(None, help="single or pair (default: pair)."),
-    treatment: TreatmentMode | None = typer.Option(None, help="clean, attack, defense or attack-defense."),
+    prepared: Path | None = typer.Option(
+        None, exists=True, file_okay=False, readable=True,
+        help="Reuse metadata and artifacts saved in this directory.",
+    ),
 ) -> None:
-    """Run a prepared scenario with the selected attack and defense treatment."""
-    from avsectester.evaluation.metric import impact, plot_impact
-    from avsectester.closed_loop.simulators.carla import resolve_scenario_seed, set_perception_gpu
-
+    """Prepare attacks, execute treatments and write the configured evaluation report."""
+    configuration = _configuration(config)
+    output = configuration.output
+    assert output is not None
+    if runs_directory(output).exists():
+        _configuration_error(ValueError(f"Run output already exists: {runs_directory(output)}"))
+    preparation = None
+    if prepared is not None:
+        try:
+            preparation = PreparedExperiment.load(configuration, prepared)
+        except ConfigurationMismatchError as error:
+            _configuration_error(error)
+        except KeyboardInterrupt:
+            typer.echo("Preparation loading interrupted.", err=True)
+            raise typer.Exit(130) from None
+        except Exception as error:
+            typer.echo(f"Preparation load error: {type(error).__name__}: {error}", err=True)
+            raise typer.Exit(1) from error
+    saved_this_call = False
     try:
-        scenario = yaml.safe_load(config.read_text())
-        if not isinstance(scenario, dict):
-            raise ValueError("Scenario YAML must contain a mapping")
-        execution = mode or ExecutionMode(scenario.get("mode", "pair"))
-        selected = treatment or TreatmentMode(scenario.get("treatment", "attack"))
-        if plot is not None and execution is ExecutionMode.SINGLE:
-            raise ValueError("--plot requires pair mode")
-        backend_spec = scenario.get("backend", {})
-        if not isinstance(backend_spec, dict):
-            raise ValueError("backend must be a mapping")
-        is_carla = backend_spec.get("type", "CarlaSimulator") == "CarlaSimulator"
-        if is_carla:
-            for key in ("client", "ego"):
-                if not isinstance(scenario.get(key), dict):
-                    raise ValueError(f"Scenario requires a {key!r} configuration mapping")
-            if scenario.get("stack") is None and not isinstance(scenario["ego"].get("pipeline"), dict):
-                raise ValueError("Scenario ego requires a pipeline configuration mapping")
-            if scenario.get("stack") is not None and gpu is not None:
-                raise ValueError("Configure a custom stack's device in stack.options instead of --gpu")
-            scenario = resolve_scenario_seed(set_perception_gpu(scenario, gpu))
-        elif gpu is not None:
-            raise ValueError("--gpu overrides CARLA modular perception. Configure the stack device in stack.options.")
-        n = frames if frames is not None else scenario.get("frames", 40)
-        if not isinstance(n, int) or isinstance(n, bool) or n < 0:
-            raise ValueError("frames must be a nonnegative integer")
-    except (ValueError, TypeError, KeyError, yaml.YAMLError) as error:
-        typer.echo(f"Configuration error: {error}", err=True)
-        raise typer.Exit(2) from error
-    except OSError as error:
-        typer.echo(f"Cannot read scenario: {error}", err=True)
-        raise typer.Exit(2) from error
-
-    try:
-        if is_carla:
-            typer.echo(f"[scenario] seed={scenario['client']['seed']}")
-        typer.echo(f"[{execution.value}] {n} frames per run, treatment={selected.value}")
-        options = {}
-        if is_carla:
-            from avsectester import carla_runner
-            options = {
-                "backend_factory": None if scenario.get("selection") is not None else
-                    lambda config: carla_runner.CarlaSimulator(config).create_runtime(),
-                "stack_factory": lambda: carla_runner._stack(scenario),
-                "run_fn": carla_runner._logged_run,
-            }
-        traces = run_configured(
-            scenario, n, mode=execution, treatment=selected,
-            provenance={"config_path": str(config.resolve())}, **options,
-        )
-        has_attack = False
-        if execution is ExecutionMode.PAIR:
-            clean = traces["clean"]
-            treated = next(trace for label, trace in traces.items() if label != "clean")
-            has_attack = selected in {TreatmentMode.ATTACK, TreatmentMode.COMBINED} and (
-                any(item.get("kind") == "attack" for item in treated.provenance.get("interventions", ()))
-                or bool((scenario.get("runtime") or {}).get("hooks"))
-            )
-        for label, trace in traces.items():
-            displayed = {"attack": "attacked", "attack-defense": "attack+defense"}.get(label, label)
-            if execution is ExecutionMode.PAIR and label == "attack" and not has_attack:
-                displayed = "baseline"
-            typer.echo(
-                f"[{displayed}] mean_detections={trace.mean_detections:.1f} "
-                f"peak_speed={trace.peak_speed:.2f} final_speed={trace.final_speed:.2f} "
-                f"brake_frames={trace.braking_frames} outputs={len(trace.outputs)}"
-            )
-        if execution is ExecutionMode.SINGLE:
-            return
-        if selected is TreatmentMode.DEFENSE:
-            typer.echo("[pair] Defense side effects relative to clean.")
-        elif selected is TreatmentMode.CLEAN:
-            typer.echo("[pair] Baseline comparison.")
-        elif not has_attack:
-            typer.echo("[pair] No intervention hooks configured. Comparing two baseline runs.")
-        result = impact(clean, treated)
-        treated_label = (
-            "attack+defense" if selected is TreatmentMode.COMBINED else
-            "attacked" if has_attack else
-            "defense" if selected is TreatmentMode.DEFENSE else "baseline"
-        )
-        title = "Defense side effects (clean vs defense)" if selected is TreatmentMode.DEFENSE else None
-        saved = plot_impact(
-            clean, treated, plot, result=result, title=title,
-            treated_label=treated_label, show_verdict=has_attack,
-        ) if plot else None
-        comparison = result.comparison(treated_label)
-        typer.echo(f"{comparison}\n=> {result.verdict}" if has_attack else comparison)
-        if saved:
-            typer.echo(f"[output] wrote driving-impact figure: {saved}")
-    except ValueError as error:
-        # Stage validation precedes reset and identifies configuration errors explicitly.
-        from avsectester.closed_loop.hooks import UnsupportedStageError
-        from avsectester.closed_loop.avstack import CommandCompatibilityError
-        from avsectester.conditions import ConditionConfigurationError
-        from avsectester.scenarios.setup import ScenarioConfigurationError
-
-        if isinstance(error, (UnsupportedStageError, CommandCompatibilityError,
-                              ConditionConfigurationError, ScenarioConfigurationError, ConfigurationError)):
-            typer.echo(f"Configuration error: {error}", err=True)
-            raise typer.Exit(2) from error
-        typer.echo(f"Execution error: {error}", err=True)
-        raise typer.Exit(1) from error
+        if preparation is None:
+            preparation = Experiment.prepare(configuration)
+            # Preparation writes its manifest last. A failed prepare must never evaluate a
+            # manifest left by an earlier invocation in the same output directory.
+            saved_this_call = (output / "prepared.json").is_file()
+        else:
+            preparation.save(output)
+            saved_this_call = True
+        result = Experiment.execute(preparation)
+    except KeyboardInterrupt:
+        typer.echo("Preparation or execution interrupted.", err=True)
+        _partial_report(configuration, saved_this_call)
+        if saved_this_call:
+            typer.echo(f"Output directory: {output}")
+        raise typer.Exit(130) from None
     except Exception as error:
-        typer.echo(f"Execution error: {error}", err=True)
+        typer.echo(f"Execution error: {type(error).__name__}: {error}", err=True)
+        _partial_report(configuration, saved_this_call)
+        if saved_this_call:
+            typer.echo(f"Output directory: {output}")
         raise typer.Exit(1) from error
+    try:
+        report = _evaluate_result(result, configuration)
+        _print_report(report, result, configuration)
+    except KeyboardInterrupt:
+        typer.echo("Evaluation interrupted; report files may be incomplete. Saved run logs remain "
+                   "available for evaluation.", err=True)
+        typer.echo(f"Output directory: {output}")
+        raise typer.Exit(130) from None
+    except Exception as error:
+        typer.echo(f"Evaluation error: {type(error).__name__}: {error}", err=True)
+        typer.echo(f"Output directory: {output}")
+        raise typer.Exit(1) from error
+    typer.echo(f"Output directory: {configuration.output}")
+    raise typer.Exit(_exit_code(result, report))
 
-    # Keep experiment outcomes distinct from runtime (1) and configuration (2) failures.
-    if not has_attack:
-        return
-    raise typer.Exit(0 if result.attack_succeeded else 4 if not result.clean_drove else 3)
+
+@app.command()
+def evaluate(
+    config: Path = typer.Argument(
+        ..., exists=True, dir_okay=False, readable=True, help="Experiment YAML file.",
+    ),
+) -> None:
+    """Recompute evaluation from saved run logs without running a simulator or reading a dataset."""
+    configuration = _configuration(config)
+    assert configuration.output is not None
+    if not (configuration.output / "prepared.json").is_file():
+        typer.echo(f"No saved experiment results found: {configuration.output / 'prepared.json'}", err=True)
+        raise typer.Exit(1)
+    try:
+        result = ExperimentResult.load(configuration.output, configuration)
+    except ConfigurationMismatchError as error:
+        _configuration_error(error)
+    except KeyboardInterrupt:
+        typer.echo("Result loading interrupted.", err=True)
+        raise typer.Exit(130) from None
+    except Exception as error:
+        typer.echo(f"Result load error: {type(error).__name__}: {error}", err=True)
+        raise typer.Exit(1) from error
+    try:
+        report = _evaluate_result(result, configuration)
+        _print_report(report, result, configuration)
+    except KeyboardInterrupt:
+        typer.echo("Evaluation interrupted; report files may be incomplete. Saved run logs remain "
+                   "available for evaluation.", err=True)
+        typer.echo(f"Output directory: {configuration.output}")
+        raise typer.Exit(130) from None
+    except Exception as error:
+        typer.echo(f"Evaluation error: {type(error).__name__}: {error}", err=True)
+        typer.echo(f"Output directory: {configuration.output}")
+        raise typer.Exit(1) from error
+    typer.echo(f"Output directory: {configuration.output}")
+    raise typer.Exit(_exit_code(result, report))
 
 
 if __name__ == "__main__":

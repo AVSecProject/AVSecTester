@@ -45,7 +45,7 @@ def definitions(monkeypatch):
         def scenario_start(self, scenario_id, frame):
             raise KeyError(scenario_id)
 
-    class Method(Attack):
+    class ExampleAttack(Attack):
         def __init__(self, texture_path=None):
             self.assets = texture_path
 
@@ -86,7 +86,7 @@ def definitions(monkeypatch):
             for name in components
         ))
 
-    module.Data, module.Method, module.Driver = Data, Method, Driver
+    module.Data, module.ExampleAttack, module.Driver = Data, ExampleAttack, Driver
     module.Localizer, module.Handler, module.adapter = Localizer, Handler, adapter
     module.bindings = bindings
     monkeypatch.setitem(sys.modules, module.__name__, module)
@@ -98,13 +98,13 @@ def basic_config(definitions):
         "dataset": {"type": definitions.__name__ + ":Data"},
         "simulator": {"type": "RecordedReplaySimulator"},
         "avstack": {"type": definitions.__name__ + ":Driver"},
-        "attacks": {"example": {"type": definitions.__name__ + ":Method"}},
+        "attacks": {"example": {"type": definitions.__name__ + ":ExampleAttack"}},
     }
 
 
 def test_python_objects_and_named_treatments(definitions):
     data, simulator, driver, attack = (
-        definitions.Data(), RecordedReplaySimulator(), definitions.adapter(), definitions.Method(),
+        definitions.Data(), RecordedReplaySimulator(), definitions.adapter(), definitions.ExampleAttack(),
     )
     config = load_configuration({
         "dataset": data, "simulator": simulator, "avstack": driver,
@@ -138,7 +138,7 @@ def test_referenced_configs_resolve_paths_from_each_containing_file(tmp_path, de
         "command_modes": ["actuator"],
     }))
     (configs / "attack.yaml").write_text(yaml.safe_dump({
-        "type": definitions.__name__ + ":Method",
+        "type": definitions.__name__ + ":ExampleAttack",
         "options": {"texture_path": "assets/texture.png"},
         "environment": {"sensors": [{"type": "GaussianNoise", "options": {"severity": 0.2},
                                       "camera": "front"}]},
@@ -221,7 +221,7 @@ def test_default_treatments_do_not_share_a_reserved_name(definitions):
     assert loaded.treatments == (
         TreatmentConfiguration("clean"), TreatmentConfiguration("example", "example"),
     )
-    config["attacks"] = {"clean": definitions.Method()}
+    config["attacks"] = {"clean": definitions.ExampleAttack()}
     with pytest.raises(ValueError, match="unique"):
         load_configuration(config)
 
@@ -278,7 +278,7 @@ def test_avstack_bindings_expose_components_over_the_configured_factory(definiti
 
 
 def test_configuration_summary_is_lazy_and_detached_from_callers(definitions):
-    class Described(definitions.Method):
+    class Described(definitions.ExampleAttack):
         def configuration_parameters(self):
             return {"texture_path": self.assets}
 
@@ -305,7 +305,7 @@ def test_configuration_summary_uses_resolved_options_and_discards_stale_construc
     assert config.configuration_summary["attacks"]["example"]["parameters"] == {
         "texture_path": str(Path.cwd() / "texture.png"),
     }
-    replaced = replace(config, attacks={"example": definitions.Method("new.png")})
+    replaced = replace(config, attacks={"example": definitions.ExampleAttack("new.png")})
     with pytest.warns(RuntimeWarning, match="parameters cannot be described"):
         summary = replaced.configuration_summary
     assert summary["attacks"]["example"]["parameters"] is None
@@ -314,13 +314,12 @@ def test_configuration_summary_uses_resolved_options_and_discards_stale_construc
     assert copied.configuration_summary == config.configuration_summary
 
 
-
 def test_configuration_does_not_request_attack_parameters_or_enumerate_scenarios(definitions, monkeypatch):
     from inspect import signature
     from unittest.mock import Mock
 
     data = definitions.Data()
-    attack = definitions.Method("texture.png")  # No texture_path attribute or descriptor override.
+    attack = definitions.ExampleAttack("texture.png")  # No texture_path attribute or descriptor override.
     scenarios = Mock(side_effect=AssertionError("scenarios should be read only on demand"))
     describe = Mock(side_effect=AssertionError("parameters should be read only on demand"))
     monkeypatch.setattr(data, "scenarios", scenarios)
@@ -334,3 +333,157 @@ def test_configuration_does_not_request_attack_parameters_or_enumerate_scenarios
     scenarios.assert_not_called()
     describe.assert_not_called()
     assert not any(name.startswith("_") for name in signature(ExperimentConfiguration).parameters)
+
+
+@pytest.mark.parametrize("count", [0, 2])
+def test_experiment_requires_exactly_one_attack_at_load(definitions, count):
+    spec = basic_config(definitions)
+    spec["attacks"] = {f"attack_{i}": definitions.ExampleAttack() for i in range(count)}
+    with pytest.raises(ValueError, match="exactly one attack.*future feature.*composite Attack"):
+        load_configuration(spec)
+    configured = ExperimentConfiguration(definitions.Data(), RecordedReplaySimulator(),
+                                         definitions.adapter(), attacks=spec["attacks"])
+    with pytest.raises(ValueError, match="exactly one attack"):
+        load_configuration(configured)
+
+
+@pytest.mark.parametrize("class_name,folder", [
+    ("MyAttack", "my_attack"), ("MyNNAttack", "my_nn_attack"),
+    ("XMLAttack", "xml_attack"), ("HTTP2Attack", "http2_attack"), ("Attack2D", "attack2_d"),
+])
+def test_attack_class_names_have_unambiguous_snake_case_folders(class_name, folder):
+    from avsectester.experiment.config import attack_directory_name
+    assert attack_directory_name(class_name) == folder
+
+
+def test_user_attack_discovery_matches_builtin_attack_discovery(tmp_path, monkeypatch):
+    import avsectester.attack.implemented_attacks as package
+    from avsectester.experiment.config import available_attacks, resolve_type
+
+    folder = tmp_path / "my_nn_attack"
+    folder.mkdir()
+    (folder / "__init__.py").write_text("from .attack import MyNNAttack\n")
+    (folder / "attack.py").write_text(
+        "from avsectester.attack import Attack\n"
+        "class MyNNAttack(Attack):\n"
+        "    def build_metadata(self, scenario): return ()\n")
+    monkeypatch.setattr(package, "__path__", [*package.__path__, str(tmp_path)])
+    try:
+        assert resolve_type("MyNNAttack").__name__ == "MyNNAttack"
+        assert "MyNNAttack" in available_attacks()
+        assert resolve_type("PatchAttack").__name__ == "PatchAttack"
+        with pytest.raises(ValueError, match="Available attacks:.*MyNNAttack"):
+            resolve_type("my_nn_attack")
+    finally:
+        sys.modules.pop(package.__name__ + ".my_nn_attack.attack", None)
+        sys.modules.pop(package.__name__ + ".my_nn_attack", None)
+
+
+def test_image_texture_path_is_relative_to_its_configuration_file(tmp_path, definitions):
+    from avsectester.experiment.config import _options
+    resolved = _options({"texture": {"image": "images/patch.png"}}, tmp_path)
+    assert resolved["texture"]["image"] == str(tmp_path / "images/patch.png")
+
+
+def test_evaluation_config_accepts_user_metrics_and_explicit_options(definitions):
+    from avsectester.evaluation.metric import DrivingMetrics, Metric
+
+    class UserMetric(Metric):
+        def __init__(self, scale=1):
+            self.scale = scale
+
+        def evaluate(self, group):
+            return {name: {"value": self.scale} for name in group.runs}
+
+    definitions.UserMetric = UserMetric
+    spec = basic_config(definitions)
+    assert load_configuration(spec).evaluation.metrics is None
+    spec["evaluation"] = {"metrics": [
+        {"type": "DrivingMetrics", "options": {"stop_speed": .2}},
+        {"type": definitions.__name__ + ":UserMetric", "options": {"scale": 3}},
+    ]}
+    configured = load_configuration(spec)
+    assert isinstance(configured.evaluation.metrics[0], DrivingMetrics)
+    assert configured.evaluation.metrics[1].scale == 3
+
+
+@pytest.mark.parametrize("evaluation,match", [
+    ({"baseline": "clean"}, "Unknown evaluation keys"),
+    ({"unknown": 1}, "Unknown evaluation keys"),
+    ({"metrics": [{"type": "DrivingMetrics"}, {"type": "DrivingMetrics"}]}, "repeat.*type"),
+    ({"metrics": [{"type": "DrivingMetrics", "unexpected": 1}]}, "Unknown Metric keys"),
+])
+def test_evaluation_configuration_errors_are_detected_on_load(definitions, evaluation, match):
+    spec = basic_config(definitions)
+    spec["evaluation"] = evaluation
+    with pytest.raises((ValueError, TypeError), match=match):
+        load_configuration(spec)
+
+
+def test_explicit_detection_metric_rejects_known_nondetecting_avstack_without_constructing(definitions):
+    spec = basic_config(definitions)
+    definitions.Driver.provides_detections = False
+    spec["evaluation"] = {"metrics": [{"type": "DetectionMetrics"}]}
+    with pytest.raises(ValueError, match="DetectionMetrics requires detections.*Driver"):
+        load_configuration(spec)
+    assert definitions.created == []
+
+
+def test_removed_clean_hooks_configuration_key_is_rejected(definitions):
+    specification = basic_config(definitions)
+    specification["clean_hooks"] = {}
+    with pytest.raises(ValueError, match="Unknown experiment keys.*clean_hooks"):
+        load_configuration(specification)
+
+
+def test_attack_discovery_accepts_exact_matching_exports_without_suffix_assumptions(tmp_path, monkeypatch):
+    import avsectester.attack.implemented_attacks as package
+    from avsectester.experiment.config import available_attacks, resolve_type
+
+    modules = []
+    for folder, content in {
+        "speed_spoof": "class SpeedSpoof(Attack):\n    def build_metadata(self, scenario): return ()\n",
+        "bad_attack": "class WrongAttack(Attack):\n    def build_metadata(self, scenario): return ()\n",
+        "not_attack": "class NotAttack: pass\n",
+        "x_attack": "class xAttack(Attack):\n    def build_metadata(self, scenario): return ()\n",
+    }.items():
+        directory = tmp_path / folder
+        directory.mkdir()
+        (directory / "__init__.py").write_text("from avsectester.attack import Attack\n" + content)
+        modules.append(package.__name__ + "." + folder)
+    monkeypatch.setattr(package, "__path__", [*package.__path__, str(tmp_path)])
+    try:
+        assert resolve_type("SpeedSpoof").__name__ == "SpeedSpoof"
+        choices = available_attacks()
+        assert "SpeedSpoof" in choices
+        assert "WrongAttack" not in choices and "NotAttack" not in choices
+        assert "xAttack" not in choices  # lookup rejects lowercase class names too
+        with pytest.raises(TypeError, match="must export"):
+            resolve_type("BadAttack")
+    finally:
+        for module in modules:
+            sys.modules.pop(module, None)
+
+
+def test_asset_face_and_optimizer_initial_texture_paths_are_configuration_relative(tmp_path):
+    from avsectester.experiment.config import _options
+    result = _options({"face": "images/sign.png", "init_texture": "textures/start.png"}, tmp_path)
+    assert result == {"face": str(tmp_path / "images/sign.png"),
+                      "init_texture": str(tmp_path / "textures/start.png")}
+
+
+def test_unknown_type_message_survives_an_attack_folder_that_fails_to_import(tmp_path, monkeypatch):
+    import avsectester.attack.implemented_attacks as package
+    from avsectester.experiment.config import available_attacks, resolve_type
+
+    folder = tmp_path / "broken_attack"
+    folder.mkdir()
+    (folder / "__init__.py").write_text("import not_installed_dependency\n")
+    monkeypatch.setattr(package, "__path__", [*package.__path__, str(tmp_path)])
+    try:
+        assert "PatchAttack" in available_attacks()
+        with pytest.raises(ValueError, match=r"Unknown built-in type 'PatchAtack'.*PatchAttack.*"
+                                             r"broken_attack \(ModuleNotFoundError"):
+            resolve_type("PatchAtack")
+    finally:
+        sys.modules.pop(package.__name__ + ".broken_attack", None)

@@ -13,10 +13,10 @@ from avsectester.closed_loop.frame_data import FrameDataCache, FrameDataSequence
 
 def frame_data():
     frame = FrameReference("road", 0, 100, 0)
-    return FrameData(frame, None, {
-        "ego": ActorState(np.eye(4), (0, 0, 0)),
+    return FrameData(frame, {
         "host": ActorState(np.eye(4), (1, 0, 0)),
-    }, {"front": SensorDataReference("capture", "front", 0)})
+    }, {"front": SensorDataReference("capture", "front", 0)},
+        ego=ActorState(np.eye(4), (0, 0, 0)))
 
 
 def test_cache_key_covers_recipe_simulator_and_seed_and_reads_are_detached():
@@ -35,8 +35,8 @@ def test_cache_key_covers_recipe_simulator_and_seed_and_reads_are_detached():
         return FrameDataSequence((expected,), {"actual_spawn": 5}, identity)
 
     first = cache.get_or_generate(key, generate)
-    first.frames[0].actors["ego"].pose[0, 3] = 99
-    assert cache.get_or_generate(key, generate).frames[0].actors["ego"].pose[0, 3] == 0
+    first.frames[0].ego.pose[0, 3] = 99
+    assert cache.get_or_generate(key, generate).frames[0].ego.pose[0, 3] == 0
     assert calls == [1]
 
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from avsectester.closed_loop.datatypes import Control
 
@@ -16,14 +16,27 @@ from .base import (
 
 @dataclass(frozen=True)
 class PrescribedMotion:
-    """Exactly one explicit control sequence (N) or world-pose sequence (N+1).
+    """One control sequence, trajectory, or constant actuator control.
 
-    Trajectories include velocity evidence. A stationary actor is represented explicitly by
-    zero controls or repeated poses, never by an inferred driving policy.
+    A recipe expands ``constant_control`` into independent controls for every decision.
+    Trajectories include N+1 states with velocity evidence and never imply a policy.
     """
 
     controls: tuple[Control, ...] = ()
     trajectory: tuple[ActorState, ...] = ()
+    constant_control: Control | None = None
+
+    def expanded(self, decision_steps: int) -> PrescribedMotion:
+        if sum((bool(self.controls), bool(self.trajectory), self.constant_control is not None)) != 1:
+            raise ValueError("Specify exactly one of controls, trajectory, constant_control")
+        motion = self
+        if self.constant_control is not None:
+            motion = replace(
+                self, controls=tuple(deepcopy(self.constant_control) for _ in range(decision_steps)),
+                constant_control=None,
+            )
+        motion.validate(decision_steps)
+        return motion
 
     def validate(self, decision_steps: int) -> None:
         if bool(self.controls) == bool(self.trajectory):
@@ -58,26 +71,43 @@ class CarlaRecipe:
             raise ValueError("A recipe must prescribe at least one decision")
         if not math.isfinite(self.time_step) or self.time_step <= 0:
             raise ValueError("time_step must be positive and finite")
+        from avsectester.datasets.carla_world import CARLA_WORLD_SETTINGS, validate_carla_world_settings
+
         scenario = deepcopy(self.scenario)
-        client = scenario["client"]
-        if not client.get("synchronous", False):
-            raise ValueError("Reference recipes require synchronous CARLA")
-        if not math.isclose(1 / float(client["rate"]), self.time_step, abs_tol=1e-9):
-            raise ValueError("Recipe time_step must match the CARLA client rate")
+        world_names = CARLA_WORLD_SETTINGS
+        validate_carla_world_settings({name: value for name, value in scenario.items()
+                                       if name in world_names})
+        client = scenario.get("client", {})
+        if not isinstance(client, Mapping):
+            raise TypeError("Recipe scenario.client must be a mapping")
+        forbidden = set(client) & {
+            "connect_ip", "connect_port", "traffic_manager_port", "rate", "synchronous",
+            "seed", "traffic_manager_seed",
+        }
+        if forbidden:
+            raise ValueError(
+                "Recipe client contains simulator runtime settings: " + ", ".join(sorted(forbidden))
+            )
         npcs = scenario.get("npcs") or []
         if isinstance(npcs, dict):
             raise ValueError("Expand NPCs into explicit spawn/motion specifications for a recipe")
+        if any(not isinstance(npc, Mapping) or not ({"spawn", "spawn_transform"} & npc.keys())
+               for npc in npcs):
+            raise ValueError("Recipe NPCs require explicit spawn or spawn_transform")
         actors = {"ego", *(f"npc:{i}" for i in range(len(npcs)))}
         if scenario.get("lead") is not None:
             actors.add("lead")
         if set(self.motion) != actors:
             raise ValueError(f"Explicit motion required for exactly these actors: {sorted(actors)}")
-        if scenario["ego"].get("autopilot") or any(npc.get("autopilot", True) for npc in npcs):
+        if scenario["ego"].get("autopilot") or any(npc.get("autopilot", False) for npc in npcs):
             raise ValueError("Traffic Manager motion is unsupported for reference recipes")
-        for motion in self.motion.values():
-            motion.validate(self.decision_steps)
+        expanded = {}
+        for actor_id, motion in self.motion.items():
+            if not isinstance(motion, PrescribedMotion):
+                raise TypeError("Recipe motion values must be PrescribedMotion")
+            expanded[actor_id] = motion.expanded(self.decision_steps)
         object.__setattr__(self, "scenario", scenario)
-        object.__setattr__(self, "motion", deepcopy(dict(self.motion)))
+        object.__setattr__(self, "motion", deepcopy(expanded))
         object.__setattr__(self, "metadata", deepcopy(dict(self.metadata)))
 
 

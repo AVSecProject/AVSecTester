@@ -1,76 +1,41 @@
 # Documentation
 
-Start with [Architecture](concepts/architecture.md). It describes every component, shows how data
-flows between them and defines the terms used in all other documents.
+Start with [Installation](getting-started/installation.md) and
+[Quickstart](getting-started/quickstart.md). Read [Architecture](concepts/architecture.md) before
+extending the framework.
 
-## Find what you need
+## Reading paths
 
-| I want to… | Read, in order |
+| Goal | Documents |
 |---|---|
-| Run a demo first | [Installation](getting-started/installation.md) → [Quickstart](getting-started/quickstart.md) |
-| Prepare and execute a Python experiment | [Run experiments](guides/experiments.md#prepare-and-execute-attacks) → [Experiment configuration (Python API)](reference/configuration.md#experiment-configuration-python-api) |
-| Implement a new attack | [Architecture](concepts/architecture.md) → [Implement an attack](guides/attacks.md). Look up details in [Runtime](reference/runtime.md) and [Configuration](reference/configuration.md). See [Examples](examples/README.md) for supplied attacks |
-| Implement a new defense | [Architecture](concepts/architecture.md) → [Implement a defense](guides/defenses.md) → [Runtime](reference/runtime.md) |
-| Optimize an attack artifact, such as a patch texture | [Implement an attack](guides/attacks.md) → [Optimize attack artifacts](guides/optimization.md) → [Physical patch example](examples/physical-patch.md) |
-| Test an attack under bad weather or sensor degradation | [Apply operating conditions](guides/conditions.md) → [Evaluate results](guides/evaluation.md) |
-| Select scenarios for an attack | [Attack metabuilder](guides/attacks.md#use-the-selected-scenario) → [Dataset and closed-loop services](guides/scenarios.md#stateless-datasets) |
-| Configure CARLA or NuRec scenes | [Configure simulators](guides/simulators.md) → [Configuration](reference/configuration.md) |
-| Integrate a new simulator or driving system | [Architecture](concepts/architecture.md) → [Configure simulators](guides/simulators.md#write-a-custom-simulator-adapter) or [Configure driving systems](guides/driving-systems.md#use-a-custom-driving-system) → [Runtime](reference/runtime.md) |
-| Contribute code or documentation | [Contributing](development/contributing.md) → [Tests](../tests/README.md) → [TODO](development/TODO.md) |
+| Run supplied experiments | Quickstart → CLI → Configuration |
+| Write an attack | Architecture → Attacks → supplied attack examples |
+| Optimize a patch | Attacks → Optimization → Physical patch |
+| Integrate a simulator or driving system | Simulators or Driving systems → Runtime → Python API |
+| Analyze existing results | Evaluation → Python API |
 
 ## All documents
 
-**Getting started**
-
-| Document | Contents |
+| Document | Purpose |
 |---|---|
-| [Installation](getting-started/installation.md) | Docker, local environments, the NuRec and Alpamayo environment, model weights and services |
-| [Quickstart](getting-started/quickstart.md) | Run a first comparison, read its output and run offline without a GPU |
+| [Installation](getting-started/installation.md) | Dependencies, services, weights and assets |
+| [Quickstart](getting-started/quickstart.md) | First run, outputs and saved-result evaluation |
+| [Architecture](concepts/architecture.md) | Components, ownership and terminology |
+| [Experiments](guides/experiments.md) | Preparation, execution, persistence and treatment comparisons |
+| [Attacks](guides/attacks.md) | User attack API and effect lifecycle |
+| [Defenses](guides/defenses.md) | Current scope and future work |
+| [Scenarios](guides/scenarios.md) | Dataset timelines, actor identities and metadata |
+| [Environments](guides/environments.md) | World and sensor environments |
+| [Simulators](guides/simulators.md) | Supplied simulators and custom simulator runtime implementation |
+| [Driving systems](guides/driving-systems.md) | Modular and Alpamayo integration |
+| [Optimization](guides/optimization.md) | User objectives, scorers and patch optimization |
+| [Evaluation](guides/evaluation.md) | RunLog metrics, reports and visualization |
+| [Attack examples](examples/README.md) | Supplied Attack implementations |
+| [CLI](reference/cli.md) | Commands and exit codes |
+| [Configuration](reference/configuration.md) | YAML keys and object construction |
+| [Runtime](reference/runtime.md) | Stages, causal order and logging |
+| [Python API](reference/python-api.md) | Modules and public interfaces |
+| [Contributing](development/contributing.md) | Design rules, checks and documentation conventions |
+| [TODO](development/TODO.md#todo) | Open development work |
 
-**Concepts**
-
-| Document | Contents |
-|---|---|
-| [Architecture](concepts/architecture.md) | Components, data flow, supported combinations, implementation status and terminology |
-
-**Guides**
-
-| Document | Contents |
-|---|---|
-| [Run experiments](guides/experiments.md) | Attack preparation, independent treatments, saved artifacts and logs, existing CLI and configured runs |
-| [Prepare scenarios](guides/scenarios.md) | Configured scenarios, inserted objects, filters and requirements, selection, visibility, custom providers |
-| [Apply operating conditions](guides/conditions.md) | World and sensor conditions, corruption operators, ordering and randomness |
-| [Configure simulators](guides/simulators.md) | CARLA and NuRec setup, seeds and spawning, world changes from handlers, custom simulators |
-| [Configure driving systems](guides/driving-systems.md) | Modular and Alpamayo driving systems, models, command compatibility, custom driving systems |
-| [Implement an attack](guides/attacks.md) | Writing, testing, packaging, configuring and running an attack |
-| [Implement a defense](guides/defenses.md) | Writing, ordering, configuring and evaluating a defense |
-| [Optimize attack artifacts](guides/optimization.md) | Where optimization fits and the current optimization interfaces |
-| [Evaluate results](guides/evaluation.md) | Driving traces, the driving-impact metric, component outputs and robustness evaluation |
-
-**Examples**
-
-| Document | Contents |
-|---|---|
-| [Examples](examples/README.md) | How to read the examples, and which supplied attack acts where |
-| [Phantom injection](examples/phantom-injection.md) | A fabricated detection added to the modular driving system's perception output |
-| [Physical patch](examples/physical-patch.md) | A textured panel deployed on a vehicle in CARLA, with optional texture optimization |
-| [Image insertion](examples/image-insertion.md) | Signs, pedestrians, signal boards and patches inserted into camera images |
-| [Speed-feedback adaptive attack](examples/speed-feedback-attack.md) | A stateful attack that adapts to feedback during a run |
-
-**Reference**
-
-| Document | Contents |
-|---|---|
-| [Configuration](reference/configuration.md) | Every configuration key |
-| [CLI](reference/cli.md) | Commands, options, output and exit codes |
-| [Runtime](reference/runtime.md) | Stages, stage values, execution order, ordering rules, handler lifecycle and contexts |
-| [Python API](reference/python-api.md) | Public classes and functions by module |
-
-**Development**
-
-| Document | Contents |
-|---|---|
-| [Contributing](development/contributing.md) | Design principles, repository layout, tests and documentation rules |
-| [TODO](development/TODO.md) | Open development work |
-| [Tests](../tests/README.md) | Test suites, CI and live tests |
-| [Scripts](../scripts/README.md) | Index of demo, preparation, optimization and validation scripts |
+See also [scripts](../scripts/README.md) and [tests](../tests/README.md).

@@ -20,6 +20,7 @@ def timeline(nurec_usdz_path, tmp_path):
     raw = NuRecDataset([nurec_usdz_path]).raw_metadata(nurec_usdz_path)
     rig = raw["rig_trajectories.json"]
     traj = rig["rig_trajectories"][0]
+    traj["rig_bbox"] = {"dim": [4.5, 2., 1.5], "centroid": [.2, 0., .7]}
     key = next(iter(rig["camera_calibrations"]))
     times = [0, 33333, 66667, 100000, 133333, 166667, 200000, 233333]
     poses, matrices = [], []
@@ -67,9 +68,9 @@ def test_rig_and_actors_match_recorded_and_interpolated_poses(timeline):
         frame = data.frames(scene)[position]
         reference = data.frame_data(scene, frame)
         expected = _interpolate_pose(times, poses, timestamp)
-        np.testing.assert_allclose(reference.actors["ego"].pose, expected, atol=1e-12)
+        np.testing.assert_allclose(reference.ego.pose, expected, atol=1e-12)
         np.testing.assert_allclose(reference.actors["host"].pose, expected, atol=1e-12)
-        np.testing.assert_allclose(reference.scene.ego.pose, expected, atol=1e-12)
+        np.testing.assert_allclose(reference.ego.pose, expected, atol=1e-12)
     data = NuRecDataset([path], time_step=.1)
     scene = data.scene_id(path)
     assert "obstacle" not in data.frame_data(scene, data.frames(scene)[0]).actors
@@ -193,3 +194,14 @@ def test_simulator_state_includes_recorded_actors_and_rejects_actor_control(time
         simulator.control_actor("host", Control(throttle=1))
     with pytest.raises(NotImplementedError, match="cannot set"):
         simulator.set_actor_state("host", ActorState(np.eye(4)))
+
+
+def test_nurec_provider_retains_rig_bbox_dimensions_and_local_centre(timeline):
+    data, path, _, _ = timeline
+    scene = data.scene_id(path)
+    record = data.frame_data(scene, data.frames(scene)[1])
+    assert record.ego.extent == (4.5, 2., 1.5)
+    assert record.ego.box_center == (.2, 0., .7)
+    assert 'ego' not in record.actors
+    expected = np.asarray(record.ego.pose) @ [.2, 0., .7, 1.]
+    np.testing.assert_allclose(record.ego.box_pose().transform[:3, 3], expected[:3])

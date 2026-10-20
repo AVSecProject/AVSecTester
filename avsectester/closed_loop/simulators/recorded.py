@@ -7,8 +7,11 @@ closed loop through a simulator, like every other dataset. It is not a closed-lo
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 
-from avsectester.closed_loop.simulator import Simulator, SimulatorRuntime
+import numpy as np
+
+from avsectester.closed_loop.simulator import SensorGeometry, SensorView, Simulator, SimulatorRuntime
 from avsectester.datasets.base import ScenarioStart
 from avsectester.closed_loop.datatypes import Observation, WorldSnapshot
 
@@ -17,6 +20,7 @@ class RecordedReplaySimulator(Simulator):
     """Open-loop replay of recorded frames; ``start`` is used by resets without a start."""
 
     dataset_kinds = ("NuScenesDataset",)
+    can_render = True
 
     def __init__(self, start: ScenarioStart | None = None) -> None:
         self.start = deepcopy(start)
@@ -48,16 +52,19 @@ class RecordedReplaySimulatorRuntime(SimulatorRuntime):
             raise ValueError("Recorded frames do not begin at the requested start frame")
         for i, data in enumerate(frames):
             if (data.frame.scenario_id != start.scenario_id
-                    or data.frame.position != start.frame.position + i
-                    or data.scene is None):
+                    or data.frame.position != start.frame.position + i):
                 raise ValueError("Recorded replay requires contiguous frames")
-        self._frames = frames
+            if data.ego is None:
+                raise ValueError("Recorded replay requires an ego state at every frame")
+        self._frames = tuple(
+            replace(data, actors={name: actor for name, actor in data.actors.items() if name != "ego"})
+            for data in frames
+        )
         self.initialization_report = {"kind": "recorded_replay", "scenario": start.scenario_id,
                                       "start_position": start.frame.position}
         self._index = 0
 
     def _observe(self):
-        import numpy as np
         from PIL import Image
 
         data = self._frames[self._index]
@@ -65,19 +72,57 @@ class RecordedReplaySimulatorRuntime(SimulatorRuntime):
         for name, location in data.sensor_data.items():
             with Image.open(location.uri) as image:
                 sensors[name] = np.array(image.convert("RGB"))
-        scene = data.scene
+
+        calibration = {name: deepcopy(dict(location.metadata))
+                       for name, location in data.sensor_data.items()}
+        speed = float(np.linalg.norm(data.ego.velocity)) if data.ego.velocity is not None else 0.0
         return Observation(data.frame.timestamp, data.frame.position,
-                           sensor_data=sensors, calibration=deepcopy(scene.cameras),
-                           vehicle_state=deepcopy(data.actors.get("ego")),
-                           ego_speed=scene.ego.speed)
+                           sensor_data=sensors, calibration=calibration,
+                           vehicle_state=deepcopy(data.ego), ego_speed=speed)
 
     def _state(self):
         if not self._frames:
             raise RuntimeError("Initialize recorded replay before requesting state")
         data = self._frames[self._index]
-        return WorldSnapshot(data.frame.timestamp, data.frame.position,
-                             deepcopy(data.actors.get("ego")), data.scene.ego.speed,
-                             {k: deepcopy(v) for k, v in data.actors.items() if k != "ego"})
+
+        speed = float(np.linalg.norm(data.ego.velocity)) if data.ego.velocity is not None else 0.0
+        return WorldSnapshot(data.frame.timestamp, data.frame.position, deepcopy(data.ego), speed,
+                             deepcopy(data.actors),
+                             ego=deepcopy(data.ego))
+
+    @property
+    def camera_sensors(self) -> frozenset[str]:
+        if not self._world_initialized:
+            return frozenset()
+        return frozenset(name for name, reference in self._frames[self._index].sensor_data.items()
+                         if "camera" in reference.metadata)
+
+    def sensor_geometry(self, sensor: str) -> SensorGeometry:
+        if not self._world_initialized:
+            raise RuntimeError("Initialize recorded replay before requesting camera geometry")
+        data = self._frames[self._index]
+        if sensor not in data.sensor_data:
+            raise ValueError(f"Unknown recorded sensor {sensor!r}")
+        metadata = data.sensor_data[sensor].metadata
+        if "camera" not in metadata or "ego_from_sensor" not in metadata:
+            raise ValueError(f"Recorded sensor {sensor!r} has no camera calibration")
+        return SensorGeometry(sensor, deepcopy(metadata["camera"]),
+                              np.linalg.inv(np.asarray(data.ego.pose) @ metadata["ego_from_sensor"]))
+
+    def sensor_view(self, sensor: str) -> SensorView:
+        """Calibrated recorded RGB frame and cuboids in the recorded world."""
+        from avsectester.closed_loop.datatypes import read_camera_rgb
+
+        geometry = self.sensor_geometry(sensor)
+        data = self._frames[self._index]
+        if self._capture is None or sensor not in self._capture.sensor_data:
+            raise ValueError(f"Recorded sensor {sensor!r} has no RGB capture")
+        captured = read_camera_rgb(self._capture, sensor)
+        if captured is None:
+            raise ValueError(f"Recorded sensor {sensor!r} has no RGB capture")
+        actors = {name: state.box_pose() for name, state in data.actors.items()}
+        return SensorView(sensor, captured[1], geometry.camera, geometry.cam_from_world,
+                          actors, data.ego.box_pose(), data.frame.timestamp, data.frame.position)
 
     def _advance_native(self, control):
         self._replay_tick()

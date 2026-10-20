@@ -1,0 +1,67 @@
+# Run with: avsectester run configs/nurec_object_insertion.yaml
+# Paths are relative to this file; set data/model paths for your machine.
+dataset:
+  type: NuRecDataset
+  options:
+    usdz_paths:
+    - ../data/nurec/023b7fcc-671c-40e3-9bd2-c66b0b073fbc/023b7fcc-671c-40e3-9bd2-c66b0b073fbc.usdz
+    camera_id: camera_front_wide_120fov
+    camera_alias: camera_front_wide_120fov
+    time_step: 0.1
+simulator:
+  type: NuRecSimulator
+  options:
+    config:
+      dt: 0.1
+    renderer:
+      type: NuRecRenderer
+      options:
+        endpoint: 127.0.0.1:50051
+        cameras:
+        - camera_front_wide_120fov
+    dynamics:
+      type: TrajectoryFollower
+      options: {}
+avstack:
+  type: AlpamayoAVStack
+  options:
+    checkpoint_path: ../models/Alpamayo-1.5-10B
+    camera_ids:
+    - camera_front_wide_120fov
+    device: cuda:1
+    output_frequency_hz: 10
+seeds:
+- 0
+recording:
+  sensor_ids:
+  - camera_front_wide_120fov
+  representations:
+  - model_input
+  every_n_steps: 1
+output: ../results/nurec_object_insertion
+attacks:
+  object:
+    type: ObjectInsertionAttack
+    options:
+      decision_steps: 20
+      max_segments: 1
+      assets:
+        type: SignAsset
+        options: {}
+      sensor: camera_front_wide_120fov
+      placement:
+        type: WorldPlacement
+        options:
+          position_m:
+          - 28.0
+          - -3.0
+          - 0.0
+      orientation:
+        type: Orientation
+        options:
+          mode: face_ego
+      placement_relative_to_ego_origin: true
+treatments:
+- name: clean
+- name: object
+  attack_name: object

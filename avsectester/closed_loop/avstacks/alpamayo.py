@@ -1,7 +1,7 @@
 """Alpamayo end-to-end camera policy as an :class:`~avsectester.closed_loop.avstack.AVStack`.
 
 Wraps AlpaSim's own Alpamayo model (``alpasim_driver.models.alpamayo1_5_model.Alpamayo15Model``) so
-it plugs into ``run(simulator, avstack, frames)`` unchanged: an :class:`~avsectester.closed_loop.datatypes.Observation`
+it plugs into ``ClosedLoopRunner``: an :class:`~avsectester.closed_loop.datatypes.Observation`
 (a rendered camera + ego state) in, a :class:`~avsectester.closed_loop.datatypes.Control` (the planned trajectory) out.
 
 Alpamayo is a trajectory-output policy: ``predict(PredictionInput) -> ModelPrediction`` with
@@ -17,6 +17,7 @@ checkpoint is supplied explicitly or through ``AVSECTESTER_ALPAMAYO_CHECKPOINT``
 from __future__ import annotations
 
 import os
+import sys
 from collections import deque
 from collections.abc import Mapping
 from typing import Any
@@ -26,6 +27,8 @@ from avsectester.closed_loop.datatypes import Control, Observation
 
 
 class AlpamayoAVStack(AVStack):
+    provides_detections = False
+
     def __init__(
         self,
         checkpoint_path: str | None = None,
@@ -48,6 +51,8 @@ class AlpamayoAVStack(AVStack):
         self.output_frequency_hz = output_frequency_hz
         # Separate adapters may share loaded weights while retaining independent input history.
         self._model = model
+        self._owns_model = model is None
+        self._closed = False
         self._frames: dict[str, deque] = {c: deque(maxlen=context_length) for c in self.camera_ids}
         self._prev_plan = None
         self._iseed = 0
@@ -98,6 +103,8 @@ class AlpamayoAVStack(AVStack):
         )
 
     def reset(self, observation: Observation) -> None:
+        if self._closed:
+            raise RuntimeError("AlpamayoAVStack is closed")
         if self._model is None:
             self._load()
         for buf in self._frames.values():
@@ -106,6 +113,45 @@ class AlpamayoAVStack(AVStack):
         self._iseed = 0
         self.last_reasoning = None
         self._last_log = None
+
+    def close(self) -> None:
+        """Release this adapter's references and any model it loaded itself.
+
+        Closing is terminal and idempotent. An injected model is borrowed: another
+        adapter may share it, so its close method and CUDA allocator are untouched.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        model, self._model = self._model, None
+        owned = self._owns_model and model is not None
+        for history in self._frames.values():
+            history.clear()
+        self._prev_plan = None
+        self._last_log = None
+        self.last_reasoning = None
+        self._iseed = 0
+        failure = None
+        try:
+            if owned and callable(getattr(model, "close", None)):
+                model.close()
+        except BaseException as error:
+            failure = error
+            raise
+        finally:
+            # Drop the last wrapper-owned model reference before returning cached CUDA
+            # blocks. Do not import torch, initialize CUDA, move weights, or collect GC.
+            del model
+            torch = sys.modules.get("torch")
+            try:
+                if (owned and str(self.device).split(":", 1)[0] == "cuda" and torch is not None
+                        and torch.cuda.is_initialized()):
+                    with torch.cuda.device(self.device):
+                        torch.cuda.empty_cache()
+            except BaseException as cleanup:
+                if failure is None:
+                    raise
+                failure.add_note(f"CUDA cache release also failed: {cleanup!r}")
 
     HISTORY_SPAN_S = 1.6  # must exceed the model's required 1.5 s ego-history span
     EPOCH_US = 10_000_000  # offset so backward-history timestamps stay positive (proto fixed64)
@@ -172,6 +218,8 @@ class AlpamayoAVStack(AVStack):
         )
 
     def __call__(self, observation: Observation) -> Control:
+        if self._closed:
+            raise RuntimeError("AlpamayoAVStack is closed")
         if self._model is None:
             self._load()
         inputs = self._emit("policy.pre", self._prediction_input(observation))
@@ -181,18 +229,17 @@ class AlpamayoAVStack(AVStack):
         self._prev_plan = getattr(prediction, "selected_plan", None)
         self.last_reasoning = getattr(prediction, "reasoning_text", None)  # chain-of-causation text, if any
         control = Control(trajectory=self._to_waypoints(prediction, observation))
-        # free end-to-end component log: what predict() already returns + the emitted command
+        # Record the already-produced policy output and command without extra inference.
         self._last_log = {"policy": policy_record, "action": self._log_capture.capture(control)}
         return control
 
     def component_log(self) -> dict[str, Any] | None:
-        """The common component-logging interface for the end-to-end stack
-        (``avsectester.evaluation.InstrumentedAVStack``): the latest frame's **free** outputs — the policy's
-        raw ``prediction`` (``candidate_positions`` ``(K, T, 3)`` + ``selected_index``) under ``policy`` and
-        the emitted :class:`~avsectester.closed_loop.datatypes.Control` under ``action``. No model internals; sparse by
-        nature compared with the modular stack's per-stage log, but the same contract so the evaluation
-        logger treats both uniformly."""
-        return getattr(self, "_last_log", None)
+        """Already-produced policy prediction and Control under ``policy`` and ``action``.
+
+        The prediction retains candidate positions, selected index and available reasoning;
+        recording does not request additional inference.
+        """
+        return self._last_log
 
     def _to_waypoints(self, prediction: Any, obs: Observation) -> list:
         """Selected candidate (T,3) rig-frame positions -> [((x,y,z),(w,x,y,z),t_us), ...]."""

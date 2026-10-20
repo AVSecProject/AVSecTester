@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import fields, is_dataclass
+from dataclasses import dataclass, fields, is_dataclass
 import importlib
 import json
 import math
@@ -18,10 +18,14 @@ if TYPE_CHECKING:
     from .config import ExperimentConfiguration
 
 
+class ConfigurationMismatchError(ValueError):
+    """Saved preparation and supplied execution configuration describe different inputs."""
+
+
 _RECORDS = {
     "avsectester.datasets.base": {"FrameReference", "ActorState"},
     "avsectester.attack.attack": {"AttackSegment"},
-    "avsectester.insertion": {"AttachedPlacement", "WorldPlacement", "Orientation"},
+    "avsectester.attack.placement": {"AttachedPlacement", "WorldPlacement", "Orientation"},
     "avsectester.geometry.poses": {"ActorPose"},
 }
 
@@ -108,11 +112,7 @@ def save_prepared(prepared: PreparedExperiment, directory: str | Path) -> Path:
     manifest = {
         "schema_version": 2, "attacks": list(prepared.metadata),
         "configuration": summary,
-        "selections": [
-            {"attack_name": item.attack_name, "scenario_id": item.scenario_id, "status": item.status,
-             "reasons": list(item.reasons), "error": item.error}
-            for item in prepared.selections
-        ],
+        "selections": [item.as_dict() for item in prepared.selections],
     }
     (root / "prepared.json").write_text(json.dumps(manifest, indent=2, allow_nan=False) + "\n")
     return root
@@ -131,37 +131,61 @@ def _require_parameters(summary: Any) -> None:
                          + ". Override configuration_parameters() and save a validated preparation.")
 
 
-def load_prepared(configuration: ExperimentConfiguration, directory: str | Path) -> PreparedExperiment:
+@dataclass(frozen=True)
+class PreparedMetadata:
+    """Saved metadata for offline analysis; deliberately has no executable artifacts."""
+
+    metadata: Mapping[str, tuple[AttackSegment, ...]]
+    selections: tuple[SelectionDecision, ...]
+
+
+def _load_metadata(configuration: ExperimentConfiguration, directory: str | Path,
+                   *, validate_dataset: bool) -> PreparedMetadata:
     root = Path(directory)
     manifest = json.loads((root / "prepared.json").read_text())
     if manifest.get("schema_version") != 2:
-        raise ValueError("Unsupported prepared experiment schema")
+        raise ValueError("Unsupported prepared experiment schema; expected version 2")
     if set(manifest["attacks"]) != set(configuration.attacks):
-        raise ValueError("Saved attack names differ from the supplied configuration")
+        raise ConfigurationMismatchError("Saved attack names differ from the supplied configuration")
     saved = manifest.get("configuration")
     _require_parameters(saved)
-    expected = configuration.configuration_summary
+    scenarios = None if validate_dataset else saved["dataset"]["scenarios"]
+    expected = configuration.describe_configuration(scenarios=scenarios)
     _require_parameters(expected)
     if not isinstance(saved, dict) or saved != expected:
         mismatches = list(expected) if not isinstance(saved, dict) else [
             key for key in expected if saved.get(key) != expected[key]
         ]
-        raise ValueError("Saved preparation configuration differs from the supplied configuration: "
+        raise ConfigurationMismatchError("Saved preparation configuration differs from the supplied configuration: "
                          + ", ".join(mismatches))
-    metadata, artifacts = {}, {}
-    for name, attack in configuration.attacks.items():
+    metadata = {}
+    for name in configuration.attacks:
         record = json.loads((root / "attacks" / name / "metadata.json").read_text())
         if record.get("schema_version") != 1:
-            raise ValueError("Unsupported attack metadata schema")
+            raise ValueError("Unsupported attack metadata schema; expected version 1")
         segments = _decode(record["segments"])
         if not isinstance(segments, tuple) or any(not isinstance(s, AttackSegment) for s in segments):
             raise ValueError("Saved metadata must contain AttackSegment records")
-        for segment in segments:
-            configuration.dataset.checked_frame(segment.scenario_id, segment.start)
-            configuration.dataset.checked_frame(segment.scenario_id, segment.stop)
+        if validate_dataset:
+            for segment in segments:
+                configuration.dataset.checked_frame(segment.scenario_id, segment.start)
+                configuration.dataset.checked_frame(segment.scenario_id, segment.stop)
         metadata[name] = segments
-        artifacts[name] = attack.load_artifacts(root / "attacks" / name)
-    decisions = tuple(SelectionDecision(
-        item["attack_name"], item["scenario_id"], item["status"], tuple(item["reasons"]), item.get("error"),
-    ) for item in manifest["selections"])
-    return PreparedExperiment(configuration, metadata, artifacts, decisions)
+    decisions = tuple(SelectionDecision.from_dict(item) for item in manifest["selections"])
+    return PreparedMetadata(metadata, decisions)
+
+
+def load_prepared_metadata(configuration: ExperimentConfiguration,
+                           directory: str | Path) -> PreparedMetadata:
+    """Read only preparation data for evaluation, without accessing dataset data or artifacts."""
+    return _load_metadata(configuration, directory, validate_dataset=False)
+
+
+def load_prepared(configuration: ExperimentConfiguration,
+                  directory: str | Path) -> PreparedExperiment:
+    """Validate execution inputs and load all artifacts; never return a partially usable object."""
+    saved = _load_metadata(configuration, directory, validate_dataset=True)
+    root = Path(directory)
+    artifacts = {name: attack.load_artifacts(root / "attacks" / name)
+                 for name, attack in configuration.attacks.items()}
+    return PreparedExperiment(configuration, saved.metadata, artifacts, saved.selections)

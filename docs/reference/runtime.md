@@ -1,586 +1,152 @@
 # Runtime reference
 
-> **Audience:** Researchers writing attack, defense, condition or localization handlers.  
-> **Outcome:** Look up stages, stage values, execution order, ordering rules, handler lifecycle and the context available to handlers.  
-> **Prerequisites:** [Implement an attack](../guides/attacks.md).
+> **Audience:** Adapter and attack implementers.
+>
+> **Outcome:** Look up decision order, stages, contexts and recorded evidence.
+>
+> **Prerequisites:** [Architecture](../concepts/architecture.md).
 
-A `HookSet` holds ordered [hooks](../concepts/architecture.md#terminology), a case and a seed for
-handler randomness. `HookDispatcher` binds it to one run. The driving system owns localization
-through `VehicleIO`. `Runtime` is a compatibility facade accepting `localizer=`. Existing
-`Runtime` calls retain their processing order and lifecycle. The runner behind `run`, `record_run`, `run_logged`, `run_pair`,
-`run_prepared` and `run_configured` applies the rules on this page.
+## Initialization
 
-## Hook configuration and Vehicle I/O
+The caller creates SimulatorRuntime and AVStack. The runner validates stages, world settings and
+command compatibility before resetting the world. For selected CARLA origins, reset follows
+prescribed motion without attack hooks to the shared deployment window. simulator.setup applies
+world effects, then deployment and capture ticks produce the selected observation. At position zero
+these ticks hold base actors. A positive origin earlier than the window is rejected.
 
-| Interface | Purpose |
-|---|---|
-| `HookSet(hooks=(), *, case=None, seed=0)` | Ordered handlers without a localization algorithm |
-| `hooks.with_hooks(extra, prepend=False)` | Copy the configuration and append or prepend handlers; preserve compatibility-facade settings |
-| `hooks.validate_stages(simulator_runtime, avstack)` | Validate stages and command modes before reset |
-| `hooks.session(simulator_runtime, avstack, perturb=None)` | Construct one internal `HookDispatcher` |
-| `stack.vehicle_io = VehicleIO(localizer=None)` | Configure the driving system's input processing and localization |
-| `Runtime(hooks=(), *, localizer=None, case=None, seed=0)` | Preserve the legacy constructor using a Vehicle I/O adapter |
+AttackRuntime.setup receives subscribed setup state and returns only WorldAttackEffect. Its
+setup_ticks declares its deployment budget. Preparation and execution share the maximum budget over
+the attack's segments, seeds and treatments. Effects register cleanup on the provided ExitStack. The
+simulator runtime records actual initial state; it does not compare against replay-error thresholds
+or reselect the origin.
 
-A legacy runtime localizer does not mutate `stack.vehicle_io`. Configuring two different
-localizers on the stack and the runtime raises an error before reset. A localizer also registered
-as a hook receives one lifecycle per run. See [Vehicle I/O](../guides/driving-systems.md#vehicle-io).
-
-## Stages
-
-A stage is a named point in the driving loop. Handlers registered at a stage receive the stage's
-value and return the value passed downstream.
-
-| Stage | Value | Provided by | When it runs |
-|---|---|---|---|
-| `simulator.setup` | `None` | `CarlaSimulator`, `NuRecSimulator` | Once per run, after the world and actors are created and before the first sensor capture |
-| `simulator.step.pre` | `None` | `CarlaSimulator`, `NuRecSimulator` | Each driving step, after the final command is validated and before it is applied |
-| `simulator.step.post` | `None` | `CarlaSimulator`, `NuRecSimulator` | Each driving step, after physics advances and before the next observation is read |
-| `render.pre` | `CameraRenderRequest` | `NuRecSimulator` | Before each camera is rendered, at reset and after each `simulator.step.post` |
-| `render.post` | RGB image (`ndarray`) | `NuRecSimulator` | After each camera is rendered |
-| `sensors.post` | `Observation` | Driving loop (always) | First stage of observation processing, on a copy of the raw observation |
-| `localization.pre` | `Observation` | Driving loop, with a Vehicle I/O or legacy Runtime localizer | Before the localizer |
-| `localization.post` | `StateEstimate` | Driving loop (always) | After the localizer, or after the ideal estimate is taken from the observation |
-| `observation` | `Observation` | Driving loop (always) | Last stage before the stack. The result is the model input |
-| `perception.pre`, `tracking.pre`, `planning.pre`, `control.pre` | `CallInputs` | `ModularAVStack` | Before the module is called |
-| `perception.post`, `tracking.post`, `planning.post`, `control.post` | The module's native output | `ModularAVStack` | After the module's own avstack post-hooks |
-| `policy.pre` | AlpaSim `PredictionInput` | `AlpamayoAVStack` | Before `model.predict` |
-| `policy.post` | AlpaSim `ModelPrediction` | `AlpamayoAVStack` | After `model.predict`, before the trajectory is built |
-| `command` | `Control` | Driving loop (always) | After the stack returns a command, before validation |
-
-Availability rules:
-
-- The driving loop always provides `sensors.post`, `localization.post`, `observation` and
-  `command`. Other stages come from `simulator.supported_stages` and `avstack.supported_stages`.
-  `localization.pre` also requires a localizer.
-- `ModularAVStack` exposes the `.pre` and `.post` stages only for modules whose call dispatches
-  avstack hooks. Alpamayo has no separate perception, tracking, planning or control modules.
-- CARLA renders inside its server and does not expose `render.pre` or `render.post`.
-- Registration is checked before the world is reset. An unavailable stage raises
-  `UnsupportedStageError` (a `ValueError`). `hooks.validate_stages(simulator_runtime, avstack)` performs the
-  same check, plus the [command compatibility](#command-compatibility) check, without creating a
-  session or invoking handlers. It returns the set of available stages.
-- `step.end` is a lifecycle notification for `after_step`, not a stage that a `Hook` can use.
-- An adapter that emits a stage outside the available set raises `ValueError`. Custom adapters
-  declare and emit stages as described in
-  [Write a custom simulator adapter](../guides/simulators.md#write-a-custom-simulator-adapter) and
-  [Use a custom driving system](../guides/driving-systems.md#use-a-custom-driving-system).
-
-Sensor capture timing differs between simulators:
-
-| Simulator | When sensor data is produced | Effect of a world change at `simulator.step.post` |
-|---|---|---|
-| CARLA | During the server tick, between `simulator.step.pre` and `simulator.step.post` | Appears from the following tick, not in the image already captured. Use `simulator.setup` or `simulator.step.pre` for a change that must appear in the next observation |
-| NuRec | After `simulator.step.post`, through `render.pre` and `render.post` | Appears in the immediately following rendering |
-
-## Values at each stage
-
-| Value | Fields and meaning |
-|---|---|
-| `Observation` | `sensor_data` maps sensor IDs to native payloads. `calibration` maps sensor IDs to the adapter's calibration. `vehicle_state` is the model-visible state estimate. `ego_speed` is the model-visible speed in m/s. `t` and `frame` are model-visible clock metadata |
-| `StateEstimate` | `vehicle_state` and `ego_speed`, independent of the physical ego state |
-| `Control` | `throttle`, `steer`, `brake` and optional `trajectory`. See [Command compatibility](#command-compatibility) |
-| `CallInputs` | `args` (a tuple) and `kwargs` (a dict), passed to the module's call. Return a new `CallInputs` to replace arguments |
-| `CameraRenderRequest` | `pose` (a copy of the NuRec `EgoPose`) and `camera` (a native camera name). Changing the request changes that rendering without moving the physical ego |
-| RGB image | The NuRec renderer's image for one camera. `context.sensor` names the native camera |
-| AlpaSim `PredictionInput` | `camera_images`, `command`, `speed`, `acceleration`, `ego_pose_history`, `inference_seed`, `previous_plan` and `route`, as built by `AlpamayoAVStack` |
-| AlpaSim `ModelPrediction` | The installed driver's output schema, including `candidate_positions` and `selected_index`. `AlpamayoAVStack` also reads `selected_plan` and `reasoning_text` when present |
-| Modular output | The native output type of the configured module, such as detections, tracks, a plan or a control |
-
-Sensor payloads keep their native types. A camera `ndarray`, an avstack `ImageData`, a point
-cloud, a radar measurement and a navigation measurement have different fields. A sensor key
-added to `sensor_data` affects driving only if the stack or localizer consumes it.
-
-At `render.pre`, a handler can change `request.camera` to render a different native camera. The
-image is still stored under the original output key, and that key's calibration follows the
-rendered camera. NuRec output keys apply the backend's `camera_aliases`.
-
-### Component inputs
-
-For the supplied avstack `ModularDrivingPipeline`, the component stages receive:
-
-| Component | `CallInputs.args` | `CallInputs.kwargs` |
-|---|---|---|
-| Perception | The selected sensor payload | Empty |
-| Tracking | Detections | `platform`: the estimated ego reference frame |
-| Planning | Previous plan, estimated ego state, tracked objects | Empty |
-| Control | Estimated ego state, current plan | Empty |
-
-These signatures belong to this pipeline. Other pipelines can use different arguments. Inspect
-`stack.native[component]` when writing a handler for a custom module. Pipeline configuration is
-described in [Component stages](../guides/driving-systems.md#component-stages).
-
-### Ego state fields
-
-| State field | Value and units |
-|---|---|
-| NuRec `vehicle_state.x`, `.y` | Planar position in the reconstruction world frame, in metres |
-| NuRec `vehicle_state.yaw` | Heading about +Z, in radians |
-| NuRec `vehicle_state.speed` | Speed in m/s |
-| NuRec `vehicle_state.t` | Simulation time in seconds |
-| NuRec `CameraRenderRequest.pose` | An `EgoPose` with the same fields, used for rendering only |
-| CARLA `vehicle_state.position.x` | Three position coordinates in metres, expressed in `position.reference` |
-| CARLA `vehicle_state.velocity.x` | Three velocity components in m/s, expressed in `velocity.reference` |
-| CARLA `vehicle_state.acceleration.x` | Three acceleration components in m/s², expressed in `acceleration.reference` |
-| CARLA `vehicle_state.attitude.q` | Native NumPy quaternion, the orientation from its reference to the vehicle frame |
-| CARLA `vehicle_state.t` | State timestamp in seconds |
-
-The CARLA adapter converts CARLA's left-handed coordinates to avstack's right-handed coordinates.
-The ego vectors use the global reference frame. Preserve the reference graph when changing a
-vector or quaternion, and update linked pose or box data when your method requires it. A CARLA
-estimated-position offset:
-
-<!-- runnable -->
-```python
-from avsectester.closed_loop.hooks import Hook, Runtime
-
-def offset_position(estimate, context):
-    estimate.vehicle_state.position.x[0] += 5.0
-    return estimate
-
-runtime = Runtime([Hook("localization.post", offset_position)])
-```
-
-Fields are not synchronized automatically. The supplied modular controller computes speed from
-`vehicle_state.velocity`. `AlpamayoAVStack` reads the scalar `ego_speed` and the pose fields `x`,
-`y` and `yaw`. To spoof speed consistently, change the velocity vector and set `ego_speed` to its
-norm. An experiment may make them inconsistent on purpose. A changed field affects only the
-components that read it.
-
-### Trajectory commands
-
-`TrajectoryFollower` reads `Control.trajectory` as a sequence of
-`((x, y, z), (w, x, y, z), timestamp_us)` waypoints:
-
-- Positions are in the current rig frame: X forward, Y left, Z up, in metres.
-- Quaternions use `wxyz` order. The follower does not read them.
-- Timestamps are absolute simulation time in microseconds.
-- The follower uses X and Y only. It interpolates from the current rig origin to the first
-  waypoint, so a physics step shorter than the waypoint interval does not jump to that waypoint.
-  A target time after the last waypoint uses the last waypoint.
-- An empty or `None` trajectory makes the ego coast to a stop at `decel` (default 4.0 m/s²).
-
-`AlpamayoAVStack` builds waypoint timestamps from the model-visible `observation.t`. Other
-backends may require a different trajectory adapter. Dynamics options are described in
-[Dynamics and time step](../guides/simulators.md#dynamics-and-time-step).
-
-### Calibration
-
-The modular stack uses the calibration and reference frames carried by avstack sensor wrappers.
-CARLA exposes the same calibration object in `observation.calibration[sensor_id]`. Camera
-calibration includes `P`, the image shape and `reference`. LiDAR calibration includes its
-`reference`. Fields keep their avstack types and coordinates. Sensors without calibration have no
-entry. NuRec uses the renderer's `calibration` mapping, keyed by output camera name. `StubRenderer`
-supplies none.
-
-To replace a sensor's calibration, call `observation.set_calibration(sensor_id, calibration)`.
-It updates both the mapping and the wrapped payload's `calibration` attribute. Replacing only the
-dictionary entry leaves the wrapper pointing to the previous object. An unknown sensor ID raises
-`KeyError`. In-place edits of the shared object are visible through both paths. Copies preserve
-these aliases within the observation and separate them from the physical sensor settings, subject
-to [Native resources and copying](#native-resources-and-copying). Editing calibration does not
-move the physical sensor.
-
-## Command compatibility
-
-`backend.command_modes` declares the command representations a backend accepts.
-`stack.command_modes` declares the representations a stack can produce.
-
-| Adapter | Command modes |
-|---|---|
-| `CarlaSimulator` | `actuator` |
-| `NuRecSimulator` with `KinematicBicycle` (the default) | `actuator` |
-| `NuRecSimulator` with `TrajectoryFollower` | `trajectory` |
-| `NuRecSimulator` with custom dynamics | The dynamics object's `command_modes`, or `None` |
-| `ModularAVStack` | `actuator` |
-| `AlpamayoAVStack` | `trajectory` |
-| Custom `WorldBackend` or `AVStack` | `None` (undeclared) unless overridden with a `frozenset` |
-
-Rules:
-
-1. Before reset, when both adapters declare modes and the Runtime has no `command` hook, every
-   mode the stack produces must be accepted by the backend. Otherwise
-   `CommandCompatibilityError` (a `ValueError`) is raised.
-2. A `command` hook may convert between representations, so its presence skips the check in
-   rule 1. The final command is still validated.
-3. After all `command` handlers run, `backend.validate_command(control)` checks the final
-   command. A non-`None` `trajectory` requires `trajectory` support. A nonzero `throttle`, `brake`
-   or `steer` requires `actuator` support. A neutral command is always accepted.
-4. A conversion to actuator commands must set `trajectory` to `None`.
-5. An undeclared (`None`) side skips these checks and keeps the adapter's own semantics.
-   Custom backends can override `validate_command` for additional constraints.
-
-Built-in actuator dynamics expect `throttle` and `brake` in `[0, 1]` and `steer` in `[-1, 1]`.
-Validation checks which fields are active, not their ranges. Changing a field that the selected
-dynamics cannot execute is an error rather than a silently inactive attack or defense. Command
-conversion does not convert camera, state or coordinate formats. See
-[Commands and compatibility](../guides/driving-systems.md#commands-and-compatibility).
-
-## Execution order
+## One decision
 
 ```mermaid
-flowchart TD
-    RESET["Handler reset(RunContext)"] --> WORLD[Simulator reset: create world and actors]
-    WORLD --> SETUP["simulator.setup, then AttackRuntime.setup and its world attack effects"]
-    SETUP --> TICKS[CARLA setup ticks]
-    TICKS --> CAPTURE["Capture first sensor data (NuRec: render.pre, render.post per camera)"]
-    CAPTURE --> ASTEP["AttackRuntime.step, if configured"]
-    ASTEP --> SEFFECT[Sensor attack effects on the capture]
-    SEFFECT --> ENV[Sensor-environment transforms]
-    ENV --> SENSOR[sensors.post]
-    SENSOR --> LOCQ{Localizer configured?}
-    LOCQ -->|Yes| LPRE[localization.pre, then localizer]
-    LOCQ -->|No| IDEAL[Estimate taken from the observation]
-    LPRE --> LPOST[localization.post]
-    IDEAL --> LPOST
-    LPOST --> OBS[observation]
-    OBS -->|First input| INIT[stack.reset]
-    INIT --> STACK[Stack call with component stages]
-    OBS -->|Later input| STACK
-    STACK --> CMD[command]
-    CMD --> VALIDATE[Validate final command]
-    VALIDATE --> MON[on_step]
-    MON --> PRE["simulator.step.pre, including world attack effects from step"]
-    PRE --> PHYS["Apply command and advance physics (CARLA captures sensors here)"]
-    PHYS --> POST[simulator.step.post]
-    POST --> NEXT["Read next sensor data (NuRec: render.pre, render.post per camera)"]
-    NEXT --> REC[Record physical state and command]
-    REC --> FEEDBACK["Handler after_step (step.end)"]
-    FEEDBACK --> MORE{Another driving step?}
-    MORE -->|Yes| ASTEP
-    MORE -->|No| STOP["AttackRuntime.stop, if configured"]
-    STOP --> CLOSE[Handler close]
+sequenceDiagram
+    participant R as ClosedLoopRunner
+    participant S as SimulatorRuntime
+    participant A as AttackRuntime
+    participant V as VehicleIO
+    participant D as AVStack
+    participant L as Recorder
+    R->>S: observe and state (no advancement)
+    R->>A: step(subscribed snapshots)
+    A-->>R: world, sensor and AVStack effects
+    R->>R: apply sensor effects, then sensor environment
+    R->>V: sensor hooks, localization, observation hooks
+    R->>D: processed observation
+    D-->>R: produced command and component outputs
+    R->>R: command effects and hooks, validate
+    R->>S: apply queued world effects, step(executed command)
+    S-->>R: post-state and next capture
+    R->>L: step record, effects and receipts
 ```
 
-- The first observation is processed once. `stack.reset` and the first stack call receive the
-  same processed input.
-- The observation read after the last driving step is not processed, because no further stack
-  call follows.
-- `Trace.records` hold the physical state after each step and the executed command. A command at
-  step *t* affects only later observations.
-- With `frames=0`, handler `reset`, the world, `simulator.setup`, the first capture (including NuRec
-  render stages), `stack.reset` and handler `close` run. No observation-processing stage and no
-  driving step runs.
-- `on_step(index, seen, control)` receives copies of the processed input and the final command,
-  after command validation and before the world advances. Use it for instrumentation. Its copies
-  cannot change execution.
-- Handler `close` runs on success and on failure. See [Plugin lifecycle](#plugin-lifecycle).
+Decision zero resets AVStack history with the same already processed observation used for its first
+call. Input transforms execute once; the localizer is not reset again. World effects returned during
+a decision cannot change its already captured input. They affect subsequent capture. Sensor and
+AVStack effects operate on current-decision values.
 
-## Online phase
+## Hook stages
 
-`RunRequest(attacks=[...])` accepts fresh `AttackRuntime` instances from
-`avsectester.attack.runtime`, normally created by `Attack.create_runtime(segment, artifacts)`.
-`ClosedLoopRunner` applies every attack effect the runtime returns; the runtime is the only
-owner of its per-run state.
+A hook is `Hook(stage, handler)`. The handler is callable `(value, StageContext) -> value`, or
+provides transform with that signature. Handlers run in registration order, consuming previous
+replacements. Adapter-specific stages must be declared; unsupported stages fail before reset.
 
-| Member | Meaning |
+| Stage | Value |
 |---|---|
-| `subscriptions` | Sequence of `ResultSubscription` declarations: the closed-loop results this attack may receive |
-| `setup_ticks` | Simulator ticks used by the world effects that `setup` returns. Default `0` |
-| `setup(context)` | Runs after the simulator reset and before the first capture; returns only `WorldAttackEffect`s |
-| `step(context)` | Runs once per decision, before Vehicle I/O; returns attack effects |
-| `stop(context)` | Releases resources; runs in reverse order, also after failures and with zero decisions |
+| simulator.setup | None; native world setup |
+| simulator.step.pre/post | None; before/after physical advancement |
+| sensors.post | Observation |
+| localization.pre | Observation |
+| localization.post | StateEstimate |
+| observation | Observation after localization |
+| perception.pre/post | CallInputs / component output, when declared |
+| tracking.pre/post | CallInputs / component output, when declared |
+| planning.pre/post | CallInputs / component output, when declared |
+| control.pre/post | CallInputs / component output, when declared |
+| policy.pre/post | End-to-end policy inputs/output, when declared |
+| command | Control before execution |
+| render.pre/post | CameraRenderRequest / rendered sensor, when declared |
 
-`ResultSubscription("observation")` requests the raw decision input.
-`ResultSubscription("physical_state")` requests a physical `WorldSnapshot`: the ego state and,
-in `actors`, every other actor's `ActorState` (canonical world pose, velocity, category and
-optional full `extent` in length, width and height, in metres) by
-stable actor ID. Driving-system component outputs are delivered to AV stack attack effects, not
-subscribed.
+Simulator setup and step handlers use explicit native operations and return None. A pre-hook uses
+CallInputs(args, kwargs) to retain native calling conventions. A post-hook returns the replacement
+output directly. NativeHook adapts an explicitly registered avstack-library hook's tuple convention.
+It lives in closed_loop/avstacks/native_hook.py.
 
-The framework creates an `OnlineContext` for every callback. It contains `step`, `stage`,
-read-only `sim_time` and `frame`, and the subscribed `observation` and `physical_state`.
-Unrequested or unavailable results are `None`. It contains no simulator, stack or
-time-advancing service. Observation copies follow the simulator's native-copy contract; other
-result data is deep-copied for each callback. `context.record_output(name, value)` saves a copy
-of an attack decision, such as a time to collision, in the decision's `outputs` of the run log.
+## Contexts and lifecycle
 
-Attack effects are classified by where they act:
+StageContext exposes step, stage, sensor, physical_state, observation, control, run resources, rng
+and record_output. Native access is explicit under simulator_runtime and avstack. A handler that
+uses native SDK objects gives up adapter portability.
 
-| Effect | Applied | Takes effect |
-|---|---|---|
-| `WorldAttackEffect.apply(simulator_runtime, resources)` | By the simulator: at `simulator.setup` when returned by `setup`, at `simulator.step.pre` when returned by `step` | From the next capture |
-| `SensorAttackEffect.apply(data, view)` | To the named `sensor`'s capture, with its `SensorView`, before Vehicle I/O | In the current decision |
-| `AVStackAttackEffect(stage, apply)` | At a stage of the `AVStack`, including its Vehicle I/O and command, as `apply(value, context)` | In the current decision |
+OnlineContext exposes only subscribed observation/physical_state snapshots and physical time; it
+cannot advance simulation. AVStackAttackEffect bound methods also receive the actual stage value.
+All online state should remain in one AttackRuntime.
 
-A world effect may call `simulator_runtime.setup_tick()` only at setup, within `setup_ticks`, and
-registers the removal of created world objects on `resources`; removal runs after `stop`. It
-moves other actors through `simulator_runtime.control_actor(actor_id, control)` (an actuator command
-from the next world step) or `simulator_runtime.set_actor_state(actor_id, state)` (a placement visible
-from the next capture); the actor then stops following its prescribed or traffic-manager
-motion. CARLA supports both; NuRec and recorded replay raise `NotImplementedError`, because
-their actors follow recorded tracks.
-Sensor effects on the same sensor chain in issue order; `view.data` keeps the unchanged capture.
-An AV stack effect's `apply` may be a bound method of the runtime, so a decision that depends on
-a component output keeps its state in the runtime. Several AV stack effects at one stage chain
-in issue order, after the HookSet handlers at that stage. An unsupported target stage, or a
-world effect on a simulator without world stages, raises before any effect is requested.
-
-Effect requests and receipts share a per-run `effect_id` and record the `category` (`world`,
-`sensor` or `avstack`) and `target`. Requests record the issuing callback; receipts record
-the decision, stage (`simulator.setup`, `capture`, the AV stack stage or `simulator.step.pre`) and the
-physical clock when the effect was applied. Effects whose point of action never runs, for
-example because the run failed, receive a `not_applied` receipt at cleanup.
-
-The low-level stage hooks remain available for defenses and custom handlers. An executable
-AV stack effect example is in
-[Keep component decisions in one runtime](../guides/attacks.md#keep-component-decisions-in-one-runtime).
-
-## Ordering at a shared stage
-
-Handlers at different stages run in [execution order](#execution-order), regardless of
-registration order. At one stage, handlers run in this order:
-
-| Order | Source | Applies to |
-|---|---|---|
-| 1 | `perturb` shorthand, prepended by `Runtime.session` | `observation`, in direct `run`, `record_run` and `run_logged` calls |
-| 2 | Sensor conditions with `order: before` | `sensors.post` or `observation` |
-| 3 | Prepared interventions with `position="before"`, in treatment order | Configured convenience `attacks` (component `.post` stages) and `patches` (`simulator.setup`) use this position |
-| 4 | Base Runtime hooks, in registration order | In configured runs, the raw `runtime.hooks`, enabled only in the `attack` and `attack-defense` treatments |
-| 5 | Prepared interventions with `position="after"` (the default), in treatment order | Every configured `interventions` entry, in definition order |
-| 6 | Sensor conditions with `order: after` (the default) | `sensors.post` or `observation` |
-
-Rules behind this order:
-
-- `Treatment.runtime(base, case, kinds=...)` assembles rows 3 to 5: `position="before"` hooks,
-  then the base Runtime's hooks, then `position="after"` hooks. It keeps the base localizer and
-  seed. Each prepared intervention contributes the hooks returned by its `hooks()` method, in
-  that order.
-- `prepare_from_config` prepares convenience `attacks`, then `patches`, then `interventions`.
-  An `interventions` entry has no `position` key, so it always uses `after`.
-- Attack and defense entries keep their written order. The `kind` decides only which
-  treatments enable an intervention. It never reorders hooks. The framework does not move
-  defenses after attacks.
-- `ScenarioConditions.apply_runtime(runtime)` adds rows 2 and 6 around the existing hooks.
-  `run_prepared` and `run_configured` apply it to every treatment. Direct `run` and `run_pair`
-  calls do not, as described in
-  [Lower-level execution](../guides/conditions.md#lower-level-execution).
-- `Runtime.with_hooks(hooks, prepend=True)` adds hooks before the existing ones, and
-  `prepend=False` (the default) after them.
-- In the modular stack, runtime component handlers run after the module's configured avstack
-  pre-hooks and post-hooks, and before component-logging capture.
-- An explicit `treated_runtime` passed to `run_configured` replaces rows 3 to 5 for that
-  treatment. Sensor conditions still wrap it.
-
-The effect of rows 2 and 6 on defenses is explained in
-[Order relative to attacks and defenses](../guides/conditions.md#order-relative-to-attacks-and-defenses).
-
-## Handler contract
-
-A handler is any of:
-
-- A function `handler(value, context)`.
-- An object with `__call__(value, context)`.
-- An object with `transform(value, context)`, such as a `Plugin`. `transform` is used when present.
-
-`Hook(stage, handler)` requires a nonempty stage name and a callable handler (or callable
-`transform`), and raises `ValueError` or `TypeError` otherwise. Any handler object may also
-define the lifecycle methods `reset`, `after_step` and `close`. See
-[Plugin lifecycle](#plugin-lifecycle).
-
-The value a handler returns is passed to the next handler at that stage and then downstream.
-The runtime checks the returned type at these stages and raises `TypeError` on a mismatch:
-
-| Stage | Required return value |
-|---|---|
-| `sensors.post`, `localization.pre`, `observation` | `Observation` |
-| `localization.post` | `StateEstimate` |
-| `command` | `Control` |
-| `render.pre` | `CameraRenderRequest` |
-| Modular `.pre` stages | `CallInputs` |
-| `simulator.setup`, `simulator.step.pre`, `simulator.step.post` | `None`. World handlers act through native operations |
-| `render.post`, modular `.post` stages, `policy.pre`, `policy.post` | Not checked. Return a value the downstream consumer accepts |
-
-A localizer is called as `localizer(observation, context)` with `context.stage` set to
-`localization` and must return a `StateEstimate`.
-
-A handler may mutate its value or return a replacement. If it returns mutable data borrowed from
-native resources, it must copy that data when isolation is needed. Registering a hook does not
-change native ownership rules.
-
-The `perturb(observation) -> Observation` argument of `run`, `record_run` and `run_logged` is
-shorthand for a one-argument handler at `observation`. It is wrapped in `ObservationTransform`,
-which also forwards the wrapped object's lifecycle methods. Prefer `Hook` when a handler needs
-the context.
-
-## Plugin lifecycle
-
-| Method | Called | Receives | Purpose |
-|---|---|---|---|
-| `reset(context)` | Once per run, before the simulator resets the world | `RunContext` | Clear per-run state, allocate resources. Actors created by the world reset do not exist yet |
-| `transform(value, context)` | At each registered stage | Stage value, `StageContext` | Return the value passed downstream. Required for `Plugin` subclasses |
-| `after_step(context)` | After each completed driving step, after the physical state is recorded | `StageContext` with `stage="step.end"` | Update state from feedback. The return value is ignored |
-| `close()` | Once per run, after success or failure | Nothing | Release handler-owned resources |
-
-- `Plugin` supplies no-op `reset`, `after_step` and `close`. Any handler object or localizer can
-  define these methods without subclassing `Plugin`.
-- One handler object registered at several stages, or as a hook and the localizer, has one
-  lifecycle per run.
-- Participants are reset in hook registration order, followed by the localizer. `after_step`
-  follows the same order. `close` runs in reverse order.
-- `close` is registered before `reset` is called. If a `reset` raises, `close` still runs for that
-  handler and for every handler reset before it.
-- In `after_step`, `context.observation` is a private copy of the next raw observation, before
-  the next step's input handlers run. `context.control` is a copy of the executed command.
-- Resolve actors created by the world reset in `simulator.setup` or later.
-- Intervention factories and `Intervention.hooks` should defer native resources to lifecycle
-  callbacks. Preparation that needs its own resources owns and releases them.
-- A closure with captured state has no reset. Create a fresh closure and Runtime for every run.
-
-Handler lifecycle and stack lifecycle are separate. The loop calls `stack.reset` once per run.
-`AlpamayoAVStack.reset` clears its camera history, previous plan and inference seed.
-`ModularAVStack.reset` clears its component-logging captures but does not reconstruct stateful
-avstack trackers, planners or controllers. Use a fresh `ModularAVStack` for each independent run.
-The runners do this with `stack_factory`.
-
-## Contexts
-
-`RunContext` is passed to `reset`. It holds the run's resources:
-
-| Field | Meaning |
-|---|---|
-| `simulator_runtime` | The live world of this run (`SimulatorRuntime`, or a legacy `WorldBackend`) |
-| `avstack` | The `AVStack` of this run |
-| `case` | The [match](../concepts/architecture.md#terminology) (`ScenarioMatch`) or `None`. See below |
-| `rng` | The run's NumPy generator. See [Randomness](#randomness) |
-| `native` | `{"simulator_runtime": simulator_runtime.native, "avstack": avstack.native}` |
-
-`StageContext` is passed to stage handlers, the localizer and `after_step`:
-
-| Field | Meaning |
-|---|---|
-| `run` | The `RunContext` |
-| `step` | Zero-based driving-step index. Stages inside the simulator step and `after_step` use the index of the step being executed |
-| `stage` | The current stage, `localization` for the localizer, or `step.end` in `after_step` |
-| `sensor` | The native camera name for `render.pre` and `render.post`, otherwise `None` |
-| `physical_state` | A fresh, independent `WorldSnapshot` of the physical state, taken for each handler call |
-| `sim_time` | `physical_state.t` |
-| `observation` | The current observation in the processing chain. `None` during `simulator.setup` and the first capture. During the simulator step it is the processed observation of the current step. In `after_step`, the next raw observation |
-| `control` | At `command`, the current command in the chain. Elsewhere a copy of the latest command, or `None` before the stack has returned one in the current step |
-| `simulator_runtime`, `avstack`, `case`, `rng`, `native` | Shortcuts to the `RunContext` fields |
-| `record_output(name, value)` | See [Recording outputs](#recording-outputs) |
-
-Model-visible time and physical time can differ during a clock attack. Use `context.sim_time` or
-`context.physical_state.t` for physical scheduling, not `observation.t`. Editing the `control` copy
-outside `command` does not change the executed command.
-
-The `case` is set as follows:
-
-- `Runtime(case=...)` stores an explicit case, which is never replaced.
-- `run_prepared` and `run_configured` supply `scenario.match` when the Runtime's case is `None`.
-- `Treatment.runtime(case=...)` replaces the base Runtime's case when `case` is not `None`.
-- Direct `run` and `run_pair` calls use the Runtime's case unchanged.
-
-`scenario.match` is a `ScenarioMatch`, not the complete `ScenarioInstance`. It is `None` without
-selection. Read selected actor IDs through `context.case.binding_ids` and insertion
-specifications through `context.case.insertions`. See
-[The prepared scenario](../guides/scenarios.md#the-prepared-scenario).
-
-## Read and write interfaces
-
-| Data | Read | Write |
-|---|---|---|
-| Sensor measurements | `observation.sensor_data[sensor_id]` at `sensors.post` | Return an `Observation` with the payload replaced. Later handlers, the localizer and the stack consume it |
-| Model-visible state | `estimate.vehicle_state` and `estimate.ego_speed` at `localization.post`, or the same fields of an `Observation` | Return a modified `StateEstimate` at `localization.post`, or `Observation` at `observation` |
-| Model-visible clock | `observation.t` and `observation.frame` | Return a modified `Observation` |
-| Calibration | `observation.calibration[sensor_id]` | `observation.set_calibration(sensor_id, calibration)`, then return the observation |
-| Driving-system components | The stage value at component stages. `context.avstack.native` and `context.avstack.models` for handles | Return a replacement value, or mutate a component output |
-| Physical state | `context.physical_state`, or `context.simulator_runtime.state()` for a new snapshot | Native simulator operations in a world-stage handler. Editing a snapshot changes nothing |
-| Other actors and environment | Simulator native resources in `context.simulator_runtime.native` | Native operations in a world-stage handler. See [Change the world from handlers](../guides/simulators.md#change-the-world-from-handlers) |
-| Rendering (NuRec) | `CameraRenderRequest` at `render.pre`, the image at `render.post` | Return a modified request or image. The physical ego does not move |
-| Final command | The `Control` at `command` | Return the `Control` the simulator executes |
-| Selected scenario | `context.case` | — |
-
-The handler's value is the current value in its chain, including changes made by earlier
-handlers. Access is not restricted by attack or defense kind.
-
-Native availability follows adapter initialization:
-
-- CARLA actors exist from `simulator.setup`.
-- The NuRec rendering service is available after the scene loads during reset.
-- The first `observation` handlers run before `stack.reset`, so a lazily loaded Alpamayo model can
-  be absent from `stack.models` at that point. Passing `model=...` to `AlpamayoAVStack` exposes an
-  already loaded model. Reading `stack.models` never forces loading.
-
-## Native resources and copying
-
-- `simulator_runtime.state()` returns an independent `WorldSnapshot` with `t`, `frame`,
-  `vehicle_state` and `ego_speed` of the physical ego and, in `actors`, the other actors' states
-  by stable ID. Editing it moves nothing. Other metadata are available only through native
-  resources.
-- CARLA getters reflect the latest completed tick. Native CARLA commands can be asynchronous, so a
-  requested world change need not appear immediately in a snapshot or sensor measurement. The NuRec
-  ego state is updated synchronously in process.
-- The loop calls `backend.copy_observation` on the raw observation before `sensors.post`, and
-  again for every `after_step` participant and for `on_step`. The default implementation is a
-  deep copy. Copying the observation as one graph keeps shared references within the copy, such
-  as calibration aliases, while separating it from the backend.
-- A localizer's returned estimate is deep-copied before `localization.post`, so a localizer can
-  return cached state without later handlers changing that cache or the backend state.
-- Native CARLA sensor captures cannot be deep-copied and stay borrowed. Their Python wrappers,
-  calibration and reference graphs are copied. Capture metadata is read-only, but SDK item
-  assignment can modify LiDAR and radar points, which affects every holder of that capture,
-  including instrumentation copies. To keep the original input, replace the capture in the
-  copied wrapper with a private array or measurement the downstream component accepts.
-- Editing an observation, including a borrowed capture, never moves simulator actors.
-- Native handles are borrowed live resources. The framework does not sandbox their operations or
-  undo changes. A handler that creates native resources releases them in `close`.
-
-## Recording outputs
-
-`context.record_output(name, value)` saves a named diagnostic value, such as an attack decision,
-a defense alarm or a score, in `trace.outputs`. It does not change the stage value, execution or
-any metric. It can be called from stage handlers, the localizer and `after_step`, while the run is
-active. It raises `ValueError` for an empty name and `RuntimeError` outside an active callback.
-
-Each record is a `RecordedOutput`:
-
-| Field | Meaning |
-|---|---|
-| `name` | The name passed to `record_output` |
-| `value` | A deep copy of the value at the time of the call |
-| `step` | Driving-step index |
-| `stage` | Stage of the callback, `localization` or `step.end` |
-| `frame`, `t` | Physical frame and time from `physical_state` at the callback |
-| `sensor` | Camera name for render stages, otherwise `None` |
-
-An `observation`-stage output is recorded before the command of its step. A `step.end` output
-describes the world after that command. Repeated names create separate records in call order.
-Use distinct names, such as `defense.speed_alarm`, when several methods record outputs. Reading
-outputs is described in
-[Intervention outputs and provenance](../guides/evaluation.md#intervention-outputs-and-provenance).
+Plugin optionally provides reset(RunContext), transform(value, StageContext), after_step(context)
+and close(). Plugin.after_step receives the next raw capture and real post-step clock. HookSet
+manages each handler owner's lifecycle once even if registered at several stages. Stateful objects
+must reset per run or be newly constructed. VehicleIO owns its localizer, and the dispatcher manages
+its lifecycle with other handlers.
 
 ## Randomness
 
-- `Runtime(seed=...)` creates a fresh `numpy.random.Generator` with
-  `numpy.random.default_rng(seed)` for every run. The default seed is `0`. `seed=None` draws
-  fresh entropy for each run.
-- All handlers and the localizer of one run share this generator through `context.rng`. Adding a
-  handler that draws numbers changes the numbers later handlers receive.
-- The seed does not configure simulator, driving-model or external-library randomness. Seed
-  those through their own APIs.
-- Sensor-environment transforms use the run seed and absolute dataset timeline position:
-  `start.frame.position + decision_step` for a selected run, or `decision_step` without a start.
-  Offline sensor reads and renders use the same position, so the same frame and seed receive
-  the same random realization. These generators are independent of hook random draws.
-- Legacy sensor conditions use their own generators, independent of `Runtime.seed`. See
-  [Randomness across treatments](../guides/conditions.md#randomness-across-treatments).
-- `run_pair`, `run_prepared` and `run_configured` record the seed as `runtime_seed`, and the
-  registered stages as `runtime_stages`, in `trace.provenance`.
+HookSet.seed creates a fresh per-run hook RNG. Environment transforms use a separate generator keyed
+by run seed, absolute dataset position and transform index. A segment beginning at position p uses
+p+i at decision i. Offline requests and formal runs at the same position align their sensor noise.
+Native frames can include initialization ticks and are not the dataset position.
 
-## World setup ticks
+## Physical and model-visible records
 
-Some world changes need simulator ticks before driving starts. Native CARLA panel deployment
-needs one tick per panel before texturing.
+| Record | Fields and coordinates |
+|---|---|
+| Observation | t, frame, sensor_data, calibration, vehicle_state, ego_speed; model-visible |
+| Control | throttle, steer, brake, optional trajectory |
+| WorldSnapshot | t, frame, vehicle_state, ego_speed, ego, other actors; physical |
+| ActorState | world-from-actor pose, velocity, category, extent, local box center |
+| Detection | ego-frame position, full extent, yaw, category and score |
+| RecordedOutput | name, copied value, decision step, stage, physical frame/time and sensor |
 
-- A handler registered at `simulator.setup` declares its count as an integer attribute
-  `setup_ticks`. `Runtime.setup_ticks` is the sum over distinct `simulator.setup` handlers. Negative
-  or non-integer values raise `ValueError`.
-- `CarlaSimulator.setup_tick()` advances one tick and is allowed only during `simulator.setup`. After
-  the `simulator.setup` handlers return, the backend performs any remaining declared ticks before the
-  first sensor tick.
-- In paired and multi-treatment runs, every run uses the largest count among the treatments, so
-  all runs start after the same number of ticks.
-- Setup ticks precede driving decisions. They are not sensor warmup and are not recorded as
-  driving steps. The default count is zero.
-- `NuRecSimulator` has no deployment ticks. `PhysicalPatchPlugin` declares one tick per panel, and
-  `AttackRuntime.setup_ticks` declares the ticks of an attack runtime's setup effects.
+ActorState.extent is full length, width and height in metres; None means unavailable. box_center is
+the actor-local box center; ActorState.box_pose() returns its oriented world box with optional
+extent. Unknown extent is None, distinct from known zero dimensions. Pose-only use remains valid;
+operations requiring dimensions report missing evidence rather than substituting zero. Detection
+position is its box center in the true ego frame at capture time, using sensor mounting extrinsics,
+independently of driving localization, with ego x forward, y left, z up; yaw is radians. None
+detections means unsupported, while an empty sequence means supported with no detections.
+
+## RunLog
+
+StepRecord stores raw_observation, model_observation, physical_pre, physical_post, produced_command,
+executed_command, components, detections, effects, outputs, typed sensor_geometry and telemetry.
+physical_pre and physical_post are StepRecord fields. Effect requests and receipts distinguish what
+was requested from what actually applied. EventRecord captures initialization, termination and
+failure/cleanup information outside a decision. RunLog.status distinguishes completed, failed,
+cancelled and incomplete logs.
+
+Parquet stores typed scalars and nested struct/list values. Large arrays and images occupy bounded
+payload shards referenced by records. Each steps/part-NNNNN.parquet and event part is closed before
+publication. Payloads publish before referring records; completion metadata is written last. A crash
+leaves completed parts readable and can lose the open part of each stream.
+
+Schema version 5 records typed camera geometry under sensor_geometry, with bounding-box offsets
+for log-only evaluation.
+Readers reject unsupported versions rather than guessing. Persisted native objects decode to plain
+data unless a codec explicitly reconstructs a supported type. In-memory capture preserves supported
+Python container types and snapshot isolation.
+
+RecordingPolicy(sensor_ids=(), representations=("model_input",), every_n_steps=1) controls sensor
+payload retention. State, commands and available component outputs/detections remain per decision.
+Recorder supports chunk_steps, chunk_bytes, payload_shard_bytes and retain_steps. Disabling
+in-memory retention requires a persistent output directory.
+
+## Failures and cleanup
+
+Unsupported stages, commands and environments are configuration errors. A failing decision stops
+attacks, records unapplied effects and cleans resources. Simulator reservations are released only
+after native cleanup. Never interpret a requested effect as applied without its receipt, or a
+partial log as a completed run.
+
+See [Python API](python-api.md#runlog-api) for readers and recorder signatures.

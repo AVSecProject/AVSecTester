@@ -1,330 +1,164 @@
 # Optimize attack artifacts
 
-> **Audience:** Researchers who optimize attack artifacts such as patch textures.  
-> **Outcome:** Understand where optimization fits, use the current optimization interfaces and connect an optimized artifact to attack preparation.  
-> **Prerequisites:** [Architecture](../concepts/architecture.md) and [Implement an attack](attacks.md).
+> **Audience:** Attack authors implementing an offline objective.
+>
+> **Outcome:** Reuse closed-loop services and optimizer implementations without changing deployment.
+>
+> **Prerequisites:** [Attacks](attacks.md).
 
+## Offline optimization
 
-## Where optimization fits
+Attack.run_offline receives the selected metadata and ClosedLoopServices. It runs once per attack
+and returns explicit artifacts. The user chooses the objective, candidate sampling and optimization
+algorithm. The framework neither supplies selection criteria nor reselects after optimization.
 
-[Optimization](../concepts/architecture.md#optimization) searches for the parameters of an
-[artifact](../concepts/architecture.md#terminology), such as a patch texture. It works on behalf
-of an attack's offline phase: `Attack.run_offline(context)` receives the selected metadata and
-closed-loop services, evaluates candidates and returns artifacts. `Experiment.prepare` calls it
-once per attack. Execution reuses those artifacts without repeating selection or optimization.
-The attack chooses its algorithm and objective.
+Within a service session, the attack can evaluate driving components, request scorer outputs, render
+its SensorAttackEffect on a sensor view, or execute complete candidate rollouts. Gradient
+requirements are checked against declared capabilities. No path silently detaches and continues.
 
-The service boundary supports three ways to evaluate a candidate:
+Candidate rollouts use the same Attack.create_runtime and artifacts deployment as formal runs. World
+state, attack state and driving history are fresh for each candidate. Never optimize by advancing
+the active formal run.
 
-| Evaluation route | How a candidate is scored | Current support |
-|---|---|---|
-| Render a candidate | Apply the attack's world or sensor effects to a simulator capture | `session.render(RenderRequest(...))` returns the observation and sensor view. The attack supplies its rendering effect |
-| Query a driving-system component | Evaluate a component or scorer through a fresh AVStack | `session.evaluate(...)` and `session.score(...)` use explicitly declared bindings and gradient capabilities |
-| Roll out in the closed loop | Deploy candidate artifacts and inspect the recorded decisions and physical states | `session.rollout(CandidateRequest(...))` creates a fresh world, AVStack and attack runtime, returning a RunLog |
+## Optimization interfaces
 
-The [closed-loop service reference](../reference/python-api.md#closed-loop-services) lists request
-fields, component descriptors and resource ownership. Candidate rollout invokes the same
-`Attack.create_runtime(segment, artifacts)` used for formal execution. Set `require_grad=True`
-when scoring requires gradients. The service rejects undeclared or detached gradient paths.
-Simulator rendering itself is not made differentiable: the attack implements any differentiable
-sensor composition it needs.
+Implementations live in `avsectester/attack/optimization/`.
 
-The supplied PGD/NES tools below retain their existing interfaces and scripts. They are not
-automatically connected to `run_offline`. Their component-scoring route uses `PatchPerturbation`
-or `LinfImage` with `MMDetRPNObjectnessScorer`. A separate rendering wrapper,
-`CarlaRenderPerturbation`, can be combined with `NES` and `MMDetInferenceScorer`.
+| Interface | Responsibility |
+|---|---|
+| DataSource.sample(batch) | Select optimization samples |
+| AdversarialSample | Image, target and user sample context |
+| Perturbation | Initialize, apply, project and export a candidate |
+| Scorer.target_score(image, target) | Produce an objective score |
+| OptimizationObjective.loss(score) | Convert score to optimization loss |
+| GradientOptimizer.run(...) | Execute the algorithm and return OptimizationResult |
 
-The supplied scripts also use CARLA around the second route: to capture the clean frame and, in
-`optimize_patch_physical.py`, to measure where the panel renders and to re-detect after
-deployment. The rendered frame is not inside the optimization loop.
+PGD is in whitebox.py; NES is in blackbox.py. HideObject minimizes a target score and SpoofObject
+maximizes it. The algorithm interfaces accept the sample provider, perturbation, scorer and
+objective rather than a fixed simulator. SessionScorer connects arbitrary image scoring to a
+closed-loop session. Patch-specific SessionDataSource and PatchOptimization live beside PatchAttack
+in implemented_attacks/patch_attack/, not in the generic optimization tool. Driving-model scorers
+live with the driving adapters, not in framework attack orchestration.
 
-## Current optimization interfaces
+## Use the optimization tools
 
-`avsectester.attacks.optim` splits an optimization into a data source, a threat model, model
-access, a goal and an algorithm. Each part is a separate interface, so an algorithm works with
-every compatible threat model and scorer (see [Valid combinations](#valid-combinations)):
+The public package exports DataSource, AdversarialSample, TargetSpec, Perturbation, Scorer,
+OptimizationObjective, HideObject, SpoofObject, GradientOptimizer, OptimizationResult, PGD, NES,
+PatchPerturbation, LinfImage and SessionScorer. A user Attack supplies its own sampling logic; the
+tool does not choose hosts, scenes, placements or simulator deployment origins.
 
-```text
-DataSource.sample(batch)          -> [AdvSample(x, target, context)]
-Perturbation.apply(sample, delta) -> adversarial input
-Perturbation.project(delta)       -> delta inside the feasible set
-Scorer.target_score(image, target) -> target confidence in [0, 1]
-AttackObjective.loss(score)       -> scalar to minimize
-GradientAttack.run(data, perturbation, scorer, objective) -> AttackResult
-```
-
-In the torch implementations, images and `delta` are RGB floats in `[0, 1]`, channels first
-`(C, H, W)`, on the scorer's device. The rendering route uses NumPy instead. For every objective,
-a lower loss means a more successful attack.
-
-### Interfaces
-
-The interfaces are exported by `avsectester.attacks.optim` and import without torch.
-
-| Name | Signature | Contract |
-|---|---|---|
-| `TargetSpec` | `TargetSpec(box: tuple[float, float, float, float], label: str \| None = None)` | The attacked object as an image-space `xyxy` box in pixels. This class differs from the scenario `TargetSpec` |
-| `AdvSample` | `AdvSample(x, target: TargetSpec, context: dict = {})` | One clean input. `context` carries threat-model data, such as a patch `placement` |
-| `DataSource` | `sample(batch: int) -> list[AdvSample]` | Returns `batch` samples, with any per-sample randomness drawn again |
-| `Perturbation` | `init()`, `apply(sample, delta)`, `project(delta)`, `export(delta) -> np.ndarray \| None` | Owns the variable `delta`, how it enters the input and its feasible set. `export` returns a deployable form, or `None` by default |
-| `Scorer` | `differentiable: bool = True`, `target_score(image, target)` | Confidence that the target is detected. Differentiable scorers return a scalar tensor. Others return a detached value |
-| `AttackObjective` | `loss(score)` | `HideObject` returns `score`. `SpoofObject` returns `1 - score` |
-| `GradientAttack` | `run(data, perturbation, scorer, objective) -> AttackResult` | The algorithm. It calls only the four interfaces above |
-| `AttackResult` | `AttackResult(delta, export, history: list[float], final_score: float)` | The optimized `delta`, `perturbation.export(delta)`, the loss per step and a final score |
-
-### Supplied implementations
-
-| Class | Module | Constructor | Behavior |
-|---|---|---|---|
-| `FrameSource` | `.data` | `FrameSource(samples, brightness=(0.8, 1.2), contrast=(0.8, 1.2), seed=0)` | Draws samples with replacement and sets random `brightness` and `contrast` in each sample's context. This is the expectation over transformation. Raises `ValueError` for an empty list |
-| `PatchPerturbation` | `.perturbations` | `PatchPerturbation(size=(128, 128), device="cuda:0", init="random", seed=0)` | `delta` is a `(3, Hp, Wp)` texture. `apply` warps it with the 3x3 homography `context["placement"]` (patch pixels to image pixels), applies the context's brightness and contrast to the patch and composites it. `project` clamps to `[0, 1]`. `export` returns `(Hp, Wp, 4)` opaque `uint8` RGBA. Any `init` other than `"random"` starts from gray |
-| `LinfImage` | `.perturbations` | `LinfImage(epsilon=8/255, image_hw=(600, 800), device="cuda:0")` | Adds `delta` to the whole image and clamps to `[0, 1]`. `project` clamps `delta` to `[-epsilon, epsilon]`. `export` returns `None` |
-| `CarlaRenderPerturbation` | `.render` | `CarlaRenderPerturbation(paint, render, size=(64, 64), init_texture=None, seed=0)` | NumPy `delta`. `apply` calls `paint(rgba)` with the `(H, W, 4)` `uint8` texture, then returns `render()`. It ignores `sample.x`. `init_texture` is an optional `(3, H, W)` warm start in `[0, 1]`. `export` returns RGBA `uint8` |
-| `MMDetRPNObjectnessScorer` | `.scorers` | `MMDetRPNObjectnessScorer(model, strides=(4, 8, 16, 32, 64))` | Differentiable. The mean RPN objectness of a two-stage MMDetection model over anchor cells whose centers lie in the target box. Returns 0 when no cell lies in the box |
-| `MMDetInferenceScorer` | `.scorers` | `MMDetInferenceScorer(model)` | Not differentiable. Runs `inference_detector` on an `(H, W, 3)` `uint8` RGB frame and returns the highest score of a detection whose box center lies in the target box, or 0.0 |
-| `PGD` | `.attacks` | `PGD(steps=200, step_size=4/255, batch=4, tv_weight=0.0, seed=0, verbose=False, log_every=25)` | Signed-gradient descent averaged over a batch, plus `tv_weight` times total variation. Raises `ValueError` for a scorer that is not differentiable. Seeds torch's global generator. `history` holds the loss per step, including the TV term. `final_score` is the mean confidence over a fresh batch |
-| `NES` | `.blackbox` | `NES(steps=40, popsize=20, sigma=0.08, lr=0.03, seed=0, verbose=False, log_every=5)` | Gradient-free. Draws one sample once and estimates the gradient from `popsize // 2` antithetic pairs. `history` starts with the initial loss. `final_score` is the last loss, which is the confidence only for `HideObject` |
-
-Two placement helpers in `avsectester.attacks.optim.geometry` build `placement` homographies:
-`homography_4pt(src, dst)` maps four points to four points, and
-`rear_panel_homography(box, patch_hw, wfrac=0.7, hfrac=0.5, ycenter=0.55)` maps the patch onto a
-centered rectangle inside a 2D box.
-
-The MMDetection scorers take the raw model. In the scripts this is the `model` attribute of
-avstack's `MMDetObjectDetector2D`, the CARLA-trained Faster R-CNN described in
-[Models used in this repository](driving-systems.md#models-used-in-this-repository).
-
-### Valid combinations
-
-| Algorithm | Perturbation | Scorer |
-|---|---|---|
-| `PGD` | `PatchPerturbation` or `LinfImage`, or another torch perturbation that is differentiable in `delta` | `MMDetRPNObjectnessScorer`, or another scorer with `differentiable = True` that returns a tensor |
-| `NES` | `CarlaRenderPerturbation`, or another perturbation whose `delta` is a NumPy array | `MMDetInferenceScorer`, or another scorer whose result converts to `float` |
-
-`PGD` checks `scorer.differentiable`. It does not check the perturbation, so a NumPy perturbation
-fails during the gradient step. `NES` checks neither. Torch perturbations fail inside `NES`, and
-`MMDetRPNObjectnessScorer` cannot score the NumPy frames that `CarlaRenderPerturbation` returns.
-
-### Combine the pieces
-
-This example runs offline. A brightness scorer stands in for a detector, so the effect is easy to
-check: hiding the target darkens the patch.
+This offline example optimizes a bounded additive image perturbation with PGD. It uses a simple
+local scorer so it needs no simulator or model weights:
 
 <!-- runnable -->
 ```python
 import torch
+from avsectester.attack.optimization import (
+    AdversarialSample, DataSource, HideObject, LinfImage, PGD, Scorer, TargetSpec,
+)
 
-from avsectester.attacks.optim.attacks import PGD
-from avsectester.attacks.optim.data import FrameSource
-from avsectester.attacks.optim.geometry import rear_panel_homography
-from avsectester.attacks.optim.interface import AdvSample, HideObject, Scorer, TargetSpec
-from avsectester.attacks.optim.perturbations import PatchPerturbation
+class FixedImageSource(DataSource):
+    def sample(self, batch):
+        return [AdversarialSample(torch.full((3, 8, 8), 0.5), TargetSpec((0, 0, 8, 8)))
+                for _ in range(batch)]
 
-
-class BoxBrightness(Scorer):
-    """A differentiable stand-in for a detector: mean brightness inside the target box."""
-
-    differentiable = True
-
+class MeanIntensityScorer(Scorer):
     def target_score(self, image, target):
-        x0, y0, x1, y1 = (int(v) for v in target.box)
-        return image[:, y0:y1, x0:x1].mean()
+        return image.mean()
 
-
-box = (40.0, 30.0, 120.0, 90.0)  # Target box, xyxy image pixels.
-frame = torch.full((3, 120, 160), 0.6)  # Clean RGB image, (C, H, W) in [0, 1].
-placement = torch.as_tensor(rear_panel_homography(box, (32, 32))).float()
-data = FrameSource([AdvSample(x=frame, target=TargetSpec(box, label="car"),
-                              context={"placement": placement})])
-
-result = PGD(steps=30, step_size=0.05, batch=2, tv_weight=0.02).run(
-    data,
-    PatchPerturbation(size=(32, 32), device="cpu", init="gray"),
-    BoxBrightness(),
-    HideObject(),
-)
-print(round(result.history[0], 3), round(result.history[-1], 3), round(result.final_score, 3))
-print(result.export.shape, result.export.dtype)
+perturbation = LinfImage(epsilon=0.1, image_hw=(8, 8), device="cpu")
+result = PGD(steps=2, batch=1, step_size=0.01).run(
+    FixedImageSource(), perturbation, MeanIntensityScorer(), HideObject())
+assert result.delta.shape == (3, 8, 8)
+assert torch.max(torch.abs(result.delta)).item() <= 0.1
 ```
 
-```text
-0.591 0.428 0.404
-(32, 32, 4) uint8
-```
+LinfImage projects an additive delta into an L-infinity ball and clips the resulting image to [0,
+1]. PatchPerturbation instead consumes sampling_grid and mask in each sample's context and exports
+an RGBA texture. A custom DataSource owns those image/geometry choices.
 
-The loss falls, and `export` is the RGBA texture to deploy. To attack a detector, build the frame
-from a camera image, replace `BoxBrightness()` with `MMDetRPNObjectnessScorer(model)` and create
-the frame and the perturbation on the model's device, as the supplied scripts do.
-
-For the rendering route, `paint` and `render` connect the perturbation to a live panel. In
-`optimize_patch_physical.py`, the equivalent of `paint` applies the texture with
-`world.apply_color_texture_to_object` to the panel's painted object, and `render` ticks the world
-and returns the camera frame:
+For a driving model, replace the scorer with SessionScorer inside the attack's service session:
 
 ```python
-# Continues the previous example. paint, render and model are supplied by the caller.
-# CARLA and MMDetection are required.
-from avsectester.attacks.optim.blackbox import NES
-from avsectester.attacks.optim.render import CarlaRenderPerturbation
-from avsectester.closed_loop.avstacks.scorers import MMDetInferenceScorer
+from avsectester.attack.optimization import PGD, HideObject, SessionScorer
 
-data = FrameSource([AdvSample(x=None, target=TargetSpec(box))])
-perturbation = CarlaRenderPerturbation(paint, render, size=(64, 64))
-nes_result = NES(steps=40, popsize=20).run(
-    data, perturbation, MMDetInferenceScorer(model), HideObject()
-)
+# Requires OfflineContext context, a custom source and perturbation.
+with context.services.session(context.seed) as session:
+    scorer = SessionScorer(session, "detector", require_grad=True,
+                           input_format="CHW float tensor [0,1]", device="cuda:0")
+    result = PGD(steps=10).run(source, perturbation, scorer, HideObject())
 ```
 
-Every loss evaluation paints and renders once, so a run renders
-`1 + steps * (2 * (popsize // 2) + 1)` frames: 841 with the defaults. The PGD texture from the
-previous example can serve as a warm start: `init_texture=result.delta.cpu().numpy()`.
+Use a declared differentiable scorer for PGD. For NES, supply the same DataSource, Perturbation,
+Scorer and OptimizationObjective contracts, with numpy candidates and a scorer that does not require
+gradients. Its Perturbation.apply may render a candidate through closed-loop services; the generic
+algorithm owns no rendering logic. NES options population_size and learning_rate control its query
+batch and update size. HideObject suppresses a target score; SpoofObject maximizes it. Objectives
+and data sources belong to the user's attack, while the same algorithms remain reusable.
 
-## Use optimization in attack preparation
+## Configure a physical patch optimization
 
-For the Attack API, implement `run_offline(context)` and return the optimizer's result in the
-form expected by `create_runtime`. `context.metadata` contains all selected segments and
-`context.services` opens isolated candidate operations. `context.services.capabilities`
-describes available components and scorers without loading a model. No framework rule requires
-an optimized asset to keep its original dimensions. The optimizer is responsible for any
-visibility or placement assumptions it changes.
-
-The examples below use the existing `Intervention` API employed by the supplied patch scripts.
-
-### Optimize inside `prepare`
-
-Run the optimizer in `Intervention.prepare` and return the exported texture as the artifact. The
-artifact must be reusable without optimizing again, so save the texture to a file and return its
-path. The following intervention extends `PhysicalPatchIntervention`, whose `hooks` already
-deploy the artifact through `PhysicalPatchPlugin` at `simulator.setup`:
-
-<!-- runnable -->
-```python
-from pathlib import Path
-
-from PIL import Image
-
-from avsectester.attacks.optim.attacks import PGD
-from avsectester.attacks.optim.interface import HideObject
-from avsectester.attacks.optim.perturbations import PatchPerturbation
-from avsectester.attacks.patch.physical_patch import PhysicalPatchIntervention
-
-
-class OptimizedPatchIntervention(PhysicalPatchIntervention):
-    """Optimize a panel texture during preparation, then deploy it as a CARLA panel."""
-
-    def __init__(self, patches, problem, texture_path, *, size=128, device="cuda:0", pgd=None):
-        super().__init__(patches)
-        self.problem = problem  # problem(scenario) -> (DataSource, Scorer)
-        self.texture_path = Path(texture_path)
-        self.size = size
-        self.device = device
-        self.pgd = pgd or PGD(steps=300, step_size=6 / 255, batch=4, tv_weight=0.02)
-
-    def prepare(self, scenario):
-        patches = super().prepare(scenario)  # Validates the panel configuration.
-        data, scorer = self.problem(scenario)
-        perturbation = PatchPerturbation(size=(self.size, self.size), device=self.device)
-        result = self.pgd.run(data, perturbation, scorer, HideObject())
-        self.texture_path.parent.mkdir(parents=True, exist_ok=True)
-        Image.fromarray(result.export).save(self.texture_path)
-        for patch in patches:
-            patch["texture"] = {"image": str(self.texture_path), "size": self.size}
-            patch["emissive"] = True
-        return patches
+```yaml
+type: PatchAttack
+options:
+  decision_steps: 20
+  texture: {type: ImageTexture, options: {image: ../assets/patch.png}}
+  candidate_hosts: [lead]
+  hosts_per_window: 1
+  sensor: camera-0-0
+  width_m: 1.0
+  height_m: 0.5
+  optimization:
+    type: PatchOptimization
+    options:
+      algorithm: {type: PGD, options: {steps: 10, step_size: 0.02, seed: 0}}
+      scorer_id: detector
+      size: [64, 64]
+      device: cuda:0
 ```
 
-`problem` receives the complete prepared [scenario](../concepts/architecture.md#terminology). It
-can capture frames from `scenario.make_backend()`, take the target from `scenario.match` and load
-the scorer's model. The artifact is the panel list with the texture path, which the default
-artifact codec stores as JSON. `emissive: true` keeps the optimized colors independent of scene
-lighting. Remove it to deploy a lit panel.
+The named scorer must be exposed through avstack.bindings. PGD needs differentiable inputs; NES can
+use score queries without gradients. PGD uses calibrated plane ray sampling and an occlusion mask as
+a differentiable surrogate. NES uses candidate effects with session.render. Optional
+validate_rollout checks the exported candidate in a rollout with the merged experiment/attack
+environment and shared deployment budget. It validates completed status and decision count, then
+logs a summary including final speed; it does not save that rollout log or claim attack
+effectiveness. The session uses the selection seed; the algorithm seed controls optimizer randomness
+independently. Empty metadata returns the original texture without attempting optimization. NES
+accepts init_texture for a warm start. PGD rejects init_texture rather than ignoring it. Physical
+deployment samples only origins accepted by session.can_deploy_at(position), which uses the
+framework's deployment and capture tick requirements. An unsupported origin fails explicitly; the
+attack does not calculate a separate window formula. By default each sample targets the host's
+projected bounding box. An explicit target_box overrides it; this objective region is distinct from
+patch placement. Save the returned artifact and verify its effect receipts and recorded input rather
+than assuming a completed optimizer implies successful deployment.
 
-Prepare once and run the treatments with the prepared intervention:
+## Rendering and limitations
 
-```python
-from avsectester.preparation import Treatment, prepare_intervention
-from avsectester.runner import run_prepared
-from avsectester.closed_loop.hooks import Runtime
+The simulator supplies SensorView evidence. Concrete attack rendering resolves host/world placement
+and uses the view's pinhole or f-theta camera model. Selection reads clean geometry and visibility
+evidence. Offline candidate rendering and online execution share SensorAttackEffect deployment. A
+physical CARLA panel uses WorldAttackEffect instead.
 
-# scenario is a CARLA prepared scenario, and stack_factory, problem and the panel list patches
-# are supplied by the caller.
-method = OptimizedPatchIntervention(patches, problem, "tmp/optimized_patch/texture.png")
-prepared = prepare_intervention(method, scenario, name="optimized-patch")
-prepared.save("tmp/optimized_patch/prepared.json")
-results = run_prepared(
-    scenario, stack_factory, 20,
-    runtimes={"clean": Runtime(), "attack": Treatment((prepared,)).runtime()},
-)
-```
+Optimization algorithms can use different approximations and objective regions. Execution checks
+establish that the migrated workflow runs, not that attacks achieve an earlier effect level.
+Validate texture sampling, occlusion, distortion, score regions and deployed artifacts for the
+scientific objective. CARLA's physical prop retains its native mesh dimensions; width_m/height_m do
+not rescale it. CARLA sampling uses the native rendered prop region, while PGD remains a
+differentiable surrogate. Its black/white emissive probes preserve the native visible footprint and
+occlusion mask, but texture sampling maps into that region's image bounding rectangle rather than
+recovering native mesh UV coordinates. This does not guarantee exact native appearance. Remaining
+geometry work is tracked in [TODO](../development/TODO.md#physical-patch-geometry).
 
-`PreparedIntervention.load(method, path)` restores the record
-without optimizing again. The record stores the texture path, not the image, so keep the file.
-See [Save and reuse artifacts](attacks.md#save-and-reuse-artifacts) and
-[Artifact codec](../reference/python-api.md#artifact-codec). Panel keys and target resolution are
-described in [Physical patch](../examples/physical-patch.md).
+## User-defined objectives
 
-To reuse a saved texture in a configured run, reference the file from a
-[`patches`](../reference/configuration.md#patches) entry with
-`texture: {image: <path>, size: <pixels>}`.
-
-### Deploy through image insertion
-
-A texture can also be inserted into camera images instead of the world. `result.export` is a valid
-`PlaneAsset` texture, and `PlaneAsset` also accepts the saved file path:
-
-```python
-from avsectester.insertion import AttachedPlacement, Insertion, Orientation, PlaneAsset
-
-# result is the AttackResult of a PatchPerturbation optimization.
-patch = Insertion(
-    id="optimized_patch",
-    asset=PlaneAsset(result.export, width_m=0.6, height_m=0.4),
-    placement=AttachedPlacement(host="attacker", anchor="rear_center", offset_m=(-0.05, 0.0, 0.15)),
-    orientation=Orientation("follow_host", rotation_deg=(0, 0, 180)),
-)
-```
-
-Insertions are specified in [Specify inserted objects](scenarios.md#specify-inserted-objects) and
-fed to the driving system as described in
-[Insert into the model input](../examples/image-insertion.md#insert-into-the-model-input).
-
-### How the supplied scripts do it
-
-The two scripts in `scripts/optimization/` combine scene setup, optimization, deployment and
-validation in one process. They run outside the intervention interface: they spawn their own ego
-and lead vehicles, and nothing calls them from `prepare`. Both need a CARLA server at
-`127.0.0.1:2000`, avstack with MMDetection and a GPU (`--gpu`, default 1).
-
-| Step | `optimize_patch.py` | `optimize_patch_physical.py` |
-|---|---|---|
-| Problem | Captures one frame with a lead vehicle 6 m ahead. The highest-scoring detection gives the target box | The same scene and target box. Spawns an emissive `PhysicalPatch` on the lead vehicle |
-| Placement | `rear_panel_homography(box, (patch, patch))` | Paints the panel green, renders and takes the bounding rectangle of green pixels. `homography_4pt` maps the patch onto that rectangle |
-| Optimization | `FrameSource`, `PatchPerturbation`, `MMDetRPNObjectnessScorer`, `HideObject`, `PGD(step_size=6/255, batch=4, tv_weight=0.02)` with `--steps` (default 300) | The same pieces with `--steps` (default 250) |
-| Validation | Pastes the texture digitally and reruns the full detector | Paints the texture on the panel, renders and reruns the full detector |
-
-The texture files, outputs and the commands that deploy them are listed in
-[Physical patch](../examples/physical-patch.md). To move a script's problem into preparation, put
-its capture and detector setup into the `problem` function above.
-
-## Current limitations
-
-- The supplied optimizers do not call closed-loop services automatically. To optimize using
-  driving outcomes, call `session.rollout` and define the objective in `run_offline`.
-- The supplied scorers and `TargetSpec` cover camera images and 2D target
-  boxes only; no scorer reads other sensors or later driving-system outputs.
-- **Not yet implemented.** The interfaces are specific to attacks, with object-hiding and spoofing
-  objectives; defenses have no optimization interface.
-- **Not yet implemented.** Optimization placement does not use the insertion geometry that
-  deployment uses: the scripts place patches from a detector box or an axis-aligned rendered
-  footprint.
-- `NES` optimizes against one sample and applies no transformation sampling. No supplied script
-  runs the rendering route.
-- `PGD` seeds torch's global random generator.
+A custom Attack can compute any objective from component values or a candidate RunLog, including
+DrivingMetrics. A component scorer must declare inputs, outputs, codecs, direction and gradient
+support. It is acceptable to use an expensive rollout objective; the user owns the optimization
+budget. The framework does not implement an alternating dependency/workflow engine.
 
 ## Next steps
 
-- [Physical patch](../examples/physical-patch.md) to deploy an optimized texture in CARLA.
-- [Save and reuse artifacts](attacks.md#save-and-reuse-artifacts) for the Attack preparation interface.
-- [Evaluate results](evaluation.md) to measure the driving impact of the deployed artifact.
-- [Implementation status](../concepts/architecture.md#implementation-status) for planned
-  optimization routes.
+Read [Physical patch](../examples/physical-patch.md), [Driving-system
+bindings](driving-systems.md#components-and-scorers-for-offline-work) and
+[Evaluation](evaluation.md).

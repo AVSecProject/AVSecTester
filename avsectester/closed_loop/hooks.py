@@ -19,7 +19,7 @@ from avsectester.closed_loop.datatypes import Control, Observation, RecordedOutp
 
 if TYPE_CHECKING:
     from avsectester.closed_loop.avstack import AVStack
-    from avsectester.closed_loop.simulator import SimulatorRuntime, WorldBackend
+    from avsectester.closed_loop.simulator import SimulatorRuntime
     from avsectester.closed_loop.vehicle_io import VehicleIO
 
 
@@ -89,9 +89,8 @@ class CameraRenderRequest:
 class RunContext:
     """Borrowed run resources. Model, native SDK and metadata access is unrestricted."""
 
-    simulator_runtime: SimulatorRuntime | WorldBackend
+    simulator_runtime: SimulatorRuntime
     avstack: AVStack
-    case: Any
     rng: np.random.Generator
 
     @property
@@ -119,7 +118,7 @@ class StageContext:
     )
 
     def record_output(self, name: str, value: Any) -> None:
-        """Save a named, independent output in this run's Trace with callback timing.
+        """Save a named, independent output in this run's RunLog with callback timing.
 
         Use this for attack decisions, defense alarms or estimator telemetry. Outputs
         supplement the transformed value and never replace the downstream input.
@@ -131,16 +130,12 @@ class StageContext:
         self._output_recorder(self, name, value)
 
     @property
-    def simulator_runtime(self) -> SimulatorRuntime | WorldBackend:
+    def simulator_runtime(self) -> SimulatorRuntime:
         return self.run.simulator_runtime
 
     @property
     def avstack(self) -> AVStack:
         return self.run.avstack
-
-    @property
-    def case(self) -> Any:
-        return self.run.case
 
     @property
     def rng(self) -> np.random.Generator:
@@ -172,20 +167,6 @@ class Plugin(ABC):
         """Release resources, including partially initialized resources after an error."""
 
 
-class ObservationTransform:
-    """Adapt a one-argument observation function without losing its lifecycle."""
-
-    def __init__(self, transform: Callable[[Observation], Observation]) -> None:
-        self.function = transform
-
-    @property
-    def lifecycle_owner(self) -> Any:
-        return self.function
-
-    def transform(self, observation: Observation, context: StageContext) -> Observation:
-        return self.function(observation)
-
-
 @dataclass(frozen=True)
 class Hook:
     """Bind a function or a lifecycle plugin to an adapter-supported execution stage."""
@@ -208,23 +189,22 @@ class HookSet:
     """Reusable ordered hooks, independent of the driving system's Vehicle I/O.
 
     A fixed seed starts a fresh RNG for each run. Stateful handlers must implement
-    ``reset`` or be constructed afresh. ``Runtime`` retains the legacy localizer argument.
+    ``reset`` or be constructed afresh.
     """
 
     def __init__(
         self,
         hooks: Iterable[Hook] = (),
         *,
-        case: Any = None,
         seed: int | None = 0,
     ) -> None:
         self.hooks = tuple(hooks)
         if any(not isinstance(hook, Hook) for hook in self.hooks):
             raise TypeError("HookSet hooks must be Hook instances")
-        self.case, self.seed = case, seed
+        self.seed = seed
 
     def with_hooks(self, hooks: Iterable[Hook], *, prepend: bool = False) -> Self:
-        """Copy this configuration while retaining compatibility-facade settings."""
+        """Copy this configuration with additional ordered hooks."""
         extra = tuple(hooks)
         if any(not isinstance(hook, Hook) for hook in extra):
             raise TypeError("HookSet hooks must be Hook instances")
@@ -235,14 +215,12 @@ class HookSet:
     def _vehicle_io(self, avstack: AVStack) -> VehicleIO:
         from avsectester.closed_loop.vehicle_io import VehicleIO
 
-        result = getattr(avstack, "vehicle_io", None)
-        if result is None:
-            return VehicleIO()
+        result = avstack.vehicle_io
         if not isinstance(result, VehicleIO):
             raise TypeError("avstack.vehicle_io must be VehicleIO")
         return result
 
-    def validate_stages(self, simulator_runtime: SimulatorRuntime | WorldBackend, avstack: AVStack) -> frozenset[str]:
+    def validate_stages(self, simulator_runtime: SimulatorRuntime, avstack: AVStack) -> frozenset[str]:
         """Check adapter capabilities without binding a dispatcher or invoking handlers."""
         from avsectester.closed_loop.avstack import validate_command_compatibility
 
@@ -259,75 +237,25 @@ class HookSet:
 
     @property
     def setup_ticks(self) -> int:
-        """Required deployment ticks, shared by both runs of a pair when supported."""
+        """Required deployment ticks, shared by every treatment in a comparison group."""
         handlers = {id(hook.handler): hook.handler for hook in self.hooks if hook.stage == "simulator.setup"}
         counts = [getattr(handler, "setup_ticks", 0) for handler in handlers.values()]
         if any(not isinstance(n, int) or isinstance(n, bool) or n < 0 for n in counts):
             raise ValueError("Plugin setup_ticks must be nonnegative integers")
         return sum(counts)
 
-    def session(self, simulator_runtime: SimulatorRuntime | WorldBackend, avstack: AVStack, perturb: Callable[[Observation], Observation] | None = None) -> HookDispatcher:
-        """Create one execution session, validating capabilities before resetting the world."""
-        hook_set = self
-        if perturb is not None:
-            hook_set = self.with_hooks([Hook("observation", ObservationTransform(perturb))], prepend=True)
-        return HookDispatcher(hook_set, simulator_runtime, avstack)
-
-
-class Runtime(HookSet):
-    """Compatibility facade for ``Runtime(..., localizer=...)``.
-
-    New driving adapters own ``VehicleIO``. A legacy localizer is held by a VehicleIO
-    adapter for this run without mutating the caller's driving-system configuration.
-    """
-
-    def __init__(
-        self,
-        hooks: Iterable[Hook] = (),
-        *,
-        localizer: Callable[[Observation, StageContext], StateEstimate] | Plugin | None = None,
-        case: Any = None,
-        seed: int | None = 0,
-    ) -> None:
-        from avsectester.closed_loop.vehicle_io import VehicleIO
-
-        super().__init__(hooks, case=case, seed=seed)
-        self._legacy_vehicle_io = VehicleIO(localizer)
-
-    @property
-    def localizer(self) -> Any:
-        return self._legacy_vehicle_io.localizer
-
-    @localizer.setter
-    def localizer(self, value: Any) -> None:
-        from avsectester.closed_loop.vehicle_io import VehicleIO
-
-        self._legacy_vehicle_io = VehicleIO(value)
-
-    def _vehicle_io(self, avstack: AVStack) -> VehicleIO:
-        driving_io = super()._vehicle_io(avstack)
-        if self.localizer is None:
-            return driving_io
-        if driving_io.localizer is not None and driving_io.localizer is not self.localizer:
-            raise ValueError("Specify a localizer on VehicleIO or legacy Runtime, not both")
-        return self._legacy_vehicle_io
-
-    @classmethod
-    def from_config(cls, config: Mapping[str, Any] | None = None, *, case: Any = None) -> Runtime:
-        """Load legacy stage handlers and localization configuration."""
-        # The legacy Runtime facade still serves configured CLI and concrete attack callers.
-        from avsectester.interventions import runtime_from_config
-
-        return runtime_from_config(config, case=case)
+    def session(self, simulator_runtime: SimulatorRuntime, avstack: AVStack) -> HookDispatcher:
+        """Create one execution session before resetting the world."""
+        return HookDispatcher(self, simulator_runtime, avstack)
 
 
 class HookDispatcher:
     """One bound run. Custom adapters publish supported stages through ``emit``."""
     CORE_STAGES = frozenset({"sensors.post", "localization.post", "observation", "command"})
 
-    def __init__(self, hook_set: HookSet, simulator_runtime: SimulatorRuntime | WorldBackend, avstack: AVStack) -> None:
+    def __init__(self, hook_set: HookSet, simulator_runtime: SimulatorRuntime, avstack: AVStack) -> None:
         self.hook_set = hook_set
-        self.context = RunContext(simulator_runtime, avstack, hook_set.case, np.random.default_rng(hook_set.seed))
+        self.context = RunContext(simulator_runtime, avstack, np.random.default_rng(hook_set.seed))
         self.vehicle_io = hook_set._vehicle_io(avstack)
         self.step = 0
         self.observation: Observation | None = None
@@ -342,8 +270,7 @@ class HookDispatcher:
         if self.vehicle_io.localizer is not None:
             participants.append(self.vehicle_io.localizer)
         # A single plugin can be bound to several stages but owns one lifecycle per run.
-        owners = [getattr(value, "lifecycle_owner", value) for value in participants]
-        self.participants = tuple({id(value): value for value in owners}.values())
+        self.participants = tuple({id(value): value for value in participants}.values())
 
     @contextmanager
     def activate(self) -> Iterator[HookDispatcher]:
@@ -353,9 +280,6 @@ class HookDispatcher:
         failure = None
         try:
             simulator_runtime = self.context.simulator_runtime
-            previous_ticks = simulator_runtime.setup_ticks
-            simulator_runtime.setup_ticks = max(previous_ticks, self.hook_set.setup_ticks)
-            resources.callback(setattr, simulator_runtime, "setup_ticks", previous_ticks)
             resources.enter_context(simulator_runtime.bind_hooks(self))
             resources.enter_context(self.context.avstack.bind_hooks(self))
             for handler in self.participants:
@@ -380,11 +304,7 @@ class HookDispatcher:
                 failure.add_note(f"Hook cleanup also failed: {error!r}")
 
     def stage_context(self, stage: str, sensor: str | None = None) -> StageContext:
-        from avsectester.closed_loop.simulator import SimulatorRuntime
-
-        simulator_runtime = self.context.simulator_runtime
-        physical_state = (simulator_runtime.state() if isinstance(simulator_runtime, SimulatorRuntime)
-                          else simulator_runtime.ground_truth())  # legacy WorldBackend
+        physical_state = self.context.simulator_runtime.state()
         return StageContext(
             self.context, self.step, stage, physical_state, sensor,
             self.observation, self.control if stage == "command" else deepcopy(self.control),

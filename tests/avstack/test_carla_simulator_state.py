@@ -63,7 +63,7 @@ def test_carla_sensor_copy_detaches_real_avstack_reference_graph(kind, make_ego)
 
 
 @pytest.fixture
-def native_truth_backend():
+def native_truth_simulator_runtime():
     transform = carla.Transform(carla.Location(11, 22, 3), carla.Rotation(yaw=30))
     native_actor = SimpleNamespace(
         id=1, type_id="vehicle.test", attributes={"number_of_wheels": "4"},
@@ -73,26 +73,26 @@ def native_truth_backend():
         get_acceleration=lambda: carla.Vector3D(),
         get_angular_velocity=lambda: carla.Vector3D(),
     )
-    backend = CarlaSimulator({}).create_runtime()
+    simulator_runtime = CarlaSimulator({}).create_runtime()
     clock = SimpleNamespace(frame=12, t=1.5, actor_present=True)
-    backend.client = SimpleNamespace(world=SimpleNamespace(get_snapshot=lambda: SimpleNamespace(
+    simulator_runtime.client = SimpleNamespace(world=SimpleNamespace(get_snapshot=lambda: SimpleNamespace(
         frame=clock.frame, timestamp=SimpleNamespace(elapsed_seconds=clock.t),
         find=lambda _: object() if clock.actor_present else None,
     )))
-    backend.ego = SimpleNamespace(
+    simulator_runtime.ego = SimpleNamespace(
         ID=1, actor=native_actor, timestamp=0.0,
         reference=CarlaReferenceFrame(GlobalOrigin3D, location=(-99, -99, -99)),
     )
-    backend.ego.get_object_state = lambda: wrap_mobile_actor_to_object_state(
-        backend.ego, backend.ego.timestamp,
+    simulator_runtime.ego.get_object_state = lambda: wrap_mobile_actor_to_object_state(
+        simulator_runtime.ego, simulator_runtime.ego.timestamp,
     )
-    return backend, transform, clock
+    return simulator_runtime, transform, clock
 
 
-def test_carla_truth_uses_native_actor_state_before_cached_body_reference_refresh(native_truth_backend):
-    backend, transform, clock = native_truth_backend
+def test_carla_truth_uses_native_actor_state_before_cached_body_reference_refresh(native_truth_simulator_runtime):
+    simulator_runtime, transform, clock = native_truth_simulator_runtime
 
-    initial = backend._state()
+    initial = simulator_runtime._state()
     np.testing.assert_allclose(initial.vehicle_state.position.x, [11, -22, 3])
     assert initial.vehicle_state.attitude.yaw == pytest.approx(-np.pi / 6)
     assert initial.ego_speed == 5
@@ -101,24 +101,24 @@ def test_carla_truth_uses_native_actor_state_before_cached_body_reference_refres
     transform.location.x = 15
     transform.rotation.yaw = 60
     clock.frame, clock.t = 13, 1.6
-    changed = backend._state()
+    changed = simulator_runtime._state()
     np.testing.assert_allclose(changed.vehicle_state.position.x, [15, -22, 3])
     assert changed.vehicle_state.attitude.yaw == pytest.approx(-np.pi / 3)
     assert changed.frame == 13 and changed.t == 1.6
     np.testing.assert_allclose(initial.vehicle_state.position.x, [11, -22, 3])
-    np.testing.assert_allclose(backend.ego.reference.x, [-99, -99, -99])
+    np.testing.assert_allclose(simulator_runtime.ego.reference.x, [-99, -99, -99])
 
 
-def test_carla_setup_truth_uses_known_spawn_until_actor_is_in_snapshot(native_truth_backend):
-    backend, transform, clock = native_truth_backend
-    backend.ego.spawn_transform = carla.Transform(
+def test_carla_setup_truth_uses_known_spawn_until_actor_is_in_snapshot(native_truth_simulator_runtime):
+    simulator_runtime, transform, clock = native_truth_simulator_runtime
+    simulator_runtime.ego.spawn_transform = carla.Transform(
         carla.Location(10, 20, 1), carla.Rotation(yaw=45),
     )
     clock.actor_present = False
     transform.location = carla.Location()
     transform.rotation = carla.Rotation()
 
-    initial = backend._state()
+    initial = simulator_runtime._state()
     np.testing.assert_allclose(initial.vehicle_state.position.x, [10, -20, 1])
     np.testing.assert_allclose(initial.vehicle_state.box.position.x, [10, -20, 1])
     assert initial.vehicle_state.attitude.yaw == pytest.approx(-np.pi / 4)
@@ -126,7 +126,7 @@ def test_carla_setup_truth_uses_known_spawn_until_actor_is_in_snapshot(native_tr
 
     clock.actor_present = True
     transform.location.x = 15
-    later = backend._state()
+    later = simulator_runtime._state()
     np.testing.assert_allclose(later.vehicle_state.position.x, [15, 0, 0])
     assert later.vehicle_state.attitude.yaw == 0
     assert initial.vehicle_state.position.x[0] == 10

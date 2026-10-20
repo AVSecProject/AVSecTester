@@ -1,85 +1,98 @@
-"""Visualize ground-truth *scene labels* on real frames — reusing ``avsectester.closed_loop.simulators.viz``.
-
-Overlays a dataset's :class:`SceneGT` (from :class:`NuRecDataset` / :class:`NuScenesDataset`) on the real
-camera frame as projected **3-D bounding boxes** (the right representation for a 3-D scene; edges are
-subdivided so they render correctly curved under the nuRec fisheye), using only the shared viz primitives:
-
-* nuRec: ``draw_boxes3d(frame, scene, target=...)`` on the scene's rendered ``.mp4`` frame, plus a
-  :func:`filmstrip` across several frames;
-* nuScenes: the full backend path — ``labels_view(...)`` wrapping ``camera_view`` over a
-  ``RecordedReplaySimulator``, exactly as a run would visualize a frame.
-
-Writes PNGs under ``tmp/compare/``. Run: ``python -m scripts.visualization.visualize_scene_labels [--nuscenes]``.
-"""
+"""Project FrameData actor boxes onto recorded NuRec or nuScenes camera images."""
 
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
 
-from avsectester.scenarios.datasets.nurec import NuRecDataset
-from avsectester.scenarios.presets import PHYSICAL_PATCH_HIDE_VEHICLE as REQ
-from avsectester.closed_loop.simulators.viz import draw_boxes3d, filmstrip, labels_view, save_image
+import numpy as np
 
-OUT = Path("tmp/compare")
-NUREC = Path("/workspace/hdd/datasets/PhysicalAI-Autonomous-Vehicles-NuRec/sample_set/26.01_release")
+from avsectester.closed_loop.simulator import SensorView
+from avsectester.closed_loop.simulators.recorded import RecordedReplaySimulator
+from avsectester.datasets.nurec import NuRecDataset
+from avsectester.datasets.nuscenes import NuScenesDataset
+from avsectester.evaluation.visualization import draw_boxes3d, filmstrip, save_image
 
 
-def _mp4_frame(mp4: str, idx: int):
+def recorded_video_frame(path: str | Path, timestamps, timestamp: float):
+    """Choose the nearest recorded sample by time, independently of decision positions."""
     import cv2
-    cap = cv2.VideoCapture(mp4)
-    cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-    ok, bgr = cap.read()
-    cap.release()
-    return bgr[:, :, ::-1].copy() if ok else None
+
+    times = np.asarray(timestamps, dtype=float)
+    if not len(times) or timestamp < times[0] or timestamp > times[-1]:
+        raise ValueError("Requested timestamp lies outside the recorded camera support")
+    index = int(np.argmin(np.abs(times - timestamp)))
+    video = cv2.VideoCapture(str(path))
+    try:
+        video.set(cv2.CAP_PROP_POS_FRAMES, index)
+        ok, bgr = video.read()
+    finally:
+        video.release()
+    if not ok:
+        raise ValueError(f"Cannot read video frame {index} from {path}")
+    return bgr[:, :, ::-1].copy()
 
 
-def nurec_examples(uuid: str = "023b7fcc-671c-40e3-9bd2-c66b0b073fbc") -> None:
-    usdz = str(NUREC / uuid / f"{uuid}.usdz")
-    mp4 = str(NUREC / uuid / "camera_front_wide_120fov.mp4")
-    strip, target_saved = [], False
-    for k in range(21):
-        scene = next(NuRecDataset([usdz], keyframe=k / 20).scenes())
-        frame = _mp4_frame(mp4, scene.source["frame_index"])
-        if frame is None:
-            continue
-        match = REQ.match(scene)
-        # projected 3-D bounding boxes (near vehicles only, to keep the frame legible); the requirement's
-        # target (if any) is highlighted and always drawn regardless of distance
-        overlaid = draw_boxes3d(frame, scene, target=match.target if match else None, max_distance=40.0)
-        strip.append(overlaid)
-        if match and not target_saved:  # first qualifying frame -> the single-frame example
-            save_image(overlaid, OUT / "labels_nurec_target.png")
-            print("saved", OUT / "labels_nurec_target.png",
-                  f"(target vehicle d={match.target.distance:.1f}m)")
-            target_saved = True
-    save_image(filmstrip(strip[::3][:8], cols=4), OUT / "labels_nurec_filmstrip.png")
-    print("saved", OUT / "labels_nurec_filmstrip.png", f"({len(strip)} frames labeled)")
+def nurec_examples(usdz: Path, video: Path, output: Path, *, camera_id: str, samples: int) -> None:
+    dataset = NuRecDataset([str(usdz)], camera_id=camera_id, camera_alias=camera_id, time_step=.1)
+    scenario = next(dataset.scenarios())
+    timeline = dataset.frames(scenario.id)
+    timestamps = dataset.camera_timestamps(str(usdz))
+    camera, ego_from_sensor = dataset.camera_geometry(str(usdz))
+    positions = np.unique(np.linspace(0, len(timeline) - 1, samples).astype(int))
+    images = []
+    for position in positions:
+        frame = timeline[int(position)]
+        data = dataset.frame_data(scenario.id, frame)
+        rgb = recorded_video_frame(video, timestamps, frame.timestamp)
+        if data.ego is None:
+            raise ValueError("NuRec frame has no true ego state")
+        ego = data.ego.box_pose()
+        actors = {identity: actor.box_pose() for identity, actor in data.actors.items()}
+        view = SensorView(camera_id, rgb, camera, np.linalg.inv(data.ego.pose @ ego_from_sensor),
+                          actors, ego, frame.timestamp, frame.position)
+        images.append(draw_boxes3d(rgb, view, actors=data.actors, max_distance=40.))
+    save_image(filmstrip(images, cols=4), output / "labels_nurec.png")
 
 
-def nuscenes_example() -> None:
-    from avsectester.scenarios.datasets.nuscenes import NuScenesDataset
-    ds = NuScenesDataset("/workspace/hdd/datasets/nuscenes", max_samples=60)
-    for scene in ds.scenes():
-        match = REQ.match(scene)
-        if match is None:
-            continue
-        backend = ds.context(scene).native["make_backend"]()
-        # the standard view path: labels_view wraps camera_view, overlaying this frame's GT
-        view = labels_view(lambda _obs, s=scene: s, camera="front", target=match.target, max_distance=40.0)
-        backend.reset()
-        save_image(view(backend.observe()), OUT / "labels_nuscenes_target.png")
-        print("saved", OUT / "labels_nuscenes_target.png",
-              f"(target vehicle d={match.target.distance:.1f}m)")
-        return
-    print("no qualifying nuScenes frame in the sampled set")
+def nuscenes_examples(dataroot: Path, output: Path, *, version: str, samples: int) -> None:
+    dataset = NuScenesDataset(str(dataroot), version=version)
+    scenario = next(dataset.scenarios())
+    timeline = dataset.frames(scenario.id)
+    positions = np.unique(np.linspace(0, len(timeline) - 1, samples).astype(int))
+    images = []
+    simulator = RecordedReplaySimulator()
+    with simulator.create_runtime() as simulator_runtime:
+        for position in positions:
+            frame = timeline[int(position)]
+            data = dataset.frame_data(scenario.id, frame)
+            simulator_runtime.reset(dataset.scenario_start(scenario.id, frame))
+            view = simulator_runtime.sensor_view("front")
+            images.append(draw_boxes3d(view.data, view, actors=data.actors, max_distance=40.))
+    save_image(filmstrip(images, cols=4), output / "labels_nuscenes.png")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--usdz", type=Path, help="NuRec reconstruction archive")
+    parser.add_argument("--video", type=Path, help="Matching recorded NuRec camera video")
+    parser.add_argument("--camera", default="camera_front_wide_120fov")
+    parser.add_argument("--nuscenes", type=Path, help="nuScenes dataroot")
+    parser.add_argument("--version", default="v1.0-trainval")
+    parser.add_argument("--samples", type=int, default=8)
+    parser.add_argument("--output", type=Path, default=Path("tmp/compare"))
+    args = parser.parse_args()
+    if args.samples < 1:
+        parser.error("--samples must be positive")
+    if args.usdz is None and args.nuscenes is None:
+        parser.error("Provide --usdz with --video, or --nuscenes")
+    if args.usdz is not None:
+        if args.video is None:
+            parser.error("--usdz requires --video from the same scene and camera")
+        nurec_examples(args.usdz, args.video, args.output, camera_id=args.camera, samples=args.samples)
+    if args.nuscenes is not None:
+        nuscenes_examples(args.nuscenes, args.output, version=args.version, samples=args.samples)
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--nuscenes", action="store_true", help="also render a nuScenes example (slow devkit load)")
-    args = ap.parse_args()
-    OUT.mkdir(parents=True, exist_ok=True)
-    nurec_examples()
-    if args.nuscenes:
-        nuscenes_example()
+    main()

@@ -15,7 +15,7 @@ FROM ghcr.io/astral-sh/uv:0.9.30 AS uv-nurec
 
 # NuRec + Alpamayo image. AlpaSim's driver requires Python 3.12, so it cannot share the Python 3.11
 # environment below. This target installs only the AlpaSim packages AVSecTester imports
-# (alpasim_driver with its model dependencies, and alpasim_grpc) plus the shared PyArrow pin.
+# (alpasim_driver with its model dependencies, and alpasim_grpc) plus the framework dependencies.
 # AVSecTester itself is not installed: mount the checkout at /app and run from it.
 #   docker build --target nurec -t avsectester:nurec .
 # It is defined before the default stage, so `docker build .` and docker compose still build the
@@ -44,11 +44,15 @@ RUN uv sync --python 3.12 --package alpasim_driver --no-dev \
  && uv run --no-sync compile-protos
 ENV PATH="/opt/alpasim/.venv/bin:${PATH}"
 
-# The same exact PyArrow pin as the Python 3.11 image, read from pyproject.toml.
+# Install the same framework dependencies as the Python 3.11 image, including the CLI and
+# report exporters. AlpaSim controls NumPy: keep its installed version rather than applying
+# the CARLA/OpenMMLab-specific NumPy<2 constraint from AVSecTester's Python 3.11 environment.
 COPY pyproject.toml /tmp/avsectester-pyproject.toml
-RUN arrow=$(python -c 'import tomllib; deps = tomllib.load(open("/tmp/avsectester-pyproject.toml", "rb"))["project"]["dependencies"]; print(next(d for d in deps if d.startswith("pyarrow==")))') \
- && uv pip install --python /opt/alpasim/.venv/bin/python "$arrow" \
- && python -c "import pyarrow.parquet, alpasim_grpc; from alpasim_driver.models.alpamayo1_5_model import Alpamayo15Model"
+RUN python -c 'import re, tomllib, numpy; from pathlib import Path; deps = tomllib.load(open("/tmp/avsectester-pyproject.toml", "rb"))["project"]["dependencies"]; Path("/tmp/avsectester-requirements.txt").write_text("\n".join(d for d in deps if re.match(r"[A-Za-z0-9_.-]+", d).group(0).lower() != "numpy") + "\n"); Path("/tmp/alpasim-numpy.txt").write_text("numpy==" + numpy.__version__ + "\n")' \
+ && uv pip install --python /opt/alpasim/.venv/bin/python \
+      -r /tmp/avsectester-requirements.txt -c /tmp/alpasim-numpy.txt \
+ && python -c "import typer, yaml, matplotlib, PIL, pyarrow.parquet, alpasim_grpc; from alpasim_driver.models.alpamayo1_5_model import Alpamayo15Model" \
+ && rm /tmp/avsectester-pyproject.toml /tmp/avsectester-requirements.txt /tmp/alpasim-numpy.txt
 
 WORKDIR /app
 ENV PYTHONPATH=/app
@@ -92,9 +96,9 @@ RUN python -m pip install --no-cache-dir -e third_party/avstack-core -c constrai
  && python -m pip install --no-cache-dir -e third_party/lib-avstack-carla --no-deps \
  && python -m pip install --no-cache-dir "carla==0.9.16" pygame ipywidgets nuscenes-devkit lyft-dataset-sdk==0.0.8 -c constraints.txt
 # 5. AVSecTester (includes the pinned Parquet dependency from pyproject.toml;
-# viz adds the --plot driving-impact figure, augment adds the corruption backend).
+# plots are part of reports; augment adds optional Albumentations transforms).
 # Torch 2.1 and MMEngine use pkg_resources, which newer setuptools versions remove.
-RUN python -m pip install --no-cache-dir -e ".[dev,viz,augment]" "setuptools==69.5.1" \
+RUN python -m pip install --no-cache-dir -e ".[dev,augment]" "setuptools==69.5.1" \
  && python -c "import pyarrow.parquet"
 
 # default to a shell — run attacks/recordings explicitly (see docs/getting-started/installation.md#docker / docker-compose.yml)

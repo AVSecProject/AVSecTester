@@ -1,475 +1,423 @@
-"""CLI configuration, treatment routing and observable experiment outcomes."""
+"""CLI workflow, saved preparation and runtime/configuration exit status."""
 
-from copy import deepcopy
-from dataclasses import replace
-import sys
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
-import yaml
 from typer.testing import CliRunner
 
-from avsectester import carla_runner
-from avsectester import cli
-from avsectester.closed_loop.avstack import AVStack
-from avsectester.legacy_experiment import ExecutionMode, TreatmentMode
-from avsectester.closed_loop.datatypes import Control, StateEstimate
-from avsectester.preparation import Intervention
-from avsectester.closed_loop.hooks import Hook, Plugin
-from avsectester.closed_loop.simulators.nurec import NuRecSimulatorRuntime, NuRecSimulator, StubRenderer
+from avsectester import __version__, cli
 
 
 @pytest.fixture
-def attack_trace(make_trace):
-    def build(*args):
-        trace = make_trace(*args)
-        trace.provenance["interventions"] = [{"kind": "attack"}]
-        return trace
-    return build
+def workflow(tmp_path, monkeypatch):
+    path = tmp_path / "experiment.yaml"
+    path.write_text("dataset: fake\n")
+    output = tmp_path / "result"
+    configuration = SimpleNamespace(output=output)
+    def save_output(directory):
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "prepared.json").write_text("{}")
+    selected = SimpleNamespace(save=Mock(side_effect=save_output))
+    result = SimpleNamespace(failures=(), selection_errors=(), notices=())
+    load = Mock(return_value=configuration)
+    validate = Mock()
+    def prepare_output(configuration):
+        save_output(configuration.output)
+        return selected
+    prepare = Mock(side_effect=prepare_output)
+    execute = Mock(return_value=result)
+    report = Mock(return_value=SimpleNamespace(format_summary=lambda: "Report", metric_errors=[]))
+    monkeypatch.setattr(cli, "load_configuration", load)
+    monkeypatch.setattr(cli, "validate_configuration_environment", validate)
+    monkeypatch.setattr(cli.Experiment, "prepare", prepare)
+    monkeypatch.setattr(cli.Experiment, "execute", execute)
+    monkeypatch.setattr(cli, "_evaluate_result", report)
+    return SimpleNamespace(**locals())
+
+
+def test_run_calls_preparation_execution_and_evaluation(workflow):
+    w = workflow
+    result = CliRunner().invoke(cli.app, ["run", str(w.path)])
+    assert result.exit_code == 0, result.output
+    w.load.assert_called_once_with(w.path)
+    w.prepare.assert_called_once_with(w.configuration)
+    w.selected.save.assert_not_called()
+    w.execute.assert_called_once_with(w.selected)
+    w.report.assert_called_once_with(w.result, w.configuration)
+
+
+def test_run_loads_saved_preparation_instead_of_preparing(workflow, monkeypatch):
+    w = workflow
+    saved = w.tmp_path / "previous"
+    saved.mkdir()
+    load = Mock(return_value=w.selected)
+    monkeypatch.setattr(cli.PreparedExperiment, "load", load)
+    result = CliRunner().invoke(cli.app, ["run", str(w.path), "--prepared", str(saved)])
+    assert result.exit_code == 0, result.output
+    load.assert_called_once_with(w.configuration, saved)
+    w.prepare.assert_not_called()
+    w.selected.save.assert_called_once_with(w.output)
+    w.execute.assert_called_once_with(w.selected)
+
+
+def test_run_refuses_existing_runs_without_preparing_or_loading(workflow, monkeypatch):
+    w = workflow
+    (w.output / "runs").mkdir(parents=True)
+    marker = w.output / "runs" / "keep"
+    marker.write_text("existing")
+    load = Mock()
+    monkeypatch.setattr(cli.PreparedExperiment, "load", load)
+    result = CliRunner().invoke(cli.app, ["run", str(w.path)])
+    assert result.exit_code == 2 and "already exists" in result.output
+    w.prepare.assert_not_called()
+    w.execute.assert_not_called()
+    load.assert_not_called()
+    assert marker.read_text() == "existing"
+
+
+@pytest.mark.parametrize("field", ["failures", "selection_errors"])
+def test_completed_work_still_gets_a_report_when_other_runs_or_selection_failed(workflow, field):
+    w = workflow
+    failure = SimpleNamespace(attack_name="example", segment_index=0, seed=0,
+                              treatment="attacked", error="RuntimeError: failed", scenario_id="scene",
+                              log=SimpleNamespace(status="failed"))
+    setattr(w.result, field, (failure,))
+    result = CliRunner().invoke(cli.app, ["run", str(w.path)])
+    assert result.exit_code == 1
+    w.report.assert_called_once_with(w.result, w.configuration)
+
+
+def test_execution_failure_evaluates_saved_partial_results(workflow, monkeypatch):
+    w = workflow
+    w.output.mkdir()
+    (w.output / "prepared.json").write_text("{}")
+    load = Mock(return_value=w.result)
+    monkeypatch.setattr(cli.ExperimentResult, "load", load)
+    w.execute.side_effect = RuntimeError("driver failed")
+    result = CliRunner().invoke(cli.app, ["run", str(w.path)])
+    assert result.exit_code == 1 and "driver failed" in result.output
+    load.assert_called_once_with(w.output, w.configuration)
+    w.report.assert_called_once_with(w.result, w.configuration)
+
+
+def test_evaluate_reads_saved_runs_without_preparing_or_executing(workflow, monkeypatch):
+    w = workflow
+    w.output.mkdir()
+    (w.output / "prepared.json").write_text("{}")
+    load = Mock(return_value=w.result)
+    monkeypatch.setattr(cli.ExperimentResult, "load", load)
+    result = CliRunner().invoke(cli.app, ["evaluate", str(w.path)])
+    assert result.exit_code == 0, result.output
+    load.assert_called_once_with(w.output, w.configuration)
+    w.prepare.assert_not_called()
+    w.execute.assert_not_called()
+    w.selected.save.assert_not_called()
+    w.report.assert_called_once_with(w.result, w.configuration)
+
+
+@pytest.mark.parametrize("command", ["run", "evaluate"])
+def test_bad_configuration_is_exit_two(workflow, command):
+    w = workflow
+    w.load.side_effect = ValueError("unknown constructor")
+    result = CliRunner().invoke(cli.app, [command, str(w.path)])
+    assert result.exit_code == 2 and "unknown constructor" in result.output
+    w.prepare.assert_not_called()
+    w.execute.assert_not_called()
+
+
+def test_prepared_mismatch_is_configuration_error(workflow, monkeypatch):
+    w = workflow
+    saved = w.tmp_path / "previous"
+    saved.mkdir()
+    monkeypatch.setattr(cli.PreparedExperiment, "load", Mock(side_effect=cli.ConfigurationMismatchError("incompatible")))
+    result = CliRunner().invoke(cli.app, ["run", str(w.path), "--prepared", str(saved)])
+    assert result.exit_code == 2 and "incompatible" in result.output
+    w.execute.assert_not_called()
+
+
+def test_missing_output_is_configuration_error(workflow):
+    w = workflow
+    w.configuration.output = None
+    result = CliRunner().invoke(cli.app, ["run", str(w.path)])
+    assert result.exit_code == 2 and "output" in result.output
+    w.prepare.assert_not_called()
+
+
+@pytest.mark.parametrize("flag", ["--frames", "--gpu", "--mode", "--treatment", "--plot"])
+def test_old_flags_are_rejected(workflow, flag):
+    result = CliRunner().invoke(cli.app, ["run", str(workflow.path), flag, "1"])
+    assert result.exit_code == 2
+    workflow.load.assert_not_called()
+
+
+def test_metric_value_error_is_execution_error_not_configuration_error(workflow):
+    w = workflow
+    w.report.side_effect = ValueError("DetectionMetrics requires detections")
+    result = CliRunner().invoke(cli.app, ["run", str(w.path)])
+    assert result.exit_code == 1 and "ValueError" in result.output and "requires detections" in result.output
+    w.execute.assert_called_once()
+
+
+def test_version_is_unchanged():
+    result = CliRunner().invoke(cli.app, ["version"])
+    assert result.exit_code == 0
+    assert result.output.strip() == f"avsectester {__version__}"
+
+
+def test_failed_prepare_does_not_read_stale_preparation(workflow, monkeypatch):
+    w = workflow
+    w.output.mkdir()
+    (w.output / "prepared.json").write_text("old preparation")
+    w.prepare.side_effect = RuntimeError("prepare failed before saving")
+    load = Mock()
+    monkeypatch.setattr(cli.ExperimentResult, "load", load)
+    result = CliRunner().invoke(cli.app, ["run", str(w.path)])
+    assert result.exit_code == 1 and "RuntimeError: prepare failed" in result.output
+    load.assert_not_called()
+    w.report.assert_not_called()
+
+
+def test_keyboard_interrupt_reports_available_results_and_returns_130(workflow, monkeypatch):
+    w = workflow
+    load = Mock(return_value=w.result)
+    monkeypatch.setattr(cli.ExperimentResult, "load", load)
+    w.execute.side_effect = KeyboardInterrupt()
+    result = CliRunner().invoke(cli.app, ["run", str(w.path)])
+    assert result.exit_code == 130 and "interrupted" in result.output
+    load.assert_called_once_with(w.output, w.configuration)
+    w.report.assert_called_once_with(w.result, w.configuration)
+
+
+def test_evaluate_missing_saved_results_has_clear_message(workflow):
+    result = CliRunner().invoke(cli.app, ["evaluate", str(workflow.path)])
+    assert result.exit_code == 1 and "No saved experiment results found" in result.output
+
+
+def test_metric_error_is_exit_one_after_writing_report(workflow):
+    w = workflow
+    w.report.return_value.metric_errors = [{"metric": "UserMetric", "error": "ValueError: invalid"}]
+    result = CliRunner().invoke(cli.app, ["run", str(w.path)])
+    assert result.exit_code == 1 and "Output directory:" in result.output
+    w.report.assert_called_once_with(w.result, w.configuration)
 
 
 @pytest.fixture
-def cli_config(tmp_path):
-    config = {
-        "frames": 6,
-        "client": {"type": "CarlaClient", "seed": 0},
-        "ego": {
-            "type": "CarlaMobileActor",
-            "pipeline": {"perception": {"type": "MMDetObjectDetector3D", "gpu": 1}},
-        },
-        "attacks": [{"stage": "perception", "hook": {"type": "PhantomInjection"},
-                     "imports": ["avsectester.attacks.pipeline.phantom"]}],
-    }
-    path = tmp_path / "scenario.yaml"
-    path.write_text(yaml.safe_dump(config))
-    return path, config
+def memory_cli(tmp_path, monkeypatch):
+    """Exercise the real public workflow; no mocks replace execution, recording or evaluation."""
+    import sys
+    from types import ModuleType
+    import numpy as np
+    import yaml
+    from avsectester.attack import Attack, AttackSegment
+    from avsectester.closed_loop.avstack import AVStack
+    from avsectester.closed_loop.datatypes import Control, Observation, WorldSnapshot
+    from avsectester.closed_loop.simulator import Simulator, SimulatorRuntime
+    from avsectester.datasets import (
+        ActorState, Dataset, FrameData, FrameReference, ScenarioDescriptor, ScenarioStart,
+    )
+    from avsectester.evaluation.metric import Metric
 
+    module = ModuleType("avsec_cli_memory")
+    module.allow_data = True
+    module.fail_run = False
 
-@pytest.fixture
-def user_methods(monkeypatch):
-    events, inputs, localizers = [], [], []
+    class MemoryDataset(Dataset):
+        def scenarios(self):
+            if not module.allow_data:
+                raise AssertionError("evaluate accessed dataset scenarios")
+            return iter((ScenarioDescriptor("scene", "memory"),))
 
-    class Localizer:
-        def __init__(self):
-            self.history = []
-            localizers.append(self)
+        def frames(self, scenario_id):
+            if not module.allow_data:
+                raise AssertionError("evaluate accessed dataset frames")
+            return tuple(FrameReference(scenario_id, i, str(i), i * .1) for i in range(3))
 
-        def __call__(self, observation, context):
-            self.history.append(observation.frame)
-            return StateEstimate(observation.vehicle_state, observation.ego_speed)
+        def frame_data(self, scenario_id, frame):
+            return FrameData(frame, ego=ActorState(np.eye(4), (1, 0, 0), "vehicle", (4, 2, 1)))
 
-    class SpeedPlugin(Plugin):
-        def __init__(self, speed):
-            self.speed = speed
+        def native(self, scenario_id):
+            return {}
 
-        def reset(self, context):
-            events.append(("reset", self.speed))
+        def scenario_start(self, scenario_id, frame):
+            return ScenarioStart("memory", scenario_id, frame, {})
 
-        def transform(self, observation, context):
-            assert context.physical_state.ego_speed == 2
-            events.append(("input", observation.ego_speed))
-            return replace(observation, ego_speed=self.speed)
+    class MemoryRuntime(SimulatorRuntime):
+        command_modes = frozenset({"actuator"})
 
-        def close(self):
-            events.append(("close", self.speed))
+        def _initialize_world(self, start, initialization, world):
+            self.position = start.frame.position
+            self.speed = .5 if world.get("weather", {}).get("precipitation", 0) else 1.
 
-    class Stack(AVStack):
-        def __init__(self):
-            self.seen = []
-            inputs.append(self.seen)
+        def _observe(self):
+            return Observation(self.position * .1, self.position,
+                               {"front": np.full((4, 4, 3), 100, np.uint8)}, ego_speed=self.speed)
+
+        def _state(self):
+            pose = np.eye(4)
+            pose[0, 3] = self.position
+            return WorldSnapshot(self.position * .1, self.position,
+                                 ego_speed=self.speed, ego=ActorState(pose, (self.speed, 0, 0), "vehicle", (4, 2, 1)))
+
+        def _advance_native(self, command):
+            self.position += 1
+
+    class MemorySimulator(Simulator):
+        dataset_kinds = ("memory",)
+        supported_world_settings = frozenset({"weather"})
+
+        def create_runtime(self, seed=None):
+            return MemoryRuntime(self)
+
+    class MemoryAVStack(AVStack):
+        command_modes = frozenset({"actuator"})
+        provides_detections = False
 
         def __call__(self, observation):
-            self.seen.append(observation.ego_speed)
-            return Control()
+            if module.fail_run:
+                raise RuntimeError("memory driving failure")
+            image = observation.sensor_data["front"]
+            noisy = bool(np.any(image != 100))
+            return Control(throttle=0. if noisy else .3, brake=.1 if noisy else 0.)
 
-    class Defense(Intervention):
-        def hooks(self, artifacts):
-            def defend(command, context):
-                context.record_output("defense", "applied")
-                events.append(("defense", context.step))
-                return Control(brake=1)
+    class MemoryAttack(Attack):
+        def build_metadata(self, scenario):
+            return (AttackSegment(scenario.scenario_id, scenario.frames[0], scenario.frames[2]),)
 
-            return [Hook("command", defend)]
+    class FailingMetric(Metric):
+        def evaluate(self, group):
+            raise ValueError("metric failed")
 
-    class SpeedFilter(Plugin):
-        def __init__(self, max_speed=1.0):
-            self.max_speed = max_speed
-
-        def transform(self, observation, context):
-            return replace(observation, ego_speed=min(observation.ego_speed, self.max_speed))
-
-    class FilterMethod(Intervention):
-        def __init__(self, max_speed=1.0):
-            self.max_speed = max_speed
-
-        def hooks(self, artifacts):
-            return [Hook("observation", SpeedFilter(self.max_speed))]
-
-    module = ModuleType("avsec_test_cli_methods")
-    module.SpeedPlugin, module.Stack, module.Localizer, module.Defense = (
-        SpeedPlugin, Stack, Localizer, Defense,
-    )
-    module.SpeedFilter, module.FilterMethod = SpeedFilter, FilterMethod
-    module.NoopAttack = lambda: lambda value, context: value
+    for item in (MemoryDataset, MemorySimulator, MemoryAVStack, MemoryAttack, FailingMetric):
+        setattr(module, item.__name__, item)
     monkeypatch.setitem(sys.modules, module.__name__, module)
-    return SimpleNamespace(
-        path=module.__name__ + ":", events=events, inputs=inputs, localizers=localizers,
-        config={
-            "backend": {
-                "type": "NuRecSimulator", "renderer": {"type": "StubRenderer", "height": 2, "width": 2},
-                "ego0": {"speed": 2},
-            },
-            "stack": {"factory": module.__name__ + ":Stack"},
-        },
-    )
-
-
-@pytest.mark.parametrize("args,frames,gpu", [
-    ([], 6, 1), (["--frames", "10", "--gpu", "0"], 10, 0), (["--frames", "0"], 0, 1),
-])
-def test_cli_loads_config_and_uses_the_shared_experiment_entry(
-    monkeypatch, cli_config, make_trace, attack_trace, args, frames, gpu,
-):
-    path, config = cli_config
-    clean, attacked = make_trace([0, 2, 5]), attack_trace([0, 1, 0], [0, 1, 1])
-    execute = Mock(return_value={"clean": clean, "attack": attacked})
-    monkeypatch.setattr(cli, "run_configured", execute)
-    result = CliRunner().invoke(cli.app, ["run", str(path), *args])
-
-    assert result.exit_code == 0, result.output
-    expected = deepcopy(config)
-    expected["ego"]["pipeline"]["perception"]["gpu"] = gpu
-    execute.assert_called_once()
-    assert execute.call_args.args == (expected, frames)
-    assert execute.call_args.kwargs["mode"] is ExecutionMode.PAIR
-    assert execute.call_args.kwargs["treatment"] is TreatmentMode.ATTACK
-    assert execute.call_args.kwargs["provenance"] == {"config_path": str(path.resolve())}
-    assert result.output.index("[clean]") < result.output.index("[attacked]")
-    assert result.output.index("[scenario] seed=0") < result.output.index("[pair]")
-    assert "peak_speed=5.00" in result.output and "ATTACK SUCCEEDED" in result.output
-    assert yaml.safe_load(path.read_text()) == config
-
-
-@pytest.mark.parametrize("clean_speeds,attacked_speeds,brakes,code,verdict", [
-    ([0, 2, 5], [0, 1, 0], [0, 1, 1], 0, "ATTACK SUCCEEDED"),
-    ([0, 2, 5], [0, 2, 5], [0, 0, 0], 3, "no impact"),
-    ([0, 0.1, 0.1], [0, 0, 0], [0, 1, 1], 4, "INCONCLUSIVE"),
-])
-def test_cli_exit_code_matches_verdict(
-    monkeypatch, cli_config, make_trace, attack_trace, clean_speeds, attacked_speeds, brakes, code, verdict,
-):
-    path, _ = cli_config
-    monkeypatch.setattr(cli, "run_configured", Mock(return_value={
-        "clean": make_trace(clean_speeds), "attack": attack_trace(attacked_speeds, brakes),
-    }))
-    result = CliRunner().invoke(cli.app, ["run", str(path)])
-    assert result.exit_code == code, result.output
-    assert verdict in result.output
-
-
-@pytest.mark.parametrize("treatment", ["clean", "attack", "defense", "attack-defense"])
-def test_cli_forwards_single_treatment_without_pair_metrics(
-    monkeypatch, cli_config, make_trace, treatment,
-):
-    path, config = cli_config
-    config.update(mode="pair", treatment="clean")
-    path.write_text(yaml.safe_dump(config))
-    execute = Mock(return_value={treatment: make_trace([0])})
-    monkeypatch.setattr(cli, "run_configured", execute)
-    result = CliRunner().invoke(cli.app, [
-        "run", str(path), "--mode", "single", "--treatment", treatment,
-    ])
-    assert result.exit_code == 0, result.output
-    assert execute.call_args.kwargs["mode"] is ExecutionMode.SINGLE
-    assert execute.call_args.kwargs["treatment"] is TreatmentMode(treatment)
-    assert "INCONCLUSIVE" not in result.output and "no impact" not in result.output
-
-
-def test_cli_optional_plot_creates_file(monkeypatch, cli_config, make_trace, attack_trace, tmp_path):
-    path, _ = cli_config
-    monkeypatch.setattr(cli, "run_configured", Mock(return_value={
-        "clean": make_trace([0, 2, 5]), "attack": attack_trace([0, 1, 0], [0, 1, 1]),
-    }))
-    output = tmp_path / "plots" / "impact.png"
-    result = CliRunner().invoke(cli.app, ["run", str(path), "--plot", str(output)])
-    assert result.exit_code == 0, result.output
-    assert output.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
-    assert str(output) in result.output
-
-
-@pytest.mark.parametrize("failure", [RuntimeError("server unavailable"), ValueError("handler failed")])
-@pytest.mark.parametrize("seed", [0, None])
-def test_cli_runtime_errors_preserve_seed_and_have_execution_exit_code(
-    monkeypatch, cli_config, failure, seed,
-):
-    import typer
-    from avsectester.closed_loop.simulators import carla
-
-    path, config = cli_config
-    config["client"]["seed"] = seed
-    path.write_text(yaml.safe_dump(config))
-    generated = Mock(return_value=987)
-    monkeypatch.setattr(carla.secrets, "randbelow", generated)
-    echo = Mock(wraps=typer.echo)
-    monkeypatch.setattr(typer, "echo", echo)
-
-    def fail(configured_scene, frames, **kwargs):
-        expected_seed = 987 if seed is None else seed
-        assert configured_scene["client"]["seed"] == expected_seed
-        echo.assert_any_call(f"[scenario] seed={expected_seed}")
-        raise failure
-
-    monkeypatch.setattr(cli, "run_configured", fail)
-    result = CliRunner().invoke(cli.app, ["run", str(path)])
-    assert result.exit_code == 1
-    assert "Execution error" in result.output and str(failure) in result.output
-    assert generated.call_count == int(seed is None)
-    assert yaml.safe_load(path.read_text()) == config
-
-
-@pytest.mark.parametrize("invalid", ["-1", "malformed-yaml", "single-plot"])
-def test_cli_rejects_invalid_options_before_experiment_assembly(monkeypatch, cli_config, invalid):
-    path, _ = cli_config
-    args = []
-    if invalid == "-1":
-        args = ["--frames", "-1"]
-    elif invalid == "malformed-yaml":
-        path.write_text("runtime: [")
-    else:
-        args = ["--mode", "single", "--plot", "unused.png"]
-    execute = Mock()
-    monkeypatch.setattr(cli, "run_configured", execute)
-    result = CliRunner().invoke(cli.app, ["run", str(path), *args])
-    assert result.exit_code == 2
-    execute.assert_not_called()
-
-
-def test_cli_rejects_unknown_runtime_options_before_constructing_backend(monkeypatch, cli_config):
-    path, config = cli_config
-    config["runtime"] = {"unused_option": True}
-    path.write_text(yaml.safe_dump(config))
-    construct = Mock(side_effect=AssertionError("Backend must not be created"))
-    monkeypatch.setattr(carla_runner, "CarlaSimulator", construct)
-    result = CliRunner().invoke(cli.app, ["run", str(path)])
-    assert result.exit_code == 2, result.output
-    assert "unused_option" in result.output
-    construct.assert_not_called()
-
-
-def test_cli_consumes_physical_patches_through_world_setup(monkeypatch, cli_config):
-    from avsectester.attacks.patch.physical_patch import PhysicalPatch
-
-    path, config = cli_config
-    config.pop("attacks")
-    config["patches"] = [{"target": "lead", "texture": {"pattern": "checkerboard"}}]
-    path.write_text(yaml.safe_dump(config))
-    world, lead, panel = object(), object(), SimpleNamespace(destroy=Mock(), is_alive=True)
-    deployed = []
-
-    class Backend(NuRecSimulatorRuntime):
-        def __init__(self, *args, **kwargs):
-            super().__init__(NuRecSimulator(*args, **kwargs))
-
-        replay_scenario = config
-
-        @property
-        def native(self):
-            return {"world": world, "actors": {"lead": lead}}
-
-        def _hold_tick(self):
-            pass
-
-    def deploy(patch, supplied_world, target, *, tick, on_spawn):
-        assert supplied_world is world and target is lead
-        deployed.append(patch.texture)
-        on_spawn(panel)
-        return [panel]
-
-    monkeypatch.setattr(PhysicalPatch, "apply", deploy)
-    monkeypatch.setattr(carla_runner, "CarlaSimulator", lambda _: SimpleNamespace(
-        create_runtime=lambda seed=None: Backend(
-            {"ego0": {"speed": 2}}, renderer=StubRenderer(height=2, width=2),
-        )))
-    monkeypatch.setattr(carla_runner, "_stack", lambda _: NeutralStack())
-    result = CliRunner().invoke(cli.app, ["run", str(path), "--frames", "1"])
-    assert result.exit_code == 3, result.output
-    assert deployed == [{"pattern": "checkerboard"}]
-    panel.destroy.assert_called_once()
-
-
-class NeutralStack(AVStack):
-    def __call__(self, observation):
-        return Control()
-
-
-def test_cli_custom_factory_runs_real_nurec_pair_and_localization(user_methods, tmp_path):
-    env = user_methods
-    config = {
-        "backend": {
-            "type": "NuRecSimulator", "renderer": {"type": "StubRenderer", "height": 2, "width": 2},
-            "ego0": {"speed": 2},
-        },
-        "stack": {"factory": env.path + "Stack"},
-        "runtime": {
-            "localizer": {"factory": env.path + "Localizer"},
-            "hooks": [
-                {"stage": "observation", "factory": env.path + "SpeedPlugin", "options": {"speed": speed}}
-                for speed in (9, 6)
-            ],
-        },
+    output = tmp_path / "output"
+    specification = {
+        "dataset": {"type": "avsec_cli_memory:MemoryDataset"},
+        "simulator": {"type": "avsec_cli_memory:MemorySimulator"},
+        "avstack": {"type": "avsec_cli_memory:MemoryAVStack"},
+        "attacks": {"example": {"type": "avsec_cli_memory:MemoryAttack"}},
+        "treatments": [{"name": "clean"}, {"name": "attacked", "attack_name": "example"},
+                       {"name": "noisy", "attack_name": "example", "environment": {
+                           "world": {"weather": {"precipitation": 70}},
+                           "sensors": [{"type": "GaussianNoise", "camera": "front",
+                                        "options": {"severity": .3}}]}}],
+        "output": str(output),
     }
-    path = tmp_path / "nurec.yaml"
-    path.write_text(yaml.safe_dump(config))
-    result = CliRunner().invoke(cli.app, ["run", str(path), "--frames", "2"])
-    assert result.exit_code == 3, result.output
-    assert env.inputs == [[2, 2], [6, 6]]
-    assert [event for event in env.events if event[0] == "input"] == [
-        ("input", 2), ("input", 9), ("input", 2), ("input", 9),
-    ]
-    for speed in (9, 6):
-        assert env.events.count(("reset", speed)) == env.events.count(("close", speed)) == 1
-    assert len(env.localizers) == 2 and env.localizers[0] is not env.localizers[1]
-    assert env.localizers[0].history == env.localizers[1].history == [0, 1]
+    config_path = tmp_path / "config.yaml"
+    def write_config():
+        config_path.write_text(yaml.safe_dump(specification))
+    write_config()
+    return SimpleNamespace(**locals())
 
 
-def test_cli_custom_carla_stack_needs_no_embedded_modular_pipeline(
-    monkeypatch, cli_config, user_methods,
-):
-    path, config = cli_config
-    config["ego"].pop("pipeline")
-    config.pop("attacks")
-    config["stack"] = {"factory": user_methods.path + "Stack"}
-    config["interventions"] = [{"kind": "defense", "factory": user_methods.path + "Defense"}]
-    config.update(mode="single", treatment="defense")
-    path.write_text(yaml.safe_dump(config))
-    backend = NuRecSimulator({"ego0": {"speed": 2}}, renderer=StubRenderer(height=2, width=2)).create_runtime()
-    backend.replay_scenario = config
-    monkeypatch.setattr(carla_runner, "CarlaSimulator", lambda _: SimpleNamespace(create_runtime=lambda seed=None: backend))
-    result = CliRunner().invoke(cli.app, ["run", str(path), "--frames", "2"])
+def test_in_memory_cli_run_then_offline_evaluate_writes_all_deliverables(memory_cli):
+    import json
+    w = memory_cli
+    runner = CliRunner()
+    result = runner.invoke(cli.app, ["run", str(w.config_path)])
     assert result.exit_code == 0, result.output
-    assert user_methods.inputs == [[2, 1.6]]
-    assert user_methods.events == [("defense", 0), ("defense", 1)]
-    assert "outputs=2" in result.output
+    assert (w.output / "prepared.json").is_file()
+    assert len(list((w.output / "runs").glob("*/*/*/*/manifest.json"))) == 3
+    directory = w.output / "evaluation"
+    assert (directory / "report.json").is_file() and (directory / "runs.csv").is_file()
+    assert len(list((directory / "plots").glob("*.png"))) == 1
+    report = json.loads((directory / "report.json").read_text())
+    pairs = {(pair["treatment_a"], pair["treatment_b"]): pair["deltas"]
+             for pair in report["pair_summaries"]}
+    # The attack has no effects, so only the noisy environment (rain slows, noise brakes) differs.
+    expected = {("clean", "attacked"): (0., 0), ("clean", "noisy"): (-.5, 2),
+                ("attacked", "noisy"): (-.5, 2)}
+    assert set(pairs) == set(expected)
+    for pair, (final_speed, brake_steps) in expected.items():
+        assert pairs[pair]["DrivingMetrics.final_speed"]["mean"] == final_speed, pair
+        assert pairs[pair]["DrivingMetrics.brake_steps"]["mean"] == brake_steps, pair
+    original = (directory / "report.json").read_bytes()
+    w.module.allow_data = False
+    repeated = runner.invoke(cli.app, ["evaluate", str(w.config_path)])
+    assert repeated.exit_code == 0, repeated.output
+    assert (directory / "report.json").read_bytes() == original
 
 
-@pytest.mark.parametrize("treatment,disabled_method", [
-    ("defense", False), ("clean", False), ("attack", False), ("attack", True),
-], ids=["defense-side-effects", "repeated-clean", "empty-attack", "disabled-defense"])
-@pytest.mark.parametrize("speed", [2, 0.1], ids=["driving", "stationary-baseline"])
-def test_non_attack_pairs_report_comparisons_without_attack_outcomes(
-    monkeypatch, user_methods, tmp_path, treatment, disabled_method, speed,
-):
-    from avsectester.evaluation import metric
-
-    config = deepcopy(user_methods.config)
-    config["backend"]["ego0"]["speed"] = speed
-    config["conditions"] = {"sensors": [{"type": "GaussianNoise", "severity": 0.1}]}
-    if treatment == "defense" or disabled_method:
-        config["interventions"] = [{"kind": "defense", "factory": user_methods.path + "Defense"}]
-    path = tmp_path / "pair.yaml"
-    path.write_text(yaml.safe_dump(config))
-    args = ["run", str(path), "--treatment", treatment, "--frames", "6"]
-    plot = Mock(wraps=metric.plot_impact)
-    monkeypatch.setattr(metric, "plot_impact", plot)
-    if treatment == "defense" and speed == 2:
-        args += ["--plot", str(tmp_path / "defense.png")]
-    result = CliRunner().invoke(cli.app, args)
-    assert result.exit_code == 0, result.output
-    assert "ATTACK" not in result.output and "INCONCLUSIVE" not in result.output
-    assert "no impact" not in result.output
-    assert "final_speed=" in result.output
-    if treatment == "defense":
-        assert "Defense side effects" in result.output and "defense: final_speed= 0.00" in result.output
-        assert len(user_methods.events) == 6
-        if speed == 2:
-            assert plot.call_args.kwargs["show_verdict"] is False
-            assert plot.call_args.kwargs["treated_label"] == "defense"
-            assert "Defense side effects" in plot.call_args.kwargs["title"]
+@pytest.mark.parametrize("failure", ["runtime", "metric", "configuration"])
+def test_in_memory_cli_failure_exit_codes_and_status_reports(memory_cli, failure):
+    import json
+    w = memory_cli
+    if failure == "runtime":
+        w.module.fail_run = True
+    elif failure == "metric":
+        w.specification["evaluation"] = {"metrics": [{"type": "avsec_cli_memory:FailingMetric"}]}
     else:
-        assert "baseline: final_speed=" in result.output and user_methods.events == []
-        if treatment == "attack":
-            assert "Comparing two baseline runs" in result.output
+        w.specification["attacks"] = {}
+    w.write_config()
+    result = CliRunner().invoke(cli.app, ["run", str(w.config_path)])
+    assert result.exit_code == (2 if failure == "configuration" else 1), result.output
+    if failure != "configuration":
+        directory = w.output / "evaluation"
+        report = json.loads((directory / "report.json").read_text())
+        assert (directory / "runs.csv").is_file()
+        if failure == "runtime":
+            assert "Failed run:" in result.output and "RuntimeError" in result.output
+        else:
+            assert report["metric_errors"]
 
 
-def test_combined_pair_labels_the_attack_with_defense_and_keeps_the_verdict(
-    monkeypatch, user_methods, tmp_path,
-):
-    from avsectester.evaluation import metric
-
-    config = deepcopy(user_methods.config)
-    config["runtime"] = {"hooks": [{"stage": "observation", "factory": user_methods.path + "NoopAttack"}]}
-    config["interventions"] = [{"kind": "defense", "factory": user_methods.path + "Defense"}]
-    path = tmp_path / "combined.yaml"
-    path.write_text(yaml.safe_dump(config))
-    plot = Mock(wraps=metric.plot_impact)
-    monkeypatch.setattr(metric, "plot_impact", plot)
-    output = tmp_path / "combined.png"
-    result = CliRunner().invoke(cli.app, [
-        "run", str(path), "--treatment", "attack-defense", "--frames", "6", "--plot", str(output),
-    ])
-    assert result.exit_code == 0, result.output
-    assert "ATTACK SUCCEEDED" in result.output and "[attack+defense]" in result.output
-    assert "attack+defense: final_speed=" in result.output
-    assert plot.call_args.kwargs["treated_label"] == "attack+defense"
-    assert plot.call_args.kwargs["show_verdict"] is True
-    assert output.read_bytes().startswith(b"\x89PNG")
-
-
-def test_raw_defense_configuration_points_to_the_method_format(user_methods, tmp_path):
-    config = deepcopy(user_methods.config)
-    config["runtime"] = {"hooks": [{
-        "stage": "observation", "factory": user_methods.path + "SpeedFilter",
-    }]}
-    path = tmp_path / "filter.yaml"
-    path.write_text(yaml.safe_dump(config))
-    result = CliRunner().invoke(cli.app, ["run", str(path), "--treatment", "defense", "--frames", "2"])
-    assert result.exit_code == 2, result.output
-    assert "runtime.hooks" in result.output and "kind: defense" in result.output
-    assert "interventions" in result.output and user_methods.inputs == []
-
-    config.pop("runtime")
-    config["interventions"] = [{"kind": "defense", "factory": user_methods.path + "FilterMethod"}]
-    path.write_text(yaml.safe_dump(config))
-    result = CliRunner().invoke(cli.app, [
-        "run", str(path), "--mode", "single", "--treatment", "defense", "--frames", "2",
-    ])
-    assert result.exit_code == 0, result.output
-    assert user_methods.inputs == [[1, 1]]
-    result = CliRunner().invoke(cli.app, ["run", str(path), "--treatment", "attack", "--frames", "2"])
-    assert result.exit_code == 0, result.output
-    assert user_methods.inputs == [[1, 1], [2, 2], [2, 2]]
-    assert "Comparing two baseline runs" in result.output
-
-
-@pytest.mark.parametrize("invalid", [
-    "stage", "command", "world-condition", "backend", "renderer", "dynamics", "backend-option",
+@pytest.mark.parametrize("error,code,label", [
+    (ValueError("invalid prepared JSON"), 1, "Result load error"),
+    (TypeError("invalid record"), 1, "Result load error"),
+    (cli.ConfigurationMismatchError("attack names differ"), 2, "Configuration error"),
 ])
-def test_cli_classifies_preflight_errors_before_reset(monkeypatch, user_methods, tmp_path, invalid):
-    config = {
-        "backend": {"type": "NuRecSimulator"},
-        "stack": {"factory": user_methods.path + "Stack"},
-    }
-    if invalid == "stage":
-        config["runtime"] = {"hooks": [{
-            "stage": "percepton.post", "factory": user_methods.path + "SpeedPlugin",
-            "options": {"speed": 6},
-        }]}
-    elif invalid == "command":
-        config["stack"] = {"type": "AlpamayoAVStack", "options": {"checkpoint_path": "unused"}}
-    elif invalid == "world-condition":
-        config["conditions"] = {"world": {"weather": "ClearNoon"}}
-    elif invalid == "backend":
-        config["backend"]["type"] = "UnknownBackend"
-    elif invalid == "backend-option":
-        config["backend"]["dtt"] = 0.1
-    else:
-        config["backend"][invalid] = {"type": "unknown"}
-    path = tmp_path / "invalid.yaml"
-    path.write_text(yaml.safe_dump(config))
-    reset = Mock(side_effect=AssertionError("World must not reset"))
-    monkeypatch.setattr(NuRecSimulatorRuntime, "reset", reset)
-    result = CliRunner().invoke(cli.app, ["run", str(path), "--frames", "1"])
-    assert result.exit_code == 2, result.output
-    assert "Configuration error" in result.output
-    reset.assert_not_called()
+def test_result_read_errors_are_distinct_from_configuration_incompatibility(
+    workflow, monkeypatch, error, code, label,
+):
+    w = workflow
+    w.output.mkdir()
+    (w.output / "prepared.json").write_text("{}")
+    monkeypatch.setattr(cli.ExperimentResult, "load", Mock(side_effect=error))
+    result = CliRunner().invoke(cli.app, ["evaluate", str(w.path)])
+    assert result.exit_code == code and label in result.output
+    w.report.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", [RuntimeError("strict run failed"), KeyboardInterrupt()])
+def test_execution_failure_prints_the_saved_output_directory_once(workflow, monkeypatch, failure):
+    monkeypatch.setattr(cli.ExperimentResult, "load", Mock(return_value=workflow.result))
+    workflow.execute.side_effect = failure
+    result = CliRunner().invoke(cli.app, ["run", str(workflow.path)])
+    assert result.exit_code in (1, 130)
+    assert result.output.count("Output directory:") == 1
+
+
+def test_prepare_interrupt_does_not_claim_an_output_directory(workflow):
+    workflow.prepare.side_effect = KeyboardInterrupt()
+    result = CliRunner().invoke(cli.app, ["run", str(workflow.path)])
+    assert result.exit_code == 130
+    assert "Output directory:" not in result.output
+    assert not workflow.output.exists()
+
+
+@pytest.mark.parametrize("command", ["run", "evaluate"])
+def test_interrupted_evaluation_is_not_restarted_and_reports_possible_partial_files(
+    workflow, monkeypatch, command,
+):
+    w = workflow
+    w.output.mkdir()
+    (w.output / "prepared.json").write_text("{}")
+    load = Mock(return_value=w.result)
+    monkeypatch.setattr(cli.ExperimentResult, "load", load)
+    w.report.side_effect = KeyboardInterrupt()
+    result = CliRunner().invoke(cli.app, [command, str(w.path)])
+    assert result.exit_code == 130 and "report files may be incomplete" in result.output
+    w.report.assert_called_once()
+    assert result.output.count("Output directory:") == 1
+
+
+def test_removed_treatment_notice_is_plain_cli_output(workflow, monkeypatch):
+    w = workflow
+    w.output.mkdir()
+    (w.output / "prepared.json").write_text("{}")
+    w.result.notices = ("Skipping saved run for removed treatment: removed",)
+    monkeypatch.setattr(cli.ExperimentResult, "load", Mock(return_value=w.result))
+    result = CliRunner().invoke(cli.app, ["evaluate", str(w.path)])
+    assert result.exit_code == 0 and w.result.notices[0] in result.output
+    assert "RuntimeWarning" not in result.output

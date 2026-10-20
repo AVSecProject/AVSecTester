@@ -1,4 +1,4 @@
-"""Closed-loop data types: the messages between the simulator and the AV stack, and world state.
+"""Closed-loop data types: the messages between the simulator and the AVStack, and world state.
 
 The simulator<->AVStack contract is exactly two messages — **sensor data down, control up**:
 
@@ -19,7 +19,10 @@ from __future__ import annotations
 import copy
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from avsectester.datasets.base import ActorState
 
 import numpy as np
 
@@ -78,7 +81,9 @@ class WorldSnapshot:
 
     ``actors`` maps stable actor IDs, other than the ego, to ``ActorState`` records (canonical
     world pose, velocity and category). Nested state objects belong to this snapshot. Editing
-    them does not actuate the world; ``Simulator.control_actor`` and ``set_actor_state`` do.
+    them does not actuate the world; simulator-runtime actor methods do. ``ego`` is canonical
+    physical truth. ``vehicle_state`` is its native SDK representation for adapter callbacks;
+    neither is the potentially perturbed model-visible Observation.vehicle_state.
     """
 
     t: float
@@ -86,6 +91,7 @@ class WorldSnapshot:
     vehicle_state: Any = None
     ego_speed: float = 0.0
     actors: Mapping[str, Any] = field(default_factory=dict)
+    ego: ActorState | None = None
 
 
 @dataclass
@@ -94,17 +100,6 @@ class StateEstimate:
 
     vehicle_state: Any = None
     ego_speed: float = 0.0
-
-
-@dataclass
-class FrameRecord:
-    frame: int = 0
-    t: float = 0.0
-    n_detections: int = 0  # optional stack telemetry (0 for stacks with no detection stage)
-    speed: float = 0.0
-    throttle: float = 0.0
-    brake: float = 0.0
-    steer: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -125,32 +120,42 @@ class RecordedOutput:
     sensor: str | None = None
 
 
-@dataclass
-class Trace:
-    """The driving record of one run — the observable a security test scores."""
+@dataclass(frozen=True)
+class Detection:
+    """One 3D detection in the capture-time true ego frame (x forward, y left, z up).
 
-    records: list[FrameRecord] = field(default_factory=list)
-    replay_scenario: dict | None = None
-    outputs: list[RecordedOutput] = field(default_factory=list)
-    provenance: dict[str, Any] = field(default_factory=dict)
-    run_log: Any = field(default=None, repr=False, compare=False)
+    ``position`` is the cuboid centre in metres, ``extent`` its full length, width and
+    height in metres, and ``yaw`` its heading in radians about ego z. Sensor mounting
+    extrinsics define this frame, independently of the driving system's localization.
+    Its origin is the true ego actor origin, not the ego cuboid centre. Evaluation uses
+    ``StepRecord.physical_pre.ego`` to transform ground-truth actors into this frame.
+    """
 
-    @property
-    def final_speed(self) -> float:
-        return self.records[-1].speed if self.records else 0.0
+    position: tuple[float, float, float]
+    extent: tuple[float, float, float]
+    yaw: float
+    category: str | None = None
+    score: float | None = None
 
-    @property
-    def peak_speed(self) -> float:
-        """Fastest the ego went during the run — used to tell whether it ever really drove."""
-        return max((r.speed for r in self.records), default=0.0)
+    def __post_init__(self) -> None:
+        import math
 
-    @property
-    def braking_frames(self) -> int:
-        return sum(r.throttle == 0.0 and r.brake > 0.0 for r in self.records)
-
-    @property
-    def mean_detections(self) -> float:
-        return sum(r.n_detections for r in self.records) / max(len(self.records), 1)
+        for name in ("position", "extent"):
+            value = getattr(self, name)
+            if len(value) != 3 or not all(math.isfinite(float(v)) for v in value):
+                raise ValueError(f"Detection {name} must contain three finite values")
+            if name == "extent" and any(v < 0 for v in value):
+                raise ValueError("Detection extent must be nonnegative")
+            object.__setattr__(self, name, tuple(float(v) for v in value))
+        object.__setattr__(self, "yaw", float(self.yaw))
+        if self.score is not None:
+            object.__setattr__(self, "score", float(self.score))
+        if self.category is not None and not isinstance(self.category, str):
+            raise TypeError("Detection category must be a string or None")
+        if not math.isfinite(self.yaw):
+            raise ValueError("Detection yaw must be finite")
+        if self.score is not None and not math.isfinite(self.score):
+            raise ValueError("Detection score must be finite")
 
 
 def validate_command_modes(command: Control, modes: frozenset[str] | None) -> None:
@@ -169,11 +174,13 @@ def validate_command_modes(command: Control, modes: frozenset[str] | None) -> No
 def read_camera_rgb(observation: Observation, camera: str | None = None) -> tuple[str, np.ndarray] | None:
     """``(sensor_id, (H,W,3) uint8 RGB)`` for a camera payload, or None. Duck-typed over the canonical
     ndarray payload (NuRec/dataset) and an avstack ``ImageData`` (``.rgb_image``) — the read side of the
-    sensor-plane seam, so an augmentation needs no backend-specific view."""
+    sensor-plane seam, so transforms need no simulator-specific image wrapper."""
     data = observation.sensor_data
     if not data:
         return None
-    key = camera if camera in data else next(iter(data))
+    if camera is not None and camera not in data:
+        return None
+    key = camera if camera is not None else next(iter(data))
     payload = data[key]
     rgb = getattr(payload, "rgb_image", None)
     if rgb is None and isinstance(payload, np.ndarray) and payload.ndim == 3 and payload.shape[2] >= 3:

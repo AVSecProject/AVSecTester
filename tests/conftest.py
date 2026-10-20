@@ -11,11 +11,8 @@ def pytest_addoption(parser):
     )
     parser.addoption(
         "--carla-config",
-        default=str(Path(__file__).resolve().parents[1] / "configs/carla_scenario.yaml"),
+        default=str(Path(__file__).resolve().parents[1] / "configs/carla_phantom.yaml"),
         help="Scenario YAML for the live CARLA test",
-    )
-    parser.addoption(
-        "--carla-gpu", type=int, default=None, help="Override live-test perception GPU"
     )
 
 
@@ -25,23 +22,6 @@ def pytest_collection_modifyitems(config, items):
         for item in items:
             if "carla" in item.keywords:
                 item.add_marker(skip)
-
-
-@pytest.fixture
-def make_trace():
-    from avsectester.closed_loop.datatypes import FrameRecord, Trace
-
-    def make(speeds, brakes=None):
-        brakes = [0.0] * len(speeds) if brakes is None else brakes
-        assert len(speeds) == len(brakes), "Test trace inputs must have the same length"
-        return Trace(
-            [
-                FrameRecord(i, i * 0.05, 1, speed, 0.0 if brake else 0.75, brake, 0.0)
-                for i, (speed, brake) in enumerate(zip(speeds, brakes))
-            ]
-        )
-
-    return make
 
 
 @pytest.fixture

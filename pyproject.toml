@@ -21,6 +21,8 @@ dependencies = [
     "pyyaml>=6,<7",            # scenario config
     "numpy>=1.26,<2",         # numpy 1.26 (torch 2.1 / OpenMMLab-official stack; see dependency-upgrade)
     "typer>=0.15,<0.17",      # CLI (>=0.15 for click 8.2+ compatibility)
+    "matplotlib>=3.6",       # evaluation reports always generate plots
+    "Pillow>=10",            # image exports from recorded payloads
     "pyarrow==21.0.0",       # Parquet RunLog; same pin in the Python 3.12 driver environment
 ]
 
@@ -30,7 +32,7 @@ rendering = [
     "opencv-python-headless>=4.9,<4.12",
     "Pillow>=10",
 ]
-# The avstack backend stack. Installed as editable path deps from the git submodules.
+# Native avstack libraries. Installed as editable path deps from the git submodules.
 # NOTE: install order and the heavy torch/mmcv/mmdet wheels are documented in docs/getting-started/installation.md.
 avstack = [
     "avstack-core",
@@ -52,14 +54,9 @@ test = [
     "opencv-python-headless>=4.9,<4.12",
     "albumentations==1.4.24",
 ]
-# Visualization (avsectester.evaluation.metric.plot_impact): the clean-vs-attacked driving-impact plot.
-viz = [
-    "matplotlib>=3.6",
-]
-# Battle-tested augmentation backend for avsectester.perturbations.image (weather/sensor corruptions).
-# Classic albumentations 1.4 (MIT): this stack is numpy<2 (torch 2.1 / OpenMMLab-official), and
-# AlbumentationsX/2.x require numpy>=2. Same `import albumentations as A` API + transforms. The
-# hand-rolled operators remain the zero-dependency fallback.
+# Optional augmentation library for avsectester.closed_loop.sensor_transforms (weather/sensor corruptions).
+# Albumentations 1.4 (MIT) supports the NumPy<2 environment used by Torch 2.1 and OpenMMLab.
+# AlbumentationsX/2.x require NumPy>=2. Built-in sensor transforms do not require Albumentations.
 augment = [
     "albumentations>=1.4,<2",
 ]
@@ -103,16 +100,15 @@ path = "avsectester/__init__.py"
 
 [tool.mypy]
 files = [
-    "avsectester/backend.py", "avsectester/runner.py",
     "avsectester/attack/attack.py", "avsectester/attack/runtime.py",
-    "avsectester/attack/segments.py", "avsectester/experiment/",
+    "avsectester/attack/segments.py", "avsectester/attack/placement.py", "avsectester/cli.py", "avsectester/experiment/",
     "avsectester/closed_loop/datatypes.py", "avsectester/closed_loop/hooks.py",
     "avsectester/closed_loop/avstack.py", "avsectester/closed_loop/vehicle_io.py",
     "avsectester/closed_loop/simulator.py", "avsectester/closed_loop/runner.py",
     "avsectester/closed_loop/services.py", "avsectester/closed_loop/resources.py",
     "avsectester/closed_loop/frame_data.py",
     "avsectester/runlog/log.py", "avsectester/runlog/codecs.py",
-    "avsectester/datasets/base.py",
+    "avsectester/datasets/base.py", "avsectester/evaluation/",
     "avsectester/closed_loop/environment.py", "avsectester/geometry/",
 ]
 python_version = "3.11"

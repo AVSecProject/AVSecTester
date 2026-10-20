@@ -70,6 +70,33 @@ def _snapshot_sensor(value: Any, capture_child: Callable[[Any], Any]) -> Any:
     return result
 
 
+def _snapshot_native(value: Any, capture_child: Callable[[Any], Any]) -> Any:
+    """Keep native in-memory behavior while capturing children through adapter codecs.
+
+    ``deepcopy`` of an outer DataContainer bypasses the ReferenceFrame codec and follows
+    every reverse reference in the live global frame. Native record fields are captured
+    recursively here instead. Persistence continues to use explicit field allowlists.
+    """
+    result = copy(value)
+    for name, child in vars(value).items():
+        vars(result)[name] = capture_child(child)
+    return result
+
+
+def _snapshot_reference(value: Any, capture_child: Callable[[Any], Any]) -> Any:
+    """Copy only an ancestor chain; descendants and integrated caches are not pose data."""
+    result = copy(value)
+    state = vars(result)
+    for name, child in vars(value).items():
+        if name == "_point_from":
+            state[name] = []
+        elif name == "_global_integrated":
+            state[name] = None
+        else:
+            state[name] = capture_child(child)
+    return result
+
+
 def _fields(value: Any, *names: str) -> dict[str, Any]:
     """Copy an explicit field allowlist, never an object's attribute dictionary."""
     return {
@@ -242,6 +269,10 @@ class _AdapterCodecs(CodecRegistry):
                 snapshot = None
                 if module_name == "avstack.sensors":
                     snapshot = _snapshot_sensor
+                elif module_name == "avstack.geometry.refchoc" and class_name == "ReferenceFrame":
+                    snapshot = _snapshot_reference
+                elif module_name.startswith("avstack."):
+                    snapshot = _snapshot_native
                 elif module_name == "carla":
                     snapshot = lambda value, capture_child: _sdk_capture(value)
                 self.register(native_type, encode, name=f"{module_name}.{class_name}.v1",

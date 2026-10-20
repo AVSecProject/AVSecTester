@@ -1,4 +1,4 @@
-"""Integration contracts for the unified loop and its compatibility views."""
+"""Integration contracts for the unified loop and independent RunLog captures."""
 
 from dataclasses import replace
 
@@ -7,40 +7,46 @@ import pytest
 
 from avsectester.attack.runtime import AttackRuntime, AVStackAttackEffect, ResultSubscription
 from avsectester.closed_loop.avstack import AVStack
-from avsectester.closed_loop.simulator import WorldBackend
-from avsectester.backend import run
-from avsectester.closed_loop.runner import ClosedLoopRunner, RecordingPolicy, RunRequest, trace_from_log
-from avsectester.closed_loop.datatypes import Control, Observation
+from avsectester.closed_loop.simulator import Simulator, SimulatorRuntime
+from avsectester.closed_loop.runner import ClosedLoopRunner, RecordingPolicy, RunRequest
+from avsectester.closed_loop.datatypes import Control, Observation, WorldSnapshot
 from avsectester.runlog import Recorder, RunLog
 from avsectester.closed_loop.hooks import Hook, HookSet
 
 
-class MemoryWorld(WorldBackend):
-    def __init__(self, fail=False):
+class MemorySimulator(Simulator):
+    def create_runtime(self, seed=None):
+        return MemoryWorld(simulator=self)
+
+
+class MemoryWorld(SimulatorRuntime):
+    def __init__(self, fail=False, simulator=None):
+        super().__init__(simulator or MemorySimulator())
         self.fail = fail
         self.closed = False
         self.resets = 0
         self.commands = []
         self.pixel = np.zeros((2, 2, 3), dtype=np.uint8)
 
-    def reset(self):
+    def _initialize_world(self, start, initialization, environment):
         self.resets += 1
         self.frame = 10
         self.t = 8.0
         self.speed = 0.0
-        return self._observe()
+
+    def _state(self):
+        return WorldSnapshot(self.t, self.frame, ego_speed=self.speed)
 
     def _observe(self):
         return Observation(self.t, self.frame, {"front": self.pixel}, ego_speed=self.speed)
 
-    def step(self, control):
+    def _advance_native(self, control):
         if self.fail:
             raise RuntimeError("world advance failed")
         self.commands.append(control)
         self.frame += 1
         self.t += 0.1
         self.speed += control.throttle
-        return self._observe()
 
     def close(self):
         self.closed = True
@@ -102,9 +108,9 @@ def test_log_separates_input_truth_and_both_commands_without_aliasing(tmp_path):
     np.testing.assert_array_equal(row.raw_observation.sensor_data["front"], 0)
     np.testing.assert_array_equal(row.model_observation.sensor_data["front"], 123)
     loaded = RunLog.read(tmp_path / "run")
-    assert trace_from_log(loaded).final_speed == trace_from_log(log).final_speed
+    assert loaded.steps[-1].physical_post.ego_speed == log.steps[-1].physical_post.ego_speed
     assert loaded.steps[0].components["perception"] == [1]
-    assert trace_from_log(loaded).mean_detections == trace_from_log(log).mean_detections == 1
+    assert [len(step.components["perception"]) for step in loaded.steps] == [1, 1]
 
 
 def test_sampling_only_changes_sensor_payloads():
@@ -198,15 +204,8 @@ def test_invalid_runtime_fails_before_reset():
     assert world.resets == 0
 
 
-def test_legacy_trace_comes_from_runlog():
-    trace = run(MemoryWorld(), Policy(), 2, runtime=HookSet())
-    assert trace.run_log is not None
-    assert len(trace.run_log.steps) == len(trace.records) == 2
-    assert trace.final_speed == trace.run_log.steps[-1].physical_post.ego_speed
-
-
-def test_unnamed_legacy_sensor_container_is_not_recorded_by_default():
-    obs = Observation(0.0, 0, sensor_data=["legacy-container"])
+def test_sensor_container_without_ids_is_not_recorded_by_default():
+    obs = Observation(0.0, 0, sensor_data=["native-container"])
     assert RecordingPolicy().observation(obs, 0, "model_input").sensor_data == {}
     with pytest.raises(ValueError, match="adapter sensor_data mapping"):
         RecordingPolicy(("front",)).observation(obs, 0, "model_input")
@@ -349,3 +348,164 @@ def test_two_component_attacks_chain_effects_in_registration_order():
     assert [receipt["effect_id"] for receipt in receipts] == [0, 1]
     assert [receipt["outcome"] for receipt in receipts] == ["applied", "applied"]
     assert all(attack.stopped for attack in attacks)
+
+
+def test_model_input_only_recording_retains_camera_geometry_without_extra_capture():
+    from avsectester.closed_loop.simulator import SensorGeometry
+    from avsectester.geometry.cameras import PinholeCamera
+
+    class CalibratedWorld(MemoryWorld):
+        def __init__(self):
+            super().__init__()
+            self.captures = self.view_reads = self.observation_reads = 0
+        def _observe(self):
+            self.captures += 1
+            return super()._observe()
+        def observe(self):
+            self.observation_reads += 1
+            return super().observe()
+        camera_sensors = frozenset({"front"})
+        def sensor_geometry(self, sensor):
+            self.view_reads += 1
+            return SensorGeometry(sensor, PinholeCamera(np.eye(3), 2, 2), np.eye(4))
+
+    world = CalibratedWorld()
+    log = ClosedLoopRunner().run(world, Policy(), RunRequest(
+        2, recording=RecordingPolicy(("front",), ("model_input",))))
+    assert world.captures == 3  # reset and two advances, regardless of recording/view reads
+    assert world.observation_reads == 5  # one reset read and pre/post reads per decision
+    assert world.view_reads == 2
+    for step in log.steps:
+        assert step.raw_observation.sensor_data == {}
+        assert set(step.model_observation.sensor_data) == {"front"}
+        view = step.sensor_geometry["front"]
+        assert isinstance(view.camera, PinholeCamera)
+        np.testing.assert_array_equal(view.cam_from_world, np.eye(4))
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_owned_world_closes_after_attack_and_hook_cleanup_while_still_reserved(fail):
+    from avsectester.attack.runtime import WorldAttackEffect
+    from avsectester.closed_loop.hooks import Plugin
+    from avsectester.closed_loop.resources import reserve
+
+    events = []
+    key = ("owned-world", fail)
+    class World(MemoryWorld):
+        def close(self):
+            events.append("close")
+            # A second independent owner must remain blocked until native teardown is done.
+            with pytest.raises(RuntimeError, match="already in use"):
+                with reserve(key, object()):
+                    pass
+            super().close()
+    class HookOwner(Plugin):
+        def transform(self, value, context):
+            return value
+        def close(self):
+            events.append("hook_cleanup")
+    class Effect(WorldAttackEffect):
+        def apply(self, simulator_runtime, resources):
+            resources.callback(events.append, "effect_cleanup")
+    class Attack(AttackRuntime):
+        def setup(self, context):
+            return (Effect(),)
+        def stop(self, context):
+            events.append("attack_cleanup")
+
+    world = World(fail=fail)
+    world.resource_key = key
+    request = RunRequest(1, attacks=(Attack(),), hooks=HookSet([Hook("observation", HookOwner())]))
+    if fail:
+        with pytest.raises(RuntimeError, match="world advance failed"):
+            ClosedLoopRunner().run(world, Policy(), request, release_owned_resources=world.close)
+    else:
+        ClosedLoopRunner().run(world, Policy(), request, release_owned_resources=world.close)
+    assert events.count("close") == 1
+    for cleanup in ("hook_cleanup", "attack_cleanup", "effect_cleanup"):
+        assert events.index(cleanup) < events.index("close")
+    assert world.closed
+    with reserve(key, object()):
+        pass
+
+
+def test_sensor_alias_effects_chain_on_the_same_canonical_capture():
+    from types import SimpleNamespace
+    from avsectester.attack.runtime import SensorAttackEffect
+
+    seen = []
+    class World(MemoryWorld):
+        def _observe(self):
+            return Observation(self.t, self.frame, {"camera0": np.full((2, 2, 3), 5, np.uint8)})
+        def sensor_view(self, sensor):
+            assert sensor in {"front", "camera0"}
+            return SimpleNamespace(sensor="camera0", data=self._capture.sensor_data["camera0"].copy(),
+                                   camera=None, cam_from_world=np.eye(4))
+    class Add(SensorAttackEffect):
+        def __init__(self, sensor, increment):
+            self.sensor, self.increment = sensor, increment
+        def apply(self, data, view):
+            seen.append((self.sensor, int(data.min()), int(view.data.min())))
+            return data + self.increment
+    class Attack(AttackRuntime):
+        def step(self, context):
+            return (Add("front", 10), Add("camera0", 20))
+
+    log = ClosedLoopRunner().run(World(), Policy(), RunRequest(
+        1, attacks=(Attack(),), recording=RecordingPolicy(("camera0",))))
+    assert seen == [("front", 5, 5), ("camera0", 15, 5)]
+    assert set(log.steps[0].model_observation.sensor_data) == {"camera0"}
+    assert log.steps[0].model_observation.sensor_data["camera0"].min() == 35
+    assert [effect["outcome"] for effect in log.steps[0].effects if effect["kind"] == "receipt"] == [
+        "applied", "applied"]
+
+
+def test_runner_in_place_sensor_effect_preserves_the_original_sensor_view_data():
+    from types import SimpleNamespace
+    from avsectester.attack.runtime import SensorAttackEffect
+
+    original_images = []
+    class World(MemoryWorld):
+        def sensor_view(self, sensor):
+            image = self._capture.sensor_data[sensor].copy()
+            original_images.append(image)
+            return SimpleNamespace(sensor=sensor, data=image, camera=None, cam_from_world=np.eye(4))
+    class InPlace(SensorAttackEffect):
+        sensor = "front"
+        def apply(self, data, view):
+            data[:] = 123
+            assert not view.data.any()
+            return data
+    class Attack(AttackRuntime):
+        def step(self, context):
+            return (InPlace(),)
+
+    simulator_runtime = World()
+    log = ClosedLoopRunner().run(simulator_runtime, Policy(), RunRequest(
+        1, attacks=(Attack(),), recording=RecordingPolicy(("front",))))
+    assert np.all(log.steps[0].model_observation.sensor_data["front"] == 123)
+    assert all(not image.any() for image in original_images)
+    assert not simulator_runtime.pixel.any()
+
+
+@pytest.mark.parametrize("failure_phase", ["environment", "hooks", "recorder"])
+def test_runner_owns_attack_cleanup_from_entry_before_world_reset(monkeypatch, failure_phase):
+    stopped, released = [], []
+    class TrackingAttack(AttackRuntime):
+        def stop(self, context):
+            stopped.append(context.stage)
+    attack = TrackingAttack()
+    def fail(*args, **kwargs):
+        raise RuntimeError("preflight failed")
+    if failure_phase == "environment":
+        monkeypatch.setattr("avsectester.closed_loop.runner.validate_environment", fail)
+    elif failure_phase == "hooks":
+        monkeypatch.setattr(HookSet, "validate_stages", fail)
+    else:
+        monkeypatch.setattr("avsectester.closed_loop.runner.Recorder", fail)
+    simulator_runtime = MemoryWorld()
+    with pytest.raises(RuntimeError, match="preflight failed"):
+        ClosedLoopRunner().run(simulator_runtime, Policy(), RunRequest(1, attacks=(attack,)),
+                               release_owned_resources=lambda: released.append(True))
+    assert stopped == ["stop"] and released == [True]
+    assert simulator_runtime.resets == 0

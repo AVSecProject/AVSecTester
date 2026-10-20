@@ -61,9 +61,16 @@ def normalize_environment(value: Mapping[str, Any] | None = None) -> dict[str, A
             if kind not in CORRUPTIONS:
                 raise ValueError(f"Unknown sensor corruption class {kind!r}. Use a built-in class "
                                  "name or 'package.module:name' for a custom transform")
-            allowed = {"severity", "warm"} if kind == "ColorTemp" else {"severity"}
+            allowed = ({"severity", "warm"} if kind == "ColorTemp" else
+                       {"severity", "transform"} if kind == "AlbumentationsCorruption" else {"severity"})
             if set(options) - allowed:
                 raise ValueError(f"Unknown {kind} options: {sorted(set(options) - allowed)}")
+            if kind == "AlbumentationsCorruption":
+                from avsectester.closed_loop.sensor_transforms import ALBUMENTATIONS_TRANSFORMS
+                transform = options.get("transform")
+                if not isinstance(transform, str) or transform not in ALBUMENTATIONS_TRANSFORMS:
+                    raise ValueError("AlbumentationsCorruption requires a supported transform: "
+                                     + ", ".join(sorted(ALBUMENTATIONS_TRANSFORMS)))
             severity = options.get("severity", 0.5)
             if isinstance(severity, bool) or not isinstance(severity, (int, float)) or not 0 <= severity <= 1:
                 raise ValueError("Sensor corruption severity must be between 0 and 1")

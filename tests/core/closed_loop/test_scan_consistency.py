@@ -132,7 +132,7 @@ class RecipeRuntime(SimulatorRuntime):
         assert frame.position == self.position
         pose = np.eye(4)
         pose[0, 3] = self.seed + self.position ** 2
-        return FrameData(frame, None, {"ego": ActorState(pose)})
+        return FrameData(frame, ego=ActorState(pose))
 
     def _replayed_scenario(self):
         return {"seed": self.seed}

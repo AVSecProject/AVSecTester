@@ -215,21 +215,20 @@ def test_setup_returns_only_world_effects(effect):
     dispatcher.stop()
 
 
-def test_legacy_world_cannot_apply_world_effects():
+def test_world_deployment_uses_the_unified_simulator_setup_hook():
     class Physical(AttackRuntime):
         def setup(self, context):
             return (Panel("a", 0),)
 
-    legacy = HookDispatcher.CORE_STAGES | {"perception.post"}
+    simulator_runtime = World()
     dispatcher = AttackDispatcher([Physical()])
-    dispatcher.validate(legacy)
-    assert not dispatcher.applies_setup_in_reset
-    assert [hook.stage for hook in dispatcher.hooks] == [
-        stage for stage in ("sensors.post", "localization.post", "observation", "perception.post",
-                            "command") if stage in legacy]
-    with pytest.raises(UnsupportedStageError, match="world attack effects"):
-        dispatcher.setup(data(0, "setup"), None)
+    dispatcher.validate(AVAILABLE)
+    assert [hook.stage for hook in dispatcher.hooks].count("simulator.setup") == 1
+    emit(dispatcher, "simulator.setup", None, data(0, "setup"), simulator_runtime)
+    assert simulator_runtime.native["objects"] == ["a"]
+    assert [receipt["stage"] for receipt in dispatcher.receipts] == ["simulator.setup"]
     dispatcher.stop()
+    assert simulator_runtime.native["objects"] == []
 
 
 @pytest.mark.parametrize("effect", [

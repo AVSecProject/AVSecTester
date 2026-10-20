@@ -9,7 +9,7 @@ from avsectester.attack import AttackSegment
 from avsectester.datasets import ActorState, FrameReference, SensorDataReference
 from avsectester.experiment.persistence import _decode, _encode
 from avsectester.geometry import ActorPose
-from avsectester.insertion import AttachedPlacement
+from avsectester.attack.placement import AttachedPlacement
 
 
 def test_metadata_json_round_trip_preserves_roles_placement_and_array_shapes():
@@ -168,7 +168,6 @@ def test_loading_allows_different_output_recording_and_runtime_counters(tmp_path
     assert restored.configuration.output == tmp_path / "another-output"
     assert restored.configuration.recording.every_n_steps == 7
     assert fresh.calls == 100
-
 
 
 def test_undescribed_parameters_warn_on_save_and_cannot_silently_pass_loading(

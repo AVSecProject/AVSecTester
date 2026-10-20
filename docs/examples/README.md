@@ -1,35 +1,22 @@
-# Examples
+# Attack examples
 
-> **Audience:** Researchers who want to see how existing attacks use the framework's interfaces.  
-> **Outcome:** Understand how each supplied attack divides its work between preparation and execution, where it acts and how to run it.  
-> **Prerequisites:** [Architecture](../concepts/architecture.md) and [Implement an attack](../guides/attacks.md).
+> **Audience:** Users studying supplied attacks.
+>
+> **Outcome:** Choose an Attack implementation and a runnable configuration.
+>
+> **Prerequisites:** [Attacks](../guides/attacks.md).
 
-## How to read these examples
+Every example implements the same Attack workflow: metabuilder, optional offline preparation, and a
+new AttackRuntime for each run. Run it through the supplied configuration with `avsectester run
+CONFIG.yaml`.
 
-The supplied concrete attacks use the legacy `Intervention` and stage-hook interfaces. They
-are separate from the `Attack` workflow described in [Implement an attack](../guides/attacks.md).
-Each example is described in the same five parts:
+| Example | Implementation | Configuration |
+|---|---|---|
+| [Phantom injection](phantom-injection.md) | PhantomInjectionAttack | configs/carla_phantom.yaml |
+| [Physical patch](physical-patch.md) | PatchAttack | configs/carla_patch.yaml, configs/carla_patch_optimized.yaml, configs/nurec_patch.yaml |
+| [Image insertion](image-insertion.md) | ObjectInsertionAttack | configs/carla_object_insertion.yaml, configs/nurec_object_insertion.yaml, configs/nuscenes_object_insertion.yaml |
+| [Speed feedback](speed-feedback-attack.md) | SpeedFeedbackAttack | configs/nurec_speed_feedback.yaml |
 
-- **What it does:** the attack's effect.
-- **Preparation:** the work done before runs and the artifact it produces.
-- **Execution:** the runtime stage, the attack surface and the handler that runs there.
-- **Configure and run:** the YAML keys or Python calls, and the scripts that exercise the example.
-- **Code:** the module paths.
-
-| Example | Stage | Attack surface | Simulator and driving system | Execution |
-|---|---|---|---|---|
-| [Phantom injection](phantom-injection.md) | `perception.post` | Perception output inside the driving system | CARLA with the modular driving system | Static |
-| [Physical patch](physical-patch.md) | `simulator.setup` | The world: a textured panel on a vehicle | CARLA | Static |
-| [Image insertion](image-insertion.md) | `observation` | Camera images in the model input | CARLA and NuRec | Static. Placement follows current poses |
-| [Speed-feedback adaptive attack](speed-feedback-attack.md) | `observation` | Reported speed in the model input | Any simulator | Adaptive |
-
-Run commands from the repository root. Simulator, model and weight setup are described in
-[Installation](../getting-started/installation.md). [scripts/README.md](../../scripts/README.md) indexes
-every script.
-
-## Defenses
-
-No reference defense example is supplied. The legacy path supports defenses through the same
-preparation and execution interfaces as the attacks above, with `kind: defense`. See [Implement a defense](../guides/defenses.md).
-
-**Not yet implemented.** Reference defense algorithms and metrics for recorded defense outputs.
+Paths in the table are relative to the repository root. All effect levels and model outcomes must be
+measured in the target environment. Passing workflow tests establishes preparation, execution and
+evaluation, not attack strength.

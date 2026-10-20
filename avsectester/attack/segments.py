@@ -35,10 +35,7 @@ def split_segments(
     run that is shorter than ``decision_steps`` becomes one shorter segment instead of being
     dropped.
     """
-    if isinstance(decision_steps, bool) or not isinstance(decision_steps, int) or decision_steps < 1:
-        raise ValueError("decision_steps must be a positive integer")
-    if not isinstance(keep_tail, bool):
-        raise TypeError("keep_tail must be boolean")
+    validate_segment_options(decision_steps, None, keep_tail)
     if not callable(eligible):
         raise TypeError("eligible must be a function of one FrameReference returning bool")
     frames = tuple(frames)
@@ -66,3 +63,15 @@ def split_segments(
             result.append(AttackSegment(frames[cursor].scenario_id, frames[cursor], frames[index]))
         run_start = index + 1
     return tuple(result)
+
+
+def validate_segment_options(decision_steps: int, max_segments: int | None,
+                             keep_tail: bool) -> None:
+    """Validate user segment-length and count parameters before any preparation starts."""
+    if isinstance(decision_steps, bool) or not isinstance(decision_steps, int) or decision_steps < 1:
+        raise ValueError("decision_steps must be a positive integer")
+    if max_segments is not None and (isinstance(max_segments, bool)
+            or not isinstance(max_segments, int) or max_segments < 1):
+        raise ValueError("max_segments must be a positive integer or None")
+    if not isinstance(keep_tail, bool):
+        raise TypeError("keep_tail must be boolean")

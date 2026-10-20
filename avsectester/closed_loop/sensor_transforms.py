@@ -1,11 +1,11 @@
 """Image-space sensor transforms used by experiment environments.
 
-Operators map uint8 RGB frames through a caller-owned random generator. Evaluation pipelines
-and robustness suites live in :mod:`avsectester.perturbations.image`.
+Operators map uint8 RGB frames through a caller-owned random generator.
 """
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import Any
 
 import numpy as np
 
@@ -233,3 +233,68 @@ CORRUPTIONS: dict[str, type[Corruption]] = {
         GaussianNoise, ShotNoise, MotionBlur, DefocusBlur, JPEGCompression, ChromaticAberration,
     )
 }
+
+
+ALBUMENTATIONS_TRANSFORMS = frozenset({
+    "Fog", "Rain", "Snow", "GaussNoise", "ISONoise", "MotionBlur", "DefocusBlur",
+    "JPEGCompression",
+})
+
+
+class AlbumentationsCorruption(Corruption):
+    """Named Albumentations transform with deterministic, severity-scaled parameters.
+
+    Install the ``augment`` extra. Supported transform names are Fog, Rain, Snow,
+    GaussNoise, ISONoise, MotionBlur, DefocusBlur and JPEGCompression.
+    """
+
+    def __init__(self, transform: str, severity: float = 0.5) -> None:
+        super().__init__(severity)
+        builders = _albumentations_builders()
+        if transform not in builders:
+            raise ValueError(f"Unknown Albumentations transform: {transform!r}")
+        self.transform = transform
+        self.category, self._build = builders[transform]
+
+    @property
+    def name(self) -> str:
+        return f"AlbumentationsCorruption[{self.transform}]@{self.severity:.2f}"
+
+    def apply(self, rgb: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+        import albumentations as A
+
+        transform = A.Compose([self._build(self.severity)], seed=int(rng.integers(0, 2**31 - 1)))
+        return transform(image=np.ascontiguousarray(rgb))["image"]
+
+
+def _odd(n: float) -> int:
+    n = max(3, round(n))
+    return n if n % 2 == 1 else n + 1
+
+
+def _albumentations_builders() -> dict[str, tuple[str, Any]]:
+    """``name -> (category, build(severity))`` for the Albumentations-backed operators (imports A so the
+    builder lambdas capture it). Severity in ``[0, 1]`` maps to each transform's native parameters.
+    Parameter names target classic albumentations 1.4.x (this environment uses numpy<2)."""
+    import albumentations as A
+
+    return {
+        "Fog": ("weather", lambda s: A.RandomFog(
+            fog_coef_range=(min(0.2 + 0.6 * s, 0.95),) * 2, alpha_coef=0.08 + 0.06 * s, p=1.0)),
+        "Rain": ("weather", lambda s: A.RandomRain(
+            drop_length=int(5 + 15 * s), drop_width=1, blur_value=_odd(1 + 6 * s),
+            brightness_coefficient=max(0.5, 1.0 - 0.4 * s), p=1.0)),
+        "Snow": ("weather", lambda s: A.RandomSnow(
+            snow_point_range=(min(0.1 + 0.4 * s, 0.9),) * 2, brightness_coeff=1.5 + 1.0 * s, p=1.0)),
+        "GaussNoise": ("sensor", lambda s: A.GaussNoise(std_range=(min(0.05 + 0.35 * s, 0.99),) * 2, p=1.0)),
+        "ISONoise": ("sensor", lambda s: A.ISONoise(
+            color_shift=(0.01 + 0.05 * s,) * 2, intensity=(0.1 + 0.6 * s,) * 2, p=1.0)),
+        "MotionBlur": ("sensor", lambda s: A.MotionBlur(blur_limit=(_odd(3 + s * 12),) * 2, p=1.0)),
+        "DefocusBlur": ("sensor", lambda s: A.Defocus(
+            radius=(max(1, round(1 + s * 8)),) * 2, alias_blur=(0.1, 0.1), p=1.0)),
+        "JPEGCompression": ("sensor", lambda s: A.ImageCompression(
+            quality_range=(int(max(5, 100 - 90 * s)),) * 2, p=1.0)),
+    }
+
+
+CORRUPTIONS["AlbumentationsCorruption"] = AlbumentationsCorruption

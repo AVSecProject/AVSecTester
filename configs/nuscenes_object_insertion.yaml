@@ -1,0 +1,51 @@
+# Run with: avsectester run configs/nuscenes_object_insertion.yaml
+# Paths are relative to this file; set data/model paths for your machine.
+dataset:
+  type: NuScenesDataset
+  options:
+    dataroot: ../data/nuscenes
+    version: v1.0-trainval
+simulator:
+  type: RecordedReplaySimulator
+  options: {}
+avstack:
+  type: CameraForwardCollisionAVStack
+  options:
+    camera: front
+    gpu: 0
+    detector_dataset: nuscenes
+seeds:
+- 0
+recording:
+  sensor_ids:
+  - front
+  representations:
+  - model_input
+  every_n_steps: 1
+output: ../results/nuscenes_object_insertion
+attacks:
+  object:
+    type: ObjectInsertionAttack
+    options:
+      decision_steps: 5
+      max_segments: 1
+      assets:
+        type: SignAsset
+        options: {}
+      sensor: front
+      placement:
+        type: WorldPlacement
+        options:
+          position_m:
+          - 28.0
+          - -3.0
+          - 0.0
+      orientation:
+        type: Orientation
+        options:
+          mode: face_ego
+      placement_relative_to_ego_origin: true
+treatments:
+- name: clean
+- name: object
+  attack_name: object

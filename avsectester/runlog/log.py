@@ -14,14 +14,19 @@ import json
 import os
 from pathlib import Path
 import sys
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-# Version 2 renamed the step ``actions`` field to ``effects`` (attack effect records).
-SCHEMA_VERSION = 2
+from avsectester.closed_loop.datatypes import Detection
+
+if TYPE_CHECKING:
+    from avsectester.closed_loop.simulator import SensorGeometry
+
+# Version 5 names the typed physical camera-geometry column sensor_geometry.
+SCHEMA_VERSION = 5
 _TAG = "_avsectester_type"
 _KEYS = "_avsectester_keys"
 _DATATYPE_NAMES = {
-    "Control", "Observation", "WorldSnapshot", "StateEstimate", "FrameRecord", "RecordedOutput",
+    "Control", "Observation", "WorldSnapshot", "StateEstimate", "Detection", "RecordedOutput",
 }
 
 
@@ -29,9 +34,9 @@ _DATATYPE_NAMES = {
 class StepRecord:
     """One decision, with independently captured physical and model-visible data.
 
-    ``telemetry`` holds already-produced compatibility measurements, including
-    ``n_detections`` where available. Missing outputs stay missing; recording never
-    runs a component to obtain them. Times belong to the captured values rather
+    ``detections`` holds canonical ego-frame boxes, or None if the driving system
+    has no detection output. Recording never runs extra inference to obtain them.
+    Times belong to the captured values rather
     than a single ambiguous timestamp for the entire decision.
     """
 
@@ -43,9 +48,19 @@ class StepRecord:
     produced_command: Any = None
     executed_command: Any = None
     components: dict[str, Any] = field(default_factory=dict)
+    detections: Sequence[Detection] | None = None
+    sensor_geometry: Mapping[str, SensorGeometry] = field(default_factory=dict)
     effects: list[Any] = field(default_factory=list)
     outputs: list[Any] = field(default_factory=list)
     telemetry: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        # A Parquet list column keeps variable detection counts in one typed schema.
+        # General tuples elsewhere retain their existing explicit tuple encoding.
+        if self.detections is not None:
+            self.detections = list(self.detections)
+            if any(not isinstance(item, Detection) for item in self.detections):
+                raise TypeError("StepRecord.detections must contain Detection values")
 
 
 @dataclass
@@ -420,7 +435,8 @@ def _read_manifest(root: Path) -> dict[str, Any]:
     with (root / "manifest.json").open(encoding="utf-8") as handle:
         manifest = json.load(handle)
     if manifest.get("schema_version") != SCHEMA_VERSION:
-        raise ValueError(f"Unsupported RunLog schema version: {manifest.get('schema_version')!r}")
+        raise ValueError(f"Unsupported RunLog schema version: {manifest.get('schema_version')!r}; "
+                         f"expected {SCHEMA_VERSION}")
     return manifest
 
 
@@ -498,6 +514,18 @@ class _Encoder:
         if isinstance(value, tuple):
             return {_TAG: "tuple", "length": len(value),
                     **{f"item_{i}": self.encode(item) for i, item in enumerate(value)}}
+        if isinstance(value, Path):
+            return {_TAG: "Path", "value": str(value)}
+        if (type(value).__module__ == "avsectester.closed_loop.simulator"
+                and type(value).__name__ == "SensorGeometry"):
+            return {_TAG: "SensorGeometry", **{f.name: self.encode(getattr(value, f.name))
+                                              for f in fields(value)}}
+        if (type(value).__module__ == "avsectester.geometry.cameras"
+                and type(value).__name__ in {"PinholeCamera", "FThetaCamera"}):
+            return {_TAG: type(value).__name__, **{f.name: self.encode(getattr(value, f.name))
+                                                   for f in fields(value)}}
+        if type(value).__module__ == "avsectester.datasets.base" and type(value).__name__ == "ActorState":
+            return {_TAG: "ActorState", **{f.name: self.encode(getattr(value, f.name)) for f in fields(value)}}
         if type(value).__module__ == "avsectester.closed_loop.datatypes" and type(value).__name__ in _DATATYPE_NAMES:
             return {_TAG: type(value).__name__,
                     **{f.name: (
@@ -568,6 +596,18 @@ class _Decoder:
             return decode(data) if decode is not None else data
         if tag == "record":
             return self.decode(value["value"])
+        if tag == "Path":
+            return Path(value["value"])
+        if tag == "SensorGeometry":
+            from avsectester.closed_loop.simulator import SensorGeometry
+            return SensorGeometry(**{f.name: self.decode(value[f.name]) for f in fields(SensorGeometry)})
+        if tag in {"PinholeCamera", "FThetaCamera"}:
+            from avsectester.geometry import cameras
+            camera_type = getattr(cameras, tag)
+            return camera_type(**{f.name: self.decode(value[f.name]) for f in fields(camera_type)})
+        if tag == "ActorState":
+            from avsectester.datasets.base import ActorState
+            return ActorState(**{f.name: self.decode(value[f.name]) for f in fields(ActorState)})
         if tag in _DATATYPE_NAMES:
             from avsectester.closed_loop import datatypes
             record_type = getattr(datatypes, tag)

@@ -13,7 +13,7 @@ Effects are classified by where they act in the closed loop:
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import ExitStack
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
@@ -98,6 +98,10 @@ class SensorAttackEffect(AttackEffect, ABC):
     def apply(self, data: Any, view: SensorView) -> Any:
         """Return the changed sensor data."""
 
+    def render_metadata(self) -> Mapping[str, Any]:
+        """Data-only evidence from the most recent application, included in its receipt."""
+        return {}
+
 
 @dataclass(frozen=True)
 class AVStackAttackEffect(AttackEffect):
@@ -139,7 +143,7 @@ class AttackRuntime:
         pass
 
 
-# Stages an AV stack attack effect can target, in their order within one decision.
+# Stages an AVStack attack effect can target, in their order within one decision.
 _STAGE_ORDER = (
     "sensors.post", "localization.pre", "localization.post", "observation",
     "perception.pre", "perception.post", "tracking.pre", "tracking.post",
@@ -165,13 +169,11 @@ class _SetupHook:
         self.setup_ticks = dispatcher.setup_ticks
 
     def __call__(self, value: None, context: StageContext) -> None:
-        from avsectester.closed_loop.simulator import SimulatorRuntime
-
         truth = context.physical_state
         simulator_runtime = context.simulator_runtime
         self.dispatcher.setup(
             OnlineContext(0, "setup", truth.t, truth.frame, physical_state=truth),
-            simulator_runtime if isinstance(simulator_runtime, SimulatorRuntime) else None,
+            simulator_runtime,
         )
 
 
@@ -179,7 +181,7 @@ class AttackDispatcher:
     """Internal: apply the effects of the run's attack runtimes at their points of action.
 
     Validate before reset, then append ``hooks`` to the run's HookSet. ``setup`` runs inside
-    the reset through the simulator.setup hook (or directly after a legacy reset). ``step`` runs
+    the reset through the simulator.setup hook. ``step`` runs
     once per decision before ``apply_sensor_effects`` and Vehicle I/O; ``stop`` runs in a
     finally block. Every effect gets a request record and a receipt.
     """
@@ -251,11 +253,6 @@ class AttackDispatcher:
             hooks.append(Hook("simulator.step.pre", self._at_world_step))
         return tuple(hooks)
 
-    @property
-    def applies_setup_in_reset(self) -> bool:
-        """Whether the simulator calls ``setup`` through its simulator.setup stage."""
-        return self._available is not None and "simulator.setup" in self._available
-
     def _for_attack(self, attack: AttackRuntime, context: OnlineContext) -> OnlineContext:
         kinds = self._subscriptions[id(attack)]
         return replace(
@@ -301,8 +298,8 @@ class AttackDispatcher:
         self.receipts.clear()
         return result
 
-    def setup(self, context: OnlineContext, simulator_runtime: SimulatorRuntime | None) -> None:
-        """Run every ``setup`` and apply its world effects; ``None`` means a legacy world."""
+    def setup(self, context: OnlineContext, simulator_runtime: SimulatorRuntime) -> None:
+        """Run every ``setup`` and apply its world effects before the first capture."""
         if self._available is None:
             raise RuntimeError("Validate attack runtimes before setup")
         if self._has_setup or self._stopped:
@@ -318,9 +315,6 @@ class AttackDispatcher:
             for effect in tuple(effects):
                 if not isinstance(effect, WorldAttackEffect):
                     raise TypeError("AttackRuntime.setup returns only WorldAttackEffect instances")
-                if simulator_runtime is None:
-                    raise UnsupportedStageError(
-                        "This simulator cannot apply world attack effects before the first capture")
                 effect_id = self._request(effect, context, attack, "setup")
                 effect.apply(simulator_runtime, self._resources)
                 truth = simulator_runtime.state()
@@ -380,14 +374,17 @@ class AttackDispatcher:
             if effect.sensor not in views:
                 views[effect.sensor] = simulator_runtime.sensor_view(effect.sensor)
             view = views[effect.sensor]
-            data[effect.sensor] = effect.apply(data.get(effect.sensor, view.data), view)
+            if view.sensor not in data:
+                data[view.sensor] = deepcopy(view.data)
+            data[view.sensor] = effect.apply(data[view.sensor], view)
             self._receipt(effect_id, effect, context.step, "capture", context.sim_time, context.frame)
+            self.receipts[-1]["render"] = dict(effect.render_metadata())
         for sensor, value in data.items():
-            observation = write_camera_rgb(observation, views[sensor].sensor, value)
+            observation = write_camera_rgb(observation, sensor, value)
         return observation
 
     def finish_decision(self) -> None:
-        """Reject AV stack effects whose stage was skipped in this decision."""
+        """Reject AVStack effects whose stage was skipped in this decision."""
         if self._avstack:
             raise RuntimeError(
                 f"Attack effects were not applied: {sorted({e.stage for _, e, _ in self._avstack})}")

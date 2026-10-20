@@ -6,6 +6,6 @@ SensorView) with implementations in ``simulators``, ``avstack`` (AVStack) with i
 metabuilder and offline-phase access in ``services``, ``driving_adapters``, ``frame_data`` and
 ``resources``.
 
-This package imports none of them: datasets and the legacy scenario package import closed-loop
-modules while they initialize, so eager imports here would be circular. Import from the modules.
+Import public types from their modules. Keeping this package initializer lightweight avoids
+loading simulator and driving-system implementations when only data contracts are needed.
 """

@@ -1,0 +1,110 @@
+# Run with: avsectester run configs/carla_patch.yaml
+# Paths are relative to this file; set data/model paths for your machine.
+dataset:
+  type: CarlaDataset
+  options:
+    recipes:
+      town03_lead:
+        type: CarlaRecipe
+        options:
+          time_step: 0.05
+          decision_steps: 60
+          scenario:
+            client:
+              map_name: Town03
+            ego:
+              type: CarlaMobileActor
+              spawn: 0
+              vehicle: vehicle.tesla.model3
+              autopilot: false
+              destination: null
+              sensors:
+              - type: CarlaRgbCamera
+                name: camera-0
+                source_ID: 0
+                image_size_x: 800
+                image_size_y: 600
+                fov: 90
+                sensor_tick: 0.0
+              - type: CarlaLidar
+                name: lidar-0
+                rotation_frequency: 20
+                sensor_tick: 0.0
+                range: 70.0
+            lead:
+              gap: 9.0
+              vehicle: vehicle.tesla.model3
+            npcs: []
+          motion:
+            ego:
+              type: PrescribedMotion
+              options:
+                constant_control:
+                  type: Control
+                  options:
+                    throttle: 0.35
+            lead:
+              type: PrescribedMotion
+              options:
+                constant_control:
+                  type: Control
+                  options:
+                    brake: 1.0
+simulator:
+  type: CarlaSimulator
+  options:
+    client:
+      connect_ip: 127.0.0.1
+      connect_port: 2000
+      traffic_manager_port: 8000
+      rate: 20.0
+      synchronous: true
+      seed: 0
+    depth_camera: camera-0-0
+avstack:
+  type: CameraForwardCollisionAVStack
+  options:
+    gpu: 0
+    camera: camera-0-0
+    area_brake: 0.03
+    throttle: 0.55
+  bindings:
+    type: avsectester.closed_loop.driving_adapters:modular_driving_adapter
+    options:
+      scorers:
+      - mmdet.rpn_objectness
+seeds:
+- 0
+evaluation:
+  metrics:
+  - type: DrivingMetrics
+  - type: StopImpact
+recording:
+  sensor_ids:
+  - camera-0-0
+  representations:
+  - model_input
+  every_n_steps: 1
+output: ../results/carla_patch
+attacks:
+  patch:
+    type: PatchAttack
+    options:
+      decision_steps: 20
+      max_windows: 1
+      sensor: camera-0-0
+      width_m: 1.4
+      height_m: 0.7
+      max_distance: 30.0
+      candidate_hosts:
+      - lead
+      hosts_per_window: 1
+      texture:
+        type: CheckerboardTexture
+        options:
+          size: 256
+          cells: 8
+treatments:
+- name: clean
+- name: patch
+  attack_name: patch

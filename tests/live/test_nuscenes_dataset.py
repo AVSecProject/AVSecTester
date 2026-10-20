@@ -1,37 +1,21 @@
-"""nuScenes -> ``SceneGT``: validated on REAL nuScenes GT (no synthetic boxes).
-
-Reads real ``v1.0-trainval`` ground truth through the devkit and is **skipped** when the dataset/devkit
-are absent — there is no fabricated stand-in. Asserts the adapter yields qualifying vehicles with real
-3-D extent and that the requirement filter selects a rear-facing lead in the patch band. The
-``RecordedReplaySimulator`` plumbing is tested separately with a real on-disk image (no GT fabrication).
-"""
-
+"""Read recorded source frames from real nuScenes without scenario compatibility helpers."""
 import os
+from pathlib import Path
 
 import pytest
-from avsectester.scenarios.datasets.nuscenes import NuScenesDataset
-from avsectester.scenarios.presets import PHYSICAL_PATCH_HIDE_VEHICLE as REQ
-from avsectester.scenarios.source import DatasetFilter
+from avsectester.datasets.nuscenes import NuScenesDataset
 
-_ROOT = os.environ.get("AVSECTESTER_NUSCENES_ROOT", "/workspace/hdd/datasets/nuscenes")
+_ROOT = Path(os.environ.get('AVSECTESTER_NUSCENES_ROOT', '/workspace/hdd/datasets/nuscenes'))
 
 
-def _has_nuscenes() -> bool:
-    if not os.path.isdir(os.path.join(_ROOT, "v1.0-trainval")):
-        return False
-    try:
-        import nuscenes  # noqa: F401
-    except ImportError:
-        return False
-    return True
-
-
-@pytest.mark.skipif(not _has_nuscenes(), reason="real nuScenes v1.0-trainval + devkit not present")
-def test_reads_real_nuscenes_gt_and_filters():
-    ds = NuScenesDataset(_ROOT, max_samples=80)
-    hits = list(DatasetFilter(ds).scenarios(REQ))
-    assert hits, "expected some qualifying frames among 80 real keyframes"
-    target = hits[0].match.target
-    assert target.category == "vehicle" and "front" in target.box2d
-    assert 4.0 <= target.distance <= 25.0        # in the physical-patch distance band
-    assert min(target.extent) > 0                # a real 3-D box has non-zero size (drives 3-D drawing)
+@pytest.mark.skipif(not (_ROOT / 'v1.0-trainval').is_dir(), reason='Real nuScenes data unavailable')
+def test_real_nuscenes_frames_have_actor_extent_and_calibration():
+    pytest.importorskip('nuscenes.nuscenes')
+    data = NuScenesDataset(str(_ROOT))
+    scenario = next(iter(data.scenarios()))
+    frames = data.frames(scenario.id)
+    record = data.frame_data(scenario.id, frames[0])
+    assert record.ego is not None and record.sensor_data
+    assert any(actor.extent and min(actor.extent) > 0 for actor in record.actors.values())
+    reference = next(iter(record.sensor_data.values()))
+    assert {'camera', 'ego_from_sensor'} <= reference.metadata.keys()

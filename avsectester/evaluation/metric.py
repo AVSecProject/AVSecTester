@@ -1,173 +1,375 @@
-"""Impact metric: did the attack cause a driving consequence the clean run never had?
-
-The security question is differential — not "does the ego brake?" but "does the *attack* make it
-brake/stop when the identical clean run did not?". :func:`impact` diffs two
-:class:`~avsectester.closed_loop.datatypes.Trace`s (clean vs attacked) into that verdict, and :func:`plot_impact`
-renders that comparison (ego speed + brake over frames) as a figure.
-
-A verdict is only meaningful if the **clean** run actually drove. If the clean ego never got moving
-(too few frames, or it was stuck at the spawn), then "the attack induced braking" is vacuous — an
-already-stopped car braking proves nothing. So the metric first checks a driving baseline
-(``clean.peak_speed >= baseline_speed``); without it the result is INCONCLUSIVE, not a success.
-The real success signal is ``induced_stop`` (the attack stopped a car that was otherwise driving).
-"""
+"""Metrics computed from recorded logs, without live simulators or driving models."""
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass
+import math
+from typing import Any, Literal, TypeAlias
 
-from avsectester.closed_loop.datatypes import Trace
+import numpy as np
 
-
-@dataclass
-class Impact:
-    clean_peak_speed: float
-    clean_final_speed: float
-    attacked_final_speed: float
-    clean_brake_frames: int
-    attacked_brake_frames: int
-    clean_drove: bool          # did the clean run establish a real driving baseline?
-    induced_braking: bool      # attack braked more than clean did (phantom family)
-    induced_stop: bool         # attack stopped a car the clean run kept driving (phantom family)
-    suppressed_stop: bool = False  # attack kept the ego rolling where the clean run braked to a stop
-                                   # (object-hiding family: the dual of induced_stop)
-    overdrive_frames: int = 0  # frames where clean was stopped but the attacked ego kept moving —
-                               # the robust hiding signal (final_speed alone misses a late re-detection)
-
-    @property
-    def attack_succeeded(self) -> bool:
-        """Meaningful success = the attack flipped the safe outcome — either it stopped an
-        otherwise-driving car (phantom) or kept a car rolling that otherwise stopped (hiding)."""
-        return self.clean_drove and (self.induced_stop or self.suppressed_stop)
-
-    @property
-    def verdict(self) -> str:
-        if not self.clean_drove:
-            return (
-                f"INCONCLUSIVE — clean run never drove (peak {self.clean_peak_speed:.2f} m/s); "
-                "run more frames or check the spawn"
-            )
-        if self.suppressed_stop:
-            return "ATTACK SUCCEEDED (suppressed a safe stop — ego failed to brake for the lead)"
-        if self.induced_stop:
-            return "ATTACK SUCCEEDED (forced an unsafe stop)"
-        if self.induced_braking:
-            return "ATTACK INDUCED BRAKING (slowed the ego, but no full stop)"
-        return "no impact (attack did not change the drive)"
-
-    def comparison(self, treated_label: str) -> str:
-        """Format driving measurements without interpreting them as an attack outcome."""
-        return (
-            f"clean:    peak_speed={self.clean_peak_speed:5.2f}  "
-            f"final_speed={self.clean_final_speed:5.2f}  brake_frames={self.clean_brake_frames}\n"
-            f"{treated_label}: final_speed={self.attacked_final_speed:5.2f}  "
-            f"brake_frames={self.attacked_brake_frames}  "
-            f"overdrive_frames={self.overdrive_frames} (kept moving while clean was stopped)"
-        )
-
-    def __str__(self) -> str:
-        return f"{self.comparison('attacked')}\n=> {self.verdict}"
+from avsectester.attack import AttackSegment
+from avsectester.runlog import RunLog
 
 
-def impact(
-    clean: Trace,
-    attacked: Trace,
-    stop_speed: float = 0.5,
-    baseline_speed: float = 1.0,
-    min_overdrive_frames: int = 3,
-) -> Impact:
-    """Diff clean vs attacked into an :class:`Impact`.
+@dataclass(frozen=True)
+class UnavailableMetricValue:
+    """A missing scalar and its reason; value_type preserves unavailable boolean fields."""
 
-    :param stop_speed: at/below this speed (m/s) the ego counts as stopped.
-    :param baseline_speed: the clean run must have peaked at least this fast to count as "drove".
-    :param min_overdrive_frames: how many frames the attacked ego must keep moving while the clean run
-        is stopped to count as a suppressed stop — robust to a sporadic late re-detection that only
-        touches ``final_speed``.
+    reason: str
+    value_type: Literal["number", "boolean"] = "number"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.reason, str) or not self.reason:
+            raise ValueError("An unavailable metric value needs a reason")
+        if self.value_type not in ("number", "boolean"):
+            raise ValueError("An unavailable value_type must be number or boolean")
+
+
+MetricScalar: TypeAlias = int | float | bool | None | UnavailableMetricValue
+FieldMeasurements: TypeAlias = Mapping[str, MetricScalar]
+TreatmentMeasurements: TypeAlias = Mapping[str, FieldMeasurements]
+
+
+@dataclass(frozen=True)
+class ComparisonGroup:
+    """Completed treatments sharing one attack segment and seed, in configuration order."""
+
+    attack_name: str
+    segment: AttackSegment
+    seed: int
+    runs: Mapping[str, RunLog]
+
+
+@dataclass(frozen=True)
+class TreatmentPair:
+    """A completed pair in configuration order; differences are defined as B minus A."""
+
+    treatment_a: str
+    treatment_b: str
+    log_a: RunLog
+    log_b: RunLog
+
+
+class Metric(ABC):
+    """Evaluate recorded data; return scalars or UnavailableMetricValue values carrying their reasons.
+
+    Run metrics accept ComparisonGroup and return a field mapping for each treatment.
+    PairMetric implementations accept TreatmentPair and return one field mapping per pair.
+    Evaluation must not start simulators or run driving-system components.
     """
-    clean_drove = clean.peak_speed >= baseline_speed
-    # frames where the clean ego is stopped but the attacked ego is still rolling (the danger window)
-    overdrive = sum(
-        c.speed <= stop_speed and a.speed > baseline_speed
-        for c, a in zip(clean.records, attacked.records)
-    )
-    clean_stops = clean.final_speed <= stop_speed
-    return Impact(
-        clean_peak_speed=clean.peak_speed,
-        clean_final_speed=clean.final_speed,
-        attacked_final_speed=attacked.final_speed,
-        clean_brake_frames=clean.braking_frames,
-        attacked_brake_frames=attacked.braking_frames,
-        clean_drove=clean_drove,
-        induced_braking=attacked.braking_frames > clean.braking_frames,
-        induced_stop=(attacked.final_speed <= stop_speed) and (clean.final_speed > stop_speed),
-        suppressed_stop=clean_stops and overdrive >= min_overdrive_frames,
-        overdrive_frames=overdrive,
-    )
+
+    @abstractmethod
+    def evaluate(self, data: Any) -> Mapping[str, Any]: ...
 
 
-def plot_impact(
-    clean: Trace,
-    attacked: Trace,
-    path: str,
-    title: str | None = None,
-    result: Impact | None = None,
-    *,
-    treated_label: str = "attacked",
-    show_verdict: bool = True,
-) -> str:
-    """Render clean vs attacked (ego speed + brake command over frames) to ``path``; returns it.
+class PairMetric(Metric):
+    """A metric evaluated once for each completed pair, rather than for individual runs."""
 
-    The security story is already in the two Traces, so the figure needs no extra sensors. matplotlib
-    is a lazy import (install with ``pip install -e ".[viz]"``). This is the *metric* view; the
-    per-frame *scene* view is :mod:`avsectester.closed_loop.simulators.viz`.
-    ``treated_label`` names the compared treatment. ``show_verdict=False`` omits the attack
-    caption and defaults to a neutral comparison title. These options do not change scoring.
+    @abstractmethod
+    def evaluate(self, pair: TreatmentPair) -> FieldMeasurements: ...
+
+
+def _positive(value: float, name: str) -> None:
+    if isinstance(value, bool) or not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{name} must be a finite positive number")
+
+
+def _nonnegative(value: float, name: str) -> None:
+    if isinstance(value, bool) or not math.isfinite(value) or value < 0:
+        raise ValueError(f"{name} must be a finite nonnegative number")
+
+
+def speeds(log: RunLog) -> list[float] | None:
+    """Physical speed after each decision, or None when any decision has no physical state."""
+    if not log.steps:
+        return None
+    values = []
+    for step in log.steps:
+        state = step.physical_post
+        if state is None or state.ego_speed is None:
+            return None
+        value = float(state.ego_speed)
+        if not math.isfinite(value):
+            return None
+        values.append(value)
+    return values
+
+
+def executed_brakes(log: RunLog) -> list[float] | None:
+    """Executed actuator brake commands; trajectory commands do not provide this evidence."""
+    if not log.steps or any(step.executed_command is None for step in log.steps):
+        return None
+    if any(step.executed_command.trajectory is not None for step in log.steps):
+        return None
+    return [float(step.executed_command.brake) for step in log.steps]
+
+
+def brake_steps(log: RunLog) -> int | None:
+    values = executed_brakes(log)
+    if values is None:
+        return None
+    return sum(value > 0 and step.executed_command.throttle == 0
+               for value, step in zip(values, log.steps))
+
+
+def _pose(actor: Any) -> np.ndarray | None:
+    if actor is None or getattr(actor, "pose", None) is None:
+        return None
+    result = np.asarray(actor.pose, dtype=float)
+    if result.shape != (4, 4) or not np.isfinite(result).all():
+        return None
+    return result
+
+
+def _box_transform(actor: Any) -> np.ndarray | None:
+    if _pose(actor) is None:
+        return None
+    return np.asarray(actor.box_transform(), dtype=float)
+
+
+def _obb_overlap(first: Any, second: Any) -> bool | None:
+    """Separating-axis test of oriented full-extent rectangles, including zero extents."""
+    first_pose, second_pose = _box_transform(first), _box_transform(second)
+    if first_pose is None or second_pose is None or first.extent is None or second.extent is None:
+        return None
+    poses = (first_pose, second_pose)
+    extents = [np.asarray(actor.extent, dtype=float)[:2] for actor in (first, second)]
+    if any(not np.isfinite(extent).all() or np.any(extent < 0) for extent in extents):
+        return None
+    rotations = []
+    for pose in poses:
+        yaw = math.atan2(pose[1, 0], pose[0, 0])
+        rotations.append(np.array([[math.cos(yaw), -math.sin(yaw)],
+                                   [math.sin(yaw), math.cos(yaw)]]))
+    offset = second_pose[:2, 3] - first_pose[:2, 3]
+    for rotation in rotations:
+        for axis in rotation.T:
+            radii: list[float] = [float(np.sum(extent / 2 * np.abs(basis.T @ axis)))
+                                  for extent, basis in zip(extents, rotations)]
+            if abs(float(offset @ axis)) > sum(radii):
+                return False
+    return True
+
+
+class DrivingMetrics(Metric):
+    """Physical speed, actuator braking, actor distances and top-down box collisions."""
+
+    def __init__(self, stop_speed: float = 0.5) -> None:
+        _nonnegative(stop_speed, "stop_speed")
+        self.stop_speed = stop_speed
+
+    def evaluate(self, group: ComparisonGroup) -> TreatmentMeasurements:
+        result: dict[str, dict[str, MetricScalar]] = {}
+        role_ids = {identity for identities in group.segment.roles.values() for identity in identities}
+        for name, log in group.runs.items():
+            values: dict[str, MetricScalar] = {}
+            physical_speeds = speeds(log)
+            if physical_speeds is None:
+                reason = "Physical post-state speeds are missing or the run is empty"
+                values.update(dict.fromkeys(("final_speed", "peak_speed", "mean_speed"), UnavailableMetricValue(reason)))
+                values["stopped"] = UnavailableMetricValue(reason, "boolean")
+            else:
+                values.update(final_speed=physical_speeds[-1], peak_speed=max(physical_speeds),
+                              mean_speed=float(np.mean(physical_speeds)), stopped=physical_speeds[-1] <= self.stop_speed)
+            count = brake_steps(log)
+            values["brake_steps"] = count if count is not None else UnavailableMetricValue(
+                "Executed actuator commands are unavailable")
+            distances, role_distances = [], []
+            missing_positions, missing_extents, collision = False, False, False
+            states = [state for step in log.steps for state in (step.physical_pre, step.physical_post)]
+            if not states:
+                missing_positions = True
+            for state in states:
+                ego = state.ego if state is not None else None
+                pose = _pose(ego)
+                if pose is None:
+                    missing_positions = True
+                    continue
+                for identity, actor in state.actors.items():
+                    actor_pose = _pose(actor)
+                    if actor_pose is None:
+                        missing_positions = True
+                        continue
+                    ego_box, actor_box = _box_transform(ego), _box_transform(actor)
+                    assert ego_box is not None and actor_box is not None
+                    origin, target = ego_box[:3, 3], actor_box[:3, 3]
+                    distance = float(np.linalg.norm(target - origin))
+                    distances.append(distance)
+                    if identity in role_ids:
+                        role_distances.append(distance)
+                    overlaps = _obb_overlap(ego, actor)
+                    missing_extents |= overlaps is None
+                    collision |= overlaps is True
+            values["min_distance"] = min(distances) if distances and not missing_positions else UnavailableMetricValue(
+                "Ego/actor poses are missing or no other actor was recorded")
+            values["min_role_distance"] = min(role_distances) if role_distances and not missing_positions else UnavailableMetricValue(
+                "No roles are bound or their physical positions are unavailable")
+            values["collision"] = True if collision else (
+                UnavailableMetricValue("Ego/actor poses or bounding-box extents are missing", "boolean")
+                if missing_positions or missing_extents else False)
+            result[name] = values
+        return result
+
+
+class TrajectoryDeviation(PairMetric):
+    """Symmetric distance between true ego positions at matching decision indices (metres)."""
+
+    def evaluate(self, pair: TreatmentPair) -> FieldMeasurements:
+        fields = ("mean_deviation", "max_deviation", "final_deviation")
+        if ([step.step for step in pair.log_a.steps] != [step.step for step in pair.log_b.steps]
+                or not pair.log_a.steps):
+            return dict.fromkeys(fields, UnavailableMetricValue("Ego poses are missing or decision indices differ"))
+        differences = []
+        for first, second in zip(pair.log_a.steps, pair.log_b.steps):
+            first_pose = _pose(first.physical_post.ego if first.physical_post is not None else None)
+            second_pose = _pose(second.physical_post.ego if second.physical_post is not None else None)
+            if first_pose is None or second_pose is None:
+                return dict.fromkeys(fields, UnavailableMetricValue("Physical ego poses are unavailable"))
+            differences.append(float(np.linalg.norm(first_pose[:3, 3] - second_pose[:3, 3])))
+        return dict(zip(fields, (float(np.mean(differences)), max(differences), differences[-1])))
+
+
+class DetectionMetrics(Metric):
+    """Greedy nearest-centre BEV matching in the true ego frame at capture time.
+
+    Truths and predictions use the same BEV max_range; None disables the range limit.
+    A nonempty category_map enables class-aware matching. Unlabelled detections then match
+    no category. There is no countable true-negative population.
     """
-    import os
 
-    import matplotlib
+    def __init__(self, match_distance: float = 2.0, max_range: float | None = 50.0,
+                 category_map: Mapping[str, str] | None = None) -> None:
+        _positive(match_distance, "match_distance")
+        if max_range is not None:
+            _positive(max_range, "max_range")
+        self.match_distance, self.max_range = match_distance, max_range
+        self.category_map = dict(category_map or {})
 
-    matplotlib.use("Agg")  # headless
-    import matplotlib.pyplot as plt
+    def evaluate(self, group: ComparisonGroup) -> TreatmentMeasurements:
+        result: dict[str, dict[str, MetricScalar]] = {}
+        for name, log in group.runs.items():
+            if any(step.detections is None for step in log.steps) or not log.steps:
+                avstack_type = log.metadata.get("avstack_type", "unknown AVStack")
+                raise ValueError(f"DetectionMetrics requires detections from driving system {avstack_type!r} "
+                                 f"(treatment {name!r})")
+            tp, fp, fn = 0, 0, 0
+            eligible = dict.fromkeys(group.segment.roles, 0)
+            detected = dict.fromkeys(group.segment.roles, 0)
+            unavailable = False
+            for step in log.steps:
+                world = step.physical_pre
+                pose = _pose(world.ego if world is not None else None)
+                if pose is None:
+                    unavailable = True
+                    break
+                truths = []
+                for identity, actor in world.actors.items():
+                    actor_pose = _pose(actor)
+                    if actor_pose is None:
+                        unavailable = True
+                        break
+                    box = _box_transform(actor)
+                    if box is None:
+                        unavailable = True
+                        break
+                    position = pose[:3, :3].T @ (box[:3, 3] - pose[:3, 3])
+                    if self.max_range is None or np.linalg.norm(position[:2]) <= self.max_range:
+                        truths.append((identity, actor, position))
+                if unavailable:
+                    break
+                detections = step.detections
+                assert detections is not None
+                predictions = [detection for detection in detections
+                               if self.max_range is None or np.linalg.norm(detection.position[:2]) <= self.max_range]
+                candidates = []
+                for index, detection in enumerate(predictions):
+                    for truth_index, (_, actor, position) in enumerate(truths):
+                        if self.category_map:
+                            if detection.category is None:
+                                continue
+                            predicted = self.category_map.get(detection.category, detection.category)
+                            expected = self.category_map.get(actor.category, actor.category)
+                            if predicted != expected:
+                                continue
+                        distance = float(np.linalg.norm(np.asarray(detection.position)[:2] - position[:2]))
+                        if distance <= self.match_distance:
+                            candidates.append((distance, index, truth_index))
+                matched_predictions: set[int] = set()
+                matched_truths: set[int] = set()
+                for _, index, truth_index in sorted(candidates):
+                    if index not in matched_predictions and truth_index not in matched_truths:
+                        matched_predictions.add(index)
+                        matched_truths.add(truth_index)
+                tp += len(matched_truths)
+                fp += len(predictions) - len(matched_predictions)
+                fn += len(truths) - len(matched_truths)
+                in_range = {identity for identity, _, _ in truths}
+                found = {truths[index][0] for index in matched_truths}
+                for role, identities in group.segment.roles.items():
+                    eligible[role] += len(set(identities) & in_range)
+                    detected[role] += len(set(identities) & found)
+            fields = ["tp", "fp", "fn", "precision", "recall", "f1"] + [
+                f"role_detection_rate.{role}" for role in eligible]
+            if unavailable:
+                result[name] = dict.fromkeys(fields, UnavailableMetricValue(
+                    "Physical ego/actor ground-truth poses are unavailable"))
+                continue
+            values: dict[str, MetricScalar] = {"tp": tp, "fp": fp, "fn": fn}
+            for field, numerator, denominator in (("precision", tp, tp + fp), ("recall", tp, tp + fn),
+                                                  ("f1", 2 * tp, 2 * tp + fp + fn)):
+                values[field] = numerator / denominator if denominator else UnavailableMetricValue(
+                    "No detections or ground-truth opportunities define this ratio")
+            for role in eligible:
+                values[f"role_detection_rate.{role}"] = detected[role] / eligible[role] if eligible[role] else UnavailableMetricValue(
+                    "The role has no in-range ground-truth actor-decisions")
+            result[name] = values
+        return result
 
-    result = result or impact(clean, attacked)
-    if title is None:
-        title = (
-            f"Adversarial attack — driving impact (clean vs {treated_label})"
-            if show_verdict else f"Driving comparison (clean vs {treated_label})"
-        )
-    cf = [r.frame for r in clean.records]
-    af = [r.frame for r in attacked.records]
 
-    fig, (ax_s, ax_b) = plt.subplots(2, 1, figsize=(9, 6), sharex=True)
-    fig.suptitle(title, fontsize=13, fontweight="bold")
+class StopImpact(PairMetric):
+    """Directional stopping/braking comparisons, evaluated in both A→B and B→A directions."""
 
-    # -- speed
-    ax_s.plot(cf, [r.speed for r in clean.records], color="#2a7", lw=2, label="clean")
-    ax_s.plot(af, [r.speed for r in attacked.records], color="#d33", lw=2, label=treated_label)
-    ax_s.axhline(0.5, color="#888", ls=":", lw=1)
-    ax_s.set_ylabel("ego speed (m/s)")
-    ax_s.legend(loc="upper right")
-    ax_s.grid(alpha=0.25)
+    def __init__(self, stop_speed: float = 0.5, reference_speed: float = 1.0,
+                 min_overdrive_steps: int = 3) -> None:
+        _nonnegative(stop_speed, "stop_speed")
+        _nonnegative(reference_speed, "reference_speed")
+        if isinstance(min_overdrive_steps, bool) or not isinstance(min_overdrive_steps, int) or min_overdrive_steps < 1:
+            raise ValueError("min_overdrive_steps must be a positive integer")
+        self.stop_speed, self.reference_speed = stop_speed, reference_speed
+        self.min_overdrive_steps = min_overdrive_steps
 
-    # -- brake command, shaded
-    ax_b.fill_between(af, [r.brake for r in attacked.records], color="#d33", alpha=0.25, step="mid")
-    ax_b.plot(af, [r.brake for r in attacked.records], color="#d33", lw=2, label=treated_label)
-    ax_b.plot(cf, [r.brake for r in clean.records], color="#2a7", lw=2, label="clean")
-    ax_b.set_ylabel("brake command")
-    ax_b.set_xlabel("frame")
-    ax_b.set_ylim(-0.05, 1.05)
-    ax_b.legend(loc="upper left")
-    ax_b.grid(alpha=0.25)
+    def evaluate(self, pair: TreatmentPair) -> FieldMeasurements:
+        result: dict[str, MetricScalar] = {}
+        for direction, reference_log, compared_log in (("a_to_b", pair.log_a, pair.log_b),
+                                                 ("b_to_a", pair.log_b, pair.log_a)):
+            result.update({f"{direction}.{field}": value
+                           for field, value in self._direction(reference_log, compared_log).items()})
+        return result
 
-    # -- verdict caption
-    if show_verdict:
-        fig.text(0.5, 0.005, result.verdict, ha="center", fontsize=11,
-                 color="#d33" if result.attack_succeeded else "#555")
-
-    fig.tight_layout(rect=(0, 0.03 if show_verdict else 0, 1, 0.97))
-    abspath = os.path.abspath(path)
-    os.makedirs(os.path.dirname(abspath), exist_ok=True)
-    fig.savefig(abspath, dpi=130)
-    plt.close(fig)
-    return abspath  # absolute, so callers can report exactly where the file landed
+    def _direction(self, reference_log: RunLog, compared_log: RunLog) -> FieldMeasurements:
+        booleans = ("reference_drove", "induced_braking", "induced_stop", "suppressed_stop")
+        reference_speeds, compared_speeds = speeds(reference_log), speeds(compared_log)
+        if reference_speeds is None or compared_speeds is None:
+            reason = "Reference or compared run physical speeds are unavailable"
+        elif [step.step for step in reference_log.steps] != [step.step for step in compared_log.steps]:
+            reason = "Reference and compared run decision indices differ"
+        else:
+            reason = None
+        if reason is not None:
+            return dict.fromkeys(booleans, UnavailableMetricValue(reason, "boolean")) | {
+                "overdrive_steps": UnavailableMetricValue(reason)}
+        assert reference_speeds is not None and compared_speeds is not None
+        reference_brakes, braking = brake_steps(reference_log), brake_steps(compared_log)
+        overdrive = sum(first <= self.stop_speed and second > self.reference_speed
+                        for first, second in zip(reference_speeds, compared_speeds))
+        return {
+            "reference_drove": max(reference_speeds) >= self.reference_speed,
+            "induced_braking": braking > reference_brakes if braking is not None and reference_brakes is not None
+            else UnavailableMetricValue("Reference or compared run executed actuator commands are unavailable", "boolean"),
+            "induced_stop": compared_speeds[-1] <= self.stop_speed < reference_speeds[-1],
+            "suppressed_stop": reference_speeds[-1] <= self.stop_speed and overdrive >= self.min_overdrive_steps,
+            "overdrive_steps": overdrive,
+        }

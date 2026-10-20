@@ -55,8 +55,7 @@ def measure(steps: int, image_every: int) -> dict:
                 produced_command=Control(trajectory=[((j * .2, 0., 0.), (1., 0., 0., 0.), i * 50000 + (j + 1) * 50000) for j in range(12)]),
                 executed_command=Control(throttle=0.2),
                 components={"perception": [{"label": "car", "box": [j * 2., 3., 15., 8.], "score": 0.9} for j in range(20)]},
-                actions=[{"stage": "perception.post", "name": "example", "applied_t": i * 0.05}],
-                telemetry={"n_detections": 20},
+                effects=[{"stage": "perception.post", "name": "example", "applied_t": i * 0.05}],
             ))
         recorder.finish()
         write_seconds = time.perf_counter() - start
