@@ -13,7 +13,7 @@ and returns explicit artifacts. The user chooses the objective, candidate sampli
 algorithm. The framework neither supplies selection criteria nor reselects after optimization.
 
 Within a service session, the attack can evaluate driving components, request scorer outputs, render
-its SensorAttackEffect on a sensor view, or execute complete candidate rollouts. Gradient
+its SensorAttackAction on a sensor view, or execute complete candidate rollouts. Gradient
 requirements are checked against declared capabilities. No path silently detaches and continues.
 
 Candidate rollouts use the same Attack.create_runtime and artifacts deployment as formal runs. World
@@ -119,29 +119,29 @@ options:
 
 The named scorer must be exposed through avstack.bindings. PGD needs differentiable inputs; NES can
 use score queries without gradients. PGD uses calibrated plane ray sampling and an occlusion mask as
-a differentiable surrogate. NES uses candidate effects with session.render. Optional
+a differentiable surrogate. NES uses candidate actions with session.render. Optional
 validate_rollout checks the exported candidate in a rollout with the merged experiment/attack
 environment and shared deployment budget. It validates completed status and decision count, then
-logs a summary including final speed; it does not save that rollout log or claim attack
-effectiveness. The session uses the selection seed; the algorithm seed controls optimizer randomness
+logs a summary including final speed; it does not save that rollout log or claim an attack
+impact. The session uses the selection seed; the algorithm seed controls optimizer randomness
 independently. Empty metadata returns the original texture without attempting optimization. NES
 accepts init_texture for a warm start. PGD rejects init_texture rather than ignoring it. Physical
 deployment samples only origins accepted by session.can_deploy_at(position), which uses the
 framework's deployment and capture tick requirements. An unsupported origin fails explicitly; the
 attack does not calculate a separate window formula. By default each sample targets the host's
 projected bounding box. An explicit target_box overrides it; this objective region is distinct from
-patch placement. Save the returned artifact and verify its effect receipts and recorded input rather
+patch placement. Save the returned artifact and verify its action receipts and recorded input rather
 than assuming a completed optimizer implies successful deployment.
 
 ## Rendering and limitations
 
 The simulator supplies SensorView evidence. Concrete attack rendering resolves host/world placement
 and uses the view's pinhole or f-theta camera model. Selection reads clean geometry and visibility
-evidence. Offline candidate rendering and online execution share SensorAttackEffect deployment. A
-physical CARLA panel uses WorldAttackEffect instead.
+evidence. Offline candidate rendering and online execution share SensorAttackAction deployment. A
+physical CARLA panel uses WorldAttackAction instead.
 
-Optimization algorithms can use different approximations and objective regions. Execution checks
-establish that the migrated workflow runs, not that attacks achieve an earlier effect level.
+Optimization algorithms can use different approximations and objective regions. Passing execution
+checks establishes that the workflow runs; it does not establish attack impact.
 Validate texture sampling, occlusion, distortion, score regions and deployed artifacts for the
 scientific objective. CARLA's physical prop retains its native mesh dimensions; width_m/height_m do
 not rescale it. CARLA sampling uses the native rendered prop region, while PGD remains a

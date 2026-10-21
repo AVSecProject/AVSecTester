@@ -2,7 +2,6 @@
 
 from collections import OrderedDict, defaultdict, namedtuple
 from dataclasses import fields, is_dataclass
-import json
 from pathlib import Path
 
 import numpy as np
@@ -111,7 +110,7 @@ def test_failed_run_status(tmp_path):
     assert RunLog.read(tmp_path / "cancelled").status == "cancelled"
 
 
-def test_chunks_and_schema_changes(tmp_path):
+def test_chunks_and_schema_evolution(tmp_path):
     recorder = Recorder(tmp_path / "run", chunk_steps=1, retain_steps=False)
     recorder.record_step(StepRecord(0, components={"score": 1}))
     recorder.record_step(StepRecord(1, components={"score": 2., "trajectory": [(1., 2.)]}))
@@ -121,11 +120,5 @@ def test_chunks_and_schema_changes(tmp_path):
     assert [step.step for step in recovered.steps] == [0, 1]
     assert recovered.steps[0].components["score"] == 1
     assert recovered.steps[1].components["trajectory"] == [(1., 2.)]
-    manifest_path = tmp_path / "run/manifest.json"
-    manifest = json.loads(manifest_path.read_text())
-    manifest["schema_version"] = -1
-    manifest_path.write_text(json.dumps(manifest))
-    with pytest.raises(ValueError, match="Unsupported RunLog schema version"):
-        RunLog.read(tmp_path / "run")
     with pytest.raises(ValueError, match="positive"):
         Recorder(chunk_steps=0)

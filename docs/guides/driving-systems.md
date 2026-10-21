@@ -31,7 +31,7 @@ extrinsics, independently of model-visible localization.
 
 Concrete attacks are not registered merely by constructing ModularAVStack. For a native hook, import
 its registration module explicitly or list it in `hooks[].imports`, and configure it with
-native_hook. Supplied PhantomInjectionAttack creates its detection effect directly, without hook
+native_hook. Supplied PhantomInjectionAttack creates its detection action directly, without hook
 registration.
 
 ## Camera forward-collision policy
@@ -50,7 +50,8 @@ available through recorded outputs.
 AlpamayoAVStack wraps AlpaSim's trajectory-output model. It uses camera histories and the
 model-visible ego state, returns Control.trajectory and exposes policy.pre/policy.post. It has no
 separate perception or tracking stage. `detections()` returns None, so DetectionMetrics is not a
-default metric for this driving system.
+default metric for this driving system. Its component log contains `policy` for the model
+prediction and `command` for the produced ego command.
 
 The driver environment is Python 3.12 and distinct from the avstack Python 3.11 environment. Run
 from a source checkout using the driver interpreter. See [NuRec

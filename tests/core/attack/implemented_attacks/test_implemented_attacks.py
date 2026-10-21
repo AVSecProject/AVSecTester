@@ -56,13 +56,13 @@ def test_implemented_attack(attack_type, options, invalid, driving_options_fixtu
                 recording=RecordingPolicy(("front",), ("raw", "model_input")),
             )))
     assert all(log.status == "completed" for log in logs)
-    assert any(effect.get("outcome") == "applied" for row in logs[0].steps for effect in row.effects)
+    assert any(action.get("outcome") == "applied" for row in logs[0].steps for action in row.actions)
     for original, loaded in zip(logs[0].steps, logs[1].steps):
         np.testing.assert_array_equal(loaded.model_observation.sensor_data["front"],
                                       original.model_observation.sensor_data["front"])
         assert loaded.model_observation.ego_speed == original.model_observation.ego_speed
         assert loaded.executed_command == original.executed_command
-        assert loaded.effects == original.effects
+        assert loaded.actions == original.actions
     configuration["attacks"]["attack"]["options"] = {**options, **invalid}
     with pytest.raises((ValueError, TypeError)):
         load_configuration(configuration)

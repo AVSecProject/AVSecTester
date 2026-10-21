@@ -1,7 +1,11 @@
 """Canonical detections and camera transport use small, explicit numeric payloads."""
 import numpy as np
 import pytest
-from avsectester.closed_loop.datatypes import Detection, Observation, read_camera_rgb, write_camera_rgb
+from operator import attrgetter
+from types import SimpleNamespace
+from avsectester.closed_loop.datatypes import (
+    Detection, Observation, read_camera_rgb, write_camera_rgb, write_sensor_data,
+)
 
 
 def test_detection():
@@ -29,7 +33,33 @@ def test_read_camera_rgb():
 def test_write_camera_rgb():
     original = np.full((2, 3, 3), 20, np.uint8)
     observation = Observation(0, 0, {"front": original, "lidar": np.zeros((2, 4))})
-    changed = write_camera_rgb(observation, "front", np.full_like(original, 90))
+    changed = write_camera_rgb(observation, "front", np.full(original.shape, 90.5))
     assert np.all(read_camera_rgb(changed, "front")[1] == 90)
+    assert changed.sensor_data["front"].dtype == np.uint8
     assert np.all(read_camera_rgb(observation, "front")[1] == 20)
     np.testing.assert_array_equal(changed.sensor_data["lidar"], observation.sensor_data["lidar"])
+
+
+@pytest.mark.parametrize("sensor,payload,data,array,expected,metadata", [
+    pytest.param("lidar", np.zeros((2, 3, 4), np.float32), np.full((2, 3, 4), 80.5, np.float32),
+                 lambda value: value, np.full((2, 3, 4), 80.5, np.float32), (), id="range-image"),
+    pytest.param("lidar", np.zeros((2, 4), np.float32), np.full((2, 4), 4.5, np.float32),
+                 lambda value: value, np.full((2, 4), 4.5, np.float32), (), id="point-array"),
+    pytest.param("gnss", SimpleNamespace(data=np.zeros(3), timestamp=.3), np.full(3, 1.25),
+                 attrgetter("data"), np.full(3, 1.25), ("timestamp",), id="native-gnss"),
+    pytest.param("imu", SimpleNamespace(data={"dv": np.zeros(3)}, timestamp=.3),
+                 {"dv": np.full(3, 2.5)}, lambda value: value.data["dv"],
+                 np.full(3, 2.5), ("timestamp",), id="native-imu"),
+])
+def test_write_sensor_data(sensor, payload, data, array, expected, metadata):
+    original = array(payload).copy()
+    observation = Observation(.3, 3, {sensor: payload})
+    changed = write_sensor_data(observation, sensor, data)
+    assert changed is not observation
+    np.testing.assert_array_equal(array(changed.sensor_data[sensor]), expected)
+    assert array(changed.sensor_data[sensor]).dtype == expected.dtype
+    np.testing.assert_array_equal(array(observation.sensor_data[sensor]), original)
+    for name in metadata:
+        assert getattr(changed.sensor_data[sensor], name) == getattr(payload, name)
+    with pytest.raises(KeyError):
+        write_sensor_data(observation, "missing", data)

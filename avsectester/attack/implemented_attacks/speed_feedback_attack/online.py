@@ -1,7 +1,7 @@
 """All speed-feedback state belongs to one runtime."""
 from dataclasses import replace
 
-from avsectester.attack.runtime import AttackRuntime, AVStackAttackEffect, ResultSubscription
+from avsectester.attack.runtime import AttackRuntime, AVStackAttackAction, ResultSubscription
 
 
 class SpeedFeedbackAttackRuntime(AttackRuntime):
@@ -20,7 +20,7 @@ class SpeedFeedbackAttackRuntime(AttackRuntime):
             speed = context.physical_state.ego_speed
             self.bias = max(0.0, min(self.max_bias, self.bias + self.gain * (self.target_speed - speed)))
         context.record_output("speed_bias", self.bias)
-        return (AVStackAttackEffect("observation", self.modify),)
+        return (AVStackAttackAction("observation", self.modify),)
 
     def modify(self, observation, context):
         return replace(observation, ego_speed=observation.ego_speed + self.bias)

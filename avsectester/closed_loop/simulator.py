@@ -33,10 +33,10 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class DeploymentPlan:
-    """Shared tick budget for all treatments, including reference generation.
+    """Shared tick budget for all treatments, including frame data generation.
 
     Participants are the simulator.setup hooks bound by the runner, including attack runtimes
-    whose setup returns world attack effects. They may consume ticks through setup_tick;
+    whose setup returns world attack actions. They may consume ticks through setup_tick;
     the remainder is executed by the simulator. Neither path can exceed this budget.
     Selection metadata never enters the simulator.
     """
@@ -79,10 +79,13 @@ class SensorGeometry:
 class SensorView:
     """What a simulator provides for one sensor capture. It contains no insertion rendering.
 
-    ``data`` is the captured camera image as RGB uint8 (H, W, 3). ``camera`` projects optical
+    ``data`` is the sensor's captured data; a camera supplies RGB uint8 (H, W, 3). ``camera`` projects optical
     camera points to pixels and unprojects pixels to rays, hiding pinhole versus f-theta
     differences. ``cam_from_world`` maps world points to optical camera axes (x right, y down,
-    z forward). ``actors`` holds world poses by stable actor ID and ``ego`` is the ego's cuboid.
+    z forward). Both are None for non-camera sensors. ``sensor_from_world`` maps world points
+    to sensor body axes (x forward, y left, z up), including for a camera; it is not the optical
+    transform. It is None when the sensor pose is unavailable. ``actors`` holds world poses by
+    stable actor ID and ``ego`` is the ego's cuboid.
     ``depth`` is optical-axis depth in metres per pixel, when the simulator measures it;
     without it, occlusion is estimated from actor cuboids. ``native`` gives simulator-specific
     access and gives up portability. World units are metres, with x forward, y left, z up.
@@ -90,12 +93,13 @@ class SensorView:
 
     sensor: str
     data: Any
-    camera: Camera
-    cam_from_world: np.ndarray
+    camera: Camera | None
+    cam_from_world: np.ndarray | None
     actors: Mapping[str, ActorPose]
     ego: ActorPose
     time: float
     frame: int
+    sensor_from_world: np.ndarray | None = None
     depth: np.ndarray | None = None
     native: Mapping[str, Any] = field(default_factory=dict)
 
@@ -111,7 +115,7 @@ class Simulator(ABC):
     can_render: bool = False
     supported_world_settings: frozenset[str] = frozenset()
     simulator_version = "1"
-    # Native ticks that make simulator.setup effects visible in the first capture. A simulator
+    # Native ticks that make simulator.setup actions visible in the first capture. A simulator
     # that renders on every tick (CARLA) needs one; one that renders at capture time needs none.
     capture_ticks = 0
 
@@ -284,6 +288,11 @@ class SimulatorRuntime(_StageAdapter, ABC):
         return self._state()
 
     @property
+    def sensors(self) -> frozenset[str]:
+        """All sensor IDs for which this runtime can provide a current SensorView."""
+        return frozenset()
+
+    @property
     def camera_sensors(self) -> frozenset[str]:
         """Explicit camera IDs whose current physical geometry can be recorded."""
         return frozenset()
@@ -300,7 +309,7 @@ class SimulatorRuntime(_StageAdapter, ABC):
         """Drive another actor with an actuator command from the next world step.
 
         The actor stops following its prescribed or traffic-manager motion for the rest of the
-        run. Call it from a ``WorldAttackEffect``. The ego belongs to the driving system.
+        run. Call it from a ``WorldAttackAction``. The ego belongs to the driving system.
         """
         raise NotImplementedError(f"{type(self).__name__} cannot control actors")
 
@@ -308,7 +317,7 @@ class SimulatorRuntime(_StageAdapter, ABC):
         """Move another actor to a canonical world state; visible from the next capture.
 
         The actor stops following its prescribed or traffic-manager motion for the rest of the
-        run. Call it from a ``WorldAttackEffect``. The ego belongs to the driving system.
+        run. Call it from a ``WorldAttackAction``. The ego belongs to the driving system.
         """
         raise NotImplementedError(f"{type(self).__name__} cannot set actor states")
 
@@ -411,7 +420,7 @@ class SimulatorRuntime(_StageAdapter, ABC):
             self._generating_frame_data = False
 
     def _scan_forward(self, count: int) -> None:
-        """Continue an effect-free service scan along prescribed motion, without stage hooks."""
+        """Continue an action-free service scan along prescribed motion, without stage hooks."""
         nonnegative(count, "scan steps")
         if not self._world_initialized or self._dispatcher is not None:
             raise RuntimeError("A sensor scan requires an initialized runtime without hooks")

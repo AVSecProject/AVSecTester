@@ -1,6 +1,7 @@
 """Recorded visualization features use small images and physical camera geometry."""
 
 from pathlib import Path
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -8,7 +9,7 @@ import pytest
 from avsectester.closed_loop.datatypes import Detection, Observation
 from avsectester.closed_loop.simulator import SensorGeometry
 from avsectester.evaluation.visualization import (
-    camera_view, detections_view, filmstrip, labels_view, record_run, save_sequence, sensor_view,
+    camera_view, detections_view, draw_boxes3d, filmstrip, labels_view, record_run, save_sequence, sensor_view,
 )
 from avsectester.geometry import FThetaCamera, PinholeCamera
 from avsectester.runlog import RunLog
@@ -51,6 +52,14 @@ def test_labels_view(camera_log):
     assert labels_view(step).sum() > step.model_observation.sensor_data["front"].sum()
     step.sensor_geometry = {}
     np.testing.assert_array_equal(labels_view(step), step.model_observation.sensor_data["front"])
+
+
+def test_draw_boxes3d(camera_log):
+    view = sensor_view(camera_log.steps[0], "front")
+    drawn = draw_boxes3d(view.data, view)
+    assert drawn.shape == view.data.shape and np.any(drawn != view.data)
+    with pytest.raises(ValueError, match="requires camera geometry"):
+        draw_boxes3d(view.data, replace(view, camera=None, cam_from_world=None))
 
 
 def test_detections_view(camera_log):

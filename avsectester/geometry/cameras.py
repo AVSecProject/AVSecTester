@@ -17,6 +17,15 @@ import numpy as np
 from numpy.typing import ArrayLike
 
 
+BODY_FROM_OPTICAL = np.array([
+    [0., 0., 1., 0.],
+    [-1., 0., 0., 0.],
+    [0., -1., 0., 0.],
+    [0., 0., 0., 1.],
+])
+"""Map optical points (x right, y down, z forward) to body axes (x forward, y left, z up)."""
+
+
 class Camera(Protocol):
     """Optical-frame lens contract. Coordinates address pixel centres at (x + .5, y + .5).
 

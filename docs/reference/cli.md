@@ -26,7 +26,7 @@ loaded before execution. All attack inputs and returned artifacts remain explici
 
 The configuration must provide output and exactly one attack. A zero-attack or multi-attack
 configuration is an error; use a selection-only Attack for environment comparisons or a composite
-Attack for combined effects. Treatments share metadata and vary attack_name and environment.
+Attack for combined actions. Treatments share metadata and vary attack_name and environment.
 
 Configuration controls models, devices, decision limits, treatments, recording and evaluation. The
 CLI does not override them. Existing output/runs is rejected rather than overwritten. Choose a fresh
@@ -85,7 +85,7 @@ run directory is a [RunLog](runtime.md#runlog). Metrics and all-pair summaries a
 | 2 | Known invalid configuration, output conflict or incompatible saved preparation |
 | 130 | Keyboard interruption; available partial output is retained |
 
-Attack effectiveness is assessed through metrics; successful execution is not an effectiveness
+Attack impact is assessed through metrics; successful execution is not an attack-impact
 claim.
 
 ## Supplied configurations

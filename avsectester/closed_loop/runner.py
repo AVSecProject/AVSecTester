@@ -164,7 +164,7 @@ class ClosedLoopRunner:
                 resources_released = True
                 release_owned_resources()
 
-        def effects() -> list[dict[str, Any]]:
+        def actions() -> list[dict[str, Any]]:
             return [
                 {"kind": kind, **item}
                 for kind, values in (("request", attack_dispatch.requests),
@@ -182,11 +182,11 @@ class ClosedLoopRunner:
                 attack_dispatch.stop()
             except BaseException as error:
                 failure = error
-            # Failed decisions and unapplied effects still have evidence.
+            # Failed decisions and unapplied actions still have evidence.
             try:
                 recorder.record_event(
                     "attack_cleanup", step=max(current_step, 0),
-                    effects=effects(), outputs=session.outputs,
+                    actions=actions(), outputs=session.outputs,
                 )
                 drain()
             except BaseException as error:
@@ -217,7 +217,7 @@ class ClosedLoopRunner:
                         "initialization", physical_state=sim.state(),
                         clock=sim.clock, setup_ticks=deployment.ticks,
                         initialization_report=simulator_runtime.initialization_report,
-                        outputs=session.outputs, effects=effects(),
+                        outputs=session.outputs, actions=actions(),
                     )
                     drain()
                     if request.decision_steps == 0:
@@ -238,7 +238,7 @@ class ClosedLoopRunner:
                         attacked = raw
                         if request.attacks:
                             attack_dispatch.step(context("step", raw))
-                            attacked = attack_dispatch.apply_sensor_effects(raw, sim)
+                            attacked = attack_dispatch.apply_sensor_actions(raw, sim)
                         position = (request.start.frame.position if request.start is not None else 0) + current_step
                         conditioned = sensor_environment.apply(attacked, position)
                         seen = session.observe(conditioned)
@@ -250,8 +250,8 @@ class ClosedLoopRunner:
                         produced = avstack(seen)
                         detections = recorder.capture(avstack.detections())
                         produced_record = recorder.capture(produced)
-                        control = session.command(produced)
-                        executed_record = recorder.capture(control)
+                        command = session.command(produced)
+                        executed_record = recorder.capture(command)
                         attack_dispatch.finish_decision()
                         components = recorder.capture(avstack.component_log() or {})
                         telemetry: dict[str, Any] = {
@@ -264,7 +264,7 @@ class ClosedLoopRunner:
                                 },
                             },
                         }
-                        sim.step(control)
+                        sim.step(command)
                         post = recorder.capture(sim.state())
                         last_observation = sim.observe()
                         if request.attacks:
@@ -280,7 +280,7 @@ class ClosedLoopRunner:
                                 model_observation=model_record, physical_pre=pre, physical_post=post,
                                 produced_command=produced_record, executed_command=executed_record,
                                 components=components, detections=detections, sensor_geometry=sensor_geometry,
-                                effects=effects(), outputs=session.outputs,
+                                actions=actions(), outputs=session.outputs,
                                 telemetry=telemetry,
                             ))
                         except BaseException as error:
@@ -314,7 +314,7 @@ class ClosedLoopRunner:
                     error_type=type(error).__name__, message=str(error),
                     initialization_report=getattr(error, "report", {}),
                     cleanup_errors=list(getattr(error, "__notes__", ())),
-                    effects=effects(), outputs=session.outputs,
+                    actions=actions(), outputs=session.outputs,
                 )
                 drain()
                 recorder.finish(

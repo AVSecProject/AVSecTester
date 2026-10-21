@@ -204,3 +204,21 @@ def write_camera_rgb(observation: Observation, key: str, rgb: np.ndarray) -> Obs
     new_data = dict(observation.sensor_data)
     new_data[key] = new_payload
     return replace(observation, sensor_data=new_data)
+
+
+def write_sensor_data(observation: Observation, sensor: str, data: Any) -> Observation:
+    """Return an observation copy with one sensor's data replaced.
+
+    Arrays retain their representation and dtype regardless of shape. Native sensor wrappers
+    are shallow-copied with only ``data`` replaced, preserving their calibration, timestamps
+    and native options. Camera-specific writes use ``write_camera_rgb`` instead.
+    """
+    payload = observation.sensor_data[sensor]
+    if isinstance(payload, np.ndarray) or not hasattr(payload, "data"):
+        replacement = data
+    else:
+        replacement = copy.copy(payload)
+        replacement.data = data
+    sensor_data = dict(observation.sensor_data)
+    sensor_data[sensor] = replacement
+    return replace(observation, sensor_data=sensor_data)

@@ -1,11 +1,11 @@
-"""Portable insertion effects: the simulator supplies geometry, the attack composites pixels."""
+"""Portable insertion actions: the simulator supplies geometry, the attack composites pixels."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
 import logging
 
-from avsectester.attack.runtime import SensorAttackEffect
+from avsectester.attack.runtime import SensorAttackAction
 from .assets import Insertion, resolve_insertion
 from .compositor import PatchCompositor, render_resolved
 from .visibility import CuboidVisibilityEstimator, DepthVisibilityEstimator
@@ -15,7 +15,7 @@ log = logging.getLogger(__name__)
 
 
 @dataclass
-class InsertionAttackEffect(SensorAttackEffect):
+class InsertionAttackAction(SensorAttackAction):
     """Render explicit planes with aligned depth when present, otherwise actor cuboids."""
 
     sensor: str
@@ -31,6 +31,8 @@ class InsertionAttackEffect(SensorAttackEffect):
         return resolve_insertion(self.insertion, view.actors, view.ego)
 
     def evidence(self, view, resolved=None):
+        if view.camera is None or view.cam_from_world is None:
+            raise ValueError("InsertionAttackAction requires a calibrated camera SensorView")
         resolved = self.resolve(view) if resolved is None else resolved
         if view.depth is not None:
             return DepthVisibilityEstimator().estimate(

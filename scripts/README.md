@@ -47,7 +47,7 @@ python -m scripts.visualization.visualize_augmentations --help
 ```
 
 - [patch_hide_probe.py](validation/patch_hide_probe.py) compares patch sizes and harmonization
-  on a CARLA SensorView using the same insertion effect used by attacks.
+  on a CARLA SensorView using the same insertion action used by attacks.
 - [validate_carla_visibility.py](validation/validate_carla_visibility.py) measures visibility
   with simulator-owned RGB/depth captures and full-silhouette reference masks on a dedicated CARLA
   world. It does not construct sensor actors, queues or depth decoders.

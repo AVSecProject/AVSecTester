@@ -21,7 +21,7 @@ flowchart TD
     E --> R[ClosedLoopRunner]
     R <--> W[SimulatorRuntime]
     R <--> V[AVStack and VehicleIO]
-    T[AttackRuntime: world, sensor and AVStack effects] --> R
+    T[AttackRuntime: world, sensor and AVStack actions] --> R
     R --> L[RunLog]
     L --> Q[Metrics, reports and visualization]
 ```
@@ -33,7 +33,7 @@ flowchart TD
 | SimulatorRuntime | World, clock, actors, sensors and captured observations | Selection metadata or attack algorithms |
 | AVStack | Driving inference and per-run history, including VehicleIO | Simulator time |
 | Attack | Parameters, input assets, selection and optional optimization | Mutable online history or stored artifacts |
-| AttackRuntime | One run's online attack state and effects | A time-advancing closed-loop service |
+| AttackRuntime | One run's online attack state and actions | A time-advancing closed-loop service |
 | HookSet | Ordered hook handlers and their per-run lifecycle | Attack selection |
 | VehicleIO | sensors.post hooks, localization and observation hooks | Sensor environment transforms or physical state |
 | ClosedLoopServices | Isolated sensor, render, component and rollout operations | Active-run advancement |
@@ -73,7 +73,7 @@ Artifacts are passed explicitly to runtime construction and persistence.
 
 There is no framework reselection after optimization. Preserving a selection's visibility, geometry
 or placement assumptions is the attack author's responsibility. Framework structure, capability and
-effect checks still apply.
+action checks still apply.
 
 ## Scenario preparation
 
@@ -89,8 +89,8 @@ fixed configured time step and interpolates recorded trajectories only within th
 ## Physical state and model-visible data
 
 `WorldSnapshot` records actual state. `Observation` contains model-visible sensors, localization and
-ego speed. Altering an observation does not move the world. `WorldAttackEffect` changes the world
-explicitly; `SensorAttackEffect` changes the current sensor sample; `AVStackAttackEffect` replaces a
+ego speed. Altering an observation does not move the world. `WorldAttackAction` changes the world
+explicitly; `SensorAttackAction` changes the current sensor sample; `AVStackAttackAction` replaces a
 value at a declared driving stage. The runner applies the sensors environment before VehicleIO;
 VehicleIO does not own those environment transforms. Produced and executed commands are logged
 separately.
@@ -112,8 +112,8 @@ AttackRuntime. Clean and attacked treatments in one comparison group share the s
 seed, decision count and deployment tick budget. Required role actors must exist under each seed; a
 missing role causes a recorded failure, not reselection.
 
-A service session can reuse one simulator runtime for forward sensor scans without attack effects.
-Rendering with effects and candidate rollouts use independent worlds. Resource reservations last
+A service session can reuse one simulator runtime for forward sensor scans without attack actions.
+Rendering with actions and candidate rollouts use independent worlds. Resource reservations last
 until native cleanup completes. Shared immutable model weights are allowed only when an adapter can
 preserve independent histories.
 

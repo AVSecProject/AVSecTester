@@ -158,7 +158,7 @@ class SessionDataSource(DataSource):
 
     def sample(self, batch):
         import torch
-        from avsectester.attack.insertion.effect import InsertionAttackEffect
+        from avsectester.attack.insertion.action import InsertionAttackAction
 
         result = []
         for _ in range(batch):
@@ -188,13 +188,13 @@ class SessionDataSource(DataSource):
                     hosts = segment.roles.get("host", ())
                     insertion = self.attack.insertion(self.attack.assets,
                         host=hosts[0] if hosts else None, placement=segment.placement)
-                    effect = InsertionAttackEffect(self.attack.sensor, insertion)
-                    resolved = effect.resolve(view)
+                    action = InsertionAttackAction(self.attack.sensor, insertion)
+                    resolved = action.resolve(view)
                     surfaces = resolved.planes()
                     if len(surfaces) != 1:
                         raise ValueError("Patch optimization requires exactly one planar surface")
                     grid, mask = plane_sampling_grid(view, surfaces[0].corners)
-                    evidence = effect.evidence(view, resolved)
+                    evidence = action.evidence(view, resolved)
                     if evidence.visibility is None:
                         raise ValueError(f"Patch optimization visibility is unavailable: {evidence.reason}")
                     mask *= np.asarray(evidence.visible_mask, dtype=np.float32)[None]

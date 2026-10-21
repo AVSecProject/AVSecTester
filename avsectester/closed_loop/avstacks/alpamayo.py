@@ -228,13 +228,13 @@ class AlpamayoAVStack(AVStack):
         self._iseed += 1
         self._prev_plan = getattr(prediction, "selected_plan", None)
         self.last_reasoning = getattr(prediction, "reasoning_text", None)  # chain-of-causation text, if any
-        control = Control(trajectory=self._to_waypoints(prediction, observation))
+        command = Control(trajectory=self._to_waypoints(prediction, observation))
         # Record the already-produced policy output and command without extra inference.
-        self._last_log = {"policy": policy_record, "action": self._log_capture.capture(control)}
-        return control
+        self._last_log = {"policy": policy_record, "command": self._log_capture.capture(command)}
+        return command
 
     def component_log(self) -> dict[str, Any] | None:
-        """Already-produced policy prediction and Control under ``policy`` and ``action``.
+        """Already-produced policy prediction and Control under ``policy`` and ``command``.
 
         The prediction retains candidate positions, selected index and available reasoning;
         recording does not request additional inference.

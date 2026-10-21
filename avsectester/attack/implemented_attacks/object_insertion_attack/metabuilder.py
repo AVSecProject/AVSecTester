@@ -1,9 +1,9 @@
-"""Select clean-view visibility windows without applying insertion effects."""
+"""Select clean-view visibility windows without applying insertion actions."""
 from dataclasses import replace
 
 import numpy as np
 
-from avsectester.attack.insertion.effect import InsertionAttackEffect
+from avsectester.attack.insertion.action import InsertionAttackAction
 from avsectester.attack.placement import AttachedPlacement, WorldPlacement
 from avsectester.attack.segments import split_segments
 from avsectester.closed_loop.services import RenderRequest
@@ -23,7 +23,7 @@ def build_metadata(attack, scenario):
                 raise ValueError("Ego-origin-relative placement requires a reference ego actor")
             point = np.asarray(ego.pose) @ np.r_[placement.position_m, 1.]
             placement = WorldPlacement(tuple(point[:3]))
-        effect = InsertionAttackEffect(attack.sensor, attack.insertion(attack.assets, placement),
+        action = InsertionAttackAction(attack.sensor, attack.insertion(attack.assets, placement),
                                       compositor=attack.compositor)
 
         def eligible(frame):
@@ -31,7 +31,7 @@ def build_metadata(attack, scenario):
             if isinstance(placement, AttachedPlacement) and placement.host not in result.view.actors:
                 scenario.record_reason("Insertion host is absent")
                 return False
-            evidence = effect.evidence(result.view)
+            evidence = action.evidence(result.view)
             visibility = evidence.visibility
             if visibility is None or visibility.fraction <= attack.min_visible_fraction:
                 scenario.record_reason("Insertion is not sufficiently visible")

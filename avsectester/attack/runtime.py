@@ -1,13 +1,13 @@
-"""The online phase: one AttackRuntime per run and the attack effects it returns.
+"""The online phase: one AttackRuntime per run and the attack actions it returns.
 
-Effects are classified by where they act in the closed loop:
+Actions are classified by where they act in the closed loop:
 
-* ``WorldAttackEffect`` changes the simulated world. The simulator applies it at setup or
+* ``WorldAttackAction`` changes the simulated world. The simulator applies it at setup or
   before a world step, and it is visible from the next capture.
-* ``SensorAttackEffect`` changes one captured sensor's data before Vehicle I/O, using the
+* ``SensorAttackAction`` changes one captured sensor's data before Vehicle I/O, using the
   simulator's sensor view. It applies to the current decision.
-* ``AVStackAttackEffect`` changes the value at a stage of the driving system (the ``AVStack``,
-  including its Vehicle I/O and command) in the current decision.
+* ``AVStackAttackAction`` changes a driving-system value from ``localization.pre`` through
+  ``command`` in the current decision.
 """
 
 from __future__ import annotations
@@ -65,15 +65,15 @@ class OnlineContext:
         self._output_recorder(self, name, value)
 
 
-class AttackEffect:
+class AttackAction:
     """Base of everything the online phase applies. Subclasses state where it acts."""
 
 
-class WorldAttackEffect(AttackEffect, ABC):
+class WorldAttackAction(AttackAction, ABC):
     """Change the simulated world. The simulator applies it; it is visible from the next capture.
 
     ``setup_ticks`` is the number of ``simulator.setup_tick()`` calls that ``apply`` makes when
-    the effect is returned by ``AttackRuntime.setup``. Ticks are unavailable after setup.
+    the action is returned by ``AttackRuntime.setup``. Ticks are unavailable after setup.
     Register the removal of created world objects on ``resources``; it runs when the run ends.
     """
 
@@ -84,11 +84,11 @@ class WorldAttackEffect(AttackEffect, ABC):
         """Change the world through the simulator's native access."""
 
 
-class SensorAttackEffect(AttackEffect, ABC):
+class SensorAttackAction(AttackAction, ABC):
     """Change one captured sensor's data before Vehicle I/O, in the current decision.
 
     ``sensor`` names the simulator sensor. ``apply`` receives the current data, which earlier
-    effects on the same sensor may have changed, and the capture's view, whose ``data`` is
+    actions on the same sensor may have changed, and the capture's view, whose ``data`` is
     the unchanged capture. It returns the changed data in the same representation.
     """
 
@@ -104,7 +104,7 @@ class SensorAttackEffect(AttackEffect, ABC):
 
 
 @dataclass(frozen=True)
-class AVStackAttackEffect(AttackEffect):
+class AVStackAttackAction(AttackAction):
     """Change the value at a driving-system stage in the current decision.
 
     ``apply(value, context)`` returns the value used downstream. It may be a bound method of
@@ -116,49 +116,49 @@ class AVStackAttackEffect(AttackEffect):
 
     def __post_init__(self) -> None:
         if not isinstance(self.stage, str) or not self.stage:
-            raise ValueError("AVStackAttackEffect.stage must be a nonempty string")
+            raise ValueError("AVStackAttackAction.stage must be a nonempty string")
         if not callable(self.apply):
-            raise TypeError("AVStackAttackEffect.apply must be callable")
+            raise TypeError("AVStackAttackAction.apply must be callable")
 
 
 class AttackRuntime:
     """One online-phase instance per run; every callback shares this object's state.
 
     ``setup`` runs after the simulator reset and before the first capture, and returns only
-    world attack effects. ``step`` runs once per decision before Vehicle I/O. ``stop`` runs
+    world attack actions. ``step`` runs once per decision before Vehicle I/O. ``stop`` runs
     at the end of the run, also after failures and with zero decisions. ``setup_ticks`` is the
-    simulator tick budget used by the world effects that ``setup`` returns.
+    simulator tick budget used by the world actions that ``setup`` returns.
     """
 
     subscriptions: Sequence[ResultSubscription] = ()
     setup_ticks: int = 0
 
-    def setup(self, context: OnlineContext) -> Sequence[WorldAttackEffect]:
+    def setup(self, context: OnlineContext) -> Sequence[WorldAttackAction]:
         return ()
 
-    def step(self, context: OnlineContext) -> Sequence[AttackEffect]:
+    def step(self, context: OnlineContext) -> Sequence[AttackAction]:
         return ()
 
     def stop(self, context: OnlineContext) -> None:
         pass
 
 
-# Stages an AVStack attack effect can target, in their order within one decision.
+# Stages an AVStack attack action can target, in their order within one decision.
 _STAGE_ORDER = (
-    "sensors.post", "localization.pre", "localization.post", "observation",
+    "localization.pre", "localization.post", "observation",
     "perception.pre", "perception.post", "tracking.pre", "tracking.post",
     "planning.pre", "planning.post", "control.pre", "control.post",
     "policy.pre", "policy.post", "command",
 )
 
 
-def _category(effect: AttackEffect) -> str:
-    for kind, name in ((WorldAttackEffect, "world"), (SensorAttackEffect, "sensor"),
-                       (AVStackAttackEffect, "avstack")):
-        if isinstance(effect, kind):
+def _category(action: AttackAction) -> str:
+    for kind, name in ((WorldAttackAction, "world"), (SensorAttackAction, "sensor"),
+                       (AVStackAttackAction, "avstack")):
+        if isinstance(action, kind):
             return name
-    raise TypeError("Attack callbacks must return WorldAttackEffect, SensorAttackEffect or "
-                    "AVStackAttackEffect instances")
+    raise TypeError("Attack callbacks must return WorldAttackAction, SensorAttackAction or "
+                    "AVStackAttackAction instances")
 
 
 class _SetupHook:
@@ -177,43 +177,47 @@ class _SetupHook:
         )
 
 
-def chain_sensor_effects(
-    observation: Observation, simulator_runtime: Any, effects: Sequence[SensorAttackEffect], *,
+def chain_sensor_actions(
+    observation: Observation, simulator_runtime: Any, actions: Sequence[SensorAttackAction], *,
     views: dict[str, SensorView] | None = None,
-    on_applied: Callable[[SensorAttackEffect], None] | None = None,
+    on_applied: Callable[[SensorAttackAction], None] | None = None,
 ) -> Observation:
-    """Apply sensor effects in issue order to copies of their captures and write them back.
+    """Apply sensor actions in issue order to copies of their captures and write them back.
 
-    Each effect receives the output of the previous effect on the same physical sensor, so
-    effects that address one camera through different names chain on a single copy; the sensor
+    Each action receives the output of the previous action on the same physical sensor, so
+    actions that address one sensor through different names chain on a single copy; the sensor
     view's own data is never modified. ``views`` holds sensor views already read for this
-    capture. ``on_applied(effect)`` runs after each effect.
+    capture. ``on_applied(action)`` runs after each action.
     """
-    from avsectester.closed_loop.datatypes import write_camera_rgb
+    from avsectester.closed_loop.datatypes import write_camera_rgb, write_sensor_data
 
     views = {} if views is None else views
     data: dict[str, Any] = {}
-    for effect in effects:
-        if effect.sensor not in views:
-            views[effect.sensor] = simulator_runtime.sensor_view(effect.sensor)
-        view = views[effect.sensor]
+    camera_sensors: set[str] = set()
+    for action in actions:
+        if action.sensor not in views:
+            views[action.sensor] = simulator_runtime.sensor_view(action.sensor)
+        view = views[action.sensor]
         if view.sensor not in data:
             data[view.sensor] = deepcopy(view.data)
-        data[view.sensor] = effect.apply(data[view.sensor], view)
+            if view.camera is not None:
+                camera_sensors.add(view.sensor)
+        data[view.sensor] = action.apply(data[view.sensor], view)
         if on_applied is not None:
-            on_applied(effect)
+            on_applied(action)
     for sensor, value in data.items():
-        observation = write_camera_rgb(observation, sensor, value)
+        write = write_camera_rgb if sensor in camera_sensors else write_sensor_data
+        observation = write(observation, sensor, value)
     return observation
 
 
 class AttackDispatcher:
-    """Internal: apply the effects of the run's attack runtimes at their points of action.
+    """Internal: apply the actions of the run's attack runtimes at their points of action.
 
     Validate before reset, then append ``hooks`` to the run's HookSet. ``setup`` runs inside
     the reset through the simulator.setup hook. ``step`` runs
-    once per decision before ``apply_sensor_effects`` and Vehicle I/O; ``stop`` runs in a
-    finally block. Every effect gets a request record and a receipt.
+    once per decision before ``apply_sensor_actions`` and Vehicle I/O; ``stop`` runs in a
+    finally block. Every action gets a request record and a receipt.
     """
 
     def __init__(
@@ -248,9 +252,9 @@ class AttackDispatcher:
         self._resources = ExitStack()
         self._last_context: OnlineContext | None = None
         self._step_contexts: dict[int, OnlineContext] = {}
-        self._world: list[tuple[int, WorldAttackEffect, AttackRuntime]] = []
-        self._sensor: list[tuple[int, SensorAttackEffect, AttackRuntime]] = []
-        self._avstack: list[tuple[int, AVStackAttackEffect, AttackRuntime]] = []
+        self._world: list[tuple[int, WorldAttackAction, AttackRuntime]] = []
+        self._sensor: list[tuple[int, SensorAttackAction, AttackRuntime]] = []
+        self._avstack: list[tuple[int, AVStackAttackAction, AttackRuntime]] = []
         self._last_step = -1
         self._has_setup = False
         self._stopped = False
@@ -268,6 +272,20 @@ class AttackDispatcher:
 
     def validate(self, available_stages: Iterable[str]) -> None:
         self._available = frozenset(available_stages)
+
+    def _check_actions(self, actions: Iterable[AttackAction]) -> None:
+        assert self._available is not None
+        for action in actions:
+            _category(action)
+            if isinstance(action, WorldAttackAction) and "simulator.step.pre" not in self._available:
+                raise UnsupportedStageError("This simulator cannot apply world attack actions")
+            if isinstance(action, AVStackAttackAction):
+                if action.stage == "sensors.post":
+                    raise UnsupportedStageError(
+                        "AVStackAttackAction cannot target sensors.post; "
+                        "use SensorAttackAction to modify sensor data")
+                if action.stage not in _STAGE_ORDER or action.stage not in self._available:
+                    raise UnsupportedStageError(f"Unsupported attack action stage: {action.stage!r}")
 
     @property
     def hooks(self) -> tuple[Hook, ...]:
@@ -295,30 +313,30 @@ class AttackDispatcher:
             physical_state=deepcopy(context.physical_state) if "physical_state" in kinds else None,
         )
 
-    def _request(self, effect: AttackEffect, context: OnlineContext, attack: AttackRuntime,
+    def _request(self, action: AttackAction, context: OnlineContext, attack: AttackRuntime,
                  callback: str) -> int:
-        effect_id = self._next_id
+        action_id = self._next_id
         self._next_id += 1
         self.requests.append({
-            "effect_id": effect_id, "step": context.step, "stage": context.stage,
+            "action_id": action_id, "step": context.step, "stage": context.stage,
             "sim_time": context.sim_time, "frame": context.frame,
             "issuer": f"{self._labels[id(attack)]}.{callback}",
-            "category": _category(effect), "target": _target(effect),
-            "effect": type(effect).__qualname__,
+            "category": _category(action), "target": _target(action),
+            "action": type(action).__qualname__,
         })
-        return effect_id
+        return action_id
 
-    def _receipt(self, effect_id: int, effect: AttackEffect, step: int, stage: str,
+    def _receipt(self, action_id: int, action: AttackAction, step: int, stage: str,
                  sim_time: float, frame: int, outcome: str = "applied",
                  reason: str | None = None) -> None:
         self.receipts.append({
-            "effect_id": effect_id, "step": step, "stage": stage, "sim_time": sim_time,
-            "frame": frame, "category": _category(effect), "target": _target(effect),
+            "action_id": action_id, "step": step, "stage": stage, "sim_time": sim_time,
+            "frame": frame, "category": _category(action), "target": _target(action),
             "outcome": outcome, "reason": reason,
         })
 
     def drain_records(self) -> dict[str, list[dict[str, Any]]]:
-        """Transfer request/receipt records while keeping pending effects and unique IDs.
+        """Transfer request/receipt records while keeping pending actions and unique IDs.
 
         The runner drains after recording initialization, decisions and cleanup. Direct
         callers retain accumulating lists unless they explicitly request this transfer.
@@ -329,7 +347,7 @@ class AttackDispatcher:
         return result
 
     def setup(self, context: OnlineContext, simulator_runtime: SimulatorRuntime) -> None:
-        """Run every ``setup`` and apply its world effects before the first capture."""
+        """Run every ``setup`` and apply its world actions before the first capture."""
         if self._available is None:
             raise RuntimeError("Validate attack runtimes before setup")
         if self._has_setup or self._stopped:
@@ -339,16 +357,16 @@ class AttackDispatcher:
         for attack in self.attacks:
             # Include partially set-up attacks in cleanup if their callback fails.
             self._started.append(attack)
-            effects = attack.setup(self._for_attack(attack, context))
-            if effects is None:
-                raise TypeError("AttackRuntime.setup must return a sequence of effects, not None")
-            for effect in tuple(effects):
-                if not isinstance(effect, WorldAttackEffect):
-                    raise TypeError("AttackRuntime.setup returns only WorldAttackEffect instances")
-                effect_id = self._request(effect, context, attack, "setup")
-                effect.apply(simulator_runtime, self._resources)
+            actions = attack.setup(self._for_attack(attack, context))
+            if actions is None:
+                raise TypeError("AttackRuntime.setup must return a sequence of actions, not None")
+            for action in tuple(actions):
+                if not isinstance(action, WorldAttackAction):
+                    raise TypeError("AttackRuntime.setup returns only WorldAttackAction instances")
+                action_id = self._request(action, context, attack, "setup")
+                action.apply(simulator_runtime, self._resources)
                 truth = simulator_runtime.state()
-                self._receipt(effect_id, effect, context.step, "simulator.setup", truth.t, truth.frame)
+                self._receipt(action_id, action, context.step, "simulator.setup", truth.t, truth.frame)
 
     def step(self, context: OnlineContext) -> None:
         if not self._has_setup or self._stopped:
@@ -357,74 +375,66 @@ class AttackDispatcher:
             raise ValueError("AttackRuntime.step must run exactly once per consecutive decision")
         pending = [*self._world, *self._sensor, *self._avstack]
         if pending:
-            raise RuntimeError(f"Attack effects were not applied: {sorted(i for i, *_ in pending)}")
+            raise RuntimeError(f"Attack actions were not applied: {sorted(i for i, *_ in pending)}")
         self._last_step = context.step
         self._last_context = context
         for attack in self.attacks:
             attack_context = self._for_attack(attack, context)
-            effects = attack.step(attack_context)
-            if effects is None:
-                raise TypeError("AttackRuntime.step must return a sequence of effects, not None")
-            effects = tuple(effects)
-            for effect in effects:
-                _category(effect)  # reject other return values before any request
-                if (isinstance(effect, WorldAttackEffect)
-                        and "simulator.step.pre" not in (self._available or ())):
-                    raise UnsupportedStageError("This simulator cannot apply world attack effects")
-                if isinstance(effect, AVStackAttackEffect) and (
-                    effect.stage not in _STAGE_ORDER or effect.stage not in (self._available or ())
-                ):
-                    raise UnsupportedStageError(f"Unsupported attack effect stage: {effect.stage!r}")
-            for effect in effects:
-                effect_id = self._request(effect, context, attack, "step")
-                if isinstance(effect, WorldAttackEffect):
-                    self._world.append((effect_id, effect, attack))
-                elif isinstance(effect, SensorAttackEffect):
-                    self._sensor.append((effect_id, effect, attack))
-                elif isinstance(effect, AVStackAttackEffect):
-                    self._avstack.append((effect_id, effect, attack))
+            actions = attack.step(attack_context)
+            if actions is None:
+                raise TypeError("AttackRuntime.step must return a sequence of actions, not None")
+            actions = tuple(actions)
+            self._check_actions(actions)
+            for action in actions:
+                action_id = self._request(action, context, attack, "step")
+                if isinstance(action, WorldAttackAction):
+                    self._world.append((action_id, action, attack))
+                elif isinstance(action, SensorAttackAction):
+                    self._sensor.append((action_id, action, attack))
+                elif isinstance(action, AVStackAttackAction):
+                    self._avstack.append((action_id, action, attack))
                     self._step_contexts[id(attack)] = attack_context
 
     def record_end(self, context: OnlineContext) -> None:
         """Remember the post-step clock for a later stop context."""
         self._last_context = context
 
-    def apply_sensor_effects(self, observation: Observation, simulator_runtime: Any) -> Observation:
-        """Apply this decision's sensor effects to the captured observation, in issue order."""
+    def apply_sensor_actions(self, observation: Observation, simulator_runtime: Any) -> Observation:
+        """Apply this decision's sensor actions to the captured observation, in issue order."""
         if not self._sensor:
             return observation
         pending, self._sensor = self._sensor, []
         context = self._last_context
         assert context is not None
-        effect_ids = iter(effect_id for effect_id, _effect, _attack in pending)
+        action_ids = iter(action_id for action_id, _action, _attack in pending)
 
-        def receipt(effect: SensorAttackEffect) -> None:
-            self._receipt(next(effect_ids), effect, context.step, "capture", context.sim_time,
+        def receipt(action: SensorAttackAction) -> None:
+            self._receipt(next(action_ids), action, context.step, "capture", context.sim_time,
                           context.frame)
-            self.receipts[-1]["render"] = dict(effect.render_metadata())
+            self.receipts[-1]["render"] = dict(action.render_metadata())
 
-        return chain_sensor_effects(observation, simulator_runtime,
-                                    [effect for _id, effect, _attack in pending], on_applied=receipt)
+        return chain_sensor_actions(observation, simulator_runtime,
+                                    [action for _id, action, _attack in pending], on_applied=receipt)
 
     def finish_decision(self) -> None:
-        """Reject AVStack effects whose stage was skipped in this decision."""
+        """Reject AVStack actions whose stage was skipped in this decision."""
         if self._avstack:
             raise RuntimeError(
-                f"Attack effects were not applied: {sorted({e.stage for _, e, _ in self._avstack})}")
+                f"Attack actions were not applied: {sorted({e.stage for _, e, _ in self._avstack})}")
 
     def _at_stage(self, value: Any, context: StageContext) -> Any:
         remaining = []
-        for effect_id, effect, attack in self._avstack:
-            if effect.stage != context.stage:
-                remaining.append((effect_id, effect, attack))
+        for action_id, action, attack in self._avstack:
+            if action.stage != context.stage:
+                remaining.append((action_id, action, attack))
                 continue
             truth = context.physical_state
             base = self._step_contexts[id(attack)]
-            value = effect.apply(value, replace(
+            value = action.apply(value, replace(
                 base, stage=context.stage, sim_time=truth.t, frame=truth.frame,
                 physical_state=deepcopy(truth) if base.physical_state is not None else None,
             ))
-            self._receipt(effect_id, effect, context.step, context.stage, truth.t, truth.frame)
+            self._receipt(action_id, action, context.step, context.stage, truth.t, truth.frame)
         self._avstack = remaining
         return value
 
@@ -436,23 +446,23 @@ class AttackDispatcher:
             return
         simulator_runtime = context.simulator_runtime
         if not isinstance(simulator_runtime, SimulatorRuntime):
-            raise UnsupportedStageError("This simulator cannot apply world attack effects")
-        for effect_id, effect, _attack in pending:
-            effect.apply(simulator_runtime, self._resources)
+            raise UnsupportedStageError("This simulator cannot apply world attack actions")
+        for action_id, action, _attack in pending:
+            action.apply(simulator_runtime, self._resources)
             truth = context.physical_state
-            self._receipt(effect_id, effect, context.step, context.stage, truth.t, truth.frame)
+            self._receipt(action_id, action, context.step, context.stage, truth.t, truth.frame)
 
     def stop(self) -> None:
         if self._stopped:
             return
         self._stopped = True
         context = replace(self._last_context, stage="stop") if self._last_context else None
-        # Stop also runs for zero decisions and partial failures. An effect whose point of
+        # Stop also runs for zero decisions and partial failures. An action whose point of
         # action was never reached was not applied, whether or not the run succeeded.
         pending = sorted([*self._world, *self._sensor, *self._avstack], key=lambda item: item[0])
-        for effect_id, effect, _attack in pending:
+        for action_id, action, _attack in pending:
             assert context is not None
-            self._receipt(effect_id, effect, context.step, context.stage, context.sim_time,
+            self._receipt(action_id, action, context.step, context.stage, context.sim_time,
                           context.frame, "not_applied", "run_ended_before_point_of_action")
         self._world, self._sensor, self._avstack = [], [], []
         failure: BaseException | None = None
@@ -471,14 +481,14 @@ class AttackDispatcher:
             if failure is None:
                 failure = error
             else:
-                failure.add_note(f"World effect cleanup also failed: {error!r}")
+                failure.add_note(f"World action cleanup also failed: {error!r}")
         if failure is not None:
             raise failure
 
 
-def _target(effect: AttackEffect) -> str:
-    if isinstance(effect, AVStackAttackEffect):
-        return effect.stage
-    if isinstance(effect, SensorAttackEffect):
-        return effect.sensor
+def _target(action: AttackAction) -> str:
+    if isinstance(action, AVStackAttackAction):
+        return action.stage
+    if isinstance(action, SensorAttackAction):
+        return action.sensor
     return "world"

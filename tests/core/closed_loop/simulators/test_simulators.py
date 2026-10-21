@@ -14,7 +14,7 @@ from avsectester.closed_loop.simulators.recorded import RecordedReplaySimulator
 from avsectester.datasets import ActorState
 from avsectester.datasets.carla import CarlaDataset, PrescribedMotion
 from avsectester.datasets.nurec import NuRecDataset
-from avsectester.geometry.cameras import pose_from_proto
+from avsectester.geometry.cameras import BODY_FROM_OPTICAL, pose_from_proto
 from avsectester.geometry.poses import rotation_matrix
 from tests.fakes import CarlaNativeBoundary, NuRecRpcBoundary
 
@@ -59,9 +59,13 @@ def test_simulators(simulator_case):
         state = runtime.state()
         assert state.ego is not None and "ego" not in state.actors
         view = runtime.sensor_view("front")
+        assert runtime.camera_sensors <= runtime.sensors
+        assert view.sensor in runtime.sensors
         assert view.data.shape == expected_shape
         assert view.time == original.t and view.frame == original.frame
         assert view.cam_from_world.shape == (4, 4)
+        assert view.sensor_from_world.shape == (4, 4)
+        np.testing.assert_allclose(view.sensor_from_world, BODY_FROM_OPTICAL @ view.cam_from_world)
         assert view.camera.project(np.array([[0., 0., 4.]])).shape == (1, 2)
         runtime.step(Control(throttle=.1))
         advanced = runtime.observe()
@@ -83,7 +87,10 @@ def test_decode_carla_depth():
 
 
 def test_carla_capture_alignment(monkeypatch, carla_dataset):
-    dataset = carla_dataset
+    recipe = carla_dataset.native("scene")
+    scenario = deepcopy(recipe.scenario)
+    scenario["ego"]["sensors"] = [{"type": "CarlaLidar", "name": "lidar"}]
+    dataset = CarlaDataset({"scene": replace(recipe, scenario=scenario)})
     start = dataset.scenario_start("scene", dataset.frames("scene")[0])
     CarlaNativeBoundary().install(monkeypatch)
     with CarlaSimulator({"rate": 10}, settle_iters=0).create_runtime() as runtime:
@@ -93,6 +100,18 @@ def test_carla_capture_alignment(monkeypatch, carla_dataset):
         assert view.frame == observation.frame == runtime.clock.frame
         np.testing.assert_allclose(view.ego.transform[:3, 3], [.2, 0., .7])
         assert view.ego.extent == (4., 2., 1.4)
+        lidar = runtime.sensor_view("lidar")
+        assert runtime.sensors == {"front", "lidar"} and runtime.camera_sensors == {"front"}
+        assert lidar.camera is None and lidar.cam_from_world is None
+        assert lidar.frame == observation.frame and lidar.time == observation.t
+        np.testing.assert_array_equal(np.frombuffer(lidar.data.raw_data, np.float32).reshape(-1, 4),
+                                      np.array([[5., -2., .5, .8]], np.float32))
+        ego_x = runtime.state().ego.pose[0, 3]
+        np.testing.assert_allclose(lidar.sensor_from_world, [
+            [0., -1., 0., -2.], [1., 0., 0., -(ego_x + 1.)],
+            [0., 0., 1., -1.5], [0., 0., 0., 1.],
+        ], atol=1e-12)
+        assert observation.sensor_data["lidar"].flipy is True
     CarlaNativeBoundary(frame_offset=10).install(monkeypatch)
     with CarlaSimulator({"rate": 10}, settle_iters=0).create_runtime() as runtime:
         with pytest.raises(SensorAlignmentError, match="ahead"):

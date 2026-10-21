@@ -105,12 +105,12 @@ def save_prepared(prepared: PreparedExperiment, directory: str | Path) -> Path:
     for name, segments in prepared.metadata.items():
         destination = root / "attacks" / name
         destination.mkdir(parents=True, exist_ok=True)
-        content = {"schema_version": 1, "segments": _encode(tuple(segments))}
+        content = {"segments": _encode(tuple(segments))}
         (destination / "metadata.json").write_text(json.dumps(content, indent=2, allow_nan=False) + "\n")
         attack = prepared.configuration.attacks[name]
         attack.save_artifacts(prepared.artifacts[name], destination)
     manifest = {
-        "schema_version": 2, "attacks": list(prepared.metadata),
+        "attacks": list(prepared.metadata),
         "configuration": summary,
         "selections": [item.as_dict() for item in prepared.selections],
     }
@@ -143,8 +143,6 @@ def _load_metadata(configuration: ExperimentConfiguration, directory: str | Path
                    *, validate_dataset: bool) -> PreparedMetadata:
     root = Path(directory)
     manifest = json.loads((root / "prepared.json").read_text())
-    if manifest.get("schema_version") != 2:
-        raise ValueError("Unsupported prepared experiment schema; expected version 2")
     if set(manifest["attacks"]) != set(configuration.attacks):
         raise ConfigurationMismatchError("Saved attack names differ from the supplied configuration")
     saved = manifest.get("configuration")
@@ -161,8 +159,6 @@ def _load_metadata(configuration: ExperimentConfiguration, directory: str | Path
     metadata = {}
     for name in configuration.attacks:
         record = json.loads((root / "attacks" / name / "metadata.json").read_text())
-        if record.get("schema_version") != 1:
-            raise ValueError("Unsupported attack metadata schema; expected version 1")
         segments = _decode(record["segments"])
         if not isinstance(segments, tuple) or any(not isinstance(s, AttackSegment) for s in segments):
             raise ValueError("Saved metadata must contain AttackSegment records")

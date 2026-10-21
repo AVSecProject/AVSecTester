@@ -2,7 +2,7 @@
 import numpy as np
 
 from avsectester.attack.attack import AttackSegment
-from avsectester.attack.insertion.effect import InsertionAttackEffect
+from avsectester.attack.insertion.action import InsertionAttackAction
 from avsectester.closed_loop.services import RenderRequest
 from avsectester.closed_loop.simulators.carla import CarlaSimulator
 
@@ -57,8 +57,8 @@ def build_metadata(attack, scenario):
                     scenario.record_reason("Candidate host exceeds the maximum distance")
                     continue
                 insertion = attack.insertion(attack.assets, host=host)
-                effect = InsertionAttackEffect(attack.sensor, insertion, compositor=attack.compositor)
-                evidence = effect.evidence(result.view)
+                action = InsertionAttackAction(attack.sensor, insertion, compositor=attack.compositor)
+                evidence = action.evidence(result.view)
                 visibility = evidence.visibility
                 if visibility is None or visibility.fraction <= attack.min_visible_fraction:
                     scenario.record_reason("Candidate host is not visible enough")

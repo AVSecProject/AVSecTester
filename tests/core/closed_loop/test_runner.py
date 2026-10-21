@@ -1,4 +1,4 @@
-"""Driving decisions, effects and failures are observed through ClosedLoopRunner.run."""
+"""Driving decisions, actions and failures are observed through ClosedLoopRunner.run."""
 
 from dataclasses import replace
 
@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from avsectester.attack.runtime import (
-    AttackRuntime, AVStackAttackEffect, SensorAttackEffect, WorldAttackEffect,
+    AttackRuntime, AVStackAttackAction, SensorAttackAction, WorldAttackAction,
 )
 from avsectester.closed_loop.datatypes import Control, Detection
 from avsectester.closed_loop.hooks import Hook, HookSet
@@ -39,6 +39,7 @@ def test_run():
 
 def test_run_with_hooks():
     hooks = HookSet([
+        Hook("sensors.post", lambda value, context: replace(value, ego_speed=value.ego_speed + 1.)),
         Hook("observation", lambda value, context: replace(value, ego_speed=value.ego_speed + 5.)),
         Hook("command", lambda value, context: replace(value, brake=.7)),
     ])
@@ -46,7 +47,7 @@ def test_run_with_hooks():
         log = ClosedLoopRunner().run(simulator_runtime, ConstantAVStack(Control(throttle=.2)),
                                      RunRequest(2, hooks=hooks, recording=RECORDING))
     for record in log.steps:
-        assert record.model_observation.ego_speed == record.raw_observation.ego_speed + 5.
+        assert record.model_observation.ego_speed == record.raw_observation.ego_speed + 6.
         assert record.produced_command == Control(throttle=.2)
         assert record.executed_command == Control(throttle=.2, brake=.7)
         assert record.physical_pre.ego_speed == record.raw_observation.ego_speed
@@ -56,7 +57,7 @@ def test_run_with_attacks(tmp_path):
     lifecycle = []
     resource = (tmp_path / "world-resource.txt").open("w")
 
-    class MoveHost(WorldAttackEffect):
+    class MoveHost(WorldAttackAction):
         def __init__(self, x, cleanup=False):
             self.x, self.cleanup = x, cleanup
 
@@ -68,11 +69,25 @@ def test_run_with_attacks(tmp_path):
             if self.cleanup:
                 resources.callback(resource.close)
 
-    class Paint(SensorAttackEffect):
+    class Paint(SensorAttackAction):
         sensor = "front"
 
         def apply(self, data, view):
             data[:] = 42
+            return data.astype(float) + .5
+
+    class ShiftPoints(SensorAttackAction):
+        sensor = "lidar"
+
+        def apply(self, data, view):
+            data[..., 0] += 2.
+            return data
+
+    class ScalePoints(SensorAttackAction):
+        sensor = "lidar"
+
+        def apply(self, data, view):
+            data[..., 0] *= 3.
             return data
 
     class OnlineAttack(AttackRuntime):
@@ -82,7 +97,8 @@ def test_run_with_attacks(tmp_path):
 
         def step(self, context):
             context.record_output("decision", context.step)
-            return (Paint(), MoveHost(14.), AVStackAttackEffect("perception.post", self.inject))
+            return (Paint(), ShiftPoints(), ScalePoints(), MoveHost(14.),
+                    AVStackAttackAction("perception.post", self.inject))
 
         def inject(self, value, context):
             return [*value, Detection((6., 0., 0.), (4., 2., 1.5), 0., "car", .9)]
@@ -90,23 +106,31 @@ def test_run_with_attacks(tmp_path):
         def stop(self, context):
             lifecycle.append("stop")
 
-    with MemorySimulator().create_runtime() as simulator_runtime:
+    points = np.tile(np.array([5.25, -2., .5, .8], np.float32), (2, 3, 1))
+    with MemorySimulator(extra_sensors={"lidar": points}).create_runtime() as simulator_runtime:
         log = ClosedLoopRunner().run(simulator_runtime, ConstantAVStack(perception_output=[]),
-                                     RunRequest(1, attacks=(OnlineAttack(),), recording=RECORDING))
+                                     RunRequest(1, attacks=(OnlineAttack(),), recording=RecordingPolicy(
+                                         ("front", "lidar"), ("raw", "model_input"))))
     assert lifecycle == ["setup", "stop"]
     assert resource.closed
     record = log.steps[0]
     assert record.physical_pre.actors["lead"].pose[0, 3] == 12.
     assert record.physical_post.actors["lead"].pose[0, 3] == 14.
     assert np.all(record.model_observation.sensor_data["front"] == 42)
+    assert record.model_observation.sensor_data["front"].dtype == np.uint8
     assert np.any(record.raw_observation.sensor_data["front"] != 42)
+    np.testing.assert_array_equal(record.raw_observation.sensor_data["lidar"], points)
+    shifted = points.copy()
+    shifted[..., 0] = 21.75
+    np.testing.assert_array_equal(record.model_observation.sensor_data["lidar"], shifted)
+    assert record.model_observation.sensor_data["lidar"].dtype == points.dtype
     assert len(record.detections) == 1
     assert record.outputs[0].name == "decision" and record.outputs[0].value == 0
-    receipts = [effect for event in log.events for effect in event.data.get("effects", [])
-                if effect["kind"] == "receipt"]
-    receipts += [effect for effect in record.effects if effect["kind"] == "receipt"]
-    assert {effect["category"] for effect in receipts} == {"world", "sensor", "avstack"}
-    assert all(effect["outcome"] == "applied" for effect in receipts)
+    receipts = [action for event in log.events for action in event.data.get("actions", [])
+                if action["kind"] == "receipt"]
+    receipts += [action for action in record.actions if action["kind"] == "receipt"]
+    assert {action["category"] for action in receipts} == {"world", "sensor", "avstack"}
+    assert all(action["outcome"] == "applied" for action in receipts)
 
 
 def test_run_failure(tmp_path):
@@ -142,3 +166,12 @@ def test_run_rejects_invalid_request():
         with pytest.raises(ValueError, match="unavailable sensors"):
             ClosedLoopRunner().run(simulator_runtime, ConstantAVStack(), RunRequest(
                 1, recording=RecordingPolicy(("missing",))))
+
+        class InvalidSensorAttack(AttackRuntime):
+            def step(self, context):
+                return (AVStackAttackAction("sensors.post", lambda value, context: value),)
+
+        with pytest.raises(ValueError, match="use SensorAttackAction to modify sensor data") as failure:
+            ClosedLoopRunner().run(simulator_runtime, ConstantAVStack(),
+                                   RunRequest(1, attacks=(InvalidSensorAttack(),)))
+        assert failure.value.run_log.status == "failed"

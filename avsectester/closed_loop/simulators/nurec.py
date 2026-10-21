@@ -19,6 +19,7 @@ from typing import Any, ClassVar, Protocol, TYPE_CHECKING
 from avsectester.closed_loop.datatypes import validate_command_modes
 from avsectester.closed_loop.simulator import SensorGeometry, SensorView, Simulator, SimulatorRuntime
 from avsectester.closed_loop.datatypes import Control, Observation, WorldSnapshot
+from avsectester.geometry.cameras import BODY_FROM_OPTICAL
 
 if TYPE_CHECKING:
     from avsectester.closed_loop.hooks import CameraRenderRequest
@@ -380,6 +381,10 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
         self.frame += 1
 
     @property
+    def sensors(self) -> frozenset[str]:
+        return self.camera_sensors
+
+    @property
     def camera_sensors(self) -> frozenset[str]:
         aliases = self.config.get("camera_aliases", {})
         return frozenset(aliases.get(camera, camera) for camera in self.renderer.cameras
@@ -669,9 +674,11 @@ def nurec_sensor_view(simulator_runtime, dataset, sensor=None, data=None):
         if captured is None:
             raise ValueError(f"Missing NuRec camera {output_key!r}")
         data = captured[1]
+    cam_from_world = renderer.cam_from_world(request.pose, request.camera)
     return SensorView(
         output_key, data, renderer.camera_model(request.camera),
-        renderer.cam_from_world(request.pose, request.camera),
+        cam_from_world,
         dataset.actor_poses(payload["usdz_path"], timestamp), ego, truth.t, truth.frame,
+        sensor_from_world=BODY_FROM_OPTICAL @ cam_from_world,
         native={"render_request": request, "timestamp_us": timestamp},
     )

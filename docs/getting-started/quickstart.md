@@ -25,7 +25,7 @@ success.
 
 Each configuration contains exactly one attack. All treatment pairs compare that attack's common
 metadata, with optional world/sensor environments. Multiple attacks in one experiment are future
-work; combine effects within one Attack when they must act together.
+work; combine actions within one Attack when they must act together.
 
 ## Read the output
 

@@ -23,7 +23,7 @@ print(report.format_summary())
 `prepare` opens the closed-loop services, calls each attack's metabuilder once per scene, validates
 segment structure and runs each attack's offline phase once over all its metadata. Preparation
 returns metadata and artifacts without live simulator or model history. An experiment accepts
-exactly one attack; multiple attacks sharing metadata are future work. To combine effects, implement
+exactly one attack; multiple attacks sharing metadata are future work. To combine actions, implement
 one composite Attack.
 
 Preparation uses the first configured seed. The metabuilder requests its environment explicitly; it
@@ -107,7 +107,7 @@ origin define the intended comparison; they do not prove bitwise identical nativ
 
 ## Environment-only robustness experiments
 
-Use a selection-only Attack whose default runtime applies no effects. Pair its selected segments
+Use a selection-only Attack whose default runtime applies no actions. Pair its selected segments
 with clean and sensor/world-environment treatments:
 
 <!-- runnable -->

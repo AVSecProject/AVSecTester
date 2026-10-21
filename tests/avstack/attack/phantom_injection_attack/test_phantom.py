@@ -1,4 +1,4 @@
-"""A phantom's source-frame geometry and its effect on the real modular driving pipeline."""
+"""A phantom's source-frame geometry and its action on the real modular driving pipeline."""
 import numpy as np
 import pytest
 
@@ -21,9 +21,9 @@ def test_phantom_geometry(make_detections):
                             GlobalOrigin3D)
     runtime = PhantomInjectionAttack(decision_steps=1, target_xyz=(8., 1., -1.4),
                                     extent=(4.5, 2., 1.7), score=.65, object_id=12345).create_runtime(None, None)
-    effect = runtime.step(OnlineContext(0, "step", 0., 0))[0]
+    action = runtime.step(OnlineContext(0, "step", 0., 0))[0]
     detector = Passthrough3DObjectDetector()
-    detector.register_post_hook(lambda output: (effect.apply(output, None),))
+    detector.register_post_hook(lambda output: (action.apply(output, None),))
     for positions in ([], [(15., 4., -1.5)]):
         output = detector(make_detections(positions, reference=sensor, frame=7))
         phantom = output[-1]
@@ -36,15 +36,15 @@ def test_phantom_geometry(make_detections):
     malformed = make_detections()
     malformed.source_reference = None
     with pytest.raises(ValueError, match="source_reference"):
-        effect.apply(malformed, None)
+        action.apply(malformed, None)
 
 
 def test_phantom_braking(pipeline_config, native_observation):
     clean, attacked = ModularAVStack(pipeline_config), ModularAVStack(pipeline_config)
     attacked.instrument()
     runtime = PhantomInjectionAttack(decision_steps=10).create_runtime(None, None)
-    effect = runtime.step(OnlineContext(0, "step", 0., 0))[0]
-    hooks = HookSet([Hook("perception.post", lambda output, context: effect.apply(output, None))])
+    action = runtime.step(OnlineContext(0, "step", 0., 0))[0]
+    hooks = HookSet([Hook("perception.post", lambda output, context: action.apply(output, None))])
     with MemorySimulator().create_runtime() as simulator_runtime:
         with hooks.session(simulator_runtime, attacked).activate():
             simulator_runtime.reset()

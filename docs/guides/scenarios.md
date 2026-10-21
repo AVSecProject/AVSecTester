@@ -35,7 +35,7 @@ rate and synchronous settings are separate runtime configuration.
 Each actor's PrescribedMotion chooses exactly one of constant_control, a per-decision control
 sequence or an N+1 ActorState trajectory. Traffic Manager policies are not recorded motion. The
 recipe horizon covers N decisions and the terminal state. Formal execution releases ego from
-prescribed motion for AVStack commands; reference generation follows the entire recipe.
+prescribed motion for AVStack commands; frame data generation follows the entire recipe.
 
 The dataset returns Unavailable for generated frame data. Experiment preparation uses the simulator
 to generate and cache it; it does not attach generated data to the Dataset.
@@ -84,8 +84,8 @@ seed or after optimization.
 Placement types belong to the core attack/placement.py module, not to Dataset. The attack/insertion/
 package provides reusable framework tools for assets, visibility and compositing. A sensor view
 supplies camera projection, calibration, canonical actor poses and available depth. The attack's
-SensorAttackEffect uses those inputs for insertion rendering. Physical objects use
-WorldAttackEffect.
+SensorAttackAction uses those inputs for insertion rendering. Physical objects use
+WorldAttackAction.
 
 See [Image insertion](../examples/image-insertion.md) and [Physical
 patch](../examples/physical-patch.md).

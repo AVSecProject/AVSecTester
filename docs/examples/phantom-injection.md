@@ -30,8 +30,8 @@ options:
 ## Workflow
 
 The metabuilder partitions decision windows. The default offline phase produces no artifact. Each
-runtime returns an AVStackAttackEffect at perception.post; the synthetic object reaches tracking,
-planning and control in the same decision. The physical world contains no such object. The effect
+runtime returns an AVStackAttackAction at perception.post; the synthetic object reaches tracking,
+planning and control in the same decision. The physical world contains no such object. The action
 constructs the added detection directly; it does not register a separate native attack hook. Native
 avstack detection classes are imported only when their output format is used. Constructing
 ModularAVStack does not globally register attack hooks. Phantom extent uses full (length, width,
@@ -41,7 +41,7 @@ preserves the original vehicle-sized phantom bottom.
 
 ## Evidence
 
-Inspect StepRecord.detections, components, commands and effect receipts, then compare clean and
+Inspect StepRecord.detections, components, commands and action receipts, then compare clean and
 attacked DrivingMetrics, DetectionMetrics and StopImpact. A changed detection count alone does not
 establish driving impact.
 

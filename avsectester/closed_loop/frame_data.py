@@ -62,7 +62,7 @@ class FrameDataCache:
 
     @staticmethod
     def key(start: ScenarioStart, simulator_identity: Mapping[str, Any], seed: int) -> str:
-        return fingerprint({"schema": 1, "kind": start.kind, "scenario": start.scenario_id,
+        return fingerprint({"kind": start.kind, "scenario": start.scenario_id,
                             "payload": start.payload, "simulator": simulator_identity, "seed": seed})
 
     def get_or_generate(

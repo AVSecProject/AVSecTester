@@ -2,7 +2,7 @@
 
 > **Audience:** Attack authors.
 >
-> **Outcome:** Define selection, optional preparation and per-run attack effects.
+> **Outcome:** Define selection, optional preparation and per-run attack actions.
 >
 > **Prerequisites:** [Architecture](../concepts/architecture.md).
 
@@ -20,7 +20,7 @@ configuration holds reusable parameters; mutable online history belongs to its r
 are explicit return values, never a second mutable Attack property.
 
 Each experiment requires exactly one Attack. Every treatment shares its metadata and changes only
-attack enablement and environment settings. Use one composite Attack to apply several effects
+attack enablement and environment settings. Use one composite Attack to apply several actions
 together.
 
 **Not yet implemented.** Comparing multiple attacks in one experiment on shared metadata. See
@@ -34,7 +34,7 @@ helper as environment-only experiments and keeps no live simulator handles.
 <!-- runnable -->
 ```python
 from dataclasses import replace
-from avsectester.attack import Attack, AttackRuntime, AVStackAttackEffect
+from avsectester.attack import Attack, AttackRuntime, AVStackAttackAction
 from avsectester.attack.segments import split_segments
 
 class SpeedSpoofAttack(Attack):
@@ -54,7 +54,7 @@ class SpeedSpoofAttackRuntime(AttackRuntime):
         self.reported_speed = reported_speed
 
     def step(self, context):
-        return [AVStackAttackEffect("observation", self.spoof)]
+        return [AVStackAttackAction("observation", self.spoof)]
 
     def spoof(self, observation, context):
         context.record_output("reported_speed", self.reported_speed)
@@ -64,7 +64,7 @@ class SpeedSpoofAttackRuntime(AttackRuntime):
 Place user attacks under attack/implemented_attacks/speed_spoof_attack/ with __init__.py exporting
 only SpeedSpoofAttack. Use type: SpeedSpoofAttack and constructor options. The same layout applies
 to supplied and user attacks: attack.py connects entry points, metabuilder.py selects, optional
-offline.py prepares, online.py implements AttackRuntime/effects, and optional assets.py owns
+offline.py prepares, online.py implements AttackRuntime/actions, and optional assets.py owns
 attack-specific assets. See the [folder
 guide](../../avsectester/attack/implemented_attacks/README.md). An importable external class can
 instead use type: my_project.attacks:SpeedSpoofAttack. The modified speed reaches the driving system
@@ -77,7 +77,7 @@ states through recorded data or a preparation-owned cache. `record_reason(text)`
 selection explanations by reason with occurrence counts in the experiment result, without recording
 every rejected frame or host. Each scenario keeps at most 100 distinct reasons; later new reasons
 are counted under "Other selection reasons". Within `scenario.services.session(seed)`, request
-sensor samples, effects-based rendering, component evaluations, scores or rollouts.
+sensor samples, actions-based rendering, component evaluations, scores or rollouts.
 
 `AttackSegment` includes scenario_id, start, stop, roles, placement and optional selection_score,
 selection_rank and user_data. Roles map user-defined names to stable actor IDs. They can be empty.
@@ -120,7 +120,7 @@ request = CandidateRequest(attack=self, segment=segment, artifacts=artifacts,
                            environment=context.environment, recording=RecordingPolicy())
 ```
 
-The request calls the same runtime factory and effects as formal execution.
+The request calls the same runtime factory and actions as formal execution.
 
 Optimization does not cause reselection or a geometry-preservation check. Keep visibility and
 placement assumptions valid in your optimizer if the attack requires them. See
@@ -135,25 +135,38 @@ tools; an attack composes them in its own offline and online implementations. Se
 insertion](../examples/image-insertion.md#use-insertion-tools-in-your-attack) and
 [Optimization](optimization.md#use-the-optimization-tools).
 
-## Online effects
+## Online actions
 
-| Effect | Method | Application |
+| Action | Method | Application |
 |---|---|---|
-| WorldAttackEffect | `apply(simulator_runtime, resources)` | Setup or before the world advances |
-| SensorAttackEffect | `apply(data, view)` | Current captured sensor, before sensor environment |
-| AVStackAttackEffect | `apply(value, context)` | Declared stage, before downstream consumption |
+| WorldAttackAction | `apply(simulator_runtime, resources)` | Setup or before the world advances |
+| SensorAttackAction | `apply(data, view)` | Any captured sensor data, before sensor environment |
+| AVStackAttackAction | `apply(value, context)` | Driving-system stages from localization.pre to command |
 
-`setup(context)` returns only world effects. Declare required setup_ticks for deployment.
-`step(context)` returns effects once each decision. `stop(context)` runs on completion and failure.
+SensorAttackAction is the attack entry for camera, LiDAR, GNSS and IMU data. Actions for one sensor
+chain in issue order on a private copy; the view retains the original capture. chain_sensor_actions
+uses write_camera_rgb when SensorView.camera is present, keeping camera data RGB uint8. Other
+sensors use write_sensor_data, which preserves array shape and dtype, native wrappers and
+calibration. SensorView.camera and cam_from_world are None for non-camera sensors.
+sensor_from_world uses sensor-body axes, including for cameras, independently of the optical
+camera transform. See [CARLA LiDAR data](../reference/runtime.md#carla-lidar-data) for raw point
+decoding and a replacement action.
+
+AVStackAttackAction cannot target sensors.post; use SensorAttackAction for sensor data. The
+sensors.post stage remains available to ordinary HookSet handlers. Actions returned dynamically
+by step are validated before their requests are queued or any action is applied.
+
+`setup(context)` returns only world actions. Declare required setup_ticks for deployment.
+`step(context)` returns actions once each decision. `stop(context)` runs on completion and failure.
 Use its instance to hold histories, trigger counts and bound component-stage callbacks.
 
 Declare `ResultSubscription("observation")` or `ResultSubscription("physical_state")` when the
 runtime reads those snapshots in its callbacks. The OnlineContext exposes no simulator or service
-that can advance time. An AVStack effect receives its current stage value; a bound method can use it
+that can advance time. An AVStack action receives its current stage value; a bound method can use it
 without introducing another independently stateful handler.
 
-Multiple effects for one stage are applied sequentially in returned and registration order. Every
-effect receives the preceding effect's replacement; receipts reflect actual application. Effect
+Multiple actions for one stage are applied sequentially in returned and registration order. Every
+action receives the preceding action's replacement; receipts reflect actual application. Action
 requests and actual application receipts are both recorded.
 
 ## Persist artifacts

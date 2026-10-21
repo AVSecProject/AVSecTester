@@ -42,8 +42,8 @@ selects constant_control, per-step controls or an N+1 trajectory for each actor.
 ### Selected-origin initialization
 
 The simulator runtime initializes base actors and sensors, replays prescribed motion without hooks
-to the deployment window, applies simulator.setup effects and runs the shared deployment ticks.
-Capture ticks then make world effects visible in the selected frame. The selected boundary is
+to the deployment window, applies simulator.setup actions and runs the shared deployment ticks.
+Capture ticks then make world actions visible in the selected frame. The selected boundary is
 preserved; a positive boundary earlier than the required window is rejected. At position zero,
 actors are held while initialization ticks execute.
 
@@ -76,7 +76,7 @@ follows them ideally. Choose compatible AVStack commands; there is no automatic 
 
 RecordedReplaySimulator reads a NuScenesDataset ScenarioStart and advances through recorded
 FrameData. It is open-loop: commands cannot change ego or traffic motion. N decisions require N+1
-frames. Sensor environments and effects can change model inputs but do not turn playback into
+frames. Sensor environments and actions can change model inputs but do not turn playback into
 closed-loop simulation.
 
 ## Write a custom simulator adapter
@@ -146,6 +146,9 @@ assert len(log.steps) == 3
 assert log.steps[-1].physical_post.ego_speed > 0
 ```
 
+Declare sensors for every available sensor_view, and camera_sensors for its camera subset.
+Non-camera views have camera=None and cam_from_world=None; positioned sensors provide a
+sensor_from_world body-frame transform, distinct from the optical camera transform.
 Set can_render=True for image insertion. A rendering simulator declares camera_sensors and
 implements sensor_geometry(sensor) without copying images, plus sensor_view(sensor), supplying
 canonical camera projection, data, camera transform, actor/ego poses with optional cuboid extents

@@ -141,11 +141,8 @@ class ScenarioStart:
     scenario_id: str
     frame: FrameReference
     payload: Mapping[str, Any]
-    schema_version: int = 1
 
     def __post_init__(self) -> None:
-        if self.schema_version != 1:
-            raise ValueError(f"Unsupported ScenarioStart schema: {self.schema_version}")
         if self.scenario_id != self.frame.scenario_id:
             raise ValueError("The start frame must belong to the scenario")
         object.__setattr__(self, "payload", deepcopy(dict(self.payload)))

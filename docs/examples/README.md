@@ -17,6 +17,6 @@ CONFIG.yaml`.
 | [Image insertion](image-insertion.md) | ObjectInsertionAttack | configs/carla_object_insertion.yaml, configs/nurec_object_insertion.yaml, configs/nuscenes_object_insertion.yaml |
 | [Speed feedback](speed-feedback-attack.md) | SpeedFeedbackAttack | configs/nurec_speed_feedback.yaml |
 
-Paths in the table are relative to the repository root. All effect levels and model outcomes must be
+Paths in the table are relative to the repository root. All attack impacts and driving results must be
 measured in the target environment. Passing workflow tests establishes preparation, execution and
 evaluation, not attack strength.

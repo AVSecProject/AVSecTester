@@ -5,7 +5,7 @@ The framework packages follow its components:
 * :mod:`avsectester.datasets` — scenarios and per-frame data from recorded datasets or CARLA
   recipes, and the start data a simulator needs. A dataset never depends on a simulator.
 * :mod:`avsectester.attack` — the user's ``Attack`` (metabuilder and offline phase),
-  ``AttackSegment`` records, and the online ``AttackRuntime`` with its attack effects.
+  ``AttackSegment`` records, and the online ``AttackRuntime`` with its attack actions.
 * :mod:`avsectester.closed_loop` — the closed loop: data types, the ``Simulator`` base and the
   supplied simulators (``simulators``), the ``AVStack`` interface and the supplied driving
   systems (``avstacks``), Vehicle I/O, stage hooks, the ``ClosedLoopRunner``, and the closed-loop

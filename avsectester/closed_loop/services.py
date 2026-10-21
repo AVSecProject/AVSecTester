@@ -1,7 +1,7 @@
 """The metabuilder and the offline phase share one isolated closed-loop service boundary.
 
-Factories construct independent resources for rendering and rollouts. Effect-free forward sensor
-scans share one runtime within a session. This module implements no separate simulator clock,
+Rendering and rollouts construct independent resources. Forward sensor scans without attack
+actions share one runtime within a session. This module implements no separate simulator clock,
 driving loop, scoring objective or selector.
 """
 from __future__ import annotations
@@ -16,7 +16,7 @@ from typing import Any
 
 from avsectester.attack import AttackSegment
 from avsectester.attack.runtime import (
-    AttackEffect, AttackRuntime, OnlineContext, SensorAttackEffect, WorldAttackEffect, chain_sensor_effects,
+    AttackAction, AttackRuntime, OnlineContext, SensorAttackAction, WorldAttackAction, chain_sensor_actions,
 )
 from avsectester.closed_loop.avstack import AVStack
 from avsectester.closed_loop.runner import ClosedLoopRunner, RecordingPolicy, RunRequest
@@ -68,24 +68,24 @@ class SensorRequest:
 
 @dataclass(frozen=True)
 class RenderRequest:
-    """Capture ``sensor_id`` at ``frame`` with attack effects applied.
+    """Capture ``sensor_id`` at ``frame`` with attack actions applied.
 
-    World attack effects are applied at the simulator.setup stage, within the services'
-    deployment plan, so they are visible in the capture. Sensor attack effects then change the
-    captured data. Component attack effects need a rollout and are rejected.
+    World attack actions are applied at the simulator.setup stage, within the services'
+    deployment plan, so they are visible in the capture. Sensor attack actions then change the
+    captured data. AVStack attack actions need a rollout and are rejected.
     """
 
     scenario_id: str
     frame: FrameReference
     sensor_id: str
-    effects: Sequence[AttackEffect] = ()
+    actions: Sequence[AttackAction] = ()
     environment: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        effects = tuple(self.effects)
-        if any(not isinstance(e, (WorldAttackEffect, SensorAttackEffect)) for e in effects):
-            raise TypeError("Render requests take world and sensor attack effects only")
-        object.__setattr__(self, "effects", effects)
+        actions = tuple(self.actions)
+        if any(not isinstance(e, (WorldAttackAction, SensorAttackAction)) for e in actions):
+            raise TypeError("Render requests take world and sensor attack actions only")
+        object.__setattr__(self, "actions", actions)
         object.__setattr__(self, "environment", normalize_environment(self.environment))
 
 
@@ -98,7 +98,7 @@ class SensorSample:
 
 @dataclass(frozen=True)
 class RenderResult:
-    """The changed capture and the requested sensor's view before its sensor effects.
+    """The changed capture and the requested sensor's view before its sensor actions.
 
     The view is detached: its ``native`` access is empty once the session operation ends.
     """
@@ -186,16 +186,16 @@ class DrivingAdapter:
 
 
 class _WorldSetup:
-    """Apply world attack effects at simulator.setup when no driving run binds the runtime."""
+    """Apply world attack actions at simulator.setup when no driving run binds the runtime."""
 
-    def __init__(self, simulator_runtime: SimulatorRuntime, effects: Sequence[WorldAttackEffect],
+    def __init__(self, simulator_runtime: SimulatorRuntime, actions: Sequence[WorldAttackAction],
                  resources: ExitStack) -> None:
-        self.simulator_runtime, self.effects, self.resources = simulator_runtime, tuple(effects), resources
+        self.simulator_runtime, self.actions, self.resources = simulator_runtime, tuple(actions), resources
 
     def emit(self, stage: str, value: Any, sensor: str | None = None) -> Any:
         if stage == "simulator.setup":
-            for effect in self.effects:
-                effect.apply(self.simulator_runtime, self.resources)
+            for action in self.actions:
+                action.apply(self.simulator_runtime, self.resources)
         return value
 
 
@@ -378,7 +378,7 @@ class ClosedLoopSession:
                            scanning: bool = False) -> SimulatorRuntime:
         if not scanning:
             self._discard_scan()
-        # Renders and rollouts always start fresh. Only an effect-free frame scan is retained.
+        # Renders and rollouts always start fresh. Only an action-free frame scan is retained.
         self.services.simulator.validate_start(start)
         # Callbacks run in reverse order: close the runtime, then release its reservation, so no
         # other operation can reset this server while its actors are still being destroyed.
@@ -450,7 +450,7 @@ class ClosedLoopSession:
                 "interpolation": start.payload.get("interpolation")}
 
     def sensor_data(self, request: SensorRequest) -> SensorSample:
-        """Read prescribed source motion, reusing one effect-free runtime for forward scans.
+        """Read prescribed source motion, reusing one action-free runtime for forward scans.
 
         A different scenario/environment, a backwards frame request, render or rollout closes
         the scan. Repeated reads of a frame do not advance the simulator.
@@ -503,24 +503,24 @@ class ClosedLoopSession:
     def render(self, request: RenderRequest) -> RenderResult:
         if not self.services.simulator.can_render:
             raise NotImplementedError("The simulator does not provide sensor views")
-        world = [e for e in request.effects if isinstance(e, WorldAttackEffect)]
-        sensor = [e for e in request.effects if isinstance(e, SensorAttackEffect)]
+        world = [e for e in request.actions if isinstance(e, WorldAttackAction)]
+        sensor = [e for e in request.actions if isinstance(e, SensorAttackAction)]
         deployment = self.services.deployment
-        if sum(effect.setup_ticks for effect in world) > deployment.ticks:
-            raise ValueError("Render effects exceed the shared deployment tick budget")
+        if sum(action.setup_ticks for action in world) > deployment.ticks:
+            raise ValueError("Render actions exceed the shared deployment tick budget")
         start = self._scenario_start(request.scenario_id, request.frame, request.environment)
         initialization = self.initialization(start, request.environment, deployment)
         with self._operation() as resources:
             simulator_runtime = self._simulator_runtime(resources, start)
             with simulator_runtime.exclusive():
-                # Effects register their removal on resources, which close before the runtime.
+                # Actions register their removal on resources, which close before the runtime.
                 with simulator_runtime.bind_hooks(_WorldSetup(simulator_runtime, world, resources)):
                     simulator_runtime.reset(start, initialization, world=request.environment["world"],
                                             deployment=deployment)
                 observation = simulator_runtime.observe()
                 views = {request.sensor_id: simulator_runtime.sensor_view(request.sensor_id)}
                 detached_view = deepcopy(replace(views[request.sensor_id], native={}))
-                observation = chain_sensor_effects(observation, simulator_runtime, sensor, views=views)
+                observation = chain_sensor_actions(observation, simulator_runtime, sensor, views=views)
                 observation = SensorEnvironment(request.environment, self.seed).apply(
                     observation, request.frame.position)
                 return RenderResult(

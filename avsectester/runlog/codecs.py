@@ -275,7 +275,7 @@ class _AdapterCodecs(CodecRegistry):
                     snapshot = _snapshot_native
                 elif module_name == "carla":
                     snapshot = lambda value, capture_child: _sdk_capture(value)
-                self.register(native_type, encode, name=f"{module_name}.{class_name}.v1",
+                self.register(native_type, encode, name=f"{module_name}.{class_name}",
                               snapshot=snapshot)
         self._scanned_types.add(value_type)
         return super().encoder(value)

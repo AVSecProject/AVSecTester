@@ -2,7 +2,9 @@
 import numpy as np
 import pytest
 
-from avsectester.geometry.cameras import FThetaCamera, PinholeCamera, make_pose, planar_rig_pose, transform
+from avsectester.geometry.cameras import (
+    BODY_FROM_OPTICAL, FThetaCamera, PinholeCamera, make_pose, planar_rig_pose, transform,
+)
 
 
 CAMERAS = [PinholeCamera(np.array([[50., 0., 50.], [0., 50., 40.], [0., 0., 1.]]), 100, 80),
@@ -30,6 +32,7 @@ def test_unproject(camera):
 
 
 def test_camera_world_transform():
+    np.testing.assert_array_equal(transform(BODY_FROM_OPTICAL, [[1., 2., 3.]]), [[3., -1., -2.]])
     world_from_rig = planar_rig_pose(10., 5., np.pi / 2)
     rig_from_sensor = make_pose(np.eye(3), (1., 0., 2.))
     world_from_sensor = world_from_rig @ rig_from_sensor

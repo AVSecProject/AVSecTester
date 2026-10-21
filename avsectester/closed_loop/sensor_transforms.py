@@ -12,7 +12,7 @@ import numpy as np
 
 class Corruption(ABC):
     """One image-space corruption. ``apply(rgb, rng) -> rgb`` maps an ``(H,W,3)`` uint8 RGB frame to a
-    corrupted one; ``severity`` in ``[0, 1]`` scales the effect (0 ≈ identity)."""
+    corrupted one; ``severity`` in ``[0, 1]`` scales the corruption strength (0 ≈ identity)."""
 
     category: str = "sensor"
 

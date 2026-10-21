@@ -84,7 +84,7 @@ output: ../results/phantom
 | `strict` | Stop on the first error when true; default false |
 
 The attacks mapping must contain exactly one entry. Multiple attacks in one experiment are future
-work; implement a composite Attack when several effects must be applied together. Empty and
+work; implement a composite Attack when several actions must be applied together. Empty and
 multi-attack configurations fail loading with exit code 2. When treatments are omitted, loading
 creates clean and attack treatments. Every treatment shares this attack's metadata and may enable
 its attack_name and change environment settings. A clean treatment has no attack_name.
@@ -213,7 +213,7 @@ recording:
 ```
 
 Sensor payloads are sampled every N decisions. Empty sensor_ids retain no image payloads. Physical
-states, commands, effects, outputs, available components and detections are recorded at each
+states, commands, actions, outputs, available components and detections are recorded at each
 decision. Choose payload retention before a run; reevaluation cannot recover omitted images.
 
 ## Evaluation

@@ -14,6 +14,7 @@ import numpy as np
 from avsectester.closed_loop.simulator import SensorGeometry, SensorView, Simulator, SimulatorRuntime
 from avsectester.datasets.base import ScenarioStart
 from avsectester.closed_loop.datatypes import Observation, WorldSnapshot
+from avsectester.geometry.cameras import BODY_FROM_OPTICAL
 
 
 class RecordedReplaySimulator(Simulator):
@@ -91,6 +92,10 @@ class RecordedReplaySimulatorRuntime(SimulatorRuntime):
                              ego=deepcopy(data.ego))
 
     @property
+    def sensors(self) -> frozenset[str]:
+        return self.camera_sensors
+
+    @property
     def camera_sensors(self) -> frozenset[str]:
         if not self._world_initialized:
             return frozenset()
@@ -122,7 +127,8 @@ class RecordedReplaySimulatorRuntime(SimulatorRuntime):
             raise ValueError(f"Recorded sensor {sensor!r} has no RGB capture")
         actors = {name: state.box_pose() for name, state in data.actors.items()}
         return SensorView(sensor, captured[1], geometry.camera, geometry.cam_from_world,
-                          actors, data.ego.box_pose(), data.frame.timestamp, data.frame.position)
+                          actors, data.ego.box_pose(), data.frame.timestamp, data.frame.position,
+                          sensor_from_world=BODY_FROM_OPTICAL @ geometry.cam_from_world)
 
     def _advance_native(self, control):
         self._replay_tick()

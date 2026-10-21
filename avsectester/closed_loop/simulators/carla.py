@@ -607,6 +607,12 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         raise ValueError(f"Select a specific RGB camera from {list(sensors)}")
 
     @property
+    def sensors(self) -> frozenset[str]:
+        if self.ego is None:
+            return frozenset()
+        return frozenset(sensor.source_identifier for sensor in self.ego.sensors.values())
+
+    @property
     def camera_sensors(self) -> frozenset[str]:
         if self.ego is None:
             return frozenset()
@@ -628,21 +634,51 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
                               optical @ native_inverse @ _FLIP)
 
     def sensor_view(self, sensor: str) -> SensorView:
-        """Direct RGB, calibration, actor and optional aligned-depth view of this capture."""
-        from avsectester.closed_loop.datatypes import read_camera_rgb
+        """Capture data and physical sensor pose; camera views also provide optical geometry.
 
-        geometry = self.sensor_geometry(sensor)
-        rgb = self._rgb_sensor(sensor)
-        captured = read_camera_rgb(self._capture, rgb.source_identifier)
-        if captured is None:
-            raise ValueError(f"Missing RGB camera {sensor!r}")
+        Native SDK measurements are copied into SensorCapture bytes, retaining their original
+        coordinate convention and the native wrapper's options when written back by an action.
+        """
+        from avsectester.closed_loop.datatypes import read_camera_rgb
+        from avsectester.runlog.codecs import SensorCapture
+
+        if not self._world_initialized or self._capture is None:
+            raise RuntimeError("Reset the CARLA simulator before requesting sensor views")
+        matches = [item for name, item in self.ego.sensors.items()
+                   if sensor in (name, item.source_identifier)]
+        if len(matches) != 1:
+            raise ValueError(f"Unknown CARLA sensor {sensor!r}; available: {sorted(self.sensors)}")
+        physical_sensor = matches[0]
+        name = physical_sensor.source_identifier
+        if name not in self._capture.sensor_data:
+            raise ValueError(f"Missing CARLA capture {name!r}")
+        payload = self._capture.sensor_data[name]
         truth = self.state()
-        payload = self._capture.sensor_data[rgb.source_identifier]
-        if getattr(payload, "frame", truth.frame - rgb.frame0) + rgb.frame0 != truth.frame:
-            raise ValueError("Camera payload and physical world must use the same frame")
+        if getattr(payload, "frame", truth.frame - physical_sensor.frame0) + physical_sensor.frame0 != truth.frame:
+            raise ValueError("Sensor payload and physical world must use the same frame")
+        inverse = np.asarray(physical_sensor.object.get_transform().get_inverse_matrix(), dtype=float)
+        sensor_from_world = _FLIP @ inverse @ _FLIP
         actors = {name: _actor_state(actor, actor.type_id).box_pose()
                   for name, actor in self.native["actors"].items() if name != "ego"}
         ego = _actor_state(self.ego.actor, self.ego.actor.type_id).box_pose()
+        if physical_sensor.object.type_id != "sensor.camera.rgb":
+            data = payload if isinstance(payload, np.ndarray) else getattr(payload, "data", payload)
+            if hasattr(data, "raw_data"):
+                data = SensorCapture(
+                    f"{type(data).__module__}.{type(data).__qualname__}", bytes(data.raw_data),
+                    int(data.frame), float(data.timestamp),
+                    {field: getattr(data, field) for field in
+                     ("channels", "horizontal_angle") if hasattr(data, field)},
+                )
+            else:
+                data = deepcopy(data)
+            return SensorView(name, data, None, None, actors, ego, truth.t, truth.frame,
+                              sensor_from_world=sensor_from_world, native=self.native)
+        geometry = self.sensor_geometry(sensor)
+        rgb = physical_sensor
+        captured = read_camera_rgb(self._capture, name)
+        if captured is None:
+            raise ValueError(f"Missing RGB camera {sensor!r}")
         depth = None
         depth_rgb = None if self.depth_camera is None else self._rgb_sensor(self.depth_camera)
         if rgb is depth_rgb:
@@ -650,7 +686,8 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
                 raise RuntimeError("Depth and RGB capture frames differ")
             depth = np.array(self.depth, copy=True)
         return SensorView(geometry.sensor, captured[1], geometry.camera, geometry.cam_from_world,
-                          actors, ego, truth.t, truth.frame, depth=depth, native=self.native)
+                          actors, ego, truth.t, truth.frame, sensor_from_world=sensor_from_world,
+                          depth=depth, native=self.native)
 
     def _observe(self) -> Observation:
         observation = self._capture_sensors()

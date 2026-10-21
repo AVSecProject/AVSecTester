@@ -47,7 +47,7 @@ The [documentation index](docs/README.md) lists all guides and references.
 **Early alpha.** Experiments use `Attack`, `AttackRuntime`, `Simulator`, `SimulatorRuntime`,
 `AVStack`, `HookSet` and `RunLog`. Supplied configurations cover phantom injection, physical
 patches, image object insertion and speed feedback. Metrics and visualizations consume saved logs.
-End-to-end execution checks do not establish attack effectiveness.
+End-to-end execution checks do not establish attack impact.
 
 **Not yet implemented.** Defense treatments and reference defense algorithms. See
 [TODO](docs/development/TODO.md#defenses).

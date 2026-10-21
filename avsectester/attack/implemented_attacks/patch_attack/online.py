@@ -7,9 +7,9 @@ from collections.abc import Callable
 
 import numpy as np
 
-from avsectester.attack.runtime import AttackRuntime, WorldAttackEffect
+from avsectester.attack.runtime import AttackRuntime, WorldAttackAction
 from avsectester.attack.insertion.assets import load_rgba_image
-from avsectester.attack.insertion.effect import InsertionAttackEffect
+from avsectester.attack.insertion.action import InsertionAttackAction
 from avsectester.attack.placement import AttachedPlacement
 from avsectester.geometry.poses import rotation_matrix, rotation_to_carla
 
@@ -99,7 +99,7 @@ class CarlaPatchPanel:
 
 
 class PatchAttackRuntime(AttackRuntime):
-    """Deploy one patch in a fresh run, through world setup or a camera effect."""
+    """Deploy one patch in a fresh run, through world setup or a camera action."""
 
     def __init__(self, attack, texture, physical, segment):
         self.attack, self.texture, self.physical = attack, texture, physical
@@ -107,15 +107,15 @@ class PatchAttackRuntime(AttackRuntime):
         self.setup_ticks = 1 if physical else 0
 
     def setup(self, context):
-        return (PatchWorldAttackEffect(self.attack, self.texture, self.insertion),) if self.physical else ()
+        return (PatchWorldAttackAction(self.attack, self.texture, self.insertion),) if self.physical else ()
 
     def step(self, context):
-        return (() if self.physical else (InsertionAttackEffect(
+        return (() if self.physical else (InsertionAttackAction(
             self.attack.sensor, self.insertion, compositor=self.attack.compositor),))
 
 
 @dataclass
-class PatchWorldAttackEffect(WorldAttackEffect):
+class PatchWorldAttackAction(WorldAttackAction):
     attack: Any
     texture: np.ndarray
     insertion: Any

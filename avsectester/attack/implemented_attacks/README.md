@@ -12,7 +12,7 @@ Each folder contains:
 - `attack.py`: the `Attack` subclass, its validated parameters and three entry points;
 - `metabuilder.py`: `build_metadata` selection logic;
 - `offline.py`: optional optimization; omit it when there is no offline work;
-- `online.py`: the `AttackRuntime` and its effects;
+- `online.py`: the `AttackRuntime` and its actions;
 - `assets.py`: optional attack-specific assets;
 - `__init__.py`: exports only the attack class.
 

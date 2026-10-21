@@ -49,5 +49,5 @@ def test_nuscenes_replay(nuscenes_dataset):
     assert log.status == "completed"
     assert all(not np.array_equal(row.raw_observation.sensor_data["front"],
                                   row.model_observation.sensor_data["front"]) for row in log.steps)
-    assert all(any(effect.get("render", {}).get("rendered") is True for effect in row.effects)
+    assert all(any(action.get("render", {}).get("rendered") is True for action in row.actions)
                for row in log.steps)

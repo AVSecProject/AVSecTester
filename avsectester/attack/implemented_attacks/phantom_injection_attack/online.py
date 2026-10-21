@@ -1,7 +1,7 @@
 """AVStack-native phantom replacement at perception.post."""
 import numpy as np
 
-from avsectester.attack.runtime import AttackRuntime, AVStackAttackEffect
+from avsectester.attack.runtime import AttackRuntime, AVStackAttackAction
 
 
 class PhantomInjectionAttackRuntime(AttackRuntime):
@@ -11,7 +11,7 @@ class PhantomInjectionAttackRuntime(AttackRuntime):
         self.attack = attack
 
     def step(self, context):
-        return (AVStackAttackEffect("perception.post", self.inject),)
+        return (AVStackAttackAction("perception.post", self.inject),)
 
     def inject(self, detections, context):
         reference = getattr(detections, "source_reference", None)

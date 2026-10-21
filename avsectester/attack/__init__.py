@@ -2,32 +2,32 @@
 
 :mod:`~avsectester.attack.attack` holds ``Attack``, ``AttackSegment`` and ``OfflineContext``;
 :mod:`~avsectester.attack.runtime` holds ``AttackRuntime``, ``OnlineContext`` and the attack
-effects; :mod:`~avsectester.attack.segments` holds the ``split_segments`` helper for
+actions; :mod:`~avsectester.attack.segments` holds the ``split_segments`` helper for
 ``build_metadata``. The user-facing names are re-exported here.
 """
 
 from avsectester.attack.attack import Attack, AttackSegment, OfflineContext
 from avsectester.attack.segments import split_segments
 from avsectester.attack.runtime import (
-    AttackEffect,
+    AttackAction,
     AttackRuntime,
-    AVStackAttackEffect,
+    AVStackAttackAction,
     OnlineContext,
     ResultSubscription,
-    SensorAttackEffect,
-    WorldAttackEffect,
+    SensorAttackAction,
+    WorldAttackAction,
 )
 
 __all__ = [
-    "AVStackAttackEffect",
+    "AVStackAttackAction",
     "Attack",
-    "AttackEffect",
+    "AttackAction",
     "AttackRuntime",
     "AttackSegment",
     "OfflineContext",
     "OnlineContext",
     "ResultSubscription",
-    "SensorAttackEffect",
-    "WorldAttackEffect",
+    "SensorAttackAction",
+    "WorldAttackAction",
     "split_segments",
 ]

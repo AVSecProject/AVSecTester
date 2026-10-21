@@ -10,7 +10,7 @@ import numpy as np
 
 from avsectester.closed_loop.datatypes import Observation
 from avsectester.closed_loop.simulator import SensorView
-from avsectester.geometry.cameras import FThetaCamera, PinholeCamera, transform
+from avsectester.geometry.cameras import BODY_FROM_OPTICAL, FThetaCamera, PinholeCamera, transform
 from avsectester.datasets import ActorState
 from avsectester.geometry.poses import ActorPose
 from avsectester.runlog import RunLog, StepRecord
@@ -136,6 +136,8 @@ def _draw_projected(image: Any, view: SensorView, boxes: Sequence[tuple[Any, str
 
     if subdiv < 1:
         raise ValueError("subdiv must be positive")
+    if view.camera is None or view.cam_from_world is None:
+        raise ValueError("Drawing projected boxes requires camera geometry")
     result = Image.fromarray(np.asarray(image).astype(np.uint8)).convert("RGB")
     draw = ImageDraw.Draw(result)
     interpolation = np.linspace(0, 1, subdiv + 1)[:, None]
@@ -220,9 +222,11 @@ def sensor_view(record: StepRecord, camera: str | None = None) -> SensorView | N
         if canonical is None:
             continue
         lens = _camera_model(canonical["camera"], image.shape[1], image.shape[0])
-        return SensorView(name, image, lens, np.asarray(canonical["cam_from_world"]),
+        cam_from_world = np.asarray(canonical["cam_from_world"])
+        return SensorView(name, image, lens, cam_from_world,
                           record.physical_pre.actors, record.physical_pre.ego,
-                          observation.t, observation.frame)
+                          observation.t, observation.frame,
+                          sensor_from_world=BODY_FROM_OPTICAL @ cam_from_world)
     return None
 
 

@@ -123,7 +123,7 @@ class Attack(ABC):
         return 0
 
     def create_runtime(self, segment: AttackSegment, artifacts: Any) -> AttackRuntime:
-        """Create the runtime for one run. By default, a runtime without attack effects."""
+        """Create the runtime for one run. By default, a runtime without attack actions."""
         return AttackRuntime()
 
     def configuration_parameters(self) -> Mapping[str, Any]:

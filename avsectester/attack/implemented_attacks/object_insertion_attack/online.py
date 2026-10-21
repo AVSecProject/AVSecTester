@@ -1,6 +1,6 @@
 """Apply object insertion to the declared camera on each decision."""
 from avsectester.attack.runtime import AttackRuntime
-from avsectester.attack.insertion.effect import InsertionAttackEffect
+from avsectester.attack.insertion.action import InsertionAttackAction
 
 
 class ObjectInsertionAttackRuntime(AttackRuntime):
@@ -10,4 +10,4 @@ class ObjectInsertionAttackRuntime(AttackRuntime):
         self.sensor, self.insertion, self.compositor = sensor, insertion, compositor
 
     def step(self, context):
-        return (InsertionAttackEffect(self.sensor, self.insertion, compositor=self.compositor),)
+        return (InsertionAttackAction(self.sensor, self.insertion, compositor=self.compositor),)

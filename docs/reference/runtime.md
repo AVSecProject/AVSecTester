@@ -11,12 +11,12 @@
 The caller creates SimulatorRuntime and AVStack. The runner validates stages, world settings and
 command compatibility before resetting the world. For selected CARLA origins, reset follows
 prescribed motion without attack hooks to the shared deployment window. simulator.setup applies
-world effects, then deployment and capture ticks produce the selected observation. At position zero
+world actions, then deployment and capture ticks produce the selected observation. At position zero
 these ticks hold base actors. A positive origin earlier than the window is rejected.
 
-AttackRuntime.setup receives subscribed setup state and returns only WorldAttackEffect. Its
+AttackRuntime.setup receives subscribed setup state and returns only WorldAttackAction. Its
 setup_ticks declares its deployment budget. Preparation and execution share the maximum budget over
-the attack's segments, seeds and treatments. Effects register cleanup on the provided ExitStack. The
+the attack's segments, seeds and treatments. Actions register cleanup on the provided ExitStack. The
 simulator runtime records actual initial state; it does not compare against replay-error thresholds
 or reselect the origin.
 
@@ -32,21 +32,70 @@ sequenceDiagram
     participant L as Recorder
     R->>S: observe and state (no advancement)
     R->>A: step(subscribed snapshots)
-    A-->>R: world, sensor and AVStack effects
-    R->>R: apply sensor effects, then sensor environment
+    A-->>R: world, sensor and AVStack actions
+    R->>R: apply sensor actions, then sensor environment
     R->>V: sensor hooks, localization, observation hooks
     R->>D: processed observation
     D-->>R: produced command and component outputs
-    R->>R: command effects and hooks, validate
-    R->>S: apply queued world effects, step(executed command)
+    R->>R: command actions and hooks, validate
+    R->>S: apply queued world actions, step(executed command)
     S-->>R: post-state and next capture
-    R->>L: step record, effects and receipts
+    R->>L: step record, actions and receipts
 ```
 
 Decision zero resets AVStack history with the same already processed observation used for its first
-call. Input transforms execute once; the localizer is not reset again. World effects returned during
+call. Input transforms execute once; the localizer is not reset again. World actions returned during
 a decision cannot change its already captured input. They affect subsequent capture. Sensor and
-AVStack effects operate on current-decision values.
+AVStack actions operate on current-decision values.
+
+Attack actions have three boundaries: WorldAttackAction changes the simulated world;
+SensorAttackAction changes any sensor capture, including LiDAR, GNSS and IMU; AVStackAttackAction
+changes driving-system values from localization.pre through command. Sensor actions chain in issue
+order on private data, preserving the original capture. Native data wrappers retain calibration
+and acquisition metadata; camera buffers remain RGB uint8. AVStackAttackAction rejects sensors.post.
+That stage remains a normal HookSet stage.
+
+SensorView.camera and cam_from_world are optional and only describe optical camera geometry.
+sensor_from_world is the world-to-sensor-body transform (x forward, y left, z up), including for
+cameras. It is distinct from cam_from_world (x right, y down, z forward) and is None when pose data
+is unavailable. SimulatorRuntime.sensors lists all sensor views, and camera_sensors is its subset.
+
+### CARLA LiDAR data
+
+A CARLA LiDAR view's data is an owned SensorCapture. Its raw_data buffer contains packed float32
+records in the order x, y, z, intensity: four values, or 16 bytes, per point. Coordinates use
+CARLA's local left-handed sensor frame: x forward, y right, z up. These raw bytes have not been
+flipped; they differ from sensor_from_world's canonical body axes, whose y points left.
+
+Writing a replacement capture retains the native LidarData wrapper and its flipy setting. With
+flipy=True, the native export conversion negates y. Return points in the original CARLA axes;
+do not pre-flip y and then apply that conversion again. Preserve the capture's frame, timestamp
+and metadata when constructing replacement bytes.
+
+This action decodes the points, shifts them one metre forward and returns a new SensorCapture:
+
+<!-- runnable -->
+```python
+import numpy as np
+from avsectester.attack.runtime import SensorAttackAction
+from avsectester.runlog.codecs import SensorCapture
+
+class ShiftLidarPointsAction(SensorAttackAction):
+    sensor = "lidar"
+
+    def apply(self, data, view):
+        points = np.frombuffer(data.raw_data, dtype=np.float32).reshape(-1, 4).copy()
+        points[:, 0] += 1.0
+        return SensorCapture(
+            native_type=data.native_type,
+            raw_bytes=points.tobytes(),
+            frame=data.frame,
+            timestamp=data.timestamp,
+            metadata=dict(data.metadata),
+        )
+```
+
+Return the action from AttackRuntime.step; the runner supplies its current capture and SensorView.
 
 ## Hook stages
 
@@ -82,7 +131,7 @@ and record_output. Native access is explicit under simulator_runtime and avstack
 uses native SDK objects gives up adapter portability.
 
 OnlineContext exposes only subscribed observation/physical_state snapshots and physical time; it
-cannot advance simulation. AVStackAttackEffect bound methods also receive the actual stage value.
+cannot advance simulation. AVStackAttackAction bound methods also receive the actual stage value.
 All online state should remain in one AttackRuntime.
 
 Plugin optionally provides reset(RunContext), transform(value, StageContext), after_step(context)
@@ -120,8 +169,8 @@ detections means unsupported, while an empty sequence means supported with no de
 ## RunLog
 
 StepRecord stores raw_observation, model_observation, physical_pre, physical_post, produced_command,
-executed_command, components, detections, effects, outputs, typed sensor_geometry and telemetry.
-physical_pre and physical_post are StepRecord fields. Effect requests and receipts distinguish what
+executed_command, components, detections, actions, outputs, typed sensor_geometry and telemetry.
+physical_pre and physical_post are StepRecord fields. Action requests and receipts distinguish what
 was requested from what actually applied. EventRecord captures initialization, termination and
 failure/cleanup information outside a decision. RunLog.status distinguishes completed, failed,
 cancelled and incomplete logs.
@@ -131,9 +180,9 @@ payload shards referenced by records. Each steps/part-NNNNN.parquet and event pa
 publication. Payloads publish before referring records; completion metadata is written last. A crash
 leaves completed parts readable and can lose the open part of each stream.
 
-Schema version 5 records typed camera geometry under sensor_geometry, with bounding-box offsets
-for log-only evaluation.
-Readers reject unsupported versions rather than guessing. Persisted native objects decode to plain
+Records include typed camera geometry under sensor_geometry, with bounding-box offsets for
+log-only evaluation. Readers consume the current record layout without legacy-format conversion.
+Persisted native objects decode to plain
 data unless a codec explicitly reconstructs a supported type. In-memory capture preserves supported
 Python container types and snapshot isolation.
 
@@ -145,8 +194,8 @@ in-memory retention requires a persistent output directory.
 ## Failures and cleanup
 
 Unsupported stages, commands and environments are configuration errors. A failing decision stops
-attacks, records unapplied effects and cleans resources. Simulator reservations are released only
-after native cleanup. Never interpret a requested effect as applied without its receipt, or a
+attacks, records unapplied actions and cleans resources. Simulator reservations are released only
+after native cleanup. Never interpret a requested action as applied without its receipt, or a
 partial log as a completed run.
 
 See [Python API](python-api.md#runlog-api) for readers and recorder signatures.

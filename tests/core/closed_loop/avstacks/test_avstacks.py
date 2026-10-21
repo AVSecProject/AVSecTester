@@ -14,7 +14,7 @@ from avsectester.closed_loop.services import DrivingAdapter
                  "native_observation", "native_dependencies", None, ("Car",), id="modular"),
     pytest.param(AlpamayoAVStack, {"checkpoint_path": "synthetic-checkpoint", "camera_ids": ["front"],
                                   "device": "cpu"}, {}, "camera_observation",
-                 "alpamayo_model_boundary", {"policy", "action"}, None, id="alpamayo"),
+                 "alpamayo_model_boundary", {"policy", "command"}, None, id="alpamayo"),
     pytest.param(CameraForwardCollisionAVStack, {}, {}, "camera_observation",
                  "camera_detector_boundary", {"perception"}, None, id="camera-forward-collision"),
 ])

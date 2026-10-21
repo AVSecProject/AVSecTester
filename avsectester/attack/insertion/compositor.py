@@ -74,7 +74,7 @@ def render_resolved(
     compositor supplies harmonization, applied within the visible region only.
 
     Returns ``(RGB image, uint8 mask)``. Unknown visibility is an explicit error.
-    Online insertion effects handle this evidence as a recorded no-op before compositing.
+    Online insertion actions handle this evidence as a recorded no-op before compositing.
     """
     from avsectester.attack.insertion.geometry import insertion_image
 

@@ -12,6 +12,7 @@ from avsectester.closed_loop.simulators.recorded import RecordedReplaySimulator
 from avsectester.datasets.nurec import NuRecDataset
 from avsectester.datasets.nuscenes import NuScenesDataset
 from avsectester.evaluation.visualization import draw_boxes3d, filmstrip, save_image
+from avsectester.geometry.cameras import BODY_FROM_OPTICAL
 
 
 def recorded_video_frame(path: str | Path, timestamps, timestamp: float):
@@ -49,8 +50,10 @@ def nurec_examples(usdz: Path, video: Path, output: Path, *, camera_id: str, sam
             raise ValueError("NuRec frame has no true ego state")
         ego = data.ego.box_pose()
         actors = {identity: actor.box_pose() for identity, actor in data.actors.items()}
-        view = SensorView(camera_id, rgb, camera, np.linalg.inv(data.ego.pose @ ego_from_sensor),
-                          actors, ego, frame.timestamp, frame.position)
+        cam_from_world = np.linalg.inv(data.ego.pose @ ego_from_sensor)
+        view = SensorView(camera_id, rgb, camera, cam_from_world,
+                          actors, ego, frame.timestamp, frame.position,
+                          sensor_from_world=BODY_FROM_OPTICAL @ cam_from_world)
         images.append(draw_boxes3d(rgb, view, actors=data.actors, max_distance=40.))
     save_image(filmstrip(images, cols=4), output / "labels_nurec.png")
 

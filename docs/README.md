@@ -22,7 +22,7 @@ extending the framework.
 | [Quickstart](getting-started/quickstart.md) | First run, outputs and saved-result evaluation |
 | [Architecture](concepts/architecture.md) | Components, ownership and terminology |
 | [Experiments](guides/experiments.md) | Preparation, execution, persistence and treatment comparisons |
-| [Attacks](guides/attacks.md) | User attack API and effect lifecycle |
+| [Attacks](guides/attacks.md) | User attack API and action lifecycle |
 | [Defenses](guides/defenses.md) | Current scope and future work |
 | [Scenarios](guides/scenarios.md) | Dataset timelines, actor identities and metadata |
 | [Environments](guides/environments.md) | World and sensor environments |

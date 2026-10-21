@@ -1,4 +1,4 @@
-"""Compare patch size and harmonization on one CARLA capture using portable insertion effects."""
+"""Compare patch size and harmonization on one CARLA capture using portable insertion actions."""
 from __future__ import annotations
 
 import argparse
@@ -9,7 +9,7 @@ from pathlib import Path
 from avsectester.attack.insertion import Insertion, PlaneAsset
 from avsectester.attack.insertion.assets import load_rgba_image
 from avsectester.attack.insertion.compositor import PatchCompositor
-from avsectester.attack.insertion.effect import InsertionAttackEffect
+from avsectester.attack.insertion.action import InsertionAttackAction
 from avsectester.attack.insertion.harmonizers import ClassicHarmonizer, PCTNetHarmonizer
 from avsectester.attack.placement import AttachedPlacement, Orientation
 from avsectester.closed_loop.avstacks.camera_forward_collision import CameraForwardCollisionAVStack
@@ -36,13 +36,13 @@ def probe_configuration(path: Path, gap: float, port: int, traffic_manager_port:
     return dataset, simulator, scenario_id
 
 
-def patch_effect(view, texture, *, width_fraction, height_fraction, harmonizer=None):
+def patch_action(view, texture, *, width_fraction, height_fraction, harmonizer=None):
     host = view.actors["lead"]
     asset = PlaneAsset(texture, host.extent[1] * width_fraction, host.extent[2] * height_fraction)
     insertion = Insertion("probe", asset, AttachedPlacement("lead", "rear_center", (-.03, 0, 0)),
                           Orientation("follow_host", (0, 0, 180)))
     compositor = PatchCompositor(harmonizer, harmonize=harmonizer is not None)
-    return InsertionAttackEffect(view.sensor, insertion, compositor)
+    return InsertionAttackAction(view.sensor, insertion, compositor)
 
 
 def main() -> int:
@@ -77,11 +77,11 @@ def main() -> int:
             print(f"clean: {clean_score:.3f}")
             for name, harmonizer in variants:
                 for size, width, height in (("standard", .85, .6), ("large", 1., .95)):
-                    effect = patch_effect(view, texture, width_fraction=width,
+                    action = patch_action(view, texture, width_fraction=width,
                                           height_fraction=height, harmonizer=harmonizer)
-                    image = effect.apply(view.data, view)
+                    image = action.apply(view.data, view)
                     score = max((score for _, score, _ in avstack.detect(image)), default=0.)
-                    evidence = effect.evidence(view)
+                    evidence = action.evidence(view)
                     print(f"{name}/{size}: confidence={score:.3f} visibility={evidence.visibility}")
                     save_image(image, args.output / f"{name}-{size}.png")
     finally:

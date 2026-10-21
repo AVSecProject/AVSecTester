@@ -32,7 +32,7 @@ world mapping to SimulatorRuntime.reset.
 
 ## Sensor processing order
 
-The simulator captures the world, sensor attack effects change the selected samples, the sensor
+The simulator captures the world, sensor attack actions change the selected samples, the sensor
 environment transforms them, and VehicleIO applies sensor hooks, localization and observation hooks.
 Images retained as raw and model_input document this distinction. Sensor transforms never change
 physical world state.
@@ -100,8 +100,8 @@ created. Its keys are weather, lighting, map_layers and road_friction. See its
 require initialization. Use a dedicated server: each formal run reloads the world.
 
 Unsupported settings fail explicitly. Do not substitute an image transform for native weather
-without specifying it under sensors. A world effect can change the world during a run, but its
-timing and application are then recorded as attack effects rather than static environment.
+without specifying it under sensors. A world action can change the world during a run, but its
+timing and application are then recorded as attack actions rather than static environment.
 
 ## Next steps
 

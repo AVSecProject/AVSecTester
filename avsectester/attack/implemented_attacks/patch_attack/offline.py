@@ -79,11 +79,11 @@ def render_candidate(session, attack, segment, frame, texture, environment, obse
                            frame.position, observation=observation)
     failure = None
     try:
-        effects = tuple(runtime.setup(online))
+        actions = tuple(runtime.setup(online))
         online = replace(online, stage="step")
-        effects += tuple(runtime.step(online))
+        actions += tuple(runtime.step(online))
         return session.render(RenderRequest(segment.scenario_id, frame, attack.sensor,
-                                             effects=effects, environment=environment))
+                                             actions=actions, environment=environment))
     except BaseException as error:
         failure = error
         raise

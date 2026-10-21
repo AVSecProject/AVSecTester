@@ -45,7 +45,7 @@ def test_trajectory_context(alpamayo_model_boundary):
     assert model.last_input.previous_plan == "forward"
     assert model.last_input.camera_images["front"][-1].image[0, 0, 0] == 1
     recorded = avstack.component_log()
-    assert recorded["action"].trajectory[-1][-1] == 1_300_000
+    assert recorded["command"].trajectory[-1][-1] == 1_300_000
     assert recorded["policy"].reasoning_text == "clear"
     avstack.reset(first)
     avstack(first)

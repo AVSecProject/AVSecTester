@@ -247,7 +247,7 @@ def load_configuration(
 def _attack_count(attacks: Mapping[str, Any]) -> None:
     if len(attacks) != 1:
         raise ValueError("An experiment requires exactly one attack. Comparing multiple attacks "
-                         "in one experiment is a future feature; to apply multiple effects "
+                         "in one experiment is a future feature; to apply multiple actions "
                          "together, implement a composite Attack.")
 
 

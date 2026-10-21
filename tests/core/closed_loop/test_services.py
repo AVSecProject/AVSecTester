@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from avsectester.attack import AttackSegment
-from avsectester.attack.runtime import SensorAttackEffect
+from avsectester.attack.runtime import SensorAttackAction
 from avsectester.closed_loop.datatypes import Control, Observation
 from avsectester.closed_loop.frame_data import FrameDataCache
 from avsectester.closed_loop.runner import RecordingPolicy
@@ -65,7 +65,7 @@ def test_sensor_data():
 
 
 def test_render():
-    class Fill(SensorAttackEffect):
+    class Fill(SensorAttackAction):
         sensor = "front"
 
         def apply(self, data, view):
@@ -75,7 +75,7 @@ def test_render():
     data = MemoryDataset()
     frame = data.frames("scene")[2]
     with ClosedLoopServices(data, MemorySimulator()) as services, services.session(3) as session:
-        rendered = session.render(RenderRequest("scene", frame, "front", effects=(Fill(),)))
+        rendered = session.render(RenderRequest("scene", frame, "front", actions=(Fill(),)))
         assert rendered.observation.frame == frame.position
         assert rendered.view.frame == frame.position
         assert np.all(rendered.observation.sensor_data["front"] == 200)
@@ -83,7 +83,7 @@ def test_render():
         assert rendered.view.native == {}
         plain = session.render(RenderRequest("scene", frame, "front"))
         np.testing.assert_array_equal(plain.view.data, rendered.view.data)
-        with pytest.raises(ValueError, match="camera"):
+        with pytest.raises(ValueError, match="Unknown memory sensor: missing"):
             session.render(RenderRequest("scene", frame, "missing"))
 
 

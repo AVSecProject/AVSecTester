@@ -21,8 +21,6 @@ from avsectester.closed_loop.datatypes import Detection
 if TYPE_CHECKING:
     from avsectester.closed_loop.simulator import SensorGeometry
 
-# Version 5 names the typed physical camera-geometry column sensor_geometry.
-SCHEMA_VERSION = 5
 _TAG = "_avsectester_type"
 _KEYS = "_avsectester_keys"
 _DATATYPE_NAMES = {
@@ -50,7 +48,7 @@ class StepRecord:
     components: dict[str, Any] = field(default_factory=dict)
     detections: Sequence[Detection] | None = None
     sensor_geometry: Mapping[str, SensorGeometry] = field(default_factory=dict)
-    effects: list[Any] = field(default_factory=list)
+    actions: list[Any] = field(default_factory=list)
     outputs: list[Any] = field(default_factory=list)
     telemetry: dict[str, Any] = field(default_factory=dict)
 
@@ -93,8 +91,7 @@ class RunLog:
         """Read completed parts, including those left by an interrupted writer.
 
         Only ``part-*.parquet`` files with a written footer are published. Pending
-        ``*.open`` files are ignored. Unrecognized schema versions raise instead
-        of being guessed. Without a native decoder, custom codec values remain
+        ``*.open`` files are ignored. Without a native decoder, custom codec values remain
         ordinary decoded data, allowing analysis without simulator dependencies.
         """
         root = Path(path)
@@ -434,9 +431,6 @@ def _arrow() -> tuple[Any, Any]:
 def _read_manifest(root: Path) -> dict[str, Any]:
     with (root / "manifest.json").open(encoding="utf-8") as handle:
         manifest = json.load(handle)
-    if manifest.get("schema_version") != SCHEMA_VERSION:
-        raise ValueError(f"Unsupported RunLog schema version: {manifest.get('schema_version')!r}; "
-                         f"expected {SCHEMA_VERSION}")
     return manifest
 
 
@@ -448,7 +442,7 @@ class _Encoder:
     def dynamic(self, value: Any) -> dict[str, Any]:
         """Typed alternatives for a declared arbitrary-value field.
 
-        Multiple named intervention outputs share a list column even when one is
+        Multiple named callback outputs share a list column even when one is
         a scalar TTC and another is a nested detection summary. Arrow has no
         Parquet union type, so store their alternatives as optional struct fields.
         Mapping entries and list members recurse through the same typed layout.
@@ -750,9 +744,7 @@ class _Writer:
         metadata = self.encoder.encode(log.metadata)
         self.payloads.publish()
         previous = self.manifest
-        self.manifest = {
-            "schema_version": SCHEMA_VERSION, "status": log.status, "metadata": metadata,
-        }
+        self.manifest = {"status": log.status, "metadata": metadata}
         try:
             self._publish_manifest()
         except BaseException:

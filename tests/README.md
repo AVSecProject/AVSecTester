@@ -18,7 +18,7 @@ tests/
   core/
     experiment/                    configuration, prepare/execute, persistence
     closed_loop/
-      test_runner.py               decision lifecycle and effects through run()
+      test_runner.py               decision lifecycle and actions through run()
       test_services.py             frame-data cache, isolated sessions and candidate operations
       test_simulator.py            shared public simulator lifecycle
       test_hooks.py                HookSet, Hook and Plugin

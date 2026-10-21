@@ -32,7 +32,7 @@ Directories belonging to treatments removed from the configuration are reported 
 One experiment contains exactly one attack. Its selected metadata is shared by every treatment. A
 comparison group is one selected segment and one seed. Treatments can enable that attack and change
 world or sensor environments. The framework does not compare independently selected attacks. To
-apply several effects together, write one composite Attack.
+apply several attack actions together, write one composite Attack.
 
 **Not yet implemented.** Comparing multiple attacks in one experiment on shared metadata. See
 [TODO](../development/TODO.md#multiple-attacks-on-shared-metadata).
@@ -67,8 +67,8 @@ geometry; absent geometry is unavailable evidence. Trajectory commands alone do 
 Units are m/s for speed and metres for distance. There is no universal attack-success threshold.
 
 TrajectoryDeviation compares true ego positions at equal decision indices. It does not align
-trajectories in time or measure road-relative error. StopImpact describes directional stopping
-outcomes; duration-aware stop events remain
+trajectories in time or measure road-relative error. StopImpact compares stopping in both
+directions; duration-aware stop events remain
 [planned](../development/TODO.md#driving-impact-metrics).
 
 DetectionMetrics transforms true actors with `StepRecord.physical_pre.ego` into the capture-time

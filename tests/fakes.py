@@ -22,12 +22,11 @@ from avsectester.closed_loop.avstack import AVStack
 from avsectester.closed_loop.datatypes import Control, Detection, Observation, WorldSnapshot
 from avsectester.closed_loop.simulator import SensorGeometry, SensorView, Simulator, SimulatorRuntime
 from avsectester.datasets import ActorState, Dataset, FrameData, FrameReference, ScenarioDescriptor, ScenarioStart
-from avsectester.geometry.cameras import PinholeCamera
+from avsectester.geometry.cameras import BODY_FROM_OPTICAL, PinholeCamera
 
 
 CAMERA = PinholeCamera(np.array([[50., 0., 50.], [0., 50., 40.], [0., 0., 1.]]), 100, 80)
-CAM_FROM_WORLD = np.array([[0., -1., 0., 0.], [0., 0., -1., 0.],
-                           [1., 0., 0., 0.], [0., 0., 0., 1.]])
+CAM_FROM_WORLD = np.linalg.inv(BODY_FROM_OPTICAL)
 
 
 def actor_state(position=(10., 0., 1.), speed=0.):
@@ -73,9 +72,11 @@ class MemorySimulator(Simulator):
     command_modes = frozenset({"actuator"})
     supported_world_settings = frozenset({"weather", "lighting", "fail", "interrupt"})
 
-    def __init__(self, time_step=.1, capture_ticks=0, resource_key=None, fail_position=None):
+    def __init__(self, time_step=.1, capture_ticks=0, resource_key=None, fail_position=None,
+                 extra_sensors=None):
         self.time_step, self.capture_ticks = time_step, capture_ticks
         self.resource_key, self.fail_position = resource_key, fail_position
+        self.extra_sensors = deepcopy(extra_sensors or {})
 
     @property
     def decision_time_step(self):
@@ -127,7 +128,7 @@ class MemorySimulatorRuntime(SimulatorRuntime):
         color = 20 + self.position
         rgb = np.full((80, 100, 3), color, np.uint8)
         return Observation(self.position * self.simulator.time_step, self.position,
-                           {"front": rgb}, ego_speed=self.speed)
+                           {"front": rgb, **deepcopy(self.simulator.extra_sensors)}, ego_speed=self.speed)
 
     def _state(self):
         return WorldSnapshot(self.position * self.simulator.time_step, self.position,
@@ -146,6 +147,10 @@ class MemorySimulatorRuntime(SimulatorRuntime):
         self.position += 1
 
     @property
+    def sensors(self):
+        return frozenset({"front", *self.simulator.extra_sensors})
+
+    @property
     def camera_sensors(self):
         return frozenset({"front"})
 
@@ -157,12 +162,22 @@ class MemorySimulatorRuntime(SimulatorRuntime):
         return SensorGeometry(sensor, CAMERA, transform)
 
     def sensor_view(self, sensor):
-        geometry = self.sensor_geometry(sensor)
+        if sensor not in self.sensors:
+            raise ValueError(f"Unknown memory sensor: {sensor}")
         observation, state = self.observe(), self.state()
-        return SensorView(sensor, observation.sensor_data[sensor], geometry.camera,
-                          geometry.cam_from_world,
+        data = observation.sensor_data[sensor]
+        body_from_world = np.eye(4)
+        body_from_world[0, 3] = -self.distance
+        camera, cam_from_world = None, None
+        if sensor in self.camera_sensors:
+            geometry = self.sensor_geometry(sensor)
+            camera, cam_from_world = geometry.camera, geometry.cam_from_world
+        elif not isinstance(data, np.ndarray):
+            data = getattr(data, "data", data)
+        return SensorView(sensor, data, camera, cam_from_world,
                           {key: value.box_pose() for key, value in state.actors.items()},
-                          state.ego.box_pose(), state.t, state.frame)
+                          state.ego.box_pose(), state.t, state.frame,
+                          sensor_from_world=body_from_world)
 
     def set_actor_state(self, actor_id, state):
         if actor_id not in self.actors:
@@ -332,7 +347,19 @@ class CarlaTransform:
         self.rotation = rotation or SimpleNamespace(pitch=0., yaw=0., roll=0.)
 
     def get_matrix(self):
+        pitch, yaw, roll = np.deg2rad([self.rotation.pitch, self.rotation.yaw, self.rotation.roll])
+        cosine_pitch, cosine_yaw, cosine_roll = np.cos([pitch, yaw, roll])
+        sine_pitch, sine_yaw, sine_roll = np.sin([pitch, yaw, roll])
         pose = np.eye(4)
+        pose[:3, :3] = [
+            [cosine_pitch * cosine_yaw,
+             cosine_yaw * sine_pitch * sine_roll - sine_yaw * cosine_roll,
+             -cosine_yaw * sine_pitch * cosine_roll - sine_yaw * sine_roll],
+            [cosine_pitch * sine_yaw,
+             sine_yaw * sine_pitch * sine_roll + cosine_yaw * cosine_roll,
+             -sine_yaw * sine_pitch * cosine_roll + cosine_yaw * sine_roll],
+            [sine_pitch, -cosine_pitch * sine_roll, cosine_pitch * cosine_roll],
+        ]
         pose[:3, 3] = (self.location.x, self.location.y, self.location.z)
         return pose
 
@@ -418,6 +445,19 @@ class CarlaSensorManager:
         return self.data[name].popleft()
 
 
+class CarlaLidarCapture:
+    """The native SDK buffer can be read as bytes but cannot be deep-copied."""
+
+    __module__ = "carla.libcarla"
+
+    def __init__(self, frame, timestamp):
+        self.frame, self.timestamp = frame, timestamp
+        self.raw_data = memoryview(np.array([[5., -2., .5, .8]], np.float32).tobytes())
+
+    def __deepcopy__(self, memo):
+        raise TypeError("Native CARLA capture cannot be deep-copied")
+
+
 class CarlaMobileActor:
     def __init__(self, client, specification):
         self.client = client
@@ -441,6 +481,16 @@ class CarlaMobileActor:
         self.sensors = {"front": SimpleNamespace(source_identifier="front", frame0=0, t0=0.,
             object=native_camera, imsize=(12, 16), P=np.array([[8., 0., 8., 0.],
              [0., 8., 6., 0.], [0., 0., 1., 0.]]))}
+        for sensor_config in specification.get("sensors", ()):
+            if sensor_config["type"] == "CarlaLidar":
+                def lidar_transform():
+                    location = self.actor.get_transform().location
+                    return CarlaTransform(CarlaVector(location.x + 1., location.y + 2., 1.5),
+                                          SimpleNamespace(pitch=0., yaw=90., roll=0.))
+
+                self.sensors["lidar"] = SimpleNamespace(source_identifier="lidar", frame0=0, t0=0.,
+                    object=SimpleNamespace(type_id="sensor.lidar.ray_cast", get_transform=lidar_transform))
+                self.sensor_data_manager.data["lidar"] = deque()
         client.world.vehicles.append(self)
 
     def initialize(self, timestamp, frame):
@@ -466,6 +516,12 @@ class CarlaMobileActor:
             rgb_image=np.full((12, 16, 3), frame % 255, np.uint8),
             calibration=SimpleNamespace(reference=SimpleNamespace(reference=self.reference)))
         self.sensor_data_manager.data["front"].append(payload)
+        if "lidar" in self.sensors:
+            lidar = self.sensors["lidar"]
+            payload = SimpleNamespace(frame=frame - lidar.frame0 + frame_offset,
+                timestamp=timestamp - lidar.t0,
+                data=CarlaLidarCapture(frame, timestamp), flipy=True, n_features=4)
+            self.sensor_data_manager.data["lidar"].append(payload)
 
     def destroy(self):
         self.actor.destroy()
@@ -578,6 +634,7 @@ class CarlaNativeBoundary:
     def install(self, monkeypatch):
         carla = ModuleType("carla")
         carla.Vector3D = carla.Location = CarlaVector
+        carla.LidarMeasurement = CarlaLidarCapture
         carla.Transform = CarlaTransform
         carla.Rotation = lambda **values: SimpleNamespace(**values)
         carla.TextureColor = carla.TextureFloatColor = CarlaTexture

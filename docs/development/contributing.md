@@ -26,7 +26,7 @@
 | Path | Responsibility |
 |---|---|
 | avsectester/datasets/ | Dataset records and CARLA/NuRec/nuScenes providers |
-| avsectester/attack/ | Attack, metadata, runtime/effects, placement and segment helper |
+| avsectester/attack/ | Attack, metadata, runtime/actions, placement and segment helper |
 | avsectester/attack/insertion/ | Reusable insertion rendering, visibility and harmonization |
 | avsectester/attack/optimization/ | Reusable offline optimization algorithms |
 | avsectester/attack/implemented_attacks/ | One folder per concrete Attack |
@@ -56,7 +56,7 @@
 | Metric | Metric.evaluate over ComparisonGroup; [Evaluation](../guides/evaluation.md#add-a-metric) |
 
 Every added component joins its family's template test, gets tests for behavior unique to it and
-is documented at the owning interface. Preserve effect timing, caller-owned resource cleanup and
+is documented at the owning interface. Preserve action timing, caller-owned resource cleanup and
 fresh per-run histories.
 
 ## Tests and CI
@@ -94,7 +94,7 @@ overridden entrypoint, also expose the existing detector model tree with the rea
 Compose entrypoint normally performs that model-path setup; overriding it bypasses the step.
 [CI](../../.github/workflows/ci.yml) covers core tests, avstack tests, lint and Parquet recording
 with only runlog-python312 running under Python 3.12. Live physics, rendering RPC/model
-compatibility and attack effectiveness need separate environment validation. Report missing
+compatibility and attack impact need separate environment validation. Report missing
 prerequisites as unverified, not passed.
 
 ## Documentation rules
@@ -127,5 +127,5 @@ not make every example non-runnable to avoid verification.
 
 ## Roadmap
 
-[TODO](TODO.md#todo) lists only incomplete capabilities. Scientific effect-level validation is
+[TODO](TODO.md#todo) lists only incomplete capabilities. Scientific attack-impact validation is
 distinct from workflow execution and offline regression tests.

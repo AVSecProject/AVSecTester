@@ -1,6 +1,6 @@
 """World settings and deterministic sensor-environment transforms.
 
-Sensor transforms run after attack sensor effects and before Vehicle I/O hooks. World settings
+Sensor transforms run after attack sensor actions and before Vehicle I/O hooks. World settings
 are validated against the simulator and passed to its reset without automatic conversion.
 """
 from __future__ import annotations

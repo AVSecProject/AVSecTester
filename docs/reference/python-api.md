@@ -15,7 +15,7 @@ data and boundary modules can be imported without simulator servers or weights.
 |---|---|
 | avsectester.experiment | Experiment, ExperimentConfiguration, PreparedExperiment and result types |
 | avsectester.experiment.config | load_configuration and treatment/configuration validation |
-| avsectester.attack | Attack, AttackSegment, OfflineContext, AttackRuntime and effects |
+| avsectester.attack | Attack, AttackSegment, OfflineContext, AttackRuntime and actions |
 | avsectester.attack.segments | split_segments |
 | avsectester.attack.placement | AttachedPlacement, WorldPlacement and Orientation |
 | avsectester.attack.implemented_attacks.<attack_folder> | Concrete Attack class exported by its folder |
@@ -85,7 +85,7 @@ position difference. roles maps names to stable actor-ID tuples. placement, sele
 selection_rank and user_data are optional and interpreted only by the metabuilder. The framework
 validates their structure without ranking or changing their meaning.
 
-AttackRuntime setup returns only world effects; step returns typed effects once per decision; stop
+AttackRuntime setup returns only world actions; step returns typed actions once per decision; stop
 closes the online lifecycle. All history and bound AVStack callbacks share one runtime instance.
 subscriptions supports observation and physical_state snapshots. OnlineContext gives physical
 frame/time and record_output but no live time-advancing resources.
@@ -93,8 +93,10 @@ frame/time and record_output but no live time-advancing resources.
 Attack.deployment_ticks(segment) declares physical setup needs. OfflineContext includes metadata,
 selection seed, resolved experiment/attack environment and the common DeploymentPlan.
 
-World effects receive SimulatorRuntime and an ExitStack for cleanup. Sensor effects receive the
-current sensor value and a SensorView containing the original capture. AVStack effects receive the
+World actions receive SimulatorRuntime and an ExitStack for cleanup. Sensor actions receive the
+current sensor value and a SensorView containing the original capture, for cameras, LiDAR, GNSS
+and IMU alike. AVStack actions can target localization.pre through command, excluding sensors.post;
+they receive the
 current value at their declared stage and OnlineContext. See [Runtime](runtime.md).
 
 ## Dataset API
@@ -129,9 +131,15 @@ compatibility.
 SensorGeometry contains sensor, typed camera and cam_from_world. camera_sensors declares eligible
 cameras; sensor_geometry(sensor) reads geometry without copying image payloads.
 
-SensorView contains sensor/data/camera/cam_from_world/actors/ego/time/frame, optional depth and
-native. Optical camera axes are x right, y down, z forward. Canonical world/actor axes are x
-forward, y left, z up. Camera project/unproject use Nx3 points and Nx2 pixel coordinates.
+SimulatorRuntime.sensors declares every sensor supported by sensor_view; camera_sensors is its
+camera subset. SensorView contains data, actors, ego, time, frame and native metadata. Only cameras
+provide camera and cam_from_world (optical x right, y down, z forward). sensor_from_world maps world
+points to the sensor body (x forward, y left, z up), including for cameras, and is None if its pose
+is unavailable. Optional depth belongs to camera views. Camera project/unproject use Nx3 points
+and Nx2 pixel coordinates. BODY_FROM_OPTICAL in geometry/cameras.py converts optical points to
+body axes. CARLA LiDAR views snapshot raw SDK bytes without changing their axes; the native wrapper
+retains its flipy option. See [CARLA LiDAR data](runtime.md#carla-lidar-data) for the byte layout,
+coordinate convention and a replacement action.
 
 ## Driving-system API
 
@@ -152,11 +160,11 @@ declare differentiable inputs and direction; services reject unavailable gradien
 
 ClosedLoopServices(dataset, simulator, driving_adapter=None, ...) exposes capabilities and
 session(seed, history="fresh"). Each session owns cleanup. Forward sensor-only scans can reuse one
-simulator runtime; effectful rendering and rollouts create independent worlds. Reservations span
+simulator runtime; rendering with attack actions and rollouts create independent worlds. Reservations span
 operation cleanup. Native handles do not escape closed operations in RenderResult views.
 
 SensorRequest selects scenario/frame/sensor_ids/environment. RenderRequest additionally selects
-sensor_id and world/sensor effects. AVStack effects require a rollout. CandidateRequest declares
+sensor_id and world/sensor actions. AVStack actions require a rollout. CandidateRequest declares
 segment, seed, decision_steps, environment, recording and optional Attack/artifacts/output_path. Its
 decision count must equal the segment interval. The simulator receives ScenarioStart, never the
 segment metadata.
@@ -176,18 +184,22 @@ avstack and requires explicit registration imports.
 normalize_environment, merge_environments and validate_environment manage the `{world, sensors}`
 shape. SensorEnvironment.apply(observation, position) receives absolute timeline position. Custom
 transforms implement apply(rgb, rng). read_camera_rgb returns None for an unknown explicit camera;
-it never substitutes another camera. read_camera_rgb/write_camera_rgb live in
+it never substitutes another camera. write_sensor_data replaces arrays directly or shallow-copies
+native wrappers and replaces their data, without inspecting array shapes or converting dtypes.
+chain_sensor_actions chooses write_camera_rgb only when SensorView.camera is present, keeping
+camera writes RGB uint8; other sensor writes use write_sensor_data.
+read_camera_rgb, write_camera_rgb and write_sensor_data live in
 closed_loop/datatypes.py and preserve sensor payload transport conventions.
 
 ## RunLog API
 
-RunLog holds metadata, steps, events, status and optional path. read loads published Parquet parts;
-schema version 5 is checked explicitly. read_table selects Parquet columns without loading all
+RunLog holds metadata, steps, events, status and optional path. read loads published Parquet parts.
+read_table selects Parquet columns without loading all
 payloads. Recorder captures independent in-memory snapshots, records steps/events, flushes closed
 parts, finishes or aborts. It does not close caller-owned simulators/models.
 
 StepRecord fields include raw/model observations, pre/post physical state, produced/executed
-commands, components, canonical detections, effects/receipts, outputs, typed sensor_geometry and
+commands, components, canonical detections, actions/receipts, outputs, typed sensor_geometry and
 telemetry. sensor_geometry maps declared camera names to lightweight typed SensorGeometry records,
 not SensorView images. physical_pre and physical_post are StepRecord fields, not fields on RunLog.
 Payload retention is controlled by RecordingPolicy. Nested native values require codecs; persisted
@@ -199,8 +211,8 @@ Metric.evaluate receives ComparisonGroup and returns per-treatment scalar dictio
 UnavailableMetricValue(reason, value_type="number" or "boolean") carries missing evidence without
 mutable metric state. MetricScalar is one scalar or unavailable value; FieldMeasurements maps field
 names to these values, and TreatmentMeasurements maps treatment names to FieldMeasurements.
-PairMetric evaluates TreatmentPair; TrajectoryDeviation is symmetric, while StopImpact returns both
-directional outcomes. Pair differences for single-run values are B minus A.
+PairMetric evaluates TreatmentPair; TrajectoryDeviation is symmetric. StopImpact reports stopping
+comparisons in both directions. Pair differences for single-run values are B minus A.
 
 report.evaluate(result, configuration) writes report.json, runs.csv and plots. Metric
 specifications, notes and errors remain in the report. EvaluationReport.format_summary() prints
@@ -292,18 +304,18 @@ avsectester.attack.implemented_attacks.patch_attack import PatchAttack`.
 | `ResultSubscription` | `kind: Literal['observation', 'physical_state']` |
 | `OnlineContext` | `step: int`<br>`stage: str`<br>`sim_time: float`<br>`frame: int`<br>`observation: Observation \| None = None`<br>`physical_state: WorldSnapshot \| None = None` |
 | `OnlineContext.record_output` | `record_output(name: str, value: Any) -> None` |
-| `AttackEffect` | Class; see methods below |
-| `WorldAttackEffect` | `setup_ticks: int = 0` |
-| `WorldAttackEffect.apply` | `apply(simulator_runtime: SimulatorRuntime, resources: ExitStack) -> None` |
-| `SensorAttackEffect` | `sensor: str` |
-| `SensorAttackEffect.apply` | `apply(data: Any, view: SensorView) -> Any` |
-| `SensorAttackEffect.render_metadata` | `render_metadata() -> Mapping[str, Any]` |
-| `AVStackAttackEffect` | `stage: str`<br>`apply: Callable[[Any, OnlineContext], Any]` |
+| `AttackAction` | Class; see methods below |
+| `WorldAttackAction` | `setup_ticks: int = 0` |
+| `WorldAttackAction.apply` | `apply(simulator_runtime: SimulatorRuntime, resources: ExitStack) -> None` |
+| `SensorAttackAction` | `sensor: str` |
+| `SensorAttackAction.apply` | `apply(data: Any, view: SensorView) -> Any` |
+| `SensorAttackAction.render_metadata` | `render_metadata() -> Mapping[str, Any]` |
+| `AVStackAttackAction` | `stage: str`<br>`apply: Callable[[Any, OnlineContext], Any]` |
 | `AttackRuntime` | `subscriptions: Sequence[ResultSubscription] = ()`<br>`setup_ticks: int = 0` |
-| `AttackRuntime.setup` | `setup(context: OnlineContext) -> Sequence[WorldAttackEffect]` |
-| `AttackRuntime.step` | `step(context: OnlineContext) -> Sequence[AttackEffect]` |
+| `AttackRuntime.setup` | `setup(context: OnlineContext) -> Sequence[WorldAttackAction]` |
+| `AttackRuntime.step` | `step(context: OnlineContext) -> Sequence[AttackAction]` |
 | `AttackRuntime.stop` | `stop(context: OnlineContext) -> None` |
-| `chain_sensor_effects` | `chain_sensor_effects(observation: Observation, simulator_runtime: Any, effects: Sequence[SensorAttackEffect], *, views: dict[str, SensorView] \| None = None, on_applied: Callable[[SensorAttackEffect], None] \| None = None) -> Observation` |
+| `chain_sensor_actions` | `chain_sensor_actions(observation: Observation, simulator_runtime: Any, actions: Sequence[SensorAttackAction], *, views: dict[str, SensorView] \| None = None, on_applied: Callable[[SensorAttackAction], None] \| None = None) -> Observation` |
 | `AttackDispatcher` | Class; see methods below |
 | `AttackDispatcher.__init__` | `__init__(attacks: Iterable[AttackRuntime] = (), *, observation_copy: Callable[[Observation], Observation] = deepcopy, output_recorder: Callable[[OnlineContext, str, Any], None] \| None = None) -> None` |
 | `AttackDispatcher.setup_ticks` | `setup_ticks: int` |
@@ -314,7 +326,7 @@ avsectester.attack.implemented_attacks.patch_attack import PatchAttack`.
 | `AttackDispatcher.setup` | `setup(context: OnlineContext, simulator_runtime: SimulatorRuntime) -> None` |
 | `AttackDispatcher.step` | `step(context: OnlineContext) -> None` |
 | `AttackDispatcher.record_end` | `record_end(context: OnlineContext) -> None` |
-| `AttackDispatcher.apply_sensor_effects` | `apply_sensor_effects(observation: Observation, simulator_runtime: Any) -> Observation` |
+| `AttackDispatcher.apply_sensor_actions` | `apply_sensor_actions(observation: Observation, simulator_runtime: Any) -> Observation` |
 | `AttackDispatcher.finish_decision` | `finish_decision() -> None` |
 | `AttackDispatcher.stop` | `stop() -> None` |
 
@@ -350,7 +362,7 @@ avsectester.attack.implemented_attacks.patch_attack import PatchAttack`.
 | `ActorState.box_transform` | `box_transform() -> np.ndarray` |
 | `ActorState.box_pose` | `box_pose() -> ActorPose` |
 | `FrameData` | `frame: FrameReference`<br>`actors: Mapping[str, ActorState] = field(default_factory=dict)`<br>`sensor_data: Mapping[str, SensorDataReference] = field(default_factory=dict)`<br>`provenance: Mapping[str, Any] = field(default_factory=dict)`<br>`ego: ActorState \| None = None` |
-| `ScenarioStart` | `kind: str`<br>`scenario_id: str`<br>`frame: FrameReference`<br>`payload: Mapping[str, Any]`<br>`schema_version: int = 1` |
+| `ScenarioStart` | `kind: str`<br>`scenario_id: str`<br>`frame: FrameReference`<br>`payload: Mapping[str, Any]` |
 | `Dataset` | Class; see methods below |
 | `Dataset.scenarios` | `scenarios() -> Iterator[ScenarioDescriptor]` |
 | `Dataset.frames` | `frames(scenario_id: str) -> Sequence[FrameReference]` |
@@ -422,6 +434,7 @@ avsectester.attack.implemented_attacks.patch_attack import PatchAttack`.
 | `Detection` | `position: tuple[float, float, float]`<br>`extent: tuple[float, float, float]`<br>`yaw: float`<br>`category: str \| None = None`<br>`score: float \| None = None` |
 | `validate_command_modes` | `validate_command_modes(command: Control, modes: frozenset[str] \| None) -> None` |
 | `read_camera_rgb` | `read_camera_rgb(observation: Observation, camera: str \| None = None) -> tuple[str, np.ndarray] \| None` |
+| `write_sensor_data` | `write_sensor_data(observation: Observation, sensor: str, data: Any) -> Observation` |
 | `write_camera_rgb` | `write_camera_rgb(observation: Observation, key: str, rgb: np.ndarray) -> Observation` |
 
 ### avsectester.closed_loop.simulator
@@ -432,7 +445,7 @@ avsectester.attack.implemented_attacks.patch_attack import PatchAttack`.
 | `can_deploy_at` | `can_deploy_at(position: int, deployment: DeploymentPlan, capture_ticks: int) -> bool` |
 | `ClockSnapshot` | `t: float`<br>`frame: int` |
 | `SensorGeometry` | `sensor: str`<br>`camera: Camera`<br>`cam_from_world: np.ndarray` |
-| `SensorView` | `sensor: str`<br>`data: Any`<br>`camera: Camera`<br>`cam_from_world: np.ndarray`<br>`actors: Mapping[str, ActorPose]`<br>`ego: ActorPose`<br>`time: float`<br>`frame: int`<br>`depth: np.ndarray \| None = None`<br>`native: Mapping[str, Any] = field(default_factory=dict)` |
+| `SensorView` | `sensor: str`<br>`data: Any`<br>`camera: Camera \| None`<br>`cam_from_world: np.ndarray \| None`<br>`actors: Mapping[str, ActorPose]`<br>`ego: ActorPose`<br>`time: float`<br>`frame: int`<br>`sensor_from_world: np.ndarray \| None = None`<br>`depth: np.ndarray \| None = None`<br>`native: Mapping[str, Any] = field(default_factory=dict)` |
 | `Simulator` | `dataset_kinds: tuple[str, ...] = ()`<br>`can_render: bool = False`<br>`supported_world_settings: frozenset[str] = frozenset()` |
 | `Simulator.create_runtime` | `create_runtime(seed: int \| None = None) -> SimulatorRuntime` |
 | `Simulator.decision_time_step` | `decision_time_step: float \| None` |
@@ -458,6 +471,7 @@ avsectester.attack.implemented_attacks.patch_attack import PatchAttack`.
 | `SimulatorRuntime.exclusive` | `exclusive() -> Iterator[None]` |
 | `SimulatorRuntime.clock` | `clock: ClockSnapshot` |
 | `SimulatorRuntime.state` | `state() -> WorldSnapshot` |
+| `SimulatorRuntime.sensors` | `sensors: frozenset[str]` |
 | `SimulatorRuntime.camera_sensors` | `camera_sensors: frozenset[str]` |
 | `SimulatorRuntime.sensor_geometry` | `sensor_geometry(sensor: str) -> SensorGeometry` |
 | `SimulatorRuntime.sensor_view` | `sensor_view(sensor: str) -> SensorView` |
@@ -540,7 +554,7 @@ avsectester.attack.implemented_attacks.patch_attack import PatchAttack`.
 |---|---|
 | `CandidateRequest` | `segment: AttackSegment`<br>`seed: int`<br>`decision_steps: int`<br>`environment: Mapping[str, Any]`<br>`recording: RecordingPolicy`<br>`attack: Any = None`<br>`artifacts: Any = None`<br>`output_path: str \| Path \| None = None` |
 | `SensorRequest` | `scenario_id: str`<br>`frame: FrameReference`<br>`sensor_ids: tuple[str, ...]`<br>`environment: Mapping[str, Any] = field(default_factory=dict)` |
-| `RenderRequest` | `scenario_id: str`<br>`frame: FrameReference`<br>`sensor_id: str`<br>`effects: Sequence[AttackEffect] = ()`<br>`environment: Mapping[str, Any] = field(default_factory=dict)` |
+| `RenderRequest` | `scenario_id: str`<br>`frame: FrameReference`<br>`sensor_id: str`<br>`actions: Sequence[AttackAction] = ()`<br>`environment: Mapping[str, Any] = field(default_factory=dict)` |
 | `SensorSample` | `frame: FrameReference`<br>`observation: Observation`<br>`provenance: Mapping[str, Any]` |
 | `RenderResult` | `frame: FrameReference`<br>`observation: Observation`<br>`view: SensorView`<br>`provenance: Mapping[str, Any]` |
 | `ComponentDescriptor` | `id: str`<br>`inputs: Mapping[str, str]`<br>`outputs: Mapping[str, str]`<br>`codecs: Mapping[str, str]`<br>`differentiable_inputs: tuple[str, ...] = ()` |
@@ -667,6 +681,7 @@ avsectester.attack.implemented_attacks.patch_attack import PatchAttack`.
 | `CarlaSimulatorRuntime.control_actor` | `control_actor(actor_id, control)` |
 | `CarlaSimulatorRuntime.set_actor_state` | `set_actor_state(actor_id, state)` |
 | `CarlaSimulatorRuntime.copy_observation` | `copy_observation(observation: Observation) -> Observation` |
+| `CarlaSimulatorRuntime.sensors` | `sensors: frozenset[str]` |
 | `CarlaSimulatorRuntime.camera_sensors` | `camera_sensors: frozenset[str]` |
 | `CarlaSimulatorRuntime.sensor_geometry` | `sensor_geometry(sensor: str) -> SensorGeometry` |
 | `CarlaSimulatorRuntime.sensor_view` | `sensor_view(sensor: str) -> SensorView` |
@@ -719,6 +734,7 @@ avsectester.attack.implemented_attacks.patch_attack import PatchAttack`.
 | `NuRecSimulatorRuntime.__init__` | `__init__(simulator: NuRecSimulator) -> None` |
 | `NuRecSimulatorRuntime.native` | `native: dict[str, Any]` |
 | `NuRecSimulatorRuntime.render_request` | `render_request(camera: str) -> CameraRenderRequest` |
+| `NuRecSimulatorRuntime.sensors` | `sensors: frozenset[str]` |
 | `NuRecSimulatorRuntime.camera_sensors` | `camera_sensors: frozenset[str]` |
 | `NuRecSimulatorRuntime.sensor_geometry` | `sensor_geometry(sensor: str) -> SensorGeometry` |
 | `NuRecSimulatorRuntime.sensor_view` | `sensor_view(sensor: str) -> SensorView` |
@@ -747,6 +763,7 @@ avsectester.attack.implemented_attacks.patch_attack import PatchAttack`.
 | `RecordedReplaySimulator.create_runtime` | `create_runtime(seed: int \| None = None) -> RecordedReplaySimulatorRuntime` |
 | `RecordedReplaySimulatorRuntime` | Class; see methods below |
 | `RecordedReplaySimulatorRuntime.__init__` | `__init__(simulator: RecordedReplaySimulator) -> None` |
+| `RecordedReplaySimulatorRuntime.sensors` | `sensors: frozenset[str]` |
 | `RecordedReplaySimulatorRuntime.camera_sensors` | `camera_sensors: frozenset[str]` |
 | `RecordedReplaySimulatorRuntime.sensor_geometry` | `sensor_geometry(sensor: str) -> SensorGeometry` |
 | `RecordedReplaySimulatorRuntime.sensor_view` | `sensor_view(sensor: str) -> SensorView` |
@@ -974,15 +991,15 @@ avsectester.attack.implemented_attacks.patch_attack import PatchAttack`.
 | `visibility_from_masks` | `visibility_from_masks(reference, visible, *, camera: str, image_bounds = None) -> Visibility \| None` |
 | `visibility_from_depth` | `visibility_from_depth(footprint, target_depth, scene_depth, *, camera: str, tolerance_m: float = 0.0002, image_bounds = None) -> Visibility \| None` |
 
-### avsectester.attack.insertion.effect
+### avsectester.attack.insertion.action
 
 | Public name | Signature or fields |
 |---|---|
-| `InsertionAttackEffect` | `sensor: str`<br>`insertion: Insertion`<br>`compositor: PatchCompositor \| None = None`<br>`rendered: bool = field(default=False, init=False)`<br>`reason: str = field(default='', init=False)` |
-| `InsertionAttackEffect.render_metadata` | `render_metadata()` |
-| `InsertionAttackEffect.resolve` | `resolve(view)` |
-| `InsertionAttackEffect.evidence` | `evidence(view, resolved = None)` |
-| `InsertionAttackEffect.apply` | `apply(data: Any, view)` |
+| `InsertionAttackAction` | `sensor: str`<br>`insertion: Insertion`<br>`compositor: PatchCompositor \| None = None`<br>`rendered: bool = field(default=False, init=False)`<br>`reason: str = field(default='', init=False)` |
+| `InsertionAttackAction.render_metadata` | `render_metadata()` |
+| `InsertionAttackAction.resolve` | `resolve(view)` |
+| `InsertionAttackAction.evidence` | `evidence(view, resolved = None)` |
+| `InsertionAttackAction.apply` | `apply(data: Any, view)` |
 
 ### avsectester.attack.optimization.interface
 
@@ -1072,7 +1089,7 @@ avsectester.attack.implemented_attacks.patch_attack import PatchAttack`.
 
 | Public name | Signature or fields |
 |---|---|
-| `StepRecord` | `step: int`<br>`raw_observation: Any = None`<br>`model_observation: Any = None`<br>`physical_pre: Any = None`<br>`physical_post: Any = None`<br>`produced_command: Any = None`<br>`executed_command: Any = None`<br>`components: dict[str, Any] = field(default_factory=dict)`<br>`detections: Sequence[Detection] \| None = None`<br>`sensor_geometry: Mapping[str, SensorGeometry] = field(default_factory=dict)`<br>`effects: list[Any] = field(default_factory=list)`<br>`outputs: list[Any] = field(default_factory=list)`<br>`telemetry: dict[str, Any] = field(default_factory=dict)` |
+| `StepRecord` | `step: int`<br>`raw_observation: Any = None`<br>`model_observation: Any = None`<br>`physical_pre: Any = None`<br>`physical_post: Any = None`<br>`produced_command: Any = None`<br>`executed_command: Any = None`<br>`components: dict[str, Any] = field(default_factory=dict)`<br>`detections: Sequence[Detection] \| None = None`<br>`sensor_geometry: Mapping[str, SensorGeometry] = field(default_factory=dict)`<br>`actions: list[Any] = field(default_factory=list)`<br>`outputs: list[Any] = field(default_factory=list)`<br>`telemetry: dict[str, Any] = field(default_factory=dict)` |
 | `EventRecord` | `kind: str`<br>`step: int \| None = None`<br>`data: dict[str, Any] = field(default_factory=dict)` |
 | `RunLog` | `metadata: dict[str, Any] = field(default_factory=dict)`<br>`steps: list[StepRecord] = field(default_factory=list)`<br>`events: list[EventRecord] = field(default_factory=list)`<br>`status: str = 'incomplete'`<br>`path: Path \| None = None` |
 | `RunLog.read` | `read(path: str \| Path, *, codecs: CodecRegistry \| None = None, load_payloads: bool = True) -> RunLog` |
@@ -1159,6 +1176,9 @@ avsectester.attack.implemented_attacks.patch_attack import PatchAttack`.
 | `rotation_to_carla` | `rotation_to_carla(rotation: ArrayLike) -> tuple[float, float, float]` |
 
 ### avsectester.geometry.cameras
+
+BODY_FROM_OPTICAL is a 4x4 ndarray mapping optical axes (x right, y down, z forward) to sensor-body
+axes (x forward, y left, z up). Left-multiply cam_from_world to obtain sensor_from_world.
 
 | Public name | Signature or fields |
 |---|---|

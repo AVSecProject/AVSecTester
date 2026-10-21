@@ -56,8 +56,8 @@ pinhole or f-theta camera model. It uses measured depth when available and actor
 supported occlusion estimates. Visibility and full-silhouette denominators remain attack-specific
 evidence; missing evidence is not assumed visible.
 
-Selection reads the clean view and insertion evidence without applying effects. Offline candidate
-rendering and online execution invoke the same InsertionAttackEffect. Undefined online visibility
+Selection reads the clean view and insertion evidence without applying actions. Offline candidate
+rendering and online execution invoke the same InsertionAttackAction. Undefined online visibility
 leaves the input unchanged and records that no rendering occurred. Image insertion changes only
 selected captured data. It does not create a collidable world object. nuScenes remains open-loop
 recorded playback.
@@ -83,7 +83,7 @@ WorldPlacement from avsectester.attack.placement; placement is a core data type.
 ```python
 import numpy as np
 from avsectester.attack.insertion import (
-    Harmonizer, Insertion, InsertionAttackEffect, PatchCompositor, PlaneAsset,
+    Harmonizer, Insertion, InsertionAttackAction, PatchCompositor, PlaneAsset,
 )
 from avsectester.attack.placement import WorldPlacement
 
@@ -93,12 +93,12 @@ class PreserveColors(Harmonizer):
 
 asset = PlaneAsset(np.full((16, 32, 4), 255, dtype=np.uint8), width_m=1.0, height_m=0.5)
 insertion = Insertion("banner", asset, WorldPlacement((10.0, 0.0, 1.5)))
-effect = InsertionAttackEffect(
+action = InsertionAttackAction(
     "front", insertion, PatchCompositor(PreserveColors(), soften=0.5))
-assert effect.insertion.asset.planes()[0].texture.shape == (16, 32, 4)
+assert action.insertion.asset.planes()[0].texture.shape == (16, 32, 4)
 ```
 
-Return such an effect from your AttackRuntime.step. Each effect resolves its placement from the
+Return such an action from your AttackRuntime.step. Each action resolves its placement from the
 simulator's canonical actor poses. For custom placement policies, calculate a WorldPlacement or
 AttachedPlacement in your metabuilder and save it in the segment; the simulator never receives
 attack metadata.
@@ -108,15 +108,15 @@ Visibility and compositing can also be used separately without starting an attac
 ```python
 from avsectester.attack.insertion import CuboidVisibilityEstimator, render_resolved
 
-# Requires a SensorView view and the configured effect above.
-resolved = effect.resolve(view)
+# Requires a SensorView view and the configured action above.
+resolved = action.resolve(view)
 evidence = CuboidVisibilityEstimator().estimate(
     resolved, view.camera, view.cam_from_world, occluders=view.actors,
     camera_name=view.sensor)
 if evidence.visibility is not None:
     composite, mask = render_resolved(
         view.data, view.camera, view.cam_from_world, resolved, evidence,
-        compositor=effect.compositor)
+        compositor=action.compositor)
 ```
 
 Use DepthVisibilityEstimator with aligned depth when available. Missing visibility is explicit and

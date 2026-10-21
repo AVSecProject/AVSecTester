@@ -35,8 +35,8 @@ lengths are attack parameters, not framework defaults. anchor and offset_m descr
 mounting rule without naming a placeholder actor. AttachedPlacement is created only when a real
 candidate host is selected.
 
-A CARLA physical panel is a WorldAttackEffect, deployed during the shared initialization window.
-NuRec uses the patch's SensorAttackEffect on the current capture. These are distinct physical
+A CARLA physical panel is a WorldAttackAction, deployed during the shared initialization window.
+NuRec uses the patch's SensorAttackAction on the current capture. These are distinct physical
 models: an image composite does not exert physical forces or alter other sensor modalities.
 
 The CARLA prop mesh has its blueprint's native dimensions. width_m and height_m configure the ideal
@@ -55,9 +55,9 @@ that explicit artifact through create_runtime. Selection is not rerun afterward.
 
 ## Evidence
 
-Record front raw/model_input images to inspect visible texture. Read effect receipts for actual
-deployment, artifact hashes for identity and driving/detection metrics for outcomes. Geometric
-visibility and successful execution alone do not guarantee attack effectiveness.
+Record front raw/model_input images to inspect visible texture. Read action receipts for actual
+deployment, artifact hashes for identity and driving/detection metrics for attack impacts. Geometric
+visibility and successful execution alone do not guarantee attack impact.
 
 ## Next steps
 
