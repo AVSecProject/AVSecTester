@@ -21,7 +21,7 @@ def test_camera_policy_with_real_detector():
     from nuscenes.nuscenes import NuScenes
     from PIL import Image
     from avsectester.closed_loop.avstacks.camera_forward_collision import CameraForwardCollisionAVStack
-    from avsectester.closed_loop.datatypes import Control, Observation
+    from avsectester.data_types import Control, Observation
 
     dataset = NuScenes(version="v1.0-trainval", dataroot=root, verbose=False)
     camera = dataset.get("sample_data", dataset.sample[0]["data"]["CAM_FRONT"])

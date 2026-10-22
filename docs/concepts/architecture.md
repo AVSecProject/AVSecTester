@@ -20,7 +20,7 @@ flowchart TD
     M --> E[Experiment.execute]
     E --> R[ClosedLoopRunner]
     R <--> W[SimulatorRuntime]
-    R <--> V[AVStack and VehicleIO]
+    R <--> V[AVStack and ObservationPipeline]
     T[AttackRuntime: world, sensor and AVStack actions] --> R
     R --> L[RunLog]
     L --> Q[Metrics, reports and visualization]
@@ -31,11 +31,11 @@ flowchart TD
 | Dataset | Immutable recorded data or a scenario recipe | Simulator state or generated frame caches |
 | Simulator | Reusable settings and capability declarations | An active world |
 | SimulatorRuntime | World, clock, actors, sensors and captured observations | Selection metadata or attack algorithms |
-| AVStack | Driving inference and per-run history, including VehicleIO | Simulator time |
+| AVStack | Driving inference and per-run history, including ObservationPipeline | Simulator time |
 | Attack | Parameters, input assets, selection and optional offline optimization | Mutable online history or stored artifacts |
 | AttackRuntime | One run's online attack state and actions, including optional optimization within the run | A time-advancing closed-loop service |
 | HookSet | Ordered hook handlers and their per-run lifecycle | Attack selection |
-| VehicleIO | sensors.post hooks, localization and observation hooks | Sensor environment transforms or physical state |
+| ObservationPipeline | sensors.post hooks, localization and observation hooks | sensor corruptions or physical state |
 | ClosedLoopServices | Isolated sensor, render, component and rollout operations | Active-run advancement |
 | ScenarioView | Scenario timeline, frame data, services and selection reasons | Dataset mutation |
 | Experiment | Preparation, treatments, resource scopes and persistence | Attack-specific selection criteria |
@@ -44,28 +44,75 @@ flowchart TD
 
 ## Code layout and dependencies
 
+Paths below are relative to avsectester/.
+
 | Path | Responsibility |
 |---|---|
-| attack/attack.py, runtime.py, segments.py, placement.py | Attack contracts and core data types |
-| attack/insertion/ | Framework insertion assets, placement resolution, visibility and attack compositing |
+| geometry/ | Camera models, rigid poses, box intersections, projection and mesh rays |
+| validation.py, type_paths.py, serialization.py | Shared validation, callable imports, JSON serialization and snapshots |
+| data_types.py | Shared observations, commands, world/actor states, detections and image targets |
+| datasets/ | Stateless recorded data and CARLA recipes |
+| maps/ | Semantic-map records and OpenDRIVE/clipgt readers |
+| rendering/ | Object surfaces, textures, harmonizers, sampling and composition |
+| closed_loop/simulators/base.py | Simulator/runtime contracts, capture lifecycle and sensor views |
+| closed_loop/avstacks/base.py, closed_loop/avstacks/driving_adapter.py | Driving-system contracts, ObservationPipeline and component/scorer bindings |
+| closed_loop/hooks.py, environment.py, sensor_corruptions.py | Hook lifecycle and explicit world/sensor environments |
+| closed_loop/simulators/ego_dynamics.py, closed_loop/simulators/object_composition.py | Ego integration and shared capture composition |
+| closed_loop/simulators/carla/ | CARLA simulator, scenarios, sensors, conversions and recipe replay |
+| closed_loop/simulators/nurec/ | NuRec simulator, renderer and depth implementation |
+| closed_loop/simulators/recorded.py | Recorded open-loop playback |
+| closed_loop/avstacks/ | Modular, Alpamayo, camera policy and driving-model scorers |
+| attack/attack.py, runtime.py, segments.py | Attack interfaces, metadata and action contracts |
+| attack/insertion/ | Insertion actions, assets, placement, visibility and compositing tools |
 | attack/optimization/ | Generic optimization contracts, PGD, NES, perturbations and SessionScorer |
-| attack/implemented_attacks/<class_name>/ | One concrete attack per snake_case class folder |
-| closed_loop/avstacks/ | Modular, Alpamayo, camera policy, native hooks, mmdet3d.py and scorers |
-| geometry/ | Shared camera, rigid-pose, plane-grid, box-projection and depth-visibility mathematics |
-| rendering/ | Simulator-independent object surfaces, sampling, harmonization and composition |
-| experiment/, runlog/, evaluation/ | Orchestration, recording and log-only analysis |
+| runlog/ | Parquet steps/events, payload shards and readers |
+| execution/ | Runner, closed-loop services, attack dispatch and frame cache |
+| implemented_attacks/<class_name>/ | One concrete Attack per snake_case class folder, with its own textures |
+| evaluation/ | Ordered log-group evaluation, metrics, report records, statistics and visualization |
+| experiment/ | Configuration, preparation, treatments and evaluation orchestration |
+| experiment/output_directory.py | Saved output layout, prepared artifacts/maps and result loading |
+| experiment/type_registry.py, configuration_summary.py | Constructor discovery and configuration descriptions |
+| experiment/result_evaluation.py | Order experiment logs, select metrics, attach selections and save reports/plots |
+| cli.py | Command-line entry points |
 
-The attack package has three layers: core contracts, framework tools and concrete attacks. Core
-imports neither tools nor concrete attacks. The insertion and optimization tools import core and
-shared framework interfaces, never each other or concrete attacks. Concrete attacks compose core and
-tools and never import one another. Patch-specific optimization orchestration belongs to
-implemented_attacks/patch_attack/, rather than the generic optimization tool. Each concrete attack
-exports only its Attack subclass from __init__.py. User attacks follow the same layout and
-class-name discovery rules as built-ins. See [Attacks](../guides/attacks.md).
+The closed_loop.simulators and closed_loop.avstacks package initializers export interfaces only.
+Import concrete implementations from their own simulator or driving-system modules.
 
-rendering/ never imports closed_loop/ or attack/. Both simulator and attack code may use it.
-Optional third-party dependencies load lazily inside functions. All plane texture sampling lives in
-rendering/surfaces.py; the existing offline optimization sampling remains a separate approximation.
+The framework separates attack core contracts, reusable tools and concrete attacks. Core imports
+neither tools nor concrete attacks. Insertion and optimization tools do not import each other or
+concrete attacks. Concrete attacks compose core and tools without importing one another. Patch
+optimization orchestration belongs to implemented_attacks/patch_attack/, outside generic tools.
+Each concrete attack exports only its Attack subclass from __init__.py. User attacks follow the
+same layout and class-name discovery as built-ins. See [Attacks](../guides/attacks.md).
+
+### Dependency layers
+
+Imports within AVSecTester point to the same layer or a lower layer. This applies to imports inside
+functions and TYPE_CHECKING blocks as well as module-level imports.
+
+| Layer | Modules | Allowed internal imports |
+|---|---|---|
+| L0 | geometry/, validation.py, type_paths.py, serialization.py | geometry may import validation; serialization may import type_paths |
+| L0′ | data_types.py | L0 |
+| L1 | datasets/, maps/, rendering/ | L0–L0′; datasets may import maps, maps must not import datasets |
+| L2 | closed_loop/, including simulator and AVStack implementations | L0–L1 |
+| L3 | attack/, runlog/ | L0–L2; attack may import runlog |
+| L4 | execution/ | L0–L3 |
+| L5 | implemented_attacks/ | L0–L4 |
+| L6 | evaluation/ | L0–L5 |
+| L7 | experiment/ | L0–L6 |
+| L8 | cli.py | L0–L7 |
+
+The sole upward reference is attack/attack.py importing ScenarioView and ClosedLoopServices from
+execution.services under TYPE_CHECKING for annotations. It performs no runtime import there.
+SerializationRegistry encodes and decodes JSON-compatible data and creates independent snapshots.
+It remains at L0 because L2 driving adapters also snapshot component outputs. String dataclass
+registrations identify classes without eagerly importing their owning modules.
+
+Third-party libraries are outside this internal dependency table. Keep optional SDK, model and GPU
+imports lazy within their implementations. rendering/ never imports closed_loop/ or attack/;
+both consumers may use it. Shared plane texture sampling lives in rendering/surfaces.py; existing
+offline optimization sampling remains a separate approximation.
 
 ## Attack workflow
 
@@ -101,8 +148,8 @@ fixed configured time step and interpolates recorded trajectories only within th
 `WorldSnapshot` records actual state. `Observation` contains model-visible sensors, localization and
 ego speed. Altering an observation does not move the world. `WorldAttackAction` changes the world
 explicitly; `SensorAttackAction` changes the current sensor sample; `AVStackAttackAction` replaces a
-value at a declared driving stage. The runner applies the sensors environment before VehicleIO;
-VehicleIO does not own those environment transforms. Produced and executed commands are logged
+value at a declared driving stage. The runner applies the sensors environment before ObservationPipeline;
+ObservationPipeline does not own those sensor corruptions. Produced and executed commands are logged
 separately.
 
 `WorldSnapshot.ego` and `actors` use `ActorState`: canonical world pose, velocity, category and
@@ -123,8 +170,10 @@ seed, decision count and deployment tick budget. Each attack checks the actor ID
 metadata when using them; a missing actor causes a recorded failure, not reselection.
 
 A service session can reuse one simulator runtime for forward sensor scans without attack actions.
-Rendering with actions and candidate rollouts use independent worlds. Resource reservations last
-until native cleanup completes. Shared immutable model weights are allowed only when an adapter can
+Rendering with actions and candidate rollouts use independent worlds. World claims last until
+native cleanup completes. SimulatorRuntime defines world_key and claim_world(owner); ownership is
+shared within the process for runtimes addressing the same world. exclusive() limits each runtime
+to one operation at a time. Shared immutable model weights are allowed only when an adapter can
 preserve independent histories.
 
 One experiment currently supports exactly one attack. Its treatment environments and
@@ -171,7 +220,7 @@ and log-based visualization use this path.
 | AVStack | A driving system accepting Observation and producing Control |
 | DrivingAdapter | Component and scorer bindings over an AVStack factory |
 | HookSet | Ordered stage hooks and their per-run lifecycle |
-| VehicleIO | sensors.post hooks, localization and observation hooks |
+| ObservationPipeline | sensors.post hooks, localization and observation hooks |
 | ClosedLoopServices | Isolated sensor, rendering, component and rollout operations |
 | ScenarioView | Selection view of timeline, frame data and services |
 | Environment | Explicit `{world, sensors}` settings |

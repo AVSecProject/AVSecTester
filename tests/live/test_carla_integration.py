@@ -8,7 +8,7 @@ import pytest
 @pytest.mark.carla
 def test_carla_configuration_prepares_executes_and_evaluates(request, tmp_path):
     from avsectester.experiment import Experiment, ExperimentResult, load_configuration
-    from avsectester.evaluation import evaluate
+    from avsectester.experiment import evaluate
 
     path = Path(request.config.getoption('--carla-config'))
     config = load_configuration(path)

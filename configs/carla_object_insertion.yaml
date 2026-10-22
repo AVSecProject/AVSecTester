@@ -40,14 +40,14 @@ dataset:
               type: avsectester.datasets.carla:PrescribedMotion
               options:
                 constant_control:
-                  type: avsectester.closed_loop.datatypes:Control
+                  type: avsectester.data_types:Control
                   options:
                     throttle: 0.35
             lead:
               type: avsectester.datasets.carla:PrescribedMotion
               options:
                 constant_control:
-                  type: avsectester.closed_loop.datatypes:Control
+                  type: avsectester.data_types:Control
                   options:
                     brake: 1.0
 simulator:
@@ -76,18 +76,18 @@ attacks:
       decision_steps: 20
       max_segments: 1
       assets:
-        type: avsectester.rendering.signs:SignAsset
+        type: avsectester.implemented_attacks.object_insertion_attack.assets:SignAsset
         options: {}
       sensor: camera-0-0
       placement:
-        type: avsectester.attack.placement:WorldPlacement
+        type: avsectester.attack.insertion.placement:WorldPlacement
         options:
           position_m:
           - 28.0
           - -3.0
           - 0.0
       orientation:
-        type: avsectester.attack.placement:Orientation
+        type: avsectester.attack.insertion.placement:Orientation
         options:
           mode: face_ego
       placement_relative_to_ego_origin: true

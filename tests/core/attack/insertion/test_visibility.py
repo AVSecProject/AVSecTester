@@ -3,14 +3,14 @@ import numpy as np
 import pytest
 from avsectester.attack.insertion import (CuboidVisibilityEstimator, DepthVisibilityEstimator,
     Insertion, PlaneAsset, resolve_insertion, visibility_from_depth, visibility_from_masks)
-from avsectester.attack.placement import Orientation, WorldPlacement
-from avsectester.geometry.poses import ActorPose
+from avsectester.attack.insertion.placement import Orientation, WorldPlacement
+from avsectester.data_types import ActorState
 from avsectester.rendering import ObjectAsset, PlacedObject, PlaneSurface
 
 
 def panel(position=(10, 0, 0)):
     return resolve_insertion(Insertion("panel", PlaneAsset(np.full((8, 8, 4), 255, np.uint8), 4, 2),
-        WorldPlacement(position), Orientation("fixed_world", (0, 0, 180))), {}, ActorPose(np.eye(4)))
+        WorldPlacement(position), Orientation("fixed_world", (0, 0, 180))), {}, ActorState(np.eye(4)))
 
 
 def test_visibility_from_masks_and_depth():
@@ -38,7 +38,7 @@ BLOCKER[:3, 3] = (5, 1, 0)
 
 @pytest.mark.parametrize("estimator,clear_options,blocked_options,source", [
     pytest.param(CuboidVisibilityEstimator, {"occluders": {}},
-                 {"occluders": {"blocker": ActorPose(BLOCKER, (1, 2, 4))}}, "actor_cuboids", id="cuboid"),
+                 {"occluders": {"blocker": ActorState(BLOCKER, extent=(1, 2, 4))}}, "actor_cuboids", id="cuboid"),
     pytest.param(DepthVisibilityEstimator,
                  {"scene_depth": np.full((80, 100), 100.), "depth_convention": "z"},
                  {"scene_depth": np.tile(np.r_[np.ones(50), np.full(50, 100.)], (80, 1)),
@@ -62,11 +62,13 @@ def test_estimate(estimator, clear_options, blocked_options, source, camera_pair
     behind = implementation.estimate(panel((-10, 0, 0)), camera, optical_from_world,
                                      camera_name="front", **clear_options)
     assert behind.visibility.fraction == 0
+    with pytest.raises(ValueError, match="max_reference_pixels must be a positive integer"):
+        estimator(max_reference_pixels=True)
 
 
 def test_cuboid_evidence(camera, optical_from_world):
     estimator = CuboidVisibilityEstimator()
-    actor = ActorPose(BLOCKER)
+    actor = ActorState(BLOCKER)
     clear = estimator.estimate(panel(), camera, optical_from_world, camera_name="front",
                                occluders={"unbounded": actor})
     assert clear.visibility.fraction == 1. and clear.ignored_occluders == ("unbounded",)

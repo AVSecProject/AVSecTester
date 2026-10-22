@@ -6,7 +6,6 @@ dataset:
     usdz_paths:
     - ../data/nurec/023b7fcc-671c-40e3-9bd2-c66b0b073fbc/023b7fcc-671c-40e3-9bd2-c66b0b073fbc.usdz
     camera_id: camera_front_wide_120fov
-    camera_alias: camera_front_wide_120fov
     time_step: 0.1
 simulator:
   type: NuRecSimulator
@@ -20,7 +19,7 @@ simulator:
         cameras:
         - camera_front_wide_120fov
     dynamics:
-      type: avsectester.closed_loop.simulators.nurec:TrajectoryFollower
+      type: avsectester.closed_loop.simulators.ego_dynamics:TrajectoryFollower
       options: {}
 avstack:
   type: AlpamayoAVStack
@@ -37,18 +36,18 @@ attacks:
       decision_steps: 20
       max_segments: 1
       assets:
-        type: avsectester.rendering.signs:SignAsset
+        type: avsectester.implemented_attacks.object_insertion_attack.assets:SignAsset
         options: {}
       sensor: camera_front_wide_120fov
       placement:
-        type: avsectester.attack.placement:WorldPlacement
+        type: avsectester.attack.insertion.placement:WorldPlacement
         options:
           position_m:
           - 28.0
           - -3.0
           - 0.0
       orientation:
-        type: avsectester.attack.placement:Orientation
+        type: avsectester.attack.insertion.placement:Orientation
         options:
           mode: face_ego
       placement_relative_to_ego_origin: true

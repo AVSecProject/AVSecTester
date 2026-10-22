@@ -1,0 +1,69 @@
+"""Experiments organize saved runs and select evaluation defaults without dataset reads."""
+
+import csv
+from dataclasses import replace
+
+import numpy as np
+
+from avsectester.closed_loop.avstacks.driving_adapter import DrivingAdapter
+from avsectester.evaluation import DrivingMetrics, EvaluationConfiguration, Metric, TrajectoryDeviation
+from avsectester.experiment import (
+    ExperimentConfiguration, ExperimentResult, RunsConfiguration, TreatmentConfiguration, evaluate,
+)
+from avsectester.experiment.models import SelectionDecision, TreatmentResult
+from avsectester.maps import ScenarioMap
+from avsectester.runlog import RunLog
+from tests.fakes import ConstantAVStack, MemoryDataset, MemorySimulator, MinimalAttack
+
+
+class MapMetric(Metric):
+    def evaluate(self, group):
+        return {name: {"boundaries": len(group.scenario_map.road_boundaries)} for name in group.runs}
+
+
+def test_evaluate(tmp_path, segment, make_log):
+    configuration = ExperimentConfiguration(
+        MemoryDataset(), MemorySimulator(), DrivingAdapter(lambda seed: ConstantAVStack()),
+        attacks={"attack": MinimalAttack()},
+        evaluation=EvaluationConfiguration((DrivingMetrics(), TrajectoryDeviation(), MapMetric())),
+        runs=RunsConfiguration(
+            treatments=tuple(TreatmentConfiguration(name, None if name == "clean" else "attack")
+                             for name in ("clean", "attacked", "rain")), output=tmp_path,
+        ),
+    )
+    runs = []
+    for index in (0, 1):
+        for seed in (0, 1):
+            for name in ("rain", "attacked", "clean"):
+                log = make_log([2., 2.], detections=None)
+                runs.append(TreatmentResult("attack", index, segment, name, seed, log))
+    runs[-3] = replace(runs[-3], log=RunLog(status="failed"), error="sensor disconnected")
+    selection = SelectionDecision("attack", "scene", "selected")
+    result = ExperimentResult(tuple(runs), selections=(selection,), scenario_maps={"scene": ScenarioMap(
+        road_boundaries=(np.array([[0., 1., 0.], [5., 1., 0.]]),),
+    )})
+    report = evaluate(result, configuration)
+    assert [(group["segment_index"], group["seed"]) for group in report.groups] == [
+        (0, 0), (0, 1), (1, 0), (1, 1),
+    ]
+    assert all(list(group["treatments"]) == ["clean", "attacked", "rain"] for group in report.groups)
+    assert report.groups[-1]["treatments"]["rain"]["error"] == "sensor disconnected"
+    assert report.groups[0]["treatments"]["clean"]["metrics"]["MapMetric.boundaries"] == 1
+    assert report.selections == [selection.as_dict()]
+    assert (tmp_path / "evaluation/report.json").is_file()
+    with (tmp_path / "evaluation/runs.csv").open() as stream:
+        rows = list(csv.DictReader(stream))
+    assert len(rows) == 12 and rows[-1]["status"] == "failed"
+    assert len(list((tmp_path / "evaluation/plots").glob("*.png"))) == 4
+
+    default_configuration = replace(
+        configuration, runs=replace(configuration.runs, output=None), evaluation=EvaluationConfiguration())
+    defaults = evaluate(result, default_configuration)
+    assert [metric["type"].split(":")[-1] for metric in defaults.metrics] == [
+        "DrivingMetrics", "TrajectoryDeviation",
+    ]
+    detected = replace(result, runs=tuple(replace(run, log=replace(
+        run.log, steps=[replace(step, detections=[]) for step in run.log.steps])) for run in result.runs))
+    assert [metric["type"].split(":")[-1] for metric in evaluate(detected, default_configuration).metrics] == [
+        "DrivingMetrics", "TrajectoryDeviation", "DetectionMetrics",
+    ]

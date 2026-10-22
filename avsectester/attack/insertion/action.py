@@ -1,17 +1,65 @@
-"""Portable insertion actions: the simulator supplies geometry, the attack composites pixels."""
+"""World-object and captured-image insertion actions for user attacks."""
 from __future__ import annotations
 
+from collections.abc import Mapping
+from contextlib import ExitStack
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 import logging
 
-from avsectester.attack.runtime import SensorAttackAction
+from avsectester.attack.runtime import SensorAttackAction, WorldAttackAction
 from .assets import Insertion, resolve_insertion
 from .compositor import PatchCompositor, render_resolved
 from .visibility import CuboidVisibilityEstimator, DepthVisibilityEstimator
 
 
+if TYPE_CHECKING:
+    import numpy as np
+    from avsectester.closed_loop.simulators.base import SimulatorRuntime
+    from avsectester.rendering import Harmonizer, ObjectAsset
+
+
 log = logging.getLogger(__name__)
+
+
+@dataclass
+class InsertObject(WorldAttackAction):
+    """Insert arbitrary textured geometry into all cameras through the simulator.
+
+    The object's origin is its bottom centre; ``world_from_object`` maps that
+    right-handed object frame (+X front, +Y left, +Z up) into the world.
+    Setup insertion is visible in the first capture; step insertion in the next.
+    """
+
+    object_id: str
+    asset: ObjectAsset
+    world_from_object: np.ndarray
+    harmonizer: Harmonizer | None = None
+
+    def __post_init__(self) -> None:
+        from avsectester.rendering import PlacedObject
+
+        placed = PlacedObject(self.object_id, self.asset, self.world_from_object, self.harmonizer)
+        self.world_from_object = placed.world_from_object
+
+    def apply(self, simulator_runtime: SimulatorRuntime, resources: ExitStack) -> None:
+        simulator_runtime.insert_object(self.object_id, self.asset, self.world_from_object,
+                                        harmonizer=self.harmonizer)
+
+        def remove_if_present() -> None:
+            try:
+                simulator_runtime.remove_object(self.object_id)
+            except KeyError:
+                # An explicit world action may have removed it before run cleanup.
+                pass
+
+        resources.callback(remove_if_present)
+
+    def receipt_details(self) -> Mapping[str, Any]:
+        return {
+            "object_id": self.object_id, "asset_category": self.asset.category,
+            "world_from_object": self.world_from_object.copy(),
+        }
 
 
 @dataclass

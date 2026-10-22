@@ -1,13 +1,12 @@
 """Stateless recorded-data and recipe providers; no simulator ownership.
-
 """
 
 from .base import (
-    ActorState, SensorDataReference, Dataset, FrameReference, FrameData, ScenarioDescriptor,
-    ScenarioStart, Unavailable,
+    SensorDataReference, Dataset, FrameReference, FrameData, ScenarioDescriptor,
+    ScenarioStart,
 )
 
 __all__ = [
-    "ActorState", "SensorDataReference", "Dataset", "FrameReference", "FrameData",
-    "ScenarioDescriptor", "ScenarioStart", "Unavailable",
+    "SensorDataReference", "Dataset", "FrameReference", "FrameData",
+    "ScenarioDescriptor", "ScenarioStart",
 ]

@@ -47,3 +47,28 @@ def test_placed_object():
         PlacedObject("sign", asset, invalid)
     with pytest.raises(TypeError, match="harmonizer must be callable"):
         PlacedObject("sign", asset, np.eye(4), harmonizer="classic")
+
+
+def test_from_panel():
+    face = np.full((32, 16, 4), [50, 80, 100, 255], np.uint8)
+    panel = ObjectAsset.from_panel(face, category="billboard", width_m=.9,
+                                   mount_height_m=1.5, post_count=1)
+    assert panel.category == "billboard" and len(panel.surfaces) == 2
+    np.testing.assert_allclose(panel.extent, [.06, .9, 3.3])
+    post, board = panel.surfaces
+    np.testing.assert_array_equal(board.texture, face)
+    np.testing.assert_allclose(board.corners, [[0., -.45, 3.3], [0., .45, 3.3],
+                                              [0., .45, 1.5], [0., -.45, 1.5]])
+    np.testing.assert_allclose(post.corners[:, 2], [2.4, 2.4, 0., 0.])
+    assert np.all(post.corners[:, 0] == -.03)
+    assert np.all(post.texture[..., 3] == 255)
+    assert np.all(post.texture[0, 8, :3] > post.texture[0, 0, :3])
+    np.testing.assert_array_equal(post.texture[0], post.texture[-1])
+    supported = ObjectAsset.from_panel(face, category="poster", width_m=2., post_count=3)
+    np.testing.assert_allclose([surface.corners[:, 1].mean() for surface in supported.surfaces[:-1]],
+                               [-.7, 0., .7])
+    face_only = ObjectAsset.from_panel(face, category="poster", width_m=1.2)
+    assert len(face_only.surfaces) == 1
+    np.testing.assert_allclose(face_only.extent, [0., 1.2, 2.4])
+    with pytest.raises(ValueError, match="nonnegative integer"):
+        ObjectAsset.from_panel(face, category="poster", width_m=1., post_count=-1)

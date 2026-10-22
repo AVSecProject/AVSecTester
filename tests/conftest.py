@@ -101,7 +101,7 @@ def native_observation(make_ego, make_detections):
     def make(frame=0, xyzs=((20., 0., 0.),), *, ego=None, mount=(0., 0., 0.)):
         import numpy as np
         from avstack.geometry import ReferenceFrame
-        from avsectester.closed_loop.datatypes import Observation
+        from avsectester.data_types import Observation
 
         ego = make_ego(t=frame * .05) if ego is None else ego
         sensor = ReferenceFrame(np.asarray(mount, dtype=float), np.quaternion(1), ego.as_reference())

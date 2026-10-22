@@ -14,7 +14,7 @@ from avsectester.experiment import (
     PreparedExperiment, load_configuration,
 )
 from avsectester.experiment.engine import validate_configuration_environment
-from avsectester.experiment.models import run_directory, runs_directory
+from avsectester.experiment.output_directory import run_directory, runs_directory
 
 app = typer.Typer(help="Adversarial security testing for AV systems.")
 _CONFIGURATION_ERRORS = (ValueError, TypeError, ImportError, AttributeError, FileNotFoundError,
@@ -44,7 +44,7 @@ def _configuration_error(error: Exception) -> NoReturn:
 
 
 def _evaluate_result(result: ExperimentResult, configuration: ExperimentConfiguration) -> Any:
-    from avsectester.evaluation.report import evaluate
+    from avsectester.experiment import evaluate
 
     return evaluate(result, configuration)
 

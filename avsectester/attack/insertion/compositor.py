@@ -1,7 +1,6 @@
 """Shared geometry-based insertion rendering and compositing.
 
 ``render_resolved`` uses the same sampling and visibility evidence as selection.
-The image-space warp primitive is also available for user-defined image operations.
 """
 
 from __future__ import annotations
@@ -13,23 +12,6 @@ from avsectester.geometry.cameras import Camera
 from avsectester.attack.insertion.types import VisibilityEvidence
 
 from avsectester.rendering import Harmonizer, blend_rgba, render_surfaces
-
-
-def warp_patch(frame_rgb: np.ndarray, dst_quad: np.ndarray, patch_rgba: np.ndarray):
-    """Perspective-warp ``patch_rgba`` onto the image quad ``dst_quad`` (4x2, TL,TR,BR,BL); composite.
-
-    Returns ``(composite_rgb uint8, mask uint8 HxW)`` — the patch alpha-blended over the frame.
-    """
-    import cv2
-
-    h, w = frame_rgb.shape[:2]
-    ph, pw = patch_rgba.shape[:2]
-    src = np.array([[0, 0], [pw, 0], [pw, ph], [0, ph]], dtype=np.float32)
-    homography = cv2.getPerspectiveTransform(src, np.asarray(dst_quad, dtype=np.float32))
-    warped = cv2.warpPerspective(patch_rgba, homography, (w, h), flags=cv2.INTER_LINEAR)
-    comp = blend_rgba(frame_rgb, warped, warped[:, :, 3] > 0)
-    mask = (warped[:, :, 3] > 127).astype(np.uint8) * 255
-    return comp.astype(np.uint8), mask
 
 
 class PatchCompositor:

@@ -34,8 +34,9 @@ world mapping to SimulatorRuntime.reset.
 ## Sensor processing order
 
 The simulator captures the world, sensor attack actions change the selected samples, the sensor
-environment transforms them, and VehicleIO applies sensor hooks, localization and observation hooks.
-Images retained as raw and model_input document this distinction. Sensor transforms never change
+environment applies corruptions, and ObservationPipeline applies sensor hooks, localization and
+observation hooks.
+Images retained as raw and model_input document this distinction. Sensor corruptions never change
 physical world state.
 
 Supply `camera` explicitly when observations contain multiple sensors. If omitted, the first
@@ -48,7 +49,7 @@ decision index and native simulator frame number are different quantities.
 
 ## Built-in image corruptions
 
-Built-in transforms live in `closed_loop/sensor_transforms.py`. Severity is in [0, 1].
+Built-in corruptions live in `closed_loop/sensor_corruptions.py`. Severity is in [0, 1].
 
 | Family | Classes |
 |---|---|
@@ -60,7 +61,7 @@ These are image-space approximations. Fog does not integrate metric scene depth,
 does not reproduce physical rainfall. World settings remain separate.
 
 `AlbumentationsCorruption` selects an Albumentations transform through its options and uses the
-augment extra. It is configured as a sensor transform, not a parallel augmentation pipeline. The
+augment extra. It is configured as a sensor corruption, not a parallel augmentation pipeline. The
 transform option is required and must name a supported transform; the recorded transform label
 includes that name. This complete configuration reuses the repository's small in-memory test
 components to demonstrate offline loading; it needs neither a simulator server nor model weights:
@@ -80,10 +81,15 @@ runs:
         camera: front
 ```
 
-## Custom sensor environments
+## Custom sensor corruptions
 
 Implement `apply(rgb, rng) -> rgb` or a callable with that signature. Return uint8 RGB with the same
-shape. Select the constructor using `type: package.module:Name` and `options`.
+shape. Select the constructor using `type: package.module:Name` and `options`. The name can refer to
+nested attributes, as in `package.module:Container.DimImage`, and must resolve to a callable through
+[import_type_path](../reference/python-api.md#avsectestertype_paths).
+
+Constructor filesystem parameters use Path or str | Path annotations; see
+[filesystem parameters](../reference/configuration.md#constructor-filesystem-parameters).
 
 <!-- runnable -->
 ```python

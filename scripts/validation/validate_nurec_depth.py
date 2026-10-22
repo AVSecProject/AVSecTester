@@ -19,7 +19,8 @@ import sys
 import numpy as np
 
 from avsectester.datasets.nurec import NuRecDataset
-from avsectester.geometry.cameras import camera_ray_mask, transform
+from avsectester.geometry.cameras import camera_ray_mask
+from avsectester.geometry.poses import transform
 from avsectester.geometry.mesh import MeshRaycaster
 
 
@@ -193,9 +194,8 @@ def road_depth_errors(dataset, scenario_id, frames, camera, rig_from_camera, poi
 
 def recorded_trajectory(dataset, scenario_id):
     """Every recorded camera-time rig pose, independently of the selected diagnostic frames."""
-    path = dataset.usdz_path(scenario_id)
-    timestamps = dataset.camera_timestamps(path)
-    origins = np.stack([dataset.ego_state(path, round(timestamp * 1e6)).pose[:3, 3]
+    timestamps = dataset.camera_timestamps(scenario_id)
+    origins = np.stack([dataset.ego_state(scenario_id, round(timestamp * 1e6)).pose[:3, 3]
                         for timestamp in timestamps])
     return timestamps, origins
 
@@ -226,13 +226,12 @@ def depth_overlays(dataset, scenario_id, frames, endpoint, output, edge_threshol
     from avsectester.evaluation.visualization import save_image
 
     renderer = NuRecRenderer(endpoint=endpoint, cameras=[dataset.camera_id])
-    simulator = NuRecSimulator({"dt": dataset.time_step,
-        "camera_aliases": {dataset.camera_id: dataset.camera_alias}}, renderer, depth="mesh")
+    simulator = NuRecSimulator({"dt": dataset.time_step}, renderer, depth="mesh")
     images = []
     with simulator.create_runtime() as runtime:
         for frame in frames:
             runtime.reset(dataset.scenario_start(scenario_id, frame))
-            view = runtime.sensor_view(dataset.camera_alias)
+            view = runtime.sensor_view(dataset.camera_id)
             depth = view.depth
             if depth is None:
                 raise ValueError("NuRec mesh mode did not provide depth")
@@ -295,7 +294,7 @@ def main(argv=None):
         report["road_height"] = road_heights(points, counts, raycaster, trajectory, arguments.road_radius_m)
         del raycaster
         gc.collect()
-        camera, rig_from_camera = dataset.camera_geometry(str(arguments.usdz))
+        camera, rig_from_camera = dataset.camera_geometry(scenario_id)
         report["camera_calibration"] = "Native USDZ camera parameters and extrinsic; no fitted coefficients"
         try:
             camera.unproject(np.array([[camera.width / 2, camera.height / 2]]))

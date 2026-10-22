@@ -1,9 +1,15 @@
-"""Tiny on-disk NuRec and nuScenes records shared by public dataset and attack tests."""
+"""Tiny datasets, recorded worlds and geometry shared by public API tests."""
 import json
+import math
 import zipfile
 
 import numpy as np
 import pytest
+
+from avsectester.attack import AttackSegment
+from avsectester.datasets import FrameReference
+from avsectester.data_types import ActorState, Control, WorldSnapshot
+from avsectester.runlog import RunLog, StepRecord
 
 
 @pytest.fixture
@@ -223,7 +229,7 @@ def nuscenes_dataset(nuscenes_root):
 
 @pytest.fixture
 def carla_dataset():
-    from avsectester.closed_loop.datatypes import Control
+    from avsectester.data_types import Control
     from avsectester.datasets.carla import CarlaDataset, CarlaRecipe, PrescribedMotion
 
     recipe = CarlaRecipe({"client": {"map_name": "Town03_Opt"}, "ego": {
@@ -236,3 +242,78 @@ def carla_dataset():
 def nurec_dataset(nurec_usdz_path):
     from avsectester.datasets.nurec import NuRecDataset
     return NuRecDataset([nurec_usdz_path], time_step=.1)
+
+
+@pytest.fixture
+def assert_camera_views_equal():
+    def compare(first, second):
+        assert first.sensor == second.sensor
+        assert first.native == second.native == {}
+        np.testing.assert_array_equal(first.data, second.data)
+        np.testing.assert_equal(first.depth, second.depth)
+        np.testing.assert_allclose(first.cam_from_world, second.cam_from_world)
+        np.testing.assert_allclose(first.sensor_from_world, second.sensor_from_world)
+        assert type(first.camera) is type(second.camera)
+        assert (first.camera.width, first.camera.height) == (second.camera.width, second.camera.height)
+        pixels = np.array([[.5, .5], [first.camera.width / 2, first.camera.height / 2]])
+        np.testing.assert_allclose(first.camera.unproject(pixels), second.camera.unproject(pixels))
+        assert first.actors.keys() == second.actors.keys()
+        for identity in first.actors:
+            np.testing.assert_allclose(first.actors[identity].box_transform(), second.actors[identity].box_transform())
+            assert first.actors[identity].extent == second.actors[identity].extent
+        np.testing.assert_allclose(first.ego.box_transform(), second.ego.box_transform())
+        assert first.ego.extent == second.ego.extent
+    return compare
+
+
+@pytest.fixture
+def make_object_in_front():
+    """An opaque rectangular face two metres along the selected camera's optical axis."""
+    from avsectester.rendering import ObjectAsset, PlaneSurface
+
+    def make(view):
+        surface = PlaneSurface(np.array([[0., -1., 2.], [0., 1., 2.],
+                                         [0., 1., 0.], [0., -1., 0.]]),
+                               np.full((8, 8, 4), [230, 10, 90, 255], np.uint8))
+        asset = ObjectAsset((surface,), (.1, 2., 2.), "stop_sign")
+        optical_from_object = np.array([[0., 1., 0., 0.], [0., 0., -1., 1.],
+                                        [-1., 0., 0., 2.], [0., 0., 0., 1.]])
+        return asset, np.linalg.inv(view.cam_from_world) @ optical_from_object
+    return make
+
+
+@pytest.fixture
+def make_actor():
+    def actor(x=0., y=0., *, z=0., yaw=0., extent=(4., 2., 2.), category="car"):
+        pose = np.eye(4)
+        cosine, sine = math.cos(yaw), math.sin(yaw)
+        pose[:2, :2] = [[cosine, -sine], [sine, cosine]]
+        pose[:3, 3] = [x, y, z]
+        return ActorState(pose, (0., 0., 0.), category, extent)
+    return actor
+
+
+
+@pytest.fixture
+def make_log(make_actor):
+    def log(velocities, brake=None, *, shift=0., actors=None, detections=()):
+        brake = [0.] * len(velocities) if brake is None else brake
+        steps = []
+        for index, (speed, braking) in enumerate(zip(velocities, brake)):
+            pre = WorldSnapshot(index * .1, index, ego_speed=speed,
+                                ego=make_actor(index + shift), actors=actors or {})
+            post = WorldSnapshot((index + 1) * .1, index + 1, ego_speed=speed,
+                                 ego=make_actor(index + 1 + shift), actors=actors or {})
+            steps.append(StepRecord(
+                index, physical_pre=pre, physical_post=post, detections=detections,
+                executed_command=Control(throttle=0. if braking else .5, brake=braking),
+            ))
+        return RunLog(metadata={"avstack_type": "ConstantAVStack"}, steps=steps, status="completed")
+    return log
+
+
+
+@pytest.fixture
+def segment():
+    return AttackSegment("scene", FrameReference("scene", 0, 0, 0.),
+                         FrameReference("scene", 3, 3, .3))

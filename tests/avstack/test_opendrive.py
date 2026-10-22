@@ -9,7 +9,8 @@ pytest.importorskip("carla")
 
 from avsectester.maps import ScenarioMap, read_opendrive
 from avsectester.datasets.carla import CarlaDataset, CarlaRecipe, PrescribedMotion
-from tests.fakes import actor_state, assert_scenario_map
+from tests.fakes import actor_state
+from tests.core.datasets.scenario_map_contract import assert_scenario_map
 
 
 FIXTURES = Path(__file__).parent / "fixtures"

@@ -40,14 +40,14 @@ dataset:
               type: avsectester.datasets.carla:PrescribedMotion
               options:
                 constant_control:
-                  type: avsectester.closed_loop.datatypes:Control
+                  type: avsectester.data_types:Control
                   options:
                     throttle: 0.35
             lead:
               type: avsectester.datasets.carla:PrescribedMotion
               options:
                 constant_control:
-                  type: avsectester.closed_loop.datatypes:Control
+                  type: avsectester.data_types:Control
                   options:
                     brake: 1.0
 simulator:
@@ -69,7 +69,7 @@ avstack:
     area_brake: 0.03
     throttle: 0.55
   bindings:
-    type: avsectester.closed_loop.driving_adapters:modular_driving_adapter
+    type: avsectester.closed_loop.avstacks.modular:modular_driving_adapter
     options:
       scorers:
       - mmdet.rpn_objectness
@@ -84,7 +84,7 @@ attacks:
       height_m: 0.7
       max_distance: 30.0
       optimization:
-        type: avsectester.attack.implemented_attacks.patch_attack.offline:PatchOptimization
+        type: avsectester.implemented_attacks.patch_attack.offline:PatchOptimization
         options:
           algorithm:
             type: avsectester.attack.optimization.whitebox:PGD
@@ -101,7 +101,7 @@ attacks:
       - lead
       hosts_per_window: 1
       assets:
-        type: avsectester.attack.insertion.assets:CheckerboardTexture
+        type: avsectester.rendering.textures:CheckerboardTexture
         options:
           size: 256
           cells: 8

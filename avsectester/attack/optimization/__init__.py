@@ -1,14 +1,14 @@
 """Public contracts, algorithms, parameterizations and session scoring for user attacks."""
 from .interface import (
     AdversarialSample, DataSource, GradientOptimizer, HideObject, OptimizationObjective,
-    OptimizationResult, Perturbation, Scorer, SpoofObject, TargetSpec,
+    OptimizationResult, Perturbation, Scorer, SpoofObject,
 )
 from .blackbox import NES
 from .scorers import SessionScorer
 
 __all__ = [
     "AdversarialSample", "DataSource", "GradientOptimizer", "HideObject", "OptimizationObjective",
-    "OptimizationResult", "Perturbation", "Scorer", "SpoofObject", "TargetSpec", "NES", "PGD",
+    "OptimizationResult", "Perturbation", "Scorer", "SpoofObject", "NES", "PGD",
     "LinfImage", "PatchPerturbation", "SessionScorer",
 ]
 

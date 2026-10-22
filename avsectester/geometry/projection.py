@@ -6,8 +6,8 @@ from itertools import product
 
 import numpy as np
 
-from .cameras import Camera, NEAR_Z, camera_ray_mask, transform
-from .poses import ActorPose
+from .cameras import Camera, FThetaCamera, NEAR_Z, camera_ray_mask
+from .poses import transform
 
 
 def _plane_samples(
@@ -59,6 +59,91 @@ def plane_sampling_grid(
             valid.reshape(1, camera.height, camera.width).astype(np.float32))
 
 
+def _ftheta_box_bounds(camera: FThetaCamera, corners: np.ndarray) -> np.ndarray:
+    """Conservative bounds of curved projected edges using interval arithmetic.
+
+    In normalized perspective coordinates an edge stays inside its endpoint rectangle.
+    Bound the radial polynomial and theta/tan(theta) separately on each short segment;
+    unlike corner sampling, this includes edge extrema between the vertices.
+    """
+    coefficients = np.asarray(camera.angle_to_pixeldist, dtype=float)
+    if not len(coefficients) or coefficients[0] != 0:
+        return np.array([[0., 0.], [camera.width, camera.height]])
+    edges = np.asarray([(first, first ^ axis) for first in range(8)
+                        for axis in (1, 2, 4) if first < first ^ axis])
+    fractions = np.linspace(0., 1., 9)
+    points = (corners[edges[:, :1]] * (1 - fractions[None, :, None])
+              + corners[edges[:, 1:]] * fractions[None, :, None])
+    normalized = points[:, :, :2] / points[:, :, 2:]
+    lower = np.minimum(normalized[:, :-1], normalized[:, 1:]).reshape(-1, 2)
+    upper = np.maximum(normalized[:, :-1], normalized[:, 1:]).reshape(-1, 2)
+    nearest = np.maximum(np.maximum(lower, -upper), 0.)
+    radius_min = np.linalg.norm(nearest, axis=1)
+    radius_max = np.linalg.norm(np.maximum(np.abs(lower), np.abs(upper)), axis=1)
+    angles = np.column_stack((np.arctan(radius_min), np.arctan(radius_max)))
+    quotient = coefficients[1:]
+    values = np.polynomial.polynomial.polyval(angles, quotient)
+    polynomial_min, polynomial_max = values.min(axis=1), values.max(axis=1)
+    roots = np.polynomial.polynomial.polyroots(np.polynomial.polynomial.polyder(quotient))
+    for root in roots:
+        if abs(root.imag) > 1e-12:
+            continue
+        inside = (angles[:, 0] <= root.real) & (root.real <= angles[:, 1])
+        value = np.polynomial.polynomial.polyval(root.real, quotient)
+        polynomial_min = np.where(inside, np.minimum(polynomial_min, value), polynomial_min)
+        polynomial_max = np.where(inside, np.maximum(polynomial_max, value), polynomial_max)
+    factors = np.divide(angles, np.tan(angles), out=np.ones_like(angles), where=angles != 0)
+    products = np.stack((polynomial_min * factors[:, 0], polynomial_min * factors[:, 1],
+                         polynomial_max * factors[:, 0], polynomial_max * factors[:, 1]), axis=1)
+    scale_min, scale_max = products.min(axis=1), products.max(axis=1)
+    c, d, e = camera.linear_cde
+    affine = np.array([[c, d], [e, 1.]])
+    offset_min = lower @ np.maximum(affine, 0).T + upper @ np.minimum(affine, 0).T
+    offset_max = upper @ np.maximum(affine, 0).T + lower @ np.minimum(affine, 0).T
+    screen = np.stack((offset_min * scale_min[:, None], offset_min * scale_max[:, None],
+                       offset_max * scale_min[:, None], offset_max * scale_max[:, None]))
+    principal = np.array([camera.cx, camera.cy])
+    return np.array([screen.min(axis=(0, 1)) + principal, screen.max(axis=(0, 1)) + principal])
+
+
+def _ftheta_partial_box_bounds(camera: FThetaCamera, corners: np.ndarray) -> np.ndarray:
+    """Bound forward projections of a box crossing the camera plane.
+
+    A lateral rectangle bounds ray azimuths even as optical z approaches zero.
+    Polynomial extrema bound the radial distance independently of that azimuth;
+    no division by near-zero optical z or full-image ray query is needed.
+    """
+    lower, upper = corners[:, :2].min(axis=0), corners[:, :2].max(axis=0)
+    nearest = np.maximum(np.maximum(lower, -upper), 0.)
+    radius_min = np.linalg.norm(nearest)
+    if radius_min == 0:
+        return np.array([[0., 0.], [camera.width, camera.height]])
+    lateral = [(x, y) for x in (lower[0], upper[0]) for y in (lower[1], upper[1])]
+    if lower[0] <= 0 <= upper[0]:
+        lateral.extend([(0., lower[1]), (0., upper[1])])
+    if lower[1] <= 0 <= upper[1]:
+        lateral.extend([(lower[0], 0.), (upper[0], 0.)])
+    directions = np.asarray(lateral)
+    directions /= np.linalg.norm(directions, axis=1, keepdims=True)
+    angle_min = np.arctan2(radius_min, corners[:, 2].max())
+    angles = [angle_min, np.pi / 2]
+    coefficients = np.asarray(camera.angle_to_pixeldist, dtype=float)
+    roots = np.polynomial.polynomial.polyroots(np.polynomial.polynomial.polyder(coefficients))
+    angles.extend(root.real for root in roots if abs(root.imag) <= 1e-12
+                  and angle_min <= root.real <= np.pi / 2)
+    radial = np.polynomial.polynomial.polyval(angles, coefficients)
+    radial_min, radial_max = radial.min(), radial.max()
+    direction_min, direction_max = directions.min(axis=0), directions.max(axis=0)
+    products = np.array([direction_min * radial_min, direction_min * radial_max,
+                         direction_max * radial_min, direction_max * radial_max])
+    offset_min, offset_max = products.min(axis=0), products.max(axis=0)
+    c, d, e = camera.linear_cde
+    affine = np.array([[c, d], [e, 1.]])
+    screen_min = offset_min @ np.maximum(affine, 0).T + offset_max @ np.minimum(affine, 0).T
+    screen_max = offset_max @ np.maximum(affine, 0).T + offset_min @ np.minimum(affine, 0).T
+    return np.array([screen_min, screen_max]) + [camera.cx, camera.cy]
+
+
 def project_box(
     camera: Camera, cam_from_world: np.ndarray, world_from_box: np.ndarray,
     extent: tuple[float, float, float] | np.ndarray,
@@ -66,7 +151,8 @@ def project_box(
     """Project a box-centred rigid pose and full dimensions to an image-clipped rectangle.
 
     Box edges crossing the camera plane are clipped to a small positive optical depth.
-    A box entirely behind that plane or outside the image returns None.
+    F-theta bounds include the curved edge projections conservatively. A box entirely
+    behind that plane or outside the image returns None.
     """
     dimensions = np.asarray(extent, dtype=float)
     if dimensions.shape != (3,) or not np.isfinite(dimensions).all() or (dimensions < 0).any():
@@ -87,7 +173,11 @@ def project_box(
             a, b = camera_points[first], camera_points[second]
             fraction = (NEAR_Z - a[2]) / (b[2] - a[2])
             clipped.append(a + fraction * (b - a))
-    pixels = np.asarray(camera.project(np.asarray(clipped)))
+    if isinstance(camera, FThetaCamera):
+        pixels = (_ftheta_box_bounds(camera, camera_points) if front.all()
+                  else _ftheta_partial_box_bounds(camera, np.asarray(clipped)))
+    else:
+        pixels = np.asarray(camera.project(np.asarray(clipped)))
     if pixels.ndim != 2 or pixels.shape[1] != 2 or not np.isfinite(pixels).all():
         raise ValueError("Box has an undefined camera projection")
     lower = np.maximum(pixels.min(axis=0), (0, 0))
@@ -132,30 +222,3 @@ def visible_plane_mask(
     result = np.zeros((camera.height, camera.width), dtype=bool)
     result[y0:y1, x0:x1] = visible.reshape(y1 - y0, x1 - x0)
     return result
-
-
-def box_ray_distances(
-    actor: ActorPose, rays: np.ndarray, world_from_cam: np.ndarray,
-) -> np.ndarray:
-    """Ray/slab intersection with an oriented box, in metres along camera unit rays."""
-    if actor.extent is None:
-        raise ValueError("Actor bounding-box extent is unavailable for ray intersections")
-    if any(v <= 0 for v in actor.extent):
-        return np.full(len(rays), np.inf)
-    box_from_cam = np.linalg.inv(actor.transform) @ world_from_cam
-    origin = box_from_cam[:3, 3]
-    directions = rays @ box_from_cam[:3, :3].T
-    half = np.asarray(actor.extent) / 2
-    parallel = np.abs(directions) < 1e-12
-    near = np.divide(
-        -half - origin, directions, out=np.full_like(directions, -np.inf), where=~parallel
-    )
-    far = np.divide(
-        half - origin, directions, out=np.full_like(directions, np.inf), where=~parallel
-    )
-    lower, upper = np.minimum(near, far), np.maximum(near, far)
-    lower[parallel], upper[parallel] = -np.inf, np.inf
-    miss = np.any(parallel & (np.abs(origin) > half), axis=1)
-    entry, leave = lower.max(axis=1), upper.min(axis=1)
-    hit = np.where(entry > NEAR_Z, entry, leave)
-    return np.where(~miss & (leave >= entry) & (hit > NEAR_Z), hit, np.inf)

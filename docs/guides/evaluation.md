@@ -17,8 +17,7 @@ Custom metrics can use it without reopening the dataset. ExperimentResult.load r
 the output's maps/ directory alongside run records; see [Semantic maps](scenarios.md#semantic-maps).
 
 ```python
-from avsectester.experiment import ExperimentResult, load_configuration
-from avsectester.evaluation.report import evaluate
+from avsectester.experiment import ExperimentResult, evaluate, load_configuration
 
 # Requires saved preparation and run logs under configuration.runs.output.
 configuration = load_configuration("configs/carla_phantom.yaml")
@@ -49,6 +48,11 @@ explanation; it does not become a zero difference.
 TrajectoryDeviation computes one symmetric distance result per pair. StopImpact evaluates both
 A-to-B and B-to-A directions. These are already comparison metrics and have no additional
 difference.
+
+RunGroup is the standalone evaluator input. Its ordered logs mapping retains every treatment,
+including failed, cancelled and incomplete logs, with optional errors and scenario_map. The metrics
+receive a ComparisonGroup containing only completed logs. evaluate_groups preserves other statuses
+and their reasons in the report and keeps treatment comparisons in the supplied log order.
 
 ## Built-in metrics
 
@@ -116,6 +120,11 @@ terminal table shows available primary fields: final_speed, brake_steps, stopped
 precision and recall. It also prints major metric difference matrices, notes and output location.
 The JSON and CSV retain all metric fields.
 
+EvaluationReport.summarize() recalculates treatment and pair summaries from report groups.
+record_error(source, error, **context) records an error with its source and contextual fields.
+Experiment evaluation delegates metric calculation to evaluate_groups, then attaches selections
+and handles experiment-specific report and plot files.
+
 ## Add a metric
 
 Implement Metric.evaluate(group), returning treatment names mapped to field/value mappings. Values
@@ -156,15 +165,19 @@ record_run exports saved frames, filmstrip creates a grid and save_sequence expo
 animation. Caller-supplied view functions receive StepRecord. None of these functions drives a
 world.
 
-## Offline evaluation example
+## Evaluate existing RunLog objects
+
+Use RunGroup and evaluate_groups directly when RunLog objects are already available. This needs no
+Experiment, configuration or dataset. Pass metrics explicitly; the returned report is summarized in
+memory. Save it with report.save(directory) when needed. The following example uses a tiny log:
 
 <!-- runnable -->
 ```python
 import numpy as np
 from avsectester.attack import AttackSegment
-from avsectester.datasets import ActorState, FrameReference
-from avsectester.closed_loop.datatypes import Control, WorldSnapshot
-from avsectester.evaluation.metric import ComparisonGroup, DrivingMetrics
+from avsectester.datasets import FrameReference
+from avsectester.data_types import ActorState, Control, WorldSnapshot
+from avsectester.evaluation import DrivingMetrics, RunGroup, evaluate_groups
 from avsectester.runlog import RunLog, StepRecord
 
 pose = np.eye(4)
@@ -174,9 +187,11 @@ log = RunLog(steps=[StepRecord(0, physical_pre=state, physical_post=state,
                              executed_command=Control())], status="completed")
 start = FrameReference("road", 0, 0, 0.0)
 stop = FrameReference("road", 1, 1, 0.1)
-group = ComparisonGroup("sample", AttackSegment("road", start, stop), 0, {"clean": log})
-values = DrivingMetrics().evaluate(group)
-assert values["clean"]["final_speed"] == 1.0
+group = RunGroup("sample", 0, AttackSegment("road", start, stop), 0, {"clean": log})
+report = evaluate_groups((group,), (DrivingMetrics(),), notes=("Existing in-memory log",))
+assert len(report.groups) == 1
+assert report.notes == ["Existing in-memory log"]
+print(report.format_summary())
 ```
 
 ## Next steps

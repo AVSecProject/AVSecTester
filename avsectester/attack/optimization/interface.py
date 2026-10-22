@@ -34,15 +34,9 @@ from typing import Any
 
 import numpy as np
 
+import avsectester.data_types as data_types
+
 Tensor = Any  # torch.Tensor at runtime; kept abstract so the contract imports without torch
-
-
-@dataclass
-class TargetSpec:
-    """The object to attack, in image-space pixels (``box`` = xyxy) plus an optional class label."""
-
-    box: tuple[float, float, float, float]
-    label: str | None = None
 
 
 @dataclass
@@ -51,7 +45,7 @@ class AdversarialSample:
     sampling grid and visibility mask — and is empty for a whole-image perturbation."""
 
     x: Tensor  # (3, H, W) in [0, 1]
-    target: TargetSpec
+    target: data_types.TargetSpec
     context: dict = field(default_factory=dict)
 
 
@@ -98,7 +92,7 @@ class Scorer(ABC):
     differentiable: bool = True
 
     @abstractmethod
-    def target_score(self, image: Tensor, target: TargetSpec) -> Tensor:
+    def target_score(self, image: Tensor, target: data_types.TargetSpec) -> Tensor:
         """Confidence in [0, 1] that ``target`` is detected in ``image`` (scalar tensor)."""
 
 

@@ -7,11 +7,12 @@ from dataclasses import replace
 from itertools import chain
 import numpy as np
 
-from avsectester.geometry.poses import ActorPose
+from avsectester.data_types import ActorState
+from avsectester.validation import require_positive_integer
 from .assets import ResolvedInsertion
 from avsectester.geometry.cameras import Camera, camera_ray_mask
 from avsectester.geometry.projection import visible_plane_mask
-from avsectester.geometry.projection import box_ray_distances
+from avsectester.geometry.boxes import box_ray_distances
 from avsectester.rendering.surfaces import prepare_surface, rasterize
 from avsectester.rendering import PlacedObject
 from .types import Visibility, VisibilityEvidence
@@ -21,8 +22,7 @@ class _VisibilityEstimator:
     def __init__(self, *, tolerance_m: float = 0.002, max_reference_pixels: int = 4_000_000):
         if not np.isfinite(tolerance_m) or tolerance_m < 0:
             raise ValueError("tolerance_m must be finite and nonnegative")
-        if not isinstance(max_reference_pixels, int) or max_reference_pixels <= 0:
-            raise ValueError("max_reference_pixels must be a positive integer")
+        require_positive_integer(max_reference_pixels, "max_reference_pixels")
         self.tolerance_m = tolerance_m
         self.max_reference_pixels = max_reference_pixels
 
@@ -111,7 +111,7 @@ class CuboidVisibilityEstimator(_VisibilityEstimator):
         camera: Camera,
         cam_from_world: np.ndarray,
         *,
-        occluders: Mapping[str, ActorPose],
+        occluders: Mapping[str, ActorState],
         camera_name: str,
         other_insertions: Sequence[ResolvedInsertion] = (),
         world_objects: Sequence[PlacedObject] = (),
@@ -132,7 +132,7 @@ class CuboidVisibilityEstimator(_VisibilityEstimator):
             if actor.extent is None:
                 continue
             blocking_depth = np.minimum(
-                blocking_depth, box_ray_distances(actor, rays, world_from_cam)
+                blocking_depth, box_ray_distances(actor.box_transform(), actor.extent, rays, world_from_cam)
             )
         blocking_depth = np.minimum(blocking_depth, _surface_occlusion_distances(
             subject.id, other_insertions, world_objects, camera, cam_from_world, rays))

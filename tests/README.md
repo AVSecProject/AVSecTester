@@ -16,28 +16,46 @@ tests/
   fakes.py                         shared memory world and native dependency boundaries
   conftest.py                      live opt-in and native observation fixtures
   core/
-    experiment/                    configuration, prepare/execute, persistence
-    closed_loop/
+    experiment/                    configuration, type discovery, output, execution and evaluation
+    execution/
       test_runner.py               decision lifecycle and actions through run()
       test_services.py             frame-data cache, isolated sessions and candidate operations
-      test_simulator.py            shared public simulator lifecycle
+      test_frame_data_cache.py     generated-frame cache identity and publication
+    closed_loop/
       test_hooks.py                HookSet, Hook and Plugin
-      test_environment.py          environment validation and deterministic transforms
-      test_datatypes.py            detection and camera RGB numerics
-      simulators/                  CARLA, NuRec and recorded replay contract template
-      avstacks/                    AVStack/DrivingAdapter template and model scorer bindings
+      test_environment.py          environment validation and deterministic sensor corruptions
+      simulators/
+        test_base.py               shared public simulator lifecycle
+        test_ego_dynamics.py       actuator and trajectory integration
+        test_simulators.py         shared simulator contract
+        carla/                     native lifecycle, sensor capture and conversions
+        nurec/                     runtime and renderer behavior
+        test_recorded.py           replay aliases and terminal support
+      avstacks/
+        test_base.py               driving interface and observation pipeline
+        test_avstacks.py           AVStack/DrivingAdapter component template
+        test_scorers.py            model scorer bindings
+        test_alpamayo.py           model ownership and cleanup
+        test_camera_forward_collision.py   image detection policy
     datasets/                      dataset contract template and interpolation
+    maps/                          semantic records and clipgt map reader
     attack/
-      test_attack.py               Attack, segments and placement specifications
-      implemented_attacks/         one shared attack lifecycle template and unique behaviors
+      test_attack.py               Attack and AttackSegment contracts
+      test_segments.py             eligible decision-window splitting
       optimization/                PGD/NES objective-decrease template
       insertion/                   geometry, alpha/depth composition, visibility and textures
+    implemented_attacks/           shared attack lifecycle and concrete attack behaviors
     geometry/                      pose, camera, sampling-grid and visibility numerical tests
-    runlog/                        Recorder/RunLog and codec registry public APIs
-    evaluation/                    metric template, evaluation reports and plots
+    rendering/                     object assets, textures, surfaces and compositing
+    runlog/                        Recorder/RunLog recording and reading APIs
+    evaluation/                    metric template, report formatting and visualization
+    test_data_types.py                shared records, detection and sensor-data transport
+    test_validation.py             integer and finite real-number validation
+    test_type_paths.py             callable imports by explicit module paths
+    test_serialization.py          JSON serialization and independent snapshots
     test_cli.py                    run, evaluate and version
     test_docs.py                   links, parsed blocks and executable examples
-  avstack/                         real native pipeline, detector forward, codecs and phantom
+  avstack/                         real native pipeline, detector forward, native records and phantom
   live/                            optional real-server, real-data and GPU checks
 ```
 
@@ -68,7 +86,7 @@ Run from the repository root:
 ```bash
 python -m pytest tests/core -q
 python -m pytest tests/avstack tests/core/closed_loop/avstacks \
-  tests/core/attack/implemented_attacks/test_implemented_attacks.py -q
+  tests/core/implemented_attacks/test_implemented_attacks.py -q
 ruff check .
 mypy
 ```

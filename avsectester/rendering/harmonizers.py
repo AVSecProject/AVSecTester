@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
+from pathlib import Path
 import numpy as np
 
 log = logging.getLogger(__name__)
@@ -87,16 +88,20 @@ class PCTNetHarmonizer(Harmonizer):
     """Learned harmonization via libcom's **PCTNet**, run **in-process** (no subprocess, no separate env).
 
     PCTNet is a self-contained color-transform CNN needing only torch / torchvision / numpy / einops —
-    all compatible with the avstack stack (torch 2.1) — so we load just the ``pct_net`` module from the
-    ``third_party/libcom`` submodule, bypassing libcom's package ``__init__`` (which eagerly imports
+    all compatible with the avstack stack (torch 2.1) — so we load just the ``pct_net`` module from
+    ``libcom_directory``, bypassing libcom's package ``__init__`` (which eagerly imports
     diffusers-based models). PCTNet gives a milder, texture-preserving harmonization than the classic
     Poisson blend — better for keeping an adversarial pattern intact. Falls back to
     :class:`ClassicHarmonizer` on any error (or set ``strict`` to raise instead).
+
+    ``libcom_directory`` is the repository root containing ``libcom/image_harmonization``.
     """
 
-    _SUBMODULE = "third_party/libcom/libcom/image_harmonization"
-
-    def __init__(self, device: int = 0, weights: str | None = None, strict: bool = False) -> None:
+    def __init__(
+        self, libcom_directory: str | Path, device: int = 0,
+        weights: str | Path | None = None, strict: bool = False,
+    ) -> None:
+        self.libcom_directory = Path(libcom_directory)
         self.device_id = device
         self.weights = weights
         self.strict = strict
@@ -110,11 +115,10 @@ class PCTNetHarmonizer(Harmonizer):
         import importlib.util
         import sys
         import types
-        from pathlib import Path
 
         import torch
 
-        root = Path(__file__).resolve().parents[2] / self._SUBMODULE
+        root = self.libcom_directory / "libcom" / "image_harmonization"
         src = root / "source"
         # dummy parent packages so pct_net's absolute imports resolve WITHOUT running libcom/__init__
         # (which imports diffusers/pytorch-lightning models that conflict with the avstack stack).
@@ -142,8 +146,6 @@ class PCTNetHarmonizer(Harmonizer):
         return self._net
 
     def _resolve_weights(self, root):
-        from pathlib import Path
-
         cand = root / "pretrained_models" / "PCTNet.pth"
         if cand.exists():
             return cand

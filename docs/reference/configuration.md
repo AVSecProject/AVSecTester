@@ -11,11 +11,17 @@
 The same configuration drives CLI and Python. Dataset, simulator, driving system, attacks, hooks
 and evaluation are components. The runs section describes what to execute on those components and
 how to record it. Attack and AVStack specifications may be inline mappings or YAML file paths.
-Relative filesystem arguments resolve against the YAML file containing that argument.
+Component YAML references and runs.output resolve relative to their containing YAML file.
+Constructor filesystem options follow the [annotation rules](#constructor-filesystem-parameters).
+
+Type resolution and attack discovery live in avsectester.experiment.type_registry; the
+configuration loader owns YAML structure and validation.
 
 Every object constructor uses `type` and `options`. A name without a colon selects a built-in class.
-`package.module:name` imports a user class or function. Such imports execute Python and must be
-trusted. The same rule applies to nested objects, hooks and sensor transforms.
+`package.module:name` imports a user class or function. The name may contain dots for nested
+attributes, such as `package.module:Container.CustomAttack`; the resolved value must be callable.
+Explicit paths use `avsectester.type_paths.import_type_path`. Such imports execute Python and must
+be trusted. The same rule applies to nested objects, hooks and sensor corruptions.
 
 ```yaml
 dataset:
@@ -41,13 +47,13 @@ dataset:
               type: avsectester.datasets.carla:PrescribedMotion
               options:
                 constant_control:
-                  type: avsectester.closed_loop.datatypes:Control
+                  type: avsectester.data_types:Control
                   options: {throttle: 0.35}
             lead:
               type: avsectester.datasets.carla:PrescribedMotion
               options:
                 constant_control:
-                  type: avsectester.closed_loop.datatypes:Control
+                  type: avsectester.data_types:Control
                   options: {brake: 1.0}
 simulator:
   type: CarlaSimulator
@@ -70,6 +76,25 @@ runs:
 
 `driving.yaml` is a user-supplied driving specification; the complete supplied version is in
 `configs/carla_phantom.yaml` at the repository root.
+
+## Constructor filesystem parameters
+
+For every framework type/options constructor, filesystem resolution follows parameter annotations.
+Path and os.PathLike annotations mark paths, including these types inside unions or sequence
+elements such as str | Path, list[Path] or tuple[str | Path, ...]. The same rules apply to nested
+constructors, hooks, sensor corruptions, assets and other helpers.
+
+For an annotated path, a str or Path value becomes an absolute string relative to the YAML file
+containing it. A leading ~ is expanded; an already absolute path keeps its location and is returned
+as a string. A string containing :// is retained unchanged. Arrays, Texture objects and other
+non-path values stay unchanged.
+
+Unannotated parameters, Any, **kwargs and plain nested dictionaries do not trigger filesystem
+resolution. A parameter annotated only as str is ordinary text. Annotation resolution is performed
+per parameter: if it fails and the annotation text mentions Path, configuration loading reports an
+error. Make the names used by that annotation available at runtime. An unresolved annotation that
+does not mention Path is ignored. Component YAML references and runs.output retain their separate
+containing-file rules.
 
 ## Components
 
@@ -112,8 +137,10 @@ bindings:
 ```
 
 Optional `bindings.type` references `function(avstack_factory, **options) -> DrivingAdapter`.
-Bindings expose components and scorers; they do not replace the AVStack. Optional avstack.vehicle_io
-constructs VehicleIO from a {type, options} specification; avstack.command_modes asserts the
+Bindings expose components and scorers; they do not replace the AVStack. Optional
+avstack.observation_pipeline
+constructs ObservationPipeline from avsectester.closed_loop.avstacks.base using a {type, options}
+specification; avstack.command_modes asserts the
 expected command modes and must match the AVStack declaration. These keys describe the configured
 driving boundary, while options are constructor arguments. A driving configuration can be reused
 across supported scenarios of one simulator.
@@ -148,7 +175,7 @@ attacks:
 
 
 Unqualified type names first resolve built-in framework types. An unknown name is looked up as an
-Attack in attack/implemented_attacks/<snake_case_class_name>/, exported by that folder's
+Attack in implemented_attacks/<snake_case_class_name>/, exported by that folder's
 __init__.py. Built-in attacks use the same discovery path as user attacks. MyAttack maps to
 my_attack, MyNNAttack to my_nn_attack, XMLAttack to xml_attack and HTTP2Attack to http2_attack and
 Attack2D to attack2_d. Continuous capitals form an acronym; the boundary before a following
@@ -158,9 +185,9 @@ elsewhere uses package.module:Class.
 Only dataset, simulator, AVStack and metric classes have built-in registry names; attacks use the
 folder discovery described above. Other constructors, including assets, textures, placements,
 optimizers, compositors and their helpers, use full package.module:Class references with options.
-Lowercase shortcuts and inferred placement types are rejected. Relative paths, including
-ImageTexture's image option, SignAsset.face and PatchOptimization.init_texture, resolve against
-the containing configuration file.
+Lowercase shortcuts and inferred placement types are rejected. Image assets can be direct paths;
+SignAsset.face, PatchAttack.assets and PatchOptimization.init_texture follow the
+[constructor filesystem rules](#constructor-filesystem-parameters).
 
 ### Hooks
 

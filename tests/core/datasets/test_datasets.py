@@ -5,13 +5,14 @@ import zipfile
 import numpy as np
 import pytest
 
-from avsectester.closed_loop.datatypes import Control
-from avsectester.datasets import FrameData, Unavailable
+from avsectester.data_types import Control
+from avsectester.datasets import FrameData
+from avsectester.data_types import Unavailable
 from avsectester.datasets.carla import CarlaRecipe, PrescribedMotion
 from avsectester.datasets.nurec import NuRecDataset, read_scene_mesh
 from avsectester.geometry.poses import rotation_matrix
 from avsectester.maps import ScenarioMap
-from tests.fakes import assert_scenario_map
+from tests.core.datasets.scenario_map_contract import assert_scenario_map
 
 
 @pytest.fixture(params=[("carla_dataset", Unavailable), ("nurec_dataset", ScenarioMap),
@@ -75,12 +76,40 @@ def test_nurec_interpolation(nurec_usdz_path):
         assert ("brief" in frame.actors) == (timestamp == .25)
     ego = dataset.frame_data("scene", frames[5]).ego
     assert ego.extent == (4., 2., 1.5) and ego.box_center == (.2, 0., .7)
+    np.testing.assert_allclose(dataset.ego_state("scene", 250000).pose, ego.pose)
+    np.testing.assert_allclose(dataset.actor_states("scene", 250000)["host"].pose,
+                               dataset.frame_data("scene", frames[5]).actors["host"].pose)
     # Returned annotations and arrays remain independent of the immutable recording.
     data = dataset.frame_data("scene", frames[5])
     data.actors["host"].pose[:] = 0
-    metadata = dataset.raw_metadata(nurec_usdz_path)
+    metadata = dataset.raw_metadata("scene")
     metadata["sequence_tracks.json"].clear()
     np.testing.assert_allclose(dataset.frame_data("scene", frames[5]).actors["host"].pose[0, 3], 9.)
+
+
+def test_nurec_camera_geometry(nurec_dataset):
+    camera, rig_from_camera = nurec_dataset.camera_geometry("scene")
+    assert (camera.width, camera.height) == (16, 12)
+    np.testing.assert_allclose(rig_from_camera,
+        [[0, 0, 1, 0], [-1, 0, 0, 0], [0, -1, 0, 1.5], [0, 0, 0, 1]])
+    rig_from_camera[:] = 0.
+    assert nurec_dataset.camera_geometry("scene")[1][2, 3] == 1.5
+    with pytest.raises(KeyError, match="Unknown NuRec scenario"):
+        nurec_dataset.camera_geometry("missing")
+
+
+def test_nurec_camera_timestamps(nurec_dataset):
+    timestamps = nurec_dataset.camera_timestamps("scene")
+    np.testing.assert_allclose(timestamps, [0., .25, .5])
+    timestamps[:] = -1.
+    np.testing.assert_allclose(nurec_dataset.camera_timestamps("scene"), [0., .25, .5])
+
+
+def test_nuscenes_sensor_references(nuscenes_dataset):
+    frame = nuscenes_dataset.frames("scene")[0]
+    data = nuscenes_dataset.frame_data("scene", frame)
+    assert set(data.sensor_references) == {"CAM_FRONT"}
+    assert data.sensor_references["CAM_FRONT"].sensor == "CAM_FRONT"
 
 
 def test_nurec_usdz_path(nurec_dataset, nurec_usdz_path):
@@ -117,62 +146,7 @@ def test_read_scene_mesh(nurec_usdz_path, tmp_path):
     np.testing.assert_allclose(vertices.min(axis=0), [-20., -20., 0.])
 
 
-def test_nurec_scenario_map(nurec_dataset, nurec_usdz_path, nurec_map_variants, tmp_path):
-    scenario_map = nurec_dataset.scenario_map("scene")
-    lane = scenario_map.lanes["lane"]
-    np.testing.assert_allclose(lane.centerline, [[-2., 0., 0.], [4., 0., 0.]])
-    assert lane.speed_limit_mps == pytest.approx(25 * .44704)
-    assert lane.lane_type == "driving" and lane.right_neighbor is None
-    assert scenario_map.lanes["bike-lane"].lane_type == "bike"
-    assert scenario_map.lanes["bike-lane"].speed_limit_mps is None
-    assert scenario_map.unavailable_layers["lanes.speed_limit_mps"]
-    assert scenario_map.lanes["shoulder-lane"].lane_type == "shoulder"
-    assert scenario_map.lanes["parking-lane"].lane_type == "parking"
-    assert scenario_map.lanes["bus-lane"].lane_type == "other"
-    sign = scenario_map.traffic_controls["stop"]
-    assert sign.kind == "stop_sign" and sign.native_category == "TRAFFIC_SIGN_REGULATORY_R1_STOP"
-    assert sign.extent == (.1, .8, 1.2) and sign.lane_ids == ("lane",)
-    assert {control.pose_reference for control in scenario_map.traffic_controls.values()} == {"face_center"}
-    assert sign.stop_line_id == "stop-line"
-    np.testing.assert_allclose(sign.pose[:3, 3], [3., 2., 1.5])
-    assert scenario_map.traffic_controls["no-stopping"].kind == "other"
-    assert scenario_map.traffic_controls["speed-limit"].kind == "speed_limit"
-    assert scenario_map.traffic_controls["yield"].kind == "yield_sign"
-    line = scenario_map.stop_lines["stop-line"]
-    assert line.kind == "stop_sign" and line.lane_ids == ("lane",) and line.control_id == "stop"
-    assert line.native_category == "STOP"
-    signal = scenario_map.stop_lines["signal-line"]
-    assert signal.kind == "traffic_light" and signal.control_id == "light"
-    assert scenario_map.stop_lines["yield-line"].kind == "yield_sign"
-    ambiguous = scenario_map.stop_lines["ambiguous-line"]
-    assert ambiguous.kind == "traffic_light" and ambiguous.control_id is None
-    unknown = scenario_map.stop_lines["unknown-line"]
-    assert unknown.kind == "unknown" and unknown.control_id is None
-    unbound = scenario_map.stop_lines["unbound-line"]
-    assert unbound.kind == "unknown" and unbound.lane_ids == () and unbound.native_category == "STOP"
-    assert set(scenario_map.stop_lines) == {"stop-line", "signal-line", "yield-line",
-                                          "ambiguous-line", "unknown-line", "unbound-line"}
-    assert scenario_map.drivable_area == ()
-    assert scenario_map.unavailable_layers["drivable_area"]
-    assert scenario_map.unavailable_layers["crosswalks"]
-
-    placeholder = NuRecDataset([nurec_map_variants["placeholder_lights"]]).scenario_map("scene")
-    assert len(placeholder.traffic_controls) == 4
-    assert placeholder.unavailable_layers["traffic_controls.traffic_light"]
-    assert "traffic_controls" not in placeholder.unavailable_layers
-    implicit = NuRecDataset([nurec_map_variants["implicit_only_lines"]]).scenario_map("scene")
-    assert implicit.stop_lines == {} and "stop_lines" not in implicit.unavailable_layers
-    assert all(control.stop_line_id is None for control in implicit.traffic_controls.values())
-
-    unknown_units = tmp_path / "without-speed-unit.usdz"
-    with zipfile.ZipFile(nurec_usdz_path) as source, zipfile.ZipFile(unknown_units, "w") as destination:
-        for member in source.infolist():
-            if member.filename != "map.xodr":
-                destination.writestr(member.filename, source.read(member.filename))
-    unscaled = NuRecDataset([str(unknown_units)]).scenario_map("scene")
-    assert unscaled.lanes["lane"].speed_limit_mps is None
-    assert unscaled.unavailable_layers["lanes.speed_limit_mps"]
-
+def test_nurec_scenario_map(nurec_usdz_path, tmp_path):
     # A geographic OpenDRIVE projection alone does not establish alignment to the rig frame.
     fallback = tmp_path / "without-clipgt.usdz"
     with zipfile.ZipFile(nurec_usdz_path) as source, zipfile.ZipFile(fallback, "w") as destination:

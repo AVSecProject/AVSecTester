@@ -7,7 +7,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from avsectester.closed_loop.datatypes import Control, Detection, Observation, WorldSnapshot
+from avsectester.data_types import Control, Detection, Observation, RecordedOutput, WorldSnapshot
+from avsectester.closed_loop.simulators.base import ClockSnapshot
 from avsectester.geometry import FThetaCamera, PinholeCamera
 from avsectester.rendering import ObjectVisibility
 from avsectester.runlog import Recorder, RunLog, StepRecord, read_table
@@ -70,10 +71,13 @@ def test_record_and_read(tmp_path, value, expected):
     command = Control(throttle=.5)
     detection = Detection((10, 0, 1), (4, 2, 2), 0, "car", .9)
     recorder = Recorder(tmp_path / "run", metadata={"seed": 4})
-    recorder.record_event("initialization", scenario="scene")
+    recorder.record_event("initialization", scenario="scene", clock=ClockSnapshot(.1, 4))
+    outputs = [RecordedOutput("ttc", 1.5, 0, "observation", 4, .1),
+               RecordedOutput("summary", {"counts": [2, 3], "missing": None},
+                              0, "observation", 4, .1)]
     recorder.record_step(StepRecord(
         0, raw_observation=observation, produced_command=command, executed_command=command,
-        detections=[detection], components={"result": value},
+        detections=[detection], components={"result": value}, outputs=outputs,
     ))
     pixels.fill(0)
     command.throttle = 0
@@ -81,11 +85,13 @@ def test_record_and_read(tmp_path, value, expected):
     decoded = RunLog.read(memory.path)
     assert decoded.status == "completed" and decoded.metadata == {"seed": 4}
     assert [event.kind for event in decoded.events] == ["initialization", "termination"]
+    assert decoded.events[0].data["clock"] == ClockSnapshot(.1, 4)
     step = decoded.steps[0]
     assert_value(step.components["result"], expected)
     np.testing.assert_array_equal(step.raw_observation.sensor_data["front"], 40)
     assert step.produced_command.throttle == step.executed_command.throttle == .5
     assert step.detections == [detection]
+    assert step.outputs == outputs
     with pytest.raises(RuntimeError, match="closed"):
         recorder.record_step(StepRecord(1))
 
@@ -96,7 +102,7 @@ def test_read_selected_columns(tmp_path):
                                         executed_command=Control(brake=.75)))
     table = read_table(tmp_path / "run", columns=["step", "executed_command"])
     assert table.column_names == ["step", "executed_command"]
-    assert table.to_pylist()[0]["executed_command"]["brake"] == .75
+    assert table.to_pylist()[0]["executed_command"]["fields"]["brake"] == .75
     with pytest.raises(ValueError, match="Unknown RunLog columns"):
         read_table(tmp_path / "run", columns=["missing"])
 

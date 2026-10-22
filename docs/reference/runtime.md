@@ -27,7 +27,7 @@ sequenceDiagram
     participant R as ClosedLoopRunner
     participant S as SimulatorRuntime
     participant A as AttackRuntime
-    participant V as VehicleIO
+    participant V as ObservationPipeline
     participant D as AVStack
     participant L as Recorder
     R->>S: observe and state (no advancement)
@@ -52,7 +52,8 @@ AVStack actions operate on current-decision values.
 
 InsertObject is a WorldAttackAction with setup_ticks=0. A setup insertion appears from the first
 capture; a step insertion appears from the next one. All camera composition happens before sensor
-attack actions, sensor environment and VehicleIO. state().objects is separate from native actors,
+attack actions, sensor environment and ObservationPipeline. state().objects is separate from native
+actors,
 and StepRecord.physical_pre/physical_post retain those object records in RunLog. The receipt's
 details contain only object_id, asset_category and world_from_object. Capture-time visibility is
 recorded separately in StepRecord.object_visibility and the initialization event as
@@ -91,7 +92,7 @@ This action decodes the points, shifts them one metre forward and returns a new 
 ```python
 import numpy as np
 from avsectester.attack.runtime import SensorAttackAction
-from avsectester.runlog.codecs import SensorCapture
+from avsectester.closed_loop.simulators.carla.sensors import SensorCapture
 
 class ShiftLidarPointsAction(SensorAttackAction):
     sensor = "lidar"
@@ -130,12 +131,12 @@ replacements. Adapter-specific stages must be declared; unsupported stages fail 
 | control.pre/post | CallInputs / component output, when declared |
 | policy.pre/post | End-to-end policy inputs/output, when declared |
 | command | Control before execution |
-| render.pre/post | CameraRenderRequest / rendered sensor, when declared |
+| render.pre/post | CameraPoseRequest / rendered sensor, when declared |
 
 Simulator setup and step handlers use explicit native operations and return None. A pre-hook uses
 CallInputs(args, kwargs) to retain native calling conventions. A post-hook returns the replacement
 output directly. NativeHook adapts an explicitly registered avstack-library hook's tuple convention.
-It lives in closed_loop/avstacks/native_hook.py.
+NativeHook is defined in closed_loop/avstacks/modular.py.
 
 ## Contexts and lifecycle
 
@@ -150,13 +151,14 @@ All online state should remain in one AttackRuntime.
 Plugin optionally provides reset(RunContext), transform(value, StageContext), after_step(context)
 and close(). Plugin.after_step receives the next raw capture and real post-step clock. HookSet
 manages each handler owner's lifecycle once even if registered at several stages. Stateful objects
-must reset per run or be newly constructed. VehicleIO owns its localizer, and the dispatcher manages
+must reset per run or be newly constructed. ObservationPipeline owns its localizer, and the
+dispatcher manages
 its lifecycle with other handlers.
 
 ## Randomness
 
-HookSet.seed creates a fresh per-run hook RNG. Environment transforms use a separate generator keyed
-by run seed, absolute dataset position and transform index. A segment beginning at position p uses
+HookSet.seed creates a fresh per-run hook RNG. Sensor corruptions use a separate generator keyed
+by run seed, absolute dataset position and corruption index. A segment beginning at position p uses
 p+i at decision i. Offline requests and formal runs at the same position align their sensor noise.
 Native frames can include initialization ticks and are not the dataset position.
 
@@ -172,8 +174,8 @@ Native frames can include initialization ticks and are not the dataset position.
 | RecordedOutput | name, copied value, decision step, stage, physical frame/time and sensor |
 
 ActorState.extent is full length, width and height in metres; None means unavailable. box_center is
-the actor-local box center; ActorState.box_pose() returns its oriented world box with optional
-extent. Unknown extent is None, distinct from known zero dimensions. Pose-only use remains valid;
+the actor-local box center; ActorState.box_transform() returns its oriented world-box-center
+transform. Unknown extent is None, distinct from known zero dimensions. Pose-only use remains valid;
 operations requiring dimensions report missing evidence rather than substituting zero. Detection
 position is its box center in the true ego frame at capture time, using sensor mounting extrinsics,
 independently of driving localization, with ego x forward, y left, z up; yaw is radians. None
@@ -210,9 +212,42 @@ leaves completed parts readable and can lose the open part of each stream.
 
 Records include typed camera geometry under sensor_geometry, with bounding-box offsets for
 log-only evaluation. Readers consume the current record layout without legacy-format conversion.
-Persisted native objects decode to plain
-data unless a codec explicitly reconstructs a supported type. In-memory capture preserves supported
-Python container types and snapshot isolation.
+SerializationRegistry provides JSON-compatible encode/decode and independent in-process snapshots.
+RunLog, experiment output and driving adapters share it. A registered dataclass encodes as
+`{"_avsectester_type": "dataclass", "type": "package.module:Name", "fields": {...}}` and is
+reconstructed on read. Field names such as record remain ordinary entries inside fields.
+Native objects are registered by their adapters when the adapter module is imported. Persisted native
+values decode to ordinary data. snapshot(value) returns detached data, preserving supported Python
+containers and native types without converting them through JSON.
+DEFAULT_REGISTRY registers framework records by string path without importing simulator SDKs,
+AVStack, AlpaSim or torch when the registry is created.
+
+The record layout has changed. Older RunLog files and experiment output directories may no longer
+be readable; there is no automatic format conversion.
+
+Register your dataclass before writing it. Before reading a log that contains user records, import
+the module defining and registering those records. An unregistered type raises an error explaining
+how to register it.
+
+<!-- runnable -->
+```python
+from dataclasses import dataclass
+
+from avsectester.serialization import DEFAULT_REGISTRY
+from avsectester.runlog import Recorder, RunLog
+
+@dataclass(frozen=True)
+class CameraCheck:
+    sensor: str
+    visible_pixels: int
+
+DEFAULT_REGISTRY.register_dataclass(CameraCheck)
+recorder = Recorder("example-run")
+recorder.record_event("camera_check", value=CameraCheck("front", 12))
+recorder.finish()
+restored = RunLog.read("example-run")
+assert restored.events[0].data["value"] == CameraCheck("front", 12)
+```
 
 RecordingPolicy(sensor_ids=(), representations=("model_input",), every_n_steps=1) controls sensor
 payload retention. State, commands and available component outputs/detections remain per decision.
@@ -222,8 +257,8 @@ in-memory retention requires a persistent output directory.
 ## Failures and cleanup
 
 Unsupported stages, commands and environments are configuration errors. A failing decision stops
-attacks, records unapplied actions and cleans resources. Simulator reservations are released only
-after native cleanup. Never interpret a requested action as applied without its receipt, or a
+attacks, records unapplied actions and cleans resources. World claims are released only after
+native cleanup. Never interpret a requested action as applied without its receipt, or a
 partial log as a completed run.
 
 See [Python API](python-api.md#runlog-api) for readers and recorder signatures.

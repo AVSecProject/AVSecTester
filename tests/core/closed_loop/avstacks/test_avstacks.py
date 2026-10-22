@@ -4,8 +4,8 @@ import pytest
 from avsectester.closed_loop.avstacks.alpamayo import AlpamayoAVStack
 from avsectester.closed_loop.avstacks.camera_forward_collision import CameraForwardCollisionAVStack
 from avsectester.closed_loop.avstacks.modular import ModularAVStack
-from avsectester.closed_loop.datatypes import Control, Detection
-from avsectester.closed_loop.services import DrivingAdapter
+from avsectester.data_types import Control, Detection
+from avsectester.closed_loop.avstacks.driving_adapter import DrivingAdapter
 
 
 @pytest.mark.parametrize(

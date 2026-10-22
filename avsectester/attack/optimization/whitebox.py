@@ -11,6 +11,8 @@ from dataclasses import dataclass
 
 import torch
 
+from avsectester.validation import require_nonnegative_integer, require_positive_integer
+
 from .interface import (
     OptimizationObjective,
     OptimizationResult,
@@ -46,11 +48,8 @@ class PGD(GradientOptimizer):
 
     def __post_init__(self) -> None:
         for name in ("steps", "batch", "log_every"):
-            value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-                raise ValueError(f"{name} must be a positive integer")
-        if isinstance(self.seed, bool) or not isinstance(self.seed, int) or self.seed < 0:
-            raise ValueError("seed must be a nonnegative integer")
+            require_positive_integer(getattr(self, name), name)
+        require_nonnegative_integer(self.seed, "seed")
         for name in ("step_size", "tv_weight"):
             value = getattr(self, name)
             if not torch.isfinite(torch.tensor(value)) or value < 0:

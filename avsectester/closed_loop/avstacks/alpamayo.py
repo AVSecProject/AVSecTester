@@ -1,8 +1,8 @@
-"""Alpamayo end-to-end camera policy as an :class:`~avsectester.closed_loop.avstack.AVStack`.
+"""Alpamayo end-to-end camera policy as an :class:`~avsectester.closed_loop.avstacks.base.AVStack`.
 
 Wraps AlpaSim's own Alpamayo model (``alpasim_driver.models.alpamayo1_5_model.Alpamayo15Model``) so
-it plugs into ``ClosedLoopRunner``: an :class:`~avsectester.closed_loop.datatypes.Observation`
-(a rendered camera + ego state) in, a :class:`~avsectester.closed_loop.datatypes.Control` (the planned trajectory) out.
+it plugs into ``ClosedLoopRunner``: an :class:`~avsectester.data_types.Observation`
+(a rendered camera + ego state) in, a :class:`~avsectester.data_types.Control` (the planned trajectory) out.
 
 Alpamayo is a trajectory-output policy: ``predict(PredictionInput) -> ModelPrediction`` with
 ``candidate_positions`` of shape ``(K, T, 3)`` in the **rig frame**. We keep a short temporal buffer
@@ -21,9 +21,57 @@ import sys
 from collections import deque
 from collections.abc import Mapping
 from typing import Any
+from pathlib import Path
 
-from avsectester.closed_loop.avstack import AVStack
-from avsectester.closed_loop.datatypes import Control, Observation
+from avsectester.closed_loop.avstacks.base import AVStack
+from avsectester.closed_loop.avstacks import driving_adapter
+from avsectester.data_types import Control, Observation
+from avsectester.serialization import DEFAULT_REGISTRY
+
+
+def _model_prediction(value: Any) -> dict[str, Any]:
+    # NVIDIA AlpaSim models/base.py, inspected at
+    # affc2eab209fa43bdfa2f26c0f8d437922d78a68. Arrays remain separate payloads.
+    result = {"native_type": f"{type(value).__module__}.{type(value).__qualname__}",
+              **{name: getattr(value, name) for name in (
+                  "candidate_positions", "candidate_rotations", "selected_index",
+                  "reasoning_text", "selected_plan")}}
+    for name in ("model_t0_us", "pose_local_to_rig_t0", "waypoint_timestamps_us"):
+        result[name] = getattr(value, name, None)
+    return result
+
+
+def _alpasim_pose(value: Any) -> dict[str, Any]:
+    position, quaternion = value.to_proto()
+    return {"position": list(position), "q_wxyz": list(quaternion)}
+
+
+def _alpasim_trajectory(value: Any) -> dict[str, Any]:
+    # AlpaSim geometry uses scipy's xyzw quaternion convention.
+    return {"timestamps_us": value.timestamps_us, "positions": value.positions,
+            "quaternions_xyzw": value.quaternions}
+
+
+DEFAULT_REGISTRY.register_native('alpasim_driver.models.base', 'ModelPrediction', _model_prediction)
+DEFAULT_REGISTRY.register_native(
+    "alpasim_driver.models.base", "CameraFrame",
+    lambda value: {"native_type": f"{type(value).__module__}.{type(value).__qualname__}",
+                   "timestamp_us": value.timestamp_us, "image": value.image},
+)
+DEFAULT_REGISTRY.register_native('alpasim_utils.geometry', 'Pose', _alpasim_pose)
+DEFAULT_REGISTRY.register_native('alpasim_utils.geometry', 'Trajectory', _alpasim_trajectory)
+
+
+def alpamayo_driving_adapter(factory):
+    """Expose a fresh end-to-end policy decision, including the adapter's history reset."""
+    def evaluate(avstack, observation):
+        avstack.reset(observation)
+        return avstack(observation)
+
+    return driving_adapter.DrivingAdapter(factory, components=((driving_adapter.ComponentDescriptor(
+        "policy", {"observation": "Observation with configured camera IDs and ego pose"},
+        {"command": "Control with rig-frame trajectory"}, {"command": "Control"},
+    ), evaluate),))
 
 
 class AlpamayoAVStack(AVStack):
@@ -31,16 +79,13 @@ class AlpamayoAVStack(AVStack):
 
     def __init__(
         self,
-        checkpoint_path: str | None = None,
+        checkpoint_path: str | Path | None = None,
         camera_ids: list[str] | None = None,
         device: str = "cuda:0",
         context_length: int = 4,
         output_frequency_hz: int = 10,
         model: Any | None = None,
     ) -> None:
-        from avsectester.runlog.codecs import default_codecs
-        from avsectester.runlog import Recorder
-
         self.checkpoint_path = (
             checkpoint_path if checkpoint_path is not None
             else os.environ.get("AVSECTESTER_ALPAMAYO_CHECKPOINT")
@@ -58,7 +103,6 @@ class AlpamayoAVStack(AVStack):
         self._iseed = 0
         self.last_reasoning: str | None = None
         self._last_log: dict[str, Any] | None = None
-        self._log_capture = Recorder(codecs=default_codecs())
 
     @property
     def command_modes(self) -> frozenset[str]:
@@ -224,13 +268,13 @@ class AlpamayoAVStack(AVStack):
             self._load()
         inputs = self._emit("policy.pre", self._prediction_input(observation))
         prediction = self._emit("policy.post", self._model.predict(inputs))
-        policy_record = self._log_capture.capture(prediction)
+        policy_record = DEFAULT_REGISTRY.snapshot(prediction)
         self._iseed += 1
         self._prev_plan = getattr(prediction, "selected_plan", None)
         self.last_reasoning = getattr(prediction, "reasoning_text", None)  # chain-of-causation text, if any
         command = Control(trajectory=self._to_waypoints(prediction, observation))
         # Record the already-produced policy output and command without extra inference.
-        self._last_log = {"policy": policy_record, "command": self._log_capture.capture(command)}
+        self._last_log = {"policy": policy_record, "command": DEFAULT_REGISTRY.snapshot(command)}
         return command
 
     def component_log(self) -> dict[str, Any] | None:

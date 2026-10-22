@@ -1,36 +1,11 @@
-"""Supplied simulators — :class:`~avsectester.closed_loop.simulator.Simulator` configurations and
-their live :class:`~avsectester.closed_loop.simulator.SimulatorRuntime` worlds.
+"""Simulator interfaces; import concrete implementations from their own modules."""
 
-``CarlaSimulator`` (real avcarla closed loop, in ``carla.py``) and ``NuRecSimulator`` (in-process NuRec
-reconstruction, in ``nurec.py``); both lazy-import their heavy deps so this package imports without
-CARLA dependencies. RecordedReplaySimulator replays recorded nuScenes frames. Each simulator runtime exposes
-its calibrated cameras through sensor_geometry and sensor_view.
-"""
-
-from .recorded import RecordedReplaySimulator, RecordedReplaySimulatorRuntime
-from .carla import CarlaSimulator, CarlaSimulatorRuntime
-from .nurec import (
-    EgoPose,
-    KinematicBicycle,
-    NuRecSimulator,
-    NuRecSimulatorRuntime,
-    NuRecRenderer,
-    Renderer,
-    StubRenderer,
-    TrajectoryFollower,
+from .base import (
+    ClockSnapshot, DeploymentPlan, FrameDataSequence, Initialization, SensorGeometry,
+    SensorView, Simulator, SimulatorRuntime,
 )
 
 __all__ = [
-    "RecordedReplaySimulator",
-    "RecordedReplaySimulatorRuntime",
-    "CarlaSimulator",
-    "CarlaSimulatorRuntime",
-    "EgoPose",
-    "KinematicBicycle",
-    "NuRecSimulator",
-    "NuRecSimulatorRuntime",
-    "NuRecRenderer",
-    "Renderer",
-    "StubRenderer",
-    "TrajectoryFollower",
+    "Simulator", "SimulatorRuntime", "SensorView", "SensorGeometry", "ClockSnapshot",
+    "DeploymentPlan", "Initialization", "FrameDataSequence",
 ]

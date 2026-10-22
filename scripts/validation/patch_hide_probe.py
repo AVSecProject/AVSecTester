@@ -7,13 +7,13 @@ from dataclasses import replace
 from pathlib import Path
 
 from avsectester.attack.insertion import Insertion, PlaneAsset
-from avsectester.rendering.images import load_rgba_image
+from avsectester.rendering.textures import load_rgba_image
 from avsectester.attack.insertion.compositor import PatchCompositor
 from avsectester.attack.insertion.action import InsertionAttackAction
 from avsectester.rendering.harmonizers import ClassicHarmonizer, PCTNetHarmonizer
-from avsectester.attack.placement import AttachedPlacement, Orientation
+from avsectester.attack.insertion.placement import AttachedPlacement, Orientation
 from avsectester.closed_loop.avstacks.camera_forward_collision import CameraForwardCollisionAVStack
-from avsectester.closed_loop.datatypes import Control
+from avsectester.data_types import Control
 from avsectester.closed_loop.simulators.carla import CarlaSimulator
 from avsectester.datasets.carla import CarlaDataset
 from avsectester.evaluation.visualization import save_image
@@ -57,7 +57,10 @@ def main() -> int:
                         help="Dedicated TM port; default is RPC port plus 6000")
     parser.add_argument("--output", type=Path, default=Path("tmp/patch-probe"))
     parser.add_argument("--pctnet", action="store_true", help="Also load PCTNet harmonization")
+    parser.add_argument("--libcom-directory", type=Path, help="Libcom checkout, required with --pctnet")
     args = parser.parse_args()
+    if args.pctnet and args.libcom_directory is None:
+        parser.error("--pctnet requires --libcom-directory")
     dataset, simulator, scenario_id = probe_configuration(args.config, args.gap, args.port,
                                                          args.traffic_manager_port)
     frame = dataset.frames(scenario_id)[0]
@@ -72,7 +75,7 @@ def main() -> int:
             save_image(view.data, args.output / "clean.png")
             variants = [("raw", None), ("classic", ClassicHarmonizer())]
             if args.pctnet:
-                variants.append(("pctnet", PCTNetHarmonizer(device=args.gpu, strict=True)))
+                variants.append(("pctnet", PCTNetHarmonizer(args.libcom_directory, device=args.gpu, strict=True)))
             clean_score = max((score for _, score, _ in avstack.detect(view.data)), default=0.)
             print(f"clean: {clean_score:.3f}")
             for name, harmonizer in variants:

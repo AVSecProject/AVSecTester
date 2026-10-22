@@ -14,24 +14,25 @@ avsectester run configs/nurec_object_insertion.yaml
 avsectester run configs/nuscenes_object_insertion.yaml
 ```
 
-ObjectInsertionAttack is exported by avsectester.attack.implemented_attacks.object_insertion_attack.
+ObjectInsertionAttack is exported by avsectester.implemented_attacks.object_insertion_attack.
 Required parameters are decision_steps and placement. The assets type/options selects SignAsset,
 PersonAsset or TrafficLightAsset; Python callers may provide a PlanarAsset. Other options include
 sensor, orientation, min_visible_fraction, max_segments and keep_tail. Asset lengths are in metres
 and carry the _m suffix, for example SignAsset.width_m and mount_height_m. TrafficLightAsset uses
 texture_height_pixels for image resolution; head_count and gap_fraction set the signal layout.
-SignAsset.post_count controls the number of support posts.
+SignAsset.post_count is a nonnegative integer controlling the support posts; its default is 1.
+Set post_count=0 for a panel without posts.
 
 ```yaml
 type: ObjectInsertionAttack
 options:
   decision_steps: 10
   assets:
-    type: avsectester.rendering.signs:SignAsset
+    type: avsectester.implemented_attacks.object_insertion_attack.assets:SignAsset
     options: {}
   sensor: front
   placement:
-    type: avsectester.attack.placement:WorldPlacement
+    type: avsectester.attack.insertion.placement:WorldPlacement
     options:
       position_m: [20.0, 0.0, 1.5]
 ```
@@ -49,8 +50,9 @@ sensor/render path is covered offline; real dataset/model execution remains a se
 ## Geometry and rendering
 
 Shared camera projection and canonical actor poses live in geometry/. Placement types live in the
-core attack/placement.py module. Reusable insertion assets, compositing and visibility live in
-attack/insertion/; shared PlaneSurface, sampling and harmonizers live in rendering/. Object-specific
+attack/insertion/placement.py tool module. Reusable insertion assets, compositing and visibility
+live in attack/insertion/; shared PlaneSurface, sampling and harmonizers live in rendering/.
+Object-specific
 assets live beside ObjectInsertionAttack.
 
 geometry/projection.py supplies plane_sampling_grid, project_box and visible_plane_mask for users
@@ -101,7 +103,8 @@ compositor:
       options: {}
 ```
 
-Use avsectester.rendering.harmonizers:PCTNetHarmonizer for the learned implementation or
+Use avsectester.rendering.harmonizers:PCTNetHarmonizer for the learned implementation, supplying
+libcom_directory as the libcom repository root, or
 package.module:MyHarmonizer for user code. See [PCTNet
 installation](../getting-started/installation.md#pctnet-harmonizer).
 
@@ -110,13 +113,14 @@ installation](../getting-started/installation.md#pctnet-harmonizer).
 Import public utilities directly from avsectester.attack.insertion. A custom PlanarAsset implements
 planes(), returning PlaneSurface records with local TL, TR, BR, BL corners in metres and RGBA
 textures. PlaneAsset provides a single rectangular YZ plane. Combine it with AttachedPlacement or
-WorldPlacement from avsectester.attack.placement; placement is a core data type.
+WorldPlacement from avsectester.attack.insertion.placement; placement belongs to the insertion
+tools.
 
 <!-- runnable -->
 ```python
 import numpy as np
 from avsectester.attack.insertion import Insertion, InsertionAttackAction, PatchCompositor, PlaneAsset
-from avsectester.attack.placement import WorldPlacement
+from avsectester.attack.insertion.placement import WorldPlacement
 from avsectester.rendering import Harmonizer
 
 class PreserveColors(Harmonizer):

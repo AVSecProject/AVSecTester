@@ -14,15 +14,31 @@ avsectester run configs/carla_patch_optimized.yaml
 avsectester run configs/nurec_patch.yaml
 ```
 
-PatchAttack is defined in avsectester.attack.implemented_attacks.patch_attack.attack. The fixed and
+PatchAttack is defined in avsectester.implemented_attacks.patch_attack.attack. The fixed and
 optimized CARLA variants are separate configurations, each with one attack and clean/attacked
 treatments on its selected metadata. NuRec uses the same class for image synthesis.
 
 Required decision_steps is user-defined. Options include assets, candidate_hosts, hosts_per_window,
 sensor, width_m, height_m, anchor, offset_m, orientation, max_distance, min_visible_fraction,
-max_windows, keep_tail, optimization, prop and emissive. The assets option accepts CheckerboardTexture
-or ImageTexture using a full module:Class type/options specification. Unknown types and misspelled
-options fail rather than silently substituting another texture.
+max_windows, keep_tail, optimization, prop and emissive. The assets option accepts a uint8 RGB/RGBA
+array, an image path, or any Texture object with rgba(). None selects CheckerboardTexture.
+load_rgba_image validates the supplied texture; invalid inputs do not select a fallback. YAML
+assets can be a direct image path; CheckerboardTexture and user Texture constructors use a full
+module:Class type/options specification. Unknown types and misspelled options fail.
+
+A custom texture can return its pixels directly; no image-wrapper class is required:
+
+<!-- runnable -->
+```python
+import numpy as np
+from avsectester.implemented_attacks.patch_attack import PatchAttack
+
+class SolidTexture:
+    def rgba(self):
+        return np.full((32, 64, 4), (255, 64, 0, 255), dtype=np.uint8)
+
+attack = PatchAttack(decision_steps=5, assets=SolidTexture())
+```
 
 ## Selection and deployment
 

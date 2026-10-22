@@ -1,4 +1,4 @@
-"""Camera lens models and pose transforms shared by datasets and simulators.
+"""Camera lens models shared by datasets and simulators.
 
 Both models use optical axes: X right, Y down, Z forward. ``PinholeCamera``
 represents calibrated CARLA and nuScenes cameras. ``FThetaCamera`` represents
@@ -11,10 +11,9 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, overload, Protocol
+from typing import overload, Protocol
 
 import numpy as np
-from numpy.typing import ArrayLike
 
 
 BODY_FROM_OPTICAL = np.array([
@@ -97,21 +96,6 @@ class FThetaCamera:
     max_angle: float = math.pi / 2
     linear_cde: tuple = (1.0, 0.0, 0.0)
 
-    @classmethod
-    def from_nurec(cls, spec: Any) -> FThetaCamera:
-        """Build from a NuRec ``CameraSpec`` (``RGBRenderRequest.camera_intrinsics``)."""
-        f = spec.ftheta_param
-        cde = f.linear_cde
-        return cls(
-            cx=f.principal_point_x,
-            cy=f.principal_point_y,
-            angle_to_pixeldist=tuple(f.angle_to_pixeldist_poly),
-            pixeldist_to_angle=tuple(f.pixeldist_to_angle_poly),
-            width=spec.resolution_w,
-            height=spec.resolution_h,
-            max_angle=f.max_angle or math.pi / 2,
-            linear_cde=(cde.linear_c or 1.0, cde.linear_d, cde.linear_e),
-        )
 
     @staticmethod
     @overload
@@ -156,42 +140,3 @@ class FThetaCamera:
         inv = np.divide(s, r, out=np.zeros_like(r), where=r > 1e-12)
         rays = np.stack([dx * inv, dy * inv, np.cos(theta)], axis=1)
         return rays / np.linalg.norm(rays, axis=1, keepdims=True)
-
-
-# ---------------------------------------------------------------------------------------------------
-# Poses (4x4 homogeneous, "a_from_b" maps b-frame points into frame a)
-# ---------------------------------------------------------------------------------------------------
-def quat_to_matrix(w: float, x: float, y: float, z: float) -> np.ndarray:
-    n = math.sqrt(w * w + x * x + y * y + z * z)
-    w, x, y, z = w / n, x / n, y / n, z / n
-    return np.array(
-        [
-            [1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
-            [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
-            [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)],
-        ]
-    )
-
-
-def make_pose(rotation: np.ndarray, translation: ArrayLike) -> np.ndarray:
-    T = np.eye(4)
-    T[:3, :3] = rotation
-    T[:3, 3] = np.asarray(translation, dtype=np.float64)
-    return T
-
-
-def pose_from_proto(pose: Any) -> np.ndarray:
-    """A NuRec/AlpaSim ``common.Pose`` (vec + quat) -> 4x4 matrix."""
-    q, v = pose.quat, pose.vec
-    return make_pose(quat_to_matrix(q.w, q.x, q.y, q.z), (v.x, v.y, v.z))
-
-
-def planar_rig_pose(x: float, y: float, yaw: float, z: float = 0.0) -> np.ndarray:
-    """world_from_rig for a 2-D ego pose (rig: x forward, y left, z up), as NuRecRenderer builds it."""
-    c, s = math.cos(yaw), math.sin(yaw)
-    return make_pose(np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]]), (x, y, z))
-
-
-def transform(T: np.ndarray, pts: np.ndarray) -> np.ndarray:
-    pts = np.asarray(pts, dtype=np.float64)
-    return (T[:3, :3] @ pts.T).T + T[:3, 3]

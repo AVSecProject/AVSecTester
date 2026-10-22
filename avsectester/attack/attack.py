@@ -29,8 +29,8 @@ from avsectester.attack.runtime import AttackRuntime
 from avsectester.datasets.base import FrameReference
 
 if TYPE_CHECKING:
-    from avsectester.closed_loop.services import ClosedLoopServices, ScenarioView
-    from avsectester.closed_loop.simulator import DeploymentPlan
+    from avsectester.execution.services import ClosedLoopServices, ScenarioView
+    from avsectester.closed_loop.simulators.base import DeploymentPlan
 
 
 @dataclass(frozen=True)

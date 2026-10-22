@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 
 from avsectester.closed_loop.avstacks.camera_forward_collision import CameraForwardCollisionAVStack
-from avsectester.closed_loop.datatypes import Observation
+from avsectester.data_types import Observation
 
 
 def test_camera_braking(camera_detector_boundary):

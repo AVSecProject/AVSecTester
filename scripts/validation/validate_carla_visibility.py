@@ -17,14 +17,14 @@ from pathlib import Path
 import numpy as np
 
 from avsectester.attack.insertion.visibility import visibility_from_depth
-from avsectester.closed_loop.datatypes import Control
+from avsectester.data_types import Control
 from avsectester.closed_loop.simulators.carla import CarlaSimulator
-from avsectester.datasets import ActorState
+from avsectester.data_types import ActorState
 from avsectester.datasets.carla import CarlaDataset, PrescribedMotion
 from avsectester.experiment import load_configuration
-from avsectester.attack.insertion.assets import CheckerboardTexture
+from avsectester.rendering.textures import CheckerboardTexture
 from avsectester.geometry.poses import rotation_matrix
-from avsectester.closed_loop.simulators.carla import rotation_to_carla
+from avsectester.closed_loop.simulators.carla.conversions import rotation_to_carla
 from scripts import REPO_ROOT
 
 WIDTH, HEIGHT, SCALE = 640, 480, 3
@@ -144,7 +144,7 @@ def main():
     args = parser.parse_args()
     import carla
 
-    from avsectester.attack.implemented_attacks.patch_attack.online import CarlaPatchPanel
+    from avsectester.implemented_attacks.patch_attack.online import CarlaPatchPanel
 
     dataset, simulator, scenario_id = validation_configuration(
         args.config, args.port, args.traffic_manager_port)

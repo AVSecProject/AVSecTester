@@ -4,7 +4,7 @@ from operator import itemgetter
 
 import pytest
 
-from avsectester.closed_loop.datatypes import Detection
+from avsectester.data_types import Detection
 from avsectester.evaluation import (
     DetectionMetrics, DrivingMetrics, StopImpact, TrajectoryDeviation, UnavailableMetricValue,
 )

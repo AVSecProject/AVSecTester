@@ -4,7 +4,8 @@ from dataclasses import replace
 
 import pytest
 
-from avsectester.closed_loop.datatypes import Control
+from avsectester.data_types import Control, StateEstimate
+from avsectester.closed_loop.avstacks.base import ObservationPipeline
 from avsectester.closed_loop.hooks import Hook, HookSet, Plugin, UnsupportedStageError
 from tests.fakes import ConstantAVStack, MemorySimulator
 
@@ -26,9 +27,11 @@ def test_with_hooks():
 def test_validate_stages():
     simulator_runtime = MemorySimulator().create_runtime()
     avstack = ConstantAVStack()
+    avstack.observation_pipeline = ObservationPipeline(
+        lambda value, context: StateEstimate(value.vehicle_state, value.ego_speed))
     available = HookSet([Hook("observation", lambda value, context: value)]).validate_stages(
         simulator_runtime, avstack)
-    assert {"observation", "command", "simulator.setup"} <= available
+    assert {"observation", "command", "simulator.setup", "localization.pre"} <= available
     with pytest.raises(UnsupportedStageError, match="Unsupported hook stages"):
         HookSet([Hook("not.a.stage", lambda value, context: value)]).validate_stages(
             simulator_runtime, avstack)

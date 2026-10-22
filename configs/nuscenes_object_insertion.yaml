@@ -7,7 +7,8 @@ dataset:
     version: v1.0-trainval
 simulator:
   type: RecordedReplaySimulator
-  options: {}
+  options:
+    camera_aliases: {CAM_FRONT: front}
 avstack:
   type: CameraForwardCollisionAVStack
   options:
@@ -21,18 +22,18 @@ attacks:
       decision_steps: 5
       max_segments: 1
       assets:
-        type: avsectester.rendering.signs:SignAsset
+        type: avsectester.implemented_attacks.object_insertion_attack.assets:SignAsset
         options: {}
       sensor: front
       placement:
-        type: avsectester.attack.placement:WorldPlacement
+        type: avsectester.attack.insertion.placement:WorldPlacement
         options:
           position_m:
           - 28.0
           - -3.0
           - 0.0
       orientation:
-        type: avsectester.attack.placement:Orientation
+        type: avsectester.attack.insertion.placement:Orientation
         options:
           mode: face_ego
       placement_relative_to_ego_origin: true

@@ -5,9 +5,10 @@ import numpy as np
 import pytest
 
 from avsectester.closed_loop.avstacks.alpamayo import AlpamayoAVStack
-from avsectester.closed_loop.datatypes import Observation
-from avsectester.closed_loop.driving_adapters import alpamayo_driving_adapter
-from avsectester.closed_loop.services import ClosedLoopServices
+from avsectester.data_types import Observation
+from avsectester.runlog import Recorder, RunLog, StepRecord
+from avsectester.closed_loop.avstacks.alpamayo import alpamayo_driving_adapter
+from avsectester.execution.services import ClosedLoopServices
 from tests.fakes import MemoryDataset, MemorySimulator
 
 
@@ -71,3 +72,22 @@ def test_close(alpamayo_model_boundary):
     assert not borrowed_model.closed and borrowed.models == {}
     with pytest.raises(ValueError, match="checkpoint_path"):
         AlpamayoAVStack(checkpoint_path="", device="cpu").reset(observation)
+
+
+def test_native_records(alpamayo_model_boundary, tmp_path):
+    avstack = AlpamayoAVStack(model=alpamayo_model_boundary.create(),
+                              camera_ids=["front"], device="cpu")
+    observation = Observation(0., 0, {"front": np.zeros((4, 6, 3), np.uint8)})
+    avstack.reset(observation)
+    command = avstack(observation)
+    components = avstack.component_log()
+    with Recorder(tmp_path) as recorder:
+        recorder.record_step(StepRecord(0, components=components, produced_command=command))
+    saved = RunLog.read(tmp_path).steps[0]
+    assert saved.components["policy"]["selected_index"] == 0
+    assert saved.components["policy"]["reasoning_text"] == "clear"
+    np.testing.assert_array_equal(saved.components["policy"]["candidate_positions"],
+                                  components["policy"].candidate_positions)
+    assert saved.produced_command.trajectory == command.trajectory
+    assert components["policy"].reasoning_text == "clear"
+    avstack.close()

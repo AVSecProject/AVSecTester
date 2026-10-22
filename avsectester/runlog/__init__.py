@@ -1,11 +1,10 @@
 """The run log: one record of everything captured during a run, with Parquet persistence.
 
-:mod:`~avsectester.runlog.log` holds the records, the recorder and the readers;
-:mod:`~avsectester.runlog.codecs` holds the native-object codecs of the supplied adapters.
+:mod:`~avsectester.runlog.log` holds the records, the recorder and the readers.
+Record and native conversions share :mod:`~avsectester.serialization`.
 """
 
 from avsectester.runlog.log import (
-    CodecRegistry,
     EventRecord,
     Recorder,
     RunLog,
@@ -13,4 +12,4 @@ from avsectester.runlog.log import (
     read_table,
 )
 
-__all__ = ["CodecRegistry", "EventRecord", "Recorder", "RunLog", "StepRecord", "read_table"]
+__all__ = ["EventRecord", "Recorder", "RunLog", "StepRecord", "read_table"]

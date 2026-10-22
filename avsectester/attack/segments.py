@@ -13,6 +13,7 @@ import numpy as np
 
 from avsectester.attack.attack import AttackSegment
 from avsectester.datasets import FrameReference
+from avsectester.validation import require_positive_integer
 
 
 def split_segments(
@@ -68,10 +69,8 @@ def split_segments(
 def validate_segment_options(decision_steps: int, max_segments: int | None,
                              keep_tail: bool) -> None:
     """Validate user segment-length and count parameters before any preparation starts."""
-    if isinstance(decision_steps, bool) or not isinstance(decision_steps, int) or decision_steps < 1:
-        raise ValueError("decision_steps must be a positive integer")
-    if max_segments is not None and (isinstance(max_segments, bool)
-            or not isinstance(max_segments, int) or max_segments < 1):
-        raise ValueError("max_segments must be a positive integer or None")
+    require_positive_integer(decision_steps, "decision_steps")
+    if max_segments is not None:
+        require_positive_integer(max_segments, "max_segments")
     if not isinstance(keep_tail, bool):
         raise TypeError("keep_tail must be boolean")

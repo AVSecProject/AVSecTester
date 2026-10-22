@@ -1,9 +1,9 @@
-"""Environment validation and repeatable image transforms through the public API."""
+"""Environment validation and repeatable sensor corruptions through the public API."""
 
 import numpy as np
 import pytest
 
-from avsectester.closed_loop.datatypes import Observation
+from avsectester.data_types import Observation
 from avsectester.closed_loop.environment import (
     SensorEnvironment, merge_environments, normalize_environment, validate_environment,
 )
@@ -26,7 +26,7 @@ def test_validate_environment():
         validate_environment({"world": {"unknown": 1}}, MemorySimulator())
 
 
-TRANSFORMS = [
+CORRUPTION_CASES = [
     ("GaussianNoise", {}), ("Fog", {}), ("Rain", {}), ("Snow", {}),
     ("Brightness", {}), ("LowLight", {}), ("Contrast", {}), ("Gamma", {}),
     ("ColorTemp", {}), ("ShotNoise", {}), ("MotionBlur", {}), ("DefocusBlur", {}),
@@ -35,11 +35,13 @@ TRANSFORMS = [
 
 
 @pytest.mark.parametrize("kind,options,dependencies", [
-    *[pytest.param(kind, options, (), id=kind) for kind, options in TRANSFORMS],
+    *[pytest.param(kind, options, (), id=kind) for kind, options in CORRUPTION_CASES],
     pytest.param("AlbumentationsCorruption", {"transform": "Fog"}, ("albumentations",),
                  id="AlbumentationsCorruption"),
+    pytest.param("avsectester.closed_loop.sensor_corruptions:Brightness", {}, (),
+                 id="custom-corruption"),
 ])
-def test_sensor_transforms(kind, options, dependencies):
+def test_sensor_corruptions(kind, options, dependencies):
     for dependency in dependencies:
         pytest.importorskip(dependency)
     image = np.random.default_rng(4).integers(25, 200, (40, 48, 3), dtype=np.uint8)

@@ -4,8 +4,8 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from avsectester.geometry.poses import ActorPose
-from avsectester.geometry.projection import box_ray_distances
+from avsectester.data_types import ActorState
+from avsectester.geometry.boxes import box_ray_distances
 from avsectester.rendering import (
     ObjectAsset, ObjectVisibility, PlacedObject, PlaneSurface, blend_rgba, composite_objects, render_surfaces,
 )
@@ -61,14 +61,14 @@ def test_composite_objects(camera, optical_from_world):
 
     blocker_pose = np.eye(4)
     blocker_pose[0, 3] = 3.
-    blocker = ActorPose(blocker_pose, (.5, 20., 20.))
+    blocker = ActorState(blocker_pose, extent=(.5, 20., 20.))
     blocked = composite_objects(image, camera, optical_from_world, (placed,), occluders={"car": blocker})
     assert not blocked.visible_mask.any()
     assert blocked.object_visibility == {"sign": ObjectVisibility("actor_cuboids", (), 0)}
     np.testing.assert_array_equal(blocked.image, image)
     rows, columns = np.indices(image.shape[:2])
     rays = camera.unproject(np.column_stack((columns.ravel() + .5, rows.ravel() + .5)))
-    distances = box_ray_distances(blocker, rays, np.linalg.inv(optical_from_world))
+    distances = box_ray_distances(blocker.box_transform(), blocker.extent, rays, np.linalg.inv(optical_from_world))
     full_depth = (distances * rays[:, 2]).reshape(image.shape[:2])
     full_cast = composite_objects(image, camera, optical_from_world, (placed,), scene_depth=full_depth)
     np.testing.assert_array_equal(blocked.image, full_cast.image)
@@ -79,7 +79,7 @@ def test_composite_objects(camera, optical_from_world):
                      max(0, projected_columns.min() - 2):min(camera.width, projected_columns.max() + 3)] = True
     np.testing.assert_array_equal(blocked.depth[candidate_region], full_cast.depth[candidate_region])
     assert np.isinf(blocked.depth[~candidate_region]).all()
-    unknown = ActorPose(blocker_pose)
+    unknown = ActorState(blocker_pose)
     unmeasured = composite_objects(image, camera, optical_from_world, (placed,),
                                    occluders={"unknown": unknown})
     np.testing.assert_array_equal(unmeasured.image, result.image)

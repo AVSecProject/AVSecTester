@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
-from avsectester.closed_loop.simulator import SensorView
+from avsectester.closed_loop.simulators.base import SensorView
 from avsectester.closed_loop.simulators.recorded import RecordedReplaySimulator
 from avsectester.datasets.nurec import NuRecDataset
 from avsectester.datasets.nuscenes import NuScenesDataset
@@ -35,11 +35,11 @@ def recorded_video_frame(path: str | Path, timestamps, timestamp: float):
 
 
 def nurec_examples(usdz: Path, video: Path, output: Path, *, camera_id: str, samples: int) -> None:
-    dataset = NuRecDataset([str(usdz)], camera_id=camera_id, camera_alias=camera_id, time_step=.1)
+    dataset = NuRecDataset([str(usdz)], camera_id=camera_id, time_step=.1)
     scenario = next(dataset.scenarios())
     timeline = dataset.frames(scenario.id)
-    timestamps = dataset.camera_timestamps(str(usdz))
-    camera, ego_from_sensor = dataset.camera_geometry(str(usdz))
+    timestamps = dataset.camera_timestamps(scenario.id)
+    camera, ego_from_sensor = dataset.camera_geometry(scenario.id)
     positions = np.unique(np.linspace(0, len(timeline) - 1, samples).astype(int))
     images = []
     for position in positions:
@@ -48,8 +48,8 @@ def nurec_examples(usdz: Path, video: Path, output: Path, *, camera_id: str, sam
         rgb = recorded_video_frame(video, timestamps, frame.timestamp)
         if data.ego is None:
             raise ValueError("NuRec frame has no true ego state")
-        ego = data.ego.box_pose()
-        actors = {identity: actor.box_pose() for identity, actor in data.actors.items()}
+        ego = data.ego
+        actors = data.actors
         cam_from_world = np.linalg.inv(data.ego.pose @ ego_from_sensor)
         view = SensorView(camera_id, rgb, camera, cam_from_world,
                           actors, ego, frame.timestamp, frame.position,
@@ -64,7 +64,7 @@ def nuscenes_examples(dataroot: Path, output: Path, *, version: str, samples: in
     timeline = dataset.frames(scenario.id)
     positions = np.unique(np.linspace(0, len(timeline) - 1, samples).astype(int))
     images = []
-    simulator = RecordedReplaySimulator()
+    simulator = RecordedReplaySimulator(camera_aliases={"CAM_FRONT": "front"})
     with simulator.create_runtime() as simulator_runtime:
         for position in positions:
             frame = timeline[int(position)]

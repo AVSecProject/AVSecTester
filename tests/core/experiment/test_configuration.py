@@ -1,17 +1,68 @@
 """Configuration is loaded through its public constructors and validation API."""
 
+from collections.abc import Sequence
 from copy import deepcopy
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
-from PIL import Image
 import pytest
 import yaml
 
-from avsectester.attack.placement import WorldPlacement
+from avsectester.attack import Attack
 from avsectester.experiment import load_configuration
-from avsectester.experiment.config import resolve_type
 from avsectester.experiment.engine import validate_configuration_environment
 from tests.fakes import ConstantAVStack, MemoryDataset, MemorySimulator, MinimalAttack
+
+if TYPE_CHECKING:
+    import pathlib as annotation_paths
+    from collections.abc import Hashable as AnnotationOption
+
+
+class NestedPathOptions:
+    """A user component distinguishes ordinary strings from filesystem paths."""
+
+    def __init__(self, path: str, source: str | Path):
+        self.path = path
+        self.source = source
+
+
+class UserPathAttack(Attack):
+    """A user attack declares its own path parameters without framework key names."""
+
+    def __init__(self, source: Path, sources: Sequence[str | Path] = (),
+                 untyped=None, payload: Any = None, settings: dict[str, Any] | None = None,
+                 nested: NestedPathOptions | None = None, **options):
+        self.source = source
+        self.sources = sources
+        self.untyped = untyped
+        self.payload = payload
+        self.settings = settings
+        self.nested = nested
+        self.options = options
+
+    def build_metadata(self, scenario):
+        return ()
+
+
+class UnresolvedPathAttack(Attack):
+    """An unresolved path annotation cannot safely identify filesystem inputs."""
+
+    def __init__(self, source: "annotation_paths.Path"):
+        self.source = source
+
+    def build_metadata(self, scenario):
+        return ()
+
+
+class UnresolvedOptionAttack(Attack):
+    """An unrelated forward reference does not hide a valid path annotation."""
+
+    def __init__(self, source: str | Path, setting: "AnnotationOption" = None):
+        self.source = source
+        self.setting = setting
+
+    def build_metadata(self, scenario):
+        return ()
 
 
 def specification():
@@ -35,20 +86,19 @@ def test_load_configuration(tmp_path):
     ]
     assert load_configuration(loaded) is loaded
 
-    Image.new("RGBA", (3, 2), (255, 255, 255, 255)).save(tmp_path / "texture.png")
-    (tmp_path / "attack.yaml").write_text(yaml.safe_dump({
-        "type": "tests.fakes:MinimalAttack", "options": {"assets": {
-            "type": "avsectester.attack.insertion.assets:ImageTexture", "options": {"image": "texture.png"},
-        }},
+    attack_directory = tmp_path / "definitions"
+    attack_directory.mkdir()
+    (attack_directory / "attack.yaml").write_text(yaml.safe_dump({
+        "type": f"{__name__}:UserPathAttack", "options": {"source": "texture.png"},
     }))
-    spec["attacks"] = {"probe": "attack.yaml"}
+    spec["attacks"] = {"probe": "definitions/attack.yaml"}
     spec["runs"] = {"output": "results"}
     path = tmp_path / "experiment.yaml"
     path.write_text(yaml.safe_dump(spec))
     for source in (str(path), path):
         loaded = load_configuration(source)
         assert loaded.runs.output == tmp_path / "results"
-        assert Path(loaded.attacks["probe"].assets.image) == tmp_path / "texture.png"
+        assert Path(loaded.attacks["probe"].source) == attack_directory / "texture.png"
 
     spec["dataset"] = {"type": "CarlaDataset", "options": {"recipes": {}, "map_directory": "maps"}}
     path.write_text(yaml.safe_dump(spec))
@@ -69,14 +119,53 @@ def test_load_configuration(tmp_path):
         load_configuration(missing)
 
 
-def test_resolve_type():
-    assert resolve_type("avsectester.attack.placement:WorldPlacement") is WorldPlacement
-    assert resolve_type("tests.fakes:ConstantAVStack") is ConstantAVStack
-    assert resolve_type("PatchAttack").__name__ == "PatchAttack"
-    with pytest.raises(ValueError, match="Available attacks"):
-        resolve_type("PatchAtack")
-    with pytest.raises(ValueError, match="package.module:name"):
-        resolve_type("tests:fakes:ConstantAVStack")
+def test_constructor_paths(tmp_path):
+    absolute = str(tmp_path / "keep" / ".." / "weights.bin")
+    uri = "https://example.test/weights.bin"
+    options = {
+        "source": "weights.bin",
+        "sources": ["first.bin", uri, absolute],
+        "untyped": "untyped.bin",
+        "payload": "payload.bin",
+        "settings": {"image": "ordinary.bin", "nested": {"path": "unchanged.bin"}},
+        "nested": {
+            "type": f"{__name__}:NestedPathOptions",
+            "options": {"path": "ordinary-string.bin", "source": "nested.bin"},
+        },
+        "image": "extra.bin",
+        "path": "extra-path.bin",
+    }
+    spec = specification()
+    spec["attacks"] = {"probe": {"type": f"{__name__}:UserPathAttack", "options": options}}
+    path = tmp_path / "experiment.yaml"
+    path.write_text(yaml.safe_dump(spec))
+    attack = load_configuration(path).attacks["probe"]
+    assert Path(attack.source) == tmp_path / "weights.bin"
+    assert Path(attack.sources[0]) == tmp_path / "first.bin"
+    assert attack.sources[1:] == [uri, absolute]
+    assert attack.untyped == "untyped.bin"
+    assert attack.payload == "payload.bin"
+    assert attack.settings == options["settings"]
+    assert attack.nested.path == "ordinary-string.bin"
+    assert Path(attack.nested.source) == tmp_path / "nested.bin"
+    assert attack.options == {"image": "extra.bin", "path": "extra-path.bin"}
+
+    spec["attacks"] = {"probe": {
+        "type": f"{__name__}:UnresolvedOptionAttack",
+        "options": {"source": "valid.bin", "setting": "unchanged.bin"},
+    }}
+    path.write_text(yaml.safe_dump(spec))
+    attack = load_configuration(path).attacks["probe"]
+    assert Path(attack.source) == tmp_path / "valid.bin"
+    assert attack.setting == "unchanged.bin"
+
+    spec["attacks"] = {"probe": {
+        "type": f"{__name__}:UnresolvedPathAttack", "options": {"source": "unknown.bin"},
+    }}
+    path.write_text(yaml.safe_dump(spec))
+    with pytest.raises(ValueError, match="path annotation") as error:
+        load_configuration(path)
+    assert "at runtime" in str(error.value)
 
 
 def test_validate_configuration_environment():

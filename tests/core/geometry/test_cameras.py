@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 
 from avsectester.geometry.cameras import (
-    BODY_FROM_OPTICAL, FThetaCamera, PinholeCamera, camera_ray_mask, make_pose, planar_rig_pose, transform,
+    BODY_FROM_OPTICAL, FThetaCamera, PinholeCamera, camera_ray_mask,
 )
 
 
@@ -38,11 +38,4 @@ def test_camera_ray_mask(camera):
 
 
 def test_camera_world_transform():
-    np.testing.assert_array_equal(transform(BODY_FROM_OPTICAL, [[1., 2., 3.]]), [[3., -1., -2.]])
-    world_from_rig = planar_rig_pose(10., 5., np.pi / 2)
-    rig_from_sensor = make_pose(np.eye(3), (1., 0., 2.))
-    world_from_sensor = world_from_rig @ rig_from_sensor
-    np.testing.assert_allclose(transform(world_from_sensor, [[0., 0., 0.]]), [[10., 6., 2.]])
-    point = np.array([[1., 2., 3.]])
-    np.testing.assert_allclose(transform(np.linalg.inv(world_from_sensor),
-                                        transform(world_from_sensor, point)), point)
+    np.testing.assert_array_equal(BODY_FROM_OPTICAL @ [1., 2., 3., 1.], [3., -1., -2., 1.])

@@ -8,9 +8,11 @@
 
 ## AVStack interface
 
-An AVStack accepts Observation and returns Control. It owns model-visible VehicleIO and per-run
-model history. `reset(first_observation)` receives the already processed first input; VehicleIO does
-not transform that input or reset the localizer twice.
+An AVStack accepts Observation and returns Control. It owns model-visible ObservationPipeline and per-run
+model history. `reset(first_observation)` receives the already processed first input;
+ObservationPipeline does not transform that input or reset the localizer twice. Its processing order
+is sensors.post hooks, the localizer, localization hooks and observation hooks. It does not process
+output commands.
 
 Declare command_modes and supported_stages. Unsupported commands fail before a world starts unless
 an explicit command hook converts them. Actual commands are checked again before execution. The
@@ -99,8 +101,9 @@ whether gradients are available. Closed-loop services reject unsupported gradien
 of detaching values and continuing.
 
 An optional `avstack.bindings` constructor receives the configured AVStack factory. It returns a
-DrivingAdapter. Built-in bindings live in closed_loop/driving_adapters.py and detector scorers in
-closed_loop/avstacks/scorers.py.
+DrivingAdapter from closed_loop/avstacks/driving_adapter.py. The modular_driving_adapter binding lives in
+closed_loop/avstacks/modular.py; alpamayo_driving_adapter lives in closed_loop/avstacks/alpamayo.py.
+Detector scorers live in closed_loop/avstacks/scorers.py.
 
 ## Use a custom driving system
 
@@ -109,8 +112,8 @@ behavior. Keep heavyweight imports in the implementation rather than shared data
 
 <!-- runnable -->
 ```python
-from avsectester.closed_loop.avstack import AVStack
-from avsectester.closed_loop.datatypes import Control, Observation
+from avsectester.closed_loop.avstacks.base import AVStack
+from avsectester.data_types import Control, Observation
 
 class CruiseControl(AVStack):
     def __init__(self, target_speed=5.0):
@@ -129,8 +132,13 @@ assert CruiseControl()(Observation(0, 0, ego_speed=0)).throttle == 1
 ```
 
 Select an importable class as `avstack.type: my_project.driving:CruiseControl`; place constructor
-parameters under options. The loader calls it with those options for every run, without passing a
-seed. See [Driving specification](../reference/configuration.md#driving-specification).
+parameters under options. Keep the class in your own package; no file under
+avsectester/closed_loop/avstacks needs editing. The loader calls it with those options for every
+run, without passing a seed. See [Driving
+specification](../reference/configuration.md#driving-specification).
+
+Annotate filesystem constructor parameters as Path or str | Path. The loader uses these annotations
+for [relative paths](../reference/configuration.md#constructor-filesystem-parameters).
 
 ## Models used in this repository
 

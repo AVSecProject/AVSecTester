@@ -10,7 +10,6 @@ import json
 import io
 import math
 import zipfile
-import xml.etree.ElementTree as ElementTree
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -18,34 +17,16 @@ from typing import Any, TYPE_CHECKING
 
 import numpy as np
 
-from avsectester.datasets.base import ActorState, Dataset, Unavailable
+from avsectester.data_types import ActorState, Unavailable
+from avsectester.datasets.base import Dataset
+from avsectester.geometry.poses import interpolate_transform, make_pose, quaternion_to_rotation
+from avsectester.maps.clipgt import read_clipgt
 
 if TYPE_CHECKING:
     from avsectester.maps.scenario_map import ScenarioMap
 
 # Classification controls target selection, never which cuboids can occlude an insertion.
 _VEHICLE_LABELS = ("automobile", "car", "truck", "bus", "trailer", "van", "vehicle")
-
-
-def _quat_to_rot(quat: np.ndarray) -> np.ndarray:
-    """Rotation matrix from an ``xyzw`` (scipy / NRE-export order) unit quaternion."""
-    x, y, z, w = (float(v) for v in quat)
-    n = math.sqrt(x * x + y * y + z * z + w * w) or 1.0
-    x, y, z, w = x / n, y / n, z / n, w / n
-    return np.array(
-        [
-            [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
-            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
-            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
-        ]
-    )
-
-
-def _se3(rot: np.ndarray, trans: np.ndarray) -> np.ndarray:
-    m = np.eye(4)
-    m[:3, :3] = rot
-    m[:3, 3] = np.asarray(trans, dtype=np.float64)
-    return m
 
 
 @dataclass
@@ -78,7 +59,7 @@ class _CameraCalibration:
 
 
 def _interpolate_pose(timestamps, poses, timestamp_us: int) -> np.ndarray | None:
-    """Linearly interpolate translation and slerp xyzw orientation without extrapolating."""
+    """Bracket native xyzw track poses by timestamp without extrapolating."""
     ts = np.asarray(timestamps, dtype=np.int64)
     if not len(ts) or timestamp_us < ts[0] or timestamp_us > ts[-1]:
         return None
@@ -86,31 +67,16 @@ def _interpolate_pose(timestamps, poses, timestamp_us: int) -> np.ndarray | None
     values = np.asarray(poses, dtype=float)
     if i == 0 or ts[i] == timestamp_us:
         p = values[i]
-        return _se3(_quat_to_rot(p[3:]), p[:3])
-    a = float(timestamp_us - ts[i - 1]) / float(ts[i] - ts[i - 1])
-    p0, p1 = values[i - 1], values[i]
-    q0, q1 = p0[3:] / np.linalg.norm(p0[3:]), p1[3:] / np.linalg.norm(p1[3:])
-    dot = float(q0 @ q1)
-    if dot < 0:
-        q1, dot = -q1, -dot
-    if dot > 0.9995:
-        q = (1 - a) * q0 + a * q1
-    else:
-        theta = math.acos(np.clip(dot, -1, 1))
-        q = (math.sin((1 - a) * theta) * q0 + math.sin(a * theta) * q1) / math.sin(theta)
-    return _se3(_quat_to_rot(q), (1 - a) * p0[:3] + a * p1[:3])
-
-
-def _matrix_quaternion(matrix):
-    """Stable xyzw quaternion from an SO(3) matrix, including rotations near pi."""
-    m = np.asarray(matrix)
-    k = np.array([
-        [m[0, 0]-m[1, 1]-m[2, 2], m[1, 0]+m[0, 1], m[2, 0]+m[0, 2], m[2, 1]-m[1, 2]],
-        [m[1, 0]+m[0, 1], m[1, 1]-m[0, 0]-m[2, 2], m[2, 1]+m[1, 2], m[0, 2]-m[2, 0]],
-        [m[2, 0]+m[0, 2], m[2, 1]+m[1, 2], m[2, 2]-m[0, 0]-m[1, 1], m[1, 0]-m[0, 1]],
-        [m[2, 1]-m[1, 2], m[0, 2]-m[2, 0], m[1, 0]-m[0, 1], np.trace(m)],
-    ]) / 3
-    return np.linalg.eigh(k)[1][:, -1]
+        return make_pose(quaternion_to_rotation(p[6], p[3], p[4], p[5]), p[:3])
+    fraction = float(timestamp_us - ts[i - 1]) / float(ts[i] - ts[i - 1])
+    first, second = values[i - 1], values[i]
+    first_pose = make_pose(
+        quaternion_to_rotation(first[6], first[3], first[4], first[5]), first[:3],
+    )
+    second_pose = make_pose(
+        quaternion_to_rotation(second[6], second[3], second[4], second[5]), second[:3],
+    )
+    return interpolate_transform(first_pose, second_pose, fraction)
 
 
 def _interpolate_rig(timestamps, transforms, timestamp_us):
@@ -119,224 +85,8 @@ def _interpolate_rig(timestamps, transforms, timestamp_us):
     i = int(np.searchsorted(timestamps, timestamp_us))
     if timestamps[i] == timestamp_us:
         return transforms[i].copy()
-    poses = [np.r_[m[:3, 3], _matrix_quaternion(m[:3, :3])] for m in transforms[i-1:i+1]]
-    return _interpolate_pose(timestamps[i-1:i+1], poses, timestamp_us)
-
-
-def _map_points(values):
-    """Read one clipgt polyline; placeholder rows contain no geometry."""
-    if not values:
-        return np.empty((0, 3), dtype=float)
-    return np.asarray([[point[axis] for axis in ("x", "y", "z")] for point in values], dtype=float)
-
-
-def _matched_rails(left, right):
-    """Pair rail points by normalized arc length before taking their midpoint."""
-    count = max(len(left), len(right))
-    fractions = np.linspace(0., 1., count)
-
-    def resample(points):
-        distance = np.r_[0., np.cumsum(np.linalg.norm(np.diff(points, axis=0), axis=1))]
-        if distance[-1] == 0:
-            return np.repeat(points[:1], count, axis=0)
-        return np.column_stack([np.interp(fractions, distance / distance[-1], points[:, axis])
-                                for axis in range(3)])
-
-    return (resample(left) + resample(right)) / 2
-
-
-def _speed_multiplier(archive):
-    """Use explicit OpenDRIVE units; bare clipgt speed numbers do not declare a unit."""
-    if "map.xodr" not in archive.namelist():
-        return None
-    root = ElementTree.fromstring(archive.read("map.xodr"))
-    units = {element.get("unit") for element in root.findall(".//speed")
-             if element.get("max") not in {None, "0", "undefined", "no limit"}}
-    if len(units) != 1:
-        return None
-    return {"mph": .44704, "km/h": 1 / 3.6, "m/s": 1.}.get(next(iter(units)))
-
-
-def _lane_kind(record):
-    uses = set(record.get("use_types") or ())
-    for token, kind in (("SHOULDER_LANE", "shoulder"), ("PARKING_LANE", "parking")):
-        if token in uses:
-            return kind
-    vehicles = set(record.get("vehicle_types") or ())
-    if "CAR" in vehicles:
-        return "driving"
-    if vehicles == {"BICYCLE"}:
-        return "bike"
-    return "other"
-
-
-def _control_kind(category):
-    # These source categories denote MUTCD R1-1, R1-2 and R2-1. Other signs that
-    # mention stopping or yielding impose different rules and retain kind="other".
-    return {
-        "TRAFFIC_SIGN_REGULATORY_R1_STOP": "stop_sign",
-        "TRAFFIC_SIGN_REGULATORY_R1_YIELD": "yield_sign",
-        "TRAFFIC_SIGN_REGULATORY_R2_SPEED_LIMIT": "speed_limit",
-    }.get(category, "other")
-
-
-def _read_clipgt_map(archive):
-    import pyarrow.parquet as parquet
-
-    from avsectester.maps.scenario_map import (
-        STOP_LINE_KIND_BY_CONTROL_KIND, Lane, ScenarioMap, StopLine, TrafficControl,
-    )
-
-    unavailable = {}
-    missing_tables = {}
-
-    def records(layer):
-        name = f"clipgt/{layer}.parquet"
-        if name not in archive.namelist():
-            missing_tables[layer] = f"NuRec archive has no {name}"
-            return ()
-        rows = parquet.read_table(io.BytesIO(archive.read(name))).to_pylist()
-        return tuple((row.get("key") or {}, row.get(layer) or {}) for row in rows)
-
-    lane_records = {}
-    for key, record in records("lane"):
-        left, right = _map_points(record.get("left_rail")), _map_points(record.get("right_rail"))
-        if key.get("map_id") is not None and len(left) >= 2 and len(right) >= 2:
-            lane_records[str(key["map_id"])] = (record, left, right)
-
-    control_records = {}
-    for layer in ("traffic_sign", "traffic_light"):
-        valid_controls = 0
-        for key, record in records(layer):
-            center, dimensions = record.get("center") or {}, record.get("dimensions") or {}
-            orientation = record.get("orientation") or {}
-            values = [*(center.get(axis) for axis in ("x", "y", "z")),
-                      *(dimensions.get(axis) for axis in ("x", "y", "z")),
-                      *(orientation.get(axis) for axis in ("x", "y", "z", "w"))]
-            if all(value is None for value in values):
-                continue
-            if key.get("map_id") is None or any(value is None for value in values):
-                unavailable["traffic_controls.partial"] = (
-                    "Some NuRec controls lack an identity, pose or dimensions")
-                continue
-            category = str(record.get("category") or "")
-            pose = _se3(_quat_to_rot(np.array([orientation[axis] for axis in ("x", "y", "z", "w")])),
-                        np.array([center[axis] for axis in ("x", "y", "z")]))
-            extent = tuple(float(dimensions[axis]) for axis in ("x", "y", "z"))
-            control_records[str(key["map_id"])] = (
-                "traffic_light" if layer == "traffic_light" else _control_kind(category),
-                category, pose, extent,
-            )
-            valid_controls += 1
-        if layer == "traffic_light" and not valid_controls:
-            unavailable["traffic_controls.traffic_light"] = missing_tables.get(layer) or (
-                "NuRec traffic_light source contains no valid light geometry")
-
-    line_records = {}
-    source_line_flags = []
-    for key, record in records("wait_line"):
-        if key.get("map_id") is not None:
-            source_line_flags.append(record.get("is_implicit"))
-        points = _map_points(record.get("location"))
-        if (record.get("is_implicit") is False and key.get("map_id") is not None
-                and len(points) >= 2):
-            # STOP is a paint label shared by signal-controlled and stop-controlled
-            # approaches. The lane's controlling light/sign determines the line kind.
-            line_records[str(key["map_id"])] = (points, str(record.get("category") or ""))
-    implicit_only = bool(source_line_flags) and all(flag is True for flag in source_line_flags)
-
-    neighbors = {identity: {name: [] for name in ("predecessors", "successors", "left", "right")}
-                 for identity in lane_records}
-    control_lanes = {identity: set() for identity in control_records}
-    line_lanes = {identity: set() for identity in line_records}
-    lane_relations = {"PREVIOUS_LANE": "predecessors", "NEXT_LANE": "successors",
-                      "LEFT_LANE": "left", "RIGHT_LANE": "right"}
-    for key, record in records("association"):
-        relation = lane_relations.get(key.get("kind"))
-        for subject in record.get("subjects") or ():
-            for target in record.get("objects") or ():
-                subject, target = str(subject), str(target)
-                if relation and subject in neighbors and target in neighbors:
-                    neighbors[subject][relation].append(target)
-                # Real clipgt SIGN_TO_LANE/LIGHT_TO_LANE/WAIT_LINE_TO_LANE rows put the
-                # lane in subjects. Identify endpoints by their layer instead of the label.
-                for first, second in ((subject, target), (target, subject)):
-                    if first in lane_records and second in control_records:
-                        control_lanes[second].add(first)
-                    if first in lane_records and second in line_records:
-                        line_lanes[second].add(first)
-
-    lane_controls = {identity: set() for identity in lane_records}
-    control_lines = {identity: set() for identity in control_records}
-    for control_id, lane_ids in control_lanes.items():
-        if control_records[control_id][0] in STOP_LINE_KIND_BY_CONTROL_KIND:
-            for lane_id in lane_ids:
-                lane_controls[lane_id].add(control_id)
-    line_controls = {identity: set().union(*(lane_controls[lane_id] for lane_id in lane_ids))
-                     for identity, lane_ids in line_lanes.items()}
-    for line_id, control_ids in line_controls.items():
-        for control_id in control_ids:
-            control_lines[control_id].add(line_id)
-
-    multiplier = _speed_multiplier(archive)
-    lanes = {}
-    for identity, (record, left, right) in lane_records.items():
-        speed = None
-        value = record.get("speed_limit")
-        if value in (None, "", "0", 0):
-            unavailable["lanes.speed_limit_mps"] = "Some NuRec lane speed limits are missing or unspecified"
-        else:
-            if multiplier is None:
-                unavailable["lanes.speed_limit_mps"] = "NuRec lane speed values have no confirmed unit"
-            else:
-                speed = float(value) * multiplier
-        relation = neighbors[identity]
-        lanes[identity] = Lane(
-            id=identity, centerline=_matched_rails(left, right), left_boundary=left,
-            right_boundary=right, lane_type=_lane_kind(record),
-            predecessors=tuple(dict.fromkeys(relation["predecessors"])),
-            successors=tuple(dict.fromkeys(relation["successors"])),
-            left_neighbor=next(iter(relation["left"]), None),
-            right_neighbor=next(iter(relation["right"]), None), speed_limit_mps=speed,
-        )
-    controls = {identity: TrafficControl(
-        id=identity, kind=kind, native_category=category, pose=pose, extent=extent,
-        pose_reference="face_center",
-        lane_ids=tuple(sorted(control_lanes[identity])),
-        stop_line_id=next(iter(control_lines[identity])) if len(control_lines[identity]) == 1 else None,
-    ) for identity, (kind, category, pose, extent) in control_records.items()}
-    lines = {}
-    for identity, (points, native_category) in line_records.items():
-        controller_ids = line_controls[identity]
-        kinds = {STOP_LINE_KIND_BY_CONTROL_KIND[control_records[control_id][0]] for control_id in controller_ids}
-        lines[identity] = StopLine(
-            id=identity, points=points, native_category=native_category,
-            kind=next(iter(kinds)) if len(kinds) == 1 else "unknown",
-            lane_ids=tuple(sorted(line_lanes[identity])),
-            control_id=next(iter(controller_ids)) if len(controller_ids) == 1 else None,
-        )
-
-    def geometries(layer, minimum):
-        return tuple(points for _key, record in records(layer)
-                     if len(points := _map_points(record.get("location"))) >= minimum)
-
-    values: dict[str, Any] = {"lanes": lanes, "traffic_controls": controls, "stop_lines": lines}
-    layers: dict[str, tuple[str, ...]] = {
-        "lanes": ("lane",), "traffic_controls": ("traffic_sign", "traffic_light"),
-        "stop_lines": ("wait_line",),
-    }
-    for name, layer, minimum in (("drivable_area", "drivable_space", 3),
-            ("road_boundaries", "road_boundary", 2), ("crosswalks", "crosswalk", 3),
-            ("intersections", "intersection_area", 3)):
-        values[name] = geometries(layer, minimum)
-        layers[name] = (layer,)
-    for name, records_in_layer in values.items():
-        if not records_in_layer:
-            if name == "stop_lines" and implicit_only:
-                continue
-            reasons = [missing_tables[layer] for layer in layers[name] if layer in missing_tables]
-            unavailable[name] = "; ".join(reasons) or "NuRec source layer contains no valid geometry"
-    return ScenarioMap(**values, unavailable_layers=unavailable)
+    fraction = float(timestamp_us - timestamps[i - 1]) / float(timestamps[i] - timestamps[i - 1])
+    return interpolate_transform(transforms[i - 1], transforms[i], fraction)
 
 
 def read_scene_mesh(usdz_path: str | Path) -> tuple[np.ndarray, np.ndarray]:
@@ -375,16 +125,15 @@ class NuRecDataset(Dataset):
     Each USDZ file is one scenario, identified by NuRec's own scene ID (``clipgt-<uuid>``), the
     ID the NuRec renderer loads. Frame data and scenario starts interpolate the recorded rig
     trajectory and actor tracks within recorded support. ``camera_id`` is NuRec's camera ID
-    (for example ``camera_front_wide_120fov``); ``camera_alias`` is the sensor name used in
-    observations and scene calibration. Native annotations are available per file through
-    ``raw_metadata`` and ``open_archive``.
+    (for example ``camera_front_wide_120fov``). Sensor names remain native here; simulators
+    configure any observation aliases. Native annotations are available per scenario through
+    ``raw_metadata``; ``open_archive`` provides read-only archive access.
     """
 
     def __init__(
         self,
-        usdz_paths: list[str],
+        usdz_paths: list[str | Path],
         camera_id: str = "camera_front_wide_120fov",
-        camera_alias: str = "front",
         vehicle_labels: tuple[str, ...] = _VEHICLE_LABELS,
         time_step: float = 0.1,
     ) -> None:
@@ -395,18 +144,18 @@ class NuRecDataset(Dataset):
             raise ValueError("time_step must be representable in integer microseconds")
         self.time_step = self._step_us / 1e6
         self.usdz_paths = [str(p) for p in usdz_paths]
-        self.camera_id, self.camera_alias = camera_id, camera_alias
+        self.camera_id = camera_id
         self.vehicle_labels = tuple(vehicle_labels)
         self._paths_by_id: dict[str, str] | None = None
 
     @classmethod
-    def from_glob(cls, pattern: str, **kwargs) -> NuRecDataset:
+    def from_glob(cls, pattern: str | Path, **kwargs) -> NuRecDataset:
         import glob
 
-        return cls(sorted(glob.glob(pattern, recursive=True)), **kwargs)
+        return cls(sorted(glob.glob(str(pattern), recursive=True)), **kwargs)
 
     @staticmethod
-    def open_archive(path: str) -> zipfile.ZipFile:
+    def open_archive(path: str | Path) -> zipfile.ZipFile:
         """Open the scene archive read-only. The caller closes it, preferably with ``with``."""
         return zipfile.ZipFile(path, "r")
 
@@ -423,10 +172,11 @@ class NuRecDataset(Dataset):
                 for name in ("rig_trajectories.json", "sequence_tracks.json")
             }
 
-    def raw_metadata(self, path: str) -> dict[str, Any]:
+    def raw_metadata(self, scenario_id: str) -> dict[str, Any]:
+        """Return an independent copy of this scenario's native annotations."""
         from copy import deepcopy
 
-        return deepcopy(self._raw_metadata(path))
+        return deepcopy(self._raw_metadata(self._path(scenario_id)))
 
     def _camera_data(self, path):
         raw = self._raw_metadata(str(path))
@@ -438,8 +188,11 @@ class NuRecDataset(Dataset):
         transforms = np.asarray(traj["cameras_frame_T_rig_worlds"][key], dtype=float)
         return raw, traj, key, cam, ts, transforms
 
-    def camera_geometry(self, path: str):
+    def camera_geometry(self, scenario_id: str):
         """Return an independent optical camera model and its rig-from-camera pose."""
+        return self._camera_geometry(self._path(scenario_id))
+
+    def _camera_geometry(self, path: str):
         from avsectester.geometry.cameras import FThetaCamera as Lens
 
         _raw, _trajectory, _key, camera, _times, _poses = self._camera_data(str(path))
@@ -450,11 +203,14 @@ class NuRecDataset(Dataset):
             max_angle=camera.max_angle, linear_cde=camera.linear_cde,
         ), camera.t_sensor_rig.copy()
 
-    def camera_timestamps(self, path: str) -> np.ndarray:
+    def camera_timestamps(self, scenario_id: str) -> np.ndarray:
         """Recorded video-frame timestamps in seconds, distinct from decision positions."""
+        return self._camera_timestamps(self._path(scenario_id))
+
+    def _camera_timestamps(self, path: str) -> np.ndarray:
         return self._camera_data(str(path))[-2][:, 0].astype(float) / 1e6
 
-    def scene_id(self, path: str) -> str:
+    def _scene_id(self, path: str) -> str:
         """NuRec's scene ID of a USDZ file, as used by the NuRec renderer."""
         _raw, traj, key, *_ = self._camera_data(path)
         scene_id = key.split("@")[1] if "@" in key else traj.get("sequence_id")
@@ -466,7 +222,7 @@ class NuRecDataset(Dataset):
         if self._paths_by_id is None:
             paths: dict[str, str] = {}
             for path in self.usdz_paths:
-                scene_id = self.scene_id(path)
+                scene_id = self._scene_id(path)
                 if scene_id in paths:
                     raise ValueError(f"NuRec scene {scene_id!r} occurs in {paths[scene_id]} and {path}")
                 paths[scene_id] = path
@@ -500,7 +256,7 @@ class NuRecDataset(Dataset):
                 if "map.xodr" in archive.namelist():
                     return Unavailable("NuRec map.xodr coordinate alignment to the scenario is unconfirmed")
                 return Unavailable("NuRec archive provides neither clipgt map layers nor map.xodr")
-            return _read_clipgt_map(archive)
+            return read_clipgt(archive)
 
     def scenarios(self):
         from .base import ScenarioDescriptor
@@ -521,8 +277,8 @@ class NuRecDataset(Dataset):
 
         self.checked_frame(scenario_id, frame)
         path = self._path(scenario_id)
-        ego = self.ego_state(path, round(frame.timestamp * 1e6))
-        actors = self.actor_states(path, round(frame.timestamp * 1e6))
+        ego = self.ego_state(scenario_id, round(frame.timestamp * 1e6))
+        actors = self.actor_states(scenario_id, round(frame.timestamp * 1e6))
         return FrameData(
             frame, actors=actors, ego=ego,
             provenance={"kind": "interpolated", "usdz_path": path,
@@ -531,7 +287,7 @@ class NuRecDataset(Dataset):
         )
 
     def native(self, scenario_id):
-        return self.raw_metadata(self._path(scenario_id))
+        return self.raw_metadata(scenario_id)
 
     def scenario_start(self, scenario_id, frame):
         from .base import ScenarioStart
@@ -540,15 +296,18 @@ class NuRecDataset(Dataset):
         path = self._path(scenario_id)
         timeline = self.frames(scenario_id)
         return ScenarioStart("NuRecDataset", scenario_id, frame, {
-            "usdz_path": path, "camera_id": self.camera_id, "camera_alias": self.camera_alias,
-            "scene_id": scenario_id, "ego": self.ego_state(path, round(frame.timestamp * 1e6)),
+            "usdz_path": path, "camera_id": self.camera_id,
+            "scene_id": scenario_id, "ego": self.ego_state(scenario_id, round(frame.timestamp * 1e6)),
             "time_step": self.time_step, "interpolation": "linear_translation_slerp_rotation",
             "first_timestamp": timeline[0].timestamp,
             "terminal_timestamp": timeline[-1].timestamp,
         })
 
-    def ego_state(self, path: str, timestamp_us: int) -> ActorState:
+    def ego_state(self, scenario_id: str, timestamp_us: int) -> ActorState:
         """Interpolate the recorded rig pose and world velocity within its support."""
+        return self._ego_state(self._path(scenario_id), timestamp_us)
+
+    def _ego_state(self, path: str, timestamp_us: int) -> ActorState:
         _raw, trajectory, _key, _cam, timestamps, transforms = self._camera_data(str(path))
         times, poses = timestamps[:, 0], transforms[:, 0]
         pose = _interpolate_rig(times, poses, timestamp_us)
@@ -564,18 +323,15 @@ class NuRecDataset(Dataset):
             tuple(float(v) for v in bbox.get("centroid", (0, 0, 0))),
         )
 
-    def actor_poses(self, path: str, timestamp_us: int):
-        """World poses and full cuboid dimensions for every actor present at this timestamp."""
-        tracks = self._raw_metadata(str(path))["sequence_tracks.json"]
-        return {actor_id: ActorState(pose, extent=extent).box_pose()
-                for actor_id, _label, extent, pose in self._track_states(tracks, timestamp_us)}
-
-    def actor_states(self, path: str, timestamp_us: int) -> dict[str, ActorState]:
+    def actor_states(self, scenario_id: str, timestamp_us: int) -> dict[str, ActorState]:
         """Recorded actors at this timestamp: world pose, velocity and category, by track ID.
 
         Velocity is the position difference over one ``time_step``, backward where the track
         exists one step earlier, otherwise forward; it is ``None`` for a single-sample track.
         """
+        return self._actor_states(self._path(scenario_id), timestamp_us)
+
+    def _actor_states(self, path: str, timestamp_us: int) -> dict[str, ActorState]:
         tracks = self._raw_metadata(str(path))["sequence_tracks.json"]
         step_us = round(self.time_step * 1e6)
         before = {tid: pose for tid, _, _, pose in self._track_states(tracks, timestamp_us - step_us)}

@@ -144,7 +144,7 @@ not required just to import the plain interfaces. Constraints keep NumPy below 2
 | avstack | Native avstack packages from the configured source submodules |
 | rendering | OpenCV and Pillow for attack rendering |
 | nurec | Pinned trimesh/Embree dependencies for NuRec mesh depth and its offline tests |
-| augment | Albumentations sensor transforms |
+| augment | Albumentations sensor corruptions |
 | test | CPU test image, plot and augmentation dependencies |
 | dev | pytest, Ruff and mypy |
 
@@ -266,13 +266,13 @@ docker run -d --name nre --net=host --gpus 'device=0' -e HOME=/tmp \
   --entrypoint /app/internal/scripts/pycena/runtime/pycena_nrm_full \
   nvcr.io/nvidia/nre/nre-ga:26.04 serve-grpc --host=0.0.0.0 --port=50051 \
   '--artifact-glob=/mnt/nre-data/**/*.usdz' --cache-size=2 \
-  --enable-editing-actors --no-replicate-training-views
+  --enable-editing-actors
 ```
 
-NuRecRenderer accepts a served scene id or an unambiguous substring. NuRecDataset.scene_id(path)
-returns its native clip id. Set dataset time_step and simulator dt consistently.
+NuRecRenderer accepts a served scene id or an unambiguous substring. NuRecDataset.scenarios()
+returns native clip identifiers. Set dataset time_step and simulator dt consistently.
 
-Both --enable-editing-actors and --no-replicate-training-views are required. Every render sends
+--enable-editing-actors is required. Every render sends
 the poses of all currently supported recorded tracks, including those not moved by an attack;
 with editing enabled, the service renders only the dynamic actors present in that request.
 This interface can move reconstructed actors but cannot add new geometry or textures. See
@@ -289,7 +289,7 @@ This interface can move reconstructed actors but cannot add new geometry or text
 The script stores checkpoints under models/work_dirs/, models/work_dirs_2d/ and models/checkpoints/,
 and links them into the vendored detector checkouts. Existing files are reused. No training data is
 required for model metadata registration. ModularAVStack registers CARLA metadata; external model
-construction can call closed_loop.avstacks.mmdet3d.register_carla_dataset explicitly.
+construction can call closed_loop.avstacks.modular.register_carla_dataset explicitly.
 
 ### Alpamayo checkpoint
 
@@ -308,7 +308,8 @@ git -c url.https://github.com/.insteadOf=git@github.com: \
 pip install einops huggingface-hub -c constraints.txt
 ```
 
-PCTNetHarmonizer loads from the libcom checkout. Supply weights explicitly for reproducible loading.
+PCTNetHarmonizer requires libcom_directory pointing to the libcom repository root. Supply weights
+explicitly for reproducible loading; the framework does not infer the checkout path.
 Without an explicit path, it first uses libcom's pretrained_models/PCTNet.pth. If missing, the
 first harmonization call imports huggingface_hub lazily and downloads PCTNet.pth from
 BCMIZB/Libcom_pretrained_models with hf_hub_download into that directory. Construction alone does
@@ -319,7 +320,9 @@ not load the model or fetch weights.
 from avsectester.attack.insertion.compositor import PatchCompositor
 from avsectester.rendering.harmonizers import PCTNetHarmonizer
 
-harmonizer = PCTNetHarmonizer(device=0, weights="/path/to/PCTNet.pth", strict=True)
+harmonizer = PCTNetHarmonizer(
+    libcom_directory="/path/to/libcom", device=0, weights="/path/to/PCTNet.pth", strict=True,
+)
 compositor = PatchCompositor(harmonizer)
 ```
 

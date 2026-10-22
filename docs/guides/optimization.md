@@ -42,10 +42,11 @@ live with the driving adapters, not in framework attack orchestration.
 
 ## Use the optimization tools
 
-The public package exports DataSource, AdversarialSample, TargetSpec, Perturbation, Scorer,
+The public package exports DataSource, AdversarialSample, Perturbation, Scorer,
 OptimizationObjective, HideObject, SpoofObject, GradientOptimizer, OptimizationResult, PGD, NES,
 PatchPerturbation, LinfImage and SessionScorer. A user Attack supplies its own sampling logic; the
-tool does not choose hosts, scenes, placements or simulator deployment origins.
+tool does not choose hosts, scenes, placements or simulator deployment origins. TargetSpec is the
+shared image-target record imported from avsectester.data_types.
 
 This offline example optimizes a bounded additive image perturbation with PGD. It uses a simple
 local scorer so it needs no simulator or model weights:
@@ -54,8 +55,9 @@ local scorer so it needs no simulator or model weights:
 ```python
 import torch
 from avsectester.attack.optimization import (
-    AdversarialSample, DataSource, HideObject, LinfImage, PGD, Scorer, TargetSpec,
+    AdversarialSample, DataSource, HideObject, LinfImage, PGD, Scorer,
 )
+from avsectester.data_types import TargetSpec
 
 class FixedImageSource(DataSource):
     def sample(self, batch):
@@ -82,9 +84,9 @@ Use the shared geometry helpers when a sample needs calibrated spatial evidence:
 ```python
 from avsectester.geometry.projection import plane_sampling_grid, project_box, visible_plane_mask
 
-# Requires calibrated camera geometry, a plane's world-space corners and a host ActorPose.
+# Requires calibrated camera geometry, a plane's world-space corners and a host ActorState.
 grid, mask = plane_sampling_grid(camera, cam_from_world, corners)
-target_box = project_box(camera, cam_from_world, host.transform, host.extent)
+target_box = project_box(camera, cam_from_world, host.box_transform(), host.extent)
 visible = visible_plane_mask(camera, cam_from_world, depth, corners, tolerance_m=0.0002)
 ```
 
@@ -122,16 +124,14 @@ and data sources belong to the user's attack, while the same algorithms remain r
 type: PatchAttack
 options:
   decision_steps: 20
-  assets:
-    type: avsectester.attack.insertion.assets:ImageTexture
-    options: {image: ../assets/patch.png}
+  assets: ../assets/patch.png
   candidate_hosts: [lead]
   hosts_per_window: 1
   sensor: camera-0-0
   width_m: 1.0
   height_m: 0.5
   optimization:
-    type: avsectester.attack.implemented_attacks.patch_attack.offline:PatchOptimization
+    type: avsectester.implemented_attacks.patch_attack.offline:PatchOptimization
     options:
       algorithm:
         type: avsectester.attack.optimization.whitebox:PGD

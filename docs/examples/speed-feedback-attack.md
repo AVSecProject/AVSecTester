@@ -13,7 +13,7 @@ avsectester run configs/nurec_speed_feedback.yaml
 ```
 
 SpeedFeedbackAttack is defined in
-avsectester.attack.implemented_attacks.speed_feedback_attack.attack. It requires decision_steps and
+avsectester.implemented_attacks.speed_feedback_attack.attack. It requires decision_steps and
 target_speed. Options include gain=0.1, max_bias=5.0, initial_bias=0.0, max_segments and keep_tail.
 It has no asset or host requirement.
 

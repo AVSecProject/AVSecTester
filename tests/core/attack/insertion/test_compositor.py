@@ -2,27 +2,17 @@
 from dataclasses import replace
 import numpy as np
 import pytest
-from avsectester.attack.insertion import (CuboidVisibilityEstimator, InsertionAttackAction,
+from avsectester.attack.insertion import (CuboidVisibilityEstimator,
     DepthVisibilityEstimator, Insertion, PatchCompositor, PlaneAsset,
-    render_resolved, resolve_insertion, warp_patch)
-from avsectester.attack.placement import Orientation, WorldPlacement
-from avsectester.geometry.poses import ActorPose
-from avsectester.closed_loop.simulator import SensorView
-from avsectester.rendering import ClassicHarmonizer, ObjectAsset, PCTNetHarmonizer, PlacedObject, PlaneSurface
+    render_resolved, resolve_insertion)
+from avsectester.attack.insertion.placement import Orientation, WorldPlacement
+from avsectester.data_types import ActorState
+from avsectester.rendering import ClassicHarmonizer, PCTNetHarmonizer
 
 
 def insertion(identity, x, texture, size):
     return resolve_insertion(Insertion(identity, PlaneAsset(texture, size, size),
-        WorldPlacement((x, 0, 0)), Orientation("fixed_world", (0, 0, 180))), {}, ActorPose(np.eye(4)))
-
-
-def test_warp_patch():
-    frame = np.full((10, 10, 3), 20, np.uint8)
-    texture = np.full((4, 4, 4), [220, 0, 0, 128], np.uint8)
-    image, mask = warp_patch(frame, np.array([[2, 2], [6, 2], [6, 6], [2, 6]]), texture)
-    np.testing.assert_allclose(image[3, 3], [120, 9, 9], atol=1)
-    np.testing.assert_array_equal(image[0, 0], frame[0, 0])
-    assert mask[3, 3] == 255 and mask[0, 0] == 0
+        WorldPlacement((x, 0, 0)), Orientation("fixed_world", (0, 0, 180))), {}, ActorState(np.eye(4)))
 
 
 def test_render_resolved(camera, optical_from_world):
@@ -70,30 +60,6 @@ def test_compositor_and_harmonizer(camera, optical_from_world, tmp_path):
         render_resolved(frame, camera, optical_from_world, item, replace(evidence, visibility=None))
     # Explicitly absent model weights are an external boundary; strict mode must expose failure.
     with pytest.raises(RuntimeError, match="PCTNet harmonization failed"):
-        PCTNetHarmonizer(weights=str(tmp_path / "missing.pth"), strict=True)(plain, mask, frame)
-
-
-def test_insertion_attack_action(camera, optical_from_world):
-    image = np.full((80, 100, 3), [20, 60, 80], np.uint8)
-    texture = np.full((16, 16, 4), [220, 0, 0, 255], np.uint8)
-    target = Insertion("target", PlaneAsset(texture, 4., 2.), WorldPlacement((10., 0., 0.)),
-                       Orientation("fixed_world", (0., 0., 180.)))
-    texture[:, :8, 3] = 0
-    surface = PlaneSurface(np.array([[0., -1., 1.], [0., 1., 1.],
-                                    [0., 1., 0.], [0., -1., 0.]]), texture)
-    pose = np.eye(4)
-    pose[:3, 3] = (5., 0., -.5)
-    placed = PlacedObject("screen", ObjectAsset.from_surfaces((surface,), "screen"), pose)
-    view = SensorView("front", image, camera, optical_from_world,
-                      {"unbounded": ActorPose(np.eye(4))}, ActorPose(np.eye(4)), 0., 0,
-                      objects={"screen": placed})
-    action = InsertionAttackAction("front", target)
-    rendered = action.apply(image, view)
-    assert np.any(rendered[:, 50:] != image[:, 50:])
-    np.testing.assert_array_equal(rendered[:, :50], image[:, :50])
-    assert action.receipt_details() == {
-        "rendered": True, "reason": "", "occlusion_source": "actor_cuboids",
-        "ignored_occluders": ("unbounded",),
-    }
-    action.apply(image, replace(view, depth=np.full((80, 100), np.inf)))
-    assert action.receipt_details()["ignored_occluders"] == ()
+        harmonizer = PCTNetHarmonizer(
+            tmp_path / "libcom", weights=str(tmp_path / "missing.pth"), strict=True)
+        harmonizer(plain, mask, frame)

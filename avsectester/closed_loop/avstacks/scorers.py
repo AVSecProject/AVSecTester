@@ -11,13 +11,7 @@ from __future__ import annotations
 
 import torch
 
-from typing import Protocol
-
-
-class TargetSpec(Protocol):
-    """A target region in image-space pixels, independent of an attack implementation."""
-
-    box: tuple[float, float, float, float]
+import avsectester.data_types as data_types
 
 
 # ResNet-FPN P2..P6 strides for the RPN cls_score levels (matches faster_rcnn_r50_fpn).
@@ -34,7 +28,7 @@ class MMDetRPNObjectnessScorer:
         self.strides = strides
         self.device = next(model.parameters()).device
 
-    def target_score(self, image: torch.Tensor, target: TargetSpec) -> torch.Tensor:
+    def target_score(self, image: torch.Tensor, target: data_types.TargetSpec) -> torch.Tensor:
         from mmdet.structures import DetDataSample
 
         x = image.to(self.device) * 255.0  # the preprocessor expects a 0..255 image
@@ -75,7 +69,7 @@ class MMDetInferenceScorer:
     def __init__(self, model):
         self.model = model
 
-    def target_score(self, image, target: TargetSpec) -> float:
+    def target_score(self, image, target: data_types.TargetSpec) -> float:
         import numpy as np
         from mmdet.apis import inference_detector
 

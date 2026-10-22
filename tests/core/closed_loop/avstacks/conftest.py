@@ -21,6 +21,7 @@ def alpamayo_model_boundary(monkeypatch):
             setattr(modules[parent], attribute, module)
     base = modules["alpasim_driver.models.base"]
     base.CameraFrame = base.PredictionInput = SimpleNamespace
+    base.ModelPrediction = type("ModelPrediction", (SimpleNamespace,), {"__module__": base.__name__})
     base.DriveCommand = SimpleNamespace(STRAIGHT="straight")
     for name in ("PoseAtTime", "Pose", "Vec3", "Quat"):
         setattr(modules["alpasim_grpc.v0.common_pb2"], name, SimpleNamespace)
@@ -33,8 +34,11 @@ def alpamayo_model_boundary(monkeypatch):
 
         def predict(self, inputs):
             self.last_input = inputs
-            return SimpleNamespace(candidate_positions=np.array([[[1., 0., 0.], [2., 0., 0.]]]),
-                                   selected_index=0, selected_plan="forward", reasoning_text="clear")
+            return base.ModelPrediction(
+                candidate_positions=np.array([[[1., 0., 0.], [2., 0., 0.]]]),
+                candidate_rotations=np.array([[[1., 0., 0., 0.], [1., 0., 0., 0.]]]),
+                selected_index=0, selected_plan="forward", reasoning_text="clear",
+            )
 
         def close(self):
             self.closed = True
@@ -100,5 +104,5 @@ def native_dependencies():
 
 @pytest.fixture
 def camera_observation():
-    from avsectester.closed_loop.datatypes import Observation
+    from avsectester.data_types import Observation
     return lambda: Observation(0., 0, {"front": np.zeros((32, 32, 3), np.uint8)})

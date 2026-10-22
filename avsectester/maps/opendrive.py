@@ -9,12 +9,12 @@ import xml.etree.ElementTree as ET
 
 import numpy as np
 
-from avsectester.datasets.base import Unavailable
+from avsectester.data_types import Unavailable
+from avsectester.geometry.poses import mirror_y_points, mirror_y_transform
 
 from .scenario_map import Lane, ScenarioMap, STOP_LINE_KIND_BY_CONTROL_KIND, StopLine, TrafficControl
 
 
-_FLIP = np.diag([1., -1., 1., 1.])
 _LANE_TYPES: dict[str, Literal["driving", "shoulder", "bike", "parking", "other"]] = {
     "driving": "driving", "shoulder": "shoulder", "biking": "bike", "parking": "parking",
 }
@@ -47,13 +47,15 @@ def _lane_id(waypoint: Any) -> str:
     return f"{waypoint.road_id}:{waypoint.section_id}:{waypoint.lane_id}"
 
 
-def _point(location: Any) -> np.ndarray:
-    return np.array([location.x, -location.y, location.z], dtype=float)
+def _native_coordinates(location: Any) -> tuple[float, float, float]:
+    """Read coordinates from a CARLA location or direction without changing its axes."""
+    return location.x, location.y, location.z
 
 
 def _edges(waypoint: Any) -> tuple[np.ndarray, np.ndarray]:
-    center = _point(waypoint.transform.location)
-    right = _point(waypoint.transform.get_right_vector()) * waypoint.lane_width / 2
+    center = mirror_y_points(_native_coordinates(waypoint.transform.location))
+    right = mirror_y_points(_native_coordinates(waypoint.transform.get_right_vector()))
+    right *= waypoint.lane_width / 2
     return center - right, center + right
 
 
@@ -81,8 +83,12 @@ def _sample_lane(native: Any, road: int, lane: int, start: float, stop: float) -
         pending = [(first, last)]
         while pending:
             left, right = pending.pop()
-            first_points = (_point(left.transform.location), *_edges(left))
-            last_points = (_point(right.transform.location), *_edges(right))
+            first_points = (
+                mirror_y_points(_native_coordinates(left.transform.location)), *_edges(left),
+            )
+            last_points = (
+                mirror_y_points(_native_coordinates(right.transform.location)), *_edges(right),
+            )
             longest = max(np.linalg.norm(last - first)
                           for first, last in zip(first_points, last_points))
             if longest <= 2.000001:
@@ -135,8 +141,8 @@ def _neighbor(waypoint: Any, side: str, lane_ids: set[str]) -> str | None:
     identity = _lane_id(adjacent) if adjacent is not None else None
     if identity not in lane_ids or waypoint.lane_id * adjacent.lane_id <= 0:
         return None
-    forward = _point(waypoint.transform.get_forward_vector())[:2]
-    other = _point(adjacent.transform.get_forward_vector())[:2]
+    forward = mirror_y_points(_native_coordinates(waypoint.transform.get_forward_vector()))[:2]
+    other = mirror_y_points(_native_coordinates(adjacent.transform.get_forward_vector()))[:2]
     return identity if forward @ other > 0 else None
 
 
@@ -168,7 +174,10 @@ def _lanes(
         middle = values[len(values) // 2]
         edges = [_edges(waypoint) for waypoint in values]
         lanes[key] = Lane(
-            key, _subdivide_polyline(np.array([_point(waypoint.transform.location) for waypoint in values])),
+            key, _subdivide_polyline(np.array([
+                mirror_y_points(_native_coordinates(waypoint.transform.location))
+                for waypoint in values
+            ])),
             _subdivide_polyline(np.array([left for left, _ in edges])),
             _subdivide_polyline(np.array([right for _, right in edges])),
             _LANE_TYPES.get(str(middle.lane_type).lower(), "other"),
@@ -228,7 +237,7 @@ def _crosswalks(native: Any) -> tuple[tuple[np.ndarray, ...], str | None]:
     polygons = []
     current = []
     for location in native.get_crosswalks():
-        current.append(_point(location))
+        current.append(mirror_y_points(_native_coordinates(location)))
         if len(current) >= 4 and np.allclose(current[0], current[-1], atol=1e-6):
             polygons.append(np.asarray(current[:-1]))
             current = []
@@ -237,8 +246,11 @@ def _crosswalks(native: Any) -> tuple[tuple[np.ndarray, ...], str | None]:
 
 
 def _control_pose(landmark: Any, waypoints: list[Any]) -> np.ndarray:
-    pose = _FLIP @ np.asarray(landmark.transform.get_matrix()) @ _FLIP
-    directions = [_point(waypoint.transform.get_forward_vector())[:2] for waypoint in waypoints]
+    pose = mirror_y_transform(landmark.transform.get_matrix())
+    directions = [
+        mirror_y_points(_native_coordinates(waypoint.transform.get_forward_vector()))[:2]
+        for waypoint in waypoints
+    ]
     directions = [direction / np.linalg.norm(direction) for direction in directions
                   if np.linalg.norm(direction) > 1e-8]
     direction = np.mean(directions, axis=0) if directions else np.zeros(2)

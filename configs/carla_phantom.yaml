@@ -33,14 +33,14 @@ dataset:
               type: avsectester.datasets.carla:PrescribedMotion
               options:
                 constant_control:
-                  type: avsectester.closed_loop.datatypes:Control
+                  type: avsectester.data_types:Control
                   options:
                     throttle: 0.35
             lead:
               type: avsectester.datasets.carla:PrescribedMotion
               options:
                 constant_control:
-                  type: avsectester.closed_loop.datatypes:Control
+                  type: avsectester.data_types:Control
                   options:
                     brake: 1.0
 simulator:

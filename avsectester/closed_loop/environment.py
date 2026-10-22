@@ -1,19 +1,19 @@
-"""World settings and deterministic sensor-environment transforms.
+"""World settings and deterministic sensor corruptions.
 
-Sensor transforms run after attack sensor actions and before Vehicle I/O hooks. World settings
+Sensor corruptions run after attack sensor actions and before ObservationPipeline hooks. World settings
 are validated against the simulator and passed to its reset without automatic conversion.
 """
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
-from importlib import import_module
 from typing import Any
 
 import numpy as np
 
-from avsectester.closed_loop.datatypes import Observation, read_camera_rgb, write_camera_rgb
-from avsectester.closed_loop.sensor_transforms import CORRUPTIONS
+from avsectester.data_types import Observation, read_camera_rgb, write_camera_rgb
+from avsectester.closed_loop.sensor_corruptions import CORRUPTIONS
+from avsectester.type_paths import import_type_path
 
 
 def normalize_environment(value: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -21,7 +21,7 @@ def normalize_environment(value: Mapping[str, Any] | None = None) -> dict[str, A
 
     Each sensor entry has ``type``, optional ``options`` and an optional ``camera``. A ``type``
     without a colon names a built-in ``Corruption`` class; ``package.module:name`` names a
-    custom transform, constructed with ``options``. Custom transforms implement
+    custom corruption, constructed with ``options``. Custom corruptions implement
     ``apply(rgb, rng) -> rgb`` or are callables with that signature.
     """
     if value is None:
@@ -35,7 +35,7 @@ def normalize_environment(value: Mapping[str, Any] | None = None) -> dict[str, A
     if not isinstance(world, Mapping):
         raise TypeError("environment.world must be a mapping")
     if not isinstance(sensors, Sequence) or isinstance(sensors, (str, bytes)):
-        raise TypeError("environment.sensors must be a list of transform specifications")
+        raise TypeError("environment.sensors must be a list of corruption specifications")
     entries = []
     for entry in sensors:
         if not isinstance(entry, Mapping):
@@ -56,17 +56,17 @@ def normalize_environment(value: Mapping[str, Any] | None = None) -> dict[str, A
             raise TypeError("Sensor environment options must be a mapping")
         if ":" in kind:
             if kind.count(":") != 1 or not all(kind.split(":")):
-                raise ValueError(f"Custom sensor transform type {kind!r} must be 'package.module:name'")
+                raise ValueError(f"Custom sensor corruption type {kind!r} must be 'package.module:name'")
         else:
             if kind not in CORRUPTIONS:
                 raise ValueError(f"Unknown sensor corruption class {kind!r}. Use a built-in class "
-                                 "name or 'package.module:name' for a custom transform")
+                                 "name or 'package.module:name' for a custom corruption")
             allowed = ({"severity", "warm"} if kind == "ColorTemp" else
                        {"severity", "transform"} if kind == "AlbumentationsCorruption" else {"severity"})
             if set(options) - allowed:
                 raise ValueError(f"Unknown {kind} options: {sorted(set(options) - allowed)}")
             if kind == "AlbumentationsCorruption":
-                from avsectester.closed_loop.sensor_transforms import ALBUMENTATIONS_TRANSFORMS
+                from avsectester.closed_loop.sensor_corruptions import ALBUMENTATIONS_TRANSFORMS
                 transform = options.get("transform")
                 if not isinstance(transform, str) or transform not in ALBUMENTATIONS_TRANSFORMS:
                     raise ValueError("AlbumentationsCorruption requires a supported transform: "
@@ -104,29 +104,26 @@ def validate_environment(value: Mapping[str, Any], simulator: Any) -> dict[str, 
 
 
 class SensorEnvironment:
-    """One run's transform instances, with randomness indexed by seed and absolute dataset frame position."""
+    """One run's corruption instances, with randomness indexed by seed and absolute dataset frame position."""
 
     def __init__(self, environment: Mapping[str, Any], seed: int = 0) -> None:
         normalized = normalize_environment(environment)
         self.seed = seed
-        self.transforms = []
+        self.corruptions = []
         for spec in normalized["sensors"]:
             if ":" in spec["type"]:
-                module, symbol = spec["type"].split(":", 1)
-                constructor: Any = import_module(module)
-                for part in symbol.split("."):
-                    constructor = getattr(constructor, part)
-                transform = constructor(**spec["options"])
+                constructor = import_type_path(spec["type"])
+                corruption = constructor(**spec["options"])
             else:
-                transform = CORRUPTIONS[spec["type"]](**spec["options"])
-            apply = getattr(transform, "apply", transform)
+                corruption = CORRUPTIONS[spec["type"]](**spec["options"])
+            apply = getattr(corruption, "apply", corruption)
             if not callable(apply):
-                raise TypeError("A sensor environment transform must implement apply(rgb, rng)")
-            self.transforms.append((spec.get("camera"), apply))
+                raise TypeError("A sensor environment corruption must implement apply(rgb, rng)")
+            self.corruptions.append((spec.get("camera"), apply))
 
     def apply(self, observation: Observation, position: int) -> Observation:
         result = observation
-        for index, (camera, apply) in enumerate(self.transforms):
+        for index, (camera, apply) in enumerate(self.corruptions):
             if camera is not None and camera not in result.sensor_data:
                 raise ValueError(f"Sensor environment requested unavailable camera: {camera!r}")
             capture = read_camera_rgb(result, camera)
@@ -134,8 +131,8 @@ class SensorEnvironment:
                 raise ValueError(f"Sensor environment requires a readable RGB camera: {camera!r}")
             sensor_id, rgb = capture
             rng = np.random.default_rng((self.seed, int(position), index))
-            transformed = np.asarray(apply(rgb.copy(), rng))
-            if transformed.shape != rgb.shape or transformed.dtype != np.uint8:
-                raise ValueError("Sensor environment transforms must return uint8 RGB with unchanged shape")
-            result = write_camera_rgb(result, sensor_id, transformed)
+            corrupted = np.asarray(apply(rgb.copy(), rng))
+            if corrupted.shape != rgb.shape or corrupted.dtype != np.uint8:
+                raise ValueError("Sensor environment corruptions must return uint8 RGB with unchanged shape")
+            result = write_camera_rgb(result, sensor_id, corrupted)
         return result

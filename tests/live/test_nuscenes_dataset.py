@@ -16,7 +16,7 @@ def test_real_nuscenes_frames_have_actor_extent_and_calibration():
     scenario = next(iter(data.scenarios()))
     frames = data.frames(scenario.id)
     record = data.frame_data(scenario.id, frames[0])
-    assert record.ego is not None and record.sensor_data
+    assert record.ego is not None and record.sensor_references
     assert any(actor.extent and min(actor.extent) > 0 for actor in record.actors.values())
-    reference = next(iter(record.sensor_data.values()))
+    reference = next(iter(record.sensor_references.values()))
     assert {'camera', 'ego_from_sensor'} <= reference.metadata.keys()

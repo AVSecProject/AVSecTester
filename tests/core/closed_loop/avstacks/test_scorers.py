@@ -3,10 +3,10 @@
 import numpy as np
 import pytest
 
-from avsectester.attack.optimization import TargetSpec
+from avsectester.data_types import TargetSpec
 from avsectester.closed_loop.avstacks.camera_forward_collision import CameraForwardCollisionAVStack
-from avsectester.closed_loop.driving_adapters import modular_driving_adapter
-from avsectester.closed_loop.services import ClosedLoopServices
+from avsectester.closed_loop.avstacks.modular import modular_driving_adapter
+from avsectester.execution.services import ClosedLoopServices
 from tests.fakes import MemoryDataset, MemorySimulator
 
 

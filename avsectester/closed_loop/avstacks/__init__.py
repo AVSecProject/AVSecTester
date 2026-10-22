@@ -1,14 +1,11 @@
-"""AV stacks — the framework's ``AVStack`` implementations (the driving systems under test).
+"""Driving-system interfaces; import implementations from their own modules."""
 
-Not to be confused with the third-party avstack library under ``third_party/``, which
-``ModularAVStack`` uses to build its pipeline.
+from .base import (
+    AVStack, CommandCompatibilityError, ObservationPipeline, validate_command_compatibility,
+)
+from .driving_adapter import ComponentDescriptor, DrivingAdapter, ScorerDescriptor
 
-``ModularAVStack`` (avstack modular pipeline) and ``AlpamayoAVStack`` (end-to-end Alpamayo) both
-lazy-import their heavy deps, so this package imports without avstack/torch.
-"""
-
-from .alpamayo import AlpamayoAVStack
-from .modular import ModularAVStack
-from .camera_forward_collision import CameraForwardCollisionAVStack
-
-__all__ = ["AlpamayoAVStack", "ModularAVStack", "CameraForwardCollisionAVStack"]
+__all__ = [
+    "AVStack", "ObservationPipeline", "CommandCompatibilityError", "validate_command_compatibility",
+    "DrivingAdapter", "ComponentDescriptor", "ScorerDescriptor",
+]

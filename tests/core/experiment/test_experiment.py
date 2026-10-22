@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from avsectester.closed_loop.services import DrivingAdapter
+from avsectester.closed_loop.avstacks.driving_adapter import DrivingAdapter
 from avsectester.experiment import Experiment, ExperimentConfiguration, RunsConfiguration, TreatmentConfiguration
 from avsectester.maps import ScenarioMap
 from tests.fakes import ConstantAVStack, MemoryDataset, MemorySimulator, MinimalAttack

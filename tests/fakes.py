@@ -13,16 +13,18 @@ import sys
 from dataclasses import replace
 import json
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
 from avsectester.attack import Attack
 from avsectester.attack.runtime import AttackRuntime
-from avsectester.closed_loop.avstack import AVStack
-from avsectester.closed_loop.datatypes import Control, Detection, Observation, WorldSnapshot
-from avsectester.closed_loop.simulator import SensorGeometry, SensorView, Simulator, SimulatorRuntime
-from avsectester.closed_loop.simulators.nurec import Renderer
-from avsectester.datasets import ActorState, Dataset, FrameData, FrameReference, ScenarioDescriptor, ScenarioStart
+from avsectester.closed_loop.avstacks.base import AVStack
+from avsectester.data_types import Control, Detection, Observation, WorldSnapshot
+from avsectester.closed_loop.simulators.base import SensorGeometry, SensorView, Simulator, SimulatorRuntime
+from avsectester.closed_loop.simulators.nurec.renderer import Renderer
+from avsectester.data_types import ActorState
+from avsectester.datasets import Dataset, FrameData, FrameReference, ScenarioDescriptor, ScenarioStart
 from avsectester.geometry.cameras import BODY_FROM_OPTICAL, PinholeCamera
 
 
@@ -34,39 +36,6 @@ def actor_state(position=(10., 0., 1.), speed=0.):
     pose = np.eye(4)
     pose[:3, 3] = position
     return ActorState(pose, (speed, 0., 0.), "vehicle", (4., 2., 2.))
-
-
-def assert_scenario_map(scenario_map, ego):
-    """Shared semantic-map contract: ego lies on a lane, controls face approaching traffic."""
-    import cv2
-
-    assert any(cv2.pointPolygonTest(np.concatenate((lane.left_boundary[:, :2],
-        lane.right_boundary[::-1, :2])).astype(np.float32), tuple(ego.pose[:2, 3]), False) >= 0
-        for lane in scenario_map.lanes.values())
-    controls = [control for control in scenario_map.traffic_controls.values() if control.lane_ids]
-    nearest = {}
-    for control in controls:
-        candidates = []
-        for identity in control.lane_ids:
-            points = scenario_map.lanes[identity].centerline
-            vectors = np.diff(points, axis=0)
-            lengths = np.linalg.norm(vectors, axis=1)
-            for index in np.flatnonzero(lengths > 0):
-                vector = vectors[index]
-                fraction = np.clip((control.pose[:3, 3] - points[index]) @ vector
-                                   / lengths[index] ** 2, 0., 1.)
-                point = points[index] + fraction * vector
-                distance = np.linalg.norm(control.pose[:3, 3] - point)
-                candidates.append((distance, vector / lengths[index], point))
-        assert candidates, f"Control {control.id!r} has no nonzero governed-lane tangent"
-        nearest[control.id] = min(candidates, key=lambda item: item[0])
-    for control in (value for value in controls
-                    if value.kind in {"stop_sign", "yield_sign", "traffic_light"}):
-        _distance, tangent, _point = nearest[control.id]
-        assert control.pose[:3, 0] @ tangent < 0, f"Control {control.id!r} faces along traffic"
-    for control in (value for value in controls if value.pose_reference == "face_center"):
-        height = control.pose[2, 3] - nearest[control.id][2][2]
-        assert .3 <= height <= 8., f"Control {control.id!r} has implausible face-centre height {height}"
 
 
 class MemoryDataset(Dataset):
@@ -110,14 +79,15 @@ class MemorySimulator(Simulator):
 
     dataset_kinds = ("memory",)
     can_render = True
+    can_replay = True
     can_insert_objects = True
     command_modes = frozenset({"actuator"})
     supported_world_settings = frozenset({"weather", "lighting", "fail", "interrupt"})
 
-    def __init__(self, time_step=.1, capture_ticks=0, resource_key=None, fail_position=None,
+    def __init__(self, time_step=.1, capture_ticks=0, world_key=None, fail_position=None,
                  extra_sensors=None, camera_geometries=None, sensor_depths=None, actors=None):
         self.time_step, self.capture_ticks = time_step, capture_ticks
-        self.resource_key, self.fail_position = resource_key, fail_position
+        self.world_key, self.fail_position = world_key, fail_position
         self.extra_sensors = deepcopy(extra_sensors or {})
         self.camera_geometries = deepcopy(camera_geometries if camera_geometries is not None else {
             "front": SensorGeometry("front", CAMERA, CAM_FROM_WORLD),
@@ -131,7 +101,7 @@ class MemorySimulator(Simulator):
 
     @property
     def identity(self):
-        return {**super().identity, "resource_key": self.resource_key}
+        return {**super().identity, "world_key": self.world_key}
 
     def create_runtime(self, seed=None):
         return MemorySimulatorRuntime(self, seed)
@@ -143,9 +113,12 @@ class MemorySimulatorRuntime(SimulatorRuntime):
     def __init__(self, simulator, seed=None):
         super().__init__(simulator)
         self.seed = seed
-        self.resource_key = simulator.resource_key if simulator.resource_key is not None else ("memory", id(self))
         self.closed = False
         self._native = {"objects": {}, "world": {}}
+
+    @property
+    def world_key(self):
+        return self.simulator.world_key if self.simulator.world_key is not None else ("memory", id(self))
 
     @property
     def native(self):
@@ -225,8 +198,8 @@ class MemorySimulatorRuntime(SimulatorRuntime):
         elif not isinstance(data, np.ndarray):
             data = getattr(data, "data", data)
         return SensorView(sensor, data, camera, cam_from_world,
-                          {key: value.box_pose() for key, value in state.actors.items()},
-                          state.ego.box_pose(), state.t, state.frame,
+                          state.actors,
+                          state.ego, state.t, state.frame,
                           depth=deepcopy(self.simulator.sensor_depths.get(sensor)),
                           sensor_from_world=body_from_world)
 
@@ -411,7 +384,7 @@ class NuRecImageBoundary(Renderer):
         return (self.origin_timestamp_us or 0) + round(pose.t * 1e6)
 
     def rig_transform(self, pose):
-        from avsectester.geometry.cameras import planar_rig_pose
+        from avsectester.closed_loop.simulators.nurec.renderer import planar_rig_pose
 
         z = 0. if self.origin_transform is None else self.origin_transform[2, 3]
         return planar_rig_pose(pose.x, pose.y, pose.yaw, z)
@@ -772,3 +745,21 @@ class CarlaNativeBoundary:
         monkeypatch.setitem(sys.modules, "avcarla", ModuleType("avcarla"))
         monkeypatch.setitem(sys.modules, "avcarla.config", SimpleNamespace(CARLA=self))
         return self
+
+
+class StubRenderer(Renderer):
+    """A placeholder renderer — no scene, no server: returns a black HWC uint8 frame. Lets the whole
+    loop run and be debugged, and gives image-consuming stacks (e.g. Alpamayo) a valid tensor. Swap
+    in :class:`NuRecRenderer` for real imagery without touching the simulator or the AVStack.
+    """
+
+    def __init__(
+        self, cameras: list[str] | None = None, height: int = 480, width: int = 640
+    ) -> None:
+        self.cameras = list(cameras) if cameras else ["camera_front"]
+        self.height, self.width = height, width
+
+    def render(self, pose: Any, camera: str, dynamic_objects=()):
+        import numpy as np
+
+        return np.zeros((self.height, self.width, 3), dtype=np.uint8)

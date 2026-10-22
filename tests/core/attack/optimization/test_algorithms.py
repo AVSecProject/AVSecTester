@@ -3,9 +3,8 @@
 import numpy as np
 import pytest
 
-from avsectester.attack.optimization import (
-    AdversarialSample, DataSource, HideObject, NES, Perturbation, Scorer, SpoofObject, TargetSpec,
-)
+from avsectester.attack.optimization import AdversarialSample, DataSource, HideObject, NES, Perturbation, Scorer, SpoofObject
+from avsectester.data_types import TargetSpec
 
 
 class ImageSource(DataSource):

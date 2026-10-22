@@ -11,23 +11,26 @@ from typing import Any
 
 from avsectester.attack import AttackSegment, OfflineContext
 from avsectester.datasets import ScenarioStart
-from avsectester.datasets.base import Unavailable, nonnegative
+from avsectester.data_types import Unavailable
+from avsectester.validation import require_nonnegative_integer
 from avsectester.attack.runtime import AttackRuntime
 from avsectester.closed_loop.environment import merge_environments, validate_environment
-from avsectester.closed_loop.frame_data import FrameDataCache
+from avsectester.execution.frame_data_cache import FrameDataCache
 from avsectester.closed_loop.hooks import HookSet
-from avsectester.closed_loop.runner import ClosedLoopRunner, RunRequest
-from avsectester.closed_loop.services import (
+from avsectester.execution.runner import ClosedLoopRunner, RunRequest
+from avsectester.execution.services import (
     ClosedLoopServices, create_avstack, create_simulator_runtime, ensure_fresh, stop_unstarted_attacks,
 )
-from avsectester.closed_loop.simulator import DeploymentPlan
+from avsectester.closed_loop.simulators.base import DeploymentPlan
 from avsectester.runlog import Recorder, RunLog
 from avsectester.maps import ScenarioMap
 
 from .config import ExperimentConfiguration, TreatmentConfiguration, load_configuration
-from .persistence import preparation_record
-from .models import (ExperimentResult, PreparedExperiment, SelectionDecision, TreatmentResult,
-                     run_directory, treatment_applies)
+from .models import (
+    ExperimentResult, PreparedExperiment, SelectionDecision, TreatmentResult,
+    preparation_record, treatment_applies,
+)
+from .output_directory import run_directory
 
 
 def _hooks(spec: Any, seed: int) -> HookSet:
@@ -162,7 +165,7 @@ class _Treatment:
 
 def _validate_setup_ticks(value: int) -> None:
     """Reject malformed participant declarations before computing a shared window."""
-    nonnegative(value, "setup_ticks")
+    require_nonnegative_integer(value, "setup_ticks")
 
 
 def _deployment_plan(config: ExperimentConfiguration, attack_name: str,
@@ -357,7 +360,7 @@ class _Execution:
                         raise TypeError("Dataset.scenario_map must return ScenarioMap or Unavailable")
                     scenario_maps[segment.scenario_id] = scenario_map
         if self.configuration.runs.output is not None:
-            from .persistence import save_scenario_maps
+            from .output_directory import save_scenario_maps
 
             save_scenario_maps(scenario_maps, self.configuration.runs.output)
         for attack_name, segments in self.prepared.metadata.items():

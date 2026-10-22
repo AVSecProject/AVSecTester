@@ -5,19 +5,21 @@ from pathlib import Path
 
 import numpy as np
 
-from avsectester.datasets.base import ActorState, Dataset, FrameData, SensorDataReference
-from avsectester.geometry.cameras import PinholeCamera, make_pose, quat_to_matrix
+from avsectester.data_types import ActorState
+from avsectester.datasets.base import Dataset, FrameData, SensorDataReference
+from avsectester.geometry.cameras import PinholeCamera
+from avsectester.geometry.poses import make_pose, quaternion_to_rotation
 
 
 class NuScenesDataset(Dataset):
     """nuScenes scenes as scenario timelines of linked keyframes.
 
-    Each scene is one scenario. ``camera`` is the nuScenes sensor (exposed under the logical name
-    ``front``). Actor identities are stable instance tokens, including annotations
+    Each scene is one scenario. ``camera`` is the native nuScenes sensor name. Simulator aliases
+    are configured separately. Actor identities are stable instance tokens, including annotations
     outside the selected camera and all annotated classes.
     """
 
-    def __init__(self, dataroot: str, version: str = "v1.0-trainval", camera: str = "CAM_FRONT") -> None:
+    def __init__(self, dataroot: str | Path, version: str = "v1.0-trainval", camera: str = "CAM_FRONT") -> None:
         self.dataroot = dataroot
         self.version = version
         self.camera = camera
@@ -62,7 +64,7 @@ class NuScenesDataset(Dataset):
     def _ego_state(self, sample, sensor_record) -> ActorState:
         nusc = self._load()
         ego = nusc.get("ego_pose", sensor_record["ego_pose_token"])
-        pose = make_pose(quat_to_matrix(*ego["rotation"]), ego["translation"])
+        pose = make_pose(quaternion_to_rotation(*ego["rotation"]), ego["translation"])
         velocity = None
         adjacent_token = sample.get("next") or sample.get("prev")
         if adjacent_token:
@@ -88,24 +90,24 @@ class NuScenesDataset(Dataset):
             width, length, height = annotation["size"]
             velocity = np.asarray(nusc.box_velocity(annotation_id), dtype=float)
             actors[annotation["instance_token"]] = ActorState(
-                make_pose(quat_to_matrix(*annotation["rotation"]), annotation["translation"]),
+                make_pose(quaternion_to_rotation(*annotation["rotation"]), annotation["translation"]),
                 tuple(float(v) for v in velocity) if np.isfinite(velocity).all() else None,
                 annotation["category_name"], (length, width, height),
             )
         calibration = nusc.get("calibrated_sensor", sensor_record["calibrated_sensor_token"])
         ego_from_sensor = make_pose(
-            quat_to_matrix(*calibration["rotation"]), calibration["translation"],
+            quaternion_to_rotation(*calibration["rotation"]), calibration["translation"],
         )
         camera = PinholeCamera(
             np.array(calibration["camera_intrinsic"], dtype=float, copy=True),
             sensor_record["width"], sensor_record["height"],
         )
         sensor = SensorDataReference(
-            str(Path(self.dataroot) / sensor_record["filename"]), "front", frame.timestamp,
+            str(Path(self.dataroot) / sensor_record["filename"]), self.camera, frame.timestamp,
             {"camera": camera, "ego_from_sensor": ego_from_sensor,
              "sample_data_token": camera_token},
         )
-        return FrameData(frame, actors=actors, sensor_data={"front": sensor},
+        return FrameData(frame, actors=actors, sensor_references={self.camera: sensor},
                          provenance={"kind": "recorded"}, ego=ego)
 
     def native(self, scenario_id):

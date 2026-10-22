@@ -20,7 +20,7 @@ environment. nuScenes uses recorded images; commands do not alter recorded traje
 configuration uses the supported Faster R-CNN/nuScenes detector pair and requires the checkpoint
 downloaded by scripts/preparation/fetch_models.sh.
 
-The NuRec renderer must start with --enable-editing-actors and --no-replicate-training-views.
+The NuRec renderer must start with --enable-editing-actors.
 Every render includes all supported recorded actor tracks, including unchanged ones; see the
 [renderer setup](../docs/getting-started/installation.md#nurec-renderer-and-scenes).
 

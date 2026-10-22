@@ -12,7 +12,8 @@ from dataclasses import dataclass
 import numpy as np
 
 from .objects import PlaneSurface
-from avsectester.geometry.cameras import Camera, NEAR_Z, camera_ray_mask, transform
+from avsectester.geometry.cameras import Camera, NEAR_Z, camera_ray_mask
+from avsectester.geometry.poses import transform
 
 
 def edge_points(corners: np.ndarray) -> np.ndarray:

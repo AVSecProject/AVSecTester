@@ -6,7 +6,6 @@ dataset:
     usdz_paths:
     - ../data/nurec/023b7fcc-671c-40e3-9bd2-c66b0b073fbc/023b7fcc-671c-40e3-9bd2-c66b0b073fbc.usdz
     camera_id: camera_front_wide_120fov
-    camera_alias: camera_front_wide_120fov
     time_step: 0.1
 simulator:
   type: NuRecSimulator
@@ -20,7 +19,7 @@ simulator:
         cameras:
         - camera_front_wide_120fov
     dynamics:
-      type: avsectester.closed_loop.simulators.nurec:TrajectoryFollower
+      type: avsectester.closed_loop.simulators.ego_dynamics:TrajectoryFollower
       options: {}
 avstack:
   type: AlpamayoAVStack

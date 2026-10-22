@@ -1,23 +1,24 @@
-"""AVSecTester — adversarial security-testing framework for autonomous-vehicle systems.
+"""Adversarial testing for autonomous driving, organized by internal dependency layer.
 
-The framework packages follow its components:
+* ``geometry``, ``validation``, ``type_paths`` and ``serialization`` provide low-level
+  mathematics, checks, callable imports, JSON serialization and independent snapshots.
+* ``data_types`` contains shared observations, commands, states, detections and data targets.
+* ``datasets``, ``maps`` and ``rendering`` provide source data, semantic maps and object rendering.
+* ``closed_loop.simulators`` and ``closed_loop.avstacks`` export their interfaces; concrete
+  simulators and driving systems live in implementation modules. Their ``base`` modules own the
+  simulator/runtime and AVStack/ObservationPipeline contracts. ``closed_loop`` also provides stage
+  hooks and environments; driving-component declarations live in ``avstacks.driving_adapter``.
+* ``attack`` defines attack interfaces and reusable insertion and optimization tools;
+  ``runlog`` records and reads closed-loop traces.
+* ``execution`` owns the runner, isolated services, attack dispatch and frame-data cache.
+* ``implemented_attacks`` composes those interfaces and tools into concrete attacks.
+* ``evaluation`` computes metrics and formats reports and visualizations from recorded data.
+* ``experiment`` loads configuration, prepares attacks and executes treatment comparisons.
+* ``cli`` exposes experiment execution and analysis commands.
 
-* :mod:`avsectester.datasets` — scenarios and per-frame data from recorded datasets or CARLA
-  recipes, and the start data a simulator needs. A dataset never depends on a simulator.
-* :mod:`avsectester.attack` — the user's ``Attack`` (metabuilder and offline phase),
-  ``AttackSegment`` records, and the online ``AttackRuntime`` with its attack actions.
-* :mod:`avsectester.closed_loop` — the closed loop: data types, the ``Simulator`` base and the
-  supplied simulators (``simulators``), the ``AVStack`` interface and the supplied driving
-  systems (``avstacks``), Vehicle I/O, stage hooks, the ``ClosedLoopRunner``, and the closed-loop
-  services used by the metabuilder and the offline phase.
-* :mod:`avsectester.runlog` — the run log and its Parquet persistence.
-* :mod:`avsectester.evaluation` — metrics, reports and visualization from RunLog.
-* :mod:`avsectester.experiment` — configuration, preparation and treatment execution.
-
-Concrete attacks live in :mod:`avsectester.attack.implemented_attacks`. Reusable insertion and
-optimization tools live in :mod:`avsectester.attack.insertion` and
-:mod:`avsectester.attack.optimization`. Attack interfaces do not import those tools or concrete
-implementations; concrete attacks compose the framework interfaces and tools.
+Internal imports point to the same or a lower layer. The sole upward type-only reference is
+from the Attack interface to the execution services supplied to its user callbacks. Optional
+native and model dependencies retain their lazy imports in the adapters that use them.
 """
 
 __version__ = "0.1.0"

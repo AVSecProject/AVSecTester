@@ -11,8 +11,10 @@ pytest.importorskip("carla")
 from avcarla.geometry import CarlaReferenceFrame
 from avstack.geometry import GlobalOrigin3D
 
-from avsectester.closed_loop.datatypes import Observation
-from avsectester.closed_loop.simulators.carla import CarlaSimulator, register_pinhole_camera
+from avsectester.data_types import Observation
+from avsectester.closed_loop.simulators.carla import CarlaSimulator
+from avsectester.closed_loop.simulators.carla.sensors import SensorCapture, register_pinhole_camera
+from avsectester.serialization import DEFAULT_REGISTRY
 
 
 def test_copy_observation(native_sensor_case, make_ego):
@@ -54,3 +56,18 @@ def test_register_pinhole_camera():
     assert CARLA.get("PinholeRgbCamera") is camera
     assert CARLA.get("CarlaRgbCamera") is ordinary
     assert register_pinhole_camera() is camera
+
+
+def test_sensor_capture():
+    source = SensorCapture("carla.LidarMeasurement", np.array([[1., 2., 3., .5]], np.float32).tobytes(),
+                           7, .7, {"channels": 16})
+    captured = DEFAULT_REGISTRY.snapshot(source)
+    source.metadata["channels"] = 32
+    assert isinstance(captured, SensorCapture) and captured.metadata == {"channels": 16}
+    np.testing.assert_array_equal(np.frombuffer(captured.raw_data, np.float32), [1., 2., 3., .5])
+    decoded = DEFAULT_REGISTRY.decode(DEFAULT_REGISTRY.encode(captured))
+    assert isinstance(decoded, dict)
+    assert decoded["native_type"] == "carla.LidarMeasurement"
+    assert decoded["frame"] == 7 and decoded["timestamp"] == .7
+    assert decoded["metadata"] == {"channels": 16}
+    assert decoded["raw_bytes"] == source.raw_bytes

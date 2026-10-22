@@ -20,7 +20,26 @@ captures again.
 `state()` returns independent physical state, available even at setup and step hooks.
 
 Only world settings go into reset. The complete `{world, sensors}` envelope is resolved by the
-experiment, runner and services; sensor transforms run after capture.
+experiment, runner and services; sensor corruptions run after capture.
+
+### Read prescribed motion
+
+start_replay(start, initialization=None, *, world=None, deployment=None) initializes at the selected
+recorded or recipe boundary and captures it while keeping ego under prescribed motion. It is used
+for raw sensor reads before driving-system control. advance_replay(count) then advances that motion
+and captures the requested boundary without emitting stage hooks. Both methods reject bound hooks;
+forward advancement also requires an initialized runtime and can_replay=True. The capability
+defaults to False.
+
+| Simulator | can_replay |
+|---|---|
+| CARLA | True |
+| Recorded playback | True |
+| NuRec | False |
+
+Closed-loop services reuse a forward scan only when can_replay is True. NuRec reads another frame
+by calling start_replay for that frame rather than advancing the previous read. This preserves the
+recorded pose for each raw sensor request.
 
 ## Inserted world objects
 
@@ -49,7 +68,8 @@ sensor_view returns the composed data. If the native view supplies depth, the re
 the pixelwise minimum of that depth and inserted-object depth. If native depth is None, it stays
 None after insertion. Actor-cuboid fallback estimates are used only in candidate projection regions;
 they are not promoted to full sensor-depth evidence. Repeated reads reuse the capture's composition.
-The input order is object composition, sensor attack actions, sensor environment, then VehicleIO.
+The input order is object composition, sensor attack actions, sensor environment, then
+ObservationPipeline.
 
 WorldSnapshot.objects records each object's world pose, category, full extent and zero velocity,
 with box_center=(0, 0, height/2). Inserted objects remain separate from native actors and do not
@@ -104,7 +124,10 @@ simulator runtime constructs SensorView directly from native camera geometry and
 
 ## NuRec
 
-NuRecSimulator takes `config`, a Renderer template, an ego-dynamics template and a depth mode.
+NuRecSimulator takes `config`, a required Renderer template, an optional ego-dynamics template and
+a depth mode. Configure NuRecRenderer explicitly; there is no default renderer. Renderer is defined
+in closed_loop/simulators/nurec/renderer.py, and the dynamics interfaces and implementations live
+in closed_loop/simulators/ego_dynamics.py.
 The default depth="mesh" requires the optional nurec dependencies at construction; depth="none"
 disables depth and needs no mesh-intersection library. Each simulator
 runtime copies them, so connections, loaded scenes and dynamics mutations are isolated. Set
@@ -115,12 +138,28 @@ mesh.ply and mesh_ground.ply before its first NRE request. Missing entries raise
 their filenames. depth="none" does not require either mesh entry.
 
 NuRecRenderer connects to the reconstruction service and renders at requested times and ego poses.
-Start NRE with both --enable-editing-actors and --no-replicate-training-views, as in the
+Start NRE with --enable-editing-actors, as in the
 [installation command](../getting-started/installation.md#nurec-renderer-and-scenes).
-StubRenderer provides synthetic images for offline tests. Actors follow their recorded tracks
-unless explicitly moved; they do not react to traffic.
+Actors follow their recorded tracks unless explicitly moved; they do not react to traffic.
 SimulatorRuntime.restore immediately captures its restored state; later observe calls do not render
 again.
+
+The configuration can be constructed without connecting to NRE; a connection is opened when a
+simulator runtime loads its scene:
+
+<!-- runnable -->
+```python
+from avsectester.closed_loop.simulators.ego_dynamics import TrajectoryFollower
+from avsectester.closed_loop.simulators.nurec import NuRecRenderer, NuRecSimulator
+
+simulator = NuRecSimulator(
+    {"dt": 0.1},
+    renderer=NuRecRenderer(endpoint="127.0.0.1:50051"),
+    dynamics=TrajectoryFollower(),
+    depth="none",
+)
+assert simulator.command_modes == frozenset({"trajectory"})
+```
 
 ### Move recorded actors
 
@@ -185,7 +224,9 @@ depth statistics separately. NRE is optional and used only when requesting RGB o
 ## Recorded playback
 
 RecordedReplaySimulator reads a NuScenesDataset ScenarioStart and advances through recorded
-FrameData. It is open-loop: commands cannot change ego or traffic motion. N decisions require N+1
+FrameData.sensor_references. Dataset sensor names stay native, such as CAM_FRONT; configure
+RecordedReplaySimulator(camera_aliases={"CAM_FRONT": "front"}) for the driving system
+name front. It is open-loop: commands cannot change ego or traffic motion. N decisions require N+1
 frames. Sensor environments and actions can change model inputs but do not turn playback into
 closed-loop simulation.
 
@@ -195,24 +236,36 @@ Actor cuboids remain available for supported insertion occlusion estimates. See
 
 ## Write a custom simulator adapter
 
+Annotate filesystem constructor parameters as Path or str | Path; see
+[filesystem parameters](../reference/configuration.md#constructor-filesystem-parameters).
+
 Declare dataset_kinds, supported_world_settings, command_modes, decision_time_step,
-supported_stages, can_render, can_insert_objects, capture_ticks and identity on Simulator.
+supported_stages, can_render, can_insert_objects, can_replay, capture_ticks and identity on
+Simulator.
 Validate start compatibility
 and world-setting values before creating native resources. Values depending on live actors are
 checked during reset.
 
-Implement native operations on SimulatorRuntime; do not override reset or step. The base class owns
-capture lifecycle, stage timing, reset isolation and deployment windows. This complete example runs
-offline:
+World ownership is defined by SimulatorRuntime.world_key and claim_world(owner). The default key
+("simulator", id(self)) gives each runtime its own world. Override world_key for an external world
+so every runtime connected to that same world returns the same hashable key, as CARLA does.
+Claims are process-local context managers: the same owner object can nest them, different owners
+are rejected immediately, and exiting releases the claim. Use exclusive() to keep one operation
+active on a runtime; it can run inside claim_world(owner).
+
+Implement native operations on SimulatorRuntime. The base class owns reset, step, start_replay and
+advance_replay, and rejects subclass overrides of those public methods. For forward replay, declare
+can_replay=True and implement only _replay_tick to advance the prescribed native motion. The shared
+methods own capture lifecycle, stage timing, reset isolation and deployment windows. This complete
+example runs offline:
 
 <!-- runnable -->
 ```python
 import numpy as np
-from avsectester.closed_loop.simulator import Simulator, SimulatorRuntime
-from avsectester.closed_loop.avstack import AVStack
-from avsectester.closed_loop.datatypes import Control, Observation, WorldSnapshot
-from avsectester.closed_loop.runner import ClosedLoopRunner, RunRequest
-from avsectester.datasets import ActorState
+from avsectester.closed_loop.simulators.base import Simulator, SimulatorRuntime
+from avsectester.closed_loop.avstacks.base import AVStack
+from avsectester.data_types import ActorState, Control, Observation, WorldSnapshot
+from avsectester.execution.runner import ClosedLoopRunner, RunRequest
 
 class LineWorld(Simulator):
     @property

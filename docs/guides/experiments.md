@@ -9,8 +9,7 @@
 ## Prepare and execute attacks
 
 ```python
-from avsectester.experiment import Experiment
-from avsectester.evaluation.report import evaluate
+from avsectester.experiment import Experiment, evaluate
 
 # Requires the configured dataset, simulator, models and device.
 experiment = Experiment()

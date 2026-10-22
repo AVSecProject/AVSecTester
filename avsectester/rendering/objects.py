@@ -1,13 +1,27 @@
 """Textured world-object descriptions, independent of simulators and attacks."""
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 
+from avsectester.validation import require_nonnegative_integer
 from avsectester.geometry.poses import validated_transform
 from .harmonizers import Harmonizer
+from .textures import Texture, load_rgba_image
+
+
+def _post_texture(height_pixels: int = 256, width_pixels: int = 16,
+              color: tuple = (150, 152, 155)) -> np.ndarray:
+    """A galvanized sign post texture: flat grey, shaded across its width like a round/U-channel post."""
+    shade = 0.65 + 0.35 * np.sin(np.linspace(0.15, math.pi - 0.15, width_pixels))  # darker at the edges
+    img = np.zeros((height_pixels, width_pixels, 4), np.uint8)
+    img[..., :3] = (np.asarray(color, np.float32)[None, None, :] * shade[None, :, None]).astype(np.uint8)
+    img[..., 3] = 255
+    return img
 
 
 @dataclass(frozen=True)
@@ -80,6 +94,42 @@ class ObjectAsset:
         extent = (2 * np.max(np.abs(corners[:, 0])), 2 * np.max(np.abs(corners[:, 1])),
                   np.max(corners[:, 2]))
         return cls(surfaces, extent, category)
+
+
+    @classmethod
+    def from_panel(
+        cls, texture: np.ndarray | str | Path | Texture, *, category: str, width_m: float,
+        mount_height_m: float = 0.0, post_count: int = 0, post_width_m: float = 0.07,
+    ) -> ObjectAsset:
+        """Build a +X-facing panel and optional support posts above a ground-level origin.
+
+        The image's aspect ratio determines the face height. Posts stand 3 cm behind
+        the face and reach its centre; several posts are spaced across +/-35% of its
+        width. Surfaces list the posts first and the panel last.
+        """
+        face = load_rgba_image(texture)
+        if not np.isfinite([width_m, mount_height_m, post_width_m]).all():
+            raise ValueError("Panel dimensions must be finite")
+        if width_m <= 0 or mount_height_m < 0 or post_width_m <= 0:
+            raise ValueError("Panel width_m and post_width_m must be positive, mount_height_m nonnegative")
+        require_nonnegative_integer(post_count, "post_count")
+        height = width_m * face.shape[0] / face.shape[1]
+
+        def rectangle(x, y, width, bottom, top, image):
+            return PlaneSurface(np.array([
+                [x, y - width / 2, top], [x, y + width / 2, top],
+                [x, y + width / 2, bottom], [x, y - width / 2, bottom],
+            ]), image)
+
+        surfaces = []
+        if post_count:
+            offsets = [0.0] if post_count == 1 else np.linspace(-0.35, 0.35, post_count) * width_m
+            for offset in offsets:
+                surfaces.append(rectangle(-0.03, offset, post_width_m, 0,
+                                          mount_height_m + height / 2, _post_texture()))
+        surfaces.append(rectangle(0, 0, width_m, mount_height_m,
+                                  mount_height_m + height, face))
+        return cls.from_surfaces(surfaces, category)
 
 
 @dataclass(frozen=True)

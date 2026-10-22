@@ -7,8 +7,8 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from avsectester.geometry.cameras import Camera, camera_ray_mask
-from avsectester.geometry.poses import ActorPose
-from avsectester.geometry.projection import box_ray_distances
+from avsectester.data_types import ActorState
+from avsectester.geometry.boxes import box_ray_distances
 from .harmonizers import Harmonizer
 from .objects import PlacedObject
 from .surfaces import render_surfaces
@@ -77,7 +77,7 @@ def blend_rgba(
 def composite_objects(
     image: np.ndarray, camera: Camera, cam_from_world: np.ndarray,
     objects: Sequence[PlacedObject], *, scene_depth: np.ndarray | None = None,
-    occluders: Mapping[str, ActorPose] | None = None,
+    occluders: Mapping[str, ActorState] | None = None,
     occlusion_tolerance_m: float = 0.1,
 ) -> CompositeResult:
     """Render the nearest object surfaces and composite their unoccluded pixels.
@@ -128,7 +128,7 @@ def composite_objects(
             if actor.extent is None:
                 ignored_occluders.append(actor_id)
                 continue
-            distance = box_ray_distances(actor, rays, world_from_cam)
+            distance = box_ray_distances(actor.box_transform(), actor.extent, rays, world_from_cam)
             hit = valid & np.isfinite(distance)
             ray_depth[hit] = np.minimum(ray_depth[hit], distance[hit] * rays[hit, 2])
         background_depth = np.full(shape, np.inf)

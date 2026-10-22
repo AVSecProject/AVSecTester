@@ -1,4 +1,4 @@
-"""CPU triangle-mesh ray queries, with optional Embree acceleration."""
+"""CPU triangle-mesh ray queries requiring Embree through the optional nurec extra."""
 
 from __future__ import annotations
 
@@ -31,7 +31,8 @@ class MeshRaycaster:
     ``vertices`` are finite world coordinates with shape ``(N, 3)``; ``faces`` are
     integer vertex indices with shape ``(M, 3)``. Construction copies both arrays.
     Queries return Euclidean distances along each ray, with ``inf`` for no hit.
-    The optional mesh dependencies are imported only when this class is used.
+    Embree is required for mesh queries. Its optional installation dependencies load only
+    when this class is used.
     """
 
     @staticmethod

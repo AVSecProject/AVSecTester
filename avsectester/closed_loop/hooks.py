@@ -15,12 +15,13 @@ from typing import Any, Protocol, Self, TYPE_CHECKING
 
 import numpy as np
 
-from avsectester.closed_loop.datatypes import Control, Observation, RecordedOutput, StateEstimate, WorldSnapshot
+from avsectester.validation import require_nonnegative_integer
+from avsectester.data_types import Control, Observation, RecordedOutput, StateEstimate, WorldSnapshot
 
 if TYPE_CHECKING:
-    from avsectester.closed_loop.avstack import AVStack
-    from avsectester.closed_loop.simulator import SimulatorRuntime
-    from avsectester.closed_loop.vehicle_io import VehicleIO
+    from avsectester.closed_loop.avstacks.base import AVStack
+    from avsectester.closed_loop.simulators.base import SimulatorRuntime
+    from avsectester.closed_loop.avstacks.base import ObservationPipeline
 
 
 class StageEmitter(Protocol):
@@ -74,15 +75,18 @@ class CallInputs:
 
 
 @dataclass
-class CameraRenderRequest:
-    """A sensor render request. Its pose is independent of the simulator's true pose."""
+class CameraPoseRequest:
+    """Camera name and rendering pose editable at a rendering simulator's ``render.pre`` stage.
+
+    The requested pose is independent of the simulator's true physical pose.
+    """
 
     pose: Any
     camera: str
 
     def __post_init__(self) -> None:
         if not isinstance(self.camera, str) or not self.camera:
-            raise ValueError("CameraRenderRequest camera must be a nonempty sensor name")
+            raise ValueError("CameraPoseRequest camera must be a nonempty sensor name")
 
 
 @dataclass(frozen=True)
@@ -186,7 +190,7 @@ def _invoke(handler: Any, value: Any, context: StageContext) -> Any:
 
 
 class HookSet:
-    """Reusable ordered hooks, independent of the driving system's Vehicle I/O.
+    """Reusable ordered hooks, independent of the driving system's ObservationPipeline.
 
     A fixed seed starts a fresh RNG for each run. Stateful handlers must implement
     ``reset`` or be constructed afresh.
@@ -212,21 +216,21 @@ class HookSet:
         result.hooks = extra + self.hooks if prepend else self.hooks + extra
         return result
 
-    def _vehicle_io(self, avstack: AVStack) -> VehicleIO:
-        from avsectester.closed_loop.vehicle_io import VehicleIO
+    def _observation_pipeline(self, avstack: AVStack) -> ObservationPipeline:
+        from avsectester.closed_loop.avstacks.base import ObservationPipeline
 
-        result = avstack.vehicle_io
-        if not isinstance(result, VehicleIO):
-            raise TypeError("avstack.vehicle_io must be VehicleIO")
+        result = avstack.observation_pipeline
+        if not isinstance(result, ObservationPipeline):
+            raise TypeError("avstack.observation_pipeline must be ObservationPipeline")
         return result
 
     def validate_stages(self, simulator_runtime: SimulatorRuntime, avstack: AVStack) -> frozenset[str]:
         """Check adapter capabilities without binding a dispatcher or invoking handlers."""
-        from avsectester.closed_loop.avstack import validate_command_compatibility
+        from avsectester.closed_loop.avstacks.base import validate_command_compatibility
 
         validate_command_compatibility(simulator_runtime, avstack, self)
         available = HookDispatcher.CORE_STAGES | simulator_runtime.supported_stages | avstack.supported_stages
-        if self._vehicle_io(avstack).localizer is not None:
+        if self._observation_pipeline(avstack).localizer is not None:
             available |= {"localization.pre"}
         unknown = {hook.stage for hook in self.hooks} - available
         if unknown:
@@ -240,8 +244,8 @@ class HookSet:
         """Required deployment ticks, shared by every treatment in a comparison group."""
         handlers = {id(hook.handler): hook.handler for hook in self.hooks if hook.stage == "simulator.setup"}
         counts = [getattr(handler, "setup_ticks", 0) for handler in handlers.values()]
-        if any(not isinstance(n, int) or isinstance(n, bool) or n < 0 for n in counts):
-            raise ValueError("Plugin setup_ticks must be nonnegative integers")
+        for count in counts:
+            require_nonnegative_integer(count, "Plugin setup_ticks")
         return sum(counts)
 
     def session(self, simulator_runtime: SimulatorRuntime, avstack: AVStack) -> HookDispatcher:
@@ -256,7 +260,7 @@ class HookDispatcher:
     def __init__(self, hook_set: HookSet, simulator_runtime: SimulatorRuntime, avstack: AVStack) -> None:
         self.hook_set = hook_set
         self.context = RunContext(simulator_runtime, avstack, np.random.default_rng(hook_set.seed))
-        self.vehicle_io = hook_set._vehicle_io(avstack)
+        self.observation_pipeline = hook_set._observation_pipeline(avstack)
         self.step = 0
         self.observation: Observation | None = None
         self.control: Control | None = None
@@ -267,8 +271,8 @@ class HookDispatcher:
         for hook in hook_set.hooks:
             self._handlers.setdefault(hook.stage, []).append(hook.handler)
         participants = [hook.handler for hook in hook_set.hooks]
-        if self.vehicle_io.localizer is not None:
-            participants.append(self.vehicle_io.localizer)
+        if self.observation_pipeline.localizer is not None:
+            participants.append(self.observation_pipeline.localizer)
         # A single plugin can be bound to several stages but owns one lifecycle per run.
         self.participants = tuple({id(value): value for value in participants}.values())
 
@@ -345,7 +349,7 @@ class HookDispatcher:
                 "localization.post": StateEstimate,
                 "observation": Observation,
                 "command": Control,
-                "render.pre": CameraRenderRequest,
+                "render.pre": CameraPoseRequest,
             }.get(stage)
             if expected is not None:
                 self._require(value, expected, stage)
@@ -361,8 +365,8 @@ class HookDispatcher:
         return value
 
     def observe(self, observation: Observation) -> Observation:
-        """Apply the driving system's Vehicle I/O with this run's ordered hooks."""
-        return self.vehicle_io.process(observation, self)
+        """Apply the driving system's ObservationPipeline with this run's ordered hooks."""
+        return self.observation_pipeline.process(observation, self)
 
     def command(self, control: Control) -> Control:
         self._require(control, Control, "avstack")

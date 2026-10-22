@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from avsectester.closed_loop.sensor_transforms import CORRUPTIONS, AlbumentationsCorruption
+from avsectester.closed_loop.sensor_corruptions import CORRUPTIONS, AlbumentationsCorruption
 from avsectester.evaluation.visualization import filmstrip, save_image
 
 

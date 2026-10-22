@@ -1,14 +1,11 @@
-"""Public attack contracts, segment selection and placement specifications."""
+"""Public attack contracts and selected intervals."""
 
 import numpy as np
 import pytest
 
 from avsectester.attack import Attack, AttackSegment, OfflineContext
-from avsectester.attack.placement import (
-    Orientation, WorldPlacement, orientation_from_spec, placement_from_spec,
-)
 from avsectester.attack.segments import split_segments
-from avsectester.closed_loop.services import ClosedLoopServices
+from avsectester.execution.services import ClosedLoopServices
 from avsectester.datasets import FrameReference
 from tests.fakes import MemoryDataset, MemorySimulator
 
@@ -41,33 +38,3 @@ def test_attack_segment():
     assert segment.user_data == {"host": "lead", "label": "visible"}
     with pytest.raises(ValueError, match="stop"):
         AttackSegment("scene", stop, start)
-
-
-def test_split_segments():
-    frames = tuple(FrameReference("scene", i, i, i * .1) for i in range(80))
-    eligible = lambda frame: frame.position >= 5
-    full = split_segments(frames, eligible, decision_steps=20)
-    assert [(segment.start.position, segment.stop.position) for segment in full] == [
-        (5, 25), (25, 45), (45, 65),
-    ]
-    with_tail = split_segments(frames, eligible, decision_steps=20, keep_tail=True)
-    assert [segment.decision_steps for segment in with_tail] == [20, 20, 20, 14]
-    separated = split_segments(frames[:8], lambda frame: frame.position != 2,
-                               decision_steps=2, keep_tail=True)
-    assert [(segment.start.position, segment.stop.position) for segment in separated] == [
-        (0, 2), (3, 5), (5, 7),
-    ]
-    with pytest.raises(ValueError, match="positive integer"):
-        split_segments(frames, eligible, decision_steps=0)
-
-
-def test_placement_from_spec():
-    attached = placement_from_spec({"type": "avsectester.attack.placement:AttachedPlacement", "options": {
-        "host": "lead", "anchor": "rear_center", "offset_m": [-.1, 0., .2],
-    }})
-    np.testing.assert_allclose(attached.local_position((4., 2., 1.5)), [-2.1, 0., .2])
-    world = placement_from_spec({"type": "avsectester.attack.placement:WorldPlacement", "options": {"position_m": [8., 1., 0.]}})
-    assert world == WorldPlacement((8., 1., 0.))
-    assert orientation_from_spec({"type": "avsectester.attack.placement:Orientation", "options": {"mode": "face_ego"}}) == Orientation("face_ego")
-    with pytest.raises(ValueError, match="Unknown placement"):
-        placement_from_spec({"type": "UnknownPlacement"})

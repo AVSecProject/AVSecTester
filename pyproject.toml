@@ -59,7 +59,7 @@ test = [
     "opencv-python-headless>=4.9,<4.12",
     "albumentations==1.4.24",
 ]
-# Optional augmentation library for avsectester.closed_loop.sensor_transforms (weather/sensor corruptions).
+# Optional augmentation library for avsectester.closed_loop.sensor_corruptions (weather/sensor corruptions).
 # Albumentations 1.4 (MIT) supports the NumPy<2 environment used by Torch 2.1 and OpenMMLab.
 # AlbumentationsX/2.x require NumPy>=2. Built-in sensor transforms do not require Albumentations.
 augment = [
@@ -106,13 +106,19 @@ path = "avsectester/__init__.py"
 [tool.mypy]
 files = [
     "avsectester/attack/attack.py", "avsectester/attack/runtime.py",
-    "avsectester/attack/segments.py", "avsectester/attack/placement.py", "avsectester/cli.py", "avsectester/experiment/",
-    "avsectester/closed_loop/datatypes.py", "avsectester/closed_loop/hooks.py",
-    "avsectester/closed_loop/avstack.py", "avsectester/closed_loop/vehicle_io.py",
-    "avsectester/closed_loop/simulator.py", "avsectester/closed_loop/runner.py",
-    "avsectester/closed_loop/services.py", "avsectester/closed_loop/resources.py",
-    "avsectester/closed_loop/frame_data.py",
-    "avsectester/runlog/log.py", "avsectester/runlog/codecs.py",
+    "avsectester/attack/segments.py", "avsectester/attack/insertion/placement.py", "avsectester/cli.py",
+    "avsectester/experiment/__init__.py", "avsectester/experiment/config.py",
+    "avsectester/experiment/engine.py", "avsectester/experiment/models.py",
+    "avsectester/experiment/output_directory.py", "avsectester/experiment/type_registry.py",
+    "avsectester/experiment/configuration_summary.py",
+    "avsectester/experiment/result_evaluation.py",
+    "avsectester/data_types.py", "avsectester/validation.py",
+    "avsectester/type_paths.py", "avsectester/serialization.py", "avsectester/closed_loop/hooks.py",
+    "avsectester/closed_loop/avstacks/base.py", "avsectester/closed_loop/avstacks/driving_adapter.py",
+    "avsectester/closed_loop/simulators/object_composition.py",
+    "avsectester/closed_loop/simulators/ego_dynamics.py",
+    "avsectester/closed_loop/simulators/base.py", "avsectester/execution/",
+    "avsectester/runlog/log.py",
     "avsectester/datasets/base.py", "avsectester/evaluation/",
     "avsectester/closed_loop/environment.py", "avsectester/geometry/",
 ]

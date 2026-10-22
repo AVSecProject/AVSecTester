@@ -62,14 +62,17 @@ class SpeedSpoofAttackRuntime(AttackRuntime):
         return replace(observation, ego_speed=self.reported_speed)
 ```
 
-Place user attacks under attack/implemented_attacks/speed_spoof_attack/ with __init__.py exporting
+Place user attacks under implemented_attacks/speed_spoof_attack/ with __init__.py exporting
 only SpeedSpoofAttack. Use type: SpeedSpoofAttack and constructor options. The same layout applies
 to supplied and user attacks: attack.py connects entry points, metabuilder.py selects, optional
 offline.py prepares, online.py implements AttackRuntime/actions, and optional assets.py owns
 attack-specific assets. See the [folder
-guide](../../avsectester/attack/implemented_attacks/README.md). An importable external class can
+guide](../../avsectester/implemented_attacks/README.md). An importable external class can
 instead use type: my_project.attacks:SpeedSpoofAttack. The modified speed reaches the driving system
 while StepRecord.physical_pre and physical_post retain actual world state.
+
+Mark filesystem constructor parameters as Path or str | Path so YAML resolves relative paths; see
+[filesystem parameters](../reference/configuration.md#constructor-filesystem-parameters).
 
 ## Use the selected scenario
 
@@ -82,12 +85,13 @@ sensor samples, actions-based rendering, component evaluations, scores or rollou
 
 Use SensorRequest(..., views=True) when offline preparation needs each sample's camera geometry,
 actors or ego pose. SensorSample.views contains one detached SensorView per requested sensor;
-view.native is empty. view.data is the capture before sensor environment transforms, while
+view.native is empty. view.data is the capture before sensor corruptions, while
 sample.observation includes those transforms. views defaults to False and then the mapping is
 empty, avoiding depth computation and extra data copies. Requesting views requires can_render.
 
-sensor_data reads a world without attack actions and can reuse one simulator runtime for forward
-scans. render applies world or sensor attack actions and creates a fresh world for each request.
+read_sensors reads a world without attack actions. When can_replay is True, it can reuse one
+simulator runtime for forward scans; NuRec resets to the requested recorded frame each time. render
+applies world or sensor attack actions and creates a fresh world for each request.
 Both can return calibrated views; render remains the entry point for evaluating deployed actions.
 
 This offline example uses the repository's shared in-memory components to collect several samples.
@@ -97,7 +101,7 @@ images and geometry into its own optimizer:
 <!-- runnable -->
 ```python
 import numpy as np
-from avsectester.closed_loop.services import ClosedLoopServices, SensorRequest
+from avsectester.execution.services import ClosedLoopServices, SensorRequest
 from tests.fakes import MemoryDataset, MemorySimulator
 
 dataset = MemoryDataset()
@@ -106,10 +110,10 @@ environment = {"sensors": [{"type": "GaussianNoise", "camera": "front",
 with ClosedLoopServices(dataset, MemorySimulator()) as services:
     scenario = services.scenario("scene", seed=7)
     with services.session(scenario.seed) as session:
-        samples = [session.sensor_data(SensorRequest(
+        samples = [session.read_sensors(SensorRequest(
             scenario.scenario_id, frame, ("front",), environment, views=True))
             for frame in scenario.frames[1:4]]
-        plain = session.sensor_data(SensorRequest("scene", scenario.frames[3], ("front",)))
+        plain = session.read_sensors(SensorRequest("scene", scenario.frames[3], ("front",)))
 
 optimization_samples = [
     {"image": sample.views["front"].data, "camera": sample.views["front"].camera,
@@ -157,8 +161,8 @@ boundary used by selection. The user defines optimization and objectives. A cand
 declares every request field, for example:
 
 ```python
-from avsectester.closed_loop.services import CandidateRequest
-from avsectester.closed_loop.runner import RecordingPolicy
+from avsectester.execution.services import CandidateRequest
+from avsectester.execution.runner import RecordingPolicy
 
 # Requires an Attack self, selected segment, artifacts and OfflineContext context.
 request = CandidateRequest(attack=self, segment=segment, artifacts=artifacts,
@@ -185,8 +189,9 @@ insertion](../examples/image-insertion.md#use-insertion-tools-in-your-attack) an
 
 ## Insert a world object
 
-Return InsertObject from AttackRuntime.setup to make an arbitrary textured object visible from the
-first capture. Returning it from step makes it visible from the next capture. The action registers
+Import InsertObject from avsectester.attack.insertion. Return it from AttackRuntime.setup to make
+an arbitrary textured object visible from the first capture. Returning it from step makes it
+visible from the next capture. The action registers
 cleanup, so the object is removed when the run ends. The framework composites it into every camera;
 the native simulator does not need a matching blueprint or reconstructed actor.
 
@@ -194,9 +199,9 @@ ObjectAsset contains rectangular PlaneSurface faces with RGBA textures. Its righ
 frame has its origin at the bottom center, +X pointing out of the front, +Y to the left and +Z up.
 extent is the full (length, width, height), with the horizontal box centered on the origin and its
 bottom at z=0. Every corner must lie inside that box. ObjectAsset.from_surfaces infers those extents
-without moving the origin. avsectester.rendering exports SignAsset for custom signs and
-stop_sign_asset for the supplied stop-sign face and posts. Existing built-in attacks retain their
-own deployment implementations.
+without moving the origin. ObjectAsset.from_panel creates a front-facing textured panel with
+optional support posts. Pass an RGBA array, a Texture implementation or your own image path.
+Existing built-in attacks retain their own deployment implementations.
 
 world_from_object is a rigid 4×4 transform from that local frame into canonical world coordinates.
 Selection can derive it from ScenarioView.frame_data(frame).ego.pose, an actor pose or a semantic
@@ -209,12 +214,16 @@ This minimal example inserts a sign eight metres ahead, facing ego:
 <!-- runnable -->
 ```python
 import numpy as np
-from avsectester.attack import AttackRuntime, InsertObject
-from avsectester.closed_loop.runner import ClosedLoopRunner, RunRequest
-from avsectester.rendering.signs import stop_sign_asset
+from avsectester.attack import AttackRuntime
+from avsectester.attack.insertion import InsertObject
+from avsectester.execution.runner import ClosedLoopRunner, RunRequest
+from avsectester.rendering import ObjectAsset
 from tests.fakes import ConstantAVStack, MemorySimulator
 
-asset = stop_sign_asset()
+texture = np.full((96, 96, 4), (180, 20, 20, 255), dtype=np.uint8)
+texture[12:-12, 12:-12, :3] = (240, 240, 240)
+asset = ObjectAsset.from_panel(texture, category="stop_sign", width_m=0.9,
+                               mount_height_m=1.5, post_count=1)
 world_from_object = np.eye(4)
 world_from_object[:3, :3] = np.diag([-1.0, -1.0, 1.0])
 world_from_object[:3, 3] = (8.0, 0.0, 0.0)
@@ -235,18 +244,20 @@ The following more complete example uses a semantic map supplied by the in-memor
 pose_reference is face_center. Its ground height comes from the closest centerline point over all
 governed lanes, in world coordinates. If c is the vertical distance from that point to the face
 center, the object pose is control.pose @ translate(0, 0, -c), and the sign's mount height is
-c - face_height/2, where face_height is the inserted sign's own face height. This keeps the face at its mapped location and the post on the estimated ground.
+c - face_height/2, where face_height is the inserted sign's own face height. This keeps the face at
+its mapped location and the post on the estimated ground.
 The same calculation supports nonzero world-ground heights. It needs no native simulator or model
 weights and imports no concrete attack:
 
 <!-- runnable -->
 ```python
 import numpy as np
-from avsectester.attack import AttackRuntime, InsertObject
-from avsectester.closed_loop.runner import ClosedLoopRunner, RecordingPolicy, RunRequest
-from avsectester.geometry.cameras import transform
+from avsectester.attack import AttackRuntime
+from avsectester.attack.insertion import InsertObject
+from avsectester.execution.runner import ClosedLoopRunner, RecordingPolicy, RunRequest
+from avsectester.geometry.poses import transform
 from avsectester.maps import Lane, ScenarioMap, StopLine, TrafficControl
-from avsectester.rendering.signs import stop_sign_asset
+from avsectester.rendering import ObjectAsset
 from tests.fakes import ConstantAVStack, MemoryDataset, MemorySimulator
 
 centerline = np.array([[0.0, 0.0, 0.0], [12.0, 0.0, 0.0]])
@@ -279,9 +290,12 @@ points = np.concatenate(candidates)
 ground_z = points[np.argmin(np.linalg.norm(points - center, axis=1))][2]
 c = control.pose[2, 3] - ground_z
 width = control.extent[1]
-# The face height follows the sign image's aspect ratio, which may differ from the mapped box.
-face_height = np.ptp(stop_sign_asset(width_m=width).surfaces[-1].corners[:, 2])
-asset = stop_sign_asset(width_m=width, mount_height_m=c - face_height / 2)
+texture = np.full((96, 96, 4), (180, 20, 20, 255), dtype=np.uint8)
+texture[12:-12, 12:-12, :3] = (240, 240, 240)
+# The face height follows the texture aspect ratio, which may differ from the mapped box.
+face_height = width * texture.shape[0] / texture.shape[1]
+asset = ObjectAsset.from_panel(texture, category="stop_sign", width_m=width,
+                               mount_height_m=c - face_height / 2, post_count=1)
 offset = np.eye(4)
 offset[2, 3] = -c
 world_from_object = control.pose @ offset
@@ -340,8 +354,8 @@ geometry. **Not yet implemented.** Inserted objects in LiDAR or other non-camera
 | AVStackAttackAction | `apply(value, context)` | Driving-system stages from localization.pre to command |
 
 SensorAttackAction is the attack entry for camera, LiDAR, GNSS and IMU data. Actions for one sensor
-chain in issue order on a private copy; the view retains the original capture. chain_sensor_actions
-uses write_camera_rgb when SensorView.camera is present, keeping camera data RGB uint8. Other
+chain in issue order on a private copy; the view retains the original capture. The runner uses
+write_camera_rgb when SensorView.camera is present, keeping camera data RGB uint8. Other
 sensors use write_sensor_data, which preserves array shape and dtype, native wrappers and
 calibration. SensorView.camera and cam_from_world are None for non-camera sensors.
 sensor_from_world uses sensor-body axes, including for cameras, independently of the optical

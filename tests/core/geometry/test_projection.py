@@ -4,15 +4,14 @@ import numpy as np
 import pytest
 
 from avsectester.geometry.cameras import FThetaCamera, PinholeCamera
-from avsectester.geometry.poses import ActorPose, rotation_matrix
-from avsectester.geometry.projection import box_ray_distances, plane_sampling_grid, project_box, visible_plane_mask
+from avsectester.geometry.projection import plane_sampling_grid, project_box, visible_plane_mask
 
 
 CAMERAS = [
     pytest.param(PinholeCamera(np.array([[1., 0., 1.], [0., 1., 1.], [0., 0., 1.]]), 2, 2),
                  .5, 1 / 3, id="pinhole"),
     pytest.param(FThetaCamera(1., 1., (0., 1.), 2, 2, (0., 1.), max_angle=1.5),
-                 np.tan(np.sqrt(.5)) / np.sqrt(2), np.arctan(np.sqrt(2) / 3) / np.sqrt(2),
+                 np.tan(np.sqrt(.5)) / np.sqrt(2), np.arctan(1 / 3),
                  id="ftheta"),
 ]
 PLANE = np.array([[-2., -2., 2.], [2., -2., 2.], [2., 2., 2.], [-2., 2., 2.]])
@@ -41,8 +40,9 @@ def test_project_box(camera, grid_half, box_half):
     pose = np.eye(4)
     pose[2, 3] = 4.
     # The nearest box corners have optical coordinates (+/-1, +/-1, 3).
-    np.testing.assert_allclose(project_box(camera, np.eye(4), pose, (2., 2., 2.)),
-                               [1 - box_half, 1 - box_half, 1 + box_half, 1 + box_half])
+    bounds = project_box(camera, np.eye(4), pose, (2., 2., 2.))
+    np.testing.assert_allclose(bounds,
+                               [1 - box_half, 1 - box_half, 1 + box_half, 1 + box_half], atol=.01)
     pose[2, 3] = -4.
     assert project_box(camera, np.eye(4), pose, (2., 2., 2.)) is None
     pose[2, 3] = .1
@@ -73,17 +73,31 @@ def test_visible_plane_mask(camera, grid_half, box_half):
         visible_plane_mask(camera, np.eye(4), np.ones((1, 2)), PLANE, .01)
 
 
-def test_box_ray_distances():
-    transform = np.eye(4)
-    transform[:3, 3] = (0, 0, 5)
-    rays = np.array([[0., 0., 1.], [1., 0., 0.], [0., 0., -1.]])
-    distances = box_ray_distances(ActorPose(transform, (2, 2, 2)), rays, np.eye(4))
-    np.testing.assert_array_equal(distances, [4., np.inf, np.inf])
-    transform[:3, :3] = rotation_matrix((0, 0, 45))
-    rotated = box_ray_distances(ActorPose(transform, (4, 2, 2)), rays, np.eye(4))
-    assert rotated[0] == pytest.approx(4.)
-    np.testing.assert_array_equal(box_ray_distances(ActorPose(np.eye(4), (2, 2, 2)),
-                                                   rays, np.eye(4)), [1, 1, 1])
-    with pytest.raises(ValueError, match="extent"):
-        box_ray_distances(ActorPose(transform), rays, np.eye(4))
+def test_project_box_curved_edges():
+    camera = FThetaCamera(100., 100., (0., 100.), 200, 200, (0., .01), max_angle=1.5)
+    pose = np.eye(4)
+    pose[2, 3] = 2.
+    bounds = project_box(camera, np.eye(4), pose, (2., 2., 2.))
+    assert bounds is not None
+    # The nearest edge midpoints extend farther than the corners in an f-theta image.
+    expected_min = 100. - 100. * np.pi / 4
+    expected_max = 100. + 100. * np.pi / 4
+    assert bounds[0] <= expected_min and bounds[1] <= expected_min
+    assert bounds[2] >= expected_max and bounds[3] >= expected_max
+    edge = np.column_stack((np.linspace(-1., 1., 1001), np.ones(1001), np.ones(1001)))
+    pixels = camera.project(edge)
+    assert np.all(pixels >= bounds[:2])
+    assert np.all(pixels <= bounds[2:])
 
+    pose[:3, 3] = (-7.3, .6, .01)
+    assert project_box(camera, np.eye(4), pose, (4., 2., 1.5)) is None
+    pose[:3, 3] = (-1.5, .1, 1.)
+    bounds = project_box(camera, np.eye(4), pose, (1., 1., 3.))
+    assert bounds is not None
+    visible_edge = np.column_stack((np.full(1001, -1.), np.full(1001, .1),
+                                   np.linspace(.001, 2.5, 1001)))
+    pixels = camera.project(visible_edge)
+    in_image = ((pixels >= 0) & (pixels <= [camera.width, camera.height])).all(axis=1)
+    assert in_image.any()
+    assert np.all(pixels[in_image] >= bounds[:2])
+    assert np.all(pixels[in_image] <= bounds[2:])

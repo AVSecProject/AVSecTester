@@ -95,7 +95,7 @@ jobs:
       - name: Test attacks and the real avstack pipeline without a server
         run: >-
           python -m pytest tests/avstack tests/core/closed_loop/avstacks
-          tests/core/attack/implemented_attacks/test_implemented_attacks.py -q
+          tests/core/implemented_attacks/test_implemented_attacks.py -q
           --junitxml=reports/avstack.xml
           --cov=avsectester --cov-report=term-missing:skip-covered
           --cov-report=xml:reports/avstack-coverage.xml

@@ -85,8 +85,10 @@ runs are involved. Keep runs.output pointing to the results to analyze.
 | `configs/nurec_patch.yaml` | Patch image synthesis with Alpamayo |
 | `configs/nuscenes_object_insertion.yaml` | Recorded insertion setup; real dataset/model run unverified |
 
-Paths are relative to the configuration file that contains them. Set dataset roots, renderer
-endpoint, checkpoint paths and device options for your environment. NuRec uses the AlpaSim driver
+Declared filesystem parameters are relative to the configuration file containing them; see
+[path resolution](../reference/configuration.md#constructor-filesystem-parameters). Set dataset roots,
+renderer endpoint, checkpoint paths and device options for your environment. NuRec uses the
+AlpaSim driver
 interpreter; from the checkout, use `python -m avsectester.cli run CONFIG.yaml` with that
 interpreter.
 

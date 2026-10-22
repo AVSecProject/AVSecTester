@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from avsectester.closed_loop.avstack import AVStack
-from avsectester.closed_loop.datatypes import Control, Observation, read_camera_rgb
+from avsectester.closed_loop.avstacks.base import AVStack
+from avsectester.data_types import Control, Observation, read_camera_rgb
 from avsectester.closed_loop.hooks import CallInputs
 
 

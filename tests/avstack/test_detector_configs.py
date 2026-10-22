@@ -40,7 +40,7 @@ def point_cloud_detectors():
 
 
 def carla_metadata():
-    from avsectester.closed_loop.avstacks.mmdet3d import register_carla_dataset
+    from avsectester.closed_loop.avstacks.modular import register_carla_dataset
     register_carla_dataset()
 
 

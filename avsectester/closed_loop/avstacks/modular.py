@@ -7,16 +7,306 @@ Heavy avstack imports are lazy (done when the pipeline is built), so this module
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from copy import deepcopy
+from copy import copy, deepcopy
 from typing import TYPE_CHECKING, Any
 
-from avsectester.closed_loop.avstack import AVStack
-from avsectester.closed_loop.datatypes import Control, Detection, Observation
+from avsectester.closed_loop.avstacks.base import AVStack
+from avsectester.closed_loop.avstacks import driving_adapter
+from avsectester.closed_loop.hooks import CallInputs, Plugin, RunContext, StageContext
+from avsectester.data_types import Control, Detection, Observation
+from avsectester.serialization import DEFAULT_REGISTRY
 
 if TYPE_CHECKING:
     from avsectester.closed_loop.hooks import StageEmitter
+
+
+def _snapshot_sensor(value: Any, capture_child: Callable[[Any], Any]) -> Any:
+    result = copy(value)
+    # The allowlist is also used by persistence. Copy wrappers and references,
+    # but snapshot the explicitly supported SDK payload through its own registration.
+    for name, child in _sensor(value).items():
+        if name != "native_type":
+            setattr(result, name, capture_child(child))
+    # These are optional derived image caches owned by native wrappers.
+    for name in ("_rgb_image", "depth_in_meters"):
+        if hasattr(value, name):
+            setattr(result, name, capture_child(getattr(value, name)))
+    return result
+
+
+def _snapshot_native(value: Any, capture_child: Callable[[Any], Any]) -> Any:
+    """Keep native in-memory behavior while capturing children through adapter registrations.
+
+    ``deepcopy`` of an outer DataContainer bypasses the ReferenceFrame registration and follows
+    every reverse reference in the live global frame. Native record fields are captured
+    recursively here instead. Persistence continues to use explicit field allowlists.
+    """
+    result = copy(value)
+    for name, child in vars(value).items():
+        vars(result)[name] = capture_child(child)
+    return result
+
+
+def _snapshot_reference(value: Any, capture_child: Callable[[Any], Any]) -> Any:
+    """Copy only an ancestor chain; descendants and integrated caches are not pose data."""
+    result = copy(value)
+    state = vars(result)
+    for name, child in vars(value).items():
+        if name == "_point_from":
+            state[name] = []
+        elif name == "_global_integrated":
+            state[name] = None
+        else:
+            state[name] = capture_child(child)
+    return result
+
+
+def _fields(value: Any, *names: str) -> dict[str, Any]:
+    """Copy an explicit field allowlist, never an object's attribute dictionary."""
+    return {
+        "native_type": f"{type(value).__module__}.{type(value).__qualname__}",
+        **{name: getattr(value, name) for name in names},
+    }
+
+
+def _quaternion(value: Any) -> list[float]:
+    return [float(value.w), float(value.x), float(value.y), float(value.z)]
+
+
+def _reference(value: Any) -> dict[str, Any]:
+    result = _fields(value, "reference", "handedness", "n_prec", "from_frame", "to_frame",
+                     "timestamp")
+    result.update({name: getattr(value, name).tolist() for name in ("x", "v", "acc")})
+    result.update(q_wxyz=_quaternion(value.q), angular_wxyz=_quaternion(value.ang))
+    # Never follow _point_from: it contains reverse links and potentially an
+    # entire live sensor tree. The parent chain alone defines the coordinates.
+    return result
+
+
+def _vector(value: Any) -> dict[str, Any]:
+    return {**_fields(value, "reference", "n_prec"), "x": value.x.tolist()}
+
+
+def _rotation(value: Any) -> dict[str, Any]:
+    return {**_fields(value, "reference", "n_prec"), "q_wxyz": _quaternion(value.q)}
+
+
+def _box3d(value: Any) -> dict[str, Any]:
+    return {**_fields(value, "ID", "obj_type", "position", "attitude", "where_is_t"),
+            "hwl": [float(value.h), float(value.w), float(value.l)]}
+
+
+def _camera(value: Any) -> dict[str, Any]:
+    return {**_fields(value, "reference", "fov_horizontal", "fov_vertical", "square_pixels",
+                      "channel_order"),
+            "P": value.P.tolist(), "img_shape": list(value.img_shape)}
+
+
+def _semantic_camera(value: Any) -> dict[str, Any]:
+    return {**_camera(value), "colors": value.colors,
+            "tags": [{"id": key, "name": name} for key, name in value.tags.items()]}
+
+
+def _sensor(value: Any) -> dict[str, Any]:
+    result = _fields(value, "timestamp", "frame", "source_ID", "source_name",
+                     "source_identifier", "data", "calibration")
+    # These are declared SensorData/subclass fields, not arbitrary kwargs.
+    for name in ("depth", "in_front", "levar", "encoding", "n_features", "flipy"):
+        if hasattr(value, name):
+            result[name] = getattr(value, name)
+    # Image and point arrays stay arrays: RunLog places them in payload shards.
+    return result
+
+
+def _detection(value: Any) -> dict[str, Any]:
+    return {**_fields(value, "ID", "source_identifier", "obj_type", "score", "data",
+                      "reference"), "noise": value.noise.tolist()}
+
+
+def _track(value: Any) -> dict[str, Any]:
+    return {
+        **_fields(value, "ID", "obj_type", "t0", "t", "dt_coast", "n_updates", "n_missed",
+                  "score", "reference", "attitude"),
+        "x": value.x.tolist(), "P": value.P.tolist(),
+    }
+
+
+def _box_track(value: Any) -> dict[str, Any]:
+    return {**_track(value), "box": value.box, "velocity": value.velocity}
+
+
+def _waypoints(value: Any) -> dict[str, Any]:
+    # Reading the heap must not pop entries or alter the planner's state.
+    entries = sorted(value.heap, key=lambda pair: pair[0])
+    return {**_fields(value, "min_waypoints", "dist_arrived", "max_dist", "max_size"),
+            "waypoints": [{"priority": value.mult * priority, "waypoint": item}
+                          for priority, item in entries]}
+
+
+_NATIVE_RECORDS: tuple[tuple[str, str, Callable[[Any], Any]], ...] = (
+    ('avstack.datastructs', 'DataContainer', lambda value: _fields(value, "frame", "timestamp", "source_identifier", "source_reference", "data")),
+    ('avstack.geometry.refchoc', 'ReferenceFrame', _reference),
+    ('avstack.geometry.refchoc', 'PassiveReferenceFrame', lambda value: _fields(value, "frame_id", "timestamp")),
+    ('avstack.geometry.refchoc', 'Vector', _vector),
+    ('avstack.geometry.refchoc', 'Rotation', _rotation),
+    ('avstack.geometry.datastructs', 'Pose', lambda value: _fields(value, "position", "attitude")),
+    ('avstack.geometry.datastructs', 'Twist', lambda value: _fields(value, "linear", "angular")),
+    ('avstack.geometry.datastructs', 'PointMatrix2D', lambda value: _fields(value, "x", "calibration")),
+    ('avstack.geometry.datastructs', 'PointMatrix3D', lambda value: _fields(value, "x", "calibration")),
+    ('avstack.geometry.bbox', 'Box3D', _box3d),
+    ('avstack.geometry.bbox', 'Box2D', lambda value: {**_fields(value, "ID", "obj_type", "calibration"), "xyxy": value.box2d.tolist()}),
+    ('avstack.geometry.bbox', 'SegMask2D', lambda value: _fields(value, "ID", "mask", "calibration")),
+    ('avstack.environment.objects', 'ObjectState', lambda value: _fields(value, "ID", "obj_type", "score", "t", "position", "velocity", "acceleration",
+                      "attitude", "angular_velocity", "box", "occlusion", "visible_fraction")),
+    ('avstack.calibration', 'Calibration', lambda value: _fields(value, "reference")),
+    ('avstack.calibration', 'CameraCalibration', _camera),
+    ('avstack.calibration', 'SemanticSegmentationCalibration', _semantic_camera),
+    ('avstack.calibration', 'RadarCalibration', lambda value: _fields(value, "reference", "fov_horizontal", "fov_vertical")),
+    ('avstack.sensors', 'SensorData', _sensor),
+    ('avstack.modules.perception.detections', 'Detection_', _detection),
+    ('avstack.modules.tracking.tracks', 'TrackBase', _track),
+    ('avstack.modules.tracking.tracks', 'BasicBoxTrack2D', _box_track),
+    ('avstack.modules.tracking.tracks', 'BasicBoxTrack3D', _box_track),
+    ('avstack.modules.tracking.tracks', 'BasicJointBoxTrack', lambda value: _fields(value, "track_2d", "track_3d")),
+    ('avstack.modules.tracking.tracks', 'GroupTrack', lambda value: _fields(value, "state", "members")),
+    ('avstack.modules.planning.types', 'WaypointPlan', _waypoints),
+    ('avstack.modules.planning.types', 'Waypoint', lambda value: _fields(value, "target_point", "target_speed")),
+    ('avstack.modules.control.types', 'VehicleControlSignal', lambda value: _fields(value, "timestamp", "throttle", "steer", "brake", "hand_brake", "reverse",
+                      "manual_gear_shift", "bounded")),
+)
+
+for _module, _name, _encode in _NATIVE_RECORDS:
+    _snapshot = (_snapshot_sensor if _module == "avstack.sensors" else
+                 _snapshot_reference if (_module, _name) ==
+                 ("avstack.geometry.refchoc", "ReferenceFrame") else _snapshot_native)
+    DEFAULT_REGISTRY.register_native(_module, _name, _encode, snapshot=_snapshot)
+
+
+class NativeHook(Plugin):
+    """Adapt a registered avstack hook's tuple convention to an ordered stage hook.
+
+    Import the implementation's registration module explicitly before running. The native
+    handler is built afresh on reset and released when its enclosing hook session closes.
+    """
+
+    def __init__(self, config: Mapping[str, Any], *, phase: str = "post") -> None:
+        if phase not in {"pre", "post"}:
+            raise ValueError("NativeHook phase must be 'pre' or 'post'")
+        self.config = deepcopy(dict(config))
+        self.phase = phase
+        self.native: Any = None
+
+    def reset(self, context: RunContext) -> None:
+        from avstack.config import HOOKS
+
+        self.native = HOOKS.build(deepcopy(self.config))
+
+    def transform(self, value: Any, context: StageContext) -> Any:
+        if self.phase == "pre":
+            if not isinstance(value, CallInputs):
+                raise TypeError("Native pre-hooks require CallInputs")
+            args, kwargs = self.native(*value.args, **value.kwargs)
+            return CallInputs(args=args, kwargs=kwargs)
+        result = self.native(value)
+        if not isinstance(result, tuple) or len(result) != 1:
+            raise TypeError("Native post-hooks must return one output in a tuple")
+        return result[0]
+
+    def close(self) -> None:
+        native, self.native = self.native, None
+        close = getattr(native, "close", None)
+        if close is not None:
+            close()
+
+
+def register_carla_dataset() -> type:
+    """Return the CARLA dataset class, registering its vendored declaration if needed.
+
+    CARLA-trained PointPillars configurations require this class even for inference,
+    where MMDetection3D builds a lazy dataset to obtain metadata. Existing registrations
+    are preserved. Only the dataset module is loaded, leaving the installed detector
+    package and its CUDA operators unchanged.
+    """
+    import importlib
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    from mmdet3d.registry import DATASETS
+
+    existing = DATASETS.get("CarlaDataset")
+    if existing is not None:
+        return existing
+
+    # The installed package supplies Det3DDataset and the module's relative imports.
+    importlib.import_module("mmdet3d.datasets")
+    name = "mmdet3d.datasets.carla_dataset"
+    if importlib.util.find_spec(name) is not None:
+        importlib.import_module(name)
+    else:
+        import avstack
+
+        source = (
+            Path(avstack.__file__).resolve().parents[1]
+            / "third_party/mmdetection3d/mmdet3d/datasets/carla_dataset.py"
+        )
+        if not source.is_file():
+            raise FileNotFoundError(
+                f"CARLA dataset declaration not found: {source}. Initialize the nested "
+                "third_party/mmdetection3d submodule in third_party/avstack-core."
+            )
+        spec = importlib.util.spec_from_file_location(name, source)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        try:
+            spec.loader.exec_module(module)
+        except Exception:
+            sys.modules.pop(name, None)
+            raise
+
+    registered = DATASETS.get("CarlaDataset")
+    if registered is None:
+        raise RuntimeError(f"{name} did not register CarlaDataset")
+    return registered
+
+
+def modular_driving_adapter(factory, *, components=(), scorers=()):
+    """Expose explicitly selected native Modular components and existing detector scorers.
+
+    Component inputs are {args: tuple, kwargs: dict}, matching that native component's
+    call signature. MMDet scorer inputs follow the existing scorer API and TargetSpec.
+    Declaring a scorer is an explicit assertion that the factory supplies that model.
+    """
+    bindings = []
+    for name in components:
+        def evaluate(avstack, inputs, name=name):
+            if name not in avstack.native:
+                raise ValueError(f"Driving system does not expose component {name!r}")
+            return avstack.native[name](*inputs.get("args", ()), **inputs.get("kwargs", {}))
+        bindings.append((driving_adapter.ComponentDescriptor(
+            name, {"args": "native positional arguments", "kwargs": "native keyword arguments"},
+            {"value": "native component output"}, {"value": "adapter codecs"},
+        ), evaluate))
+    scores = []
+    for name in scorers:
+        if name not in {"mmdet.inference", "mmdet.rpn_objectness"}:
+            raise ValueError(f"Unknown built-in scorer {name!r}")
+        differentiable = name == "mmdet.rpn_objectness"
+        def score(avstack, inputs, target, differentiable=differentiable):
+            from avsectester.closed_loop.avstacks.scorers import MMDetInferenceScorer, MMDetRPNObjectnessScorer
+
+            model = avstack.models["perception"]
+            scorer = MMDetRPNObjectnessScorer(model) if differentiable else MMDetInferenceScorer(model)
+            return scorer.target_score(inputs, target)
+        scores.append((driving_adapter.ScorerDescriptor(
+            name, {"image": "CHW float tensor [0,1]" if differentiable else "HWC RGB uint8"},
+            {"score": "scalar confidence"}, {"score": "tensor" if differentiable else "float"},
+            ("image",) if differentiable else (), (), "minimize",
+        ), score))
+    return driving_adapter.DrivingAdapter(factory, components=bindings, scorers=scores)
+
 
 def _remove_hook(hooks: list, target: Any) -> None:
     """Remove our own hook without disturbing hooks installed by the caller."""
@@ -54,15 +344,10 @@ class _StageCapture:
     downstream modules can mutate it, and returns the original so the pipeline is unaffected."""
 
     def __init__(self) -> None:
-        from avsectester.runlog.codecs import default_codecs
-        from avsectester.runlog import Recorder
-
-        # Reuse the canonical snapshot path without creating a writer or retaining a run.
-        self._recorder = Recorder(codecs=default_codecs())
         self.last: Any = None
 
     def __call__(self, output: Any, *args: Any, **kwargs: Any) -> tuple[Any]:
-        self.last = self._recorder.capture(output)
+        self.last = DEFAULT_REGISTRY.snapshot(output)
         return (output,)
 
 
@@ -76,7 +361,7 @@ def _register_avstack_modules() -> None:
 
 
 class ModularAVStack(AVStack):
-    """An :class:`~avsectester.closed_loop.avstack.AVStack` backed by an avstack ``ModularDrivingPipeline``.
+    """An :class:`~avsectester.closed_loop.avstacks.base.AVStack` backed by an avstack ``ModularDrivingPipeline``.
 
     Observation -> the pipeline (perception -> tracking -> planning -> control) -> a Control command.
     CARLA-trained MMDetection3D checkpoint configurations register their dataset metadata
@@ -102,8 +387,6 @@ class ModularAVStack(AVStack):
             and not perception.get("deploy", False)
         ):
             # PointPillars inference also needs its custom dataset metadata.
-            from .mmdet3d import register_carla_dataset
-
             register_carla_dataset()
         self.pipeline = PIPELINE.build(deepcopy(pipeline_cfg))
         self._captures: dict[str, _StageCapture] = {}
@@ -295,10 +578,7 @@ class ModularAVStack(AVStack):
                 # Without a vehicle body parent, the detections cannot be expressed in the ego frame.
                 if reference is None or getattr(reference, "is_global_origin", False):
                     continue
-                from avsectester.runlog import Recorder
-                from avsectester.runlog.codecs import default_codecs
-
-                self._detection_reference = Recorder(codecs=default_codecs()).capture(reference)
+                self._detection_reference = DEFAULT_REGISTRY.snapshot(reference)
                 break
 
     def __call__(self, observation: Observation) -> Control:

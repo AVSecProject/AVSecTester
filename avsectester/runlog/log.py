@@ -1,32 +1,28 @@
 """Independent run snapshots and incremental Parquet persistence.
 
 The in-memory API imports neither Arrow nor simulator/model packages. ``Recorder``
-uses one capture path for memory and disk; native adapter objects require registered
-codecs before persistence. Unknown objects are never pickled or stringified.
+uses one snapshot path for memory and disk; native adapter objects require registered
+native types before persistence. Unknown objects are never pickled or stringified.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
-from copy import copy, deepcopy
-from dataclasses import dataclass, field, fields, is_dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field, fields
 import json
 import os
 from pathlib import Path
 import sys
 from typing import Any, TYPE_CHECKING
 
-from avsectester.closed_loop.datatypes import Detection
+from avsectester.data_types import Detection
+from avsectester.serialization import DEFAULT_REGISTRY, SerializationRegistry
 
 if TYPE_CHECKING:
-    from avsectester.closed_loop.simulator import SensorGeometry
+    from avsectester.closed_loop.simulators.base import SensorGeometry
     from avsectester.rendering.compositing import ObjectVisibility
 
 _TAG = "_avsectester_type"
-_KEYS = "_avsectester_keys"
-_DATATYPE_NAMES = {
-    "Control", "Observation", "WorldSnapshot", "StateEstimate", "Detection", "RecordedOutput",
-}
 
 
 @dataclass
@@ -89,18 +85,18 @@ class RunLog:
         cls,
         path: str | Path,
         *,
-        codecs: CodecRegistry | None = None,
+        registry: SerializationRegistry = DEFAULT_REGISTRY,
         load_payloads: bool = True,
     ) -> RunLog:
         """Read completed parts, including those left by an interrupted writer.
 
         Only ``part-*.parquet`` files with a written footer are published. Pending
-        ``*.open`` files are ignored. Without a native decoder, custom codec values remain
-        ordinary decoded data, allowing analysis without simulator dependencies.
+        ``*.open`` files are ignored. Native values decode to ordinary data, allowing
+        analysis without simulator dependencies. User record types must be registered first.
         """
         root = Path(path)
         manifest = _read_manifest(root)
-        decoder = _Decoder(root, codecs or CodecRegistry(), load_payloads)
+        decoder = _Decoder(root, registry, load_payloads)
         log = cls(
             metadata=decoder.decode(manifest["metadata"]),
             status=manifest["status"],
@@ -113,61 +109,11 @@ class RunLog:
         return log
 
 
-class CodecRegistry:
-    """Explicit native-object conversion supplied by adapters.
-
-    Encoders return plain data, supported core dataclasses or arrays. A decoder
-    is optional: persisted component results can remain data for offline metrics.
-    Codec names must remain stable across processes and releases. An optional
-    ``snapshot(value, capture_child)`` handles SDK buffers that cannot be copied;
-    it returns an independent native-compatible value and uses ``capture_child``
-    for owned members. It must not capture its own input recursively.
-    """
-
-    def __init__(self) -> None:
-        self._encoders: dict[type, tuple[str, Callable[[Any], Any]]] = {}
-        self._decoders: dict[str, Callable[[Any], Any]] = {}
-        self._snapshots: dict[type, Callable[[Any, Callable[[Any], Any]], Any]] = {}
-
-    def register(
-        self,
-        native_type: type,
-        encode: Callable[[Any], Any],
-        *,
-        name: str | None = None,
-        decode: Callable[[Any], Any] | None = None,
-        snapshot: Callable[[Any, Callable[[Any], Any]], Any] | None = None,
-    ) -> CodecRegistry:
-        label = name or f"{native_type.__module__}.{native_type.__qualname__}"
-        if native_type in self._encoders or label in {item[0] for item in self._encoders.values()}:
-            raise ValueError(f"Duplicate RunLog codec: {label}")
-        self._encoders[native_type] = (label, encode)
-        if decode is not None:
-            self._decoders[label] = decode
-        if snapshot is not None:
-            self._snapshots[native_type] = snapshot
-        return self
-
-    def encoder(self, value: Any) -> tuple[str, Callable[[Any], Any]] | None:
-        for native_type in type(value).__mro__:
-            if native_type in self._encoders:
-                return self._encoders[native_type]
-        return None
-
-    def snapshotter(self, value: Any) -> Callable[[Any, Callable[[Any], Any]], Any] | None:
-        # Adapter registries may register already-loaded native types lazily.
-        self.encoder(value)
-        for native_type in type(value).__mro__:
-            if native_type in self._snapshots:
-                return self._snapshots[native_type]
-        return None
-
-
 class Recorder:
     """Capture a run in memory and optionally stream it to Parquet.
 
     ``record_step`` and ``record_event`` snapshot their inputs immediately.
-    Call ``capture`` earlier when a subsequent hook might mutate a value before
+    Call ``snapshot`` earlier when a subsequent hook might mutate a value before
     a complete step is available. ``retain_steps=False`` bounds disk-recorder
     memory by the open chunk instead of retaining the full run.
 
@@ -181,7 +127,7 @@ class Recorder:
         path: str | Path | None = None,
         *,
         metadata: dict[str, Any] | None = None,
-        codecs: CodecRegistry | None = None,
+        registry: SerializationRegistry = DEFAULT_REGISTRY,
         chunk_steps: int = 128,
         chunk_bytes: int = 8 * 1024 * 1024,
         payload_shard_bytes: int = 64 * 1024 * 1024,
@@ -191,23 +137,23 @@ class Recorder:
             raise ValueError("Chunk limits must be positive")
         if not retain_steps and path is None:
             raise ValueError("retain_steps=False requires a persistent output path")
-        self.codecs = codecs or CodecRegistry()
+        self.registry = registry
         self.log = RunLog(
-            metadata=self.capture(metadata or {}), path=Path(path) if path is not None else None
+            metadata=self.snapshot(metadata or {}), path=Path(path) if path is not None else None
         )
         self.retain_steps = retain_steps
         self._finished = False
         self._last_step = -1
         self._writer = (
-            _Writer(self.log.path, self.codecs, chunk_steps, chunk_bytes, payload_shard_bytes)
+            _Writer(self.log.path, self.registry, chunk_steps, chunk_bytes, payload_shard_bytes)
             if self.log.path is not None else None
         )
         if self._writer is not None:
             self._writer.write_manifest(self.log)
 
-    def capture(self, value: Any) -> Any:
+    def snapshot(self, value: Any) -> Any:
         """Copy mutable data now; tensors are detached without importing torch."""
-        return _snapshot(value, {}, self.codecs)
+        return self.registry.snapshot(value)
 
     def record_step(self, record: StepRecord) -> StepRecord:
         self._check_open()
@@ -216,7 +162,7 @@ class Recorder:
         if (not isinstance(record.step, int) or isinstance(record.step, bool)
                 or record.step <= self._last_step or record.step < 0):
             raise ValueError("Decision indices must be nonnegative and strictly increasing")
-        snapshot = self.capture(record)
+        snapshot = self.snapshot(record)
         if self._writer is not None:
             self._writer.append("steps", {f.name: getattr(snapshot, f.name) for f in fields(snapshot)})
         if self.retain_steps:
@@ -226,7 +172,7 @@ class Recorder:
 
     def record_event(self, kind: str, *, step: int | None = None, **data: Any) -> EventRecord:
         self._check_open()
-        event = self.capture(EventRecord(kind=kind, step=step, data=data))
+        event = self.snapshot(EventRecord(kind=kind, step=step, data=data))
         if self._writer is not None:
             self._writer.append("events", {f.name: getattr(event, f.name) for f in fields(event)})
         if self.retain_steps:
@@ -341,88 +287,6 @@ def read_table(
     return pa.concat_tables(tables)
 
 
-def _snapshot(value: Any, memo: dict[int, Any], codecs: CodecRegistry) -> Any:
-    if value is None or isinstance(value, (str, int, float, bool, bytes)):
-        return value
-    key = id(value)
-    if key in memo:
-        return memo[key]
-    snapshot = codecs.snapshotter(value)
-    if snapshot is not None:
-        result = snapshot(value, lambda child: _snapshot(child, memo, codecs))
-        if result is value:
-            raise TypeError("A RunLog snapshot codec must return an independent snapshot")
-        memo[key] = result
-        return result
-    if _is_tensor(value):
-        result = value.detach().clone()
-        memo[key] = result
-        return result
-    if type(value) is dict:
-        result = {}
-        memo[key] = result
-        for k, v in value.items():
-            result[deepcopy(k, memo)] = _snapshot(v, memo, codecs)
-        return result
-    if type(value) is list:
-        result = []
-        memo[key] = result
-        result.extend(_snapshot(v, memo, codecs) for v in value)
-        return result
-    if type(value) is tuple:
-        result = tuple(_snapshot(v, memo, codecs) for v in value)
-        memo[key] = result
-        return result
-    if isinstance(value, dict):
-        result = copy(value)
-        memo[key] = result
-        result.clear()
-        for k, v in value.items():
-            result[deepcopy(k, memo)] = _snapshot(v, memo, codecs)
-        _snapshot_attributes(value, result, memo, codecs)
-        return result
-    if isinstance(value, list):
-        result = copy(value)
-        memo[key] = result
-        result[:] = [_snapshot(v, memo, codecs) for v in value]
-        _snapshot_attributes(value, result, memo, codecs)
-        return result
-    if isinstance(value, tuple):
-        items = [_snapshot(v, memo, codecs) for v in value]
-        if hasattr(value, "_fields"):
-            result = getattr(type(value), "_make")(items)
-        else:
-            try:
-                result = type(value)(items)
-            except Exception:
-                result = deepcopy(value, memo)
-        memo[key] = result
-        return result
-    if is_dataclass(value) and not isinstance(value, type):
-        result = object.__new__(type(value))
-        memo[key] = result
-        for f in fields(value):
-            object.__setattr__(result, f.name, _snapshot(getattr(value, f.name), memo, codecs))
-        return result
-    return deepcopy(value, memo)
-
-
-def _snapshot_attributes(
-    source: Any, result: Any, memo: dict[int, Any], codecs: CodecRegistry,
-) -> None:
-    """Replace the attributes ``copy`` shared with ``source`` by independent snapshots."""
-    state = getattr(source, "__dict__", None)
-    if state:
-        target = vars(result)
-        for name, item in state.items():
-            target[name] = _snapshot(item, memo, codecs)
-
-
-def _is_tensor(value: Any) -> bool:
-    return any(base.__module__.split(".")[0] == "torch" and base.__name__ == "Tensor"
-               for base in type(value).__mro__)
-
-
 def _arrow() -> tuple[Any, Any]:
     try:
         import pyarrow as pa
@@ -439,8 +303,8 @@ def _read_manifest(root: Path) -> dict[str, Any]:
 
 
 class _Encoder:
-    def __init__(self, codecs: CodecRegistry, payloads: _PayloadWriter) -> None:
-        self.codecs = codecs
+    def __init__(self, registry: SerializationRegistry, payloads: _PayloadWriter) -> None:
+        self.registry = registry
         self.payloads = payloads
 
     def dynamic(self, value: Any) -> dict[str, Any]:
@@ -476,89 +340,36 @@ class _Encoder:
         return {_TAG: "dynamic", "kind": kind, kind: encoded}
 
     def encode(self, value: Any) -> Any:
-        if value is None or isinstance(value, (bool, int, float, str)):
-            return value
+        encoded = self.registry.encode(
+            value, encode_child=self.encode, encode_field=self._record_field,
+            encode_leaf=self._payload_value,
+        )
+        if (isinstance(encoded, dict) and encoded.get(_TAG) == "dataclass"
+                and encoded["fields"] == {}):
+            # Parquet cannot store an empty struct; null transports a record with no fields.
+            return {**encoded, "fields": None}
+        return encoded
+
+    def _payload_value(self, value: Any) -> dict[str, Any]:
         if isinstance(value, bytes):
             return {_TAG: "bytes", **self.payloads.write(memoryview(value))}
-        codec = self.codecs.encoder(value)
-        if codec is not None:
-            name, encode = codec
-            converted = encode(value)
-            if converted is value:
-                raise TypeError(f"RunLog codec {name} returned its input")
-            return {_TAG: "codec", "name": name, "value": self.encode(converted)}
-        if _is_tensor(value):
-            value = value.detach().cpu().numpy()
-        if any(base.__module__.split(".")[0] == "numpy" for base in type(value).__mro__):
-            import numpy as np
-            if isinstance(value, np.generic):
-                return self.encode(value.item())
-            if isinstance(value, np.ndarray):
-                if value.dtype.hasobject or value.dtype.fields:
-                    raise TypeError("Object/structured arrays require an explicit RunLog codec")
-                array = np.ascontiguousarray(value)
-                return {
-                    _TAG: "array", "dtype": value.dtype.str, "shape": list(value.shape),
-                    **self.payloads.write(memoryview(array.reshape(-1)).cast("B")),
-                }
-        if isinstance(value, Mapping):
-            if not all(isinstance(key, str) for key in value):
-                raise TypeError("RunLog mappings require string keys")
-            if _TAG in value or _KEYS in value:
-                raise ValueError("RunLog mappings contain a reserved serialization key")
-            return {_KEYS: list(value), **{k: self.encode(v) for k, v in value.items()}}
-        if isinstance(value, list):
-            return [self.encode(item) for item in value]
-        if isinstance(value, tuple):
-            return {_TAG: "tuple", "length": len(value),
-                    **{f"item_{i}": self.encode(item) for i, item in enumerate(value)}}
-        if isinstance(value, Path):
-            return {_TAG: "Path", "value": str(value)}
-        if (type(value).__module__ == "avsectester.closed_loop.simulator"
-                and type(value).__name__ == "SensorGeometry"):
-            return {_TAG: "SensorGeometry", **{f.name: self.encode(getattr(value, f.name))
-                                              for f in fields(value)}}
-        if (type(value).__module__ == "avsectester.rendering.compositing"
-                and type(value).__name__ == "ObjectVisibility"):
-            return {_TAG: "ObjectVisibility", **{f.name: self.encode(getattr(value, f.name))
-                                                 for f in fields(value)}}
-        if (type(value).__module__ == "avsectester.geometry.cameras"
-                and type(value).__name__ in {"PinholeCamera", "FThetaCamera"}):
-            return {_TAG: type(value).__name__, **{f.name: self.encode(getattr(value, f.name))
-                                                   for f in fields(value)}}
-        if type(value).__module__ == "avsectester.datasets.base" and type(value).__name__ == "ActorState":
-            return {_TAG: "ActorState", **{f.name: self.encode(getattr(value, f.name)) for f in fields(value)}}
-        if type(value).__module__ == "avsectester.closed_loop.datatypes" and type(value).__name__ in _DATATYPE_NAMES:
-            return {_TAG: type(value).__name__,
-                    **{f.name: (
-                        self.dynamic(getattr(value, f.name))
-                        if type(value).__name__ == "RecordedOutput" and f.name == "value"
-                        else self.encode(getattr(value, f.name))
-                    ) for f in fields(value)}}
-        if (type(value).__module__.startswith("avsectester.")
-                and is_dataclass(value) and not isinstance(value, type)):
-            # Framework records are explicitly data; external/native dataclasses
-            # still need adapter codecs. Readers never import the encoded name.
-            return {
-                _TAG: "record", "name": f"{type(value).__module__}.{type(value).__qualname__}",
-                "value": {
-                    _KEYS: [f.name for f in fields(value)],
-                    **{f.name: (
-                        self.dynamic(getattr(value, f.name)) if f.name == "value"
-                        else self.encode(getattr(value, f.name))
-                    ) for f in fields(value)},
-                },
-            }
-        raise TypeError(
-            f"No RunLog codec for {type(value).__module__}.{type(value).__qualname__}; "
-            "register an adapter codec returning plain data"
-        )
+        import numpy as np
+
+        array = np.ascontiguousarray(value)
+        return {
+            _TAG: "array", "dtype": value.dtype.str, "shape": list(value.shape),
+            **self.payloads.write(memoryview(array.reshape(-1)).cast("B")),
+        }
+
+    def _record_field(self, name: str, value: Any) -> Any:
+        # Callback outputs deliberately permit heterogeneous values in one list column.
+        return self.dynamic(value) if name == "value" else self.encode(value)
 
 
 class _Decoder:
-    def __init__(self, root: Path, codecs: CodecRegistry, load_payloads: bool) -> None:
+    def __init__(self, root: Path, registry: SerializationRegistry, load_payloads: bool) -> None:
         self.root = root
-        self.codecs = codecs
+        self.registry = registry
         self.load_payloads = load_payloads
 
     def decode(self, value: Any) -> Any:
@@ -578,8 +389,6 @@ class _Decoder:
             if dtype.hasobject or dtype.fields:
                 raise ValueError("Unsafe array dtype in RunLog payload")
             return np.frombuffer(data, dtype=dtype).reshape(value["shape"]).copy()
-        if tag == "tuple":
-            return tuple(self.decode(value[f"item_{i}"]) for i in range(value["length"]))
         if tag == "dynamic":
             kind = value["kind"]
             if kind == "null":
@@ -592,36 +401,9 @@ class _Decoder:
             if kind not in {"boolean", "integer", "number", "string", "encoded"}:
                 raise ValueError(f"Unknown RunLog dynamic value kind: {kind!r}")
             return self.decode(value[kind])
-        if tag == "codec":
-            data = self.decode(value["value"])
-            decode = self.codecs._decoders.get(value["name"])
-            return decode(data) if decode is not None else data
-        if tag == "record":
-            return self.decode(value["value"])
-        if tag == "Path":
-            return Path(value["value"])
-        if tag == "SensorGeometry":
-            from avsectester.closed_loop.simulator import SensorGeometry
-            return SensorGeometry(**{f.name: self.decode(value[f.name]) for f in fields(SensorGeometry)})
-        if tag == "ObjectVisibility":
-            from avsectester.rendering.compositing import ObjectVisibility
-            return ObjectVisibility(**{f.name: self.decode(value[f.name]) for f in fields(ObjectVisibility)})
-        if tag in {"PinholeCamera", "FThetaCamera"}:
-            from avsectester.geometry import cameras
-            camera_type = getattr(cameras, tag)
-            return camera_type(**{f.name: self.decode(value[f.name]) for f in fields(camera_type)})
-        if tag == "ActorState":
-            from avsectester.datasets.base import ActorState
-            return ActorState(**{f.name: self.decode(value[f.name]) for f in fields(ActorState)})
-        if tag in _DATATYPE_NAMES:
-            from avsectester.closed_loop import datatypes
-            record_type = getattr(datatypes, tag)
-            return record_type(**{f.name: self.decode(value[f.name]) for f in fields(record_type)})
-        if tag is not None:
-            raise ValueError(f"Unknown RunLog value codec: {tag!r}")
-        if _KEYS in value:
-            return {key: self.decode(value[key]) for key in value[_KEYS]}
-        return {key: self.decode(item) for key, item in value.items()}
+        if tag == "dataclass" and value["fields"] is None:
+            value = {**value, "fields": {}}
+        return self.registry.decode(value, decode_child=self.decode)
 
     def _payload(self, value: dict[str, Any]) -> bytes:
         pieces = []
@@ -690,7 +472,7 @@ class _PayloadWriter:
 
 
 class _Writer:
-    def __init__(self, root: Path, codecs: CodecRegistry, rows: int, size: int, shard: int) -> None:
+    def __init__(self, root: Path, registry: SerializationRegistry, rows: int, size: int, shard: int) -> None:
         self.pa, self.pq = _arrow()
         root.mkdir(parents=True, exist_ok=True)
         if any(root.iterdir()):
@@ -700,7 +482,7 @@ class _Writer:
         self.root = root
         self.rows, self.size = rows, size
         self.payloads = _PayloadWriter(root, shard)
-        self.encoder = _Encoder(codecs, self.payloads)
+        self.encoder = _Encoder(registry, self.payloads)
         self.buffers: dict[str, list[dict[str, Any]]] = {"steps": [], "events": []}
         self.counts = {"steps": 0, "events": 0}
         self.rows_written = {"steps": 0, "events": 0}
@@ -727,7 +509,7 @@ class _Writer:
                         [previous, table.schema], promote_options="permissive"
                     )
                 except (self.pa.ArrowInvalid, self.pa.ArrowTypeError) as exc:
-                    raise TypeError("RunLog values need consistent typed adapter codecs") from exc
+                    raise TypeError("RunLog values need consistent typed registered records") from exc
                 tables[stream] = table
                 self.schemas[stream] = schema
         # Finalize all referenced payloads before publishing any record part.

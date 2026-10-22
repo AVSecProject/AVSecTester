@@ -4,48 +4,14 @@ import numpy as np
 import pytest
 
 
-@pytest.fixture
-def assert_camera_views_equal():
-    def compare(first, second):
-        assert first.sensor == second.sensor
-        assert first.native == second.native == {}
-        np.testing.assert_array_equal(first.data, second.data)
-        np.testing.assert_equal(first.depth, second.depth)
-        np.testing.assert_allclose(first.cam_from_world, second.cam_from_world)
-        np.testing.assert_allclose(first.sensor_from_world, second.sensor_from_world)
-        assert type(first.camera) is type(second.camera)
-        assert (first.camera.width, first.camera.height) == (second.camera.width, second.camera.height)
-        pixels = np.array([[.5, .5], [first.camera.width / 2, first.camera.height / 2]])
-        np.testing.assert_allclose(first.camera.unproject(pixels), second.camera.unproject(pixels))
-        assert first.actors.keys() == second.actors.keys()
-        for identity in first.actors:
-            np.testing.assert_allclose(first.actors[identity].transform, second.actors[identity].transform)
-            assert first.actors[identity].extent == second.actors[identity].extent
-        np.testing.assert_allclose(first.ego.transform, second.ego.transform)
-        assert first.ego.extent == second.ego.extent
-    return compare
 
 
-@pytest.fixture
-def make_object_in_front():
-    """An opaque rectangular face two metres along the selected camera's optical axis."""
-    from avsectester.rendering import ObjectAsset, PlaneSurface
-
-    def make(view):
-        surface = PlaneSurface(np.array([[0., -1., 2.], [0., 1., 2.],
-                                         [0., 1., 0.], [0., -1., 0.]]),
-                               np.full((8, 8, 4), [230, 10, 90, 255], np.uint8))
-        asset = ObjectAsset((surface,), (.1, 2., 2.), "stop_sign")
-        optical_from_object = np.array([[0., 1., 0., 0.], [0., 0., -1., 1.],
-                                        [-1., 0., 0., 2.], [0., 0., 0., 1.]])
-        return asset, np.linalg.inv(view.cam_from_world) @ optical_from_object
-    return make
 
 
 @pytest.fixture
 def assert_inserted_world_object(make_object_in_front):
     """The same public insertion/capture contract for memory and native simulators."""
-    from avsectester.closed_loop.datatypes import Control, read_camera_rgb
+    from avsectester.data_types import Control, read_camera_rgb
     from avsectester.geometry.projection import project_box
     from avsectester.rendering import PlacedObject, composite_objects
 

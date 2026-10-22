@@ -22,6 +22,9 @@ It never creates or owns a simulator. Returned mutable data is independent of ca
 | ScenarioStart | Source payload needed to reset the simulator at the chosen position |
 | Unavailable | Requested evidence is unavailable, with an explicit reason |
 
+ActorState and Unavailable are imported from avsectester.data_types; the frame, descriptor and start
+records are exported by avsectester.datasets.
+
 `ActorState.pose` locates the actor/rig origin; box_center is the local bounding-box offset. The
 world box center is pose applied to box_center. Extent is full length, width and height in metres.
 World axes are right-handed x forward, y left, z up.
@@ -42,15 +45,16 @@ to generate and cache it; it does not attach generated data to the Dataset.
 
 ## NuRec
 
-NuRecDataset reads USDZ records. Configure camera_id for the recorded camera and camera_alias for
-its observation name. Scene identifiers are native clip identifiers, available through
-`dataset.scene_id(path)`; they are not filesystem paths.
+NuRecDataset reads USDZ records. Configure camera_id for the recorded camera; frame data keeps
+that native sensor name. Scene identifiers returned by dataset.scenarios() are native clip
+identifiers, not filesystem paths. Configure model-visible aliases only on NuRecSimulator through
+camera_aliases, for example `{camera_front_wide_120fov: front}`.
 
 The timeline starts at the first supported timestamp and advances at time_step. For a 0.1 s
 experiment, positions count 0.1 s decisions even when source cameras were recorded at 30 Hz. Ego and
 actor trajectories are interpolated at requested times without extrapolation. An actor outside its
-recorded support is absent. Use camera_timestamps(path) for recorded video-frame times and
-camera_geometry(path) for the optical camera model and rig-from-camera transform. These timestamps
+recorded support is absent. Use camera_timestamps(scenario_id) for recorded video-frame times and
+camera_geometry(scenario_id) for the optical camera model and rig-from-camera transform. These timestamps
 differ from the decision timeline and must be used when overlaying video labels.
 The camera model retains the archive's native forward and inverse lens polynomials. No inverse is
 fitted: if the source supplies none, pixeldist_to_angle stays empty and ray unprojection raises
@@ -58,6 +62,9 @@ NotImplementedError.
 
 The simulator decision time step must match the dataset before a world starts. Provenance records
 the time step and interpolation.
+
+The dataset public camera and trajectory methods take scenario_id. Use usdz_path(scenario_id)
+when access to the underlying archive path is needed.
 
 NuRecDataset.scene_mesh(scenario_id) delegates to the public read_scene_mesh(usdz_path) function in
 datasets/nurec.py. It merges mesh.ply with mesh_ground.ply into world-coordinate vertices and
@@ -68,9 +75,11 @@ the same reader. Static mesh depth is a simulator option, not an attack-specific
 ## nuScenes recorded playback
 
 NuScenesDataset exposes scene tokens, keyframe timelines and stable instance actor IDs across
-frames. It retains all annotated categories and full extents. RecordedReplaySimulator decodes sensor
-references and advances through frames; driving commands do not change recorded motion. A window of
-N decisions needs N+1 available frames, including the terminal frame.
+frames. It retains all annotated categories and full extents. FrameData.sensor_references uses the
+configured native camera name, such as CAM_FRONT. RecordedReplaySimulator decodes these references
+and advances through frames; driving commands do not change recorded motion. Set its camera_aliases
+to `{CAM_FRONT: front}` when the driving system expects front. A window of N decisions needs N+1
+available frames, including the terminal frame.
 
 ## Semantic maps
 
@@ -78,6 +87,9 @@ N decisions needs N+1 available frames, including the terminal frame.
 returns Unavailable("This dataset provides no map"). Selection uses the same interface through
 `ScenarioView.scenario_map()`. A missing map does not prevent other dataset operations; attacks
 that require it decide how to record or handle the missing evidence.
+
+NuRecDataset delegates clipgt archive parsing to avsectester.maps.clipgt.read_clipgt(archive).
+The reader accepts an open zipfile.ZipFile and returns ScenarioMap.
 
 The public types are exported by avsectester.maps. All four records are frozen dataclasses.
 Geometry uses the same canonical right-handed world frame as ActorState, in metres. Array inputs
@@ -106,7 +118,8 @@ Only a face_center pose has its extent centered on the origin; place assets rela
 signal_position poses only with additional evidence. Lane types are
 driving, shoulder, bike, parking or other. Traffic controls distinguish stop_sign, yield_sign,
 speed_limit, traffic_light and other. Stop-line kinds are stop_sign, traffic_light, yield_sign and
-unknown. STOP_LINE_KIND_BY_CONTROL_KIND, exported from avsectester.maps, maps the three stopping-control kinds to
+unknown. STOP_LINE_KIND_BY_CONTROL_KIND, exported from avsectester.maps, maps the three
+stopping-control kinds to
 their matching stop-line kinds; unrecognized control associations leave unknown.
 StopLine.native_category preserves the source paint or reference category independently of that
 derived kind. unavailable_layers maps missing evidence to reasons; it does not fill gaps with
@@ -220,6 +233,9 @@ silently misplaced map.
 
 ### Custom datasets and saved results
 
+Filesystem constructor parameters use Path or str | Path annotations for
+[YAML path resolution](../reference/configuration.md#constructor-filesystem-parameters).
+
 A custom Dataset can implement scenario_map and construct the four shared map records. For an
 OpenDRIVE source already aligned with the dataset's canonical world frame, reuse
 `read_opendrive(xodr_text, name=scenario_id)` from avsectester.maps.opendrive. It returns
@@ -240,7 +256,7 @@ Evaluation never calls Dataset to obtain a map.
 ## Select segments
 
 Attack authors implement build_metadata and decide their own eligibility criteria. Read
-`ScenarioView.frame_data` for actor states, use service sensor_data/render for visual evidence, and
+`ScenarioView.frame_data` for actor states, use service read_sensors/render for visual evidence, and
 attach user explanations through record_reason.
 
 `split_segments` only partitions consecutive eligible decision frames. It does not choose hosts,
@@ -255,7 +271,7 @@ framework does not rerun selection under each seed or after optimization.
 
 ## Specify inserted objects
 
-Placement types belong to the core attack/placement.py module, not to Dataset. The attack/insertion/
+Placement types belong to attack/insertion/placement.py, not to Dataset. The attack/insertion/
 package provides reusable framework tools for assets, visibility and compositing. A sensor view
 supplies camera projection, calibration, canonical actor poses and available depth. The attack's
 SensorAttackAction uses those inputs for insertion rendering. Physical objects use

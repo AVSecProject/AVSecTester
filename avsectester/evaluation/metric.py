@@ -6,14 +6,18 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 import math
-from typing import Any, Literal, TypeAlias
+from typing import Any, Literal, TypeAlias, TypeGuard
 
 import numpy as np
 
 from avsectester.attack import AttackSegment
-from avsectester.datasets.base import Unavailable
+from avsectester.data_types import Unavailable
 from avsectester.maps import ScenarioMap
 from avsectester.runlog import RunLog
+from avsectester.geometry.boxes import oriented_boxes_overlap
+from avsectester.validation import (
+    require_nonnegative_number, require_positive_integer, require_positive_number,
+)
 
 
 @dataclass(frozen=True)
@@ -80,16 +84,6 @@ class PairMetric(Metric):
     def evaluate(self, pair: TreatmentPair) -> FieldMeasurements: ...
 
 
-def _positive(value: float, name: str) -> None:
-    if isinstance(value, bool) or not math.isfinite(value) or value <= 0:
-        raise ValueError(f"{name} must be a finite positive number")
-
-
-def _nonnegative(value: float, name: str) -> None:
-    if isinstance(value, bool) or not math.isfinite(value) or value < 0:
-        raise ValueError(f"{name} must be a finite nonnegative number")
-
-
 def speeds(log: RunLog) -> list[float] | None:
     """Physical speed after each decision, or None when any decision has no physical state."""
     if not log.steps:
@@ -123,50 +117,18 @@ def brake_steps(log: RunLog) -> int | None:
                for value, step in zip(values, log.steps))
 
 
-def _pose(actor: Any) -> np.ndarray | None:
+def _recorded_pose_is_available(actor: Any) -> TypeGuard[Any]:
     if actor is None or getattr(actor, "pose", None) is None:
-        return None
-    result = np.asarray(actor.pose, dtype=float)
-    if result.shape != (4, 4) or not np.isfinite(result).all():
-        return None
-    return result
-
-
-def _box_transform(actor: Any) -> np.ndarray | None:
-    if _pose(actor) is None:
-        return None
-    return np.asarray(actor.box_transform(), dtype=float)
-
-
-def _obb_overlap(first: Any, second: Any) -> bool | None:
-    """Separating-axis test of oriented full-extent rectangles, including zero extents."""
-    first_pose, second_pose = _box_transform(first), _box_transform(second)
-    if first_pose is None or second_pose is None or first.extent is None or second.extent is None:
-        return None
-    poses = (first_pose, second_pose)
-    extents = [np.asarray(actor.extent, dtype=float)[:2] for actor in (first, second)]
-    if any(not np.isfinite(extent).all() or np.any(extent < 0) for extent in extents):
-        return None
-    rotations = []
-    for pose in poses:
-        yaw = math.atan2(pose[1, 0], pose[0, 0])
-        rotations.append(np.array([[math.cos(yaw), -math.sin(yaw)],
-                                   [math.sin(yaw), math.cos(yaw)]]))
-    offset = second_pose[:2, 3] - first_pose[:2, 3]
-    for rotation in rotations:
-        for axis in rotation.T:
-            radii: list[float] = [float(np.sum(extent / 2 * np.abs(basis.T @ axis)))
-                                  for extent, basis in zip(extents, rotations)]
-            if abs(float(offset @ axis)) > sum(radii):
-                return False
-    return True
+        return False
+    pose = np.asarray(actor.pose, dtype=float)
+    return pose.shape == (4, 4) and bool(np.isfinite(pose).all())
 
 
 class DrivingMetrics(Metric):
     """Physical speed, actuator braking, actor distances and top-down box collisions."""
 
     def __init__(self, stop_speed: float = 0.5) -> None:
-        _nonnegative(stop_speed, "stop_speed")
+        require_nonnegative_number(stop_speed, "stop_speed")
         self.stop_speed = stop_speed
 
     def evaluate(self, group: ComparisonGroup) -> TreatmentMeasurements:
@@ -191,21 +153,20 @@ class DrivingMetrics(Metric):
                 missing_positions = True
             for state in states:
                 ego = state.ego if state is not None else None
-                pose = _pose(ego)
-                if pose is None:
+                if not _recorded_pose_is_available(ego):
                     missing_positions = True
                     continue
                 for actor in state.actors.values():
-                    actor_pose = _pose(actor)
-                    if actor_pose is None:
+                    if not _recorded_pose_is_available(actor):
                         missing_positions = True
                         continue
-                    ego_box, actor_box = _box_transform(ego), _box_transform(actor)
+                    ego_box, actor_box = ego.box_transform(), actor.box_transform()
                     assert ego_box is not None and actor_box is not None
                     origin, target = ego_box[:3, 3], actor_box[:3, 3]
                     distance = float(np.linalg.norm(target - origin))
                     distances.append(distance)
-                    overlaps = _obb_overlap(ego, actor)
+                    overlaps = (None if ego.extent is None or actor.extent is None else
+                                oriented_boxes_overlap(ego_box, ego.extent, actor_box, actor.extent))
                     missing_extents |= overlaps is None
                     collision |= overlaps is True
             values["min_distance"] = min(distances) if distances and not missing_positions else UnavailableMetricValue(
@@ -227,11 +188,11 @@ class TrajectoryDeviation(PairMetric):
             return dict.fromkeys(fields, UnavailableMetricValue("Ego poses are missing or decision indices differ"))
         differences = []
         for first, second in zip(pair.log_a.steps, pair.log_b.steps):
-            first_pose = _pose(first.physical_post.ego if first.physical_post is not None else None)
-            second_pose = _pose(second.physical_post.ego if second.physical_post is not None else None)
-            if first_pose is None or second_pose is None:
+            first_ego = first.physical_post.ego if first.physical_post is not None else None
+            second_ego = second.physical_post.ego if second.physical_post is not None else None
+            if not (_recorded_pose_is_available(first_ego) and _recorded_pose_is_available(second_ego)):
                 return dict.fromkeys(fields, UnavailableMetricValue("Physical ego poses are unavailable"))
-            differences.append(float(np.linalg.norm(first_pose[:3, 3] - second_pose[:3, 3])))
+            differences.append(float(np.linalg.norm(np.asarray(first_ego.pose)[:3, 3] - np.asarray(second_ego.pose)[:3, 3])))
         return dict(zip(fields, (float(np.mean(differences)), max(differences), differences[-1])))
 
 
@@ -245,9 +206,9 @@ class DetectionMetrics(Metric):
 
     def __init__(self, match_distance: float = 2.0, max_range: float | None = 50.0,
                  category_map: Mapping[str, str] | None = None) -> None:
-        _positive(match_distance, "match_distance")
+        require_positive_number(match_distance, "match_distance")
         if max_range is not None:
-            _positive(max_range, "max_range")
+            require_positive_number(max_range, "max_range")
         self.match_distance, self.max_range = match_distance, max_range
         self.category_map = dict(category_map or {})
 
@@ -262,20 +223,17 @@ class DetectionMetrics(Metric):
             unavailable = False
             for step in log.steps:
                 world = step.physical_pre
-                pose = _pose(world.ego if world is not None else None)
-                if pose is None:
+                ego = world.ego if world is not None else None
+                if not _recorded_pose_is_available(ego):
                     unavailable = True
                     break
+                pose = np.asarray(ego.pose, dtype=float)
                 truths = []
                 for identity, actor in world.actors.items():
-                    actor_pose = _pose(actor)
-                    if actor_pose is None:
+                    if not _recorded_pose_is_available(actor):
                         unavailable = True
                         break
-                    box = _box_transform(actor)
-                    if box is None:
-                        unavailable = True
-                        break
+                    box = actor.box_transform()
                     position = pose[:3, :3].T @ (box[:3, 3] - pose[:3, 3])
                     if self.max_range is None or np.linalg.norm(position[:2]) <= self.max_range:
                         truths.append((identity, actor, position))
@@ -326,10 +284,9 @@ class StopImpact(PairMetric):
 
     def __init__(self, stop_speed: float = 0.5, reference_speed: float = 1.0,
                  min_overdrive_steps: int = 3) -> None:
-        _nonnegative(stop_speed, "stop_speed")
-        _nonnegative(reference_speed, "reference_speed")
-        if isinstance(min_overdrive_steps, bool) or not isinstance(min_overdrive_steps, int) or min_overdrive_steps < 1:
-            raise ValueError("min_overdrive_steps must be a positive integer")
+        require_nonnegative_number(stop_speed, "stop_speed")
+        require_nonnegative_number(reference_speed, "reference_speed")
+        require_positive_integer(min_overdrive_steps, "min_overdrive_steps")
         self.stop_speed, self.reference_speed = stop_speed, reference_speed
         self.min_overdrive_steps = min_overdrive_steps
 

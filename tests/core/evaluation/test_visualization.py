@@ -6,10 +6,10 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from avsectester.closed_loop.datatypes import Detection, Observation
-from avsectester.closed_loop.simulator import SensorGeometry
+from avsectester.data_types import Detection, Observation
+from avsectester.closed_loop.simulators.base import SensorGeometry
 from avsectester.evaluation.visualization import (
-    camera_view, detections_view, draw_boxes3d, filmstrip, labels_view, record_run, save_sequence, sensor_view,
+    camera_view, detections_view, draw_boxes3d, filmstrip, labels_view, plot_group, record_run, save_sequence, sensor_view,
 )
 from avsectester.geometry import FThetaCamera, PinholeCamera
 from avsectester.runlog import RunLog
@@ -85,3 +85,12 @@ def test_filmstrip(camera_log):
     assert filmstrip(camera_log, cols=2).shape == (108, 274, 3)
     with pytest.raises(ValueError, match="Filmstrip"):
         filmstrip([])
+
+
+def test_plot_group(tmp_path, make_log):
+    path = plot_group({"clean": make_log([3., 2.]),
+                       "attacked": make_log([2., 0.], [0., 1.])}, tmp_path / "plot.png",
+                      title="Small recorded experiment")
+    assert path.read_bytes().startswith(b"\x89PNG")
+    empty = plot_group({}, tmp_path / "empty.png")
+    assert empty.is_file()

@@ -1,7 +1,7 @@
 """Explicit insertion geometry, independent of a simulator or attack implementation.
 
 World and actor frames use metres and right-handed x-forward, y-left, z-up axes. An actor
-pose is centred on its bounding box. Assets use the same axes, with their front along +X.
+pose identifies its origin; box_transform() locates its bounding-box centre. Assets use the same axes, with their front along +X.
 Placement determines position, while orientation independently determines rotation.
 """
 
@@ -16,51 +16,10 @@ import numpy as np
 
 
 from avsectester.geometry import poses
+from avsectester.data_types import ActorState
 from avsectester.rendering.objects import PlaneSurface
-from avsectester.rendering import images
-from avsectester.attack.placement import AttachedPlacement, WorldPlacement, Orientation
-
-
-@dataclass(frozen=True)
-class ImageTexture:
-    """An image loaded from an explicit image path."""
-
-    image: str | Path
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.image, (str, Path)):
-            raise TypeError("image must be a file path")
-        object.__setattr__(self, "_image", images.load_rgba_image(self.image))
-
-    def rgba(self) -> np.ndarray:
-        return self._image.copy()
-
-
-@dataclass(frozen=True)
-class CheckerboardTexture:
-    """An opaque square checkerboard with an explicit pixel size and cell count."""
-
-    size: int = 256
-    cells: int = 8
-    colors: tuple = ((255, 0, 0), (255, 255, 255))
-
-    def __post_init__(self) -> None:
-        for name in ("size", "cells"):
-            value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-                raise ValueError(f"{name} must be a positive integer")
-        if self.cells > self.size:
-            raise ValueError("cells cannot exceed the texture size")
-        colors = np.asarray(self.colors)
-        if (colors.shape != (2, 3) or not np.issubdtype(colors.dtype, np.integer)
-                or ((colors < 0) | (colors > 255)).any()):
-            raise ValueError("colors must contain two RGB integer colors in [0, 255]")
-
-    def rgba(self) -> np.ndarray:
-        positions = np.arange(self.size) * self.cells // self.size
-        pattern = (positions[:, None] + positions[None, :]) % 2
-        rgb = np.asarray(self.colors, dtype=np.uint8)[pattern]
-        return np.concatenate((rgb, np.full((self.size, self.size, 1), 255, np.uint8)), axis=2)
+from avsectester.rendering import textures
+from avsectester.attack.insertion.placement import AttachedPlacement, WorldPlacement, Orientation
 
 
 class PlanarAsset(Protocol):
@@ -84,7 +43,7 @@ class PlaneAsset:
     def __post_init__(self):
         if not all(np.isfinite(v) and v > 0 for v in (self.width_m, self.height_m)):
             raise ValueError("asset width and height must be finite and positive")
-        texture = images.load_rgba_image(self.texture)
+        texture = textures.load_rgba_image(self.texture)
         # Reuse the same validation as custom asset surfaces.
         surface = PlaneSurface(self._corners(), texture)
         object.__setattr__(self, "texture", surface.texture)
@@ -142,8 +101,8 @@ class ResolvedInsertion:
 
 def resolve_insertion(
     insertion: Insertion,
-    actors: Mapping[str, poses.ActorPose],
-    ego: poses.ActorPose,
+    actors: Mapping[str, ActorState],
+    ego: ActorState,
 ) -> ResolvedInsertion:
     """Resolve a user-specified installation against current actor poses without mutation.
 
@@ -159,12 +118,12 @@ def resolve_insertion(
         if host.extent is None:
             raise ValueError(f"Insertion host {placement.host!r} bounding-box extent is unavailable")
         local = placement.local_position(host.extent)
-        position = host.transform[:3, :3] @ local + host.transform[:3, 3]
+        position = host.box_transform()[:3, :3] @ local + host.box_transform()[:3, 3]
     else:
         position = np.asarray(placement.position_m)
 
     if orientation.mode == "face_ego":
-        target = ego.transform[:3, :3] @ orientation.target_offset_m + ego.transform[:3, 3]
+        target = ego.box_transform()[:3, :3] @ orientation.target_offset_m + ego.box_transform()[:3, 3]
         forward = target - position
         distance = np.linalg.norm(forward)
         if distance < 1e-9:
@@ -179,7 +138,7 @@ def resolve_insertion(
     else:
         rotation = poses.rotation_matrix(orientation.rotation_deg)
         if orientation.mode == "follow_host":
-            rotation = host.transform[:3, :3] @ rotation
+            rotation = host.box_transform()[:3, :3] @ rotation
 
     pose = np.eye(4)
     pose[:3, :3], pose[:3, 3] = rotation, position

@@ -8,12 +8,14 @@ from typing import Any
 
 import numpy as np
 
-from avsectester.closed_loop.datatypes import Observation
-from avsectester.closed_loop.simulator import SensorView
-from avsectester.geometry.cameras import BODY_FROM_OPTICAL, FThetaCamera, PinholeCamera, transform
-from avsectester.datasets import ActorState
-from avsectester.geometry.poses import ActorPose
+from avsectester.data_types import Observation
+from avsectester.closed_loop.simulators.base import SensorView
+from avsectester.geometry.cameras import BODY_FROM_OPTICAL, FThetaCamera, PinholeCamera
+from avsectester.geometry.poses import transform
+from avsectester.data_types import ActorState
 from avsectester.runlog import RunLog, StepRecord
+
+from .metric import executed_brakes, speeds
 
 View = Callable[[StepRecord], Any]
 _BOX_EDGES = ((0, 1), (1, 2), (2, 3), (3, 0), (4, 5), (5, 6), (6, 7), (7, 4),
@@ -120,14 +122,10 @@ def box3d_corners(center: Any, extent: Any, yaw: float) -> np.ndarray:
     return points @ rotation.T + np.asarray(center)
 
 
-def _actor_corners(actor: ActorState | ActorPose) -> np.ndarray | None:
-    if isinstance(actor, ActorState):
-        if actor.extent is None:
-            return None
-        cuboid = actor.box_pose()
-    else:
-        cuboid = actor
-    return transform(cuboid.transform, box3d_corners((0, 0, 0), cuboid.extent, 0))
+def _actor_corners(actor: ActorState) -> np.ndarray | None:
+    if actor.extent is None:
+        return None
+    return transform(actor.box_transform(), box3d_corners((0, 0, 0), actor.extent, 0))
 
 
 def _draw_projected(image: Any, view: SensorView, boxes: Sequence[tuple[Any, str, Any]],
@@ -164,13 +162,13 @@ def draw_boxes3d(image: Any, view: SensorView, *, actors: Mapping[str, Any] | No
                  target: str | None = None, subdiv: int = 8, max_distance: float | None = None,
                  color: tuple[int, int, int] = (40, 200, 40),
                  target_color: tuple[int, int, int] = (235, 64, 52)) -> np.ndarray:
-    """Project ActorState/ActorPose cuboids through a SensorView, without SceneGT.
+    """Project ActorState cuboids through a SensorView, without SceneGT.
 
     This also supports dataset inspection: pass FrameData.actors explicitly. Ordinary run
     overlays use the physical_pre actors stored in each StepRecord.
     """
     boxes = []
-    ego_pose = _get(view.ego, "pose", _get(view.ego, "transform"))
+    ego_pose = view.ego.box_transform()
     origin = np.asarray(ego_pose)[:3, 3]
     for identity, actor in sorted((view.actors if actors is None else actors).items(), key=lambda item: item[0] == target):
         corners = _actor_corners(actor)
@@ -327,3 +325,35 @@ def save_sequence(log: RunLog, out_dir: str | Path, name: str = "sequence", cols
     save_image(filmstrip(frames, cols), strip)
     save_gif(frames, gif, fps)
     return str(strip), str(gif)
+
+
+def plot_group(runs: Mapping[str, Any], path: str | Path, *, title: str | None = None) -> Path:
+    """Plot physical speeds and executed brakes without changing matplotlib's global backend."""
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.figure import Figure
+
+    figure = Figure(figsize=(9, 6))
+    FigureCanvasAgg(figure)
+    speed_axis, brake_axis = figure.subplots(2, 1, sharex=True)
+    if title:
+        figure.suptitle(title)
+    for name, log in runs.items():
+        positions = [step.step for step in log.steps]
+        physical_speeds, braking = speeds(log), executed_brakes(log)
+        if physical_speeds is not None:
+            speed_axis.plot(positions, physical_speeds, label=name)
+        if braking is not None:
+            brake_axis.plot(positions, braking, label=name)
+    speed_axis.set_ylabel("ego speed (m/s)")
+    brake_axis.set_ylabel("executed brake")
+    brake_axis.set_xlabel("decision step")
+    for axis in (speed_axis, brake_axis):
+        axis.grid(alpha=0.25)
+        if axis.lines:
+            axis.legend()
+    figure.tight_layout()
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    figure.savefig(destination, dpi=130)
+    figure.clear()
+    return destination
