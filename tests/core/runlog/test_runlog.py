@@ -7,8 +7,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from avsectester.closed_loop.datatypes import Control, Detection, Observation
+from avsectester.closed_loop.datatypes import Control, Detection, Observation, WorldSnapshot
 from avsectester.geometry import FThetaCamera, PinholeCamera
+from avsectester.rendering import ObjectVisibility
 from avsectester.runlog import Recorder, RunLog, StepRecord, read_table
 
 Point = namedtuple("Point", "x y")
@@ -18,6 +19,10 @@ VALUES = [
     pytest.param(np.int64(7), 7, id="numpy-scalar"),
     pytest.param(Path("artifacts/patch.png"), Path("artifacts/patch.png"), id="path"),
     pytest.param(b"sensor-bytes", b"sensor-bytes", id="bytes"),
+    pytest.param(WorldSnapshot(.1, 3, traffic_lights={"signal-1": "red"}),
+                 WorldSnapshot(.1, 3, traffic_lights={"signal-1": "red"}), id="traffic-lights"),
+    pytest.param(ObjectVisibility("actor_cuboids", ("unmeasured-actor",), 12),
+                 ObjectVisibility("actor_cuboids", ("unmeasured-actor",), 12), id="object-visibility"),
     pytest.param({"list": [1, None], "tuple": ("car", .9)},
                  {"list": [1, None], "tuple": ("car", .9)}, id="nested"),
     pytest.param(Point(1, [2, 3]), (1, [2, 3]), id="namedtuple"),

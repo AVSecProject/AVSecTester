@@ -12,13 +12,17 @@ Evaluation reads saved preparation and RunLog records after simulators close. It
 scenarios, read dataset frames, load attack artifacts or run model inference. Missing observations
 cannot be reconstructed. Unavailable metric values carry a reason; failed runs remain failures.
 
+ComparisonGroup.scenario_map contains the map saved for that scene, or Unavailable with its reason.
+Custom metrics can use it without reopening the dataset. ExperimentResult.load restores maps from
+the output's maps/ directory alongside run records; see [Semantic maps](scenarios.md#semantic-maps).
+
 ```python
 from avsectester.experiment import ExperimentResult, load_configuration
 from avsectester.evaluation.report import evaluate
 
-# Requires saved preparation and run logs under configuration.output.
+# Requires saved preparation and run logs under configuration.runs.output.
 configuration = load_configuration("configs/carla_phantom.yaml")
-result = ExperimentResult.load(configuration.output, configuration)
+result = ExperimentResult.load(configuration.runs.output, configuration)
 report = evaluate(result, configuration)
 print(report.format_summary())
 ```
@@ -52,7 +56,7 @@ difference.
 |---|---|---|
 | DrivingMetrics | stop_speed=0.5 | Speed, braking, stopping, actor distances and geometric collision |
 | TrajectoryDeviation | — | Mean, maximum and final matched-decision ego position distance |
-| DetectionMetrics | match_distance=2.0, max_range=50.0, category_map=— | TP, FP, FN, precision, recall, F1 and role detection rates |
+| DetectionMetrics | match_distance=2.0, max_range=50.0, category_map=— | TP, FP, FN, precision, recall and F1 |
 | StopImpact | stop_speed=0.5, reference_speed=1.0, min_overdrive_steps=3 | Stopping and braking comparisons in both directions |
 
 The default metric set is chosen once for the entire experiment: DrivingMetrics and
@@ -75,7 +79,7 @@ DetectionMetrics transforms true actors with `StepRecord.physical_pre.ego` into 
 true ego frame. Detections use sensor mounting extrinsics, independently of model localization. Both
 detections and truth are filtered by the same bird's-eye range, then matched once within
 match_distance. Set max_range to null to disable range filtering. With category_map configured, a
-detection without a category cannot match a class. Zero denominators and absent role evidence
+detection without a category cannot match a class. Zero denominators and missing detection evidence
 produce unavailable values with reasons. TN and AP/mAP are not defined by these thresholded outputs.
 
 ## Configure metrics

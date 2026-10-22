@@ -8,10 +8,11 @@ from collections.abc import Callable
 import numpy as np
 
 from avsectester.attack.runtime import AttackRuntime, WorldAttackAction
-from avsectester.attack.insertion.assets import load_rgba_image
+from avsectester.rendering.images import load_rgba_image
 from avsectester.attack.insertion.action import InsertionAttackAction
 from avsectester.attack.placement import AttachedPlacement
-from avsectester.geometry.poses import rotation_matrix, rotation_to_carla
+from avsectester.geometry.poses import rotation_matrix
+from avsectester.closed_loop.simulators.carla import rotation_to_carla
 
 DEFAULT_PROP = "static.prop.ironplank"
 
@@ -103,7 +104,7 @@ class PatchAttackRuntime(AttackRuntime):
 
     def __init__(self, attack, texture, physical, segment):
         self.attack, self.texture, self.physical = attack, texture, physical
-        self.insertion = attack.insertion(texture, placement=segment.placement)
+        self.insertion = attack.insertion(texture, placement=attack.selected_placement(segment))
         self.setup_ticks = 1 if physical else 0
 
     def setup(self, context):

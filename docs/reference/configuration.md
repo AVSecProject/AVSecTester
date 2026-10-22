@@ -8,8 +8,9 @@
 
 ## Experiment configuration
 
-The same configuration drives CLI and Python. Dataset, simulator, driving system and attacks are
-configured separately. Attack and AVStack specifications may be inline mappings or YAML file paths.
+The same configuration drives CLI and Python. Dataset, simulator, driving system, attacks, hooks
+and evaluation are components. The runs section describes what to execute on those components and
+how to record it. Attack and AVStack specifications may be inline mappings or YAML file paths.
 Relative filesystem arguments resolve against the YAML file containing that argument.
 
 Every object constructor uses `type` and `options`. A name without a colon selects a built-in class.
@@ -22,7 +23,7 @@ dataset:
   options:
     recipes:
       road:
-        type: CarlaRecipe
+        type: avsectester.datasets.carla:CarlaRecipe
         options:
           decision_steps: 40
           time_step: 0.05
@@ -37,13 +38,17 @@ dataset:
             lead: {gap: 25.0, vehicle: vehicle.tesla.model3}
           motion:
             ego:
-              type: PrescribedMotion
+              type: avsectester.datasets.carla:PrescribedMotion
               options:
-                constant_control: {type: Control, options: {throttle: 0.35}}
+                constant_control:
+                  type: avsectester.closed_loop.datatypes:Control
+                  options: {throttle: 0.35}
             lead:
-              type: PrescribedMotion
+              type: avsectester.datasets.carla:PrescribedMotion
               options:
-                constant_control: {type: Control, options: {brake: 1.0}}
+                constant_control:
+                  type: avsectester.closed_loop.datatypes:Control
+                  options: {brake: 1.0}
 simulator:
   type: CarlaSimulator
   options:
@@ -53,19 +58,20 @@ attacks:
   phantom:
     type: PhantomInjectionAttack
     options: {decision_steps: 20, target_xyz: [6, 0, -0.7], max_segments: 1}
-treatments:
-  - {name: clean}
-  - {name: attacked, attack_name: phantom}
-seeds: [0]
 evaluation:
   metrics: [{type: DrivingMetrics}, {type: DetectionMetrics}, {type: StopImpact}]
-output: ../results/phantom
+runs:
+  treatments:
+    - {name: clean}
+    - {name: attacked, attack_name: phantom}
+  seeds: [0]
+  output: ../results/phantom
 ```
 
 `driving.yaml` is a user-supplied driving specification; the complete supplied version is in
 `configs/carla_phantom.yaml` at the repository root.
 
-## Top-level keys
+## Components
 
 | Key | Meaning |
 |---|---|
@@ -73,23 +79,10 @@ output: ../results/phantom
 | `simulator` | Simulator object specification |
 | `avstack` | Driving specification, inline or a file reference |
 | `attacks` | Exactly one name mapped to an Attack specification or file reference |
-| `treatments` | Named clean or single-attack runs with optional environment overrides |
-| `seeds` | Nonempty unique nonnegative integers; default `[0]` |
-| `decision_steps` | Optional positive upper bound on each selected segment's decisions |
-| `environment` | Experiment base `{world, sensors}` settings |
 | `hooks` | One stage-hook configuration applied to every treatment |
-| `recording` | Sensor retention policy; state and commands remain recorded each decision |
 | `evaluation` | Metrics and all-treatment pair comparisons |
-| `output` | Required CLI output directory; optional for in-memory Python execution |
-| `strict` | Stop on the first error when true; default false |
 
-The attacks mapping must contain exactly one entry. Multiple attacks in one experiment are future
-work; implement a composite Attack when several actions must be applied together. Empty and
-multi-attack configurations fail loading with exit code 2. When treatments are omitted, loading
-creates clean and attack treatments. Every treatment shares this attack's metadata and may enable
-its attack_name and change environment settings. A clean treatment has no attack_name.
-
-## Dataset and simulator
+### Dataset and simulator
 
 CARLA scene content is solely in `CarlaRecipe.scenario`. The simulator receives runtime client
 settings, optional settling iterations and a depth-camera name. Recipe motion explicitly covers ego
@@ -102,7 +95,7 @@ segment positions. NuScenes uses RecordedReplaySimulator for open-loop playback.
 
 See [Scenarios](../guides/scenarios.md) and [Simulators](../guides/simulators.md).
 
-## Driving specification
+### Driving specification
 
 `avstack.type` names an AVStack class or a callable returning one. It receives only its `options`,
 not a seed. Each run, rollout and component evaluation creates fresh driving state. Scoring calls
@@ -125,7 +118,14 @@ expected command modes and must match the AVStack declaration. These keys descri
 driving boundary, while options are constructor arguments. A driving configuration can be reused
 across supported scenarios of one simulator.
 
-## Attack specification
+### Attack specification
+
+The attacks mapping must contain exactly one entry. Multiple attacks in one experiment are future
+work; implement a composite Attack when several actions must be applied together. Empty and
+multi-attack configurations fail loading with exit code 2. When treatments are omitted, loading
+creates clean and attack treatments under runs. Every treatment shares this attack's metadata,
+may enable its attack_name and can change environment settings. A clean treatment has no
+attack_name.
 
 An attack specification has `type`, `options` and optional `environment`. Selection parameters,
 input assets and optimization belong to the Attack constructor. The framework calls its metabuilder
@@ -134,14 +134,16 @@ entirely to build_metadata; the framework only validates and saves AttackSegment
 reruns selection after optimization.
 
 ```yaml
-type: SpeedFeedbackAttack
-options:
-  decision_steps: 20
-  target_speed: 3.0
-  gain: 0.1
-  max_bias: 5.0
-environment:
-  world: {weather: SoftRainNoon}
+attacks:
+  speed_feedback:
+    type: SpeedFeedbackAttack
+    options:
+      decision_steps: 20
+      target_speed: 3.0
+      gain: 0.1
+      max_bias: 5.0
+    environment:
+      world: {weather: SoftRainNoon}
 ```
 
 
@@ -153,32 +155,14 @@ Attack2D to attack2_d. Continuous capitals form an acronym; the boundary before 
 capital-plus-lowercase word is split. Missing attacks report the available names. User code
 elsewhere uses package.module:Class.
 
-Assets, textures, placements, optimizers and compositor options also use type/options; lowercase
-shortcuts and inferred placement types are rejected. Relative paths, including ImageTexture's image
-option, SignAsset.face and PatchOptimization.init_texture, resolve against the containing
-configuration file.
+Only dataset, simulator, AVStack and metric classes have built-in registry names; attacks use the
+folder discovery described above. Other constructors, including assets, textures, placements,
+optimizers, compositors and their helpers, use full package.module:Class references with options.
+Lowercase shortcuts and inferred placement types are rejected. Relative paths, including
+ImageTexture's image option, SignAsset.face and PatchOptimization.init_texture, resolve against
+the containing configuration file.
 
-## Environment
-
-The complete shape is `{world: {...}, sensors: [...]}`. Resolve experiment base, enabled Attack
-environment and treatment overrides in that order. World dictionaries merge recursively; an
-explicitly supplied sensor list replaces the preceding list. SimulatorRuntime.reset receives only
-the world mapping. See the complete [environment merge
-rules](../guides/environments.md#experiment-environment).
-
-```yaml
-environment:
-  world: {weather: SoftRainNoon}
-  sensors:
-    - {type: GaussianNoise, options: {severity: 0.2}, camera: front}
-```
-
-CARLA supports the native keys declared by `CarlaSimulator.supported_world_settings`, including
-weather, lighting, map_layers and road_friction; support is not limited to weather. Unsupported
-world settings fail rather than becoming sensor approximations. See [Native CARLA
-settings](../guides/environments.md#native-carla-settings).
-
-## Hooks
+### Hooks
 
 ```yaml
 hooks:
@@ -203,20 +187,7 @@ attack preparation and deployment. Hook stage names and contexts are in
 The same hooks apply to every treatment, including treatments with no attack_name. Treatments differ
 only in attack enablement and environment settings.
 
-## Recording
-
-```yaml
-recording:
-  sensor_ids: [front]
-  representations: [raw, model_input]
-  every_n_steps: 2
-```
-
-Sensor payloads are sampled every N decisions. Empty sensor_ids retain no image payloads. Physical
-states, commands, actions, outputs, available components and detections are recorded at each
-decision. Choose payload retention before a run; reevaluation cannot recover omitted images.
-
-## Evaluation
+### Evaluation
 
 There is no baseline option. Every ordered-by-configuration treatment pair is compared once, with
 single-run metric differences calculated as B minus A. TrajectoryDeviation is symmetric and
@@ -239,13 +210,95 @@ evaluation:
 User metrics use type/options, including package.module:Class. See
 [Evaluation](../guides/evaluation.md#built-in-metrics) for fields and evidence requirements.
 
+## Run settings
+
+Run settings belong exclusively under runs. Supplying treatments, seeds, decision_steps,
+environment, recording, output or strict at the experiment's top level raises "Unknown experiment
+keys"; old layouts are not converted. In Python, use the frozen RunsConfiguration as
+ExperimentConfiguration.runs.
+
+| Key under runs | Meaning |
+|---|---|
+| `treatments` | Named clean or single-attack runs with optional environment overrides; defaults to clean and attack |
+| `seeds` | Nonempty unique nonnegative integers; default `[0]` |
+| `decision_steps` | Optional positive upper bound on each selected segment's decisions; default null |
+| `environment` | Shared base `{world, sensors}` settings; default empty |
+| `recording` | Sensor retention policy; state and commands remain recorded each decision |
+| `output` | Required CLI output directory; optional for in-memory Python execution |
+| `strict` | Stop on the first error when true; default false |
+
+runs.output is resolved relative to the YAML file containing it. Preparation uses the first value
+of runs.seeds. OfflineContext.environment merges runs.environment with the attack's environment;
+metabuilders request sensor/render environments explicitly and otherwise see the original world.
+
+### Environment
+
+The value of runs.environment has shape `{world: {...}, sensors: [...]}`. Resolve experiment base,
+enabled Attack environment and treatment overrides in that order. World dictionaries merge
+recursively; an explicitly supplied sensor list replaces the preceding list. SimulatorRuntime.reset
+receives only the world mapping. See the complete [environment merge
+rules](../guides/environments.md#experiment-environment).
+
+For example, the value of runs.environment can be:
+
+```yaml
+world: {weather: SoftRainNoon}
+sensors:
+  - {type: GaussianNoise, options: {severity: 0.2}, camera: front}
+```
+
+CARLA supports the native keys declared by `CarlaSimulator.supported_world_settings`, including
+weather, lighting, map_layers and road_friction; support is not limited to weather. Unsupported
+world settings fail rather than becoming sensor approximations. See [Native CARLA
+settings](../guides/environments.md#native-carla-settings).
+
+### Recording
+
+```yaml
+runs:
+  recording:
+    sensor_ids: [front]
+    representations: [raw, model_input]
+    every_n_steps: 2
+```
+
+Sensor payloads are sampled every N decisions. Empty sensor_ids retain no image payloads. Physical
+states, commands, actions, outputs, available components and detections are recorded at each
+decision. Choose payload retention before a run; reevaluation cannot recover omitted images.
+
 ## Saved preparation compatibility
 
-`PreparedExperiment.save(directory)` records dataset type and scenario list, simulator identity, and
-each attack's type, parameters and environment. `PreparedExperiment.load(config, directory)` rejects
-incompatible descriptions with ConfigurationMismatchError. The CLI maps that specific error to exit
-code 2. Corrupt or unreadable saved files are result-reading failures (exit code 1). Output,
-recording and evaluation can be changed for later runs.
+`PreparedExperiment.save(directory)` records dataset type and scenario list, simulator identity,
+each attack's type, parameters and environment. prepared.json also stores preparation, captured by
+Experiment.prepare from the inputs actually used:
+
+- seed is runs.seeds[0].
+- offline_environments maps each attack name to its merged environment,
+  merge_environments(runs.environment, attack.environment), recorded as canonical data: world
+  settings as written, and each sensor entry as type, options and, when set, camera.
+
+The record is computed before selection starts, so an environment value that is not data (for
+example an arbitrary object) fails before any preparation work. Paths, tuples, NumPy values and
+dataclasses are recorded as their configuration-summary data.
+
+`PreparedExperiment.load(config, directory)` and CLI --prepared check dataset/scenario, simulator
+and attack compatibility, then compare the saved preparation seed and each offline environment
+with the supplied configuration. A mismatch raises ConfigurationMismatchError naming the differing
+fields and their saved and new values; the CLI maps it to exit code 2. Corrupt or unreadable files
+are result-reading failures (exit code 1).
+
+Additional seeds after the first, treatments, recording, output, strict, decision_steps and
+evaluation settings may change when reusing preparation. The first seed and normalized per-attack
+offline environments must still agree. Saving a loaded preparation preserves its original
+preparation snapshot rather than recomputing it from the current run settings. Records are compared
+as canonical JSON text, so a list and a tuple with the same values agree while True and 1 differ.
+Options are compared as written: writing a transform's default value explicitly differs from
+omitting it. prepared.json uses deterministic key order. Values passed to offline preparation and
+simulation remain unchanged.
+
+ExperimentResult.load and CLI evaluate read saved logs through load_prepared_metadata without
+constraining runs. Historical analysis does not require preparation to be reusable for new runs,
+and outputs saved without a preparation record remain readable.
 
 Summaries are calculated only when saving or loading. Constructing or running a configuration does
 not enumerate scenarios for this check or require parameter descriptions. YAML constructor options

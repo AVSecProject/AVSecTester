@@ -23,9 +23,13 @@ class InsertionAttackAction(SensorAttackAction):
     compositor: PatchCompositor | None = None
     rendered: bool = field(default=False, init=False)
     reason: str = field(default="", init=False)
+    occlusion_source: str = field(default="", init=False)
+    ignored_occluders: tuple[str, ...] = field(default=(), init=False)
 
-    def render_metadata(self):
-        return {"rendered": self.rendered, "reason": self.reason}
+    def receipt_details(self):
+        return {"rendered": self.rendered, "reason": self.reason,
+                "occlusion_source": self.occlusion_source,
+                "ignored_occluders": self.ignored_occluders}
 
     def resolve(self, view):
         return resolve_insertion(self.insertion, view.actors, view.ego)
@@ -40,11 +44,13 @@ class InsertionAttackAction(SensorAttackAction):
                 depth_convention="z", camera_name=view.sensor)
         return CuboidVisibilityEstimator().estimate(
             resolved, view.camera, view.cam_from_world, occluders=view.actors,
-            camera_name=view.sensor)
+            camera_name=view.sensor, world_objects=tuple(view.objects.values()))
 
     def apply(self, data: Any, view):
         resolved = self.resolve(view)
         evidence = self.evidence(view, resolved)
+        self.occlusion_source = "depth" if view.depth is not None else "actor_cuboids"
+        self.ignored_occluders = evidence.ignored_occluders
         self.rendered = evidence.visibility is not None and bool(evidence.visible_mask.any())
         self.reason = evidence.reason if not self.rendered else ""
         if not self.rendered:

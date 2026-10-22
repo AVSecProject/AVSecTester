@@ -23,7 +23,8 @@ from avsectester.datasets import ActorState
 from avsectester.datasets.carla import CarlaDataset, PrescribedMotion
 from avsectester.experiment import load_configuration
 from avsectester.attack.insertion.assets import CheckerboardTexture
-from avsectester.geometry.poses import rotation_matrix, rotation_to_carla
+from avsectester.geometry.poses import rotation_matrix
+from avsectester.closed_loop.simulators.carla import rotation_to_carla
 from scripts import REPO_ROOT
 
 WIDTH, HEIGHT, SCALE = 640, 480, 3

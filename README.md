@@ -25,7 +25,8 @@ docker compose up -d --build
 docker compose exec avsectester avsectester run configs/carla_phantom.yaml
 ```
 
-Set the server address, model device, treatments and output directory in the configuration. `run`
+Set the server address and model device on the configured components; set treatments and output
+under runs.treatments and runs.output. `run`
 prepares, executes and evaluates the experiment. `evaluate` recalculates metrics from saved logs
 after the simulator closes. See [Quickstart](docs/getting-started/quickstart.md).
 

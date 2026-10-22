@@ -4,13 +4,15 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import math
 from typing import Any, Literal, TypeAlias
 
 import numpy as np
 
 from avsectester.attack import AttackSegment
+from avsectester.datasets.base import Unavailable
+from avsectester.maps import ScenarioMap
 from avsectester.runlog import RunLog
 
 
@@ -35,12 +37,18 @@ TreatmentMeasurements: TypeAlias = Mapping[str, FieldMeasurements]
 
 @dataclass(frozen=True)
 class ComparisonGroup:
-    """Completed treatments sharing one attack segment and seed, in configuration order."""
+    """Completed treatments sharing one attack segment and seed, plus its saved scenario map.
+
+    ``scenario_map`` comes from the experiment result; metric evaluation never queries datasets.
+    """
 
     attack_name: str
     segment: AttackSegment
     seed: int
     runs: Mapping[str, RunLog]
+    scenario_map: ScenarioMap | Unavailable = field(
+        default_factory=lambda: Unavailable("No saved scenario map is available"),
+    )
 
 
 @dataclass(frozen=True)
@@ -163,7 +171,6 @@ class DrivingMetrics(Metric):
 
     def evaluate(self, group: ComparisonGroup) -> TreatmentMeasurements:
         result: dict[str, dict[str, MetricScalar]] = {}
-        role_ids = {identity for identities in group.segment.roles.values() for identity in identities}
         for name, log in group.runs.items():
             values: dict[str, MetricScalar] = {}
             physical_speeds = speeds(log)
@@ -177,7 +184,7 @@ class DrivingMetrics(Metric):
             count = brake_steps(log)
             values["brake_steps"] = count if count is not None else UnavailableMetricValue(
                 "Executed actuator commands are unavailable")
-            distances, role_distances = [], []
+            distances = []
             missing_positions, missing_extents, collision = False, False, False
             states = [state for step in log.steps for state in (step.physical_pre, step.physical_post)]
             if not states:
@@ -188,7 +195,7 @@ class DrivingMetrics(Metric):
                 if pose is None:
                     missing_positions = True
                     continue
-                for identity, actor in state.actors.items():
+                for actor in state.actors.values():
                     actor_pose = _pose(actor)
                     if actor_pose is None:
                         missing_positions = True
@@ -198,15 +205,11 @@ class DrivingMetrics(Metric):
                     origin, target = ego_box[:3, 3], actor_box[:3, 3]
                     distance = float(np.linalg.norm(target - origin))
                     distances.append(distance)
-                    if identity in role_ids:
-                        role_distances.append(distance)
                     overlaps = _obb_overlap(ego, actor)
                     missing_extents |= overlaps is None
                     collision |= overlaps is True
             values["min_distance"] = min(distances) if distances and not missing_positions else UnavailableMetricValue(
                 "Ego/actor poses are missing or no other actor was recorded")
-            values["min_role_distance"] = min(role_distances) if role_distances and not missing_positions else UnavailableMetricValue(
-                "No roles are bound or their physical positions are unavailable")
             values["collision"] = True if collision else (
                 UnavailableMetricValue("Ego/actor poses or bounding-box extents are missing", "boolean")
                 if missing_positions or missing_extents else False)
@@ -256,8 +259,6 @@ class DetectionMetrics(Metric):
                 raise ValueError(f"DetectionMetrics requires detections from driving system {avstack_type!r} "
                                  f"(treatment {name!r})")
             tp, fp, fn = 0, 0, 0
-            eligible = dict.fromkeys(group.segment.roles, 0)
-            detected = dict.fromkeys(group.segment.roles, 0)
             unavailable = False
             for step in log.steps:
                 world = step.physical_pre
@@ -306,25 +307,16 @@ class DetectionMetrics(Metric):
                 tp += len(matched_truths)
                 fp += len(predictions) - len(matched_predictions)
                 fn += len(truths) - len(matched_truths)
-                in_range = {identity for identity, _, _ in truths}
-                found = {truths[index][0] for index in matched_truths}
-                for role, identities in group.segment.roles.items():
-                    eligible[role] += len(set(identities) & in_range)
-                    detected[role] += len(set(identities) & found)
-            fields = ["tp", "fp", "fn", "precision", "recall", "f1"] + [
-                f"role_detection_rate.{role}" for role in eligible]
+            fields = ["tp", "fp", "fn", "precision", "recall", "f1"]
             if unavailable:
                 result[name] = dict.fromkeys(fields, UnavailableMetricValue(
                     "Physical ego/actor ground-truth poses are unavailable"))
                 continue
             values: dict[str, MetricScalar] = {"tp": tp, "fp": fp, "fn": fn}
-            for field, numerator, denominator in (("precision", tp, tp + fp), ("recall", tp, tp + fn),
+            for field_name, numerator, denominator in (("precision", tp, tp + fp), ("recall", tp, tp + fn),
                                                   ("f1", 2 * tp, 2 * tp + fp + fn)):
-                values[field] = numerator / denominator if denominator else UnavailableMetricValue(
+                values[field_name] = numerator / denominator if denominator else UnavailableMetricValue(
                     "No detections or ground-truth opportunities define this ratio")
-            for role in eligible:
-                values[f"role_detection_rate.{role}"] = detected[role] / eligible[role] if eligible[role] else UnavailableMetricValue(
-                    "The role has no in-range ground-truth actor-decisions")
             result[name] = values
         return result
 

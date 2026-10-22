@@ -12,7 +12,7 @@ from copy import deepcopy
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from threading import Lock
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from avsectester.attack import AttackSegment
 from avsectester.attack.runtime import (
@@ -28,6 +28,10 @@ from avsectester.closed_loop.resources import reserve, simulator_key
 from avsectester.runlog import Recorder, RunLog
 from avsectester.closed_loop.hooks import HookSet
 from avsectester.closed_loop.simulator import DeploymentPlan, SensorView, Simulator, SimulatorRuntime
+
+if TYPE_CHECKING:
+    from avsectester.maps import ScenarioMap
+    from avsectester.rendering.compositing import ObjectVisibility
 
 
 @dataclass(frozen=True)
@@ -61,6 +65,7 @@ class SensorRequest:
     frame: FrameReference
     sensor_ids: tuple[str, ...]
     environment: Mapping[str, Any] = field(default_factory=dict)
+    views: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "environment", normalize_environment(self.environment))
@@ -91,9 +96,12 @@ class RenderRequest:
 
 @dataclass(frozen=True)
 class SensorSample:
+    """An environment-processed observation and optional detached raw sensor views."""
+
     frame: FrameReference
     observation: Observation
     provenance: Mapping[str, Any]
+    views: Mapping[str, SensorView] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -101,12 +109,15 @@ class RenderResult:
     """The changed capture and the requested sensor's view before its sensor actions.
 
     The view is detached: its ``native`` access is empty once the session operation ends.
+    ``object_visibility`` retains each world's object visibility by object and camera ID
+    from the same capture, before cleanup removes the inserted objects.
     """
 
     frame: FrameReference
     observation: Observation
     view: SensorView
     provenance: Mapping[str, Any]
+    object_visibility: Mapping[str, Mapping[str, ObjectVisibility]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -147,6 +158,7 @@ class ClosedLoopCapabilities:
     dataset_kinds: tuple[str, ...]
     sensor_data: bool
     render: bool
+    insert_objects: bool
     rollout: bool
     components: tuple[ComponentDescriptor, ...]
     scorers: tuple[ScorerDescriptor, ...]
@@ -278,6 +290,7 @@ class ClosedLoopServices:
         driver = self.driving_adapter
         return ClosedLoopCapabilities(
             self.simulator.dataset_kinds, True, self.simulator.can_render,
+            self.simulator.can_insert_objects,
             driver is not None,
             tuple(deepcopy(pair[0]) for pair in driver.component_bindings.values()) if driver else (),
             tuple(deepcopy(pair[0]) for pair in driver.scorer_bindings.values()) if driver else (),
@@ -453,8 +466,11 @@ class ClosedLoopSession:
         """Read prescribed source motion, reusing one action-free runtime for forward scans.
 
         A different scenario/environment, a backwards frame request, render or rollout closes
-        the scan. Repeated reads of a frame do not advance the simulator.
+        the scan. Repeated reads of a frame do not advance the simulator. Optional views retain
+        the raw capture, before the sensor environment, and have no native runtime access.
         """
+        if request.views and not self.services.simulator.can_render:
+            raise NotImplementedError("The simulator does not provide sensor views")
         self._check()
         start = self._scenario_start(request.scenario_id, request.frame, request.environment)
         key = (start.scenario_id, request.environment)
@@ -491,8 +507,13 @@ class ClosedLoopSession:
                 observation.sensor_data = {key: observation.sensor_data[key] for key in request.sensor_ids}
                 observation.calibration = {key: value for key, value in observation.calibration.items()
                                            if key in request.sensor_ids}
+                views = {
+                    sensor: deepcopy(replace(simulator_runtime.sensor_view(sensor), native={}))
+                    for sensor in request.sensor_ids
+                } if request.views else {}
                 return SensorSample(start.frame, observation,
-                                    self._provenance(start, request.environment, simulator_runtime))
+                                    self._provenance(start, request.environment, simulator_runtime),
+                                    views)
             except BaseException as error:
                 try:
                     self._discard_scan()
@@ -518,6 +539,10 @@ class ClosedLoopSession:
                     simulator_runtime.reset(start, initialization, world=request.environment["world"],
                                             deployment=deployment)
                 observation = simulator_runtime.observe()
+                object_visibility = deepcopy({
+                    object_id: simulator_runtime.object_visibility(object_id)
+                    for object_id in simulator_runtime.state().objects
+                })
                 views = {request.sensor_id: simulator_runtime.sensor_view(request.sensor_id)}
                 detached_view = deepcopy(replace(views[request.sensor_id], native={}))
                 observation = chain_sensor_actions(observation, simulator_runtime, sensor, views=views)
@@ -525,7 +550,7 @@ class ClosedLoopSession:
                     observation, request.frame.position)
                 return RenderResult(
                     start.frame, observation, detached_view,
-                    self._provenance(start, request.environment, simulator_runtime))
+                    self._provenance(start, request.environment, simulator_runtime), object_visibility)
 
     def components(self) -> Sequence[ComponentDescriptor]:
         self._check()
@@ -668,3 +693,7 @@ class ScenarioView:
         """Resolve recorded data or a preparation-owned cache, without mutating Dataset."""
         with self.services.session(self.seed) as scope:
             return scope.frame_data(self.scenario_id, frame)
+
+    def scenario_map(self) -> ScenarioMap | Unavailable:
+        """Read this scenario's semantic map without starting a simulator."""
+        return self.services.dataset.scenario_map(self.scenario_id)

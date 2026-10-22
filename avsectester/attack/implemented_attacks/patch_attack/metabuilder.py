@@ -75,8 +75,11 @@ def build_metadata(attack, scenario):
                   for host in common}
         ranked = sorted(common, key=lambda host: (-values[host], order[host]))
         for rank, host in enumerate(ranked[:attack.hosts_per_window]):
-            segment = AttackSegment(scenario.scenario_id, start, stop, roles={"host": (host,)},
-                placement=attack.placement_for(host), selection_score=values[host], selection_rank=rank,
-                user_data={"deployment": "world" if physical else "sensor"})
+            segment = AttackSegment(scenario.scenario_id, start, stop, user_data={
+                "host": host,
+                "placement": {"anchor": attack.anchor, "offset_m": list(attack.offset_m)},
+                "score": values[host], "rank": rank,
+                "deployment": "world" if physical else "sensor",
+            })
             selected.append(segment)
     return tuple(selected)

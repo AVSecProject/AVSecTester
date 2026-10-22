@@ -1,0 +1,42 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<OpenDRIVE>
+  <header revMajor="1" revMinor="4" name="DiscontinuousLanes" version="1.00" date="2026-10-21" north="10" south="-10" east="20" west="0">
+    <geoReference>+proj=tmerc +lat_0=0 +lon_0=0 +k=1 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs</geoReference>
+  </header>
+  <road name="Straight" length="20" id="1" junction="-1">
+    <link />
+    <type s="0" type="town">
+      <speed max="50" unit="km/h" />
+    </type>
+    <planView>
+      <geometry s="0" x="0" y="0" hdg="0" length="20">
+        <line />
+      </geometry>
+    </planView>
+    <elevationProfile>
+      <elevation s="0" a="0" b="0" c="0" d="0" />
+    </elevationProfile>
+    <lateralProfile />
+    <lanes>
+      <laneOffset s="0" a="-4.135" b="0" c="0" d="0" />
+      <laneOffset s="10" a="-7" b="0" c="0" d="0" />
+      <laneSection s="0">
+        <center>
+          <lane id="0" type="none" level="false">
+            <link />
+          </lane>
+        </center>
+        <left>
+          <lane id="1" type="none" level="false">
+            <link />
+            <width sOffset="0" a=".635" b="0" c="0" d="0" />
+            <width sOffset="10" a="3.5" b="0" c="0" d="0" />
+            <roadMark sOffset="0" type="solid" weight="standard" color="white" width="0.15" />
+          </lane>
+        </left>
+      </laneSection>
+    </lanes>
+    <objects />
+    <signals />
+  </road>
+</OpenDRIVE>

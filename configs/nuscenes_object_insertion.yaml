@@ -14,15 +14,6 @@ avstack:
     camera: front
     gpu: 0
     detector_dataset: nuscenes
-seeds:
-- 0
-recording:
-  sensor_ids:
-  - front
-  representations:
-  - model_input
-  every_n_steps: 1
-output: ../results/nuscenes_object_insertion
 attacks:
   object:
     type: ObjectInsertionAttack
@@ -30,22 +21,32 @@ attacks:
       decision_steps: 5
       max_segments: 1
       assets:
-        type: SignAsset
+        type: avsectester.rendering.signs:SignAsset
         options: {}
       sensor: front
       placement:
-        type: WorldPlacement
+        type: avsectester.attack.placement:WorldPlacement
         options:
           position_m:
           - 28.0
           - -3.0
           - 0.0
       orientation:
-        type: Orientation
+        type: avsectester.attack.placement:Orientation
         options:
           mode: face_ego
       placement_relative_to_ego_origin: true
-treatments:
-- name: clean
-- name: object
-  attack_name: object
+runs:
+  treatments:
+  - name: clean
+  - name: object
+    attack_name: object
+  seeds:
+  - 0
+  recording:
+    sensor_ids:
+    - front
+    representations:
+    - model_input
+    every_n_steps: 1
+  output: ../results/nuscenes_object_insertion

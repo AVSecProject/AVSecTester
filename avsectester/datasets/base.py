@@ -13,6 +13,7 @@ from typing import Any, TYPE_CHECKING
 if TYPE_CHECKING:
     import numpy as np
     from avsectester.geometry.poses import ActorPose
+    from avsectester.maps import ScenarioMap
 
 
 def nonnegative(value: int, name: str) -> None:
@@ -44,7 +45,7 @@ class ScenarioDescriptor:
 
 @dataclass(frozen=True)
 class Unavailable:
-    """The dataset has no frame data for this frame, for example a CARLA recipe."""
+    """A dataset cannot supply the requested evidence, with an explicit reason."""
 
     reason: str
 
@@ -169,6 +170,10 @@ class Dataset(ABC):
 
     @abstractmethod
     def scenario_start(self, scenario_id: str, frame: FrameReference) -> ScenarioStart: ...
+
+    def scenario_map(self, scenario_id: str) -> ScenarioMap | Unavailable:
+        """Return immutable semantic map data, or explain why this dataset has none."""
+        return Unavailable("This dataset provides no map")
 
     def checked_frame(self, scenario_id: str, frame: FrameReference) -> FrameReference:
         frames = self.frames(scenario_id)

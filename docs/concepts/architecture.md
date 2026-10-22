@@ -32,8 +32,8 @@ flowchart TD
 | Simulator | Reusable settings and capability declarations | An active world |
 | SimulatorRuntime | World, clock, actors, sensors and captured observations | Selection metadata or attack algorithms |
 | AVStack | Driving inference and per-run history, including VehicleIO | Simulator time |
-| Attack | Parameters, input assets, selection and optional optimization | Mutable online history or stored artifacts |
-| AttackRuntime | One run's online attack state and actions | A time-advancing closed-loop service |
+| Attack | Parameters, input assets, selection and optional offline optimization | Mutable online history or stored artifacts |
+| AttackRuntime | One run's online attack state and actions, including optional optimization within the run | A time-advancing closed-loop service |
 | HookSet | Ordered hook handlers and their per-run lifecycle | Attack selection |
 | VehicleIO | sensors.post hooks, localization and observation hooks | Sensor environment transforms or physical state |
 | ClosedLoopServices | Isolated sensor, render, component and rollout operations | Active-run advancement |
@@ -47,11 +47,12 @@ flowchart TD
 | Path | Responsibility |
 |---|---|
 | attack/attack.py, runtime.py, segments.py, placement.py | Attack contracts and core data types |
-| attack/insertion/ | Framework assets, projection, visibility, compositor and harmonizers |
+| attack/insertion/ | Framework insertion assets, placement resolution, visibility and attack compositing |
 | attack/optimization/ | Generic optimization contracts, PGD, NES, perturbations and SessionScorer |
 | attack/implemented_attacks/<class_name>/ | One concrete attack per snake_case class folder |
 | closed_loop/avstacks/ | Modular, Alpamayo, camera policy, native hooks, mmdet3d.py and scorers |
-| geometry/ | Shared camera and rigid-pose mathematics |
+| geometry/ | Shared camera, rigid-pose, plane-grid, box-projection and depth-visibility mathematics |
+| rendering/ | Simulator-independent object surfaces, sampling, harmonization and composition |
 | experiment/, runlog/, evaluation/ | Orchestration, recording and log-only analysis |
 
 The attack package has three layers: core contracts, framework tools and concrete attacks. Core
@@ -62,6 +63,10 @@ implemented_attacks/patch_attack/, rather than the generic optimization tool. Ea
 exports only its Attack subclass from __init__.py. User attacks follow the same layout and
 class-name discovery rules as built-ins. See [Attacks](../guides/attacks.md).
 
+rendering/ never imports closed_loop/ or attack/. Both simulator and attack code may use it.
+Optional third-party dependencies load lazily inside functions. All plane texture sampling lives in
+rendering/surfaces.py; the existing offline optimization sampling remains a separate approximation.
+
 ## Attack workflow
 
 Every attack follows `build_metadata → run_offline → create_runtime`.
@@ -70,6 +75,11 @@ The metabuilder selects `AttackSegment` records through `ScenarioView`; it can u
 simulator sensor views, driving components and candidate rollouts. Offline preparation runs once for
 that attack and returns artifacts. The online phase creates a fresh `AttackRuntime` for each run.
 Artifacts are passed explicitly to runtime construction and persistence.
+
+The online phase is the attack's behavior inside any closed-loop run. A candidate rollout started
+during offline preparation creates the candidate's `AttackRuntime` in the same way as an experiment
+run. Optimization can therefore happen offline, across queries and rollouts, and online, within
+one run.
 
 There is no framework reselection after optimization. Preserving a selection's visibility, geometry
 or placement assumptions is the attack author's responsibility. Framework structure, capability and
@@ -80,7 +90,7 @@ action checks still apply.
 Dataset providers remain stateless across simulator execution. CARLA provides a `CarlaRecipe`;
 preparation generates its `FrameData` sequence in a separate cache. NuRec and nuScenes provide
 recorded actor data. `Dataset.scenario_start()` returns `ScenarioStart` for a selected boundary. The
-simulator receives that record, never `AttackSegment` or selection scores.
+simulator receives that record, never `AttackSegment` or attack-specific metadata.
 
 A segment with N decisions requires N+1 supported timeline states. The final state is the state
 after the last decision; it is not an additional driving input. NuRec's decision timeline uses a
@@ -103,14 +113,14 @@ permit evaluation after closing the simulator.
 
 ## Isolation and comparison
 
-Preparation uses the first configured seed. Each scene's metabuilder sees the original environment
+Preparation uses runs.seeds[0]. Each scene's metabuilder sees the original environment
 unless it explicitly requests another environment. Experiment base settings are not implicitly added
-to selection requests.
+to selection requests. The offline context uses the merged runs.environment and attack environment.
 
 Every formal run and candidate rollout creates a new simulator runtime, AVStack history and
 AttackRuntime. Clean and attacked treatments in one comparison group share the selected origin,
-seed, decision count and deployment tick budget. Required role actors must exist under each seed; a
-missing role causes a recorded failure, not reselection.
+seed, decision count and deployment tick budget. Each attack checks the actor IDs in its custom
+metadata when using them; a missing actor causes a recorded failure, not reselection.
 
 A service session can reuse one simulator runtime for forward sensor scans without attack actions.
 Rendering with actions and candidate rollouts use independent worlds. Resource reservations last
@@ -152,11 +162,10 @@ and log-based visualization use this path.
 |---|---|
 | Metabuilder | `Attack.build_metadata`, the user's selection logic |
 | Metadata | All selected `AttackSegment` records for an attack |
-| Segment | A decision interval, role bindings and optional placement, score and user data |
+| Segment | scenario_id, a decision interval and attack-specific user_data |
 | Artifact | Offline output reused by subsequent runs |
 | Treatment | A named attack choice and environment override |
 | Comparison group | One attack, segment and seed, with its completed treatment logs |
-| Role | An attack-defined name bound to stable actor IDs |
 | Simulator | Reusable simulator configuration |
 | Simulator runtime | One live world created by a Simulator |
 | AVStack | A driving system accepting Observation and producing Control |

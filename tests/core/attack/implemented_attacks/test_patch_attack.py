@@ -2,13 +2,13 @@
 
 import numpy as np
 import pytest
+from dataclasses import replace
 
 from avsectester.attack import AttackSegment, OfflineContext
 from avsectester.attack.implemented_attacks.patch_attack import PatchAttack
 from avsectester.attack.implemented_attacks.patch_attack.offline import PatchOptimization
 from avsectester.attack.implemented_attacks.patch_attack.optimization_data import SessionDataSource
 from avsectester.attack.insertion import PatchCompositor
-from avsectester.attack.placement import AttachedPlacement
 from avsectester.closed_loop.datatypes import Control
 from avsectester.closed_loop.hooks import Hook, HookSet
 from avsectester.closed_loop.runner import ClosedLoopRunner, RunRequest
@@ -27,11 +27,16 @@ def test_world_mount_and_cleanup(monkeypatch):
          "lead": PrescribedMotion(constant_control=Control())})
     dataset = CarlaDataset({"scene": recipe})
     frames = dataset.frames("scene")
-    attack = PatchAttack(decision_steps=2, texture=np.full((3, 4, 4), [0, 255, 0, 255], np.uint8))
+    attack = PatchAttack(decision_steps=2, assets=np.full((3, 4, 4), [0, 255, 0, 255], np.uint8))
     artifacts = np.full((3, 4, 4), [255, 0, 0, 255], np.uint8)
-    segment = AttackSegment("scene", frames[0], frames[2], roles={"host": ("lead",)},
-        placement=AttachedPlacement("lead", "rear_center", (-.01, 0., 0.)),
-        user_data={"deployment": "world"})
+    segment = AttackSegment("scene", frames[0], frames[2], user_data={
+        "host": "lead", "placement": {"anchor": "rear_center", "offset_m": [-.01, 0., 0.]},
+        "deployment": "world",
+    })
+    with pytest.raises(ValueError, match="missing keys: host, placement. Required keys: host, placement"):
+        attack.create_runtime(replace(segment, user_data={}), artifacts)
+    with pytest.raises(ValueError, match="missing keys: placement. Required keys: host, placement"):
+        attack.create_runtime(replace(segment, user_data={"host": "lead"}), artifacts)
     deployed = []
 
     def inspect_native_panel(value, context):
@@ -57,6 +62,13 @@ def test_world_mount_and_cleanup(monkeypatch):
         ))
     assert log.status == "completed"
     assert deployed and all(not panel.is_alive for panel in deployed)
+    missing_host = replace(segment, user_data={**segment.user_data, "host": "absent"})
+    with CarlaSimulator({"rate": 10.}, settle_iters=0).create_runtime() as runtime:
+        with pytest.raises(ValueError, match="host 'absent'"):
+            ClosedLoopRunner().run(runtime, ConstantAVStack(), RunRequest(
+                1, start=dataset.scenario_start("scene", frames[0]),
+                attacks=(attack.create_runtime(missing_host, artifacts),),
+            ))
 
 
 def test_optimization_data_and_rendering():
@@ -70,7 +82,7 @@ def test_optimization_data_and_rendering():
     driver = DrivingAdapter(lambda seed: ConstantAVStack(),
                             scorers=[(descriptor, lambda avstack, image, target: image.mean())])
     attack = PatchAttack(decision_steps=2, max_windows=1,
-                        compositor=PatchCompositor(harmonize=False))
+                        compositor=PatchCompositor())
     with ClosedLoopServices(dataset, simulator, driver) as services:
         metadata = attack.build_metadata(services.scenario("scene", seed=0))
         with services.session(0) as session:

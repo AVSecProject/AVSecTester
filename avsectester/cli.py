@@ -24,8 +24,8 @@ _CONFIGURATION_ERRORS = (ValueError, TypeError, ImportError, AttributeError, Fil
 def _configuration(path: Path) -> ExperimentConfiguration:
     try:
         configuration = load_configuration(path)
-        if configuration.output is None:
-            raise ValueError("CLI experiments require an output directory")
+        if configuration.runs.output is None:
+            raise ValueError("CLI experiments require an output directory in runs.output")
         validate_configuration_environment(configuration)
         return configuration
     except _CONFIGURATION_ERRORS as error:
@@ -55,8 +55,8 @@ def _print_report(report: Any, result: ExperimentResult,
         typer.echo(notice)
     typer.echo(report.format_summary())
     for failure in result.failures:
-        assert configuration.output is not None
-        destination = run_directory(configuration.output, failure.attack_name, failure.segment_index,
+        assert configuration.runs.output is not None
+        destination = run_directory(configuration.runs.output, failure.attack_name, failure.segment_index,
                                     failure.seed, failure.treatment)
         typer.echo(f"Failed run: {destination}: {failure.error or failure.log.status}", err=True)
     for selection in result.selection_errors:
@@ -71,9 +71,9 @@ def _exit_code(result: ExperimentResult, report: Any) -> int:
 def _partial_report(configuration: ExperimentConfiguration, saved_this_call: bool) -> None:
     if not saved_this_call:
         return
-    assert configuration.output is not None
+    assert configuration.runs.output is not None
     try:
-        partial = ExperimentResult.load(configuration.output, configuration)
+        partial = ExperimentResult.load(configuration.runs.output, configuration)
         report = _evaluate_result(partial, configuration)
         _print_report(report, partial, configuration)
     except KeyboardInterrupt:
@@ -100,7 +100,7 @@ def run(
 ) -> None:
     """Prepare attacks, execute treatments and write the configured evaluation report."""
     configuration = _configuration(config)
-    output = configuration.output
+    output = configuration.runs.output
     assert output is not None
     if runs_directory(output).exists():
         _configuration_error(ValueError(f"Run output already exists: {runs_directory(output)}"))
@@ -151,7 +151,7 @@ def run(
         typer.echo(f"Evaluation error: {type(error).__name__}: {error}", err=True)
         typer.echo(f"Output directory: {output}")
         raise typer.Exit(1) from error
-    typer.echo(f"Output directory: {configuration.output}")
+    typer.echo(f"Output directory: {configuration.runs.output}")
     raise typer.Exit(_exit_code(result, report))
 
 
@@ -163,12 +163,12 @@ def evaluate(
 ) -> None:
     """Recompute evaluation from saved run logs without running a simulator or reading a dataset."""
     configuration = _configuration(config)
-    assert configuration.output is not None
-    if not (configuration.output / "prepared.json").is_file():
-        typer.echo(f"No saved experiment results found: {configuration.output / 'prepared.json'}", err=True)
+    assert configuration.runs.output is not None
+    if not (configuration.runs.output / "prepared.json").is_file():
+        typer.echo(f"No saved experiment results found: {configuration.runs.output / 'prepared.json'}", err=True)
         raise typer.Exit(1)
     try:
-        result = ExperimentResult.load(configuration.output, configuration)
+        result = ExperimentResult.load(configuration.runs.output, configuration)
     except ConfigurationMismatchError as error:
         _configuration_error(error)
     except KeyboardInterrupt:
@@ -183,13 +183,13 @@ def evaluate(
     except KeyboardInterrupt:
         typer.echo("Evaluation interrupted; report files may be incomplete. Saved run logs remain "
                    "available for evaluation.", err=True)
-        typer.echo(f"Output directory: {configuration.output}")
+        typer.echo(f"Output directory: {configuration.runs.output}")
         raise typer.Exit(130) from None
     except Exception as error:
         typer.echo(f"Evaluation error: {type(error).__name__}: {error}", err=True)
-        typer.echo(f"Output directory: {configuration.output}")
+        typer.echo(f"Output directory: {configuration.runs.output}")
         raise typer.Exit(1) from error
-    typer.echo(f"Output directory: {configuration.output}")
+    typer.echo(f"Output directory: {configuration.runs.output}")
     raise typer.Exit(_exit_code(result, report))
 
 

@@ -19,7 +19,7 @@ docker compose exec avsectester avsectester run configs/carla_phantom.yaml
 
 The phantom experiment selects segments, prepares its artifacts once, then runs clean and attacked
 treatments from each selected start. The terminal displays metric summaries. It also writes
-metadata, artifacts, Parquet logs and an evaluation report under the configured `output`. An attack
+metadata, artifacts, Parquet logs and an evaluation report under runs.output. An attack
 that changes nothing can still complete successfully: exit codes report execution, not scientific
 success.
 
@@ -44,20 +44,22 @@ docker compose cp avsectester:/app/results/carla_phantom ./results/carla_phantom
 ```
 
 To retain outputs directly on the host, use a suitable bind mount and configure its container path
-as `output`. See [Devices, mounts and rebuilds](installation.md#devices-mounts-and-rebuilds).
+as runs.output. See [Devices, mounts and rebuilds](installation.md#devices-mounts-and-rebuilds).
 
 ## Reuse preparation
 
-Set a fresh `output` directory in the experiment configuration and reference the previous saved
+Set a fresh runs.output directory in the experiment configuration and reference the previous saved
 preparation:
 
 ```bash
 avsectester run configs/carla_phantom.yaml --prepared results/carla_phantom
 ```
 
-The framework verifies dataset/scenario, simulator and attack compatibility before executing. It
-does not rerun the metabuilder or offline optimization. It refuses to reuse a preparation whose
-attack parameters were not describable and therefore could not be verified.
+The framework verifies dataset/scenario, simulator and attack compatibility, the first seed and
+the offline environments before executing. It does not rerun the metabuilder or offline
+optimization. It refuses to reuse a preparation whose attack parameters were not describable and
+therefore could not be verified. See
+[Saved preparation compatibility](../reference/configuration.md#saved-preparation-compatibility).
 
 ## Reevaluate saved runs
 
@@ -68,7 +70,7 @@ avsectester evaluate configs/carla_phantom.yaml
 ```
 
 The command recalculates metrics and plots from the configured output. No simulator or new inference
-runs are involved. Keep the configuration's output pointing to the results to analyze.
+runs are involved. Keep runs.output pointing to the results to analyze.
 
 ## Supplied configurations
 

@@ -5,7 +5,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from avsectester.attack import AttackSegment
+from avsectester.attack import AttackSegment, InsertObject
 from avsectester.attack.runtime import SensorAttackAction
 from avsectester.closed_loop.datatypes import Control, Observation
 from avsectester.closed_loop.frame_data import FrameDataCache
@@ -16,6 +16,7 @@ from avsectester.closed_loop.services import (
 )
 from avsectester.closed_loop.simulators.carla import CarlaSimulator
 from avsectester.datasets import Unavailable
+from avsectester.rendering import ObjectVisibility
 from tests.fakes import CarlaNativeBoundary, ConstantAVStack, MemoryDataset, MemorySimulator, MinimalAttack
 
 
@@ -42,29 +43,55 @@ def test_frame_data(carla_dataset, monkeypatch):
     np.testing.assert_allclose(reused.ego.pose, expected)
 
 
-def test_sensor_data():
+def test_scenario_map(nurec_dataset):
+    with ClosedLoopServices(nurec_dataset, MemorySimulator()) as services:
+        selected = services.scenario("scene", seed=0).scenario_map()
+        assert selected.lanes
+        assert list(selected.lanes) == list(nurec_dataset.scenario_map("scene").lanes)
+    with ClosedLoopServices(MemoryDataset(), MemorySimulator()) as services:
+        missing = services.scenario("scene", seed=0).scenario_map()
+        assert isinstance(missing, Unavailable)
+        assert missing.reason == "This dataset provides no map"
+
+
+def test_sensor_data(assert_camera_views_equal):
     data, simulator = MemoryDataset(), MemorySimulator()
     frames = data.frames("scene")
     environment = {"sensors": [{"type": "GaussianNoise", "camera": "front",
                                 "options": {"severity": .2}}]}
     with ClosedLoopServices(data, simulator) as services:
         with services.session(7) as session:
-            samples = [session.sensor_data(SensorRequest("scene", frame, ("front",), environment))
+            samples = [session.sensor_data(SensorRequest("scene", frame, ("front",), environment,
+                                                        views=True))
                        for frame in frames[1:4]]
             assert [sample.observation.frame for sample in samples] == [1, 2, 3]
         for sample in samples:
             with services.session(7) as independent:
                 replayed = independent.sensor_data(SensorRequest(
                     "scene", sample.frame, ("front",), environment))
+                assert replayed.views == {}
             np.testing.assert_array_equal(sample.observation.sensor_data["front"],
                                           replayed.observation.sensor_data["front"])
             assert sample.provenance["seed"] == 7
+            assert np.any(sample.views["front"].data != sample.observation.sensor_data["front"])
+            with services.session(7) as independent:
+                rendered = independent.render(RenderRequest("scene", sample.frame, "front", environment=environment))
+            assert_camera_views_equal(sample.views["front"], rendered.view)
         with services.session(7) as session:
+            request = SensorRequest("scene", frames[0], ("front",), views=True)
+            captured = session.sensor_data(request)
+            original = captured.views["front"].data.copy()
+            captured.views["front"].data[:] = 0
+            np.testing.assert_array_equal(session.sensor_data(request).views["front"].data, original)
             with pytest.raises(ValueError, match="Unavailable sensors"):
                 session.sensor_data(SensorRequest("scene", frames[0], ("missing",)))
+        simulator.can_render = False
+        with services.session(7) as session:
+            with pytest.raises(NotImplementedError, match="The simulator does not provide sensor views"):
+                session.sensor_data(SensorRequest("scene", frames[0], ("front",), views=True))
 
 
-def test_render():
+def test_render(make_object_in_front):
     class Fill(SensorAttackAction):
         sensor = "front"
 
@@ -81,8 +108,23 @@ def test_render():
         assert np.all(rendered.observation.sensor_data["front"] == 200)
         assert np.any(rendered.view.data != 200)
         assert rendered.view.native == {}
+        assert rendered.object_visibility == {}
         plain = session.render(RenderRequest("scene", frame, "front"))
         np.testing.assert_array_equal(plain.view.data, rendered.view.data)
+        asset, world_from_object = make_object_in_front(plain.view)
+        inserted = session.render(RenderRequest("scene", frame, "front", actions=(
+            InsertObject("sign", asset, world_from_object),
+        )))
+        assert np.any(inserted.view.data != plain.view.data)
+        assert inserted.view.depth is plain.view.depth is None
+        visibility = inserted.object_visibility["sign"]["front"]
+        assert isinstance(visibility, ObjectVisibility)
+        assert visibility.visible_pixels > 0
+        np.testing.assert_array_equal(inserted.observation.sensor_data["front"], inserted.view.data)
+        unmodified = session.render(RenderRequest("scene", frame, "front"))
+        np.testing.assert_array_equal(unmodified.view.data, plain.view.data)
+        assert unmodified.object_visibility == {}
+        assert inserted.object_visibility["sign"]["front"] == visibility
         with pytest.raises(ValueError, match="Unknown memory sensor: missing"):
             session.render(RenderRequest("scene", frame, "missing"))
 
@@ -144,6 +186,7 @@ def component_services():
 def test_evaluate(component_services):
     services, component, _ = component_services
     assert services.capabilities.rollout
+    assert services.capabilities.insert_objects
     with services.session(0) as session:
         assert session.components() == (component,)
         result = session.evaluate("driver", Observation(0., 0))

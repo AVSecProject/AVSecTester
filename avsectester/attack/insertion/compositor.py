@@ -12,7 +12,7 @@ from .assets import ResolvedInsertion
 from avsectester.geometry.cameras import Camera
 from avsectester.attack.insertion.types import VisibilityEvidence
 
-from avsectester.attack.insertion.harmonizers import Harmonizer, ClassicHarmonizer
+from avsectester.rendering import Harmonizer, blend_rgba, render_surfaces
 
 
 def warp_patch(frame_rgb: np.ndarray, dst_quad: np.ndarray, patch_rgba: np.ndarray):
@@ -27,8 +27,7 @@ def warp_patch(frame_rgb: np.ndarray, dst_quad: np.ndarray, patch_rgba: np.ndarr
     src = np.array([[0, 0], [pw, 0], [pw, ph], [0, ph]], dtype=np.float32)
     homography = cv2.getPerspectiveTransform(src, np.asarray(dst_quad, dtype=np.float32))
     warped = cv2.warpPerspective(patch_rgba, homography, (w, h), flags=cv2.INTER_LINEAR)
-    alpha = warped[:, :, 3:4].astype(np.float32) / 255.0
-    comp = frame_rgb.astype(np.float32) * (1 - alpha) + warped[:, :, :3].astype(np.float32) * alpha
+    comp = blend_rgba(frame_rgb, warped, warped[:, :, 3] > 0)
     mask = (warped[:, :, 3] > 127).astype(np.uint8) * 255
     return comp.astype(np.uint8), mask
 
@@ -38,23 +37,19 @@ class PatchCompositor:
 
     ``soften`` is the Gaussian sigma in pixels for resolved insertion rendering.
     It does not change geometry or expand visibility masks.
-    ``harmonize`` enables the selected harmonizer. When disabled, it is not called
-    or loaded, and the same geometry, alpha compositing and softening still apply.
+    ``harmonizer=None`` disables harmonization. Geometry, alpha compositing and
+    softening apply independently of the selected harmonizer.
     """
 
     def __init__(
         self, harmonizer: Harmonizer | None = None, *, soften: float = 0.0,
-        harmonize: bool = True,
     ) -> None:
-        if not isinstance(harmonize, bool):
-            raise TypeError("harmonize must be a bool")
         if not np.isfinite(soften) or soften < 0:
             raise ValueError("soften must be finite and nonnegative")
         if harmonizer is not None and not callable(harmonizer):
             raise TypeError("harmonizer must implement Harmonizer")
         self.soften = float(soften)
-        self.harmonize = harmonize
-        self.harmonizer = harmonizer if harmonizer is not None else ClassicHarmonizer()
+        self.harmonizer = harmonizer
 
 
 def render_resolved(
@@ -76,8 +71,6 @@ def render_resolved(
     Returns ``(RGB image, uint8 mask)``. Unknown visibility is an explicit error.
     Online insertion actions handle this evidence as a recorded no-op before compositing.
     """
-    from avsectester.attack.insertion.geometry import insertion_image
-
     shape = frame.shape[:2]
     if shape != (camera.height, camera.width):
         raise ValueError("Frame dimensions do not match camera calibration")
@@ -89,20 +82,12 @@ def render_resolved(
     if evidence is not None and getattr(evidence, "sampled_rgba", None) is not None:
         rgba, depth = evidence.sampled_rgba, evidence.target_depth
     else:
-        rgba, depth = insertion_image(resolved, camera, cam_from_world)
+        rgba, depth = render_surfaces(resolved.planes(), camera, cam_from_world)
     active = np.isfinite(depth)
     if evidence is not None:
         active &= evidence.visible_mask
-    if compositor is not None and compositor.soften > 0:
-        import cv2
-
-        # Appearance filtering never expands the geometric visibility mask.
-        rgba = cv2.GaussianBlur(rgba.astype(np.float32), (0, 0), compositor.soften)
-    output = frame.copy()
-    alpha = rgba[active, 3:4].astype(np.float32) / 255
-    output[active] = (frame[active] * (1 - alpha) + rgba[active, :3] * alpha).astype(np.uint8)
+    output = blend_rgba(frame, rgba, active,
+                        harmonizer=None if compositor is None else compositor.harmonizer,
+                        soften=0.0 if compositor is None else compositor.soften)
     union = active.astype(np.uint8) * 255
-    if compositor is not None and compositor.harmonize and active.any():
-        harmonized = compositor.harmonizer(output, union, frame)
-        output[active] = harmonized[active]
     return output, union

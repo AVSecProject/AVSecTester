@@ -14,13 +14,13 @@ simulator:
     config:
       dt: 0.1
     renderer:
-      type: NuRecRenderer
+      type: avsectester.closed_loop.simulators.nurec:NuRecRenderer
       options:
         endpoint: 127.0.0.1:50051
         cameras:
         - camera_front_wide_120fov
     dynamics:
-      type: TrajectoryFollower
+      type: avsectester.closed_loop.simulators.nurec:TrajectoryFollower
       options: {}
 avstack:
   type: AlpamayoAVStack
@@ -30,15 +30,6 @@ avstack:
     - camera_front_wide_120fov
     device: cuda:1
     output_frequency_hz: 10
-seeds:
-- 0
-recording:
-  sensor_ids:
-  - camera_front_wide_120fov
-  representations:
-  - model_input
-  every_n_steps: 1
-output: ../results/nurec_object_insertion
 attacks:
   object:
     type: ObjectInsertionAttack
@@ -46,22 +37,32 @@ attacks:
       decision_steps: 20
       max_segments: 1
       assets:
-        type: SignAsset
+        type: avsectester.rendering.signs:SignAsset
         options: {}
       sensor: camera_front_wide_120fov
       placement:
-        type: WorldPlacement
+        type: avsectester.attack.placement:WorldPlacement
         options:
           position_m:
           - 28.0
           - -3.0
           - 0.0
       orientation:
-        type: Orientation
+        type: avsectester.attack.placement:Orientation
         options:
           mode: face_ego
       placement_relative_to_ego_origin: true
-treatments:
-- name: clean
-- name: object
-  attack_name: object
+runs:
+  treatments:
+  - name: clean
+  - name: object
+    attack_name: object
+  seeds:
+  - 0
+  recording:
+    sensor_ids:
+    - camera_front_wide_120fov
+    representations:
+    - model_input
+    every_n_steps: 1
+  output: ../results/nurec_object_insertion

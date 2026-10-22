@@ -15,7 +15,7 @@ avsectester run configs/carla_phantom.yaml
 PhantomInjectionAttack is defined in
 avsectester.attack.implemented_attacks.phantom_injection_attack.attack. It takes explicit
 decision_steps and optional max_segments, target_xyz, object_type, score, extent, object_id and
-keep_tail. It needs no image asset or host role.
+keep_tail. It needs no image asset or selected host.
 
 ```yaml
 type: PhantomInjectionAttack

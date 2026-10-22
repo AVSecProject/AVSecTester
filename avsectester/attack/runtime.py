@@ -24,6 +24,8 @@ from avsectester.closed_loop.hooks import Hook, StageContext, UnsupportedStageEr
 
 if TYPE_CHECKING:
     from avsectester.closed_loop.simulator import SensorView, SimulatorRuntime
+    from avsectester.rendering import Harmonizer, ObjectAsset
+    import numpy as np
 
 
 @dataclass(frozen=True)
@@ -68,6 +70,10 @@ class OnlineContext:
 class AttackAction:
     """Base of everything the online phase applies. Subclasses state where it acts."""
 
+    def receipt_details(self) -> Mapping[str, Any]:
+        """Data-only evidence from the most recent application, included in its receipt."""
+        return {}
+
 
 class WorldAttackAction(AttackAction, ABC):
     """Change the simulated world. The simulator applies it; it is visible from the next capture.
@@ -84,6 +90,46 @@ class WorldAttackAction(AttackAction, ABC):
         """Change the world through the simulator's native access."""
 
 
+@dataclass
+class InsertObject(WorldAttackAction):
+    """Insert arbitrary textured geometry into all cameras through the simulator.
+
+    The object's origin is its bottom centre; ``world_from_object`` maps that
+    right-handed object frame (+X front, +Y left, +Z up) into the world.
+    Setup insertion is visible in the first capture; step insertion in the next.
+    """
+
+    object_id: str
+    asset: ObjectAsset
+    world_from_object: np.ndarray
+    harmonizer: Harmonizer | None = None
+
+    def __post_init__(self) -> None:
+        from avsectester.rendering import PlacedObject
+
+        placed = PlacedObject(self.object_id, self.asset, self.world_from_object, self.harmonizer)
+        self.world_from_object = placed.world_from_object
+
+    def apply(self, simulator_runtime: SimulatorRuntime, resources: ExitStack) -> None:
+        simulator_runtime.insert_object(self.object_id, self.asset, self.world_from_object,
+                                        harmonizer=self.harmonizer)
+
+        def remove_if_present() -> None:
+            try:
+                simulator_runtime.remove_object(self.object_id)
+            except KeyError:
+                # An explicit world action may have removed it before run cleanup.
+                pass
+
+        resources.callback(remove_if_present)
+
+    def receipt_details(self) -> Mapping[str, Any]:
+        return {
+            "object_id": self.object_id, "asset_category": self.asset.category,
+            "world_from_object": self.world_from_object.copy(),
+        }
+
+
 class SensorAttackAction(AttackAction, ABC):
     """Change one captured sensor's data before Vehicle I/O, in the current decision.
 
@@ -97,11 +143,6 @@ class SensorAttackAction(AttackAction, ABC):
     @abstractmethod
     def apply(self, data: Any, view: SensorView) -> Any:
         """Return the changed sensor data."""
-
-    def render_metadata(self) -> Mapping[str, Any]:
-        """Data-only evidence from the most recent application, included in its receipt."""
-        return {}
-
 
 @dataclass(frozen=True)
 class AVStackAttackAction(AttackAction):
@@ -332,8 +373,14 @@ class AttackDispatcher:
         self.receipts.append({
             "action_id": action_id, "step": step, "stage": stage, "sim_time": sim_time,
             "frame": frame, "category": _category(action), "target": _target(action),
-            "outcome": outcome, "reason": reason,
+            "outcome": outcome, "reason": reason, "details": {},
         })
+        if outcome == "applied":
+            self.receipts[-1]["details"] = dict(action.receipt_details())
+
+    def records(self) -> dict[str, list[dict[str, Any]]]:
+        """Data-only request and receipt records, ready for serialization."""
+        return {"requests": list(self.requests), "receipts": list(self.receipts)}
 
     def drain_records(self) -> dict[str, list[dict[str, Any]]]:
         """Transfer request/receipt records while keeping pending actions and unique IDs.
@@ -341,7 +388,7 @@ class AttackDispatcher:
         The runner drains after recording initialization, decisions and cleanup. Direct
         callers retain accumulating lists unless they explicitly request this transfer.
         """
-        result = {"requests": list(self.requests), "receipts": list(self.receipts)}
+        result = self.records()
         self.requests.clear()
         self.receipts.clear()
         return result
@@ -411,7 +458,6 @@ class AttackDispatcher:
         def receipt(action: SensorAttackAction) -> None:
             self._receipt(next(action_ids), action, context.step, "capture", context.sim_time,
                           context.frame)
-            self.receipts[-1]["render"] = dict(action.render_metadata())
 
         return chain_sensor_actions(observation, simulator_runtime,
                                     [action for _id, action, _attack in pending], on_applied=receipt)

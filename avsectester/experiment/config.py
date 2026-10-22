@@ -1,7 +1,7 @@
 """Construct experiment objects from Python mappings or YAML files.
 
 An experiment declares ``dataset``, ``simulator``, ``avstack``, named ``attacks`` and
-``treatments``. Attack and driving specifications can be inline mappings or YAML paths.
+``runs`` settings. Attack and driving specifications can be inline mappings or YAML paths.
 Every constructed object is selected by one key, ``type``, with keyword arguments in
 ``options``: a value without a colon names a built-in class (``type: NuRecSimulator``), and
 ``package.module:name`` names user code (``type: my_project.driving:MyAVStack``). Known
@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
-from dataclasses import dataclass, field, fields, is_dataclass
+from dataclasses import dataclass, field, fields, is_dataclass, replace
 import hashlib
 from importlib import import_module
 import math
@@ -71,54 +71,25 @@ class _ConfiguredAttacks(dict[str, Attack]):
 
 
 @dataclass(frozen=True)
-class ExperimentConfiguration:
-    """Reusable configuration. Each run creates its own driving and simulator instances."""
+class RunsConfiguration:
+    """What to run on the configured components, and how to record and handle those runs."""
 
-    dataset: Dataset
-    simulator: Simulator
-    avstack: DrivingAdapter
-    attacks: Mapping[str, Attack] = field(default_factory=dict)
     treatments: tuple[TreatmentConfiguration, ...] = ()
     seeds: tuple[int, ...] = (0,)
     decision_steps: int | None = None
     environment: Mapping[str, Any] = field(default_factory=dict)
     recording: RecordingPolicy = field(default_factory=RecordingPolicy)
-    evaluation: EvaluationConfiguration = field(default_factory=EvaluationConfiguration)
     output: Path | None = None
     strict: bool = False
-    hooks: HookConfiguration = None
-    # Loader-owned constructor descriptions. Keeping the source object alongside its options
-    # prevents dataclasses.replace(attacks=...) from reusing another attack's description.
-    _attack_specifications: Mapping[str, tuple[Attack, Mapping[str, Any]]] = field(
-        default_factory=dict, init=False, repr=False, compare=False,
-    )
 
     def __post_init__(self) -> None:
         from avsectester.closed_loop.environment import normalize_environment
 
-        for name, expected in (("dataset", Dataset), ("simulator", Simulator),
-                               ("avstack", DrivingAdapter), ("recording", RecordingPolicy),
-                               ("evaluation", EvaluationConfiguration)):
-            if not isinstance(getattr(self, name), expected):
-                raise TypeError(f"{name} must be {expected.__name__}")
-        specifications = self.attacks.specifications if isinstance(self.attacks, _ConfiguredAttacks) else {}
-        attacks = dict(self.attacks)
-        for name, attack in attacks.items():
-            _name(name, "Attack name")
-            if not isinstance(attack, Attack):
-                raise TypeError("An attack configuration must construct Attack")
         treatments = tuple(self.treatments)
-        if not treatments:
-            treatments = (TreatmentConfiguration("clean"),) + tuple(
-                TreatmentConfiguration(name, name) for name in attacks
-            )
         if any(not isinstance(item, TreatmentConfiguration) for item in treatments):
             raise TypeError("treatments must contain TreatmentConfiguration values")
         if len({item.name for item in treatments}) != len(treatments):
             raise ValueError("Treatment names must be unique")
-        for item in treatments:
-            if item.attack_name is not None and item.attack_name not in attacks:
-                raise ValueError(f"Treatment {item.name!r} references unknown attack {item.attack_name!r}")
         if not self.seeds or any(isinstance(seed, bool) or not isinstance(seed, int)
                                  or seed < 0 for seed in self.seeds):
             raise ValueError("seeds must be a nonempty sequence of nonnegative integers")
@@ -129,18 +100,60 @@ class ExperimentConfiguration:
             or self.decision_steps < 1
         ):
             raise ValueError("decision_steps must be a positive integer or None")
+        if not isinstance(self.recording, RecordingPolicy):
+            raise TypeError("recording must be RecordingPolicy")
         if not isinstance(self.strict, bool):
             raise TypeError("strict must be boolean")
-        if self.hooks is not None and not isinstance(self.hooks, HookSet) and not callable(self.hooks):
-            raise TypeError("hooks must be HookSet or a seed-to-HookSet factory")
-        configured_attacks = _ConfiguredAttacks(attacks, specifications)
-        object.__setattr__(self, "attacks", configured_attacks)
-        object.__setattr__(self, "_attack_specifications", configured_attacks.specifications)
         object.__setattr__(self, "treatments", treatments)
         object.__setattr__(self, "seeds", tuple(self.seeds))
         object.__setattr__(self, "environment", normalize_environment(self.environment))
         if self.output is not None:
             object.__setattr__(self, "output", Path(self.output))
+
+
+@dataclass(frozen=True)
+class ExperimentConfiguration:
+    """Reusable components and run settings; every run owns fresh driving and simulator state."""
+
+    dataset: Dataset
+    simulator: Simulator
+    avstack: DrivingAdapter
+    attacks: Mapping[str, Attack] = field(default_factory=dict)
+    hooks: HookConfiguration = None
+    evaluation: EvaluationConfiguration = field(default_factory=EvaluationConfiguration)
+    runs: RunsConfiguration = field(default_factory=RunsConfiguration)
+    # Loader-owned constructor descriptions. Keeping the source object alongside its options
+    # prevents dataclasses.replace(attacks=...) from reusing another attack's description.
+    _attack_specifications: Mapping[str, tuple[Attack, Mapping[str, Any]]] = field(
+        default_factory=dict, init=False, repr=False, compare=False,
+    )
+
+    def __post_init__(self) -> None:
+        for name, expected in (("dataset", Dataset), ("simulator", Simulator),
+                               ("avstack", DrivingAdapter), ("runs", RunsConfiguration),
+                               ("evaluation", EvaluationConfiguration)):
+            if not isinstance(getattr(self, name), expected):
+                raise TypeError(f"{name} must be {expected.__name__}")
+        specifications = self.attacks.specifications if isinstance(self.attacks, _ConfiguredAttacks) else {}
+        attacks = dict(self.attacks)
+        for name, attack in attacks.items():
+            _name(name, "Attack name")
+            if not isinstance(attack, Attack):
+                raise TypeError("An attack configuration must construct Attack")
+        treatments = self.runs.treatments
+        if not treatments:
+            treatments = (TreatmentConfiguration("clean"),) + tuple(
+                TreatmentConfiguration(name, name) for name in attacks
+            )
+            object.__setattr__(self, "runs", replace(self.runs, treatments=treatments))
+        for item in treatments:
+            if item.attack_name is not None and item.attack_name not in attacks:
+                raise ValueError(f"Treatment {item.name!r} references unknown attack {item.attack_name!r}")
+        if self.hooks is not None and not isinstance(self.hooks, HookSet) and not callable(self.hooks):
+            raise TypeError("hooks must be HookSet or a seed-to-HookSet factory")
+        configured_attacks = _ConfiguredAttacks(attacks, specifications)
+        object.__setattr__(self, "attacks", configured_attacks)
+        object.__setattr__(self, "_attack_specifications", configured_attacks.specifications)
 
     @property
     def configuration_summary(self) -> dict[str, Any]:
@@ -153,7 +166,11 @@ class ExperimentConfiguration:
         return self.describe_configuration()
 
     def describe_configuration(self, *, scenarios: Sequence[str] | None = None) -> dict[str, Any]:
-        """Describe preparation inputs; supplied scenario IDs avoid accessing a dataset."""
+        """Describe preparation inputs without requiring dataset access.
+
+        Supplied scenario IDs avoid enumerating the dataset. Run settings are intentionally
+        excluded from this compatibility summary.
+        """
         descriptions = {}
         for name, attack in self.attacks.items():
             supplied = self._attack_specifications.get(name)
@@ -200,8 +217,7 @@ def load_configuration(
         return config
     spec, directory = _mapping(config, Path.cwd(), "Experiment")
     _keys(spec, {
-        "dataset", "simulator", "avstack", "attacks", "treatments", "seeds", "decision_steps",
-        "environment", "recording", "evaluation", "output", "strict", "hooks",
+        "dataset", "simulator", "avstack", "attacks", "hooks", "evaluation", "runs",
     }, "experiment")
     for key in ("dataset", "simulator", "avstack"):
         if key not in spec:
@@ -216,32 +232,45 @@ def load_configuration(
         name: (attack, parameters) for name, (attack, parameters) in constructed_attacks.items()
         if parameters is not None
     }
-    treatments = _treatments(spec.get("treatments"))
-    recording = spec.get("recording", RecordingPolicy())
-    if isinstance(recording, Mapping):
-        _keys(recording, {"sensor_ids", "representations", "every_n_steps"}, "recording")
-        recording = RecordingPolicy(
-            sensor_ids=_sequence(recording.get("sensor_ids", ()), "recording.sensor_ids"),
-            representations=_sequence(recording.get("representations", ("model_input",)),
-                                      "recording.representations"),
-            every_n_steps=recording.get("every_n_steps", 1),
-        )
-    output = spec.get("output")
-    if output is not None:
-        output = _path(output, directory)
+    runs = _runs(spec.get("runs", {}), directory)
     configuration = ExperimentConfiguration(
         dataset=_construct(spec["dataset"], directory, Dataset),
         simulator=_construct(spec["simulator"], directory, Simulator),
         avstack=_avstack(spec["avstack"], directory),
-        attacks=_ConfiguredAttacks(attacks, attack_specifications), treatments=treatments,
-        seeds=_sequence(spec.get("seeds", (0,)), "seeds"),
-        decision_steps=spec.get("decision_steps"), environment=spec.get("environment", {}),
-        recording=recording, evaluation=_evaluation(spec.get("evaluation"), directory),
-        output=output, strict=spec.get("strict", False),
+        attacks=_ConfiguredAttacks(attacks, attack_specifications),
         hooks=_hooks(spec.get("hooks"), directory),
+        evaluation=_evaluation(spec.get("evaluation"), directory),
+        runs=runs,
     )
     _validate_metric_configuration(configuration)
     return configuration
+
+
+def _runs(value: Any, directory: Path) -> RunsConfiguration:
+    if isinstance(value, RunsConfiguration):
+        return value
+    if not isinstance(value, Mapping):
+        raise TypeError("runs must be a mapping or RunsConfiguration")
+    _keys(value, {"treatments", "seeds", "decision_steps", "environment", "recording", "output", "strict"},
+          "runs")
+    recording = value.get("recording", RecordingPolicy())
+    if isinstance(recording, Mapping):
+        _keys(recording, {"sensor_ids", "representations", "every_n_steps"}, "runs.recording")
+        recording = RecordingPolicy(
+            sensor_ids=_sequence(recording.get("sensor_ids", ()), "runs.recording.sensor_ids"),
+            representations=_sequence(recording.get("representations", ("model_input",)),
+                                      "runs.recording.representations"),
+            every_n_steps=recording.get("every_n_steps", 1),
+        )
+    output = value.get("output")
+    if output is not None:
+        output = _path(output, directory)
+    return RunsConfiguration(
+        treatments=_treatments(value.get("treatments")),
+        seeds=_sequence(value.get("seeds", (0,)), "runs.seeds"),
+        decision_steps=value.get("decision_steps"), environment=value.get("environment", {}),
+        recording=recording, output=output, strict=value.get("strict", False),
+    )
 
 
 def _attack_count(attacks: Mapping[str, Any]) -> None:
@@ -467,46 +496,20 @@ def _import(value: str) -> Callable[..., Any]:
 
 
 _BUILTINS = {
-    "SignAsset": "avsectester.attack.implemented_attacks.object_insertion_attack.assets:SignAsset",
-    "PersonAsset": "avsectester.attack.implemented_attacks.object_insertion_attack.assets:PersonAsset",
-    "TrafficLightAsset": "avsectester.attack.implemented_attacks.object_insertion_attack.assets:TrafficLightAsset",
-    "CheckerboardTexture": "avsectester.attack.insertion.assets:CheckerboardTexture",
-    "ImageTexture": "avsectester.attack.insertion.assets:ImageTexture",
-    "PatchCompositor": "avsectester.attack.insertion.compositor:PatchCompositor",
-    "ClassicHarmonizer": "avsectester.attack.insertion.harmonizers:ClassicHarmonizer",
-    "PCTNetHarmonizer": "avsectester.attack.insertion.harmonizers:PCTNetHarmonizer",
-    "PatchOptimization": "avsectester.attack.implemented_attacks.patch_attack.offline:PatchOptimization",
-    "PGD": "avsectester.attack.optimization.whitebox:PGD",
-    "NES": "avsectester.attack.optimization.blackbox:NES",
-    "AttachedPlacement": "avsectester.attack.placement:AttachedPlacement",
-    "WorldPlacement": "avsectester.attack.placement:WorldPlacement",
-    "Orientation": "avsectester.attack.placement:Orientation",
     "CameraForwardCollisionAVStack": "avsectester.closed_loop.avstacks.camera_forward_collision:CameraForwardCollisionAVStack",
     "DrivingMetrics": "avsectester.evaluation.metric:DrivingMetrics",
     "DetectionMetrics": "avsectester.evaluation.metric:DetectionMetrics",
     "TrajectoryDeviation": "avsectester.evaluation.metric:TrajectoryDeviation",
     "StopImpact": "avsectester.evaluation.metric:StopImpact",
-    "PlaneAsset": "avsectester.attack.insertion:PlaneAsset",
-    "PlaneSurface": "avsectester.attack.insertion:PlaneSurface",
-    "Insertion": "avsectester.attack.insertion:Insertion",
 
     "CarlaDataset": "avsectester.datasets.carla:CarlaDataset",
-    "CarlaRecipe": "avsectester.datasets.carla:CarlaRecipe",
-    "PrescribedMotion": "avsectester.datasets.carla:PrescribedMotion",
     "NuRecDataset": "avsectester.datasets.nurec:NuRecDataset",
     "NuScenesDataset": "avsectester.datasets.nuscenes:NuScenesDataset",
     "CarlaSimulator": "avsectester.closed_loop.simulators.carla:CarlaSimulator",
     "NuRecSimulator": "avsectester.closed_loop.simulators.nurec:NuRecSimulator",
     "RecordedReplaySimulator": "avsectester.closed_loop.simulators.recorded:RecordedReplaySimulator",
-    "StubRenderer": "avsectester.closed_loop.simulators.nurec:StubRenderer",
-    "NuRecRenderer": "avsectester.closed_loop.simulators.nurec:NuRecRenderer",
-    "KinematicBicycle": "avsectester.closed_loop.simulators.nurec:KinematicBicycle",
-    "TrajectoryFollower": "avsectester.closed_loop.simulators.nurec:TrajectoryFollower",
     "ModularAVStack": "avsectester.closed_loop.avstacks.modular:ModularAVStack",
     "AlpamayoAVStack": "avsectester.closed_loop.avstacks.alpamayo:AlpamayoAVStack",
-    "VehicleIO": "avsectester.closed_loop.vehicle_io:VehicleIO",
-    "Control": "avsectester.closed_loop.datatypes:Control",
-    "ActorState": "avsectester.datasets.base:ActorState",
 }
 
 
@@ -586,6 +589,7 @@ def _builtin(value: str) -> Callable[..., Any]:
 
 
 _PATH_KEYS = {
+    "map_directory",
     "face", "init_texture", "path", "directory", "checkpoint_path", "checkpoint", "dataroot", "usdz_path", "usdz_paths",
     "image", "texture", "asset_path", "image_path", "texture_path", "output_path", "model_path", "config_path",
 }

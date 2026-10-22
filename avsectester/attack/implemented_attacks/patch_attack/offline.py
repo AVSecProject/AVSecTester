@@ -65,7 +65,7 @@ class PatchOptimization:
         if self.init_texture is not None:
             if isinstance(self.algorithm, PGD):
                 raise ValueError("init_texture is supported only by NES, not PGD")
-            from avsectester.attack.insertion.assets import load_rgba_image
+            from avsectester.rendering.images import load_rgba_image
             object.__setattr__(self, "init_texture", load_rgba_image(self.init_texture))
 
 
@@ -114,7 +114,7 @@ def optimize_patch(attack, context, options: PatchOptimization):
     white_box = isinstance(algorithm, PGD)
     scorer_id = options.scorer_id or ("mmdet.rpn_objectness" if white_box else "mmdet.inference")
     seed = algorithm.seed
-    from avsectester.attack.insertion.assets import load_rgba_image
+    from avsectester.rendering.images import load_rgba_image
     import cv2
     alpha = cv2.resize(load_rgba_image(attack.assets)[..., 3],
                        (options.size[1], options.size[0]), interpolation=cv2.INTER_NEAREST)

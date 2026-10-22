@@ -10,7 +10,8 @@ from avsectester.attack.placement import (AttachedPlacement, Orientation, orient
                                         validate_attached_mount)
 from avsectester.attack.segments import validate_segment_options
 from avsectester.attack.insertion import Insertion, PlaneAsset
-from avsectester.attack.insertion.assets import CheckerboardTexture, ImageTexture, load_rgba_image
+from avsectester.attack.insertion.assets import CheckerboardTexture, ImageTexture
+from avsectester.rendering.images import load_rgba_image
 from avsectester.attack.insertion.compositor import PatchCompositor
 from .metabuilder import build_metadata
 from .offline import PatchOptimization, run_offline
@@ -28,7 +29,7 @@ class PatchAttack(Attack):
     mesh dimensions must match the declared plane dimensions.
     """
 
-    def __init__(self, *, decision_steps, texture=None, candidate_hosts=None, hosts_per_window=1,
+    def __init__(self, *, decision_steps, assets=None, candidate_hosts=None, hosts_per_window=1,
                  sensor="front", width_m=1.0, height_m=0.5, anchor="rear_center", offset_m=(-0.01, 0.0, 0.0),
                  orientation=None,
                  max_distance=None, min_visible_fraction=0.0, max_windows=None, keep_tail=False,
@@ -48,10 +49,10 @@ class PatchAttack(Attack):
             raise ValueError("hosts_per_window must be a positive integer")
         self.decision_steps, self.max_windows, self.keep_tail = decision_steps, max_windows, keep_tail
         self.candidate_hosts, self.hosts_per_window = candidate_hosts, hosts_per_window
-        self.texture = CheckerboardTexture() if texture is None else texture
-        if not isinstance(self.texture, (CheckerboardTexture, ImageTexture, np.ndarray)):
-            raise TypeError("texture must be CheckerboardTexture, ImageTexture or an RGBA array")
-        rgba = self.texture if isinstance(self.texture, np.ndarray) else self.texture.rgba()
+        assets = CheckerboardTexture() if assets is None else assets
+        if not isinstance(assets, (CheckerboardTexture, ImageTexture, np.ndarray)):
+            raise TypeError("assets must be CheckerboardTexture, ImageTexture or an RGBA array")
+        rgba = assets if isinstance(assets, np.ndarray) else assets.rgba()
         self.sensor, self.width_m, self.height_m = sensor, float(width_m), float(height_m)
         if not isinstance(sensor, str) or not sensor:
             raise ValueError("sensor must be a nonempty declared sensor name")
@@ -79,6 +80,15 @@ class PatchAttack(Attack):
     def placement_for(self, host):
         return AttachedPlacement(host, self.anchor, self.offset_m)
 
+    def selected_placement(self, segment):
+        """Rebuild this attack's host-local placement from its data-only metadata."""
+        required = ("host", "placement")
+        missing = [key for key in required if key not in segment.user_data]
+        if missing:
+            raise ValueError("PatchAttack metadata is missing keys: " + ", ".join(missing)
+                             + ". Required keys: " + ", ".join(required))
+        return AttachedPlacement(segment.user_data["host"], **segment.user_data["placement"])
+
     def insertion(self, artifacts, *, host=None, placement=None):
         if artifacts is None:
             raise ValueError("PatchAttack requires explicit artifacts")
@@ -101,8 +111,7 @@ class PatchAttack(Attack):
     def create_runtime(self, segment, artifacts):
         if artifacts is None:
             raise ValueError("PatchAttack requires explicit artifacts")
-        if not isinstance(segment.placement, AttachedPlacement):
-            raise ValueError("Selected patch metadata requires an attached placement")
+        self.selected_placement(segment)
         physical = segment.user_data.get("deployment") == "world"
         if physical and self.orientation.mode != "follow_host":
             raise ValueError("CARLA physical patches require follow_host orientation")

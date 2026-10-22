@@ -77,6 +77,26 @@ LinfImage projects an additive delta into an L-infinity ball and clips the resul
 1]. PatchPerturbation instead consumes sampling_grid and mask in each sample's context and exports
 an RGBA texture. A custom DataSource owns those image/geometry choices.
 
+Use the shared geometry helpers when a sample needs calibrated spatial evidence:
+
+```python
+from avsectester.geometry.projection import plane_sampling_grid, project_box, visible_plane_mask
+
+# Requires calibrated camera geometry, a plane's world-space corners and a host ActorPose.
+grid, mask = plane_sampling_grid(camera, cam_from_world, corners)
+target_box = project_box(camera, cam_from_world, host.transform, host.extent)
+visible = visible_plane_mask(camera, cam_from_world, depth, corners, tolerance_m=0.0002)
+```
+
+The grid follows grid_sample with align_corners=False and works for pinhole and f-theta cameras.
+The box helper accepts arbitrary world boxes; selecting the host and score region remains the
+attack's responsibility. The depth mask compares plane depth with aligned optical-axis scene depth.
+Pass visible_plane_mask(..., bounds=(x0, y0, x1, y1)) to compute rays only in a projected face's
+rectangle. Right and bottom are exclusive; the full-image output is False outside the clipped
+bounds. Omitting bounds computes the whole image. DepthVisibilityEstimator applies this bounded
+path for each face automatically.
+These helpers live in geometry/projection.py and take no simulator or attack object.
+
 For a driving model, replace the scorer with SessionScorer inside the attack's service session:
 
 ```python
@@ -102,16 +122,20 @@ and data sources belong to the user's attack, while the same algorithms remain r
 type: PatchAttack
 options:
   decision_steps: 20
-  texture: {type: ImageTexture, options: {image: ../assets/patch.png}}
+  assets:
+    type: avsectester.attack.insertion.assets:ImageTexture
+    options: {image: ../assets/patch.png}
   candidate_hosts: [lead]
   hosts_per_window: 1
   sensor: camera-0-0
   width_m: 1.0
   height_m: 0.5
   optimization:
-    type: PatchOptimization
+    type: avsectester.attack.implemented_attacks.patch_attack.offline:PatchOptimization
     options:
-      algorithm: {type: PGD, options: {steps: 10, step_size: 0.02, seed: 0}}
+      algorithm:
+        type: avsectester.attack.optimization.whitebox:PGD
+        options: {steps: 10, step_size: 0.02, seed: 0}
       scorer_id: detector
       size: [64, 64]
       device: cuda:0

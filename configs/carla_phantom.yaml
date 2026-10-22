@@ -5,7 +5,7 @@ dataset:
   options:
     recipes:
       town03_lead:
-        type: CarlaRecipe
+        type: avsectester.datasets.carla:CarlaRecipe
         options:
           time_step: 0.05
           decision_steps: 60
@@ -30,17 +30,17 @@ dataset:
             npcs: []
           motion:
             ego:
-              type: PrescribedMotion
+              type: avsectester.datasets.carla:PrescribedMotion
               options:
                 constant_control:
-                  type: Control
+                  type: avsectester.closed_loop.datatypes:Control
                   options:
                     throttle: 0.35
             lead:
-              type: PrescribedMotion
+              type: avsectester.datasets.carla:PrescribedMotion
               options:
                 constant_control:
-                  type: Control
+                  type: avsectester.closed_loop.datatypes:Control
                   options:
                     brake: 1.0
 simulator:
@@ -82,20 +82,6 @@ avstack:
           K_P: 0.4
           K_D: 0.0
           K_I: 0.05
-seeds:
-- 0
-evaluation:
-  metrics:
-  - type: DrivingMetrics
-  - type: DetectionMetrics
-  - type: StopImpact
-recording:
-  sensor_ids:
-  - lidar-0-0
-  representations:
-  - model_input
-  every_n_steps: 1
-output: ../results/carla_phantom
 attacks:
   phantom:
     type: PhantomInjectionAttack
@@ -112,12 +98,27 @@ attacks:
       - 4.0
       - 1.8
       - 1.6
-treatments:
-- name: clean
-- name: phantom
-  attack_name: phantom
-- name: phantom_rain
-  attack_name: phantom
-  environment:
-    world:
-      weather: SoftRainNoon
+evaluation:
+  metrics:
+  - type: DrivingMetrics
+  - type: DetectionMetrics
+  - type: StopImpact
+runs:
+  treatments:
+  - name: clean
+  - name: phantom
+    attack_name: phantom
+  - name: phantom_rain
+    attack_name: phantom
+    environment:
+      world:
+        weather: SoftRainNoon
+  seeds:
+  - 0
+  recording:
+    sensor_ids:
+    - lidar-0-0
+    representations:
+    - model_input
+    every_n_steps: 1
+  output: ../results/carla_phantom

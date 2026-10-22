@@ -65,8 +65,24 @@ docker compose exec avsectester avsectester run configs/carla_phantom.yaml
 
 The service image is avsectester:latest. Stop both services with docker compose down. Model
 inference uses the GPU number visible inside the container, configured in avstack options. Compose
-uses Epic rendering quality and 2 GB of shared memory for the CARLA server. Epic is the quality
-setting used for the verified Town03 experiment runs.
+uses Low rendering quality and 2 GB of shared memory for the CARLA server.
+
+### Export CARLA maps
+
+Semantic-map reads use local OpenDRIVE files. With CARLA running, export the towns needed by your
+recipes from an environment containing the carla client package:
+
+```bash
+docker compose exec avsectester python -m scripts.preparation.export_carla_maps \
+  --host 127.0.0.1 --port 2000 --town Town03 Town05 --output data/carla_maps
+```
+
+The script connects once and loads each requested town to write `<town>.xodr`. Set
+dataset.options.map_directory to ../data/carla_maps in a configuration under configs/; paths remain
+relative to that configuration file. Copy exports to the host if they must survive container
+recreation. Later map reads use carla.Map locally and require no server connection. Missing files,
+map_directory or the optional client package produce Unavailable with an export instruction rather
+than starting a simulator. See [Semantic maps](../guides/scenarios.md#semantic-maps).
 
 ### Devices, mounts and rebuilds
 
@@ -116,7 +132,7 @@ uv python install 3.11.13
 uv venv --python 3.11.13 --seed .venv
 source .venv/bin/activate
 pip install torch==2.1.0 --index-url https://download.pytorch.org/whl/cpu
-pip install -e ".[dev,test]" -c constraints.txt
+pip install -e ".[dev,test,nurec]" -c constraints.txt
 ```
 
 The package dependencies include PyYAML, NumPy, Typer, matplotlib, Pillow and pinned PyArrow.
@@ -127,14 +143,27 @@ not required just to import the plain interfaces. Constraints keep NumPy below 2
 |---|---|
 | avstack | Native avstack packages from the configured source submodules |
 | rendering | OpenCV and Pillow for attack rendering |
+| nurec | Pinned trimesh/Embree dependencies for NuRec mesh depth and its offline tests |
 | augment | Albumentations sensor transforms |
 | test | CPU test image, plot and augmentation dependencies |
 | dev | pytest, Ruff and mypy |
 
+NuRec defaults to mesh depth. Install the optional nurec extra whenever using that mode:
+
+```bash
+pip install -e ".[nurec]" -c constraints.txt
+```
+
+It pins trimesh==5.1.1 and embreex==4.4.0.post1. trimesh loads the archived PLY meshes; embreex
+provides CPU Embree ray queries and supplies wheels for Python 3.11 and 3.12.
+No GPU is required for mesh intersection. Without this extra, explicitly set the NuRec simulator's
+depth option to none; depth=mesh rejects a missing intersection dependency at construction.
+
 ## Local full installation
 
 Initialize the submodules and create Python 3.11 without installing CPU torch. Install the same
-compatible versions as the Docker environment:
+compatible versions as the Docker environment. The full offline test suite requires both test and
+nurec extras; dev supplies pytest, Ruff and mypy:
 
 ```bash
 pip install torch==2.1.0 torchvision==0.16.0 --index-url https://download.pytorch.org/whl/cu121
@@ -142,12 +171,12 @@ pip install mmcv==2.1.0 -f https://download.openmmlab.com/mmcv/dist/cu121/torch2
 pip install "mmengine>=0.10"
 pip install --no-deps mmdet==3.2.0 mmdet3d==1.4.0
 pip install "numpy==1.26.4" "scikit-image>=0.21,<0.24" "pandas>=2,<3" \
-  pycocotools terminaltables plyfile trimesh tensorboard networkx
+  pycocotools terminaltables plyfile tensorboard networkx
 pip install -e third_party/avstack-core -c constraints.txt
 pip install -e third_party/avstack-api --no-deps
 pip install -e third_party/lib-avstack-carla --no-deps
 pip install carla==0.9.16 pygame ipywidgets nuscenes-devkit lyft-dataset-sdk==0.0.8 -c constraints.txt
-pip install -e ".[dev,rendering,augment]" "setuptools==69.5.1" -c constraints.txt
+pip install -e ".[dev,test,rendering,augment,nurec]" "setuptools==69.5.1" -c constraints.txt
 ```
 
 Adapter metadata has sibling dependencies; no-deps avoids resolving them after the necessary imports
@@ -160,7 +189,7 @@ Use matching CARLA 0.9.16 client and server versions. This example dedicates phy
 
 ```bash
 docker run -d --name carla-avsec --gpus 'device=0' --net=host \
-  carlasim/carla:0.9.16 ./CarlaUE4.sh -RenderOffScreen -nosound -carla-rpc-port=2000 -quality-level=Epic
+  carlasim/carla:0.9.16 ./CarlaUE4.sh -RenderOffScreen -nosound -carla-rpc-port=2000 -quality-level=Low
 ```
 
 Every formal run can reload the world. Use a dedicated server and configure perception on another
@@ -192,7 +221,8 @@ that interpreter, retaining its existing model and numerical-library versions:
 ```bash
 uv pip install --python /path/to/alpasim/.venv/bin/python \
   "pyyaml>=6,<7" "typer>=0.15,<0.17" "matplotlib>=3.6" "Pillow>=10" \
-  "opencv-python-headless>=4.9,<4.12" "$arrow_requirement"
+  "opencv-python-headless>=4.9,<4.12" "$arrow_requirement" \
+  "trimesh==5.1.1" "embreex==4.4.0.post1"
 ```
 
 Do not apply the CARLA Python 3.11 constraints or replace the driver's Torch installation. Then run
@@ -213,11 +243,10 @@ The repository's Dockerfile supplies this environment as its nurec target:
 docker build --target nurec -t avsectester:nurec .
 ```
 
-That target installs the framework's CLI, report and Parquet dependencies into AlpaSim's Python 3.12
-environment while preserving AlpaSim's NumPy version. It imports AVSecTester from the mounted
-checkout rather than installing the Python 3.11 package. An older image built with only the
-additional PyArrow dependency needs rebuilding or the dependency installation above before it can
-run the CLI.
+That target installs the framework's CLI, report, Parquet and nurec-extra dependencies into
+AlpaSim's Python 3.12 environment while preserving AlpaSim's NumPy version. It imports AVSecTester
+from the mounted checkout rather than installing the Python 3.11 package. Older images containing
+only PyArrow need either rebuilding or the dependency installation above before CLI use.
 
 ### NuRec renderer and scenes
 
@@ -236,11 +265,18 @@ docker run -d --name nre --net=host --gpus 'device=0' -e HOME=/tmp \
   -v /path/to/nurec-scenes/sample_set/26.01_release:/mnt/nre-data \
   --entrypoint /app/internal/scripts/pycena/runtime/pycena_nrm_full \
   nvcr.io/nvidia/nre/nre-ga:26.04 serve-grpc --host=0.0.0.0 --port=50051 \
-  '--artifact-glob=/mnt/nre-data/**/*.usdz' --cache-size=2 --enable-editing-actors
+  '--artifact-glob=/mnt/nre-data/**/*.usdz' --cache-size=2 \
+  --enable-editing-actors --no-replicate-training-views
 ```
 
 NuRecRenderer accepts a served scene id or an unambiguous substring. NuRecDataset.scene_id(path)
 returns its native clip id. Set dataset time_step and simulator dt consistently.
+
+Both --enable-editing-actors and --no-replicate-training-views are required. Every render sends
+the poses of all currently supported recorded tracks, including those not moved by an attack;
+with editing enabled, the service renders only the dynamic actors present in that request.
+This interface can move reconstructed actors but cannot add new geometry or textures. See
+[NuRec actor movement](../guides/simulators.md#move-recorded-actors).
 
 ## Model weights and assets
 
@@ -273,13 +309,15 @@ pip install einops huggingface-hub -c constraints.txt
 ```
 
 PCTNetHarmonizer loads from the libcom checkout. Supply weights explicitly for reproducible loading.
-Without an explicit path, it uses libcom's pretrained_models/PCTNet.pth and can download missing
-weights from BCMIZB/Libcom_pretrained_models.
+Without an explicit path, it first uses libcom's pretrained_models/PCTNet.pth. If missing, the
+first harmonization call imports huggingface_hub lazily and downloads PCTNet.pth from
+BCMIZB/Libcom_pretrained_models with hf_hub_download into that directory. Construction alone does
+not load the model or fetch weights.
 
 <!-- runnable -->
 ```python
 from avsectester.attack.insertion.compositor import PatchCompositor
-from avsectester.attack.insertion.harmonizers import PCTNetHarmonizer
+from avsectester.rendering.harmonizers import PCTNetHarmonizer
 
 harmonizer = PCTNetHarmonizer(device=0, weights="/path/to/PCTNet.pth", strict=True)
 compositor = PatchCompositor(harmonizer)

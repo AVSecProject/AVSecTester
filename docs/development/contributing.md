@@ -27,13 +27,14 @@
 |---|---|
 | avsectester/datasets/ | Dataset records and CARLA/NuRec/nuScenes providers |
 | avsectester/attack/ | Attack, metadata, runtime/actions, placement and segment helper |
-| avsectester/attack/insertion/ | Reusable insertion rendering, visibility and harmonization |
+| avsectester/attack/insertion/ | Insertion assets, placement resolution, visibility and attack compositing |
 | avsectester/attack/optimization/ | Reusable offline optimization algorithms |
 | avsectester/attack/implemented_attacks/ | One folder per concrete Attack |
 | avsectester/closed_loop/ | Simulator/runtime, AVStack, runner, services, hooks and environment |
 | avsectester/closed_loop/simulators/ | CARLA, NuRec and recorded playback implementations |
 | avsectester/closed_loop/avstacks/ | Modular, Alpamayo, camera-forward-collision, native hooks, mmdet3d.py and model scorers |
 | avsectester/geometry/ | Canonical camera and pose geometry |
+| avsectester/rendering/ | Simulator-independent object descriptions, plane sampling and composition |
 | avsectester/experiment/ | Configuration, preparation, execution and persistence |
 | avsectester/runlog/ | Step/event records, codecs and Parquet persistence |
 | avsectester/evaluation/ | Log-only metrics, reports and visualization |
@@ -41,6 +42,10 @@
 | scripts/ | Preparation, validation and visualization tools |
 | tests/ | Core, avstack and explicitly selected live groups |
 | third_party/ | External source submodules |
+
+rendering/ never imports attack/ or closed_loop/. Simulator and attack implementations can both use
+it. Optional third-party dependencies load lazily inside functions. Keep shared plane texture
+sampling in rendering/surfaces.py rather than copying it into either consumer.
 
 ## Add a component
 
@@ -119,9 +124,8 @@ to a matching TODO item when one exists. Do not describe planned capabilities as
 Use English, sentence-case headings and roughly 100-character prose lines. Begin task pages with
 Audience, Outcome and Prerequisites. End guides with Next steps. Update links when headings move.
 Self-contained offline examples carry `<!-- runnable -->` immediately before the code fence and are
-checked by tests/core/test_docs.py: Python examples are executed; YAML examples must be either an
-`environment:` mapping, validated like an experiment environment, or a complete experiment
-configuration, loaded with load_configuration. Other runnable blocks fail the test.
+checked by tests/core/test_docs.py: Python examples are executed; runnable YAML is a complete
+experiment configuration loaded with load_configuration. Other runnable blocks fail the test.
 External-service examples state prerequisites; they must still parse against the current API. Do
 not make every example non-runnable to avoid verification.
 

@@ -5,7 +5,7 @@ import pytest
 
 from avsectester.attack import Attack, AttackSegment, OfflineContext
 from avsectester.attack.placement import (
-    AttachedPlacement, Orientation, WorldPlacement, orientation_from_spec, placement_from_spec,
+    Orientation, WorldPlacement, orientation_from_spec, placement_from_spec,
 )
 from avsectester.attack.segments import split_segments
 from avsectester.closed_loop.services import ClosedLoopServices
@@ -19,12 +19,12 @@ def test_attack(tmp_path):
             return split_segments(scenario.frames, lambda frame: True, decision_steps=2)
 
     attack = SelectionOnlyAttack()
-    attack.assets = {"image": np.full((2, 3, 4), 120, np.uint8)}
     with ClosedLoopServices(MemoryDataset(), MemorySimulator()) as services:
         metadata = attack.build_metadata(services.scenario("scene", seed=0))
         artifacts = attack.run_offline(OfflineContext(services, metadata))
     assert metadata and metadata[0].decision_steps == 2
-    np.testing.assert_array_equal(artifacts["image"], attack.assets["image"])
+    assert artifacts is None
+    artifacts = {"image": np.full((2, 3, 4), 120, np.uint8)}
     attack.save_artifacts(artifacts, tmp_path)
     restored = attack.load_artifacts(tmp_path)
     np.testing.assert_array_equal(restored["image"], artifacts["image"])
@@ -36,12 +36,9 @@ def test_attack(tmp_path):
 def test_attack_segment():
     start = FrameReference("scene", 2, "frame-2", .2)
     stop = FrameReference("scene", 5, "frame-5", .5)
-    segment = AttackSegment("scene", start, stop, roles={"host": ("lead",)},
-                           placement=AttachedPlacement("lead", "rear_center"),
-                           selection_score=.8, selection_rank=1, user_data={"label": "visible"})
+    segment = AttackSegment("scene", start, stop, user_data={"host": "lead", "label": "visible"})
     assert segment.decision_steps == 3
-    assert segment.roles == {"host": ("lead",)}
-    assert segment.selection_score == .8 and segment.selection_rank == 1
+    assert segment.user_data == {"host": "lead", "label": "visible"}
     with pytest.raises(ValueError, match="stop"):
         AttackSegment("scene", stop, start)
 
@@ -65,12 +62,12 @@ def test_split_segments():
 
 
 def test_placement_from_spec():
-    attached = placement_from_spec({"type": "AttachedPlacement", "options": {
+    attached = placement_from_spec({"type": "avsectester.attack.placement:AttachedPlacement", "options": {
         "host": "lead", "anchor": "rear_center", "offset_m": [-.1, 0., .2],
     }})
     np.testing.assert_allclose(attached.local_position((4., 2., 1.5)), [-2.1, 0., .2])
-    world = placement_from_spec({"type": "WorldPlacement", "options": {"position_m": [8., 1., 0.]}})
+    world = placement_from_spec({"type": "avsectester.attack.placement:WorldPlacement", "options": {"position_m": [8., 1., 0.]}})
     assert world == WorldPlacement((8., 1., 0.))
-    assert orientation_from_spec({"type": "Orientation", "options": {"mode": "face_ego"}}) == Orientation("face_ego")
+    assert orientation_from_spec({"type": "avsectester.attack.placement:Orientation", "options": {"mode": "face_ego"}}) == Orientation("face_ego")
     with pytest.raises(ValueError, match="Unknown placement"):
         placement_from_spec({"type": "UnknownPlacement"})

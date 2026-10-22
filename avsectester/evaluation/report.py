@@ -16,6 +16,7 @@ import shutil
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+from avsectester.datasets.base import Unavailable
 
 from .metric import (
     ComparisonGroup, DetectionMetrics, DrivingMetrics, Metric, PairMetric,
@@ -307,11 +308,14 @@ def evaluate(result: ExperimentResult, configuration: ExperimentConfiguration) -
     grouped: dict[tuple[str, int, int], list[Any]] = defaultdict(list)
     for run in result.runs:
         grouped[run.group].append(run)
-    order = {item.name: index for index, item in enumerate(configuration.treatments)}
+    order = {item.name: index for index, item in enumerate(configuration.runs.treatments)}
     for (attack_name, segment_index, seed), original in grouped.items():
         runs = sorted(original, key=lambda run: order[run.treatment])
         complete = {run.treatment: run.log for run in runs if run.log.status == "completed"}
-        group = ComparisonGroup(attack_name, runs[0].segment, seed, complete)
+        group = ComparisonGroup(
+            attack_name, runs[0].segment, seed, complete,
+            result.scenario_maps.get(runs[0].segment.scenario_id, Unavailable("No saved scenario map is available")),
+        )
         context = {"attack_name": attack_name, "segment_index": segment_index, "seed": seed}
         treatments = {
             run.treatment: {"status": run.log.status, "error": run.error,
@@ -373,8 +377,8 @@ def evaluate(result: ExperimentResult, configuration: ExperimentConfiguration) -
                               "treatments": treatments, "comparisons": comparisons})
     _aggregate(report)
     report.selections = [item.as_dict() for item in result.selections]
-    if configuration.output is not None:
-        destination = Path(configuration.output) / "evaluation"
+    if configuration.runs.output is not None:
+        destination = Path(configuration.runs.output) / "evaluation"
         # Save statuses first: plotting errors must not erase the useful partial report.
         report.save(destination)
         plots = destination / "plots"

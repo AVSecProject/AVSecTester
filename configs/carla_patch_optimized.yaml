@@ -5,7 +5,7 @@ dataset:
   options:
     recipes:
       town03_lead:
-        type: CarlaRecipe
+        type: avsectester.datasets.carla:CarlaRecipe
         options:
           time_step: 0.05
           decision_steps: 60
@@ -37,17 +37,17 @@ dataset:
             npcs: []
           motion:
             ego:
-              type: PrescribedMotion
+              type: avsectester.datasets.carla:PrescribedMotion
               options:
                 constant_control:
-                  type: Control
+                  type: avsectester.closed_loop.datatypes:Control
                   options:
                     throttle: 0.35
             lead:
-              type: PrescribedMotion
+              type: avsectester.datasets.carla:PrescribedMotion
               options:
                 constant_control:
-                  type: Control
+                  type: avsectester.closed_loop.datatypes:Control
                   options:
                     brake: 1.0
 simulator:
@@ -73,19 +73,6 @@ avstack:
     options:
       scorers:
       - mmdet.rpn_objectness
-seeds:
-- 0
-evaluation:
-  metrics:
-  - type: DrivingMetrics
-  - type: StopImpact
-recording:
-  sensor_ids:
-  - camera-0-0
-  representations:
-  - model_input
-  every_n_steps: 1
-output: ../results/carla_patch_optimized
 attacks:
   patch:
     type: PatchAttack
@@ -97,10 +84,10 @@ attacks:
       height_m: 0.7
       max_distance: 30.0
       optimization:
-        type: PatchOptimization
+        type: avsectester.attack.implemented_attacks.patch_attack.offline:PatchOptimization
         options:
           algorithm:
-            type: PGD
+            type: avsectester.attack.optimization.whitebox:PGD
             options:
               steps: 10
               step_size: 0.03
@@ -113,12 +100,26 @@ attacks:
       candidate_hosts:
       - lead
       hosts_per_window: 1
-      texture:
-        type: CheckerboardTexture
+      assets:
+        type: avsectester.attack.insertion.assets:CheckerboardTexture
         options:
           size: 256
           cells: 8
-treatments:
-- name: clean
-- name: patch
-  attack_name: patch
+evaluation:
+  metrics:
+  - type: DrivingMetrics
+  - type: StopImpact
+runs:
+  treatments:
+  - name: clean
+  - name: patch
+    attack_name: patch
+  seeds:
+  - 0
+  recording:
+    sensor_ids:
+    - camera-0-0
+    representations:
+    - model_input
+    every_n_steps: 1
+  output: ../results/carla_patch_optimized

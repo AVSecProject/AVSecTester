@@ -44,7 +44,7 @@ def make_log(make_actor):
 @pytest.fixture
 def segment():
     return AttackSegment("scene", FrameReference("scene", 0, 0, 0.),
-                         FrameReference("scene", 3, 3, .3), roles={"host": ("lead",)})
+                         FrameReference("scene", 3, 3, .3))
 
 
 @pytest.fixture

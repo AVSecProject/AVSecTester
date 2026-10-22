@@ -1,0 +1,167 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<OpenDRIVE>
+  <!-- Test map for signal references. All signals are declared on road 3 and referenced from
+       roads 1 and 2, which is not a physical layout; it exercises per-reference stop lines and
+       merged controlled lanes. "unbound" validates a lane that road 3 does not have, so it governs
+       no lane. "opposite" and "ambiguous" govern lanes of opposite directions on road 1. -->
+  <header revMajor="1" revMinor="4" name="ReferencedControls" version="1.00" date="2026-10-21" north="24" south="-4" east="20" west="0">
+    <geoReference>+proj=tmerc +lat_0=0 +lon_0=0 +k=1 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs</geoReference>
+  </header>
+  <road name="Road 1" length="20" id="1" junction="-1">
+    <link />
+    <type s="0" type="town">
+      <speed max="50" unit="km/h" />
+    </type>
+    <planView>
+      <geometry s="0" x="0" y="0" hdg="0" length="20">
+        <line />
+      </geometry>
+    </planView>
+    <elevationProfile>
+      <elevation s="0" a="0" b="0" c="0" d="0" />
+    </elevationProfile>
+    <lateralProfile />
+    <lanes>
+      <laneOffset s="0" a="0" b="0" c="0" d="0" />
+      <laneSection s="0">
+        <center>
+          <lane id="0" type="none" level="false">
+            <link />
+          </lane>
+        </center>
+        <right>
+          <lane id="-1" type="driving" level="false">
+            <link />
+            <width sOffset="0" a="3.5" b="0" c="0" d="0" />
+            <roadMark sOffset="0" type="solid" weight="standard" color="white" width="0.15" />
+          </lane>
+        </right>
+        <left>
+          <lane id="1" type="driving" level="false">
+            <link />
+            <width sOffset="0" a="3.5" b="0" c="0" d="0" />
+            <roadMark sOffset="0" type="solid" weight="standard" color="white" width="0.15" />
+          </lane>
+        </left>
+      </laneSection>
+    </lanes>
+    <objects />
+    <signals>
+      <signalReference id="stop-shared" s="6" t="0" orientation="+">
+        <validity fromLane="-1" toLane="-1" />
+      </signalReference>
+      <signalReference id="yield-shared" s="6" t="0" orientation="+">
+        <validity fromLane="-1" toLane="-1" />
+      </signalReference>
+      <signalReference id="light-shared" s="6" t="0" orientation="+">
+        <validity fromLane="-1" toLane="-1" />
+      </signalReference>
+      <signalReference id="opposite" s="8" t="0" orientation="+">
+        <validity fromLane="-1" toLane="1" />
+      </signalReference>
+      <signalReference id="ambiguous" s="8" t="0" orientation="+">
+        <validity fromLane="-1" toLane="1" />
+      </signalReference>
+    </signals>
+  </road>
+  <road name="Road 2" length="20" id="2" junction="-1">
+    <link />
+    <type s="0" type="town">
+      <speed max="50" unit="km/h" />
+    </type>
+    <planView>
+      <geometry s="0" x="0" y="10" hdg="0" length="20">
+        <line />
+      </geometry>
+    </planView>
+    <elevationProfile>
+      <elevation s="0" a="0" b="0" c="0" d="0" />
+    </elevationProfile>
+    <lateralProfile />
+    <lanes>
+      <laneOffset s="0" a="0" b="0" c="0" d="0" />
+      <laneSection s="0">
+        <center>
+          <lane id="0" type="none" level="false">
+            <link />
+          </lane>
+        </center>
+        <right>
+          <lane id="-1" type="driving" level="false">
+            <link />
+            <width sOffset="0" a="3.5" b="0" c="0" d="0" />
+            <roadMark sOffset="0" type="solid" weight="standard" color="white" width="0.15" />
+          </lane>
+        </right>
+      </laneSection>
+    </lanes>
+    <objects />
+    <signals>
+      <signalReference id="stop-shared" s="12" t="0" orientation="+">
+        <validity fromLane="-1" toLane="-1" />
+      </signalReference>
+      <signalReference id="yield-shared" s="12" t="0" orientation="+">
+        <validity fromLane="-1" toLane="-1" />
+      </signalReference>
+      <signalReference id="light-shared" s="12" t="0" orientation="+">
+        <validity fromLane="-1" toLane="-1" />
+      </signalReference>
+    </signals>
+  </road>
+  <road name="Road 3" length="20" id="3" junction="-1">
+    <link />
+    <type s="0" type="town">
+      <speed max="50" unit="km/h" />
+    </type>
+    <planView>
+      <geometry s="0" x="0" y="20" hdg="0" length="20">
+        <line />
+      </geometry>
+    </planView>
+    <elevationProfile>
+      <elevation s="0" a="0" b="0" c="0" d="0" />
+    </elevationProfile>
+    <lateralProfile />
+    <lanes>
+      <laneOffset s="0" a="0" b="0" c="0" d="0" />
+      <laneSection s="0">
+        <center>
+          <lane id="0" type="none" level="false">
+            <link />
+          </lane>
+        </center>
+        <right>
+          <lane id="-1" type="driving" level="false">
+            <link />
+            <width sOffset="0" a="3.5" b="0" c="0" d="0" />
+            <roadMark sOffset="0" type="solid" weight="standard" color="white" width="0.15" />
+          </lane>
+        </right>
+      </laneSection>
+    </lanes>
+    <objects />
+    <signals>
+      <signal s="10" t="-3.5" id="stop-shared" name="Stop" dynamic="no" orientation="+" zOffset="2" country="Germany" type="206" subtype="" value="0" unit="" height="0.6" width="0.6" hOffset=".37" pitch="0" roll="0">
+        <validity fromLane="-1" toLane="-1" />
+      </signal>
+      <signal s="10" t="-3.5" id="yield-shared" name="Yield" dynamic="no" orientation="+" zOffset="2" country="Germany" type="205" subtype="" value="0" unit="" height="0.6" width="0.6" hOffset="-.21" pitch="0" roll="0">
+        <validity fromLane="-1" toLane="-1" />
+      </signal>
+      <signal s="10" t="-3.5" id="light-shared" name="Light" dynamic="no" orientation="+" zOffset="2" country="Germany" type="1000001" subtype="" value="0" unit="" height="0.6" width="0.6" hOffset="1.1" pitch="0" roll="0">
+        <validity fromLane="-1" toLane="-1" />
+      </signal>
+      <signal s="10" t="-3.5" id="unbound" name="Stop" dynamic="no" orientation="-" zOffset="2" country="Germany" type="206" subtype="" value="0" unit="" height="0.6" width="0.6" hOffset=".4" pitch="0" roll="0">
+        <validity fromLane="1" toLane="1" />
+      </signal>
+      <signal s="10" t="-3.5" id="opposite" name="Stop" dynamic="no" orientation="+" zOffset="2" country="Germany" type="206" subtype="" value="0" unit="" height="0.6" width="0.6" hOffset=".6" pitch="0" roll="0">
+        <validity fromLane="1" toLane="1" />
+      </signal>
+      <signal s="10" t="-3.5" id="ambiguous" name="Stop" dynamic="no" orientation="+" zOffset="2" country="Germany" type="206" subtype="" value="0" unit="" height="0.6" width="0.6" hOffset=".6" pitch="0" roll="0">
+        <validity fromLane="-1" toLane="-1" />
+      </signal>
+      <signal s="10" t="-3.5" id="zero-height" name="SpeedLimit" dynamic="no" orientation="+" zOffset="2" country="Germany" type="274" subtype="" value="0" unit="" height="0" width="0.6" hOffset=".37" pitch="0" roll="0">
+        <validity fromLane="-1" toLane="-1" />
+      </signal>
+    </signals>
+  </road>
+</OpenDRIVE>

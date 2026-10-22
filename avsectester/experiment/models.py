@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal, TYPE_CHECKING
 
 from avsectester.attack import AttackSegment
+from avsectester.datasets.base import Unavailable
+from avsectester.maps import ScenarioMap
 from avsectester.runlog import RunLog
 
 if TYPE_CHECKING:
@@ -75,6 +77,28 @@ def saved_run_directories(root: Path) -> tuple[tuple[tuple[str, int, int, str], 
     return tuple(found)
 
 
+def validated_preparation(preparation: Any, attack_names: Any) -> Mapping[str, Any]:
+    """Check a preparation record: the first seed and each attack's offline environment."""
+    import json
+
+    if not isinstance(preparation, Mapping) or set(preparation) != {"seed", "offline_environments"}:
+        raise ValueError("A preparation record must contain seed and offline_environments")
+    seed = preparation["seed"]
+    if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
+        raise ValueError("A preparation seed must be a nonnegative integer")
+    environments = preparation["offline_environments"]
+    if not isinstance(environments, Mapping) or set(environments) != set(attack_names):
+        raise ValueError("A preparation record needs one offline environment for every attack")
+    for name, environment in environments.items():
+        if not isinstance(environment, Mapping) or set(environment) != {"world", "sensors"}:
+            raise ValueError(f"Offline environment for {name!r} must contain world and sensors")
+    try:
+        json.dumps(dict(preparation), allow_nan=False)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"A preparation record must contain only JSON data: {error}") from None
+    return preparation
+
+
 def treatment_applies(treatment: Any, attack_name: str) -> bool:
     """Whether a treatment runs on this attack's selected metadata."""
     return treatment.attack_name is None or treatment.attack_name == attack_name
@@ -94,6 +118,10 @@ class PreparedExperiment:
     metadata: Mapping[str, tuple[AttackSegment, ...]]
     artifacts: Mapping[str, Any]
     selections: tuple[SelectionDecision, ...] = ()
+    preparation: Mapping[str, Any] = field(kw_only=True)
+
+    def __post_init__(self) -> None:
+        validated_preparation(self.preparation, self.metadata)
 
     def save(self, directory: str | Path) -> Path:
         from .persistence import save_prepared
@@ -135,11 +163,16 @@ class TreatmentResult:
 
 @dataclass(frozen=True)
 class ExperimentResult:
-    """Completed and failed treatment runs, grouped with the preparation selection outcomes."""
+    """Treatment runs, selection outcomes and saved maps for scenarios with selected segments.
+
+    ``scenario_maps`` retains both semantic maps and explicit unavailable reasons. Loading and evaluation
+    use this snapshot rather than accessing dataset map services.
+    """
 
     runs: tuple[TreatmentResult, ...] = ()
     selections: tuple[SelectionDecision, ...] = ()
     notices: tuple[str, ...] = ()
+    scenario_maps: Mapping[str, ScenarioMap | Unavailable] = field(default_factory=dict)
 
     @property
     def groups(self) -> dict[tuple[str, int, int], dict[str, RunLog]]:
@@ -166,7 +199,7 @@ class ExperimentResult:
         Existing manifests must agree with both their directory and the prepared segment.
         """
         from .config import load_configuration
-        from .persistence import load_prepared_metadata
+        from .persistence import load_prepared_metadata, load_scenario_maps
 
         root = Path(output)
         config = load_configuration(configuration)
@@ -174,14 +207,14 @@ class ExperimentResult:
         expected: dict[tuple[str, int, int, str], tuple[AttackSegment, Path]] = {}
         for attack_name, segments in prepared.metadata.items():
             for index, segment in enumerate(segments):
-                for seed in config.seeds:
-                    for treatment_config in config.treatments:
+                for seed in config.runs.seeds:
+                    for treatment_config in config.runs.treatments:
                         if not treatment_applies(treatment_config, attack_name):
                             continue
                         key = attack_name, index, seed, treatment_config.name
                         expected[key] = segment, run_directory(root, *key)
         destination = runs_directory(root)
-        known_treatments = {item.name for item in config.treatments}
+        known_treatments = {item.name for item in config.runs.treatments}
         notices = tuple(
             f"Skipping saved run for removed treatment: {path}" if key[3] not in known_treatments
             else f"Skipping saved run that the saved preparation does not expect: {path}"
@@ -229,7 +262,11 @@ class ExperimentResult:
                 "treatment": treatment,
             }, status="incomplete", path=path)
             runs.append(TreatmentResult(name, index, segment, treatment, seed, missing, message))
-        return cls(tuple(runs), prepared.selections, notices)
+        scenario_ids = tuple(dict.fromkeys(
+            segment.scenario_id for segments in prepared.metadata.values() for segment in segments
+        ))
+        scenario_maps = load_scenario_maps(root, scenario_ids)
+        return cls(tuple(runs), prepared.selections, notices, scenario_maps)
 
 
 def _same_data(first: Any, second: Any) -> bool:

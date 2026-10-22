@@ -25,6 +25,9 @@ BODY_FROM_OPTICAL = np.array([
 ])
 """Map optical points (x right, y down, z forward) to body axes (x forward, y left, z up)."""
 
+NEAR_Z: float = 1e-5
+"""Minimum positive optical z used for geometric projection and ray intersections, in metres."""
+
 
 class Camera(Protocol):
     """Optical-frame lens contract. Coordinates address pixel centres at (x + .5, y + .5).
@@ -39,6 +42,14 @@ class Camera(Protocol):
     def project(self, pts_cam: np.ndarray) -> np.ndarray: ...
 
     def unproject(self, uv: np.ndarray) -> np.ndarray: ...
+
+
+def camera_ray_mask(camera: Camera, rays: np.ndarray) -> np.ndarray:
+    """Finite forward camera rays inside the lens's optional maximum viewing angle."""
+    valid = np.isfinite(rays).all(axis=1) & (rays[:, 2] > 0)
+    if hasattr(camera, "max_angle"):
+        valid &= np.arctan2(np.hypot(rays[:, 0], rays[:, 1]), rays[:, 2]) <= camera.max_angle
+    return valid
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -127,7 +138,7 @@ class FThetaCamera:
     def in_view(self, pts_cam: np.ndarray) -> np.ndarray:
         """Which camera-frame points project: in front of the camera and within ``max_angle``."""
         p = np.atleast_2d(np.asarray(pts_cam, dtype=np.float64))
-        return (p[:, 2] > 0) & (np.arctan2(np.hypot(p[:, 0], p[:, 1]), p[:, 2]) <= self.max_angle)
+        return camera_ray_mask(self, p)
 
     def unproject(self, uv: np.ndarray) -> np.ndarray:
         if not len(self.pixeldist_to_angle):

@@ -63,25 +63,3 @@ class ActorPose:
             if (extent < 0).any():
                 raise ValueError("extent must be nonnegative")
             object.__setattr__(self, "extent", tuple(float(v) for v in extent))
-
-
-def rotation_to_carla(rotation: ArrayLike) -> tuple[float, float, float]:
-    """Return native CARLA (pitch, yaw, roll) degrees from a native rotation matrix.
-
-    CARLA uses Rz(yaw) @ Ry(-pitch) @ Rx(-roll). At either pitch singularity,
-    choose roll=0 and retain the observable yaw/roll combination.
-    """
-    matrix = np.asarray(rotation, dtype=float)
-    if (matrix.shape != (3, 3) or not np.isfinite(matrix).all()
-            or not np.allclose(matrix.T @ matrix, np.eye(3), atol=1e-6)
-            or not np.isclose(np.linalg.det(matrix), 1.0, atol=1e-6)):
-        raise ValueError("rotation must be a finite right-handed 3x3 matrix")
-    pitch = np.arcsin(np.clip(matrix[2, 0], -1.0, 1.0))
-    if np.hypot(matrix[0, 0], matrix[1, 0]) > 1e-8:
-        yaw = np.arctan2(matrix[1, 0], matrix[0, 0])
-        roll = np.arctan2(-matrix[2, 1], matrix[2, 2])
-    else:
-        yaw = np.arctan2(-matrix[0, 1], matrix[1, 1])
-        roll = 0.0
-    angles = np.rad2deg([pitch, yaw, roll])
-    return float(angles[0]), float(angles[1]), float(angles[2])

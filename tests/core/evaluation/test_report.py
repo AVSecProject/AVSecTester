@@ -9,15 +9,17 @@ import numpy as np
 from avsectester.closed_loop.services import DrivingAdapter
 from avsectester.evaluation import DrivingMetrics, EvaluationConfiguration, Metric, TrajectoryDeviation, evaluate
 from avsectester.evaluation.report import plot_group
-from avsectester.experiment import ExperimentConfiguration, ExperimentResult, TreatmentConfiguration
+from avsectester.experiment import ExperimentConfiguration, ExperimentResult, RunsConfiguration, TreatmentConfiguration
 from avsectester.experiment.models import TreatmentResult
 from avsectester.runlog import RunLog
+from avsectester.maps import ScenarioMap
 from tests.fakes import ConstantAVStack, MemoryDataset, MemorySimulator, MinimalAttack
 
 
 class UserMetric(Metric):
     def evaluate(self, group):
-        return {name: {"seed": np.int64(group.seed)} for name in group.runs}
+        return {name: {"seed": np.int64(group.seed),
+                       "map_boundaries": len(group.scenario_map.road_boundaries)} for name in group.runs}
 
 
 class BrokenMetric(Metric):
@@ -29,10 +31,12 @@ def test_evaluate(tmp_path, segment, make_log):
     configuration = ExperimentConfiguration(
         MemoryDataset(), MemorySimulator(), DrivingAdapter(lambda seed: ConstantAVStack()),
         attacks={"attack": MinimalAttack()},
-        treatments=tuple(TreatmentConfiguration(name, None if name == "clean" else "attack")
-                         for name in ("clean", "attacked", "rain")),
         evaluation=EvaluationConfiguration((DrivingMetrics(), TrajectoryDeviation(), UserMetric(), BrokenMetric())),
-        output=tmp_path,
+        runs=RunsConfiguration(
+            treatments=tuple(TreatmentConfiguration(name, None if name == "clean" else "attack")
+                             for name in ("clean", "attacked", "rain")),
+            output=tmp_path,
+        ),
     )
     runs = []
     for index in (0, 1):
@@ -43,7 +47,10 @@ def test_evaluate(tmp_path, segment, make_log):
                        else make_log([speed + seed, speed + seed], shift=seed + index))
                 runs.append(TreatmentResult("attack", index, segment, name, seed, log,
                                             "sensor disconnected" if failed else None))
-    report = evaluate(ExperimentResult(tuple(runs)), configuration)
+    result = ExperimentResult(tuple(runs), scenario_maps={"scene": ScenarioMap(
+        road_boundaries=(np.array([[0., 1., 0.], [5., 1., 0.]]),),
+    )})
+    report = evaluate(result, configuration)
     assert len(report.groups) == 4
     assert [row["treatment"] for row in report.treatment_summaries] == ["clean", "attacked", "rain"]
     assert len(report.groups[0]["comparisons"]) == 3
@@ -65,13 +72,14 @@ def test_evaluate(tmp_path, segment, make_log):
     data = json.loads((tmp_path / "evaluation/report.json").read_text())
     assert data == report.as_dict() and data["statistics"]["std_ddof"] == 0
     assert data["groups"][0]["treatments"]["clean"]["metrics"]["UserMetric.seed"] == 0
+    assert data["groups"][0]["treatments"]["clean"]["metrics"]["UserMetric.map_boundaries"] == 1
     with (tmp_path / "evaluation/runs.csv").open() as stream:
         rows = list(csv.DictReader(stream))
     assert len(rows) == 12 and rows[-1]["status"] == "failed"
     assert "UserMetric.seed" in rows[0] and rows[0]["seed"] == "0"
     assert len(list((tmp_path / "evaluation/plots").glob("*.png"))) == 4
-    defaults = evaluate(ExperimentResult(tuple(runs)), replace(
-        configuration, output=None, evaluation=EvaluationConfiguration()))
+    defaults = evaluate(result, replace(
+        configuration, runs=replace(configuration.runs, output=None), evaluation=EvaluationConfiguration()))
     assert {metric["type"].split(":")[-1] for metric in defaults.metrics} >= {"DrivingMetrics", "TrajectoryDeviation"}
 
 

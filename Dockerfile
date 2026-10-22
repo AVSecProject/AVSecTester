@@ -48,10 +48,10 @@ ENV PATH="/opt/alpasim/.venv/bin:${PATH}"
 # report exporters. AlpaSim controls NumPy: keep its installed version rather than applying
 # the CARLA/OpenMMLab-specific NumPy<2 constraint from AVSecTester's Python 3.11 environment.
 COPY pyproject.toml /tmp/avsectester-pyproject.toml
-RUN python -c 'import re, tomllib, numpy; from pathlib import Path; deps = tomllib.load(open("/tmp/avsectester-pyproject.toml", "rb"))["project"]["dependencies"]; Path("/tmp/avsectester-requirements.txt").write_text("\n".join(d for d in deps if re.match(r"[A-Za-z0-9_.-]+", d).group(0).lower() != "numpy") + "\n"); Path("/tmp/alpasim-numpy.txt").write_text("numpy==" + numpy.__version__ + "\n")' \
+RUN python -c 'import re, tomllib, numpy; from pathlib import Path; project = tomllib.load(open("/tmp/avsectester-pyproject.toml", "rb"))["project"]; deps = project["dependencies"] + project["optional-dependencies"]["nurec"]; Path("/tmp/avsectester-requirements.txt").write_text("\n".join(d for d in deps if re.match(r"[A-Za-z0-9_.-]+", d).group(0).lower() != "numpy") + "\n"); Path("/tmp/alpasim-numpy.txt").write_text("numpy==" + numpy.__version__ + "\n")' \
  && uv pip install --python /opt/alpasim/.venv/bin/python \
       -r /tmp/avsectester-requirements.txt -c /tmp/alpasim-numpy.txt \
- && python -c "import typer, yaml, matplotlib, PIL, pyarrow.parquet, alpasim_grpc; from alpasim_driver.models.alpamayo1_5_model import Alpamayo15Model" \
+ && python -c "import typer, yaml, matplotlib, PIL, pyarrow.parquet, alpasim_grpc; from embreex.rtcore_scene import EmbreeScene; from embreex.mesh_construction import TriangleMesh; from alpasim_driver.models.alpamayo1_5_model import Alpamayo15Model" \
  && rm /tmp/avsectester-pyproject.toml /tmp/avsectester-requirements.txt /tmp/alpasim-numpy.txt
 
 WORKDIR /app
@@ -89,17 +89,17 @@ RUN python -m pip install --no-cache-dir mmcv==2.1.0 \
 # 3. mmdet 3.2.0 + mmdet3d 1.4.0 (all caps satisfied → no patch); keep numpy<2 (deps may pull numpy>=2)
 RUN python -m pip install --no-cache-dir --no-deps mmdet==3.2.0 mmdet3d==1.4.0 \
  && python -m pip install --no-cache-dir "numpy==1.26.4" "scikit-image>=0.21,<0.24" "pandas>=2,<3" \
-      pycocotools terminaltables plyfile trimesh tensorboard networkx
+      pycocotools terminaltables plyfile tensorboard networkx
 # 4. avstack packages + CARLA 0.9.16 client
 RUN python -m pip install --no-cache-dir -e third_party/avstack-core -c constraints.txt \
  && python -m pip install --no-cache-dir -e third_party/avstack-api  --no-deps \
  && python -m pip install --no-cache-dir -e third_party/lib-avstack-carla --no-deps \
  && python -m pip install --no-cache-dir "carla==0.9.16" pygame ipywidgets nuscenes-devkit lyft-dataset-sdk==0.0.8 -c constraints.txt
 # 5. AVSecTester (includes the pinned Parquet dependency from pyproject.toml;
-# plots are part of reports; augment adds optional Albumentations transforms).
+# plots are part of reports; augment adds Albumentations and nurec adds mesh ray casting).
 # Torch 2.1 and MMEngine use pkg_resources, which newer setuptools versions remove.
-RUN python -m pip install --no-cache-dir -e ".[dev,augment]" "setuptools==69.5.1" \
- && python -c "import pyarrow.parquet"
+RUN python -m pip install --no-cache-dir -e ".[dev,augment,nurec]" "setuptools==69.5.1" \
+ && python -c "import pyarrow.parquet; from embreex.rtcore_scene import EmbreeScene; from embreex.mesh_construction import TriangleMesh"
 
 # default to a shell — run attacks/recordings explicitly (see docs/getting-started/installation.md#docker / docker-compose.yml)
 CMD ["bash"]

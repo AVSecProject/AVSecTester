@@ -29,7 +29,8 @@ class VisibilityEvidence:
     ``reference_pixels`` includes the full off-image alpha silhouette. Masks and
     ``target_depth`` are cropped to the image. Depth is optical-axis Z in metres.
     ``sampled_rgba`` optionally carries the exact surface samples used by the estimator,
-    so compositing can reuse them. Custom providers may omit it.
+    so compositing can reuse them. Custom providers may omit it. ``ignored_occluders`` lists
+    actors skipped by cuboid visibility because their bounding-box extents are unknown.
     """
 
     visibility: Visibility | None
@@ -39,3 +40,4 @@ class VisibilityEvidence:
     reference_pixels: int
     reason: str = ""
     sampled_rgba: np.ndarray | None = None
+    ignored_occluders: tuple[str, ...] = ()

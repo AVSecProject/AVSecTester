@@ -8,6 +8,9 @@ import pytest
 
 @pytest.fixture
 def nurec_usdz_path(tmp_path):
+    import pyarrow as arrow
+    import pyarrow.parquet as parquet
+
     camera = "camera_front_wide_120fov@scene"
     transforms = []
     for position in range(3):
@@ -17,7 +20,8 @@ def nurec_usdz_path(tmp_path):
     rig = {
         "camera_calibrations": {camera: {
             "camera_model": {"parameters": {"resolution": [16, 12],
-                "principal_point": [8, 6], "angle_to_pixeldist_poly": [0, 8], "max_angle": 1.5}},
+                "principal_point": [8, 6], "angle_to_pixeldist_poly": [0, 8],
+                "pixeldist_to_angle_poly": [0, .125], "max_angle": 1.5}},
             "T_sensor_rig": [[0, 0, 1, 0], [-1, 0, 0, 0], [0, -1, 0, 1.5], [0, 0, 0, 1]],
         }},
         "rig_trajectories": [{"sequence_id": "scene", "rig_bbox": {
@@ -32,10 +36,136 @@ def nurec_usdz_path(tmp_path):
                          [[5, 2, 1, 0, 0, 0, 1], [5, 2, 1, 0, 0, 0, 1]]]},
         "cuboidtracks_data": {"cuboids_dims": [[4, 2, 2], [1, 1, 2]]}}}
     path = tmp_path / "scene.usdz"
+    def points(coordinates):
+        return [dict(zip(("x", "y", "z"), point)) for point in coordinates]
+
+    def lane(center_y, vehicle_types, use_types=(), speed_limit="25"):
+        return {"left_rail": points([(-2, center_y + 2, 0), (4, center_y + 2, 0)]),
+                "right_rail": points([(-2, center_y - 2, 0), (4, center_y - 2, 0)]),
+                "speed_limit": speed_limit, "vehicle_types": vehicle_types, "use_types": use_types}
+
+    def control(category, y):
+        return {"center": {"x": 3., "y": y, "z": 1.5},
+                "dimensions": {"x": .1, "y": .8, "z": 1.2},
+                "orientation": {"x": 0., "y": 0., "z": 1., "w": 0.}, "category": category}
+
+    layers = {
+        "lane": [("lane", lane(0, ["CAR", "BICYCLE"])),
+                 ("signal-lane", lane(6, ["CAR"])), ("bike-lane", lane(-6, ["BICYCLE"], speed_limit="0")),
+                 ("ambiguous-lane", lane(12, ["CAR"])),
+                 ("shoulder-lane", lane(18, ["CAR"], ["SHOULDER_LANE"])),
+                 ("parking-lane", lane(-12, ["CAR"], ["PARKING_LANE"])),
+                 ("bus-lane", lane(-18, ["BUS"]))],
+        "traffic_sign": [("stop", control("TRAFFIC_SIGN_REGULATORY_R1_STOP", 2.)),
+            ("no-stopping", control("TRAFFIC_SIGN_REGULATORY_R8_NO_STOPPING_ANYTIME", -10.)),
+            ("yield", control("TRAFFIC_SIGN_REGULATORY_R1_YIELD", -4.)),
+            ("speed-limit", control("TRAFFIC_SIGN_REGULATORY_R2_SPEED_LIMIT", 2.))],
+        "traffic_light": [("light", control("traffic_light", 8.)),
+                          ("second-light", control("traffic_light", 14.))],
+        "wait_line": [("stop-line", {"category": "STOP", "is_implicit": False,
+            "location": points([(3, -2, 0), (3, 2, 0)])}),
+            ("signal-line", {"category": "STOP", "is_implicit": False,
+                             "location": points([(3, 4, 0), (3, 8, 0)])}),
+            ("yield-line", {"category": "STOP", "is_implicit": False,
+                            "location": points([(3, -8, 0), (3, -4, 0)])}),
+            ("ambiguous-line", {"category": "STOP", "is_implicit": False,
+                                "location": points([(3, 10, 0), (3, 14, 0)])}),
+            ("unknown-line", {"category": "STOP", "is_implicit": False,
+                              "location": points([(3, -14, 0), (3, -10, 0)])}),
+            ("unbound-line", {"category": "STOP", "is_implicit": False,
+                              "location": points([(2, -14, 0), (2, -10, 0)])}),
+            ("implicit-line", {"category": "STOP", "is_implicit": True,
+                               "location": points([(2, -2, 0), (2, 2, 0)])}),
+            ("unspecified-line", {"category": "STOP", "is_implicit": None,
+                                  "location": points([(1, -2, 0), (1, 2, 0)])})],
+        "drivable_space": [(None, {"location": None})],
+    }
+    associations = [
+        {"key": {"map_id": "lane", "kind": "SIGN_TO_LANE"},
+         "association": {"subjects": ["lane"], "objects": ["stop"]}},
+        {"key": {"map_id": "lane", "kind": "WAIT_LINE_TO_LANE"},
+         "association": {"subjects": ["lane"], "objects": ["stop-line"]}},
+        {"key": {"map_id": "stop-line", "kind": "WAIT_LINE_TO_SIGN"},
+         "association": {"subjects": ["stop-line"], "objects": ["stop"]}},
+        {"key": {"map_id": "lane", "kind": "RIGHT_LANE"},
+         "association": {"subjects": ["lane"], "objects": ["-1"]}},
+    ]
+    for kind, lane_id, other_id in (
+        ("SIGN_TO_LANE", "parking-lane", "no-stopping"), ("SIGN_TO_LANE", "lane", "speed-limit"),
+        ("SIGN_TO_LANE", "bike-lane", "yield"), ("LIGHT_TO_LANE", "signal-lane", "light"),
+        ("LIGHT_TO_LANE", "ambiguous-lane", "light"),
+        ("LIGHT_TO_LANE", "ambiguous-lane", "second-light"),
+        ("WAIT_LINE_TO_LANE", "signal-lane", "signal-line"),
+        ("WAIT_LINE_TO_LANE", "bike-lane", "yield-line"),
+        ("WAIT_LINE_TO_LANE", "ambiguous-lane", "ambiguous-line"),
+        ("WAIT_LINE_TO_LANE", "parking-lane", "unknown-line"),
+        ("WAIT_LINE_TO_LANE", "lane", "implicit-line"),
+        ("WAIT_LINE_TO_LANE", "lane", "unspecified-line"),
+    ):
+        associations.append({"key": {"map_id": lane_id, "kind": kind},
+                             "association": {"subjects": [lane_id], "objects": [other_id]}})
+
+    def mesh_ply(vertices, faces):
+        header = (f"ply\nformat ascii 1.0\nelement vertex {len(vertices)}\n"
+                  "property float x\nproperty float y\nproperty float z\n"
+                  f"element face {len(faces)}\nproperty list uchar int vertex_indices\nend_header\n")
+        return header + "\n".join(" ".join(map(str, point)) for point in vertices) + "\n" + "\n".join(
+            "3 " + " ".join(map(str, face)) for face in faces) + "\n"
+
+    cube_vertices = [(4, -1, 0), (6, -1, 0), (6, 1, 0), (4, 1, 0),
+                     (4, -1, 2), (6, -1, 2), (6, 1, 2), (4, 1, 2)]
+    cube_faces = [(0, 2, 1), (0, 3, 2), (4, 5, 6), (4, 6, 7),
+                  (0, 1, 5), (0, 5, 4), (1, 2, 6), (1, 6, 5),
+                  (2, 3, 7), (2, 7, 6), (3, 0, 4), (3, 4, 7)]
+    ground_vertices = [(-20, -20, 0), (20, -20, 0), (20, 20, 0), (-20, 20, 0)]
     with zipfile.ZipFile(path, "w") as archive:
         archive.writestr("rig_trajectories.json", json.dumps(rig))
         archive.writestr("sequence_tracks.json", json.dumps(tracks))
+        archive.writestr("mesh.ply", mesh_ply(cube_vertices, cube_faces))
+        archive.writestr("mesh_ground.ply", mesh_ply(ground_vertices, [(0, 1, 2), (0, 2, 3)]))
+        archive.writestr("map.xodr", '<OpenDRIVE><road><type><speed max="25" unit="mph"/>'
+                        '</type></road></OpenDRIVE>')
+        for layer, values in layers.items():
+            rows = [{"key": {"clip_id": "scene", "label_class_id": "test", "map_id": identity},
+                     layer: data, "version": 0} for identity, data in values]
+            output = arrow.BufferOutputStream()
+            parquet.write_table(arrow.Table.from_pylist(rows), output)
+            archive.writestr(f"clipgt/{layer}.parquet", output.getvalue().to_pybytes())
+        output = arrow.BufferOutputStream()
+        parquet.write_table(arrow.Table.from_pylist(associations), output)
+        archive.writestr("clipgt/association.parquet", output.getvalue().to_pybytes())
     return str(path)
+
+
+@pytest.fixture
+def nurec_map_variants(nurec_usdz_path, tmp_path):
+    """The same reconstruction with a light placeholder or only implicit wait lines."""
+    import io
+    import pyarrow as arrow
+    import pyarrow.parquet as parquet
+
+    with zipfile.ZipFile(nurec_usdz_path) as archive:
+        line_rows = parquet.read_table(io.BytesIO(archive.read("clipgt/wait_line.parquet"))).to_pylist()
+    for row in line_rows:
+        row["wait_line"]["is_implicit"] = True
+    replacements = {
+        "placeholder_lights": ("traffic_light", [{"key": {"map_id": None}, "traffic_light": {
+            "center": None, "dimensions": None, "orientation": None, "category": None}}]),
+        "implicit_only_lines": ("wait_line", line_rows),
+    }
+    paths = {}
+    for variant, (layer, rows) in replacements.items():
+        path = tmp_path / f"{variant}.usdz"
+        member_name = f"clipgt/{layer}.parquet"
+        output = arrow.BufferOutputStream()
+        parquet.write_table(arrow.Table.from_pylist(rows), output)
+        with zipfile.ZipFile(nurec_usdz_path) as source, zipfile.ZipFile(path, "w") as destination:
+            for member in source.infolist():
+                if member.filename != member_name:
+                    destination.writestr(member.filename, source.read(member.filename))
+            destination.writestr(member_name, output.getvalue().to_pybytes())
+        paths[variant] = str(path)
+    return paths
 
 
 @pytest.fixture

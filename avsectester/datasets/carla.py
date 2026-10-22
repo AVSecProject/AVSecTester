@@ -6,12 +6,17 @@ import math
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 from avsectester.closed_loop.datatypes import Control
 
 from .base import (
     ActorState, Dataset, FrameReference, ScenarioDescriptor, ScenarioStart, Unavailable, nonnegative,
 )
+
+if TYPE_CHECKING:
+    from avsectester.maps import ScenarioMap
 
 
 @dataclass(frozen=True)
@@ -112,8 +117,9 @@ class CarlaRecipe:
 
 
 class CarlaDataset(Dataset):
-    def __init__(self, recipes: Mapping[str, CarlaRecipe]) -> None:
+    def __init__(self, recipes: Mapping[str, CarlaRecipe], map_directory: str | Path | None = None) -> None:
         self._recipes = deepcopy(dict(recipes))
+        self.map_directory = Path(map_directory) if map_directory is not None else None
 
     def scenarios(self):
         for identity in self._recipes:
@@ -130,6 +136,24 @@ class CarlaDataset(Dataset):
 
     def native(self, scenario_id):
         return deepcopy(self._recipes[scenario_id])
+
+    def scenario_map(self, scenario_id: str) -> ScenarioMap | Unavailable:
+        """Read an exported OpenDRIVE map without connecting to a CARLA server."""
+        from avsectester.maps import read_opendrive
+
+        recipe = self._recipes[scenario_id]
+        map_name = recipe.scenario.get("client", {}).get("map_name")
+        usage = ("Export maps with python scripts/preparation/export_carla_maps.py "
+                 "--town Town03 --output <directory>, then set CarlaDataset.map_directory")
+        if not map_name:
+            return Unavailable(f"The CARLA recipe has no map_name. {usage}")
+        if self.map_directory is None:
+            return Unavailable(f"No CARLA map_directory was supplied. {usage}")
+        name = str(map_name).rsplit("/", 1)[-1]
+        path = self.map_directory / f"{name}.xodr"
+        if not path.is_file():
+            return Unavailable(f"CARLA map file not found: {path}. {usage}")
+        return read_opendrive(path.read_text(encoding="utf-8"), name=name)
 
     def scenario_start(self, scenario_id, frame):
         self.checked_frame(scenario_id, frame)

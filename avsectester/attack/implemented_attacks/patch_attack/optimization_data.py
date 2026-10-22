@@ -10,70 +10,7 @@ import numpy as np
 from avsectester.closed_loop.datatypes import read_camera_rgb
 from avsectester.closed_loop.services import RenderRequest
 from avsectester.attack.optimization import AdversarialSample, DataSource, TargetSpec
-
-
-def plane_sampling_grid(view, corners):
-    """Return an image-sized texture grid and geometric mask for a calibrated plane.
-
-    Pixel centres are unprojected through the actual lens, then intersected with the plane.
-    Grid coordinates use ``grid_sample(align_corners=False)``: texture edges are -1/+1.
-    This works for both pinhole and f-theta cameras; four projected corners cannot describe
-    the curved footprint of a wide-angle lens.
-    """
-    from avsectester.attack.insertion.geometry import NEAR_Z, camera_ray_mask
-    from avsectester.geometry.cameras import transform
-
-    corners = transform(view.cam_from_world, np.asarray(corners, dtype=float))
-    origin = corners[0]
-    u, v = corners[1] - origin, corners[3] - origin
-    normal = np.cross(u, v)
-    basis = np.column_stack((u, v))
-    gram = basis.T @ basis
-    if not np.isfinite(corners).all() or np.linalg.det(gram) <= 1e-18:
-        raise ValueError("Optimization needs a finite nondegenerate patch plane")
-    height, width = view.data.shape[:2]
-    if (height, width) != (view.camera.height, view.camera.width):
-        raise ValueError("Optimization camera calibration and image dimensions differ")
-    ys, xs = np.meshgrid(np.arange(height), np.arange(width), indexing="ij")
-    pixels = np.column_stack((xs.ravel() + .5, ys.ravel() + .5))
-    rays = np.asarray(view.camera.unproject(pixels), dtype=float)
-    denominator = rays @ normal
-    distance = np.divide(origin @ normal, denominator,
-                         out=np.full(len(rays), np.inf), where=np.abs(denominator) > 1e-12)
-    valid = camera_ray_mask(view.camera, rays) & np.isfinite(distance) & (distance > 0)
-    valid &= distance * rays[:, 2] > NEAR_Z
-    offsets = rays * np.where(valid, distance, 0.)[:, None] - origin
-    coordinates = offsets @ basis @ np.linalg.inv(gram)
-    valid &= np.isfinite(coordinates).all(axis=1)
-    valid &= ((coordinates >= 0.) & (coordinates <= 1.)).all(axis=1)
-    # Invalid rays stay out of the texture. In particular NaNs must never reach autograd.
-    grid = np.where(valid[:, None], coordinates * 2. - 1., 2.)
-    return (grid.reshape(height, width, 2).astype(np.float32),
-            valid.reshape(1, height, width).astype(np.float32))
-
-
-def projected_host_box(view, host_id):
-    """Project the selected host's full box into the same camera as the scored image."""
-    from itertools import product
-    from avsectester.geometry.cameras import transform
-
-    if host_id not in view.actors:
-        raise ValueError(f"Optimization host {host_id!r} is missing from the selected view")
-    host = view.actors[host_id]
-    if host.extent is None:
-        raise ValueError(f"Optimization host {host_id!r} bounding-box extent is unavailable")
-    corners = np.asarray(tuple(product((-0.5, 0.5), repeat=3))) * host.extent
-    camera_points = transform(view.cam_from_world @ host.transform, corners)
-    if (camera_points[:, 2] <= 0).any():
-        raise ValueError("Optimization host box crosses the camera plane")
-    pixels = np.asarray(view.camera.project(camera_points))
-    if pixels.shape != (8, 2) or not np.isfinite(pixels).all():
-        raise ValueError("Optimization host box has an undefined camera projection")
-    lower = np.maximum(pixels.min(axis=0), (0, 0))
-    upper = np.minimum(pixels.max(axis=0), (view.camera.width, view.camera.height))
-    if (upper <= lower).any():
-        raise ValueError("Optimization host box is outside the camera image")
-    return tuple(float(v) for v in (*lower, *upper))
+from avsectester.geometry import projection
 
 
 def native_sampling_grid(black, white):
@@ -123,7 +60,7 @@ class SessionDataSource(DataSource):
 
     def _physical_capture(self, segment, frame):
         from .offline import render_candidate
-        from avsectester.attack.insertion.assets import load_rgba_image
+        from avsectester.rendering.images import load_rgba_image
 
         if not self.attack.emissive:
             raise ValueError("Native patch optimization requires self-emissive deployment")
@@ -131,7 +68,7 @@ class SessionDataSource(DataSource):
         dimensions = tuple(getattr(self.attack, name, None) for name in
                            ("prop", "width_m", "height_m", "emissive", "sensor", "orientation"))
         alpha_source = load_rgba_image(self.attack.assets)[..., 3]
-        identity = repr((segment.scenario_id, frame.position, segment.roles, segment.placement,
+        identity = repr((segment.scenario_id, frame.position, segment.user_data,
                          getattr(self.session, "seed", None), self.environment, dimensions, self.size))
         key = (identity, hashlib.sha256(alpha_source.tobytes()).digest())
         if key not in self._native_samples:
@@ -185,15 +122,19 @@ class SessionDataSource(DataSource):
                 grid, mask = None, None
                 if self.require_patch_grid:
                     view = capture.view
-                    hosts = segment.roles.get("host", ())
                     insertion = self.attack.insertion(self.attack.assets,
-                        host=hosts[0] if hosts else None, placement=segment.placement)
+                        placement=self.attack.selected_placement(segment))
                     action = InsertionAttackAction(self.attack.sensor, insertion)
                     resolved = action.resolve(view)
                     surfaces = resolved.planes()
                     if len(surfaces) != 1:
                         raise ValueError("Patch optimization requires exactly one planar surface")
-                    grid, mask = plane_sampling_grid(view, surfaces[0].corners)
+                    if view.camera is None or view.cam_from_world is None:
+                        raise ValueError("Optimization requires a calibrated camera view")
+                    if view.data.shape[:2] != (view.camera.height, view.camera.width):
+                        raise ValueError("Optimization camera calibration and image dimensions differ")
+                    grid, mask = projection.plane_sampling_grid(
+                        view.camera, view.cam_from_world, surfaces[0].corners)
                     evidence = action.evidence(view, resolved)
                     if evidence.visibility is None:
                         raise ValueError(f"Patch optimization visibility is unavailable: {evidence.reason}")
@@ -206,10 +147,19 @@ class SessionDataSource(DataSource):
                 raise ValueError("Patch has no visible pixels in the optimization camera")
             box = self.target_box
             if box is None:
-                hosts = segment.roles.get("host", ())
-                if len(hosts) != 1:
+                host = segment.user_data.get("host")
+                if not isinstance(host, str) or not host:
                     raise ValueError("Default patch objective requires one selected host")
-                box = projected_host_box(view, hosts[0])
+                if host not in view.actors:
+                    raise ValueError(f"Optimization host {host!r} is missing from the selected view")
+                actor = view.actors[host]
+                if actor.extent is None:
+                    raise ValueError(f"Optimization host {host!r} bounding-box extent is unavailable")
+                if view.camera is None or view.cam_from_world is None:
+                    raise ValueError("Optimization requires a calibrated camera view")
+                box = projection.project_box(view.camera, view.cam_from_world, actor.transform, actor.extent)
+                if box is None:
+                    raise ValueError("Optimization host box is behind or outside the camera image")
             result.append(AdversarialSample(
                 x=torch.as_tensor(captured[1].copy(), device=self.device).permute(2, 0, 1).float() / 255,
                 target=TargetSpec(tuple(float(v) for v in box)),

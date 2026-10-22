@@ -16,30 +16,9 @@ import numpy as np
 
 
 from avsectester.geometry import poses
+from avsectester.rendering.objects import PlaneSurface
+from avsectester.rendering import images
 from avsectester.attack.placement import AttachedPlacement, WorldPlacement, Orientation
-
-
-def load_rgba_image(value: np.ndarray | str | Path | object) -> np.ndarray:
-    """Load one RGB/RGBA image as an independent uint8 RGBA array.
-
-    Texture objects expose ``rgba()``. Paths are interpreted by the caller; configuration
-    loading resolves them relative to the configuration file before constructing a texture.
-    """
-    if callable(getattr(value, "rgba", None)):
-        value = value.rgba()
-    if isinstance(value, (str, Path)):
-        from PIL import Image
-        with Image.open(value) as image:
-            array = np.array(image.convert("RGBA"))
-    elif isinstance(value, np.ndarray):
-        array = np.array(value, copy=True)
-    else:
-        raise TypeError("texture must be an image path, uint8 image array or texture object")
-    if array.dtype != np.uint8 or array.ndim != 3 or array.shape[2] not in (3, 4) or 0 in array.shape:
-        raise ValueError("texture must be a nonempty uint8 RGB or RGBA image")
-    if array.shape[2] == 3:
-        array = np.concatenate((array, np.full((*array.shape[:2], 1), 255, np.uint8)), axis=2)
-    return array
 
 
 @dataclass(frozen=True)
@@ -51,7 +30,7 @@ class ImageTexture:
     def __post_init__(self) -> None:
         if not isinstance(self.image, (str, Path)):
             raise TypeError("image must be a file path")
-        object.__setattr__(self, "_image", load_rgba_image(self.image))
+        object.__setattr__(self, "_image", images.load_rgba_image(self.image))
 
     def rgba(self) -> np.ndarray:
         return self._image.copy()
@@ -84,37 +63,6 @@ class CheckerboardTexture:
         return np.concatenate((rgb, np.full((self.size, self.size, 1), 255, np.uint8)), axis=2)
 
 
-@dataclass(frozen=True)
-class PlaneSurface:
-    """A textured rectangle, with corners ordered TL, TR, BR, BL from its front.
-
-    Asset surfaces use local coordinates; resolved surfaces use world coordinates.
-    """
-
-    corners: np.ndarray
-    texture: np.ndarray
-
-    def __post_init__(self):
-        corners = np.array(self.corners, dtype=float, copy=True)
-        texture = np.array(self.texture, copy=True)
-        if corners.shape != (4, 3) or not np.isfinite(corners).all():
-            raise ValueError("corners must be four finite three-dimensional points")
-        if texture.ndim != 3 or texture.shape[2] != 4 or 0 in texture.shape:
-            raise ValueError("texture must be a nonempty RGBA image")
-        if texture.dtype != np.uint8:
-            raise ValueError("texture must use uint8 RGBA values")
-        u, v = corners[1] - corners[0], corners[3] - corners[0]
-        scale = np.linalg.norm(u) * np.linalg.norm(v)
-        if scale <= 0 or not np.isclose(u @ v, 0.0, atol=1e-8 * scale):
-            raise ValueError("surface edges must form a nondegenerate rectangle")
-        if not np.allclose(corners[2], corners[1] + corners[3] - corners[0]):
-            raise ValueError("surface corners must form a rectangle in TL, TR, BR, BL order")
-        corners.setflags(write=False)
-        texture.setflags(write=False)
-        object.__setattr__(self, "corners", corners)
-        object.__setattr__(self, "texture", texture)
-
-
 class PlanarAsset(Protocol):
     """Extension point for assets composed of local textured rectangular surfaces."""
 
@@ -136,7 +84,7 @@ class PlaneAsset:
     def __post_init__(self):
         if not all(np.isfinite(v) and v > 0 for v in (self.width_m, self.height_m)):
             raise ValueError("asset width and height must be finite and positive")
-        texture = load_rgba_image(self.texture)
+        texture = images.load_rgba_image(self.texture)
         # Reuse the same validation as custom asset surfaces.
         surface = PlaneSurface(self._corners(), texture)
         object.__setattr__(self, "texture", surface.texture)

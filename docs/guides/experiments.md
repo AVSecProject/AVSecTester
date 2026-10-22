@@ -26,10 +26,11 @@ returns metadata and artifacts without live simulator or model history. An exper
 exactly one attack; multiple attacks sharing metadata are future work. To combine actions, implement
 one composite Attack.
 
-Preparation uses the first configured seed. The metabuilder requests its environment explicitly; it
-does not automatically inherit the experiment's base environment. Its selected metadata is reused
-for every execution seed. Missing required role actors under another seed cause a failed run, not a
-new selection.
+Preparation uses runs.seeds[0]. OfflineContext.environment merges runs.environment with the attack
+environment. The metabuilder requests its environment explicitly; it does not automatically inherit
+the base environment. Its selected metadata is reused
+for every execution seed. The framework does not interpret actor IDs in custom metadata; each
+attack checks actors when it uses them and reports a missing actor as a run failure.
 
 `execute` iterates attack, segment, seed and treatment groups. Each run creates a simulator runtime,
 AVStack and AttackRuntime. Cleanup closes owned resources on success and failure. Generated CARLA
@@ -39,12 +40,13 @@ in its key.
 ## Treatments and common origins
 
 ```yaml
-treatments:
-  - {name: clean}
-  - {name: attacked, attack_name: phantom}
-  - name: rain
-    environment:
-      world: {weather: SoftRainNoon}
+runs:
+  treatments:
+    - {name: clean}
+    - {name: attacked, attack_name: phantom}
+    - name: rain
+      environment:
+        world: {weather: SoftRainNoon}
 ```
 
 Each comparison group has one attack's selected segment and one seed. Treatments share its origin,
@@ -85,14 +87,20 @@ attack_name, segment, treatment, seed, log and error. `groups` exposes grouped l
 exposes non-completed runs, and `selection_errors` distinguishes metabuilder errors from ordinary
 no-match decisions.
 
-By default, selection errors and run failures are recorded while remaining work continues. `strict:
-true` stops at the first error. Metrics consume completed logs and report failed-run counts
-separately. A failure must not become a zero-valued successful observation.
+By default, selection errors and run failures are recorded while remaining work continues.
+Setting runs.strict to true stops at the first error. Metrics consume completed logs and report
+failed-run counts separately. A failure must not become a zero-valued successful observation.
 
 `ExperimentResult.load(output, configuration)` reads only saved preparation summaries and run logs
 for independent analysis. It never enumerates or loads the dataset, and does not load artifacts.
 Unreadable logs are failed runs; obsolete treatment directories are reported and skipped.
 `avsectester evaluate` uses this path after simulation closes.
+
+Execution also reads each scene with selected segments once through Dataset.scenario_map. The result
+is retained in ExperimentResult.scenario_maps, including Unavailable and its reason. Persistent
+experiments write maps/<scenario_id>.json using the prepared-metadata encoding. Loading results
+restores these maps for ComparisonGroup.scenario_map; evaluation does not call the dataset for
+missing maps.
 
 ## Reproducibility
 
@@ -124,7 +132,7 @@ class SelectionOnlyAttack(Attack):
                               decision_steps=self.decision_steps)
 ```
 
-Configure it under `attacks`, then use treatments with only `environment` overrides. The same
+Configure it under `attacks`, then use runs.treatments with only environment overrides. The same
 reporting machinery compares robustness across environments.
 
 ## Next steps

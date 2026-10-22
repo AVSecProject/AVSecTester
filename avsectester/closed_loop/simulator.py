@@ -14,7 +14,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, TYPE_CHECKING
 
 from avsectester.closed_loop.hooks import _StageAdapter
@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 
     from avsectester.geometry.poses import ActorPose
     from avsectester.geometry.cameras import Camera
+    from avsectester.rendering import Harmonizer, ObjectAsset, ObjectVisibility, PlacedObject
 
 
 @dataclass(frozen=True)
@@ -77,9 +78,10 @@ class SensorGeometry:
 
 @dataclass(frozen=True)
 class SensorView:
-    """What a simulator provides for one sensor capture. It contains no insertion rendering.
+    """One sensor capture, including world objects composed by the framework.
 
-    ``data`` is the sensor's captured data; a camera supplies RGB uint8 (H, W, 3). ``camera`` projects optical
+    ``data`` is the sensor's captured data; a camera supplies RGB uint8 (H, W, 3).
+    ``camera`` projects optical
     camera points to pixels and unprojects pixels to rays, hiding pinhole versus f-theta
     differences. ``cam_from_world`` maps world points to optical camera axes (x right, y down,
     z forward). Both are None for non-camera sensors. ``sensor_from_world`` maps world points
@@ -87,8 +89,13 @@ class SensorView:
     transform. It is None when the sensor pose is unavailable. ``actors`` holds world poses by
     stable actor ID and ``ego`` is the ego's cuboid.
     ``depth`` is optical-axis depth in metres per pixel, when the simulator measures it;
-    without it, occlusion is estimated from actor cuboids. ``native`` gives simulator-specific
-    access and gives up portability. World units are metres, with x forward, y left, z up.
+    without it, occlusion is estimated from actor cuboids and ``depth`` remains None after
+    object composition. Existing measured depth includes composed objects. ``objects`` contains
+    the placed world objects whose projection lies in this camera's current image, keyed by
+    object ID, including fully occluded ones. They are immutable and shared, not copied.
+    ``native`` gives
+    simulator-specific access and gives up portability. World units are metres, with x forward,
+    y left, z up.
     """
 
     sensor: str
@@ -102,6 +109,7 @@ class SensorView:
     sensor_from_world: np.ndarray | None = None
     depth: np.ndarray | None = None
     native: Mapping[str, Any] = field(default_factory=dict)
+    objects: Mapping[str, PlacedObject] = field(default_factory=dict)
 
 
 class Simulator(ABC):
@@ -113,6 +121,7 @@ class Simulator(ABC):
 
     dataset_kinds: tuple[str, ...] = ()
     can_render: bool = False
+    can_insert_objects: bool = False
     supported_world_settings: frozenset[str] = frozenset()
     simulator_version = "1"
     # Native ticks that make simulator.setup actions visible in the first capture. A simulator
@@ -182,12 +191,19 @@ class SimulatorRuntime(_StageAdapter, ABC):
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
-        if {"reset", "step"} & cls.__dict__.keys():
-            raise TypeError("SimulatorRuntime subclasses implement native operations, not reset/step")
+        if {"reset", "step", "sensor_view"} & cls.__dict__.keys():
+            raise TypeError("SimulatorRuntime subclasses implement native operations, "
+                            "not reset/step/sensor_view")
 
     def __init__(self, simulator: Simulator) -> None:
         self.simulator = simulator
         self._capture: Observation | None = None
+        self._objects: dict[str, PlacedObject] = {}
+        self._capture_objects: dict[str, PlacedObject] = {}
+        self._composited_capture: Observation | None = None
+        self._composited_views: dict[str, SensorView] = {}
+        self._object_visibility: dict[str, dict[str, ObjectVisibility]] = {}
+        self._composition_error: BaseException | None = None
         self._world_initialized = False
         self._resetting = False
         self._stepping = False
@@ -215,6 +231,10 @@ class SimulatorRuntime(_StageAdapter, ABC):
     @property
     def can_render(self) -> bool:
         return self.simulator.can_render
+
+    @property
+    def can_insert_objects(self) -> bool:
+        return self.simulator.can_insert_objects
 
     @property
     def supported_world_settings(self) -> frozenset[str]:
@@ -257,6 +277,14 @@ class SimulatorRuntime(_StageAdapter, ABC):
 
     def close(self) -> None:
         """Release the world and native connections. Optional."""
+        self._objects.clear()
+        self._capture_objects.clear()
+        self._composited_views.clear()
+        self._object_visibility.clear()
+        self._composited_capture = None
+        self._composition_error = None
+        self._capture = None
+        self._world_initialized = False
 
     @contextmanager
     def exclusive(self) -> Iterator[None]:
@@ -285,7 +313,13 @@ class SimulatorRuntime(_StageAdapter, ABC):
         """
         if not (self._world_initialized or self._resetting or self._stepping):
             raise RuntimeError("Reset the simulator before requesting its state")
-        return self._state()
+        objects = {}
+        for object_id, placed in self._objects.items():
+            objects[object_id] = ActorState(
+                placed.world_from_object.copy(), (0., 0., 0.), placed.asset.category,
+                placed.asset.extent, (0., 0., placed.asset.extent[2] / 2),
+            )
+        return replace(self._state(), objects=objects)
 
     @property
     def sensors(self) -> frozenset[str]:
@@ -298,12 +332,138 @@ class SimulatorRuntime(_StageAdapter, ABC):
         return frozenset()
 
     def sensor_geometry(self, sensor: str) -> SensorGeometry:
-        """Read camera geometry without copying a capture or running render hooks."""
-        raise NotImplementedError(f"{type(self).__name__} does not provide camera geometry")
+        """Read optical-camera geometry; override for a lightweight, image-free path.
+
+        The default uses the native sensor view. Native simulators override it so
+        projection screening does not copy pixels or compute optional scene depth.
+        """
+        view = self._sensor_view(sensor)
+        if view.camera is None or view.cam_from_world is None:
+            raise ValueError(f"Sensor {sensor!r} has no optical camera geometry")
+        return SensorGeometry(view.sensor, view.camera, deepcopy(view.cam_from_world))
 
     def sensor_view(self, sensor: str) -> SensorView:
         """Return the view of the current capture of ``sensor``; it never advances time."""
+        if not self._world_initialized or self._capture is None:
+            raise RuntimeError("Reset the simulator before requesting sensor views")
+        self._compose_capture()
+        view = self._composited_views.get(sensor)
+        if view is None:
+            native_view = self._sensor_view(sensor)
+            view = self._composited_views.get(native_view.sensor, native_view)
+        # Explicit native handles retain their documented opt-out from portability. Placed
+        # objects are immutable and may hold harmonizer resources, so they are shared.
+        detached = deepcopy(replace(view, native={}, objects={}))
+        return replace(detached, native=view.native, objects=dict(view.objects))
+
+    def _sensor_view(self, sensor: str) -> SensorView:
+        """Native capture and geometry, before framework object composition."""
         raise NotImplementedError(f"{type(self).__name__} does not provide sensor views")
+
+    def insert_object(self, object_id: str, asset: ObjectAsset, world_from_object: np.ndarray, *,
+                      harmonizer: Harmonizer | None = None) -> None:
+        """Register a physical world object, visible from the next sensor capture."""
+        from avsectester.rendering import ObjectAsset, PlacedObject
+
+        if not self.can_insert_objects:
+            raise NotImplementedError(f"{type(self.simulator).__name__} cannot insert objects")
+        if not (self._world_initialized or self._resetting or self._stepping):
+            raise RuntimeError("Reset the simulator before inserting objects")
+        if not isinstance(asset, ObjectAsset):
+            raise TypeError("An inserted object requires an ObjectAsset")
+        if harmonizer is not None and not callable(harmonizer):
+            raise TypeError("An object harmonizer must be callable or None")
+        placed = PlacedObject(object_id, asset, world_from_object, harmonizer)
+        if object_id in self._objects:
+            raise ValueError(f"Object {object_id!r} is already inserted")
+        self._objects[object_id] = placed
+
+    def remove_object(self, object_id: str) -> None:
+        """Remove a world object; the previous capture remains unchanged."""
+        if not self.can_insert_objects:
+            raise NotImplementedError(f"{type(self.simulator).__name__} cannot insert objects")
+        if object_id not in self._objects:
+            raise KeyError(f"Unknown inserted object {object_id!r}")
+        del self._objects[object_id]
+
+    def object_visibility(self, object_id: str) -> Mapping[str, ObjectVisibility]:
+        """Visibility of an object in the latest capture, for every camera whose image contains it.
+
+        A camera whose image contains the object's projection has an entry even when actors or
+        scene depth hide every pixel (``visible_pixels == 0``). Raises ``KeyError`` for an object
+        that is not part of the latest capture, and re-raises a failed composition.
+        """
+        if not self._world_initialized or self._capture is None:
+            raise RuntimeError("Reset the simulator before reading object visibility")
+        if object_id not in self._capture_objects:
+            if object_id in self._objects:
+                raise KeyError(f"Object {object_id!r} was inserted after the latest capture; "
+                               "it is visible from the next capture")
+            raise KeyError(f"Unknown inserted object {object_id!r}")
+        self._compose_capture()
+        return deepcopy(self._object_visibility[object_id])
+
+    def _take_capture(self) -> None:
+        """Acquire native sensor data once and snapshot the objects visible to that capture."""
+        self._capture_objects = dict(self._objects)
+        self._composited_capture = None
+        self._composited_views.clear()
+        self._object_visibility = {identity: {} for identity in self._capture_objects}
+        self._composition_error = None
+        self._capture = None
+        self._capture = self._observe()
+
+    def _compose_capture(self) -> None:
+        if self._composited_capture is not None:
+            return
+        if self._composition_error is not None:
+            raise self._composition_error
+        assert self._capture is not None
+        observation = self._capture
+        try:
+            if self._capture_objects:
+                import numpy as np
+
+                from avsectester.closed_loop.datatypes import read_camera_rgb, write_camera_rgb
+                from avsectester.geometry.projection import project_box
+                from avsectester.rendering import composite_objects
+
+                for sensor in sorted(self.camera_sensors):
+                    geometry = self.sensor_geometry(sensor)
+                    candidates = []
+                    for placed in self._capture_objects.values():
+                        box_from_object = np.eye(4)
+                        box_from_object[2, 3] = placed.asset.extent[2] / 2
+                        if project_box(geometry.camera, geometry.cam_from_world,
+                                       placed.world_from_object @ box_from_object,
+                                       placed.asset.extent) is not None:
+                            candidates.append(placed)
+                    if not candidates:
+                        continue
+                    # Only cameras whose image contains an object need a full view,
+                    # including the optional, more expensive NuRec mesh depth.
+                    view = self._sensor_view(sensor)
+                    if view.camera is None or view.cam_from_world is None:
+                        raise ValueError(f"Camera {sensor!r} has no optical geometry")
+                    captured = read_camera_rgb(observation, view.sensor)
+                    if captured is None:
+                        raise ValueError(f"Missing RGB camera {view.sensor!r}")
+                    result = composite_objects(
+                        captured[1], view.camera, view.cam_from_world, candidates,
+                        scene_depth=view.depth, occluders=view.actors,
+                    )
+                    observation = write_camera_rgb(observation, view.sensor, result.image)
+                    self._composited_views[view.sensor] = replace(
+                        view, data=result.image, depth=None if view.depth is None else result.depth,
+                        objects={placed.object_id: placed for placed in candidates},
+                    )
+                    for placed in candidates:
+                        self._object_visibility[placed.object_id][view.sensor] = (
+                            result.object_visibility[placed.object_id])
+            self._composited_capture = observation
+        except BaseException as error:
+            self._composition_error = error
+            raise
 
     def control_actor(self, actor_id: str, control: Control) -> None:
         """Drive another actor with an actuator command from the next world step.
@@ -346,6 +506,12 @@ class SimulatorRuntime(_StageAdapter, ABC):
             raise ValueError("Selected boundary is earlier than its deployment window")
         self._world_initialized = False
         self._capture = None
+        self._objects.clear()
+        self._capture_objects.clear()
+        self._composited_capture = None
+        self._composited_views.clear()
+        self._object_visibility.clear()
+        self._composition_error = None
         self.initialization_report = {}
         self._start, self._deployment = start, plan
         self._resetting = True
@@ -367,7 +533,7 @@ class SimulatorRuntime(_StageAdapter, ABC):
             for _ in range(self.capture_ticks):
                 self._window_tick(position)
             self._before_selected_capture(position)
-            self._capture = self._observe()
+            self._take_capture()
             self._world_initialized = True
             try:
                 self._check_initialization(initialization)
@@ -398,7 +564,7 @@ class SimulatorRuntime(_StageAdapter, ABC):
             self._emit("simulator.step.pre", None)
             self._advance_native(control)
             self._emit("simulator.step.post", None)
-            self._capture = self._observe()
+            self._take_capture()
         finally:
             self._stepping = False
         self._world_initialized = True
@@ -407,7 +573,9 @@ class SimulatorRuntime(_StageAdapter, ABC):
         """Return an independent copy of the current capture; never advance or recapture."""
         if not self._world_initialized or self._capture is None:
             raise RuntimeError("Reset the simulator before observing")
-        return self.copy_observation(self._capture)
+        self._compose_capture()
+        assert self._composited_capture is not None
+        return self.copy_observation(self._composited_capture)
 
     def _reset_scan(self, start: ScenarioStart, initialization: Any = None, *,
                     world: Mapping[str, Any] | None = None,
@@ -429,7 +597,7 @@ class SimulatorRuntime(_StageAdapter, ABC):
             for _ in range(count):
                 self._capture = None
                 self._replay_tick()
-                self._capture = self._observe()
+                self._take_capture()
         except BaseException:
             self._world_initialized = False
             raise
@@ -507,7 +675,7 @@ class SimulatorRuntime(_StageAdapter, ABC):
             records = [self._capture_frame_data(frames[0])]
             for frame in frames[1:]:
                 self._replay_tick()
-                self._capture = self._observe()
+                self._take_capture()
                 records.append(self._capture_frame_data(frame))
         finally:
             self._generating_frame_data = False

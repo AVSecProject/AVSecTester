@@ -11,7 +11,8 @@ def test_carla_configuration_prepares_executes_and_evaluates(request, tmp_path):
     from avsectester.evaluation import evaluate
 
     path = Path(request.config.getoption('--carla-config'))
-    config = replace(load_configuration(path), output=tmp_path / 'experiment', decision_steps=3)
+    config = load_configuration(path)
+    config = replace(config, runs=replace(config.runs, output=tmp_path / 'experiment', decision_steps=3))
     prepared = Experiment.prepare(config)
     assert not [item for item in prepared.selections if item.status == 'error']
     assert any(prepared.metadata.values()), 'The real scenario must select at least one segment'
@@ -21,6 +22,6 @@ def test_carla_configuration_prepares_executes_and_evaluates(request, tmp_path):
         assert len(run.log.steps) == 3
         assert run.log.steps[0].physical_pre.ego is not None
     report = evaluate(result, config)
-    restored = ExperimentResult.load(config.output, config)
+    restored = ExperimentResult.load(config.runs.output, config)
     assert len(restored.runs) == len(result.runs)
     assert evaluate(restored, config).as_dict() == report.as_dict()

@@ -33,7 +33,7 @@ CASES = [
             [2., 0.], [0., 1.], actors={"lead": data["actor"](10.)})}),
         lambda data: data["group"]({"attacked": RunLog()}), itemgetter("attacked"), {
             "final_speed": 0., "peak_speed": 2., "mean_speed": 1., "stopped": True,
-            "brake_steps": 1, "min_distance": 8., "min_role_distance": 8., "collision": False,
+            "brake_steps": 1, "min_distance": 8., "collision": False,
         }, id="driving"),
     pytest.param(
         TrajectoryDeviation, {},
@@ -50,7 +50,6 @@ CASES = [
         lambda data: data["group"]({"attacked": without_capture(data["log"]([2.]))}),
         itemgetter("attacked"), {
             "tp": 1, "fp": 1, "fn": 0, "precision": .5, "recall": 1., "f1": 2 / 3,
-            "role_detection_rate.host": 1.,
         }, id="detection"),
     pytest.param(
         StopImpact, {},

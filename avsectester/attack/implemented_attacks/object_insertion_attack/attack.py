@@ -4,12 +4,12 @@ from __future__ import annotations
 import math
 
 from avsectester.attack.attack import Attack
-from avsectester.attack.placement import (WorldPlacement, orientation_from_spec,
+from avsectester.attack.placement import (AttachedPlacement, WorldPlacement, orientation_from_spec,
                                         placement_from_spec)
 from avsectester.attack.segments import validate_segment_options
 from avsectester.attack.insertion import Insertion
 from avsectester.attack.insertion.compositor import PatchCompositor
-from .assets import SignAsset
+from avsectester.rendering import SignAsset
 from .metabuilder import build_metadata
 from .online import ObjectInsertionAttackRuntime
 
@@ -55,6 +55,31 @@ class ObjectInsertionAttack(Attack):
     def build_metadata(self, scenario):
         return build_metadata(self, scenario)
 
+    def run_offline(self, context):
+        return self.assets
+
+    def selected_placement(self, segment):
+        """Rebuild the placement selected by this attack from data-only metadata."""
+        if "placement" not in segment.user_data:
+            raise ValueError("ObjectInsertionAttack metadata is missing keys: placement. "
+                             "Required keys: placement")
+        values = dict(segment.user_data["placement"])
+        if "kind" not in values:
+            raise ValueError("ObjectInsertionAttack placement metadata is missing keys: kind. "
+                             "Required keys: kind, host (attached) or position_m (world)")
+        kind = values.pop("kind")
+        if kind == "attached":
+            if "host" not in values:
+                raise ValueError("ObjectInsertionAttack attached placement metadata is missing keys: host. "
+                                 "Required keys: kind, host")
+            return AttachedPlacement(**values)
+        if kind == "world":
+            if "position_m" not in values:
+                raise ValueError("ObjectInsertionAttack world placement metadata is missing keys: position_m. "
+                                 "Required keys: kind, position_m")
+            return WorldPlacement(**values)
+        raise ValueError(f"Unknown selected object placement kind: {kind!r}")
+
     def create_runtime(self, segment, artifacts):
         return ObjectInsertionAttackRuntime(
-            self.sensor, self.insertion(artifacts, segment.placement), self.compositor)
+            self.sensor, self.insertion(artifacts, self.selected_placement(segment)), self.compositor)

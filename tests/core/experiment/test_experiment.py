@@ -6,7 +6,8 @@ import json
 import pytest
 
 from avsectester.closed_loop.services import DrivingAdapter
-from avsectester.experiment import Experiment, ExperimentConfiguration, TreatmentConfiguration
+from avsectester.experiment import Experiment, ExperimentConfiguration, RunsConfiguration, TreatmentConfiguration
+from avsectester.maps import ScenarioMap
 from tests.fakes import ConstantAVStack, MemoryDataset, MemorySimulator, MinimalAttack
 
 
@@ -14,7 +15,7 @@ def configuration(attack, *, dataset=None, treatments=(), **options):
     return ExperimentConfiguration(
         dataset or MemoryDataset(), MemorySimulator(),
         DrivingAdapter(lambda seed: ConstantAVStack()), {"probe": attack},
-        treatments=treatments, **options,
+        runs=RunsConfiguration(treatments=treatments, **options),
     )
 
 
@@ -40,19 +41,21 @@ def test_prepare():
     ]
     assert "RuntimeError: synthetic selection failed" == prepared.selections[1].error
     with pytest.raises(RuntimeError, match="selection failed"):
-        Experiment.prepare(replace(config, strict=True))
+        Experiment.prepare(replace(config, runs=replace(config.runs, strict=True)))
 
 
 def test_execute(tmp_path):
     marker = tmp_path / "stopped.jsonl"
     config = configuration(
-        MinimalAttack(stop_marker_path=marker), seeds=(2, 7), treatments=(
+        MinimalAttack(stop_marker_path=marker), dataset=MemoryDataset(maps={"scene": ScenarioMap()}),
+        seeds=(2, 7), treatments=(
             TreatmentConfiguration("clean"), TreatmentConfiguration("attacked", "probe"),
             TreatmentConfiguration("failed", environment={"world": {"fail": True}}),
         ),
     )
     prepared = Experiment.prepare(config)
     result = Experiment.execute(prepared)
+    assert isinstance(result.scenario_maps["scene"], ScenarioMap)
     expected = {(index, seed, treatment) for index in (0, 1) for seed in (2, 7)
                 for treatment in ("clean", "attacked", "failed")}
     assert {(run.segment_index, run.seed, run.treatment) for run in result.runs} == expected
@@ -69,7 +72,7 @@ def test_execute(tmp_path):
             assert progress == [0, 1]
     assert marker.read_text().strip()
     with pytest.raises(RuntimeError, match="memory simulation failed"):
-        Experiment.execute(Experiment.prepare(replace(config, strict=True)))
+        Experiment.execute(Experiment.prepare(replace(config, runs=replace(config.runs, strict=True))))
 
     # A later attack instance is constructed before the first treatment starts. Interruption
     # must propagate and release that pending participant even though its setup never ran.

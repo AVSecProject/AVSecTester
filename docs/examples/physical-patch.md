@@ -18,11 +18,11 @@ PatchAttack is defined in avsectester.attack.implemented_attacks.patch_attack.at
 optimized CARLA variants are separate configurations, each with one attack and clean/attacked
 treatments on its selected metadata. NuRec uses the same class for image synthesis.
 
-Required decision_steps is user-defined. Options include texture, candidate_hosts, hosts_per_window,
+Required decision_steps is user-defined. Options include assets, candidate_hosts, hosts_per_window,
 sensor, width_m, height_m, anchor, offset_m, orientation, max_distance, min_visible_fraction,
-max_windows, keep_tail, optimization, prop and emissive. Texture uses a CheckerboardTexture or
-ImageTexture type/options specification. Unknown types and misspelled options fail rather than
-silently substituting another texture.
+max_windows, keep_tail, optimization, prop and emissive. The assets option accepts CheckerboardTexture
+or ImageTexture using a full module:Class type/options specification. Unknown types and misspelled
+options fail rather than silently substituting another texture.
 
 ## Selection and deployment
 
@@ -30,7 +30,7 @@ The metabuilder scores eligible candidate_hosts independently within each decisi
 keeps the user-requested hosts_per_window best hosts. Omitting candidate_hosts considers non-ego
 actors. It reads clean SensorView geometry/evidence without deploying the attack for selection.
 Ranking is local to hosts in each window, not a ranking of windows. It returns AttackSegment records
-with stable roles and any placement/score information it produces. Visibility thresholds and segment
+with host IDs, placement parameters and scores in user_data. Visibility thresholds and segment
 lengths are attack parameters, not framework defaults. anchor and offset_m describe a host-local
 mounting rule without naming a placeholder actor. AttachedPlacement is created only when a real
 candidate host is selected.

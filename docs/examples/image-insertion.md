@@ -26,10 +26,12 @@ SignAsset.post_count controls the number of support posts.
 type: ObjectInsertionAttack
 options:
   decision_steps: 10
-  assets: {type: SignAsset, options: {}}
+  assets:
+    type: avsectester.rendering.signs:SignAsset
+    options: {}
   sensor: front
   placement:
-    type: WorldPlacement
+    type: avsectester.attack.placement:WorldPlacement
     options:
       position_m: [20.0, 0.0, 1.5]
 ```
@@ -47,14 +49,26 @@ sensor/render path is covered offline; real dataset/model execution remains a se
 ## Geometry and rendering
 
 Shared camera projection and canonical actor poses live in geometry/. Placement types live in the
-core attack/placement.py module. Reusable assets, compositing, occlusion and harmonization live in
-the attack/insertion/ framework tool; object-specific assets live beside ObjectInsertionAttack.
+core attack/placement.py module. Reusable insertion assets, compositing and visibility live in
+attack/insertion/; shared PlaneSurface, sampling and harmonizers live in rendering/. Object-specific
+assets live beside ObjectInsertionAttack.
+
+geometry/projection.py supplies plane_sampling_grid, project_box and visible_plane_mask for users
+who need calibrated sampling, box rectangles or a depth-visible plane mask independently. They
+receive camera models and world transforms directly, support pinhole and f-theta lenses, and do
+not depend on SensorView or attack metadata.
+geometry/cameras.py also provides the shared NEAR_Z threshold and camera_ray_mask for rejecting
+nonfinite, backward or out-of-lens rays. DepthVisibilityEstimator restricts plane-depth queries to
+each projected face's image bounds; pixels outside those bounds are False in the returned mask.
 
 The simulator provides a SensorView: RGB data, camera model, camera-from-world transform, actor and
 ego cuboids, time and optional depth. The attack resolves placement and projects through the actual
 pinhole or f-theta camera model. It uses measured depth when available and actor cuboids for
 supported occlusion estimates. Visibility and full-silhouette denominators remain attack-specific
 evidence; missing evidence is not assumed visible.
+Without depth, inserted world objects in SensorView.objects also occlude through their
+alpha-aware faces. Visibility sources and receipt details are listed in the
+[Python API](../reference/python-api.md) and [RunLog](../reference/runtime.md#runlog) references.
 
 Selection reads the clean view and insertion evidence without applying actions. Offline candidate
 rendering and online execution invoke the same InsertionAttackAction. Undefined online visibility
@@ -64,13 +78,32 @@ recorded playback.
 
 ## Harmonization
 
-PatchCompositor and optional harmonizers live in attack/insertion. Classic harmonization is
-lightweight; PCTNet requires its model dependencies and weights. strict=True raises
-loading/inference errors; permissive fallback must be explicitly chosen for the experiment.
-Harmonizer is a public extension point: implement __call__(composite_rgb, mask, background_rgb).
-Configure compositor as {type: PatchCompositor, options: {soften: 0.0, harmonizer: {type:
-package.module:MyHarmonizer, options: {}}}}. Built-ins are ClassicHarmonizer and PCTNetHarmonizer.
-See [PCTNet installation](../getting-started/installation.md#pctnet-harmonizer).
+PatchCompositor remains in attack/insertion, while harmonizers live in rendering/.
+PatchCompositor defaults to harmonizer=None and soften=0.0: inserted pixels receive no
+harmonization. Choose one of these three forms:
+
+- Omit harmonizer, or pass None in Python, to keep the default without harmonization.
+- Supply ClassicHarmonizer for lightweight color/blending adjustments, or PCTNetHarmonizer for
+  learned harmonization. PCTNet requires dependencies and weights; strict=True raises loading or
+  inference errors instead of falling back.
+- Subclass Harmonizer and implement __call__(composite_rgb, mask, background_rgb). Reference that
+  implementation as package.module:Class in YAML.
+
+For example, explicitly enable the framework's classic harmonizer:
+
+```yaml
+compositor:
+  type: avsectester.attack.insertion.compositor:PatchCompositor
+  options:
+    soften: 0.0
+    harmonizer:
+      type: avsectester.rendering.harmonizers:ClassicHarmonizer
+      options: {}
+```
+
+Use avsectester.rendering.harmonizers:PCTNetHarmonizer for the learned implementation or
+package.module:MyHarmonizer for user code. See [PCTNet
+installation](../getting-started/installation.md#pctnet-harmonizer).
 
 ## Use insertion tools in your attack
 
@@ -82,10 +115,9 @@ WorldPlacement from avsectester.attack.placement; placement is a core data type.
 <!-- runnable -->
 ```python
 import numpy as np
-from avsectester.attack.insertion import (
-    Harmonizer, Insertion, InsertionAttackAction, PatchCompositor, PlaneAsset,
-)
+from avsectester.attack.insertion import Insertion, InsertionAttackAction, PatchCompositor, PlaneAsset
 from avsectester.attack.placement import WorldPlacement
+from avsectester.rendering import Harmonizer
 
 class PreserveColors(Harmonizer):
     def __call__(self, composite_rgb, mask, background_rgb):
@@ -100,8 +132,9 @@ assert action.insertion.asset.planes()[0].texture.shape == (16, 32, 4)
 
 Return such an action from your AttackRuntime.step. Each action resolves its placement from the
 simulator's canonical actor poses. For custom placement policies, calculate a WorldPlacement or
-AttachedPlacement in your metabuilder and save it in the segment; the simulator never receives
-attack metadata.
+AttachedPlacement in your metabuilder, then save its parameters as JSON-like user_data rather
+than storing the placement object itself. Reconstruct it in the attack's online phase; the
+simulator never receives attack metadata.
 
 Visibility and compositing can also be used separately without starting an attack:
 
@@ -112,7 +145,7 @@ from avsectester.attack.insertion import CuboidVisibilityEstimator, render_resol
 resolved = action.resolve(view)
 evidence = CuboidVisibilityEstimator().estimate(
     resolved, view.camera, view.cam_from_world, occluders=view.actors,
-    camera_name=view.sensor)
+    camera_name=view.sensor, world_objects=tuple(view.objects.values()))
 if evidence.visibility is not None:
     composite, mask = render_resolved(
         view.data, view.camera, view.cam_from_world, resolved, evidence,

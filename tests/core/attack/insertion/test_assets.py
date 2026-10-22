@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 from PIL import Image
 from avsectester.attack.insertion import (CheckerboardTexture, ImageTexture, Insertion,
-    PlaneAsset, PlaneSurface, load_rgba_image, resolve_insertion)
+    PlaneAsset, resolve_insertion)
 from avsectester.attack.placement import AttachedPlacement, Orientation, WorldPlacement
 from avsectester.geometry.poses import ActorPose, rotation_matrix
 
@@ -17,12 +17,8 @@ def test_textures(tmp_path):
     path = tmp_path / "texture.png"
     Image.fromarray(rgba).save(path)
     np.testing.assert_array_equal(ImageTexture(path).rgba(), rgba)
-    rgb = rgba[..., :3]
-    np.testing.assert_array_equal(load_rgba_image(rgb), rgba)
     rgba[:] = 0
     assert checker.rgba().max() == 255
-    with pytest.raises(ValueError, match="texture"):
-        load_rgba_image(np.zeros((2, 3), np.uint8))
 
 
 def test_plane_asset():
@@ -31,8 +27,6 @@ def test_plane_asset():
     np.testing.assert_array_equal(surface.corners,
         [[0, -2, 1], [0, 2, 1], [0, 2, -1], [0, -2, -1]])
     assert surface.texture.shape == (4, 8, 4)
-    with pytest.raises(ValueError):
-        PlaneSurface(np.zeros((3, 3)), surface.texture)
 
 
 def test_resolve_insertion():

@@ -1,76 +1,15 @@
-"""Sign, person-poster and traffic-light assets owned by ObjectInsertionAttack."""
+"""Person-poster and traffic-light assets owned by ObjectInsertionAttack."""
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
-from avsectester.attack.insertion import PlaneSurface
-from avsectester.attack.insertion.assets import load_rgba_image
+from avsectester.rendering import signs
+from avsectester.rendering.images import load_rgba_image
 
-ASSETS = Path(__file__).resolve().parents[3] / "assets" / "signs"
-STOP_SIGN = ASSETS / "mutcd_r1-1_stop.png"
-
-
-def post_rgba(height_pixels: int = 256, width_pixels: int = 16,
-              color: tuple = (150, 152, 155)) -> np.ndarray:
-    """A galvanized sign post texture: flat grey, shaded across its width like a round/U-channel post."""
-    shade = 0.65 + 0.35 * np.sin(np.linspace(0.15, math.pi - 0.15, width_pixels))  # darker at the edges
-    img = np.zeros((height_pixels, width_pixels, 4), np.uint8)
-    img[..., :3] = (np.asarray(color, np.float32)[None, None, :] * shade[None, :, None]).astype(np.uint8)
-    img[..., 3] = 255
-    return img
-
-@dataclass
-class SignAsset:
-    """A local planar sign and optional posts, ready for an ``Insertion``.
-
-    The origin is on the ground beneath the face. Local +x is the face normal,
-    +y is the viewer's right and +z is up. Lengths are in metres: ``width_m`` is the face width,
-    ``mount_height_m`` locates the bottom edge of the face and ``post_width_m`` is each post's
-    width. World position and orientation belong to the insertion.
-    """
-
-    face: np.ndarray | str | Path = field(default=STOP_SIGN, repr=False)
-    width_m: float = 0.9
-    mount_height_m: float = 1.5
-    post: bool = True
-    post_width_m: float = 0.07
-    post_count: int = 1
-
-    def __post_init__(self):
-        self.face = load_rgba_image(self.face)
-        if not isinstance(self.post, bool):
-            raise TypeError("post must be boolean")
-
-        if not np.isfinite([self.width_m, self.mount_height_m, self.post_width_m]).all():
-            raise ValueError("Sign dimensions must be finite")
-        if self.width_m <= 0 or self.mount_height_m < 0 or self.post_width_m <= 0:
-            raise ValueError("Sign width_m and post_width_m must be positive, mount_height_m nonnegative")
-        if isinstance(self.post_count, bool) or not isinstance(self.post_count, int) or self.post_count < 1:
-            raise ValueError("post_count must be a positive integer")
-
-    def planes(self) -> Sequence[PlaneSurface]:
-        height = self.width_m * self.face.shape[0] / self.face.shape[1]
-
-        def rectangle(x, y, width, bottom, top, texture):
-            return PlaneSurface(np.array([
-                [x, y - width / 2, top], [x, y + width / 2, top],
-                [x, y + width / 2, bottom], [x, y - width / 2, bottom],
-            ]), texture)
-
-        surfaces = []
-        if self.post:
-            offsets = [0.0] if self.post_count == 1 else np.linspace(-0.35, 0.35, self.post_count) * self.width_m
-            for offset in offsets:
-                surfaces.append(rectangle(-0.03, offset, self.post_width_m, 0,
-                                          self.mount_height_m + height / 2, post_rgba()))
-        surfaces.append(rectangle(0, 0, self.width_m, self.mount_height_m,
-                                  self.mount_height_m + height, self.face))
-        return surfaces
 
 def poster_rgba(person: np.ndarray, aspect: float = 1.5, fill: float = 0.86,
                 paper: tuple = (228, 226, 218), border: tuple = (40, 40, 42), border_frac: float = 0.025) -> np.ndarray:
@@ -98,14 +37,14 @@ def poster_rgba(person: np.ndarray, aspect: float = 1.5, fill: float = 0.86,
     poster[:, :b, :3] = poster[:, -b:, :3] = border
     return poster
 
-def standee(person: np.ndarray, height_m: float = 1.75) -> SignAsset:
+def standee(person: np.ndarray, height_m: float = 1.75) -> signs.SignAsset:
     """A local life-size cut-out standing on the ground, without posts."""
-    return SignAsset(face=person, width_m=height_m * person.shape[1] / person.shape[0],
+    return signs.SignAsset(face=person, width_m=height_m * person.shape[1] / person.shape[0],
                      mount_height_m=0.0, post=False)
 
-def billboard(person: np.ndarray, width_m: float = 1.4, mount_height_m: float = 0.6) -> SignAsset:
+def billboard(person: np.ndarray, width_m: float = 1.4, mount_height_m: float = 0.6) -> signs.SignAsset:
     """A printed poster on two legs. Placement is supplied separately by ``Insertion``."""
-    return SignAsset(face=poster_rgba(person), width_m=width_m, mount_height_m=mount_height_m,
+    return signs.SignAsset(face=poster_rgba(person), width_m=width_m, mount_height_m=mount_height_m,
                      post=True, post_width_m=0.09, post_count=2)
 
 _HOUSING = (28, 28, 30)
@@ -169,9 +108,9 @@ def traffic_lights_rgba(head_count: int = 3, lit: str = "red", texture_height_pi
         out[marg:marg + hh, x0:x0 + hw, 3] = np.maximum(out[marg:marg + hh, x0:x0 + hw, 3], head[..., 3])
     return out
 
-def roadside_rig(face: np.ndarray, width_m: float = 2.4, mount_height_m: float = 2.2) -> SignAsset:
+def roadside_rig(face: np.ndarray, width_m: float = 2.4, mount_height_m: float = 2.2) -> signs.SignAsset:
     """Local traffic-light board and post, with its bottom edge at ``mount_height_m``."""
-    return SignAsset(face=face, width_m=width_m, mount_height_m=mount_height_m, post_width_m=0.12)
+    return signs.SignAsset(face=face, width_m=width_m, mount_height_m=mount_height_m, post_width_m=0.12)
 
 @dataclass
 class PersonAsset:

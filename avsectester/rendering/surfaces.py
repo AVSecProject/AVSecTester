@@ -6,28 +6,19 @@ Both consumers use the same pixel centres, bilinear samples and alpha > 127 silh
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
 
-from avsectester.geometry.poses import ActorPose
-from .assets import PlaneSurface
-from avsectester.geometry.cameras import Camera, transform
-
-NEAR_Z = 1e-5
+from .objects import PlaneSurface
+from avsectester.geometry.cameras import Camera, NEAR_Z, camera_ray_mask, transform
 
 
 def edge_points(corners: np.ndarray) -> np.ndarray:
     """Sample curved image boundaries produced by projecting straight 3D edges."""
     t = np.linspace(0, 1, 65)[:, None]
     return np.concatenate([corners[i] + t * (corners[(i + 1) % 4] - corners[i]) for i in range(4)])
-
-
-def camera_ray_mask(camera: Camera, rays: np.ndarray) -> np.ndarray:
-    valid = np.isfinite(rays).all(axis=1) & (rays[:, 2] > 0)
-    if hasattr(camera, "max_angle"):
-        valid &= np.arctan2(np.hypot(rays[:, 0], rays[:, 1]), rays[:, 2]) <= camera.max_angle
-    return valid
 
 
 @dataclass
@@ -119,9 +110,9 @@ class Projection:
     y0: int
 
 
-def rasterize(subject, camera: Camera, cam_from_world, max_reference_pixels):
+def rasterize(surfaces: Sequence[PlaneSurface], camera: Camera, cam_from_world, max_reference_pixels):
     """Full unbounded alpha silhouette, nearest-surface distances and matching colors."""
-    samplers = [prepare_surface(s, camera, cam_from_world) for s in subject.planes()]
+    samplers = [prepare_surface(s, camera, cam_from_world) for s in surfaces]
     if not samplers:
         return None, "Asset has no planar surfaces"
     front = [s for s in samplers if s.reason != "Target is behind the camera"]
@@ -186,37 +177,15 @@ def sample_image(
     return rgba, depth
 
 
-def insertion_image(subject, camera: Camera, cam_from_world) -> tuple[np.ndarray, np.ndarray]:
+def render_surfaces(
+    surfaces: Sequence[PlaneSurface], camera: Camera, cam_from_world: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
     """Resolve the nearest opaque surface per image pixel, independently of input ordering."""
     rgba = np.zeros((camera.height, camera.width, 4), np.uint8)
     nearest = np.full((camera.height, camera.width), np.inf)
-    for surface in subject.planes():
+    for surface in surfaces:
         colors, depth = sample_image(prepare_surface(surface, camera, cam_from_world), camera)
         closer = depth < nearest
         nearest[closer], rgba[closer] = depth[closer], colors[closer]
     return rgba, nearest
 
-
-def box_intersections(actor: ActorPose, rays: np.ndarray, world_from_cam) -> np.ndarray:
-    """Ray/slab intersection with an oriented box, in metres along camera unit rays."""
-    if actor.extent is None:
-        raise ValueError("Actor bounding-box extent is unavailable for ray intersections")
-    if any(v <= 0 for v in actor.extent):
-        return np.full(len(rays), np.inf)
-    box_from_cam = np.linalg.inv(actor.transform) @ world_from_cam
-    origin = box_from_cam[:3, 3]
-    directions = rays @ box_from_cam[:3, :3].T
-    half = np.asarray(actor.extent) / 2
-    parallel = np.abs(directions) < 1e-12
-    near = np.divide(
-        -half - origin, directions, out=np.full_like(directions, -np.inf), where=~parallel
-    )
-    far = np.divide(
-        half - origin, directions, out=np.full_like(directions, np.inf), where=~parallel
-    )
-    lower, upper = np.minimum(near, far), np.maximum(near, far)
-    lower[parallel], upper[parallel] = -np.inf, np.inf
-    miss = np.any(parallel & (np.abs(origin) > half), axis=1)
-    entry, leave = lower.max(axis=1), upper.min(axis=1)
-    hit = np.where(entry > NEAR_Z, entry, leave)
-    return np.where(~miss & (leave >= entry) & (hit > NEAR_Z), hit, np.inf)

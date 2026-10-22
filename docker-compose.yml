@@ -10,7 +10,7 @@
 services:
   carla:
     image: carlasim/carla:0.9.16
-    command: ./CarlaUE4.sh -RenderOffScreen -nosound -quality-level=Epic -carla-rpc-port=2000
+    command: ./CarlaUE4.sh -RenderOffScreen -nosound -quality-level=Low -carla-rpc-port=2000
     shm_size: 2gb
     network_mode: host
     environment:

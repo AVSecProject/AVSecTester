@@ -11,20 +11,65 @@ import copy
 import dataclasses
 import math
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
+from functools import lru_cache
 from itertools import pairwise
+from pathlib import Path
 from typing import Any, ClassVar, Protocol, TYPE_CHECKING
+import zipfile
 
 from avsectester.closed_loop.datatypes import validate_command_modes
 from avsectester.closed_loop.simulator import SensorGeometry, SensorView, Simulator, SimulatorRuntime
 from avsectester.closed_loop.datatypes import Control, Observation, WorldSnapshot
+from avsectester.datasets.base import ActorState
 from avsectester.geometry.cameras import BODY_FROM_OPTICAL
+from avsectester.geometry.poses import validated_transform, validated_vector
 
 if TYPE_CHECKING:
     from avsectester.closed_loop.hooks import CameraRenderRequest
     from avsectester.geometry.cameras import Camera
+    from avsectester.geometry.mesh import MeshRaycaster
     import numpy as np
+
+
+@lru_cache(maxsize=2)
+def _cached_scene_raycaster(path: str, modified_ns: int, size: int) -> MeshRaycaster:
+    from avsectester.datasets.nurec import read_scene_mesh
+    from avsectester.geometry.mesh import MeshRaycaster
+
+    return MeshRaycaster(*read_scene_mesh(path))
+
+
+def _scene_raycaster(path: str) -> MeshRaycaster:
+    """Share two immutable scene BVHs by resolved archive path, mtime_ns and size."""
+    source = Path(path).resolve()
+    stat = source.stat()
+    return _cached_scene_raycaster(str(source), stat.st_mtime_ns, stat.st_size)
+
+
+def _actor_geometry_key(actors: Mapping[str, ActorState]) -> tuple:
+    return tuple((identity, state.extent, state.box_transform().tobytes())
+                 for identity, state in sorted(actors.items()))
+
+
+def _actor_raycaster(actors: Mapping[str, ActorState]) -> MeshRaycaster | None:
+    import numpy as np
+    import trimesh
+    from avsectester.geometry.mesh import MeshRaycaster
+
+    vertices, faces, offset = [], [], 0
+    for actor_id, state in actors.items():
+        if state.extent is None:
+            raise ValueError(f"NuRec mesh depth requires bounding-box extent for actor {actor_id!r}")
+        if min(state.extent) <= 0:
+            continue
+        mesh = trimesh.creation.box(extents=state.extent, transform=state.box_transform())
+        vertices.append(mesh.vertices)
+        faces.append(mesh.faces + offset)
+        offset += len(mesh.vertices)
+    return None if not faces else MeshRaycaster(np.vstack(vertices), np.vstack(faces))
 
 
 @dataclass
@@ -162,8 +207,8 @@ class Renderer(ABC):
         """Load a reconstruction once (no-op for the stub)."""
 
     @abstractmethod
-    def render(self, pose: EgoPose, camera: str) -> Any:
-        """Render one camera at ``pose`` — stateless given the loaded scene."""
+    def render(self, pose: EgoPose, camera: str, dynamic_objects=()) -> Any:
+        """Render one camera and the supplied track-ID/world-pose pairs at ``pose``."""
 
     def camera_model(self, camera: str | None = None) -> Camera | None:
         """Optical camera model, or None when this renderer supplies no geometry."""
@@ -189,7 +234,7 @@ class StubRenderer(Renderer):
         self.cameras = list(cameras) if cameras else ["camera_front"]
         self.height, self.width = height, width
 
-    def render(self, pose: EgoPose, camera: str):
+    def render(self, pose: EgoPose, camera: str, dynamic_objects=()):
         import numpy as np
 
         return np.zeros((self.height, self.width, 3), dtype=np.uint8)
@@ -206,13 +251,23 @@ class NuRecSimulator(Simulator):
 
     dataset_kinds = ("NuRecDataset",)
     can_render = True
+    can_insert_objects = True
 
     def __init__(
         self,
         config: dict,
         renderer: Renderer | None = None,
         dynamics: EgoDynamics | None = None,
+        *,
+        depth: str = "mesh",
     ) -> None:
+        if not isinstance(depth, str) or depth not in {"mesh", "none"}:
+            raise ValueError("NuRec depth must be 'mesh' or 'none'")
+        if depth == "mesh":
+            from avsectester.geometry.mesh import MeshRaycaster
+
+            MeshRaycaster.check_dependencies()
+        self.depth = depth
         self.config = deepcopy(config)
         self.simulator_version = str(self.config.get("simulator_version", "1"))
         self.renderer = renderer or StubRenderer()
@@ -243,6 +298,7 @@ class NuRecSimulator(Simulator):
     @property
     def identity(self):
         return {**super().identity, "config": deepcopy(self.config),
+                "depth": self.depth,
                 "renderer": type(self.renderer).__name__,
                 "endpoint": getattr(self.renderer, "endpoint", None)}
 
@@ -258,12 +314,17 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
         self.renderer = copy_renderer() if callable(copy_renderer) else copy.copy(simulator.renderer)
         self.dynamics = deepcopy(simulator.dynamics)
         self.dt = simulator.dt
+        self.depth = simulator.depth
         self.pose = EgoPose()
         self.frame = 0
         self._render_requests: dict[str, CameraRenderRequest] = {}
         # Recorded actor tracks, by archive; recorded files are immutable.
         self._track_datasets: dict[tuple, Any] = {}
         self._actor_states: tuple[int, dict] | None = None
+        self._actor_overrides: dict[str, tuple[int, ActorState]] = {}
+        self._capture_actor_states: dict[str, dict[str, ActorState]] = {}
+        self._capture_depth: dict[str, np.ndarray] = {}
+        self._capture_actor_raycasters: dict[tuple, Any] = {}
         self._recorded_end: float | None = None
 
     @property
@@ -292,7 +353,6 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
     def _ego_state(self):
         """Canonical physical ego pose; the renderer retains the recorded height and tilt."""
         import numpy as np
-        from avsectester.datasets.base import ActorState
         from avsectester.geometry.cameras import planar_rig_pose
 
         rig_transform = getattr(self.renderer, "rig_transform", None)
@@ -315,9 +375,14 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
                           (0., 0., 0.) if recorded is None else recorded.box_rotation)
 
     def _state(self) -> WorldSnapshot:
-        """Physical ego and recorded traffic, detached from model-visible observations."""
+        """Physical ego and current traffic, detached from model-visible observations."""
         return WorldSnapshot(self.pose.t, self.frame, deepcopy(self.pose), self.pose.speed,
-                             deepcopy(self._recorded_actors()), ego=self._ego_state())
+                             deepcopy(self._actors_at(self._timestamp_us(self.pose))),
+                             ego=self._ego_state())
+
+    def _timestamp_us(self, pose: EgoPose) -> int:
+        origin = 0. if self._start is None else self._start.frame.timestamp
+        return round((origin + pose.t) * 1e6)
 
     def _tracks(self):
         from avsectester.datasets.nurec import NuRecDataset
@@ -328,22 +393,64 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
             self._track_datasets[key] = NuRecDataset([key[0]], camera_id=key[1], time_step=key[2])
         return self._track_datasets[key]
 
-    def _recorded_actors(self) -> dict:
+    def _recorded_actors(self, timestamp_us: int) -> dict:
         if self._start is None or "usdz_path" not in self._start.payload:
             return {}
-        if self._actor_states is None or self._actor_states[0] != self.frame:
+        if self._actor_states is None or self._actor_states[0] != timestamp_us:
             dataset = self._tracks()
-            timestamp = round((self._start.frame.timestamp + self.pose.t) * 1e6)
-            self._actor_states = (self.frame, dataset.actor_states(self._start.payload["usdz_path"], timestamp))
+            self._actor_states = (timestamp_us, dataset.actor_states(
+                self._start.payload["usdz_path"], timestamp_us))
         return self._actor_states[1]
+
+    def _actors_at(self, timestamp_us: int) -> dict[str, ActorState]:
+        import numpy as np
+
+        actors = dict(self._recorded_actors(timestamp_us))
+        for actor_id, (origin_us, state) in self._actor_overrides.items():
+            pose = state.pose.copy()
+            pose[:3, 3] += np.asarray(state.velocity) * ((timestamp_us - origin_us) / 1e6)
+            actors[actor_id] = dataclasses.replace(state, pose=pose)
+        return actors
+
+    def set_actor_state(self, actor_id: str, state: ActorState) -> None:
+        """Override a current reconstructed actor's pose and world velocity until reset.
+
+        The given pose is its physical state at the current clock. Subsequent captures
+        extrapolate translation with the supplied velocity, retaining recorded appearance
+        and dimensions. A previous capture and its sensor-view geometry are unchanged.
+        """
+        if actor_id == "ego":
+            raise ValueError("ego is controlled by the driving system")
+        actors = self.state().actors
+        if actor_id not in actors:
+            raise KeyError(f"Unknown NuRec actor {actor_id!r}; available: {sorted(actors)}")
+        if not isinstance(state, ActorState):
+            raise TypeError("NuRec actor state must be an ActorState")
+        if state.velocity is None:
+            raise ValueError("NuRec actor overrides require a finite world velocity")
+        velocity = tuple(float(value) for value in validated_vector(state.velocity, "velocity"))
+        replacement = dataclasses.replace(actors[actor_id],
+            pose=validated_transform(state.pose), velocity=velocity)
+        self._actor_overrides[actor_id] = (self._timestamp_us(self.pose), replacement)
 
     def _initialize_world(self, start, initialization, environment):
         if initialization is not None:
             raise ValueError("CARLA replay initialization does not apply to NuRec")
         if environment:
             raise ValueError(f"Unsupported NuRec environment overrides: {sorted(environment)}")
+        if self.depth == "mesh" and start is not None:
+            path = start.payload["usdz_path"]
+            with zipfile.ZipFile(path) as archive:
+                members = set(archive.namelist())
+            missing = [name for name in ("mesh.ply", "mesh_ground.ply") if name not in members]
+            if missing:
+                raise ValueError(f"NuRec mesh depth archive {str(path)!r} is missing: {', '.join(missing)}")
         self._render_requests.clear()
         self._actor_states = None
+        self._actor_overrides.clear()
+        self._capture_actor_states.clear()
+        self._capture_depth.clear()
+        self._capture_actor_raycasters.clear()
         self._recorded_end = None
         config = deepcopy(self.config)
         if start is not None:
@@ -404,17 +511,40 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
         return SensorGeometry(aliases.get(native_camera, native_camera), camera,
                               self.renderer.cam_from_world(request.pose, request.camera))
 
-    def sensor_view(self, sensor: str) -> SensorView:
-        """View of the current capture; recorded actors come from the recorded clip."""
+    def _sensor_view(self, sensor: str) -> SensorView:
+        """View of the current capture, including its recorded or overridden actor poses."""
         if self._start is None:
             raise ValueError("NuRec sensor views require a scenario start with recorded actors")
-        return nurec_sensor_view(self, self._tracks(), sensor)
+        return nurec_sensor_view(self, sensor)
+
+    def _camera_depth(self, camera_name: str, camera: Camera,
+                      cam_from_world: np.ndarray) -> np.ndarray | None:
+        if self.depth == "none":
+            return None
+        if camera_name not in self._capture_depth:
+            from avsectester.geometry.mesh import camera_depth
+
+            actors = self._capture_actor_states[camera_name]
+            actor_key = _actor_geometry_key(actors)
+            if actor_key not in self._capture_actor_raycasters:
+                self._capture_actor_raycasters[actor_key] = _actor_raycaster(actors)
+            raycasters = [_scene_raycaster(self._start.payload["usdz_path"])]
+            actor_mesh = self._capture_actor_raycasters[actor_key]
+            if actor_mesh is not None:
+                raycasters.append(actor_mesh)
+            self._capture_depth[camera_name] = camera_depth(
+                camera, cam_from_world, raycasters,
+            )
+        return self._capture_depth[camera_name].copy()
 
     def _observe(self) -> Observation:
         from avsectester.closed_loop.hooks import CameraRenderRequest
 
         aliases = self.config.get("camera_aliases", {})
         sensor_data = {}
+        self._capture_actor_states.clear()
+        self._capture_depth.clear()
+        self._capture_actor_raycasters.clear()
         calibration = {aliases.get(key, key): value for key, value in self.renderer.calibration.items()}
         for camera in self.renderer.cameras:
             # A render request may use a false viewpoint without moving the physical ego.
@@ -427,7 +557,10 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
                 calibration.pop(output_key, None)
                 if request.camera in self.renderer.calibration:
                     calibration[output_key] = self.renderer.calibration[request.camera]
-            image = self.renderer.render(request.pose, request.camera)
+            actors = self._actors_at(self._timestamp_us(request.pose))
+            image = self.renderer.render(request.pose, request.camera,
+                dynamic_objects=tuple((identity, state.pose) for identity, state in actors.items()))
+            self._capture_actor_states[camera] = deepcopy(actors)
             sensor_data[aliases.get(camera, camera)] = self._emit(
                 "render.post", image, sensor=camera,
             )
@@ -441,22 +574,31 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
         ))
 
     def close(self) -> None:
-        self._capture = None
-        self._world_initialized = False
-        self.renderer.close()
+        self._capture_depth.clear()
+        self._capture_actor_raycasters.clear()
+        try:
+            self.renderer.close()
+        finally:
+            super().close()
 
-    # -- checkpointing: the whole world state is a small picklable dict --------------------------
+    # In-process world checkpoints retain frozen assets and loaded harmonizer references.
 
     def checkpoint(self) -> dict:
-        return {"pose": asdict(self.pose), "frame": self.frame}
+        return {"pose": asdict(self.pose), "frame": self.frame,
+                "actor_overrides": deepcopy(self._actor_overrides),
+                "objects": dict(self._objects)}
 
     def restore(self, ckpt: dict) -> None:
         self.pose = EgoPose(**ckpt["pose"])
         self.frame = ckpt["frame"]
+        self._actor_overrides = deepcopy(ckpt["actor_overrides"])
+        # Frozen placed assets and harmonizer configurations are shared; copying a
+        # harmonizer's loaded model would duplicate heavyweight native resources.
+        self._objects = dict(ckpt["objects"])
         self._render_requests.clear()
         self._world_initialized = False
         self._capture = None
-        self._capture = self._observe()
+        self._take_capture()
         self._world_initialized = True
 
 
@@ -607,12 +749,16 @@ class NuRecRenderer(Renderer):
         extrinsic = self._camera_poses.get(camera, self._rig_to_camera)
         return np.linalg.inv(self.rig_transform(pose) @ pose_from_proto(extrinsic))
 
-    def render(self, pose: EgoPose, camera: str):
+    def render(self, pose: EgoPose, camera: str, dynamic_objects=()):
         """Render one RGB frame at the ego pose via a single stateless render_rgb call."""
-        return self.render_at(self.rig_transform(pose), self.timestamp_us(pose), camera)
+        return self.render_at(self.rig_transform(pose), self.timestamp_us(pose), camera, dynamic_objects)
 
-    def render_at(self, world_from_rig, timestamp_us: int, camera: str):
-        """Render a recorded or user-provided SE(3) pose at an absolute scene timestamp."""
+    def render_at(self, world_from_rig, timestamp_us: int, camera: str, dynamic_objects=()):
+        """Render an absolute rig pose/time and all present track-ID/world-pose pairs.
+
+        Actor poses use the same reference point as sequence_tracks.json; no bounding-box
+        offset is applied. Each pose pair repeats the pose to describe an instantaneous capture.
+        """
         if self.origin_bounds is not None:
             first, last = self.origin_bounds
             if not first - 1e-6 <= timestamp_us / 1e6 <= last + 1e-6:
@@ -629,13 +775,22 @@ class NuRecRenderer(Renderer):
         if camera not in self._camera_specs:
             raise ValueError(f"Camera {camera!r} was not loaded")
         spec = self._camera_specs[camera]
-        transform = np.asarray(world_from_rig, dtype=float)
-        qx, qy, qz, qw = Rotation.from_matrix(transform[:3, :3]).as_quat()
-        rig = common_pb2.Pose(
-            vec=common_pb2.Vec3(x=transform[0, 3], y=transform[1, 3], z=transform[2, 3]),
-            quat=common_pb2.Quat(w=qw, x=qx, y=qy, z=qz),
-        )
+
+        def protobuf_pose(world_from_object):
+            transform = np.array(world_from_object, dtype=float, copy=True)
+            qx, qy, qz, qw = Rotation.from_matrix(transform[:3, :3]).as_quat()
+            return common_pb2.Pose(
+                vec=common_pb2.Vec3(x=transform[0, 3], y=transform[1, 3], z=transform[2, 3]),
+                quat=common_pb2.Quat(w=qw, x=qx, y=qy, z=qz),
+            )
+
+        rig = protobuf_pose(world_from_rig)
         cam = _compose_pose(rig, self._camera_poses[camera], common_pb2)
+        objects = []
+        for track_id, world_from_actor in dynamic_objects:
+            actor_pose = protobuf_pose(validated_transform(world_from_actor))
+            objects.append(sensorsim_pb2.DynamicObject(track_id=track_id,
+                pose_pair=sensorsim_pb2.PosePair(start_pose=actor_pose, end_pose=actor_pose)))
         frame_us = int(timestamp_us)
         req = sensorsim_pb2.RGBRenderRequest(
             scene_id=self._loaded_scene_id,
@@ -645,6 +800,7 @@ class NuRecRenderer(Renderer):
             frame_start_us=frame_us,
             frame_end_us=frame_us + 1,  # render at an instant: a non-empty [t, t+1) interval
             sensor_pose=sensorsim_pb2.PosePair(start_pose=cam, end_pose=cam),
+            dynamic_objects=objects,
             image_format=sensorsim_pb2.ImageFormat.JPEG,
             image_quality=self.image_quality,
             insert_ego_mask=False,
@@ -654,8 +810,8 @@ class NuRecRenderer(Renderer):
         return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)  # HWC uint8 RGB for the AVStack
 
 
-def nurec_sensor_view(simulator_runtime, dataset, sensor=None, data=None):
-    """Build a view directly from capture geometry and recorded actor tracks."""
+def nurec_sensor_view(simulator_runtime, sensor=None, data=None):
+    """Build a view directly from camera and actor geometry saved with this capture."""
     from avsectester.closed_loop.datatypes import read_camera_rgb
 
     renderer = simulator_runtime.renderer
@@ -675,10 +831,15 @@ def nurec_sensor_view(simulator_runtime, dataset, sensor=None, data=None):
             raise ValueError(f"Missing NuRec camera {output_key!r}")
         data = captured[1]
     cam_from_world = renderer.cam_from_world(request.pose, request.camera)
+    camera = renderer.camera_model(request.camera)
+    if camera is None:
+        raise ValueError(f"NuRec camera {output_key!r} has no camera geometry")
     return SensorView(
-        output_key, data, renderer.camera_model(request.camera),
+        output_key, data, camera,
         cam_from_world,
-        dataset.actor_poses(payload["usdz_path"], timestamp), ego, truth.t, truth.frame,
+        {identity: state.box_pose() for identity, state in
+         simulator_runtime._capture_actor_states[native_camera].items()}, ego, truth.t, truth.frame,
         sensor_from_world=BODY_FROM_OPTICAL @ cam_from_world,
+        depth=simulator_runtime._camera_depth(native_camera, camera, cam_from_world),
         native={"render_request": request, "timestamp_us": timestamp},
     )

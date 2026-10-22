@@ -31,6 +31,8 @@ sequenceDiagram
     participant D as AVStack
     participant L as Recorder
     R->>S: observe and state (no advancement)
+    S->>S: compose registered world objects into captured camera data
+    S-->>R: composed capture
     R->>A: step(subscribed snapshots)
     A-->>R: world, sensor and AVStack actions
     R->>R: apply sensor actions, then sensor environment
@@ -48,6 +50,15 @@ call. Input transforms execute once; the localizer is not reset again. World act
 a decision cannot change its already captured input. They affect subsequent capture. Sensor and
 AVStack actions operate on current-decision values.
 
+InsertObject is a WorldAttackAction with setup_ticks=0. A setup insertion appears from the first
+capture; a step insertion appears from the next one. All camera composition happens before sensor
+attack actions, sensor environment and VehicleIO. state().objects is separate from native actors,
+and StepRecord.physical_pre/physical_post retain those object records in RunLog. The receipt's
+details contain only object_id, asset_category and world_from_object. Capture-time visibility is
+recorded separately in StepRecord.object_visibility and the initialization event as
+object ID → camera name → ObjectVisibility. See
+[Insert a world object](../guides/attacks.md#insert-a-world-object).
+
 Attack actions have three boundaries: WorldAttackAction changes the simulated world;
 SensorAttackAction changes any sensor capture, including LiDAR, GNSS and IMU; AVStackAttackAction
 changes driving-system values from localization.pre through command. Sensor actions chain in issue
@@ -59,6 +70,8 @@ SensorView.camera and cam_from_world are optional and only describe optical came
 sensor_from_world is the world-to-sensor-body transform (x forward, y left, z up), including for
 cameras. It is distinct from cam_from_world (x right, y down, z forward) and is None when pose data
 is unavailable. SimulatorRuntime.sensors lists all sensor views, and camera_sensors is its subset.
+SensorView.objects maps visible object IDs to their PlacedObject values for this camera and capture.
+Cuboid-based insertion visibility uses their alpha-aware surfaces alongside the native actor boxes.
 
 ### CARLA LiDAR data
 
@@ -153,7 +166,7 @@ Native frames can include initialization ticks and are not the dataset position.
 |---|---|
 | Observation | t, frame, sensor_data, calibration, vehicle_state, ego_speed; model-visible |
 | Control | throttle, steer, brake, optional trajectory |
-| WorldSnapshot | t, frame, vehicle_state, ego_speed, ego, other actors; physical |
+| WorldSnapshot | t, frame, vehicle_state, ego_speed, ego, actors, traffic_lights and objects; physical |
 | ActorState | world-from-actor pose, velocity, category, extent, local box center |
 | Detection | ego-frame position, full extent, yaw, category and score |
 | RecordedOutput | name, copied value, decision step, stage, physical frame/time and sensor |
@@ -166,12 +179,27 @@ position is its box center in the true ego frame at capture time, using sensor m
 independently of driving localization, with ego x forward, y left, z up; yaw is radians. None
 detections means unsupported, while an empty sequence means supported with no detections.
 
+WorldSnapshot.traffic_lights maps semantic-map TrafficControl IDs to red, yellow, green, off or
+unknown. CARLA reads signal actors using their OpenDRIVE IDs; NuRec and recorded replay currently
+return an empty mapping. The static map itself is available to selection and saved evaluation,
+not to OnlineContext or AVStack input.
+
 ## RunLog
 
 StepRecord stores raw_observation, model_observation, physical_pre, physical_post, produced_command,
-executed_command, components, detections, actions, outputs, typed sensor_geometry and telemetry.
+executed_command, components, detections, actions, outputs, typed sensor_geometry, object_visibility
+and telemetry.
 physical_pre and physical_post are StepRecord fields. Action requests and receipts distinguish what
-was requested from what actually applied. EventRecord captures initialization, termination and
+was requested from what actually applied. Every receipt has a details mapping, filled when the
+action applies and defaulting to {}. InsertionAttackAction adds rendered, reason, occlusion_source
+(depth or actor_cuboids) and ignored_occluders (actors without extent). InsertObject adds
+object_id, asset_category and world_from_object.
+
+StepRecord.object_visibility, the initialization event and RenderResult.object_visibility map object
+ID → camera name → ObjectVisibility for that capture. ObjectVisibility is a frozen record with
+occlusion_source, ignored_occluders and visible_pixels. Camera entries follow
+[Inserted world objects](../guides/simulators.md#inserted-world-objects). EventRecord captures
+initialization, termination and
 failure/cleanup information outside a decision. RunLog.status distinguishes completed, failed,
 cancelled and incomplete logs.
 

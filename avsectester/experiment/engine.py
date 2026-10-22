@@ -10,8 +10,8 @@ from pathlib import Path
 from typing import Any
 
 from avsectester.attack import AttackSegment, OfflineContext
-from avsectester.datasets import FrameData, ScenarioStart
-from avsectester.datasets.base import nonnegative
+from avsectester.datasets import ScenarioStart
+from avsectester.datasets.base import Unavailable, nonnegative
 from avsectester.attack.runtime import AttackRuntime
 from avsectester.closed_loop.environment import merge_environments, validate_environment
 from avsectester.closed_loop.frame_data import FrameDataCache
@@ -22,8 +22,10 @@ from avsectester.closed_loop.services import (
 )
 from avsectester.closed_loop.simulator import DeploymentPlan
 from avsectester.runlog import Recorder, RunLog
+from avsectester.maps import ScenarioMap
 
 from .config import ExperimentConfiguration, TreatmentConfiguration, load_configuration
+from .persistence import preparation_record
 from .models import (ExperimentResult, PreparedExperiment, SelectionDecision, TreatmentResult,
                      run_directory, treatment_applies)
 
@@ -43,15 +45,15 @@ def _hooks(spec: Any, seed: int) -> HookSet:
 
 def validate_configuration_environment(config: ExperimentConfiguration) -> None:
     """Check every enabled environment before preparation can create a world."""
-    validate_environment(config.environment, config.simulator)
+    validate_environment(config.runs.environment, config.simulator)
     for name, attack in config.attacks.items():
         if not isinstance(attack.environment, Mapping):
             raise TypeError(f"Attack {name!r} environment must be a mapping")
-        validate_environment(merge_environments(config.environment, attack.environment), config.simulator)
-    for treatment in config.treatments:
+        validate_environment(merge_environments(config.runs.environment, attack.environment), config.simulator)
+    for treatment in config.runs.treatments:
         attack = config.attacks[treatment.attack_name] if treatment.attack_name is not None else None
         validate_environment(merge_environments(
-            config.environment, attack.environment if attack is not None else {}, treatment.environment,
+            config.runs.environment, attack.environment if attack is not None else {}, treatment.environment,
         ), config.simulator)
 
 
@@ -65,11 +67,6 @@ def _segments(attack: Any, view: Any, config: ExperimentConfiguration) -> tuple[
         config.dataset.checked_frame(segment.scenario_id, segment.start)
         config.dataset.checked_frame(segment.scenario_id, segment.stop)
         config.dataset.decision_window(segment.scenario_id, segment.start, segment.decision_steps)
-        if segment.roles:
-            available = view.frame_data(segment.start).actors
-            missing = {identity for identities in segment.roles.values() for identity in identities} - available.keys()
-            if missing:
-                raise ValueError(f"Selected roles contain actors absent at the start: {sorted(missing)}")
     return selected
 
 
@@ -89,7 +86,9 @@ class Experiment:
         artifacts: dict[str, Any] = {}
         selections: list[SelectionDecision] = []
         cache = FrameDataCache()
-        seed = configuration.seeds[0]
+        seed = configuration.runs.seeds[0]
+        # Record the inputs before any work, so unsupported values fail before selection.
+        preparation = preparation_record(configuration)
         for name, attack in configuration.attacks.items():
             selected: list[AttackSegment] = []
             for scenario in configuration.dataset.scenarios():
@@ -113,11 +112,11 @@ class Experiment:
                         name, scenario.id, "error", tuple(view.reasons) if view is not None else (),
                         f"{type(error).__name__}: {error}",
                     ))
-                    if configuration.strict:
+                    if configuration.runs.strict:
                         raise
             metadata[name] = tuple(selected)
             deployment = _deployment_plan(configuration, name, metadata[name])
-            environment = merge_environments(configuration.environment, attack.environment)
+            environment = merge_environments(configuration.runs.environment, attack.environment)
             with ClosedLoopServices(
                 configuration.dataset, configuration.simulator,
                 configuration.avstack, cache, deployment=deployment,
@@ -125,9 +124,12 @@ class Experiment:
                 artifacts[name] = attack.run_offline(OfflineContext(
                     services, metadata[name], seed, environment, deployment,
                 ))
-        prepared = PreparedExperiment(configuration, metadata, artifacts, tuple(selections))
-        if configuration.output is not None:
-            prepared.save(configuration.output)
+        prepared = PreparedExperiment(
+            configuration, metadata, artifacts, tuple(selections),
+            preparation=preparation,
+        )
+        if configuration.runs.output is not None:
+            prepared.save(configuration.runs.output)
         return prepared
 
     @staticmethod
@@ -168,10 +170,10 @@ def _deployment_plan(config: ExperimentConfiguration, attack_name: str,
     """Use one budget across preparation, segments, seeds and comparison treatments."""
     attack = config.attacks[attack_name]
     ticks = 0
-    for treatment in config.treatments:
+    for treatment in config.runs.treatments:
         if not treatment_applies(treatment, attack_name):
             continue
-        for seed in config.seeds:
+        for seed in config.runs.seeds:
             hooks = _hooks(config.hooks, seed)
             _validate_setup_ticks(hooks.setup_ticks)
             for segment in segments:
@@ -197,12 +199,12 @@ class _Execution:
         config = self.configuration
         attack = config.attacks[group.attack_name]
         environment = merge_environments(
-            config.environment, attack.environment if treatment.attack_name is not None else {},
+            config.runs.environment, attack.environment if treatment.attack_name is not None else {},
             treatment.environment,
         )
         destination = None
-        if config.output is not None:
-            destination = run_directory(config.output, group.attack_name, group.index,
+        if config.runs.output is not None:
+            destination = run_directory(config.runs.output, group.attack_name, group.index,
                                         group.seed, treatment.name)
         metadata: dict[str, Any] = {
             "attack_name": group.attack_name, "segment_index": group.index,
@@ -236,13 +238,13 @@ class _Execution:
             group.attack_name, group.index, group.segment, treatment.name, group.seed, log,
             f"{type(error).__name__}: {error}",
         ))
-        if self.configuration.strict:
+        if self.configuration.runs.strict:
             raise error
 
     def _treatments(self, group: _Group) -> tuple[_Treatment, ...]:
         config = self.configuration
         result = []
-        for treatment in config.treatments:
+        for treatment in config.runs.treatments:
             if not treatment_applies(treatment, group.attack_name):
                 continue
             runtime = None
@@ -269,7 +271,7 @@ class _Execution:
                     for pending in result:
                         stop_unstarted_attacks((pending.attack_runtime,), group.segment.start, error)
                     raise
-                if config.strict:
+                if config.runs.strict:
                     for pending in result:
                         stop_unstarted_attacks((pending.attack_runtime,), group.segment.start, error)
                 self._failed(group, treatment, error)
@@ -287,17 +289,7 @@ class _Execution:
             with ClosedLoopServices(
                 config.dataset, config.simulator, frame_data_cache=self.cache, deployment=deployment,
             ) as services, services.session(group.seed) as session:
-                initialization = session.initialization(start, config.environment)
-        if segment.roles:
-            record = (initialization.expected if initialization is not None
-                      else config.dataset.frame_data(segment.scenario_id, segment.start))
-            if not isinstance(record, FrameData):
-                raise ValueError("Selected roles require actor data at the execution start")
-            required = {identity for identities in segment.roles.values() for identity in identities}
-            missing = required - record.actors.keys()
-            if missing:
-                raise ValueError(f"Selected role actors absent at start for seed {group.seed}: "
-                                 f"{sorted(missing)}")
+                initialization = session.initialization(start, config.runs.environment)
         return start, initialization
 
     def _run_treatment(self, group: _Group, treatment: _Treatment,
@@ -312,7 +304,7 @@ class _Execution:
                 request = RunRequest(
                     group.decision_steps, hooks=treatment.hooks,
                     attacks=(treatment.attack_runtime,) if treatment.attack_runtime is not None else (),
-                    recording=config.recording, output_path=destination, metadata=metadata,
+                    recording=config.runs.recording, output_path=destination, metadata=metadata,
                     start=deepcopy(start), initialization=deepcopy(initialization),
                     deployment=deployment, environment=metadata["environment"],
                 )
@@ -356,11 +348,23 @@ class _Execution:
                 raise
 
     def run(self) -> ExperimentResult:
+        scenario_maps: dict[str, ScenarioMap | Unavailable] = {}
+        for segments in self.prepared.metadata.values():
+            for segment in segments:
+                if segment.scenario_id not in scenario_maps:
+                    scenario_map = self.configuration.dataset.scenario_map(segment.scenario_id)
+                    if not isinstance(scenario_map, (ScenarioMap, Unavailable)):
+                        raise TypeError("Dataset.scenario_map must return ScenarioMap or Unavailable")
+                    scenario_maps[segment.scenario_id] = scenario_map
+        if self.configuration.runs.output is not None:
+            from .persistence import save_scenario_maps
+
+            save_scenario_maps(scenario_maps, self.configuration.runs.output)
         for attack_name, segments in self.prepared.metadata.items():
             for index, segment in enumerate(segments):
                 steps = segment.decision_steps
-                if self.configuration.decision_steps is not None:
-                    steps = min(steps, self.configuration.decision_steps)
-                for seed in self.configuration.seeds:
+                if self.configuration.runs.decision_steps is not None:
+                    steps = min(steps, self.configuration.runs.decision_steps)
+                for seed in self.configuration.runs.seeds:
                     self._run_group(_Group(attack_name, index, segment, seed, steps))
-        return ExperimentResult(tuple(self.runs), self.prepared.selections)
+        return ExperimentResult(tuple(self.runs), self.prepared.selections, scenario_maps=scenario_maps)

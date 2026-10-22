@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 
 from avsectester.geometry.cameras import (
-    BODY_FROM_OPTICAL, FThetaCamera, PinholeCamera, make_pose, planar_rig_pose, transform,
+    BODY_FROM_OPTICAL, FThetaCamera, PinholeCamera, camera_ray_mask, make_pose, planar_rig_pose, transform,
 )
 
 
@@ -29,6 +29,12 @@ def test_unproject(camera):
     points = np.array([[0., 0., 1.], [.3, -.2, 1.], [-.7, .5, 1.]])
     rays = camera.unproject(camera.project(points))
     np.testing.assert_allclose(rays, points / np.linalg.norm(points, axis=1, keepdims=True), atol=1e-10)
+
+
+@pytest.mark.parametrize("camera", CAMERAS, ids=["pinhole", "ftheta"])
+def test_camera_ray_mask(camera):
+    rays = np.array([[0., 0., 1.], [0., 0., -1.], [np.nan, 0., 1.]])
+    np.testing.assert_array_equal(camera_ray_mask(camera, rays), [True, False, False])
 
 
 def test_camera_world_transform():

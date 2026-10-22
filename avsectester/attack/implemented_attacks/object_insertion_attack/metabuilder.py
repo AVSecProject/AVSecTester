@@ -1,5 +1,5 @@
 """Select clean-view visibility windows without applying insertion actions."""
-from dataclasses import replace
+from dataclasses import asdict, replace
 
 import numpy as np
 
@@ -43,7 +43,10 @@ def build_metadata(attack, scenario):
                                   keep_tail=attack.keep_tail)
     if attack.max_segments is not None:
         selected = selected[:attack.max_segments]
-    roles = {"host": (placement.host,)} if isinstance(placement, AttachedPlacement) else {}
-    return tuple(replace(segment, roles=roles, placement=placement,
-        selection_score=min(scores[position] for position in range(
-            segment.start.position, segment.stop.position))) for segment in selected)
+    placement_data = asdict(placement)
+    placement_data["kind"] = "attached" if isinstance(placement, AttachedPlacement) else "world"
+    return tuple(replace(segment, user_data={
+        "placement": placement_data,
+        "score": min(scores[position] for position in range(
+            segment.start.position, segment.stop.position)),
+    }) for segment in selected)

@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
+from itertools import chain
 import numpy as np
 
 from avsectester.geometry.poses import ActorPose
 from .assets import ResolvedInsertion
-from avsectester.geometry.cameras import Camera
-from .geometry import box_intersections, prepare_surface, rasterize
+from avsectester.geometry.cameras import Camera, camera_ray_mask
+from avsectester.geometry.projection import visible_plane_mask
+from avsectester.geometry.projection import box_ray_distances
+from avsectester.rendering.surfaces import prepare_surface, rasterize
+from avsectester.rendering import PlacedObject
 from .types import Visibility, VisibilityEvidence
 
 
@@ -22,7 +27,7 @@ class _VisibilityEstimator:
         self.max_reference_pixels = max_reference_pixels
 
     def _prepare(self, subject, camera, cam_from_world, source, camera_name):
-        projection, reason = rasterize(subject, camera, cam_from_world, self.max_reference_pixels)
+        projection, reason = rasterize(subject.planes(), camera, cam_from_world, self.max_reference_pixels)
         shape = (camera.height, camera.width)
         reference = np.zeros(shape, dtype=bool)
         rgba = np.zeros((*shape, 4), np.uint8)
@@ -49,8 +54,7 @@ class _VisibilityEstimator:
         )
         ray_indices = ys * width + xs
         rays = projection.rays[ray_indices]
-        if hasattr(camera, "max_angle"):
-            valid &= np.arctan2(np.hypot(rays[:, 0], rays[:, 1]), rays[:, 2]) <= camera.max_angle
+        valid &= camera_ray_mask(camera, rays)
         selected = ray_indices[valid]
         image_x, image_y = image_x[valid], image_y[valid]
         reference[image_y, image_x] = True
@@ -76,7 +80,20 @@ class _VisibilityEstimator:
             evidence.reference_pixels,
             reason,
             evidence.sampled_rgba,
+            evidence.ignored_occluders,
         )
+
+
+def _surface_occlusion_distances(
+    subject_id, other_insertions, world_objects, camera, cam_from_world, rays,
+):
+    proposed = (surface for other in other_insertions if other.id != subject_id
+                for surface in other.planes())
+    inserted = (surface for placed in world_objects for surface in placed.world_surfaces())
+    distance = np.full(len(rays), np.inf)
+    for surface in chain(proposed, inserted):
+        distance = np.minimum(distance, prepare_surface(surface, camera, cam_from_world).sample(rays)[0])
+    return distance
 
 
 class CuboidVisibilityEstimator(_VisibilityEstimator):
@@ -84,7 +101,8 @@ class CuboidVisibilityEstimator(_VisibilityEstimator):
 
     Keep the host in ``occluders`` so that body panels can obscure their mounted objects. Missing
     buildings, vegetation and other unlabeled geometry are not inferred. Result source is always
-    ``cuboid_estimate``. Explicit insertion surfaces use their alpha masks.
+    ``actor_cuboids``. Proposed insertions and world-object surfaces use their alpha masks.
+    Actor IDs without known extents are skipped and recorded in the evidence.
     """
 
     def estimate(
@@ -96,9 +114,12 @@ class CuboidVisibilityEstimator(_VisibilityEstimator):
         occluders: Mapping[str, ActorPose],
         camera_name: str,
         other_insertions: Sequence[ResolvedInsertion] = (),
+        world_objects: Sequence[PlacedObject] = (),
     ) -> VisibilityEvidence:
-        source = "cuboid_estimate"
+        source = "actor_cuboids"
         state, evidence = self._prepare(subject, camera, cam_from_world, source, camera_name)
+        evidence = replace(evidence, ignored_occluders=tuple(
+            identity for identity, actor in occluders.items() if actor.extent is None))
         if state is None:
             return evidence
         projection, indices, xs, ys = state
@@ -107,20 +128,14 @@ class CuboidVisibilityEstimator(_VisibilityEstimator):
         world_from_cam = np.linalg.inv(cam_from_world)
         # Native actor IDs and insertion IDs belong to different namespaces. Even an
         # identically named host must remain an occluder of its mounted surface.
-        for identity, actor in occluders.items():
+        for actor in occluders.values():
             if actor.extent is None:
-                return self._finish(evidence, np.zeros_like(evidence.reference_mask), source,
-                                    camera_name, f"Occluder {identity!r} bounding-box extent is unavailable")
+                continue
             blocking_depth = np.minimum(
-                blocking_depth, box_intersections(actor, rays, world_from_cam)
+                blocking_depth, box_ray_distances(actor, rays, world_from_cam)
             )
-        for other in other_insertions:
-            if other.id != subject.id:
-                for surface in other.planes():
-                    blocking_depth = np.minimum(
-                        blocking_depth,
-                        prepare_surface(surface, camera, cam_from_world).sample(rays)[0],
-                    )
+        blocking_depth = np.minimum(blocking_depth, _surface_occlusion_distances(
+            subject.id, other_insertions, world_objects, camera, cam_from_world, rays))
         visible = np.zeros_like(evidence.reference_mask)
         visible[ys, xs] = projection.distance[indices] <= blocking_depth + self.tolerance_m
         return self._finish(evidence, visible, source, camera_name)
@@ -131,7 +146,8 @@ class DepthVisibilityEstimator(_VisibilityEstimator):
 
     ``depth_convention`` must be ``'z'`` for optical-axis depth or ``'range'`` for ray distance.
     The depth image must represent the same camera pose, lens and instant as the target geometry.
-    Invalid depth at a target pixel makes the result unknown rather than silently visible.
+    Positive infinity means no scene intersection. NaN or nonpositive depth at a target pixel
+    makes the result unknown rather than silently visible.
     """
 
     def __init__(self, *, tolerance_m: float = 0.0002, max_reference_pixels: int = 4_000_000):
@@ -153,27 +169,41 @@ class DepthVisibilityEstimator(_VisibilityEstimator):
         scene_depth = np.asarray(scene_depth, dtype=float)
         if scene_depth.shape != (camera.height, camera.width):
             raise ValueError("scene_depth must have the calibrated camera's image shape")
-        source = "depth_comparison"
+        source = "depth"
         state, evidence = self._prepare(subject, camera, cam_from_world, source, camera_name)
         if state is None:
             return evidence
         projection, indices, xs, ys = state
         measured = scene_depth[ys, xs]
         visible = np.zeros_like(evidence.reference_mask)
-        if np.any(~np.isfinite(measured) | (measured <= 0)):
+        if np.any(np.isnan(measured) | (measured <= 0)):
             return self._finish(
                 evidence, visible, source, camera_name, "Invalid depth at target pixels"
             )
         rays = projection.rays[indices]
-        target = projection.distance[indices]
-        if depth_convention == "z":
-            target = target * rays[:, 2]
-        visible[ys, xs] = target <= measured + self.tolerance_m
-        for other in other_insertions:
-            if other.id != subject.id:
-                for surface in other.planes():
-                    distance = prepare_surface(surface, camera, cam_from_world).sample(rays)[0]
-                    visible[ys, xs] &= projection.distance[indices] <= distance + self.tolerance_m
+        z_depth = scene_depth
+        z_tolerance = self.tolerance_m
+        if depth_convention == "range":
+            # Only opaque reference pixels are consumed below; their rays already
+            # belong to the same lens/pixel centres as the calibrated scene depth.
+            z_depth = np.full_like(scene_depth, np.inf)
+            z_depth[ys, xs] = (measured + self.tolerance_m) * rays[:, 2]
+            z_tolerance = 0.
+        for surface in subject.planes():
+            sampler = prepare_surface(surface, camera, cam_from_world)
+            distance = sampler.sample(rays)[0]
+            # Only the nearest opaque texel contributes. A nearer plane's transparent hole
+            # must not make an occluded farther surface visible.
+            winning = np.isclose(distance, projection.distance[indices], rtol=1e-10, atol=1e-10)
+            if not winning.any():
+                continue
+            plane_visible = visible_plane_mask(
+                camera, cam_from_world, z_depth, surface.corners, z_tolerance,
+                bounds=sampler.bounds)
+            visible[ys[winning], xs[winning]] |= plane_visible[ys[winning], xs[winning]]
+        distance = _surface_occlusion_distances(
+            subject.id, other_insertions, (), camera, cam_from_world, rays)
+        visible[ys, xs] &= projection.distance[indices] <= distance + self.tolerance_m
         return self._finish(evidence, visible, source, camera_name)
 
 
@@ -228,7 +258,8 @@ def visibility_from_depth(
     footprint is the FULL projected silhouette, including portions outside the camera image.
     target_depth may come from an isolated reference render or known surface geometry. The
     target and camera poses must match the scene measurement. Depth outside image_bounds is
-    not needed and may be NaN. Depth inside the target's in-image footprint must be valid.
+    not needed and may be NaN. Target depth inside the in-image footprint must be finite and
+    positive; positive infinite scene depth means no scene intersection.
     """
     footprint = np.asarray(footprint, dtype=bool)
     target_depth, scene_depth = np.asarray(target_depth), np.asarray(scene_depth)
@@ -244,7 +275,7 @@ def visibility_from_depth(
     if not np.all(
         np.isfinite(target_depth[required])
         & (target_depth[required] > 0)
-        & np.isfinite(scene_depth[required])
+        & ~np.isnan(scene_depth[required])
         & (scene_depth[required] > 0)
     ):
         raise ValueError("Depth evidence is missing or invalid inside the target footprint")
@@ -254,4 +285,4 @@ def visibility_from_depth(
         camera=camera,
         image_bounds=image_bounds,
     )
-    return None if result is None else Visibility(result.fraction, "depth_comparison", camera)
+    return None if result is None else Visibility(result.fraction, "depth", camera)

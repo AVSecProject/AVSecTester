@@ -32,7 +32,7 @@ tests/
       implemented_attacks/         one shared attack lifecycle template and unique behaviors
       optimization/                PGD/NES objective-decrease template
       insertion/                   geometry, alpha/depth composition, visibility and textures
-    geometry/                      pose and camera numerical tests
+    geometry/                      pose, camera, sampling-grid and visibility numerical tests
     runlog/                        Recorder/RunLog and codec registry public APIs
     evaluation/                    metric template, evaluation reports and plots
     test_cli.py                    run, evaluate and version
@@ -73,7 +73,8 @@ ruff check .
 mypy
 ```
 
-The core environment needs the test extra. Native tests additionally need avstack and the native
+The full offline suite needs both test and nurec extras, including Embree for synthetic NuRec depth.
+Native tests additionally need avstack and the native
 SDK dependencies. The detector template builds each configured model and forwards synthetic
 inputs without checkpoint weights. Cases explicitly skip when an optional detector package or its
 external model configuration checkout is unavailable. Core memory tests require no model weights,

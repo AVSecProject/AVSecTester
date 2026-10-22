@@ -9,21 +9,22 @@
 ## Experiment environment
 
 An environment has two independent parts: `world`, applied by the simulator at reset, and `sensors`,
-applied to captured model inputs. Settings merge in this order: experiment base, enabled
+applied to captured model inputs. Settings merge in this order: runs.environment, enabled
 Attack.environment, treatment overrides. World mappings merge recursively; an explicitly provided
 sensor list replaces the preceding list.
 
 ```yaml
-environment:
-  world: {weather: SoftRainNoon}
-  sensors:
-    - {type: GaussianNoise, options: {severity: 0.2}, camera: front}
-treatments:
-  - {name: clean}
-  - name: heavy_noise
-    environment:
-      sensors:
-        - {type: GaussianNoise, options: {severity: 0.7}, camera: front}
+runs:
+  environment:
+    world: {weather: SoftRainNoon}
+    sensors:
+      - {type: GaussianNoise, options: {severity: 0.2}, camera: front}
+  treatments:
+    - {name: clean}
+    - name: heavy_noise
+      environment:
+        sensors:
+          - {type: GaussianNoise, options: {severity: 0.7}, camera: front}
 ```
 
 Metabuilders do not inherit the experiment base environment. They must request any alternative
@@ -61,15 +62,22 @@ does not reproduce physical rainfall. World settings remain separate.
 `AlbumentationsCorruption` selects an Albumentations transform through its options and uses the
 augment extra. It is configured as a sensor transform, not a parallel augmentation pipeline. The
 transform option is required and must name a supported transform; the recorded transform label
-includes that name. For example:
+includes that name. This complete configuration reuses the repository's small in-memory test
+components to demonstrate offline loading; it needs neither a simulator server nor model weights:
 
 <!-- runnable -->
 ```yaml
-environment:
-  sensors:
-    - type: AlbumentationsCorruption
-      options: {transform: Fog, severity: 0.5}
-      camera: front
+dataset: {type: "tests.fakes:MemoryDataset"}
+simulator: {type: "tests.fakes:MemorySimulator"}
+avstack: {type: "tests.fakes:ConstantAVStack"}
+attacks:
+  probe: {type: "tests.fakes:MinimalAttack"}
+runs:
+  environment:
+    sensors:
+      - type: AlbumentationsCorruption
+        options: {transform: Fog, severity: 0.5}
+        camera: front
 ```
 
 ## Custom sensor environments

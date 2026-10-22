@@ -18,10 +18,10 @@ def write_configuration(directory, *, output="results", world=None):
         "simulator": {"type": "tests.fakes:MemorySimulator"},
         "avstack": {"type": "tests.fakes:ConstantAVStack"},
         "attacks": {"probe": {"type": "tests.fakes:MinimalAttack"}},
-        "output": output,
+        "runs": {"output": output},
     }
     if world is not None:
-        specification["environment"] = {"world": world}
+        specification["runs"]["environment"] = {"world": world}
     path = directory / "experiment.yaml"
     path.write_text(yaml.safe_dump(specification))
     return path
@@ -43,7 +43,19 @@ def test_run(tmp_path):
     assert repeated.exit_code == 2 and "already exists" in repeated.output
     assert (output / "evaluation/report.json").read_bytes() == report
 
-    second_path = write_configuration(tmp_path / "reused")
+    second_path = write_configuration(tmp_path / "reused", world={"weather": "rain"})
+    second_configuration = yaml.safe_load(second_path.read_text())
+    second_configuration["runs"]["seeds"] = [1]
+    second_path.write_text(yaml.safe_dump(second_configuration))
+    mismatched_seed = runner.invoke(cli.app, ["run", str(second_path), "--prepared", str(output)])
+    assert mismatched_seed.exit_code == 2, mismatched_seed.output
+    assert "preparation configuration differs" in mismatched_seed.output
+    second_configuration["runs"]["seeds"] = [0, 1]
+    second_path.write_text(yaml.safe_dump(second_configuration))
+    mismatched_environment = runner.invoke(cli.app, ["run", str(second_path), "--prepared", str(output)])
+    assert mismatched_environment.exit_code == 2, mismatched_environment.output
+    second_configuration["runs"].pop("environment")
+    second_path.write_text(yaml.safe_dump(second_configuration))
     reused = runner.invoke(cli.app, ["run", str(second_path), "--prepared", str(output)])
     assert reused.exit_code == 0, reused.output
     assert (tmp_path / "reused/results/prepared.json").read_bytes() == (output / "prepared.json").read_bytes()

@@ -14,13 +14,13 @@ simulator:
     config:
       dt: 0.1
     renderer:
-      type: NuRecRenderer
+      type: avsectester.closed_loop.simulators.nurec:NuRecRenderer
       options:
         endpoint: 127.0.0.1:50051
         cameras:
         - camera_front_wide_120fov
     dynamics:
-      type: TrajectoryFollower
+      type: avsectester.closed_loop.simulators.nurec:TrajectoryFollower
       options: {}
 avstack:
   type: AlpamayoAVStack
@@ -30,15 +30,6 @@ avstack:
     - camera_front_wide_120fov
     device: cuda:1
     output_frequency_hz: 10
-seeds:
-- 0
-recording:
-  sensor_ids:
-  - camera_front_wide_120fov
-  representations:
-  - model_input
-  every_n_steps: 1
-output: ../results/nurec_patch
 attacks:
   patch:
     type: PatchAttack
@@ -52,12 +43,22 @@ attacks:
       candidate_hosts:
       - '15'
       hosts_per_window: 1
-      texture:
-        type: CheckerboardTexture
+      assets:
+        type: avsectester.attack.insertion.assets:CheckerboardTexture
         options:
           size: 256
           cells: 8
-treatments:
-- name: clean
-- name: patch
-  attack_name: patch
+runs:
+  treatments:
+  - name: clean
+  - name: patch
+    attack_name: patch
+  seeds:
+  - 0
+  recording:
+    sensor_ids:
+    - camera_front_wide_120fov
+    representations:
+    - model_input
+    every_n_steps: 1
+  output: ../results/nurec_patch

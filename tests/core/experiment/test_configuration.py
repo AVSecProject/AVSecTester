@@ -30,7 +30,7 @@ def test_load_configuration(tmp_path):
     assert isinstance(loaded.simulator, MemorySimulator)
     assert isinstance(loaded.avstack.factory(0), ConstantAVStack)
     assert isinstance(loaded.attacks["probe"], MinimalAttack)
-    assert [(item.name, item.attack_name) for item in loaded.treatments] == [
+    assert [(item.name, item.attack_name) for item in loaded.runs.treatments] == [
         ("clean", None), ("probe", "probe"),
     ]
     assert load_configuration(loaded) is loaded
@@ -38,17 +38,21 @@ def test_load_configuration(tmp_path):
     Image.new("RGBA", (3, 2), (255, 255, 255, 255)).save(tmp_path / "texture.png")
     (tmp_path / "attack.yaml").write_text(yaml.safe_dump({
         "type": "tests.fakes:MinimalAttack", "options": {"assets": {
-            "type": "ImageTexture", "options": {"image": "texture.png"},
+            "type": "avsectester.attack.insertion.assets:ImageTexture", "options": {"image": "texture.png"},
         }},
     }))
     spec["attacks"] = {"probe": "attack.yaml"}
-    spec["output"] = "results"
+    spec["runs"] = {"output": "results"}
     path = tmp_path / "experiment.yaml"
     path.write_text(yaml.safe_dump(spec))
     for source in (str(path), path):
         loaded = load_configuration(source)
-        assert loaded.output == tmp_path / "results"
+        assert loaded.runs.output == tmp_path / "results"
         assert Path(loaded.attacks["probe"].assets.image) == tmp_path / "texture.png"
+
+    spec["dataset"] = {"type": "CarlaDataset", "options": {"recipes": {}, "map_directory": "maps"}}
+    path.write_text(yaml.safe_dump(spec))
+    assert load_configuration(path).dataset.map_directory == tmp_path / "maps"
 
     for bundled in (Path(__file__).resolve().parents[3] / "configs").glob("*.yaml"):
         configuration = load_configuration(bundled)
@@ -66,7 +70,7 @@ def test_load_configuration(tmp_path):
 
 
 def test_resolve_type():
-    assert resolve_type("WorldPlacement") is WorldPlacement
+    assert resolve_type("avsectester.attack.placement:WorldPlacement") is WorldPlacement
     assert resolve_type("tests.fakes:ConstantAVStack") is ConstantAVStack
     assert resolve_type("PatchAttack").__name__ == "PatchAttack"
     with pytest.raises(ValueError, match="Available attacks"):
@@ -77,11 +81,11 @@ def test_resolve_type():
 
 def test_validate_configuration_environment():
     spec = specification()
-    spec["environment"] = {"sensors": [
+    spec["runs"] = {"environment": {"sensors": [
         {"type": "GaussianNoise", "options": {"severity": .1}, "camera": "front"},
-    ]}
+    ]}}
     configuration = load_configuration(spec)
     validate_configuration_environment(configuration)
-    spec["environment"] = {"world": {"unsupported_setting": True}}
+    spec["runs"]["environment"] = {"world": {"unsupported_setting": True}}
     with pytest.raises(ValueError, match="does not support"):
         validate_configuration_environment(load_configuration(spec))

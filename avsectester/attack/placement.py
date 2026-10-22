@@ -93,16 +93,15 @@ def placement_from_spec(value: Any) -> AttachedPlacement | WorldPlacement:
     if isinstance(value, Mapping):
         if set(value) - {"type", "options"} or "type" not in value:
             raise ValueError("Placement requires only type and options")
-        classes = {"AttachedPlacement": AttachedPlacement, "WorldPlacement": WorldPlacement}
+        classes = {f"{kind.__module__}:{kind.__name__}": kind
+                   for kind in (AttachedPlacement, WorldPlacement)}
         kind = value["type"]
         if not isinstance(kind, str) or kind not in classes:
             raise ValueError(f"Unknown placement type {kind!r}; choose from {tuple(classes)}")
         options = value.get("options", {})
         if not isinstance(options, Mapping):
             raise TypeError("Placement options must be a mapping")
-        if kind == "AttachedPlacement":
-            return AttachedPlacement(**options)
-        return WorldPlacement(**options)
+        return classes[kind](**options)
     if not isinstance(value, (AttachedPlacement, WorldPlacement)):
         raise TypeError("placement must be AttachedPlacement or WorldPlacement")
     return value
@@ -113,8 +112,9 @@ def orientation_from_spec(value: Any) -> Orientation:
     if value is None:
         return Orientation("face_ego")
     if isinstance(value, Mapping):
-        if set(value) - {"type", "options"} or value.get("type") != "Orientation":
-            raise ValueError("Orientation requires {type: Orientation, options: {...}}")
+        if (set(value) - {"type", "options"}
+                or value.get("type") != f"{Orientation.__module__}:{Orientation.__name__}"):
+            raise ValueError("Orientation requires its full module:Class type and options")
         options = value.get("options", {})
         if not isinstance(options, Mapping):
             raise TypeError("Orientation options must be a mapping")

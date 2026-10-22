@@ -5,7 +5,7 @@ dataset:
   options:
     recipes:
       town03_lead:
-        type: CarlaRecipe
+        type: avsectester.datasets.carla:CarlaRecipe
         options:
           time_step: 0.05
           decision_steps: 60
@@ -37,17 +37,17 @@ dataset:
             npcs: []
           motion:
             ego:
-              type: PrescribedMotion
+              type: avsectester.datasets.carla:PrescribedMotion
               options:
                 constant_control:
-                  type: Control
+                  type: avsectester.closed_loop.datatypes:Control
                   options:
                     throttle: 0.35
             lead:
-              type: PrescribedMotion
+              type: avsectester.datasets.carla:PrescribedMotion
               options:
                 constant_control:
-                  type: Control
+                  type: avsectester.closed_loop.datatypes:Control
                   options:
                     brake: 1.0
 simulator:
@@ -69,19 +69,6 @@ avstack:
     detector_dataset: carla-vehicle
     area_brake: 0.03
     throttle: 0.55
-seeds:
-- 0
-evaluation:
-  metrics:
-  - type: DrivingMetrics
-  - type: StopImpact
-recording:
-  sensor_ids:
-  - camera-0-0
-  representations:
-  - model_input
-  every_n_steps: 1
-output: ../results/carla_object_insertion
 attacks:
   object:
     type: ObjectInsertionAttack
@@ -89,22 +76,36 @@ attacks:
       decision_steps: 20
       max_segments: 1
       assets:
-        type: SignAsset
+        type: avsectester.rendering.signs:SignAsset
         options: {}
       sensor: camera-0-0
       placement:
-        type: WorldPlacement
+        type: avsectester.attack.placement:WorldPlacement
         options:
           position_m:
           - 28.0
           - -3.0
           - 0.0
       orientation:
-        type: Orientation
+        type: avsectester.attack.placement:Orientation
         options:
           mode: face_ego
       placement_relative_to_ego_origin: true
-treatments:
-- name: clean
-- name: object
-  attack_name: object
+evaluation:
+  metrics:
+  - type: DrivingMetrics
+  - type: StopImpact
+runs:
+  treatments:
+  - name: clean
+  - name: object
+    attack_name: object
+  seeds:
+  - 0
+  recording:
+    sensor_ids:
+    - camera-0-0
+    representations:
+    - model_input
+    every_n_steps: 1
+  output: ../results/carla_object_insertion

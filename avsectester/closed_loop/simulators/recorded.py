@@ -22,6 +22,7 @@ class RecordedReplaySimulator(Simulator):
 
     dataset_kinds = ("NuScenesDataset",)
     can_render = True
+    can_insert_objects = True
 
     def __init__(self, start: ScenarioStart | None = None) -> None:
         self.start = deepcopy(start)
@@ -114,7 +115,7 @@ class RecordedReplaySimulatorRuntime(SimulatorRuntime):
         return SensorGeometry(sensor, deepcopy(metadata["camera"]),
                               np.linalg.inv(np.asarray(data.ego.pose) @ metadata["ego_from_sensor"]))
 
-    def sensor_view(self, sensor: str) -> SensorView:
+    def _sensor_view(self, sensor: str) -> SensorView:
         """Calibrated recorded RGB frame and cuboids in the recorded world."""
         from avsectester.closed_loop.datatypes import read_camera_rgb
 
@@ -146,6 +147,5 @@ class RecordedReplaySimulatorRuntime(SimulatorRuntime):
         return deepcopy(data)
 
     def close(self):
-        self._capture = None
-        self._world_initialized = False
         self._frames = ()
+        super().close()

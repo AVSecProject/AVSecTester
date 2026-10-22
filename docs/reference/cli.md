@@ -24,14 +24,16 @@ artifacts, executes treatments and evaluates their logs. With --prepared, it val
 existing preparation instead of selecting and optimizing again. Prepared artifacts must be fully
 loaded before execution. All attack inputs and returned artifacts remain explicit.
 
-The configuration must provide output and exactly one attack. A zero-attack or multi-attack
+The configuration must provide runs.output and exactly one attack. A zero-attack or multi-attack
 configuration is an error; use a selection-only Attack for environment comparisons or a composite
 Attack for combined actions. Treatments share metadata and vary attack_name and environment.
 
 Configuration controls models, devices, decision limits, treatments, recording and evaluation. The
-CLI does not override them. Existing output/runs is rejected rather than overwritten. Choose a fresh
-output when reusing preparation. Output, recording and metrics can change; incompatible simulator,
-dataset and attack inputs fail preparation compatibility checks.
+CLI does not override them. Run settings are nested under runs. Existing runs.output/runs is
+rejected rather than overwritten. Choose a fresh runs.output when reusing preparation. Reuse
+requires the same dataset, simulator and attack inputs, the same first seed and the same offline
+environments; other run settings and metrics can change. See
+[Saved preparation compatibility](configuration.md#saved-preparation-compatibility).
 
 The terminal prints the output directory, selection/execution errors including exception types, and
 failed runs in non-strict mode. Reports contain every available run status. A partial report uses
@@ -39,7 +41,7 @@ only preparation saved in this invocation; stale preparation from another run is
 
 ## Evaluate
 
-`evaluate EXPERIMENT.yaml` reads configured output and recomputes all treatment-pair metrics. It
+`evaluate EXPERIMENT.yaml` reads runs.output and recomputes all treatment-pair metrics. It
 replaces evaluation outputs and leaves saved runs and preparation intact. No dataset scenarios or
 frames, model inference, simulator connection or attack artifacts are needed. Missing saved
 preparation/results produces a clear error. Corrupt run logs are recorded as failed; other logs
@@ -66,6 +68,7 @@ report never implies successful completion.
   attacks/<attack-name>/metadata.json
   attacks/<attack-name>/artifacts.pkl
   attacks/<attack-name>/manifest.json
+  maps/<scenario-id>.json
   runs/<attack-name>/segment-<NNNNN>/seed-<S>/<treatment>/
   evaluation/report.json
   evaluation/runs.csv

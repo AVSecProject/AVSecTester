@@ -21,6 +21,7 @@ from avsectester.attack.runtime import AttackRuntime
 from avsectester.closed_loop.avstack import AVStack
 from avsectester.closed_loop.datatypes import Control, Detection, Observation, WorldSnapshot
 from avsectester.closed_loop.simulator import SensorGeometry, SensorView, Simulator, SimulatorRuntime
+from avsectester.closed_loop.simulators.nurec import Renderer
 from avsectester.datasets import ActorState, Dataset, FrameData, FrameReference, ScenarioDescriptor, ScenarioStart
 from avsectester.geometry.cameras import BODY_FROM_OPTICAL, PinholeCamera
 
@@ -35,12 +36,52 @@ def actor_state(position=(10., 0., 1.), speed=0.):
     return ActorState(pose, (speed, 0., 0.), "vehicle", (4., 2., 2.))
 
 
+def assert_scenario_map(scenario_map, ego):
+    """Shared semantic-map contract: ego lies on a lane, controls face approaching traffic."""
+    import cv2
+
+    assert any(cv2.pointPolygonTest(np.concatenate((lane.left_boundary[:, :2],
+        lane.right_boundary[::-1, :2])).astype(np.float32), tuple(ego.pose[:2, 3]), False) >= 0
+        for lane in scenario_map.lanes.values())
+    controls = [control for control in scenario_map.traffic_controls.values() if control.lane_ids]
+    nearest = {}
+    for control in controls:
+        candidates = []
+        for identity in control.lane_ids:
+            points = scenario_map.lanes[identity].centerline
+            vectors = np.diff(points, axis=0)
+            lengths = np.linalg.norm(vectors, axis=1)
+            for index in np.flatnonzero(lengths > 0):
+                vector = vectors[index]
+                fraction = np.clip((control.pose[:3, 3] - points[index]) @ vector
+                                   / lengths[index] ** 2, 0., 1.)
+                point = points[index] + fraction * vector
+                distance = np.linalg.norm(control.pose[:3, 3] - point)
+                candidates.append((distance, vector / lengths[index], point))
+        assert candidates, f"Control {control.id!r} has no nonzero governed-lane tangent"
+        nearest[control.id] = min(candidates, key=lambda item: item[0])
+    for control in (value for value in controls
+                    if value.kind in {"stop_sign", "yield_sign", "traffic_light"}):
+        _distance, tangent, _point = nearest[control.id]
+        assert control.pose[:3, 0] @ tangent < 0, f"Control {control.id!r} faces along traffic"
+    for control in (value for value in controls if value.pose_reference == "face_center"):
+        height = control.pose[2, 3] - nearest[control.id][2][2]
+        assert .3 <= height <= 8., f"Control {control.id!r} has implausible face-centre height {height}"
+
+
 class MemoryDataset(Dataset):
     """A calibrated camera, one stationary lead vehicle and an evenly spaced timeline."""
 
-    def __init__(self, scenario_ids=("scene",), decision_steps=6, time_step=.1, dataroot=None):
+    def __init__(self, scenario_ids=("scene",), decision_steps=6, time_step=.1, dataroot=None,
+                 maps=None):
         self.scenario_ids = tuple(scenario_ids)
         self.decision_steps, self.time_step, self.dataroot = decision_steps, time_step, dataroot
+        self.maps = dict(maps or {})
+
+    def scenario_map(self, scenario_id):
+        if scenario_id not in self.scenario_ids:
+            raise KeyError(scenario_id)
+        return self.maps[scenario_id] if scenario_id in self.maps else super().scenario_map(scenario_id)
 
     def scenarios(self):
         return iter(ScenarioDescriptor(name, "memory") for name in self.scenario_ids)
@@ -69,14 +110,20 @@ class MemorySimulator(Simulator):
 
     dataset_kinds = ("memory",)
     can_render = True
+    can_insert_objects = True
     command_modes = frozenset({"actuator"})
     supported_world_settings = frozenset({"weather", "lighting", "fail", "interrupt"})
 
     def __init__(self, time_step=.1, capture_ticks=0, resource_key=None, fail_position=None,
-                 extra_sensors=None):
+                 extra_sensors=None, camera_geometries=None, sensor_depths=None, actors=None):
         self.time_step, self.capture_ticks = time_step, capture_ticks
         self.resource_key, self.fail_position = resource_key, fail_position
         self.extra_sensors = deepcopy(extra_sensors or {})
+        self.camera_geometries = deepcopy(camera_geometries if camera_geometries is not None else {
+            "front": SensorGeometry("front", CAMERA, CAM_FROM_WORLD),
+        })
+        self.sensor_depths = deepcopy(sensor_depths or {})
+        self.initial_actors = deepcopy(actors if actors is not None else {"lead": actor_state()})
 
     @property
     def decision_time_step(self):
@@ -106,7 +153,7 @@ class MemorySimulatorRuntime(SimulatorRuntime):
 
     def _initialize_world(self, start, initialization, environment):
         self.position, self.distance, self.speed = 0, 0., 1.
-        self.actors = {"lead": actor_state()}
+        self.actors = deepcopy(self.simulator.initial_actors)
         self._native = {"objects": {}, "world": deepcopy(environment)}
         self.closed = False
 
@@ -126,9 +173,10 @@ class MemorySimulatorRuntime(SimulatorRuntime):
 
     def _observe(self):
         color = 20 + self.position
-        rgb = np.full((80, 100, 3), color, np.uint8)
+        images = {sensor: np.full((geometry.camera.height, geometry.camera.width, 3), color, np.uint8)
+                  for sensor, geometry in self.simulator.camera_geometries.items()}
         return Observation(self.position * self.simulator.time_step, self.position,
-                           {"front": rgb, **deepcopy(self.simulator.extra_sensors)}, ego_speed=self.speed)
+                           {**images, **deepcopy(self.simulator.extra_sensors)}, ego_speed=self.speed)
 
     def _state(self):
         return WorldSnapshot(self.position * self.simulator.time_step, self.position,
@@ -148,23 +196,24 @@ class MemorySimulatorRuntime(SimulatorRuntime):
 
     @property
     def sensors(self):
-        return frozenset({"front", *self.simulator.extra_sensors})
+        return frozenset({*self.simulator.camera_geometries, *self.simulator.extra_sensors})
 
     @property
     def camera_sensors(self):
-        return frozenset({"front"})
+        return frozenset(self.simulator.camera_geometries)
 
     def sensor_geometry(self, sensor):
-        if sensor != "front":
+        if sensor not in self.camera_sensors:
             raise ValueError(f"Unknown memory camera: {sensor}")
-        transform = CAM_FROM_WORLD.copy()
+        geometry = self.simulator.camera_geometries[sensor]
+        transform = geometry.cam_from_world.copy()
         transform[:, 3] -= transform[:, 0] * self.distance
-        return SensorGeometry(sensor, CAMERA, transform)
+        return SensorGeometry(sensor, geometry.camera, transform)
 
-    def sensor_view(self, sensor):
+    def _sensor_view(self, sensor):
         if sensor not in self.sensors:
             raise ValueError(f"Unknown memory sensor: {sensor}")
-        observation, state = self.observe(), self.state()
+        observation, state = self._capture, self.state()
         data = observation.sensor_data[sensor]
         body_from_world = np.eye(4)
         body_from_world[0, 3] = -self.distance
@@ -172,11 +221,13 @@ class MemorySimulatorRuntime(SimulatorRuntime):
         if sensor in self.camera_sensors:
             geometry = self.sensor_geometry(sensor)
             camera, cam_from_world = geometry.camera, geometry.cam_from_world
+            body_from_world = BODY_FROM_OPTICAL @ cam_from_world
         elif not isinstance(data, np.ndarray):
             data = getattr(data, "data", data)
         return SensorView(sensor, data, camera, cam_from_world,
                           {key: value.box_pose() for key, value in state.actors.items()},
                           state.ego.box_pose(), state.t, state.frame,
+                          depth=deepcopy(self.simulator.sensor_depths.get(sensor)),
                           sensor_from_world=body_from_world)
 
     def set_actor_state(self, actor_id, state):
@@ -193,6 +244,7 @@ class MemorySimulatorRuntime(SimulatorRuntime):
         return FrameData(frame, actors=state.actors, ego=state.ego)
 
     def close(self):
+        super().close()
         self.closed = True
         self._world_initialized = False
         self._capture = None
@@ -252,6 +304,9 @@ class MinimalAttack(Attack):
         from avsectester.attack.segments import split_segments
         return split_segments(scenario.frames, lambda frame: True, decision_steps=self.decision_steps)[:self.max_segments]
 
+    def run_offline(self, context):
+        return self.assets
+
     def create_runtime(self, segment, artifacts):
         return MinimalAttackRuntime(segment, self.stop_marker_path)
 
@@ -285,6 +340,7 @@ class NuRecRpcBoundary:
 
     def __init__(self):
         self.last_request = None
+        self.requests = []
         self.mount = SimpleNamespace(vec=SimpleNamespace(x=0., y=0., z=1.5),
             quat=SimpleNamespace(w=.5, x=-.5, y=.5, z=-.5))
         self.spec = SimpleNamespace(resolution_h=12, resolution_w=16, ftheta_param=SimpleNamespace(
@@ -293,13 +349,16 @@ class NuRecRpcBoundary:
             linear_cde=SimpleNamespace(linear_c=1., linear_d=0., linear_e=0.)))
 
     def get_available_scenes(self, request):
+        self.requests.append(request)
         return SimpleNamespace(scene_ids=["scene"])
 
     def get_available_cameras(self, request):
+        self.requests.append(request)
         return SimpleNamespace(available_cameras=[SimpleNamespace(logical_id="front",
             intrinsics=self.spec, rig_to_camera=self.mount)])
 
     def get_available_trajectories(self, request):
+        self.requests.append(request)
         pose = SimpleNamespace(vec=SimpleNamespace(x=0., y=0., z=.3),
                                quat=SimpleNamespace(w=1., x=0., y=0., z=0.))
         return SimpleNamespace(available_trajectories=[SimpleNamespace(trajectory=SimpleNamespace(
@@ -308,6 +367,7 @@ class NuRecRpcBoundary:
     def render_rgb(self, request):
         from io import BytesIO
         from PIL import Image
+        self.requests.append(request)
         self.last_request = request
         image = np.full((request.resolution_h, request.resolution_w, 3), 30, np.uint8)
         stream = BytesIO()
@@ -319,7 +379,8 @@ class NuRecRpcBoundary:
                                  Vec3=SimpleNamespace, Empty=SimpleNamespace)
         sensor = SimpleNamespace(AvailableCamerasRequest=SimpleNamespace,
             AvailableTrajectoriesRequest=SimpleNamespace, RGBRenderRequest=SimpleNamespace,
-            PosePair=SimpleNamespace, ImageFormat=SimpleNamespace(JPEG=1))
+            PosePair=SimpleNamespace, DynamicObject=SimpleNamespace,
+            ImageFormat=SimpleNamespace(JPEG=1))
         modules = {
             "grpc": {"insecure_channel": lambda endpoint: SimpleNamespace(close=lambda: None)},
             "alpasim_grpc": {}, "alpasim_grpc.v0": {"common_pb2": common,
@@ -331,6 +392,37 @@ class NuRecRpcBoundary:
             vars(module).update(values)
             monkeypatch.setitem(sys.modules, name, module)
         return self
+
+
+class NuRecImageBoundary(Renderer):
+    """A deterministic image service boundary with a chosen optical lens model."""
+
+    cameras = ["front"]
+
+    def __init__(self, camera):
+        self.camera = camera
+
+    def camera_model(self, camera=None):
+        if camera not in {None, "front"}:
+            raise ValueError(f"Unknown camera {camera!r}")
+        return self.camera
+
+    def timestamp_us(self, pose):
+        return (self.origin_timestamp_us or 0) + round(pose.t * 1e6)
+
+    def rig_transform(self, pose):
+        from avsectester.geometry.cameras import planar_rig_pose
+
+        z = 0. if self.origin_transform is None else self.origin_transform[2, 3]
+        return planar_rig_pose(pose.x, pose.y, pose.yaw, z)
+
+    def cam_from_world(self, pose, camera=None):
+        rig_from_camera = BODY_FROM_OPTICAL.copy()
+        rig_from_camera[2, 3] = 1.5
+        return np.linalg.inv(self.rig_transform(pose) @ rig_from_camera)
+
+    def render(self, pose, camera, dynamic_objects=()):
+        return np.full((self.camera.height, self.camera.width, 3), 30, np.uint8)
 
 
 class CarlaVector:
@@ -431,6 +523,22 @@ class CarlaActor:
         self.destroyed = True
 
 
+class CarlaTrafficLight(CarlaActor):
+    def __init__(self, world, actor_id, signal_id, state="Red"):
+        super().__init__(world, actor_id, "traffic.traffic_light")
+        self.signal_id = signal_id
+        self.state = state
+
+    def get_opendrive_id(self):
+        return self.signal_id
+
+    def get_state(self):
+        return self.state
+
+    def set_state(self, state):
+        self.state = state
+
+
 class CarlaSensorManager:
     def __init__(self):
         self.data = {"front": deque()}
@@ -456,6 +564,14 @@ class CarlaLidarCapture:
 
     def __deepcopy__(self, memo):
         raise TypeError("Native CARLA capture cannot be deep-copied")
+
+
+class CarlaImageData(SimpleNamespace):
+    """ImageData's RGB accessor follows its replaceable pixel buffer."""
+
+    @property
+    def rgb_image(self):
+        return self.data
 
 
 class CarlaMobileActor:
@@ -510,10 +626,13 @@ class CarlaMobileActor:
         return SimpleNamespace(position=pose.position, attitude=pose.attitude, velocity=self.actor.velocity)
 
     def capture(self, frame, timestamp, frame_offset=0):
+        # Identical physical scenes have identical pixels even when reset setup ticks
+        # give their captures different native clock/frame metadata.
+        color = int(round(self.actor.transform.location.x * 1000)) % 255
         sensor = self.sensors["front"]
-        payload = SimpleNamespace(frame=frame - sensor.frame0 + frame_offset,
+        payload = CarlaImageData(frame=frame - sensor.frame0 + frame_offset,
             timestamp=timestamp - sensor.t0,
-            rgb_image=np.full((12, 16, 3), frame % 255, np.uint8),
+            data=np.full((12, 16, 3), color, np.uint8),
             calibration=SimpleNamespace(reference=SimpleNamespace(reference=self.reference)))
         self.sensor_data_manager.data["front"].append(payload)
         if "lidar" in self.sensors:
@@ -532,6 +651,7 @@ class CarlaWorld:
         self.frame, self.time = 0, 0.
         self.dt = 1 / config.get("rate", 10.)
         self.actors, self.vehicles = [], []
+        self.actors.append(CarlaTrafficLight(self, 10000, "signal-1"))
         self.config, self.frame_offset = config, frame_offset
         self.weather = None
         self.layers = []
@@ -646,6 +766,8 @@ class CarlaNativeBoundary:
             throttle=throttle, brake=brake, steer=steer)
         carla.WeatherParameters = lambda **values: SimpleNamespace(**values)
         carla.MapLayer = SimpleNamespace(Buildings="Buildings")
+        carla.TrafficLightState = SimpleNamespace(Red="Red", Yellow="Yellow", Green="Green", Off="Off",
+                                                 Unknown="Unknown")
         monkeypatch.setitem(sys.modules, "carla", carla)
         monkeypatch.setitem(sys.modules, "avcarla", ModuleType("avcarla"))
         monkeypatch.setitem(sys.modules, "avcarla.config", SimpleNamespace(CARLA=self))

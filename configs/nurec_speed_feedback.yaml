@@ -14,13 +14,13 @@ simulator:
     config:
       dt: 0.1
     renderer:
-      type: NuRecRenderer
+      type: avsectester.closed_loop.simulators.nurec:NuRecRenderer
       options:
         endpoint: 127.0.0.1:50051
         cameras:
         - camera_front_wide_120fov
     dynamics:
-      type: TrajectoryFollower
+      type: avsectester.closed_loop.simulators.nurec:TrajectoryFollower
       options: {}
 avstack:
   type: AlpamayoAVStack
@@ -30,15 +30,6 @@ avstack:
     - camera_front_wide_120fov
     device: cuda:1
     output_frequency_hz: 10
-seeds:
-- 0
-recording:
-  sensor_ids:
-  - camera_front_wide_120fov
-  representations:
-  - model_input
-  every_n_steps: 1
-output: ../results/nurec_speed_feedback
 attacks:
   speed:
     type: SpeedFeedbackAttack
@@ -48,7 +39,17 @@ attacks:
       target_speed: 12.0
       gain: 0.1
       max_bias: 5.0
-treatments:
-- name: clean
-- name: speed
-  attack_name: speed
+runs:
+  treatments:
+  - name: clean
+  - name: speed
+    attack_name: speed
+  seeds:
+  - 0
+  recording:
+    sensor_ids:
+    - camera_front_wide_120fov
+    representations:
+    - model_input
+    every_n_steps: 1
+  output: ../results/nurec_speed_feedback

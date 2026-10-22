@@ -6,11 +6,13 @@ import numpy as np
 import pytest
 
 from avsectester.attack.runtime import (
-    AttackRuntime, AVStackAttackAction, SensorAttackAction, WorldAttackAction,
+    AttackRuntime, AVStackAttackAction, InsertObject, SensorAttackAction, WorldAttackAction,
 )
 from avsectester.closed_loop.datatypes import Control, Detection
 from avsectester.closed_loop.hooks import Hook, HookSet
 from avsectester.closed_loop.runner import ClosedLoopRunner, RecordingPolicy, RunRequest
+from avsectester.runlog import RunLog
+from avsectester.rendering import ObjectVisibility
 from tests.fakes import ConstantAVStack, MemoryDataset, MemorySimulator
 
 
@@ -131,6 +133,7 @@ def test_run_with_attacks(tmp_path):
     receipts += [action for action in record.actions if action["kind"] == "receipt"]
     assert {action["category"] for action in receipts} == {"world", "sensor", "avstack"}
     assert all(action["outcome"] == "applied" for action in receipts)
+    assert all(isinstance(action["details"], dict) for action in receipts)
 
 
 def test_run_failure(tmp_path):
@@ -157,6 +160,74 @@ def test_run_failure(tmp_path):
         with pytest.raises(KeyboardInterrupt) as cancelled:
             ClosedLoopRunner().run(simulator_runtime, ConstantAVStack(interrupt_on_position=0), RunRequest(1))
         assert cancelled.value.run_log.status == "cancelled"
+
+
+def test_insert_object(tmp_path, make_object_in_front):
+    with MemorySimulator().create_runtime() as simulator_runtime:
+        simulator_runtime.reset()
+        clean = simulator_runtime.sensor_view("front")
+        asset, world_from_object = make_object_in_front(clean)
+
+        class InsertAttackRuntime(AttackRuntime):
+            def setup(self, context):
+                return (InsertObject("sign", asset, world_from_object),)
+
+        log = ClosedLoopRunner().run(simulator_runtime, ConstantAVStack(), RunRequest(
+            2, attacks=(InsertAttackRuntime(),), recording=RECORDING, output_path=tmp_path / "run"))
+        assert log.status == "completed"
+        record = log.steps[0]
+        assert np.any(record.raw_observation.sensor_data["front"] != clean.data)
+        assert record.physical_pre.objects.keys() == record.physical_post.objects.keys() == {"sign"}
+        assert simulator_runtime.state().objects == {}
+        receipts = [item for event in log.events for item in event.data.get("actions", ())
+                    if item["kind"] == "receipt"]
+        insertion = next(item for item in receipts if item.get("details", {}).get("object_id") == "sign")
+        assert insertion["outcome"] == "applied"
+        assert set(insertion["details"]) == {"object_id", "asset_category", "world_from_object"}
+        assert insertion["details"]["asset_category"] == "stop_sign"
+        np.testing.assert_allclose(insertion["details"]["world_from_object"], world_from_object)
+        initialization = next(event for event in log.events if event.kind == "initialization")
+        assert initialization.data["object_visibility"] == record.object_visibility
+        for step in log.steps:
+            assert set(step.object_visibility) == {"sign"}
+            assert set(step.object_visibility["sign"]) == {"front"}
+            assert isinstance(step.object_visibility["sign"]["front"], ObjectVisibility)
+            assert step.object_visibility["sign"]["front"].visible_pixels > 0
+        saved = RunLog.read(tmp_path / "run")
+        assert [step.object_visibility for step in saved.steps] == [
+            step.object_visibility for step in log.steps]
+
+        class RemoveObject(WorldAttackAction):
+            def apply(self, simulator_runtime, resources):
+                simulator_runtime.remove_object("sign")
+
+        class InsertThenRemoveAttackRuntime(InsertAttackRuntime):
+            def step(self, context):
+                return (RemoveObject(),)
+
+        removed = ClosedLoopRunner().run(simulator_runtime, ConstantAVStack(), RunRequest(
+            1, attacks=(InsertThenRemoveAttackRuntime(),)))
+        assert removed.status == "completed"
+        assert removed.steps[0].physical_pre.objects.keys() == {"sign"}
+        assert removed.steps[0].physical_post.objects == simulator_runtime.state().objects == {}
+
+    restored_log = RunLog.read(tmp_path / "run")
+    restored_insertion = next(item for event in restored_log.events
+                              for item in event.data.get("actions", ())
+                              if item["kind"] == "receipt"
+                              and item.get("details", {}).get("object_id") == "sign")
+    assert set(restored_insertion["details"]) == set(insertion["details"])
+    assert restored_insertion["details"]["asset_category"] == "stop_sign"
+    for actual, expected in zip(restored_log.steps, log.steps):
+        assert actual.object_visibility == expected.object_visibility
+        assert isinstance(actual.object_visibility["sign"]["front"], ObjectVisibility)
+    restored_initialization = next(event for event in restored_log.events if event.kind == "initialization")
+    assert restored_initialization.data["object_visibility"] == initialization.data["object_visibility"]
+    restored = restored_log.steps[0]
+    for state in (restored.physical_pre.objects["sign"], restored.physical_post.objects["sign"]):
+        np.testing.assert_allclose(state.pose, world_from_object)
+        assert state.extent == asset.extent and state.category == asset.category
+        assert state.box_center == (0., 0., 1.)
 
 
 def test_run_rejects_invalid_request():

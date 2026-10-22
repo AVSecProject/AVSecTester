@@ -11,13 +11,14 @@
 | Entry point | Input | Return |
 |---|---|---|
 | `build_metadata(scenario)` | ScenarioView, user assets and parameters | Sequence of AttackSegment |
-| `run_offline(context)` | ClosedLoopServices and all selected metadata | Artifacts; defaults to assets unchanged |
+| `run_offline(context)` | ClosedLoopServices and all selected metadata | Artifacts; defaults to None |
 | `create_runtime(segment, artifacts)` | One selected segment and prepared artifacts | Fresh AttackRuntime |
 
-Only `build_metadata` is abstract. An attack without assets leaves `assets=None`. An attack without
-optimization uses the default offline phase. A selection-only attack uses the empty runtime. Attack
-configuration holds reusable parameters; mutable online history belongs to its runtime. Artifacts
-are explicit return values, never a second mutable Attack property.
+Only `build_metadata` is abstract. The base Attack owns no assets. An attack that needs assets
+defines its own constructor parameter and run_offline implementation, which may return those
+assets unchanged. A selection-only attack uses the default None artifacts and empty runtime.
+Attack configuration holds reusable parameters; mutable online history belongs to its runtime.
+Artifacts are explicit return values, never a second mutable Attack property.
 
 Each experiment requires exactly one Attack. Every treatment shares its metadata and changes only
 attack enablement and environment settings. Use one composite Attack to apply several actions
@@ -79,10 +80,55 @@ every rejected frame or host. Each scenario keeps at most 100 distinct reasons; 
 are counted under "Other selection reasons". Within `scenario.services.session(seed)`, request
 sensor samples, actions-based rendering, component evaluations, scores or rollouts.
 
-`AttackSegment` includes scenario_id, start, stop, roles, placement and optional selection_score,
-selection_rank and user_data. Roles map user-defined names to stable actor IDs. They can be empty.
-The framework validates records and required actor existence; it does not interpret scores, rerank
-records or supply filters. A single attack owns all metadata used by its experiment treatments.
+Use SensorRequest(..., views=True) when offline preparation needs each sample's camera geometry,
+actors or ego pose. SensorSample.views contains one detached SensorView per requested sensor;
+view.native is empty. view.data is the capture before sensor environment transforms, while
+sample.observation includes those transforms. views defaults to False and then the mapping is
+empty, avoiding depth computation and extra data copies. Requesting views requires can_render.
+
+sensor_data reads a world without attack actions and can reuse one simulator runtime for forward
+scans. render applies world or sensor attack actions and creates a fresh world for each request.
+Both can return calibrated views; render remains the entry point for evaluating deployed actions.
+
+This offline example uses the repository's shared in-memory components to collect several samples.
+A real attack substitutes its ScenarioView.services and selected frames, then passes the returned
+images and geometry into its own optimizer:
+
+<!-- runnable -->
+```python
+import numpy as np
+from avsectester.closed_loop.services import ClosedLoopServices, SensorRequest
+from tests.fakes import MemoryDataset, MemorySimulator
+
+dataset = MemoryDataset()
+environment = {"sensors": [{"type": "GaussianNoise", "camera": "front",
+                             "options": {"severity": 0.2}}]}
+with ClosedLoopServices(dataset, MemorySimulator()) as services:
+    scenario = services.scenario("scene", seed=7)
+    with services.session(scenario.seed) as session:
+        samples = [session.sensor_data(SensorRequest(
+            scenario.scenario_id, frame, ("front",), environment, views=True))
+            for frame in scenario.frames[1:4]]
+        plain = session.sensor_data(SensorRequest("scene", scenario.frames[3], ("front",)))
+
+optimization_samples = [
+    {"image": sample.views["front"].data, "camera": sample.views["front"].camera,
+     "cam_from_world": sample.views["front"].cam_from_world,
+     "actors": sample.views["front"].actors, "ego": sample.views["front"].ego}
+    for sample in samples]
+assert len(optimization_samples) == 3 and not plain.views
+assert all(sample.views["front"].native == {} for sample in samples)
+assert all(sample["cam_from_world"].shape == (4, 4) for sample in optimization_samples)
+assert np.any(samples[0].observation.sensor_data["front"] != optimization_samples[0]["image"])
+```
+
+`AttackSegment` has exactly four fixed fields: scenario_id, start, stop and user_data. Put all
+custom data, including actor IDs, placement parameters and any scores or ranks, in user_data.
+Data that must be persisted can contain only JSON-like values or numpy arrays; convert custom
+placement objects to data before storing them. The framework validates segment boundaries and
+saves records without interpreting custom data, checking selected actors, ranking records or
+supplying filters. An attack must report missing actors when it uses them. A single attack owns
+all metadata used by its experiment treatments.
 
 `split_segments(frames, eligible, *, decision_steps, keep_tail=False)` returns AttackSegment
 records. `eligible(frame)` runs once in order for every nonterminal frame. It never runs on the
@@ -128,12 +174,162 @@ placement assumptions valid in your optimizer if the attack requires them. See
 
 ## Reuse framework tools
 
-The public avsectester.attack.insertion package provides asset surfaces, compositing, visibility and
-harmonizer extension points. The public avsectester.attack.optimization package provides DataSource,
-objective, perturbation and scorer contracts plus PGD, NES and SessionScorer. These are independent
-tools; an attack composes them in its own offline and online implementations. See [Image
+The public avsectester.attack.insertion package provides insertion assets, placement resolution,
+compositing and visibility. avsectester.rendering provides simulator-independent ObjectAsset,
+PlaneSurface, surface rendering, composition and harmonizer extension points. The public
+avsectester.attack.optimization package provides DataSource, objective, perturbation and scorer
+contracts plus PGD, NES and SessionScorer. An attack composes these tools in its own offline and
+online implementations. See [Image
 insertion](../examples/image-insertion.md#use-insertion-tools-in-your-attack) and
 [Optimization](optimization.md#use-the-optimization-tools).
+
+## Insert a world object
+
+Return InsertObject from AttackRuntime.setup to make an arbitrary textured object visible from the
+first capture. Returning it from step makes it visible from the next capture. The action registers
+cleanup, so the object is removed when the run ends. The framework composites it into every camera;
+the native simulator does not need a matching blueprint or reconstructed actor.
+
+ObjectAsset contains rectangular PlaneSurface faces with RGBA textures. Its right-handed local
+frame has its origin at the bottom center, +X pointing out of the front, +Y to the left and +Z up.
+extent is the full (length, width, height), with the horizontal box centered on the origin and its
+bottom at z=0. Every corner must lie inside that box. ObjectAsset.from_surfaces infers those extents
+without moving the origin. avsectester.rendering exports SignAsset for custom signs and
+stop_sign_asset for the supplied stop-sign face and posts. Existing built-in attacks retain their
+own deployment implementations.
+
+world_from_object is a rigid 4×4 transform from that local frame into canonical world coordinates.
+Selection can derive it from ScenarioView.frame_data(frame).ego.pose, an actor pose or a semantic
+map feature, then save it in AttackSegment.user_data. Account for the source feature's reference
+point: a TrafficControl pose and an asset's bottom-center origin need not coincide. Compute any
+mounting offset before returning InsertObject.
+
+This minimal example inserts a sign eight metres ahead, facing ego:
+
+<!-- runnable -->
+```python
+import numpy as np
+from avsectester.attack import AttackRuntime, InsertObject
+from avsectester.closed_loop.runner import ClosedLoopRunner, RunRequest
+from avsectester.rendering.signs import stop_sign_asset
+from tests.fakes import ConstantAVStack, MemorySimulator
+
+asset = stop_sign_asset()
+world_from_object = np.eye(4)
+world_from_object[:3, :3] = np.diag([-1.0, -1.0, 1.0])
+world_from_object[:3, 3] = (8.0, 0.0, 0.0)
+
+class PlaceSignAttackRuntime(AttackRuntime):
+    def setup(self, context):
+        return [InsertObject("demo_stop_sign", asset, world_from_object)]
+
+with MemorySimulator().create_runtime() as simulator_runtime:
+    log = ClosedLoopRunner().run(simulator_runtime, ConstantAVStack(),
+                                RunRequest(1, attacks=(PlaceSignAttackRuntime(),)))
+    assert "demo_stop_sign" in log.steps[0].physical_pre.objects
+    assert not simulator_runtime.state().objects
+assert log.status == "completed"
+```
+
+The following more complete example uses a semantic map supplied by the in-memory Dataset. The sign's
+pose_reference is face_center. Its ground height comes from the closest centerline point over all
+governed lanes, in world coordinates. If c is the vertical distance from that point to the face
+center, the object pose is control.pose @ translate(0, 0, -c), and the sign's mount height is
+c - face_height/2, where face_height is the inserted sign's own face height. This keeps the face at its mapped location and the post on the estimated ground.
+The same calculation supports nonzero world-ground heights. It needs no native simulator or model
+weights and imports no concrete attack:
+
+<!-- runnable -->
+```python
+import numpy as np
+from avsectester.attack import AttackRuntime, InsertObject
+from avsectester.closed_loop.runner import ClosedLoopRunner, RecordingPolicy, RunRequest
+from avsectester.geometry.cameras import transform
+from avsectester.maps import Lane, ScenarioMap, StopLine, TrafficControl
+from avsectester.rendering.signs import stop_sign_asset
+from tests.fakes import ConstantAVStack, MemoryDataset, MemorySimulator
+
+centerline = np.array([[0.0, 0.0, 0.0], [12.0, 0.0, 0.0]])
+lane = Lane("approach", centerline, centerline + (0.0, 2.0, 0.0),
+            centerline - (0.0, 2.0, 0.0))
+face_pose = np.eye(4)
+face_pose[:3, :3] = np.diag([-1.0, -1.0, 1.0])
+face_pose[:3, 3] = (8.0, 0.0, 2.0)
+control = TrafficControl("stop", "stop_sign", "demo_stop_sign", face_pose,
+                         (0.02, 0.9, 0.9), pose_reference="face_center",
+                         lane_ids=(lane.id,), stop_line_id="stop-line")
+stop_line = StopLine("stop-line", np.array([[7.0, -2.0, 0.0], [7.0, 2.0, 0.0]]),
+                     native_category="STOP", kind="stop_sign",
+                     lane_ids=(lane.id,), control_id=control.id)
+dataset = MemoryDataset(maps={"scene": ScenarioMap(
+    lanes={lane.id: lane}, traffic_controls={control.id: control},
+    stop_lines={stop_line.id: stop_line})})
+scenario_map = dataset.scenario_map("scene")
+control = scenario_map.traffic_controls["stop"]
+assert control.pose_reference == "face_center"
+center = control.pose[:3, 3]
+candidates = []
+for lane_id in control.lane_ids:  # the nearest centerline point over every governed lane
+    centerline = scenario_map.lanes[lane_id].centerline
+    starts, vectors = centerline[:-1], np.diff(centerline, axis=0)
+    fraction = np.clip(np.sum((center - starts) * vectors, axis=1)
+                       / np.sum(vectors * vectors, axis=1), 0.0, 1.0)
+    candidates.append(starts + fraction[:, None] * vectors)
+points = np.concatenate(candidates)
+ground_z = points[np.argmin(np.linalg.norm(points - center, axis=1))][2]
+c = control.pose[2, 3] - ground_z
+width = control.extent[1]
+# The face height follows the sign image's aspect ratio, which may differ from the mapped box.
+face_height = np.ptp(stop_sign_asset(width_m=width).surfaces[-1].corners[:, 2])
+asset = stop_sign_asset(width_m=width, mount_height_m=c - face_height / 2)
+offset = np.eye(4)
+offset[2, 3] = -c
+world_from_object = control.pose @ offset
+face_corners = transform(world_from_object, asset.surfaces[-1].corners)
+post_corners = transform(world_from_object, asset.surfaces[0].corners)
+np.testing.assert_allclose(face_corners.mean(axis=0), control.pose[:3, 3])
+np.testing.assert_allclose(post_corners[:, 2].min(), ground_z)
+
+class PlaceSignAttackRuntime(AttackRuntime):
+    def setup(self, context):
+        return [InsertObject("demo_stop_sign", asset, world_from_object)]
+
+with MemorySimulator().create_runtime() as simulator_runtime:
+    start = dataset.scenario_start("scene", dataset.frames("scene")[0])
+    simulator_runtime.reset(start)
+    clean = simulator_runtime.observe().sensor_data["front"].copy()
+    log = ClosedLoopRunner().run(simulator_runtime, ConstantAVStack(),
+        RunRequest(1, start=start, attacks=(PlaceSignAttackRuntime(),),
+                   recording=RecordingPolicy(sensor_ids=("front",), representations=("raw",))))
+    record = log.steps[0]
+    np.testing.assert_allclose(record.physical_pre.objects["demo_stop_sign"].pose,
+                               world_from_object)
+    assert np.any(record.raw_observation.sensor_data["front"] != clean)
+    assert record.object_visibility["demo_stop_sign"]["front"].visible_pixels > 0
+    assert not simulator_runtime.state().objects
+assert log.status == "completed"
+```
+
+WorldSnapshot.objects keeps inserted objects separate from actors, and RunLog preserves their
+poses, categories, extents and zero velocities. Per-camera visibility is measured at every capture;
+[Inserted world objects](simulators.md#inserted-world-objects) defines it and
+[RunLog](../reference/runtime.md#runlog) describes the recorded receipts and visibility records.
+
+Selection may check scenario.services.capabilities.insert_objects, which reflects the simulator's
+can_insert_objects declaration. Returning InsertObject to an unsupported simulator raises
+NotImplementedError during the run and records failure. Setup actions are created inside reset, so
+the framework cannot inspect them during preflight.
+
+Pass harmonizer=None for unchanged appearance, a built-in ClassicHarmonizer or PCTNetHarmonizer,
+or an instance of your own avsectester.rendering.Harmonizer subclass. In an attack's YAML options,
+reference your class as package.module:Class and pass the constructed instance to InsertObject.
+See the [custom harmonizer example](../examples/image-insertion.md#harmonization). Harmonization
+changes only visible object pixels. When using composite_objects directly, set each
+PlacedObject.harmonizer; appearance belongs to the placed object, not a separate global argument.
+
+Inserted objects affect camera images and recorded world state. They do not add native collision
+geometry. **Not yet implemented.** Inserted objects in LiDAR or other non-camera sensor data. See
+[TODO](../development/TODO.md#inserted-objects-in-non-camera-sensors).
 
 ## Online actions
 
@@ -167,7 +363,9 @@ without introducing another independently stateful handler.
 
 Multiple actions for one stage are applied sequentially in returned and registration order. Every
 action receives the preceding action's replacement; receipts reflect actual application. Action
-requests and actual application receipts are both recorded.
+requests and actual application receipts are both recorded. Any AttackAction may return
+additional evidence from receipt_details(); every receipt has details, defaulting to {}. The
+built-in actions' details are listed in [RunLog](../reference/runtime.md#runlog).
 
 ## Persist artifacts
 

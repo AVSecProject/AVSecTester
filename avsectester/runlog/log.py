@@ -20,6 +20,7 @@ from avsectester.closed_loop.datatypes import Detection
 
 if TYPE_CHECKING:
     from avsectester.closed_loop.simulator import SensorGeometry
+    from avsectester.rendering.compositing import ObjectVisibility
 
 _TAG = "_avsectester_type"
 _KEYS = "_avsectester_keys"
@@ -34,6 +35,8 @@ class StepRecord:
 
     ``detections`` holds canonical ego-frame boxes, or None if the driving system
     has no detection output. Recording never runs extra inference to obtain them.
+    ``object_visibility`` maps world-object IDs and camera IDs to the visibility
+    evidence for the decision's current capture, before its sensor actions.
     Times belong to the captured values rather
     than a single ambiguous timestamp for the entire decision.
     """
@@ -48,6 +51,7 @@ class StepRecord:
     components: dict[str, Any] = field(default_factory=dict)
     detections: Sequence[Detection] | None = None
     sensor_geometry: Mapping[str, SensorGeometry] = field(default_factory=dict)
+    object_visibility: Mapping[str, Mapping[str, ObjectVisibility]] = field(default_factory=dict)
     actions: list[Any] = field(default_factory=list)
     outputs: list[Any] = field(default_factory=list)
     telemetry: dict[str, Any] = field(default_factory=dict)
@@ -514,6 +518,10 @@ class _Encoder:
                 and type(value).__name__ == "SensorGeometry"):
             return {_TAG: "SensorGeometry", **{f.name: self.encode(getattr(value, f.name))
                                               for f in fields(value)}}
+        if (type(value).__module__ == "avsectester.rendering.compositing"
+                and type(value).__name__ == "ObjectVisibility"):
+            return {_TAG: "ObjectVisibility", **{f.name: self.encode(getattr(value, f.name))
+                                                 for f in fields(value)}}
         if (type(value).__module__ == "avsectester.geometry.cameras"
                 and type(value).__name__ in {"PinholeCamera", "FThetaCamera"}):
             return {_TAG: type(value).__name__, **{f.name: self.encode(getattr(value, f.name))
@@ -595,6 +603,9 @@ class _Decoder:
         if tag == "SensorGeometry":
             from avsectester.closed_loop.simulator import SensorGeometry
             return SensorGeometry(**{f.name: self.decode(value[f.name]) for f in fields(SensorGeometry)})
+        if tag == "ObjectVisibility":
+            from avsectester.rendering.compositing import ObjectVisibility
+            return ObjectVisibility(**{f.name: self.decode(value[f.name]) for f in fields(ObjectVisibility)})
         if tag in {"PinholeCamera", "FThetaCamera"}:
             from avsectester.geometry import cameras
             camera_type = getattr(cameras, tag)

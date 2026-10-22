@@ -7,10 +7,10 @@ from dataclasses import replace
 from pathlib import Path
 
 from avsectester.attack.insertion import Insertion, PlaneAsset
-from avsectester.attack.insertion.assets import load_rgba_image
+from avsectester.rendering.images import load_rgba_image
 from avsectester.attack.insertion.compositor import PatchCompositor
 from avsectester.attack.insertion.action import InsertionAttackAction
-from avsectester.attack.insertion.harmonizers import ClassicHarmonizer, PCTNetHarmonizer
+from avsectester.rendering.harmonizers import ClassicHarmonizer, PCTNetHarmonizer
 from avsectester.attack.placement import AttachedPlacement, Orientation
 from avsectester.closed_loop.avstacks.camera_forward_collision import CameraForwardCollisionAVStack
 from avsectester.closed_loop.datatypes import Control
@@ -41,7 +41,7 @@ def patch_action(view, texture, *, width_fraction, height_fraction, harmonizer=N
     asset = PlaneAsset(texture, host.extent[1] * width_fraction, host.extent[2] * height_fraction)
     insertion = Insertion("probe", asset, AttachedPlacement("lead", "rear_center", (-.03, 0, 0)),
                           Orientation("follow_host", (0, 0, 180)))
-    compositor = PatchCompositor(harmonizer, harmonize=harmonizer is not None)
+    compositor = PatchCompositor(harmonizer)
     return InsertionAttackAction(view.sensor, insertion, compositor)
 
 

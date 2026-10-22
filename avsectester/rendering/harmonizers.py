@@ -114,7 +114,7 @@ class PCTNetHarmonizer(Harmonizer):
 
         import torch
 
-        root = Path(__file__).resolve().parents[3] / self._SUBMODULE
+        root = Path(__file__).resolve().parents[2] / self._SUBMODULE
         src = root / "source"
         # dummy parent packages so pct_net's absolute imports resolve WITHOUT running libcom/__init__
         # (which imports diffusers/pytorch-lightning models that conflict with the avstack stack).
@@ -147,14 +147,11 @@ class PCTNetHarmonizer(Harmonizer):
         cand = root / "pretrained_models" / "PCTNet.pth"
         if cand.exists():
             return cand
-        from huggingface_hub import hf_hub_download  # downloaded once, then cached in the submodule
+        from huggingface_hub import hf_hub_download
 
         cand.parent.mkdir(parents=True, exist_ok=True)
-        return Path(
-            hf_hub_download(
-                "BCMIZB/Libcom_pretrained_models", "PCTNet.pth", local_dir=str(cand.parent)
-            )
-        )
+        return Path(hf_hub_download("BCMIZB/Libcom_pretrained_models", "PCTNet.pth",
+                                    local_dir=str(cand.parent)))
 
     def __call__(self, composite_rgb, mask, background_rgb):
         try:

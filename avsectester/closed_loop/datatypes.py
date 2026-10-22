@@ -84,6 +84,9 @@ class WorldSnapshot:
     them does not actuate the world; simulator-runtime actor methods do. ``ego`` is canonical
     physical truth. ``vehicle_state`` is its native SDK representation for adapter callbacks;
     neither is the potentially perturbed model-visible Observation.vehicle_state.
+    ``traffic_lights`` maps semantic-map control IDs to red, yellow, green, off or unknown.
+    Simulators without live signal-state evidence leave the mapping empty.
+    ``objects`` holds framework-inserted world objects separately from native actors.
     """
 
     t: float
@@ -92,6 +95,8 @@ class WorldSnapshot:
     ego_speed: float = 0.0
     actors: Mapping[str, Any] = field(default_factory=dict)
     ego: ActorState | None = None
+    traffic_lights: Mapping[str, str] = field(default_factory=dict)
+    objects: Mapping[str, ActorState] = field(default_factory=dict)
 
 
 @dataclass

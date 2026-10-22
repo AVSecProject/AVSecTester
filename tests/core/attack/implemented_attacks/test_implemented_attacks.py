@@ -14,13 +14,13 @@ from tests.fakes import MemoryDataset, MemorySimulator
 
 ATTACKS = [
     pytest.param("PatchAttack", {
-        "decision_steps": 2, "texture": CheckerboardTexture(size=8), "max_windows": 1,
-        "compositor": PatchCompositor(harmonize=False),
+        "decision_steps": 2, "assets": CheckerboardTexture(size=8), "max_windows": 1,
+        "compositor": PatchCompositor(),
     }, {"hosts_per_window": 0}, "default_driving_options", id="patch"),
     pytest.param("ObjectInsertionAttack", {
         "decision_steps": 2, "max_segments": 1,
         "assets": PlaneAsset(np.full((8, 8, 4), [240, 20, 20, 255], np.uint8), 1., 1.),
-        "placement": WorldPlacement((7., 0., 1.)), "compositor": PatchCompositor(harmonize=False),
+        "placement": WorldPlacement((7., 0., 1.)), "compositor": PatchCompositor(),
     }, {"min_visible_fraction": 2.}, "default_driving_options", id="object-insertion"),
     pytest.param("PhantomInjectionAttack", {"decision_steps": 2, "max_segments": 1},
                  {"score": 2.}, "native_driving_options", id="phantom-injection"),

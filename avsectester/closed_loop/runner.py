@@ -165,10 +165,11 @@ class ClosedLoopRunner:
                 release_owned_resources()
 
         def actions() -> list[dict[str, Any]]:
+            records = attack_dispatch.records()
             return [
                 {"kind": kind, **item}
-                for kind, values in (("request", attack_dispatch.requests),
-                                     ("receipt", attack_dispatch.receipts))
+                for kind, values in (("request", records["requests"]),
+                                     ("receipt", records["receipts"]))
                 for item in values
             ]
 
@@ -213,11 +214,14 @@ class ClosedLoopRunner:
                     sim.reset(request.start, request.initialization,
                               deployment=deployment, world=request.environment["world"])
                     last_observation = sim.observe()
+                    initial_state = sim.state()
                     recorder.record_event(
-                        "initialization", physical_state=sim.state(),
+                        "initialization", physical_state=initial_state,
                         clock=sim.clock, setup_ticks=deployment.ticks,
                         initialization_report=simulator_runtime.initialization_report,
                         outputs=session.outputs, actions=actions(),
+                        object_visibility={object_id: sim.object_visibility(object_id)
+                                           for object_id in initial_state.objects},
                     )
                     drain()
                     if request.decision_steps == 0:
@@ -226,8 +230,13 @@ class ClosedLoopRunner:
                         session.step = current_step
                         raw = sim.observe()
                         last_observation = raw
+                        pre_state = sim.state()
+                        object_visibility = recorder.capture({
+                            object_id: sim.object_visibility(object_id)
+                            for object_id in pre_state.objects
+                        })
                         raw_record = recorder.capture(request.recording.observation(raw, current_step, "raw"))
-                        pre = recorder.capture(sim.state())
+                        pre = recorder.capture(pre_state)
                         sensor_geometry = {}
                         retained_sensors = (request.recording.sensor_ids
                             if current_step % request.recording.every_n_steps == 0
@@ -280,6 +289,7 @@ class ClosedLoopRunner:
                                 model_observation=model_record, physical_pre=pre, physical_post=post,
                                 produced_command=produced_record, executed_command=executed_record,
                                 components=components, detections=detections, sensor_geometry=sensor_geometry,
+                                object_visibility=object_visibility,
                                 actions=actions(), outputs=session.outputs,
                                 telemetry=telemetry,
                             ))
