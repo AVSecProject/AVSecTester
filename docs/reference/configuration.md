@@ -165,8 +165,9 @@ the required past; preparation also discards invalid segments. See
 
 ### Driving specification
 
-`avstack.type` names an AVStack class or a callable returning one. It receives only its `options`,
-not a seed. Each run, rollout and component evaluation creates fresh driving state. Scoring calls
+`avstack.type` names an AVStack class or a callable returning one. It receives its `options`; a
+constructor that declares a `seed` parameter also receives the run seed, and `seed` is then
+rejected in options. Each run, rollout and component evaluation creates fresh driving state. Scoring calls
 within one closed-loop session reuse its isolated scoring AVStack until session close.
 
 ```yaml

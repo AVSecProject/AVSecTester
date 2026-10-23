@@ -65,6 +65,12 @@ class UnresolvedOptionAttack(Attack):
         return ()
 
 
+class SeededAVStack(ConstantAVStack):
+    def __init__(self, seed=None):
+        super().__init__()
+        self.seed = seed
+
+
 def specification():
     return {
         "dataset": {"type": "tests.fakes:MemoryDataset"},
@@ -80,6 +86,12 @@ def test_load_configuration(tmp_path):
     assert isinstance(loaded.dataset, MemoryDataset)
     assert isinstance(loaded.simulator, MemorySimulator)
     assert isinstance(loaded.avstack.factory(0), ConstantAVStack)
+    seeded = specification()
+    seeded["avstack"] = {"type": f"{__name__}:SeededAVStack"}
+    assert load_configuration(seeded).avstack.factory(5).seed == 5
+    seeded["avstack"]["options"] = {"seed": 1}
+    with pytest.raises(ValueError, match="reserved"):
+        load_configuration(seeded)
     assert isinstance(loaded.attacks["probe"], MinimalAttack)
     assert [(item.name, item.attack_name) for item in loaded.runs.treatments] == [
         ("clean", None), ("probe", "probe"),

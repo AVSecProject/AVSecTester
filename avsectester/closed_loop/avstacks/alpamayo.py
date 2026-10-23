@@ -30,7 +30,7 @@ from avsectester.closed_loop.avstacks import driving_adapter
 from avsectester.data_types import Control, Observation
 from avsectester.geometry.poses import rotation_to_quaternion
 from avsectester.serialization import DEFAULT_REGISTRY
-from avsectester.validation import require_positive_integer
+from avsectester.validation import require_nonnegative_integer, require_positive_integer
 
 
 def _model_prediction(value: Any) -> dict[str, Any]:
@@ -89,6 +89,11 @@ class AlpamayoAVStack(AVStack):
     ``alpamayo_base.py`` NUM_HISTORY_STEPS=16 and HISTORY_TIME_STEP=0.1. Images require
     ``(context_length - 1) * frame_subsample`` past decisions, which must fit that history.
     ``reset`` receives the recorded past; neither missing images nor poses are fabricated.
+    ``seed`` is the run seed, which configuration loading supplies. Like AlpaSim's driver, a
+    seeded stack loads the model with ``force_determinism`` and seeds each decision from the
+    run seed and the decision count since reset. Unlike AlpaSim's ``seed + count``, the
+    derived seeds of distinct run seeds do not overlap. ``None`` leaves sampling unseeded. An
+    injected ``model`` keeps its own determinism setting.
     """
 
     provides_detections = False
@@ -103,6 +108,7 @@ class AlpamayoAVStack(AVStack):
         frame_subsample: int = 1,
         output_frequency_hz: int = 10,
         model: Any | None = None,
+        seed: int | None = None,
     ) -> None:
         self.checkpoint_path = (
             checkpoint_path if checkpoint_path is not None
@@ -119,6 +125,9 @@ class AlpamayoAVStack(AVStack):
                              "reduce context_length or frame_subsample")
         require_positive_integer(output_frequency_hz, "output_frequency_hz")
         self.output_frequency_hz = output_frequency_hz
+        if seed is not None:
+            require_nonnegative_integer(seed, "seed")
+        self.seed = seed
         # Separate adapters may share loaded weights while retaining independent input history.
         self._model = model
         self._owns_model = model is None
@@ -128,7 +137,7 @@ class AlpamayoAVStack(AVStack):
         self._poses: deque[tuple[float, float, float, float]] = deque(maxlen=self.past_steps + 1)
         self._ready = False
         self._prev_plan = None
-        self._iseed = 0
+        self._inference_count = 0
         self.last_reasoning: str | None = None
         self._last_log: dict[str, Any] | None = None
 
@@ -165,6 +174,7 @@ class AlpamayoAVStack(AVStack):
             checkpoint_path=self.checkpoint_path,
             device=self.device,
             num_trajectory_samples=1,
+            force_determinism=self.seed is not None,
         )
         self._model = Alpamayo15Model.from_config(
             model_cfg=cfg,
@@ -183,7 +193,7 @@ class AlpamayoAVStack(AVStack):
             buffer.clear()
         self._poses.clear()
         self._prev_plan = None
-        self._iseed = 0
+        self._inference_count = 0
         self.last_reasoning = None
         self._last_log = None
         history = list(past)
@@ -221,7 +231,7 @@ class AlpamayoAVStack(AVStack):
         self._prev_plan = None
         self._last_log = None
         self.last_reasoning = None
-        self._iseed = 0
+        self._inference_count = 0
         failure = None
         try:
             if owned and callable(getattr(model, "close", None)):
@@ -326,8 +336,16 @@ class AlpamayoAVStack(AVStack):
             camera_images=camera_images, command=command, speed=speed, acceleration=acceleration,
             ego_pose_history=[self._pose_at(x, y, yaw, self._timestamp(time))
                               for x, y, yaw, time in poses],
-            inference_seed=self._iseed, previous_plan=self._prev_plan, route=route,
+            inference_seed=self._inference_seed(), previous_plan=self._prev_plan, route=route,
         )
+
+    def _inference_seed(self) -> int:
+        """This decision's sampling seed: independent streams for distinct run seeds."""
+        if self.seed is None:
+            return self._inference_count
+        import numpy as np
+
+        return int(np.random.SeedSequence((self.seed, self._inference_count)).generate_state(1)[0])
 
     @staticmethod
     def _pose_at(x: float, y: float, yaw: float, t_us: int):
@@ -349,7 +367,7 @@ class AlpamayoAVStack(AVStack):
         inputs = self._emit("policy.pre", self._prediction_input(observation))
         prediction = self._emit("policy.post", self._model.predict(inputs))
         policy_record = DEFAULT_REGISTRY.snapshot(prediction)
-        self._iseed += 1
+        self._inference_count += 1
         self._prev_plan = getattr(prediction, "selected_plan", None)
         self.last_reasoning = getattr(prediction, "reasoning_text", None)  # chain-of-causation text, if any
         command = Control(trajectory=self._to_waypoints(prediction, observation))

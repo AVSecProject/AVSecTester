@@ -386,10 +386,16 @@ def _avstack(value: Any, directory: Path) -> DrivingAdapter:
         if not modes or modes - {"actuator", "trajectory"}:
             raise ValueError("command_modes must contain actuator and/or trajectory")
 
+    # A constructor that declares ``seed`` receives the run seed; configuring it is an error.
+    try:
+        seeded = "seed" in inspect.signature(constructor).parameters
+    except (TypeError, ValueError):
+        seeded = False
+    if seeded and "seed" in options:
+        raise ValueError("avstack.options.seed is reserved: constructors declaring seed receive the run seed")
+
     def factory(seed: int) -> AVStack:
-        # AVStack constructors receive only their configured options; the run seed controls
-        # hooks, sensor environments and the simulator.
-        avstack = constructor(**deepcopy(options))
+        avstack = constructor(**deepcopy(options), **({"seed": seed} if seeded else {}))
         if not isinstance(avstack, AVStack):
             raise TypeError("avstack.type must construct an AVStack")
         try:

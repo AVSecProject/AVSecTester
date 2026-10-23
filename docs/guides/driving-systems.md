@@ -106,7 +106,9 @@ Alpamayo declares past_steps=15: its model consumes 16 poses at 0.1 s intervals,
 (`NUM_HISTORY_STEPS` and `HISTORY_TIME_STEP` in AlpaSim). reset requires that real observation
 history and checks rounded observation timestamps are exactly 100 ms apart before loading its
 model. Its `(context_length - 1) * frame_subsample` image span must not exceed 15 decisions.
-Each decision appends the received pose. As in AlpaSim's driver, the model input's speed is the
+AlpamayoAVStack declares `seed`. Like AlpaSim's driver, a seeded stack loads the model with
+force_determinism and seeds each decision from the run seed and the decision count since reset.
+Unlike AlpaSim's seed plus count, distinct run seeds yield non-overlapping inference seeds. Each decision appends the received pose. As in AlpaSim's driver, the model input's speed is the
 horizontal speed of Observation.vehicle_state (ego_speed and lateral_speed) and its acceleration is the
 state's longitudinal acceleration; Alpamayo 1.5 models do not read either value.
 Images are taken from the received camera history at frame_subsample intervals. Missing history or
@@ -217,7 +219,8 @@ assert CruiseControl()(Observation(0, 0, ego_speed=0)).throttle == 1
 Select an importable class as `avstack.type: my_project.driving:CruiseControl`; place constructor
 parameters under options. Keep the class in your own package; no file under
 avsectester/closed_loop/avstacks needs editing. The loader calls it with those options for every
-run, without passing a seed. See [Driving
+run. Declare a `seed` constructor parameter to receive the run seed, so repeated runs with one seed
+are reproducible and treatments sharing a seed are paired. See [Driving
 specification](../reference/configuration.md#driving-specification).
 
 Annotate filesystem constructor parameters as Path or str | Path. The loader uses these annotations

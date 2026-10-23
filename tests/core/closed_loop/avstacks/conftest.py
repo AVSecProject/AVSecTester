@@ -35,6 +35,7 @@ def alpamayo_model_boundary(monkeypatch):
         @classmethod
         def from_config(cls, **options):
             model = PolicyModel()
+            model.options = options
             loaded.append(model)
             return model
 

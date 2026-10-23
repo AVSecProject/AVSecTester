@@ -178,6 +178,29 @@ def test_close(alpamayo_model_boundary, alpamayo_observations):
         AlpamayoAVStack(checkpoint_path="", device="cpu", camera_ids=["front"]).reset(observation, past=past)
 
 
+def test_seed(alpamayo_model_boundary, alpamayo_observations):
+    observations = alpamayo_observations(count=18)
+    observation, past = observations[15], observations[:15]
+    derived = {seed: [int(np.random.SeedSequence((seed, count)).generate_state(1)[0]) for count in (0, 1)]
+               for seed in (7, 8)}
+    assert not set(derived[7]) & set(derived[8])
+    for seed, determinism, expected in ((7, True, derived[7]), (None, False, [0, 1])):
+        avstack = AlpamayoAVStack(checkpoint_path="synthetic-checkpoint", device="cpu",
+                                  camera_ids=["front"], seed=seed)
+        for _ in range(2):
+            avstack.reset(observation, past=past)
+            model = avstack.models["policy"]
+            seeds = []
+            for current in observations[15:17]:
+                avstack(current)
+                seeds.append(model.last_input.inference_seed)
+            assert seeds == expected
+        assert model.options["model_cfg"].force_determinism is determinism
+        avstack.close()
+    with pytest.raises(ValueError, match="seed"):
+        AlpamayoAVStack(camera_ids=["front"], seed=-1)
+
+
 def test_native_records(alpamayo_model_boundary, alpamayo_observations, tmp_path):
     avstack = AlpamayoAVStack(model=alpamayo_model_boundary.create(), camera_ids=["front"], device="cpu")
     observations = alpamayo_observations()
