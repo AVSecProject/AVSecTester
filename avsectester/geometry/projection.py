@@ -6,8 +6,27 @@ from itertools import product
 
 import numpy as np
 
-from .cameras import Camera, FThetaCamera, NEAR_Z
+from .cameras import Camera, FThetaCamera, NEAR_Z, camera_ray_mask
 from .poses import transform
+
+
+def _windshield_points(camera: FThetaCamera, points: np.ndarray) -> np.ndarray:
+    """Optical points moved along the windshield's deflection, keeping their distances.
+
+    The calibrated windshield model is extrapolated near the lens's maximum angle, where its
+    deflected ray can lose its forward component. Points outside the lens's field, or deflected
+    out of it, project outside the image and stay in place.
+    """
+    if camera.windshield is None:
+        return points
+    flat = points.reshape(-1, 3)
+    moved = flat.copy()
+    seen = np.flatnonzero(camera_ray_mask(camera, flat))
+    if seen.size:
+        deflected = camera.windshield.distort(flat[seen])
+        kept = camera_ray_mask(camera, deflected)
+        moved[seen[kept]] = deflected[kept] * np.linalg.norm(flat[seen[kept]], axis=1, keepdims=True)
+    return moved.reshape(points.shape)
 
 
 def _ftheta_box_bounds(camera: FThetaCamera, corners: np.ndarray) -> np.ndarray:
@@ -25,6 +44,7 @@ def _ftheta_box_bounds(camera: FThetaCamera, corners: np.ndarray) -> np.ndarray:
     fractions = np.linspace(0., 1., 9)
     points = (corners[edges[:, :1]] * (1 - fractions[None, :, None])
               + corners[edges[:, 1:]] * fractions[None, :, None])
+    points = _windshield_points(camera, points)
     normalized = points[:, :, :2] / points[:, :, 2:]
     lower = np.minimum(normalized[:, :-1], normalized[:, 1:]).reshape(-1, 2)
     upper = np.maximum(normalized[:, :-1], normalized[:, 1:]).reshape(-1, 2)
@@ -64,6 +84,7 @@ def _ftheta_partial_box_bounds(camera: FThetaCamera, corners: np.ndarray) -> np.
     Polynomial extrema bound the radial distance independently of that azimuth;
     no division by near-zero optical z or full-image ray query is needed.
     """
+    corners = _windshield_points(camera, corners)
     lower, upper = corners[:, :2].min(axis=0), corners[:, :2].max(axis=0)
     nearest = np.maximum(np.maximum(lower, -upper), 0.)
     radius_min = np.linalg.norm(nearest)
@@ -102,8 +123,9 @@ def project_box(
     """Project a box-centred rigid pose and full dimensions to an image-clipped rectangle.
 
     Box edges crossing the camera plane are clipped to a small positive optical depth.
-    F-theta bounds include the curved edge projections conservatively. A box entirely
-    behind that plane or outside the image returns None.
+    F-theta bounds include the curved edge projections conservatively, after deflecting edge
+    samples inside the lens's field through any windshield. A box entirely behind that plane or
+    outside the image returns None.
     """
     dimensions = np.asarray(extent, dtype=float)
     if dimensions.shape != (3,) or not np.isfinite(dimensions).all() or (dimensions < 0).any():
