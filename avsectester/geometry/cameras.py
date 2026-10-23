@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import overload, Protocol
+from typing import Protocol
 
 import numpy as np
 
@@ -98,15 +98,7 @@ class FThetaCamera:
 
 
     @staticmethod
-    @overload
-    def _poly(coeffs: tuple, x: np.ndarray) -> np.ndarray: ...
-
-    @staticmethod
-    @overload
-    def _poly(coeffs: tuple, x: float) -> float: ...
-
-    @staticmethod
-    def _poly(coeffs: tuple, x: np.ndarray | float) -> np.ndarray | float:
+    def _poly(coeffs: tuple, x: np.ndarray) -> np.ndarray:
         return np.polynomial.polynomial.polyval(x, np.asarray(coeffs, dtype=np.float64))
 
     def project(self, pts_cam: np.ndarray) -> np.ndarray:
