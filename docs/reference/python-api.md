@@ -1217,7 +1217,7 @@ addresses pixel centres at i + 0.5. Unsupported external distortion types raise 
 | `alpamayo_driving_adapter` | `alpamayo_driving_adapter(factory)` |
 | `AlpamayoAVStack` | Class; see methods below |
 | `AlpamayoAVStack.past_steps` | `past_steps: ClassVar[int] = 15` |
-| `AlpamayoAVStack.__init__` | `__init__(checkpoint_path: str \| Path \| None = None, camera_ids: list[str] \| None = None, device: str = 'cuda:0', context_length: int = 4, frame_subsample: int = 1, output_frequency_hz: int = 10, model: Any \| None = None) -> None` |
+| `AlpamayoAVStack.__init__` | `__init__(checkpoint_path: str \| Path \| None = None, camera_ids: list[str] \| None = None, device: str = 'cuda:0', context_length: int = 4, frame_subsample: int = 1, output_frequency_hz: int = 10, model: Any \| None = None, seed: int \| None = None) -> None` |
 | `AlpamayoAVStack.command_modes` | `command_modes: frozenset[str]` |
 | `AlpamayoAVStack.supported_stages` | `supported_stages: frozenset[str]` |
 | `AlpamayoAVStack.native` | `native: Mapping[str, Any]` |
