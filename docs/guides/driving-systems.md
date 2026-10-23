@@ -29,7 +29,9 @@ fabricate or repeat observations.
 
 The runner and candidate rollouts apply the treatment's sensor corruptions to each past observation
 using its own absolute frame position. Past inputs do not pass through stage hooks,
-ObservationPipeline or attack actions. Their t and frame values are negative relative to the start.
+ObservationPipeline or attack actions; world objects present at the start, such as objects inserted
+during setup, appear in them because they existed before it. Their t and frame values are negative
+relative to the start.
 Reset receives them separately from the first processed current input. The RunLog initialization
 event records `past_steps` and each past observation's t and vehicle_state in `past_observations`,
 without storing those images.

@@ -191,6 +191,21 @@ class MemorySimulatorRuntime(SimulatorRuntime):
             ego_speed=float(np.linalg.norm(velocity)),
         )
 
+    def _recorded_sensor_geometry(self, position, sensor):
+        if sensor not in self.camera_sensors:
+            raise ValueError(f"Unknown memory camera: {sensor}")
+        geometry = self.simulator.camera_geometries[sensor]
+        transform = geometry.cam_from_world.copy()
+        transform[:, 3] -= transform[:, 0] * self._start.recorded_ego[position].pose[0, 3]
+        return SensorGeometry(sensor, geometry.camera, transform)
+
+    def _recorded_sensor_view(self, position, sensor, observation):
+        geometry = self._recorded_sensor_geometry(position, sensor)
+        return SensorView(sensor, observation.sensor_data[sensor], geometry.camera, geometry.cam_from_world,
+                          {}, self._start.recorded_ego[position], observation.t, observation.frame,
+                          depth=deepcopy(self.simulator.sensor_depths.get(sensor)),
+                          sensor_from_world=BODY_FROM_OPTICAL @ geometry.cam_from_world)
+
     def _state(self):
         return WorldSnapshot(self.position * self.simulator.time_step, self.position,
                              ego_speed=self.speed, actors=deepcopy(self.actors),

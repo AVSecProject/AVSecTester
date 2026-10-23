@@ -267,6 +267,7 @@ NuRec termination events include ground_contact_failures, a count per rejected g
 
 Driving systems may declare past_steps. Before the first decision, the runner obtains that many
 recorded past observations and applies only the treatment's sensor corruptions at each absolute
-dataset position. Past observations bypass hooks, ObservationPipeline and attacks. AVStack.reset
+dataset position. Past observations bypass hooks, ObservationPipeline and attacks, but contain the
+world objects present at the start, such as objects inserted during setup. AVStack.reset
 receives them from oldest to newest. The initialization event includes past_steps and
 past_observations, containing only each observation's t and vehicle_state, without images.

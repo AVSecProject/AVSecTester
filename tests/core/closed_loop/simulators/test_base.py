@@ -314,3 +314,31 @@ def test_observe_past():
         assert not runtime.can_observe_past
         with pytest.raises(NotImplementedError, match="cannot observe the recorded past"):
             runtime.observe_past(1)
+
+
+def test_observe_past_contains_start_objects(make_object_in_front):
+    from avsectester.rendering import PlacedObject, composite_objects
+
+    dataset = MemoryDataset()
+    start = dataset.scenario_start("scene", dataset.frames("scene")[3])
+    with MemorySimulator().create_runtime() as runtime:
+        runtime.reset(start)
+        asset, world_from_object = make_object_in_front(runtime.sensor_view("front"))
+        later = world_from_object.copy()
+        later[1, 3] += .5
+        hooks = HookSet([Hook("simulator.setup", lambda value, context: context.simulator_runtime.insert_object(
+            "sign", asset, world_from_object))])
+        with hooks.session(runtime, ConstantAVStack()).activate():
+            runtime.reset(start)
+        runtime.insert_object("later", asset, later)
+        runtime.remove_object("sign")
+        past = runtime.observe_past(3)
+        # Objects present at the start are part of the recorded past; later insertions are not.
+        sign = (PlacedObject("sign", asset, world_from_object),)
+        for observation, recorded in zip(past, start.recorded_ego[:3]):
+            cam_from_world = CAM_FROM_WORLD.copy()
+            cam_from_world[:, 3] -= cam_from_world[:, 0] * recorded.pose[0, 3]
+            plain = np.full((CAMERA.height, CAMERA.width, 3), 20 + observation.frame + 3, np.uint8)
+            expected = composite_objects(plain, CAMERA, cam_from_world, sign)
+            assert expected.visible_mask.any()
+            np.testing.assert_array_equal(observation.sensor_data["front"], expected.image)

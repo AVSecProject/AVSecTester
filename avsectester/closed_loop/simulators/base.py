@@ -269,6 +269,7 @@ class SimulatorRuntime(_StageAdapter, ABC):
         self._capture: Observation | None = None
         self._objects: dict[str, PlacedObject] = {}
         self._capture_objects: dict[str, PlacedObject] = {}
+        self._start_objects: dict[str, PlacedObject] = {}
         self._composited_capture: Observation | None = None
         self._composited_views: dict[str, SensorView] = {}
         self._object_visibility: dict[str, dict[str, ObjectVisibility]] = {}
@@ -362,6 +363,7 @@ class SimulatorRuntime(_StageAdapter, ABC):
         """Release the world and native connections. Optional."""
         self._objects.clear()
         self._capture_objects.clear()
+        self._start_objects.clear()
         self._composited_views.clear()
         self._object_visibility.clear()
         self._composited_capture = None
@@ -581,6 +583,7 @@ class SimulatorRuntime(_StageAdapter, ABC):
         self._capture = None
         self._objects.clear()
         self._capture_objects.clear()
+        self._start_objects.clear()
         self._composited_capture = None
         self._composited_views.clear()
         self._object_visibility.clear()
@@ -607,6 +610,7 @@ class SimulatorRuntime(_StageAdapter, ABC):
                 self._window_tick(position)
             self._before_selected_capture(position)
             self._take_capture()
+            self._start_objects = dict(self._capture_objects)
             self._world_initialized = True
             try:
                 self._check_initialization(initialization)
@@ -655,8 +659,10 @@ class SimulatorRuntime(_StageAdapter, ABC):
 
         Requires a completed reset, ``can_observe_past`` and a recording covering the
         requested decision positions. Times and frames are negative relative to that start.
-        These observations contain no attack or framework-inserted objects, run no stage
-        hooks and leave the current world state and capture unchanged.
+        World objects present at the start, i.e. inserted during reset or simulator setup,
+        existed before it: they are composed into every past camera capture exactly as live
+        captures compose them. Objects inserted later, sensor attack actions and stage hooks
+        are absent. The current world state and capture are unchanged.
         """
         require_nonnegative_integer(count, "past observation count")
         if not self._world_initialized or self._capture is None:
@@ -670,12 +676,33 @@ class SimulatorRuntime(_StageAdapter, ABC):
             raise ValueError(f"Start position {position} has only {position} past decisions; {count} required")
         if position >= len(self._start.recorded_ego):
             raise ValueError("Recorded ego trajectory does not include the selected start")
-        return tuple(self.copy_observation(self._observe_recorded(previous))
-                     for previous in range(position - count, position))
+        past = []
+        for previous in range(position - count, position):
+            observation = self._observe_recorded(previous)
+            if self._start_objects:
+                def geometry(sensor: str, previous: int = previous) -> SensorGeometry:
+                    return self._recorded_sensor_geometry(previous, sensor)
+
+                def view(sensor: str, previous: int = previous,
+                         observation: Observation = observation) -> SensorView:
+                    return self._recorded_sensor_view(previous, sensor, observation)
+
+                observation, _, _ = compose_capture(
+                    observation, self._start_objects, self.camera_sensors, geometry, view)
+            past.append(self.copy_observation(observation))
+        return tuple(past)
 
     def _observe_recorded(self, position: int) -> Observation:
         """Capture one recorded decision position without hooks or changing live state."""
         raise NotImplementedError("This simulator cannot observe the recorded past")
+
+    def _recorded_sensor_geometry(self, position: int, sensor: str) -> SensorGeometry:
+        """Camera geometry of a recorded past capture; required to compose start objects into it."""
+        raise NotImplementedError("This simulator cannot compose world objects into recorded captures")
+
+    def _recorded_sensor_view(self, position: int, sensor: str, observation: Observation) -> SensorView:
+        """Camera view of a recorded past capture whose data comes from ``observation``."""
+        raise NotImplementedError("This simulator cannot compose world objects into recorded captures")
 
     def start_replay(self, start: ScenarioStart, initialization: Initialization | None = None, *,
                      world: Mapping[str, Any] | None = None,

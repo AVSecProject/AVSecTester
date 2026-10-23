@@ -183,11 +183,16 @@ NuRec declares `can_observe_past=True`. After reset, `observe_past(count)` retur
 recorded decision observations from oldest to newest, with negative start-relative time and frame.
 The complete ScenarioStart.recorded_ego trajectory supplies the actual poses; each camera is
 rendered with recorded traffic at that time. The current physical state and capture are unchanged.
-Inserted objects, attack actions and stage hooks are excluded. A request fails when history is
-insufficient, the runtime has not reset, or the simulator does not declare this capability.
+World objects present at the start, i.e. inserted during reset or simulator setup, existed before
+it: each past camera capture composes them exactly as live captures do, with the recorded camera
+pose, recorded actors and mesh depth. Objects inserted later, sensor attack actions and stage hooks
+are excluded. A request fails when history is insufficient, the runtime has not reset, or the
+simulator does not declare this capability.
 
 A custom simulator can declare can_observe_past and implement `_observe_recorded(position)`;
-the public observe_past lifecycle belongs to the base class and cannot be overridden. CARLA and
+to compose start objects it also implements `_recorded_sensor_geometry(position, sensor)` and
+`_recorded_sensor_view(position, sensor, observation)`. The public observe_past lifecycle belongs
+to the base class and cannot be overridden. CARLA and
 recorded replay do not currently provide past observations.
 
 ### Navigation

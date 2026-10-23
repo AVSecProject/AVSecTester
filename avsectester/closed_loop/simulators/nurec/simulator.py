@@ -416,16 +416,56 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
             )
         return self._capture_depth[camera_name].copy()
 
-    def _observe_recorded(self, position: int) -> Observation:
+    def _recorded_capture(self, position: int) -> tuple[np.ndarray, int, dict[str, ActorState]]:
+        """Recorded rig pose, scene timestamp and actor states of a past decision position."""
         start = self._start
         if start is None:
             raise RuntimeError("Past NuRec observations require a scenario start")
-        recorded = start.recorded_ego[position]
-        pose = validated_transform(recorded.pose)
+        pose = validated_transform(start.recorded_ego[position].pose)
+        relative_time = (position - start.frame.position) * self.dt
+        timestamp_us = round((start.frame.timestamp + relative_time) * 1e6)
+        return pose, timestamp_us, self._tracks().actor_states(start.payload["scene_id"], timestamp_us)
+
+    def _recorded_sensor_geometry(self, position: int, sensor: str) -> SensorGeometry:
+        aliases = self.config.get("camera_aliases", {})
+        native_camera = next((key for key, alias in aliases.items() if alias == sensor), sensor)
+        if native_camera not in self.renderer.cameras:
+            raise ValueError(f"Unknown NuRec camera {sensor!r}")
+        camera = self.renderer.camera_model(native_camera)
+        if camera is None:
+            raise ValueError(f"NuRec camera {sensor!r} has no camera geometry")
+        pose, _, _ = self._recorded_capture(position)
+        return SensorGeometry(aliases.get(native_camera, native_camera), camera,
+                              self.renderer.cam_from_world(pose, native_camera))
+
+    def _recorded_sensor_view(self, position: int, sensor: str, observation: Observation) -> SensorView:
+        """View of a recorded past capture with its recorded actors and, when enabled, mesh depth."""
+        from avsectester.data_types import read_camera_rgb
+
+        geometry = self._recorded_sensor_geometry(position, sensor)
+        _, timestamp_us, actors = self._recorded_capture(position)
+        captured = read_camera_rgb(observation, geometry.sensor)
+        if captured is None:
+            raise ValueError(f"Missing NuRec camera {geometry.sensor!r}")
+        depth = None
+        if self.depth != "none":
+            from avsectester.geometry.mesh import camera_depth
+
+            depth = _actor_depth(geometry.camera, geometry.cam_from_world, actors, camera_depth(
+                geometry.camera, geometry.cam_from_world, [_scene_raycaster(self._start.payload["usdz_path"])]))
+        return SensorView(
+            geometry.sensor, captured[1], geometry.camera, geometry.cam_from_world, actors,
+            self._start.recorded_ego[position], observation.t, observation.frame,
+            sensor_from_world=BODY_FROM_OPTICAL @ geometry.cam_from_world, depth=depth,
+            native={"timestamp_us": timestamp_us},
+        )
+
+    def _observe_recorded(self, position: int) -> Observation:
+        pose, timestamp_us, actors = self._recorded_capture(position)
+        start = self._start
+        assert start is not None
         relative_frame = position - start.frame.position
         relative_time = relative_frame * self.dt
-        timestamp_us = round((start.frame.timestamp + relative_time) * 1e6)
-        actors = self._tracks().actor_states(start.payload["scene_id"], timestamp_us)
         aliases = self.config.get("camera_aliases", {})
         sensor_data = {
             aliases.get(camera, camera): self.renderer.render(

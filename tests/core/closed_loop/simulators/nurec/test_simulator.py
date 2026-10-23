@@ -326,3 +326,11 @@ def test_observe_past(nurec_dataset, monkeypatch, make_object_in_front):
             runtime.reset(nurec_dataset.scenario_start("scene", frames[0]))
             with pytest.raises(ValueError, match="only 0 past decisions; 1 required"):
                 runtime.observe_past(1)
+        setup = HookSet([Hook("simulator.setup", lambda value, context: context.simulator_runtime.insert_object(
+            "start-sign", asset, world_from_object))])
+        with setup.session(runtime, ConstantAVStack()).activate():
+            runtime.reset(start)
+            # A world object present at the start is composed into the recorded past captures.
+            for observation in runtime.observe_past(3):
+                image = observation.sensor_data["front"]
+                assert np.any(image != 30) and np.all(image[0, 0] == 30)

@@ -157,8 +157,8 @@ NuRec derives navigation from the recorded path and ScenarioStart.scenario_map, 
 actual ego pose onto it at each capture. Observation.route is a driving-system input in ego axes;
 it does not constrain a planned trajectory. The driving system can request recorded observations
 before the selected start through past_steps. NuRec renders those past poses and actor states from
-the recording. The runner applies the treatment's sensor corruptions to that history, without
-attack actions, stage hooks or ObservationPipeline. Both route and history are model-visible;
+the recording, including world objects present at the start. The runner applies the treatment's
+sensor corruptions to that history, without attack actions, stage hooks or ObservationPipeline. Both route and history are model-visible;
 physical state remains separate. Insufficient recorded history makes a start ineligible.
 
 `WorldSnapshot.ego` and `actors` use `ActorState`: canonical world pose, velocity, category and
