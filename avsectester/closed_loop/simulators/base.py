@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     import numpy as np
 
     from avsectester.geometry.cameras import Camera
-    from avsectester.rendering import Harmonizer, ObjectAsset, ObjectVisibility, PlacedObject
+    from avsectester.rendering import CompositePlan, Harmonizer, ObjectAsset, ObjectVisibility, PlacedObject
 
 
 _reservation_lock = Lock()
@@ -139,6 +139,25 @@ class SensorView:
     depth: np.ndarray | None = None
     native: Mapping[str, Any] = field(default_factory=dict)
     objects: Mapping[str, PlacedObject] = field(default_factory=dict)
+
+    def composite_plan(self, objects: Sequence[PlacedObject]) -> CompositePlan:
+        """Plan composing ``objects`` into this camera view exactly as simulator captures do.
+
+        The plan uses this view's camera, its measured depth or, without depth, its actor
+        cuboids, and the capture occlusion tolerance. ``plan.composite`` therefore reproduces
+        the deployed capture differentiably in surface colours. Plan on a view captured
+        without these objects, for example a clean ``ClosedLoopSession.render`` result.
+        """
+        from avsectester.rendering import plan_composite
+
+        if self.camera is None or self.cam_from_world is None:
+            raise ValueError(f"Sensor {self.sensor!r} has no optical camera geometry")
+        objects = tuple(objects)
+        present = sorted({placed.object_id for placed in objects} & self.objects.keys())
+        if present:
+            raise ValueError(f"View already contains objects {present}; plan on a view captured without them")
+        return plan_composite(self.camera, self.cam_from_world, objects,
+                              scene_depth=self.depth, occluders=self.actors)
 
 
 @dataclass(frozen=True)

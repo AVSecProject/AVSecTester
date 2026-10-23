@@ -1,8 +1,9 @@
-"""Depth-aware composition of world objects and shared visible-region appearance blending."""
+"""Depth-aware composition of world objects, differentiable in surface colours, and visible-region blending."""
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -11,7 +12,10 @@ from avsectester.data_types import ActorState
 from avsectester.geometry.boxes import box_ray_distances
 from .harmonizers import Harmonizer
 from .objects import PlacedObject
-from .surfaces import render_surfaces
+from .surfaces import PlaneSampling, _render_region, prepare_surface, sample_texture
+
+if TYPE_CHECKING:
+    import torch
 
 
 @dataclass(frozen=True)
@@ -74,23 +78,123 @@ def blend_rgba(
     return _harmonize_visible(output, active, image, harmonizer)
 
 
-def composite_objects(
-    image: np.ndarray, camera: Camera, cam_from_world: np.ndarray,
-    objects: Sequence[PlacedObject], *, scene_depth: np.ndarray | None = None,
-    occluders: Mapping[str, ActorState] | None = None,
+@dataclass(frozen=True)
+class _Footprint:
+    """One surface's sampling over its clipped image region and the visible pixels it owns."""
+
+    object_index: int
+    surface_index: int
+    sampling: PlaneSampling
+    alpha: np.ndarray
+    premultiplied: np.ndarray
+    owned: np.ndarray
+
+
+def _object_mask(footprints: Sequence[_Footprint], index: int, shape: tuple[int, ...]) -> np.ndarray:
+    """The visible pixels owned by one planned object's surfaces."""
+    mask = np.zeros(shape, dtype=bool)
+    for footprint in footprints:
+        if footprint.object_index == index:
+            x0, y0, x1, y1 = footprint.sampling.bounds
+            mask[y0:y1, x0:x1] |= footprint.owned
+    return mask
+
+
+@dataclass(frozen=True)
+class CompositePlan:
+    """Texture-independent geometry for compositing placed objects into one camera image.
+
+    Sampling, coverage, nearest-surface ownership and occlusion are fixed when planning; only
+    surface colours remain free. ``apply`` produces a deployed uint8 composite, including
+    harmonizers. ``composite`` is the same blend as a differentiable function of the image and
+    of replacement surface colours, so optimized textures match their deployment up to the final
+    8-bit rounding. ``depth`` is the scene depth combined with the composed surfaces.
+    """
+
+    objects: tuple[PlacedObject, ...]
+    depth: np.ndarray
+    visible_mask: np.ndarray
+    occlusion_source: str
+    ignored_occluders: tuple[str, ...]
+    object_visibility: Mapping[str, ObjectVisibility]
+    footprints: tuple[_Footprint, ...] = field(repr=False)
+
+    def composite(self, image: torch.Tensor,
+                  textures: Mapping[tuple[str, int], torch.Tensor] | None = None) -> torch.Tensor:
+        """Blend the planned surfaces over a ``(3, H, W)`` image with values in [0, 1].
+
+        ``textures`` maps ``(object_id, surface index in its asset)`` to straight RGB
+        ``(3, h, w)`` values in [0, 1] at that surface texture's size. The asset's alpha keeps the
+        surface shape, and other surfaces keep their asset colours. Gradients reach the image and
+        the replacement colours; the planned geometry carries none. Harmonizers are not
+        differentiable, so a plan containing a harmonized object is rejected.
+        """
+        harmonized = [placed.object_id for placed in self.objects if placed.harmonizer is not None]
+        if harmonized:
+            raise ValueError(f"Harmonizers are not differentiable; plan objects {harmonized} without them")
+        return self._blend(image, dict(textures or {}))
+
+    def apply(self, image: np.ndarray) -> CompositeResult:
+        """Composite a calibrated uint8 RGB image and harmonize each object's visible pixels."""
+        import torch
+
+        image = np.asarray(image)
+        if image.shape != (*self.depth.shape, 3) or image.dtype != np.uint8:
+            raise ValueError("image must be calibrated uint8 RGB with shape (H, W, 3)")
+        with torch.no_grad():
+            values = torch.as_tensor(image, dtype=torch.float32).permute(2, 0, 1) / 255
+            blended = self._blend(values, {}).permute(1, 2, 0).numpy()
+        output = image.copy()
+        visible = self.visible_mask
+        output[visible] = np.rint(np.clip(blended[visible], 0, 1) * 255).astype(np.uint8)
+        unharmonized = output.copy()
+        for index, placed in enumerate(self.objects):
+            active = _object_mask(self.footprints, index, self.depth.shape)
+            _harmonize_visible(output, active, image, placed.harmonizer, unharmonized)
+        return CompositeResult(output, self.depth, visible, self.occlusion_source,
+                               self.ignored_occluders, self.object_visibility)
+
+    def _blend(self, image: torch.Tensor, textures: dict[tuple[str, int], torch.Tensor]) -> torch.Tensor:
+        import torch
+
+        if image.ndim != 3 or tuple(image.shape) != (3, *self.depth.shape):
+            raise ValueError("image must be a (3, H, W) tensor at the planned camera size")
+        assets = {placed.object_id: placed.asset for placed in self.objects}
+        for key, colors in textures.items():
+            if (not isinstance(key, tuple) or len(key) != 2 or key[0] not in assets
+                    or not isinstance(key[1], int) or not 0 <= key[1] < len(assets[key[0]].surfaces)):
+                raise KeyError(f"Unknown planned surface {key!r}; keys are (object_id, surface index)")
+            texture = assets[key[0]].surfaces[key[1]].texture
+            if not isinstance(colors, torch.Tensor) or tuple(colors.shape) != (3, *texture.shape[:2]):
+                raise ValueError(f"Colours for {key!r} must be a (3, {texture.shape[0]}, {texture.shape[1]}) tensor")
+        layer = image.new_zeros((4, *image.shape[1:]))
+        for footprint in self.footprints:
+            colors = textures.get((self.objects[footprint.object_index].object_id, footprint.surface_index))
+            if colors is None:
+                sampled = torch.as_tensor(footprint.premultiplied, dtype=image.dtype, device=image.device)
+            else:
+                alpha = torch.as_tensor(footprint.alpha, dtype=colors.dtype, device=colors.device)[None]
+                sampled = sample_texture(torch.cat((colors * alpha, alpha)), footprint.sampling)
+                sampled = sampled.to(dtype=image.dtype, device=image.device)
+            x0, y0, x1, y1 = footprint.sampling.bounds
+            owned = torch.as_tensor(footprint.owned, device=image.device)
+            layer[:, y0:y1, x0:x1] += sampled * owned
+        return image * (1 - layer[3:]) + layer[:3]
+
+
+def plan_composite(
+    camera: Camera, cam_from_world: np.ndarray, objects: Sequence[PlacedObject], *,
+    scene_depth: np.ndarray | None = None, occluders: Mapping[str, ActorState] | None = None,
     occlusion_tolerance_m: float = 0.1,
-) -> CompositeResult:
-    """Render the nearest object surfaces and composite their unoccluded pixels.
+) -> CompositePlan:
+    """Plan the nearest object surfaces and their unoccluded pixels in one camera.
 
     Aligned scene z-depth, when supplied, is the sole occlusion evidence. Otherwise actor
     cuboids with known extents approximate the scene inside the candidate projection regions.
-    Each object's harmonizer sees the same unharmonized composite and changes only that object's
-    visible pixels. Actor IDs without known extents are returned as ``ignored_occluders``.
+    Actor IDs without known extents are returned as ``ignored_occluders``. Surface order breaks
+    exact depth ties, so the result does not depend on object order otherwise.
     """
-    image = np.asarray(image)
     shape = (camera.height, camera.width)
-    if image.shape != (*shape, 3) or image.dtype != np.uint8:
-        raise ValueError("image must be calibrated uint8 RGB with shape (H, W, 3)")
     if not np.isfinite(occlusion_tolerance_m) or occlusion_tolerance_m < 0:
         raise ValueError("occlusion_tolerance_m must be finite and nonnegative")
     objects = tuple(objects)
@@ -99,18 +203,30 @@ def composite_objects(
     if len({item.object_id for item in objects}) != len(objects):
         raise ValueError("Placed object IDs must be unique")
     nearest = np.full(shape, np.inf)
-    rgba = np.zeros((*shape, 4), np.uint8)
     owners = np.full(shape, -1, dtype=np.int64)
     candidate_pixels = np.zeros(shape, dtype=bool)
-    for index, placed in enumerate(objects):
-        colors, depth = render_surfaces(placed.world_surfaces(), camera, cam_from_world)
-        rows, columns = np.nonzero(np.isfinite(depth))
-        if columns.size:
-            x0, x1 = max(0, columns.min() - 2), min(shape[1], columns.max() + 3)
-            y0, y1 = max(0, rows.min() - 2), min(shape[0], rows.max() + 3)
-            candidate_pixels[y0:y1, x0:x1] = True
-        closer = depth < nearest
-        nearest[closer], rgba[closer], owners[closer] = depth[closer], colors[closer], index
+    regions = []
+    for object_index, placed in enumerate(objects):
+        rows, columns = [], []
+        for surface_index, surface in enumerate(placed.world_surfaces()):
+            sampler = prepare_surface(surface, camera, cam_from_world)
+            bounds = sampler.image_bounds(camera)
+            if bounds is None:
+                continue
+            x0, y0, x1, y1 = bounds
+            sampling, premultiplied, depth = _render_region(sampler, camera, bounds)
+            covered_rows, covered_columns = np.nonzero(np.isfinite(depth))
+            rows.append(covered_rows + y0)
+            columns.append(covered_columns + x0)
+            region, region_owners = nearest[y0:y1, x0:x1], owners[y0:y1, x0:x1]
+            closer = depth < region
+            region[closer], region_owners[closer] = depth[closer], len(regions)
+            regions.append((object_index, surface_index, sampling, surface.texture[..., 3] / 255,
+                            premultiplied.transpose(2, 0, 1).astype(np.float32)))
+        if rows and np.concatenate(rows).size:
+            all_rows, all_columns = np.concatenate(rows), np.concatenate(columns)
+            candidate_pixels[max(0, all_rows.min() - 2):min(shape[0], all_rows.max() + 3),
+                             max(0, all_columns.min() - 2):min(shape[1], all_columns.max() + 3)] = True
     ignored_occluders = []
     if scene_depth is not None:
         background_depth = np.asarray(scene_depth, dtype=float)
@@ -136,14 +252,33 @@ def composite_objects(
         occlusion_source = "actor_cuboids"
     visible = (np.isfinite(nearest) & (background_depth > 0)
                & (nearest <= background_depth + occlusion_tolerance_m))
-    output = blend_rgba(image, rgba, visible)
-    unharmonized = output.copy()
+    footprints = []
+    for index, (object_index, surface_index, sampling, alpha, premultiplied) in enumerate(regions):
+        x0, y0, x1, y1 = sampling.bounds
+        owned = visible[y0:y1, x0:x1] & (owners[y0:y1, x0:x1] == index)
+        if owned.any():
+            footprints.append(_Footprint(object_index, surface_index, sampling, alpha, premultiplied, owned))
     ignored = tuple(ignored_occluders)
-    object_visibility = {}
-    for index, placed in enumerate(objects):
-        active = visible & (owners == index)
-        _harmonize_visible(output, active, image, placed.harmonizer, unharmonized)
-        object_visibility[placed.object_id] = ObjectVisibility(
-            occlusion_source, ignored, int(np.count_nonzero(active)))
-    return CompositeResult(output, np.minimum(background_depth, nearest), visible, occlusion_source,
-                           ignored, object_visibility)
+    visibility = {placed.object_id: ObjectVisibility(
+        occlusion_source, ignored, int(np.count_nonzero(_object_mask(footprints, index, shape))))
+        for index, placed in enumerate(objects)}
+    return CompositePlan(objects, np.minimum(background_depth, nearest), visible, occlusion_source,
+                         ignored, visibility, tuple(footprints))
+
+
+def composite_objects(
+    image: np.ndarray, camera: Camera, cam_from_world: np.ndarray,
+    objects: Sequence[PlacedObject], *, scene_depth: np.ndarray | None = None,
+    occluders: Mapping[str, ActorState] | None = None,
+    occlusion_tolerance_m: float = 0.1,
+) -> CompositeResult:
+    """Plan and apply a composite; see ``plan_composite`` and ``CompositePlan.apply``.
+
+    Each object's harmonizer sees the same unharmonized composite and changes only that object's
+    visible pixels.
+    """
+    image = np.asarray(image)
+    if image.shape != (camera.height, camera.width, 3) or image.dtype != np.uint8:
+        raise ValueError("image must be calibrated uint8 RGB with shape (H, W, 3)")
+    return plan_composite(camera, cam_from_world, objects, scene_depth=scene_depth, occluders=occluders,
+                          occlusion_tolerance_m=occlusion_tolerance_m).apply(image)

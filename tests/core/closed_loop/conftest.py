@@ -45,6 +45,10 @@ def assert_inserted_world_object(make_object_in_front):
             clean_first.cam_from_world, (PlacedObject("sign", asset, world_from_object),),
             scene_depth=clean_first.depth, occluders=clean_first.actors)
         np.testing.assert_array_equal(view.data, expected.image)
+        planned = clean_first.composite_plan((PlacedObject("sign", asset, world_from_object),))
+        np.testing.assert_array_equal(planned.apply(clean_first.data).image, view.data)
+        with pytest.raises(ValueError, match="already contains"):
+            view.composite_plan((PlacedObject("sign", asset, world_from_object),))
         assert runtime.object_visibility("sign")["front"] == expected.object_visibility["sign"]
         assert view.objects.keys() == {"sign"}
         np.testing.assert_array_equal(view.objects["sign"].world_from_object, world_from_object)

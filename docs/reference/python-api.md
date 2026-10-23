@@ -32,7 +32,7 @@ data and boundary modules can be imported without simulator servers or weights.
 | avsectester.maps.opendrive | OpenDRIVE semantic-map reader |
 | avsectester.maps.scenario_map | Semantic-map records and stopping-control classification |
 | avsectester.rendering | Object assets, surface rendering, composition and harmonizers |
-| avsectester.rendering.compositing | ObjectVisibility, CompositeResult, composite_objects and blend_rgba |
+| avsectester.rendering.compositing | ObjectVisibility, CompositePlan, CompositeResult, plan_composite, composite_objects and blend_rgba |
 | avsectester.rendering.harmonizers | Harmonizer, ClassicHarmonizer and PCTNetHarmonizer |
 | avsectester.rendering.objects | PlaneSurface, ObjectAsset and PlacedObject |
 | avsectester.rendering.surfaces | Calibrated planar sampling and render_surfaces |
@@ -802,6 +802,7 @@ dataset, simulator or model dependencies.
 | `SimulatorRuntime.camera_sensors` | `camera_sensors: frozenset[str]` |
 | `SimulatorRuntime.sensor_geometry` | `sensor_geometry(sensor: str) -> SensorGeometry` |
 | `SimulatorRuntime.sensor_view` | `sensor_view(sensor: str) -> SensorView` |
+| `SensorView.composite_plan` | `composite_plan(objects: Sequence[PlacedObject]) -> CompositePlan` |
 | `SimulatorRuntime.control_actor` | `control_actor(actor_id: str, control: Control) -> None` |
 | `SimulatorRuntime.set_actor_state` | `set_actor_state(actor_id: str, state: ActorState) -> None` |
 | `SimulatorRuntime.insert_object` | `insert_object(object_id: str, asset: ObjectAsset, world_from_object: np.ndarray, *, harmonizer: Harmonizer \| None = None) -> None` |
@@ -1415,8 +1416,8 @@ alpha is the filtered coverage.
 ### avsectester.rendering.compositing
 
 The rendering package root exports ObjectAsset, PlacedObject, PlaneSurface, Harmonizer,
-ClassicHarmonizer, PCTNetHarmonizer, render_surfaces, ObjectVisibility, CompositeResult, blend_rgba,
-composite_objects, Texture, CheckerboardTexture and load_rgba_image.
+ClassicHarmonizer, PCTNetHarmonizer, render_surfaces, ObjectVisibility, CompositePlan, CompositeResult,
+blend_rgba, plan_composite, composite_objects, Texture, CheckerboardTexture and load_rgba_image.
 Plane surfaces are in world coordinates when passed to render_surfaces. Its RGBA and depth outputs
 have calibrated image dimensions; depth is optical-axis z, with inf where no surface is hit.
 
@@ -1426,6 +1427,10 @@ have calibrated image dimensions; depth is optical-axis z, with inf where no sur
 | `CompositeResult` | `image: np.ndarray`<br>`depth: np.ndarray`<br>`visible_mask: np.ndarray`<br>`occlusion_source: str`<br>`ignored_occluders: tuple[str, ...] = ()`<br>`object_visibility: Mapping[str, ObjectVisibility] = field(default_factory=dict)` |
 | `blend_rgba` | `blend_rgba(image: np.ndarray, rgba: np.ndarray, visible_mask: np.ndarray, *, harmonizer: Harmonizer \| None = None, soften: float = 0.0) -> np.ndarray` |
 | `composite_objects` | `composite_objects(image: np.ndarray, camera: Camera, cam_from_world: np.ndarray, objects: Sequence[PlacedObject], *, scene_depth: np.ndarray \| None = None, occluders: Mapping[str, ActorState] \| None = None, occlusion_tolerance_m: float = 0.1) -> CompositeResult` |
+| `plan_composite` | `plan_composite(camera: Camera, cam_from_world: np.ndarray, objects: Sequence[PlacedObject], *, scene_depth: np.ndarray \| None = None, occluders: Mapping[str, ActorState] \| None = None, occlusion_tolerance_m: float = 0.1) -> CompositePlan` |
+| `CompositePlan` | Frozen record: `objects: tuple[PlacedObject, ...]`<br>`depth: np.ndarray`<br>`visible_mask: np.ndarray`<br>`occlusion_source: str`<br>`ignored_occluders: tuple[str, ...]`<br>`object_visibility: Mapping[str, ObjectVisibility]`<br>`footprints: tuple[...]` (internal) |
+| `CompositePlan.apply` | `apply(image: np.ndarray) -> CompositeResult` |
+| `CompositePlan.composite` | `composite(image: torch.Tensor, textures: Mapping[tuple[str, int], torch.Tensor] \| None = None) -> torch.Tensor` |
 
 composite_objects accepts uint8 RGB, resolves the nearest object surfaces, and blends only visible
 pixels. Each PlacedObject carries its own optional harmonizer. Supplied scene_depth is the sole
@@ -1437,6 +1442,17 @@ in input mapping order; they cannot supply cuboid occlusion. It is empty in scen
 which does not consult the occluders mapping. object_visibility provides one ObjectVisibility per
 input object, including its visible-pixel count. PlacedObject.world_surfaces() returns the
 asset's surfaces in world coordinates.
+
+composite_objects is plan_composite followed by CompositePlan.apply. The plan fixes everything that
+does not depend on surface colours: subpixel sampling, coverage from each asset's alpha,
+nearest-surface ownership, occlusion and object visibility. apply blends in floating point, rounds
+once to uint8 and then runs each object's harmonizer. composite performs the same blend on a
+(3, H, W) tensor in [0, 1] and accepts replacement straight-RGB colours, keyed by (object_id,
+surface index in the asset), at the surface texture's size. Rounding its output reproduces apply
+without harmonizers, and gradients reach the image and the replacement colours. A plan containing a
+harmonized object rejects composite, because harmonizers are not differentiable.
+SensorView.composite_plan(objects) plans with the view's camera, depth or actor cuboids and the
+capture tolerance, exactly as simulator captures compose world objects.
 
 ### avsectester.rendering.harmonizers
 

@@ -32,7 +32,6 @@ def compose_capture(
         import numpy as np
 
         from avsectester.geometry.projection import project_box
-        from avsectester.rendering import composite_objects
 
         for sensor in sorted(camera_sensors):
             geometry = sensor_geometry(sensor)
@@ -47,15 +46,10 @@ def compose_capture(
             if not candidates:
                 continue
             view = sensor_view(sensor)
-            if view.camera is None or view.cam_from_world is None:
-                raise ValueError(f"Camera {sensor!r} has no optical geometry")
             captured = read_camera_rgb(observation, view.sensor)
             if captured is None:
                 raise ValueError(f"Missing RGB camera {view.sensor!r}")
-            result = composite_objects(
-                captured[1], view.camera, view.cam_from_world, candidates,
-                scene_depth=view.depth, occluders=view.actors,
-            )
+            result = view.composite_plan(candidates).apply(captured[1])
             observation = write_camera_rgb(observation, view.sensor, result.image)
             views[view.sensor] = replace(
                 view, data=result.image, depth=None if view.depth is None else result.depth,

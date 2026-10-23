@@ -170,6 +170,47 @@ occlusion mask, but texture sampling maps into that region's image bounding rect
 recovering native mesh UV coordinates. This does not guarantee exact native appearance. Remaining
 geometry work is tracked in [TODO](../development/TODO.md#physical-patch-geometry).
 
+## Optimize a world object's texture
+
+World objects inserted with InsertObject are composited by the simulator at every capture.
+SensorView.composite_plan plans that composition for a view captured without the objects, such as
+a clean `ClosedLoopSession.render(RenderRequest(...)).view`. The plan fixes geometry, coverage and
+occlusion; `plan.composite` is the same blend as a differentiable function of surface colours.
+Rounding its result reproduces the deployed capture, so an optimized texture is the one deployed.
+
+<!-- runnable -->
+```python
+import numpy as np
+import torch
+
+from avsectester.closed_loop.simulators.base import SensorView
+from avsectester.data_types import ActorState
+from avsectester.geometry.cameras import BODY_FROM_OPTICAL, PinholeCamera
+from avsectester.geometry.poses import make_pose, rotation_matrix
+from avsectester.rendering import ObjectAsset, PlacedObject
+
+# In an attack, use a clean ClosedLoopSession.render(...).view instead of this synthetic view.
+camera = PinholeCamera(np.array([[300., 0., 160.], [0., 300., 120.], [0., 0., 1.]]), 320, 240)
+view = SensorView("front", np.full((240, 320, 3), 90, np.uint8), camera,
+                  np.linalg.inv(BODY_FROM_OPTICAL), {}, ActorState(np.eye(4)), 0.0, 0)
+face = np.full((64, 64, 4), 255, np.uint8)
+asset = ObjectAsset.from_panel(face, category="sign", width_m=0.9, mount_height_m=1.0)
+sign = PlacedObject("sign", asset, make_pose(rotation_matrix([0., 0., 180.]), [8., 0., -1.5]))
+
+plan = view.composite_plan([sign])
+colors = torch.rand(3, 64, 64, requires_grad=True)
+background = torch.as_tensor(view.data).permute(2, 0, 1).float() / 255
+image = plan.composite(background, {("sign", 0): colors})
+image.mean().backward()
+assert colors.grad.abs().sum() > 0
+```
+
+The surface index refers to `asset.surfaces`; from_panel lists optional posts before the face.
+The asset's alpha keeps the face shape, so only colours are optimized. To deploy, write the
+optimized colours into an RGBA texture with the original alpha, build the ObjectAsset and return
+InsertObject. Harmonizers are not differentiable: plan the objects without them, or account for
+their effect separately. The objective, model inputs and update rule belong to the attack.
+
 ## User-defined objectives
 
 A custom Attack can compute any objective from component values or a candidate RunLog, including

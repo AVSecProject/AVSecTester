@@ -187,6 +187,25 @@ online implementations. See [Image
 insertion](../examples/image-insertion.md#use-insertion-tools-in-your-attack) and
 [Optimization](optimization.md#use-the-optimization-tools).
 
+## Choose world or sensor insertion
+
+The two insertion paths are independent; an attack uses whichever matches its threat model.
+
+| | World insertion: InsertObject | Sensor insertion: InsertionAttackAction |
+|---|---|---|
+| Action kind | WorldAttackAction | SensorAttackAction |
+| Affects | Every camera, from the next capture | One named camera's data, in the current decision |
+| World state and RunLog | WorldSnapshot.objects; poses, extents and per-camera visibility | Receipts only; not part of world state |
+| Placement | Fixed world_from_object | World or host-attached placement, resolved per capture |
+| Occlusion | Scene depth, otherwise actor cuboids; 0.1 m tolerance | Scene depth or actor cuboids and other world objects; millimetre tolerances |
+| Appearance | PlacedObject.harmonizer | PatchCompositor and its harmonizer |
+| Differentiable path | SensorView.composite_plan, then CompositePlan.composite | PatchPerturbation over plane_sampling |
+| Simulator requirement | can_insert_objects | A calibrated camera SensorView |
+
+Use world insertion for a physical object that every sensor and the recorded world should contain,
+such as a sign. Use sensor insertion for a perturbation of one camera's data, such as an injected
+image or a patch that follows a host vehicle.
+
 ## Insert a world object
 
 Import InsertObject from avsectester.attack.insertion. Return it from AttackRuntime.setup to make

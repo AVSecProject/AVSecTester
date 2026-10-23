@@ -7,7 +7,8 @@ import pytest
 from avsectester.data_types import ActorState
 from avsectester.geometry.boxes import box_ray_distances
 from avsectester.rendering import (
-    ObjectAsset, ObjectVisibility, PlacedObject, PlaneSurface, blend_rgba, composite_objects, render_surfaces,
+    ObjectAsset, ObjectVisibility, PlacedObject, PlaneSurface, blend_rgba, composite_objects, plan_composite,
+    render_surfaces,
 )
 
 
@@ -42,7 +43,8 @@ def test_composite_objects(camera, optical_from_world):
     rgba, target_depth = render_surfaces(placed.world_surfaces(), camera, optical_from_world)
     reference = np.isfinite(target_depth)
     result = composite_objects(image, camera, optical_from_world, (placed,))
-    np.testing.assert_array_equal(result.image, blend_rgba(image, rgba, reference))
+    # Composition blends filtered premultiplied colours in floating point and rounds once.
+    assert np.abs(result.image.astype(int) - blend_rgba(image, rgba, reference).astype(int)).max() <= 1
     np.testing.assert_array_equal(result.image[40, 50], [240, 20, 20])
     np.testing.assert_array_equal(result.image[~reference], image[~reference])
     np.testing.assert_array_equal(result.depth, target_depth)
@@ -125,3 +127,44 @@ def test_composite_objects(camera, optical_from_world):
         np.all(ordered.image == [255, 255, 0], axis=2))
     with pytest.raises(ValueError, match="uint8 RGB"):
         composite_objects(image.astype(float), camera, optical_from_world, (placed,))
+
+
+def test_composite_plan_is_the_differentiable_deployment(camera, optical_from_world):
+    torch = pytest.importorskip("torch")
+    rng = np.random.default_rng(0)
+    texture = np.concatenate((rng.integers(0, 256, (16, 16, 3)), np.full((16, 16, 1), 255)), axis=2)
+    texture[:2, :2, 3] = 0
+    surface = PlaneSurface(np.array([[0., -2., 2.], [0., 2., 2.],
+                                    [0., 2., 0.], [0., -2., 0.]]), texture.astype(np.uint8))
+    pose = np.eye(4)
+    pose[:3, 3] = (6., 0., -1.)
+    placed = PlacedObject("sign", ObjectAsset.from_surfaces((surface,), "sign"), pose)
+    image = rng.integers(0, 256, (80, 100, 3)).astype(np.uint8)
+    scene_depth = np.full((80, 100), 100.)
+    scene_depth[:, :50] = 1.
+    plan = plan_composite(camera, optical_from_world, (placed,), scene_depth=scene_depth)
+    deployed = plan.apply(image)
+    np.testing.assert_array_equal(
+        deployed.image, composite_objects(image, camera, optical_from_world, (placed,), scene_depth=scene_depth).image)
+    assert plan.object_visibility == deployed.object_visibility
+
+    background = torch.as_tensor(image, dtype=torch.float32).permute(2, 0, 1) / 255
+    colors = (torch.as_tensor(texture[..., :3], dtype=torch.float32).permute(2, 0, 1) / 255).requires_grad_()
+    composite = plan.composite(background, {("sign", 0): colors})
+    rounded = np.rint(composite.detach().permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+    np.testing.assert_array_equal(rounded, deployed.image)
+    composite.sum().backward()
+    assert colors.grad is not None and colors.grad.abs().sum() > 0
+
+    changed = plan.composite(background, {("sign", 0): torch.zeros_like(colors)}).detach()
+    moved = (changed - composite.detach()).abs().amax(dim=0).numpy() > 0
+    assert moved.any() and not moved[~deployed.visible_mask].any()
+    with pytest.raises(KeyError, match="Unknown planned surface"):
+        plan.composite(background, {("other", 0): colors})
+    with pytest.raises(KeyError, match="Unknown planned surface"):
+        plan.composite(background, {("sign", 1): colors})
+    with pytest.raises(ValueError, match="must be a"):
+        plan.composite(background, {("sign", 0): colors[:, :8]})
+    harmonized = plan_composite(camera, optical_from_world, (replace(placed, harmonizer=lambda c, m, b: c),))
+    with pytest.raises(ValueError, match="Harmonizers are not differentiable"):
+        harmonized.composite(background)

@@ -240,8 +240,8 @@ def _straight_rgba(premultiplied: np.ndarray) -> np.ndarray:
 
 
 def _render_region(sampler: SurfaceSampler, camera: Camera,
-                   bounds: tuple[int, int, int, int]) -> tuple[np.ndarray, np.ndarray]:
-    """Premultiplied float RGBA and covered depth of one surface over a pixel region."""
+                   bounds: tuple[int, int, int, int]) -> tuple[PlaneSampling, np.ndarray, np.ndarray]:
+    """Sampling, premultiplied float RGBA and covered depth of one surface over a pixel region."""
     import torch
 
     sampling = plane_sampling(sampler, camera, bounds)
@@ -249,7 +249,7 @@ def _render_region(sampler: SurfaceSampler, camera: Camera,
         premultiplied = sample_texture(premultiplied_texture(sampler.texture), sampling)
     premultiplied = premultiplied.permute(1, 2, 0).numpy().astype(float)
     covered = (premultiplied[..., 3] > _COVERED) & np.isfinite(sampling.depth)
-    return premultiplied, np.where(covered, sampling.depth, np.inf)
+    return sampling, premultiplied, np.where(covered, sampling.depth, np.inf)
 
 
 @dataclass
@@ -290,7 +290,7 @@ def rasterize(surfaces: Sequence[PlaneSurface], camera: Camera, cam_from_world, 
     nearest = np.full((height, width), np.inf)
     premultiplied = np.zeros((height, width, 4))
     for sampler in front:
-        colors, depth = _render_region(sampler, camera, (x0, y0, x1, y1))
+        _, colors, depth = _render_region(sampler, camera, (x0, y0, x1, y1))
         closer = depth < nearest
         nearest[closer], premultiplied[closer] = depth[closer], colors[closer]
     xs, ys = np.meshgrid(np.arange(x0, x1), np.arange(y0, y1))
@@ -315,7 +315,7 @@ def render_surfaces(
         if bounds is None:
             continue
         x0, y0, x1, y1 = bounds
-        colors, depth = _render_region(sampler, camera, bounds)
+        _, colors, depth = _render_region(sampler, camera, bounds)
         region = nearest[y0:y1, x0:x1]
         closer = depth < region
         region[closer] = depth[closer]
