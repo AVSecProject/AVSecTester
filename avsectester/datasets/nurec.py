@@ -243,6 +243,7 @@ class NuRecDataset(Dataset):
         """Merge the static and ground PLY meshes in canonical scene-world coordinates."""
         return read_scene_mesh(self.usdz_path(scenario_id))
 
+    @lru_cache(maxsize=8)
     def scenario_map(self, scenario_id: str) -> ScenarioMap | Unavailable:
         """Read canonical-world clipgt geometry, preserving missing-layer reasons.
 
@@ -301,7 +302,8 @@ class NuRecDataset(Dataset):
             "time_step": self.time_step, "interpolation": "linear_translation_slerp_rotation",
             "first_timestamp": timeline[0].timestamp,
             "terminal_timestamp": timeline[-1].timestamp,
-        })
+        }, recorded_ego=tuple(self.ego_state(scenario_id, round(item.timestamp * 1e6))
+                              for item in timeline), scenario_map=self.scenario_map(scenario_id))
 
     def ego_state(self, scenario_id: str, timestamp_us: int) -> ActorState:
         """Interpolate the recorded rig pose and world velocity within its support."""

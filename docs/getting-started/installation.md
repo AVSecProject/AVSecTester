@@ -148,7 +148,8 @@ not required just to import the plain interfaces. Constraints keep NumPy below 2
 | test | CPU test image, plot and augmentation dependencies |
 | dev | pytest, Ruff and mypy |
 
-NuRec defaults to mesh depth. Install the optional nurec extra whenever using that mode:
+NuRec defaults to mesh depth and ego ground contact. Install the optional nurec extra when using
+either feature:
 
 ```bash
 pip install -e ".[nurec]" -c constraints.txt
@@ -156,8 +157,9 @@ pip install -e ".[nurec]" -c constraints.txt
 
 It pins trimesh==5.1.1 and embreex==4.4.0.post1. trimesh loads the archived PLY meshes; embreex
 provides CPU Embree ray queries and supplies wheels for Python 3.11 and 3.12.
-No GPU is required for mesh intersection. Without this extra, explicitly set the NuRec simulator's
-depth option to none; depth=mesh rejects a missing intersection dependency at construction.
+No GPU is required for mesh intersection. Without this extra, explicitly set both depth="none"
+and physics_update_mode="none"; either mesh feature rejects missing intersection dependencies at
+construction. The AlpaSim controller has separate workspace dependencies described below.
 
 ## Local full installation
 
@@ -202,9 +204,35 @@ rendering service. They do not use the CARLA Python 3.11 inference environment.
 
 ### Driver environment
 
-Build AlpaSim's driver environment following its instructions (`uv sync --package alpasim_driver`).
-It must provide Alpamayo, alpasim_driver and alpasim_grpc. Install AVSecTester's exact PyArrow pin
-into that interpreter:
+Build AlpaSim's Python 3.12 workspace with both its driver and controller packages:
+
+```bash
+cd /path/to/alpasim
+uv sync --python 3.12 --package alpasim_driver --package alpasim_controller --no-dev
+uv run --no-sync compile-protos
+```
+
+Keep alpasim_controller installed as an editable workspace package. Its upstream setuptools
+package list omits alpasim_controller.mpc_impl from a non-editable wheel, while MPC discovery
+requires the installed alpasim.mpc entry points. The workspace installs the controller's OSQP,
+do-mpc and CasADi dependencies. Verify the implementation and entry point before running NuRec:
+
+```bash
+/path/to/alpasim/.venv/bin/python - <<'PYTHON'
+import json
+from importlib.metadata import distribution, entry_points
+import alpasim_controller.mpc_impl
+
+metadata = json.loads(distribution("alpasim_controller").read_text("direct_url.json"))
+assert metadata["dir_info"]["editable"]
+implementations = {entry.name: entry for entry in entry_points(group="alpasim.mpc")}
+assert "linear" in implementations
+print(implementations["linear"].load())
+PYTHON
+```
+
+The environment must also provide Alpamayo, alpasim_driver and alpasim_grpc. Install
+AVSecTester's exact PyArrow pin into that interpreter:
 
 ```bash
 cd /path/to/AVSecTester
@@ -243,10 +271,12 @@ The repository's Dockerfile supplies this environment as its nurec target:
 docker build --target nurec -t avsectester:nurec .
 ```
 
-That target installs the framework's CLI, report, Parquet and nurec-extra dependencies into
-AlpaSim's Python 3.12 environment while preserving AlpaSim's NumPy version. It imports AVSecTester
-from the mounted checkout rather than installing the Python 3.11 package. Older images containing
-only PyArrow need either rebuilding or the dependency installation above before CLI use.
+That target installs both editable AlpaSim workspace packages, verifies the linear MPC entry point,
+and installs the framework's CLI, report, Parquet and nurec-extra dependencies into Python 3.12
+while preserving AlpaSim's NumPy version. It imports AVSecTester from the mounted checkout rather
+than installing the Python 3.11 package. Rebuild an older image before using the supplied NuRec
+configurations with AlpaSimController. The optional nurec extra supplies mesh-ray dependencies;
+it does not install the AlpaSim workspace or controller on its own.
 
 ### NuRec renderer and scenes
 

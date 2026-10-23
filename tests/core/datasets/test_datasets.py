@@ -32,6 +32,7 @@ def test_datasets(dataset_case):
     start = dataset.scenario_start(scenario.id, frames[1])
     assert start.frame == frames[1] and start.scenario_id == scenario.id
     assert isinstance(dataset.scenario_map(scenario.id), map_type)
+    assert start.scenario_map == dataset.scenario_map(scenario.id)
     with pytest.raises(ValueError, match="terminal frame"):
         dataset.decision_window(scenario.id, frames[-1], 1)
     with pytest.raises(ValueError, match="scenario's frames"):
@@ -48,6 +49,14 @@ def test_recorded_frame_data(dataset_fixture, request):
     assert data.frame == frame and data.ego is not None
     assert "host" in data.actors and "ego" not in data.actors
     assert data.actors["host"].extent == (4., 2., 2.)
+    frames = dataset.frames(scenario.id)
+    start = dataset.scenario_start(scenario.id, frame)
+    assert len(start.recorded_ego) == len(frames)
+    for recorded, reference in zip(start.recorded_ego, frames):
+        expected = dataset.frame_data(scenario.id, reference).ego
+        np.testing.assert_array_equal(recorded.pose, expected.pose)
+        assert recorded.velocity == expected.velocity
+        assert recorded.extent == expected.extent and recorded.box_center == expected.box_center
 
 
 @pytest.mark.parametrize("dataset_fixture", ["nurec_dataset"])

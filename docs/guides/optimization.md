@@ -150,7 +150,7 @@ logs a summary including final speed; it does not save that rollout log or claim
 impact. The session uses the selection seed; the algorithm seed controls optimizer randomness
 independently. Empty metadata returns the original texture without attempting optimization. NES
 accepts init_texture for a warm start. PGD rejects init_texture rather than ignoring it. Physical
-deployment samples only origins accepted by session.can_deploy_at(position), which uses the
+deployment samples only origins accepted by session.can_start_at(position), which uses the
 framework's deployment and capture tick requirements. An unsupported origin fails explicitly; the
 attack does not calculate a separate window formula. By default each sample targets the host's
 projected bounding box. An explicit target_box overrides it; this objective region is distinct from

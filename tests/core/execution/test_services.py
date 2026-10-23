@@ -16,9 +16,12 @@ from avsectester.execution.services import (
     CandidateRequest, ClosedLoopServices, RenderRequest, SensorRequest,
 )
 from avsectester.closed_loop.simulators.carla import CarlaSimulator
+from avsectester.closed_loop.simulators.base import DeploymentPlan
 from avsectester.data_types import Unavailable
 from avsectester.rendering import ObjectVisibility
-from tests.fakes import CarlaNativeBoundary, ConstantAVStack, MemoryDataset, MemorySimulator, MinimalAttack
+from tests.fakes import (
+    CarlaNativeBoundary, ConstantAVStack, HistoryAVStack, MemoryDataset, MemorySimulator, MinimalAttack,
+)
 
 
 def test_frame_data(carla_dataset, monkeypatch):
@@ -148,6 +151,29 @@ def test_rollout():
                                    second.steps[-1].physical_post.ego.pose)
         with pytest.raises(ValueError, match="seed must match"):
             session.rollout(replace(request, seed=8))
+
+    history_segment = AttackSegment("scene", frames[2], frames[4])
+    history_request = CandidateRequest(history_segment, 7, 2, {}, RecordingPolicy(("front",)))
+    history_adapter = DrivingAdapter(lambda seed: HistoryAVStack(), past_steps=2)
+    with ClosedLoopServices(data, MemorySimulator(), history_adapter) as services:
+        with services.session(7) as session:
+            history_log = session.rollout(history_request)
+    assert len(history_log.steps[0].components["past_observations"]) == 2
+    initialization = next(event for event in history_log.events if event.kind == "initialization")
+    assert initialization.data["past_steps"] == 2
+
+
+def test_can_start_at():
+    adapter = DrivingAdapter(lambda seed: HistoryAVStack(), past_steps=2)
+    with ClosedLoopServices(MemoryDataset(), MemorySimulator(capture_ticks=1), adapter,
+                            deployment=DeploymentPlan(2)) as services:
+        with services.session(7) as session:
+            assert not session.can_start_at(0)
+            assert not session.can_start_at(1)
+            assert not session.can_start_at(2)
+            assert session.can_start_at(3)
+            with pytest.raises(ValueError, match="position must be a nonnegative integer"):
+                session.can_start_at(-1)
 
 
 def test_session():

@@ -26,7 +26,9 @@ tests/
       test_environment.py          environment validation and deterministic sensor corruptions
       simulators/
         test_base.py               shared public simulator lifecycle
-        test_ego_dynamics.py       actuator and trajectory integration
+        test_ego_dynamics.py       actuator integration, ideal following and optional real MPC
+        test_navigation.py         map/recorded route generation
+        test_ground_contact.py     mesh-constrained ego height and orientation
         test_simulators.py         shared simulator contract
         carla/                     native lifecycle, sensor capture and conversions
         nurec/                     runtime and renderer behavior
@@ -35,7 +37,7 @@ tests/
         test_base.py               driving interface and observation pipeline
         test_avstacks.py           AVStack/DrivingAdapter component template
         test_scorers.py            model scorer bindings
-        test_alpamayo.py           model ownership and cleanup
+        test_alpamayo.py           actual input history, routes, trajectories and model ownership
         test_camera_forward_collision.py   image detection policy
     datasets/                      dataset contract template and interpolation
     maps/                          semantic records and clipgt map reader
@@ -126,3 +128,7 @@ There is no NuRec server integration test. Real dataset checks use AVSECTESTER_N
 AVSECTESTER_NUSCENES_ROOT. The camera-policy GPU test additionally needs CUDA, detector weights and
 nuScenes v1.0-trainval images; AVSECTESTER_TEST_GPU selects its device. These checks skip when their
 external prerequisites are absent. Offline checks do not launch simulator servers.
+
+AlpaSim-dependent policy and controller tests use pytest.importorskip outside the Python 3.12
+NuRec image. Inside avsectester:nurec, they use the installed AlpaSim protobufs and navigation,
+replace only learned model weights, and run without a renderer server or GPU.

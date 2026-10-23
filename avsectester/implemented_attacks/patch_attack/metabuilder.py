@@ -40,6 +40,9 @@ def build_metadata(attack, scenario):
     discovered = []
     with scenario.services.session(scenario.seed) as session:
         for frame in frames[:-1]:
+            if not session.can_start_at(frame.position):
+                scenario.record_reason("Frame lacks history or deployment space for a run start")
+                continue
             result = session.render(RenderRequest(scenario.scenario_id, frame, attack.sensor))
             hosts = candidates if candidates is not None else tuple(sorted(result.view.actors))
             if not hosts:

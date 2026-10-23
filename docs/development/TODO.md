@@ -2,21 +2,15 @@
 
 This file lists open work. Items are planned capabilities, not implemented features.
 
-## Driving-model input fidelity
-
-- [ ] Accumulate the state history actually received by AlpamayoAVStack instead of rebuilding
-  it from current pose and constant speed. Keep model-visible estimates separate from physical state,
-  specify startup padding, and review route, command and acceleration defaults.
-
-## Vehicle dynamics
-
-- [ ] Add a trajectory-to-actuator controller with physical vehicle dynamics for NuRec/Alpamayo.
-  Keep TrajectoryFollower as an explicitly selected ideal follower.
-
 ## Reactive traffic in NuRec
 
 - [ ] Make other actors react to ego motion. Confirm renderer support for per-frame actor poses
-  and evaluate an appropriate traffic model or AlpaSim traffic integration.
+  and integrate AlpaSim's trafficsim for reactive traffic.
+
+## Rolling-shutter rendering
+
+- [ ] Support AlpaSim's shutter_duration_us when requesting camera captures. Current requests
+  render instantaneous frames without rolling-shutter timing.
 
 ## Driving-impact metrics
 

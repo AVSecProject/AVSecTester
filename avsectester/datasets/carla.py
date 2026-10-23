@@ -6,6 +6,7 @@ import math
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
@@ -268,6 +269,7 @@ class CarlaDataset(Dataset):
     def native(self, scenario_id):
         return deepcopy(self._recipes[scenario_id])
 
+    @lru_cache(maxsize=8)
     def scenario_map(self, scenario_id: str) -> ScenarioMap | Unavailable:
         """Read an exported OpenDRIVE map without connecting to a CARLA server."""
         from avsectester.maps import read_opendrive
@@ -288,4 +290,5 @@ class CarlaDataset(Dataset):
 
     def scenario_start(self, scenario_id, frame):
         self.checked_frame(scenario_id, frame)
-        return ScenarioStart("CarlaDataset", scenario_id, frame, {"recipe": self.native(scenario_id)})
+        return ScenarioStart("CarlaDataset", scenario_id, frame, {"recipe": self.native(scenario_id)},
+                             scenario_map=self.scenario_map(scenario_id))

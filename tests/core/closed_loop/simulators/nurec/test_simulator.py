@@ -36,10 +36,44 @@ def test_reset_requires_mesh(nurec_usdz_path, tmp_path, monkeypatch):
         assert boundary.last_request is not None
 
 
+def test_reset_initializes_dynamics(nurec_dataset, monkeypatch):
+    from tests.fakes import ResetRecordingDynamics
+
+    NuRecRpcBoundary().install(monkeypatch)
+    frames = nurec_dataset.frames("scene")
+    start = nurec_dataset.scenario_start("scene", frames[2])
+    recorded = []
+    for position, original in enumerate(start.recorded_ego):
+        pose = original.pose.copy()
+        pose[:3, :3] = rotation_matrix((0., 0., position * 2.))
+        local_velocity = np.array([3. + position * .2, .4, 0.])
+        recorded.append(replace(original, pose=pose,
+                                velocity=tuple(pose[:3, :3] @ local_velocity)))
+    start = replace(start, recorded_ego=tuple(recorded),
+                    payload={**start.payload, "ego": recorded[2]})
+    simulator = NuRecSimulator({"dt": .1}, NuRecRenderer(cameras=["front"]),
+                               ResetRecordingDynamics(), physics_update_mode="none",
+                               route_generator="none")
+    with simulator.create_runtime() as runtime:
+        runtime.reset(start)
+        initial = runtime.native["dynamics"].initial_state
+        assert initial.speed == pytest.approx(3.4)
+        assert initial.lateral_speed == pytest.approx(.4)
+        assert initial.yaw_rate == pytest.approx(np.deg2rad(2.) / .1)
+        assert initial.acceleration == pytest.approx(2.)
+        assert initial.t == 0.
+        np.testing.assert_allclose(runtime.state().ego.velocity, recorded[2].velocity)
+        runtime.step(Control(throttle=.2))
+        runtime.reset(start)
+        assert runtime.state().vehicle_state == initial
+        assert runtime.native["dynamics"].initial_state == initial
+
+
 def test_checkpoint(monkeypatch):
     NuRecRpcBoundary().install(monkeypatch)
     simulator = NuRecSimulator({"dt": .1, "ego0": {"x": 10., "y": 5., "yaw": np.pi / 2}},
-                               NuRecRenderer(cameras=["front"]), TrajectoryFollower())
+                               NuRecRenderer(cameras=["front"]), TrajectoryFollower(),
+                               route_generator="none", physics_update_mode="none")
     with simulator.create_runtime() as runtime:
         runtime.reset()
         runtime.step(Control(trajectory=[((2., 0., 0.), (1., 0., 0., 0.), 200000)]))
@@ -186,3 +220,109 @@ def test_depth_without_default_camera(nurec_usdz_path, tmp_path, monkeypatch):
     with NuRecSimulator({"dt": .1}, NuRecRenderer(cameras=["front"])).create_runtime() as runtime:
         runtime.reset(dataset.scenario_start("scene", dataset.frames("scene")[0]))
         np.testing.assert_allclose(runtime.sensor_view("front").depth[6, 8], 4., atol=1e-6)
+
+
+def test_route(nurec_dataset, monkeypatch):
+    from avsectester.data_types import Unavailable
+
+    NuRecRpcBoundary().install(monkeypatch)
+    start = nurec_dataset.scenario_start("scene", nurec_dataset.frames("scene")[0])
+    with NuRecSimulator({"dt": .1}, NuRecRenderer(cameras=["front"])).create_runtime() as runtime:
+        runtime.reset(start)
+        route = runtime.observe().route
+        assert route.shape == (20, 3)
+        np.testing.assert_allclose(route[0], [0., 0., 0.])
+        runtime.step(Control(throttle=.2))
+        np.testing.assert_allclose(runtime.observe().route[0], [0., 0., 0.], atol=1e-12)
+        missing = replace(start, scenario_map=Unavailable("No map"))
+        with pytest.raises(ValueError, match="recorded.*none"):
+            runtime.reset(missing)
+
+
+@pytest.mark.parametrize("mode,height", [("ego_only", .05), ("none", .3)])
+def test_ground_contact(mode, height, nurec_dataset, monkeypatch):
+    from avsectester.execution.runner import ClosedLoopRunner, RunRequest
+    from tests.fakes import ConstantAVStack
+
+    NuRecRpcBoundary().install(monkeypatch)
+    start = nurec_dataset.scenario_start("scene", nurec_dataset.frames("scene")[0])
+    simulator = NuRecSimulator({"dt": .1}, NuRecRenderer(cameras=["front"]),
+                               physics_update_mode=mode, ground_mesh="mesh_ground")
+    with simulator.create_runtime() as runtime:
+        log = ClosedLoopRunner().run(runtime, ConstantAVStack(), RunRequest(1, start=start))
+        assert log.steps[0].physical_post.ego.pose[2, 3] == pytest.approx(height)
+        termination = next(event for event in log.events if event.kind == "termination")
+        assert termination.data["ground_contact_failures"] == {}
+
+
+def test_ground_contact_failure(nurec_dataset, monkeypatch):
+    from avsectester.execution.runner import ClosedLoopRunner, RunRequest
+    from tests.fakes import ConstantAVStack
+
+    NuRecRpcBoundary().install(monkeypatch)
+    start = nurec_dataset.scenario_start("scene", nurec_dataset.frames("scene")[0])
+    ego = start.payload["ego"]
+    pose = ego.pose.copy()
+    pose[0, 3] = 1000.
+    start = replace(start, payload={**start.payload, "ego": replace(ego, pose=pose)})
+    simulator = NuRecSimulator({"dt": .1}, NuRecRenderer(cameras=["front"]), route_generator="none")
+    with simulator.create_runtime() as runtime:
+        log = ClosedLoopRunner().run(runtime, ConstantAVStack(), RunRequest(1, start=start))
+        termination = next(event for event in log.events if event.kind == "termination")
+        assert termination.data["ground_contact_failures"] == {"insufficient_intersections": 1}
+        assert log.steps[0].physical_post.ego.pose[2, 3] == pytest.approx(.3)
+
+
+def test_observe_past(nurec_dataset, monkeypatch, make_object_in_front):
+    from avsectester.closed_loop.hooks import Hook, HookSet
+    from tests.fakes import ConstantAVStack
+
+    boundary = NuRecRpcBoundary().install(monkeypatch)
+    frames = nurec_dataset.frames("scene")
+    start = nurec_dataset.scenario_start("scene", frames[3])
+    simulator = NuRecSimulator({"dt": .1}, NuRecRenderer(cameras=["front"]),
+                               physics_update_mode="none")
+    with simulator.create_runtime() as runtime:
+        hooks = HookSet([Hook("render.post", lambda image, context: image + 7)])
+        with hooks.session(runtime, ConstantAVStack()).activate():
+            runtime.reset(start)
+            asset, world_from_object = make_object_in_front(runtime.sensor_view("front"))
+            runtime.insert_object("new-sign", asset, world_from_object)
+            host = runtime.state().actors["host"]
+            pose = host.pose.copy()
+            pose[1, 3] = 20.
+            runtime.set_actor_state("host", replace(host, pose=pose, velocity=(0., 0., 0.)))
+            runtime.step(Control())
+            original = runtime.observe()
+            physical = runtime.state()
+            request = runtime.render_request("front")
+            past = runtime.observe_past(3)
+            assert runtime.can_observe_past
+            assert [observation.frame for observation in past] == [-3, -2, -1]
+            np.testing.assert_allclose([observation.t for observation in past], [-.3, -.2, -.1])
+            rendered = [item for item in boundary.requests if hasattr(item, "frame_start_us")][-3:]
+            for observation, native, frame in zip(past, rendered, frames[:3]):
+                recorded = nurec_dataset.frame_data("scene", frame)
+                assert native.frame_start_us == round(frame.timestamp * 1e6)
+                np.testing.assert_allclose(pose_from_proto(native.sensor_pose.start_pose),
+                    recorded.ego.pose @ pose_from_proto(boundary.mount), atol=1e-12)
+                assert observation.vehicle_state.x == pytest.approx(recorded.ego.pose[0, 3])
+                assert observation.ego_speed == pytest.approx(np.linalg.norm(recorded.ego.velocity))
+                # Past captures bypass render hooks, actor overrides and framework insertions.
+                np.testing.assert_array_equal(observation.sensor_data["front"], 30)
+                actors = {item.track_id: item for item in native.dynamic_objects}
+                assert actors.keys() == recorded.actors.keys()
+                for identity, actor in recorded.actors.items():
+                    np.testing.assert_allclose(pose_from_proto(actors[identity].pose_pair.start_pose),
+                                               actor.pose, atol=1e-12)
+                np.testing.assert_allclose(observation.route[0], [0., 0., 0.], atol=1e-12)
+            np.testing.assert_array_equal(runtime.observe().sensor_data["front"], original.sensor_data["front"])
+            np.testing.assert_allclose(runtime.observe().route, original.route)
+            np.testing.assert_allclose(runtime.state().ego.pose, physical.ego.pose)
+            np.testing.assert_allclose(runtime.state().actors["host"].pose, physical.actors["host"].pose)
+            assert runtime.state().objects.keys() == {"new-sign"}
+            assert runtime.clock.t == physical.t and runtime.clock.frame == physical.frame
+            np.testing.assert_array_equal(runtime.render_request("front").pose, request.pose)
+            runtime.reset(nurec_dataset.scenario_start("scene", frames[0]))
+            with pytest.raises(ValueError, match="only 0 past decisions; 1 required"):
+                runtime.observe_past(1)

@@ -37,11 +37,12 @@ class ClassifiedSensorResult(SensorResult):
 
 
 def test_register_dataclass(tmp_path):
-    from avsectester.closed_loop.simulators.ego_dynamics import EgoPose
+    from avsectester.closed_loop.simulators.ego_dynamics import PlanarEgoState
 
     for record in (Control(throttle=.4), Unavailable("no map"), TargetSpec((1., 2., 3., 4.)),
                    Detection((8., 0., 1.), (4., 2., 2.), 0., "car", .9),
-                   FrameReference("scene", 0, "first", 0.), EgoPose(x=2., speed=3.)):
+                   FrameReference("scene", 0, "first", 0.), PlanarEgoState(x=2., speed=3., lateral_speed=.4,
+                       yaw_rate=.2, acceleration=-1.5)):
         encoded = DEFAULT_REGISTRY.encode(record)
         assert encoded["_avsectester_type"] == "dataclass"
         assert encoded["type"] == f"{type(record).__module__}:{type(record).__qualname__}"

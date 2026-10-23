@@ -27,6 +27,9 @@ def build_metadata(attack, scenario):
                                       compositor=attack.compositor)
 
         def eligible(frame):
+            if not session.can_start_at(frame.position):
+                scenario.record_reason("Frame lacks history or deployment space for a run start")
+                return False
             result = session.render(RenderRequest(scenario.scenario_id, frame, attack.sensor))
             if isinstance(placement, AttachedPlacement) and placement.host not in result.view.actors:
                 scenario.record_reason("Insertion host is absent")

@@ -40,6 +40,10 @@ def test_prepare():
         ("first", "selected"), ("broken", "error"), ("last", "selected"),
     ]
     assert "RuntimeError: synthetic selection failed" == prepared.selections[1].error
+    restricted = replace(config, avstack=DrivingAdapter(lambda seed: ConstantAVStack(), past_steps=1))
+    filtered = Experiment.prepare(restricted)
+    assert [segment.start.position for segment in filtered.metadata["probe"]] == [2, 2]
+    assert "insufficient recorded history" in filtered.selections[0].reasons[0]
     with pytest.raises(RuntimeError, match="selection failed"):
         Experiment.prepare(replace(config, runs=replace(config.runs, strict=True)))
 

@@ -9,14 +9,34 @@
 ## AVStack interface
 
 An AVStack accepts Observation and returns Control. It owns model-visible ObservationPipeline and per-run
-model history. `reset(first_observation)` receives the already processed first input;
-ObservationPipeline does not transform that input or reset the localizer twice. Its processing order
+model history. `reset(first_observation, past=())` receives the processed first input and
+recorded past observations ordered oldest to newest. ObservationPipeline does not transform that
+input or reset the localizer twice. Its processing order
 is sensors.post hooks, the localizer, localization hooks and observation hooks. It does not process
 output commands.
 
 Declare command_modes and supported_stages. Unsupported commands fail before a world starts unless
 an explicit command hook converts them. Actual commands are checked again before execution. The
 interface never silently translates incompatible sensor or command formats.
+
+### Recorded input history
+
+Declare the required number of preceding decision observations with the AVStack class attribute
+`past_steps`, which defaults to 0. The simulator must advertise `can_observe_past` and the selected
+start must have that much recorded history. NuRec provides these inputs through
+`observe_past(count)`; unavailable or insufficient recorded history is an error, never a reason to
+fabricate or repeat observations.
+
+The runner and candidate rollouts apply the treatment's sensor corruptions to each past observation
+using its own absolute frame position. Past inputs do not pass through stage hooks,
+ObservationPipeline or attack actions. Their t and frame values are negative relative to the start.
+Reset receives them separately from the first processed current input. The RunLog initialization
+event records `past_steps` and each past observation's t and vehicle_state in `past_observations`,
+without storing those images.
+
+During selection, `session.can_start_at(position)` checks both the deployment window and the
+required history. Built-in attacks use this check; experiment preparation also discards segments
+that cannot start.
 
 ## Modular driving system
 
@@ -53,7 +73,8 @@ AlpamayoAVStack wraps AlpaSim's trajectory-output model. It uses camera historie
 model-visible ego state, returns Control.trajectory and exposes policy.pre/policy.post. It has no
 separate perception or tracking stage. `detections()` returns None, so DetectionMetrics is not a
 default metric for this driving system. Its component log contains `policy` for the model
-prediction and `command` for the produced ego command.
+prediction and `command` for the produced ego command. It also records route_waypoints,
+navigation_command, navigation_note, history_pose_count and selected_image_times.
 
 The driver environment is Python 3.12 and distinct from the avstack Python 3.11 environment. Run
 from a source checkout using the driver interpreter. See [NuRec
@@ -79,8 +100,28 @@ assert avstack.command_modes == frozenset({"trajectory"})
 assert avstack.detections() is None
 ```
 
-**Not yet implemented.** A complete received-state history and a physical trajectory controller. See
-[TODO](../development/TODO.md#vehicle-dynamics).
+Alpamayo declares past_steps=15: its model consumes 16 poses at 0.1 s intervals, covering 1.5 s
+(`NUM_HISTORY_STEPS` and `HISTORY_TIME_STEP` in AlpaSim). reset requires that real observation
+history and checks rounded observation timestamps are exactly 100 ms apart before loading its
+model. Its `(context_length - 1) * frame_subsample` image span must not exceed 15 decisions.
+Each decision appends the received pose; speed and acceleration come from successive pose differences.
+Images are taken from the received camera history at frame_subsample intervals. Missing history or
+images raises an error; neither poses nor images are fabricated or repeated.
+
+frame_subsample defaults to 1. The policy selects context_length images from the latest
+`(context_length - 1) * frame_subsample + 1` observations, retaining the current frame. The supplied
+NuRec configurations use four images with stride 3: at decision zero, their times are
+−0.9, −0.6, −0.3 and 0.0 s relative to the selected start.
+
+Observation.route becomes an AlpaSim Route at the same rounded microsecond epoch as the pose
+history. AlpaSim's determine_command_from_route supplies the navigation command. Without a route,
+the model receives route=None and STRAIGHT, with the fallback recorded in navigation_note.
+Control.trajectory begins at the current rig origin with identity rotation and t0, followed by the
+selected model waypoints and their rotations. Model-provided waypoint timestamps are preserved.
+
+For one-shot offline policy evaluation, alpamayo_driving_adapter's policy component takes
+`{"observation": current, "past": past_observations}`. The caller must supply the actual history;
+a single image is insufficient. This component input contains the same data used by reset.
 
 ## Component logging interface
 
@@ -99,6 +140,12 @@ DrivingAdapter binds a fresh AVStack factory to ComponentDescriptor and ScorerDe
 Descriptors declare inputs, outputs, codecs and differentiable inputs. A scorer also declares
 whether gradients are available. Closed-loop services reject unsupported gradient requests instead
 of detaching values and continuing.
+
+DrivingAdapter exposes `past_steps` without constructing an AVStack or loading its model. If the
+factory has an `avstack_type` attribute naming an AVStack subclass, its class-level declaration wins.
+Otherwise the adapter's explicit `past_steps` option is used, defaulting to 0. Configuration loading
+attaches the configured AVStack type to its factory. alpamayo_driving_adapter explicitly supplies
+15 as its fallback, so a plain Python factory without avstack_type still selects valid start frames.
 
 An optional `avstack.bindings` constructor receives the configured AVStack factory. It returns a
 DrivingAdapter from closed_loop/avstacks/driving_adapter.py. The modular_driving_adapter binding lives in

@@ -10,16 +10,20 @@ dataset:
 simulator:
   type: NuRecSimulator
   options:
+    route_generator: map
+    physics_update_mode: ego_only
+    ground_mesh: mesh
     config:
       dt: 0.1
     renderer:
       type: avsectester.closed_loop.simulators.nurec:NuRecRenderer
       options:
         endpoint: 127.0.0.1:50051
+        resolution_hw: {camera_front_wide_120fov: [1080, 1900]}
         cameras:
         - camera_front_wide_120fov
     dynamics:
-      type: avsectester.closed_loop.simulators.ego_dynamics:TrajectoryFollower
+      type: avsectester.closed_loop.simulators.ego_dynamics:AlpaSimController
       options: {}
 avstack:
   type: AlpamayoAVStack
@@ -29,6 +33,7 @@ avstack:
     - camera_front_wide_120fov
     device: cuda:1
     output_frequency_hz: 10
+    frame_subsample: 3
 attacks:
   patch:
     type: PatchAttack

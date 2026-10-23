@@ -275,3 +275,42 @@ def test_object_visibility_hidden(make_object_in_front):
         visibility = simulator_runtime.object_visibility("sign")
         assert visibility.keys() == {"front"} and visibility["front"].visible_pixels == 0
         assert simulator_runtime.sensor_view("front").objects.keys() == {"sign"}
+
+
+def test_observe_past():
+    dataset = MemoryDataset()
+    frames = dataset.frames("scene")
+    start = dataset.scenario_start("scene", frames[3])
+    with MemorySimulator().create_runtime() as runtime:
+        with pytest.raises(RuntimeError, match="Reset the simulator"):
+            runtime.observe_past(1)
+        runtime.reset(start)
+        original = runtime.observe()
+        state = runtime.state()
+        past = runtime.observe_past(3)
+        assert [observation.frame for observation in past] == [-3, -2, -1]
+        np.testing.assert_allclose([observation.t for observation in past], [-.3, -.2, -.1])
+        np.testing.assert_allclose([observation.vehicle_state.x for observation in past],
+                                   [value.pose[0, 3] for value in start.recorded_ego[:3]])
+        past[0].sensor_data["front"][:] = 255
+        assert np.all(runtime.observe_past(3)[0].sensor_data["front"] == 20)
+        assert runtime.observe_past(0) == ()
+        np.testing.assert_array_equal(runtime.observe().sensor_data["front"], original.sensor_data["front"])
+        assert runtime.clock.t == state.t and runtime.clock.frame == state.frame
+        np.testing.assert_array_equal(runtime.state().ego.pose, state.ego.pose)
+        with pytest.raises(ValueError, match="only 3 past decisions; 4 required"):
+            runtime.observe_past(4)
+        with pytest.raises(ValueError, match="nonnegative integer"):
+            runtime.observe_past(-1)
+        runtime.reset(replace(start, recorded_ego=()))
+        with pytest.raises(ValueError, match="ScenarioStart.recorded_ego"):
+            runtime.observe_past(1)
+
+    class NoPastSimulator(MemorySimulator):
+        can_observe_past = False
+
+    with NoPastSimulator().create_runtime() as runtime:
+        runtime.reset(start)
+        assert not runtime.can_observe_past
+        with pytest.raises(NotImplementedError, match="cannot observe the recorded past"):
+            runtime.observe_past(1)

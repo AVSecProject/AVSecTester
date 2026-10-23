@@ -53,8 +53,8 @@ End-to-end execution checks do not establish attack impact.
 **Not yet implemented.** Defense treatments and reference defense algorithms. See
 [TODO](docs/development/TODO.md#defenses).
 
-**Not yet implemented.** Reactive NuRec traffic and a physical trajectory controller. See
-[TODO](docs/development/TODO.md#vehicle-dynamics).
+**Not yet implemented.** Reactive NuRec traffic and rolling-shutter rendering. See
+[TODO](docs/development/TODO.md#reactive-traffic-in-nurec).
 
 ## License
 

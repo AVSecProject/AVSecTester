@@ -15,7 +15,7 @@ FROM ghcr.io/astral-sh/uv:0.9.30 AS uv-nurec
 
 # NuRec + Alpamayo image. AlpaSim's driver requires Python 3.12, so it cannot share the Python 3.11
 # environment below. This target installs only the AlpaSim packages AVSecTester imports
-# (alpasim_driver with its model dependencies, and alpasim_grpc) plus the framework dependencies.
+# (alpasim_driver, alpasim_controller and alpasim_grpc) plus their framework dependencies.
 # AVSecTester itself is not installed: mount the checkout at /app and run from it.
 #   docker build --target nurec -t avsectester:nurec .
 # It is defined before the default stage, so `docker build .` and docker compose still build the
@@ -44,12 +44,18 @@ RUN uv sync --python 3.12 --package alpasim_driver --no-dev \
  && uv run --no-sync compile-protos
 ENV PATH="/opt/alpasim/.venv/bin:${PATH}"
 
+# Keep the controller as an editable workspace package: upstream's wheel package list omits
+# mpc_impl, and the implementation is discovered through the alpasim.mpc entry points.
+RUN uv sync --python 3.12 --package alpasim_driver --package alpasim_controller --no-dev \
+ && python -c 'import json; from importlib.metadata import distribution, entry_points; import alpasim_controller.mpc_impl, casadi, do_mpc, osqp; assert json.loads(distribution("alpasim_controller").read_text("direct_url.json"))["dir_info"]["editable"]; points = {point.name: point for point in entry_points(group="alpasim.mpc")}; assert "linear" in points; print("linear MPC:", points["linear"].load())'
+
 # Install the same framework dependencies as the Python 3.11 image, including the CLI and
 # report exporters. AlpaSim controls NumPy: keep its installed version rather than applying
 # the CARLA/OpenMMLab-specific NumPy<2 constraint from AVSecTester's Python 3.11 environment.
+# Do not inherit AlpaSim's rolling package-date cutoff for these separately pinned dependencies.
 COPY pyproject.toml /tmp/avsectester-pyproject.toml
 RUN python -c 'import re, tomllib, numpy; from pathlib import Path; project = tomllib.load(open("/tmp/avsectester-pyproject.toml", "rb"))["project"]; deps = project["dependencies"] + project["optional-dependencies"]["nurec"]; Path("/tmp/avsectester-requirements.txt").write_text("\n".join(d for d in deps if re.match(r"[A-Za-z0-9_.-]+", d).group(0).lower() != "numpy") + "\n"); Path("/tmp/alpasim-numpy.txt").write_text("numpy==" + numpy.__version__ + "\n")' \
- && uv pip install --python /opt/alpasim/.venv/bin/python \
+ && uv pip install --no-config --python /opt/alpasim/.venv/bin/python \
       -r /tmp/avsectester-requirements.txt -c /tmp/alpasim-numpy.txt \
  && python -c "import typer, yaml, matplotlib, PIL, pyarrow.parquet, alpasim_grpc; from embreex.rtcore_scene import EmbreeScene; from embreex.mesh_construction import TriangleMesh; from alpasim_driver.models.alpamayo1_5_model import Alpamayo15Model" \
  && rm /tmp/avsectester-pyproject.toml /tmp/avsectester-requirements.txt /tmp/alpasim-numpy.txt

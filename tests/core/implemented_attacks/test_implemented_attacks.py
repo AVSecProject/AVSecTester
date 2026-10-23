@@ -3,6 +3,7 @@
 import numpy as np
 import pytest
 
+from avsectester.closed_loop.avstacks.driving_adapter import DrivingAdapter
 from avsectester.attack import OfflineContext
 from avsectester.attack.insertion import PatchCompositor, PlaneAsset
 from avsectester.rendering.textures import CheckerboardTexture
@@ -45,6 +46,10 @@ def test_implemented_attack(attack_type, options, invalid, driving_options_fixtu
         metadata = attack.build_metadata(services.scenario("scene", seed=0))
         assert len(metadata) == 1 and metadata[0].decision_steps == 2
         artifacts = attack.run_offline(OfflineContext(services, tuple(metadata)))
+    history_driver = DrivingAdapter(lambda seed: configured.avstack.factory(seed), past_steps=1)
+    with ClosedLoopServices(configured.dataset, configured.simulator, history_driver) as services:
+        eligible = attack.build_metadata(services.scenario("scene", seed=0))
+        assert eligible and all(segment.start.position >= 1 for segment in eligible)
     attack.save_artifacts(artifacts, tmp_path)
     restored = attack.load_artifacts(tmp_path)
     segment = metadata[0]

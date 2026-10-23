@@ -30,6 +30,27 @@ def _scene_raycaster(path: str) -> MeshRaycaster:
     return _cached_scene_raycaster(str(source), stat.st_mtime_ns, stat.st_size)
 
 
+@lru_cache(maxsize=4)
+def _cached_ground_raycaster(path: str, modified_ns: int, size: int,
+                             mesh_name: str) -> MeshRaycaster:
+    import io
+    import zipfile
+    import trimesh
+    from avsectester.geometry.mesh import MeshRaycaster
+
+    with zipfile.ZipFile(path) as archive:
+        if mesh_name not in archive.namelist():
+            raise ValueError(f"NuRec ground contact archive {path!r} is missing: {mesh_name}")
+        mesh = trimesh.load(io.BytesIO(archive.read(mesh_name)), file_type="ply", process=False)
+    return MeshRaycaster(mesh.vertices, mesh.faces)
+
+
+def _ground_raycaster(path: str, mesh_name: str) -> MeshRaycaster:
+    source = Path(path).resolve()
+    stat = source.stat()
+    return _cached_ground_raycaster(str(source), stat.st_mtime_ns, stat.st_size, mesh_name)
+
+
 def _actor_depth(camera: Camera, cam_from_world: np.ndarray,
                  actors: Mapping[str, ActorState], depth: np.ndarray) -> np.ndarray:
     """Intersect each captured actor only in its padded projected image rectangle."""

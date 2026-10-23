@@ -60,7 +60,8 @@ def validate_configuration_environment(config: ExperimentConfiguration) -> None:
         ), config.simulator)
 
 
-def _segments(attack: Any, view: Any, config: ExperimentConfiguration) -> tuple[AttackSegment, ...]:
+def _segments(attack_name: str, attack: Any, view: Any,
+              config: ExperimentConfiguration) -> tuple[AttackSegment, ...]:
     selected = tuple(attack.build_metadata(view))
     for segment in selected:
         if not isinstance(segment, AttackSegment):
@@ -70,7 +71,19 @@ def _segments(attack: Any, view: Any, config: ExperimentConfiguration) -> tuple[
         config.dataset.checked_frame(segment.scenario_id, segment.start)
         config.dataset.checked_frame(segment.scenario_id, segment.stop)
         config.dataset.decision_window(segment.scenario_id, segment.start, segment.decision_steps)
-    return selected
+    deployment = _deployment_plan(config, attack_name, selected)
+    accepted = []
+    with ClosedLoopServices(config.dataset, config.simulator, config.avstack,
+                            view.services.frame_data_cache, deployment=deployment) as services:
+        with services.session(view.seed) as session:
+            for segment in selected:
+                if session.can_start_at(segment.start.position):
+                    accepted.append(segment)
+                else:
+                    view.record_reason(
+                        f"Segment at position {segment.start.position} cannot start: "
+                        "insufficient recorded history or deployment window")
+    return tuple(accepted)
 
 
 class Experiment:
@@ -104,7 +117,7 @@ class Experiment:
                         configuration.avstack, cache,
                     ) as services:
                         view = services.scenario(scenario.id, seed=seed)
-                        values = _segments(attack, view, configuration)
+                        values = _segments(name, attack, view, configuration)
                     selected.extend(values)
                     selections.append(SelectionDecision(
                         name, scenario.id, "selected" if values else "not_selected",

@@ -44,7 +44,9 @@ data and boundary modules can be imported without simulator servers or weights.
 | avsectester.closed_loop.avstacks.modular | ModularAVStack, native hooks, dataset registration and component bindings |
 | avsectester.closed_loop.avstacks.scorers | Driving-model scorer implementations |
 | avsectester.closed_loop.avstacks.driving_adapter | DrivingAdapter, ComponentDescriptor and ScorerDescriptor |
-| avsectester.closed_loop.simulators.ego_dynamics | EgoPose, EgoDynamics, KinematicBicycle and TrajectoryFollower |
+| avsectester.closed_loop.simulators.ground_contact | Mesh-based ego ground constraint |
+| avsectester.closed_loop.simulators.navigation | RouteGenerator: map or recorded navigation intent |
+| avsectester.closed_loop.simulators.ego_dynamics | PlanarEgoState, EgoDynamics and vehicle-motion implementations |
 | avsectester.closed_loop.environment | Environment validation/merge and SensorEnvironment |
 | avsectester.closed_loop.hooks | HookSet, Hook, Plugin, contexts and stage values |
 | avsectester.closed_loop.sensor_corruptions | Built-in image corruptions and AlbumentationsCorruption |
@@ -201,7 +203,8 @@ sensor_view computes optical-axis mesh/actor-box depth on demand and caches it p
 two-scene process cache holds static mesh BVHs. See [Mesh depth](../guides/simulators.md#mesh-depth).
 In mesh mode, NuRecSimulatorRuntime.reset with a recorded Dataset ScenarioStart verifies that
 mesh.ply and mesh_ground.ply exist in its USDZ before the first NRE request. Missing entries raise
-ValueError naming the files. depth="none" requires neither mesh entry.
+ValueError naming the files. depth="none" disables this depth preflight, while ego ground contact
+still requires the selected ground_mesh file unless physics_update_mode="none".
 
 NuRecDataset uses a fixed time_step timeline, interpolates only within recording support, and uses
 the native camera_id in FrameData.sensor_references. Dataset public camera and trajectory methods
@@ -240,7 +243,8 @@ setup action.
 
 Custom simulator runtime classes implement native operations, not reset/step. Simulator declarations
 include dataset_kinds, decision_time_step, command_modes, supported_stages,
-supported_world_settings, can_render, can_insert_objects, can_replay, capture_ticks and identity.
+supported_world_settings, can_render, can_insert_objects, can_replay, can_observe_past,
+capture_ticks and identity.
 validate_world_settings checks supported names and values without native startup; validate_start checks
 dataset/time-step compatibility.
 
@@ -269,13 +273,25 @@ recorded playback declare True; NuRec declares False and supports raw
 frame reads through repeated start_replay calls. SimulatorRuntime owns both public methods;
 implementations supply _replay_tick rather than overriding them.
 
+Simulator.can_observe_past declares access to recorded observations before the selected start.
+After reset, observe_past(count) returns that many observations from oldest to newest, with negative
+run-relative t and frame values. It requires start.frame.position >= count and nonempty
+start.recorded_ego. Reading the past neither changes the current capture/world nor includes inserted
+objects or attack actions. NuRec supports this capability; CARLA and recorded replay do not.
+Implementations supply _observe_recorded(position), leaving observe_past to the base lifecycle.
+
 ## Driving-system API
 
 closed_loop.avstacks exports AVStack, ObservationPipeline, command compatibility and driving-adapter
 interfaces. Import concrete driving systems from avstacks.modular, avstacks.alpamayo or
 avstacks.camera_forward_collision.
 
-AVStack.__call__(observation) returns Control. reset receives the first already processed input.
+AVStack.__call__(observation) returns Control. reset(observation, past=()) receives the first already
+processed input and preceding recorded observations ordered oldest to newest. AVStack.past_steps is a
+class-level declaration, defaulting to 0. Each past input receives the treatment's sensor corruptions
+at its own absolute frame position, without stage hooks, ObservationPipeline or attacks. The
+initialization event records past_steps and past_observations containing t and vehicle_state; past
+images are not recorded there.
 ObservationPipeline applies sensors.post hooks, localization, localization hooks and observation
 hooks, and owns the localizer lifecycle. It does not process output commands. AVStack also
 declares command_modes, supported_stages, models, component_log and detections. None detections
@@ -289,6 +305,11 @@ The configured AVStack constructor receives only options and creates a fresh ins
 DrivingAdapter separately binds component/scorer callables. Its Python factory accepts a seed; YAML
 avstack.bindings receives the loader's configured factory and returns DrivingAdapter. Scorers
 declare differentiable inputs and direction; services reject unavailable gradients.
+DrivingAdapter.past_steps reads factory.avstack_type.past_steps when avstack_type is an AVStack
+subclass, otherwise its explicit past_steps constructor option. This inspection never creates an
+AVStack or loads model weights. ClosedLoopSession.can_start_at(position) combines this history
+requirement with the shared deployment-window check. The Alpamayo binding explicitly supplies a
+15-step fallback for factories without AVStack-type metadata.
 
 ## Closed-loop service API
 
@@ -598,7 +619,7 @@ The optional encode/decode callbacks provide recursive transport for persistence
 | `ScenarioDescriptor` | `id: str`<br>`kind: str`<br>`payload: Mapping[str, Any] = field(default_factory=dict)` |
 | `SensorDataReference` | `uri: str`<br>`sensor: str`<br>`timestamp: float`<br>`metadata: Mapping[str, Any] = field(default_factory=dict)` |
 | `FrameData` | `frame: FrameReference`<br>`actors: Mapping[str, ActorState] = field(default_factory=dict)`<br>`sensor_references: Mapping[str, SensorDataReference] = field(default_factory=dict)`<br>`provenance: Mapping[str, Any] = field(default_factory=dict)`<br>`ego: ActorState \| None = None` |
-| `ScenarioStart` | `kind: str`<br>`scenario_id: str`<br>`frame: FrameReference`<br>`payload: Mapping[str, Any]` |
+| `ScenarioStart` | `kind: str`<br>`scenario_id: str`<br>`frame: FrameReference`<br>`payload: Mapping[str, Any]`<br>`recorded_ego: tuple[ActorState, ...] = ()`<br>`scenario_map: ScenarioMap \| Unavailable = Unavailable('The dataset provides no scenario map')` |
 | `Dataset` | Class; see methods below |
 | `Dataset.scenarios` | `scenarios() -> Iterator[ScenarioDescriptor]` |
 | `Dataset.frames` | `frames(scenario_id: str) -> Sequence[FrameReference]` |
@@ -608,6 +629,13 @@ The optional encode/decode callbacks provide recursive transport for persistence
 | `Dataset.scenario_map` | `scenario_map(scenario_id: str) -> ScenarioMap \| Unavailable` |
 | `Dataset.checked_frame` | `checked_frame(scenario_id: str, frame: FrameReference) -> FrameReference` |
 | `Dataset.decision_window` | `decision_window(scenario_id: str, start: FrameReference, decision_steps: int) -> tuple[FrameReference, ...]` |
+
+ScenarioStart.recorded_ego is the complete recorded ego trajectory on the decision timeline:
+positions and length match Dataset.frames and each state matches FrameData.ego. It is empty when
+there is no recording, as for CARLA recipes. scenario_map is read-only and shared without copying;
+datasets cache parsed maps per scene. NuRec fills both fields, nuScenes fills the trajectory, and
+CARLA fills the map when an exported OpenDRIVE map is available. These are simulator inputs;
+online attack context still receives no semantic map.
 
 ### avsectester.datasets.carla
 
@@ -716,7 +744,7 @@ dataset, simulator or model dependencies.
 | `ActorState.box_transform` | `box_transform() -> np.ndarray` |
 | `TargetSpec` | `box: tuple[float, float, float, float]`<br>`label: str \| None = None` |
 | `Control` | `throttle: float = 0.0`<br>`steer: float = 0.0`<br>`brake: float = 0.0`<br>`trajectory: Any = None` |
-| `Observation` | `t: float`<br>`frame: int`<br>`sensor_data: dict[str, Any] = field(default_factory=dict)`<br>`calibration: dict[str, Any] = field(default_factory=dict)`<br>`vehicle_state: Any = None`<br>`ego_speed: float = 0.0` |
+| `Observation` | `t: float`<br>`frame: int`<br>`sensor_data: dict[str, Any] = field(default_factory=dict)`<br>`calibration: dict[str, Any] = field(default_factory=dict)`<br>`vehicle_state: Any = None`<br>`ego_speed: float = 0.0`<br>`route: np.ndarray \| None = None` |
 | `Observation.set_calibration` | `set_calibration(sensor_id: str, calibration: Any) -> None` |
 | `WorldSnapshot` | `t: float`<br>`frame: int`<br>`vehicle_state: Any = None`<br>`ego_speed: float = 0.0`<br>`actors: Mapping[str, Any] = field(default_factory=dict)`<br>`ego: ActorState \| None = None`<br>`traffic_lights: Mapping[str, str] = field(default_factory=dict)`<br>`objects: Mapping[str, ActorState] = field(default_factory=dict)` |
 | `StateEstimate` | `vehicle_state: Any = None`<br>`ego_speed: float = 0.0` |
@@ -739,7 +767,7 @@ dataset, simulator or model dependencies.
 | `ClockSnapshot` | `t: float`<br>`frame: int` |
 | `SensorGeometry` | `sensor: str`<br>`camera: Camera`<br>`cam_from_world: np.ndarray` |
 | `SensorView` | `sensor: str`<br>`data: Any`<br>`camera: Camera \| None`<br>`cam_from_world: np.ndarray \| None`<br>`actors: Mapping[str, ActorState]`<br>`ego: ActorState`<br>`time: float`<br>`frame: int`<br>`sensor_from_world: np.ndarray \| None = None`<br>`depth: np.ndarray \| None = None`<br>`native: Mapping[str, Any] = field(default_factory=dict)`<br>`objects: Mapping[str, PlacedObject] = field(default_factory=dict)` |
-| `Simulator` | `dataset_kinds: tuple[str, ...] = ()`<br>`can_render: bool = False`<br>`can_insert_objects: bool = False`<br>`can_replay: bool = False`<br>`supported_world_settings: frozenset[str] = frozenset()` |
+| `Simulator` | `dataset_kinds: tuple[str, ...] = ()`<br>`can_render: bool = False`<br>`can_insert_objects: bool = False`<br>`can_replay: bool = False`<br>`can_observe_past: bool = False`<br>`supported_world_settings: frozenset[str] = frozenset()` |
 | `Simulator.create_runtime` | `create_runtime(seed: int \| None = None) -> SimulatorRuntime` |
 | `Simulator.decision_time_step` | `decision_time_step: float \| None` |
 | `Simulator.command_modes` | `command_modes: frozenset[str] \| None` |
@@ -753,11 +781,13 @@ dataset, simulator or model dependencies.
 | `SimulatorRuntime.can_render` | `can_render: bool` |
 | `SimulatorRuntime.can_insert_objects` | `can_insert_objects: bool` |
 | `SimulatorRuntime.can_replay` | `can_replay: bool` |
+| `SimulatorRuntime.can_observe_past` | `can_observe_past: bool` |
 | `SimulatorRuntime.supported_world_settings` | `supported_world_settings: frozenset[str]` |
 | `SimulatorRuntime.capture_ticks` | `capture_ticks: int` |
 | `SimulatorRuntime.decision_time_step` | `decision_time_step: float \| None` |
 | `SimulatorRuntime.command_modes` | `command_modes: frozenset[str] \| None` |
 | `SimulatorRuntime.supported_stages` | `supported_stages: frozenset[str]` |
+| `SimulatorRuntime.termination_details` | `termination_details: Mapping[str, Any]` |
 | `SimulatorRuntime.identity` | `identity: Mapping[str, Any]` |
 | `SimulatorRuntime.validate_start` | `validate_start(start: ScenarioStart \| None) -> None` |
 | `SimulatorRuntime.validate_command` | `validate_command(command: Control) -> None` |
@@ -783,6 +813,7 @@ dataset, simulator or model dependencies.
 | `SimulatorRuntime.setup_tick` | `setup_tick() -> None` |
 | `SimulatorRuntime.step` | `step(control: Control) -> None` |
 | `SimulatorRuntime.observe` | `observe() -> Observation` |
+| `SimulatorRuntime.observe_past` | `observe_past(count: int) -> tuple[Observation, ...]` |
 | `SimulatorRuntime.generate_frame_data` | `generate_frame_data(start: ScenarioStart, frames: Sequence[FrameReference], *, world: Mapping[str, Any] \| None = None, deployment: DeploymentPlan \| None = None) -> FrameDataSequence` |
 
 ### avsectester.closed_loop.avstacks.base
@@ -792,9 +823,9 @@ dataset, simulator or model dependencies.
 | `ObservationPipeline` | Class; see methods below |
 | `ObservationPipeline.__init__` | `__init__(localizer: Any = None) -> None` |
 | `ObservationPipeline.process` | `process(observation: Observation, dispatcher: HookDispatcher) -> Observation` |
-| `AVStack` | `provides_detections: bool \| None = None` |
+| `AVStack` | `provides_detections: bool \| None = None`<br>`past_steps: ClassVar[int] = 0` |
 | `AVStack.observation_pipeline` | `observation_pipeline: ObservationPipeline` |
-| `AVStack.reset` | `reset(observation: Observation) -> None` |
+| `AVStack.reset` | `reset(observation: Observation, past: Sequence[Observation] = ()) -> None` |
 | `AVStack.command_modes` | `command_modes: frozenset[str] \| None` |
 | `AVStack.models` | `models: Mapping[str, Any]` |
 | `AVStack.component_log` | `component_log() -> Mapping[str, Any] \| None` |
@@ -852,7 +883,8 @@ dataset, simulator or model dependencies.
 | `ComponentDescriptor` | `id: str`<br>`inputs: Mapping[str, str]`<br>`outputs: Mapping[str, str]`<br>`codecs: Mapping[str, str]`<br>`differentiable_inputs: tuple[str, ...] = ()` |
 | `ScorerDescriptor` | `output_shape: tuple[int, ...] = ()`<br>`direction: str = 'minimize'` |
 | `DrivingAdapter` | Class; see methods below |
-| `DrivingAdapter.__init__` | `__init__(factory: Callable[[int], AVStack], *, components: Sequence[tuple[ComponentDescriptor, Callable[..., Any]]] = (), scorers: Sequence[tuple[ScorerDescriptor, Callable[..., Any]]] = ()) -> None` |
+| `DrivingAdapter.__init__` | `__init__(factory: Callable[[int], AVStack], *, components: Sequence[tuple[ComponentDescriptor, Callable[..., Any]]] = (), scorers: Sequence[tuple[ScorerDescriptor, Callable[..., Any]]] = (), past_steps: int = 0) -> None` |
+| `DrivingAdapter.past_steps` | `past_steps: int` |
 
 ### avsectester.execution.services
 
@@ -879,7 +911,7 @@ dataset, simulator or model dependencies.
 | `ClosedLoopSession` | Class; see methods below |
 | `ClosedLoopSession.__init__` | `__init__(services: ClosedLoopServices, seed: int) -> None` |
 | `ClosedLoopSession.close` | `close() -> None` |
-| `ClosedLoopSession.can_deploy_at` | `can_deploy_at(position: int) -> bool` |
+| `ClosedLoopSession.can_start_at` | `can_start_at(position: int) -> bool` |
 | `ClosedLoopSession.frame_data` | `frame_data(scenario: str, frame: FrameReference, environment: Mapping[str, Any] \| None = None) -> FrameData` |
 | `ClosedLoopSession.initialization` | `initialization(start: ScenarioStart, environment: Mapping[str, Any], deployment: DeploymentPlan \| None = None) -> Initialization \| None` |
 | `ClosedLoopSession.read_sensors` | `read_sensors(request: SensorRequest) -> SensorSample` |
@@ -1029,7 +1061,7 @@ dataset, simulator or model dependencies.
 | Public name | Signature or fields |
 |---|---|
 | `NuRecSimulator` | Class; see methods below |
-| `NuRecSimulator.__init__` | `__init__(config: dict, renderer: Renderer, dynamics: EgoDynamics \| None = None, *, depth: str = 'mesh') -> None` |
+| `NuRecSimulator.__init__` | `__init__(config: dict, renderer: Renderer, dynamics: EgoDynamics \| None = None, *, depth: str = 'mesh', route_generator: str = 'map', physics_update_mode: str = 'ego_only', ground_mesh: str = 'mesh') -> None` |
 | `NuRecSimulator.create_runtime` | `create_runtime(seed: int \| None = None) -> NuRecSimulatorRuntime` |
 | `NuRecSimulator.supported_stages` | `supported_stages: frozenset[str]` |
 | `NuRecSimulator.command_modes` | `command_modes: frozenset[str] \| None` |
@@ -1068,13 +1100,35 @@ views retain the actor poses used for their capture. checkpoint/restore includes
 
 | Public name | Signature or fields |
 |---|---|
-| `EgoPose` | `x: float = 0.0`<br>`y: float = 0.0`<br>`yaw: float = 0.0`<br>`speed: float = 0.0`<br>`t: float = 0.0` |
+| `PlanarEgoState` | `x: float = 0.0`<br>`y: float = 0.0`<br>`yaw: float = 0.0`<br>`speed: float = 0.0`<br>`t: float = 0.0`<br>`lateral_speed: float = 0.0`<br>`yaw_rate: float = 0.0`<br>`acceleration: float = 0.0` |
 | `EgoDynamics` | Class; see methods below |
-| `EgoDynamics.step` | `step(pose: EgoPose, control: Control, dt: float) -> EgoPose` |
+| `EgoDynamics.reset` | `reset(state: PlanarEgoState) -> None` |
+| `EgoDynamics.step` | `step(pose: PlanarEgoState, control: Control, dt: float) -> PlanarEgoState` |
 | `KinematicBicycle` | `wheelbase: float = 2.8`<br>`max_accel: float = 3.0`<br>`max_brake: float = 8.0`<br>`max_steer: float = 0.6`<br>`command_modes: ClassVar[frozenset[str]] = frozenset({'actuator'})` |
-| `KinematicBicycle.step` | `step(pose: EgoPose, control: Control, dt: float) -> EgoPose` |
+| `KinematicBicycle.reset` | `reset(state: PlanarEgoState) -> None` |
+| `KinematicBicycle.step` | `step(pose: PlanarEgoState, control: Control, dt: float) -> PlanarEgoState` |
 | `TrajectoryFollower` | `decel: float = 4.0`<br>`command_modes: ClassVar[frozenset[str]] = frozenset({'trajectory'})` |
-| `TrajectoryFollower.step` | `step(pose: EgoPose, control: Control, dt: float) -> EgoPose` |
+| `TrajectoryFollower.reset` | `reset(state: PlanarEgoState) -> None` |
+| `TrajectoryFollower.step` | `step(pose: PlanarEgoState, control: Control, dt: float) -> PlanarEgoState` |
+| `AlpaSimController` | `mpc_implementation: str = 'linear'`<br>`n_horizon: int = 20`<br>`dt_mpc: float = 0.1`<br>`gains: Mapping[str, float \| int] \| None = None`<br>`command_modes: ClassVar[frozenset[str]] = frozenset({'trajectory'})`<br>`EPOCH_US: ClassVar[int] = 10000000` |
+| `AlpaSimController.reset` | `reset(state: PlanarEgoState) -> None` |
+| `AlpaSimController.step` | `step(pose: PlanarEgoState, control: Control, dt: float) -> PlanarEgoState` |
+
+PlanarEgoState uses world X/Y and yaw for the rig origin, ego-axis longitudinal/lateral speeds,
+seconds for t, radians per second for yaw_rate and m/s² for longitudinal acceleration. NuRec
+initializes these from the recording and calls the dynamics reset method when present.
+KinematicBicycle and TrajectoryFollower need no warmup; their step results include difference-based
+yaw_rate and acceleration. TrajectoryFollower is an explicitly selected ideal follower.
+
+AlpaSimController tracks t0-led trajectory commands through AlpaSim's in-process MPC and dynamic
+bicycle model. Its defaults match AlpaSim affc2ea ControllerConfig. gains overrides named MPCGains
+fields, retaining unspecified defaults. VehicleModel.Parameters uses the official Ford Fusion
+values rather than USDZ measurements. The first reset lazily imports AlpaSim and creates a system;
+subsequent resets create fresh systems. An internal 10-second offset keeps protobuf timestamps
+nonnegative while returned state times remain on the simulator clock. State time must match the
+controller's last propagated time, and plans must start at t0 with a zero position and unit rotation.
+See [controller installation](../getting-started/installation.md#driver-environment) for the editable
+workspace package and required linear entry point.
 
 ### avsectester.closed_loop.simulators.nurec.renderer
 
@@ -1090,20 +1144,18 @@ views retain the actor poses used for their capture. checkpoint/restore includes
 | `Renderer.origin_timestamp_us` | `origin_timestamp_us: Any` |
 | `Renderer.origin_bounds` | `origin_bounds: Any` |
 | `Renderer.load_scene` | `load_scene(scene: Any) -> None` |
-| `Renderer.render` | `render(pose: EgoPose, camera: str, dynamic_objects=()) -> Any` |
+| `Renderer.render` | `render(world_from_rig: np.ndarray, timestamp_us: int, camera: str, dynamic_objects=()) -> Any` |
 | `Renderer.camera_model` | `camera_model(camera: str \| None = None) -> Camera \| None` |
-| `Renderer.cam_from_world` | `cam_from_world(pose: EgoPose, camera: str \| None = None) -> np.ndarray` |
+| `Renderer.cam_from_world` | `cam_from_world(world_from_rig: np.ndarray, camera: str \| None = None) -> np.ndarray` |
 | `Renderer.close` | `close() -> None` |
-| `NuRecRenderer` | `endpoint: str = '127.0.0.1:50051'`<br>`scene_id: str \| None = None`<br>`cameras: list[str] = field(default_factory=lambda: ['camera_front_wide_120fov'])`<br>`calibration: dict = field(default_factory=dict)`<br>`image_quality: float = 95.0` |
+| `NuRecRenderer` | `endpoint: str = '127.0.0.1:50051'`<br>`scene_id: str \| None = None`<br>`cameras: list[str] = field(default_factory=lambda: ['camera_front_wide_120fov'])`<br>`calibration: dict = field(default_factory=dict)`<br>`image_quality: float = 95.0`<br>`resolution_hw: Mapping[str, tuple[int, int]] = field(default_factory=dict)` |
 | `NuRecRenderer.copy` | `copy() -> NuRecRenderer` |
 | `NuRecRenderer.load_scene` | `load_scene(scene: Any) -> None` |
 | `NuRecRenderer.service` | `service: Any` |
 | `NuRecRenderer.close` | `close()` |
-| `NuRecRenderer.timestamp_us` | `timestamp_us(pose: EgoPose) -> int` |
 | `NuRecRenderer.camera_model` | `camera_model(camera: str \| None = None) -> Camera` |
-| `NuRecRenderer.rig_transform` | `rig_transform(pose: EgoPose)` |
-| `NuRecRenderer.cam_from_world` | `cam_from_world(pose: EgoPose, camera: str \| None = None) -> np.ndarray` |
-| `NuRecRenderer.render` | `render(pose: EgoPose, camera: str, dynamic_objects=())` |
+| `NuRecRenderer.cam_from_world` | `cam_from_world(world_from_rig: np.ndarray, camera: str \| None = None) -> np.ndarray` |
+| `NuRecRenderer.render` | `render(world_from_rig: np.ndarray, timestamp_us: int, camera: str, dynamic_objects=())` |
 | `NuRecRenderer.render_at` | `render_at(world_from_rig, timestamp_us: int, camera: str, dynamic_objects=())` |
 
 ### avsectester.closed_loop.simulators.recorded
@@ -1134,7 +1186,7 @@ views retain the actor poses used for their capture. checkpoint/restore includes
 | `modular_driving_adapter` | `modular_driving_adapter(factory, *, components = (), scorers = ())` |
 | `ModularAVStack` | Class; see methods below |
 | `ModularAVStack.__init__` | `__init__(pipeline_cfg: dict) -> None` |
-| `ModularAVStack.reset` | `reset(observation: Observation) -> None` |
+| `ModularAVStack.reset` | `reset(observation: Observation, past: Sequence[Observation] = ()) -> None` |
 | `ModularAVStack.command_modes` | `command_modes: frozenset[str]` |
 | `ModularAVStack.supported_stages` | `supported_stages: frozenset[str]` |
 | `ModularAVStack.native` | `native: Mapping[str, Any]` |
@@ -1151,12 +1203,13 @@ views retain the actor poses used for their capture. checkpoint/restore includes
 |---|---|
 | `alpamayo_driving_adapter` | `alpamayo_driving_adapter(factory)` |
 | `AlpamayoAVStack` | Class; see methods below |
-| `AlpamayoAVStack.__init__` | `__init__(checkpoint_path: str \| Path \| None = None, camera_ids: list[str] \| None = None, device: str = 'cuda:0', context_length: int = 4, output_frequency_hz: int = 10, model: Any \| None = None) -> None` |
+| `AlpamayoAVStack.past_steps` | `past_steps: ClassVar[int] = 15` |
+| `AlpamayoAVStack.__init__` | `__init__(checkpoint_path: str \| Path \| None = None, camera_ids: list[str] \| None = None, device: str = 'cuda:0', context_length: int = 4, frame_subsample: int = 1, output_frequency_hz: int = 10, model: Any \| None = None) -> None` |
 | `AlpamayoAVStack.command_modes` | `command_modes: frozenset[str]` |
 | `AlpamayoAVStack.supported_stages` | `supported_stages: frozenset[str]` |
 | `AlpamayoAVStack.native` | `native: Mapping[str, Any]` |
 | `AlpamayoAVStack.models` | `models: Mapping[str, Any]` |
-| `AlpamayoAVStack.reset` | `reset(observation: Observation) -> None` |
+| `AlpamayoAVStack.reset` | `reset(observation: Observation, past: Sequence[Observation] = ()) -> None` |
 | `AlpamayoAVStack.close` | `close() -> None` |
 | `AlpamayoAVStack.__call__` | `__call__(observation: Observation) -> Control` |
 | `AlpamayoAVStack.component_log` | `component_log() -> dict[str, Any] \| None` |
@@ -1169,7 +1222,7 @@ views retain the actor poses used for their capture. checkpoint/restore includes
 | `CameraForwardCollisionAVStack.__init__` | `__init__(gpu: int = 0, camera: str = 'front', area_brake: float = 0.03, throttle: float = 0.55, detector_dataset: str = 'carla-vehicle', threshold: float = 0.3, area_max: float = 0.3, max_height_frac: float = 0.6) -> None` |
 | `CameraForwardCollisionAVStack.models` | `models: dict[str, Any]` |
 | `CameraForwardCollisionAVStack.detect` | `detect(rgb: Any) -> list` |
-| `CameraForwardCollisionAVStack.reset` | `reset(observation: Observation) -> None` |
+| `CameraForwardCollisionAVStack.reset` | `reset(observation: Observation, past: Sequence[Observation] = ()) -> None` |
 | `CameraForwardCollisionAVStack.__call__` | `__call__(observation: Observation) -> Control` |
 | `CameraForwardCollisionAVStack.component_log` | `component_log() -> dict[str, Any] \| None` |
 | `CameraForwardCollisionAVStack.close` | `close() -> None` |
@@ -1673,3 +1726,51 @@ camera_depth unprojects each pixel center through the supplied lens, casts world
 through every supplied MeshRaycaster, and keeps the nearest hit. Its float64 (H, W) output is
 optical-axis z depth, with inf where all raycasters miss. It is shared by the simulator and offline
 validation, and needs no native renderer or default-camera configuration.
+
+### avsectester.closed_loop.simulators.navigation
+
+| Name | Signature |
+|---|---|
+| `RouteGenerator` | `RouteGenerator(kind, recorded_points, scenario_map)` |
+| `RouteGenerator.route` | `route(world_from_ego: np.ndarray) -> np.ndarray \| None` |
+
+Routes are model-visible navigation intent in ego coordinates, in metres with Z=0. Map mode
+uses driving lanes, resolves lane transitions along the recording, and extends through successors.
+Recorded mode uses the recorded path without extension. Each query projects the current physical
+ego origin onto the route, samples 20 points across 80 m, and repeats the endpoint when short.
+None disables navigation.
+
+### avsectester.closed_loop.simulators.ground_contact
+
+| Name | Signature |
+|---|---|
+| `constrain_to_ground` | `constrain_to_ground(raycaster: MeshRaycaster, world_from_box: np.ndarray, extent: tuple[float, float, float]) -> tuple[np.ndarray, str]` |
+
+A 4×4 box-bottom grid is raycast vertically in both directions within 100 m. At least six hits
+are needed. Plane-fit displacement over 1.5 m or rotation over 10° rejects the update; the
+original pose is returned with insufficient_intersections, high_translation or high_rotation.
+Successful updates return successful_update and preserve box-centre horizontal position.
+
+SimulatorRuntime.termination_details supplies diagnostics for the termination event; NuRec
+records ground_contact_failures grouped by reason.
+
+NuRecRenderer.resolution_hw sets requested height and width per camera; missing entries use
+native resolution. Loading probes each camera to obtain the server's actual aspect-preserving
+output size. Its optical model uses that size, with lens coefficients and principal point scaled
+by returned_height/native_height. Later size changes are rejected. Depth and insertion use this
+same scaled model. AlpamayoAVStack.frame_subsample selects image context from a strided recent
+window, retaining the current frame. The official single-camera preset uses a factor of 3.
+
+AlpamayoAVStack requires 15 actual past decisions and 0.1 s observation intervals. reset seeds
+its image and pose caches; each call appends the current observation. The latest 16 received poses
+provide the model history and pose-difference speed and acceleration. It rejects missing images
+and a context span `(context_length - 1) * frame_subsample` greater than 15. No temporal padding
+is used. Model timestamps use round(t * 1e6) + EPOCH_US.
+
+The policy component bound by alpamayo_driving_adapter takes a mapping with observation and past.
+Its DrivingAdapter fallback past_steps is 15 even for an ordinary Python factory without
+avstack_type; configured class metadata still takes precedence.
+Observation.route supplies rig-relative navigation; the official AlpaSim helper determines the
+command. The component log includes route_waypoints, navigation_command, navigation_note,
+history_pose_count and selected_image_times (simulation seconds by camera). Control.trajectory
+starts at rig-frame origin with identity rotation at t0, followed by full model waypoint poses.

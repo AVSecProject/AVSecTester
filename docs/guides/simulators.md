@@ -22,6 +22,20 @@ captures again.
 Only world settings go into reset. The complete `{world, sensors}` envelope is resolved by the
 experiment, runner and services; sensor corruptions run after capture.
 
+### Scenario start inputs
+
+ScenarioStart carries the selected frame and dataset payload, together with two read-only inputs:
+
+- recorded_ego contains the complete recorded ego trajectory on the dataset's decision timeline.
+  Its order and length match Dataset.frames, and each state matches FrameData.ego. It is empty
+  when no recorded trajectory exists, such as a CARLA recipe.
+- scenario_map is the dataset's cached ScenarioMap or an Unavailable reason. The start shares this
+  read-only map without copying it. NuRec supplies both inputs, nuScenes supplies the trajectory,
+  and CARLA supplies its exported map when available.
+
+These inputs let the simulator reconstruct the recorded past and navigation intent without
+receiving attack-selection metadata. Maps are cached per scene rather than reparsed for each run.
+
 ### Read prescribed motion
 
 start_replay(start, initialization=None, *, world=None, deployment=None) initializes at the selected
@@ -31,11 +45,11 @@ and captures the requested boundary without emitting stage hooks. Both methods r
 forward advancement also requires an initialized runtime and can_replay=True. The capability
 defaults to False.
 
-| Simulator | can_replay |
-|---|---|
-| CARLA | True |
-| Recorded playback | True |
-| NuRec | False |
+| Simulator | can_replay | can_observe_past |
+|---|---|---|
+| CARLA | True | False |
+| Recorded playback | True | False |
+| NuRec | False | True |
 
 Closed-loop services reuse a forward scan only when can_replay is True. NuRec reads another frame
 by calling start_replay for that frame rather than advancing the previous read. This preserves the
@@ -128,14 +142,15 @@ NuRecSimulator takes `config`, a required Renderer template, an optional ego-dyn
 a depth mode. Configure NuRecRenderer explicitly; there is no default renderer. Renderer is defined
 in closed_loop/simulators/nurec/renderer.py, and the dynamics interfaces and implementations live
 in closed_loop/simulators/ego_dynamics.py.
-The default depth="mesh" requires the optional nurec dependencies at construction; depth="none"
-disables depth and needs no mesh-intersection library. Each simulator
-runtime copies them, so connections, loaded scenes and dynamics mutations are isolated. Set
+Mesh depth and ego ground contact require the optional nurec dependencies at construction.
+To run without mesh queries, set both depth="none" and physics_update_mode="none". Each simulator
+runtime copies its renderer and dynamics, so connections, loaded scenes and mutations are isolated. Set
 `config.dt` to NuRecDataset.time_step; this mismatch is rejected before simulation starts.
 
 With depth="mesh", a reset from a recorded Dataset ScenarioStart checks that its USDZ contains both
 mesh.ply and mesh_ground.ply before its first NRE request. Missing entries raise ValueError listing
-their filenames. depth="none" does not require either mesh entry.
+their filenames. depth="none" disables this depth requirement; ego ground contact still requires
+its selected ground_mesh file unless physics_update_mode="none".
 
 NuRecRenderer connects to the reconstruction service and renders at requested times and ego poses.
 Start NRE with --enable-editing-actors, as in the
@@ -149,17 +164,85 @@ simulator runtime loads its scene:
 
 <!-- runnable -->
 ```python
-from avsectester.closed_loop.simulators.ego_dynamics import TrajectoryFollower
+from avsectester.closed_loop.simulators.ego_dynamics import AlpaSimController
 from avsectester.closed_loop.simulators.nurec import NuRecRenderer, NuRecSimulator
 
 simulator = NuRecSimulator(
     {"dt": 0.1},
     renderer=NuRecRenderer(endpoint="127.0.0.1:50051"),
-    dynamics=TrajectoryFollower(),
+    dynamics=AlpaSimController(),
     depth="none",
+    physics_update_mode="none",
 )
 assert simulator.command_modes == frozenset({"trajectory"})
 ```
+
+### Recorded past observations
+
+NuRec declares `can_observe_past=True`. After reset, `observe_past(count)` returns the preceding
+recorded decision observations from oldest to newest, with negative start-relative time and frame.
+The complete ScenarioStart.recorded_ego trajectory supplies the actual poses; each camera is
+rendered with recorded traffic at that time. The current physical state and capture are unchanged.
+Inserted objects, attack actions and stage hooks are excluded. A request fails when history is
+insufficient, the runtime has not reset, or the simulator does not declare this capability.
+
+A custom simulator can declare can_observe_past and implement `_observe_recorded(position)`;
+the public observe_past lifecycle belongs to the base class and cannot be overridden. CARLA and
+recorded replay do not currently provide past observations.
+
+### Navigation
+
+NuRecSimulator uses `route_generator="map"` by default. ScenarioStart supplies the complete
+recorded ego path and cached semantic map. Driving lanes within 4 m and a heading difference
+of π/8 are candidates; the route follows consistent lane sequences and extends along successors
+with the smallest heading change. A projection farther than 10 m is rejected.
+
+Each capture projects the physical ego origin onto this route and provides 20 forward points
+spanning 80 m as Observation.route in ego coordinates (X forward, Y left, Z zero). Short routes
+repeat their last point. This navigation intent does not constrain the driving command.
+
+Map mode requires a map with driving lanes at reset. Select `route_generator="recorded"` to use
+the recording without extension, or `route_generator="none"` to provide no route.
+
+### Ground contact
+
+The runtime owns the physical three-dimensional ego pose, starting from the recording.
+After each dynamics step, `physics_update_mode="ego_only"` fits the ego box bottom to the
+scene mesh using AlpaSim's vertical ray and plane-fit procedure. `ground_mesh="mesh"` is the
+official default; `"mesh_ground"` selects the ground-only reconstruction. BVHs are cached by
+archive and mesh name. Select `physics_update_mode="none"` to retain the predicted pose.
+
+Updates require at least six hits within 100 m, at most 1.5 m displacement and at most 10°
+rotation. Rejected updates retain the prediction; termination events count failures by reason.
+The renderer receives the resulting three-dimensional rig pose rather than retaining an initial
+height or tilt. The plane-centroid fit rotates about the box centre, as in AlpaSim, so it is
+an approximate contact correction rather than a penetration solver.
+
+### Camera resolution
+
+NuRecRenderer.resolution_hw maps native camera IDs to requested (height, width). Its default
+is native resolution. NRE preserves aspect ratio, so actual width may differ from the request;
+the renderer probes each camera on load and scales its lens model using the returned height.
+All later captures must have the same dimensions. Sensor geometry, mesh depth and inserted
+objects use that scaled model. The supplied NuRec configurations request (1080, 1900) from
+camera_front_wide_120fov, matching AlpaSim's single-camera preset.
+
+### AlpaSim defaults
+
+The supplied NuRec configurations follow AlpaSim affc2ea and its single-camera Alpamayo 1.5 preset:
+
+| Setting | AlpaSim source/default | Supplied NuRec configurations |
+|---|---|---|
+| Controller | base_config.yaml: default linear MPC | AlpaSimController with linear MPC |
+| Navigation | route_generator_type: MAP | route_generator: map |
+| Ground contact | physics_update_mode: EGO_ONLY; use_ground_mesh=False | ego_only; ground_mesh: mesh |
+| Camera | 1cam_1080.yaml: camera_front_wide_120fov, requested 1080×1900 | Same camera and request; actual NRE size is probed |
+| Camera timing | frame_interval_us: 100000; subsample_factor: 3 | dt: 0.1; frame_subsample: 3 |
+| Reactive traffic | AlpaSim trafficsim | **Not yet implemented.** Other actors follow recorded tracks or explicit overrides |
+| Rolling shutter | shutter_duration_us: 30000 in the camera preset | **Not yet implemented.** Captures render at one instant |
+
+The controller and camera preset are explicit configuration choices. NuRecSimulator still accepts
+other dynamics implementations, navigation modes and camera resolutions.
 
 ### Move recorded actors
 
@@ -187,11 +270,51 @@ NRE can move only actors reconstructed in the source scene. Its editing interfac
 new geometry or textures; framework object composition supplies those camera pixels without sending
 the new objects to NRE.
 
-KinematicBicycle consumes actuator controls. TrajectoryFollower consumes trajectory controls and
-follows them ideally. Choose compatible AVStack commands; there is no automatic conversion.
+### Ego dynamics
 
-**Not yet implemented.** Reactive other-actor traffic and a physical trajectory controller. See
-[TODO](../development/TODO.md#vehicle-dynamics).
+The supplied NuRec configurations explicitly select AlpaSimController, matching AlpaSim's default
+linear MPC and dynamic bicycle vehicle model. Its parameters are mpc_implementation="linear",
+n_horizon=20, dt_mpc=0.1 and gains=None. An explicit gains mapping overrides named fields of
+AlpaSim's MPCGains; unspecified gains retain ControllerConfig's defaults. Choosing another
+implementation requires its registered AlpaSim MPC entry point.
+
+The controller uses the official VehicleModel.Parameters defaults, taken from the Ford Fusion:
+2,014.4 kg mass, 3,414.2 kg·m² yaw inertia and 2.85 m wheelbase. These physical parameters are not
+read from the USDZ. The USDZ ego extent and box centre still determine ground contact and geometry.
+AlpaSim packages load only on the first reset; constructing this configuration does not load a
+controller, model weights or a rendering service. See the
+[driver installation](../getting-started/installation.md#driver-environment) for its dependencies.
+
+PlanarEgoState contains x, y and yaw in world coordinates; longitudinal speed and lateral_speed in
+ego axes; t in seconds; yaw_rate in radians per second; and longitudinal acceleration in m/s².
+At each runtime reset, the recorded ego velocity is transformed into ego axes, and neighbouring
+recorded frames supply yaw_rate and acceleration. The runtime then calls dynamics.reset(state).
+Checkpoint/restore retains these planar state fields alongside the physical three-dimensional pose.
+
+AlpaSimController accepts trajectory commands led by the rig origin at t0 with identity rotation,
+followed by future rig-frame poses. It advances through AlpaSim's controller and vehicle model,
+using a fixed internal timestamp offset to keep protobuf times nonnegative. State timestamps must
+match the controller's propagated time. Repeated reset initializes a fresh controller system.
+
+KinematicBicycle consumes actuator commands. TrajectoryFollower consumes trajectory commands and
+realizes their positions ideally; it remains available through explicit selection. Both accept
+reset(state) without warmup and return finite-difference yaw_rate and acceleration. Choose command
+modes compatible with the driving system; no automatic command conversion is performed.
+
+A custom dynamics component implements step(state, command, dt) and can provide reset(state) and
+command_modes. Configure it without editing the simulator:
+
+```yaml
+dynamics:
+  type: package.module:CustomDynamics
+  options: {}
+```
+
+This dynamics specification belongs in simulator.options. Each runtime receives an independent
+copy and calls its reset method when provided.
+
+**Not yet implemented.** Reactive other-actor traffic. See
+[TODO](../development/TODO.md#reactive-traffic-in-nurec).
 
 ### Mesh depth
 

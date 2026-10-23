@@ -38,6 +38,20 @@ def actor_state(position=(10., 0., 1.), speed=0.):
     return ActorState(pose, (speed, 0., 0.), "vehicle", (4., 2., 2.))
 
 
+class ResetRecordingDynamics:
+    """A user dynamics implementation that exposes its recorded initial state."""
+
+    command_modes = frozenset({"actuator"})
+
+    def reset(self, state):
+        self.initial_state = deepcopy(state)
+
+    def step(self, state, command, dt):
+        from avsectester.closed_loop.simulators.ego_dynamics import KinematicBicycle
+
+        return KinematicBicycle().step(state, command, dt)
+
+
 class MemoryDataset(Dataset):
     """A calibrated camera, one stationary lead vehicle and an evenly spaced timeline."""
 
@@ -68,7 +82,12 @@ class MemoryDataset(Dataset):
 
     def scenario_start(self, scenario_id, frame):
         frame = self.checked_frame(scenario_id, frame)
-        return ScenarioStart("memory", scenario_id, frame, {"time_step": self.time_step})
+        return ScenarioStart(
+            "memory", scenario_id, frame, {"time_step": self.time_step},
+            recorded_ego=tuple(self.frame_data(scenario_id, item).ego
+                               for item in self.frames(scenario_id)),
+            scenario_map=self.scenario_map(scenario_id),
+        )
 
     def native(self, scenario_id):
         return {"scenario_id": scenario_id}
@@ -80,6 +99,7 @@ class MemorySimulator(Simulator):
     dataset_kinds = ("memory",)
     can_render = True
     can_replay = True
+    can_observe_past = True
     can_insert_objects = True
     command_modes = frozenset({"actuator"})
     supported_world_settings = frozenset({"weather", "lighting", "fail", "interrupt"})
@@ -150,6 +170,26 @@ class MemorySimulatorRuntime(SimulatorRuntime):
                   for sensor, geometry in self.simulator.camera_geometries.items()}
         return Observation(self.position * self.simulator.time_step, self.position,
                            {**images, **deepcopy(self.simulator.extra_sensors)}, ego_speed=self.speed)
+
+    def _observe_recorded(self, position):
+        from avsectester.closed_loop.simulators.ego_dynamics import PlanarEgoState
+
+        start = self._start
+        ego = start.recorded_ego[position]
+        relative_position = position - start.frame.position
+        images = {sensor: np.full((geometry.camera.height, geometry.camera.width, 3),
+                                  20 + position, np.uint8)
+                  for sensor, geometry in self.simulator.camera_geometries.items()}
+        velocity = np.asarray(ego.velocity, dtype=float)
+        return Observation(
+            relative_position * self.simulator.time_step, relative_position,
+            {**images, **deepcopy(self.simulator.extra_sensors)},
+            vehicle_state=PlanarEgoState(x=float(ego.pose[0, 3]), y=float(ego.pose[1, 3]),
+                                  yaw=float(np.arctan2(ego.pose[1, 0], ego.pose[0, 0])),
+                                  speed=float(np.linalg.norm(velocity)),
+                                  t=relative_position * self.simulator.time_step),
+            ego_speed=float(np.linalg.norm(velocity)),
+        )
 
     def _state(self):
         return WorldSnapshot(self.position * self.simulator.time_step, self.position,
@@ -240,7 +280,7 @@ class ConstantAVStack(AVStack):
         self.closed = False
         self.output = None
 
-    def reset(self, observation):
+    def reset(self, observation, past=()):
         self.output = None
 
     def __call__(self, observation):
@@ -262,6 +302,36 @@ class ConstantAVStack(AVStack):
 
     def close(self):
         self.closed = True
+
+
+class HistoryAVStack(ConstantAVStack):
+    """A driver that records its actual warmup inputs in public component telemetry."""
+
+    past_steps = 2
+
+    def reset(self, observation, past=()):
+        super().reset(observation, past=past)
+        self.past_observations = tuple(deepcopy(item) for item in past)
+        self.initial_observation = deepcopy(observation)
+
+    def component_log(self):
+        return {**super().component_log(), "past_observations": self.past_observations,
+                "initial_observation": self.initial_observation}
+
+
+class DeceleratingAVStack(AVStack):
+    """Replan a -2 m/s² trajectory from the current observed speed every decision."""
+
+    command_modes = frozenset({"trajectory"})
+    past_steps = 15
+
+    def __call__(self, observation):
+        times = np.arange(51) * .1
+        positions = float(observation.ego_speed) * times - times ** 2
+        return Control(trajectory=[
+            ((float(position), 0., 0.), (1., 0., 0., 0.), round((observation.t + time) * 1e6))
+            for time, position in zip(times, positions)
+        ])
 
 
 class MinimalAttack(Attack):
@@ -311,7 +381,8 @@ class MinimalAttackRuntime(AttackRuntime):
 class NuRecRpcBoundary:
     """A SensorsimService boundary; NuRecRenderer itself remains real."""
 
-    def __init__(self):
+    def __init__(self, returned_resolution_hw=None):
+        self.returned_resolution_hw = returned_resolution_hw
         self.last_request = None
         self.requests = []
         self.mount = SimpleNamespace(vec=SimpleNamespace(x=0., y=0., z=1.5),
@@ -342,7 +413,11 @@ class NuRecRpcBoundary:
         from PIL import Image
         self.requests.append(request)
         self.last_request = request
-        image = np.full((request.resolution_h, request.resolution_w, 3), 30, np.uint8)
+        height, width = self.returned_resolution_hw or (
+            request.resolution_h,
+            round(request.resolution_h * self.spec.resolution_w / self.spec.resolution_h),
+        )
+        image = np.full((height, width, 3), 30, np.uint8)
         stream = BytesIO()
         Image.fromarray(image).save(stream, format="JPEG")
         return SimpleNamespace(image_bytes=stream.getvalue())
@@ -380,21 +455,12 @@ class NuRecImageBoundary(Renderer):
             raise ValueError(f"Unknown camera {camera!r}")
         return self.camera
 
-    def timestamp_us(self, pose):
-        return (self.origin_timestamp_us or 0) + round(pose.t * 1e6)
-
-    def rig_transform(self, pose):
-        from avsectester.closed_loop.simulators.nurec.renderer import planar_rig_pose
-
-        z = 0. if self.origin_transform is None else self.origin_transform[2, 3]
-        return planar_rig_pose(pose.x, pose.y, pose.yaw, z)
-
-    def cam_from_world(self, pose, camera=None):
+    def cam_from_world(self, world_from_rig, camera=None):
         rig_from_camera = BODY_FROM_OPTICAL.copy()
         rig_from_camera[2, 3] = 1.5
-        return np.linalg.inv(self.rig_transform(pose) @ rig_from_camera)
+        return np.linalg.inv(world_from_rig @ rig_from_camera)
 
-    def render(self, pose, camera, dynamic_objects=()):
+    def render(self, world_from_rig, timestamp_us, camera, dynamic_objects=()):
         return np.full((self.camera.height, self.camera.width, 3), 30, np.uint8)
 
 
@@ -759,7 +825,25 @@ class StubRenderer(Renderer):
         self.cameras = list(cameras) if cameras else ["camera_front"]
         self.height, self.width = height, width
 
-    def render(self, pose: Any, camera: str, dynamic_objects=()):
+    def render(self, world_from_rig: Any, timestamp_us: int, camera: str, dynamic_objects=()):
         import numpy as np
 
         return np.zeros((self.height, self.width, 3), dtype=np.uint8)
+
+
+def recorded_policy_observations(count=16, start_time=-1.5, time_step=.1, speed=4.,
+                                 acceleration=0., yaw=0., route=None):
+    """A small synthetic recording supplied to policy tests as actual observed history."""
+    from avsectester.closed_loop.simulators.ego_dynamics import PlanarEgoState
+
+    observations = []
+    for index in range(count):
+        elapsed = index * time_step
+        time = start_time + elapsed
+        distance = speed * elapsed + .5 * acceleration * elapsed ** 2
+        state = PlanarEgoState(x=distance * float(np.cos(yaw)), y=distance * float(np.sin(yaw)),
+                        yaw=yaw, speed=speed + acceleration * elapsed, t=time)
+        observations.append(Observation(
+            time, index, {"front": np.full((4, 6, 3), index, np.uint8)},
+            vehicle_state=state, ego_speed=state.speed, route=deepcopy(route)))
+    return tuple(observations)

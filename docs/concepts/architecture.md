@@ -57,7 +57,8 @@ Paths below are relative to avsectester/.
 | closed_loop/simulators/base.py | Simulator/runtime contracts, capture lifecycle and sensor views |
 | closed_loop/avstacks/base.py, closed_loop/avstacks/driving_adapter.py | Driving-system contracts, ObservationPipeline and component/scorer bindings |
 | closed_loop/hooks.py, environment.py, sensor_corruptions.py | Hook lifecycle and explicit world/sensor environments |
-| closed_loop/simulators/ego_dynamics.py, closed_loop/simulators/object_composition.py | Ego integration and shared capture composition |
+| closed_loop/simulators/ego_dynamics.py, navigation.py, ground_contact.py | Ego dynamics, navigation intent and mesh ground contact |
+| closed_loop/simulators/object_composition.py | Shared capture composition |
 | closed_loop/simulators/carla/ | CARLA simulator, scenarios, sensors, conversions and recipe replay |
 | closed_loop/simulators/nurec/ | NuRec simulator, renderer and depth implementation |
 | closed_loop/simulators/recorded.py | Recorded open-loop playback |
@@ -146,11 +147,19 @@ fixed configured time step and interpolates recorded trajectories only within th
 ## Physical state and model-visible data
 
 `WorldSnapshot` records actual state. `Observation` contains model-visible sensors, localization and
-ego speed. Altering an observation does not move the world. `WorldAttackAction` changes the world
+ego speed and navigation route. Altering an observation does not move the world. `WorldAttackAction` changes the world
 explicitly; `SensorAttackAction` changes the current sensor sample; `AVStackAttackAction` replaces a
 value at a declared driving stage. The runner applies the sensors environment before ObservationPipeline;
 ObservationPipeline does not own those sensor corruptions. Produced and executed commands are logged
 separately.
+
+NuRec derives navigation from the recorded path and ScenarioStart.scenario_map, then projects the
+actual ego pose onto it at each capture. Observation.route is a driving-system input in ego axes;
+it does not constrain a planned trajectory. The driving system can request recorded observations
+before the selected start through past_steps. NuRec renders those past poses and actor states from
+the recording. The runner applies the treatment's sensor corruptions to that history, without
+attack actions, stage hooks or ObservationPipeline. Both route and history are model-visible;
+physical state remains separate. Insufficient recorded history makes a start ineligible.
 
 `WorldSnapshot.ego` and `actors` use `ActorState`: canonical world pose, velocity, category and
 optional full extent. `Detection` uses the true capture-time ego frame, independently of model
@@ -191,7 +200,8 @@ enabled/disabled attack states are compared on common metadata, with all treatme
 | NuScenesDataset + RecordedReplaySimulator | Compatible AVStack | Open-loop recorded playback |
 
 Recorded playback does not respond to driving commands. NuRec's other actors follow recorded tracks.
-`TrajectoryFollower` is an ideal trajectory executor, not a physical actuator controller.
+The supplied NuRec configurations use AlpaSimController with linear MPC and its dynamic vehicle model.
+TrajectoryFollower remains an explicitly selected ideal trajectory executor.
 
 ## Implementation status
 
@@ -202,8 +212,8 @@ and log-based visualization use this path.
 **Not yet implemented.** Defense treatments and reference defenses. See
 [TODO](../development/TODO.md#defenses).
 
-**Not yet implemented.** Reactive NuRec traffic and a physical trajectory controller. See
-[TODO](../development/TODO.md#vehicle-dynamics).
+**Not yet implemented.** Reactive NuRec traffic and rolling-shutter rendering. See
+[TODO](../development/TODO.md#reactive-traffic-in-nurec).
 
 ## Terminology
 

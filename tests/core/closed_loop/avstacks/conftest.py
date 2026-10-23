@@ -8,37 +8,23 @@ import pytest
 
 @pytest.fixture
 def alpamayo_model_boundary(monkeypatch):
-    names = (
-        "alpasim_driver", "alpasim_driver.models", "alpasim_driver.models.base",
-        "alpasim_driver.models.alpamayo1_5_model", "alpasim_driver.schema",
-        "alpasim_grpc", "alpasim_grpc.v0", "alpasim_grpc.v0.common_pb2",
-    )
-    modules = {name: ModuleType(name) for name in names}
-    for name, module in modules.items():
-        monkeypatch.setitem(sys.modules, name, module)
-        if "." in name:
-            parent, attribute = name.rsplit(".", 1)
-            setattr(modules[parent], attribute, module)
-    base = modules["alpasim_driver.models.base"]
-    base.CameraFrame = base.PredictionInput = SimpleNamespace
-    base.ModelPrediction = type("ModelPrediction", (SimpleNamespace,), {"__module__": base.__name__})
-    base.DriveCommand = SimpleNamespace(STRAIGHT="straight")
-    for name in ("PoseAtTime", "Pose", "Vec3", "Quat"):
-        setattr(modules["alpasim_grpc.v0.common_pb2"], name, SimpleNamespace)
-    modules["alpasim_driver.schema"].ModelConfig = SimpleNamespace
+    base = pytest.importorskip("alpasim_driver.models.base")
+    pytest.importorskip("alpasim_grpc.v0.egodriver_pb2")
+    pytest.importorskip("alpasim_driver.navigation")
 
     class PolicyModel:
         def __init__(self):
             self.closed = False
             self.last_input = None
+            self.prediction = base.ModelPrediction(
+                candidate_positions=np.array([[[1., 0., 0.], [2., 0., 0.]]]),
+                candidate_rotations=np.tile(np.eye(3), (1, 2, 1, 1)),
+                selected_index=0, selected_plan="forward", reasoning_text="clear",
+            )
 
         def predict(self, inputs):
             self.last_input = inputs
-            return base.ModelPrediction(
-                candidate_positions=np.array([[[1., 0., 0.], [2., 0., 0.]]]),
-                candidate_rotations=np.array([[[1., 0., 0., 0.], [1., 0., 0., 0.]]]),
-                selected_index=0, selected_plan="forward", reasoning_text="clear",
-            )
+            return self.prediction
 
         def close(self):
             self.closed = True
@@ -52,7 +38,12 @@ def alpamayo_model_boundary(monkeypatch):
             loaded.append(model)
             return model
 
-    modules["alpasim_driver.models.alpamayo1_5_model"].Alpamayo15Model = ModelLoader
+    # Keep real AlpaSim protobufs, navigation and model input/output records. Only weights
+    # and checkpoint-backed construction are replaced.
+    name = "alpasim_driver.models.alpamayo1_5_model"
+    module = ModuleType(name)
+    module.Alpamayo15Model = ModelLoader
+    monkeypatch.setitem(sys.modules, name, module)
     return SimpleNamespace(create=PolicyModel, loaded=loaded)
 
 
@@ -106,3 +97,25 @@ def native_dependencies():
 def camera_observation():
     from avsectester.data_types import Observation
     return lambda: Observation(0., 0, {"front": np.zeros((32, 32, 3), np.uint8)})
+
+
+@pytest.fixture
+def alpamayo_observations():
+    from tests.fakes import recorded_policy_observations
+
+    return recorded_policy_observations
+
+
+@pytest.fixture
+def empty_past():
+    return ()
+
+
+@pytest.fixture
+def policy_past(alpamayo_observations):
+    return alpamayo_observations()[:-1]
+
+
+@pytest.fixture
+def policy_observation(alpamayo_observations):
+    return lambda: alpamayo_observations()[-1]

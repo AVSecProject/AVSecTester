@@ -7,11 +7,12 @@ import dataclasses
 import math
 from abc import ABC, abstractmethod
 from copy import deepcopy
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, TYPE_CHECKING
 
-from avsectester.closed_loop.simulators.ego_dynamics import EgoPose
 from avsectester.geometry.poses import validated_transform
+from avsectester.validation import require_positive_integer
 
 if TYPE_CHECKING:
     from avsectester.geometry.cameras import Camera, FThetaCamera
@@ -93,14 +94,18 @@ class Renderer(ABC):
         """Load a reconstruction once; renderers without a service may leave this empty."""
 
     @abstractmethod
-    def render(self, pose: EgoPose, camera: str, dynamic_objects=()) -> Any:
-        """Render one camera and the supplied track-ID/world-pose pairs at ``pose``."""
+    def render(
+        self, world_from_rig: np.ndarray, timestamp_us: int, camera: str, dynamic_objects=(),
+    ) -> Any:
+        """Render one camera at the explicit three-dimensional rig pose and scene timestamp."""
 
     def camera_model(self, camera: str | None = None) -> Camera | None:
         """Optical camera model, or None when this renderer supplies no geometry."""
         return None
 
-    def cam_from_world(self, pose: EgoPose, camera: str | None = None) -> np.ndarray:
+    def cam_from_world(
+        self, world_from_rig: np.ndarray, camera: str | None = None,
+    ) -> np.ndarray:
         """World-to-optical-camera transform for the rendered pose."""
         raise NotImplementedError("This renderer does not provide camera geometry")
 
@@ -124,12 +129,27 @@ class NuRecRenderer(Renderer):
     cameras: list[str] = field(default_factory=lambda: ["camera_front_wide_120fov"])
     calibration: dict = field(default_factory=dict)
     image_quality: float = 95.0
+    resolution_hw: Mapping[str, tuple[int, int]] = field(default_factory=dict)
 
     def copy(self) -> NuRecRenderer:
         """The same configuration without a connection, loaded scene or run origin."""
         return dataclasses.replace(self)
 
     def __post_init__(self) -> None:
+        if not isinstance(self.resolution_hw, Mapping):
+            raise TypeError("resolution_hw must map camera names to (height, width)")
+        resolutions = {}
+        for camera, dimensions in self.resolution_hw.items():
+            if camera not in self.cameras:
+                raise ValueError(f"resolution_hw names an unconfigured camera {camera!r}")
+            if not isinstance(dimensions, (tuple, list)) or len(dimensions) != 2:
+                raise ValueError(f"resolution_hw[{camera!r}] must contain height and width")
+            height, width = dimensions
+            require_positive_integer(height, f"resolution_hw[{camera!r}] height")
+            require_positive_integer(width, f"resolution_hw[{camera!r}] width")
+            resolutions[camera] = (height, width)
+        self.resolution_hw = resolutions
+        self._camera_models = {}
         self._stub = None
         self._channel = None
         self._camera_specs = {}
@@ -147,6 +167,7 @@ class NuRecRenderer(Renderer):
         from alpasim_grpc.v0 import common_pb2, sensorsim_pb2, sensorsim_pb2_grpc
 
         self.close()
+        self._camera_models = {}
         self._channel = grpc.insecure_channel(self.endpoint)
         self._stub = sensorsim_pb2_grpc.SensorsimServiceStub(self._channel)
         available = list(self._stub.get_available_scenes(common_pb2.Empty()).scene_ids)
@@ -182,6 +203,20 @@ class NuRecRenderer(Renderer):
         self._t0 = (
             poses[0].timestamp_us if self.origin_timestamp_us is None else self.origin_timestamp_us
         )
+        world_from_rig = self.origin_transform
+        if world_from_rig is None:
+            world_from_rig = pose_from_proto(self._start_pose)
+        for camera in self.cameras:
+            image = self.render_at(world_from_rig, self._t0, camera)
+            height, width = image.shape[:2]
+            native = ftheta_camera_from_spec(self._camera_specs[camera])
+            scale = height / native.height
+            self._camera_models[camera] = dataclasses.replace(
+                native, width=width, height=height, cx=native.cx * scale, cy=native.cy * scale,
+                angle_to_pixeldist=tuple(value * scale for value in native.angle_to_pixeldist),
+                pixeldist_to_angle=tuple(value * scale ** -power
+                                         for power, value in enumerate(native.pixeldist_to_angle)),
+            )
 
     @property
     def service(self):
@@ -196,38 +231,29 @@ class NuRecRenderer(Renderer):
         self._channel = None
         self._stub = None
 
-    def timestamp_us(self, pose: EgoPose) -> int:
-        return self._t0 + round(pose.t * 1e6)
-
     def camera_model(self, camera: str | None = None) -> Camera:
-        """The rendered camera's lens model (:class:`~avsectester.geometry.cameras.FThetaCamera`)
-        for world-anchored insertion, available after :meth:`load_scene`."""
-        return ftheta_camera_from_spec(self._camera_specs.get(camera, self._spec))
+        """The lens scaled to the image dimensions actually returned by NRE during load_scene."""
+        if self._stub is None:
+            raise RuntimeError("Call load_scene before requesting a NuRec camera model")
+        name = self.cameras[0] if camera is None else camera
+        if name not in self._camera_models:
+            raise ValueError(f"Camera {name!r} was not loaded")
+        return deepcopy(self._camera_models[name])
 
-    def rig_transform(self, pose: EgoPose):
-        """Preserve the selected frame's height/tilt while evolving planar position and heading."""
-        import numpy as np
-
-        if self.origin_transform is None:
-            z = self._start_pose.vec.z if self._start_pose is not None else 0.0
-            return planar_rig_pose(pose.x, pose.y, pose.yaw, z)
-        anchor = np.asarray(self.origin_transform, dtype=float)
-        anchor_yaw = math.atan2(anchor[1, 0], anchor[0, 0])
-        current = planar_rig_pose(pose.x, pose.y, pose.yaw, anchor[2, 3])
-        initial_flat = planar_rig_pose(0, 0, anchor_yaw)
-        current[:3, :3] = current[:3, :3] @ initial_flat[:3, :3].T @ anchor[:3, :3]
-        return current
-
-    def cam_from_world(self, pose: EgoPose, camera: str | None = None) -> np.ndarray:
-        """The same camera pose used by the render request, including selected-frame tilt."""
+    def cam_from_world(
+        self, world_from_rig: np.ndarray, camera: str | None = None,
+    ) -> np.ndarray:
+        """World-to-optical-camera transform at the explicit three-dimensional rig pose."""
         import numpy as np
 
         extrinsic = self._camera_poses.get(camera, self._rig_to_camera)
-        return np.linalg.inv(self.rig_transform(pose) @ pose_from_proto(extrinsic))
+        return np.linalg.inv(validated_transform(world_from_rig) @ pose_from_proto(extrinsic))
 
-    def render(self, pose: EgoPose, camera: str, dynamic_objects=()):
-        """Render one RGB frame at the ego pose via a single stateless render_rgb call."""
-        return self.render_at(self.rig_transform(pose), self.timestamp_us(pose), camera, dynamic_objects)
+    def render(
+        self, world_from_rig: np.ndarray, timestamp_us: int, camera: str, dynamic_objects=(),
+    ):
+        """Render one RGB frame at an explicit three-dimensional rig pose and scene timestamp."""
+        return self.render_at(world_from_rig, timestamp_us, camera, dynamic_objects)
 
     def render_at(self, world_from_rig, timestamp_us: int, camera: str, dynamic_objects=()):
         """Render an absolute rig pose/time and all present track-ID/world-pose pairs.
@@ -270,10 +296,11 @@ class NuRecRenderer(Renderer):
             objects.append(sensorsim_pb2.DynamicObject(track_id=track_id,
                 pose_pair=sensorsim_pb2.PosePair(start_pose=actor_pose, end_pose=actor_pose)))
         frame_us = int(timestamp_us)
+        height, width = self.resolution_hw.get(camera, (spec.resolution_h, spec.resolution_w))
         req = sensorsim_pb2.RGBRenderRequest(
             scene_id=self._loaded_scene_id,
-            resolution_h=spec.resolution_h,
-            resolution_w=spec.resolution_w,
+            resolution_h=height,
+            resolution_w=width,
             camera_intrinsics=spec,
             frame_start_us=frame_us,
             frame_end_us=frame_us + 1,  # render at an instant: a non-empty [t, t+1) interval
@@ -285,4 +312,12 @@ class NuRecRenderer(Renderer):
         )
         ret = self._stub.render_rgb(req)
         img = cv2.imdecode(np.frombuffer(ret.image_bytes, np.uint8), cv2.IMREAD_COLOR)
+        if img is None:
+            raise ValueError(f"NRE returned an undecodable image for camera {camera!r}")
+        model = self._camera_models.get(camera)
+        if model is not None and img.shape[:2] != (model.height, model.width):
+            raise ValueError(
+                f"NRE image dimensions for camera {camera!r} changed: "
+                f"expected {(model.height, model.width)}, got {img.shape[:2]}"
+            )
         return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)  # HWC uint8 RGB for the AVStack

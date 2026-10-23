@@ -166,7 +166,7 @@ Native frames can include initialization ticks and are not the dataset position.
 
 | Record | Fields and coordinates |
 |---|---|
-| Observation | t, frame, sensor_data, calibration, vehicle_state, ego_speed; model-visible |
+| Observation | t, frame, sensor_data, calibration, vehicle_state, ego_speed, route; model-visible |
 | Control | throttle, steer, brake, optional trajectory |
 | WorldSnapshot | t, frame, vehicle_state, ego_speed, ego, actors, traffic_lights and objects; physical |
 | ActorState | world-from-actor pose, velocity, category, extent, local box center |
@@ -262,3 +262,11 @@ native cleanup. Never interpret a requested action as applied without its receip
 partial log as a completed run.
 
 See [Python API](python-api.md#runlog-api) for readers and recorder signatures.
+
+NuRec termination events include ground_contact_failures, a count per rejected ground-fit reason.
+
+Driving systems may declare past_steps. Before the first decision, the runner obtains that many
+recorded past observations and applies only the treatment's sensor corruptions at each absolute
+dataset position. Past observations bypass hooks, ObservationPipeline and attacks. AVStack.reset
+receives them from oldest to newest. The initialization event includes past_steps and
+past_observations, containing only each observation's t and vehicle_state, without images.

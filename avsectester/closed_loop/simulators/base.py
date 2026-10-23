@@ -174,6 +174,7 @@ class Simulator(ABC):
     dataset_kinds: tuple[str, ...] = ()
     can_render: bool = False
     can_replay: bool = False
+    can_observe_past: bool = False
     can_insert_objects: bool = False
     supported_world_settings: frozenset[str] = frozenset()
     simulator_version = "1"
@@ -240,9 +241,9 @@ class SimulatorRuntime(_StageAdapter, ABC):
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
-        if {"reset", "step", "sensor_view", "start_replay", "advance_replay"} & cls.__dict__.keys():
+        if {"reset", "step", "sensor_view", "start_replay", "advance_replay", "observe_past"} & cls.__dict__.keys():
             raise TypeError("SimulatorRuntime subclasses implement native operations, "
-                            "not reset/step/sensor_view/start_replay/advance_replay")
+                            "not reset/step/sensor_view/start_replay/advance_replay/observe_past")
 
     def __init__(self, simulator: Simulator) -> None:
         self.simulator = simulator
@@ -287,6 +288,10 @@ class SimulatorRuntime(_StageAdapter, ABC):
         return self.simulator.can_replay
 
     @property
+    def can_observe_past(self) -> bool:
+        return self.simulator.can_observe_past
+
+    @property
     def can_insert_objects(self) -> bool:
         return self.simulator.can_insert_objects
 
@@ -313,6 +318,11 @@ class SimulatorRuntime(_StageAdapter, ABC):
     @property
     def identity(self) -> Mapping[str, Any]:
         return self.simulator.identity
+
+    @property
+    def termination_details(self) -> Mapping[str, Any]:
+        """Simulator diagnostics saved with the run's termination event."""
+        return {}
 
     def validate_start(self, start: ScenarioStart | None) -> None:
         self.simulator.validate_start(start)
@@ -620,6 +630,33 @@ class SimulatorRuntime(_StageAdapter, ABC):
         self._compose_capture()
         assert self._composited_capture is not None
         return self.copy_observation(self._composited_capture)
+
+    def observe_past(self, count: int) -> tuple[Observation, ...]:
+        """Read recorded observations before the selected start, from oldest to newest.
+
+        Requires a completed reset, ``can_observe_past`` and a recording covering the
+        requested decision positions. Times and frames are negative relative to that start.
+        These observations contain no attack or framework-inserted objects, run no stage
+        hooks and leave the current world state and capture unchanged.
+        """
+        require_nonnegative_integer(count, "past observation count")
+        if not self._world_initialized or self._capture is None:
+            raise RuntimeError("Reset the simulator before requesting past observations")
+        if not self.can_observe_past:
+            raise NotImplementedError(f"{type(self.simulator).__name__} cannot observe the recorded past")
+        if self._start is None or not self._start.recorded_ego:
+            raise ValueError("Past observations require ScenarioStart.recorded_ego")
+        position = self._start.frame.position
+        if position < count:
+            raise ValueError(f"Start position {position} has only {position} past decisions; {count} required")
+        if position >= len(self._start.recorded_ego):
+            raise ValueError("Recorded ego trajectory does not include the selected start")
+        return tuple(self.copy_observation(self._observe_recorded(previous))
+                     for previous in range(position - count, position))
+
+    def _observe_recorded(self, position: int) -> Observation:
+        """Capture one recorded decision position without hooks or changing live state."""
+        raise NotImplementedError("This simulator cannot observe the recorded past")
 
     def start_replay(self, start: ScenarioStart, initialization: Initialization | None = None, *,
                      world: Mapping[str, Any] | None = None,

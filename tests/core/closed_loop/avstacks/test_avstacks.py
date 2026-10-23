@@ -9,17 +9,18 @@ from avsectester.closed_loop.avstacks.driving_adapter import DrivingAdapter
 
 
 @pytest.mark.parametrize(
-    "constructor,options,option_fixtures,observation_fixture,boundary,component_keys,detection_categories", [
+    "constructor,options,option_fixtures,observation_fixture,past_fixture,boundary,component_keys,nullable_components,detection_categories", [
     pytest.param(ModularAVStack, {}, {"pipeline_cfg": "pipeline_config"},
-                 "native_observation", "native_dependencies", None, ("Car",), id="modular"),
+                 "native_observation", "empty_past", "native_dependencies", None, set(), ("Car",), id="modular"),
     pytest.param(AlpamayoAVStack, {"checkpoint_path": "synthetic-checkpoint", "camera_ids": ["front"],
-                                  "device": "cpu"}, {}, "camera_observation",
-                 "alpamayo_model_boundary", {"policy", "command"}, None, id="alpamayo"),
-    pytest.param(CameraForwardCollisionAVStack, {}, {}, "camera_observation",
-                 "camera_detector_boundary", {"perception"}, None, id="camera-forward-collision"),
+                                  "device": "cpu"}, {}, "policy_observation", "policy_past",
+                 "alpamayo_model_boundary", {"policy", "command", "route_waypoints", "navigation_command",
+                    "history_pose_count", "selected_image_times", "navigation_note"}, {"route_waypoints"}, None, id="alpamayo"),
+    pytest.param(CameraForwardCollisionAVStack, {}, {}, "camera_observation", "empty_past",
+                 "camera_detector_boundary", {"perception"}, set(), None, id="camera-forward-collision"),
 ])
-def test_avstack(constructor, options, option_fixtures, observation_fixture, boundary,
-                 component_keys, detection_categories, request):
+def test_avstack(constructor, options, option_fixtures, observation_fixture, past_fixture, boundary,
+                 component_keys, nullable_components, detection_categories, request):
     request.getfixturevalue(boundary)
     options = {**options, **{name: request.getfixturevalue(fixture)
                             for name, fixture in option_fixtures.items()}}
@@ -27,13 +28,13 @@ def test_avstack(constructor, options, option_fixtures, observation_fixture, bou
     adapter = DrivingAdapter(lambda seed: constructor(**options))
     avstack = adapter.factory(0)
     try:
-        avstack.reset(observation)
+        avstack.reset(observation, past=request.getfixturevalue(past_fixture))
         assert isinstance(avstack(observation), Control)
         assert avstack.command_modes
         components = avstack.component_log()
         assert (components is None) == (component_keys is None)
         assert set(components or {}) == set(component_keys or ())
-        assert all(value is not None for value in (components or {}).values())
+        assert {key for key, value in (components or {}).items() if value is None} == nullable_components
         detections = avstack.detections()
         assert (detections is None) == (detection_categories is None)
         assert tuple(detection.category for detection in detections or ()) == (detection_categories or ())

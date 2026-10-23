@@ -101,6 +101,8 @@ class Observation:
     and ``calibration``. ``calibration`` maps each sensor to the vehicle frame (intrinsics + extrinsic)
     — the bridge from world/vehicle coordinates into each sensor. No world/ground-truth state is
     included: the driving system sees only what a real vehicle senses about the scene and itself.
+    ``route`` is model-visible navigation intent in ego coordinates (X forward, Y left),
+    an (N, 3) array in metres with zero Z, or None. Hooks and attacks may modify it.
     """
 
     t: float
@@ -109,6 +111,7 @@ class Observation:
     calibration: dict[str, Any] = field(default_factory=dict)  # sensor_id -> intrinsics + extrinsic
     vehicle_state: Any = None  # ego pose/velocity (what localization reports)
     ego_speed: float = 0.0  # reported speed (m/s), available to the driving model
+    route: np.ndarray | None = None
 
     def set_calibration(self, sensor_id: str, calibration: Any) -> None:
         """Replace model-visible calibration and its native payload reference together.

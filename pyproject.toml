@@ -117,6 +117,8 @@ files = [
     "avsectester/closed_loop/avstacks/base.py", "avsectester/closed_loop/avstacks/driving_adapter.py",
     "avsectester/closed_loop/simulators/object_composition.py",
     "avsectester/closed_loop/simulators/ego_dynamics.py",
+    "avsectester/closed_loop/simulators/navigation.py",
+    "avsectester/closed_loop/simulators/ground_contact.py",
     "avsectester/closed_loop/simulators/base.py", "avsectester/execution/",
     "avsectester/runlog/log.py",
     "avsectester/datasets/base.py", "avsectester/evaluation/",

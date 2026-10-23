@@ -31,9 +31,10 @@ options:
 The metabuilder partitions eligible decisions. Offline preparation is trivial. create_runtime
 creates a fresh feedback state for each treatment run. The runtime subscribes to physical state,
 updates its bounded bias and returns an AVStackAttackAction changing Observation.ego_speed. The
-supplied NuRec/Alpamayo configuration consumes that model-visible field. It is not configured with a
-Modular pipeline whose control path ignores it. Physical state remains separately logged. Online
-histories are not shared through Attack.
+supplied NuRec configuration records this field change, but Alpamayo derives its model speed and
+acceleration from the received pose history. Changing ego_speed alone therefore does not change
+those Alpamayo inputs. To study a speed-feedback attack impact, use a driving system that consumes
+ego_speed. Physical state remains separately logged. Online histories are not shared through Attack.
 
 The runtime records each step's bias through OnlineContext.record_output. Inspect
 StepRecord.outputs, model_observation, physical_pre and executed_command to see the full causal

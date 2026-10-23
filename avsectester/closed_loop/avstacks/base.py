@@ -12,7 +12,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from avsectester.data_types import Control, Detection, Observation, StateEstimate
 from avsectester.closed_loop.hooks import _StageAdapter
@@ -73,6 +73,7 @@ class AVStack(_StageAdapter, ABC):
     """
 
     provides_detections: bool | None = None
+    past_steps: ClassVar[int] = 0
 
     @property
     def observation_pipeline(self) -> ObservationPipeline:
@@ -87,8 +88,12 @@ class AVStack(_StageAdapter, ABC):
             raise TypeError("observation_pipeline must be ObservationPipeline")
         self._observation_pipeline = value
 
-    def reset(self, observation: Observation) -> None:
-        """Optional warmup from the first Observation (e.g. seed a planner). Default no-op."""
+    def reset(self, observation: Observation, past: Sequence[Observation] = ()) -> None:
+        """Initialize from the first observation and recorded past, ordered oldest to newest.
+
+        ``past_steps`` declares the required number of preceding decision observations.
+        The default implementation requires none and performs no warmup.
+        """
 
     @property
     def command_modes(self) -> frozenset[str] | None:

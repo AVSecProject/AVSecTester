@@ -375,12 +375,14 @@ class ClosedLoopSession:
 
         return self.services.frame_data_cache.get_or_generate(key, generate)
 
-    def can_deploy_at(self, position: int) -> bool:
-        """Check a candidate boundary against this session's fixed deployment budget."""
+    def can_start_at(self, position: int) -> bool:
+        """Check deployment and recorded-history requirements without starting a runtime."""
         from avsectester.closed_loop.simulators.base import can_deploy_at
 
-        return can_deploy_at(position, self.services.deployment,
-                             self.services.simulator.capture_ticks)
+        deployment_allowed = can_deploy_at(position, self.services.deployment,
+                                            self.services.simulator.capture_ticks)
+        adapter = self.services.driving_adapter
+        return deployment_allowed and position >= (adapter.past_steps if adapter is not None else 0)
 
     def frame_data(self, scenario: str, frame: FrameReference,
                   environment: Mapping[str, Any] | None = None) -> FrameData:

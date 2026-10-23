@@ -9,14 +9,16 @@ from copy import deepcopy
 from dataclasses import asdict
 from typing import Any, TYPE_CHECKING
 import zipfile
+from collections import Counter
 
-from avsectester.closed_loop.simulators.ego_dynamics import EgoDynamics, EgoPose, KinematicBicycle
+from avsectester.closed_loop.simulators.ego_dynamics import EgoDynamics, PlanarEgoState, KinematicBicycle
 from avsectester.closed_loop.simulators.base import SensorGeometry, SensorView, Simulator, SimulatorRuntime
+from avsectester.closed_loop.simulators.navigation import RouteGenerator
 from avsectester.geometry.cameras import BODY_FROM_OPTICAL
 from avsectester.geometry.poses import validated_transform, validated_vector
 from avsectester.data_types import ActorState, Observation, WorldSnapshot
 
-from .depth import _actor_depth, _scene_raycaster
+from .depth import _actor_depth, _scene_raycaster, _ground_raycaster
 from .renderer import Renderer, planar_rig_pose
 
 if TYPE_CHECKING:
@@ -36,6 +38,7 @@ class NuRecSimulator(Simulator):
 
     dataset_kinds = ("NuRecDataset",)
     can_render = True
+    can_observe_past = True
     can_insert_objects = True
 
     def __init__(
@@ -45,16 +48,28 @@ class NuRecSimulator(Simulator):
         dynamics: EgoDynamics | None = None,
         *,
         depth: str = "mesh",
+        route_generator: str = "map",
+        physics_update_mode: str = "ego_only",
+        ground_mesh: str = "mesh",
     ) -> None:
         if renderer is None:
             raise TypeError("NuRecSimulator requires a renderer; configure NuRecRenderer")
         if not isinstance(depth, str) or depth not in {"mesh", "none"}:
             raise ValueError("NuRec depth must be 'mesh' or 'none'")
-        if depth == "mesh":
+        if physics_update_mode not in {"ego_only", "none"}:
+            raise ValueError("physics_update_mode must be 'ego_only' or 'none'")
+        if ground_mesh not in {"mesh", "mesh_ground"}:
+            raise ValueError("ground_mesh must be 'mesh' or 'mesh_ground'")
+        if depth == "mesh" or physics_update_mode == "ego_only":
             from avsectester.geometry.mesh import MeshRaycaster
 
             MeshRaycaster.check_dependencies()
         self.depth = depth
+        if route_generator not in {"map", "recorded", "none"}:
+            raise ValueError("route_generator must be 'map', 'recorded' or 'none'")
+        self.route_generator = route_generator
+        self.physics_update_mode = physics_update_mode
+        self.ground_mesh = ground_mesh
         self.config = deepcopy(config)
         self.simulator_version = str(self.config.get("simulator_version", "1"))
         self.renderer = renderer
@@ -86,7 +101,13 @@ class NuRecSimulator(Simulator):
     def identity(self):
         return {**super().identity, "config": deepcopy(self.config),
                 "depth": self.depth,
+                "route_generator": self.route_generator,
+                "physics_update_mode": self.physics_update_mode,
+                "ground_mesh": self.ground_mesh,
                 "renderer": type(self.renderer).__name__,
+                "resolution_hw": deepcopy(getattr(self.renderer, "resolution_hw", {})),
+                "dynamics": {"type": f"{type(self.dynamics).__module__}:{type(self.dynamics).__qualname__}",
+                             "options": asdict(self.dynamics) if dataclasses.is_dataclass(self.dynamics) else {}},
                 "endpoint": getattr(self.renderer, "endpoint", None)}
 
 
@@ -102,7 +123,7 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
         self.dynamics = deepcopy(simulator.dynamics)
         self.dt = simulator.dt
         self.depth = simulator.depth
-        self.pose = EgoPose()
+        self.pose = PlanarEgoState()
         self.frame = 0
         self._render_requests: dict[str, CameraPoseRequest] = {}
         # Recorded actor tracks, by archive; recorded files are immutable.
@@ -112,6 +133,10 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
         self._capture_actor_states: dict[str, dict[str, ActorState]] = {}
         self._capture_depth: dict[str, np.ndarray] = {}
         self._recorded_end: float | None = None
+        self._route = RouteGenerator("none", (), None)
+        self._world_from_ego: Any = None
+        self._ground_contact = None
+        self._ground_contact_failures: Counter[str] = Counter()
 
     @property
     def native(self) -> dict[str, Any]:
@@ -137,27 +162,20 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
         return deepcopy(self._render_requests[native_camera])
 
     def _ego_state(self):
-        """Canonical physical ego pose; the renderer retains the recorded height and tilt."""
+        """Physical three-dimensional rig pose, owned by this runtime."""
         import numpy as np
 
-        rig_transform = getattr(self.renderer, "rig_transform", None)
-        if callable(rig_transform):
-            pose = rig_transform(self.pose)
-        else:
-            anchor = None if self._start is None else self._start.payload["ego"].pose
-            z = 0.0 if anchor is None else np.asarray(anchor)[2, 3]
-            pose = planar_rig_pose(self.pose.x, self.pose.y, self.pose.yaw, z)
-            if anchor is not None:
-                anchor = np.asarray(anchor, dtype=float)
-                yaw = math.atan2(anchor[1, 0], anchor[0, 0])
-                pose[:3, :3] = (pose[:3, :3]
-                    @ planar_rig_pose(0, 0, yaw)[:3, :3].T @ anchor[:3, :3])
+        pose = self._world_from_ego.copy()
         recorded = None if self._start is None else self._start.payload["ego"]
-        return ActorState(pose, (self.pose.speed * math.cos(self.pose.yaw),
-                                self.pose.speed * math.sin(self.pose.yaw), 0.0), "vehicle",
+        velocity = pose[:3, :3] @ np.array([self.pose.speed, self.pose.lateral_speed, 0.])
+        return ActorState(pose, tuple(float(value) for value in velocity), "vehicle",
                           None if recorded is None else recorded.extent,
                           (0., 0., 0.) if recorded is None else recorded.box_center,
                           (0., 0., 0.) if recorded is None else recorded.box_rotation)
+
+    @property
+    def termination_details(self) -> dict[str, Any]:
+        return {"ground_contact_failures": dict(self._ground_contact_failures)}
 
     def _state(self) -> WorldSnapshot:
         """Physical ego and current traffic, detached from model-visible observations."""
@@ -165,9 +183,39 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
                              deepcopy(self._actors_at(self._timestamp_us(self.pose))),
                              ego=self._ego_state())
 
-    def _timestamp_us(self, pose: EgoPose) -> int:
+    def _timestamp_us(self, pose: PlanarEgoState) -> int:
         origin = 0. if self._start is None else self._start.frame.timestamp
         return round((origin + pose.t) * 1e6)
+
+    def _recorded_planar_state(self, position: int, ego: ActorState | None = None) -> PlanarEgoState:
+        """Rig-frame motion and finite differences from the actual recording."""
+        import numpy as np
+
+        start = self._start
+        recorded = start.recorded_ego
+        current = recorded[position] if ego is None else ego
+        if current.velocity is None:
+            raise ValueError(f"Recorded ego state at position {position} has no velocity")
+        pose = np.asarray(current.pose)
+        velocity = pose[:3, :3].T @ validated_vector(current.velocity, "recorded ego velocity")
+        yaw = math.atan2(pose[1, 0], pose[0, 0])
+        yaw_rate, acceleration = 0., 0.
+        neighbor = position - 1 if position else 1
+        if 0 <= neighbor < len(recorded):
+            other = recorded[neighbor]
+            if other.velocity is None:
+                raise ValueError(f"Recorded ego state at position {neighbor} has no velocity")
+            other_velocity = np.asarray(other.pose)[:3, :3].T @ validated_vector(
+                other.velocity, "recorded ego velocity")
+            interval = (position - neighbor) * self.dt
+            other_yaw = math.atan2(other.pose[1, 0], other.pose[0, 0])
+            difference = yaw - other_yaw
+            yaw_rate = math.atan2(math.sin(difference), math.cos(difference)) / interval
+            acceleration = (velocity[0] - other_velocity[0]) / interval
+        return PlanarEgoState(float(pose[0, 3]), float(pose[1, 3]), yaw, float(velocity[0]),
+                              (position - start.frame.position) * self.dt,
+                              lateral_speed=float(velocity[1]), yaw_rate=float(yaw_rate),
+                              acceleration=float(acceleration))
 
     def _tracks(self):
         from avsectester.datasets.nurec import NuRecDataset
@@ -236,18 +284,13 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
         self._capture_actor_states.clear()
         self._capture_depth.clear()
         self._recorded_end = None
+        self._ground_contact_failures.clear()
+        self._ground_contact = None
         config = deepcopy(self.config)
         if start is not None:
-            import numpy as np
-
             ego = start.payload["ego"]
-            pose = np.asarray(ego.pose, dtype=float)
             config["scene"] = start.payload.get("scene_id")
-            config["ego0"] = {
-                "x": float(pose[0, 3]), "y": float(pose[1, 3]),
-                "yaw": math.atan2(pose[1, 0], pose[0, 0]),
-                "speed": float(np.linalg.norm(ego.velocity)) if ego.velocity is not None else 0.0,
-            }
+            config["ego0"] = asdict(self._recorded_planar_state(start.frame.position, ego))
             self._recorded_end = start.payload["terminal_timestamp"] - start.frame.timestamp
             self.initialization_report = {
                 "kind": "recorded", "start_frame": asdict(start.frame),
@@ -256,19 +299,55 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
                 "terminal_timestamp": start.payload["terminal_timestamp"], "pre_roll_steps": 0,
             }
         reset_origin = getattr(self.renderer, "reset_origin", None)
+        self._route = RouteGenerator(
+            self.simulator.route_generator,
+            () if start is None else [state.pose[:3, 3] for state in start.recorded_ego],
+            None if start is None else start.scenario_map,
+        )
+        if self.simulator.physics_update_mode == "ego_only":
+            if start is None:
+                raise ValueError("NuRec ground contact requires a ScenarioStart; "
+                                 "select physics_update_mode='none' without a recording")
+            if start.payload["ego"].extent is None:
+                raise ValueError("NuRec ground contact requires ego bounding-box extent")
+            self._ground_contact = _ground_raycaster(
+                start.payload["usdz_path"], self.simulator.ground_mesh + ".ply")
         if callable(reset_origin):
             reset_origin(start)
         elif start is not None:
             raise TypeError("Source initialization requires renderer.reset_origin(ScenarioStart)")
+        self.pose = PlanarEgoState(**config.get("ego0", {}))
+        self._world_from_ego = (start.payload["ego"].pose.copy() if start is not None else
+            planar_rig_pose(self.pose.x, self.pose.y, self.pose.yaw))
+        reset_dynamics = getattr(self.dynamics, "reset", None)
+        if callable(reset_dynamics):
+            reset_dynamics(deepcopy(self.pose))
         self.renderer.load_scene(config.get("scene"))
-        self.pose = EgoPose(**config.get("ego0", {}))
         self.frame = 0
 
     def _advance_native(self, control):
         if self._recorded_end is not None and round((self.pose.t + self.dt) * 1e6) > round(self._recorded_end * 1e6):
             raise ValueError("NuRec step exceeds terminal recorded support")
         self._render_requests.clear()
+        previous_yaw = self.pose.yaw
         self.pose = self.dynamics.step(self.pose, control, self.dt)
+        world_from_ego = planar_rig_pose(self.pose.x, self.pose.y, self.pose.yaw,
+                                         self._world_from_ego[2, 3])
+        world_from_ego[:3, :3] = (world_from_ego[:3, :3]
+            @ planar_rig_pose(0, 0, previous_yaw)[:3, :3].T @ self._world_from_ego[:3, :3])
+        self._world_from_ego = world_from_ego
+        if self._ground_contact is not None:
+            from avsectester.closed_loop.simulators.ground_contact import constrain_to_ground
+            import numpy as np
+
+            ego = self._ego_state()
+            corrected, status = constrain_to_ground(self._ground_contact, ego.box_transform(), ego.extent)
+            if status != "successful_update":
+                self._ground_contact_failures[status] += 1
+            self._world_from_ego = corrected @ np.linalg.inv(
+                np.linalg.inv(ego.pose) @ ego.box_transform())
+            self.pose.x, self.pose.y = self._world_from_ego[:2, 3]
+            self.pose.yaw = math.atan2(self._world_from_ego[1, 0], self._world_from_ego[0, 0])
         self.frame += 1
 
     @property
@@ -306,7 +385,7 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
         output_key = aliases.get(native_camera, native_camera)
         request = self.render_request(native_camera)
         truth = self.state()
-        timestamp = self.renderer.timestamp_us(request.pose)
+        timestamp = self._timestamp_us(self.pose)
         captured = read_camera_rgb(self._capture, output_key)
         if captured is None:
             raise ValueError(f"Missing NuRec camera {output_key!r}")
@@ -337,6 +416,34 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
             )
         return self._capture_depth[camera_name].copy()
 
+    def _observe_recorded(self, position: int) -> Observation:
+        start = self._start
+        if start is None:
+            raise RuntimeError("Past NuRec observations require a scenario start")
+        recorded = start.recorded_ego[position]
+        pose = validated_transform(recorded.pose)
+        relative_frame = position - start.frame.position
+        relative_time = relative_frame * self.dt
+        timestamp_us = round((start.frame.timestamp + relative_time) * 1e6)
+        actors = self._tracks().actor_states(start.payload["scene_id"], timestamp_us)
+        aliases = self.config.get("camera_aliases", {})
+        sensor_data = {
+            aliases.get(camera, camera): self.renderer.render(
+                pose, timestamp_us, camera,
+                dynamic_objects=tuple((identity, state.pose) for identity, state in actors.items()))
+            for camera in self.renderer.cameras
+        }
+        vehicle_state = self._recorded_planar_state(position)
+        # Route generation may extend its stored polyline. A past query must not change the
+        # live runtime's navigation state or any later model-visible route.
+        route = deepcopy(self._route).route(pose)
+        return Observation(
+            t=relative_time, frame=relative_frame, sensor_data=sensor_data,
+            calibration={aliases.get(key, key): deepcopy(value)
+                         for key, value in self.renderer.calibration.items()},
+            vehicle_state=vehicle_state, ego_speed=vehicle_state.speed, route=route,
+        )
+
     def _observe(self) -> Observation:
         from avsectester.closed_loop.hooks import CameraPoseRequest
 
@@ -348,7 +455,7 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
         for camera in self.renderer.cameras:
             # A render request may use a false viewpoint without moving the physical ego.
             request = self._emit(
-                "render.pre", CameraPoseRequest(deepcopy(self.pose), camera), sensor=camera,
+                "render.pre", CameraPoseRequest(self._world_from_ego.copy(), camera), sensor=camera,
             )
             self._render_requests[camera] = deepcopy(request)
             if request.camera != camera:
@@ -356,8 +463,8 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
                 calibration.pop(output_key, None)
                 if request.camera in self.renderer.calibration:
                     calibration[output_key] = self.renderer.calibration[request.camera]
-            actors = self._actors_at(self._timestamp_us(request.pose))
-            image = self.renderer.render(request.pose, request.camera,
+            actors = self._actors_at(self._timestamp_us(self.pose))
+            image = self.renderer.render(request.pose, self._timestamp_us(self.pose), request.camera,
                 dynamic_objects=tuple((identity, state.pose) for identity, state in actors.items()))
             self._capture_actor_states[camera] = deepcopy(actors)
             sensor_data[aliases.get(camera, camera)] = self._emit(
@@ -370,6 +477,7 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
             calibration=calibration,
             vehicle_state=self.pose,
             ego_speed=self.pose.speed,
+            route=self._route.route(self._ego_state().pose),
         ))
 
     def close(self) -> None:
@@ -383,12 +491,19 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
 
     def checkpoint(self) -> dict:
         return {"pose": asdict(self.pose), "frame": self.frame,
+                "world_from_ego": self._world_from_ego.copy(),
+                "ground_contact_failures": dict(self._ground_contact_failures),
                 "actor_overrides": deepcopy(self._actor_overrides),
                 "objects": dict(self._objects)}
 
     def restore(self, ckpt: dict) -> None:
-        self.pose = EgoPose(**ckpt["pose"])
+        self.pose = PlanarEgoState(**ckpt["pose"])
+        reset_dynamics = getattr(self.dynamics, "reset", None)
+        if callable(reset_dynamics):
+            reset_dynamics(deepcopy(self.pose))
         self.frame = ckpt["frame"]
+        self._world_from_ego = ckpt["world_from_ego"].copy()
+        self._ground_contact_failures = Counter(ckpt["ground_contact_failures"])
         self._actor_overrides = deepcopy(ckpt["actor_overrides"])
         # Frozen placed assets and harmonizer configurations are shared; copying a
         # harmonizer's loaded model would duplicate heavyweight native resources.

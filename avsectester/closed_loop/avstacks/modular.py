@@ -399,7 +399,7 @@ class ModularAVStack(AVStack):
             self._perception_capture = _StageCapture()
             perception_module.register_post_hook(self._perception_capture)
 
-    def reset(self, observation: Observation) -> None:
+    def reset(self, observation: Observation, past: Sequence[Observation] = ()) -> None:
         """Clear telemetry. Use a fresh AVStack for independent pipeline histories.
 
         avstack modules do not share a complete reset contract for neural model,

@@ -69,12 +69,17 @@ class ScenarioStart:
 
     ``kind`` is the dataset class name (``NuRecDataset``, ``NuScenesDataset`` or ``CarlaDataset``);
     ``payload`` is that dataset's start data and is copied on construction.
+    ``recorded_ego`` contains the complete decision-timeline recording, when available.
+    ``scenario_map`` is read-only and shared without copying.
     """
 
     kind: str
     scenario_id: str
     frame: FrameReference
     payload: Mapping[str, Any]
+    recorded_ego: tuple[data_types.ActorState, ...] = ()
+    scenario_map: ScenarioMap | data_types.Unavailable = field(
+        default_factory=lambda: data_types.Unavailable("The dataset provides no scenario map"))
 
     def __post_init__(self) -> None:
         if self.scenario_id != self.frame.scenario_id:

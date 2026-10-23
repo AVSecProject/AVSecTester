@@ -9,10 +9,15 @@ from avsectester.attack.runtime import AttackRuntime, AVStackAttackAction, Senso
 from avsectester.attack.insertion import InsertObject
 from avsectester.data_types import Control, Detection
 from avsectester.closed_loop.hooks import Hook, HookSet
+from avsectester.closed_loop.simulators.nurec import NuRecSimulator
 from avsectester.execution.runner import ClosedLoopRunner, RecordingPolicy, RunRequest
+from avsectester.execution.services import ClosedLoopServices, SensorRequest
 from avsectester.runlog import RunLog
 from avsectester.rendering import ObjectVisibility
-from tests.fakes import ConstantAVStack, MemoryDataset, MemorySimulator
+from tests.fakes import (
+    ConstantAVStack, DeceleratingAVStack, HistoryAVStack, MemoryDataset, MemorySimulator,
+    NuRecImageBoundary,
+)
 
 
 RECORDING = RecordingPolicy(("front",), ("raw", "model_input"))
@@ -52,6 +57,58 @@ def test_run_with_hooks():
         assert record.produced_command == Control(throttle=.2)
         assert record.executed_command == Control(throttle=.2, brake=.7)
         assert record.physical_pre.ego_speed == record.raw_observation.ego_speed
+
+
+def test_run_with_past(tmp_path):
+    class Paint(SensorAttackAction):
+        sensor = "front"
+
+        def apply(self, data, view):
+            data[:] = 100
+            return data
+
+    class PaintAttackRuntime(AttackRuntime):
+        def step(self, context):
+            return (Paint(),)
+
+    dataset, simulator = MemoryDataset(), MemorySimulator()
+    frames = dataset.frames("scene")
+    start = dataset.scenario_start("scene", frames[3])
+    environment = {"sensors": [{"type": "GaussianNoise", "camera": "front",
+                                 "options": {"severity": .2}}]}
+    hooks = HookSet([Hook("sensors.post", lambda value, context:
+                         replace(value, ego_speed=value.ego_speed + 5.))], seed=7)
+    avstack = HistoryAVStack()
+    with simulator.create_runtime() as runtime:
+        log = ClosedLoopRunner().run(runtime, avstack, RunRequest(
+            1, start=start, environment=environment, hooks=hooks,
+            attacks=(PaintAttackRuntime(),), recording=RECORDING, output_path=tmp_path / "run"))
+    past = avstack.past_observations
+    assert [observation.t for observation in past] == pytest.approx([-.2, -.1])
+    assert [observation.ego_speed for observation in past] == [1., 1.]
+    assert avstack.initial_observation.ego_speed == 6.
+    assert np.all(log.steps[0].raw_observation.sensor_data["front"] == 23)
+    assert np.any(log.steps[0].model_observation.sensor_data["front"] != 23)
+    with ClosedLoopServices(dataset, simulator) as services, services.session(7) as session:
+        for historical, frame in zip(past, frames[1:3]):
+            original = session.read_sensors(SensorRequest("scene", frame, ("front",)))
+            conditioned = session.read_sensors(SensorRequest(
+                "scene", frame, ("front",), environment=environment))
+            np.testing.assert_array_equal(historical.sensor_data["front"],
+                                          conditioned.observation.sensor_data["front"])
+            assert np.any(historical.sensor_data["front"] != original.observation.sensor_data["front"])
+    saved = RunLog.read(tmp_path / "run")
+    initialization = next(event for event in saved.events if event.kind == "initialization")
+    assert initialization.data["past_steps"] == 2
+    assert [item["t"] for item in initialization.data["past_observations"]] == pytest.approx([-.2, -.1])
+    assert all(set(item) == {"t", "vehicle_state"}
+               for item in initialization.data["past_observations"])
+    with simulator.create_runtime() as runtime:
+        empty = ClosedLoopRunner().run(runtime, avstack, RunRequest(
+            0, start=start, environment=environment, hooks=hooks))
+        assert empty.status == "completed" and not empty.steps
+        assert len(avstack.past_observations) == 2
+        assert avstack.initial_observation.ego_speed == 6.
 
 
 def test_run_with_attacks(tmp_path):
@@ -245,3 +302,30 @@ def test_run_rejects_invalid_request():
             ClosedLoopRunner().run(simulator_runtime, ConstantAVStack(),
                                    RunRequest(1, attacks=(InvalidSensorAttack(),)))
         assert failure.value.run_log.status == "failed"
+    unsupported = MemorySimulator()
+    unsupported.can_observe_past = False
+    with unsupported.create_runtime() as runtime:
+        with pytest.raises(NotImplementedError, match="cannot provide the 2 recorded past observations"):
+            ClosedLoopRunner().run(runtime, HistoryAVStack(), RunRequest(1))
+
+
+def test_run_with_decelerating_feedback(nurec_longitudinal_recording, deceleration_case):
+    dynamics, expected_drop, tolerance = deceleration_case
+    dataset = nurec_longitudinal_recording
+    start = dataset.scenario_start("scene", dataset.frames("scene")[15])
+    camera, _ = dataset.camera_geometry("scene")
+    simulator = NuRecSimulator(
+        {"dt": .1}, NuRecImageBoundary(camera), dynamics,
+        depth="none", route_generator="none", physics_update_mode="none",
+    )
+    with simulator.create_runtime() as runtime:
+        log = ClosedLoopRunner().run(runtime, DeceleratingAVStack(), RunRequest(10, start=start))
+    assert log.status == "completed" and len(log.steps) == 10
+    speeds = np.array([log.steps[0].physical_pre.ego_speed,
+                       *(step.physical_post.ego_speed for step in log.steps)])
+    assert speeds[0] == pytest.approx(10.)
+    assert speeds[0] - speeds[-1] == pytest.approx(expected_drop, abs=tolerance)
+    np.testing.assert_allclose(speeds, 10 - expected_drop * np.arange(11) / 10,
+                               atol=tolerance, rtol=0)
+    np.testing.assert_allclose([step.model_observation.ego_speed for step in log.steps],
+                               speeds[:-1], atol=1e-12)

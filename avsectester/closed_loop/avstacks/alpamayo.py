@@ -7,7 +7,7 @@ it plugs into ``ClosedLoopRunner``: an :class:`~avsectester.data_types.Observati
 Alpamayo is a trajectory-output policy: ``predict(PredictionInput) -> ModelPrediction`` with
 ``candidate_positions`` of shape ``(K, T, 3)`` in the **rig frame**. We keep a short temporal buffer
 of camera frames + ego poses (the model's context) and emit the selected candidate as
-``Control.trajectory``; the simulator's trajectory follower turns that into motion.
+``Control.trajectory``; the simulator's configured ego dynamics tracks that plan.
 
 Runs in the AlpaSim **driver env** (Python 3.12 + ``alpasim_driver`` and the Alpamayo repos), NOT the
 CARLA/avsec 3.11 env — so all heavy imports are lazy and this module imports fine without them. The
@@ -16,17 +16,21 @@ checkpoint is supplied explicitly or through ``AVSECTESTER_ALPAMAYO_CHECKPOINT``
 
 from __future__ import annotations
 
+import math
 import os
 import sys
 from collections import deque
-from collections.abc import Mapping
-from typing import Any
+from copy import deepcopy
+from collections.abc import Mapping, Sequence
+from typing import Any, ClassVar
 from pathlib import Path
 
 from avsectester.closed_loop.avstacks.base import AVStack
 from avsectester.closed_loop.avstacks import driving_adapter
 from avsectester.data_types import Control, Observation
+from avsectester.geometry.poses import rotation_to_quaternion
 from avsectester.serialization import DEFAULT_REGISTRY
+from avsectester.validation import require_positive_integer
 
 
 def _model_prediction(value: Any) -> dict[str, Any]:
@@ -64,18 +68,31 @@ DEFAULT_REGISTRY.register_native('alpasim_utils.geometry', 'Trajectory', _alpasi
 
 def alpamayo_driving_adapter(factory):
     """Expose a fresh end-to-end policy decision, including the adapter's history reset."""
-    def evaluate(avstack, observation):
-        avstack.reset(observation)
+    def evaluate(avstack, inputs):
+        if not isinstance(inputs, Mapping) or set(inputs) != {"observation", "past"}:
+            raise TypeError("Alpamayo policy inputs require observation and past")
+        observation, past = inputs["observation"], inputs["past"]
+        avstack.reset(observation, past=past)
         return avstack(observation)
 
     return driving_adapter.DrivingAdapter(factory, components=((driving_adapter.ComponentDescriptor(
-        "policy", {"observation": "Observation with configured camera IDs and ego pose"},
+        "policy", {"observation": "Observation with configured camera IDs and ego pose",
+                   "past": "Sequence[Observation] covering the previous 15 decisions"},
         {"command": "Control with rig-frame trajectory"}, {"command": "Control"},
-    ), evaluate),))
+    ), evaluate),), past_steps=AlpamayoAVStack.past_steps)
 
 
 class AlpamayoAVStack(AVStack):
+    """A policy using real 10 Hz observations, image context and model-visible navigation.
+
+    ``past_steps=15`` supplies the 16 poses spanning 1.5 s required by AlpaSim's
+    ``alpamayo_base.py`` NUM_HISTORY_STEPS=16 and HISTORY_TIME_STEP=0.1. Images require
+    ``(context_length - 1) * frame_subsample`` past decisions, which must fit that history.
+    ``reset`` receives the recorded past; neither missing images nor poses are fabricated.
+    """
+
     provides_detections = False
+    past_steps: ClassVar[int] = 15
 
     def __init__(
         self,
@@ -83,6 +100,7 @@ class AlpamayoAVStack(AVStack):
         camera_ids: list[str] | None = None,
         device: str = "cuda:0",
         context_length: int = 4,
+        frame_subsample: int = 1,
         output_frequency_hz: int = 10,
         model: Any | None = None,
     ) -> None:
@@ -92,13 +110,23 @@ class AlpamayoAVStack(AVStack):
         )
         self.camera_ids = camera_ids or ["camera_front_wide_120fov"]
         self.device = device
+        require_positive_integer(context_length, "context_length")
+        require_positive_integer(frame_subsample, "frame_subsample")
         self.context_length = context_length
+        self.frame_subsample = frame_subsample
+        if (context_length - 1) * frame_subsample > self.past_steps:
+            raise ValueError("The image context requires more than 15 past decisions; "
+                             "reduce context_length or frame_subsample")
+        require_positive_integer(output_frequency_hz, "output_frequency_hz")
         self.output_frequency_hz = output_frequency_hz
         # Separate adapters may share loaded weights while retaining independent input history.
         self._model = model
         self._owns_model = model is None
         self._closed = False
-        self._frames: dict[str, deque] = {c: deque(maxlen=context_length) for c in self.camera_ids}
+        history_length = (context_length - 1) * frame_subsample + 1
+        self._frames: dict[str, deque] = {c: deque(maxlen=history_length) for c in self.camera_ids}
+        self._poses: deque[tuple[float, float, float, float]] = deque(maxlen=self.past_steps + 1)
+        self._ready = False
         self._prev_plan = None
         self._iseed = 0
         self.last_reasoning: str | None = None
@@ -146,17 +174,34 @@ class AlpamayoAVStack(AVStack):
             output_frequency_hz=self.output_frequency_hz,
         )
 
-    def reset(self, observation: Observation) -> None:
+    def reset(self, observation: Observation, past: Sequence[Observation] = ()) -> None:
+        """Initialize policy context from recorded observations before the selected origin."""
         if self._closed:
             raise RuntimeError("AlpamayoAVStack is closed")
-        if self._model is None:
-            self._load()
-        for buf in self._frames.values():
-            buf.clear()
+        self._ready = False
+        for buffer in self._frames.values():
+            buffer.clear()
+        self._poses.clear()
         self._prev_plan = None
         self._iseed = 0
         self.last_reasoning = None
         self._last_log = None
+        history = list(past)
+        if len(history) < self.past_steps:
+            raise ValueError("Alpamayo requires 15 recorded past observations before its first decision")
+        all_observations = [*history, observation]
+        for index, item in enumerate(all_observations):
+            self._observation_pose(item)
+            for camera in self.camera_ids:
+                if item.sensor_data.get(camera) is None:
+                    raise ValueError(f"Alpamayo observation is missing camera {camera!r}")
+            if index:
+                self._validate_interval(all_observations[index - 1].t, item.t)
+        if self._model is None:
+            self._load()
+        for item in history[-self.past_steps:]:
+            self._append_observation(item)
+        self._ready = True
 
     def close(self) -> None:
         """Release this adapter's references and any model it loaded itself.
@@ -167,6 +212,8 @@ class AlpamayoAVStack(AVStack):
         if self._closed:
             return
         self._closed = True
+        self._ready = False
+        self._poses.clear()
         model, self._model = self._model, None
         owned = self._owns_model and model is not None
         for history in self._frames.values():
@@ -197,60 +244,92 @@ class AlpamayoAVStack(AVStack):
                     raise
                 failure.add_note(f"CUDA cache release also failed: {cleanup!r}")
 
-    HISTORY_SPAN_S = 1.6  # must exceed the model's required 1.5 s ego-history span
-    EPOCH_US = 10_000_000  # offset so backward-history timestamps stay positive (proto fixed64)
+    EPOCH_US = 10_000_000  # fixed offset for nonnegative protobuf timestamps
 
-    def _prediction_input(self, obs: Observation):
-        from alpasim_driver.models.base import CameraFrame, DriveCommand, PredictionInput
+    @staticmethod
+    def _validate_interval(first: float, second: float) -> None:
+        if round(second * 1e6) - round(first * 1e6) != 100000:
+            raise ValueError("Alpamayo requires a 0.1 second decision interval")
 
-        t_us = int(obs.t * 1e6) + self.EPOCH_US
-        for cam in self.camera_ids:
-            image = obs.sensor_data.get(cam)  # HWC uint8 (np or torch) rendered by NuRec
-            if image is not None:
-                self._frames[cam].append(CameraFrame(timestamp_us=t_us, image=image))
-        # camera context: pad to context_length at startup; ego history: span HISTORY_SPAN_S backward
+    @classmethod
+    def _timestamp(cls, time: float) -> int:
+        if not math.isfinite(time):
+            raise ValueError("Alpamayo observation time must be finite")
+        timestamp = round(time * 1e6) + cls.EPOCH_US
+        if timestamp < 0:
+            raise ValueError("Alpamayo observation time precedes its nonnegative timestamp epoch")
+        return timestamp
+
+    @classmethod
+    def _observation_pose(cls, observation: Observation) -> tuple[float, float, float, float]:
+        if not isinstance(observation, Observation):
+            raise TypeError("Alpamayo history must contain Observation values")
+        state = observation.vehicle_state
+        try:
+            pose = (float(state.x), float(state.y), float(state.yaw), float(observation.t))
+        except (AttributeError, TypeError, ValueError) as error:
+            raise ValueError("Alpamayo requires vehicle_state with finite x, y and yaw") from error
+        if not all(math.isfinite(value) for value in pose):
+            raise ValueError("Alpamayo requires finite ego poses and observation times")
+        cls._timestamp(pose[3])
+        return pose
+
+    def _append_observation(self, observation: Observation) -> None:
+        from alpasim_driver.models.base import CameraFrame
+
+        pose = self._observation_pose(observation)
+        if self._poses:
+            self._validate_interval(self._poses[-1][3], pose[3])
+        images = {}
+        for camera in self.camera_ids:
+            image = observation.sensor_data.get(camera)
+            if image is None:
+                raise ValueError(f"Alpamayo observation is missing camera {camera!r}")
+            images[camera] = deepcopy(image)
+        self._poses.append(pose)
+        timestamp = self._timestamp(observation.t)
+        for camera, image in images.items():
+            self._frames[camera].append(CameraFrame(timestamp_us=timestamp, image=image))
+
+    def _prediction_input(self, observation: Observation):
+        import numpy as np
+        from alpasim_driver.models.base import DriveCommand, PredictionInput
+        from alpasim_driver.navigation import determine_command_from_route
+        from alpasim_grpc.v0 import common_pb2, egodriver_pb2
+
+        self._append_observation(observation)
+        if len(self._poses) != self.past_steps + 1:
+            raise ValueError("Alpamayo requires 16 actual ego poses covering the last 1.5 seconds")
+        camera_images = {}
+        for camera in self.camera_ids:
+            frames = list(self._frames[camera])
+            required = (self.context_length - 1) * self.frame_subsample + 1
+            if len(frames) < required:
+                raise ValueError(f"Alpamayo camera {camera!r} requires {required} actual images")
+            camera_images[camera] = frames[::self.frame_subsample]
+        poses = list(self._poses)
+        speeds = [math.hypot(second[0] - first[0], second[1] - first[1])
+                  / (second[3] - first[3]) for first, second in zip(poses[-3:], poses[-2:])]
+        acceleration = (speeds[-1] - speeds[-2]) / (poses[-1][3] - poses[-2][3])
+        route = None
+        if observation.route is None:
+            command = DriveCommand.STRAIGHT
+        else:
+            points = np.asarray(observation.route, dtype=float)
+            if points.ndim != 2 or points.shape[1:] != (3,) or not np.isfinite(points).all():
+                raise ValueError("Alpamayo route must be a finite (N, 3) array in ego coordinates")
+            route = egodriver_pb2.Route(timestamp_us=self._timestamp(observation.t),
+                waypoints=[common_pb2.Vec3(x=float(x), y=float(y), z=float(z)) for x, y, z in points])
+            command = determine_command_from_route(route)
         return PredictionInput(
-            camera_images={c: self._pad(self._frames[c]) for c in self.camera_ids},
-            command=DriveCommand.STRAIGHT,
-            speed=float(obs.ego_speed),
-            acceleration=0.0,
-            ego_pose_history=self._ego_history_backward(obs, t_us),
-            inference_seed=self._iseed,
-            previous_plan=self._prev_plan,
-            route=None,
+            camera_images=camera_images, command=command, speed=speeds[-1], acceleration=acceleration,
+            ego_pose_history=[self._pose_at(x, y, yaw, self._timestamp(time))
+                              for x, y, yaw, time in poses],
+            inference_seed=self._iseed, previous_plan=self._prev_plan, route=route,
         )
-
-    def _pad(self, items) -> list:
-        """Left-pad a temporal buffer to ``context_length`` by repeating its earliest element."""
-        items = list(items)
-        if not items:
-            return items
-        return [items[0]] * (self.context_length - len(items)) + items
-
-    def _ego_history_backward(self, obs: Observation, t_us: int) -> list:
-        """Ego poses spanning HISTORY_SPAN_S before now, constant-velocity backward from the current
-        state (a valid startup prior; a longer run can substitute the real accumulated trajectory)."""
-        import math
-
-        s = obs.vehicle_state
-        x, y, yaw = getattr(s, "x", 0.0), getattr(s, "y", 0.0), getattr(s, "yaw", 0.0)
-        speed = float(obs.ego_speed)
-        dt = 1.0 / self.output_frequency_hz
-        n = int(self.HISTORY_SPAN_S / dt) + 1
-        return [
-            self._pose_at(
-                x - speed * math.cos(yaw) * (k * dt),
-                y - speed * math.sin(yaw) * (k * dt),
-                yaw,
-                t_us - int(k * dt * 1e6),
-            )
-            for k in range(n, -1, -1)  # oldest (-HISTORY_SPAN_S) .. current (0)
-        ]
 
     @staticmethod
     def _pose_at(x: float, y: float, yaw: float, t_us: int):
-        import math
-
         from alpasim_grpc.v0 import common_pb2
 
         return common_pb2.PoseAtTime(
@@ -264,8 +343,8 @@ class AlpamayoAVStack(AVStack):
     def __call__(self, observation: Observation) -> Control:
         if self._closed:
             raise RuntimeError("AlpamayoAVStack is closed")
-        if self._model is None:
-            self._load()
+        if not self._ready:
+            raise RuntimeError("Reset AlpamayoAVStack with recorded past before requesting a decision")
         inputs = self._emit("policy.pre", self._prediction_input(observation))
         prediction = self._emit("policy.post", self._model.predict(inputs))
         policy_record = DEFAULT_REGISTRY.snapshot(prediction)
@@ -274,28 +353,57 @@ class AlpamayoAVStack(AVStack):
         self.last_reasoning = getattr(prediction, "reasoning_text", None)  # chain-of-causation text, if any
         command = Control(trajectory=self._to_waypoints(prediction, observation))
         # Record the already-produced policy output and command without extra inference.
-        self._last_log = {"policy": policy_record, "command": DEFAULT_REGISTRY.snapshot(command)}
+        import numpy as np
+
+        route = inputs.route
+        route_waypoints = (None if route is None else np.asarray(
+            [[point.x, point.y, point.z] for point in route.waypoints], dtype=float).reshape(-1, 3))
+        self._last_log = {
+            "policy": policy_record, "command": DEFAULT_REGISTRY.snapshot(command),
+            "route_waypoints": route_waypoints, "navigation_command": inputs.command.name,
+            "navigation_note": ("No route supplied; using STRAIGHT" if route is None
+                                else "Navigation command derived from observation.route"),
+            "history_pose_count": len(inputs.ego_pose_history),
+            "selected_image_times": {camera: [(frame.timestamp_us - self.EPOCH_US) / 1e6
+                                               for frame in frames]
+                                     for camera, frames in inputs.camera_images.items()},
+        }
         return command
 
     def component_log(self) -> dict[str, Any] | None:
         """Already-produced policy prediction and Control under ``policy`` and ``command``.
 
-        The prediction retains candidate positions, selected index and available reasoning;
-        recording does not request additional inference.
+        Also includes route waypoints, semantic navigation command, a navigation note,
+        real-history pose count and the selected image times on the simulator clock.
+        Recording does not request additional inference.
         """
         return self._last_log
 
-    def _to_waypoints(self, prediction: Any, obs: Observation) -> list:
-        """Selected candidate (T,3) rig-frame positions -> [((x,y,z),(w,x,y,z),t_us), ...]."""
+    def _to_waypoints(self, prediction: Any, observation: Observation) -> list:
+        """Prepend the model's t0 rig origin and retain predicted poses and exact timestamps."""
         import numpy as np
 
-        k = int(getattr(prediction, "selected_index", 0))
-        positions = np.asarray(prediction.candidate_positions)[k]  # (T, 3), rig frame
-        # emit waypoint times in the simulator's clock (not the model's epoch'd time) at the
-        # model's output frequency, so the trajectory follower interpolates consistently.
-        base_us = int(obs.t * 1e6)
-        dt_us = int(1e6 / self.output_frequency_hz)
-        return [
-            (tuple(float(v) for v in xyz), (1.0, 0.0, 0.0, 0.0), base_us + (i + 1) * dt_us)
-            for i, xyz in enumerate(positions)
-        ]
+        index = int(prediction.selected_index)
+        positions = np.asarray(prediction.candidate_positions)[index]
+        rotations = np.asarray(prediction.candidate_rotations)[index]
+        if (positions.ndim != 2 or positions.shape[1:] != (3,)
+                or rotations.shape != (len(positions), 3, 3) or not np.isfinite(positions).all()):
+            raise ValueError("Alpamayo prediction needs (T, 3) positions and (T, 3, 3) rotations")
+        model_origin = prediction.model_t0_us
+        origin = (round(observation.t * 1e6) if model_origin is None
+                  else int(model_origin) - self.EPOCH_US)
+        provided_times = prediction.waypoint_timestamps_us
+        if provided_times is None:
+            times = [origin + round((index + 1) * 1e6 / self.output_frequency_hz)
+                     for index in range(len(positions))]
+        else:
+            provided_times = np.asarray(provided_times)
+            if provided_times.shape != (len(positions),):
+                raise ValueError("Alpamayo waypoint timestamps must match the predicted positions")
+            times = [int(time) - self.EPOCH_US for time in provided_times]
+        if any(second <= first for first, second in zip([origin, *times], times)):
+            raise ValueError("Alpamayo waypoint timestamps must increase after model t0")
+        return [((0.0, 0.0, 0.0), (1.0, 0.0, 0.0, 0.0), origin), *[
+            (tuple(float(value) for value in position), rotation_to_quaternion(rotation), time)
+            for position, rotation, time in zip(positions, rotations, times)
+        ]]

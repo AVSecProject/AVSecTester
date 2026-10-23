@@ -123,6 +123,7 @@ class NuScenesDataset(Dataset):
         if (frame.scenario_id != scenario_id or frame.position >= len(frames)
                 or frame != frames[frame.position]):
             raise ValueError("Frame is outside or does not match the scenario's frames")
+        data = tuple(self._frame_data(item) for item in frames)
         return ScenarioStart("NuScenesDataset", scenario_id, frame, {
-            "frame_data": tuple(self._frame_data(item) for item in frames[frame.position:]),
-        })
+            "frame_data": data[frame.position:],
+        }, recorded_ego=tuple(item.ego for item in data), scenario_map=self.scenario_map(scenario_id))

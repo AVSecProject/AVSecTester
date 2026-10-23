@@ -120,6 +120,49 @@ segment positions. NuScenes uses RecordedReplaySimulator for open-loop playback.
 
 See [Scenarios](../guides/scenarios.md) and [Simulators](../guides/simulators.md).
 
+### NuRec closed-loop settings
+
+The supplied NuRec experiments use the AlpaSim linear MPC, map navigation, ego ground contact
+against mesh.ply, and the official single-camera Alpamayo preset:
+
+```yaml
+simulator:
+  type: NuRecSimulator
+  options:
+    config: {dt: 0.1}
+    route_generator: map
+    physics_update_mode: ego_only
+    ground_mesh: mesh
+    renderer:
+      type: avsectester.closed_loop.simulators.nurec:NuRecRenderer
+      options:
+        cameras: [camera_front_wide_120fov]
+        resolution_hw: {camera_front_wide_120fov: [1080, 1900]}
+    dynamics:
+      type: avsectester.closed_loop.simulators.ego_dynamics:AlpaSimController
+      options: {mpc_implementation: linear, n_horizon: 20, dt_mpc: 0.1}
+avstack:
+  type: AlpamayoAVStack
+  options:
+    camera_ids: [camera_front_wide_120fov]
+    frame_subsample: 3
+```
+
+route_generator accepts map, recorded or none. Map navigation requires a semantic map with driving
+lanes; recorded uses the recorded ego path without extending it. physics_update_mode accepts
+ego_only or none; ground_mesh selects mesh or mesh_ground independently of depth. Both ground
+contact and mesh depth require the nurec extra. NuRecRenderer.resolution_hw uses native camera IDs
+and requested (height, width). NRE may return another width to preserve the camera aspect ratio;
+projection, depth and insertion use its actual dimensions.
+
+Alpamayo requires 15 preceding recorded decisions at 0.1 s intervals. Their images and poses are
+provided to reset; no startup padding is generated. frame_subsample defaults to 1, and the
+configured image span `(context_length - 1) * frame_subsample` must not exceed 15. The supplied
+stride of 3 selects four images from the latest ten decisions. Built-in attacks skip starts lacking
+the required past; preparation also discards invalid segments. See
+[Simulators](../guides/simulators.md#alpasim-defaults) and
+[Driving systems](../guides/driving-systems.md#alpamayo).
+
 ### Driving specification
 
 `avstack.type` names an AVStack class or a callable returning one. It receives only its `options`,

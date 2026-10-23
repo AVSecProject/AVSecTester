@@ -93,6 +93,13 @@ class ClosedLoopRunner:
             if not isinstance(simulator_runtime, SimulatorRuntime):
                 raise TypeError("ClosedLoopRunner requires SimulatorRuntime")
             sim = simulator_runtime
+            past_steps = avstack.past_steps
+            require_nonnegative_integer(past_steps, "past_steps")
+            if past_steps and not sim.can_observe_past:
+                raise NotImplementedError(
+                    f"{type(sim).__name__} cannot provide the {past_steps} recorded past "
+                    f"observations required by {type(avstack).__name__}"
+                )
             validate_environment(request.environment, simulator_runtime.simulator)
             hooks = request.hooks or HookSet()
             sensor_environment = SensorEnvironment(request.environment, seed=hooks.seed or 0)
@@ -212,6 +219,11 @@ class ClosedLoopRunner:
                               deployment=deployment, world=request.environment["world"])
                     last_observation = sim.observe()
                     initial_state = sim.state()
+                    start_position = request.start.frame.position if request.start is not None else 0
+                    past = tuple(
+                        sensor_environment.apply(observation, start_position - past_steps + index)
+                        for index, observation in enumerate(sim.observe_past(past_steps))
+                    ) if past_steps else ()
                     recorder.record_event(
                         "initialization", physical_state=initial_state,
                         clock=sim.clock, setup_ticks=deployment.ticks,
@@ -219,10 +231,15 @@ class ClosedLoopRunner:
                         outputs=session.outputs, actions=actions(),
                         object_visibility={object_id: sim.object_visibility(object_id)
                                            for object_id in initial_state.objects},
+                        past_steps=len(past),
+                        past_observations=[{"t": observation.t,
+                                            "vehicle_state": recorder.snapshot(observation.vehicle_state)}
+                                           for observation in past],
                     )
                     drain()
                     if request.decision_steps == 0:
-                        avstack.reset(simulator_runtime.copy_observation(last_observation))
+                        conditioned = sensor_environment.apply(last_observation, start_position)
+                        avstack.reset(session.observe(conditioned), past=past)
                     for current_step in range(request.decision_steps):
                         session.step = current_step
                         raw = sim.observe()
@@ -252,7 +269,7 @@ class ClosedLoopRunner:
                             request.recording.observation(seen, current_step, "model_input")
                         )
                         if current_step == 0:
-                            avstack.reset(seen)
+                            avstack.reset(seen, past=past)
                         produced = avstack(seen)
                         detections = recorder.snapshot(avstack.detections())
                         produced_record = recorder.snapshot(produced)
@@ -309,7 +326,7 @@ class ClosedLoopRunner:
                     if attack_dispatch.started:
                         cleanup_attacks()
             release()
-            return recorder.finish(status="completed")
+            return recorder.finish(status="completed", **sim.termination_details)
         except BaseException as error:
             try:
                 release()
@@ -327,6 +344,7 @@ class ClosedLoopRunner:
                 recorder.finish(
                     status="cancelled" if isinstance(error, (KeyboardInterrupt, SystemExit)) else "failed",
                     incomplete_step=current_step if current_step >= 0 else None,
+                    **sim.termination_details,
                 )
             except BaseException as cleanup:
                 error.add_note(f"Log finalization also failed: {cleanup!r}")

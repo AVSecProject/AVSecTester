@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from avsectester.closed_loop.avstacks.base import AVStack
+from avsectester.validation import require_nonnegative_integer
 
 
 @dataclass(frozen=True)
@@ -42,10 +43,27 @@ class DrivingAdapter:
         self, factory: Callable[[int], AVStack], *,
         components: Sequence[tuple[ComponentDescriptor, Callable[..., Any]]] = (),
         scorers: Sequence[tuple[ScorerDescriptor, Callable[..., Any]]] = (),
+        past_steps: int = 0,
     ) -> None:
+        require_nonnegative_integer(past_steps, "past_steps")
         self.factory = factory
+        self._past_steps = past_steps
         self.component_bindings = self._bindings(components)
         self.scorer_bindings = self._bindings(scorers)
+
+    @property
+    def past_steps(self) -> int:
+        """Required recorded history, declared by the AVStack type or this adapter.
+
+        Reading the declaration never constructs a driving system or loads model weights.
+        A factory's ``avstack_type`` takes precedence when it is an AVStack subclass.
+        """
+        avstack_type = getattr(self.factory, "avstack_type", None)
+        if isinstance(avstack_type, type) and issubclass(avstack_type, AVStack):
+            value = avstack_type.past_steps
+            require_nonnegative_integer(value, "past_steps")
+            return value
+        return self._past_steps
 
     @staticmethod
     def _bindings(entries: Sequence[Any]) -> dict[str, Any]:

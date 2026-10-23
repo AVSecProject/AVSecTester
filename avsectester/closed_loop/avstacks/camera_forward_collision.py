@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 from avsectester.closed_loop.avstacks.base import AVStack
@@ -70,7 +71,7 @@ class CameraForwardCollisionAVStack(AVStack):
                 for box, score, label in zip(boxes, scores, labels)
                 if score >= self.threshold and (vehicle_labels is None or int(label) in vehicle_labels)]
 
-    def reset(self, observation: Observation) -> None:
+    def reset(self, observation: Observation, past: Sequence[Observation] = ()) -> None:
         self._last = None
 
     def __call__(self, observation: Observation) -> Control:

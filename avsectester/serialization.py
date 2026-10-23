@@ -302,7 +302,7 @@ for _module, _names in (
     )),
     ("avsectester.datasets.base", ("FrameReference",)),
     ("avsectester.closed_loop.simulators.base", ("ClockSnapshot", "SensorGeometry")),
-    ("avsectester.closed_loop.simulators.ego_dynamics", ("EgoPose",)),
+    ("avsectester.closed_loop.simulators.ego_dynamics", ("PlanarEgoState",)),
     ("avsectester.rendering.compositing", ("ObjectVisibility",)),
     ("avsectester.geometry.cameras", ("PinholeCamera", "FThetaCamera")),
     ("avsectester.attack.attack", ("AttackSegment",)),

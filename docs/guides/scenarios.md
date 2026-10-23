@@ -20,6 +20,11 @@ It never creates or owns a simulator. Returned mutable data is independent of ca
 | ActorState | Canonical world pose, velocity, category, full extent and local box center |
 | SensorDataReference | Sensor name, data location, timestamp and decoding metadata |
 | ScenarioStart | Source payload needed to reset the simulator at the chosen position |
+
+ScenarioStart also carries `recorded_ego`, the complete decision-timeline ego recording for
+NuRec and nuScenes, and `scenario_map`, the scene's read-only semantic map or an unavailable
+reason. CARLA recipes provide a map but no recorded ego trajectory. Parsed maps are cached per
+scene and shared without copying; start payloads remain independent copies.
 | Unavailable | Requested evidence is unavailable, with an explicit reason |
 
 ActorState and Unavailable are imported from avsectester.data_types; the frame, descriptor and start

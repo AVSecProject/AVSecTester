@@ -106,10 +106,10 @@ class SessionDataSource(DataSource):
             candidates = frames[segment.start.position:segment.stop.position]
             if physical:
                 candidates = tuple(frame for frame in candidates
-                                   if self.session.can_deploy_at(frame.position))
+                                   if self.session.can_start_at(frame.position))
             if self.at_segment_start:
                 frame = segment.start
-                if physical and not self.session.can_deploy_at(frame.position):
+                if physical and not self.session.can_start_at(frame.position):
                     raise ValueError("Selected patch start cannot preserve the deployment window")
             elif candidates:
                 frame = self._rng.choice(candidates)
