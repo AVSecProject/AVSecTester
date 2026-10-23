@@ -38,7 +38,7 @@ def test_trajectory_context(alpamayo_model_boundary, alpamayo_observations):
     command = avstack(observations[15])
     assert command.trajectory[0] == ((0., 0., 0.), (1., 0., 0., 0.), 0)
     model_input = model.last_input
-    assert model_input.speed == pytest.approx(.55)
+    assert model_input.speed == pytest.approx(.5)
     assert model_input.acceleration == pytest.approx(-1.)
     assert model_input.previous_plan is None
     assert len(model_input.ego_pose_history) == 16
@@ -49,7 +49,7 @@ def test_trajectory_context(alpamayo_model_boundary, alpamayo_observations):
         round(observation.t * 1e6) + avstack.EPOCH_US for observation in observations[:16]]
     assert [frame.image[0, 0, 0] for frame in model_input.camera_images["front"]] == [14, 15]
     avstack(observations[16])
-    assert model.last_input.speed == pytest.approx(.45)
+    assert model.last_input.speed == pytest.approx(.4)
     assert model.last_input.acceleration == pytest.approx(-1.)
     assert model.last_input.previous_plan == "forward"
     np.testing.assert_allclose(

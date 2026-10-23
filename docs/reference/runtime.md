@@ -131,7 +131,7 @@ replacements. Adapter-specific stages must be declared; unsupported stages fail 
 | control.pre/post | CallInputs / component output, when declared |
 | policy.pre/post | End-to-end policy inputs/output, when declared |
 | command | Control before execution |
-| render.pre/post | CameraPoseRequest / rendered sensor, when declared |
+| render.pre/post | CameraPoseRequest / rendered sensor, when declared; NuRec's request pose is the 4×4 world_from_rig rendering pose |
 
 Simulator setup and step handlers use explicit native operations and return None. A pre-hook uses
 CallInputs(args, kwargs) to retain native calling conventions. A post-hook returns the replacement

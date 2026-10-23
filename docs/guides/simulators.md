@@ -214,6 +214,9 @@ archive and mesh name. Select `physics_update_mode="none"` to retain the predict
 
 Updates require at least six hits within 100 m, at most 1.5 m displacement and at most 10°
 rotation. Rejected updates retain the prediction; termination events count failures by reason.
+Two checks are stricter than AlpaSim's PhysicsBackend: it fits a plane from three hits and leaves
+its `min_intersections = 6` unused, and it compares only the largest signed Euler angle of the
+correction with 10°, whereas the rotation here is the full angle between the fitted normals.
 The renderer receives the resulting three-dimensional rig pose rather than retaining an initial
 height or tilt. The plane-centroid fit rotates about the box centre, as in AlpaSim, so it is
 an approximate contact correction rather than a penetration solver.

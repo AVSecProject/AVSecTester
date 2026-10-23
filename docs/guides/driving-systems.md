@@ -104,7 +104,9 @@ Alpamayo declares past_steps=15: its model consumes 16 poses at 0.1 s intervals,
 (`NUM_HISTORY_STEPS` and `HISTORY_TIME_STEP` in AlpaSim). reset requires that real observation
 history and checks rounded observation timestamps are exactly 100 ms apart before loading its
 model. Its `(context_length - 1) * frame_subsample` image span must not exceed 15 decisions.
-Each decision appends the received pose; speed and acceleration come from successive pose differences.
+Each decision appends the received pose. As in AlpaSim's driver, the model input's speed is the
+horizontal speed of Observation.vehicle_state (ego_speed and lateral_speed) and its acceleration is the
+state's longitudinal acceleration; Alpamayo 1.5 models do not read either value.
 Images are taken from the received camera history at frame_subsample intervals. Missing history or
 images raises an error; neither poses nor images are fabricated or repeated.
 
@@ -151,6 +153,38 @@ An optional `avstack.bindings` constructor receives the configured AVStack facto
 DrivingAdapter from closed_loop/avstacks/driving_adapter.py. The modular_driving_adapter binding lives in
 closed_loop/avstacks/modular.py; alpamayo_driving_adapter lives in closed_loop/avstacks/alpamayo.py.
 Detector scorers live in closed_loop/avstacks/scorers.py.
+
+Your own binding adds scorers without editing framework files. This one keeps Alpamayo's policy
+component and adds a black-box scorer over the planned trajectory: the forward progress of the
+waypoint closest to 3 s. Reference it as `avstack.bindings.type: my_project.bindings:alpamayo_progress`.
+A white-box scorer instead runs a differentiable forward pass through `avstack.models["policy"]`,
+returns a tensor and declares its differentiable inputs.
+
+<!-- runnable -->
+```python
+from avsectester.closed_loop.avstacks.alpamayo import alpamayo_driving_adapter
+from avsectester.closed_loop.avstacks.driving_adapter import DrivingAdapter, ScorerDescriptor
+
+def planned_progress(avstack, inputs, target):
+    avstack.reset(inputs["observation"], past=inputs["past"])
+    trajectory = avstack(inputs["observation"]).trajectory
+    position, _, _ = min(trajectory, key=lambda waypoint: abs(waypoint[2] - 3_000_000))
+    return float(position[0])
+
+def alpamayo_progress(factory):
+    policy = alpamayo_driving_adapter(factory)
+    descriptor = ScorerDescriptor(
+        "planned_progress", {"observation": "current Observation", "past": "15 past Observations"},
+        {"score": "forward metres at 3 s"}, {"score": "float"}, direction="minimize")
+    return DrivingAdapter(factory, components=tuple(policy.component_bindings.values()),
+                          scorers=((descriptor, planned_progress),), past_steps=policy.past_steps)
+
+adapter = alpamayo_progress(lambda seed: None)
+assert set(adapter.component_bindings) == {"policy"} and set(adapter.scorer_bindings) == {"planned_progress"}
+```
+
+`ClosedLoopSession.score("planned_progress", inputs, target)` then evaluates it on a fresh policy
+history for each request.
 
 ## Use a custom driving system
 

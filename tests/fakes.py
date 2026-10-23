@@ -842,7 +842,8 @@ def recorded_policy_observations(count=16, start_time=-1.5, time_step=.1, speed=
         time = start_time + elapsed
         distance = speed * elapsed + .5 * acceleration * elapsed ** 2
         state = PlanarEgoState(x=distance * float(np.cos(yaw)), y=distance * float(np.sin(yaw)),
-                        yaw=yaw, speed=speed + acceleration * elapsed, t=time)
+                        yaw=yaw, speed=speed + acceleration * elapsed, t=time,
+                        acceleration=acceleration)
         observations.append(Observation(
             time, index, {"front": np.full((4, 6, 3), index, np.uint8)},
             vehicle_state=state, ego_speed=state.speed, route=deepcopy(route)))

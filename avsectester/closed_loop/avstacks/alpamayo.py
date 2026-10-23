@@ -308,9 +308,10 @@ class AlpamayoAVStack(AVStack):
                 raise ValueError(f"Alpamayo camera {camera!r} requires {required} actual images")
             camera_images[camera] = frames[::self.frame_subsample]
         poses = list(self._poses)
-        speeds = [math.hypot(second[0] - first[0], second[1] - first[1])
-                  / (second[3] - first[3]) for first, second in zip(poses[-3:], poses[-2:])]
-        acceleration = (speeds[-1] - speeds[-2]) / (poses[-1][3] - poses[-2][3])
+        # Like AlpaSim's driver: horizontal speed and longitudinal acceleration of the reported state.
+        state = observation.vehicle_state
+        speed = math.hypot(observation.ego_speed, float(getattr(state, "lateral_speed", 0.0)))
+        acceleration = float(getattr(state, "acceleration", 0.0))
         route = None
         if observation.route is None:
             command = DriveCommand.STRAIGHT
@@ -322,7 +323,7 @@ class AlpamayoAVStack(AVStack):
                 waypoints=[common_pb2.Vec3(x=float(x), y=float(y), z=float(z)) for x, y, z in points])
             command = determine_command_from_route(route)
         return PredictionInput(
-            camera_images=camera_images, command=command, speed=speeds[-1], acceleration=acceleration,
+            camera_images=camera_images, command=command, speed=speed, acceleration=acceleration,
             ego_pose_history=[self._pose_at(x, y, yaw, self._timestamp(time))
                               for x, y, yaw, time in poses],
             inference_seed=self._iseed, previous_plan=self._prev_plan, route=route,
