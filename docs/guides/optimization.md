@@ -172,11 +172,14 @@ geometry work is tracked in [TODO](../development/TODO.md#physical-patch-geometr
 
 ## Optimize a world object's texture
 
-World objects inserted with InsertObject are composited by the simulator at every capture.
-SensorView.composite_plan plans that composition for a view captured without the objects, such as
-a clean `ClosedLoopSession.render(RenderRequest(...)).view`. The plan fixes geometry, coverage and
-occlusion; `plan.composite` is the same blend as a differentiable function of surface colours.
-Rounding its result reproduces the deployed capture, so an optimized texture is the one deployed.
+World objects inserted with InsertObject are composited by the simulator at every capture. A view
+captured with the objects, such as `ClosedLoopSession.render(RenderRequest(..., actions=[insert])).view`,
+records that composition: `view.composition.plan` fixes geometry, coverage and occlusion, and
+`plan.composite(background, textures)` over `view.composition.background` is the same blend as a
+differentiable function of surface colours. Rounding its result reproduces the deployed capture, so
+an optimized texture is the one deployed. This works with every occlusion source, including NuRec's
+default rendered probes. With object_occlusion="geometry", SensorView.composite_plan also plans
+objects into a view captured without them, such as a clean render, without rendering again:
 
 <!-- runnable -->
 ```python

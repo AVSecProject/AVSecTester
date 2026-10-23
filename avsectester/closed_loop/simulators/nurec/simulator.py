@@ -22,8 +22,11 @@ from .depth import _actor_depth, _scene_raycaster, _ground_raycaster
 from .renderer import Renderer, planar_rig_pose
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from avsectester.closed_loop.hooks import CameraPoseRequest
     from avsectester.geometry.cameras import Camera
+    from avsectester.rendering import CompositePlan, PlacedObject
     import numpy as np
 
 
@@ -34,6 +37,12 @@ class NuRecSimulator(Simulator):
     renders through its own copy (``Renderer.copy``), with its own connection, loaded scene and
     origin. ``dynamics`` is also a template: every runtime integrates with its own copy, so a
     handler that changes it, for example ``max_brake``, changes only that runtime.
+
+    ``object_occlusion`` chooses how inserted world objects are hidden behind the scene. The
+    default ``"rendered_probes"`` renders opaque probe copies of the objects inside the
+    reconstruction (``Renderer.render_scene_visibility``), so the reconstruction that produces
+    the images also hides the objects; it needs no mesh. ``"geometry"`` estimates occlusion from
+    the configured ``depth`` (mesh plus actor cuboids, or actor cuboids alone).
     """
 
     dataset_kinds = ("NuRecDataset",)
@@ -51,6 +60,7 @@ class NuRecSimulator(Simulator):
         route_generator: str = "map",
         physics_update_mode: str = "ego_only",
         ground_mesh: str = "mesh",
+        object_occlusion: str = "rendered_probes",
     ) -> None:
         if renderer is None:
             raise TypeError("NuRecSimulator requires a renderer; configure NuRecRenderer")
@@ -60,6 +70,8 @@ class NuRecSimulator(Simulator):
             raise ValueError("physics_update_mode must be 'ego_only' or 'none'")
         if ground_mesh not in {"mesh", "mesh_ground"}:
             raise ValueError("ground_mesh must be 'mesh' or 'mesh_ground'")
+        if object_occlusion not in {"rendered_probes", "geometry"}:
+            raise ValueError("object_occlusion must be 'rendered_probes' or 'geometry'")
         if depth == "mesh" or physics_update_mode == "ego_only":
             from avsectester.geometry.mesh import MeshRaycaster
 
@@ -70,6 +82,7 @@ class NuRecSimulator(Simulator):
         self.route_generator = route_generator
         self.physics_update_mode = physics_update_mode
         self.ground_mesh = ground_mesh
+        self.object_occlusion = object_occlusion
         self.config = deepcopy(config)
         self.simulator_version = str(self.config.get("simulator_version", "1"))
         self.renderer = renderer
@@ -104,6 +117,7 @@ class NuRecSimulator(Simulator):
                 "route_generator": self.route_generator,
                 "physics_update_mode": self.physics_update_mode,
                 "ground_mesh": self.ground_mesh,
+                "object_occlusion": self.object_occlusion,
                 "renderer": type(self.renderer).__name__,
                 "resolution_hw": deepcopy(getattr(self.renderer, "resolution_hw", {})),
                 "dynamics": {"type": f"{type(self.dynamics).__module__}:{type(self.dynamics).__qualname__}",
@@ -399,6 +413,7 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
             sensor_from_world=BODY_FROM_OPTICAL @ cam_from_world,
             depth=self._camera_depth(native_camera, camera, cam_from_world),
             native={"render_request": request, "timestamp_us": timestamp},
+            object_occlusion=self.simulator.object_occlusion,
         )
 
     def _camera_depth(self, camera_name: str, camera: Camera,
@@ -440,10 +455,13 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
 
     def _recorded_sensor_view(self, position: int, sensor: str, observation: Observation) -> SensorView:
         """View of a recorded past capture with its recorded actors and, when enabled, mesh depth."""
+        from avsectester.closed_loop.hooks import CameraPoseRequest
         from avsectester.data_types import read_camera_rgb
 
         geometry = self._recorded_sensor_geometry(position, sensor)
-        _, timestamp_us, actors = self._recorded_capture(position)
+        pose, timestamp_us, actors = self._recorded_capture(position)
+        aliases = self.config.get("camera_aliases", {})
+        native_camera = next((key for key, alias in aliases.items() if alias == sensor), sensor)
         captured = read_camera_rgb(observation, geometry.sensor)
         if captured is None:
             raise ValueError(f"Missing NuRec camera {geometry.sensor!r}")
@@ -457,8 +475,22 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
             geometry.sensor, captured[1], geometry.camera, geometry.cam_from_world, actors,
             self._start.recorded_ego[position], observation.t, observation.frame,
             sensor_from_world=BODY_FROM_OPTICAL @ geometry.cam_from_world, depth=depth,
-            native={"timestamp_us": timestamp_us},
+            native={"render_request": CameraPoseRequest(pose, native_camera), "timestamp_us": timestamp_us},
+            object_occlusion=self.simulator.object_occlusion,
         )
+
+    def _composite_plan(self, view: SensorView, objects: Sequence[PlacedObject]) -> CompositePlan:
+        """Plan with the visibility of rendered probes at the view's own capture, when configured."""
+        if self.simulator.object_occlusion == "geometry":
+            return super()._composite_plan(view, objects)
+        from avsectester.rendering import plan_composite
+
+        assert view.camera is not None and view.cam_from_world is not None
+        request = view.native["render_request"]
+        visibility = self.renderer.render_scene_visibility(
+            request.pose, view.native["timestamp_us"], request.camera, objects,
+            dynamic_objects=tuple((identity, state.pose) for identity, state in view.actors.items()))
+        return plan_composite(view.camera, view.cam_from_world, objects, scene_visibility=visibility)
 
     def _observe_recorded(self, position: int) -> Observation:
         pose, timestamp_us, actors = self._recorded_capture(position)

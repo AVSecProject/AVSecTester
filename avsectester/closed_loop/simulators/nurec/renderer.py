@@ -15,8 +15,15 @@ from avsectester.geometry.poses import validated_transform
 from avsectester.validation import require_positive_integer
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from avsectester.geometry.cameras import Camera, FThetaCamera
+    from avsectester.rendering import PlacedObject
+    from .probe_assets import ProbeAsset
     import numpy as np
+
+
+_PROBE_COLOURS = (("white", (1., 1., 1.)), ("black", (0., 0., 0.)))
 
 
 def ftheta_camera_from_spec(spec: Any) -> FThetaCamera:
@@ -113,6 +120,14 @@ class Renderer(ABC):
     ) -> Any:
         """Render one camera at the explicit three-dimensional rig pose and scene timestamp."""
 
+    def render_scene_visibility(
+        self, world_from_rig: np.ndarray, timestamp_us: int, camera: str,
+        objects: Sequence[PlacedObject], dynamic_objects=(),
+    ) -> np.ndarray:
+        """Pixels where the reconstructed scene does not hide ``objects`` in this capture."""
+        raise NotImplementedError(f"{type(self).__name__} cannot render object visibility; "
+                                  "use object_occlusion='geometry'")
+
     def camera_model(self, camera: str | None = None) -> Camera | None:
         """Optical camera model, or None when this renderer supplies no geometry."""
         return None
@@ -136,6 +151,11 @@ class NuRecRenderer(Renderer):
     inversion. Lazily imports the gRPC stubs. Connect it to a running renderer and a loaded NuRec
     scene. ``service`` exposes the native RPC client after loading. ``render_at`` supports exact
     recorded poses for initial-sequence inspection without advancing a driving policy.
+
+    ``render_scene_visibility`` inserts probe copies of objects into the loaded scene. It writes
+    their Gaussian PLY files to ``probe_directory``, which the NRE server must read at
+    ``server_probe_directory`` (the same path by default). ``track_padding_m`` is the server's
+    track padding, which sets the inserted probes' scale.
     """
 
     endpoint: str = "127.0.0.1:50051"
@@ -144,6 +164,9 @@ class NuRecRenderer(Renderer):
     calibration: dict = field(default_factory=dict)
     image_quality: float = 95.0
     resolution_hw: Mapping[str, tuple[int, int]] = field(default_factory=dict)
+    probe_directory: str | None = None
+    server_probe_directory: str | None = None
+    track_padding_m: tuple[float, float, float] = (1.0, 1.0, 0.25)
 
     def copy(self) -> NuRecRenderer:
         """The same configuration without a connection, loaded scene or run origin."""
@@ -163,6 +186,12 @@ class NuRecRenderer(Renderer):
             require_positive_integer(width, f"resolution_hw[{camera!r}] width")
             resolutions[camera] = (height, width)
         self.resolution_hw = resolutions
+        padding = tuple(float(value) for value in self.track_padding_m)
+        if len(padding) != 3 or not all(math.isfinite(value) and value >= 0 for value in padding):
+            raise ValueError("track_padding_m must contain three finite nonnegative values")
+        self.track_padding_m = padding
+        self._probes: dict[tuple[int, str], tuple[Any, ProbeAsset, str]] = {}
+        self._trajectory_bounds_us = (0, 1)
         self._camera_models = {}
         self._stub = None
         self._channel = None
@@ -214,6 +243,8 @@ class NuRecRenderer(Renderer):
             .trajectory.poses
         )
         self._start_pose = poses[0].pose  # scene world-frame origin for the ego
+        self._trajectory_bounds_us = (int(poses[0].timestamp_us), max(int(poses[-1].timestamp_us),
+                                                                      int(poses[0].timestamp_us) + 1))
         self._t0 = (
             poses[0].timestamp_us if self.origin_timestamp_us is None else self.origin_timestamp_us
         )
@@ -275,6 +306,128 @@ class NuRecRenderer(Renderer):
         Actor poses use the same reference point as sequence_tracks.json; no bounding-box
         offset is applied. Each pose pair repeats the pose to describe an instantaneous capture.
         """
+        return self._render_image(world_from_rig, timestamp_us, camera, dynamic_objects, self.image_quality)
+
+    def render_scene_visibility(
+        self, world_from_rig: np.ndarray, timestamp_us: int, camera: str,
+        objects: Sequence[PlacedObject], dynamic_objects=(),
+    ) -> np.ndarray:
+        """Pixels where the reconstructed scene does not hide ``objects`` in an NRE render.
+
+        Each object has two opaque Gaussian probes, white and black, under track IDs derived from
+        their content, so clients rendering the same object share them. Probes are inserted into
+        the loaded scene when the server reports them missing: on first use, and after the server
+        drops the scene's edits because it reloaded the scene or an edit of it failed.
+        Both probes are rendered with ``dynamic_objects`` at this capture, as maximum-quality JPEG:
+        server-side PNG encoding is about fifteen times slower, and the resulting visibility
+        differs only in single edge pixels. A pixel is visible when the white render exceeds the
+        black one by at least half the colour range.
+        Rejects probe pixels outside the objects' projected boxes, which indicate an asset scale
+        or axis convention that differs from the measured NRE behaviour.
+        """
+        import grpc
+        import numpy as np
+
+        from avsectester.geometry.projection import project_box
+
+        if self.probe_directory is None:
+            raise ValueError("Rendered-probe occlusion requires NuRecRenderer.probe_directory, readable by "
+                             "the NRE server; or use object_occlusion='geometry'")
+        tracks: dict[str, list] = {colour: [] for colour, _ in _PROBE_COLOURS}
+        boxes = []
+        for placed in objects:
+            for colour, rgb in _PROBE_COLOURS:
+                probe, track_id = self._probe(placed.asset, colour, rgb)
+                world_from_track = placed.world_from_object @ probe.object_from_track
+                tracks[colour].append((track_id, world_from_track))
+            boxes.append((world_from_track, placed.asset.extent))
+
+        def render(colour: str) -> np.ndarray:
+            try:
+                return self._render_image(world_from_rig, timestamp_us, camera,
+                                          (*dynamic_objects, *tracks[colour]), 100.0)
+            except grpc.RpcError as error:
+                # NRE rejects a request naming a track that its loaded scene does not hold.
+                if error.code() != grpc.StatusCode.INVALID_ARGUMENT or "is not in list" not in str(error.details()):
+                    raise
+            self._insert_probes(objects)
+            return self._render_image(world_from_rig, timestamp_us, camera,
+                                      (*dynamic_objects, *tracks[colour]), 100.0)
+
+        white, black = render("white"), render("black")
+        visible = (white.astype(np.int16) - black).mean(axis=2) >= 127.5
+        camera_model = self.camera_model(camera)
+        cam_from_world = self.cam_from_world(world_from_rig, camera)
+        expected = np.zeros_like(visible)
+        for world_from_box, extent in boxes:
+            bounds = project_box(camera_model, cam_from_world, world_from_box, extent)
+            if bounds is not None:
+                x0, y0, x1, y1 = bounds
+                expected[max(0, math.floor(y0) - 3):max(0, math.ceil(y1) + 3),
+                         max(0, math.floor(x0) - 3):max(0, math.ceil(x1) + 3)] = True
+        stray = int(np.count_nonzero(visible & ~expected))
+        if stray > max(10, 0.02 * np.count_nonzero(visible)):
+            raise ValueError(f"{stray} NRE probe pixels fall outside the objects' projections; "
+                             "check track_padding_m and the NRE version")
+        return visible
+
+    def _probe(self, asset: Any, colour: str, rgb: tuple[float, float, float]) -> tuple[ProbeAsset, str]:
+        """A probe of ``asset`` in one colour and its content-derived track ID, cached per asset."""
+        import hashlib
+
+        from .probe_assets import probe_asset
+
+        key = (id(asset), colour)
+        if key not in self._probes:
+            probe = probe_asset(asset, rgb, track_padding_m=self.track_padding_m)
+            digest = hashlib.sha256(probe.ply + repr(probe.object_size).encode()).hexdigest()[:24]
+            # The cached asset reference keeps its id from being reused while the entry exists.
+            self._probes[key] = (asset, probe, f"avsectester_probe_{digest}")
+        _, probe, track_id = self._probes[key]
+        return probe, track_id
+
+    def _insert_probes(self, objects: Sequence[PlacedObject]) -> None:
+        """Write the probe PLY files of ``objects`` and insert their tracks into the loaded scene."""
+        import os
+        import tempfile
+        from pathlib import Path
+
+        from .asset_editing import EDIT_ASSETS_METHOD, asset_editing_messages
+
+        assert self.probe_directory is not None
+        if self._channel is None:
+            raise RuntimeError("Call load_scene before rendering")
+        messages = asset_editing_messages()
+        request = messages["EditAssetsRequest"](scene_id=self._loaded_scene_id)
+        server_directory = Path(self.server_probe_directory or self.probe_directory)
+        for placed in objects:
+            for colour, rgb in _PROBE_COLOURS:
+                probe, track_id = self._probe(placed.asset, colour, rgb)
+                path = Path(self.probe_directory) / f"{track_id}.ply"
+                if not path.exists():
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as stream:
+                        stream.write(probe.ply)
+                    os.replace(stream.name, path)
+                    os.chmod(path, 0o644)
+                track = request.insert.add(id=track_id, semantic_class="protruding_object",
+                                           asset_id=str(server_directory / path.name))
+                track.object_size.size_x, track.object_size.size_y, track.object_size.size_z = probe.object_size
+                # NRE requires two trajectory poses; render requests listing the probe set its pose.
+                # A request listing no dynamic objects renders every track along its trajectory,
+                # so the trajectory lies far below the scene.
+                for timestamp_us in self._trajectory_bounds_us:
+                    pose = track.trajectory.poses.add(timestamp_us=timestamp_us)
+                    pose.pose.vec.z, pose.pose.quat.w = -10_000.0, 1.0
+        edit = self._channel.unary_unary(
+            EDIT_ASSETS_METHOD, request_serializer=type(request).SerializeToString,
+            response_deserializer=messages["EditAssetsResponse"].FromString)
+        response = edit(request)
+        if not response.success:
+            raise RuntimeError(f"NRE edit_assets failed: {response.message}")
+
+    def _render_image(self, world_from_rig, timestamp_us: int, camera: str, dynamic_objects,
+                      image_quality: float):
         if self.origin_bounds is not None:
             first, last = self.origin_bounds
             if not first - 1e-6 <= timestamp_us / 1e6 <= last + 1e-6:
@@ -321,7 +474,7 @@ class NuRecRenderer(Renderer):
             sensor_pose=sensorsim_pb2.PosePair(start_pose=cam, end_pose=cam),
             dynamic_objects=objects,
             image_format=sensorsim_pb2.ImageFormat.JPEG,
-            image_quality=self.image_quality,
+            image_quality=image_quality,
             insert_ego_mask=False,
         )
         ret = self._stub.render_rgb(req)

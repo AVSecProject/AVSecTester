@@ -168,3 +168,26 @@ def test_composite_plan_is_the_differentiable_deployment(camera, optical_from_wo
     harmonized = plan_composite(camera, optical_from_world, (replace(placed, harmonizer=lambda c, m, b: c),))
     with pytest.raises(ValueError, match="Harmonizers are not differentiable"):
         harmonized.composite(background)
+
+
+def test_plan_composite_with_scene_visibility(camera, optical_from_world):
+    surface = PlaneSurface(np.array([[0., -2., 2.], [0., 2., 2.], [0., 2., 0.], [0., -2., 0.]]),
+                           np.full((8, 8, 4), [200, 40, 40, 255], np.uint8))
+    pose = np.eye(4)
+    pose[:3, 3] = (6., 0., -1.)
+    placed = PlacedObject("sign", ObjectAsset.from_surfaces((surface,), "sign"), pose)
+    # Renderer-measured visibility replaces depth evidence: the scene hides the left half.
+    scene_visibility = np.ones((80, 100), bool)
+    scene_visibility[:, :50] = False
+    plan = plan_composite(camera, optical_from_world, (placed,), scene_visibility=scene_visibility)
+    unoccluded = plan_composite(camera, optical_from_world, (placed,), scene_visibility=np.ones((80, 100), bool))
+    np.testing.assert_array_equal(plan.visible_mask, unoccluded.visible_mask & scene_visibility)
+    assert plan.visible_mask.any() and unoccluded.visible_mask[:, :50].any()
+    assert plan.occlusion_source == "scene_visibility"
+    assert plan.object_visibility["sign"].visible_pixels == plan.visible_mask.sum()
+    assert np.isposinf(plan.depth[~plan.visible_mask]).all() and np.isfinite(plan.depth[plan.visible_mask]).all()
+    with pytest.raises(ValueError, match="excludes scene_depth"):
+        plan_composite(camera, optical_from_world, (placed,), scene_visibility=scene_visibility,
+                       scene_depth=np.ones((80, 100)))
+    with pytest.raises(ValueError, match="boolean image"):
+        plan_composite(camera, optical_from_world, (placed,), scene_visibility=scene_visibility[:, :10])

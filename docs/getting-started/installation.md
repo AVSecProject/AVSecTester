@@ -291,8 +291,10 @@ hf download nvidia/PhysicalAI-Autonomous-Vehicles-NuRec \
 Serve it with nre-ga on a separate available GPU:
 
 ```bash
+mkdir -p /path/to/nre-probes
 docker run -d --name nre --net=host --gpus 'device=0' -e HOME=/tmp \
   -v /path/to/nurec-scenes/sample_set/26.01_release:/mnt/nre-data \
+  -v /path/to/nre-probes:/mnt/nre-probes:ro \
   --entrypoint /app/internal/scripts/pycena/runtime/pycena_nrm_full \
   nvcr.io/nvidia/nre/nre-ga:26.04 serve-grpc --host=0.0.0.0 --port=50051 \
   '--artifact-glob=/mnt/nre-data/**/*.usdz' --cache-size=2 \
@@ -304,9 +306,17 @@ returns native clip identifiers. Set dataset time_step and simulator dt consiste
 
 --enable-editing-actors is required. Every render sends
 the poses of all currently supported recorded tracks, including those not moved by an attack;
-with editing enabled, the service renders only the dynamic actors present in that request.
-This interface can move reconstructed actors but cannot add new geometry or textures. See
+with editing enabled, the service renders only the dynamic actors present in that request. A
+request listing no dynamic actors renders every track along its recorded trajectory. Render
+requests move reconstructed actors; inserted world objects are composited onto the renders. See
 [NuRec actor movement](../guides/simulators.md#move-recorded-actors).
+
+World objects inserted into NuRec are hidden by probes rendered in the reconstruction by default.
+The server reads the probe files that NuRecRenderer writes from the mounted directory; set
+`NuRecRenderer(probe_directory="/path/to/nre-probes", server_probe_directory="/mnt/nre-probes")`.
+Create the directory before starting the container, so Docker does not create it as root. Without
+a probe directory, insert world objects with `object_occlusion="geometry"`. See
+[Rendered-probe occlusion](../guides/simulators.md#rendered-probe-occlusion).
 
 ## Model weights and assets
 

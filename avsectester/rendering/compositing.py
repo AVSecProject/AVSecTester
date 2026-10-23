@@ -108,7 +108,8 @@ class CompositePlan:
     surface colours remain free. ``apply`` produces a deployed uint8 composite, including
     harmonizers. ``composite`` is the same blend as a differentiable function of the image and
     of replacement surface colours, so optimized textures match their deployment up to the final
-    8-bit rounding. ``depth`` is the scene depth combined with the composed surfaces.
+    8-bit rounding. ``depth`` is the scene depth combined with the composed surfaces; with
+    ``scene_visibility`` evidence it holds only the visible surfaces.
     """
 
     objects: tuple[PlacedObject, ...]
@@ -182,21 +183,43 @@ class CompositePlan:
         return image * (1 - layer[3:]) + layer[:3]
 
 
+@dataclass(frozen=True)
+class ObjectComposition:
+    """How placed objects were composed into one capture: the image beneath them and the plan.
+
+    ``plan.apply(background).image`` is the composed capture, and ``plan.composite`` over
+    ``background`` reproduces it differentiably in surface colours.
+    """
+
+    background: np.ndarray
+    plan: CompositePlan
+
+
 def plan_composite(
     camera: Camera, cam_from_world: np.ndarray, objects: Sequence[PlacedObject], *,
     scene_depth: np.ndarray | None = None, occluders: Mapping[str, ActorState] | None = None,
-    occlusion_tolerance_m: float = 0.1,
+    occlusion_tolerance_m: float = 0.1, scene_visibility: np.ndarray | None = None,
 ) -> CompositePlan:
     """Plan the nearest object surfaces and their unoccluded pixels in one camera.
 
-    Aligned scene z-depth, when supplied, is the sole occlusion evidence. Otherwise actor
-    cuboids with known extents approximate the scene inside the candidate projection regions.
-    Actor IDs without known extents are returned as ``ignored_occluders``. Surface order breaks
-    exact depth ties, so the result does not depend on object order otherwise.
+    ``scene_visibility``, when supplied, is the sole occlusion evidence: a boolean image that is
+    true where the scene does not hide these objects, measured for example by rendering them
+    inside the scene. It excludes ``scene_depth`` and ``occluders``, and the plan's depth then
+    holds only the visible object surfaces. Otherwise aligned scene z-depth, when supplied, is
+    the sole occlusion evidence; without it, actor cuboids with known extents approximate the
+    scene inside the candidate projection regions. Actor IDs without known extents are returned
+    as ``ignored_occluders``. Surface order breaks exact depth ties, so the result does not
+    depend on object order otherwise.
     """
     shape = (camera.height, camera.width)
     if not np.isfinite(occlusion_tolerance_m) or occlusion_tolerance_m < 0:
         raise ValueError("occlusion_tolerance_m must be finite and nonnegative")
+    if scene_visibility is not None:
+        if scene_depth is not None or occluders:
+            raise ValueError("scene_visibility excludes scene_depth and occluders")
+        scene_visibility = np.asarray(scene_visibility)
+        if scene_visibility.shape != shape or scene_visibility.dtype != bool:
+            raise ValueError("scene_visibility must be a boolean image at the calibrated dimensions")
     objects = tuple(objects)
     if any(not isinstance(item, PlacedObject) for item in objects):
         raise TypeError("objects must contain PlacedObject values")
@@ -228,7 +251,11 @@ def plan_composite(
             candidate_pixels[max(0, all_rows.min() - 2):min(shape[0], all_rows.max() + 3),
                              max(0, all_columns.min() - 2):min(shape[1], all_columns.max() + 3)] = True
     ignored_occluders = []
-    if scene_depth is not None:
+    if scene_visibility is not None:
+        # Hidden pixels get a scene depth of zero, which no surface can be in front of.
+        background_depth = np.where(scene_visibility, np.inf, 0.0)
+        occlusion_source = "scene_visibility"
+    elif scene_depth is not None:
         background_depth = np.asarray(scene_depth, dtype=float)
         if background_depth.shape != shape:
             raise ValueError("scene_depth must match the calibrated image dimensions")
@@ -262,8 +289,9 @@ def plan_composite(
     visibility = {placed.object_id: ObjectVisibility(
         occlusion_source, ignored, int(np.count_nonzero(_object_mask(footprints, index, shape))))
         for index, placed in enumerate(objects)}
-    return CompositePlan(objects, np.minimum(background_depth, nearest), visible, occlusion_source,
-                         ignored, visibility, tuple(footprints))
+    depth = (np.where(visible, nearest, np.inf) if scene_visibility is not None
+             else np.minimum(background_depth, nearest))
+    return CompositePlan(objects, depth, visible, occlusion_source, ignored, visibility, tuple(footprints))
 
 
 def composite_objects(

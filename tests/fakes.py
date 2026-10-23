@@ -393,13 +393,40 @@ class MinimalAttackRuntime(AttackRuntime):
 # Native dependency boundaries used by the real simulator implementations.
 
 
+class NuRecRpcError(Exception):
+    """A gRPC status error raised by the NuRec service boundary."""
+
+    def __init__(self, code, details):
+        super().__init__(details)
+        self._code, self._details = code, details
+
+    def code(self):
+        return self._code
+
+    def details(self):
+        return self._details
+
+
 class NuRecRpcBoundary:
-    """A SensorsimService boundary; NuRecRenderer itself remains real."""
+    """A SensorsimService boundary; NuRecRenderer itself remains real.
+
+    Inserted Gaussian assets are drawn at their listed poses, mapped into track frames as the
+    measured NRE convention does, except at pixels in ``hidden``, where the scene covers them.
+    ``asset_directories`` maps server asset paths to local ones. With ``scene_tracks`` set, a
+    render naming any other track that was not inserted fails as NRE does.
+    """
+
+    TRACK_FROM_PLY = np.array([[1., 0., 0.], [0., 0., -1.], [0., 1., 0.]])
+    TRACK_PADDING_M = np.array([1., 1., .25])
 
     def __init__(self, returned_resolution_hw=None):
         self.returned_resolution_hw = returned_resolution_hw
         self.last_request = None
         self.requests = []
+        self.tracks = {}
+        self.scene_tracks = None
+        self.hidden = None
+        self.asset_directories = {}
         self.mount = SimpleNamespace(vec=SimpleNamespace(x=0., y=0., z=1.5),
             quat=SimpleNamespace(w=.5, x=-.5, y=.5, z=-.5))
         self.spec = SimpleNamespace(resolution_h=12, resolution_w=16, ftheta_param=SimpleNamespace(
@@ -427,16 +454,54 @@ class NuRecRpcBoundary:
     def render_rgb(self, request):
         from io import BytesIO
         from PIL import Image
+        from avsectester.closed_loop.simulators.nurec.renderer import ftheta_camera_from_spec, pose_from_proto
         self.requests.append(request)
         self.last_request = request
         height, width = self.returned_resolution_hw or (
             request.resolution_h,
             round(request.resolution_h * self.spec.resolution_w / self.spec.resolution_h),
         )
+        listed = [item.track_id for item in request.dynamic_objects]
+        unknown = [track for track in listed if track not in self.tracks
+                   and self.scene_tracks is not None and track not in self.scene_tracks]
+        if unknown:
+            raise NuRecRpcError("INVALID_ARGUMENT", f"{unknown[0]!r} is not in list")
         image = np.full((height, width, 3), 30, np.uint8)
+        camera = ftheta_camera_from_spec(self.spec)
+        cam_from_world = np.linalg.inv(pose_from_proto(request.sensor_pose.start_pose))
+        for item in request.dynamic_objects:
+            if item.track_id not in self.tracks:
+                continue
+            points, colours = self.tracks[item.track_id]
+            cam_from_track = cam_from_world @ pose_from_proto(item.pose_pair.start_pose)
+            optical = points @ cam_from_track[:3, :3].T + cam_from_track[:3, 3]
+            front = optical[:, 2] > 0
+            pixels = np.floor(camera.project(optical[front])).astype(int)
+            inside = (pixels >= 0).all(axis=1) & (pixels < [width, height]).all(axis=1)
+            for (x, y), colour in zip(pixels[inside], colours[front][inside]):
+                if self.hidden is None or not self.hidden[y, x]:
+                    image[y, x] = colour
         stream = BytesIO()
-        Image.fromarray(image).save(stream, format="JPEG")
+        Image.fromarray(image).save(stream, format="PNG")
         return SimpleNamespace(image_bytes=stream.getvalue())
+
+    def edit_assets(self, request):
+        self.requests.append(request)
+        for track in request.insert:
+            directory, name = track.asset_id.rsplit("/", 1)
+            data = (Path(self.asset_directories.get(directory, directory)) / name).read_bytes()
+            header, body = data.split(b"end_header\n", 1)
+            rows = np.frombuffer(body, "<f4").reshape(-1, 14)
+            size = np.array([track.object_size.size_x, track.object_size.size_y, track.object_size.size_z])
+            scale = (size - self.TRACK_PADDING_M).max()
+            colours = np.clip((rows[:, 3:6] * .28209479177387814 + .5) * 255, 0, 255).round().astype(np.uint8)
+            self.tracks[track.id] = (rows[:, :3] @ self.TRACK_FROM_PLY.T * scale, colours)
+        return SimpleNamespace(success=True, message="Success")
+
+    def _unary_unary(self, method, request_serializer, response_deserializer):
+        if not method.endswith("/edit_assets"):
+            raise NotImplementedError(method)
+        return lambda request, timeout=None: self.edit_assets(request)
 
     def install(self, monkeypatch):
         common = SimpleNamespace(Pose=SimpleNamespace, Quat=SimpleNamespace,
@@ -446,7 +511,10 @@ class NuRecRpcBoundary:
             PosePair=SimpleNamespace, DynamicObject=SimpleNamespace,
             ImageFormat=SimpleNamespace(JPEG=1))
         modules = {
-            "grpc": {"insecure_channel": lambda endpoint: SimpleNamespace(close=lambda: None)},
+            "grpc": {"insecure_channel": lambda endpoint: SimpleNamespace(
+                         close=lambda: None, unary_unary=self._unary_unary),
+                     "RpcError": NuRecRpcError,
+                     "StatusCode": SimpleNamespace(INVALID_ARGUMENT="INVALID_ARGUMENT")},
             "alpasim_grpc": {}, "alpasim_grpc.v0": {"common_pb2": common,
                 "sensorsim_pb2": sensor,
                 "sensorsim_pb2_grpc": SimpleNamespace(SensorsimServiceStub=lambda channel: self)},

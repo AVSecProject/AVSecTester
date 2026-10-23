@@ -63,7 +63,7 @@ Simulator.can_insert_objects declares support for framework-composited ObjectAss
 |---|---|---|
 | In-memory example | True | Available depth, otherwise actor cuboids |
 | CARLA | True | Aligned depth for depth_camera; actor cuboids for other cameras |
-| NuRec | True | Static mesh and actor boxes with depth="mesh"; actor cuboids with depth="none" |
+| NuRec | True | Probes rendered in the reconstruction (default object_occlusion="rendered_probes"); with object_occlusion="geometry", static mesh and actor boxes with depth="mesh", actor cuboids with depth="none" |
 | Recorded playback | True | Actor cuboids |
 | Base Simulator | False | Unsupported until declared by the implementation |
 
@@ -84,6 +84,15 @@ None after insertion. Actor-cuboid fallback estimates are used only in candidate
 they are not promoted to full sensor-depth evidence. Repeated reads reuse the capture's composition.
 The input order is object composition, sensor attack actions, sensor environment, then
 ObservationPipeline.
+
+A composed view records how it was composed. SensorView.composition holds the native capture beneath
+the objects (`background`) and the CompositePlan that composed them; `plan.apply(background)`
+reproduces the view's data and `plan.composite` is the same blend, differentiable in surface colours.
+SensorView.object_occlusion states how objects are hidden: "geometry" (aligned depth or actor
+cuboids, as above) or "rendered_probes" (the simulator renders opaque probe copies of the objects
+inside its own scene, as NuRec does by default). A simulator adapter supplies such measured
+visibility by overriding `_composite_plan(view, objects)` and returning plan_composite with
+scene_visibility; ObjectVisibility.occlusion_source is then "scene_visibility".
 
 WorldSnapshot.objects records each object's world pose, category, full extent and zero velocity,
 with box_center=(0, 0, height/2). Inserted objects remain separate from native actors and do not
@@ -138,8 +147,8 @@ simulator runtime constructs SensorView directly from native camera geometry and
 
 ## NuRec
 
-NuRecSimulator takes `config`, a required Renderer template, an optional ego-dynamics template and
-a depth mode. Configure NuRecRenderer explicitly; there is no default renderer. Renderer is defined
+NuRecSimulator takes `config`, a required Renderer template, an optional ego-dynamics template, a
+depth mode and an object_occlusion mode. Configure NuRecRenderer explicitly; there is no default renderer. Renderer is defined
 in closed_loop/simulators/nurec/renderer.py, and the dynamics interfaces and implementations live
 in closed_loop/simulators/ego_dynamics.py.
 Mesh depth and ego ground contact require the optional nurec dependencies at construction.
@@ -185,7 +194,7 @@ The complete ScenarioStart.recorded_ego trajectory supplies the actual poses; ea
 rendered with recorded traffic at that time. The current physical state and capture are unchanged.
 World objects present at the start, i.e. inserted during reset or simulator setup, existed before
 it: each past camera capture composes them exactly as live captures do, with the recorded camera
-pose, recorded actors and mesh depth. Objects inserted later, sensor attack actions and stage hooks
+pose, recorded actors and rendered probes or mesh depth. Objects inserted later, sensor attack actions and stage hooks
 are excluded. A request fails when history is insufficient, the runtime has not reset, or the
 simulator does not declare this capability.
 
@@ -351,6 +360,51 @@ are represented by boxes, not detailed reconstructed geometry, so silhouettes ca
 static mesh can also contain parked or slowly moving vehicles. Moving a recorded actor with
 set_actor_state does not erase that vehicle's archived mesh geometry, so its original location can
 continue to occlude. These mesh contents are not classified or removed automatically.
+
+### Rendered-probe occlusion
+
+By default (object_occlusion="rendered_probes"), inserted world objects are hidden by the
+reconstruction as NRE renders it, because the same reconstruction produces the images. With
+object_occlusion="geometry" they are hidden by mesh depth and actor boxes instead, as described
+under [Mesh depth](#mesh-depth). Rendered probes need no mesh.ply, so they also apply to
+releases that ship only mesh_ground.ply (26.02 and 26.04), and it handles reconstructed vehicles,
+poles and vegetation alike. For each camera whose image contains objects, the renderer inserts
+each object's opaque Gaussian copy (probe) into the loaded scene, renders the capture once with
+white probes and once with black ones, and treats pixels whose white render exceeds the black one
+by half the colour range as visible. Object colours still come from the framework's composite, so
+optimized textures remain differentiable; use SensorView.composition, because
+SensorView.composite_plan cannot measure this evidence on a clean view and raises. The setting
+applies to world objects; sensor insertion (InsertionAttackAction) keeps its own visibility
+estimators. See [TODO](../development/TODO.md#nurec-rendered-probe-conventions) for the
+measured NRE conventions this relies on.
+
+NuRecRenderer writes probe PLY files to `probe_directory`; the NRE server must read that directory
+at `server_probe_directory` (the same path by default), and must run with --enable-editing-actors.
+A renderer without `probe_directory` raises at the first capture that composes a world object.
+Track IDs derive from probe content, so runtimes and processes rendering the same object share the
+server's probes. Probes are inserted when NRE reports them missing: on first use, after NRE reloads
+an evicted scene, and after any failed edit of the scene, which drops all of its edits. Probes stay
+in the server's memory until it reloads the scene; the framework never restores scene parameters,
+because that would remove other clients' probes. Their trajectories lie 10 km below the scene,
+because a render request that lists no dynamic objects renders every track along its trajectory.
+
+Each composed camera adds two renders per capture, about 0.03 s each at 1080 x 1920. They use
+maximum-quality JPEG: server-side PNG encoding takes about 0.5 s per image, and the measured
+visibility differs from PNG in only a few edge pixels. NRE documents neither how a PLY's axes map
+to the inserted track nor how `object_size` scales it; the framework uses the convention measured on
+nre-ga 26.04, with probes landing within 0.15 px of the projected surfaces, and `track_padding_m`
+is the server's track padding. Probe pixels outside the objects' projected boxes raise ValueError,
+which flags a server that uses a different convention.
+
+The evidence is the reconstruction's own geometry, with these consequences:
+
+- Reconstructed surfaces have thickness. A panel placed within a few centimetres of a reconstructed
+  sign is partly or wholly hidden by it; on three stop-sign scenes at 12–40 m, offsets of 10–20 cm
+  kept 83–99% of a replica face visible, while 2 cm kept 6–33% in two of them.
+- Mesh depth is not a substitute near reconstructed surfaces: in one of those scenes it hid a
+  replica 10–20 cm in front of the sign completely at 12 m, where NRE renders 83–98% of it visible.
+- The base of an object standing on the road can be hidden by the reconstructed road surface.
+- Probe silhouettes differ from the composite's by about one pixel at edges.
 
 geometry.mesh.camera_depth casts calibrated camera rays through supplied MeshRaycaster instances
 and combines their nearest optical-axis depths. The simulator and validation tool use this same

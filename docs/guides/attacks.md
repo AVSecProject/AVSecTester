@@ -199,7 +199,7 @@ The two insertion paths are independent; an attack uses whichever matches its th
 | Placement | Fixed world_from_object | World or host-attached placement, resolved per capture |
 | Occlusion | Scene depth, otherwise actor cuboids; 0.1 m tolerance | Scene depth or actor cuboids and other world objects; millimetre tolerances |
 | Appearance | PlacedObject.harmonizer | PatchCompositor and its harmonizer |
-| Differentiable path | SensorView.composite_plan, then CompositePlan.composite | PatchPerturbation over plane_sampling |
+| Differentiable path | SensorView.composition (or composite_plan with object_occlusion="geometry"), then CompositePlan.composite | PatchPerturbation over plane_sampling |
 | Simulator requirement | can_insert_objects | A calibrated camera SensorView |
 
 Use world insertion for a physical object that every sensor and the recorded world should contain,

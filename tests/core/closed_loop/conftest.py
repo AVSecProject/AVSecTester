@@ -47,6 +47,11 @@ def assert_inserted_world_object(make_object_in_front):
         np.testing.assert_array_equal(view.data, expected.image)
         planned = clean_first.composite_plan((PlacedObject("sign", asset, world_from_object),))
         np.testing.assert_array_equal(planned.apply(clean_first.data).image, view.data)
+        # The view records the capture beneath its objects and the plan that composed them.
+        np.testing.assert_array_equal(view.composition.background, clean_first.data)
+        np.testing.assert_array_equal(view.composition.plan.visible_mask, planned.visible_mask)
+        np.testing.assert_array_equal(view.composition.plan.apply(view.composition.background).image, view.data)
+        assert clean_first.composition is None
         with pytest.raises(ValueError, match="already contains"):
             view.composite_plan((PlacedObject("sign", asset, world_from_object),))
         assert runtime.object_visibility("sign")["front"] == expected.object_visibility["sign"]

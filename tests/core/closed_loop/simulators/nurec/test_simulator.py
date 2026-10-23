@@ -90,7 +90,8 @@ def test_set_actor_state(nurec_usdz_path, monkeypatch, make_object_in_front):
     dataset = NuRecDataset([nurec_usdz_path], time_step=.1)
     frames = dataset.frames("scene")
     start = dataset.scenario_start("scene", frames[2])
-    with NuRecSimulator({"dt": .1}, NuRecRenderer(cameras=["front"])).create_runtime() as runtime:
+    simulator = NuRecSimulator({"dt": .1}, NuRecRenderer(cameras=["front"]), object_occlusion="geometry")
+    with simulator.create_runtime() as runtime:
         runtime.reset(start)
         recorded = dataset.frame_data("scene", frames[2]).actors
         request_actors = {item.track_id: item for item in boundary.last_request.dynamic_objects}
@@ -196,6 +197,81 @@ def test_depth(nurec_dataset, camera, ground_depth):
         NuRecSimulator({"dt": .1}, NuRecImageBoundary(camera), depth="unsupported")
 
 
+def test_rendered_probe_occlusion(nurec_dataset, tmp_path, monkeypatch, make_object_in_front):
+    from avsectester.closed_loop.hooks import Hook, HookSet
+    from avsectester.rendering import PlacedObject, plan_composite
+    from tests.fakes import ConstantAVStack
+
+    boundary = NuRecRpcBoundary().install(monkeypatch)
+    boundary.asset_directories = {"/server/assets": str(tmp_path)}
+    boundary.scene_tracks = {"host", "brief"}
+    boundary.hidden = np.zeros((12, 16), bool)
+    boundary.hidden[:, :8] = True  # The reconstruction covers the left half of the image.
+    start = nurec_dataset.scenario_start("scene", nurec_dataset.frames("scene")[2])
+    renderer = NuRecRenderer(cameras=["front"], probe_directory=str(tmp_path),
+                             server_probe_directory="/server/assets")
+    # Rendered probes are the default object occlusion.
+    simulator = NuRecSimulator({"dt": .1}, renderer, physics_update_mode="none", depth="none")
+    with simulator.create_runtime() as runtime:
+        runtime.reset(start)
+        asset, world_from_object = make_object_in_front(runtime.sensor_view("front"))
+        # A dense texture places probe Gaussians in every covered pixel of this small image.
+        (surface,) = asset.surfaces
+        asset = replace(asset, surfaces=(replace(surface, texture=np.full((256, 256, 4), [230, 10, 90, 255], np.uint8)),))
+        runtime.insert_object("sign", asset, world_from_object)
+
+        def check_capture():
+            view = runtime.sensor_view("front")
+            expected = plan_composite(view.camera, view.cam_from_world, (PlacedObject("sign", asset, world_from_object),),
+                                      scene_visibility=~boundary.hidden)
+            assert not expected.visible_mask[:, :8].any() and expected.visible_mask.any()
+            np.testing.assert_array_equal(view.composition.plan.visible_mask, expected.visible_mask)
+            np.testing.assert_array_equal(expected.apply(view.composition.background).image, view.data)
+            visibility = runtime.object_visibility("sign")["front"]
+            assert visibility.occlusion_source == "scene_visibility"
+            assert visibility.visible_pixels == expected.visible_mask.sum()
+            return view
+
+        runtime.step(Control())
+        view = check_capture()
+        with pytest.raises(ValueError, match="'rendered_probes' occlusion"):
+            view.composite_plan((PlacedObject("other", asset, world_from_object),))
+        edits = [request for request in boundary.requests if hasattr(request, "insert")]
+        assert len(edits) == 1 and len(edits[0].insert) == 2
+        for track in edits[0].insert:
+            assert track.asset_id == f"/server/assets/{track.id}.ply"
+            assert (tmp_path / f"{track.id}.ply").read_bytes().startswith(b"ply\n")
+
+        # Inserted probes persist on the server; a server that dropped them gets them again.
+        runtime.step(Control())
+        check_capture()
+        assert len([request for request in boundary.requests if hasattr(request, "insert")]) == 1
+        boundary.tracks.clear()
+        runtime.step(Control())
+        check_capture()
+        assert len([request for request in boundary.requests if hasattr(request, "insert")]) == 2
+
+        setup = HookSet([Hook("simulator.setup", lambda value, context: context.simulator_runtime.insert_object(
+            "start-sign", asset, world_from_object))])
+        with setup.session(runtime, ConstantAVStack()).activate():
+            runtime.reset(start)
+            # Objects present at the start are hidden by the reconstruction in past captures too.
+            for observation in runtime.observe_past(2):
+                image = observation.sensor_data["front"]
+                assert np.all(image[:, :8] == 30) and np.any(image[:, 8:] != 30)
+
+    unconfigured = NuRecSimulator({"dt": .1}, NuRecRenderer(cameras=["front"]), physics_update_mode="none",
+                                  depth="none")
+    with unconfigured.create_runtime() as runtime:
+        runtime.reset(start)
+        runtime.insert_object("sign", asset, world_from_object)
+        runtime.step(Control())
+        with pytest.raises(ValueError, match="probe_directory"):
+            runtime.sensor_view("front")
+    with pytest.raises(ValueError, match="object_occlusion must be"):
+        NuRecSimulator({"dt": .1}, renderer, object_occlusion="unsupported")
+
+
 def test_depth_without_default_camera(nurec_usdz_path, tmp_path, monkeypatch):
     archive_path = tmp_path / "side_only.usdz"
     with zipfile.ZipFile(nurec_usdz_path) as source:
@@ -281,7 +357,7 @@ def test_observe_past(nurec_dataset, monkeypatch, make_object_in_front):
     frames = nurec_dataset.frames("scene")
     start = nurec_dataset.scenario_start("scene", frames[3])
     simulator = NuRecSimulator({"dt": .1}, NuRecRenderer(cameras=["front"]),
-                               physics_update_mode="none")
+                               physics_update_mode="none", object_occlusion="geometry")
     with simulator.create_runtime() as runtime:
         hooks = HookSet([Hook("render.post", lambda image, context: image + 7)])
         with hooks.session(runtime, ConstantAVStack()).activate():

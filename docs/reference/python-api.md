@@ -32,7 +32,7 @@ data and boundary modules can be imported without simulator servers or weights.
 | avsectester.maps.opendrive | OpenDRIVE semantic-map reader |
 | avsectester.maps.scenario_map | Semantic-map records and stopping-control classification |
 | avsectester.rendering | Object assets, surface rendering, composition and harmonizers |
-| avsectester.rendering.compositing | ObjectVisibility, CompositePlan, CompositeResult, plan_composite, composite_objects and blend_rgba |
+| avsectester.rendering.compositing | ObjectVisibility, CompositePlan, CompositeResult, ObjectComposition, plan_composite, composite_objects and blend_rgba |
 | avsectester.rendering.harmonizers | Harmonizer, ClassicHarmonizer and PCTNetHarmonizer |
 | avsectester.rendering.objects | PlaneSurface, ObjectAsset and PlacedObject |
 | avsectester.rendering.surfaces | Calibrated planar sampling and render_surfaces |
@@ -60,6 +60,8 @@ data and boundary modules can be imported without simulator servers or weights.
 | avsectester.closed_loop.simulators.carla.simulator | CARLA simulator configuration and runtime |
 | avsectester.closed_loop.simulators.nurec | NuRecSimulator, NuRecSimulatorRuntime and NuRecRenderer exports |
 | avsectester.closed_loop.simulators.nurec.renderer | Renderer, NuRecRenderer and RPC pose/camera conversion |
+| avsectester.closed_loop.simulators.nurec.asset_editing | NRE edit_assets messages declared from NVIDIA's public gRPC API reference |
+| avsectester.closed_loop.simulators.nurec.probe_assets | ProbeAsset and probe_asset: single-colour Gaussian copies of ObjectAssets for NRE insertion |
 | avsectester.closed_loop.simulators.nurec.simulator | NuRec simulator configuration and runtime |
 | avsectester.closed_loop.simulators.recorded | RecordedReplaySimulator and RecordedReplaySimulatorRuntime |
 | avsectester.attack | Attack, AttackSegment, OfflineContext, AttackRuntime and actions |
@@ -767,7 +769,7 @@ dataset, simulator or model dependencies.
 | `can_deploy_at` | `can_deploy_at(position: int, deployment: DeploymentPlan, capture_ticks: int) -> bool` |
 | `ClockSnapshot` | `t: float`<br>`frame: int` |
 | `SensorGeometry` | `sensor: str`<br>`camera: Camera`<br>`cam_from_world: np.ndarray` |
-| `SensorView` | `sensor: str`<br>`data: Any`<br>`camera: Camera \| None`<br>`cam_from_world: np.ndarray \| None`<br>`actors: Mapping[str, ActorState]`<br>`ego: ActorState`<br>`time: float`<br>`frame: int`<br>`sensor_from_world: np.ndarray \| None = None`<br>`depth: np.ndarray \| None = None`<br>`native: Mapping[str, Any] = field(default_factory=dict)`<br>`objects: Mapping[str, PlacedObject] = field(default_factory=dict)` |
+| `SensorView` | `sensor: str`<br>`data: Any`<br>`camera: Camera \| None`<br>`cam_from_world: np.ndarray \| None`<br>`actors: Mapping[str, ActorState]`<br>`ego: ActorState`<br>`time: float`<br>`frame: int`<br>`sensor_from_world: np.ndarray \| None = None`<br>`depth: np.ndarray \| None = None`<br>`native: Mapping[str, Any] = field(default_factory=dict)`<br>`objects: Mapping[str, PlacedObject] = field(default_factory=dict)`<br>`composition: ObjectComposition \| None = None`<br>`object_occlusion: str = 'geometry'` |
 | `Simulator` | `dataset_kinds: tuple[str, ...] = ()`<br>`can_render: bool = False`<br>`can_insert_objects: bool = False`<br>`can_replay: bool = False`<br>`can_observe_past: bool = False`<br>`supported_world_settings: frozenset[str] = frozenset()` |
 | `Simulator.create_runtime` | `create_runtime(seed: int \| None = None) -> SimulatorRuntime` |
 | `Simulator.decision_time_step` | `decision_time_step: float \| None` |
@@ -1063,7 +1065,7 @@ dataset, simulator or model dependencies.
 | Public name | Signature or fields |
 |---|---|
 | `NuRecSimulator` | Class; see methods below |
-| `NuRecSimulator.__init__` | `__init__(config: dict, renderer: Renderer, dynamics: EgoDynamics \| None = None, *, depth: str = 'mesh', route_generator: str = 'map', physics_update_mode: str = 'ego_only', ground_mesh: str = 'mesh') -> None` |
+| `NuRecSimulator.__init__` | `__init__(config: dict, renderer: Renderer, dynamics: EgoDynamics \| None = None, *, depth: str = 'mesh', route_generator: str = 'map', physics_update_mode: str = 'ego_only', ground_mesh: str = 'mesh', object_occlusion: str = 'rendered_probes') -> None` |
 | `NuRecSimulator.create_runtime` | `create_runtime(seed: int \| None = None) -> NuRecSimulatorRuntime` |
 | `NuRecSimulator.supported_stages` | `supported_stages: frozenset[str]` |
 | `NuRecSimulator.command_modes` | `command_modes: frozenset[str] \| None` |
@@ -1085,6 +1087,9 @@ dataset, simulator or model dependencies.
 NuRecRenderer is explicitly configured on NuRecSimulator; it is not constructed automatically.
 The package root exports only NuRecSimulator, NuRecSimulatorRuntime and NuRecRenderer.
 Renderer and the RPC conversion functions are imported from nurec.renderer.
+render_scene_visibility returns a boolean image, true where the reconstruction does not hide the
+objects; NuRecSimulator's default object_occlusion="rendered_probes" passes it to plan_composite
+as scene_visibility. See [Rendered-probe occlusion](../guides/simulators.md#rendered-probe-occlusion).
 
 dynamic_objects is a sequence of (track_id, world_from_actor) pairs. NuRecRenderer serializes each
 pose into both endpoints of DynamicObject.pose_pair, retaining the dataset's world pose and
@@ -1151,10 +1156,11 @@ addresses pixel centres at i + 0.5. Unsupported external distortion types raise 
 | `Renderer.origin_bounds` | `origin_bounds: Any` |
 | `Renderer.load_scene` | `load_scene(scene: Any) -> None` |
 | `Renderer.render` | `render(world_from_rig: np.ndarray, timestamp_us: int, camera: str, dynamic_objects=()) -> Any` |
+| `Renderer.render_scene_visibility` | `render_scene_visibility(world_from_rig: np.ndarray, timestamp_us: int, camera: str, objects: Sequence[PlacedObject], dynamic_objects=()) -> np.ndarray` |
 | `Renderer.camera_model` | `camera_model(camera: str \| None = None) -> Camera \| None` |
 | `Renderer.cam_from_world` | `cam_from_world(world_from_rig: np.ndarray, camera: str \| None = None) -> np.ndarray` |
 | `Renderer.close` | `close() -> None` |
-| `NuRecRenderer` | `endpoint: str = '127.0.0.1:50051'`<br>`scene_id: str \| None = None`<br>`cameras: list[str] = field(default_factory=lambda: ['camera_front_wide_120fov'])`<br>`calibration: dict = field(default_factory=dict)`<br>`image_quality: float = 95.0`<br>`resolution_hw: Mapping[str, tuple[int, int]] = field(default_factory=dict)` |
+| `NuRecRenderer` | `endpoint: str = '127.0.0.1:50051'`<br>`scene_id: str \| None = None`<br>`cameras: list[str] = field(default_factory=lambda: ['camera_front_wide_120fov'])`<br>`calibration: dict = field(default_factory=dict)`<br>`image_quality: float = 95.0`<br>`resolution_hw: Mapping[str, tuple[int, int]] = field(default_factory=dict)`<br>`probe_directory: str \| None = None`<br>`server_probe_directory: str \| None = None`<br>`track_padding_m: tuple[float, float, float] = (1.0, 1.0, 0.25)` |
 | `NuRecRenderer.copy` | `copy() -> NuRecRenderer` |
 | `NuRecRenderer.load_scene` | `load_scene(scene: Any) -> None` |
 | `NuRecRenderer.service` | `service: Any` |
@@ -1163,6 +1169,7 @@ addresses pixel centres at i + 0.5. Unsupported external distortion types raise 
 | `NuRecRenderer.cam_from_world` | `cam_from_world(world_from_rig: np.ndarray, camera: str \| None = None) -> np.ndarray` |
 | `NuRecRenderer.render` | `render(world_from_rig: np.ndarray, timestamp_us: int, camera: str, dynamic_objects=())` |
 | `NuRecRenderer.render_at` | `render_at(world_from_rig, timestamp_us: int, camera: str, dynamic_objects=())` |
+| `NuRecRenderer.render_scene_visibility` | `render_scene_visibility(world_from_rig: np.ndarray, timestamp_us: int, camera: str, objects: Sequence[PlacedObject], dynamic_objects=()) -> np.ndarray` |
 
 ### avsectester.closed_loop.simulators.recorded
 
@@ -1422,7 +1429,7 @@ alpha is the filtered coverage.
 
 The rendering package root exports ObjectAsset, PlacedObject, PlaneSurface, Harmonizer,
 ClassicHarmonizer, PCTNetHarmonizer, render_surfaces, ObjectVisibility, CompositePlan, CompositeResult,
-blend_rgba, plan_composite, composite_objects, Texture, CheckerboardTexture and load_rgba_image.
+ObjectComposition, blend_rgba, plan_composite, composite_objects, Texture, CheckerboardTexture and load_rgba_image.
 Plane surfaces are in world coordinates when passed to render_surfaces. Its RGBA and depth outputs
 have calibrated image dimensions; depth is optical-axis z, with inf where no surface is hit.
 
@@ -1432,7 +1439,8 @@ have calibrated image dimensions; depth is optical-axis z, with inf where no sur
 | `CompositeResult` | `image: np.ndarray`<br>`depth: np.ndarray`<br>`visible_mask: np.ndarray`<br>`occlusion_source: str`<br>`ignored_occluders: tuple[str, ...] = ()`<br>`object_visibility: Mapping[str, ObjectVisibility] = field(default_factory=dict)` |
 | `blend_rgba` | `blend_rgba(image: np.ndarray, rgba: np.ndarray, visible_mask: np.ndarray, *, harmonizer: Harmonizer \| None = None, soften: float = 0.0) -> np.ndarray` |
 | `composite_objects` | `composite_objects(image: np.ndarray, camera: Camera, cam_from_world: np.ndarray, objects: Sequence[PlacedObject], *, scene_depth: np.ndarray \| None = None, occluders: Mapping[str, ActorState] \| None = None, occlusion_tolerance_m: float = 0.1) -> CompositeResult` |
-| `plan_composite` | `plan_composite(camera: Camera, cam_from_world: np.ndarray, objects: Sequence[PlacedObject], *, scene_depth: np.ndarray \| None = None, occluders: Mapping[str, ActorState] \| None = None, occlusion_tolerance_m: float = 0.1) -> CompositePlan` |
+| `plan_composite` | `plan_composite(camera: Camera, cam_from_world: np.ndarray, objects: Sequence[PlacedObject], *, scene_depth: np.ndarray \| None = None, occluders: Mapping[str, ActorState] \| None = None, occlusion_tolerance_m: float = 0.1, scene_visibility: np.ndarray \| None = None) -> CompositePlan` |
+| `ObjectComposition` | Frozen record: `background: np.ndarray`<br>`plan: CompositePlan` |
 | `CompositePlan` | Frozen record: `objects: tuple[PlacedObject, ...]`<br>`depth: np.ndarray`<br>`visible_mask: np.ndarray`<br>`occlusion_source: str`<br>`ignored_occluders: tuple[str, ...]`<br>`object_visibility: Mapping[str, ObjectVisibility]`<br>`footprints: tuple[...]` (internal) |
 | `CompositePlan.apply` | `apply(image: np.ndarray) -> CompositeResult` |
 | `CompositePlan.composite` | `composite(image: torch.Tensor, textures: Mapping[tuple[str, int], torch.Tensor] \| None = None) -> torch.Tensor` |

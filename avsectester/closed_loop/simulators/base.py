@@ -29,7 +29,9 @@ if TYPE_CHECKING:
     import numpy as np
 
     from avsectester.geometry.cameras import Camera
-    from avsectester.rendering import CompositePlan, Harmonizer, ObjectAsset, ObjectVisibility, PlacedObject
+    from avsectester.rendering import (
+        CompositePlan, Harmonizer, ObjectAsset, ObjectComposition, ObjectVisibility, PlacedObject,
+    )
 
 
 _reservation_lock = Lock()
@@ -122,6 +124,10 @@ class SensorView:
     object composition. Existing measured depth includes composed objects. ``objects`` contains
     the placed world objects whose projection lies in this camera's current image, keyed by
     object ID, including fully occluded ones. They are immutable and shared, not copied.
+    ``composition`` holds the image beneath them and the plan that composed them into ``data``.
+    ``object_occlusion`` states how the simulator hides composed objects behind its scene:
+    ``"geometry"`` uses this view's depth or actor cuboids, which ``composite_plan`` reproduces;
+    ``"rendered_probes"`` renders opaque probe copies of the objects inside the simulator's scene.
     ``native`` gives
     simulator-specific access and gives up portability. World units are metres, with x forward,
     y left, z up.
@@ -139,6 +145,8 @@ class SensorView:
     depth: np.ndarray | None = None
     native: Mapping[str, Any] = field(default_factory=dict)
     objects: Mapping[str, PlacedObject] = field(default_factory=dict)
+    composition: ObjectComposition | None = None
+    object_occlusion: str = "geometry"
 
     def composite_plan(self, objects: Sequence[PlacedObject]) -> CompositePlan:
         """Plan composing ``objects`` into this camera view exactly as simulator captures do.
@@ -146,12 +154,17 @@ class SensorView:
         The plan uses this view's camera, its measured depth or, without depth, its actor
         cuboids, and the capture occlusion tolerance. ``plan.composite`` therefore reproduces
         the deployed capture differentiably in surface colours. Plan on a view captured
-        without these objects, for example a clean ``ClosedLoopSession.render`` result.
+        without these objects, for example a clean ``ClosedLoopSession.render`` result. Only
+        ``"geometry"`` object occlusion can be planned here; ``"rendered_probes"`` needs the objects
+        in the scene: capture the view with them inserted and use its ``composition`` instead.
         """
         from avsectester.rendering import plan_composite
 
         if self.camera is None or self.cam_from_world is None:
             raise ValueError(f"Sensor {self.sensor!r} has no optical camera geometry")
+        if self.object_occlusion != "geometry":
+            raise ValueError(f"Sensor {self.sensor!r} hides objects with {self.object_occlusion!r} occlusion; "
+                             "capture the view with the objects inserted and use view.composition")
         objects = tuple(objects)
         present = sorted({placed.object_id for placed in objects} & self.objects.keys())
         if present:
@@ -463,9 +476,11 @@ class SimulatorRuntime(_StageAdapter, ABC):
             native_view = self._sensor_view(sensor)
             view = self._composited_views.get(native_view.sensor, native_view)
         # Explicit native handles retain their documented opt-out from portability. Placed
-        # objects are immutable and may hold harmonizer resources, so they are shared.
-        detached = deepcopy(replace(view, native={}, objects={}))
-        return replace(detached, native=view.native, objects=dict(view.objects))
+        # objects, also referenced by the composition plan, are immutable and may hold harmonizer
+        # resources, so the copy shares them.
+        shared = {id(placed): placed for placed in view.objects.values()}
+        detached = deepcopy(replace(view, native={}), shared)
+        return replace(detached, native=view.native)
 
     def _sensor_view(self, sensor: str) -> SensorView:
         """Native capture and geometry, before framework object composition."""
@@ -534,7 +549,7 @@ class SimulatorRuntime(_StageAdapter, ABC):
             (self._composited_capture, self._composited_views,
              self._object_visibility) = compose_capture(
                 self._capture, self._capture_objects, self.camera_sensors,
-                self.sensor_geometry, self._sensor_view,
+                self.sensor_geometry, self._sensor_view, self._composite_plan,
             )
         except BaseException as error:
             self._composition_error = error
@@ -688,7 +703,8 @@ class SimulatorRuntime(_StageAdapter, ABC):
                     return self._recorded_sensor_view(previous, sensor, observation)
 
                 observation, _, _ = compose_capture(
-                    observation, self._start_objects, self.camera_sensors, geometry, view)
+                    observation, self._start_objects, self.camera_sensors, geometry, view,
+                    self._composite_plan)
             past.append(self.copy_observation(observation))
         return tuple(past)
 
@@ -703,6 +719,10 @@ class SimulatorRuntime(_StageAdapter, ABC):
     def _recorded_sensor_view(self, position: int, sensor: str, observation: Observation) -> SensorView:
         """Camera view of a recorded past capture whose data comes from ``observation``."""
         raise NotImplementedError("This simulator cannot compose world objects into recorded captures")
+
+    def _composite_plan(self, view: SensorView, objects: Sequence[PlacedObject]) -> CompositePlan:
+        """Plan composing ``objects`` into a native capture view; measured occlusion overrides this."""
+        return view.composite_plan(objects)
 
     def start_replay(self, start: ScenarioStart, initialization: Initialization | None = None, *,
                      world: Mapping[str, Any] | None = None,

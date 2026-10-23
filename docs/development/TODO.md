@@ -35,6 +35,12 @@ This file lists open work. Items are planned capabilities, not implemented featu
 - [ ] Supply aligned static-scene depth or geometry for RecordedReplaySimulator. Its image
   insertion currently uses actor cuboids without static mesh occlusion.
 
+## NuRec rendered-probe conventions
+
+- [ ] Replace the measured NRE asset conventions (PLY axes, object_size scaling, track padding)
+  with documented ones once NVIDIA publishes them, and recheck probe alignment for each NRE release.
+  Probe silhouettes differ from composited surfaces by about one pixel at edges.
+
 ## Inserted objects in non-camera sensors
 
 - [ ] Include framework-inserted ObjectAsset geometry in LiDAR and other non-camera captures.
