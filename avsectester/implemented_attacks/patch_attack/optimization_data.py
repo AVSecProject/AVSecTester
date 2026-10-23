@@ -12,6 +12,7 @@ from avsectester.execution.services import RenderRequest
 from avsectester.attack.optimization import AdversarialSample, DataSource
 from avsectester.data_types import TargetSpec
 from avsectester.geometry import projection
+from avsectester.rendering.surfaces import plane_sampling, prepare_surface
 
 
 def native_sampling_grid(black, white):
@@ -115,6 +116,7 @@ class SessionDataSource(DataSource):
                 frame = self._rng.choice(candidates)
             else:
                 raise ValueError("Patch segment has no frame that preserves the deployment window")
+            sampling = None
             if physical and self.require_patch_grid:
                 capture, grid, mask = self._physical_capture(segment, frame)
             else:
@@ -134,12 +136,15 @@ class SessionDataSource(DataSource):
                         raise ValueError("Optimization requires a calibrated camera view")
                     if view.data.shape[:2] != (view.camera.height, view.camera.width):
                         raise ValueError("Optimization camera calibration and image dimensions differ")
-                    grid, mask = projection.plane_sampling_grid(
-                        view.camera, view.cam_from_world, surfaces[0].corners)
+                    sampler = prepare_surface(surfaces[0], view.camera, view.cam_from_world)
+                    bounds = sampler.image_bounds(view.camera)
+                    if bounds is None:
+                        raise ValueError("Patch projects outside the optimization camera image")
+                    sampling = plane_sampling(sampler, view.camera, bounds)
                     evidence = action.evidence(view, resolved)
                     if evidence.visibility is None:
                         raise ValueError(f"Patch optimization visibility is unavailable: {evidence.reason}")
-                    mask *= np.asarray(evidence.visible_mask, dtype=np.float32)[None]
+                    mask = np.asarray(evidence.visible_mask, dtype=np.float32)[None]
             view = capture.view
             captured = read_camera_rgb(capture.observation, view.sensor)
             if captured is None or captured[0] != view.sensor:
@@ -164,7 +169,7 @@ class SessionDataSource(DataSource):
             result.append(AdversarialSample(
                 x=torch.as_tensor(captured[1].copy(), device=self.device).permute(2, 0, 1).float() / 255,
                 target=TargetSpec(tuple(float(v) for v in box)),
-                context={"sampling_grid": grid, "mask": mask, "frame": frame, "segment": segment,
+                context={"plane_sampling": sampling, "sampling_grid": grid, "mask": mask, "frame": frame, "segment": segment,
                          "observation": capture.observation,
                          "brightness": self._rng.uniform(*self.brightness),
                          "contrast": self._rng.uniform(*self.contrast)},

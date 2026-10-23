@@ -55,13 +55,12 @@ live in attack/insertion/; shared PlaneSurface, sampling and harmonizers live in
 Object-specific
 assets live beside ObjectInsertionAttack.
 
-geometry/projection.py supplies plane_sampling_grid, project_box and visible_plane_mask for users
-who need calibrated sampling, box rectangles or a depth-visible plane mask independently. They
-receive camera models and world transforms directly, support pinhole and f-theta lenses, and do
-not depend on SensorView or attack metadata.
+rendering/surfaces.py samples textured planes with per-pixel prefiltering: each pixel averages
+2 x 2 rays, each reading a trilinear mipmap at its own footprint, so distant textures do not alias.
+Composition, visibility and patch optimization share this sampler. geometry/projection.py supplies
+project_box for users who need a box's image rectangle independently.
 geometry/cameras.py also provides the shared NEAR_Z threshold and camera_ray_mask for rejecting
-nonfinite, backward or out-of-lens rays. DepthVisibilityEstimator restricts plane-depth queries to
-each projected face's image bounds; pixels outside those bounds are False in the returned mask.
+nonfinite, backward or out-of-lens rays.
 
 The simulator provides a SensorView: RGB data, camera model, camera-from-world transform, actor and
 ego cuboids, time and optional depth. The attack resolves placement and projects through the actual

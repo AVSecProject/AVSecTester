@@ -13,11 +13,16 @@ from .interface import AdversarialSample, Perturbation
 
 
 class PatchPerturbation(Perturbation):
-    """A rectangular texture warped with a user-supplied sampling grid and visibility mask.
+    """A rectangular texture rendered into each sample's background, with photometric jitter.
 
-    δ is the patch pixels ``(3, Hp, Wp)`` in [0,1]; ``apply`` warps+composites it into the sample's
-    background using calibrated ``sampling_grid``/``mask``, with photometric jitter; ``project``
-    clamps to [0,1] (the whole surface is adversarial); ``export`` yields the deploy texture.
+    δ is the patch pixels ``(3, Hp, Wp)`` in [0,1]. A sample's context supplies ``mask``, the
+    visible region ``(1, H, W)``, and either ``plane_sampling`` or ``sampling_grid``.
+    ``plane_sampling`` is the framework renderer's
+    :class:`~avsectester.rendering.surfaces.PlaneSampling`: the patch is filtered exactly as
+    deployment renders it, so gradients reach every texel. ``sampling_grid`` is an image-sized
+    ``grid_sample`` grid measured from a native renderer that samples the texture itself.
+    ``project`` clamps to [0,1] (the whole surface is adversarial); ``export`` yields the
+    deploy texture.
     """
 
     def __init__(self, size=(128, 128), device="cuda:0", init="random", seed=0, alpha=None):
@@ -46,18 +51,35 @@ class PatchPerturbation(Perturbation):
     def apply(self, sample: AdversarialSample, delta: torch.Tensor) -> torch.Tensor:
         x = sample.x.to(delta.device)
         out_h, out_w = x.shape[1:]
+        mask = torch.as_tensor(sample.context["mask"], device=delta.device, dtype=delta.dtype)
+        if mask.shape != (1, out_h, out_w):
+            raise ValueError("The patch mask must match the background dimensions")
+        b = float(sample.context.get("brightness", 1.0))
+        c = float(sample.context.get("contrast", 1.0))
+        sampling = sample.context.get("plane_sampling")
+        if sampling is not None:
+            from avsectester.rendering.surfaces import sample_texture
+
+            colors = (((delta - 0.5) * c + 0.5) * b).clamp(0, 1)
+            alpha = (torch.ones_like(delta[:1]) if self.alpha is None else
+                     torch.as_tensor(self.alpha, device=delta.device, dtype=delta.dtype)[None] / 255)
+            layer = sample_texture(torch.cat((colors * alpha, alpha)), sampling)
+            x0, y0, x1, y1 = sampling.bounds
+            if not (0 <= x0 < x1 <= out_w and 0 <= y0 < y1 <= out_h):
+                raise ValueError("Patch plane sampling must lie inside the background image")
+            visible = mask[:, y0:y1, x0:x1]
+            region = x[:, y0:y1, x0:x1] * (1 - layer[3:] * visible) + layer[:3] * visible
+            return torch.cat((x[:, :y0], torch.cat((x[:, y0:y1, :x0], region, x[:, y0:y1, x1:]), dim=2),
+                              x[:, y1:]), dim=1)
         grid = torch.as_tensor(sample.context["sampling_grid"], device=delta.device,
                                dtype=delta.dtype)
-        mask = torch.as_tensor(sample.context["mask"], device=delta.device, dtype=delta.dtype)
-        if grid.shape != (out_h, out_w, 2) or mask.shape != (1, out_h, out_w):
-            raise ValueError("Calibrated patch grid/mask must match the background dimensions")
+        if grid.shape != (out_h, out_w, 2):
+            raise ValueError("Calibrated patch grid must match the background dimensions")
         warped = F.grid_sample(delta.unsqueeze(0), grid.unsqueeze(0), mode="bilinear",
                                padding_mode="border", align_corners=False)[0]
         coverage = F.grid_sample(torch.ones_like(delta[:1]).unsqueeze(0), grid.unsqueeze(0),
                                  mode="bilinear", padding_mode="zeros", align_corners=False)[0]
         mask = mask * coverage
-        b = float(sample.context.get("brightness", 1.0))
-        c = float(sample.context.get("contrast", 1.0))
         warped = (((warped - 0.5) * c + 0.5) * b).clamp(0, 1)
         return x * (1 - mask) + warped * mask
 

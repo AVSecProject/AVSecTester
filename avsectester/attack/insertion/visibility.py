@@ -11,7 +11,6 @@ from avsectester.data_types import ActorState
 from avsectester.validation import require_positive_integer
 from .assets import ResolvedInsertion
 from avsectester.geometry.cameras import Camera, camera_ray_mask
-from avsectester.geometry.projection import visible_plane_mask
 from avsectester.geometry.boxes import box_ray_distances
 from avsectester.rendering.surfaces import prepare_surface, rasterize
 from avsectester.rendering import PlacedObject
@@ -59,7 +58,7 @@ class _VisibilityEstimator:
         image_x, image_y = image_x[valid], image_y[valid]
         reference[image_y, image_x] = True
         rgba[image_y, image_x] = projection.rgba[selected]
-        depth[image_y, image_x] = projection.distance[selected] * projection.rays[selected, 2]
+        depth[image_y, image_x] = projection.depth[selected]
         state = (projection, selected, image_x, image_y)
         return state, VisibilityEvidence(
             None, reference, reference.copy(), depth, count, sampled_rgba=rgba
@@ -137,7 +136,8 @@ class CuboidVisibilityEstimator(_VisibilityEstimator):
         blocking_depth = np.minimum(blocking_depth, _surface_occlusion_distances(
             subject.id, other_insertions, world_objects, camera, cam_from_world, rays))
         visible = np.zeros_like(evidence.reference_mask)
-        visible[ys, xs] = projection.distance[indices] <= blocking_depth + self.tolerance_m
+        target = projection.depth[indices] / rays[:, 2]
+        visible[ys, xs] = target <= blocking_depth + self.tolerance_m
         return self._finish(evidence, visible, source, camera_name)
 
 
@@ -181,29 +181,13 @@ class DepthVisibilityEstimator(_VisibilityEstimator):
                 evidence, visible, source, camera_name, "Invalid depth at target pixels"
             )
         rays = projection.rays[indices]
-        z_depth = scene_depth
-        z_tolerance = self.tolerance_m
-        if depth_convention == "range":
-            # Only opaque reference pixels are consumed below; their rays already
-            # belong to the same lens/pixel centres as the calibrated scene depth.
-            z_depth = np.full_like(scene_depth, np.inf)
-            z_depth[ys, xs] = (measured + self.tolerance_m) * rays[:, 2]
-            z_tolerance = 0.
-        for surface in subject.planes():
-            sampler = prepare_surface(surface, camera, cam_from_world)
-            distance = sampler.sample(rays)[0]
-            # Only the nearest opaque texel contributes. A nearer plane's transparent hole
-            # must not make an occluded farther surface visible.
-            winning = np.isclose(distance, projection.distance[indices], rtol=1e-10, atol=1e-10)
-            if not winning.any():
-                continue
-            plane_visible = visible_plane_mask(
-                camera, cam_from_world, z_depth, surface.corners, z_tolerance,
-                bounds=sampler.bounds)
-            visible[ys[winning], xs[winning]] |= plane_visible[ys[winning], xs[winning]]
+        target_z = projection.depth[indices]
+        # Both conventions compare the nearest covering surface along each pixel's own rays.
+        target = target_z if depth_convention == "z" else target_z / rays[:, 2]
+        visible[ys, xs] = target <= measured + self.tolerance_m
         distance = _surface_occlusion_distances(
             subject.id, other_insertions, (), camera, cam_from_world, rays)
-        visible[ys, xs] &= projection.distance[indices] <= distance + self.tolerance_m
+        visible[ys, xs] &= target_z / rays[:, 2] <= distance + self.tolerance_m
         return self._finish(evidence, visible, source, camera_name)
 
 

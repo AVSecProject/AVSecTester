@@ -76,28 +76,24 @@ assert torch.max(torch.abs(result.delta)).item() <= 0.1
 ```
 
 LinfImage projects an additive delta into an L-infinity ball and clips the resulting image to [0,
-1]. PatchPerturbation instead consumes sampling_grid and mask in each sample's context and exports
-an RGBA texture. A custom DataSource owns those image/geometry choices.
-
-Use the shared geometry helpers when a sample needs calibrated spatial evidence:
+1]. PatchPerturbation renders its texture into each sample and exports an RGBA texture. A sample's
+context supplies mask, the visible region, and either plane_sampling or sampling_grid:
 
 ```python
-from avsectester.geometry.projection import plane_sampling_grid, project_box, visible_plane_mask
+from avsectester.geometry.projection import project_box
+from avsectester.rendering.surfaces import plane_sampling, prepare_surface
 
-# Requires calibrated camera geometry, a plane's world-space corners and a host ActorState.
-grid, mask = plane_sampling_grid(camera, cam_from_world, corners)
+# Requires calibrated camera geometry, the patch's world-space PlaneSurface and a host ActorState.
+sampler = prepare_surface(surface, camera, cam_from_world)
+sampling = plane_sampling(sampler, camera, sampler.image_bounds(camera))
 target_box = project_box(camera, cam_from_world, host.box_transform(), host.extent)
-visible = visible_plane_mask(camera, cam_from_world, depth, corners, tolerance_m=0.0002)
 ```
 
-The grid follows grid_sample with align_corners=False and works for pinhole and f-theta cameras.
-The box helper accepts arbitrary world boxes; selecting the host and score region remains the
-attack's responsibility. The depth mask compares plane depth with aligned optical-axis scene depth.
-Pass visible_plane_mask(..., bounds=(x0, y0, x1, y1)) to compute rays only in a projected face's
-rectangle. Right and bottom are exclusive; the full-image output is False outside the clipped
-bounds. Omitting bounds computes the whole image. DepthVisibilityEstimator applies this bounded
-path for each face automatically.
-These helpers live in geometry/projection.py and take no simulator or attack object.
+plane_sampling is the framework renderer's footprint geometry. PatchPerturbation filters the patch
+with the same prefiltered sampler that renders it online, so optimized and deployed pixels match
+and gradients reach every texel, also for distant patches. sampling_grid is an image-sized
+grid_sample grid measured from a native renderer, such as a CARLA prop, that samples the texture
+itself. Selecting the host and score region remains the attack's responsibility.
 
 For a driving model, replace the scorer with SessionScorer inside the attack's service session:
 

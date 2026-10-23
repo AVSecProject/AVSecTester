@@ -1375,16 +1375,34 @@ the face and precede it in surfaces. from_surfaces derives the final extent.
 
 ### avsectester.rendering.surfaces
 
+Every pixel averages SUBSAMPLES x SUBSAMPLES rays; each ray reads a trilinear mipmap of the
+premultiplied texture at its own footprint level. Coverage is geometric: rays outside the
+rectangle contribute nothing, so filtered edges are antialiased without spreading. Rendering,
+visibility and PatchPerturbation call the same sample_texture, so optimization filters the patch
+exactly as deployment renders it.
+
 | Public name | Signature or fields |
 |---|---|
+| `SUBSAMPLES` | `2`; rays per pixel along each image axis |
 | `edge_points` | `edge_points(corners: np.ndarray) -> np.ndarray` |
 | `SurfaceSampler` | `corners: np.ndarray`<br>`texture: np.ndarray`<br>`bounds: tuple[int, int, int, int] \| None`<br>`reason: str = ''` |
+| `SurfaceSampler.intersect` | `intersect(rays: np.ndarray) -> tuple[np.ndarray, np.ndarray]` |
 | `SurfaceSampler.sample` | `sample(rays: np.ndarray) -> tuple[np.ndarray, np.ndarray]` |
+| `SurfaceSampler.image_bounds` | `image_bounds(camera: Camera) -> tuple[int, int, int, int] \| None` |
 | `prepare_surface` | `prepare_surface(surface: PlaneSurface, camera: Camera, cam_from_world) -> SurfaceSampler` |
-| `Projection` | `reference: np.ndarray`<br>`distance: np.ndarray`<br>`rays: np.ndarray`<br>`rgba: np.ndarray`<br>`x0: int`<br>`y0: int` |
+| `PlaneSampling` | Frozen record: `bounds: tuple[int, int, int, int]`<br>`coordinates: np.ndarray`<br>`derivatives: np.ndarray`<br>`depth: np.ndarray` |
+| `plane_sampling` | `plane_sampling(sampler: SurfaceSampler, camera: Camera, bounds: tuple[int, int, int, int]) -> PlaneSampling` |
+| `premultiplied_texture` | `premultiplied_texture(rgba: np.ndarray) -> torch.Tensor` |
+| `sample_texture` | `sample_texture(texture: torch.Tensor, sampling: PlaneSampling) -> torch.Tensor` |
+| `Projection` | `reference: np.ndarray`<br>`depth: np.ndarray`<br>`rays: np.ndarray`<br>`rgba: np.ndarray`<br>`x0: int`<br>`y0: int` |
 | `rasterize` | `rasterize(surfaces: Sequence[PlaneSurface], camera: Camera, cam_from_world, max_reference_pixels)` |
-| `sample_image` | `sample_image(sampler: SurfaceSampler, camera: Camera, *, margin: int = 2) -> tuple[np.ndarray, np.ndarray]` |
 | `render_surfaces` | `render_surfaces(surfaces: Sequence[PlaneSurface], camera: Camera, cam_from_world: np.ndarray) -> tuple[np.ndarray, np.ndarray]` |
+
+SurfaceSampler.sample is a point query for occlusion: a ray is blocked where the full-resolution
+bilinear alpha exceeds 127. PlaneSampling stores texture-independent footprint geometry, so one
+sampling serves any texture size. sample_texture takes and returns premultiplied (4, H, W)
+tensors and requires torch. Covered pixels returned by render_surfaces have finite depth; their
+alpha is the filtered coverage.
 
 ### avsectester.attack.insertion.compositor
 
@@ -1680,19 +1698,10 @@ attack metadata. Both pinhole and f-theta lenses are supported.
 
 | Public name | Signature or fields |
 |---|---|
-| `plane_sampling_grid` | `plane_sampling_grid(camera, cam_from_world, corners) -> tuple[np.ndarray, np.ndarray]` |
 | `project_box` | `project_box(camera, cam_from_world, world_from_box, extent) -> tuple[float, float, float, float] \| None` |
-| `visible_plane_mask` | `visible_plane_mask(camera, cam_from_world, depth, corners, tolerance_m, *, bounds: tuple[int, int, int, int] \| None = None) -> np.ndarray` |
 
-plane_sampling_grid maps world-space plane corners to image-sized texture coordinates in the
-grid_sample convention with align_corners=False, plus a geometric mask. project_box returns the
-image rectangle (x0, y0, x1, y1), or None when the box has no visible projection. visible_plane_mask
-compares the plane's optical-axis depth against aligned scene depth plus tolerance_m. Optional
-bounds=(x0, y0, x1, y1) limits ray computation to that rectangle; right and bottom are exclusive.
-The returned mask always has full image shape and is False outside the clipped rectangle. Bounds
-may extend beyond the image and are intersected with it. Empty bounds produce an all-False mask;
-noninteger or reversed bounds raise ValueError. None computes the whole image.
-DepthVisibilityEstimator passes each projected face's bounds rather than casting full-image rays.
+project_box returns the image rectangle (x0, y0, x1, y1), or None when the box has no visible
+projection.
 
 ### avsectester.geometry.boxes
 
