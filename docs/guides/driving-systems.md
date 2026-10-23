@@ -116,8 +116,8 @@ images raises an error; neither poses nor images are fabricated or repeated.
 
 frame_subsample defaults to 1. The policy selects context_length images from the latest
 `(context_length - 1) * frame_subsample + 1` observations, retaining the current frame. The supplied
-NuRec configurations use four images with stride 3: at decision zero, their times are
-−0.9, −0.6, −0.3 and 0.0 s relative to the selected start.
+NuRec configurations use four images with stride 1, matching Alpamayo's 10 Hz image history: at
+decision zero, their times are −0.3, −0.2, −0.1 and 0.0 s relative to the selected start.
 
 Observation.route becomes an AlpaSim Route at the same rounded microsecond epoch as the pose
 history. AlpaSim's determine_command_from_route supplies the navigation command. Without a route,

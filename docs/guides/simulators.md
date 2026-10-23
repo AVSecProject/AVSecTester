@@ -253,7 +253,8 @@ windshield model, projections drift 2–9 px from the rendered image across the 
 
 ### AlpaSim defaults
 
-The supplied NuRec configurations follow AlpaSim affc2ea and its single-camera Alpamayo 1.5 preset:
+The supplied NuRec configurations follow AlpaSim affc2ea: its Alpamayo 1.5 driver configuration with
+the single-camera preset's camera:
 
 | Setting | AlpaSim source/default | Supplied NuRec configurations |
 |---|---|---|
@@ -261,9 +262,13 @@ The supplied NuRec configurations follow AlpaSim affc2ea and its single-camera A
 | Navigation | route_generator_type: MAP | route_generator: map |
 | Ground contact | physics_update_mode: EGO_ONLY; use_ground_mesh=False | ego_only; ground_mesh: mesh |
 | Camera | 1cam_1080.yaml: camera_front_wide_120fov, requested 1080×1900 | Same camera and request; actual NRE size is probed |
-| Camera timing | frame_interval_us: 100000; subsample_factor: 3 | dt: 0.1; frame_subsample: 3 |
+| Camera timing | frame_interval_us: 100000 (10 Hz); alpamayo1_5.yaml subsample_factor: 1, four images at 10 Hz | dt: 0.1; frame_subsample: 1 |
 | Reactive traffic | AlpaSim trafficsim | **Not yet implemented.** Other actors follow recorded tracks or explicit overrides |
 | Rolling shutter | shutter_duration_us: 30000 in the camera preset | **Not yet implemented.** Captures render at one instant |
+
+AlpaSim's single-camera preset alpamayo1_5_1cam.yaml sets subsample_factor 3 for video-model
+renderers that emit 30 Hz frames; with NuRec's 10 Hz captures that stride would space Alpamayo's
+images 0.3 s apart instead of 0.1 s, so it is not used here.
 
 The controller and camera preset are explicit configuration choices. NuRecSimulator still accepts
 other dynamics implementations, navigation modes and camera resolutions.

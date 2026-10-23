@@ -145,7 +145,7 @@ avstack:
   type: AlpamayoAVStack
   options:
     camera_ids: [camera_front_wide_120fov]
-    frame_subsample: 3
+    frame_subsample: 1
 ```
 
 route_generator accepts map, recorded or none. Map navigation requires a semantic map with driving
@@ -157,8 +157,10 @@ projection, depth and insertion use its actual dimensions.
 
 Alpamayo requires 15 preceding recorded decisions at 0.1 s intervals. Their images and poses are
 provided to reset; no startup padding is generated. frame_subsample defaults to 1, and the
-configured image span `(context_length - 1) * frame_subsample` must not exceed 15. The supplied
-stride of 3 selects four images from the latest ten decisions. Built-in attacks skip starts lacking
+configured image span `(context_length - 1) * frame_subsample` must not exceed 15. NuRec captures
+arrive at 10 Hz, the image rate Alpamayo expects, so the supplied configurations use frame_subsample 1:
+four consecutive images spanning 0.3 s. A larger stride feeds Alpamayo a
+slower image cadence than it was trained on. Built-in attacks skip starts lacking
 the required past; preparation also discards invalid segments. See
 [Simulators](../guides/simulators.md#alpasim-defaults) and
 [Driving systems](../guides/driving-systems.md#alpamayo).

@@ -34,7 +34,7 @@ avstack:
     - camera_front_wide_120fov
     device: cuda:1
     output_frequency_hz: 10
-    frame_subsample: 3
+    frame_subsample: 1
 attacks:
   speed:
     type: SpeedFeedbackAttack
