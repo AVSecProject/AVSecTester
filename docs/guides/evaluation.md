@@ -32,13 +32,15 @@ Directories belonging to treatments removed from the configuration are reported 
 
 ## Comparison groups
 
-One experiment contains exactly one attack. Its selected metadata is shared by every treatment. A
-comparison group is one selected segment and one seed. Treatments can enable that attack and change
-world or sensor environments. The framework does not compare independently selected attacks. To
-apply several attack actions together, write one composite Attack.
+An experiment contains one or more attacks, and each attack selects its own segments. A comparison
+group is one attack, one of its segments and one seed. It contains the treatments that enable that
+attack and the treatments without attack_name, such as clean or environment-only treatments; those
+repeat in every attack's groups. Treatments can also change world or sensor environments. Treatments
+of different attacks are not compared within a group. To apply several attack actions together in
+one run, write one composite Attack.
 
-**Not yet implemented.** Comparing multiple attacks in one experiment on shared metadata. See
-[TODO](../development/TODO.md#multiple-attacks-on-shared-metadata).
+**Not yet implemented.** Comparing different attacks within one group when their segments coincide.
+See [TODO](../development/TODO.md#multiple-attacks-on-shared-metadata).
 
 There is no baseline setting. Within a group, treatments are paired in configuration order. For A
 before B, every single-run metric difference is B minus A. Boolean values also have numeric

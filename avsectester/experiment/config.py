@@ -213,7 +213,7 @@ def load_configuration(
     objects directly. User types are imported Python code and must be trusted.
     """
     if isinstance(config, ExperimentConfiguration):
-        _attack_count(config.attacks)
+        _require_attacks(config.attacks)
         _validate_metric_configuration(config)
         return config
     spec, directory = _mapping(config, Path.cwd(), "Experiment")
@@ -226,7 +226,7 @@ def load_configuration(
     attack_specs = spec.get("attacks", {})
     if not isinstance(attack_specs, Mapping):
         raise TypeError("attacks must map names to Attack objects or constructor specifications")
-    _attack_count(attack_specs)
+    _require_attacks(attack_specs)
     constructed_attacks = {name: _attack(value, directory) for name, value in attack_specs.items()}
     attacks = {name: pair[0] for name, pair in constructed_attacks.items()}
     attack_specifications = {
@@ -275,11 +275,9 @@ def _runs(value: Any, directory: Path) -> RunsConfiguration:
     )
 
 
-def _attack_count(attacks: Mapping[str, Any]) -> None:
-    if len(attacks) != 1:
-        raise ValueError("An experiment requires exactly one attack. Comparing multiple attacks "
-                         "in one experiment is a future feature; to apply multiple actions "
-                         "together, implement a composite Attack.")
+def _require_attacks(attacks: Mapping[str, Any]) -> None:
+    if not attacks:
+        raise ValueError("An experiment requires at least one attack; attack metadata selects its segments")
 
 
 def _validate_metric_configuration(configuration: ExperimentConfiguration) -> None:

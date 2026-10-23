@@ -21,9 +21,9 @@ print(report.format_summary())
 
 `prepare` opens the closed-loop services, calls each attack's metabuilder once per scene, validates
 segment structure and runs each attack's offline phase once over all its metadata. Preparation
-returns metadata and artifacts without live simulator or model history. An experiment accepts
-exactly one attack; multiple attacks sharing metadata are future work. To combine actions, implement
-one composite Attack.
+returns metadata and artifacts without live simulator or model history. An experiment accepts one
+or more attacks, each preparing its own metadata and artifacts. To combine actions in one run,
+implement one composite Attack.
 
 Preparation uses runs.seeds[0]. OfflineContext.environment merges runs.environment with the attack
 environment. The metabuilder requests its environment explicitly; it does not automatically inherit
@@ -49,9 +49,9 @@ runs:
 ```
 
 Each comparison group has one attack's selected segment and one seed. Treatments share its origin,
-decision length and initialization tick budget. All treatments use the experiment's single attack
-metadata. They differ only in whether attack_name enables the attack and in world/sensor environment
-settings. Environment-only treatments are valid. The same configured hooks run for every treatment.
+decision length and initialization tick budget. The group contains the treatments enabling that
+attack and the treatments without attack_name, which therefore repeat for every attack. They differ
+only in whether attack_name enables the attack and in world/sensor environment settings. Environment-only treatments are valid. The same configured hooks run for every treatment.
 Every treatment pair is compared in configuration order; there is no baseline setting.
 
 Preparation and execution use the same deployment budget: the largest hook/attack setup requirement

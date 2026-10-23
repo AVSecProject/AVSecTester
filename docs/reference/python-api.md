@@ -135,8 +135,9 @@ sensor/render requests use the original world unless they specify an environment
 ExperimentResult.load and CLI evaluate read historical logs through load_prepared_metadata without
 constraining runs.
 
-Configurations contain exactly one attack. Treatments enable its attack_name and optional
-environment overrides on shared metadata. Every treatment pair is evaluated; no baseline is
+Configurations contain one or more attacks, each with its own metadata. A treatment enables one
+attack by attack_name, or none, with optional environment overrides; a treatment without attack_name
+runs on every attack's segments. Every treatment pair is evaluated; no baseline is
 configured. The same hooks apply to every treatment. Result failures and selection errors remain
 available independently.
 

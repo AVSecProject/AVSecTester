@@ -23,9 +23,10 @@ metadata, artifacts, Parquet logs and an evaluation report under runs.output. An
 that changes nothing can still complete successfully: exit codes report execution, not scientific
 success.
 
-Each configuration contains exactly one attack. All treatment pairs compare that attack's common
-metadata, with optional world/sensor environments. Multiple attacks in one experiment are future
-work; combine actions within one Attack when they must act together.
+A configuration contains one or more attacks, each selecting its own segments. Treatments without
+attack_name run on every attack's segments; all treatment pairs within one attack's segment and seed
+are compared, with optional world/sensor environments. Combine actions within one Attack when they
+must act together in a run.
 
 ## Read the output
 

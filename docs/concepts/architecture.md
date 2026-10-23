@@ -185,11 +185,12 @@ shared within the process for runtimes addressing the same world. exclusive() li
 to one operation at a time. Shared immutable model weights are allowed only when an adapter can
 preserve independent histories.
 
-One experiment currently supports exactly one attack. Its treatment environments and
-enabled/disabled attack states are compared on common metadata, with all treatment pairs evaluated.
+One experiment supports one or more attacks, each with its own metadata. A comparison group is one
+attack's segment and seed: the treatments enabling that attack and those without attack_name are
+compared there, with all treatment pairs evaluated.
 
-**Not yet implemented.** Comparing multiple attacks in one experiment on shared metadata. See
-[TODO](../development/TODO.md#multiple-attacks-on-shared-metadata).
+**Not yet implemented.** Comparing different attacks within one group when their segments coincide.
+See [TODO](../development/TODO.md#multiple-attacks-on-shared-metadata).
 
 ## Supported combinations
 

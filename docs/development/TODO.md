@@ -60,5 +60,6 @@ This file lists open work. Items are planned capabilities, not implemented featu
 
 ## Multiple attacks on shared metadata
 
-- [ ] Define explicit common selection metadata for comparing different attacks in one experiment.
-  Current configurations require exactly one Attack; combined actions belong to a composite Attack.
+- [ ] Compare different attacks within one comparison group when their segments coincide, running
+  treatments without attack_name once. Today each attack forms its own groups, and those treatments
+  repeat for every attack.

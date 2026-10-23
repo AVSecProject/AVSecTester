@@ -127,8 +127,11 @@ def test_load_configuration(tmp_path):
         load_configuration(unknown)
     missing = specification()
     missing["attacks"] = {}
-    with pytest.raises(ValueError, match="exactly one attack"):
+    with pytest.raises(ValueError, match="at least one attack"):
         load_configuration(missing)
+    several = specification()
+    several["attacks"]["other"] = {"type": "tests.fakes:MinimalAttack"}
+    assert set(load_configuration(several).attacks) == {"probe", "other"}
 
 
 def test_constructor_paths(tmp_path):

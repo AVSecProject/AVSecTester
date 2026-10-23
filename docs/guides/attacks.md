@@ -131,8 +131,8 @@ custom data, including actor IDs, placement parameters and any scores or ranks, 
 Data that must be persisted can contain only JSON-like values or numpy arrays; convert custom
 placement objects to data before storing them. The framework validates segment boundaries and
 saves records without interpreting custom data, checking selected actors, ranking records or
-supplying filters. An attack must report missing actors when it uses them. A single attack owns
-all metadata used by its experiment treatments.
+supplying filters. An attack must report missing actors when it uses them. Each attack owns the
+metadata of the treatments that run on its segments.
 
 `split_segments(frames, eligible, *, decision_steps, keep_tail=False)` returns AttackSegment
 records. `eligible(frame)` runs once in order for every nonterminal frame. It never runs on the

@@ -6,7 +6,9 @@ import json
 import pytest
 
 from avsectester.closed_loop.avstacks.driving_adapter import DrivingAdapter
-from avsectester.experiment import Experiment, ExperimentConfiguration, RunsConfiguration, TreatmentConfiguration
+from avsectester.experiment import (
+    Experiment, ExperimentConfiguration, ExperimentResult, RunsConfiguration, TreatmentConfiguration, evaluate,
+)
 from avsectester.maps import ScenarioMap
 from tests.fakes import ConstantAVStack, MemoryDataset, MemorySimulator, MinimalAttack
 
@@ -89,3 +91,28 @@ def test_execute(tmp_path):
         Experiment.execute(Experiment.prepare(interrupted))
     stopped = [json.loads(line) for line in interrupted_marker.read_text().splitlines()]
     assert {"scenario": "scene", "start": 0} in stopped
+
+
+def test_multiple_attacks(tmp_path):
+    # Each attack keeps its own metadata; untargeted treatments run on every attack's segments.
+    config = ExperimentConfiguration(
+        MemoryDataset(), MemorySimulator(), DrivingAdapter(lambda seed: ConstantAVStack()),
+        {"green": MinimalAttack(max_segments=1), "blue": MinimalAttack(max_segments=1)},
+        runs=RunsConfiguration(treatments=(
+            TreatmentConfiguration("clean"), TreatmentConfiguration("green", "green"),
+            TreatmentConfiguration("blue", "blue"),
+            TreatmentConfiguration("green_rain", "green", environment={"world": {"weather": "rain"}}),
+        ), output=tmp_path / "results"),
+    )
+    result = Experiment.execute(Experiment.prepare(config))
+    assert {(run.attack_name, run.treatment) for run in result.runs} == {
+        ("green", "clean"), ("green", "green"), ("green", "green_rain"), ("blue", "clean"), ("blue", "blue"),
+    }
+    assert all(run.log.status == "completed" for run in result.runs)
+    loaded = ExperimentResult.load(tmp_path / "results", config)
+    assert {(run.attack_name, run.treatment) for run in loaded.runs} == {
+        (run.attack_name, run.treatment) for run in result.runs}
+    report = evaluate(loaded, config)
+    assert {(row["attack_name"], row["treatment"]) for row in report.treatment_summaries} == {
+        ("green", "clean"), ("green", "green"), ("green", "green_rain"), ("blue", "clean"), ("blue", "blue"),
+    }

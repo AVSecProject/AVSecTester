@@ -24,9 +24,10 @@ artifacts, executes treatments and evaluates their logs. With --prepared, it val
 existing preparation instead of selecting and optimizing again. Prepared artifacts must be fully
 loaded before execution. All attack inputs and returned artifacts remain explicit.
 
-The configuration must provide runs.output and exactly one attack. A zero-attack or multi-attack
-configuration is an error; use a selection-only Attack for environment comparisons or a composite
-Attack for combined actions. Treatments share metadata and vary attack_name and environment.
+The configuration must provide runs.output and at least one attack. A zero-attack configuration
+is an error; use a selection-only Attack for environment comparisons or a composite Attack for
+combined actions. Treatments vary attack_name and environment; each runs on the segments of its
+attack, and treatments without attack_name run on every attack's segments.
 
 Configuration controls models, devices, decision limits, treatments, recording and evaluation. The
 CLI does not override them. Run settings are nested under runs. Existing runs.output/runs is
