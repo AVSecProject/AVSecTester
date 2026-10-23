@@ -9,7 +9,7 @@ import pytest
 
 from avsectester.data_types import Control, Detection, Observation, RecordedOutput, WorldSnapshot
 from avsectester.closed_loop.simulators.base import ClockSnapshot
-from avsectester.geometry import FThetaCamera, PinholeCamera
+from avsectester.geometry import FThetaCamera, PinholeCamera, WindshieldDistortion
 from avsectester.rendering import ObjectVisibility
 from avsectester.runlog import Recorder, RunLog, StepRecord, read_table
 
@@ -41,6 +41,13 @@ VALUES = [
     pytest.param(FThetaCamera(16., 12., (0., 20.), 32, 24, (0., .05), max_angle=1.4),
                  FThetaCamera(16., 12., (0., 20.), 32, 24, (0., .05), max_angle=1.4),
                  id="fisheye-camera"),
+    pytest.param(FThetaCamera(16., 12., (0., 20.), 32, 24, (0., .05), max_angle=1.4,
+                              windshield=WindshieldDistortion((0., 1., 0., 0., 0., 0.), (0., 0., 0., 1., 0., 0.),
+                                                              (0., 1., 0., 0., 0., 0.), (0., 0., 0., 1., 0., 0.))),
+                 FThetaCamera(16., 12., (0., 20.), 32, 24, (0., .05), max_angle=1.4,
+                              windshield=WindshieldDistortion((0., 1., 0., 0., 0., 0.), (0., 0., 0., 1., 0., 0.),
+                                                              (0., 1., 0., 0., 0., 0.), (0., 0., 0., 1., 0., 0.))),
+                 id="fisheye-windshield-camera"),
 ]
 
 

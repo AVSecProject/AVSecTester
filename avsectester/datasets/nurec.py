@@ -19,6 +19,7 @@ import numpy as np
 
 from avsectester.data_types import ActorState, Unavailable
 from avsectester.datasets.base import Dataset
+from avsectester.geometry.cameras import WindshieldDistortion
 from avsectester.geometry.poses import interpolate_transform, make_pose, quaternion_to_rotation
 from avsectester.maps.clipgt import read_clipgt
 
@@ -41,11 +42,16 @@ class _CameraCalibration:
     max_angle: float
     t_sensor_rig: np.ndarray
     linear_cde: tuple[float, float, float] = (1.0, 0.0, 0.0)
+    windshield: WindshieldDistortion | None = None
 
     @classmethod
     def from_calib(cls, calib: dict) -> _CameraCalibration:
         p = calib["camera_model"]["parameters"]
         w, h = p["resolution"]
+        distortion = p.get("external_distortion_parameters")
+        windshield = None if not distortion else WindshieldDistortion(
+            tuple(distortion["horizontal_poly"]), tuple(distortion["vertical_poly"]),
+            tuple(distortion["horizontal_poly_inverse"]), tuple(distortion["vertical_poly_inverse"]))
         return cls(
             width=int(w),
             height=int(h),
@@ -55,6 +61,7 @@ class _CameraCalibration:
             max_angle=float(p["max_angle"]),
             t_sensor_rig=np.asarray(calib["T_sensor_rig"], dtype=np.float64),
             linear_cde=tuple(p.get("linear_cde", (1.0, 0.0, 0.0))),
+            windshield=windshield,
         )
 
 
@@ -200,7 +207,7 @@ class NuRecDataset(Dataset):
             cx=float(camera.principal_point[0]), cy=float(camera.principal_point[1]),
             angle_to_pixeldist=tuple(camera.angle_to_pixeldist), width=camera.width,
             height=camera.height, pixeldist_to_angle=tuple(camera.pixeldist_to_angle),
-            max_angle=camera.max_angle, linear_cde=camera.linear_cde,
+            max_angle=camera.max_angle, linear_cde=camera.linear_cde, windshield=camera.windshield,
         ), camera.t_sensor_rig.copy()
 
     def camera_timestamps(self, scenario_id: str) -> np.ndarray:

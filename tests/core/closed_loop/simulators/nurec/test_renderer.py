@@ -66,3 +66,19 @@ def test_resolution(nurec_dataset, monkeypatch):
         NuRecRenderer(cameras=["front"], resolution_hw={"side": (6, 8)})
     with pytest.raises(ValueError, match="height must be a positive integer"):
         NuRecRenderer(cameras=["front"], resolution_hw={"front": (0, 8)})
+
+
+def test_windshield_spec():
+    from types import SimpleNamespace
+
+    spec = NuRecRpcBoundary().spec
+    windshield = SimpleNamespace(horizontal_poly=[0., 1., 0., 0., 0., 0.], vertical_poly=[0., 0., 0., 1., 0., 0.],
+                                 horizontal_poly_inverse=[0., 1., 0., 0., 0., 0.],
+                                 vertical_poly_inverse=[0., 0., 0., 1., 0., 0.])
+    distorted = SimpleNamespace(**{**vars(spec), "bivariate_windshield_model_param": windshield,
+                                   "WhichOneof": lambda group: "bivariate_windshield_model_param"})
+    camera = ftheta_camera_from_spec(distorted)
+    assert camera.windshield is not None and camera.windshield.vertical_poly == (0., 0., 0., 1., 0., 0.)
+    assert ftheta_camera_from_spec(spec).windshield is None
+    with pytest.raises(ValueError, match="Unsupported NuRec external distortion"):
+        ftheta_camera_from_spec(SimpleNamespace(**{**vars(spec), "WhichOneof": lambda group: "other_model"}))

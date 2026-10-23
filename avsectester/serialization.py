@@ -304,7 +304,7 @@ for _module, _names in (
     ("avsectester.closed_loop.simulators.base", ("ClockSnapshot", "SensorGeometry")),
     ("avsectester.closed_loop.simulators.ego_dynamics", ("PlanarEgoState",)),
     ("avsectester.rendering.compositing", ("ObjectVisibility",)),
-    ("avsectester.geometry.cameras", ("PinholeCamera", "FThetaCamera")),
+    ("avsectester.geometry.cameras", ("PinholeCamera", "FThetaCamera", "WindshieldDistortion")),
     ("avsectester.attack.attack", ("AttackSegment",)),
     ("avsectester.maps.scenario_map", ("ScenarioMap", "Lane", "TrafficControl", "StopLine")),
 ):

@@ -405,7 +405,8 @@ class NuRecRpcBoundary:
         self.spec = SimpleNamespace(resolution_h=12, resolution_w=16, ftheta_param=SimpleNamespace(
             principal_point_x=8., principal_point_y=6., angle_to_pixeldist_poly=[0., 8.],
             pixeldist_to_angle_poly=[0., .125], max_angle=1.5,
-            linear_cde=SimpleNamespace(linear_c=1., linear_d=0., linear_e=0.)))
+            linear_cde=SimpleNamespace(linear_c=1., linear_d=0., linear_e=0.)),
+            WhichOneof=lambda group: None)
 
     def get_available_scenes(self, request):
         self.requests.append(request)

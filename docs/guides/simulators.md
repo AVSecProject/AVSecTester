@@ -235,6 +235,13 @@ All later captures must have the same dimensions. Sensor geometry, mesh depth an
 objects use that scaled model. The supplied NuRec configurations request (1080, 1900) from
 camera_front_wide_120fov, matching AlpaSim's single-camera preset.
 
+The lens model follows NRE's rendering cameras: the f-theta polynomials, the vehicle-windshield
+distortion stored with the camera, and NRE's pixel convention, which places the principal point
+half a pixel from the spec value in the framework's pixel-centre convention. Probe objects
+inserted into NRE scenes at 3 m and 8 m land on their projected pixels with a mean error below
+0.01 px and a standard deviation below 0.1 px, at native and half resolution. Without the
+windshield model, projections drift 2–9 px from the rendered image across the frame.
+
 ### AlpaSim defaults
 
 The supplied NuRec configurations follow AlpaSim affc2ea and its single-camera Alpamayo 1.5 preset:

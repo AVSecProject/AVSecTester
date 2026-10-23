@@ -10,7 +10,7 @@ import numpy as np
 
 from avsectester.data_types import Observation
 from avsectester.closed_loop.simulators.base import SensorView
-from avsectester.geometry.cameras import BODY_FROM_OPTICAL, FThetaCamera, PinholeCamera
+from avsectester.geometry.cameras import BODY_FROM_OPTICAL, FThetaCamera, PinholeCamera, WindshieldDistortion
 from avsectester.geometry.poses import transform
 from avsectester.data_types import ActorState
 from avsectester.runlog import RunLog, StepRecord
@@ -187,7 +187,10 @@ def _camera_model(value: Any, width: int, height: int) -> Any:
         return value
     if isinstance(value, Mapping):
         if "angle_to_pixeldist" in value:
-            return FThetaCamera(**{name: item for name, item in value.items() if name in FThetaCamera.__dataclass_fields__})
+            options = {name: item for name, item in value.items() if name in FThetaCamera.__dataclass_fields__}
+            if isinstance(options.get("windshield"), Mapping):
+                options["windshield"] = WindshieldDistortion(**options["windshield"])
+            return FThetaCamera(**options)
         if "K" in value:
             return PinholeCamera(np.asarray(value["K"]), int(value.get("width", width)), int(value.get("height", height)))
     matrix = np.asarray(value)

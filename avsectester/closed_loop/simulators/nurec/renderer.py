@@ -20,20 +20,34 @@ if TYPE_CHECKING:
 
 
 def ftheta_camera_from_spec(spec: Any) -> FThetaCamera:
-    """Build an f-theta lens from a NuRec CameraSpec."""
-    from avsectester.geometry.cameras import FThetaCamera
+    """Build an f-theta lens from a NuRec CameraSpec, including its windshield distortion.
+
+    NRE renders pixel ``i`` from the spec's image point ``i``, whereas ``Camera`` addresses pixel
+    centres at ``i + 0.5``; the principal point is shifted by half a pixel accordingly. Probe
+    objects inserted into NRE scenes land on the projected pixels within 0.05 px.
+    """
+    from avsectester.geometry.cameras import FThetaCamera, WindshieldDistortion
 
     parameters = spec.ftheta_param
     correction = parameters.linear_cde
+    windshield = None
+    if spec.WhichOneof("external_distortion") == "bivariate_windshield_model_param":
+        model = spec.bivariate_windshield_model_param
+        windshield = WindshieldDistortion(
+            tuple(model.horizontal_poly), tuple(model.vertical_poly),
+            tuple(model.horizontal_poly_inverse), tuple(model.vertical_poly_inverse))
+    elif spec.WhichOneof("external_distortion") is not None:
+        raise ValueError(f"Unsupported NuRec external distortion {spec.WhichOneof('external_distortion')!r}")
     return FThetaCamera(
-        cx=parameters.principal_point_x,
-        cy=parameters.principal_point_y,
+        cx=parameters.principal_point_x + 0.5,
+        cy=parameters.principal_point_y + 0.5,
         angle_to_pixeldist=tuple(parameters.angle_to_pixeldist_poly),
         pixeldist_to_angle=tuple(parameters.pixeldist_to_angle_poly),
         width=spec.resolution_w,
         height=spec.resolution_h,
         max_angle=parameters.max_angle or math.pi / 2,
         linear_cde=(correction.linear_c or 1.0, correction.linear_d, correction.linear_e),
+        windshield=windshield,
     )
 
 

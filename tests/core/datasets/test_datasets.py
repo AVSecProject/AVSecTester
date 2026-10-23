@@ -107,6 +107,33 @@ def test_nurec_camera_geometry(nurec_dataset):
         nurec_dataset.camera_geometry("missing")
 
 
+def test_nurec_camera_windshield(nurec_usdz_path, tmp_path):
+    import json
+    import zipfile
+    from avsectester.datasets.nurec import NuRecDataset
+
+    windshield = {"reference_poly": "FORWARD", "horizontal_poly": [.01, 1., 0., 0., 0., 0.],
+                  "vertical_poly": [0., 0., 0., 1., 0., 0.], "horizontal_poly_inverse": [-.01, 1., 0., 0., 0., 0.],
+                  "vertical_poly_inverse": [0., 0., 0., 1., 0., 0.]}
+    distorted = tmp_path / "windshield" / "scene.usdz"
+    distorted.parent.mkdir()
+    with zipfile.ZipFile(nurec_usdz_path) as source, zipfile.ZipFile(distorted, "w") as target:
+        for name in source.namelist():
+            data = source.read(name)
+            if name == "rig_trajectories.json":
+                rig = json.loads(data)
+                for calibration in rig["camera_calibrations"].values():
+                    calibration["camera_model"]["parameters"]["external_distortion_parameters"] = windshield
+                data = json.dumps(rig).encode()
+            target.writestr(name, data)
+    camera, _ = NuRecDataset([distorted], time_step=.1).camera_geometry("scene")
+    assert camera.windshield is not None and camera.windshield.horizontal_poly == (.01, 1., 0., 0., 0., 0.)
+    # The recorded camera keeps the archive's principal point; NRE's half-pixel offset is renderer-specific.
+    assert (camera.cx, camera.cy) == (8., 6.)
+    plain, _ = NuRecDataset([nurec_usdz_path], time_step=.1).camera_geometry("scene")
+    assert plain.windshield is None
+
+
 def test_nurec_camera_timestamps(nurec_dataset):
     timestamps = nurec_dataset.camera_timestamps("scene")
     np.testing.assert_allclose(timestamps, [0., .25, .5])

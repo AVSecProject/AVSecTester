@@ -14,7 +14,7 @@ data and boundary modules can be imported without simulator servers or weights.
 | Module | Public purpose |
 |---|---|
 | avsectester.geometry.boxes | Oriented-box ray distances and overlap |
-| avsectester.geometry.cameras | Camera, PinholeCamera, FThetaCamera and lens/ray conventions |
+| avsectester.geometry.cameras | Camera, PinholeCamera, FThetaCamera, WindshieldDistortion and lens/ray conventions |
 | avsectester.geometry.mesh | MeshRaycaster and calibrated camera_depth |
 | avsectester.geometry.poses | Canonical transforms, quaternions, interpolation and Y-axis mirroring |
 | avsectester.geometry.projection | Plane grids, box projection and plane visibility |
@@ -688,7 +688,7 @@ online attack context still receives no semantic map.
 | `NuRecDataset.actor_states` | `actor_states(scenario_id: str, timestamp_us: int) -> dict[str, ActorState]` |
 
 camera_geometry returns an independent FThetaCamera and rig-from-camera pose, preserving the
-archive's native forward and inverse polynomials. Missing native pixeldist_to_angle remains empty;
+archive's native forward and inverse polynomials and its windshield distortion when present. Missing native pixeldist_to_angle remains empty;
 unproject then raises NotImplementedError instead of using a fitted inverse.
 
 ### avsectester.datasets.nuscenes
@@ -1133,6 +1133,10 @@ See [controller installation](../getting-started/installation.md#driver-environm
 workspace package and required linear entry point.
 
 ### avsectester.closed_loop.simulators.nurec.renderer
+
+ftheta_camera_from_spec includes the spec's bivariate windshield distortion and shifts the
+principal point by half a pixel: NRE renders pixel i from the spec's image point i, whereas Camera
+addresses pixel centres at i + 0.5. Unsupported external distortion types raise ValueError.
 
 | Public name | Signature or fields |
 |---|---|
@@ -1691,6 +1695,10 @@ BODY_FROM_OPTICAL is a 4x4 ndarray mapping optical axes (x right, y down, z forw
 axes (x forward, y left, z up). Left-multiply cam_from_world to obtain sensor_from_world.
 NEAR_Z is the shared 1e-5 m optical near-depth threshold for geometric projection and surface
 sampling. camera_ray_mask accepts finite forward rays and respects an optional lens max_angle.
+WindshieldDistortion is the vehicle-windshield ray deflection of NVIDIA ncore's bivariate model:
+distort maps scene-side rays to lens-side rays with the forward polynomials and undistort applies
+the inverse polynomials. An FThetaCamera with a windshield distorts rays before its lens projects
+them and undistorts the rays it unprojects.
 
 | Public name | Signature or fields |
 |---|---|
@@ -1703,10 +1711,13 @@ sampling. camera_ray_mask accepts finite forward rays and respects an optional l
 | `PinholeCamera` | `K: np.ndarray`<br>`width: int`<br>`height: int` |
 | `PinholeCamera.project` | `project(pts_cam: np.ndarray) -> np.ndarray` |
 | `PinholeCamera.unproject` | `unproject(uv: np.ndarray) -> np.ndarray` |
-| `FThetaCamera` | `cx: float`<br>`cy: float`<br>`angle_to_pixeldist: tuple`<br>`width: int`<br>`height: int`<br>`pixeldist_to_angle: tuple = ()`<br>`max_angle: float = math.pi / 2`<br>`linear_cde: tuple = (1.0, 0.0, 0.0)` |
+| `FThetaCamera` | `cx: float`<br>`cy: float`<br>`angle_to_pixeldist: tuple`<br>`width: int`<br>`height: int`<br>`pixeldist_to_angle: tuple = ()`<br>`max_angle: float = math.pi / 2`<br>`linear_cde: tuple = (1.0, 0.0, 0.0)`<br>`windshield: WindshieldDistortion \| None = None` |
 | `FThetaCamera.project` | `project(pts_cam: np.ndarray) -> np.ndarray` |
 | `FThetaCamera.in_view` | `in_view(pts_cam: np.ndarray) -> np.ndarray` |
 | `FThetaCamera.unproject` | `unproject(uv: np.ndarray) -> np.ndarray` |
+| `WindshieldDistortion` | Frozen record: `horizontal_poly: tuple`<br>`vertical_poly: tuple`<br>`horizontal_poly_inverse: tuple`<br>`vertical_poly_inverse: tuple` |
+| `WindshieldDistortion.distort` | `distort(rays: np.ndarray) -> np.ndarray` |
+| `WindshieldDistortion.undistort` | `undistort(rays: np.ndarray) -> np.ndarray` |
 
 ### avsectester.geometry.projection
 

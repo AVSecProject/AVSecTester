@@ -2,8 +2,9 @@
 
 Both models use optical axes: X right, Y down, Z forward. ``PinholeCamera``
 represents calibrated CARLA and nuScenes cameras. ``FThetaCamera`` represents
-NuRec wide-angle lenses using angle-to-pixel polynomials. Per-pixel ray casting
-supports distorted lenses whose projection cannot be described by a homography.
+NuRec wide-angle lenses using angle-to-pixel polynomials, optionally seen through a
+``WindshieldDistortion``. Per-pixel ray casting supports distorted lenses whose projection
+cannot be described by a homography.
 The module depends only on NumPy and standard-library types.
 """
 
@@ -75,6 +76,65 @@ class PinholeCamera:
         return rays / np.linalg.norm(rays, axis=1, keepdims=True)
 
 
+def _bivariate_order(coefficients: tuple) -> int:
+    terms = 0
+    for order in range(len(coefficients)):
+        terms += order + 1
+        if terms == len(coefficients):
+            return order
+    raise ValueError("Windshield polynomial length must be a triangular number (order + 1)(order + 2) / 2")
+
+
+def _bivariate(coefficients: tuple, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """Evaluate sum_k p_k(x) * y**k, where p_k has degree order - k; blocks are stored for k = 0, 1, ..."""
+    order, start = _bivariate_order(coefficients), 0
+    result = np.zeros_like(x)
+    for degree in range(order, -1, -1):
+        block = np.asarray(coefficients[start:start + degree + 1], dtype=np.float64)
+        result += np.polynomial.polynomial.polyval(x, block) * y ** (order - degree)
+        start += degree + 1
+    return result
+
+
+@dataclass(frozen=True)
+class WindshieldDistortion:
+    """Refraction of camera rays by the vehicle windshield, as in NVIDIA ncore's bivariate model.
+
+    A unit optical ray has angles ``phi = asin(x)`` and ``theta = asin(y)``. Bivariate polynomials
+    map these angles, and the deflected ray is ``(sin phi', sin theta', sqrt(1 - x'^2 - y'^2))``
+    with the original sign of z. ``horizontal_poly`` and ``vertical_poly`` map scene-side rays to
+    lens-side rays; the ``_inverse`` polynomials map back. Coefficients use ncore's order: blocks
+    of decreasing degree in phi, multiplied by increasing powers of theta.
+    """
+
+    horizontal_poly: tuple
+    vertical_poly: tuple
+    horizontal_poly_inverse: tuple
+    vertical_poly_inverse: tuple
+
+    def __post_init__(self) -> None:
+        for name in ("horizontal_poly", "vertical_poly", "horizontal_poly_inverse", "vertical_poly_inverse"):
+            values = tuple(float(value) for value in getattr(self, name))
+            _bivariate_order(values)
+            object.__setattr__(self, name, values)
+
+    @staticmethod
+    def _deflect(rays: np.ndarray, horizontal: tuple, vertical: tuple) -> np.ndarray:
+        r = np.atleast_2d(np.asarray(rays, dtype=np.float64))
+        r = r / np.linalg.norm(r, axis=1, keepdims=True)
+        phi, theta = np.arcsin(np.clip(r[:, 0], -1, 1)), np.arcsin(np.clip(r[:, 1], -1, 1))
+        x, y = np.sin(_bivariate(horizontal, phi, theta)), np.sin(_bivariate(vertical, phi, theta))
+        return np.stack([x, y, np.sqrt(np.clip(1 - x * x - y * y, 0, 1)) * np.sign(r[:, 2])], axis=1)
+
+    def distort(self, rays: np.ndarray) -> np.ndarray:
+        """Scene-side rays to the lens-side rays that the f-theta lens projects."""
+        return self._deflect(rays, self.horizontal_poly, self.vertical_poly)
+
+    def undistort(self, rays: np.ndarray) -> np.ndarray:
+        """Lens-side rays to the scene-side rays they observe."""
+        return self._deflect(rays, self.horizontal_poly_inverse, self.vertical_poly_inverse)
+
+
 @dataclass
 class FThetaCamera:
     """NVIDIA f-theta fisheye: ``r_px = angle_to_pixeldist(theta)`` with ``theta`` the ray's angle to
@@ -84,7 +144,9 @@ class FThetaCamera:
     coefficient lists in increasing order (c0 + c1*x + c2*x^2 ...), exactly as NuRec's ``ftheta_param``
     and ``.usdz`` calibration store them. ``linear_cde`` is the small affine screen correction
     ``[[c, d], [e, 1]]`` applied to the radial offset (identity ``(1, 0, 0)`` in NuRec).
-    :meth:`unproject` inverts that affine correction before the radial polynomial.
+    :meth:`unproject` inverts that affine correction before the radial polynomial. A
+    ``windshield`` deflects scene rays before the lens projects them, and unprojected lens rays
+    are mapped back to the scene, matching NuRec's rendering cameras.
     """
 
     cx: float
@@ -95,6 +157,7 @@ class FThetaCamera:
     pixeldist_to_angle: tuple = ()
     max_angle: float = math.pi / 2
     linear_cde: tuple = (1.0, 0.0, 0.0)
+    windshield: WindshieldDistortion | None = None
 
 
     @staticmethod
@@ -103,6 +166,8 @@ class FThetaCamera:
 
     def project(self, pts_cam: np.ndarray) -> np.ndarray:
         p = np.atleast_2d(np.asarray(pts_cam, dtype=np.float64))
+        if self.windshield is not None:
+            p = self.windshield.distort(p)
         rho = np.hypot(p[:, 0], p[:, 1])
         theta = np.arctan2(rho, p[:, 2])
         r = self._poly(self.angle_to_pixeldist, theta)
@@ -131,4 +196,6 @@ class FThetaCamera:
         s = np.sin(theta)
         inv = np.divide(s, r, out=np.zeros_like(r), where=r > 1e-12)
         rays = np.stack([dx * inv, dy * inv, np.cos(theta)], axis=1)
+        if self.windshield is not None:
+            rays = self.windshield.undistort(rays)
         return rays / np.linalg.norm(rays, axis=1, keepdims=True)
