@@ -1,4 +1,4 @@
-"""Optimize a physical patch texture with configurable one-decision rollout queries."""
+"""Optimize the patch pixels of a replica stop-sign face with one-decision rollout queries."""
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
@@ -87,7 +87,7 @@ class MaskedTexturePerturbation(Perturbation):
     """A NumPy RGB colour variable whose applied value is the physical uint8 RGBA texture.
 
     Geometry and alpha stay fixed. This differs from white-box image composition: NES passes
-    this exported texture to the rollout scorer, which deploys it through the patch attack.
+    this exported texture to the rollout scorer, which deploys it as the replica face.
     """
 
     def __init__(self, original_rgba: np.ndarray, mask: np.ndarray) -> None:
@@ -220,9 +220,9 @@ def optimize_patch_by_rollouts(
     ``1 + steps * (population_size + 1)``; this orchestration imposes no separate budget.
     """
     options = cast("RolloutPatchOptimization", attack.optimization)
-    mask = original[..., 3] == 255
-    if len(context.metadata) < options.scene_count:
-        raise ValueError("Not enough selected scenes for black-box optimization")
+    mask = attack.mask
+    if not context.metadata:
+        raise ValueError("Rollout patch optimization requires at least one training segment")
     output = Path(options.output_directory)
     rollout_directory = output / "rollouts"
     if rollout_directory.exists() and any(rollout_directory.iterdir()):
@@ -234,7 +234,7 @@ def optimize_patch_by_rollouts(
         with context.services.session(context.seed) as session:
             starts = tuple(
                 start
-                for segment in context.metadata[:options.scene_count]
+                for segment in context.metadata[:options.max_training_segments]
                 for start in fixed_start_segments(
                     segment, context.services.dataset.frames(segment.scenario_id),
                     session.can_start_at, options.start_distances_m,
@@ -248,10 +248,12 @@ def optimize_patch_by_rollouts(
     finally:
         _write_csv(output / "rollouts.csv", scorer.records if scorer is not None else [])
     Image.fromarray(perturbation.export(perturbation.init())).save(output / "initial_patch.png")
-    optimized = attack.patch_texture(result.export)
+    optimized = attack.replica_texture(result.export)
     Image.fromarray(optimized).save(output / "optimized_texture.png")
     _write_json(output / "optimization.json", {
         "history": result.history, "final_score": result.final_score,
+        "max_training_segments": options.max_training_segments,
+        "training_segments": len(context.metadata[:options.max_training_segments]),
         "start_distances_m": list(options.start_distances_m), "horizon_s": options.horizon_s,
         "starts": [{"scenario_id": start.scenario_id, "start_position": start.start.position,
                     "stop_position": start.stop.position, "timestamp": start.start.timestamp}

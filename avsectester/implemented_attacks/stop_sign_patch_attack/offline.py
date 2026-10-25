@@ -24,13 +24,13 @@ def _output_path(value: str | Path) -> None:
 
 @dataclass(frozen=True)
 class DetectorPatchOptimization:
-    """PGD sampling and scoring settings for one shared physical patch."""
+    """PGD settings; an optional segment cap limits cost within the training metadata."""
 
     detector: Scorer
     optimizer: GradientOptimizer
     output_directory: str | Path
     camera_id: str = "camera_front_wide_120fov"
-    scene_count: int = 4
+    max_training_segments: int | None = None
     samples_per_scene: int = 8
     min_visible_pixels: int = 100
     detection_threshold: float = .5
@@ -46,7 +46,8 @@ class DetectorPatchOptimization:
         _output_path(self.output_directory)
         if not isinstance(self.camera_id, str) or not self.camera_id:
             raise ValueError("camera_id must be a nonempty sensor name")
-        require_positive_integer(self.scene_count, "scene_count")
+        if self.max_training_segments is not None:
+            require_positive_integer(self.max_training_segments, "max_training_segments")
         require_positive_integer(self.samples_per_scene, "samples_per_scene")
         if self.samples_per_scene < 4:
             raise ValueError("samples_per_scene must be at least 4")
@@ -61,13 +62,13 @@ class DetectorPatchOptimization:
 
 @dataclass(frozen=True)
 class RolloutPatchOptimization:
-    """NES settings for one-decision planned-forward-distance queries."""
+    """NES settings; use at most one training segment by default to bound query cost."""
 
     optimizer: GradientOptimizer
     output_directory: str | Path
     start_distances_m: tuple[float, ...] = (40., 30., 20.)
     horizon_s: float = 3.
-    scene_count: int = 1
+    max_training_segments: int | None = 1
 
     def __post_init__(self) -> None:
         if not isinstance(self.optimizer, NES):
@@ -80,7 +81,8 @@ class RolloutPatchOptimization:
             require_positive_number(value, "start_distances_m")
         object.__setattr__(self, "start_distances_m", distances)
         require_positive_number(self.horizon_s, "horizon_s")
-        require_positive_integer(self.scene_count, "scene_count")
+        if self.max_training_segments is not None:
+            require_positive_integer(self.max_training_segments, "max_training_segments")
 
 
 def run_offline(attack: StopSignPatchAttack, context: OfflineContext) -> np.ndarray:

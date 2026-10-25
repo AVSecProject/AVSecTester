@@ -1,4 +1,4 @@
-"""Stop-sign selection, transparent patch placement and real offline optimization."""
+"""Stop-sign selection, patched replica placement and real offline optimization."""
 import csv
 from dataclasses import replace
 import json
@@ -17,7 +17,7 @@ from avsectester.geometry.cameras import PinholeCamera
 from avsectester.geometry.projection import project_box
 from avsectester.implemented_attacks.stop_sign_patch_attack import StopSignPatchAttack
 from avsectester.implemented_attacks.stop_sign_patch_attack.assets import (
-    initial_patch_texture, read_patch_mask, texture_from_colors,
+    DEFAULT_MASK_PATH, initial_patch_texture, read_patch_mask, replica_face, texture_from_colors,
 )
 from avsectester.implemented_attacks.stop_sign_patch_attack.detector import StopSignDetector
 from avsectester.implemented_attacks.stop_sign_patch_attack.detector_optimization import (
@@ -61,17 +61,19 @@ def test_build_metadata(approach_view):
     assert (short.start.position, short.stop.position) == (57, 59)
 
 
-def test_initial_patch_texture(tmp_path):
-    mask = np.array([[True, False, True], [False, True, False]])
-    white = initial_patch_texture("white", mask, noise_std=.25, noise_seed=0)
-    black = initial_patch_texture("black", mask, noise_std=.25, noise_seed=0)
-    noise = initial_patch_texture("gaussian_noise", mask, noise_std=.25, noise_seed=0)
-    assert white.dtype == np.uint8 and white.shape == (*mask.shape, 4)
-    np.testing.assert_array_equal(white[..., :3][mask], 255)
-    np.testing.assert_array_equal(black[..., :3][mask], 0)
-    for texture in (white, black, noise):
-        np.testing.assert_array_equal(texture[..., 3], mask.astype(np.uint8) * 255)
-        np.testing.assert_array_equal(texture[~mask], 0)
+def test_initial_patch_texture():
+    mask = read_patch_mask(DEFAULT_MASK_PATH)
+    face = replica_face()
+    textures = {kind: initial_patch_texture(kind, mask, noise_std=.25, noise_seed=0)
+                for kind in ("none", "white", "black", "gaussian_noise")}
+    np.testing.assert_array_equal(textures["none"], face)
+    np.testing.assert_array_equal(textures["white"][..., :3][mask], 255)
+    np.testing.assert_array_equal(textures["black"][..., :3][mask], 0)
+    for texture in textures.values():
+        assert texture.dtype == np.uint8 and texture.shape == face.shape
+        np.testing.assert_array_equal(texture[..., 3], face[..., 3])
+        np.testing.assert_array_equal(texture[..., :3][~mask], face[..., :3][~mask])
+    noise = textures["gaussian_noise"]
     np.testing.assert_array_equal(noise, initial_patch_texture("gaussian_noise", mask,
                                                             noise_std=.25, noise_seed=0))
     assert not np.array_equal(noise, initial_patch_texture("gaussian_noise", mask,
@@ -81,14 +83,9 @@ def test_initial_patch_texture(tmp_path):
     np.testing.assert_array_equal(noise[..., :3][mask], expected[mask])
     with pytest.raises(ValueError, match="initial_patch"):
         StopSignPatchAttack(initial_patch="red")
-    empty = tmp_path / "empty.png"
-    Image.fromarray(np.zeros((3, 3), np.uint8)).save(empty)
-    with pytest.raises(ValueError, match="nonempty"):
-        StopSignPatchAttack(mask_path=empty)
-    nonbinary = tmp_path / "nonbinary.png"
-    Image.fromarray(np.full((3, 3), 128, np.uint8)).save(nonbinary)
-    with pytest.raises(ValueError, match="binary"):
-        StopSignPatchAttack(mask_path=nonbinary)
+    with pytest.raises(ValueError, match="cannot be optimized"):
+        StopSignPatchAttack(initial_patch="none", optimization=RolloutPatchOptimization(
+            NES(steps=1, population_size=2), "unused"))
     with pytest.raises(TypeError, match="optimization"):
         StopSignPatchAttack(optimization=object())
 
@@ -99,47 +96,67 @@ def test_create_runtime(approach_view):
     segment, = attack.build_metadata(scenario)
     texture = attack.run_offline(OfflineContext(scenario.services, (segment,), seed=0))
     candidate = texture.copy()
-    candidate[candidate[..., 3] > 0, :3] = (35, 85, 135)
+    candidate[..., :3][attack.mask] = (35, 85, 135)
     actions = attack.create_runtime(segment, candidate).setup(
         OnlineContext(0, "setup", 0., segment.start.position))
     assert len(actions) == 1 and isinstance(actions[0], InsertObject)
     action = actions[0]
-    assert action.object_id == "stop_sign_patch" and action.asset.category == "stop_sign_patch"
+    assert action.object_id == "stop_sign_replica" and action.asset.category == "stop_sign"
     assert action.asset.extent[1] == pytest.approx(.8)
+    assert StopSignPatchAttack().create_runtime(segment, candidate).setup(
+        OnlineContext(0, "setup", 0., segment.start.position))[0].asset.extent[1] == pytest.approx(.88)
     np.testing.assert_array_equal(action.asset.surfaces[0].texture, candidate)
     control = control_from_user_data(segment.user_data)
     face_center = action.asset.surfaces[0].corners.mean(axis=0)
     np.testing.assert_allclose((action.world_from_object @ np.r_[face_center, 1.])[:3],
                                control.pose[:3, 3] + .10 * control.pose[:3, 0])
-    with pytest.raises(ValueError, match="shape|dimensions|size"):
+    unpatched = StopSignPatchAttack(initial_patch="none")
+    np.testing.assert_array_equal(unpatched.run_offline(OfflineContext(scenario.services, (segment,))),
+                                  replica_face())
+    with pytest.raises(ValueError, match="shape"):
         attack.create_runtime(segment, np.zeros((2, 2, 4), np.uint8))
     changed_alpha = candidate.copy()
     changed_alpha[0, 0, 3] ^= 255
     with pytest.raises(ValueError, match="alpha"):
         attack.create_runtime(segment, changed_alpha)
+    outside = candidate.copy()
+    outside[..., :3][~attack.mask & (outside[..., 3] > 0)] = 0
+    with pytest.raises(ValueError, match="inside the patch mask"):
+        attack.create_runtime(segment, outside)
 
 
-def test_detector_patch_optimization(nurec_patch_services, replica_detector_model, tmp_path):
+@pytest.mark.parametrize(("max_training_segments", "expected_starts"), [
+    (None, [15, 16]), (1, [15]), (10, [15, 16]),
+])
+def test_detector_patch_optimization(nurec_patch_services, replica_detector_model, tmp_path,
+                                     max_training_segments, expected_starts):
     services, make_segment = nurec_patch_services
     output = tmp_path / "detector"
     attack = StopSignPatchAttack(initial_patch="white", optimization=DetectorPatchOptimization(
         detector=StopSignDetector(model=replica_detector_model),
         optimizer=PGD(steps=3, batch=1, seed=0), output_directory=output,
         camera_id="front", min_visible_pixels=5, detection_threshold=0.,
-        braking_deceleration_mps2=10., scene_count=1, samples_per_scene=4,
+        braking_deceleration_mps2=10., max_training_segments=max_training_segments, samples_per_scene=4,
     ))
     segment = make_segment()
-    texture = attack.run_offline(OfflineContext(services, (segment,), seed=0))
-    mask = read_patch_mask(attack.mask_path)
-    np.testing.assert_array_equal(texture[..., 3], mask.astype(np.uint8) * 255)
-    np.testing.assert_array_equal(texture[~mask], 0)
+    context = OfflineContext(services, (segment, make_segment(start=16)), seed=0,
+                             validation_metadata=(make_segment(start=23),))
+    texture = attack.run_offline(context)
+    face = replica_face()
+    np.testing.assert_array_equal(texture[..., 3], face[..., 3])
+    np.testing.assert_array_equal(texture[..., :3][~attack.mask], face[..., :3][~attack.mask])
     assert all((output / name).is_file() for name in (
         "calibration.json", "sample_manifest.csv", "pgd_scores.csv", "heldout_scores.csv",
         "detection_rate_vs_distance.csv", "optimization.json", "initial_patch.png",
         "optimized_texture.png", "pgd_curve.png",
     ))
     calibration = json.loads((output / "calibration.json").read_text())
+    assert [row["selected_start"] for row in calibration] == expected_starts
     assert calibration[0]["d_min_m"] == pytest.approx(5.)
+    with pytest.raises(ValueError, match="training segment"):
+        attack.run_offline(replace(context, metadata=()))
+    with pytest.raises(ValueError, match="max_training_segments"):
+        replace(attack.optimization, max_training_segments=0)
     with (output / "sample_manifest.csv").open(newline="") as stream:
         samples = list(csv.DictReader(stream))
     train = {(row["scene"], row["frame"]) for row in samples if row["split"] == "train"}
@@ -148,37 +165,44 @@ def test_detector_patch_optimization(nurec_patch_services, replica_detector_mode
     with (output / "heldout_scores.csv").open(newline="") as stream:
         rows = list(csv.DictReader(stream))
     scores = {(row["scene"], row["frame"], row["texture"]): float(row["score"]) for row in rows}
+    assert {row["texture"] for row in rows} == {"clean", "replica", "initial", "optimized"}
     for scene, frame in heldout:
         assert scores[scene, frame, "optimized"] < scores[scene, frame, "initial"]
     initial = np.asarray(Image.open(output / "initial_patch.png"))
-    asset, pose = attack.patch_placement(segment, initial)
+    asset, pose = attack.replica_placement(segment, initial)
     control = control_from_user_data(segment.user_data)
     frames = tuple(services.dataset.frames(segment.scenario_id))
     with services.session(0) as session:
         for row in samples:
             rendered = session.render(RenderRequest(segment.scenario_id, frames[int(row["frame"])],
-                "front", actions=[InsertObject("stop_sign_patch", asset, pose)]))
+                "front", actions=[InsertObject("stop_sign_replica", asset, pose)]))
             view = rendered.view
             expected = project_box(view.camera, view.cam_from_world, control.pose, control.extent)
             np.testing.assert_allclose(json.loads(row["target_box"]), expected)
             ys, xs = np.nonzero(view.composition.plan.visible_mask)
-            patch_bounds = (xs.min(), ys.min(), xs.max() + 1, ys.max() + 1)
-            assert not np.allclose(expected, patch_bounds)
+            replica_bounds = (xs.min(), ys.min(), xs.max() + 1, ys.max() + 1)
+            assert not np.allclose(expected, replica_bounds)
 
 
-def test_rollout_patch_optimization(nurec_patch_services, tmp_path):
+@pytest.mark.parametrize(("max_training_segments", "expected_segments"), [
+    (None, 2), (1, 1), (10, 2),
+])
+def test_rollout_patch_optimization(nurec_patch_services, tmp_path,
+                                    max_training_segments, expected_segments):
     services, make_segment = nurec_patch_services
     output = tmp_path / "rollout"
     options = RolloutPatchOptimization(
         NES(steps=1, population_size=2, seed=0), output,
-        start_distances_m=(12., 8.),
+        start_distances_m=(12., 8.), max_training_segments=max_training_segments,
     )
     attack = StopSignPatchAttack(initial_patch="white", optimization=options)
-    context = OfflineContext(services, (make_segment(),), seed=0)
+    training = (make_segment(), make_segment(start=16))
+    context = OfflineContext(services, training, seed=0,
+                             validation_metadata=(make_segment(start=23),))
     texture = attack.run_offline(context)
     with (output / "rollouts.csv").open(newline="") as stream:
         rows = list(csv.DictReader(stream))
-    assert len(rows) == 8
+    assert len(rows) == 8 * expected_segments
     assert {row["status"] for row in rows} == {"completed"}
     assert all(float(row["forward_m"]) == pytest.approx(21.) for row in rows)
     for row in rows:
@@ -186,10 +210,18 @@ def test_rollout_patch_optimization(nurec_patch_services, tmp_path):
         assert log.status == "completed" and len(log.steps) == 1
         assert planned_forward_distance(log.steps[0].produced_command.trajectory) == pytest.approx(21.)
     summary = json.loads((output / "optimization.json").read_text())
+    assert summary["training_segments"] == expected_segments
+    assert summary["max_training_segments"] == max_training_segments
+    assert len(summary["starts"]) == 2 * expected_segments
+    assert {row["scenario_id"] for row in rows} == {training[0].scenario_id}
     assert len(summary["history"]) == 2
     assert summary["history"] == pytest.approx([-21., -21.])
     initial = np.asarray(Image.open(output / "initial_patch.png"))
     np.testing.assert_array_equal(texture, initial)
+    with pytest.raises(ValueError, match="training segment"):
+        attack.run_offline(replace(context, metadata=()))
+    with pytest.raises(ValueError, match="max_training_segments"):
+        replace(options, max_training_segments=0)
     with pytest.raises(ValueError, match="rollout directory must be empty"):
         attack.run_offline(context)
     failed_output = tmp_path / "failed"
@@ -206,16 +238,23 @@ def test_rollout_patch_optimization(nurec_patch_services, tmp_path):
 
 
 def test_read_patch_mask(tmp_path):
-    mask = np.zeros((4, 4), bool)
-    mask[:2] = True
+    face = replica_face()
+    mask = np.zeros(face.shape[:2], bool)
+    mask[200:260, 100:400] = True
     path = tmp_path / "mask.png"
     Image.fromarray(mask.astype(np.uint8) * 255).save(path)
     np.testing.assert_array_equal(read_patch_mask(path), mask)
-    for name, pixels in (("empty", np.zeros((4, 4), np.uint8)), ("gray", np.full((4, 4), 128, np.uint8))):
-        invalid = tmp_path / f"{name}.png"
-        Image.fromarray(pixels).save(invalid)
-        with pytest.raises(ValueError, match="nonempty and binary"):
-            read_patch_mask(invalid)
+    corner = np.zeros(face.shape[:2], np.uint8)
+    corner[0, 0] = 255
+    invalid = {"empty": (np.zeros(face.shape[:2], np.uint8), "nonempty and binary"),
+               "gray": (np.full(face.shape[:2], 128, np.uint8), "nonempty and binary"),
+               "small": (np.full((4, 4), 255, np.uint8), "resolution"),
+               "outside": (corner, "inside the replica face")}
+    for name, (pixels, message) in invalid.items():
+        destination = tmp_path / f"{name}.png"
+        Image.fromarray(pixels).save(destination)
+        with pytest.raises(ValueError, match=message):
+            read_patch_mask(destination)
 
 
 def test_texture_from_colors():
@@ -239,7 +278,7 @@ def test_masked_patch_perturbation():
     pose = np.array([[0., 1., 0., 0.], [0., 0., -1., .5],
                      [-1., 0., 0., 4.], [0., 0., 0., 1.]])
     camera = PinholeCamera(np.array([[20., 0., 6.], [0., 20., 6.], [0., 0., 1.]]), 12, 12)
-    plan = plan_composite(camera, np.eye(4), [PlacedObject("stop_sign_patch", asset, pose)])
+    plan = plan_composite(camera, np.eye(4), [PlacedObject("stop_sign_replica", asset, pose)])
     sample = AdversarialSample(torch.zeros(3, 12, 12), TargetSpec((3., 3., 9., 9.)), {"plan": plan})
     perturbation = MaskedPatchPerturbation(original, mask)
     colors = perturbation.init()

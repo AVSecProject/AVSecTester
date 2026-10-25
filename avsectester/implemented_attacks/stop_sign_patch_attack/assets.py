@@ -1,4 +1,8 @@
-"""Binary patch canvases, initial textures and map-aligned panel geometry."""
+"""Stop-sign replica faces, patch masks, initial textures and map-aligned panel geometry.
+
+The replica is the canonical MUTCD R1-1 face. A patch replaces only the masked pixels of that
+face, in face-texture coordinates, so the legend stays where the face design puts it.
+"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -8,39 +12,56 @@ import numpy as np
 from PIL import Image
 
 from avsectester.maps import TrafficControl
-from avsectester.rendering import ObjectAsset
+from avsectester.rendering import STOP_SIGN_FACE, ObjectAsset, load_rgba_image
 from avsectester.validation import (
     require_nonnegative_integer, require_nonnegative_number, require_positive_number,
 )
 
 
 DEFAULT_MASK_PATH = Path(__file__).with_name("masks") / "rp2_bars.png"
+INITIAL_PATCHES = ("none", "white", "black", "gaussian_noise")
+
+
+def replica_face() -> np.ndarray:
+    """The canonical uint8 RGBA stop-sign face, transparent outside the octagon."""
+    return load_rgba_image(STOP_SIGN_FACE)
 
 
 def read_patch_mask(path: str | Path) -> np.ndarray:
-    """Read a nonempty binary mask as an independent boolean canvas."""
+    """Read a nonempty binary mask that lies inside the replica face's opaque octagon."""
     with Image.open(path) as image:
         pixels = np.asarray(image.convert("L"))
     if pixels.size == 0 or not np.isin(pixels, (0, 255)).all() or not (pixels == 255).any():
         raise ValueError("Patch mask must be nonempty and binary (0 or 255)")
-    return np.array(pixels == 255, copy=True)
+    mask = np.array(pixels == 255, copy=True)
+    face = replica_face()
+    if mask.shape != face.shape[:2]:
+        raise ValueError(f"Patch mask must match the replica face resolution {face.shape[:2]}")
+    if (mask & (face[..., 3] == 0)).any():
+        raise ValueError("Patch mask must lie inside the replica face's opaque pixels")
+    return mask
 
 
 def initial_patch_texture(
     kind: str, mask: np.ndarray, *, noise_std: float, noise_seed: int,
 ) -> np.ndarray:
-    """Make masked white, black or independently sampled Gaussian RGB pixels."""
-    if kind not in ("white", "black", "gaussian_noise"):
-        raise ValueError("initial_patch must be white, black or gaussian_noise")
+    """Return the replica face with its masked pixels white, black or Gaussian noise.
+
+    ``none`` returns the unpatched replica face. Noise samples independent RGB values from
+    ``clip(0.5 + noise_std * N(0, 1), 0, 1)``. Alpha and unmasked pixels are always the face's.
+    """
+    if kind not in INITIAL_PATCHES:
+        raise ValueError("initial_patch must be none, white, black or gaussian_noise")
     require_nonnegative_number(noise_std, "noise_std")
     require_nonnegative_integer(noise_seed, "noise_seed")
+    texture = replica_face()
     mask = np.asarray(mask)
-    if mask.ndim != 2 or mask.dtype != bool or not mask.any():
-        raise ValueError("Patch mask must be a nonempty boolean canvas")
-    texture = np.zeros((*mask.shape, 4), dtype=np.uint8)
-    texture[..., 3] = mask.astype(np.uint8) * 255
+    if mask.dtype != bool or mask.shape != texture.shape[:2] or not mask.any():
+        raise ValueError("Patch mask must be a nonempty boolean canvas at the face resolution")
     if kind == "white":
         texture[..., :3][mask] = 255
+    elif kind == "black":
+        texture[..., :3][mask] = 0
     elif kind == "gaussian_noise":
         rng = np.random.default_rng(noise_seed)
         colors = np.rint(np.clip(.5 + noise_std * rng.standard_normal((*mask.shape, 3)),
@@ -49,15 +70,17 @@ def initial_patch_texture(
     return texture
 
 
-def validate_patch_texture(texture: object, mask: np.ndarray) -> np.ndarray:
-    """Require uint8 RGBA artifacts with exactly the configured mask alpha."""
+def validate_replica_texture(texture: object, mask: np.ndarray) -> np.ndarray:
+    """Require a uint8 RGBA replica face that differs from the canonical face only in the mask."""
     if not isinstance(texture, np.ndarray):
-        raise TypeError("Patch artifacts must be a uint8 RGBA array")
-    shape = (*mask.shape, 4)
-    if texture.dtype != np.uint8 or texture.shape != shape:
-        raise ValueError(f"Patch artifacts must be uint8 RGBA with shape {shape}")
-    if not np.array_equal(texture[..., 3], mask.astype(np.uint8) * 255):
-        raise ValueError("Patch artifacts alpha must equal the configured mask times 255")
+        raise TypeError("Replica artifacts must be a uint8 RGBA array")
+    face = replica_face()
+    if texture.dtype != np.uint8 or texture.shape != face.shape:
+        raise ValueError(f"Replica artifacts must be uint8 RGBA with shape {face.shape}")
+    if not np.array_equal(texture[..., 3], face[..., 3]):
+        raise ValueError("Replica artifacts must keep the canonical face alpha")
+    if not np.array_equal(texture[..., :3][~mask], face[..., :3][~mask]):
+        raise ValueError("Replica artifacts may change colours only inside the patch mask")
     return texture.copy()
 
 
@@ -65,18 +88,18 @@ def _check_control(control: TrafficControl) -> None:
     if not isinstance(control, TrafficControl):
         raise TypeError("control must be a TrafficControl")
     if control.kind != "stop_sign" or control.pose_reference != "face_center":
-        raise ValueError("A patch requires a stop_sign control with pose_reference='face_center'")
+        raise ValueError("A replica requires a stop_sign control with pose_reference='face_center'")
     require_positive_number(control.extent[1], "sign width")
     require_positive_number(control.extent[2], "sign height")
 
 
-def patch_asset(control: TrafficControl, texture: np.ndarray, width_scale: float) -> ObjectAsset:
-    """Build a transparent panel using the map width and canvas aspect ratio."""
+def replica_asset(control: TrafficControl, texture: np.ndarray, width_scale: float) -> ObjectAsset:
+    """Build a post-free face panel from the scaled map width and the texture aspect ratio."""
     _check_control(control)
     require_positive_number(width_scale, "width_scale")
     width_m = control.extent[1] * width_scale
     asset = ObjectAsset.from_panel(
-        texture, category="stop_sign_patch", width_m=width_m,
+        texture, category="stop_sign", width_m=width_m,
         mount_height_m=0., post_count=0,
     )
     if not np.isclose(asset.extent[2], control.extent[2], rtol=1e-6, atol=1e-6):
@@ -90,7 +113,7 @@ def patch_asset(control: TrafficControl, texture: np.ndarray, width_scale: float
     return asset
 
 
-def patch_pose(
+def replica_pose(
     control: TrafficControl, offset_m: float = .10, *, panel_height_m: float,
 ) -> np.ndarray:
     """Place the panel centre along the mapped face's +X-facing normal.

@@ -7,11 +7,11 @@ from .compositing import (
     CompositePlan, CompositeResult, ObjectComposition, ObjectVisibility, blend_rgba, composite_objects,
     plan_composite,
 )
-from .textures import CheckerboardTexture, Texture, load_rgba_image
+from .textures import STOP_SIGN_FACE, CheckerboardTexture, Texture, load_rgba_image
 
 __all__ = [
     "ObjectAsset", "PlacedObject", "PlaneSurface", "ClassicHarmonizer", "Harmonizer",
     "PCTNetHarmonizer", "render_surfaces", "CompositePlan", "CompositeResult", "ObjectComposition",
     "ObjectVisibility", "blend_rgba", "composite_objects", "plan_composite",
-    "CheckerboardTexture", "Texture", "load_rgba_image",
+    "STOP_SIGN_FACE", "CheckerboardTexture", "Texture", "load_rgba_image",
 ]

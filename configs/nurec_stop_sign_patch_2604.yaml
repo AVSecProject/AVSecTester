@@ -58,6 +58,10 @@ avstack:
     frame_subsample: 1
     output_frequency_hz: 10
 attacks:
+  replica:
+    type: StopSignPatchAttack
+    options:
+      initial_patch: none
   white:
     type: StopSignPatchAttack
     options:
@@ -89,7 +93,7 @@ attacks:
               step_size: 0.01568627450980392
               batch: 1
               seed: 0
-          scene_count: 4
+          max_training_segments: null
           samples_per_scene: 8
           output_directory: ../results/nurec_stop_sign_patch_2604/optimization/white_detector_pgd
   black_detector_pgd:
@@ -111,7 +115,7 @@ attacks:
               step_size: 0.01568627450980392
               batch: 1
               seed: 0
-          scene_count: 4
+          max_training_segments: null
           samples_per_scene: 8
           output_directory: ../results/nurec_stop_sign_patch_2604/optimization/black_detector_pgd
   noise_detector_pgd:
@@ -133,7 +137,7 @@ attacks:
               step_size: 0.01568627450980392
               batch: 1
               seed: 0
-          scene_count: 4
+          max_training_segments: null
           samples_per_scene: 8
           output_directory: ../results/nurec_stop_sign_patch_2604/optimization/noise_detector_pgd
   white_rollout_nes:
@@ -156,7 +160,7 @@ attacks:
           - 30
           - 20
           horizon_s: 3
-          scene_count: 1
+          max_training_segments: 1
           output_directory: ../results/nurec_stop_sign_patch_2604/optimization/white_rollout_nes
   black_rollout_nes:
     type: StopSignPatchAttack
@@ -178,7 +182,7 @@ attacks:
           - 30
           - 20
           horizon_s: 3
-          scene_count: 1
+          max_training_segments: 1
           output_directory: ../results/nurec_stop_sign_patch_2604/optimization/black_rollout_nes
   noise_rollout_nes:
     type: StopSignPatchAttack
@@ -200,7 +204,7 @@ attacks:
           - 30
           - 20
           horizon_s: 3
-          scene_count: 1
+          max_training_segments: 1
           output_directory: ../results/nurec_stop_sign_patch_2604/optimization/noise_rollout_nes
 evaluation:
   metrics:
@@ -209,9 +213,15 @@ evaluation:
     options:
       phrase: stop sign
   - type: DrivingMetrics
+split:
+  train_segments: 4
+  seed: 0
+  execute: [test]
 runs:
   treatments:
   - name: clean
+  - name: replica
+    attack_name: replica
   - name: white
     attack_name: white
   - name: black

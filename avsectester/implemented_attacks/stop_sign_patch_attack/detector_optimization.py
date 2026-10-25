@@ -1,4 +1,4 @@
-"""Optimize a transparent physical patch against a differentiable stop-sign detector."""
+"""Optimize the patch pixels of a replica stop-sign face against a differentiable detector."""
 from __future__ import annotations
 
 from collections import defaultdict
@@ -21,14 +21,14 @@ from avsectester.execution.services import ClosedLoopSession, RenderRequest
 from avsectester.geometry.projection import project_box
 from avsectester.validation import require_nonnegative_integer, require_positive_integer
 
-from .assets import texture_from_colors
+from .assets import replica_face, texture_from_colors
 from .metabuilder import control_from_user_data, route_progress
 
 if TYPE_CHECKING:
     from .attack import StopSignPatchAttack
     from .offline import DetectorPatchOptimization
 
-OBJECT_ID = "stop_sign_patch"
+OBJECT_ID = "stop_sign_replica"
 
 
 class TextureDataSource(DataSource):
@@ -81,6 +81,11 @@ class MaskedPatchPerturbation(Perturbation):
                                    self.project(delta).detach().cpu().numpy())
 
 
+def _colors(texture: np.ndarray) -> torch.Tensor:
+    """Straight RGB colours of a uint8 RGBA texture as a CHW tensor in [0, 1]."""
+    return torch.as_tensor(texture[..., :3].copy(), dtype=torch.float32).permute(2, 0, 1) / 255
+
+
 def _write_csv(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
     columns = list(dict.fromkeys(key for row in rows for key in row))
     with path.open("w", newline="") as stream:
@@ -101,9 +106,9 @@ def collect_samples(
     """Calibrate exact detectable ranges and sample disjoint, time-spaced captures.
 
     The d_max search covers recording start through the recorded stop, on the entering route
-    and facing the selected sign. Frames are searched by descending distance; the first score
-    meeting the attack's detection threshold is therefore the farthest detectable eligible
-    frame, without a monotonicity assumption. The configured visibility minimum excludes
+    and facing the selected sign. Frames are searched by descending distance; the first frame
+    whose unpatched replica meets the attack's detection threshold is therefore the farthest
+    detectable eligible frame, without a monotonicity assumption. The configured visibility minimum excludes
     ineligible frames explicitly. d_min uses the recorded speed at the selected segment
     start, squared and divided by twice the configured braking deceleration.
 
@@ -111,21 +116,22 @@ def collect_samples(
     geometry or service errors stop collection with a saved reproduction; they are never scores.
     """
     options = cast("DetectorPatchOptimization", attack.optimization)
-    if len(context.metadata) < options.scene_count:
-        raise ValueError("Not enough selected scenes for the white-box cohort")
+    if not context.metadata:
+        raise ValueError("Detector patch optimization requires at least one training segment")
     if context.environment.get("sensors"):
         raise ValueError("White-box composition samples require an environment without sensor corruptions")
     destination = Path(options.output_directory)
     destination.mkdir(parents=True, exist_ok=True)
     dataset = context.services.dataset
-    cohort = context.metadata[:options.scene_count]
+    cohort = context.metadata[:options.max_training_segments]
+    replica_colors = _colors(replica_face())
     calibration: list[dict[str, Any]] = []
     manifest: list[dict[str, Any]] = []
     train, heldout = [], []
     for segment in cohort:
         scene = segment.scenario_id
         control = control_from_user_data(segment.user_data)
-        asset, pose = attack.patch_placement(segment, original)
+        asset, pose = attack.replica_placement(segment, original)
         frames = tuple(dataset.frames(scene))
         positions = np.asarray(segment.user_data["route_points"], dtype=float)
         stop = int(segment.user_data["recorded_stop_frame"])
@@ -178,9 +184,10 @@ def collect_samples(
                     sample = capture(session, index, "d_max_search")
                     if sample is not None:
                         with torch.no_grad():
-                            clean_image = sample.x
-                            score = float(options.detector.target_score(clean_image, sample.target))
-                        sample.context["record"]["clean_score"] = score
+                            replica_image = sample.context["plan"].composite(
+                                sample.x, {(OBJECT_ID, 0): replica_colors})
+                            score = float(options.detector.target_score(replica_image, sample.target))
+                        sample.context["record"]["replica_score"] = score
                         if score >= options.detection_threshold:
                             record["d_max_m"] = float(distances[index])
                             cache[index] = sample
@@ -227,17 +234,21 @@ def collect_samples(
 def optimize_patch(
     attack: StopSignPatchAttack, context: OfflineContext, original: np.ndarray,
 ) -> np.ndarray:
-    """Run framework PGD/HideObject and evaluate three textures on distinct held-out frames."""
+    """Run framework PGD/HideObject; score held-out frames with and without the replica.
+
+    ``clean`` is the reconstructed sign without insertion, ``replica`` the unpatched replica,
+    ``initial`` the initial patch and ``optimized`` the PGD result.
+    """
     options = cast("DetectorPatchOptimization", attack.optimization)
     destination = Path(options.output_directory)
     destination.mkdir(parents=True, exist_ok=True)
-    mask = original[..., 3] == 255
+    mask = attack.mask
     train, heldout = collect_samples(attack, context, original)
     perturbation = MaskedPatchPerturbation(original, mask, device=getattr(options.detector, "device", "cpu"))
     initial = perturbation.export(perturbation.init())
     result = options.optimizer.run(TextureDataSource(train, seed=context.seed), perturbation,
                                   options.detector, HideObject())
-    optimized = attack.patch_texture(result.export)
+    optimized = attack.replica_texture(result.export)
     for name, texture in [("initial_patch", initial), ("optimized_texture", optimized)]:
         Image.fromarray(texture).save(destination / (name + ".png"))
     scores = [{"iteration": index, "stage": "before_update", "objective": value}
@@ -247,11 +258,11 @@ def optimize_patch(
     measured = []
     with torch.no_grad():
         for sample in heldout:
-            for name, candidate in [("clean", None), ("initial", initial), ("optimized", optimized)]:
+            for name, candidate in [("clean", None), ("replica", replica_face()), ("initial", initial),
+                                    ("optimized", optimized)]:
                 image = sample.x
                 if candidate is not None:
-                    colors = torch.as_tensor(candidate[..., :3].copy(), dtype=torch.float32).permute(2, 0, 1) / 255
-                    image = sample.context["plan"].composite(sample.x, {(OBJECT_ID, 0): colors})
+                    image = sample.context["plan"].composite(sample.x, {(OBJECT_ID, 0): _colors(candidate)})
                 score = float(options.detector.target_score(image, sample.target))
                 entry = sample.context["record"]
                 measured.append({"scene": sample.context["scene"],
@@ -282,7 +293,9 @@ def optimize_patch(
     figure.savefig(destination / "pgd_curve.png", dpi=150)
     figure.clear()
     _write_json(destination / "optimization.json", {"train_frames": len(train), "heldout_frames": len(heldout),
-        "history": result.history, "final_score": result.final_score, "scene_count": options.scene_count,
+        "history": result.history, "final_score": result.final_score,
+        "max_training_segments": options.max_training_segments,
+        "training_segments": len(context.metadata[:options.max_training_segments]),
         "mask_pixels": int(mask.sum()), "offset_m": attack.offset_m, "width_scale": attack.width_scale,
         "detector_stop_sign_label": getattr(options.detector, "stop_sign_label", None)})
     return optimized

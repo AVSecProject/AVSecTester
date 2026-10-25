@@ -36,7 +36,7 @@ data and boundary modules can be imported without simulator servers or weights.
 | avsectester.rendering.harmonizers | Harmonizer, ClassicHarmonizer and PCTNetHarmonizer |
 | avsectester.rendering.objects | PlaneSurface, ObjectAsset and PlacedObject |
 | avsectester.rendering.surfaces | Calibrated planar sampling and render_surfaces |
-| avsectester.rendering.textures | Texture, CheckerboardTexture and load_rgba_image |
+| avsectester.rendering.textures | STOP_SIGN_FACE, Texture, CheckerboardTexture and load_rgba_image |
 | avsectester.closed_loop.avstacks.base | AVStack, ObservationPipeline and command compatibility checks |
 | avsectester.closed_loop.avstacks | AVStack, ObservationPipeline and driving-adapter interfaces |
 | avsectester.closed_loop.avstacks.alpamayo | AlpamayoAVStack and its component bindings |
@@ -87,7 +87,7 @@ data and boundary modules can be imported without simulator servers or weights.
 | avsectester.execution.runner | ClosedLoopRunner, RunRequest and RecordingPolicy |
 | avsectester.execution.services | ClosedLoopServices/session, ScenarioView and request/result records |
 | avsectester.implemented_attacks.<attack_folder> | Concrete Attack class exported by its folder |
-| avsectester.implemented_attacks.stop_sign_patch_attack.attack | StopSignPatchAttack selection, preparation and placement |
+| avsectester.implemented_attacks.stop_sign_patch_attack.attack | StopSignPatchAttack selection, preparation and replica placement |
 | avsectester.implemented_attacks.stop_sign_patch_attack.offline | DetectorPatchOptimization and RolloutPatchOptimization |
 | avsectester.implemented_attacks.stop_sign_patch_attack.detector | Local differentiable stop-sign detector scorer |
 | avsectester.evaluation | RunGroup, evaluate_groups, metrics and report records |
@@ -106,13 +106,14 @@ data and boundary modules can be imported without simulator servers or weights.
 
 ## Experiment API
 
-Use Experiment.prepare(config) and execute(prepared). Configuration can be an existing typed object,
-mapping or YAML path. PreparedExperiment owns explicit metadata and artifacts and no live resources.
+Use Experiment.prepare(config, resume=False) and execute(prepared, resume=False). Configuration can
+be an existing typed object, mapping or YAML path. PreparedExperiment owns explicit metadata and artifacts and no live resources.
 Save/load are methods on PreparedExperiment. ExperimentResult.load(output, config) loads saved runs
 for evaluation without starting a simulator or loading artifacts for deployment.
 
 ExperimentConfiguration contains the dataset, simulator, avstack, attacks, hooks, evaluation and a
-frozen RunsConfiguration under runs. Read or change treatments, seeds, decision_steps, environment,
+frozen RunsConfiguration under runs and optional frozen SplitConfiguration under split. Read or
+change treatments, seeds, decision_steps, environment,
 recording, output and strict through configuration.runs. YAML uses the same runs nesting; old
 top-level run settings are rejected rather than converted. Relative runs.output paths resolve
 against the containing YAML file.
@@ -131,8 +132,8 @@ constructor inputs cannot be read from same-named attributes. Unverifiable param
 are explicitly marked unverified, and prevent validated preparation loading. They do not prevent
 configuration construction or in-memory execution.
 
-PreparedExperiment.preparation records the preparation inputs (seed and offline_environments) as
-canonical data; [Saved preparation compatibility](configuration.md#saved-preparation-compatibility)
+PreparedExperiment.preparation records the preparation inputs (seed, offline_environments and split
+counts/seed, excluding split.execute) as canonical data; [Saved preparation compatibility](configuration.md#saved-preparation-compatibility)
 defines what reuse checks.
 
 OfflineContext.environment merges runs.environment with the attack environment. Metabuilder
@@ -142,7 +143,9 @@ constraining runs.
 
 Configurations contain one or more attacks, each with its own metadata. A treatment enables one
 attack by attack_name, or none, with optional environment overrides; a treatment without attack_name
-runs on every attack's segments. Every treatment pair is evaluated; no baseline is
+runs once per complete segment unit and seed. Identical metadata selected by different attacks
+shares a unit; different user_data means a different unit even for the same window. Every group
+treatment pair is evaluated, including different attacks; no baseline is
 configured. The same hooks apply to every treatment. Result failures and selection errors remain
 available independently.
 
@@ -151,6 +154,11 @@ result-reading exceptions remain read failures rather than configuration errors.
 ExperimentResult.notices contains ordinary messages for skipped saved runs that the configuration or
 saved preparation does not expect, such as removed treatments. The output_directory module defines
 the run layout through run_directory; saved_run_directories lists saved runs by that layout.
+Run directories are runs/segment-xxxxx/seed-s/treatment/; old attack-prefixed v5/v6 results are not
+loadable or evaluable by this version. Preparation checkpoints selection/units before optimization
+and saves each completed artifact before the next attack. Resume validates the saved configuration
+and preparation record, reuses saved selection and runs only unfinished offline work. Execution
+resume retains matching completed manifests and reruns only other expected runs.
 
 ## Attack API
 
@@ -169,8 +177,11 @@ closes the online lifecycle. All history and bound AVStack callbacks share one r
 subscriptions supports observation and physical_state snapshots. OnlineContext gives physical
 frame/time and record_output but no live time-advancing resources.
 
-Attack.deployment_ticks(segment) declares physical setup needs. OfflineContext includes metadata,
-selection seed, resolved experiment/attack environment and the common DeploymentPlan.
+Attack.deployment_ticks(segment) declares physical setup needs. OfflineContext includes training
+metadata, validation_metadata, selection seed, resolved experiment/attack environment and the
+experiment-wide maximum DeploymentPlan. Without split, metadata contains all selected segments and
+validation_metadata is empty; with split each attack receives only its units in the respective
+parts. PreparedExperiment retains all selected metadata and units.
 
 World actions receive SimulatorRuntime and an ExitStack for cleanup. Sensor actions receive the
 current sensor value and a SensorView containing the original capture, for cameras, LiDAR, GNSS
@@ -437,7 +448,8 @@ avsectester.implemented_attacks.patch_attack import PatchAttack`.
 |---|---|
 | `TreatmentConfiguration` | `name: str`<br>`attack_name: str \| None = None`<br>`environment: Mapping[str, Any] = field(default_factory=dict)` |
 | `RunsConfiguration` | `treatments: tuple[TreatmentConfiguration, ...] = ()`<br>`seeds: tuple[int, ...] = (0,)`<br>`decision_steps: int \| None = None`<br>`environment: Mapping[str, Any] = field(default_factory=dict)`<br>`recording: RecordingPolicy = field(default_factory=RecordingPolicy)`<br>`output: Path \| None = None`<br>`strict: bool = False` |
-| `ExperimentConfiguration` | `dataset: Dataset`<br>`simulator: Simulator`<br>`avstack: DrivingAdapter`<br>`attacks: Mapping[str, Attack] = field(default_factory=dict)`<br>`hooks: HookConfiguration = None`<br>`evaluation: EvaluationConfiguration = field(default_factory=EvaluationConfiguration)`<br>`runs: RunsConfiguration = field(default_factory=RunsConfiguration)` |
+| `SplitConfiguration` | `train_segments: int`<br>`validation_segments: int = 0`<br>`seed: int = 0`<br>`execute: tuple[str, ...] = ("test",)` |
+| `ExperimentConfiguration` | `dataset: Dataset`<br>`simulator: Simulator`<br>`avstack: DrivingAdapter`<br>`attacks: Mapping[str, Attack] = field(default_factory=dict)`<br>`hooks: HookConfiguration = None`<br>`evaluation: EvaluationConfiguration = field(default_factory=EvaluationConfiguration)`<br>`runs: RunsConfiguration = field(default_factory=RunsConfiguration)`<br>`split: SplitConfiguration \| None = None` |
 | `ExperimentConfiguration.configuration_summary` | `configuration_summary: dict[str, Any]` |
 | `ExperimentConfiguration.describe_configuration` | `describe_configuration(*, scenarios: Sequence[str] \| None = None) -> dict[str, Any]` |
 | `load_configuration` | `load_configuration(config: ExperimentConfiguration \| Mapping[str, Any] \| str \| Path) -> ExperimentConfiguration` |
@@ -468,8 +480,8 @@ not discover attacks. Third-party registry specifications remain the owning cons
 |---|---|
 | `validate_configuration_environment` | `validate_configuration_environment(config: ExperimentConfiguration) -> None` |
 | `Experiment` | Class; see methods below |
-| `Experiment.prepare` | `prepare(config: ExperimentConfiguration \| Mapping[str, Any] \| str \| Path) -> PreparedExperiment` |
-| `Experiment.execute` | `execute(prepared: PreparedExperiment) -> ExperimentResult` |
+| `Experiment.prepare` | `prepare(config: ExperimentConfiguration \| Mapping[str, Any] \| str \| Path, resume: bool = False) -> PreparedExperiment` |
+| `Experiment.execute` | `execute(prepared: PreparedExperiment, resume: bool = False) -> ExperimentResult` |
 
 ### avsectester.experiment.models
 
@@ -480,13 +492,14 @@ not discover attacks. Third-party registry specifications remain the owning cons
 | `SelectionDecision.as_dict` | `as_dict() -> dict[str, Any]` |
 | `SelectionDecision.from_dict` | `from_dict(value: Mapping[str, Any]) -> SelectionDecision` |
 | `treatment_applies` | `treatment_applies(treatment: Any, attack_name: str) -> bool` |
-| `PreparedExperiment` | `configuration: ExperimentConfiguration`<br>`metadata: Mapping[str, tuple[AttackSegment, ...]]`<br>`artifacts: Mapping[str, Any]`<br>`selections: tuple[SelectionDecision, ...] = ()`<br>`preparation: Mapping[str, Any]` (required, keyword-only) |
+| `SegmentUnit` | `index: int`<br>`segment: AttackSegment`<br>`attack_names: tuple[str, ...]`<br>`part: str \| None = None` |
+| `PreparedExperiment` | `configuration: ExperimentConfiguration`<br>`metadata: Mapping[str, tuple[AttackSegment, ...]]`<br>`artifacts: Mapping[str, Any]`<br>`selections: tuple[SelectionDecision, ...] = ()`<br>`preparation: Mapping[str, Any]` (required, keyword-only)<br>`units: tuple[SegmentUnit, ...] = ()` (keyword-only)<br>`deployment: DeploymentPlan \| None = None` (keyword-only) |
 | `PreparedExperiment.save` | `save(directory: str \| Path) -> Path` |
 | `PreparedExperiment.load` | `load(config: ExperimentConfiguration \| Mapping[str, Any] \| str \| Path, directory: str \| Path) -> PreparedExperiment` |
-| `TreatmentResult` | `attack_name: str`<br>`segment_index: int`<br>`segment: AttackSegment`<br>`treatment: str`<br>`seed: int`<br>`log: RunLog`<br>`error: str \| None = None` |
-| `TreatmentResult.group` | `group: tuple[str, int, int]` |
+| `TreatmentResult` | `attack_name: str \| None`<br>`segment_index: int`<br>`segment: AttackSegment`<br>`treatment: str`<br>`seed: int`<br>`log: RunLog`<br>`error: str \| None = None`<br>`part: str \| None = None` |
+| `TreatmentResult.group` | `group: tuple[int, int]` |
 | `ExperimentResult` | `runs: tuple[TreatmentResult, ...] = ()`<br>`selections: tuple[SelectionDecision, ...] = ()`<br>`notices: tuple[str, ...] = ()`<br>`scenario_maps: Mapping[str, ScenarioMap \| Unavailable] = field(default_factory=dict)` |
-| `ExperimentResult.groups` | `groups: dict[tuple[str, int, int], dict[str, RunLog]]` |
+| `ExperimentResult.groups` | `groups: dict[tuple[int, int], dict[str, RunLog]]` |
 | `ExperimentResult.failures` | `failures: tuple[TreatmentResult, ...]` |
 | `ExperimentResult.selection_errors` | `selection_errors: tuple[SelectionDecision, ...]` |
 | `ExperimentResult.load` | `load(output: str \| Path, configuration: ExperimentConfiguration) -> ExperimentResult` |
@@ -501,13 +514,13 @@ methods provide the usual save/load entry points.
 
 | Public name | Signature or fields |
 |---|---|
-| `PreparedMetadata` | `metadata: Mapping[str, tuple[AttackSegment, ...]]`<br>`selections: tuple[SelectionDecision, ...]`<br>`preparation: Mapping[str, Any] \| None` |
+| `PreparedMetadata` | `metadata: Mapping[str, tuple[AttackSegment, ...]]`<br>`selections: tuple[SelectionDecision, ...]`<br>`preparation: Mapping[str, Any]`<br>`units: tuple[SegmentUnit, ...]`<br>`deployment: DeploymentPlan \| None` |
 | `save_prepared` | `save_prepared(prepared: PreparedExperiment, directory: str \| Path) -> Path` |
 | `load_prepared` | `load_prepared(configuration: ExperimentConfiguration, directory: str \| Path) -> PreparedExperiment` |
 | `load_prepared_metadata` | `load_prepared_metadata(configuration: ExperimentConfiguration, directory: str \| Path) -> PreparedMetadata` |
 | `runs_directory` | `runs_directory(root: Path) -> Path` |
-| `run_directory` | `run_directory(root: Path, attack_name: str, segment_index: int, seed: int, treatment: str) -> Path` |
-| `saved_run_directories` | `saved_run_directories(root: Path) -> tuple[tuple[tuple[str, int, int, str], Path], ...]` |
+| `run_directory` | `run_directory(root: Path, segment_index: int, seed: int, treatment: str) -> Path` |
+| `saved_run_directories` | `saved_run_directories(root: Path) -> tuple[tuple[tuple[int, int, str], Path], ...]` |
 | `load_result` | `load_result(directory: str \| Path, configuration: ExperimentConfiguration) -> ExperimentResult` |
 | `ConfigurationMismatchError` | `ConfigurationMismatchError(ValueError)`; raised when a saved preparation and the supplied configuration describe different attacks or inputs |
 | `save_scenario_maps` | `save_scenario_maps(maps: Mapping[str, ScenarioMap \| Unavailable], directory: str \| Path) -> None` |
@@ -525,7 +538,7 @@ methods provide the usual save/load entry points.
 |---|---|
 | `AttackSegment` | `scenario_id: str`<br>`start: FrameReference`<br>`stop: FrameReference`<br>`user_data: Mapping[str, Any] = field(default_factory=dict)` |
 | `AttackSegment.decision_steps` | `decision_steps: int` |
-| `OfflineContext` | `services: ClosedLoopServices`<br>`metadata: tuple[AttackSegment, ...]`<br>`seed: int = 0`<br>`environment: Mapping[str, Any] = field(default_factory=dict)`<br>`deployment: DeploymentPlan \| None = None` |
+| `OfflineContext` | `services: ClosedLoopServices`<br>`metadata: tuple[AttackSegment, ...]`<br>`seed: int = 0`<br>`environment: Mapping[str, Any] = field(default_factory=dict)`<br>`deployment: DeploymentPlan \| None = None`<br>`validation_metadata: tuple[AttackSegment, ...] = ()` |
 | `Attack` | `environment: Mapping[str, Any] = MappingProxyType({})` |
 | `Attack.build_metadata` | `build_metadata(scenario: ScenarioView) -> Sequence[AttackSegment]` |
 | `Attack.run_offline` | `run_offline(context: OfflineContext) -> Any` |
@@ -1308,23 +1321,25 @@ addresses pixel centres at i + 0.5. Unsupported external distortion types raise 
 | Public name | Signature or fields |
 |---|---|
 | `StopSignPatchAttack` | Class; see methods below |
-| `StopSignPatchAttack.__init__` | `__init__(initial_patch='white', optimization=None, mask_path=DEFAULT_MASK_PATH, noise_std=0.25, noise_seed=0, approach_m=50.0, hold_steps=20, offset_m=0.10, width_scale=1.0)` |
+| `StopSignPatchAttack.__init__` | `__init__(initial_patch='white', optimization=None, mask_path=DEFAULT_MASK_PATH, noise_std=0.25, noise_seed=0, approach_m=50.0, hold_steps=20, offset_m=0.10, width_scale=1.1)` |
 | `StopSignPatchAttack.build_metadata` | `build_metadata(scenario)` |
 | `StopSignPatchAttack.run_offline` | `run_offline(context)` |
-| `StopSignPatchAttack.patch_placement` | `patch_placement(segment, texture) -> tuple[ObjectAsset, np.ndarray]` |
-| `StopSignPatchAttack.patch_texture` | `patch_texture(artifacts) -> np.ndarray` |
+| `StopSignPatchAttack.replica_placement` | `replica_placement(segment, texture) -> tuple[ObjectAsset, np.ndarray]` |
+| `StopSignPatchAttack.replica_texture` | `replica_texture(artifacts) -> np.ndarray` |
 | `StopSignPatchAttack.create_runtime` | `create_runtime(segment, artifacts)` |
 
-The default mask is masks/rp2_bars.png inside this attack package. The folder's __init__.py exports
-only StopSignPatchAttack. Artifacts are uint8 RGBA textures with alpha exactly equal to the mask
-times 255. The runtime inserts one stop_sign_patch object at setup.
+initial_patch is none, white, black or gaussian_noise; none deploys the unpatched replica and
+cannot be optimized. The default mask is masks/rp2_bars.png inside this attack package. The
+folder's __init__.py exports only StopSignPatchAttack. Artifacts are uint8 RGBA replica faces
+with the alpha of STOP_SIGN_FACE and its colours outside the mask. The runtime inserts one
+stop_sign_replica object at setup.
 
 ### avsectester.implemented_attacks.stop_sign_patch_attack.offline
 
 | Public name | Signature or fields |
 |---|---|
-| `DetectorPatchOptimization` | Frozen dataclass: `detector: Scorer`, `optimizer: PGD`, `output_directory: str \| Path`, `camera_id='camera_front_wide_120fov'`, `scene_count=4`, `samples_per_scene=8`, `min_visible_pixels=100`, `detection_threshold=0.5`, `braking_deceleration_mps2=3.4` |
-| `RolloutPatchOptimization` | Frozen dataclass: `optimizer: NES`, `output_directory: str \| Path`, `start_distances_m=(40.0, 30.0, 20.0)`, `horizon_s=3.0`, `scene_count=1` |
+| `DetectorPatchOptimization` | Frozen dataclass: `detector: Scorer`, `optimizer: PGD`, `output_directory: str \| Path`, `camera_id='camera_front_wide_120fov'`, `max_training_segments=None`, `samples_per_scene=8`, `min_visible_pixels=100`, `detection_threshold=0.5`, `braking_deceleration_mps2=3.4` |
+| `RolloutPatchOptimization` | Frozen dataclass: `optimizer: NES`, `output_directory: str \| Path`, `start_distances_m=(40.0, 30.0, 20.0)`, `horizon_s=3.0`, `max_training_segments=1` |
 | `run_offline` | `run_offline(attack, context) -> np.ndarray` |
 
 Both optimizers start from the attack's generated initial patch. Detector options require PGD;
@@ -1356,7 +1371,7 @@ box selection do not provide gradients. An injected model replaces only the lear
 
 ### avsectester.implemented_attacks.object_insertion_attack.assets
 
-SignAsset defaults to the bundled textures/mutcd_r1-1_stop.png in this concrete attack package.
+SignAsset defaults to avsectester.rendering.STOP_SIGN_FACE, the bundled MUTCD R1-1 texture.
 Its bottom-center origin, +X front, +Y left and +Z up match ObjectAsset. object_asset delegates to
 ObjectAsset.from_panel; planes returns that object's surfaces, with posts before the face.
 post_count is nonnegative; zero omits support posts.
@@ -1408,6 +1423,7 @@ The loader returns an independent uint8 RGBA image.
 
 | Public name | Signature or fields |
 |---|---|
+| `STOP_SIGN_FACE` | `Path` to the bundled public-domain MUTCD R1-1 face, 512×512 RGBA, transparent outside the octagon; sources in `rendering/assets/SOURCES.md` |
 | `Texture` | Protocol; see method below |
 | `Texture.rgba` | `rgba() -> np.ndarray` |
 | `CheckerboardTexture` | `size: int = 256`<br>`cells: int = 8`<br>`colors: tuple = ((255, 0, 0), (255, 255, 255))` |
@@ -1658,7 +1674,7 @@ metrics, contains completed logs only.
 
 | Public name | Signature or fields |
 |---|---|
-| `RunGroup` | `attack_name: str`<br>`segment_index: int`<br>`segment: AttackSegment`<br>`seed: int`<br>`logs: Mapping[str, RunLog]`<br>`errors: Mapping[str, str] = field(default_factory=dict)`<br>`scenario_map: ScenarioMap \| Unavailable = field(default_factory=lambda: Unavailable('No saved scenario map is available'))` |
+| `RunGroup` | `segment_index: int`<br>`segment: AttackSegment`<br>`seed: int`<br>`logs: Mapping[str, RunLog]`<br>`errors: Mapping[str, str] = field(default_factory=dict)`<br>`scenario_map: ScenarioMap \| Unavailable = field(default_factory=lambda: Unavailable('No saved scenario map is available'))`<br>`treatment_attacks: Mapping[str, str \| None] = field(default_factory=dict)`<br>`part: str \| None = None` |
 | `evaluate_groups` | `evaluate_groups(groups: Sequence[RunGroup], metrics: Sequence[Metric], *, notes: Sequence[str] = ()) -> EvaluationReport` |
 
 ### avsectester.evaluation.metric
@@ -1666,7 +1682,7 @@ metrics, contains completed logs only.
 | Public name | Signature or fields |
 |---|---|
 | `UnavailableMetricValue` | `reason: str`<br>`value_type: Literal['number', 'boolean'] = 'number'` |
-| `ComparisonGroup` | `attack_name: str`<br>`segment: AttackSegment`<br>`seed: int`<br>`runs: Mapping[str, RunLog]`<br>`scenario_map: ScenarioMap \| Unavailable = field(default_factory=lambda: Unavailable('No saved scenario map is available'))` |
+| `ComparisonGroup` | `segment: AttackSegment`<br>`seed: int`<br>`runs: Mapping[str, RunLog]`<br>`scenario_map: ScenarioMap \| Unavailable = field(default_factory=lambda: Unavailable('No saved scenario map is available'))`<br>`treatment_attacks: Mapping[str, str \| None] = field(default_factory=dict)` |
 | `TreatmentPair` | `treatment_a: str`<br>`treatment_b: str`<br>`log_a: RunLog`<br>`log_b: RunLog` |
 | `Metric` | Class; see methods below |
 | `Metric.evaluate` | `evaluate(data: Any) -> Mapping[str, Any]` |

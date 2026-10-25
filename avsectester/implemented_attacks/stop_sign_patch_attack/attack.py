@@ -1,4 +1,4 @@
-"""Connect stop-approach selection, optional patch optimization and deployment."""
+"""Connect stop-approach selection, optional patch optimization and replica deployment."""
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -13,17 +13,23 @@ from avsectester.validation import (
     require_nonnegative_integer, require_nonnegative_number, require_positive_number,
 )
 
-from .assets import DEFAULT_MASK_PATH, patch_asset, patch_pose, read_patch_mask, validate_patch_texture
+from .assets import (
+    DEFAULT_MASK_PATH, INITIAL_PATCHES, read_patch_mask, replica_asset, replica_pose,
+    validate_replica_texture,
+)
 from .metabuilder import control_from_user_data, select_stop_approach
 from .offline import DetectorPatchOptimization, RolloutPatchOptimization, run_offline
 from .online import StopSignPatchAttackRuntime
 
 
 class StopSignPatchAttack(Attack):
-    """Place masked pixels on recorded stop signs, preserving the reconstructed sign.
+    """Cover a recorded stop sign with a replica face whose masked pixels form a patch.
 
-    One approach is selected per scenario. Optional detector PGD or rollout NES
-    prepares a shared texture before each selected segment creates its runtime.
+    One approach is selected per scenario. The replica is the canonical MUTCD face, scaled
+    from the mapped sign width and placed in front of the reconstructed face, so it hides the
+    original sign; the patch lies in face-texture coordinates and never moves the legend.
+    ``initial_patch="none"`` deploys the unpatched replica as a control. Optional detector PGD
+    or rollout NES optimizes the masked pixels of the initial patch offline.
     """
 
     def __init__(
@@ -31,10 +37,12 @@ class StopSignPatchAttack(Attack):
         optimization: DetectorPatchOptimization | RolloutPatchOptimization | None = None,
         mask_path: str | Path = DEFAULT_MASK_PATH, noise_std: float = .25, noise_seed: int = 0,
         approach_m: float = 50., hold_steps: int = 20, offset_m: float = .10,
-        width_scale: float = 1.,
+        width_scale: float = 1.1,
     ) -> None:
-        if initial_patch not in ("white", "black", "gaussian_noise"):
-            raise ValueError("initial_patch must be white, black or gaussian_noise")
+        if initial_patch not in INITIAL_PATCHES:
+            raise ValueError("initial_patch must be none, white, black or gaussian_noise")
+        if initial_patch == "none" and optimization is not None:
+            raise ValueError("initial_patch none deploys the unpatched replica and cannot be optimized")
         if optimization is not None and not isinstance(
             optimization, (DetectorPatchOptimization, RolloutPatchOptimization),
         ):
@@ -64,19 +72,19 @@ class StopSignPatchAttack(Attack):
     def run_offline(self, context: OfflineContext) -> np.ndarray:
         return run_offline(self, context)
 
-    def patch_placement(
+    def replica_placement(
         self, segment: AttackSegment, texture: np.ndarray,
     ) -> tuple[ObjectAsset, np.ndarray]:
         """Use the same panel size and face-centre placement offline and online."""
         control = control_from_user_data(segment.user_data)
-        asset = patch_asset(control, texture, self.width_scale)
-        pose = patch_pose(control, self.offset_m, panel_height_m=asset.extent[2])
+        asset = replica_asset(control, texture, self.width_scale)
+        pose = replica_pose(control, self.offset_m, panel_height_m=asset.extent[2])
         return asset, pose
 
-    def patch_texture(self, artifacts: object) -> np.ndarray:
-        return validate_patch_texture(artifacts, self.mask)
+    def replica_texture(self, artifacts: object) -> np.ndarray:
+        return validate_replica_texture(artifacts, self.mask)
 
     def create_runtime(self, segment: AttackSegment, artifacts: object) -> AttackRuntime:
-        texture = self.patch_texture(artifacts)
-        asset, pose = self.patch_placement(segment, texture)
+        texture = self.replica_texture(artifacts)
+        asset, pose = self.replica_placement(segment, texture)
         return StopSignPatchAttackRuntime(asset, pose)

@@ -10,7 +10,7 @@ import numpy as np
 
 from avsectester.validation import require_nonnegative_integer, require_positive_integer
 from avsectester.rendering.objects import ObjectAsset, PlaneSurface
-from avsectester.rendering.textures import load_rgba_image
+from avsectester.rendering.textures import STOP_SIGN_FACE, load_rgba_image
 
 
 @dataclass
@@ -23,7 +23,7 @@ class SignAsset:
     width. World position and orientation belong to a PlacedObject.
     """
 
-    face: np.ndarray | str | Path = field(default=Path(__file__).resolve().parent / "textures" / "mutcd_r1-1_stop.png", repr=False)
+    face: np.ndarray | str | Path = field(default=STOP_SIGN_FACE, repr=False)
     width_m: float = 0.9
     mount_height_m: float = 1.5
     post_width_m: float = 0.07

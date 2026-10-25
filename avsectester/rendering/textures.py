@@ -7,6 +7,9 @@ import numpy as np
 
 from avsectester.validation import require_positive_integer
 
+# Bundled public-domain texture shared by attacks; sources are listed in assets/SOURCES.md.
+STOP_SIGN_FACE = Path(__file__).resolve().with_name("assets") / "mutcd_r1-1_stop.png"
+
 
 class Texture(Protocol):
     """A user-provided texture that returns an RGB or RGBA uint8 image."""
