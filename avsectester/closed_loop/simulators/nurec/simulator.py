@@ -16,6 +16,7 @@ from avsectester.closed_loop.simulators.base import SensorGeometry, SensorView, 
 from avsectester.closed_loop.simulators.navigation import RouteGenerator
 from avsectester.geometry.cameras import BODY_FROM_OPTICAL
 from avsectester.geometry.poses import validated_transform, validated_vector
+from avsectester.validation import require_nonnegative_number
 from avsectester.data_types import ActorState, Observation, WorldSnapshot
 
 from .depth import _actor_depth, _scene_raycaster, _ground_raycaster
@@ -43,6 +44,10 @@ class NuRecSimulator(Simulator):
     reconstruction (``Renderer.render_scene_visibility``), so the reconstruction that produces
     the images also hides the objects; it needs no mesh. ``"geometry"`` estimates occlusion from
     the configured ``depth`` (mesh plus actor cuboids, or actor cuboids alone).
+    ``occlusion_tolerance_m`` (default 0.15 m) applies to both: the reconstruction hides an
+    object only when it lies more than about this distance in front of it. Reconstructed
+    Gaussians extend some centimetres in front of their surfaces, so an object placed on or just
+    in front of a reconstructed surface needs this margin to stay visible.
     """
 
     dataset_kinds = ("NuRecDataset",)
@@ -61,6 +66,7 @@ class NuRecSimulator(Simulator):
         physics_update_mode: str = "ego_only",
         ground_mesh: str = "mesh",
         object_occlusion: str = "rendered_probes",
+        occlusion_tolerance_m: float = 0.15,
     ) -> None:
         if renderer is None:
             raise TypeError("NuRecSimulator requires a renderer; configure NuRecRenderer")
@@ -72,6 +78,7 @@ class NuRecSimulator(Simulator):
             raise ValueError("ground_mesh must be 'mesh' or 'mesh_ground'")
         if object_occlusion not in {"rendered_probes", "geometry"}:
             raise ValueError("object_occlusion must be 'rendered_probes' or 'geometry'")
+        require_nonnegative_number(occlusion_tolerance_m, "occlusion_tolerance_m")
         if depth == "mesh" or physics_update_mode == "ego_only":
             from avsectester.geometry.mesh import MeshRaycaster
 
@@ -83,6 +90,7 @@ class NuRecSimulator(Simulator):
         self.physics_update_mode = physics_update_mode
         self.ground_mesh = ground_mesh
         self.object_occlusion = object_occlusion
+        self.occlusion_tolerance_m = occlusion_tolerance_m
         self.config = deepcopy(config)
         self.simulator_version = str(self.config.get("simulator_version", "1"))
         self.renderer = renderer
@@ -414,6 +422,7 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
             depth=self._camera_depth(native_camera, camera, cam_from_world),
             native={"render_request": request, "timestamp_us": timestamp},
             object_occlusion=self.simulator.object_occlusion,
+            occlusion_tolerance_m=self.simulator.occlusion_tolerance_m,
         )
 
     def _camera_depth(self, camera_name: str, camera: Camera,
@@ -477,6 +486,7 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
             sensor_from_world=BODY_FROM_OPTICAL @ geometry.cam_from_world, depth=depth,
             native={"render_request": CameraPoseRequest(pose, native_camera), "timestamp_us": timestamp_us},
             object_occlusion=self.simulator.object_occlusion,
+            occlusion_tolerance_m=self.simulator.occlusion_tolerance_m,
         )
 
     def _composite_plan(self, view: SensorView, objects: Sequence[PlacedObject]) -> CompositePlan:
@@ -489,7 +499,8 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
         request = view.native["render_request"]
         visibility = self.renderer.render_scene_visibility(
             request.pose, view.native["timestamp_us"], request.camera, objects,
-            dynamic_objects=tuple((identity, state.pose) for identity, state in view.actors.items()))
+            dynamic_objects=tuple((identity, state.pose) for identity, state in view.actors.items()),
+            occlusion_tolerance_m=self.simulator.occlusion_tolerance_m)
         return plan_composite(view.camera, view.cam_from_world, objects, scene_visibility=visibility)
 
     def _observe_recorded(self, position: int) -> Observation:

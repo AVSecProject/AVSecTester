@@ -90,7 +90,12 @@ the objects (`background`) and the CompositePlan that composed them; `plan.apply
 reproduces the view's data and `plan.composite` is the same blend, differentiable in surface colours.
 SensorView.object_occlusion states how objects are hidden: "geometry" (aligned depth or actor
 cuboids, as above) or "rendered_probes" (the simulator renders opaque probe copies of the objects
-inside its own scene, as NuRec does by default). A simulator adapter supplies such measured
+inside its own scene, as NuRec does by default). In both modes scene content hides an object only
+when it lies more than about the occlusion tolerance in front of it. Simulators that insert objects
+take it as the occlusion_tolerance_m option and record it in SensorView.occlusion_tolerance_m:
+0.15 m for NuRecSimulator, 0.1 m for CarlaSimulator and RecordedReplaySimulator. A larger value
+keeps objects that sit on or just in front of a scene surface visible, but scene content closer
+than the tolerance, for example a twig touching a sign, no longer hides them. A simulator adapter supplies such measured
 visibility by overriding `_composite_plan(view, objects)` and returning plan_composite with
 scene_visibility; ObjectVisibility.occlusion_source is then "scene_visibility".
 
@@ -376,7 +381,12 @@ releases that ship only mesh_ground.ply (26.02 and 26.04), and it handles recons
 poles and vegetation alike. For each camera whose image contains objects, the renderer inserts
 each object's opaque Gaussian copy (probe) into the loaded scene, renders the capture once with
 white probes and once with black ones, and treats pixels whose white render exceeds the black one
-by half the colour range as visible. Object colours still come from the framework's composite, so
+by half the colour range as visible. The Gaussians of a reconstructed surface extend some
+centimetres in front of it, so an object placed on or just in front of a reconstructed sign, wall
+or vehicle would be hidden by that surface. The renderer therefore moves each probe
+occlusion_tolerance_m (default 0.15 m) toward the camera, along the ray to the object's box centre
+and at most halfway there; the composed object keeps its pose, and the slightly larger probe
+projection is clipped to the object by the composition plan. Object colours still come from the framework's composite, so
 optimized textures remain differentiable; use SensorView.composition, because
 SensorView.composite_plan cannot measure this evidence on a clean view and raises. The setting
 applies to world objects; sensor insertion (InsertionAttackAction) keeps its own visibility

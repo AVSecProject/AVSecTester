@@ -260,6 +260,31 @@ def test_rendered_probe_occlusion(nurec_dataset, tmp_path, monkeypatch, make_obj
                 image = observation.sensor_data["front"]
                 assert np.all(image[:, :8] == 30) and np.any(image[:, 8:] != 30)
 
+    # The occlusion tolerance moves only the probes, toward the camera along the ray to the box
+    # centre; the composed capture keeps the object's pose.
+    from avsectester.closed_loop.simulators.nurec.renderer import pose_from_proto
+
+    def capture(tolerance):
+        tolerant = NuRecSimulator({"dt": .1}, renderer, physics_update_mode="none", depth="none",
+                                  occlusion_tolerance_m=tolerance)
+        assert tolerant.identity["occlusion_tolerance_m"] == tolerance
+        with tolerant.create_runtime() as runtime:
+            runtime.reset(start)
+            runtime.insert_object("sign", asset, world_from_object)
+            runtime.step(Control())
+            data = runtime.sensor_view("front").data
+        request = boundary.last_request
+        probe = next(item for item in request.dynamic_objects if item.track_id.startswith("avsectester_probe_"))
+        return (data, pose_from_proto(request.sensor_pose.start_pose)[:3, 3],
+                pose_from_proto(probe.pose_pair.start_pose)[:3, 3])
+
+    data, camera_centre, probe_centre = capture(0.)
+    moved_data, _, moved_centre = capture(.25)
+    ray = probe_centre - camera_centre
+    np.testing.assert_allclose(moved_centre, probe_centre - .25 * ray / np.linalg.norm(ray), atol=1e-6)
+    np.testing.assert_array_equal(moved_data, data)
+    assert NuRecSimulator({"dt": .1}, renderer).occlusion_tolerance_m == .15
+
     unconfigured = NuRecSimulator({"dt": .1}, NuRecRenderer(cameras=["front"]), physics_update_mode="none",
                                   depth="none")
     with unconfigured.create_runtime() as runtime:

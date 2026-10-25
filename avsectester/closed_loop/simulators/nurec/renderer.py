@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, ClassVar, TYPE_CHECKING
 
 from avsectester.geometry.poses import validated_transform
-from avsectester.validation import require_positive_integer
+from avsectester.validation import require_nonnegative_number, require_positive_integer
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -123,9 +123,13 @@ class Renderer(ABC):
 
     def render_scene_visibility(
         self, world_from_rig: np.ndarray, timestamp_us: int, camera: str,
-        objects: Sequence[PlacedObject], dynamic_objects=(),
+        objects: Sequence[PlacedObject], dynamic_objects=(), *, occlusion_tolerance_m: float = 0.,
     ) -> np.ndarray:
-        """Pixels where the reconstructed scene does not hide ``objects`` in this capture."""
+        """Pixels where the reconstructed scene does not hide ``objects`` in this capture.
+
+        Scene content less than about ``occlusion_tolerance_m`` in front of an object does not
+        hide it.
+        """
         raise NotImplementedError(f"{type(self).__name__} cannot render object visibility; "
                                   "use object_occlusion='geometry'")
 
@@ -311,7 +315,7 @@ class NuRecRenderer(Renderer):
 
     def render_scene_visibility(
         self, world_from_rig: np.ndarray, timestamp_us: int, camera: str,
-        objects: Sequence[PlacedObject], dynamic_objects=(),
+        objects: Sequence[PlacedObject], dynamic_objects=(), *, occlusion_tolerance_m: float = 0.,
     ) -> np.ndarray:
         """Pixels where the reconstructed scene does not hide ``objects`` in an NRE render.
 
@@ -325,6 +329,10 @@ class NuRecRenderer(Renderer):
         black one by at least half the colour range.
         Rejects probe pixels outside the objects' projected boxes, which indicate an asset scale
         or axis convention that differs from the measured NRE behaviour.
+        ``occlusion_tolerance_m`` moves each probe that distance toward the camera, along the ray
+        to its bounding-box centre and at most halfway there, so scene content less than about
+        that distance in front of an object does not hide it. Composed objects keep their poses;
+        the moved probe projects slightly larger, which the composition plan clips to the object.
         """
         import grpc
         import numpy as np
@@ -334,12 +342,21 @@ class NuRecRenderer(Renderer):
         if self.probe_directory is None:
             raise ValueError("Rendered-probe occlusion requires NuRecRenderer.probe_directory, readable by "
                              "the NRE server; or use object_occlusion='geometry'")
+        require_nonnegative_number(occlusion_tolerance_m, "occlusion_tolerance_m")
+        cam_from_world = self.cam_from_world(world_from_rig, camera)
+        camera_centre = np.linalg.inv(cam_from_world)[:3, 3]
         tracks: dict[str, list] = {colour: [] for colour, _ in _PROBE_COLOURS}
         boxes = []
         for placed in objects:
+            world_from_probe = placed.world_from_object.copy()
+            centre = world_from_probe @ np.array([0., 0., placed.asset.extent[2] / 2, 1.])
+            ray = centre[:3] - camera_centre
+            distance = float(np.linalg.norm(ray))
+            if occlusion_tolerance_m and distance > 0:
+                world_from_probe[:3, 3] -= min(occlusion_tolerance_m, distance / 2) * ray / distance
             for colour, rgb in _PROBE_COLOURS:
                 probe, track_id = self._probe(placed.asset, colour, rgb)
-                world_from_track = placed.world_from_object @ probe.object_from_track
+                world_from_track = world_from_probe @ probe.object_from_track
                 tracks[colour].append((track_id, world_from_track))
             boxes.append((world_from_track, placed.asset.extent))
 
@@ -358,7 +375,6 @@ class NuRecRenderer(Renderer):
         white, black = render("white"), render("black")
         visible = (white.astype(np.int16) - black).mean(axis=2) >= 127.5
         camera_model = self.camera_model(camera)
-        cam_from_world = self.cam_from_world(world_from_rig, camera)
         expected = np.zeros_like(visible)
         for world_from_box, extent in boxes:
             bounds = project_box(camera_model, cam_from_world, world_from_box, extent)

@@ -794,8 +794,8 @@ dataset, simulator or model dependencies.
 | `can_deploy_at` | `can_deploy_at(position: int, deployment: DeploymentPlan, capture_ticks: int) -> bool` |
 | `ClockSnapshot` | `t: float`<br>`frame: int` |
 | `SensorGeometry` | `sensor: str`<br>`camera: Camera`<br>`cam_from_world: np.ndarray` |
-| `SensorView` | `sensor: str`<br>`data: Any`<br>`camera: Camera \| None`<br>`cam_from_world: np.ndarray \| None`<br>`actors: Mapping[str, ActorState]`<br>`ego: ActorState`<br>`time: float`<br>`frame: int`<br>`sensor_from_world: np.ndarray \| None = None`<br>`depth: np.ndarray \| None = None`<br>`native: Mapping[str, Any] = field(default_factory=dict)`<br>`objects: Mapping[str, PlacedObject] = field(default_factory=dict)`<br>`composition: ObjectComposition \| None = None`<br>`object_occlusion: str = 'geometry'` |
-| `Simulator` | `dataset_kinds: tuple[str, ...] = ()`<br>`can_render: bool = False`<br>`can_insert_objects: bool = False`<br>`can_replay: bool = False`<br>`can_observe_past: bool = False`<br>`supported_world_settings: frozenset[str] = frozenset()` |
+| `SensorView` | `sensor: str`<br>`data: Any`<br>`camera: Camera \| None`<br>`cam_from_world: np.ndarray \| None`<br>`actors: Mapping[str, ActorState]`<br>`ego: ActorState`<br>`time: float`<br>`frame: int`<br>`sensor_from_world: np.ndarray \| None = None`<br>`depth: np.ndarray \| None = None`<br>`native: Mapping[str, Any] = field(default_factory=dict)`<br>`objects: Mapping[str, PlacedObject] = field(default_factory=dict)`<br>`composition: ObjectComposition \| None = None`<br>`object_occlusion: str = 'geometry'`<br>`occlusion_tolerance_m: float = 0.1` |
+| `Simulator` | `dataset_kinds: tuple[str, ...] = ()`<br>`can_render: bool = False`<br>`can_insert_objects: bool = False`<br>`can_replay: bool = False`<br>`can_observe_past: bool = False`<br>`supported_world_settings: frozenset[str] = frozenset()`<br>`occlusion_tolerance_m: float = 0.1` |
 | `Simulator.create_runtime` | `create_runtime(seed: int \| None = None) -> SimulatorRuntime` |
 | `Simulator.decision_time_step` | `decision_time_step: float \| None` |
 | `Simulator.command_modes` | `command_modes: frozenset[str] \| None` |
@@ -1025,7 +1025,7 @@ dataset, simulator or model dependencies.
 | Public name | Signature or fields |
 |---|---|
 | `CarlaSimulator` | Class; see methods below |
-| `CarlaSimulator.__init__` | `__init__(client: dict, settle_iters: int = 100, *, simulator_version = '0.9.16', depth_camera: str \| None = None) -> None` |
+| `CarlaSimulator.__init__` | `__init__(client: dict, settle_iters: int = 100, *, simulator_version = '0.9.16', depth_camera: str \| None = None, occlusion_tolerance_m: float = 0.1) -> None` |
 | `CarlaSimulator.validate_world_settings` | `validate_world_settings(world: Mapping[str, Any]) -> None` |
 | `CarlaSimulator.create_runtime` | `create_runtime(seed: int \| None = None) -> CarlaSimulatorRuntime` |
 | `CarlaSimulator.command_modes` | `command_modes: frozenset[str]` |
@@ -1090,7 +1090,7 @@ dataset, simulator or model dependencies.
 | Public name | Signature or fields |
 |---|---|
 | `NuRecSimulator` | Class; see methods below |
-| `NuRecSimulator.__init__` | `__init__(config: dict, renderer: Renderer, dynamics: EgoDynamics \| None = None, *, depth: str = 'mesh', route_generator: str = 'map', physics_update_mode: str = 'ego_only', ground_mesh: str = 'mesh', object_occlusion: str = 'rendered_probes') -> None` |
+| `NuRecSimulator.__init__` | `__init__(config: dict, renderer: Renderer, dynamics: EgoDynamics \| None = None, *, depth: str = 'mesh', route_generator: str = 'map', physics_update_mode: str = 'ego_only', ground_mesh: str = 'mesh', object_occlusion: str = 'rendered_probes', occlusion_tolerance_m: float = 0.15) -> None` |
 | `NuRecSimulator.create_runtime` | `create_runtime(seed: int \| None = None) -> NuRecSimulatorRuntime` |
 | `NuRecSimulator.supported_stages` | `supported_stages: frozenset[str]` |
 | `NuRecSimulator.command_modes` | `command_modes: frozenset[str] \| None` |
@@ -1114,7 +1114,8 @@ The package root exports only NuRecSimulator, NuRecSimulatorRuntime and NuRecRen
 Renderer and the RPC conversion functions are imported from nurec.renderer.
 render_scene_visibility returns a boolean image, true where the reconstruction does not hide the
 objects; NuRecSimulator's default object_occlusion="rendered_probes" passes it to plan_composite
-as scene_visibility. See [Rendered-probe occlusion](../guides/simulators.md#rendered-probe-occlusion).
+as scene_visibility, with the simulator's occlusion_tolerance_m. NuRecRenderer moves each probe
+that distance toward the camera, at most halfway, while the composed object keeps its pose. See [Rendered-probe occlusion](../guides/simulators.md#rendered-probe-occlusion).
 
 dynamic_objects is a sequence of (track_id, world_from_actor) pairs. NuRecRenderer serializes each
 pose into both endpoints of DynamicObject.pose_pair, retaining the dataset's world pose and
@@ -1181,7 +1182,7 @@ addresses pixel centres at i + 0.5. Unsupported external distortion types raise 
 | `Renderer.origin_bounds` | `origin_bounds: Any` |
 | `Renderer.load_scene` | `load_scene(scene: Any) -> None` |
 | `Renderer.render` | `render(world_from_rig: np.ndarray, timestamp_us: int, camera: str, dynamic_objects=()) -> Any` |
-| `Renderer.render_scene_visibility` | `render_scene_visibility(world_from_rig: np.ndarray, timestamp_us: int, camera: str, objects: Sequence[PlacedObject], dynamic_objects=()) -> np.ndarray` |
+| `Renderer.render_scene_visibility` | `render_scene_visibility(world_from_rig: np.ndarray, timestamp_us: int, camera: str, objects: Sequence[PlacedObject], dynamic_objects=(), *, occlusion_tolerance_m: float = 0.0) -> np.ndarray` |
 | `Renderer.camera_model` | `camera_model(camera: str \| None = None) -> Camera \| None` |
 | `Renderer.cam_from_world` | `cam_from_world(world_from_rig: np.ndarray, camera: str \| None = None) -> np.ndarray` |
 | `Renderer.close` | `close() -> None` |
@@ -1194,14 +1195,14 @@ addresses pixel centres at i + 0.5. Unsupported external distortion types raise 
 | `NuRecRenderer.cam_from_world` | `cam_from_world(world_from_rig: np.ndarray, camera: str \| None = None) -> np.ndarray` |
 | `NuRecRenderer.render` | `render(world_from_rig: np.ndarray, timestamp_us: int, camera: str, dynamic_objects=())` |
 | `NuRecRenderer.render_at` | `render_at(world_from_rig, timestamp_us: int, camera: str, dynamic_objects=())` |
-| `NuRecRenderer.render_scene_visibility` | `render_scene_visibility(world_from_rig: np.ndarray, timestamp_us: int, camera: str, objects: Sequence[PlacedObject], dynamic_objects=()) -> np.ndarray` |
+| `NuRecRenderer.render_scene_visibility` | `render_scene_visibility(world_from_rig: np.ndarray, timestamp_us: int, camera: str, objects: Sequence[PlacedObject], dynamic_objects=(), *, occlusion_tolerance_m: float = 0.0) -> np.ndarray` |
 
 ### avsectester.closed_loop.simulators.recorded
 
 | Public name | Signature or fields |
 |---|---|
 | `RecordedReplaySimulator` | Class; see methods below |
-| `RecordedReplaySimulator.__init__` | `__init__(start: ScenarioStart \| None = None, *, camera_aliases: Mapping[str, str] = {}) -> None` |
+| `RecordedReplaySimulator.__init__` | `__init__(start: ScenarioStart \| None = None, *, camera_aliases: Mapping[str, str] = {}, occlusion_tolerance_m: float = 0.1) -> None` |
 | `RecordedReplaySimulator.create_runtime` | `create_runtime(seed: int \| None = None) -> RecordedReplaySimulatorRuntime` |
 | `RecordedReplaySimulatorRuntime` | Class; see methods below |
 | `RecordedReplaySimulatorRuntime.__init__` | `__init__(simulator: RecordedReplaySimulator) -> None` |

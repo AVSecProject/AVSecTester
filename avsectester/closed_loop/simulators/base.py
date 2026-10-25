@@ -128,6 +128,8 @@ class SensorView:
     ``object_occlusion`` states how the simulator hides composed objects behind its scene:
     ``"geometry"`` uses this view's depth or actor cuboids, which ``composite_plan`` reproduces;
     ``"rendered_probes"`` renders opaque probe copies of the objects inside the simulator's scene.
+    ``occlusion_tolerance_m`` is the simulator's occlusion tolerance: scene content hides a
+    composed object only when it lies more than about this distance in front of the object.
     ``native`` gives
     simulator-specific access and gives up portability. World units are metres, with x forward,
     y left, z up.
@@ -147,12 +149,13 @@ class SensorView:
     objects: Mapping[str, PlacedObject] = field(default_factory=dict)
     composition: ObjectComposition | None = None
     object_occlusion: str = "geometry"
+    occlusion_tolerance_m: float = 0.1
 
     def composite_plan(self, objects: Sequence[PlacedObject]) -> CompositePlan:
         """Plan composing ``objects`` into this camera view exactly as simulator captures do.
 
         The plan uses this view's camera, its measured depth or, without depth, its actor
-        cuboids, and the capture occlusion tolerance. ``plan.composite`` therefore reproduces
+        cuboids, and its occlusion tolerance. ``plan.composite`` therefore reproduces
         the deployed capture differentiably in surface colours. Plan on a view captured
         without these objects, for example a clean ``ClosedLoopSession.render`` result. Only
         ``"geometry"`` object occlusion can be planned here; ``"rendered_probes"`` needs the objects
@@ -170,7 +173,8 @@ class SensorView:
         if present:
             raise ValueError(f"View already contains objects {present}; plan on a view captured without them")
         return plan_composite(self.camera, self.cam_from_world, objects,
-                              scene_depth=self.depth, occluders=self.actors)
+                              scene_depth=self.depth, occluders=self.actors,
+                              occlusion_tolerance_m=self.occlusion_tolerance_m)
 
 
 @dataclass(frozen=True)
@@ -201,6 +205,9 @@ class Simulator(ABC):
 
     It can be reused. ``create_runtime`` creates one live world per run or service operation;
     the caller closes it. Declarations describe every runtime of this simulator.
+    ``occlusion_tolerance_m`` applies to inserted world objects: scene content hides one only
+    when it lies more than about this distance in front of it. Simulators that insert objects
+    accept it as a constructor option.
     """
 
     dataset_kinds: tuple[str, ...] = ()
@@ -213,6 +220,7 @@ class Simulator(ABC):
     # Native ticks that make simulator.setup actions visible in the first capture. A simulator
     # that renders on every tick (CARLA) needs one; one that renders at capture time needs none.
     capture_ticks = 0
+    occlusion_tolerance_m: float = 0.1
 
     @abstractmethod
     def create_runtime(self, seed: int | None = None) -> SimulatorRuntime:
@@ -233,8 +241,11 @@ class Simulator(ABC):
 
     @property
     def identity(self) -> Mapping[str, Any]:
-        return {"simulator": type(self).__name__, "version": self.simulator_version,
-                "time_step": self.decision_time_step, "capture_ticks": self.capture_ticks}
+        identity = {"simulator": type(self).__name__, "version": self.simulator_version,
+                    "time_step": self.decision_time_step, "capture_ticks": self.capture_ticks}
+        if self.can_insert_objects:
+            identity["occlusion_tolerance_m"] = self.occlusion_tolerance_m
+        return identity
 
     def validate_world_settings(self, settings: Mapping[str, Any]) -> None:
         """Check world-setting names and values without creating a live world.

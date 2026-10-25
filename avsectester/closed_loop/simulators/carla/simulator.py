@@ -18,7 +18,7 @@ from avsectester.datasets.base import FrameData, SensorDataReference
 from avsectester.datasets.carla import CarlaRecipe, CARLA_WORLD_SETTINGS, validate_carla_world_settings
 from avsectester.geometry.poses import MIRROR_Y, mirror_y_transform
 from avsectester.data_types import Observation, WorldSnapshot
-from avsectester.validation import require_nonnegative_integer
+from avsectester.validation import require_nonnegative_integer, require_nonnegative_number
 
 from .conversions import _actor_state, _traffic_light_state
 from .recipe_replay import RecipeReplay, _place
@@ -49,7 +49,7 @@ class CarlaSimulator(Simulator):
 
     def __init__(
         self, client: dict, settle_iters: int = 100, *, simulator_version="0.9.16",
-        depth_camera: str | None = None,
+        depth_camera: str | None = None, occlusion_tolerance_m: float = 0.1,
     ) -> None:
         allowed = {"connect_ip", "connect_port", "traffic_manager_port", "rate", "synchronous",
                    "seed", "traffic_manager_seed"}
@@ -73,7 +73,9 @@ class CarlaSimulator(Simulator):
             if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 65535:
                 raise ValueError(f"client.{name} must be an integer in [1,65535]")
         require_nonnegative_integer(settle_iters, "settle_iters")
+        require_nonnegative_number(occlusion_tolerance_m, "occlusion_tolerance_m")
         self.settle_iters = settle_iters
+        self.occlusion_tolerance_m = occlusion_tolerance_m
         self.simulator_version = simulator_version
         self.depth_camera = depth_camera
 
@@ -526,7 +528,8 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
             depth = np.array(self.depth, copy=True)
         return SensorView(geometry.sensor, captured[1], geometry.camera, geometry.cam_from_world,
                           actors, ego, truth.t, truth.frame, sensor_from_world=sensor_from_world,
-                          depth=depth, native=self.native)
+                          depth=depth, native=self.native,
+                          occlusion_tolerance_m=self.simulator.occlusion_tolerance_m)
 
     def _observe(self) -> Observation:
         observation = self._capture_sensors()

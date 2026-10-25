@@ -17,6 +17,7 @@ from avsectester.closed_loop.simulators.base import SensorGeometry, SensorView, 
 from avsectester.datasets.base import ScenarioStart
 from avsectester.data_types import Observation, WorldSnapshot
 from avsectester.geometry.cameras import BODY_FROM_OPTICAL
+from avsectester.validation import require_nonnegative_number
 
 
 class RecordedReplaySimulator(Simulator):
@@ -32,8 +33,10 @@ class RecordedReplaySimulator(Simulator):
     can_insert_objects = True
 
     def __init__(self, start: ScenarioStart | None = None, *,
-                 camera_aliases: Mapping[str, str] = {}) -> None:
+                 camera_aliases: Mapping[str, str] = {}, occlusion_tolerance_m: float = 0.1) -> None:
+        require_nonnegative_number(occlusion_tolerance_m, "occlusion_tolerance_m")
         self.start = deepcopy(start)
+        self.occlusion_tolerance_m = occlusion_tolerance_m
         if not isinstance(camera_aliases, Mapping) or any(
             not isinstance(native, str) or not native or not isinstance(alias, str) or not alias
             for native, alias in camera_aliases.items()
@@ -160,7 +163,8 @@ class RecordedReplaySimulatorRuntime(SimulatorRuntime):
         actors = data.actors
         return SensorView(sensor, captured[1], geometry.camera, geometry.cam_from_world,
                           actors, data.ego, data.frame.timestamp, data.frame.position,
-                          sensor_from_world=BODY_FROM_OPTICAL @ geometry.cam_from_world)
+                          sensor_from_world=BODY_FROM_OPTICAL @ geometry.cam_from_world,
+                          occlusion_tolerance_m=self.simulator.occlusion_tolerance_m)
 
     def _advance_native(self, control):
         self._replay_tick()

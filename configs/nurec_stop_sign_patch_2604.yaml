@@ -28,6 +28,7 @@ simulator:
   options:
     depth: none
     object_occlusion: rendered_probes
+    occlusion_tolerance_m: 0.15
     ground_mesh: mesh_ground
     physics_update_mode: ego_only
     route_generator: map

@@ -41,9 +41,12 @@ def assert_inserted_world_object(make_object_in_front):
 
         runtime.step(Control())
         view = runtime.sensor_view("front")
+        # Captures use the simulator's configured occlusion tolerance.
+        assert clean_first.occlusion_tolerance_m == runtime.simulator.occlusion_tolerance_m
         expected = composite_objects(clean_first.data, clean_first.camera,
             clean_first.cam_from_world, (PlacedObject("sign", asset, world_from_object),),
-            scene_depth=clean_first.depth, occluders=clean_first.actors)
+            scene_depth=clean_first.depth, occluders=clean_first.actors,
+            occlusion_tolerance_m=clean_first.occlusion_tolerance_m)
         np.testing.assert_array_equal(view.data, expected.image)
         planned = clean_first.composite_plan((PlacedObject("sign", asset, world_from_object),))
         np.testing.assert_array_equal(planned.apply(clean_first.data).image, view.data)
