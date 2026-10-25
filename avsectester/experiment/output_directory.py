@@ -6,7 +6,7 @@ RunLog reading remains delegated to the runlog package.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 import json
 import math
@@ -18,10 +18,11 @@ from avsectester.data_types import Unavailable
 from avsectester.serialization import DEFAULT_REGISTRY
 from avsectester.maps import ScenarioMap
 from avsectester.runlog import RunLog
+from avsectester.closed_loop.simulators.base import DeploymentPlan
 
 from .models import (
     ExperimentResult, PreparedExperiment, SelectionDecision, TreatmentResult,
-    preparation_record, treatment_applies, validated_preparation,
+    SegmentUnit, build_units, preparation_record, validated_preparation,
 )
 
 if TYPE_CHECKING:
@@ -37,29 +38,20 @@ def runs_directory(root: Path) -> Path:
     return Path(root) / "runs"
 
 
-def run_directory(root: Path, attack_name: str, segment_index: int,
-                  seed: int, treatment: str) -> Path:
-    """Return the sole on-disk layout for an experiment's treatment runs."""
-    return (runs_directory(root) / attack_name / f"{_SEGMENT_PREFIX}{segment_index:05d}"
-            / f"{_SEED_PREFIX}{seed}" / treatment)
+def run_directory(root: Path, segment_index: int, seed: int, treatment: str) -> Path:
+    """Return one shared segment-unit/seed/treatment run directory."""
+    return runs_directory(root) / f"{_SEGMENT_PREFIX}{segment_index:05d}" / f"{_SEED_PREFIX}{seed}" / treatment
 
 
-def saved_run_directories(root: Path) -> tuple[tuple[tuple[str, int, int, str], Path], ...]:
-    """List saved runs (directories with a manifest) laid out by :func:`run_directory`.
-
-    Each entry is ``((attack_name, segment_index, seed, treatment), directory)``. Directories
-    that do not follow the layout are ignored.
-    """
+def saved_run_directories(root: Path) -> tuple[tuple[tuple[int, int, str], Path], ...]:
+    """List new-layout manifests as ((segment_index, seed, treatment), directory)."""
     found = []
-    pattern = f"*/{_SEGMENT_PREFIX}*/{_SEED_PREFIX}*/*/manifest.json"
+    pattern = f"{_SEGMENT_PREFIX}*/{_SEED_PREFIX}*/*/manifest.json"
     for manifest in sorted(runs_directory(root).glob(pattern)):
         directory = manifest.parent
-        seed_directory = directory.parent
-        segment_directory = seed_directory.parent
         try:
-            key = (segment_directory.parent.name,
-                   int(segment_directory.name.removeprefix(_SEGMENT_PREFIX)),
-                   int(seed_directory.name.removeprefix(_SEED_PREFIX)), directory.name)
+            key = (int(directory.parent.parent.name.removeprefix(_SEGMENT_PREFIX)),
+                   int(directory.parent.name.removeprefix(_SEED_PREFIX)), directory.name)
         except ValueError:
             continue
         if run_directory(root, *key) == directory:
@@ -98,27 +90,57 @@ def _validate_user_data(value: Any) -> None:
     raise TypeError("Saved user_data must contain only JSON-like data or NumPy arrays")
 
 
-def save_prepared(prepared: PreparedExperiment, directory: str | Path) -> Path:
-    summary = prepared.configuration.configuration_summary
-    root = Path(directory)
+def _write_json(path: Path, value: Any) -> None:
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(json.dumps(value, indent=2, allow_nan=False, sort_keys=True) + "\n")
+    temporary.replace(path)
+
+
+def _save_metadata(prepared: PreparedExperiment, root: Path) -> None:
     root.mkdir(parents=True, exist_ok=True)
     for name, segments in prepared.metadata.items():
         destination = root / "attacks" / name
         destination.mkdir(parents=True, exist_ok=True)
         for segment in segments:
             _validate_user_data(segment.user_data)
-        content = {"segments": DEFAULT_REGISTRY.encode(tuple(segments))}
-        (destination / "metadata.json").write_text(json.dumps(content, indent=2, allow_nan=False) + "\n")
-        attack = prepared.configuration.attacks[name]
-        attack.save_artifacts(prepared.artifacts[name], destination)
-    manifest = {
-        "attacks": list(prepared.metadata),
-        "configuration": summary,
-        "preparation": prepared.preparation,
-        "selections": [item.as_dict() for item in prepared.selections],
-    }
-    (root / "prepared.json").write_text(
-        json.dumps(manifest, indent=2, allow_nan=False, sort_keys=True) + "\n")
+        _write_json(destination / "metadata.json", {"segments": DEFAULT_REGISTRY.encode(tuple(segments))})
+
+
+def _preparation_manifest(prepared: PreparedExperiment) -> dict[str, Any]:
+    return {"attacks": list(prepared.metadata),
+            "configuration": prepared.configuration.configuration_summary,
+            "preparation": prepared.preparation,
+            "selections": [item.as_dict() for item in prepared.selections],
+            "units": [unit.as_dict() for unit in prepared.units],
+            "deployment_ticks": None if prepared.deployment is None else prepared.deployment.ticks}
+
+
+def save_preparation_progress(prepared: PreparedExperiment, directory: str | Path,
+                              completed_attacks: Sequence[str] = ()) -> Path:
+    """Checkpoint selection/partition data and the already published attack artifacts."""
+    root = Path(directory)
+    _save_metadata(prepared, root)
+    manifest = _preparation_manifest(prepared)
+    manifest["completed_attacks"] = list(completed_attacks)
+    _write_json(root / "preparation-progress.json", manifest)
+    return root
+
+
+def save_completed_artifact(prepared: PreparedExperiment, name: str, directory: str | Path,
+                            completed_attacks: Sequence[str]) -> Path:
+    """Publish one completed offline artifact before advancing the preparation checkpoint."""
+    root = Path(directory)
+    prepared.configuration.attacks[name].save_artifacts(prepared.artifacts[name], root / "attacks" / name)
+    return save_preparation_progress(prepared, root, completed_attacks)
+
+
+def save_prepared(prepared: PreparedExperiment, directory: str | Path) -> Path:
+    """Publish a complete preparation only after every artifact has been saved."""
+    root = Path(directory)
+    _save_metadata(prepared, root)
+    for name, attack in prepared.configuration.attacks.items():
+        attack.save_artifacts(prepared.artifacts[name], root / "attacks" / name)
+    _write_json(root / "prepared.json", _preparation_manifest(prepared))
     return root
 
 
@@ -176,7 +198,9 @@ class PreparedMetadata:
 
     metadata: Mapping[str, tuple[AttackSegment, ...]]
     selections: tuple[SelectionDecision, ...]
-    preparation: Mapping[str, Any] | None
+    preparation: Mapping[str, Any]
+    units: tuple[SegmentUnit, ...]
+    deployment: DeploymentPlan | None
 
 
 def _canonical_text(value: Any) -> str:
@@ -195,6 +219,8 @@ def _check_preparation(configuration: ExperimentConfiguration,
     mismatches = []
     if _canonical_text(saved["seed"]) != _canonical_text(expected["seed"]):
         mismatches.append(f"preparation.seed: old={saved['seed']}, new={expected['seed']}")
+    if _canonical_text(saved["split"]) != _canonical_text(expected["split"]):
+        mismatches.append(f"preparation.split: old={saved['split']}, new={expected['split']}")
     for name, environment in expected["offline_environments"].items():
         stored = saved["offline_environments"][name]
         if _canonical_text(stored) != _canonical_text(environment):
@@ -210,19 +236,16 @@ def _check_preparation(configuration: ExperimentConfiguration,
 
 
 def _load_metadata(configuration: ExperimentConfiguration, directory: str | Path,
-                   *, validate_dataset: bool) -> PreparedMetadata:
+                   *, validate_dataset: bool, manifest_name: str = "prepared.json") -> PreparedMetadata:
     root = Path(directory)
-    manifest = json.loads((root / "prepared.json").read_text())
+    manifest = json.loads((root / manifest_name).read_text())
     if set(manifest["attacks"]) != set(configuration.attacks):
         raise ConfigurationMismatchError("Saved attack names differ from the supplied configuration")
-    preparation: Mapping[str, Any] | None
+    preparation = _read_preparation(manifest)
     if validate_dataset:
-        preparation = _read_preparation(manifest)
         _check_preparation(configuration, preparation)
-    else:
-        # Evaluation reads results only; outputs saved before preparation records remain usable.
-        preparation = (None if "preparation" not in manifest
-                       else validated_preparation(manifest["preparation"], manifest["attacks"]))
+    elif _canonical_text(preparation["split"]) != _canonical_text(preparation_record(configuration)["split"]):
+        raise ConfigurationMismatchError("Saved preparation.split differs from the supplied configuration")
     saved = manifest.get("configuration")
     _require_parameters(saved)
     scenarios = None if validate_dataset else saved["dataset"]["scenarios"]
@@ -247,7 +270,17 @@ def _load_metadata(configuration: ExperimentConfiguration, directory: str | Path
                 configuration.dataset.checked_frame(segment.scenario_id, segment.stop)
         metadata[name] = segments
     decisions = tuple(SelectionDecision.from_dict(item) for item in manifest["selections"])
-    return PreparedMetadata(metadata, decisions, preparation)
+    if "units" not in manifest:
+        raise ConfigurationMismatchError("Saved preparation uses an unsupported layout without segment units")
+    try:
+        units = build_units(configuration, metadata, scenario_ids=expected["dataset"]["scenarios"])
+    except (ValueError, KeyError) as error:
+        raise ConfigurationMismatchError(f"Saved preparation units cannot be reconstructed: {error}") from error
+    if manifest["units"] != [unit.as_dict() for unit in units]:
+        raise ConfigurationMismatchError("Saved preparation units or partition differ from the supplied configuration")
+    ticks = manifest["deployment_ticks"]
+    deployment = None if ticks is None else DeploymentPlan(ticks)
+    return PreparedMetadata(metadata, decisions, preparation, units, deployment)
 
 
 def load_prepared_metadata(configuration: ExperimentConfiguration,
@@ -265,7 +298,24 @@ def load_prepared(configuration: ExperimentConfiguration,
     artifacts = {name: attack.load_artifacts(root / "attacks" / name)
                  for name, attack in configuration.attacks.items()}
     return PreparedExperiment(configuration, saved.metadata, artifacts, saved.selections,
-                              preparation=saved.preparation)
+                              preparation=saved.preparation, units=saved.units, deployment=saved.deployment)
+
+
+def load_preparation_progress(configuration: ExperimentConfiguration,
+                              directory: str | Path) -> tuple[PreparedExperiment, tuple[str, ...]]:
+    """Validate an incomplete preparation, reusing selection and only completed artifacts."""
+    root = Path(directory)
+    manifest = json.loads((root / "preparation-progress.json").read_text())
+    saved = _load_metadata(configuration, root, validate_dataset=True,
+                           manifest_name="preparation-progress.json")
+    completed = tuple(manifest["completed_attacks"])
+    if len(set(completed)) != len(completed) or any(name not in configuration.attacks for name in completed):
+        raise ValueError("Preparation progress has invalid completed attack names")
+    artifacts = {name: configuration.attacks[name].load_artifacts(root / "attacks" / name)
+                 for name in completed}
+    return (PreparedExperiment(configuration, saved.metadata, artifacts, saved.selections,
+                               preparation=saved.preparation, units=saved.units, deployment=saved.deployment),
+            completed)
 
 
 def load_result(directory: str | Path, configuration: ExperimentConfiguration) -> ExperimentResult:
@@ -281,36 +331,41 @@ def load_result(directory: str | Path, configuration: ExperimentConfiguration) -
     root = Path(directory)
     config = load_configuration(configuration)
     prepared = load_prepared_metadata(config, root)
-    expected: dict[tuple[str, int, int, str], tuple[AttackSegment, Path]] = {}
-    for attack_name, segments in prepared.metadata.items():
-        for index, segment in enumerate(segments):
-            for seed in config.runs.seeds:
-                for treatment_config in config.runs.treatments:
-                    if not treatment_applies(treatment_config, attack_name):
-                        continue
-                    key = attack_name, index, seed, treatment_config.name
-                    expected[key] = segment, run_directory(root, *key)
+    expected: dict[tuple[int, int, str], tuple[SegmentUnit, str | None, Path]] = {}
+    for unit in prepared.units:
+        if config.split is not None and unit.part not in config.split.execute:
+            continue
+        for seed in config.runs.seeds:
+            for treatment_config in config.runs.treatments:
+                name = treatment_config.attack_name
+                if name is not None and name not in unit.attack_names:
+                    continue
+                key = unit.index, seed, treatment_config.name
+                expected[key] = unit, name, run_directory(root, *key)
     destination = runs_directory(root)
     known_treatments = {item.name for item in config.runs.treatments}
     notices = tuple(
-        f"Skipping saved run for removed treatment: {path}" if key[3] not in known_treatments
+        f"Skipping saved run for removed treatment: {path}" if key[2] not in known_treatments
         else f"Skipping saved run that the saved preparation does not expect: {path}"
         for key, path in saved_run_directories(root) if key not in expected
     )
-    found: dict[tuple[str, int, int, str], TreatmentResult] = {}
-    for key, (segment, path) in expected.items():
+    runs: list[TreatmentResult] = []
+    for (index, seed, treatment), (unit, name, path) in expected.items():
+        segment = unit.segment
+        description = {"attack_name": name, "segment_index": index, "seed": seed,
+                       "treatment": treatment, "part": unit.part}
         if not (path / "manifest.json").is_file():
+            message = "Expected run has no saved manifest; execution did not finish this treatment"
+            log = RunLog(metadata=description, status="incomplete", path=path)
+            runs.append(TreatmentResult(name, index, segment, treatment, seed, log, message, unit.part))
             continue
-        name, index, seed, treatment = key
         try:
             if not path.resolve().is_relative_to(destination.resolve()):
                 raise ValueError(f"Run manifest escapes the run output directory: {path}")
             log = RunLog.read(path)
             data = log.metadata
-            identity = (data.get("attack_name"), data.get("segment_index"),
-                        data.get("seed"), data.get("treatment"))
-            if any(type(actual) is not type(wanted) or actual != wanted
-                   for actual, wanted in zip(identity, key)):
+            if any(type(data.get(key)) is not type(value) or data.get(key) != value
+                   for key, value in description.items()):
                 raise ValueError(f"Run identity metadata and output directory disagree: {path}")
             if not _same_data(data.get("segment"), asdict(segment)):
                 raise ValueError(f"Run segment metadata differs from the saved preparation: {path}")
@@ -322,23 +377,8 @@ def load_result(directory: str | Path, configuration: ExperimentConfiguration) -
                 error = f"Run ended with status {log.status}"
         except Exception as read_error:
             error = f"Run read failed: {type(read_error).__name__}: {read_error}"
-            log = RunLog(metadata={
-                "attack_name": name, "segment_index": index, "seed": seed,
-                "treatment": treatment,
-            }, status="failed", path=path)
-        found[key] = TreatmentResult(name, index, segment, treatment, seed, log, error)
-    runs: list[TreatmentResult] = []
-    for (name, index, seed, treatment), (segment, path) in expected.items():
-        key = name, index, seed, treatment
-        if key in found:
-            runs.append(found[key])
-            continue
-        message = "Expected run has no saved manifest; execution did not finish this treatment"
-        missing = RunLog(metadata={
-            "attack_name": name, "segment_index": index, "seed": seed,
-            "treatment": treatment,
-        }, status="incomplete", path=path)
-        runs.append(TreatmentResult(name, index, segment, treatment, seed, missing, message))
+            log = RunLog(metadata=description, status="failed", path=path)
+        runs.append(TreatmentResult(name, index, segment, treatment, seed, log, error, unit.part))
     scenario_ids = tuple(dict.fromkeys(
         segment.scenario_id for segments in prepared.metadata.values() for segment in segments
     ))

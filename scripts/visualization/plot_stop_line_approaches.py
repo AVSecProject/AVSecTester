@@ -58,7 +58,8 @@ def plot_stop_line_approaches(
     for scenario_id, traces in grouped.items():
         figure, axis = plt.subplots(figsize=(9, 5))
         for run, distances, speeds in traces:
-            label = f"{run.treatment} ({run.attack_name}, seed {run.seed})"
+            part = f", {run.part}" if run.part is not None else ""
+            label = f"{run.treatment} (segment {run.segment_index}, seed {run.seed}{part})"
             axis.plot(distances, speeds, label=label,
                       color=colors[run.treatment], alpha=.75)
         axis.axvline(0., color="black", linestyle=":", label="stop line")

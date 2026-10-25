@@ -7,7 +7,7 @@ from avsectester.evaluation import ComparisonGroup, TreatmentPair
 
 @pytest.fixture
 def make_group(segment):
-    return lambda runs: ComparisonGroup("attack", segment, 0, runs)
+    return lambda runs: ComparisonGroup(segment, 0, runs)
 
 
 @pytest.fixture
@@ -28,6 +28,6 @@ def stop_line_group(segment):
         line = StopLine("line", np.array([[line_x, -line_end_y, 0.],
                                           [line_x, line_end_y, 0.]]), "stop", "stop_sign")
         selected = replace(segment, user_data={"stop_line_id": line.id})
-        return ComparisonGroup("attack", selected, 0, runs,
+        return ComparisonGroup(selected, 0, runs,
                                ScenarioMap(stop_lines={line.id: line}))
     return make

@@ -14,7 +14,7 @@ from avsectester.experiment import (
     PreparedExperiment, load_configuration,
 )
 from avsectester.experiment.engine import validate_configuration_environment
-from avsectester.experiment.output_directory import run_directory, runs_directory
+from avsectester.experiment.output_directory import run_directory
 
 app = typer.Typer(help="Adversarial security testing for AV systems.")
 _CONFIGURATION_ERRORS = (ValueError, TypeError, ImportError, AttributeError, FileNotFoundError,
@@ -56,7 +56,7 @@ def _print_report(report: Any, result: ExperimentResult,
     typer.echo(report.format_summary())
     for failure in result.failures:
         assert configuration.runs.output is not None
-        destination = run_directory(configuration.runs.output, failure.attack_name, failure.segment_index,
+        destination = run_directory(configuration.runs.output, failure.segment_index,
                                     failure.seed, failure.treatment)
         typer.echo(f"Failed run: {destination}: {failure.error or failure.log.status}", err=True)
     for selection in result.selection_errors:
@@ -97,17 +97,23 @@ def run(
         None, exists=True, file_okay=False, readable=True,
         help="Reuse metadata and artifacts saved in this directory.",
     ),
+    resume: bool = typer.Option(False, help="Resume preparation and unfinished runs in runs.output."),
 ) -> None:
     """Prepare attacks, execute treatments and write the configured evaluation report."""
+    if resume and prepared is not None:
+        _configuration_error(ValueError("--resume and --prepared cannot be used together"))
     configuration = _configuration(config)
     output = configuration.runs.output
     assert output is not None
-    if runs_directory(output).exists():
-        _configuration_error(ValueError(f"Run output already exists: {runs_directory(output)}"))
+    if not resume and output.exists() and (not output.is_dir() or any(output.iterdir())):
+        _configuration_error(ValueError(f"Experiment output already exists: {output}"))
     preparation = None
-    if prepared is not None:
+    source = prepared
+    if resume and (output / "prepared.json").is_file():
+        source = output
+    if source is not None:
         try:
-            preparation = PreparedExperiment.load(configuration, prepared)
+            preparation = PreparedExperiment.load(configuration, source)
         except ConfigurationMismatchError as error:
             _configuration_error(error)
         except KeyboardInterrupt:
@@ -116,17 +122,20 @@ def run(
         except Exception as error:
             typer.echo(f"Preparation load error: {type(error).__name__}: {error}", err=True)
             raise typer.Exit(1) from error
-    saved_this_call = False
+    saved_this_call = resume and (output / "prepared.json").is_file()
     try:
         if preparation is None:
-            preparation = Experiment.prepare(configuration)
+            preparation = Experiment.prepare(configuration, resume=resume)
             # Preparation writes its manifest last. A failed prepare must never evaluate a
             # manifest left by an earlier invocation in the same output directory.
             saved_this_call = (output / "prepared.json").is_file()
         else:
-            preparation.save(output)
+            if not resume:
+                preparation.save(output)
             saved_this_call = True
-        result = Experiment.execute(preparation)
+        result = Experiment.execute(preparation, resume=resume)
+    except ConfigurationMismatchError as error:
+        _configuration_error(error)
     except KeyboardInterrupt:
         typer.echo("Preparation or execution interrupted.", err=True)
         _partial_report(configuration, saved_this_call)

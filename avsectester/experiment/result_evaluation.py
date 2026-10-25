@@ -39,17 +39,18 @@ def evaluate(result: ExperimentResult, configuration: ExperimentConfiguration) -
         metrics, notes = _default_metrics(result)
     else:
         metrics = configuration.evaluation.metrics
-    grouped: dict[tuple[str, int, int], list[TreatmentResult]] = defaultdict(list)
+    grouped: dict[tuple[int, int], list[TreatmentResult]] = defaultdict(list)
     for run in result.runs:
         grouped[run.group].append(run)
     order = {item.name: index for index, item in enumerate(configuration.runs.treatments)}
     groups = []
-    for (attack_name, segment_index, seed), original in grouped.items():
+    for (segment_index, seed), original in grouped.items():
         runs = sorted(original, key=lambda run: order[run.treatment])
         segment = runs[0].segment
         groups.append(RunGroup(
-            attack_name, segment_index, segment, seed,
+            segment_index, segment, seed,
             {run.treatment: run.log for run in runs},
+            treatment_attacks={run.treatment: run.attack_name for run in runs}, part=runs[0].part,
             errors={run.treatment: run.error for run in runs if run.error is not None},
             scenario_map=result.scenario_maps.get(
                 segment.scenario_id, Unavailable("No saved scenario map is available")),
@@ -67,10 +68,10 @@ def evaluate(result: ExperimentResult, configuration: ExperimentConfiguration) -
         for group in groups:
             try:
                 plot_group({name: log for name, log in group.logs.items() if log.status == "completed"},
-                           plots / f"{group.attack_name}-segment-{group.segment_index:05d}-seed-{group.seed}.png",
-                           title=f"{group.attack_name}: segment {group.segment_index}, seed {group.seed}")
+                           plots / f"segment-{group.segment_index:05d}-seed-{group.seed}.png",
+                           title=f"Segment {group.segment_index}, seed {group.seed}")
             except Exception as error:
-                report.record_error("plot_group", error, attack_name=group.attack_name,
+                report.record_error("plot_group", error, part=group.part,
                                     segment_index=group.segment_index, seed=group.seed)
         report.save(destination)
     return report

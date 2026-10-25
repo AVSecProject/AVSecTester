@@ -5,7 +5,7 @@ These models describe experiments without owning live run resources.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, TYPE_CHECKING
@@ -16,6 +16,7 @@ from avsectester.closed_loop.environment import merge_environments, normalize_en
 from avsectester.data_types import Unavailable
 from avsectester.maps import ScenarioMap
 from avsectester.runlog import RunLog
+from avsectester.closed_loop.simulators.base import DeploymentPlan
 
 if TYPE_CHECKING:
     from .config import ExperimentConfiguration
@@ -65,6 +66,11 @@ def preparation_record(configuration: ExperimentConfiguration) -> dict[str, Any]
     """
     return {
         "seed": configuration.runs.seeds[0],
+        "split": None if configuration.split is None else {
+            "train_segments": configuration.split.train_segments,
+            "validation_segments": configuration.split.validation_segments,
+            "seed": configuration.split.seed,
+        },
         "offline_environments": {
             name: _environment_record(merge_environments(configuration.runs.environment,
                                                          attack.environment))
@@ -77,10 +83,17 @@ def validated_preparation(preparation: Any, attack_names: Any) -> Mapping[str, A
     """Check a preparation record: the first seed and each attack's offline environment."""
     import json
 
-    if not isinstance(preparation, Mapping) or set(preparation) != {"seed", "offline_environments"}:
-        raise ValueError("A preparation record must contain seed and offline_environments")
+    if not isinstance(preparation, Mapping) or set(preparation) != {"seed", "offline_environments", "split"}:
+        raise ValueError("A preparation record must contain seed, offline_environments and split")
     seed = preparation["seed"]
     require_nonnegative_integer(seed, "preparation seed")
+    split = preparation["split"]
+    if split is not None:
+        from .config import SplitConfiguration
+
+        if not isinstance(split, Mapping) or set(split) != {"train_segments", "validation_segments", "seed"}:
+            raise ValueError("Preparation split must contain train_segments, validation_segments and seed")
+        SplitConfiguration(**split)
     environments = preparation["offline_environments"]
     if not isinstance(environments, Mapping) or set(environments) != set(attack_names):
         raise ValueError("A preparation record needs one offline environment for every attack")
@@ -100,6 +113,64 @@ def treatment_applies(treatment: Any, attack_name: str) -> bool:
 
 
 @dataclass(frozen=True)
+class SegmentUnit:
+    """One canonical segment shared by all attacks that selected exactly that segment."""
+
+    index: int
+    segment: AttackSegment
+    attack_names: tuple[str, ...]
+    part: str | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"index": self.index, "scenario_id": self.segment.scenario_id,
+                "start": self.segment.start.position, "stop": self.segment.stop.position,
+                "attack_names": list(self.attack_names), "part": self.part}
+
+
+def segment_key(segment: AttackSegment) -> str:
+    """Canonical metadata identity, including attack-owned user_data."""
+    import json
+    from avsectester.serialization import DEFAULT_REGISTRY
+
+    return json.dumps(DEFAULT_REGISTRY.encode(segment), sort_keys=True, allow_nan=False)
+
+
+def build_units(configuration: ExperimentConfiguration,
+                metadata: Mapping[str, tuple[AttackSegment, ...]], *,
+                scenario_ids: Sequence[str] | None = None) -> tuple[SegmentUnit, ...]:
+    """Build deterministic shared units and assign the configured random partition."""
+    import numpy as np
+
+    if scenario_ids is None:
+        scenario_ids = tuple(scenario.id for scenario in configuration.dataset.scenarios())
+    order = {scenario_id: index for index, scenario_id in enumerate(scenario_ids)}
+    records: dict[str, tuple[AttackSegment, list[str], int]] = {}
+    for attack_index, name in enumerate(configuration.attacks):
+        for segment in metadata[name]:
+            key = segment_key(segment)
+            if key not in records:
+                records[key] = (segment, [], attack_index)
+            if name not in records[key][1]:
+                records[key][1].append(name)
+    ordered = sorted(records.values(), key=lambda item: (
+        order[item[0].scenario_id], item[0].start.position, item[0].stop.position, item[2],
+    ))
+    parts: list[str | None] = [None] * len(ordered)
+    split = configuration.split
+    if split is not None:
+        required = split.train_segments + split.validation_segments
+        if required >= len(ordered):
+            raise ValueError(f"train_segments + validation_segments must be less than the actual "
+                             f"segment-unit count ({len(ordered)})")
+        permutation = np.random.default_rng(split.seed).permutation(len(ordered))
+        for rank, index in enumerate(permutation):
+            parts[index] = ("train" if rank < split.train_segments else
+                            "validation" if rank < required else "test")
+    return tuple(SegmentUnit(index, segment, tuple(names), parts[index])
+                 for index, (segment, names, _) in enumerate(ordered))
+
+
+@dataclass(frozen=True)
 class PreparedExperiment:
     """Configured factories, selected metadata and artifacts, never a live simulator or session.
 
@@ -114,9 +185,13 @@ class PreparedExperiment:
     artifacts: Mapping[str, Any]
     selections: tuple[SelectionDecision, ...] = ()
     preparation: Mapping[str, Any] = field(kw_only=True)
+    units: tuple[SegmentUnit, ...] = field(default=(), kw_only=True)
+    deployment: DeploymentPlan | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         validated_preparation(self.preparation, self.metadata)
+        if not self.units and any(self.metadata.values()):
+            object.__setattr__(self, "units", build_units(self.configuration, self.metadata))
 
     def save(self, directory: str | Path) -> Path:
         from .output_directory import save_prepared
@@ -143,17 +218,18 @@ class PreparedExperiment:
 class TreatmentResult:
     """The recorded outcome of one segment, seed and named treatment."""
 
-    attack_name: str
+    attack_name: str | None
     segment_index: int
     segment: AttackSegment
     treatment: str
     seed: int
     log: RunLog
     error: str | None = None
+    part: str | None = None
 
     @property
-    def group(self) -> tuple[str, int, int]:
-        return self.attack_name, self.segment_index, self.seed
+    def group(self) -> tuple[int, int]:
+        return self.segment_index, self.seed
 
 
 @dataclass(frozen=True)
@@ -170,8 +246,8 @@ class ExperimentResult:
     scenario_maps: Mapping[str, ScenarioMap | Unavailable] = field(default_factory=dict)
 
     @property
-    def groups(self) -> dict[tuple[str, int, int], dict[str, RunLog]]:
-        result: dict[tuple[str, int, int], dict[str, RunLog]] = {}
+    def groups(self) -> dict[tuple[int, int], dict[str, RunLog]]:
+        result: dict[tuple[int, int], dict[str, RunLog]] = {}
         for run in self.runs:
             result.setdefault(run.group, {})[run.treatment] = run.log
         return result

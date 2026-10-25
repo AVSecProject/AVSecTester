@@ -44,6 +44,8 @@ def test_save_and_load(tmp_path):
     assert loaded.preparation == saved_preparation == prepared.preparation
     assert loaded.artifacts == prepared.artifacts
     assert loaded.metadata == prepared.metadata
+    assert [unit.as_dict() for unit in loaded.units] == [unit.as_dict() for unit in prepared.units]
+    assert loaded.deployment == prepared.deployment
     assert measurements(Experiment.execute(loaded)) == measurements(Experiment.execute(prepared))
     execution_config = replace(config, runs=replace(
         config.runs, seeds=(0, 5), decision_steps=1, strict=True,
@@ -116,7 +118,7 @@ def test_experiment_result_load(tmp_path):
     assert isinstance(loaded.scenario_maps["unmapped"], Unavailable)
     assert loaded.scenario_maps["unmapped"].reason == original.scenario_maps["unmapped"].reason
     failed = original.runs[0]
-    manifest = run_directory(config.runs.output, failed.attack_name, failed.segment_index,
+    manifest = run_directory(config.runs.output, failed.segment_index,
                              failed.seed, failed.treatment) / "manifest.json"
     manifest.write_text("{incomplete JSON")
     loaded = ExperimentResult.load(config.runs.output, config)
@@ -124,3 +126,15 @@ def test_experiment_result_load(tmp_path):
     assert [(run.group, run.treatment) for run in loaded.failures] == [(failed.group, failed.treatment)]
     assert "Run read failed" in loaded.failures[0].error
     assert all(run.log.status == "completed" for run in loaded.runs[1:])
+
+
+def test_load_rejects_changed_units(tmp_path):
+    config = configuration()
+    prepared = Experiment.prepare(config)
+    prepared.save(tmp_path)
+    path = tmp_path / "prepared.json"
+    manifest = json.loads(path.read_text())
+    manifest["units"][0]["part"] = "train"
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(ConfigurationMismatchError, match="units or partition"):
+        PreparedExperiment.load(config, tmp_path)

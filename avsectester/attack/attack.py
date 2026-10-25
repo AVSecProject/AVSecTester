@@ -70,6 +70,7 @@ class OfflineContext:
     seed: int = 0
     environment: Mapping[str, Any] = field(default_factory=dict)
     deployment: DeploymentPlan | None = None
+    validation_metadata: tuple[AttackSegment, ...] = ()
 
 
 class Attack(ABC):

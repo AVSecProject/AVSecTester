@@ -32,7 +32,6 @@ class RunGroup:
     from a dataset during evaluation.
     """
 
-    attack_name: str
     segment_index: int
     segment: AttackSegment
     seed: int
@@ -41,6 +40,8 @@ class RunGroup:
     scenario_map: ScenarioMap | Unavailable = field(
         default_factory=lambda: Unavailable("No saved scenario map is available"),
     )
+    treatment_attacks: Mapping[str, str | None] = field(default_factory=dict)
+    part: str | None = None
 
 
 def evaluate_groups(
@@ -67,10 +68,10 @@ def evaluate_groups(
               for metric in metrics}
     for source in groups:
         complete = {name: log for name, log in source.logs.items() if log.status == "completed"}
-        group = ComparisonGroup(source.attack_name, source.segment, source.seed, complete,
-                                source.scenario_map)
-        context = {"attack_name": source.attack_name, "segment_index": source.segment_index,
-                   "seed": source.seed}
+        group = ComparisonGroup(source.segment, source.seed, complete,
+                                source.scenario_map, source.treatment_attacks)
+        context = {"segment_index": source.segment_index, "seed": source.seed, "part": source.part,
+                   "treatment_attacks": {name: source.treatment_attacks.get(name) for name in source.logs}}
         treatments: dict[str, dict[str, Any]] = {
             name: {"status": log.status, "error": source.errors.get(name),
                    "metrics": {}, "reasons": {}, "metric_types": {}}

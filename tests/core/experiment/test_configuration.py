@@ -9,7 +9,7 @@ import pytest
 import yaml
 
 from avsectester.attack import Attack
-from avsectester.experiment import load_configuration
+from avsectester.experiment import SplitConfiguration, load_configuration
 from avsectester.experiment.engine import validate_configuration_environment
 from tests.fakes import ConstantAVStack, MemoryDataset, MemorySimulator, MinimalAttack
 
@@ -193,3 +193,29 @@ def test_validate_configuration_environment():
     spec["runs"]["environment"] = {"world": {"unsupported_setting": True}}
     with pytest.raises(ValueError, match="does not support"):
         validate_configuration_environment(load_configuration(spec))
+
+
+def test_split_configuration():
+    spec = specification()
+    assert load_configuration(spec).split is None
+    spec["split"] = {"train_segments": 2}
+    assert load_configuration(spec).split == SplitConfiguration(2)
+    spec["split"] = {"train_segments": 2, "validation_segments": 1, "seed": 7,
+                     "execute": ["train", "validation", "test"]}
+    assert load_configuration(spec).split == SplitConfiguration(2, 1, 7, ("train", "validation", "test"))
+    invalid = (
+        ({}, ValueError, "train_segments"),
+        ({"train_segments": 0}, ValueError, "train_segments"),
+        ({"train_segments": True}, ValueError, "train_segments"),
+        ({"train_segments": 1, "validation_segments": -1}, ValueError, "validation_segments"),
+        ({"train_segments": 1, "seed": -1}, ValueError, "seed"),
+        ({"train_segments": 1, "execute": ["test", "test"]}, ValueError, "duplicates"),
+        ({"train_segments": 1, "execute": ["invalid"]}, ValueError, "accepts"),
+        ({"train_segments": 1, "execute": ["validation"]}, ValueError, "zero"),
+        ({"train_segments": 1, "execute": "test"}, TypeError, "sequence"),
+        ({"train_segments": 1, "extra": 0}, ValueError, "Unknown split keys"),
+    )
+    for value, error, message in invalid:
+        spec["split"] = value
+        with pytest.raises(error, match=message):
+            load_configuration(spec)

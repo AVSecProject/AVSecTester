@@ -23,10 +23,11 @@ metadata, artifacts, Parquet logs and an evaluation report under runs.output. An
 that changes nothing can still complete successfully: exit codes report execution, not scientific
 success.
 
-A configuration contains one or more attacks, each selecting its own segments. Treatments without
-attack_name run on every attack's segments; all treatment pairs within one attack's segment and seed
-are compared, with optional world/sensor environments. Combine actions within one Attack when they
-must act together in a run.
+A configuration contains one or more attacks, each selecting its own segments. Complete identical
+segments form shared units. Each treatment without attack_name runs once per unit and seed, and
+treatments from all attacks selecting that unit are compared in one group. Optional split settings
+separate train, validation and test units. Combine actions within one Attack when they must act
+together in a run; see [Experiments](../guides/experiments.md).
 
 ## Read the output
 

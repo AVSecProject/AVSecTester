@@ -185,12 +185,21 @@ shared within the process for runtimes addressing the same world. exclusive() li
 to one operation at a time. Shared immutable model weights are allowed only when an adapter can
 preserve independent histories.
 
-One experiment supports one or more attacks, each with its own metadata. A comparison group is one
-attack's segment and seed: the treatments enabling that attack and those without attack_name are
-compared there, with all treatment pairs evaluated.
+All attacks finish selection before any offline optimization. Complete identical segments form one
+unit across attacks; user_data is part of the canonical identity. An optional seeded split assigns
+units to train, validation and test. Only training metadata is passed to offline optimization;
+validation_metadata is a separate optional input. PreparedExperiment retains all selected metadata
+and the units with their selecting attacks and parts.
 
-**Not yet implemented.** Comparing different attacks within one group when their segments coincide.
-See [TODO](../development/TODO.md#multiple-attacks-on-shared-metadata).
+One unit and seed form a comparison group. Treatments without attack_name run once per group, and
+treatments for every attack selecting that unit are compared in the same group. Offline and online
+services share the maximum deployment tick budget across the entire experiment. By default split
+executes only test units; without split all units execute.
+
+Splitting is by complete metadata, not by raw images. The same scene/window with different user_data
+can enter train and test independently, so test inputs may contain images seen during training.
+Sharing un-attacked runs across these distinct units and conditional transfer remain
+[planned](../development/TODO.md#shared-runs-across-different-user-data).
 
 ## Supported combinations
 
@@ -225,7 +234,8 @@ and log-based visualization use this path.
 | Segment | scenario_id, a decision interval and attack-specific user_data |
 | Artifact | Offline output reused by subsequent runs |
 | Treatment | A named attack choice and environment override |
-| Comparison group | One attack, segment and seed, with its completed treatment logs |
+| Unit | One complete segment shared by all attacks selecting identical metadata |
+| Comparison group | One unit and seed |
 | Simulator | Reusable simulator configuration |
 | Simulator runtime | One live world created by a Simulator |
 | AVStack | A driving system accepting Observation and producing Control |

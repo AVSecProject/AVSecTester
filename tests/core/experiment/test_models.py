@@ -18,6 +18,7 @@ def test_preparation_record():
     )
     assert preparation_record(configuration) == {
         "seed": 3,
+        "split": None,
         "offline_environments": {"probe": {
             "world": {"weather": "rain", "lighting": {
                 "street_lights": {"color": list(color)}, "intensity": .5,

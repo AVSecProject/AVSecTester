@@ -73,6 +73,26 @@ def test_run(tmp_path):
     assert invalid.exit_code == 2 and "Configuration error" in invalid.output
 
 
+def test_run_resume(tmp_path):
+    path = write_configuration(tmp_path)
+    completed = runner.invoke(cli.app, ["run", str(path), "--resume"])
+    assert completed.exit_code == 0, completed.output
+    output = tmp_path / "results"
+    manifests = {p: p.read_bytes() for p in (output / "runs").rglob("manifest.json")}
+    assert manifests
+    resumed = runner.invoke(cli.app, ["run", str(path), "--resume"])
+    assert resumed.exit_code == 0, resumed.output
+    assert {p: p.read_bytes() for p in manifests} == manifests
+    conflicting = runner.invoke(cli.app, ["run", str(path), "--resume", "--prepared", str(output)])
+    assert conflicting.exit_code == 2
+    assert "--resume and --prepared" in conflicting.output
+    configuration = yaml.safe_load(path.read_text())
+    configuration["runs"]["seeds"] = [1]
+    path.write_text(yaml.safe_dump(configuration))
+    incompatible = runner.invoke(cli.app, ["run", str(path), "--resume"])
+    assert incompatible.exit_code == 2 and "configuration differs" in incompatible.output
+
+
 def test_evaluate(tmp_path):
     path = write_configuration(tmp_path)
     missing = runner.invoke(cli.app, ["evaluate", str(path)])

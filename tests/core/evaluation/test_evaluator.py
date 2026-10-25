@@ -35,20 +35,23 @@ class InterruptedMetric(Metric):
 
 def test_evaluate_groups(segment, make_log):
     groups = (
-        RunGroup("attack", 0, segment, 1, {
+        RunGroup(0, segment, 1, {
             "clean": make_log([3., 3.]), "attacked": make_log([1., 1.]),
             "rain": make_log([2., 2.]),
-        }),
-        RunGroup("attack", 0, segment, 0, {
+        }, treatment_attacks={"clean": None, "attacked": "first", "rain": "second"}, part="test"),
+        RunGroup(0, segment, 0, {
             "clean": make_log([3., 3.]), "attacked": make_log([1., 1.]),
             "rain": RunLog(status="failed"),
-        }, errors={"rain": "sensor disconnected"}),
+        }, errors={"rain": "sensor disconnected"},
+                 treatment_attacks={"clean": None, "attacked": "first", "rain": "second"}, part="test"),
     )
     report = evaluate_groups(groups, (
         DrivingMetrics(), TrajectoryDeviation(), StopImpact(), UserMetric(), BrokenMetric(), InvalidMetric(),
     ), notes=("Recorded evidence only.",))
     assert [group["seed"] for group in report.groups] == [1, 0]
     first, last = report.groups
+    assert first["part"] == "test"
+    assert first["treatment_attacks"] == {"clean": None, "attacked": "first", "rain": "second"}
     assert list(first["treatments"]) == ["clean", "attacked", "rain"]
     assert [(pair["treatment_a"], pair["treatment_b"]) for pair in first["comparisons"]] == [
         ("clean", "attacked"), ("clean", "rain"), ("attacked", "rain"),

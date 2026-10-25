@@ -103,9 +103,10 @@ containing-file rules.
 | `dataset` | Dataset object specification |
 | `simulator` | Simulator object specification |
 | `avstack` | Driving specification, inline or a file reference |
-| `attacks` | Exactly one name mapped to an Attack specification or file reference |
+| `attacks` | One or more names mapped to Attack specifications or file references |
 | `hooks` | One stage-hook configuration applied to every treatment |
 | `evaluation` | Metrics and all-treatment pair comparisons |
+| `split` | Optional SplitConfiguration assigning complete segment units to train, validation and test |
 
 ### Dataset and simulator
 
@@ -193,12 +194,13 @@ across supported scenarios of one simulator.
 
 ### Attack specification
 
-The attacks mapping contains one or more entries. Each attack selects its own metadata; a comparison
-group contains one attack's segment and seed. Treatments without attack_name run in every attack
-group, while a named attack treatment runs only in its own groups. Omitted treatments create clean
-and one treatment per attack under runs. A clean treatment has no attack_name. To apply several
-actions together in one run, implement a composite Attack. Comparing different attacks within one
-group remains future work.
+The attacks mapping contains one or more entries. Each attack selects its own metadata. Complete
+identical segments form one unit shared by their selecting attacks. A comparison group is a unit
+and seed. Every treatment without attack_name runs once in that group; a treatment with attack_name
+runs only when that attack selected the unit. All group treatments are paired, including treatments
+from different attacks. Omitted treatments create clean and one treatment per attack under runs. A
+clean treatment has no attack_name. To apply several actions together in one run, implement a
+composite Attack.
 
 An attack specification has `type`, `options` and optional `environment`. Selection parameters,
 input assets and optimization belong to the Attack constructor. The framework calls its metabuilder
@@ -285,6 +287,46 @@ evaluation:
 User metrics use type/options, including package.module:Class. See
 [Evaluation](../guides/evaluation.md#built-in-metrics) for fields and evidence requirements.
 
+## Data split
+
+Omit split for the all-segments preparation and execution behavior. With split, all attacks finish
+selection before the framework builds a shared unit list and starts any offline phase:
+
+```yaml
+split:
+  train_segments: 4
+  validation_segments: 0
+  seed: 0
+  execute: [test]
+```
+
+| Key under split | Meaning |
+|---|---|
+| train_segments | Required positive integer number of training units |
+| validation_segments | Nonnegative integer number of validation units; default 0 |
+| seed | Nonnegative integer permutation seed; default 0 |
+| execute | Unique list drawn from train, validation, test; default [test]; [] executes no units |
+
+Unknown split keys are rejected. Executing validation requires validation_segments greater than zero.
+Training plus validation must be smaller than the actual number of units, leaving at least one test
+unit. Invalid counts report that actual number.
+
+A unit is a complete AttackSegment: scenario, start, stop and user_data must all match. Identity is
+canonical JSON from DEFAULT_REGISTRY.encode(segment) with sorted keys. Units are ordered by dataset
+scenario order, then start position, stop position and configuration attack order. A seeded
+np.random.default_rng(seed).permutation assigns the first requested units to train, the next to
+validation and the remainder to test. Different attacks selecting an identical segment share its
+part; the same window with different user_data forms different units and is split independently.
+Consequently test inputs may include images already seen during training. This is a metadata split,
+not a guarantee of disjoint scene windows or images.
+
+OfflineContext.metadata contains only each attack's train segments and validation_metadata contains
+its validation segments, both in original selection order. PreparedExperiment.metadata still keeps
+all selected segments. PreparedExperiment.units records each unit, its selecting attacks and part;
+without split the part is None. The maximum deployment budget over all attacks is used for offline
+and online work; segments unable to start under that common budget are removed before splitting and
+the scenario selection record explains why. split.execute changes only which parts run closed loop.
+
 ## Run settings
 
 Run settings belong exclusively under runs. Supplying treatments, seeds, decision_steps,
@@ -348,6 +390,8 @@ each attack's type, parameters and environment. prepared.json also stores prepar
 Experiment.prepare from the inputs actually used:
 
 - seed is runs.seeds[0].
+- split is {train_segments, validation_segments, seed}, or None without a split. execute is not
+  included because it controls execution only.
 - offline_environments maps each attack name to its merged environment,
   merge_environments(runs.environment, attack.environment), recorded as canonical data: world
   settings as written, and each sensor entry as type, options and, when set, camera.
@@ -357,13 +401,14 @@ example an arbitrary object) fails before any preparation work. Paths, tuples, N
 dataclasses are recorded as their configuration-summary data.
 
 `PreparedExperiment.load(config, directory)` and CLI --prepared check dataset/scenario, simulator
-and attack compatibility, then compare the saved preparation seed and each offline environment
-with the supplied configuration. A mismatch raises ConfigurationMismatchError naming the differing
+and attack compatibility, then compare the saved preparation seed, split counts/seed and each offline
+environment with the supplied configuration. The saved units are recomputed from saved metadata and
+the configured split and compared item by item; a different allocation is incompatible. A mismatch raises ConfigurationMismatchError naming the differing
 fields and their saved and new values; the CLI maps it to exit code 2. Corrupt or unreadable files
 are result-reading failures (exit code 1).
 
-Additional seeds after the first, treatments, recording, output, strict, decision_steps and
-evaluation settings may change when reusing preparation. The first seed and normalized per-attack
+Additional seeds after the first, treatments, recording, output, strict, decision_steps,
+split.execute and evaluation settings may change when reusing preparation. The first seed and normalized per-attack
 offline environments must still agree. Saving a loaded preparation preserves its original
 preparation snapshot rather than recomputing it from the current run settings. Records are compared
 as canonical JSON text, so a list and a tuple with the same values agree while True and 1 differ.
@@ -373,7 +418,8 @@ simulation remain unchanged.
 
 ExperimentResult.load and CLI evaluate read saved logs through load_prepared_metadata without
 constraining runs. Historical analysis does not require preparation to be reusable for new runs,
-and outputs saved without a preparation record remain readable.
+but the old attack-prefixed run directory layout, including v5/v6 outputs, is not supported by this
+version. Use the matching historical version to load or evaluate those results.
 
 Summaries are calculated only when saving or loading. Constructing or running a configuration does
 not enumerate scenarios for this check or require parameter descriptions. YAML constructor options

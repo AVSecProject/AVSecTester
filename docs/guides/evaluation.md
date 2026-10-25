@@ -30,17 +30,17 @@ print(report.format_summary())
 Unreadable runs are recorded as failed with their read error; other runs can still be evaluated.
 Directories belonging to treatments removed from the configuration are reported and skipped.
 
+Old attack-prefixed run directories, including v5/v6 outputs, are incompatible with this version.
+Use the matching historical version to load or reevaluate them.
+
 ## Comparison groups
 
-An experiment contains one or more attacks, and each attack selects its own segments. A comparison
-group is one attack, one of its segments and one seed. It contains the treatments that enable that
-attack and the treatments without attack_name, such as clean or environment-only treatments; those
-repeat in every attack's groups. Treatments can also change world or sensor environments. Treatments
-of different attacks are not compared within a group. To apply several attack actions together in
-one run, write one composite Attack.
-
-**Not yet implemented.** Comparing different attacks within one group when their segments coincide.
-See [TODO](../development/TODO.md#multiple-attacks-on-shared-metadata).
+A comparison group is one complete segment unit and one seed. Identical segments selected by
+different attacks share a global segment_index and group. Each treatment without attack_name,
+including clean or environment-only treatments, runs once. Attacked treatments run when that attack
+selected the unit. All group treatments are compared, including different attacks. To apply several
+attack actions together in one run, write one composite Attack. Different user_data creates distinct
+units, even for the same window, and those units retain separate clean runs.
 
 There is no baseline setting. Within a group, treatments are paired in configuration order. For A
 before B, every single-run metric difference is B minus A. Boolean values also have numeric
@@ -52,9 +52,13 @@ A-to-B and B-to-A directions. These are already comparison metrics and have no a
 difference.
 
 RunGroup is the standalone evaluator input. Its ordered logs mapping retains every treatment,
-including failed, cancelled and incomplete logs, with optional errors and scenario_map. The metrics
+including failed, cancelled and incomplete logs, with optional errors, scenario_map, part and
+treatment_attacks (treatment name to attack name or None). It has no group attack_name. The metrics
 receive a ComparisonGroup containing only completed logs. evaluate_groups preserves other statuses
 and their reasons in the report and keeps treatment comparisons in the supplied log order.
+ComparisonGroup(segment, seed, runs, scenario_map=..., treatment_attacks=...) contains completed
+logs and their enabled attacks. Each report group records segment_index, seed, part, scenario_id
+and treatment_attacks.
 
 ## Built-in metrics
 
@@ -121,13 +125,15 @@ configuration error: the report and runs.csv still preserve run status and the m
 | Output | Content |
 |---|---|
 | report.json | Metric types/options, groups, treatment values, pair values, reasons and errors |
-| runs.csv | One row per run, with identity/status and metric-prefixed value columns |
-| plots/ | Per-group speed and braking by decision index |
+| runs.csv | part, segment_index, scenario_id, seed, treatment, attack_name, status, error, then metric-prefixed value columns |
+| plots/ | Per-group speed and braking by decision index, named segment-xxxxx-seed-s.png |
 
 Treatment summaries show completed group counts, total groups, failures, numeric mean/population
 standard deviation (ddof=0), and boolean true proportions. Missing evidence is excluded from numeric
 denominators. Boolean fields retain proportion formatting even when every value is unavailable. Pair
-summaries include single-run differences and pair metrics, grouped by ordered treatment pair. The
+summaries include single-run differences and pair metrics. Treatment statistics are grouped by
+(part, treatment), and pair statistics by (part, treatment_a, treatment_b). format_summary prints
+separate tables per part; without split there is only one table. The
 terminal table shows available primary fields: final_speed, brake_steps, stopped, collision,
 precision and recall. It also prints major metric difference matrices, notes and output location.
 The JSON and CSV retain all metric fields.
@@ -168,7 +174,7 @@ from avsectester.runlog import RunLog
 from avsectester.evaluation.visualization import record_run, save_gif, camera_view
 
 # Requires a saved run with retained camera payloads and geometry.
-log = RunLog.read("results/experiment/runs/attack/segment-00000/seed-0/clean")
+log = RunLog.read("results/experiment/runs/segment-00000/seed-0/clean")
 record_run(log, "export/frames", visualize=camera_view)
 save_gif(log, "export/drive.gif", fps=5)
 ```
@@ -199,7 +205,8 @@ log = RunLog(steps=[StepRecord(0, physical_pre=state, physical_post=state,
                              executed_command=Control())], status="completed")
 start = FrameReference("road", 0, 0, 0.0)
 stop = FrameReference("road", 1, 1, 0.1)
-group = RunGroup("sample", 0, AttackSegment("road", start, stop), 0, {"clean": log})
+group = RunGroup(0, AttackSegment("road", start, stop), 0, {"clean": log},
+                 treatment_attacks={"clean": None})
 report = evaluate_groups((group,), (DrivingMetrics(),), notes=("Existing in-memory log",))
 assert len(report.groups) == 1
 assert report.notes == ["Existing in-memory log"]

@@ -19,10 +19,12 @@ report = evaluate(result, prepared.configuration)
 print(report.format_summary())
 ```
 
-`prepare` opens the closed-loop services, calls each attack's metabuilder once per scene, validates
-segment structure and runs each attack's offline phase once over all its metadata. Preparation
-returns metadata and artifacts without live simulator or model history. An experiment accepts one
-or more attacks, each preparing its own metadata and artifacts. To combine actions in one run,
+`prepare` first selects every attack's metadata, validates segments against the experiment-wide
+deployment budget and builds shared segment units. With split, it assigns these units to train,
+validation and test before any offline phase. Each attack receives only its train segments as
+OfflineContext.metadata and its validation segments as validation_metadata. Without split the
+offline metadata contains all its selected segments. PreparedExperiment retains all metadata, units
+and explicit artifacts without live simulator or model history. To combine actions in one run,
 implement one composite Attack.
 
 Preparation uses runs.seeds[0]. OfflineContext.environment merges runs.environment with the attack
@@ -31,7 +33,7 @@ the base environment. Its selected metadata is reused
 for every execution seed. The framework does not interpret actor IDs in custom metadata; each
 attack checks actors when it uses them and reports a missing actor as a run failure.
 
-`execute` iterates attack, segment, seed and treatment groups. Each run creates a simulator runtime,
+`execute` iterates unit and seed groups, restricted to split.execute when configured. Each run creates a simulator runtime,
 AVStack and AttackRuntime. Cleanup closes owned resources on success and failure. Generated CARLA
 frame data is cached across execution groups with seed, environment and deployment settings included
 in its key.
@@ -48,19 +50,33 @@ runs:
         world: {weather: SoftRainNoon}
 ```
 
-Each comparison group has one attack's selected segment and one seed. Treatments share its origin,
-decision length and initialization tick budget. The group contains the treatments enabling that
-attack and the treatments without attack_name, which therefore repeat for every attack. They differ
-only in whether attack_name enables the attack and in world/sensor environment settings. Environment-only treatments are valid. The same configured hooks run for every treatment.
-Every treatment pair is compared in configuration order; there is no baseline setting.
+A unit is one complete segment: scenario, start, stop and user_data. Identical segments selected by
+different attacks share a unit and its global segment_index. A comparison group is that unit and
+one seed. Treatments share its origin, decision length and initialization tick budget. Each
+treatment without attack_name runs once; each attacked treatment runs when its attack selected
+this unit, using that attack's artifacts. All treatment pairs, including different attacks, are
+compared in configuration order. Environment-only treatments are valid; the configured hooks run
+for every treatment. There is no baseline setting.
 
 Preparation and execution use the same deployment budget: the largest hook/attack setup requirement
-across this attack's selected segments, seeds and treatments. Clean runs execute the same tick
+across all attacks, selected segments, seeds and treatments. Clean runs execute the same tick
 budget without the attack. Initialization records actual state; there is no replay error threshold
 or automatic retry/reselection.
 
 **Not yet implemented.** Defense treatments and attack-plus-defense comparisons. See
 [TODO](../development/TODO.md#defenses).
+
+## Train, validation and test
+
+Configure the optional top-level split with train_segments, validation_segments, seed and execute.
+The framework orders units by dataset scenario, start/stop positions and configured attack order,
+then assigns parts using a seeded NumPy permutation. The training and validation counts must leave
+at least one test unit. execute defaults to [test]; omitting split executes all units. See
+[Data split](../reference/configuration.md#data-split).
+
+Units include user_data. Different attacker settings for the same window may therefore enter train
+and test separately, and test images may have been seen during training. No conditional transfer or
+cross-user_data sharing of un-attacked runs is implemented.
 
 ## Save and reload preparation
 
@@ -79,10 +95,36 @@ the default format is trusted pickle with a content hash. Only load trusted prep
 Loading requires an explicit compatible configuration and does not select or optimize again. See
 [compatibility checks](../reference/configuration.md#saved-preparation-compatibility).
 
+## Resume interrupted work
+
+```python
+from avsectester.experiment import Experiment
+
+# Requires the original configuration and its output directory.
+prepared = Experiment.prepare("configs/carla_phantom.yaml", resume=True)
+result = Experiment.execute(prepared, resume=True)
+```
+
+Preparation writes each attack's metadata and preparation-progress.json immediately after selection
+and splitting. After every completed offline phase it saves that attack's artifacts and checkpoints
+the completed attack names. prepared.json is written only after all attacks finish. With resume=True,
+a complete preparation is loaded directly; otherwise the progress configuration and preparation
+record are checked before restoring saved selection and units. Completed artifacts are loaded and
+only remaining attacks run offline. Selection is not repeated on a partial resume. Incompatible
+configuration raises ConfigurationMismatchError with its differences.
+
+Execution preserves a completed run only when its manifest identity matches segment_index, seed,
+treatment and attack_name. It reads that log into the result without rewriting the manifest. A
+missing run is filled in; an existing failed, incomplete, corrupt or mismatched run directory is
+removed individually and rerun. A fully completed group requires no world/AVStack initialization.
+The CLI equivalent is `avsectester run CONFIG --resume`. Without --resume, existing output is an
+error; --resume cannot be combined with --prepared.
+
 ## Results and failure handling
 
 `ExperimentResult.runs` contains TreatmentResult records, including failed runs. Each identifies
-attack_name, segment, treatment, seed, log and error. `groups` exposes grouped logs, `failures`
+attack_name (None for an un-attacked treatment), segment_index, segment, part, treatment, seed, log
+and error. `groups` is keyed by (segment_index, seed), `failures`
 exposes non-completed runs, and `selection_errors` distinguishes metabuilder errors from ordinary
 no-match decisions.
 
@@ -93,7 +135,9 @@ failed-run counts separately. A failure must not become a zero-valued successful
 `ExperimentResult.load(output, configuration)` reads only saved preparation summaries and run logs
 for independent analysis. It never enumerates or loads the dataset, and does not load artifacts.
 Unreadable logs are failed runs; obsolete treatment directories are reported and skipped.
-`avsectester evaluate` uses this path after simulation closes.
+`avsectester evaluate` uses this path after simulation closes. Runs use
+runs/segment-xxxxx/seed-s/treatment/; historical attack-prefixed layouts such as v5/v6 results cannot
+be loaded or evaluated with this version.
 
 Execution also reads each scene with selected segments once through Dataset.scenario_map. The result
 is retained in ExperimentResult.scenario_maps, including Unavailable and its reason. Persistent

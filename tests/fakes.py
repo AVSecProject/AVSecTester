@@ -389,15 +389,22 @@ class DeceleratingAVStack(AVStack):
 class MinimalAttack(Attack):
     """Select deterministic consecutive windows and record per-run progress."""
 
-    def __init__(self, decision_steps=2, max_segments=2, assets=None, fail_scenarios=(), stop_marker_path=None):
+    def __init__(self, decision_steps=2, max_segments=2, assets=None, fail_scenarios=(), stop_marker_path=None,
+                 variants_per_window=1):
         self.decision_steps, self.max_segments, self.assets = decision_steps, max_segments, assets
         self.fail_scenarios, self.stop_marker_path = tuple(fail_scenarios), stop_marker_path
+        self.variants_per_window = variants_per_window
 
     def build_metadata(self, scenario):
         if scenario.scenario_id in self.fail_scenarios:
             raise RuntimeError("synthetic selection failed")
         from avsectester.attack.segments import split_segments
-        return split_segments(scenario.frames, lambda frame: True, decision_steps=self.decision_steps)[:self.max_segments]
+        windows = split_segments(scenario.frames, lambda frame: True,
+                                 decision_steps=self.decision_steps)[:self.max_segments]
+        if self.variants_per_window == 1:
+            return windows
+        return tuple(replace(segment, user_data={"variant": variant})
+                     for segment in windows for variant in range(self.variants_per_window))
 
     def run_offline(self, context):
         return self.assets

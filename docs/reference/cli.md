@@ -12,6 +12,7 @@
 avsectester version
 avsectester run EXPERIMENT.yaml
 avsectester run EXPERIMENT.yaml --prepared DIRECTORY
+avsectester run EXPERIMENT.yaml --resume
 avsectester evaluate EXPERIMENT.yaml
 ```
 
@@ -19,26 +20,32 @@ avsectester evaluate EXPERIMENT.yaml
 
 ## Run
 
-`run EXPERIMENT.yaml [--prepared DIRECTORY]` loads configuration, selects metadata, prepares
-artifacts, executes treatments and evaluates their logs. With --prepared, it validates and loads an
-existing preparation instead of selecting and optimizing again. Prepared artifacts must be fully
+`run EXPERIMENT.yaml [--prepared DIRECTORY | --resume]` loads configuration, prepares artifacts,
+executes treatments and evaluates their logs. With --prepared, it validates and loads an existing
+complete preparation instead of selecting and optimizing again. Prepared artifacts must be fully
 loaded before execution. All attack inputs and returned artifacts remain explicit.
 
-The configuration must provide runs.output and at least one attack. A zero-attack configuration
-is an error; use a selection-only Attack for environment comparisons or a composite Attack for
-combined actions. Treatments vary attack_name and environment; each runs on the segments of its
-attack, and treatments without attack_name run on every attack's segments.
+The configuration must provide runs.output and at least one attack. Treatments without attack_name
+run once per unit and seed. Attacked treatments run on units selected by their attack, and different
+attacks selecting identical complete metadata share a comparison group. With split, execution is
+restricted to split.execute, which defaults to test. See [Data split](configuration.md#data-split).
 
-Configuration controls models, devices, decision limits, treatments, recording and evaluation. The
-CLI does not override them. Run settings are nested under runs. Existing runs.output/runs is
-rejected rather than overwritten. Choose a fresh runs.output when reusing preparation. Reuse
-requires the same dataset, simulator and attack inputs, the same first seed and the same offline
-environments; other run settings and metrics can change. See
+Without --resume an existing nonempty output is rejected rather than overwritten. With --prepared,
+choose a fresh runs.output for execution. Reusing preparation requires compatible dataset,
+simulator, attack inputs, first seed, split counts/seed and offline environments. Execution parts,
+other run settings and metrics can change; see
 [Saved preparation compatibility](configuration.md#saved-preparation-compatibility).
 
+--resume continues the same runs.output. If prepared.json exists it is loaded; otherwise preparation
+resumes from preparation-progress.json after compatibility checks. Saved metadata and parts are
+reused, completed artifacts are loaded and only unfinished attacks run offline. The execution phase
+keeps matching completed manifests and reads their logs, reruns only missing/failed/incomplete or
+mismatched runs, and skips initialization for groups already complete. It then evaluates the result.
+--resume and --prepared together are a configuration error (exit code 2).
+
 The terminal prints the output directory, selection/execution errors including exception types, and
-failed runs in non-strict mode. Reports contain every available run status. A partial report uses
-only preparation saved in this invocation; stale preparation from another run is never used.
+failed runs in non-strict mode. Reports retain every available run status and summarize each part
+separately. A partial report does not imply successful completion.
 
 ## Evaluate
 
@@ -54,30 +61,36 @@ run states and the metric error. Terminal output includes summaries, difference 
 
 ## Interruptions
 
-Ctrl-C prints an interruption message, cleans up owned resources and exits with code 130. During
-execution, the CLI attempts a partial report only when this invocation saved preparation. An
-interruption during preparation does not imply that an output directory exists. An interruption
-during evaluation does not restart evaluation; some evaluation outputs may already be replaced or
-incomplete. Interrupted logs have cancelled status; missing expected logs are incomplete. A partial
-report never implies successful completion.
+Ctrl-C prints an interruption message, cleans up owned resources and exits with code 130. Selection
+and splitting are checkpointed before offline optimization; a preparation interruption after that
+point retains preparation-progress.json and artifacts of completed attacks. A complete prepared.json
+is written only after all offline phases succeed. An interruption during selection may precede any
+checkpoint. Resume with the same configuration and --resume.
+
+Interrupted execution logs have cancelled status; missing expected logs are incomplete. A later
+--resume preserves matching completed runs and reruns other expected runs individually. An
+interruption during evaluation does not restart evaluation; some report outputs may already be
+replaced or incomplete. Re-run evaluate to regenerate them without simulation.
 
 ## Output layout
 
 ```text
 <output>/
+  preparation-progress.json
   prepared.json
   attacks/<attack-name>/metadata.json
   attacks/<attack-name>/artifacts.pkl
   attacks/<attack-name>/manifest.json
   maps/<scenario-id>.json
-  runs/<attack-name>/segment-<NNNNN>/seed-<S>/<treatment>/
+  runs/segment-<NNNNN>/seed-<S>/<treatment>/
   evaluation/report.json
   evaluation/runs.csv
   evaluation/plots/
 ```
 
 Artifact filenames above describe the default trusted-pickle format; attacks may override it. Each
-run directory is a [RunLog](runtime.md#runlog). Metrics and all-pair summaries are described in
+run directory is a [RunLog](runtime.md#runlog). Segment numbers are global unit indexes. The old
+attack-prefixed layout, including v5/v6 outputs, cannot be loaded or evaluated with this version. Metrics and all-pair summaries are described in
 [Evaluation](../guides/evaluation.md).
 
 ## Exit codes

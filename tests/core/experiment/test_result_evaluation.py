@@ -24,11 +24,11 @@ class MapMetric(Metric):
 def test_evaluate(tmp_path, segment, make_log):
     configuration = ExperimentConfiguration(
         MemoryDataset(), MemorySimulator(), DrivingAdapter(lambda seed: ConstantAVStack()),
-        attacks={"attack": MinimalAttack()},
+        attacks={"attack": MinimalAttack(), "other": MinimalAttack()},
         evaluation=EvaluationConfiguration((DrivingMetrics(), TrajectoryDeviation(), MapMetric())),
         runs=RunsConfiguration(
-            treatments=tuple(TreatmentConfiguration(name, None if name == "clean" else "attack")
-                             for name in ("clean", "attacked", "rain")), output=tmp_path,
+            treatments=(TreatmentConfiguration("clean"), TreatmentConfiguration("attacked", "attack"),
+                        TreatmentConfiguration("rain", "other")), output=tmp_path,
         ),
     )
     runs = []
@@ -36,7 +36,9 @@ def test_evaluate(tmp_path, segment, make_log):
         for seed in (0, 1):
             for name in ("rain", "attacked", "clean"):
                 log = make_log([2., 2.], detections=None)
-                runs.append(TreatmentResult("attack", index, segment, name, seed, log))
+                runs.append(TreatmentResult(
+                    {"clean": None, "attacked": "attack", "rain": "other"}[name],
+                    index, segment, name, seed, log, part="train" if index == 0 else "test"))
     runs[-3] = replace(runs[-3], log=RunLog(status="failed"), error="sensor disconnected")
     selection = SelectionDecision("attack", "scene", "selected")
     result = ExperimentResult(tuple(runs), selections=(selection,), scenario_maps={"scene": ScenarioMap(
@@ -50,11 +52,15 @@ def test_evaluate(tmp_path, segment, make_log):
     assert report.groups[-1]["treatments"]["rain"]["error"] == "sensor disconnected"
     assert report.groups[0]["treatments"]["clean"]["metrics"]["MapMetric.boundaries"] == 1
     assert report.selections == [selection.as_dict()]
+    assert report.groups[0]["treatment_attacks"] == {"clean": None, "attacked": "attack", "rain": "other"}
+    assert [group["part"] for group in report.groups] == ["train", "train", "test", "test"]
     assert (tmp_path / "evaluation/report.json").is_file()
     with (tmp_path / "evaluation/runs.csv").open() as stream:
         rows = list(csv.DictReader(stream))
     assert len(rows) == 12 and rows[-1]["status"] == "failed"
-    assert len(list((tmp_path / "evaluation/plots").glob("*.png"))) == 4
+    assert {p.name for p in (tmp_path / "evaluation/plots").glob("*.png")} == {
+        f"segment-{index:05d}-seed-{seed}.png" for index in (0, 1) for seed in (0, 1)
+    }
 
     default_configuration = replace(
         configuration, runs=replace(configuration.runs, output=None), evaluation=EvaluationConfiguration())

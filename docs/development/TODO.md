@@ -64,8 +64,8 @@ This file lists open work. Items are planned capabilities, not implemented featu
   calibration and command compatibility. Current reuse guarantees cover supported scenarios within the
   same simulator.
 
-## Multiple attacks on shared metadata
+## Shared runs across different user data
 
-- [ ] Compare different attacks within one comparison group when their segments coincide, running
-  treatments without attack_name once. Today each attack forms its own groups, and those treatments
-  repeat for every attack.
+- [ ] Reuse treatments without attack_name across units with the same scenario and decision window
+  but different user_data. Current units include all user_data in their identity and keep these
+  runs separate. Conditional transfer between training and testing is also not implemented.

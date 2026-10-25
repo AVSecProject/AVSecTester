@@ -31,7 +31,7 @@ import warnings
 
 import yaml  # type: ignore[import-untyped]
 
-from avsectester.validation import require_positive_integer
+from avsectester.validation import require_nonnegative_integer, require_positive_integer
 from avsectester.attack import Attack
 from avsectester.closed_loop.avstacks.base import AVStack
 from avsectester.closed_loop.hooks import Hook, HookSet
@@ -72,6 +72,31 @@ class _ConfiguredAttacks(dict[str, Attack]):
         super().__init__(attacks)
         self.specifications = {name: (attack, deepcopy(parameters))
                                for name, (attack, parameters) in specifications.items()}
+
+
+@dataclass(frozen=True)
+class SplitConfiguration:
+    """Random segment-unit partition sizes and independently selectable execution parts."""
+
+    train_segments: int
+    validation_segments: int = 0
+    seed: int = 0
+    execute: tuple[str, ...] = ("test",)
+
+    def __post_init__(self) -> None:
+        require_positive_integer(self.train_segments, "train_segments")
+        require_nonnegative_integer(self.validation_segments, "validation_segments")
+        require_nonnegative_integer(self.seed, "split seed")
+        if not isinstance(self.execute, Sequence) or isinstance(self.execute, (str, bytes)):
+            raise TypeError("split.execute must be a sequence of parts")
+        parts = tuple(self.execute)
+        if any(part not in {"train", "validation", "test"} for part in parts):
+            raise ValueError("split.execute accepts train, validation and test")
+        if len(set(parts)) != len(parts):
+            raise ValueError("split.execute must not contain duplicates")
+        if "validation" in parts and self.validation_segments == 0:
+            raise ValueError("split.execute includes validation but validation_segments is zero")
+        object.__setattr__(self, "execute", parts)
 
 
 @dataclass(frozen=True)
@@ -123,6 +148,7 @@ class ExperimentConfiguration:
     hooks: HookConfiguration = None
     evaluation: EvaluationConfiguration = field(default_factory=EvaluationConfiguration)
     runs: RunsConfiguration = field(default_factory=RunsConfiguration)
+    split: SplitConfiguration | None = None
     # Loader-owned constructor descriptions. Keeping the source object alongside its options
     # prevents dataclasses.replace(attacks=...) from reusing another attack's description.
     _attack_specifications: Mapping[str, tuple[Attack, Mapping[str, Any]]] = field(
@@ -135,6 +161,8 @@ class ExperimentConfiguration:
                                ("evaluation", EvaluationConfiguration)):
             if not isinstance(getattr(self, name), expected):
                 raise TypeError(f"{name} must be {expected.__name__}")
+        if self.split is not None and not isinstance(self.split, SplitConfiguration):
+            raise TypeError("split must be SplitConfiguration or None")
         specifications = self.attacks.specifications if isinstance(self.attacks, _ConfiguredAttacks) else {}
         attacks = dict(self.attacks)
         for name, attack in attacks.items():
@@ -218,7 +246,7 @@ def load_configuration(
         return config
     spec, directory = _mapping(config, Path.cwd(), "Experiment")
     _keys(spec, {
-        "dataset", "simulator", "avstack", "attacks", "hooks", "evaluation", "runs",
+        "dataset", "simulator", "avstack", "attacks", "hooks", "evaluation", "runs", "split",
     }, "experiment")
     for key in ("dataset", "simulator", "avstack"):
         if key not in spec:
@@ -241,10 +269,24 @@ def load_configuration(
         attacks=_ConfiguredAttacks(attacks, attack_specifications),
         hooks=_hooks(spec.get("hooks"), directory),
         evaluation=_evaluation(spec.get("evaluation"), directory),
-        runs=runs,
+        runs=runs, split=_split(spec.get("split")),
     )
     _validate_metric_configuration(configuration)
     return configuration
+
+
+def _split(value: Any) -> SplitConfiguration | None:
+    if value is None or isinstance(value, SplitConfiguration):
+        return value
+    if not isinstance(value, Mapping):
+        raise TypeError("split must be a mapping or SplitConfiguration")
+    _keys(value, {"train_segments", "validation_segments", "seed", "execute"}, "split")
+    if "train_segments" not in value:
+        raise ValueError("split requires train_segments")
+    return SplitConfiguration(
+        value["train_segments"], value.get("validation_segments", 0), value.get("seed", 0),
+        _sequence(value.get("execute", ("test",)), "split.execute"),
+    )
 
 
 def _runs(value: Any, directory: Path) -> RunsConfiguration:

@@ -16,7 +16,7 @@ these ticks hold base actors. A positive origin earlier than the window is rejec
 
 AttackRuntime.setup receives subscribed setup state and returns only WorldAttackAction. Its
 setup_ticks declares its deployment budget. Preparation and execution share the maximum budget over
-the attack's segments, seeds and treatments. Actions register cleanup on the provided ExitStack. The
+all configured attacks, selected segments, seeds and treatments. Actions register cleanup on the provided ExitStack. The
 simulator runtime records actual initial state; it does not compare against replay-error thresholds
 or reselect the origin.
 

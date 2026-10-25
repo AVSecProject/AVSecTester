@@ -52,25 +52,25 @@ class EvaluationReport:
 
     def summarize(self) -> None:
         """Rebuild treatment and pair population statistics from the recorded group rows."""
-        treatments: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
-        pairs: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+        treatments: dict[tuple[str | None, str], list[dict[str, Any]]] = defaultdict(list)
+        pairs: dict[tuple[str | None, str, str], list[dict[str, Any]]] = defaultdict(list)
         for group in self.groups:
             for treatment, row in group["treatments"].items():
-                treatments[group["attack_name"], treatment].append(row)
+                treatments[group["part"], treatment].append(row)
             for pair in group["comparisons"]:
-                pairs[group["attack_name"], pair["treatment_a"], pair["treatment_b"]].append(pair)
+                pairs[group["part"], pair["treatment_a"], pair["treatment_b"]].append(pair)
         self.treatment_summaries = [
-            {"attack_name": attack_name, "treatment": treatment,
+            {"part": part, "treatment": treatment,
              "groups": sum(row["status"] == "completed" for row in rows), "total_groups": len(rows),
              "failed_runs": sum(row["status"] != "completed" for row in rows),
              "metrics": _summarize_rows(rows, "metrics")}
-            for (attack_name, treatment), rows in treatments.items()
+            for (part, treatment), rows in treatments.items()
         ]
         self.pair_summaries = [
-            {"attack_name": attack_name, "treatment_a": first, "treatment_b": second,
+            {"part": part, "treatment_a": first, "treatment_b": second,
              "groups": sum(row["status"] == "completed" for row in rows), "total_groups": len(rows),
              "deltas": _summarize_rows(rows, "deltas"), "metrics": _summarize_rows(rows, "metrics")}
-            for (attack_name, first, second), rows in pairs.items()
+            for (part, first, second), rows in pairs.items()
         ]
 
     def record_error(self, source: str, error: Exception, **context: Any) -> None:
@@ -92,9 +92,9 @@ class EvaluationReport:
     def format_summary(self) -> str:
         """Format treatment tables, mean pairwise-difference matrices and report explanations."""
         lines = []
-        attacks = list(dict.fromkeys(row["attack_name"] for row in self.treatment_summaries))
-        for attack in attacks:
-            rows = [row for row in self.treatment_summaries if row["attack_name"] == attack]
+        parts = list(dict.fromkeys(row["part"] for row in self.treatment_summaries))
+        for part in parts:
+            rows = [row for row in self.treatment_summaries if row["part"] == part]
             fields = [name for name in _SUMMARY_FIELDS if any(name in row["metrics"] for row in rows)]
             kinds = {name: next(row["metrics"][name]["kind"] for row in rows if name in row["metrics"])
                      for name in fields}
@@ -110,11 +110,12 @@ class EvaluationReport:
                     values.append(_format_number(value))
                 table.append([row["treatment"], f"{row['groups']}/{row['total_groups']}",
                               str(row["failed_runs"]), *values])
-            lines.append(f"Attack: {attack}")
+            if part is not None:
+                lines.append(f"Part: {part}")
             lines.extend(_table(table))
             treatments = [row["treatment"] for row in rows]
             for field_name in ("DrivingMetrics.final_speed", "DrivingMetrics.brake_steps"):
-                pairs = [row for row in self.pair_summaries if row["attack_name"] == attack]
+                pairs = [row for row in self.pair_summaries if row["part"] == part]
                 if any(field_name in row["deltas"] for row in pairs):
                     lines.append(f"Mean difference B - A: {field_name} (row A, column B)")
                     matrix = [["A \\ B", *treatments]]
@@ -151,14 +152,15 @@ class EvaluationReport:
                                     for name in row["metrics"]))
         with (destination / "runs.csv").open("w", newline="", encoding="utf-8") as stream:
             writer = csv.DictWriter(stream, fieldnames=[
-                "attack_name", "segment_index", "scenario_id", "seed", "treatment", "status", "error", *fields,
+                "part", "segment_index", "scenario_id", "seed", "treatment", "attack_name", "status", "error", *fields,
             ])
             writer.writeheader()
             for group in self.groups:
                 for name, row in group["treatments"].items():
                     writer.writerow({key: group[key] for key in (
-                        "attack_name", "segment_index", "scenario_id", "seed",
-                    )} | {"treatment": name, "status": row["status"], "error": row["error"] or ""}
+                        "part", "segment_index", "scenario_id", "seed",
+                    )} | {"treatment": name, "attack_name": group["treatment_attacks"].get(name),
+                         "status": row["status"], "error": row["error"] or ""}
                                     | _json_data(row["metrics"]))
         self.path = destination
         return destination

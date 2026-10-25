@@ -11,7 +11,7 @@
 | Entry point | Input | Return |
 |---|---|---|
 | `build_metadata(scenario)` | ScenarioView, user assets and parameters | Sequence of AttackSegment |
-| `run_offline(context)` | ClosedLoopServices and all selected metadata | Artifacts; defaults to None |
+| `run_offline(context)` | ClosedLoopServices, training metadata and optional validation metadata | Artifacts; defaults to None |
 | `create_runtime(segment, artifacts)` | One selected segment and prepared artifacts | Fresh AttackRuntime |
 
 Only `build_metadata` is abstract. The base Attack owns no assets. An attack that needs assets
@@ -20,13 +20,13 @@ assets unchanged. A selection-only attack uses the default None artifacts and em
 Attack configuration holds reusable parameters; mutable online history belongs to its runtime.
 Artifacts are explicit return values, never a second mutable Attack property.
 
-One experiment supports one or more attacks, each with its own metadata. A comparison group is one
-attack's segment and seed: treatments enabling that attack and those without attack_name are
-compared there, with all treatment pairs evaluated. Use one composite Attack to apply several
-actions together in one run.
-
-Comparing different attacks within one group when their segments coincide remains
-[TODO](../development/TODO.md#multiple-attacks-on-shared-metadata).
+One experiment supports one or more attacks, each selecting its own metadata. Identical complete
+segments form one unit, including scenario, start, stop and user_data. A comparison group is one
+unit and seed: it contains each treatment without attack_name once and treatments for every attack
+that selected that unit. All treatment pairs are evaluated, including pairs from different attacks.
+Use one composite Attack to apply several actions together in one run. Different user_data creates
+a different unit even for the same window; sharing un-attacked runs across these units remains
+[planned](../development/TODO.md#shared-runs-across-different-user-data).
 
 ## Write your first attack
 
@@ -157,8 +157,11 @@ recorded support fail rather than padding or silently shortening the run.
 
 ## Offline preparation
 
-`run_offline(OfflineContext)` receives all selected metadata and the same closed-loop service
-boundary used by selection. The user defines optimization and objectives. A candidate rollout
+`run_offline(OfflineContext)` receives training segments in metadata and validation segments in
+validation_metadata when split is configured. Both retain the attack's selection order. Without
+split, metadata contains all selected segments and validation_metadata is empty. The context uses
+the same closed-loop service boundary as selection and the experiment-wide deployment budget.
+The attack chooses whether to use validation_metadata. The user defines optimization and objectives. A candidate rollout
 declares every request field, for example:
 
 ```python
