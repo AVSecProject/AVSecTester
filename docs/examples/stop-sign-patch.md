@@ -61,15 +61,30 @@ covers the legend. Masks are 512 by 512, like the face, and must lie inside its 
 default rp2_bars mask covers bars above and below STOP; face_interior is an alternative packaged
 mask.
 
-The panel width is the map sign width times width_scale, which defaults to 1.1 so the replica
-also covers the reconstructed sign's edges; its height follows the face aspect ratio. Its face
-center is aligned with the map sign face center and moved 10 cm toward approaching vehicles along
-the sign's positive X normal, in front of the reconstructed face. Map pose and size errors can
-leave a thin edge of the original sign visible; the same placement rule is used in all scenes. A
-height mismatch produces a warning rather than a scene-specific correction. All ten supplied
-attack options use ExposureHarmonizer(reference="under"), written once as a YAML anchor. It
-compares the original reconstructed sign's luminance under the replica's visible pixels with the
-unpatched replica's, because the replica panel's nominal_texture is the canonical face. The
+The default face_orientation="upright" projects the annotated positive X face normal onto the
+horizontal plane and normalizes it. The replica's up axis is world positive Z, and its left axis
+is cross(up, normal), giving a right-handed orientation. A nearly vertical annotated normal is
+rejected because its horizontal direction is undefined. face_orientation="map" instead keeps
+the annotated rotation, including its tilt.
+
+The default face_size="mutcd_standard" selects the MUTCD R1-1 face width nearest the annotated
+sign height from 0.762, 0.914 and 1.219 m (30, 36 and 48 inches). face_size="map_width" instead
+uses the annotated width. The selected width is multiplied by width_scale, which defaults to
+1.1; panel height follows the texture aspect ratio. A height mismatch warning is emitted only
+with map_width, because mutcd_standard deliberately chooses a standard size.
+
+The face center starts at the annotated center and moves offset_m along the selected
+orientation's positive X normal; offset_m defaults to 0.10 m. The object's bottom-center origin
+is then half the panel height below that face center along its positive Z axis. Online deployment
+and both optimization paths share replica_placement. The attack keeps the annotated center and
+yaw without scene-specific correction. Annotation position and yaw errors can leave the original
+sign visible around the replica's edges at close range; this is a data limitation. Occlusion is
+handled by the simulator's occlusion_tolerance_m rather than by adjusting attack placement.
+
+All ten supplied attack options use ExposureHarmonizer(reference="under"), written once as a
+YAML anchor. It compares the original reconstructed sign's luminance under the replica's visible
+pixels with the unpatched replica's, because the replica panel's nominal_texture is the canonical
+face. The
 resulting gain describes scene lighting only: every patch, including an optimized one, receives
 the gain of the unpatched control, and a patch cannot brighten or darken the rest of the sign. The
 same harmonizer instance is passed to InsertObject for online deployment and white-box sampling.

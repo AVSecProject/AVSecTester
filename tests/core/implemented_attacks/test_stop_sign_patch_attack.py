@@ -106,15 +106,55 @@ def test_create_runtime(approach_view):
     action = actions[0]
     assert action.harmonizer is harmonizer
     assert action.object_id == "stop_sign_replica" and action.asset.category == "stop_sign"
-    assert action.asset.extent[1] == pytest.approx(.8)
+    assert action.asset.extent[1] == pytest.approx(.762)
     assert StopSignPatchAttack().create_runtime(segment, candidate).setup(
-        OnlineContext(0, "setup", 0., segment.start.position))[0].asset.extent[1] == pytest.approx(.88)
+        OnlineContext(0, "setup", 0., segment.start.position))[0].asset.extent[1] == pytest.approx(.762 * 1.1)
+    mapped = StopSignPatchAttack(face_size="map_width", width_scale=1.)
+    mapped_action, = mapped.create_runtime(segment, candidate).setup(
+        OnlineContext(0, "setup", 0., segment.start.position))
+    assert mapped_action.asset.extent[1] == pytest.approx(.8)
     np.testing.assert_array_equal(action.asset.surfaces[0].texture, candidate)
     np.testing.assert_array_equal(action.asset.surfaces[0].nominal_texture, replica_face())
     control = control_from_user_data(segment.user_data)
     face_center = action.asset.surfaces[0].corners.mean(axis=0)
     np.testing.assert_allclose((action.world_from_object @ np.r_[face_center, 1.])[:3],
                                control.pose[:3, 3] + .10 * control.pose[:3, 0])
+    # A pitched annotation has a tilted up axis and a nonhorizontal face normal.
+    yaw, pitch = .5, .2
+    normal = np.array([np.cos(yaw) * np.cos(pitch), np.sin(yaw) * np.cos(pitch), -np.sin(pitch)])
+    side = np.array([-np.sin(yaw), np.cos(yaw), 0.])
+    tilted_pose = control.pose.copy()
+    tilted_pose[:3, :3] = np.column_stack((normal, side, np.cross(normal, side)))
+    tilted_segment = replace(segment, user_data={**segment.user_data, "sign_pose": tilted_pose})
+    upright_action, = attack.create_runtime(tilted_segment, candidate).setup(
+        OnlineContext(0, "setup", 0., segment.start.position))
+    expected_normal = np.array([np.cos(yaw), np.sin(yaw), 0.])
+    np.testing.assert_allclose(upright_action.world_from_object[:3, 2], [0., 0., 1.])
+    np.testing.assert_allclose(upright_action.world_from_object[:3, 0], expected_normal)
+    np.testing.assert_allclose(upright_action.world_from_object[:3, 1],
+                               np.cross([0., 0., 1.], expected_normal))
+    np.testing.assert_allclose(
+        (upright_action.world_from_object @ np.r_[face_center, 1.])[:3],
+        control.pose[:3, 3] + attack.offset_m * expected_normal,
+    )
+    map_attack = StopSignPatchAttack(face_orientation="map", width_scale=attack.width_scale)
+    map_action, = map_attack.create_runtime(tilted_segment, candidate).setup(
+        OnlineContext(0, "setup", 0., segment.start.position))
+    np.testing.assert_allclose(map_action.world_from_object[:3, :3], tilted_pose[:3, :3])
+    np.testing.assert_allclose(
+        (map_action.world_from_object @ np.r_[face_center, 1.])[:3],
+        control.pose[:3, 3] + map_attack.offset_m * normal,
+    )
+    with pytest.raises(ValueError, match="upright or map"):
+        StopSignPatchAttack(face_orientation="tilted")
+    with pytest.raises(ValueError, match="mutcd_standard or map_width"):
+        StopSignPatchAttack(face_size="arbitrary")
+    vertical_pose = tilted_pose.copy()
+    vertical_pose[:3, :3] = np.array([[0., 0., 1.], [0., 1., 0.], [-1., 0., 0.]])
+    with pytest.raises(ValueError, match="horizontal normal"):
+        attack.replica_placement(
+            replace(segment, user_data={**segment.user_data, "sign_pose": vertical_pose}), candidate,
+        )
     unpatched = StopSignPatchAttack(initial_patch="none")
     np.testing.assert_array_equal(unpatched.run_offline(OfflineContext(scenario.services, (segment,))),
                                   replica_face())

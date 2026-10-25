@@ -20,6 +20,7 @@ from avsectester.validation import (
 
 DEFAULT_MASK_PATH = Path(__file__).with_name("masks") / "rp2_bars.png"
 INITIAL_PATCHES = ("none", "white", "black", "gaussian_noise")
+MUTCD_STOP_SIGN_SIZES_M = (0.762, 0.914, 1.219)
 
 
 def replica_face() -> np.ndarray:
@@ -93,20 +94,33 @@ def _check_control(control: TrafficControl) -> None:
     require_positive_number(control.extent[2], "sign height")
 
 
-def replica_asset(control: TrafficControl, texture: np.ndarray, width_scale: float) -> ObjectAsset:
-    """Build a post-free face panel from the scaled map width and the texture aspect ratio.
+def replica_asset(
+    control: TrafficControl, texture: np.ndarray, width_scale: float, face_size: str,
+) -> ObjectAsset:
+    """Build a post-free face panel with a selected width and the texture aspect ratio.
+
+    ``mutcd_standard`` selects the MUTCD R1-1 size closest to the mapped sign height;
+    ``map_width`` keeps the mapped width. Both multiply that width by ``width_scale``.
 
     The canonical face is the panel's nominal texture, so a harmonizer estimates scene
     lighting from the unpatched replica and applies it unchanged to every patch.
     """
     _check_control(control)
     require_positive_number(width_scale, "width_scale")
-    width_m = control.extent[1] * width_scale
+    if face_size == "mutcd_standard":
+        face_width = min(MUTCD_STOP_SIGN_SIZES_M, key=lambda size: abs(size - control.extent[2]))
+    elif face_size == "map_width":
+        face_width = control.extent[1]
+    else:
+        raise ValueError("face_size must be mutcd_standard or map_width")
+    width_m = face_width * width_scale
     asset = ObjectAsset.from_panel(
         texture, category="stop_sign", width_m=width_m,
         mount_height_m=0., post_count=0, nominal_texture=replica_face(),
     )
-    if not np.isclose(asset.extent[2], control.extent[2], rtol=1e-6, atol=1e-6):
+    if face_size == "map_width" and not np.isclose(
+        asset.extent[2], control.extent[2], rtol=1e-6, atol=1e-6,
+    ):
         warnings.warn(
             f"Stop sign {control.id}: map height {control.extent[2]:.6g} m differs from "
             f"texture-derived panel height {asset.extent[2]:.6g} m; "
@@ -119,16 +133,29 @@ def replica_asset(control: TrafficControl, texture: np.ndarray, width_scale: flo
 
 def replica_pose(
     control: TrafficControl, offset_m: float = .10, *, panel_height_m: float,
+    face_orientation: str,
 ) -> np.ndarray:
-    """Place the panel centre along the mapped face's +X-facing normal.
+    """Place a panel in front of the mapped face centre using the selected orientation.
 
-    The returned pose has the bottom-centred origin used by ObjectAsset. Subtract
-    half the actual panel height along local +Z, including tilted signs.
+    ``upright`` projects the mapped +X normal onto the horizontal plane and uses world
+    +Z as its up axis; ``map`` preserves the mapped rotation. Offset the face centre along
+    the selected +X, then lower the ObjectAsset origin by half the panel height along
+    the selected +Z. The mapped face centre itself is never corrected.
     """
     _check_control(control)
     require_nonnegative_number(offset_m, "offset_m")
     require_positive_number(panel_height_m, "panel_height_m")
     pose = np.array(control.pose, copy=True)
+    if face_orientation == "upright":
+        normal = np.array([pose[0, 0], pose[1, 0], 0.])
+        horizontal_norm = np.linalg.norm(normal)
+        if horizontal_norm < 1e-6:
+            raise ValueError("upright face_orientation requires a horizontal normal of at least 1e-6")
+        normal /= horizontal_norm
+        up = np.array([0., 0., 1.])
+        pose[:3, :3] = np.column_stack((normal, np.cross(up, normal), up))
+    elif face_orientation != "map":
+        raise ValueError("face_orientation must be upright or map")
     rotation = pose[:3, :3]
     pose[:3, 3] += offset_m * rotation[:, 0] - panel_height_m / 2 * rotation[:, 2]
     return pose

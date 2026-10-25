@@ -1326,7 +1326,7 @@ addresses pixel centres at i + 0.5. Unsupported external distortion types raise 
 | Public name | Signature or fields |
 |---|---|
 | `StopSignPatchAttack` | Class; see methods below |
-| `StopSignPatchAttack.__init__` | `__init__(initial_patch='white', optimization=None, mask_path=DEFAULT_MASK_PATH, noise_std=0.25, noise_seed=0, approach_m=50.0, hold_steps=20, offset_m=0.10, width_scale=1.1, harmonizer: Harmonizer \| None = None)` |
+| `StopSignPatchAttack.__init__` | `__init__(initial_patch='white', optimization=None, mask_path=DEFAULT_MASK_PATH, noise_std=0.25, noise_seed=0, approach_m=50.0, hold_steps=20, offset_m=0.10, width_scale=1.1, harmonizer: Harmonizer \| None = None, face_orientation='upright', face_size='mutcd_standard')` |
 | `StopSignPatchAttack.build_metadata` | `build_metadata(scenario)` |
 | `StopSignPatchAttack.run_offline` | `run_offline(context)` |
 | `StopSignPatchAttack.replica_placement` | `replica_placement(segment, texture) -> tuple[ObjectAsset, np.ndarray]` |
@@ -1341,6 +1341,30 @@ stop_sign_replica object at setup. Its configured harmonizer is passed to the sa
 in deployment and white-box sampling; differentiable composition includes that harmonizer. The
 replica panel's nominal_texture is the canonical face, so exposure is measured on the unpatched
 replica.
+
+replica_placement(segment, texture) is shared by online deployment and both optimization paths.
+It applies face_orientation and face_size to the selected map control. face_orientation="upright"
+(the default) normalizes the annotated normal's horizontal projection, uses world positive Z as
+up and cross(up, normal) as the left axis. A horizontal normal magnitude below 1e-6 raises
+ValueError. face_orientation="map" preserves the annotated rotation. face_size="mutcd_standard"
+(the default) selects the standard width nearest the annotated height; face_size="map_width"
+uses the annotated width. width_scale multiplies either choice. Unsupported option values raise
+ValueError. Neither mode corrects the annotated center or yaw.
+
+### avsectester.implemented_attacks.stop_sign_patch_attack.assets
+
+| Public name | Signature or fields |
+|---|---|
+| `MUTCD_STOP_SIGN_SIZES_M` | `(0.762, 0.914, 1.219)` metres: 30, 36 and 48 inch R1-1 faces |
+| `replica_asset` | `replica_asset(control, texture, width_scale, face_size) -> ObjectAsset` |
+| `replica_pose` | `replica_pose(control, offset_m, *, panel_height_m, face_orientation) -> np.ndarray` |
+
+replica_asset chooses the width by face_size, multiplies it by width_scale, and derives panel
+height from the texture aspect ratio. Only map_width warns about a mismatch with the annotated
+height. replica_pose constructs the selected orientation at the annotated face center, moves
+along its positive X axis by offset_m, then moves down its positive Z axis by half panel_height_m
+to obtain the bottom-center object pose. Thus the deployed face center is the annotated center
+plus offset_m times that mode's normal. panel_height_m is required.
 
 ### avsectester.implemented_attacks.stop_sign_patch_attack.offline
 

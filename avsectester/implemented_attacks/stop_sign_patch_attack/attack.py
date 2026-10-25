@@ -26,8 +26,9 @@ class StopSignPatchAttack(Attack):
     """Cover a recorded stop sign with a replica face whose masked pixels form a patch.
 
     One approach is selected per scenario. The replica is the canonical MUTCD face, scaled
-    from the mapped sign width and placed in front of the reconstructed face, so it hides the
-    original sign; the patch lies in face-texture coordinates and never moves the legend.
+    by the MUTCD size closest to the mapped height and placed upright in front of the mapped
+    face centre. Optional map orientation and width modes preserve the annotation geometry.
+    The patch lies in face-texture coordinates and never moves the legend.
     ``initial_patch="none"`` deploys the unpatched replica as a control. Optional detector PGD
     or rollout NES optimizes the masked pixels of the initial patch offline.
     """
@@ -38,6 +39,7 @@ class StopSignPatchAttack(Attack):
         mask_path: str | Path = DEFAULT_MASK_PATH, noise_std: float = .25, noise_seed: int = 0,
         approach_m: float = 50., hold_steps: int = 20, offset_m: float = .10,
         width_scale: float = 1.1, harmonizer: Harmonizer | None = None,
+        face_orientation: str = "upright", face_size: str = "mutcd_standard",
     ) -> None:
         if initial_patch not in INITIAL_PATCHES:
             raise ValueError("initial_patch must be none, white, black or gaussian_noise")
@@ -47,6 +49,10 @@ class StopSignPatchAttack(Attack):
             optimization, (DetectorPatchOptimization, RolloutPatchOptimization),
         ):
             raise TypeError("optimization must be DetectorPatchOptimization or RolloutPatchOptimization")
+        if face_orientation not in ("upright", "map"):
+            raise ValueError("face_orientation must be upright or map")
+        if face_size not in ("mutcd_standard", "map_width"):
+            raise ValueError("face_size must be mutcd_standard or map_width")
         require_nonnegative_number(noise_std, "noise_std")
         require_nonnegative_integer(noise_seed, "noise_seed")
         require_positive_number(approach_m, "approach_m")
@@ -63,6 +69,8 @@ class StopSignPatchAttack(Attack):
         self.offset_m = offset_m
         self.width_scale = width_scale
         self.harmonizer = harmonizer
+        self.face_orientation = face_orientation
+        self.face_size = face_size
         self.mask = read_patch_mask(mask_path)
         self.mask.setflags(write=False)
 
@@ -76,10 +84,15 @@ class StopSignPatchAttack(Attack):
     def replica_placement(
         self, segment: AttackSegment, texture: np.ndarray,
     ) -> tuple[ObjectAsset, np.ndarray]:
-        """Use the same panel size and face-centre placement offline and online."""
+        """Share the selected MUTCD/map width and upright/map orientation across all phases.
+
+        Preserve the mapped face centre and offset along the selected normal; no positional
+        or yaw correction is applied to individual scenarios.
+        """
         control = control_from_user_data(segment.user_data)
-        asset = replica_asset(control, texture, self.width_scale)
-        pose = replica_pose(control, self.offset_m, panel_height_m=asset.extent[2])
+        asset = replica_asset(control, texture, self.width_scale, self.face_size)
+        pose = replica_pose(control, self.offset_m, panel_height_m=asset.extent[2],
+                            face_orientation=self.face_orientation)
         return asset, pose
 
     def replica_texture(self, artifacts: object) -> np.ndarray:
