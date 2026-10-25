@@ -22,7 +22,7 @@ from avsectester.execution.runner import ClosedLoopRunner, RunRequest
 from avsectester.execution.services import (
     ClosedLoopServices, create_avstack, create_simulator_runtime, ensure_fresh, stop_unstarted_attacks,
 )
-from avsectester.closed_loop.simulators.base import DeploymentPlan
+from avsectester.closed_loop.simulators.base import DeploymentPlan, UnsupportedStartError
 from avsectester.runlog import Recorder, RunLog
 from avsectester.maps import ScenarioMap
 
@@ -81,12 +81,18 @@ def _segments(attack_name: str, attack: Any, view: Any,
                             view.services.frame_data_cache, deployment=deployment) as services:
         with services.session(view.seed) as session:
             for segment in selected:
-                if session.can_start_at(segment.start.position):
-                    accepted.append(segment)
-                else:
+                if not session.can_start_at(segment.start.position):
                     view.record_reason(
                         f"Segment at position {segment.start.position} cannot start: "
                         "insufficient recorded history or deployment window")
+                    continue
+                start = config.dataset.scenario_start(segment.scenario_id, segment.start)
+                try:
+                    config.simulator.validate_start(start)
+                except UnsupportedStartError as error:
+                    view.record_reason(f"Segment at position {segment.start.position} cannot start: {error}")
+                    continue
+                accepted.append(segment)
     return tuple(accepted)
 
 

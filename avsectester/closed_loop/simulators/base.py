@@ -200,6 +200,15 @@ class FrameDataSequence:
         return deepcopy(self.frames[frame.position])
 
 
+class UnsupportedStartError(ValueError):
+    """A correctly configured simulator cannot start at this particular scenario start.
+
+    ``Simulator.validate_start`` raises it for problems of the recorded data, for example a
+    recording whose navigation route cannot be built. Experiment selection skips such segments
+    and records the reason; other ``validate_start`` errors indicate a configuration problem.
+    """
+
+
 class Simulator(ABC):
     """A configured simulator: settings and declarations, without world state.
 
@@ -261,7 +270,11 @@ class Simulator(ABC):
                              f"{sorted(unsupported)}. Use explicitly configured sensors transforms instead")
 
     def validate_start(self, start: ScenarioStart | None) -> None:
-        """Reject a scenario start this simulator cannot reset to, before any world exists."""
+        """Reject a scenario start this simulator cannot reset to, before any world exists.
+
+        Raise ``UnsupportedStartError`` when the configuration is valid but this start's data
+        cannot be used, so experiment selection can skip it.
+        """
         if start is None:
             return
         if not isinstance(start, ScenarioStart):

@@ -434,5 +434,7 @@ API](../reference/python-api.md#attack-api).
 A selected start must satisfy `session.can_start_at(position)`: the shared deployment window
 must fit and the position must provide the driving adapter's declared past_steps. Built-in
 metabuilders exclude earlier positions before splitting windows. Preparation also drops invalid
-custom-builder segments and records why they cannot start. Past observations initialize the
+custom-builder segments and records why they cannot start. It drops segments whose start the
+simulator rejects with UnsupportedStartError as well, for example a NuRec recording whose map
+navigation route cannot be built, so they reach neither offline optimization nor execution. Past observations initialize the
 driving system from the recording; attack actions do not modify them.

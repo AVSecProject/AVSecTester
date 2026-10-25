@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import dataclasses
+import hashlib
 import math
 from copy import deepcopy
 from dataclasses import asdict
@@ -12,8 +13,11 @@ import zipfile
 from collections import Counter
 
 from avsectester.closed_loop.simulators.ego_dynamics import EgoDynamics, PlanarEgoState, KinematicBicycle
-from avsectester.closed_loop.simulators.base import SensorGeometry, SensorView, Simulator, SimulatorRuntime
+from avsectester.closed_loop.simulators.base import (
+    SensorGeometry, SensorView, Simulator, SimulatorRuntime, UnsupportedStartError,
+)
 from avsectester.closed_loop.simulators.navigation import RouteGenerator
+from avsectester.maps import ScenarioMap
 from avsectester.geometry.cameras import BODY_FROM_OPTICAL
 from avsectester.geometry.poses import validated_transform, validated_vector
 from avsectester.validation import require_nonnegative_number
@@ -27,8 +31,15 @@ if TYPE_CHECKING:
 
     from avsectester.closed_loop.hooks import CameraPoseRequest
     from avsectester.geometry.cameras import Camera
+    from avsectester.datasets.base import ScenarioStart
     from avsectester.rendering import CompositePlan, PlacedObject
     import numpy as np
+
+
+def _route_generator(kind: str, start: ScenarioStart | None) -> RouteGenerator:
+    """The navigation route of a run from ``start``, built from its complete recording and map."""
+    return RouteGenerator(kind, () if start is None else [state.pose[:3, 3] for state in start.recorded_ego],
+                          None if start is None else start.scenario_map)
 
 
 class NuRecSimulator(Simulator):
@@ -48,6 +59,8 @@ class NuRecSimulator(Simulator):
     object only when it lies more than about this distance in front of it. Reconstructed
     Gaussians extend some centimetres in front of their surfaces, so an object placed on or just
     in front of a reconstructed surface needs this margin to stay visible.
+    ``validate_start`` raises ``UnsupportedStartError`` when the configured navigation route
+    cannot be built from the start's recording and map; each recording is checked once.
     """
 
     dataset_kinds = ("NuRecDataset",)
@@ -98,6 +111,28 @@ class NuRecSimulator(Simulator):
         self.dt = float(self.config.get("dt", 0.05))
         if not math.isfinite(self.dt) or self.dt <= 0:
             raise ValueError("NuRec decision time step must be positive and finite")
+        self._route_failures: dict[tuple[str, str, str, bool], str | None] = {}
+
+    def validate_start(self, start: ScenarioStart | None) -> None:
+        import numpy as np
+
+        super().validate_start(start)
+        if start is None or self.route_generator == "none":
+            return
+        # The route depends only on the complete recording and the map, not on the start frame.
+        # Within one configured simulator a scenario's recording and map are fixed.
+        positions = np.asarray([state.pose[:3, 3] for state in start.recorded_ego], dtype=float)
+        key = (start.scenario_id, self.route_generator, hashlib.sha256(positions.tobytes()).hexdigest(),
+               isinstance(start.scenario_map, ScenarioMap))
+        if key not in self._route_failures:
+            try:
+                _route_generator(self.route_generator, start)
+                self._route_failures[key] = None
+            except ValueError as error:
+                self._route_failures[key] = str(error)
+        failure = self._route_failures[key]
+        if failure is not None:
+            raise UnsupportedStartError(f"Navigation route cannot be built: {failure}")
 
     def create_runtime(self, seed: int | None = None) -> NuRecSimulatorRuntime:
         """A new live world; NuRec rendering and ego dynamics are deterministic, so ``seed`` is unused."""
@@ -321,11 +356,7 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
                 "terminal_timestamp": start.payload["terminal_timestamp"], "pre_roll_steps": 0,
             }
         reset_origin = getattr(self.renderer, "reset_origin", None)
-        self._route = RouteGenerator(
-            self.simulator.route_generator,
-            () if start is None else [state.pose[:3, 3] for state in start.recorded_ego],
-            None if start is None else start.scenario_map,
-        )
+        self._route = _route_generator(self.simulator.route_generator, start)
         if self.simulator.physics_update_mode == "ego_only":
             if start is None:
                 raise ValueError("NuRec ground contact requires a ScenarioStart; "

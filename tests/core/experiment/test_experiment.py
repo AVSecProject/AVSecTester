@@ -7,6 +7,7 @@ import pytest
 
 from avsectester.attack import AttackSegment
 from avsectester.closed_loop.avstacks.driving_adapter import DrivingAdapter
+from avsectester.closed_loop.simulators import UnsupportedStartError
 from avsectester.experiment import (
     ConfigurationMismatchError, Experiment, ExperimentConfiguration, ExperimentResult, PreparedExperiment,
     RunsConfiguration, SplitConfiguration, TreatmentConfiguration, evaluate,
@@ -50,6 +51,19 @@ def test_prepare():
     assert "insufficient recorded history" in filtered.selections[0].reasons[0]
     with pytest.raises(RuntimeError, match="selection failed"):
         Experiment.prepare(replace(config, runs=replace(config.runs, strict=True)))
+
+    # Starts the simulator cannot use are skipped with the simulator's reason.
+    class UnusableLastScenario(MemorySimulator):
+        def validate_start(self, start):
+            super().validate_start(start)
+            if start.scenario_id == "last":
+                raise UnsupportedStartError("synthetic route failure")
+
+    skipped = Experiment.prepare(replace(config, simulator=UnusableLastScenario()))
+    assert {segment.scenario_id for segment in skipped.metadata["probe"]} == {"first"}
+    last = next(decision for decision in skipped.selections if decision.scenario_id == "last")
+    assert last.status == "not_selected"
+    assert any("cannot start: synthetic route failure" in reason for reason in last.reasons)
 
 
 def test_execute(tmp_path):

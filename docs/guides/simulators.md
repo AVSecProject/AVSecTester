@@ -223,6 +223,13 @@ repeat their last point. This navigation intent does not constrain the driving c
 Map mode requires a map with driving lanes at reset. Select `route_generator="recorded"` to use
 the recording without extension, or `route_generator="none"` to provide no route.
 
+As in AlpaSim, a route that folds back by more than 150 degrees is rejected. The lane matcher can
+switch for a single frame to a lane that is not connected to the previous one, for example where
+the recording drifts toward another lane, and such a recording has no valid route at any start.
+NuRecSimulator.validate_start builds the route once per recording and raises
+UnsupportedStartError for these starts; experiment preparation skips their segments and records
+the reason.
+
 ### Ground contact
 
 The runtime owns the physical three-dimensional ego pose, starting from the recording.

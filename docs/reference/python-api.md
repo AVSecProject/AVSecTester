@@ -266,7 +266,9 @@ include dataset_kinds, decision_time_step, command_modes, supported_stages,
 supported_world_settings, can_render, can_insert_objects, can_replay, can_observe_past,
 capture_ticks and identity.
 validate_world_settings checks supported names and values without native startup; validate_start checks
-dataset/time-step compatibility.
+dataset/time-step compatibility and raises UnsupportedStartError, a ValueError, when the configuration
+is valid but a particular start's data cannot be used. Experiment preparation skips such segments and
+records the reason.
 
 SensorGeometry contains sensor, typed camera and cam_from_world. camera_sensors declares eligible
 cameras. The base sensor_geometry derives it from _sensor_view; an optional lightweight override
@@ -791,6 +793,7 @@ dataset, simulator or model dependencies.
 | `FrameDataSequence` | `frames: tuple[FrameData, ...]`<br>`resolved_scenario: Mapping[str, Any]`<br>`provenance: Mapping[str, Any]` |
 | `FrameDataSequence.at` | `at(frame: FrameReference) -> FrameData` |
 | `DeploymentPlan` | `ticks: int = 0` |
+| `UnsupportedStartError` | `UnsupportedStartError(ValueError)`; raised by validate_start when a valid configuration cannot start at a particular scenario start; preparation skips the segment |
 | `can_deploy_at` | `can_deploy_at(position: int, deployment: DeploymentPlan, capture_ticks: int) -> bool` |
 | `ClockSnapshot` | `t: float`<br>`frame: int` |
 | `SensorGeometry` | `sensor: str`<br>`camera: Camera`<br>`cam_from_world: np.ndarray` |
@@ -1096,6 +1099,7 @@ dataset, simulator or model dependencies.
 | `NuRecSimulator.command_modes` | `command_modes: frozenset[str] \| None` |
 | `NuRecSimulator.decision_time_step` | `decision_time_step: Any` |
 | `NuRecSimulator.identity` | `identity: Any` |
+| `NuRecSimulator.validate_start` | `validate_start(start: ScenarioStart \| None) -> None`; also raises UnsupportedStartError when the configured navigation route cannot be built from the start's recording and map, checked once per recording |
 | `NuRecSimulatorRuntime` | Class; see methods below |
 | `NuRecSimulatorRuntime.__init__` | `__init__(simulator: NuRecSimulator) -> None` |
 | `NuRecSimulatorRuntime.native` | `native: dict[str, Any]` |

@@ -340,6 +340,23 @@ def test_route(nurec_dataset, monkeypatch):
             runtime.reset(missing)
 
 
+def test_validate_start(nurec_dataset):
+    from avsectester.closed_loop.simulators import UnsupportedStartError
+
+    start = nurec_dataset.scenario_start("scene", nurec_dataset.frames("scene")[0])
+    # A recording that turns back on itself has no valid navigation route.
+    last = start.recorded_ego[-1]
+    reversed_pose = last.pose.copy()
+    reversed_pose[0, 3] -= 1.
+    folded = replace(start, recorded_ego=(*start.recorded_ego, replace(last, pose=reversed_pose)))
+    for kind in ("map", "recorded"):
+        simulator = NuRecSimulator({"dt": .1}, NuRecRenderer(cameras=["front"]), route_generator=kind)
+        simulator.validate_start(start)
+        with pytest.raises(UnsupportedStartError, match="folds back"):
+            simulator.validate_start(folded)
+    NuRecSimulator({"dt": .1}, NuRecRenderer(cameras=["front"]), route_generator="none").validate_start(folded)
+
+
 @pytest.mark.parametrize("mode,height", [("ego_only", .05), ("none", .3)])
 def test_ground_contact(mode, height, nurec_dataset, monkeypatch):
     from avsectester.execution.runner import ClosedLoopRunner, RunRequest
