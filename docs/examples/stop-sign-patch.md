@@ -50,9 +50,12 @@ python -m avsectester.cli run CONFIG (or evaluate CONFIG).
 The metabuilder uses the semantic stop sign and its associated stop-sign stop line, the recorded
 route, ego position, heading and speed. It selects at most one segment per scene. The approach
 must come from the entering side, face the sign, pass within 3 m of the stop line, and contain a
-recorded speed below 0.5 m/s within 15 m before it. The default approach distance is 50 m and the
-segment includes 20 hold decisions. Selection also leaves the 15 real past observations required
-by the driving adapter available at the start. Scene versions are distinguished by configurations.
+recorded speed below 0.5 m/s within 15 m before it. The segment starts at the earliest frame
+within approach_m (default 50 m) of the line that leaves the 15 real past observations required
+by the driving adapter, and includes 20 hold decisions. If that start is closer to the line than
+min_approach_m (default 20 m), the approach is rejected: a recording that begins near the line
+gives the replica no distance in which to be seen. Scene versions are distinguished by
+configurations.
 
 The runtime inserts one stop_sign_replica object: the canonical MUTCD R1-1 face
 (avsectester.rendering.STOP_SIGN_FACE) without a post, covering the reconstructed sign. The patch

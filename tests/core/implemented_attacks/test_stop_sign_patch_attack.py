@@ -59,8 +59,17 @@ def test_build_metadata(approach_view):
     assert not attack.build_metadata(approach_view(facing=False))
     assert not attack.build_metadata(approach_view(stopped=False))
     assert not attack.build_metadata(approach_view(linked_sign=False, sign_x=75.))
-    short, = StopSignPatchAttack(approach_m=3., hold_steps=1).build_metadata(scenario)
+    short, = StopSignPatchAttack(approach_m=3., min_approach_m=0., hold_steps=1).build_metadata(scenario)
     assert (short.start.position, short.stop.position) == (57, 59)
+    # History pushes this start to 10 m before the line, closer than the default 20 m minimum.
+    late = approach_view(past_steps=50)
+    assert not attack.build_metadata(late)
+    assert any(reason.startswith("Approach starts closer to the line than min_approach_m")
+               for reason in late.reasons)
+    near, = StopSignPatchAttack(min_approach_m=5.).build_metadata(late)
+    assert near.start.position == 50
+    with pytest.raises(ValueError, match="must not exceed approach_m"):
+        StopSignPatchAttack(approach_m=10.)
 
 
 def test_initial_patch_texture():

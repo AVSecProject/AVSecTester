@@ -1326,7 +1326,7 @@ addresses pixel centres at i + 0.5. Unsupported external distortion types raise 
 | Public name | Signature or fields |
 |---|---|
 | `StopSignPatchAttack` | Class; see methods below |
-| `StopSignPatchAttack.__init__` | `__init__(initial_patch='white', optimization=None, mask_path=DEFAULT_MASK_PATH, noise_std=0.25, noise_seed=0, approach_m=50.0, hold_steps=20, offset_m=0.10, width_scale=1.1, harmonizer: Harmonizer \| None = None, face_orientation='upright', face_size='mutcd_standard')` |
+| `StopSignPatchAttack.__init__` | `__init__(initial_patch='white', optimization=None, mask_path=DEFAULT_MASK_PATH, noise_std=0.25, noise_seed=0, approach_m=50.0, hold_steps=20, offset_m=0.10, width_scale=1.1, harmonizer: Harmonizer \| None = None, face_orientation='upright', face_size='mutcd_standard', min_approach_m=20.0)` |
 | `StopSignPatchAttack.build_metadata` | `build_metadata(scenario)` |
 | `StopSignPatchAttack.run_offline` | `run_offline(context)` |
 | `StopSignPatchAttack.replica_placement` | `replica_placement(segment, texture) -> tuple[ObjectAsset, np.ndarray]` |

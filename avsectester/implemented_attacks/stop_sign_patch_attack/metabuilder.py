@@ -12,7 +12,9 @@ from avsectester.data_types import Unavailable
 from avsectester.datasets import FrameReference
 from avsectester.execution.services import ScenarioView
 from avsectester.maps import TrafficControl
-from avsectester.validation import require_nonnegative_integer, require_positive_number
+from avsectester.validation import (
+    require_nonnegative_integer, require_nonnegative_number, require_positive_number,
+)
 
 
 def route_progress(points: np.ndarray, route_points: np.ndarray) -> np.ndarray:
@@ -146,14 +148,20 @@ def _crossing_distances(route: np.ndarray, line: np.ndarray) -> list[float]:
 
 def select_stop_approach(
     scenario: ScenarioView, approach_m: float = 50., hold_steps: int = 20,
+    min_approach_m: float = 0.,
 ) -> StopApproach | None:
     """Find one recorded stop on the driven route, checking history through the session.
 
     Only stop_sign stop lines are eligible. Traffic-light, yield-sign and unknown
-    stop lines are excluded.
+    stop lines are excluded. The segment starts at the earliest frame within ``approach_m``
+    of the line that has the required history; an approach whose start is closer to the
+    line than ``min_approach_m`` is rejected.
     """
     require_positive_number(approach_m, "approach_m")
     require_nonnegative_integer(hold_steps, "hold_steps")
+    require_nonnegative_number(min_approach_m, "min_approach_m")
+    if min_approach_m > approach_m:
+        raise ValueError("min_approach_m must not exceed approach_m")
     scenario_map = scenario.scenario_map()
     if isinstance(scenario_map, Unavailable):
         scenario.record_reason(f"Scenario map unavailable: {scenario_map.reason}")
@@ -217,6 +225,9 @@ def select_stop_approach(
                         scenario.record_reason("Approach has insufficient past history or deployment space")
                         continue
                     first = starts[0]
+                    if distances[first] < min_approach_m:
+                        scenario.record_reason("Approach starts closer to the line than min_approach_m")
+                        continue
                     last = min(recorded_stop + hold_steps, len(frames) - 1)
                     if last <= first:
                         scenario.record_reason("Selected approach has no executable decision interval")

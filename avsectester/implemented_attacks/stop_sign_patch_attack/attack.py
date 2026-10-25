@@ -40,6 +40,7 @@ class StopSignPatchAttack(Attack):
         approach_m: float = 50., hold_steps: int = 20, offset_m: float = .10,
         width_scale: float = 1.1, harmonizer: Harmonizer | None = None,
         face_orientation: str = "upright", face_size: str = "mutcd_standard",
+        min_approach_m: float = 20.,
     ) -> None:
         if initial_patch not in INITIAL_PATCHES:
             raise ValueError("initial_patch must be none, white, black or gaussian_noise")
@@ -56,6 +57,9 @@ class StopSignPatchAttack(Attack):
         require_nonnegative_number(noise_std, "noise_std")
         require_nonnegative_integer(noise_seed, "noise_seed")
         require_positive_number(approach_m, "approach_m")
+        require_nonnegative_number(min_approach_m, "min_approach_m")
+        if min_approach_m > approach_m:
+            raise ValueError("min_approach_m must not exceed approach_m")
         require_nonnegative_integer(hold_steps, "hold_steps")
         require_nonnegative_number(offset_m, "offset_m")
         require_positive_number(width_scale, "width_scale")
@@ -65,6 +69,7 @@ class StopSignPatchAttack(Attack):
         self.noise_std = noise_std
         self.noise_seed = noise_seed
         self.approach_m = approach_m
+        self.min_approach_m = min_approach_m
         self.hold_steps = hold_steps
         self.offset_m = offset_m
         self.width_scale = width_scale
@@ -75,7 +80,7 @@ class StopSignPatchAttack(Attack):
         self.mask.setflags(write=False)
 
     def build_metadata(self, scenario: ScenarioView) -> Sequence[AttackSegment]:
-        selected = select_stop_approach(scenario, self.approach_m, self.hold_steps)
+        selected = select_stop_approach(scenario, self.approach_m, self.hold_steps, self.min_approach_m)
         return () if selected is None else (selected.to_segment(),)
 
     def run_offline(self, context: OfflineContext) -> np.ndarray:

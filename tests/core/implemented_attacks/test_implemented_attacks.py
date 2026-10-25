@@ -29,7 +29,7 @@ ATTACKS = [
     pytest.param("SpeedFeedbackAttack", {
         "decision_steps": 2, "target_speed": 4., "initial_bias": .5, "max_segments": 1,
     }, {"max_bias": -1.}, "default_driving_options", "memory_dataset", id="speed-feedback"),
-    pytest.param("StopSignPatchAttack", {"approach_m": 3., "hold_steps": 1},
+    pytest.param("StopSignPatchAttack", {"approach_m": 3., "min_approach_m": 0., "hold_steps": 1},
                  {"initial_patch": "red"}, "default_driving_options",
                  "stop_approach_dataset", id="stop-sign-patch"),
 ]
