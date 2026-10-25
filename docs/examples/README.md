@@ -16,6 +16,7 @@ CONFIG.yaml`.
 | [Physical patch](physical-patch.md) | PatchAttack | configs/carla_patch.yaml, configs/carla_patch_optimized.yaml, configs/nurec_patch.yaml |
 | [Image insertion](image-insertion.md) | ObjectInsertionAttack | configs/carla_object_insertion.yaml, configs/nurec_object_insertion.yaml, configs/nuscenes_object_insertion.yaml |
 | [Speed feedback](speed-feedback-attack.md) | SpeedFeedbackAttack | configs/nurec_speed_feedback.yaml |
+| [Stop-sign patch](stop-sign-patch.md) | StopSignPatchAttack | configs/nurec_stop_sign_patch_2601.yaml, configs/nurec_stop_sign_patch_2604.yaml |
 
 Paths in the table are relative to the repository root. All attack impacts and driving results must be
 measured in the target environment. Passing workflow tests establishes preparation, execution and

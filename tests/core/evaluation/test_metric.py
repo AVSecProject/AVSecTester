@@ -6,9 +6,10 @@ import pytest
 
 from avsectester.data_types import Detection
 from avsectester.evaluation import (
-    DetectionMetrics, DrivingMetrics, StopImpact, TrajectoryDeviation, UnavailableMetricValue,
+    DetectionMetrics, DrivingMetrics, ReasoningPhraseRate, StopImpact, StopLineMetrics,
+    TrajectoryDeviation, UnavailableMetricValue,
 )
-from avsectester.runlog import RunLog
+from avsectester.runlog import EventRecord, RunLog
 
 
 def unchanged(value):
@@ -22,8 +23,19 @@ def without_capture(log):
 
 
 @pytest.fixture
-def metric_inputs(make_actor, make_log, make_group, make_pair):
-    return {"actor": make_actor, "log": make_log, "group": make_group, "pair": make_pair}
+def metric_inputs(make_actor, make_log, make_group, make_pair, stop_line_group):
+    return {"actor": make_actor, "log": make_log, "group": make_group, "pair": make_pair,
+            "stop_line_group": stop_line_group}
+
+
+def with_reasoning(log):
+    for step, text in zip(log.steps, ("STOP SIGN ahead", "road clear")):
+        step.components["policy"] = {"reasoning_text": text}
+    return log
+
+
+def phrase_rate(treatments):
+    return {"phrase_rate": treatments["attacked"]["phrase_rate"]}
 
 
 CASES = [
@@ -61,6 +73,21 @@ CASES = [
             "b_to_a.induced_braking": False, "b_to_a.induced_stop": False,
             "b_to_a.suppressed_stop": True, "b_to_a.overdrive_steps": 3,
         }, id="stop-impact"),
+    pytest.param(
+        StopLineMetrics, {},
+        lambda data: data["stop_line_group"]({"attacked": data["log"](
+            [4., 0.], actors={"lead": data["actor"](10., category="vehicle")})}),
+        lambda data: data["group"]({"attacked": data["log"]([4., 0.])}), itemgetter("attacked"), {
+            "stopped_before_line": False, "crossed_without_stop": True, "line_crossed": True,
+            "speed_at_line": 3., "min_speed_before_line": 4., "max_deceleration": 40.,
+            "time_to_stop": .2, "min_vehicle_distance_after_line": 8.,
+            "initial_distance_to_line": 1.25, "final_distance_to_line": -.75,
+        }, id="stop-line"),
+    pytest.param(
+        ReasoningPhraseRate, {"phrase": "stop sign"},
+        lambda data: data["group"]({"attacked": with_reasoning(data["log"]([2., 2.]))}),
+        lambda data: data["group"]({"attacked": data["log"]([2., 2.])}), phrase_rate,
+        {"phrase_rate": .5}, id="reasoning-phrase"),
 ]
 
 
@@ -73,3 +100,68 @@ def test_evaluate(metric_type, options, build_input, build_missing, select_resul
     missing = select_result(metric.evaluate(build_missing(metric_inputs)))
     assert missing and all(isinstance(value, UnavailableMetricValue) and value.reason
                            for value in missing.values())
+
+
+def test_stop_line_metrics(make_log, make_actor, stop_line_group):
+    from dataclasses import replace
+
+    from avsectester.evaluation import signed_stop_line_distances
+
+    log = make_log([8., 4.])
+    values = StopLineMetrics().evaluate(stop_line_group({"attacked": log}))["attacked"]
+    assert values["speed_at_line"] == 7.  # x=1.25 is one quarter of the x=1 -> 2 step.
+    distant = make_log([8., 4.])
+    for step in distant.steps:
+        step.physical_pre = replace(step.physical_pre,
+                                    ego=make_actor(step.physical_pre.ego.pose[0, 3], 4.01))
+        step.physical_post = replace(step.physical_post,
+                                     ego=make_actor(step.physical_post.ego.pose[0, 3], 4.01))
+    beyond = StopLineMetrics().evaluate(stop_line_group({"attacked": distant}))["attacked"]
+    assert beyond["line_crossed"] is False
+    assert beyond["crossed_without_stop"] is False
+    assert isinstance(beyond["speed_at_line"], UnavailableMetricValue)
+    distances, crossing = signed_stop_line_distances(
+        [[0., 4., 50.], [2., 4., -50.]], [[1.25, -1., 0.], [1.25, 1., 0.]],
+    )
+    assert crossing == (0, .625)
+    assert distances == pytest.approx([1.25, -.75])
+    initialization = RunLog(events=[EventRecord("initialization", data={
+        "physical_state": log.steps[0].physical_pre,
+    })])
+    initial = StopLineMetrics().evaluate(stop_line_group({"attacked": initialization}))["attacked"]
+    assert initial["initial_distance_to_line"] == 1.25
+    assert initial["min_speed_before_line"] == 8.
+    assert initial["line_crossed"] is False
+    assert isinstance(initial["max_deceleration"], UnavailableMetricValue)
+
+
+def test_reasoning_phrase_rate(make_log, make_group):
+    from types import SimpleNamespace
+
+    log = make_log([1., 1., 1.])
+    log.steps[0].components["policy"] = SimpleNamespace(reasoning_text="STOP SIGN ahead")
+    log.steps[1].components["policy"] = {"reasoning_text": ""}
+    metric = ReasoningPhraseRate("stop sign")
+    values = metric.evaluate(make_group({"attacked": log}))["attacked"]
+    assert values["phrase_steps"] == 1
+    assert values["reasoning_steps"] == 2
+    assert isinstance(values["phrase_rate"], UnavailableMetricValue)
+
+
+def test_signed_stop_line_distances():
+    import numpy as np
+
+    from avsectester.evaluation import signed_stop_line_distances
+
+    # Both bends and repeated vertices retain the first crossing along the trace.
+    line = np.array([[1., -1., 0.], [1., -1., 0.], [1., 1., 0.], [3., 1., 0.]])
+    distances, crossing = signed_stop_line_distances(
+        [[0., 0., 9.], [2., 0., -5.], [2., 2., 0.]], line,
+    )
+    assert crossing == (0, .5)
+    assert distances == pytest.approx([1., -1., -1.])
+    np.testing.assert_array_equal(line[:, 0], [1., 1., 1., 3.])
+    with pytest.raises(ValueError, match="M >= 2"):
+        signed_stop_line_distances([[0., 0., 0.]], [[1., 0., 0.]])
+    with pytest.raises(ValueError, match="nonzero horizontal"):
+        signed_stop_line_distances([[0., 0., 0.]], [[1., 0., 0.], [1., 0., 1.]])

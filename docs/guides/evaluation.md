@@ -64,10 +64,12 @@ and their reasons in the report and keeps treatment comparisons in the supplied 
 | TrajectoryDeviation | — | Mean, maximum and final matched-decision ego position distance |
 | DetectionMetrics | match_distance=2.0, max_range=50.0, category_map=— | TP, FP, FN, precision, recall and F1 |
 | StopImpact | stop_speed=0.5, reference_speed=1.0, min_overdrive_steps=3 | Stopping and braking comparisons in both directions |
+| StopLineMetrics | stop_speed=0.5, endpoint_tolerance_m=3.0 | Saved stop_line_id and scenario map; physical stopping, crossing speed and distances |
+| ReasoningPhraseRate | phrase (required), component=policy, field=reasoning_text | Case-insensitive phrase steps, text steps and rate over all decisions |
 
 The default metric set is chosen once for the entire experiment: DrivingMetrics and
 TrajectoryDeviation, plus DetectionMetrics when all completed logs provide detection evidence.
-StopImpact is available when explicitly configured. An experiment with no completed logs reports
+StopImpact, StopLineMetrics and ReasoningPhraseRate are available when explicitly configured. An experiment with no completed logs reports
 missing run data rather than claiming its AVStack cannot provide detections. Report notes are also
 printed in the terminal.
 
@@ -87,6 +89,14 @@ detections and truth are filtered by the same bird's-eye range, then matched onc
 match_distance. Set max_range to null to disable range filtering. With category_map configured, a
 detection without a category cannot match a class. Zero denominators and missing detection evidence
 produce unavailable values with reasons. TN and AP/mAP are not defined by these thresholded outputs.
+
+StopLineMetrics looks up segment.user_data["stop_line_id"] in the saved scenario map and assumes
+the initial position is before the line. signed_stop_line_distances uses horizontal distances to
+the stop-line polyline, extends its endpoints by endpoint_tolerance_m and identifies the first
+crossing between adjacent physical positions. Crossing speed is linearly interpolated. Missing
+line, map or physical evidence produces unavailable values with reasons. ReasoningPhraseRate reads
+a mapping field or native component attribute; phrase_rate is unavailable if any decision lacks
+text and otherwise uses all decisions as its denominator.
 
 ## Configure metrics
 

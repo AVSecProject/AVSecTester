@@ -193,12 +193,12 @@ across supported scenarios of one simulator.
 
 ### Attack specification
 
-The attacks mapping must contain exactly one entry. Multiple attacks in one experiment are future
-work; implement a composite Attack when several actions must be applied together. Empty and
-multi-attack configurations fail loading with exit code 2. When treatments are omitted, loading
-creates clean and attack treatments under runs. Every treatment shares this attack's metadata,
-may enable its attack_name and can change environment settings. A clean treatment has no
-attack_name.
+The attacks mapping contains one or more entries. Each attack selects its own metadata; a comparison
+group contains one attack's segment and seed. Treatments without attack_name run in every attack
+group, while a named attack treatment runs only in its own groups. Omitted treatments create clean
+and one treatment per attack under runs. A clean treatment has no attack_name. To apply several
+actions together in one run, implement a composite Attack. Comparing different attacks within one
+group remains future work.
 
 An attack specification has `type`, `options` and optional `environment`. Selection parameters,
 input assets and optimization belong to the Attack constructor. The framework calls its metabuilder
@@ -268,7 +268,7 @@ StopImpact computes both directions. Unfinished pairs are unavailable with a rea
 
 Omitting metrics selects one default set for the entire experiment: DrivingMetrics and
 TrajectoryDeviation, with DetectionMetrics added when completed logs all provide canonical
-detections. StopImpact must be explicitly configured. Explicitly unsupported DetectionMetrics and
+detections. StopImpact, StopLineMetrics and ReasoningPhraseRate must be explicitly configured. Explicitly unsupported DetectionMetrics and
 duplicate metric types fail configuration loading. Metric implementation errors remain reportable
 evaluation failures.
 
@@ -278,6 +278,8 @@ evaluation:
     - {type: DrivingMetrics, options: {stop_speed: 0.5}}
     - {type: TrajectoryDeviation}
     - {type: StopImpact}
+    - {type: StopLineMetrics, options: {stop_speed: 0.5, endpoint_tolerance_m: 3.0}}
+    - {type: ReasoningPhraseRate, options: {phrase: stop sign}}
 ```
 
 User metrics use type/options, including package.module:Class. See

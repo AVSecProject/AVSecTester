@@ -25,6 +25,8 @@ _BUILTINS = {
     "DetectionMetrics": "avsectester.evaluation.metric:DetectionMetrics",
     "TrajectoryDeviation": "avsectester.evaluation.metric:TrajectoryDeviation",
     "StopImpact": "avsectester.evaluation.metric:StopImpact",
+    "StopLineMetrics": "avsectester.evaluation.metric:StopLineMetrics",
+    "ReasoningPhraseRate": "avsectester.evaluation.metric:ReasoningPhraseRate",
 
     "CarlaDataset": "avsectester.datasets.carla:CarlaDataset",
     "NuRecDataset": "avsectester.datasets.nurec:NuRecDataset",

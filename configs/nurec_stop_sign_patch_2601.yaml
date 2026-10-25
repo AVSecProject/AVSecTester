@@ -1,0 +1,246 @@
+# Run with: avsectester run configs/nurec_stop_sign_patch_2601.yaml
+# Paths are relative to this file; set data/model paths for your machine.
+dataset:
+  type: NuRecDataset
+  options:
+    usdz_paths:
+    - ../data/nurec/df113232-421d-4a88-8b1e-310291b08674/df113232-421d-4a88-8b1e-310291b08674.usdz
+    - ../data/nurec/6d95a6b3-ef42-4cc0-941f-dbed4d15901a/6d95a6b3-ef42-4cc0-941f-dbed4d15901a.usdz
+    - ../data/nurec/c6a47fa1-6d26-449e-a544-3c5be1051dfd/c6a47fa1-6d26-449e-a544-3c5be1051dfd.usdz
+    - ../data/nurec/1a7b81b8-9bca-4385-a591-64f74eb59db2/1a7b81b8-9bca-4385-a591-64f74eb59db2.usdz
+    - ../data/nurec/5775a998-77f9-472a-8d12-f2b036a4cfe8/5775a998-77f9-472a-8d12-f2b036a4cfe8.usdz
+    - ../data/nurec/13a9767e-35c2-4d91-bba1-4326fc018dfc/13a9767e-35c2-4d91-bba1-4326fc018dfc.usdz
+    - ../data/nurec/07981e6a-22dd-4796-ad2f-1252037ecd28/07981e6a-22dd-4796-ad2f-1252037ecd28.usdz
+    - ../data/nurec/d4c97cc1-1297-41fd-9ad8-87d269b65e4d/d4c97cc1-1297-41fd-9ad8-87d269b65e4d.usdz
+    - ../data/nurec/1316f5fa-9b99-4979-90eb-1a8d56b32a73/1316f5fa-9b99-4979-90eb-1a8d56b32a73.usdz
+    - ../data/nurec/d2fcf4b2-2a4b-47e3-a2ec-a9e3372c3a8a/d2fcf4b2-2a4b-47e3-a2ec-a9e3372c3a8a.usdz
+    - ../data/nurec/ada590cf-e6eb-4d6b-bed7-ecbc1f5ad9cd/ada590cf-e6eb-4d6b-bed7-ecbc1f5ad9cd.usdz
+    - ../data/nurec/fe6c404c-cca9-46f1-a662-8091b3389a67/fe6c404c-cca9-46f1-a662-8091b3389a67.usdz
+    - ../data/nurec/7eaac028-ff62-4f54-9cca-52c8f49ba87e/7eaac028-ff62-4f54-9cca-52c8f49ba87e.usdz
+    - ../data/nurec/aeeaa73d-9274-4610-9669-193ff356a53d/aeeaa73d-9274-4610-9669-193ff356a53d.usdz
+    - ../data/nurec/7b186d92-d6f5-4e27-a324-d705d1fad7e1/7b186d92-d6f5-4e27-a324-d705d1fad7e1.usdz
+    - ../data/nurec/c0de5bb2-4c11-4348-8369-7d231699e7b3/c0de5bb2-4c11-4348-8369-7d231699e7b3.usdz
+    - ../data/nurec/0b54c8d4-8119-431e-9ae8-5c70f5e64716/0b54c8d4-8119-431e-9ae8-5c70f5e64716.usdz
+    - ../data/nurec/86ad21f0-5c8e-4733-9e48-585b3b3c0607/86ad21f0-5c8e-4733-9e48-585b3b3c0607.usdz
+    - ../data/nurec/3b9f9fa6-c966-41a5-9a6c-c64374d97e7c/3b9f9fa6-c966-41a5-9a6c-c64374d97e7c.usdz
+    - ../data/nurec/2a356a82-3672-4fd5-ad80-174a780ae0c9/2a356a82-3672-4fd5-ad80-174a780ae0c9.usdz
+    - ../data/nurec/0e002edd-c307-437c-9b97-6a1f6d28ac91/0e002edd-c307-437c-9b97-6a1f6d28ac91.usdz
+    camera_id: camera_front_wide_120fov
+    time_step: 0.1
+simulator:
+  type: NuRecSimulator
+  options:
+    depth: none
+    object_occlusion: rendered_probes
+    ground_mesh: mesh
+    physics_update_mode: ego_only
+    route_generator: map
+    config:
+      dt: 0.1
+    renderer:
+      type: avsectester.closed_loop.simulators.nurec:NuRecRenderer
+      options:
+        endpoint: 127.0.0.1:50051
+        cameras:
+        - camera_front_wide_120fov
+        resolution_hw:
+          camera_front_wide_120fov:
+          - 1080
+          - 1900
+        probe_directory: ../results/nre-probes
+        server_probe_directory: /mnt/nre-probes
+    dynamics:
+      type: avsectester.closed_loop.simulators.ego_dynamics:AlpaSimController
+      options: {}
+avstack:
+  type: AlpamayoAVStack
+  options:
+    checkpoint_path: ../models/Alpamayo-1.5-10B
+    device: cuda:0
+    camera_ids:
+    - camera_front_wide_120fov
+    frame_subsample: 1
+    output_frequency_hz: 10
+attacks:
+  white:
+    type: StopSignPatchAttack
+    options:
+      initial_patch: white
+  black:
+    type: StopSignPatchAttack
+    options:
+      initial_patch: black
+  noise:
+    type: StopSignPatchAttack
+    options:
+      initial_patch: gaussian_noise
+  white_detector_pgd:
+    type: StopSignPatchAttack
+    options:
+      initial_patch: white
+      optimization:
+        type: avsectester.implemented_attacks.stop_sign_patch_attack.offline:DetectorPatchOptimization
+        options:
+          detector:
+            type: avsectester.implemented_attacks.stop_sign_patch_attack.detector:StopSignDetector
+            options:
+              weights_path: ../models/fasterrcnn_resnet50_fpn_coco-258fb6c6.pth
+              device: cuda:0
+          optimizer:
+            type: avsectester.attack.optimization:PGD
+            options:
+              steps: 20
+              step_size: 0.01568627450980392
+              batch: 1
+              seed: 0
+          scene_count: 4
+          samples_per_scene: 8
+          output_directory: ../results/nurec_stop_sign_patch_2601/optimization/white_detector_pgd
+  black_detector_pgd:
+    type: StopSignPatchAttack
+    options:
+      initial_patch: black
+      optimization:
+        type: avsectester.implemented_attacks.stop_sign_patch_attack.offline:DetectorPatchOptimization
+        options:
+          detector:
+            type: avsectester.implemented_attacks.stop_sign_patch_attack.detector:StopSignDetector
+            options:
+              weights_path: ../models/fasterrcnn_resnet50_fpn_coco-258fb6c6.pth
+              device: cuda:0
+          optimizer:
+            type: avsectester.attack.optimization:PGD
+            options:
+              steps: 20
+              step_size: 0.01568627450980392
+              batch: 1
+              seed: 0
+          scene_count: 4
+          samples_per_scene: 8
+          output_directory: ../results/nurec_stop_sign_patch_2601/optimization/black_detector_pgd
+  noise_detector_pgd:
+    type: StopSignPatchAttack
+    options:
+      initial_patch: gaussian_noise
+      optimization:
+        type: avsectester.implemented_attacks.stop_sign_patch_attack.offline:DetectorPatchOptimization
+        options:
+          detector:
+            type: avsectester.implemented_attacks.stop_sign_patch_attack.detector:StopSignDetector
+            options:
+              weights_path: ../models/fasterrcnn_resnet50_fpn_coco-258fb6c6.pth
+              device: cuda:0
+          optimizer:
+            type: avsectester.attack.optimization:PGD
+            options:
+              steps: 20
+              step_size: 0.01568627450980392
+              batch: 1
+              seed: 0
+          scene_count: 4
+          samples_per_scene: 8
+          output_directory: ../results/nurec_stop_sign_patch_2601/optimization/noise_detector_pgd
+  white_rollout_nes:
+    type: StopSignPatchAttack
+    options:
+      initial_patch: white
+      optimization:
+        type: avsectester.implemented_attacks.stop_sign_patch_attack.offline:RolloutPatchOptimization
+        options:
+          optimizer:
+            type: avsectester.attack.optimization:NES
+            options:
+              steps: 1
+              population_size: 4
+              sigma: 0.08
+              learning_rate: 0.03
+              seed: 0
+          start_distances_m:
+          - 40
+          - 30
+          - 20
+          horizon_s: 3
+          scene_count: 1
+          output_directory: ../results/nurec_stop_sign_patch_2601/optimization/white_rollout_nes
+  black_rollout_nes:
+    type: StopSignPatchAttack
+    options:
+      initial_patch: black
+      optimization:
+        type: avsectester.implemented_attacks.stop_sign_patch_attack.offline:RolloutPatchOptimization
+        options:
+          optimizer:
+            type: avsectester.attack.optimization:NES
+            options:
+              steps: 1
+              population_size: 4
+              sigma: 0.08
+              learning_rate: 0.03
+              seed: 0
+          start_distances_m:
+          - 40
+          - 30
+          - 20
+          horizon_s: 3
+          scene_count: 1
+          output_directory: ../results/nurec_stop_sign_patch_2601/optimization/black_rollout_nes
+  noise_rollout_nes:
+    type: StopSignPatchAttack
+    options:
+      initial_patch: gaussian_noise
+      optimization:
+        type: avsectester.implemented_attacks.stop_sign_patch_attack.offline:RolloutPatchOptimization
+        options:
+          optimizer:
+            type: avsectester.attack.optimization:NES
+            options:
+              steps: 1
+              population_size: 4
+              sigma: 0.08
+              learning_rate: 0.03
+              seed: 0
+          start_distances_m:
+          - 40
+          - 30
+          - 20
+          horizon_s: 3
+          scene_count: 1
+          output_directory: ../results/nurec_stop_sign_patch_2601/optimization/noise_rollout_nes
+evaluation:
+  metrics:
+  - type: StopLineMetrics
+  - type: ReasoningPhraseRate
+    options:
+      phrase: stop sign
+  - type: DrivingMetrics
+runs:
+  treatments:
+  - name: clean
+  - name: white
+    attack_name: white
+  - name: black
+    attack_name: black
+  - name: noise
+    attack_name: noise
+  - name: white_detector_pgd
+    attack_name: white_detector_pgd
+  - name: black_detector_pgd
+    attack_name: black_detector_pgd
+  - name: noise_detector_pgd
+    attack_name: noise_detector_pgd
+  - name: white_rollout_nes
+    attack_name: white_rollout_nes
+  - name: black_rollout_nes
+    attack_name: black_rollout_nes
+  - name: noise_rollout_nes
+    attack_name: noise_rollout_nes
+  seeds:
+  - 0
+  decision_steps: null
+  recording:
+    sensor_ids:
+    - camera_front_wide_120fov
+    representations:
+    - model_input
+    every_n_steps: 10
+  output: ../results/nurec_stop_sign_patch_2601

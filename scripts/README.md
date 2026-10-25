@@ -10,6 +10,8 @@ avsectester run configs/carla_object_insertion.yaml
 avsectester run configs/nurec_speed_feedback.yaml
 avsectester run configs/nurec_object_insertion.yaml
 avsectester run configs/nurec_patch.yaml
+avsectester run configs/nurec_stop_sign_patch_2601.yaml
+avsectester run configs/nurec_stop_sign_patch_2604.yaml
 avsectester run configs/nuscenes_object_insertion.yaml
 ```
 
@@ -30,7 +32,8 @@ level and treatments, seeds, environment, recording and failure settings under r
 `runs/` directories are rejected. Reuse saved preparation with `--prepared DIRECTORY`; recompute
 metrics after the simulator closes with `avsectester evaluate EXPERIMENT.yaml`. Experiment and
 optimization settings belong in the YAML files. Fixed and optimized patches use separate
-configurations, each with one attack.
+configurations. The stop-sign patch configurations include nine independently prepared attacks;
+the clean treatment repeats in every attack group.
 
 ## Preparation
 
@@ -54,6 +57,7 @@ python -m scripts.validation.validate_carla_visibility --help
 python -m scripts.validation.validate_nurec_depth --help
 python -m scripts.visualization.visualize_scene_labels --help
 python -m scripts.visualization.visualize_augmentations --help
+python -m scripts.visualization.plot_stop_line_approaches configs/nurec_stop_sign_patch_2601.yaml
 ```
 
 - [patch_hide_probe.py](validation/patch_hide_probe.py) compares patch sizes and harmonization
@@ -82,6 +86,9 @@ python -m scripts.visualization.visualize_augmentations --help
   unavailable with a reason. The two vertical checks still run, without fitting a camera model.
 - [visualize_scene_labels.py](visualization/visualize_scene_labels.py) projects recorded
   FrameData actors onto their camera images, using timestamps to match video frames.
+- [plot_stop_line_approaches.py](visualization/plot_stop_line_approaches.py) reads saved experiment
+  records and plots speed against signed distance to the selected stop line, one figure per scene.
+  Its default destination is stop_line_plots/ under runs.output; --output selects another directory.
 - [visualize_augmentations.py](visualization/visualize_augmentations.py) applies sensor transforms
   to one image and writes a labelled comparison figure.
 
@@ -103,3 +110,11 @@ total_source_points and all_point_distance_bands describe all original road poin
 --endpoint 127.0.0.1:50051 to render depth_edges_NNNNN.png using an already running NRE service.
 Without that option, no neural renderer is created or queried. Exit code 0 means both vertical
 alignment checks passed; 1 means validation failed, and 2 indicates invalid command arguments.
+
+The stop-sign patch configurations combine detector PGD and Alpamayo rollout NES in one
+preparation process. Start that process with CUBLAS_WORKSPACE_CONFIG=:4096:8 set so
+CuBLAS operations support the deterministic mode enabled by PGD. For example:
+
+```bash
+CUBLAS_WORKSPACE_CONFIG=:4096:8 avsectester run configs/nurec_stop_sign_patch_2601.yaml
+```

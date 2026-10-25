@@ -20,11 +20,12 @@ assets unchanged. A selection-only attack uses the default None artifacts and em
 Attack configuration holds reusable parameters; mutable online history belongs to its runtime.
 Artifacts are explicit return values, never a second mutable Attack property.
 
-Each experiment requires exactly one Attack. Every treatment shares its metadata and changes only
-attack enablement and environment settings. Use one composite Attack to apply several actions
-together.
+One experiment supports one or more attacks, each with its own metadata. A comparison group is one
+attack's segment and seed: treatments enabling that attack and those without attack_name are
+compared there, with all treatment pairs evaluated. Use one composite Attack to apply several
+actions together in one run.
 
-**Not yet implemented.** Comparing multiple attacks in one experiment on shared metadata. See
+Comparing different attacks within one group when their segments coincide remains
 [TODO](../development/TODO.md#multiple-attacks-on-shared-metadata).
 
 ## Write your first attack

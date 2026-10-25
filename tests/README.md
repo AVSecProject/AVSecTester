@@ -14,7 +14,7 @@ public workflow rather than repeating lower-level numerical assertions.
 ```text
 tests/
   fakes.py                         shared memory world and native dependency boundaries
-  conftest.py                      live opt-in and native observation fixtures
+  conftest.py                      live opt-in, native observations and shared NuRec recordings
   core/
     experiment/                    configuration, type discovery, output, execution and evaluation
     execution/
@@ -60,6 +60,8 @@ tests/
   avstack/                         real native pipeline, detector forward, native records and phantom
   live/                            optional real-server, real-data and GPU checks
 ```
+
+The root conftest.py provides nurec_usdz_path and nurec_longitudinal_recording to core tests.
 
 ## Writing tests
 

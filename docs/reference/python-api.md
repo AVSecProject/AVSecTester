@@ -87,6 +87,9 @@ data and boundary modules can be imported without simulator servers or weights.
 | avsectester.execution.runner | ClosedLoopRunner, RunRequest and RecordingPolicy |
 | avsectester.execution.services | ClosedLoopServices/session, ScenarioView and request/result records |
 | avsectester.implemented_attacks.<attack_folder> | Concrete Attack class exported by its folder |
+| avsectester.implemented_attacks.stop_sign_patch_attack.attack | StopSignPatchAttack selection, preparation and placement |
+| avsectester.implemented_attacks.stop_sign_patch_attack.offline | DetectorPatchOptimization and RolloutPatchOptimization |
+| avsectester.implemented_attacks.stop_sign_patch_attack.detector | Local differentiable stop-sign detector scorer |
 | avsectester.evaluation | RunGroup, evaluate_groups, metrics and report records |
 | avsectester.evaluation.evaluator | Standalone ordered log groups and metric evaluation |
 | avsectester.evaluation.metric | ComparisonGroup, Metric and built-in metrics |
@@ -392,7 +395,12 @@ RunGroup contains all treatment logs in their supplied order, including unfinish
 plus optional errors and a scenario map. evaluate_groups(groups, metrics, notes=()) evaluates
 already available logs without an Experiment or dataset. It passes only completed logs to the
 ComparisonGroup used by metrics and returns an EvaluationReport with statuses and summaries.
-The evaluation package exports RunGroup and evaluate_groups.
+The evaluation package exports RunGroup and evaluate_groups. It also exports StopLineMetrics,
+ReasoningPhraseRate and signed_stop_line_distances. StopLineMetrics requires stop_line_id in the
+segment user_data and a matching saved scenario-map stop line, and assumes the start is before
+the line. signed_stop_line_distances returns horizontal distances and the first crossing as an
+adjacent-sample index and interpolation fraction; signs turn negative after that crossing.
+ReasoningPhraseRate reads the configured component field from native objects or mappings.
 
 Metric.evaluate receives ComparisonGroup and returns per-treatment scalar dictionaries.
 UnavailableMetricValue(reason, value_type="number" or "boolean") carries missing evidence without
@@ -1295,6 +1303,45 @@ addresses pixel centres at i + 0.5. Unsupported external distortion types raise 
 | `PatchAttack.deployment_ticks` | `deployment_ticks(segment)` |
 | `PatchAttack.create_runtime` | `create_runtime(segment, artifacts)` |
 
+### avsectester.implemented_attacks.stop_sign_patch_attack.attack
+
+| Public name | Signature or fields |
+|---|---|
+| `StopSignPatchAttack` | Class; see methods below |
+| `StopSignPatchAttack.__init__` | `__init__(initial_patch='white', optimization=None, mask_path=DEFAULT_MASK_PATH, noise_std=0.25, noise_seed=0, approach_m=50.0, hold_steps=20, offset_m=0.10, width_scale=1.0)` |
+| `StopSignPatchAttack.build_metadata` | `build_metadata(scenario)` |
+| `StopSignPatchAttack.run_offline` | `run_offline(context)` |
+| `StopSignPatchAttack.patch_placement` | `patch_placement(segment, texture) -> tuple[ObjectAsset, np.ndarray]` |
+| `StopSignPatchAttack.patch_texture` | `patch_texture(artifacts) -> np.ndarray` |
+| `StopSignPatchAttack.create_runtime` | `create_runtime(segment, artifacts)` |
+
+The default mask is masks/rp2_bars.png inside this attack package. The folder's __init__.py exports
+only StopSignPatchAttack. Artifacts are uint8 RGBA textures with alpha exactly equal to the mask
+times 255. The runtime inserts one stop_sign_patch object at setup.
+
+### avsectester.implemented_attacks.stop_sign_patch_attack.offline
+
+| Public name | Signature or fields |
+|---|---|
+| `DetectorPatchOptimization` | Frozen dataclass: `detector: Scorer`, `optimizer: PGD`, `output_directory: str \| Path`, `camera_id='camera_front_wide_120fov'`, `scene_count=4`, `samples_per_scene=8`, `min_visible_pixels=100`, `detection_threshold=0.5`, `braking_deceleration_mps2=3.4` |
+| `RolloutPatchOptimization` | Frozen dataclass: `optimizer: NES`, `output_directory: str \| Path`, `start_distances_m=(40.0, 30.0, 20.0)`, `horizon_s=3.0`, `scene_count=1` |
+| `run_offline` | `run_offline(attack, context) -> np.ndarray` |
+
+Both optimizers start from the attack's generated initial patch. Detector options require PGD;
+rollout options require NES. Neither preparation path executes the final treatment suite.
+
+### avsectester.implemented_attacks.stop_sign_patch_attack.detector
+
+| Public name | Signature or fields |
+|---|---|
+| `StopSignDetector` | Scorer using local COCO_V1 Faster R-CNN weights; differentiable input scores |
+| `StopSignDetector.__init__` | `__init__(weights_path: str \| Path = 'fasterrcnn_resnet50_fpn_coco-258fb6c6.pth', device: str = 'cpu', model: Any = None)` |
+| `StopSignDetector.target_score` | `target_score(image: torch.Tensor, target: TargetSpec) -> torch.Tensor` |
+
+The maximum stop-sign score is selected among detections with target-box IoU at least 0.3.
+No matching detection returns a zero score connected to the image gradient. NMS and discrete
+box selection do not provide gradients. An injected model replaces only the learned-model boundary.
+
 ### avsectester.implemented_attacks.object_insertion_attack.attack
 
 | Public name | Signature or fields |
@@ -1628,6 +1675,11 @@ metrics, contains completed logs only.
 | `speeds` | `speeds(log: RunLog) -> list[float] \| None` |
 | `executed_brakes` | `executed_brakes(log: RunLog) -> list[float] \| None` |
 | `brake_steps` | `brake_steps(log: RunLog) -> int \| None` |
+| `signed_stop_line_distances` | `signed_stop_line_distances(positions, line_points, *, endpoint_tolerance_m=3.0) -> tuple[np.ndarray, tuple[int, float] \| None]` |
+| `StopLineMetrics` | `StopLineMetrics(stop_speed: float = 0.5, endpoint_tolerance_m: float = 3.0)` |
+| `StopLineMetrics.evaluate` | `evaluate(group: ComparisonGroup) -> TreatmentMeasurements` |
+| `ReasoningPhraseRate` | `ReasoningPhraseRate(phrase: str, component: str = 'policy', field: str = 'reasoning_text')` |
+| `ReasoningPhraseRate.evaluate` | `evaluate(group: ComparisonGroup) -> TreatmentMeasurements` |
 | `DrivingMetrics` | Class; see methods below |
 | `DrivingMetrics.__init__` | `__init__(stop_speed: float = 0.5) -> None` |
 | `DrivingMetrics.evaluate` | `evaluate(group: ComparisonGroup) -> TreatmentMeasurements` |

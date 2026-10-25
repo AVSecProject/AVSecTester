@@ -29,7 +29,8 @@ def test_attack_directory_name(class_name, directory_name):
 
 def test_available_attacks():
     names = available_attacks()
-    assert {"PatchAttack", "ObjectInsertionAttack", "PhantomInjectionAttack", "SpeedFeedbackAttack"} <= set(names)
+    assert {"PatchAttack", "ObjectInsertionAttack", "PhantomInjectionAttack", "SpeedFeedbackAttack",
+            "StopSignPatchAttack"} <= set(names)
     assert names == tuple(sorted(names))
     assert all(issubclass(resolve_type(name), Attack) for name in names)
 

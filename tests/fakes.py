@@ -26,6 +26,7 @@ from avsectester.closed_loop.simulators.nurec.renderer import Renderer
 from avsectester.data_types import ActorState
 from avsectester.datasets import Dataset, FrameData, FrameReference, ScenarioDescriptor, ScenarioStart
 from avsectester.geometry.cameras import BODY_FROM_OPTICAL, PinholeCamera
+from avsectester.maps import Lane, ScenarioMap, StopLine, TrafficControl
 
 
 CAMERA = PinholeCamera(np.array([[50., 0., 50.], [0., 50., 40.], [0., 0., 1.]]), 100, 80)
@@ -91,6 +92,42 @@ class MemoryDataset(Dataset):
 
     def native(self, scenario_id):
         return {"scenario_id": scenario_id}
+
+
+class StopApproachDataset(MemoryDataset):
+    """A real Dataset extension with a straight approach and a recorded pause."""
+
+    def __init__(self, scenario_map, stopped=True):
+        self.positions = np.r_[np.arange(59.), [58., 58.], np.arange(59., 81.)]
+        self.stopped = stopped
+        super().__init__(decision_steps=len(self.positions) - 1, maps={"scene": scenario_map})
+
+    def frame_data(self, scenario_id, frame):
+        frame = self.checked_frame(scenario_id, frame)
+        speed = 10.
+        if self.stopped and 58 <= frame.position <= 60:
+            speed = 0.
+        return FrameData(frame, ego=actor_state((self.positions[frame.position], 0., 0.), speed))
+
+
+def stop_approach_map(*, line_kind="stop_sign", facing=True, line_offset_y=0.,
+                      linked_sign=True, sign_x=60.):
+    """Map geometry for a straight recorded stop approach."""
+    pose = np.diag([-1., -1., 1., 1.])
+    pose[:3, 3] = [sign_x, -3., 2.]
+    if not facing:
+        pose[:3, :3] = np.eye(3)
+    control = TrafficControl("sign", "stop_sign", "MUTCD_R1_STOP", pose, (.05, .8, .8),
+                             "face_center", lane_ids=("lane",))
+    lane = Lane("lane", np.array([[0., 0., 0.], [80., 0., 0.]]),
+                np.array([[0., 3., 0.], [80., 3., 0.]]),
+                np.array([[0., -3., 0.], [80., -3., 0.]]))
+    line = StopLine("line", np.array([[60., -3. + line_offset_y, 0.],
+                                     [60., 3. + line_offset_y, 0.]]), "ENTRY",
+                    kind=line_kind, lane_ids=("lane",),
+                    control_id="sign" if linked_sign else None)
+    return ScenarioMap(lanes={"lane": lane}, traffic_controls={"sign": control},
+                       stop_lines={"line": line})
 
 
 class MemorySimulator(Simulator):
