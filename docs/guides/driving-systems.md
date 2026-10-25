@@ -108,7 +108,12 @@ history and checks rounded observation timestamps are exactly 100 ms apart befor
 model. Its `(context_length - 1) * frame_subsample` image span must not exceed 15 decisions.
 AlpamayoAVStack declares `seed`. Like AlpaSim's driver, a seeded stack loads the model with
 force_determinism and seeds each decision from the run seed and the decision count since reset.
-Unlike AlpaSim's seed plus count, distinct run seeds yield non-overlapping inference seeds. Each decision appends the received pose. As in AlpaSim's driver, the model input's speed is the
+Unlike AlpaSim's seed plus count, distinct run seeds yield non-overlapping inference seeds.
+force_determinism enables deterministic PyTorch algorithms for the whole process, and cuBLAS then
+requires CUBLAS_WORKSPACE_CONFIG to have been set before the process's first GPU matrix product.
+Importing the adapter, which configuration loading does before any model runs, sets it to
+:4096:8 unless it is already set, so detector optimization and Alpamayo can share one process.
+Each decision appends the received pose. As in AlpaSim's driver, the model input's speed is the
 horizontal speed of Observation.vehicle_state (ego_speed and lateral_speed) and its acceleration is the
 state's longitudinal acceleration; Alpamayo 1.5 models do not read either value.
 Images are taken from the received camera history at frame_subsample intervals. Missing history or

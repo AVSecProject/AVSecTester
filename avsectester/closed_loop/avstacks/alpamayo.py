@@ -32,6 +32,13 @@ from avsectester.geometry.poses import rotation_to_quaternion
 from avsectester.serialization import DEFAULT_REGISTRY
 from avsectester.validation import require_nonnegative_integer, require_positive_integer
 
+# A seeded stack loads AlpaSim with force_determinism, which enables deterministic PyTorch
+# algorithms and sets this variable only when the model loads. CuBLAS honours it only when it is
+# set before the process's first GPU matrix product, which other work in the same experiment,
+# such as detector optimization, may already have run. Configuration loading imports this
+# module before any of that work, so the default is in place in time.
+os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+
 
 def _model_prediction(value: Any) -> dict[str, Any]:
     # NVIDIA AlpaSim models/base.py, inspected at

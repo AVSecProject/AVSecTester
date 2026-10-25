@@ -1,5 +1,6 @@
 """Real policy context and trajectory transport with only checkpoint weights replaced."""
 from dataclasses import replace
+import os
 
 import numpy as np
 import pytest
@@ -197,6 +198,8 @@ def test_seed(alpamayo_model_boundary, alpamayo_observations):
             assert seeds == expected
         assert model.options["model_cfg"].force_determinism is determinism
         avstack.close()
+    # Deterministic cuBLAS must be configured before any GPU work; importing the adapter does it.
+    assert os.environ["CUBLAS_WORKSPACE_CONFIG"] in (":4096:8", ":16:8")
     with pytest.raises(ValueError, match="seed"):
         AlpamayoAVStack(camera_ids=["front"], seed=-1)
 
