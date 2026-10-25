@@ -33,7 +33,7 @@ data and boundary modules can be imported without simulator servers or weights.
 | avsectester.maps.scenario_map | Semantic-map records and stopping-control classification |
 | avsectester.rendering | Object assets, surface rendering, composition and harmonizers |
 | avsectester.rendering.compositing | ObjectVisibility, CompositePlan, CompositeResult, ObjectComposition, plan_composite, composite_objects and blend_rgba |
-| avsectester.rendering.harmonizers | Harmonizer, ClassicHarmonizer and PCTNetHarmonizer |
+| avsectester.rendering.harmonizers | Harmonizer, ExposureHarmonizer, ClassicHarmonizer and PCTNetHarmonizer |
 | avsectester.rendering.objects | PlaneSurface, ObjectAsset and PlacedObject |
 | avsectester.rendering.surfaces | Calibrated planar sampling and render_surfaces |
 | avsectester.rendering.textures | STOP_SIGN_FACE, Texture, CheckerboardTexture and load_rgba_image |
@@ -158,7 +158,10 @@ Run directories are runs/segment-xxxxx/seed-s/treatment/; old attack-prefixed v5
 loadable or evaluable by this version. Preparation checkpoints selection/units before optimization
 and saves each completed artifact before the next attack. Resume validates the saved configuration
 and preparation record, reuses saved selection and runs only unfinished offline work. Execution
-resume retains matching completed manifests and reruns only other expected runs.
+resume retains completed manifests only when the full expected metadata matches: segment_index,
+seed, treatment, attack_name, part, segment, environment, decision_steps, selected_decision_steps
+and deployment_ticks. Segment data uses its canonical serialized comparison. Any mismatch reruns
+that one expected run; unchanged metadata preserves its log and directory.
 
 ## Attack API
 
@@ -522,6 +525,7 @@ methods provide the usual save/load entry points.
 | `run_directory` | `run_directory(root: Path, segment_index: int, seed: int, treatment: str) -> Path` |
 | `saved_run_directories` | `saved_run_directories(root: Path) -> tuple[tuple[tuple[int, int, str], Path], ...]` |
 | `load_result` | `load_result(directory: str \| Path, configuration: ExperimentConfiguration) -> ExperimentResult` |
+| `recorded_data_equal` | `recorded_data_equal(first: Any, second: Any) -> bool`; compares saved plain data, treating lists and tuples alike and arrays by value |
 | `ConfigurationMismatchError` | `ConfigurationMismatchError(ValueError)`; raised when a saved preparation and the supplied configuration describe different attacks or inputs |
 | `save_scenario_maps` | `save_scenario_maps(maps: Mapping[str, ScenarioMap \| Unavailable], directory: str \| Path) -> None` |
 | `load_scenario_maps` | `load_scenario_maps(directory: str \| Path, scenario_ids: tuple[str, ...]) -> dict[str, ScenarioMap \| Unavailable]` |
@@ -1181,7 +1185,7 @@ addresses pixel centres at i + 0.5. Unsupported external distortion types raise 
 | `Renderer.camera_model` | `camera_model(camera: str \| None = None) -> Camera \| None` |
 | `Renderer.cam_from_world` | `cam_from_world(world_from_rig: np.ndarray, camera: str \| None = None) -> np.ndarray` |
 | `Renderer.close` | `close() -> None` |
-| `NuRecRenderer` | `endpoint: str = '127.0.0.1:50051'`<br>`scene_id: str \| None = None`<br>`cameras: list[str] = field(default_factory=lambda: ['camera_front_wide_120fov'])`<br>`calibration: dict = field(default_factory=dict)`<br>`image_quality: float = 95.0`<br>`resolution_hw: Mapping[str, tuple[int, int]] = field(default_factory=dict)`<br>`probe_directory: str \| None = None`<br>`server_probe_directory: str \| None = None`<br>`track_padding_m: tuple[float, float, float] = (1.0, 1.0, 0.25)` |
+| `NuRecRenderer` | `endpoint: str = '127.0.0.1:50051'`<br>`scene_id: str \| None = None`<br>`cameras: list[str] = field(default_factory=lambda: ['camera_front_wide_120fov'])`<br>`calibration: dict = field(default_factory=dict)`<br>`image_quality: float = 95.0`<br>`resolution_hw: Mapping[str, tuple[int, int]] = field(default_factory=dict)`<br>`probe_directory: str \| Path \| None = None`<br>`server_probe_directory: str \| None = None`<br>`track_padding_m: tuple[float, float, float] = (1.0, 1.0, 0.25)` |
 | `NuRecRenderer.copy` | `copy() -> NuRecRenderer` |
 | `NuRecRenderer.load_scene` | `load_scene(scene: Any) -> None` |
 | `NuRecRenderer.service` | `service: Any` |
@@ -1321,7 +1325,7 @@ addresses pixel centres at i + 0.5. Unsupported external distortion types raise 
 | Public name | Signature or fields |
 |---|---|
 | `StopSignPatchAttack` | Class; see methods below |
-| `StopSignPatchAttack.__init__` | `__init__(initial_patch='white', optimization=None, mask_path=DEFAULT_MASK_PATH, noise_std=0.25, noise_seed=0, approach_m=50.0, hold_steps=20, offset_m=0.10, width_scale=1.1)` |
+| `StopSignPatchAttack.__init__` | `__init__(initial_patch='white', optimization=None, mask_path=DEFAULT_MASK_PATH, noise_std=0.25, noise_seed=0, approach_m=50.0, hold_steps=20, offset_m=0.10, width_scale=1.1, harmonizer: Harmonizer \| None = None)` |
 | `StopSignPatchAttack.build_metadata` | `build_metadata(scenario)` |
 | `StopSignPatchAttack.run_offline` | `run_offline(context)` |
 | `StopSignPatchAttack.replica_placement` | `replica_placement(segment, texture) -> tuple[ObjectAsset, np.ndarray]` |
@@ -1332,7 +1336,10 @@ initial_patch is none, white, black or gaussian_noise; none deploys the unpatche
 cannot be optimized. The default mask is masks/rp2_bars.png inside this attack package. The
 folder's __init__.py exports only StopSignPatchAttack. Artifacts are uint8 RGBA replica faces
 with the alpha of STOP_SIGN_FACE and its colours outside the mask. The runtime inserts one
-stop_sign_replica object at setup.
+stop_sign_replica object at setup. Its configured harmonizer is passed to the same InsertObject
+in deployment and white-box sampling; differentiable composition includes that harmonizer. The
+replica panel's nominal_texture is the canonical face, so exposure is measured on the unpatched
+replica.
 
 ### avsectester.implemented_attacks.stop_sign_patch_attack.offline
 
@@ -1435,17 +1442,20 @@ The loader returns an independent uint8 RGBA image.
 
 ObjectAsset and PlacedObject use the canonical right-handed world convention. Object-local origin
 is the bottom center, with +X front, +Y left and +Z up. Extent is full length, width and height.
-PlaneSurface corners and rigid object transforms are copied and read-only. from_panel reads a
-texture array, image path or Texture and creates a panel facing +X. Its face height follows the
-texture aspect ratio; mount_height_m is the lower face edge height. Optional posts sit 3 cm behind
-the face and precede it in surfaces. from_surfaces derives the final extent.
+PlaneSurface corners, textures and rigid object transforms are copied and read-only. A surface's
+optional nominal_texture is its unmodified appearance, with the texture's shape and alpha;
+harmonizers measure scene statistics on it, so texture edits do not change them. from_panel reads
+a texture array, image path or Texture and creates a panel facing +X; nominal_texture, if given,
+belongs to the panel. Its face height follows the texture aspect ratio; mount_height_m is the lower
+face edge height. Optional posts sit 3 cm behind the face and precede it in surfaces.
+from_surfaces derives the final extent. world_surfaces keeps each surface's textures.
 
 | Public name | Signature or fields |
 |---|---|
-| `PlaneSurface` | `corners: np.ndarray`<br>`texture: np.ndarray` |
+| `PlaneSurface` | `corners: np.ndarray`<br>`texture: np.ndarray`<br>`nominal_texture: np.ndarray \| None = None` |
 | `ObjectAsset` | `surfaces: tuple[PlaneSurface, ...]`<br>`extent: tuple[float, float, float]`<br>`category: str` |
 | `ObjectAsset.from_surfaces` | `from_surfaces(surfaces: Sequence[PlaneSurface], category: str) -> ObjectAsset` |
-| `ObjectAsset.from_panel` | `from_panel(texture: np.ndarray \| str \| Path \| Texture, *, category: str, width_m: float, mount_height_m: float = 0.0, post_count: int = 0, post_width_m: float = 0.07) -> ObjectAsset` |
+| `ObjectAsset.from_panel` | `from_panel(texture: np.ndarray \| str \| Path \| Texture, *, category: str, width_m: float, mount_height_m: float = 0.0, post_count: int = 0, post_width_m: float = 0.07, nominal_texture: np.ndarray \| str \| Path \| Texture \| None = None) -> ObjectAsset` |
 | `PlacedObject` | `object_id: str`<br>`asset: ObjectAsset`<br>`world_from_object: np.ndarray`<br>`harmonizer: Harmonizer \| None = None` |
 | `PlacedObject.world_surfaces` | `world_surfaces() -> tuple[PlaneSurface, ...]` |
 
@@ -1491,7 +1501,7 @@ alpha is the filtered coverage.
 ### avsectester.rendering.compositing
 
 The rendering package root exports ObjectAsset, PlacedObject, PlaneSurface, Harmonizer,
-ClassicHarmonizer, PCTNetHarmonizer, render_surfaces, ObjectVisibility, CompositePlan, CompositeResult,
+ExposureHarmonizer, ClassicHarmonizer, PCTNetHarmonizer, render_surfaces, ObjectVisibility, CompositePlan, CompositeResult,
 ObjectComposition, blend_rgba, plan_composite, composite_objects, Texture, CheckerboardTexture and load_rgba_image.
 Plane surfaces are in world coordinates when passed to render_surfaces. Its RGBA and depth outputs
 have calibrated image dimensions; depth is optical-axis z, with inf where no surface is hit.
@@ -1521,12 +1531,16 @@ asset's surfaces in world coordinates.
 
 composite_objects is plan_composite followed by CompositePlan.apply. The plan fixes everything that
 does not depend on surface colours: subpixel sampling, coverage from each asset's alpha,
-nearest-surface ownership, occlusion and object visibility. apply blends in floating point, rounds
-once to uint8 and then runs each object's harmonizer. composite performs the same blend on a
-(3, H, W) tensor in [0, 1] and accepts replacement straight-RGB colours, keyed by (object_id,
-surface index in the asset), at the surface texture's size. Rounding its output reproduces apply
-without harmonizers, and gradients reach the image and the replacement colours. A plan containing a
-harmonized object rejects composite, because harmonizers are not differentiable.
+nearest-surface ownership, occlusion and object visibility. composite blends a (3, H, W) tensor in
+[0, 1] and accepts replacement straight-RGB colours, keyed by (object_id, surface index in the asset),
+at the surface texture's size. Each differentiable harmonizer receives the same unadjusted blend,
+its object's visible mask, the original background and the nominal blend, in which surfaces with a
+nominal_texture show it instead of their texture or replacement colours, and changes only its mask. apply uses this
+same floating-point blend and tensor harmonization before one uint8 rounding; if the plan has only
+differentiable harmonizers, apply(image) equals round(composite(image/255) times 255) pixel for
+pixel. Gradients reach the image and replacement colours through the harmonizer calculation.
+Non-differentiable harmonizers still run after rounding through the numpy deployment path;
+composite rejects only those objects, reporting their IDs and harmonizer types.
 SensorView.composite_plan(objects) plans with the view's camera, depth or actor cuboids and the
 capture tolerance, exactly as simulator captures compose world objects.
 
@@ -1536,12 +1550,30 @@ capture tolerance, exactly as simulator captures compose world objects.
 |---|---|
 | `Harmonizer` | Class; see methods below |
 | `Harmonizer.__call__` | `__call__(composite_rgb: np.ndarray, mask: np.ndarray, background_rgb: np.ndarray) -> np.ndarray` |
+| `Harmonizer.differentiable` | Class attribute; False by default |
+| `Harmonizer.harmonize_tensor` | `harmonize_tensor(composite: torch.Tensor, mask: torch.Tensor, background: torch.Tensor, nominal_composite: torch.Tensor) -> torch.Tensor`; default raises NotImplementedError |
+| `ExposureHarmonizer` | Frozen dataclass: `reference: str = 'ring'`, `ring_px: int = 12`, `gain_range: tuple[float, float] = (0.05, 1.2)`, `feather_sigma: float = 1.2`; differentiable=True |
+| `ExposureHarmonizer.harmonize_tensor` | `harmonize_tensor(composite, mask, background, nominal_composite) -> torch.Tensor` |
+| `ExposureHarmonizer.exposure_gain` | `exposure_gain(composite, mask, background) -> torch.Tensor \| None` |
+| `ExposureHarmonizer.__call__` | `__call__(composite_rgb: np.ndarray, mask: np.ndarray, background_rgb: np.ndarray) -> np.ndarray`; same tensor calculation, rounded to uint8 |
 | `ClassicHarmonizer` | Class; see methods below |
 | `ClassicHarmonizer.__init__` | `__init__(color_transfer: bool = True, poisson: bool = True, preserve_chroma: bool = False, blend: str = 'poisson', feather: float = 1.2, gain_range: tuple = (0.35, 1.2)) -> None` |
 | `ClassicHarmonizer.__call__` | `__call__(composite_rgb, mask, background_rgb)` |
 | `PCTNetHarmonizer` | Class; see methods below |
 | `PCTNetHarmonizer.__init__` | `__init__(libcom_directory: str \| Path, device: int = 0, weights: str \| Path \| None = None, strict: bool = False) -> None` |
 | `PCTNetHarmonizer.__call__` | `__call__(composite_rgb, mask, background_rgb)` |
+
+Tensor harmonization accepts float RGB CHW composite, background and nominal-composite tensors in
+[0, 1] and a boolean HW visible mask, and must preserve the input outside that mask. The nominal
+composite shows each surface's nominal_texture where one is set and equals the composite elsewhere.
+ExposureHarmonizer converts sRGB to linear RGB, computes Y=0.2126R+0.7152G+0.0722B and clamps the
+reference-background/nominal-object mean luminance ratio (denominator plus 1e-6) to gain_range. It
+scales the object's linear RGB by this gain, converts back to sRGB and optionally feathers to the
+original background inside the mask. Its numpy __call__ has no nominal composite and measures the
+gain on the composite itself.
+reference is ring or under; empty visible/reference areas return the input unchanged, and
+exposure_gain returns None. ClassicHarmonizer and PCTNetHarmonizer keep differentiable=False.
+See the [exposure formulas and parameters](../examples/image-insertion.md#differentiable-exposure).
 
 ### avsectester.attack.insertion.visibility
 

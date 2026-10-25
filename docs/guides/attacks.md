@@ -357,12 +357,24 @@ can_insert_objects declaration. Returning InsertObject to an unsupported simulat
 NotImplementedError during the run and records failure. Setup actions are created inside reset, so
 the framework cannot inspect them during preflight.
 
-Pass harmonizer=None for unchanged appearance, a built-in ClassicHarmonizer or PCTNetHarmonizer,
-or an instance of your own avsectester.rendering.Harmonizer subclass. In an attack's YAML options,
+Pass harmonizer=None for unchanged appearance, ExposureHarmonizer for differentiable exposure
+matching, ClassicHarmonizer or PCTNetHarmonizer for non-differentiable adjustments, or an instance
+of your own avsectester.rendering.Harmonizer subclass. In an attack's YAML options,
 reference your class as package.module:Class and pass the constructed instance to InsertObject.
 See the [custom harmonizer example](../examples/image-insertion.md#harmonization). Harmonization
 changes only visible object pixels. When using composite_objects directly, set each
 PlacedObject.harmonizer; appearance belongs to the placed object, not a separate global argument.
+
+A harmonizer declares differentiable=False by default. CompositePlan.composite accepts one only
+when it declares differentiable=True and implements
+harmonize_tensor(composite, mask, background, nominal_composite). The tensors are RGB CHW floats
+in [0, 1] and a boolean HW visible mask. nominal_composite shows each surface's nominal_texture
+where one is set; estimate scene statistics from it so that texture edits do not change them.
+Differentiable harmonizers run in floating point in both composite and apply before the final
+uint8 rounding; they use the same unadjusted composite, original background and nominal composite
+for each object's mask. Thus deployment and optimization use the same calculation. Non-differentiable harmonizers remain available after
+rounding in apply, and composite rejects them by object ID and harmonizer type. See
+[differentiable exposure](../examples/image-insertion.md#differentiable-exposure).
 
 Inserted objects affect camera images and recorded world state. They do not add native collision
 geometry. **Not yet implemented.** Inserted objects in LiDAR or other non-camera sensor data. See

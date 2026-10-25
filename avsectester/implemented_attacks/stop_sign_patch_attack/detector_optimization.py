@@ -149,7 +149,8 @@ def collect_samples(
             if index in cache:
                 return cache[index]
             observation = session.render(RenderRequest(scene, frames[index], options.camera_id,
-                actions=[InsertObject(OBJECT_ID, asset, pose)], environment=context.environment))
+                actions=[InsertObject(OBJECT_ID, asset, pose, harmonizer=attack.harmonizer)],
+                environment=context.environment))
             evidence = observation.object_visibility.get(OBJECT_ID, {}).get(options.camera_id)
             visible_pixels = 0 if evidence is None else evidence.visible_pixels
             note = {"frame": index, "timestamp_s": frames[index].timestamp,

@@ -8,7 +8,7 @@ Placement determines position, while orientation independently determines rotati
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Protocol
 
@@ -94,7 +94,7 @@ class ResolvedInsertion:
     def planes(self) -> tuple[PlaneSurface, ...]:
         rotation, translation = self.pose[:3, :3], self.pose[:3, 3]
         return tuple(
-            PlaneSurface(surface.corners @ rotation.T + translation, surface.texture)
+            replace(surface, corners=surface.corners @ rotation.T + translation)
             for surface in self.asset.planes()
         )
 

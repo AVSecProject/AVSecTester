@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -29,10 +29,14 @@ class PlaneSurface:
     """A textured rectangle, with corners ordered TL, TR, BR, BL from its front.
 
     Asset surfaces use local coordinates; resolved surfaces use world coordinates.
+    ``nominal_texture`` is the optional unmodified appearance of an edited texture, with the
+    same shape and alpha. Harmonizers estimate scene adjustments from it, so an edit such as an
+    adversarial patch does not change how the scene adjusts the rest of the surface.
     """
 
     corners: np.ndarray
     texture: np.ndarray
+    nominal_texture: np.ndarray | None = None
 
     def __post_init__(self):
         corners = np.array(self.corners, dtype=float, copy=True)
@@ -53,6 +57,13 @@ class PlaneSurface:
         texture.setflags(write=False)
         object.__setattr__(self, "corners", corners)
         object.__setattr__(self, "texture", texture)
+        if self.nominal_texture is not None:
+            nominal = np.array(self.nominal_texture, copy=True)
+            if (nominal.dtype != np.uint8 or nominal.shape != texture.shape
+                    or not np.array_equal(nominal[..., 3], texture[..., 3])):
+                raise ValueError("nominal_texture must be uint8 RGBA with the texture's shape and alpha")
+            nominal.setflags(write=False)
+            object.__setattr__(self, "nominal_texture", nominal)
 
 
 @dataclass(frozen=True)
@@ -100,14 +111,17 @@ class ObjectAsset:
     def from_panel(
         cls, texture: np.ndarray | str | Path | Texture, *, category: str, width_m: float,
         mount_height_m: float = 0.0, post_count: int = 0, post_width_m: float = 0.07,
+        nominal_texture: np.ndarray | str | Path | Texture | None = None,
     ) -> ObjectAsset:
         """Build a +X-facing panel and optional support posts above a ground-level origin.
 
         The image's aspect ratio determines the face height. Posts stand 3 cm behind
         the face and reach its centre; several posts are spaced across +/-35% of its
-        width. Surfaces list the posts first and the panel last.
+        width. Surfaces list the posts first and the panel last. ``nominal_texture`` is
+        the panel's unmodified appearance; see PlaneSurface.
         """
         face = load_rgba_image(texture)
+        nominal = None if nominal_texture is None else load_rgba_image(nominal_texture)
         if not np.isfinite([width_m, mount_height_m, post_width_m]).all():
             raise ValueError("Panel dimensions must be finite")
         if width_m <= 0 or mount_height_m < 0 or post_width_m <= 0:
@@ -115,11 +129,11 @@ class ObjectAsset:
         require_nonnegative_integer(post_count, "post_count")
         height = width_m * face.shape[0] / face.shape[1]
 
-        def rectangle(x, y, width, bottom, top, image):
+        def rectangle(x, y, width, bottom, top, image, nominal=None):
             return PlaneSurface(np.array([
                 [x, y - width / 2, top], [x, y + width / 2, top],
                 [x, y + width / 2, bottom], [x, y - width / 2, bottom],
-            ]), image)
+            ]), image, nominal)
 
         surfaces = []
         if post_count:
@@ -128,7 +142,7 @@ class ObjectAsset:
                 surfaces.append(rectangle(-0.03, offset, post_width_m, 0,
                                           mount_height_m + height / 2, _post_texture()))
         surfaces.append(rectangle(0, 0, width_m, mount_height_m,
-                                  mount_height_m + height, face))
+                                  mount_height_m + height, face, nominal))
         return cls.from_surfaces(surfaces, category)
 
 
@@ -153,5 +167,5 @@ class PlacedObject:
     def world_surfaces(self) -> tuple[PlaneSurface, ...]:
         """The asset's surfaces with corners in world coordinates."""
         rotation, translation = self.world_from_object[:3, :3], self.world_from_object[:3, 3]
-        return tuple(PlaneSurface(surface.corners @ rotation.T + translation, surface.texture)
+        return tuple(replace(surface, corners=surface.corners @ rotation.T + translation)
                      for surface in self.asset.surfaces)

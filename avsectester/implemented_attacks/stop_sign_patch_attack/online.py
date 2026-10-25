@@ -7,15 +7,18 @@ import numpy as np
 
 from avsectester.attack import AttackRuntime, OnlineContext
 from avsectester.attack.insertion import InsertObject
-from avsectester.rendering import ObjectAsset
+from avsectester.rendering import Harmonizer, ObjectAsset
 
 
 class StopSignPatchAttackRuntime(AttackRuntime):
     """Insert one replica face; the simulator owns subsequent capture and cleanup."""
 
-    def __init__(self, asset: ObjectAsset, world_from_object: np.ndarray) -> None:
+    def __init__(self, asset: ObjectAsset, world_from_object: np.ndarray,
+                 harmonizer: Harmonizer | None = None) -> None:
         self.asset = asset
+        self.harmonizer = harmonizer
         self.world_from_object = world_from_object.copy()
 
     def setup(self, context: OnlineContext) -> Sequence[InsertObject]:
-        return (InsertObject("stop_sign_replica", self.asset, self.world_from_object),)
+        return (InsertObject("stop_sign_replica", self.asset, self.world_from_object,
+                             harmonizer=self.harmonizer),)

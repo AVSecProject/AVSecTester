@@ -16,6 +16,16 @@ def test_plane_surface():
     with pytest.raises(ValueError, match="four finite"):
         PlaneSurface(np.zeros((3, 3)), surface.texture)
 
+    nominal = np.full_like(texture, 255)
+    edited = PlaneSurface(surface.corners, surface.texture, nominal)
+    nominal[:] = 0
+    np.testing.assert_array_equal(edited.nominal_texture, 255)
+    assert surface.nominal_texture is None
+    nominal[..., 3] = 255
+    nominal[0, 0, 3] = 0
+    with pytest.raises(ValueError, match="texture's shape and alpha"):
+        PlaneSurface(surface.corners, np.full_like(texture, 255), nominal)
+
 
 def test_object_asset():
     surface = PlaneSurface(np.array([[0., -1., 3.], [0., 1., 3.],
@@ -41,6 +51,11 @@ def test_placed_object():
     placed = PlacedObject("sign", asset, pose)
     pose[:3, 3] = 0.
     np.testing.assert_array_equal(placed.world_from_object[:3, 3], [5., 2., 1.])
+    nominal = np.full((2, 2, 4), [0, 0, 0, 255], np.uint8)
+    edited = ObjectAsset.from_surfaces((PlaneSurface(surface.corners, surface.texture, nominal),), "sign")
+    world_surface, = PlacedObject("sign", edited, placed.world_from_object).world_surfaces()
+    np.testing.assert_allclose(world_surface.corners[0], [5., 1., 3.])
+    np.testing.assert_array_equal(world_surface.nominal_texture, nominal)
     invalid = np.eye(4)
     invalid[0, 0] = 2.
     with pytest.raises(ValueError, match="rigid"):
@@ -69,6 +84,11 @@ def test_from_panel():
                                [-.7, 0., .7])
     face_only = ObjectAsset.from_panel(face, category="poster", width_m=1.2)
     assert len(face_only.surfaces) == 1
+    nominal = np.full_like(face, 255)
+    patched = ObjectAsset.from_panel(face, category="sign", width_m=.9, post_count=1,
+                                     nominal_texture=nominal)
+    assert patched.surfaces[0].nominal_texture is None
+    np.testing.assert_array_equal(patched.surfaces[1].nominal_texture, nominal)
     np.testing.assert_allclose(face_only.extent, [0., 1.2, 2.4])
     with pytest.raises(ValueError, match="nonnegative integer"):
         ObjectAsset.from_panel(face, category="poster", width_m=1., post_count=-1)

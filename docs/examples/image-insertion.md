@@ -81,9 +81,10 @@ recorded playback.
 
 PatchCompositor remains in attack/insertion, while harmonizers live in rendering/.
 PatchCompositor defaults to harmonizer=None and soften=0.0: inserted pixels receive no
-harmonization. Choose one of these three forms:
+harmonization. Choose a built-in implementation or provide your own:
 
 - Omit harmonizer, or pass None in Python, to keep the default without harmonization.
+- Supply ExposureHarmonizer for differentiable exposure matching (see below).
 - Supply ClassicHarmonizer for lightweight color/blending adjustments, or PCTNetHarmonizer for
   learned harmonization. PCTNet requires dependencies and weights; strict=True raises loading or
   inference errors instead of falling back.
@@ -106,6 +107,52 @@ Use avsectester.rendering.harmonizers:PCTNetHarmonizer for the learned implement
 libcom_directory as the libcom repository root, or
 package.module:MyHarmonizer for user code. See [PCTNet
 installation](../getting-started/installation.md#pctnet-harmonizer).
+
+### Differentiable exposure
+
+ExposureHarmonizer is a frozen dataclass exported from avsectester.rendering. Its parameters are
+reference="ring", ring_px=12, gain_range=(0.05, 1.2) and feather_sigma=1.2. reference="ring" uses the
+background ring obtained by dilating the visible object mask outward by ring_px pixels and excluding
+the mask itself; the default corresponds to a 25 by 25 dilation. reference="under" uses the original
+background directly under the visible object mask. For a replica covering an existing sign, this
+references the reconstructed sign itself.
+
+For an sRGB channel s in [0, 1], the linear channel is s/12.92 when s <= 0.04045, and
+((s+0.055)/1.055)^2.4 otherwise. Linear luminance is Y=0.2126R+0.7152G+0.0722B. The exposure gain is
+the reference background mean Y divided by the nominal object's visible mean Y plus 1e-6, clamped to
+gain_range. Visible linear RGB is multiplied by that one gain, converted back using the inverse
+sRGB transfer (12.92L below 0.0031308, otherwise 1.055L^(1/2.4)-0.055), then clipped to [0, 1].
+Multiplying all three linear channels by the same gain adjusts exposure while largely preserving
+hue and saturation.
+
+The gain describes scene lighting, not the texture, so it is measured on the object's nominal
+appearance. A PlaneSurface may carry nominal_texture, its unmodified RGBA appearance with the same
+shape and alpha as texture; ObjectAsset.from_panel accepts it for the panel. Harmonizers then see a
+nominal composite in which those surfaces show their nominal texture, also when composite
+replaces their colours. An adversarial patch therefore receives the gain measured on the
+unpatched object and cannot change the exposure of the rest of the object. Surfaces without
+nominal_texture use their own texture, so the gain follows the texture itself.
+
+If feather_sigma is positive, a Gaussian-blurred float mask supplies a: inside the visible mask,
+the result is a times the exposure-adjusted colour plus (1-a) times the original background.
+feather_sigma=0 disables feathering. Pixels outside the visible mask retain the input composite.
+An empty visible mask or empty reference area leaves the input unchanged.
+
+Harmonizer.harmonize_tensor receives composite, background and nominal_composite as (3, H, W)
+float tensors in [0, 1] and a boolean (H, W) mask. ExposureHarmonizer declares differentiable=True
+and uses this same PyTorch calculation for its numpy uint8 __call__, converting in and rounding out;
+that interface has no nominal composite and measures the gain on the composite itself. The public
+exposure_gain method returns the scalar gain tensor, or None for an empty visible/reference area.
+Given the nominal composite, it records the exact gain used in render checks.
+
+CompositePlan.composite applies each differentiable harmonizer to the same unadjusted blend, its
+own visible mask, the original background and the nominal blend. CompositePlan.apply uses that calculation before its
+one uint8 rounding. For a plan containing only differentiable harmonizers, apply(image) equals
+round(composite(image/255) times 255) pixel for pixel. ClassicHarmonizer, including its Poisson
+path, and PCTNetHarmonizer remain non-differentiable: they run through the numpy path after
+rounding during deployment, and composite reports the offending object and harmonizer type.
+Custom tensor harmonizers must explicitly declare differentiable=True, implement harmonize_tensor
+and preserve pixels outside the mask; the base method raises NotImplementedError.
 
 ## Use insertion tools in your attack
 

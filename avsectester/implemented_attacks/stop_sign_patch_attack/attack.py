@@ -8,7 +8,7 @@ import numpy as np
 
 from avsectester.attack import Attack, AttackRuntime, AttackSegment, OfflineContext
 from avsectester.execution.services import ScenarioView
-from avsectester.rendering import ObjectAsset
+from avsectester.rendering import Harmonizer, ObjectAsset
 from avsectester.validation import (
     require_nonnegative_integer, require_nonnegative_number, require_positive_number,
 )
@@ -37,7 +37,7 @@ class StopSignPatchAttack(Attack):
         optimization: DetectorPatchOptimization | RolloutPatchOptimization | None = None,
         mask_path: str | Path = DEFAULT_MASK_PATH, noise_std: float = .25, noise_seed: int = 0,
         approach_m: float = 50., hold_steps: int = 20, offset_m: float = .10,
-        width_scale: float = 1.1,
+        width_scale: float = 1.1, harmonizer: Harmonizer | None = None,
     ) -> None:
         if initial_patch not in INITIAL_PATCHES:
             raise ValueError("initial_patch must be none, white, black or gaussian_noise")
@@ -62,6 +62,7 @@ class StopSignPatchAttack(Attack):
         self.hold_steps = hold_steps
         self.offset_m = offset_m
         self.width_scale = width_scale
+        self.harmonizer = harmonizer
         self.mask = read_patch_mask(mask_path)
         self.mask.setflags(write=False)
 
@@ -87,4 +88,4 @@ class StopSignPatchAttack(Attack):
     def create_runtime(self, segment: AttackSegment, artifacts: object) -> AttackRuntime:
         texture = self.replica_texture(artifacts)
         asset, pose = self.replica_placement(segment, texture)
-        return StopSignPatchAttackRuntime(asset, pose)
+        return StopSignPatchAttackRuntime(asset, pose, self.harmonizer)

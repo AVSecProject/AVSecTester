@@ -33,6 +33,7 @@ from .models import (
 )
 from .output_directory import (
     run_directory, load_preparation_progress, save_preparation_progress, save_completed_artifact,
+    recorded_data_equal,
 )
 
 
@@ -422,11 +423,10 @@ class _Execution:
                 retained = None
                 try:
                     log = RunLog.read(destination)
-                    expected = {"segment_index": group.index, "seed": group.seed,
-                                "treatment": specification.name, "attack_name": specification.attack_name}
+                    expected, _ = self._description(group, specification, self.deployment)
                     if log.status == "completed" and all(
-                        key in log.metadata and type(log.metadata[key]) is type(value)
-                        and log.metadata[key] == value for key, value in expected.items()
+                        key in log.metadata and recorded_data_equal(log.metadata[key], value)
+                        for key, value in expected.items()
                     ):
                         retained = TreatmentResult(specification.attack_name, group.index, group.segment,
                                                    specification.name, group.seed, log, part=group.part)

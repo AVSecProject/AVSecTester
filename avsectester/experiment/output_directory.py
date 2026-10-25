@@ -367,7 +367,7 @@ def load_result(directory: str | Path, configuration: ExperimentConfiguration) -
             if any(type(data.get(key)) is not type(value) or data.get(key) != value
                    for key, value in description.items()):
                 raise ValueError(f"Run identity metadata and output directory disagree: {path}")
-            if not _same_data(data.get("segment"), asdict(segment)):
+            if not recorded_data_equal(data.get("segment"), asdict(segment)):
                 raise ValueError(f"Run segment metadata differs from the saved preparation: {path}")
             errors = [event.data for event in log.events if event.kind == "failure"]
             error = None
@@ -386,7 +386,7 @@ def load_result(directory: str | Path, configuration: ExperimentConfiguration) -
     return ExperimentResult(tuple(runs), prepared.selections, notices, scenario_maps)
 
 
-def _same_data(first: Any, second: Any) -> bool:
+def recorded_data_equal(first: Any, second: Any) -> bool:
     """Compare recorded plain data, including independent arrays and list/tuple encoding."""
     import numpy as np
 
@@ -395,9 +395,10 @@ def _same_data(first: Any, second: Any) -> bool:
     if isinstance(second, np.generic):
         second = second.item()
     if isinstance(first, Mapping) and isinstance(second, Mapping):
-        return first.keys() == second.keys() and all(_same_data(first[key], second[key]) for key in first)
+        return first.keys() == second.keys() and all(
+            recorded_data_equal(first[key], second[key]) for key in first)
     if isinstance(first, (list, tuple)) and isinstance(second, (list, tuple)):
-        return len(first) == len(second) and all(_same_data(a, b) for a, b in zip(first, second))
+        return len(first) == len(second) and all(recorded_data_equal(a, b) for a, b in zip(first, second))
     if isinstance(first, np.ndarray) or isinstance(second, np.ndarray):
         return bool(np.array_equal(first, second))
     return type(first) is type(second) and first == second

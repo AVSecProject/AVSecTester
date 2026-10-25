@@ -7,7 +7,8 @@ import pytest
 from avsectester.data_types import ActorState
 from avsectester.geometry.boxes import box_ray_distances
 from avsectester.rendering import (
-    ObjectAsset, ObjectVisibility, PlacedObject, PlaneSurface, blend_rgba, composite_objects, plan_composite,
+    ClassicHarmonizer, ExposureHarmonizer, ObjectAsset, ObjectVisibility, PlacedObject, PlaneSurface,
+    blend_rgba, composite_objects, plan_composite,
     render_surfaces,
 )
 
@@ -168,6 +169,77 @@ def test_composite_plan_is_the_differentiable_deployment(camera, optical_from_wo
     harmonized = plan_composite(camera, optical_from_world, (replace(placed, harmonizer=lambda c, m, b: c),))
     with pytest.raises(ValueError, match="Harmonizers are not differentiable"):
         harmonized.composite(background)
+
+
+def test_composite_plan_harmonizers(camera, optical_from_world):
+    torch = pytest.importorskip("torch")
+    rng = np.random.default_rng(7)
+    texture = rng.integers(0, 256, (12, 12, 4), dtype=np.uint8)
+    texture[..., 3] = 255
+    texture[:2, :2, 3] = 0
+    surface = PlaneSurface(np.array([[0., -.75, 2.], [0., .75, 2.],
+                                    [0., .75, 0.], [0., -.75, 0.]]), texture)
+    asset = ObjectAsset.from_surfaces((surface,), "sign")
+    pose = np.eye(4)
+    pose[:3, 3] = (6., -1., -1.)
+    far_pose = pose.copy()
+    far_pose[:3, 3] = (9., 1.5, -1.)
+    near = PlacedObject("near", asset, pose, harmonizer=ExposureHarmonizer(reference="under"))
+    far = PlacedObject("far", asset, far_pose, harmonizer=ExposureHarmonizer(
+        reference="ring", ring_px=3, gain_range=(.4, .4), feather_sigma=0.))
+    image = rng.integers(10, 100, (80, 100, 3), dtype=np.uint8)
+    plan = plan_composite(camera, optical_from_world, (near, far))
+    assert all(row.visible_pixels > 0 for row in plan.object_visibility.values())
+    background = (torch.as_tensor(image, dtype=torch.float32).permute(2, 0, 1) / 255).requires_grad_()
+    colors = (torch.as_tensor(texture[..., :3], dtype=torch.float32).permute(2, 0, 1) / 255).requires_grad_()
+    output = plan.composite(background, {("near", 0): colors, ("far", 0): colors})
+    deployed = plan.apply(image)
+    rounded = (output.detach().clamp(0, 1) * 255).round().to(torch.uint8).permute(1, 2, 0).numpy()
+    np.testing.assert_array_equal(deployed.image, rounded)
+    np.testing.assert_array_equal(deployed.image[~plan.visible_mask], image[~plan.visible_mask])
+    output.sum().backward()
+    assert colors.grad is not None and torch.isfinite(colors.grad).all() and colors.grad.abs().sum() > 0
+    assert background.grad is not None and torch.isfinite(background.grad).all()
+
+    unadjusted = plan_composite(camera, optical_from_world, (
+        replace(near, harmonizer=None), replace(far, harmonizer=None))).apply(image)
+    assert np.any(deployed.image[plan.visible_mask] != unadjusted.image[plan.visible_mask])
+    reversed_plan = plan_composite(camera, optical_from_world, (far, near))
+    np.testing.assert_array_equal(deployed.image, reversed_plan.apply(image).image)
+    np.testing.assert_array_equal(
+        rounded, (reversed_plan.composite(background).detach().clamp(0, 1) * 255)
+        .round().to(torch.uint8).permute(1, 2, 0).numpy())
+
+    classic = replace(far, harmonizer=ClassicHarmonizer(color_transfer=False, poisson=False))
+    mixed = plan_composite(camera, optical_from_world, (near, classic))
+    with pytest.raises(ValueError, match="object 'far' uses ClassicHarmonizer"):
+        mixed.composite(background)
+    near_only = plan_composite(camera, optical_from_world, (near,))
+    np.testing.assert_array_equal(
+        mixed.apply(image).image[near_only.visible_mask], deployed.image[near_only.visible_mask])
+
+    # A nominal texture fixes the harmonizer's statistics, so editing part of the texture leaves
+    # the rest of the object unchanged; without one, the edit changes the whole object's gain.
+    edited = texture.copy()
+    edited[6:, :, :3] = 255
+    edited_colors = torch.as_tensor(edited[..., :3], dtype=torch.float32).permute(2, 0, 1) / 255
+    exposure = ExposureHarmonizer(reference="under", gain_range=(.01, 10.), feather_sigma=0.)
+    nominal_asset = ObjectAsset.from_surfaces((PlaneSurface(surface.corners, edited, texture),), "sign")
+    plans = {name: plan_composite(camera, optical_from_world, (PlacedObject("near", item, pose, exposure),))
+             for name, item in (("nominal", nominal_asset), ("plain", asset))}
+    unadjusted = plan_composite(camera, optical_from_world, (PlacedObject("near", asset, pose),))
+    background = background.detach()
+    with torch.no_grad():
+        changed = (unadjusted.composite(background, {("near", 0): colors})
+                   != unadjusted.composite(background, {("near", 0): edited_colors})).any(0)
+        unchanged = torch.as_tensor(unadjusted.visible_mask) & ~changed
+        assert changed.any() and unchanged.any()
+        outputs = {name: [plan.composite(background, {("near", 0): value})[:, unchanged]
+                          for value in (colors, edited_colors)] for name, plan in plans.items()}
+        torch.testing.assert_close(*outputs["nominal"], atol=0, rtol=0)
+        assert not torch.allclose(*outputs["plain"])
+        rounded = (plans["nominal"].composite(background).clamp(0, 1) * 255).round().to(torch.uint8)
+    np.testing.assert_array_equal(plans["nominal"].apply(image).image, rounded.permute(1, 2, 0).numpy())
 
 
 def test_plan_composite_with_scene_visibility(camera, optical_from_world):

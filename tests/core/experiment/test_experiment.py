@@ -317,3 +317,35 @@ def test_execute_resume(tmp_path):
         path: content for path, content in all_manifests.items() if path != pending_manifest
     }
     assert retained_file.read_text() == "preserve completed directory"
+
+    # Execution settings form part of the checkpoint identity, not just the run's location.
+    shorter = replace(prepared, configuration=replace(
+        config, runs=replace(config.runs, decision_steps=1),
+    ))
+    shortened = Experiment.execute(shorter, resume=True)
+    assert all(run.log.status == "completed" and len(run.log.steps) == 1 for run in shortened.runs)
+    assert all(run.log.metadata["decision_steps"] == 1 for run in shortened.runs)
+    assert all(run.log.metadata["selected_decision_steps"] == 2 for run in shortened.runs)
+    assert not retained_file.exists()
+    short_manifests = {path: path.read_bytes() for path in base.glob("*/manifest.json")}
+    retained_file.write_text("retain unchanged shorter execution")
+    Experiment.execute(shorter, resume=True)
+    assert {path: path.read_bytes() for path in short_manifests} == short_manifests
+    assert retained_file.read_text() == "retain unchanged shorter execution"
+
+    changed = replace(shorter, configuration=replace(
+        shorter.configuration, runs=replace(
+            shorter.configuration.runs,
+            treatments=tuple(replace(t, environment={"world": {"weather": "rain"}})
+                             if t.name == "pending" else t for t in shorter.configuration.runs.treatments),
+        ),
+    ))
+    replaced_file.write_text("discard changed treatment environment")
+    changed_runs = Experiment.execute(changed, resume=True)
+    pending = next(run for run in changed_runs.runs if run.treatment == "pending")
+    assert pending.log.metadata["environment"]["world"]["weather"] == "rain"
+    assert not replaced_file.exists()
+    assert retained_file.read_text() == "retain unchanged shorter execution"
+    assert {path: path.read_bytes() for path in short_manifests if path != pending_manifest} == {
+        path: content for path, content in short_manifests.items() if path != pending_manifest
+    }

@@ -113,10 +113,13 @@ record are checked before restoring saved selection and units. Completed artifac
 only remaining attacks run offline. Selection is not repeated on a partial resume. Incompatible
 configuration raises ConfigurationMismatchError with its differences.
 
-Execution preserves a completed run only when its manifest identity matches segment_index, seed,
-treatment and attack_name. It reads that log into the result without rewriting the manifest. A
-missing run is filled in; an existing failed, incomplete, corrupt or mismatched run directory is
-removed individually and rerun. A fully completed group requires no world/AVStack initialization.
+Execution preserves a completed run only when all expected metadata matches: segment_index, seed,
+treatment, attack_name, part, segment, environment, decision_steps, selected_decision_steps and
+deployment_ticks. Segment data is compared in its canonical serialized representation. A change in
+the decision limit, treatment environment or deployment budget therefore reruns the affected run.
+Otherwise it reads that log into the result without rewriting the manifest. A missing run is filled
+in; an existing failed, incomplete, corrupt or mismatched run directory is removed individually and
+rerun. A fully completed group requires no world/AVStack initialization.
 The CLI equivalent is `avsectester run CONFIG --resume`. Without --resume, existing output is an
 error; --resume cannot be combined with --prepared.
 

@@ -156,6 +156,12 @@ contact and mesh depth require the nurec extra. NuRecRenderer.resolution_hw uses
 and requested (height, width). NRE may return another width to preserve the camera aspect ratio;
 projection, depth and insertion use its actual dimensions.
 
+NuRecRenderer.probe_directory is a client-side path (str | Path | None). A relative value is resolved
+against the YAML configuration file, like other path-annotated constructor options, rather than the
+process working directory. server_probe_directory is a string in the NRE server's filesystem
+namespace; configuration loading leaves it unchanged. Mount the same probe files at those two
+locations when client and NRE run in different containers.
+
 Alpamayo requires 15 preceding recorded decisions at 0.1 s intervals. Their images and poses are
 provided to reset; no startup padding is generated. frame_subsample defaults to 1, and the
 configured image span `(context_length - 1) * frame_subsample` must not exceed 15. NuRec captures

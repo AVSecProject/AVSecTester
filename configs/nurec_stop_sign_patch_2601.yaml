@@ -66,22 +66,29 @@ attacks:
     type: StopSignPatchAttack
     options:
       initial_patch: none
+      harmonizer: &exposure_harmonizer
+        type: avsectester.rendering.harmonizers:ExposureHarmonizer
+        options: {reference: under}
   white:
     type: StopSignPatchAttack
     options:
       initial_patch: white
+      harmonizer: *exposure_harmonizer
   black:
     type: StopSignPatchAttack
     options:
       initial_patch: black
+      harmonizer: *exposure_harmonizer
   noise:
     type: StopSignPatchAttack
     options:
       initial_patch: gaussian_noise
+      harmonizer: *exposure_harmonizer
   white_detector_pgd:
     type: StopSignPatchAttack
     options:
       initial_patch: white
+      harmonizer: *exposure_harmonizer
       optimization:
         type: avsectester.implemented_attacks.stop_sign_patch_attack.offline:DetectorPatchOptimization
         options:
@@ -104,6 +111,7 @@ attacks:
     type: StopSignPatchAttack
     options:
       initial_patch: black
+      harmonizer: *exposure_harmonizer
       optimization:
         type: avsectester.implemented_attacks.stop_sign_patch_attack.offline:DetectorPatchOptimization
         options:
@@ -126,6 +134,7 @@ attacks:
     type: StopSignPatchAttack
     options:
       initial_patch: gaussian_noise
+      harmonizer: *exposure_harmonizer
       optimization:
         type: avsectester.implemented_attacks.stop_sign_patch_attack.offline:DetectorPatchOptimization
         options:
@@ -148,6 +157,7 @@ attacks:
     type: StopSignPatchAttack
     options:
       initial_patch: white
+      harmonizer: *exposure_harmonizer
       optimization:
         type: avsectester.implemented_attacks.stop_sign_patch_attack.offline:RolloutPatchOptimization
         options:
@@ -170,6 +180,7 @@ attacks:
     type: StopSignPatchAttack
     options:
       initial_patch: black
+      harmonizer: *exposure_harmonizer
       optimization:
         type: avsectester.implemented_attacks.stop_sign_patch_attack.offline:RolloutPatchOptimization
         options:
@@ -192,6 +203,7 @@ attacks:
     type: StopSignPatchAttack
     options:
       initial_patch: gaussian_noise
+      harmonizer: *exposure_harmonizer
       optimization:
         type: avsectester.implemented_attacks.stop_sign_patch_attack.offline:RolloutPatchOptimization
         options:

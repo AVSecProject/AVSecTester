@@ -4,8 +4,16 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
+import math
+from typing import ClassVar, TYPE_CHECKING
 from pathlib import Path
 import numpy as np
+
+from avsectester.validation import require_nonnegative_integer, require_nonnegative_number
+
+if TYPE_CHECKING:
+    import torch
 
 log = logging.getLogger(__name__)
 
@@ -13,10 +21,174 @@ log = logging.getLogger(__name__)
 class Harmonizer(ABC):
     """Adjust the pasted foreground to fit the background. Must preserve the patch's texture."""
 
+    differentiable: ClassVar[bool] = False
+
+    def harmonize_tensor(
+        self, composite: torch.Tensor, mask: torch.Tensor, background: torch.Tensor,
+        nominal_composite: torch.Tensor,
+    ) -> torch.Tensor:
+        """Adjust CHW floating sRGB only within the HW boolean visible mask.
+
+        ``nominal_composite`` shows each surface's nominal texture where one is set and equals
+        ``composite`` elsewhere. Estimate scene statistics from it, so texture edits such as an
+        adversarial patch do not change the adjustment applied to the rest of the object.
+        """
+        raise NotImplementedError(f"{type(self).__name__} is not differentiable")
+
     @abstractmethod
     def __call__(
         self, composite_rgb: np.ndarray, mask: np.ndarray, background_rgb: np.ndarray
     ) -> np.ndarray: ...
+
+
+def _linear_rgb(srgb: torch.Tensor) -> torch.Tensor:
+    import torch
+
+    return torch.where(srgb <= .04045, srgb / 12.92, ((srgb + .055) / 1.055).pow(2.4))
+
+
+def _srgb_rgb(linear: torch.Tensor) -> torch.Tensor:
+    import torch
+
+    # The inactive power branch must also have a finite derivative at zero.
+    return torch.where(linear <= .0031308, 12.92 * linear,
+                       1.055 * linear.clamp_min(.0031308).pow(1 / 2.4) - .055)
+
+
+def _reflection_indices(length: int, radius: int, device: torch.device) -> torch.Tensor:
+    import torch
+
+    indices = torch.arange(-radius, length + radius, device=device)
+    if length == 1:
+        return torch.zeros_like(indices)
+    period = 2 * (length - 1)
+    indices = indices.remainder(period)
+    return torch.minimum(indices, period - indices)
+
+
+def _feather_mask(mask: torch.Tensor, sigma: float, dtype: torch.dtype) -> torch.Tensor:
+    import torch
+    import torch.nn.functional as F
+
+    radius = int(round(4 * sigma))
+    if radius == 0:
+        return mask.to(dtype)
+    coordinates = torch.arange(-radius, radius + 1, device=mask.device, dtype=dtype)
+    kernel = torch.exp(-.5 * (coordinates / sigma).square())
+    kernel = kernel / kernel.sum()
+    weights = mask.to(dtype)[None, None]
+    # Reflect without repeating the border, even for images smaller than the kernel.
+    weights = weights.index_select(-1, _reflection_indices(mask.shape[1], radius, mask.device))
+    weights = F.conv2d(weights, kernel[None, None, None, :])
+    weights = weights.index_select(-2, _reflection_indices(mask.shape[0], radius, mask.device))
+    return F.conv2d(weights, kernel[None, None, :, None])[0, 0]
+
+
+def _check_tensor_inputs(composite: torch.Tensor, mask: torch.Tensor, background: torch.Tensor) -> None:
+    import torch
+
+    if (composite.ndim != 3 or composite.shape[0] != 3 or background.shape != composite.shape
+            or mask.shape != composite.shape[1:]):
+        raise ValueError("Harmonizer inputs require RGB CHW images and an HW mask")
+    if (not composite.is_floating_point() or not background.is_floating_point()
+            or mask.dtype != torch.bool):
+        raise TypeError("Harmonizer inputs require floating RGB tensors and a boolean mask")
+    if (background.device != composite.device or mask.device != composite.device
+            or background.dtype != composite.dtype):
+        raise ValueError("Harmonizer inputs must share one device and image dtype")
+
+
+@dataclass(frozen=True)
+class ExposureHarmonizer(Harmonizer):
+    """Match visible foreground exposure to a background reference in linear RGB.
+
+    The ring reference samples square outward dilation minus the visible mask.
+    The under reference samples the original background below the visible mask.
+    One clipped luminance gain, estimated from the nominal composite, scales all
+    channels of the composite, with optional Gaussian feathering against the
+    background. Only visible-mask pixels change. NumPy and differentiable tensor
+    calls share this calculation; NumPy has no nominal composite, estimates the
+    gain from the composite itself and rounds to uint8 only at the end.
+    """
+
+    reference: str = "ring"
+    ring_px: int = 12
+    gain_range: tuple[float, float] = (.05, 1.2)
+    feather_sigma: float = 1.2
+    differentiable: ClassVar[bool] = True
+
+    def __post_init__(self) -> None:
+        if self.reference not in {"ring", "under"}:
+            raise ValueError("reference must be ring or under")
+        require_nonnegative_integer(self.ring_px, "ring_px")
+        require_nonnegative_number(self.feather_sigma, "feather_sigma")
+        if len(self.gain_range) != 2 or any(
+            isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, float, np.number))
+            or not math.isfinite(float(value)) or float(value) <= 0
+            for value in self.gain_range
+        ) or self.gain_range[0] > self.gain_range[1]:
+            raise ValueError("gain_range must be two positive finite values in increasing order")
+        object.__setattr__(self, "gain_range", tuple(float(value) for value in self.gain_range))
+
+    def exposure_gain(
+        self, composite: torch.Tensor, mask: torch.Tensor, background: torch.Tensor,
+    ) -> torch.Tensor | None:
+        """Return the clipped gain from ``composite``'s visible luminance to the reference.
+
+        Inputs use CHW floating sRGB in [0, 1] and an HW boolean mask. Harmonization passes
+        the nominal composite here, so this measures exactly the gain used for rendering.
+        Returns None for an empty visible or reference region.
+        """
+        import torch.nn.functional as F
+
+        _check_tensor_inputs(composite, mask, background)
+        if not mask.any():
+            return None
+        reference = mask
+        if self.reference == "ring":
+            dilated = F.max_pool2d(
+                mask.to(composite.dtype)[None, None], 2 * self.ring_px + 1,
+                stride=1, padding=self.ring_px,
+            )[0, 0] > 0
+            reference = dilated & ~mask
+        if not reference.any():
+            return None
+        luminance_weights = composite.new_tensor((.2126, .7152, .0722))[:, None]
+        foreground_y = (_linear_rgb(composite[:, mask]) * luminance_weights).sum(dim=0)
+        reference_y = (_linear_rgb(background[:, reference]) * luminance_weights).sum(dim=0)
+        return (reference_y.mean() / (foreground_y.mean() + 1e-6)).clamp(
+            self.gain_range[0], self.gain_range[1])
+
+    def harmonize_tensor(
+        self, composite: torch.Tensor, mask: torch.Tensor, background: torch.Tensor,
+        nominal_composite: torch.Tensor,
+    ) -> torch.Tensor:
+        import torch
+
+        _check_tensor_inputs(composite, mask, background)
+        if (nominal_composite.shape != composite.shape or nominal_composite.dtype != composite.dtype
+                or nominal_composite.device != composite.device):
+            raise ValueError("The nominal composite must match the composite's shape, dtype and device")
+        gain = self.exposure_gain(nominal_composite, mask, background)
+        if gain is None:
+            return composite
+        adjusted = _srgb_rgb(_linear_rgb(composite) * gain).clamp(0, 1)
+        if self.feather_sigma > 0:
+            alpha = _feather_mask(mask, self.feather_sigma, composite.dtype)[None]
+            adjusted = alpha * adjusted + (1 - alpha) * background
+        return torch.where(mask[None], adjusted, composite)
+
+    def __call__(
+        self, composite_rgb: np.ndarray, mask: np.ndarray, background_rgb: np.ndarray,
+    ) -> np.ndarray:
+        import torch
+
+        composite = torch.from_numpy(np.ascontiguousarray(composite_rgb)).permute(2, 0, 1).float() / 255
+        background = torch.from_numpy(np.ascontiguousarray(background_rgb)).permute(2, 0, 1).float() / 255
+        visible = torch.from_numpy(np.ascontiguousarray(mask > 0))
+        with torch.no_grad():
+            output = self.harmonize_tensor(composite, visible, background, composite)
+        return (output.clamp(0, 1) * 255).round().to(torch.uint8).permute(1, 2, 0).numpy()
 
 
 class ClassicHarmonizer(Harmonizer):

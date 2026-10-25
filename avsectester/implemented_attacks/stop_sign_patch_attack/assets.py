@@ -94,13 +94,17 @@ def _check_control(control: TrafficControl) -> None:
 
 
 def replica_asset(control: TrafficControl, texture: np.ndarray, width_scale: float) -> ObjectAsset:
-    """Build a post-free face panel from the scaled map width and the texture aspect ratio."""
+    """Build a post-free face panel from the scaled map width and the texture aspect ratio.
+
+    The canonical face is the panel's nominal texture, so a harmonizer estimates scene
+    lighting from the unpatched replica and applies it unchanged to every patch.
+    """
     _check_control(control)
     require_positive_number(width_scale, "width_scale")
     width_m = control.extent[1] * width_scale
     asset = ObjectAsset.from_panel(
         texture, category="stop_sign", width_m=width_m,
-        mount_height_m=0., post_count=0,
+        mount_height_m=0., post_count=0, nominal_texture=replica_face(),
     )
     if not np.isclose(asset.extent[2], control.extent[2], rtol=1e-6, atol=1e-6):
         warnings.warn(

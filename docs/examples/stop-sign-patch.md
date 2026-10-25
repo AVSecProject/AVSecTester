@@ -66,9 +66,16 @@ also covers the reconstructed sign's edges; its height follows the face aspect r
 center is aligned with the map sign face center and moved 10 cm toward approaching vehicles along
 the sign's positive X normal, in front of the reconstructed face. Map pose and size errors can
 leave a thin edge of the original sign visible; the same placement rule is used in all scenes. A
-height mismatch produces a warning rather than a scene-specific correction. The replica is
-composited with the texture's own colours, without matching scene lighting. World insertion changes
-camera composition; it does not insert returns into LiDAR.
+height mismatch produces a warning rather than a scene-specific correction. All ten supplied
+attack options use ExposureHarmonizer(reference="under"), written once as a YAML anchor. It
+compares the original reconstructed sign's luminance under the replica's visible pixels with the
+unpatched replica's, because the replica panel's nominal_texture is the canonical face. The
+resulting gain describes scene lighting only: every patch, including an optimized one, receives
+the gain of the unpatched control, and a patch cannot brighten or darken the rest of the sign. The
+same harmonizer instance is passed to InsertObject for online deployment and white-box sampling.
+Differentiable composition therefore includes the same exposure and feather calculation during
+optimization and deployment. World insertion changes camera composition; it does not insert
+returns into LiDAR.
 
 ## Data split and treatments
 
@@ -81,7 +88,7 @@ split:
   execute: [test]
 ```
 
-All nine attacks select their metadata before the framework forms complete segment units. Identical
+All ten attacks select their metadata before the framework forms complete segment units. Identical
 segments, including user_data, share a unit across attacks. Four units are assigned to train by the
 seeded permutation; the remainder are test units. No validation units are requested. Only training
 segments reach offline optimization. StopSignPatchAttack does not use validation_metadata.
@@ -162,10 +169,12 @@ with --prepared. Python provides Experiment.prepare(configuration, resume=True) 
 Experiment.execute(prepared, resume=True).
 
 Resume checkpoints whole attacks, not individual PGD updates or NES queries. An unfinished offline
-phase starts from its beginning. The black-box optimizer retains its guard against a nonempty
-output_directory/rollouts directory. After a failed NES phase, first archive or explicitly clean
-that failed attack's optimization directory before retrying; framework resume does not erase those
-query logs or merge partial optimization results. See [Resume interrupted work](../guides/experiments.md#resume-interrupted-work).
+phase starts from its beginning. If output_directory/rollouts is nonempty, the black-box optimizer
+renames it to rollouts-incomplete-<UTC timestamp> in the same output directory, then starts a fresh
+rollouts directory. The previous query logs are preserved rather than deleted or merged, and
+optimization.json records the archive path in archived_rollouts (or null when no archive was
+needed). Matching completed executions are retained only when their full expected metadata still
+agrees, including segment, part, environment, decision counts and deployment budget. See [Resume interrupted work](../guides/experiments.md#resume-interrupted-work).
 
 ## One renderer for both scene versions
 

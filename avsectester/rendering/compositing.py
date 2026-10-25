@@ -102,14 +102,16 @@ def _object_mask(footprints: Sequence[_Footprint], index: int, shape: tuple[int,
 
 @dataclass(frozen=True)
 class CompositePlan:
-    """Texture-independent geometry for compositing placed objects into one camera image.
+    """Texture-independent geometry and composition for one camera image.
 
     Sampling, coverage, nearest-surface ownership and occlusion are fixed when planning; only
-    surface colours remain free. ``apply`` produces a deployed uint8 composite, including
-    harmonizers. ``composite`` is the same blend as a differentiable function of the image and
-    of replacement surface colours, so optimized textures match their deployment up to the final
-    8-bit rounding. ``depth`` is the scene depth combined with the composed surfaces; with
-    ``scene_visibility`` evidence it holds only the visible surfaces.
+    surface colours remain free. Apply and composite share the floating-point blend and all
+    differentiable harmonizers, differing only in final 8-bit rounding. Non-differentiable
+    harmonizers support deployment through apply only. Each object's harmonizer sees the same
+    unadjusted composite and original background, and changes only its visible pixels.
+    Differentiable harmonizers also see the nominal composite, in which surfaces with a
+    nominal texture show it instead of their texture or replacement colours.
+    Depth combines scene and surface evidence; scene_visibility keeps only visible surfaces.
     """
 
     objects: tuple[PlacedObject, ...]
@@ -122,21 +124,58 @@ class CompositePlan:
 
     def composite(self, image: torch.Tensor,
                   textures: Mapping[tuple[str, int], torch.Tensor] | None = None) -> torch.Tensor:
-        """Blend the planned surfaces over a ``(3, H, W)`` image with values in [0, 1].
+        """Blend surfaces and differentiable harmonizers over a (3, H, W) image in [0, 1].
 
-        ``textures`` maps ``(object_id, surface index in its asset)`` to straight RGB
-        ``(3, h, w)`` values in [0, 1] at that surface texture's size. The asset's alpha keeps the
-        surface shape, and other surfaces keep their asset colours. Gradients reach the image and
-        the replacement colours; the planned geometry carries none. Harmonizers are not
-        differentiable, so a plan containing a harmonized object is rejected.
+        Textures maps (object_id, surface index) to straight RGB (3, h, w) colours at the
+        surface texture's size. Asset alpha preserves its shape; omitted surfaces keep their
+        asset colours. Gradients reach the image and replacement colours, not planned geometry.
+        Each harmonizer receives the same unadjusted blend, its visible mask, the original
+        background and the nominal blend. Non-differentiable harmonizers make this operation
+        unavailable.
         """
-        harmonized = [placed.object_id for placed in self.objects if placed.harmonizer is not None]
-        if harmonized:
-            raise ValueError(f"Harmonizers are not differentiable; plan objects {harmonized} without them")
-        return self._blend(image, dict(textures or {}))
+        for placed in self.objects:
+            harmonizer = placed.harmonizer
+            if harmonizer is not None and not getattr(harmonizer, "differentiable", False):
+                raise ValueError(
+                    f"Harmonizers are not differentiable: object {placed.object_id!r} uses "
+                    f"{type(harmonizer).__name__}")
+        textures = dict(textures or {})
+        return self._harmonize_tensor(self._blend(image, textures), image, textures)
+
+    def _harmonize_tensor(self, blended: torch.Tensor, background: torch.Tensor,
+                          textures: dict[tuple[str, int], torch.Tensor]) -> torch.Tensor:
+        """Apply differentiable harmonizers to independent copies of one unadjusted blend."""
+        import torch
+
+        harmonized = [(index, placed, placed.harmonizer) for index, placed in enumerate(self.objects)
+                      if placed.harmonizer is not None and getattr(placed.harmonizer, "differentiable", False)]
+        nominal_textures = {
+            (placed.object_id, surface_index): torch.as_tensor(
+                surface.nominal_texture[..., :3].copy(), dtype=background.dtype, device=background.device,
+            ).permute(2, 0, 1) / 255
+            for _, placed, _ in harmonized
+            for surface_index, surface in enumerate(placed.asset.surfaces)
+            if surface.nominal_texture is not None
+        }
+        nominal = (self._blend(background, {**textures, **nominal_textures}) if nominal_textures
+                   else blended)
+        output = blended
+        for index, _, harmonizer in harmonized:
+            active = torch.as_tensor(
+                _object_mask(self.footprints, index, self.depth.shape), device=blended.device)
+            if active.any():
+                adjusted = harmonizer.harmonize_tensor(
+                    blended.clone(), active, background.clone(), nominal.clone())
+                output = torch.where(active[None], adjusted, output)
+        return output
 
     def apply(self, image: np.ndarray) -> CompositeResult:
-        """Composite a calibrated uint8 RGB image and harmonize each object's visible pixels."""
+        """Deploy uint8 RGB, rounding once after differentiable composition.
+
+        Differentiable harmonizers use the same floating-point calculation as composite.
+        Non-differentiable harmonizers run afterwards through their NumPy interface, each seeing
+        the rounded unadjusted composite and original background.
+        """
         import torch
 
         image = np.asarray(image)
@@ -144,14 +183,21 @@ class CompositePlan:
             raise ValueError("image must be calibrated uint8 RGB with shape (H, W, 3)")
         with torch.no_grad():
             values = torch.as_tensor(image, dtype=torch.float32).permute(2, 0, 1) / 255
-            blended = self._blend(values, {}).permute(1, 2, 0).numpy()
+            blended = self._blend(values, {})
+            harmonized = self._harmonize_tensor(blended, values, {}).permute(1, 2, 0).numpy()
+            unadjusted = blended.permute(1, 2, 0).numpy()
         output = image.copy()
         visible = self.visible_mask
-        output[visible] = np.rint(np.clip(blended[visible], 0, 1) * 255).astype(np.uint8)
-        unharmonized = output.copy()
-        for index, placed in enumerate(self.objects):
-            active = _object_mask(self.footprints, index, self.depth.shape)
-            _harmonize_visible(output, active, image, placed.harmonizer, unharmonized)
+        output[visible] = np.rint(np.clip(harmonized[visible], 0, 1) * 255).astype(np.uint8)
+        numpy_harmonized = [
+            (index, placed) for index, placed in enumerate(self.objects)
+            if placed.harmonizer is not None and not getattr(placed.harmonizer, "differentiable", False)]
+        if numpy_harmonized:
+            unharmonized = image.copy()
+            unharmonized[visible] = np.rint(np.clip(unadjusted[visible], 0, 1) * 255).astype(np.uint8)
+            for index, placed in numpy_harmonized:
+                active = _object_mask(self.footprints, index, self.depth.shape)
+                _harmonize_visible(output, active, image, placed.harmonizer, unharmonized)
         return CompositeResult(output, self.depth, visible, self.occlusion_source,
                                self.ignored_occluders, self.object_visibility)
 

@@ -1,6 +1,7 @@
 """Stop-sign selection, patched replica placement and real offline optimization."""
 import csv
 from dataclasses import replace
+from pathlib import Path
 import json
 
 import numpy as np
@@ -32,6 +33,7 @@ from avsectester.implemented_attacks.stop_sign_patch_attack.offline import (
 from avsectester.implemented_attacks.stop_sign_patch_attack.rollout_optimization import (
     MaskedTexturePerturbation, fixed_start_segments, planned_forward_distance,
 )
+from avsectester.rendering import ExposureHarmonizer
 from avsectester.rendering.compositing import plan_composite
 from avsectester.rendering.objects import ObjectAsset, PlacedObject
 from avsectester.runlog import RunLog
@@ -91,7 +93,8 @@ def test_initial_patch_texture():
 
 
 def test_create_runtime(approach_view):
-    attack = StopSignPatchAttack(offset_m=.10, width_scale=1.)
+    harmonizer = ExposureHarmonizer(reference="under")
+    attack = StopSignPatchAttack(offset_m=.10, width_scale=1., harmonizer=harmonizer)
     scenario = approach_view()
     segment, = attack.build_metadata(scenario)
     texture = attack.run_offline(OfflineContext(scenario.services, (segment,), seed=0))
@@ -101,11 +104,13 @@ def test_create_runtime(approach_view):
         OnlineContext(0, "setup", 0., segment.start.position))
     assert len(actions) == 1 and isinstance(actions[0], InsertObject)
     action = actions[0]
+    assert action.harmonizer is harmonizer
     assert action.object_id == "stop_sign_replica" and action.asset.category == "stop_sign"
     assert action.asset.extent[1] == pytest.approx(.8)
     assert StopSignPatchAttack().create_runtime(segment, candidate).setup(
         OnlineContext(0, "setup", 0., segment.start.position))[0].asset.extent[1] == pytest.approx(.88)
     np.testing.assert_array_equal(action.asset.surfaces[0].texture, candidate)
+    np.testing.assert_array_equal(action.asset.surfaces[0].nominal_texture, replica_face())
     control = control_from_user_data(segment.user_data)
     face_center = action.asset.surfaces[0].corners.mean(axis=0)
     np.testing.assert_allclose((action.world_from_object @ np.r_[face_center, 1.])[:3],
@@ -132,7 +137,8 @@ def test_detector_patch_optimization(nurec_patch_services, replica_detector_mode
                                      max_training_segments, expected_starts):
     services, make_segment = nurec_patch_services
     output = tmp_path / "detector"
-    attack = StopSignPatchAttack(initial_patch="white", optimization=DetectorPatchOptimization(
+    attack = StopSignPatchAttack(initial_patch="white", harmonizer=ExposureHarmonizer(reference="under"),
+                                optimization=DetectorPatchOptimization(
         detector=StopSignDetector(model=replica_detector_model),
         optimizer=PGD(steps=3, batch=1, seed=0), output_directory=output,
         camera_id="front", min_visible_pixels=5, detection_threshold=0.,
@@ -175,7 +181,7 @@ def test_detector_patch_optimization(nurec_patch_services, replica_detector_mode
     with services.session(0) as session:
         for row in samples:
             rendered = session.render(RenderRequest(segment.scenario_id, frames[int(row["frame"])],
-                "front", actions=[InsertObject("stop_sign_replica", asset, pose)]))
+                "front", actions=[InsertObject("stop_sign_replica", asset, pose, harmonizer=attack.harmonizer)]))
             view = rendered.view
             expected = project_box(view.camera, view.cam_from_world, control.pose, control.extent)
             np.testing.assert_allclose(json.loads(row["target_box"]), expected)
@@ -195,10 +201,15 @@ def test_rollout_patch_optimization(nurec_patch_services, tmp_path,
         NES(steps=1, population_size=2, seed=0), output,
         start_distances_m=(12., 8.), max_training_segments=max_training_segments,
     )
-    attack = StopSignPatchAttack(initial_patch="white", optimization=options)
+    attack = StopSignPatchAttack(initial_patch="white", optimization=options,
+                                harmonizer=ExposureHarmonizer(reference="under"))
     training = (make_segment(), make_segment(start=16))
     context = OfflineContext(services, training, seed=0,
                              validation_metadata=(make_segment(start=23),))
+    old_query = output / "rollouts" / "old-query"
+    old_query.mkdir(parents=True)
+    old_evidence = old_query / "evidence.txt"
+    old_evidence.write_text("unfinished query evidence")
     texture = attack.run_offline(context)
     with (output / "rollouts.csv").open(newline="") as stream:
         rows = list(csv.DictReader(stream))
@@ -211,6 +222,10 @@ def test_rollout_patch_optimization(nurec_patch_services, tmp_path,
         assert planned_forward_distance(log.steps[0].produced_command.trajectory) == pytest.approx(21.)
     summary = json.loads((output / "optimization.json").read_text())
     assert summary["training_segments"] == expected_segments
+    archive = Path(summary["archived_rollouts"])
+    assert archive.parent == output and archive.name.startswith("rollouts-incomplete-")
+    assert (archive / "old-query" / "evidence.txt").read_text() == "unfinished query evidence"
+    assert not (output / "rollouts" / "old-query").exists()
     assert summary["max_training_segments"] == max_training_segments
     assert len(summary["starts"]) == 2 * expected_segments
     assert {row["scenario_id"] for row in rows} == {training[0].scenario_id}
@@ -222,11 +237,9 @@ def test_rollout_patch_optimization(nurec_patch_services, tmp_path,
         attack.run_offline(replace(context, metadata=()))
     with pytest.raises(ValueError, match="max_training_segments"):
         replace(options, max_training_segments=0)
-    with pytest.raises(ValueError, match="rollout directory must be empty"):
-        attack.run_offline(context)
     failed_output = tmp_path / "failed"
     failed = StopSignPatchAttack(optimization=replace(options, output_directory=failed_output,
-                                                     horizon_s=6.))
+                                                     horizon_s=6.), harmonizer=attack.harmonizer)
     with pytest.raises(ValueError, match="does not cover the requested horizon"):
         failed.run_offline(context)
     with (failed_output / "rollouts.csv").open(newline="") as stream:
@@ -278,7 +291,8 @@ def test_masked_patch_perturbation():
     pose = np.array([[0., 1., 0., 0.], [0., 0., -1., .5],
                      [-1., 0., 0., 4.], [0., 0., 0., 1.]])
     camera = PinholeCamera(np.array([[20., 0., 6.], [0., 20., 6.], [0., 0., 1.]]), 12, 12)
-    plan = plan_composite(camera, np.eye(4), [PlacedObject("stop_sign_replica", asset, pose)])
+    plan = plan_composite(camera, np.eye(4), [PlacedObject(
+        "stop_sign_replica", asset, pose, ExposureHarmonizer(reference="under"))])
     sample = AdversarialSample(torch.zeros(3, 12, 12), TargetSpec((3., 3., 9., 9.)), {"plan": plan})
     perturbation = MaskedPatchPerturbation(original, mask)
     colors = perturbation.init()

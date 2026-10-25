@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 import csv
+from datetime import datetime, timezone
 import json
 from numbers import Integral
 from pathlib import Path
@@ -225,8 +226,16 @@ def optimize_patch_by_rollouts(
         raise ValueError("Rollout patch optimization requires at least one training segment")
     output = Path(options.output_directory)
     rollout_directory = output / "rollouts"
+    archived_rollouts = None
     if rollout_directory.exists() and any(rollout_directory.iterdir()):
-        raise ValueError("Black-box rollout directory must be empty")
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+        archive = output / f"rollouts-incomplete-{stamp}"
+        suffix = 0
+        while archive.exists() or archive.is_symlink():
+            suffix += 1
+            archive = output / f"rollouts-incomplete-{stamp}-{suffix}"
+        rollout_directory.rename(archive)
+        archived_rollouts = str(archive)
     rollout_directory.mkdir(parents=True, exist_ok=True)
     perturbation = MaskedTexturePerturbation(original, mask)
     scorer = None
@@ -252,6 +261,7 @@ def optimize_patch_by_rollouts(
     Image.fromarray(optimized).save(output / "optimized_texture.png")
     _write_json(output / "optimization.json", {
         "history": result.history, "final_score": result.final_score,
+        "archived_rollouts": archived_rollouts,
         "max_training_segments": options.max_training_segments,
         "training_segments": len(context.metadata[:options.max_training_segments]),
         "start_distances_m": list(options.start_distances_m), "horizon_s": options.horizon_s,

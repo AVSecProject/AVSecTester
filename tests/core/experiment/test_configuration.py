@@ -182,6 +182,28 @@ def test_constructor_paths(tmp_path):
         load_configuration(path)
     assert "at runtime" in str(error.value)
 
+    # Local probe files resolve beside the YAML; server paths stay in the server namespace.
+    directory = tmp_path / "configs"
+    directory.mkdir()
+    probe_spec = specification()
+    probe_spec["simulator"] = {
+        "type": "NuRecSimulator",
+        "options": {
+            "config": {"dt": .1}, "depth": "none", "physics_update_mode": "none",
+            "route_generator": "none",
+            "renderer": {
+                "type": "avsectester.closed_loop.simulators.nurec:NuRecRenderer",
+                "options": {"probe_directory": "../results/nre-probes",
+                            "server_probe_directory": "../server-probes"},
+            },
+        },
+    }
+    probe_config = directory / "nurec.yaml"
+    probe_config.write_text(yaml.safe_dump(probe_spec))
+    renderer = load_configuration(probe_config).simulator.renderer
+    assert Path(renderer.probe_directory) == (tmp_path / "results/nre-probes").resolve()
+    assert renderer.server_probe_directory == "../server-probes"
+
 
 def test_validate_configuration_environment():
     spec = specification()

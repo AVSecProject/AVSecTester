@@ -9,6 +9,7 @@ from abc import ABC, abstractmethod
 from copy import deepcopy
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, ClassVar, TYPE_CHECKING
 
 from avsectester.geometry.poses import validated_transform
@@ -164,7 +165,7 @@ class NuRecRenderer(Renderer):
     calibration: dict = field(default_factory=dict)
     image_quality: float = 95.0
     resolution_hw: Mapping[str, tuple[int, int]] = field(default_factory=dict)
-    probe_directory: str | None = None
+    probe_directory: str | Path | None = None
     server_probe_directory: str | None = None
     track_padding_m: tuple[float, float, float] = (1.0, 1.0, 0.25)
 
