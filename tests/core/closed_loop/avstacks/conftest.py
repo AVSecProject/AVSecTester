@@ -120,3 +120,33 @@ def policy_past(alpamayo_observations):
 @pytest.fixture
 def policy_observation(alpamayo_observations):
     return lambda: alpamayo_observations()[-1]
+
+
+@pytest.fixture
+def rule_based_detector_model():
+    from tests.fakes import CocoDetectionModel
+
+    return CocoDetectionModel(boxes=((48., 38., 52., 42.),))
+
+
+@pytest.fixture
+def rule_based_observation():
+    from avsectester.closed_loop.simulators.ego_dynamics import PlanarEgoState
+    from avsectester.data_types import Observation
+    from avsectester.geometry import CameraCalibration, PinholeCamera
+    from avsectester.geometry.cameras import BODY_FROM_OPTICAL
+
+    return lambda: Observation(
+        0., 0, {"front": np.full((80, 100, 3), 30, np.uint8)},
+        {"front": CameraCalibration(PinholeCamera(
+            np.array([[100., 0., 50.], [0., 100., 40.], [0., 0., 1.]]), 100, 80),
+            BODY_FROM_OPTICAL)},
+        PlanarEgoState(speed=10.), 10.,
+    )
+
+
+@pytest.fixture
+def rule_based_detector(rule_based_detector_model):
+    from avsectester.closed_loop.avstacks.implemented.rule_based import CocoStopSignDetector
+
+    return CocoStopSignDetector("synthetic-local-weights", device="cpu", model=rule_based_detector_model)

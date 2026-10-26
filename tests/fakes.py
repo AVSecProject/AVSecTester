@@ -987,3 +987,22 @@ def recorded_policy_observations(count=16, start_time=-1.5, time_step=.1, speed=
             time, index, {"front": np.full((4, 6, 3), index, np.uint8)},
             vehicle_state=state, ego_speed=state.speed, route=deepcopy(route)))
     return tuple(observations)
+
+
+def CocoDetectionModel(boxes=((42., 30., 58., 50.),), scores=(.9,), labels=(13,)):
+    """Create a torchvision-compatible learned-model boundary without requiring torch at import."""
+    import torch
+
+    class DetectionModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.roi_heads = SimpleNamespace(score_thresh=.5)
+
+        def forward(self, images):
+            return [{
+                "boxes": image.new_tensor(boxes).reshape(-1, 4),
+                "scores": image.new_tensor(scores),
+                "labels": torch.tensor(labels, dtype=torch.int64, device=image.device),
+            } for image in images]
+
+    return DetectionModel()

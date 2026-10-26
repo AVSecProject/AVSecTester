@@ -4,6 +4,7 @@ import pytest
 from avsectester.closed_loop.avstacks.implemented.alpamayo import AlpamayoAVStack
 from avsectester.closed_loop.avstacks.implemented.camera_forward_collision import CameraForwardCollisionAVStack
 from avsectester.closed_loop.avstacks.implemented.modular import ModularAVStack
+from avsectester.closed_loop.avstacks.implemented.rule_based import RuleBasedAVStack
 from avsectester.data_types import Control, Detection
 from avsectester.closed_loop.avstacks.driving_adapter import DrivingAdapter
 
@@ -18,6 +19,11 @@ from avsectester.closed_loop.avstacks.driving_adapter import DrivingAdapter
                     "history_pose_count", "selected_image_times", "navigation_note"}, {"route_waypoints"}, None, id="alpamayo"),
     pytest.param(CameraForwardCollisionAVStack, {}, {}, "camera_observation", "empty_past",
                  "camera_detector_boundary", {"perception"}, set(), None, id="camera-forward-collision"),
+    pytest.param(RuleBasedAVStack, {"camera_id": "front"},
+                 {"detector": "rule_based_detector"}, "rule_based_observation", "empty_past",
+                 "rule_based_detector_model", {"detections", "sign_estimates", "state", "target_track_id",
+                    "distance_to_stop_m", "acceleration_mps2", "planned_speed_mps", "braking", "tracks"},
+                 set(), None, id="rule-based"),
 ])
 def test_avstack(constructor, options, option_fixtures, observation_fixture, past_fixture, boundary,
                  component_keys, nullable_components, detection_categories, request):

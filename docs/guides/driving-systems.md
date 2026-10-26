@@ -77,6 +77,149 @@ Its detections() returns None: 2D image boxes are not canonical 3D detections. D
 therefore cannot be applied without a true 3D detection output. Component/image diagnostics remain
 available through recorded outputs.
 
+## NuRec rule-based driving system
+
+RuleBasedAVStack is a trajectory-only stop-sign policy. Its implementation lives in
+closed_loop/avstacks/implemented/rule_based/: detector.py loads and runs the COCO stop-sign detector,
+ranging.py estimates a sign position from known size and camera rays, tracker.py tracks stationary
+signs with a bearing EKF, planner.py follows the route with a free-road cruise term and
+constant-deceleration stopping, and stack.py connects these stages to AVStack. It provides no
+canonical 3D detections.
+
+The stack composes a required CocoStopSignDetector with an optional StopSignTracker and
+StopSignPlanner. Omitting either creates its default instance. These classes and the frozen
+SignTrack record are exported from the rule_based package. Only the top-level RuleBasedAVStack
+has a built-in short name. Nested component specifications use their full module:Class paths.
+A top-level device value is injected into the detector, rather than into the stack:
+
+```yaml
+device: cuda:0
+avstack:
+  type: RuleBasedAVStack
+  options:
+    detector:
+      type: avsectester.closed_loop.avstacks.implemented.rule_based:CocoStopSignDetector
+      options:
+        weights_path: ../models/fasterrcnn_resnet50_fpn_coco-258fb6c6.pth
+```
+
+The stack reads camera RGB and requires CameraCalibration for the chosen camera in
+Observation.calibration. NuRec supplies this optical-camera-to-rig transform and camera model;
+missing calibration is an explicit error explaining the current NuRec requirement. Ranging
+unprojects the top and bottom box centres and uses their angular separation with sign_height_m
+(default 0.762 m). For ray angle θ, range is sign_height_m / (2 tan(θ / 2)); the box-centre ray is then
+transformed from the optical camera frame into the rig frame. Torchvision and Camera use the same
+continuous pixel coordinates; no half-pixel conversion is applied. Range error scales in direct
+proportion to the assumed sign height.
+
+The stack validates calibration.rig_from_camera before taking its translation as the camera
+optical centre in rig coordinates; ranging also validates this rigid transform. CameraCalibration
+does not validate array fields at construction, so RunLog.read(load_payloads=False) can retain a
+payload reference without loading it.
+
+StopSignTracker converts each measured sign position and the camera optical centre into horizontal
+world coordinates using the model-visible PlanarEgoState. A new SignTrack contains a track_id,
+a two-dimensional world position and a 2×2 position covariance. Existing tracks persist through
+missing detections; reset clears them and starts track IDs at zero again. For measured camera-to-sign
+range r, the measurement covariance has radial standard deviation
+hypot(range_sigma_fraction * r, min_position_sigma_m) and tangential standard deviation
+hypot(bearing_sigma_rad * r, min_position_sigma_m). Association uses the smallest Mahalanobis
+distance under the sum of track and measurement covariances, accepting distances at most
+max_association_mahalanobis_distance. Unmatched measurements initialize new stationary tracks.
+
+After association, only the measured bearing updates an existing track through an EKF; the
+known-size range is used for initialization and association, avoiding repeated fusion of its
+systematic size bias. Bearing residuals wrap to (−π, π], and there is no process noise for these
+stationary signs. The default parameters are range_sigma_fraction=0.3, bearing_sigma_rad=0.007,
+min_position_sigma_m=0.3 and max_association_mahalanobis_distance=3.5. The measured bearing standard
+deviation was 0.0067 rad; 0.3 fractional range uncertainty covers the observed systematic bias and
+jitter (worst relative error −35%). The 0.3 m position floor limits overconfidence in measurement
+and association noise and helps avoid duplicate tracks.
+
+At every decision StopSignPlanner takes the tracker output, transforms each world position into the
+current rig frame and projects it onto Observation.route, a navigation intent with X forward and
+Y left. The planner does not maintain its own sign-position memory or radius-based association.
+Handled signs and the current target are identified by track_id. When the route is absent it uses
+a forward straight line; endpoint tangents continue short routes.
+
+Signs behind the route origin or beyond sign_lookahead_m are ignored. A sign is also ignored when
+its distance to the nearest route point exceeds max_sign_lateral_offset_m. The default lateral
+limit is 10.0 m: in 32 selected NuRec segments the mapped sign centres are 2.8108–7.2283 m from the
+recorded route; adding 2 m to the maximum and rounding up gives 10 m. A stop sign governing another
+intersection direction can still trigger a stop if it falls within these ranges.
+
+The stop target is the projected sign arc length minus stop_before_sign_m. The default 5.5 m uses
+map stop-line geometry and ego front overhang in the same 32 segments: the geometric target places
+the vehicle front at least 0.5 m before the line in 29/32 segments (90.6%, meeting the 90% condition).
+This calculation excludes monocular ranging error.
+
+The planner parameters make units and roles explicit:
+
+| Parameter | Default | Meaning |
+|---|---:|---|
+| stop_before_sign_m | 5.5 | Route distance before the sign at which to stop (m) |
+| stop_duration_s | 2.0 | Time held in STOPPED (s) |
+| stop_speed_mps | 0.1 | Speed below which the ego is considered stopped (m/s) |
+| stop_position_tolerance_m | 2.0 | Maximum remaining target distance for entering STOPPED (m) |
+| sign_lookahead_m | 60.0 | Furthest forward route projection considered for a sign (m) |
+| max_sign_lateral_offset_m | 10.0 | Maximum sign-to-route lateral distance (m) |
+| cruise_speed_mps | None | Desired cruise speed; None uses reset speed (m/s) |
+| min_cruise_speed_mps | 5.0 | Lower bound on reset-derived cruise speed (m/s) |
+| max_acceleration_mps2 | 1.0 | Maximum free-road acceleration (m/s²) |
+| comfortable_deceleration_mps2 | 3.0 | Required-deceleration threshold for starting a stop (m/s²) |
+| max_deceleration_mps2 | 6.0 | Maximum commanded planning deceleration (m/s²) |
+| acceleration_exponent | 4.0 | IDM free-road exponent |
+| trajectory_horizon_s | 5.0 | Planned duration (s) |
+| trajectory_step_s | 0.1 | Integration and waypoint interval (s) |
+
+Cruising and approach motion before braking use the IDM free-road acceleration term:
+
+```text
+a_free = max_acceleration_mps2 * [1 - (v / v0)^acceleration_exponent]
+```
+
+The standard IDM free-road symbols are a = max_acceleration_mps2 and δ = acceleration_exponent.
+There is no virtual leader, standstill-gap or time-headway term. comfortable_deceleration_mps2
+instead determines when distance-based stopping begins.
+
+For a STOPPING target, let d be the remaining route distance to that target. At each integration
+substep the required constant deceleration is required = v² / (2 d) for d > 0. Braking starts when
+required reaches comfortable_deceleration_mps2, or immediately when d ≤ 0. Once braking starts it
+stays latched for that target, including across decisions, until the target changes, the planner
+enters STOPPED, or no target remains. Before this threshold the planner uses a_free.
+
+After braking begins, acceleration is -required, capped at -max_deceleration_mps2. At d ≤ 0 it
+uses -max_deceleration_mps2. The planner does not accelerate again for that target while braking
+is latched. If detection is so late that required exceeds max_deceleration_mps2, braking is capped
+and the ego may overshoot the target. CRUISE always uses the free-road term.
+
+The state machine is CRUISE → STOPPING → STOPPED → CRUISE. It enters STOPPED when speed is below
+stop_speed_mps and the remaining target gap is at most stop_position_tolerance_m. It holds for
+stop_duration_s using observation time, marks that track_id handled and resumes. Handled tracks
+are ignored. Each trajectory begins at the rig origin and identity quaternion at the observation
+timestamp, with strictly increasing integer microsecond timestamps. STOPPED repeats the origin.
+trajectory_horizon_s must cover at least one trajectory_step_s, and the step must round to a
+positive integer number of microseconds.
+
+The component log records boxes and confidence, estimated rig positions and ranges, tracks,
+planner state, the target track_id (None without a stop target), the latched braking flag and
+target gap. Each track entry contains its track_id,
+world position and maximum position standard deviation (the square root of the covariance's largest
+eigenvalue). acceleration_mps2 and planned_speed_mps describe the first integration step of the
+planned trajectory. The controller follows the whole trajectory and may begin slowing earlier,
+so the logged first-step acceleration can be positive while the physical vehicle is decelerating.
+
+The detector reads a local Faster R-CNN COCO_V1 checkpoint; it downloads no weights.
+CocoStopSignDetector.close() releases its loaded or injected model, after which detect raises
+RuntimeError; RuleBasedAVStack.close() calls it. The supplied nurec_stop_sign_patch_modular_2601.yaml
+and nurec_stop_sign_patch_modular_2604.yaml configurations use the same checkpoint for driving and
+white-box scoring.
+
+This policy only handles stop signs. It does not perceive vehicles or obstacles and follows the
+navigation route centreline. With recorded, non-reactive traffic, following vehicles can rear-end
+the stopped ego, and vehicles intruding into the lane can be sideswiped. DrivingMetrics.collision
+counts the recorded top-down bounding-box overlaps, including these cases.
+
 ## Alpamayo
 
 AlpamayoAVStack wraps AlpaSim's trajectory-output model. It uses camera histories and the

@@ -1,0 +1,236 @@
+# Run with: avsectester run configs/nurec_stop_sign_patch_modular_2604.yaml
+# Paths are relative to this file; set data/model paths for your machine.
+device: cuda:0
+dataset:
+  type: NuRecDataset
+  options:
+    dataroot: ../data/nurec/26.04_release
+    camera_id: camera_front_wide_120fov
+    time_step: 0.1
+split:
+  train_segments: 4
+  seed: 0
+  execute: [test]
+simulator:
+  type: NuRecSimulator
+  options:
+    depth: none
+    object_occlusion: rendered_probes
+    occlusion_tolerance_m: 0.15
+    ground_mesh: mesh_ground
+    physics_update_mode: ego_only
+    route_generator: map
+    config:
+      dt: 0.1
+    renderer:
+      type: avsectester.closed_loop.simulators.nurec:NuRecRenderer
+      options:
+        endpoint: 127.0.0.1:50051
+        cameras:
+        - camera_front_wide_120fov
+        resolution_hw:
+          camera_front_wide_120fov:
+          - 1080
+          - 1900
+        probe_directory: ../results/nre-probes
+        server_probe_directory: /mnt/nre-probes
+    dynamics:
+      type: avsectester.closed_loop.simulators.ego_dynamics:AlpaSimController
+      options: {}
+avstack:
+  type: RuleBasedAVStack
+  options:
+    detector:
+      type: avsectester.closed_loop.avstacks.implemented.rule_based:CocoStopSignDetector
+      options:
+        weights_path: ../models/fasterrcnn_resnet50_fpn_coco-258fb6c6.pth
+attacks:
+  no_patch:
+    type: StopSignPatchAttack
+    options:
+      initial_patch: none
+      harmonizer: &exposure_harmonizer
+        type: avsectester.rendering.harmonizers:ExposureHarmonizer
+        options: {reference: under}
+  white:
+    type: StopSignPatchAttack
+    options:
+      initial_patch: white
+      harmonizer: *exposure_harmonizer
+  black:
+    type: StopSignPatchAttack
+    options:
+      initial_patch: black
+      harmonizer: *exposure_harmonizer
+  noise:
+    type: StopSignPatchAttack
+    options:
+      initial_patch: gaussian_noise
+      harmonizer: *exposure_harmonizer
+  white_detector_pgd:
+    type: StopSignPatchAttack
+    options:
+      initial_patch: white
+      harmonizer: *exposure_harmonizer
+      optimization:
+        type: avsectester.implemented_attacks.stop_sign_patch_attack.offline:DetectorPatchOptimization
+        options:
+          detector:
+            type: avsectester.implemented_attacks.stop_sign_patch_attack.detector:StopSignDetector
+            options:
+              weights_path: ../models/fasterrcnn_resnet50_fpn_coco-258fb6c6.pth
+          optimizer:
+            type: avsectester.attack.optimization:PGD
+            options:
+              steps: 20
+              step_size: 0.01568627450980392
+              batch: 1
+              seed: 0
+          max_training_segments: null
+          samples_per_scene: 8
+  black_detector_pgd:
+    type: StopSignPatchAttack
+    options:
+      initial_patch: black
+      harmonizer: *exposure_harmonizer
+      optimization:
+        type: avsectester.implemented_attacks.stop_sign_patch_attack.offline:DetectorPatchOptimization
+        options:
+          detector:
+            type: avsectester.implemented_attacks.stop_sign_patch_attack.detector:StopSignDetector
+            options:
+              weights_path: ../models/fasterrcnn_resnet50_fpn_coco-258fb6c6.pth
+          optimizer:
+            type: avsectester.attack.optimization:PGD
+            options:
+              steps: 20
+              step_size: 0.01568627450980392
+              batch: 1
+              seed: 0
+          max_training_segments: null
+          samples_per_scene: 8
+  noise_detector_pgd:
+    type: StopSignPatchAttack
+    options:
+      initial_patch: gaussian_noise
+      harmonizer: *exposure_harmonizer
+      optimization:
+        type: avsectester.implemented_attacks.stop_sign_patch_attack.offline:DetectorPatchOptimization
+        options:
+          detector:
+            type: avsectester.implemented_attacks.stop_sign_patch_attack.detector:StopSignDetector
+            options:
+              weights_path: ../models/fasterrcnn_resnet50_fpn_coco-258fb6c6.pth
+          optimizer:
+            type: avsectester.attack.optimization:PGD
+            options:
+              steps: 20
+              step_size: 0.01568627450980392
+              batch: 1
+              seed: 0
+          max_training_segments: null
+          samples_per_scene: 8
+  white_rollout_nes:
+    type: StopSignPatchAttack
+    options:
+      initial_patch: white
+      harmonizer: *exposure_harmonizer
+      optimization:
+        type: avsectester.implemented_attacks.stop_sign_patch_attack.offline:RolloutPatchOptimization
+        options:
+          optimizer:
+            type: avsectester.attack.optimization:NES
+            options:
+              steps: 1
+              population_size: 4
+              sigma: 0.08
+              learning_rate: 0.03
+              seed: 0
+          start_distances_m:
+          - 40
+          - 30
+          - 20
+          horizon_s: 3
+          max_training_segments: 1
+  black_rollout_nes:
+    type: StopSignPatchAttack
+    options:
+      initial_patch: black
+      harmonizer: *exposure_harmonizer
+      optimization:
+        type: avsectester.implemented_attacks.stop_sign_patch_attack.offline:RolloutPatchOptimization
+        options:
+          optimizer:
+            type: avsectester.attack.optimization:NES
+            options:
+              steps: 1
+              population_size: 4
+              sigma: 0.08
+              learning_rate: 0.03
+              seed: 0
+          start_distances_m:
+          - 40
+          - 30
+          - 20
+          horizon_s: 3
+          max_training_segments: 1
+  noise_rollout_nes:
+    type: StopSignPatchAttack
+    options:
+      initial_patch: gaussian_noise
+      harmonizer: *exposure_harmonizer
+      optimization:
+        type: avsectester.implemented_attacks.stop_sign_patch_attack.offline:RolloutPatchOptimization
+        options:
+          optimizer:
+            type: avsectester.attack.optimization:NES
+            options:
+              steps: 1
+              population_size: 4
+              sigma: 0.08
+              learning_rate: 0.03
+              seed: 0
+          start_distances_m:
+          - 40
+          - 30
+          - 20
+          horizon_s: 3
+          max_training_segments: 1
+evaluation:
+  metrics:
+  - type: StopLineMetrics
+  - type: DrivingMetrics
+  - type: avsectester.implemented_attacks.stop_sign_patch_attack.metrics:ReplicaVisibility
+runs:
+  treatments:
+  - name: clean
+  - name: no_patch
+    attack_name: no_patch
+  - name: white
+    attack_name: white
+  - name: black
+    attack_name: black
+  - name: noise
+    attack_name: noise
+  - name: white_detector_pgd
+    attack_name: white_detector_pgd
+  - name: black_detector_pgd
+    attack_name: black_detector_pgd
+  - name: noise_detector_pgd
+    attack_name: noise_detector_pgd
+  - name: white_rollout_nes
+    attack_name: white_rollout_nes
+  - name: black_rollout_nes
+    attack_name: black_rollout_nes
+  - name: noise_rollout_nes
+    attack_name: noise_rollout_nes
+  seeds:
+  - 0
+  decision_steps: null
+  recording:
+    sensor_ids:
+    - camera_front_wide_120fov
+    representations:
+    - model_input
+    every_n_steps: 10
+  output: ../results/nurec_stop_sign_patch_modular_2604

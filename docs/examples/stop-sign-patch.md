@@ -45,14 +45,42 @@ avsectester console executable, invoke the same public CLI as
 python -m avsectester.cli run CONFIG (or evaluate CONFIG).
 
 
+## Run with the NuRec rule-based driving system
+
+Use configs/nurec_stop_sign_patch_modular_2601.yaml or
+configs/nurec_stop_sign_patch_modular_2604.yaml to replace Alpamayo with RuleBasedAVStack.
+Their dataset, simulator, attacks and split settings match the Alpamayo examples, while driving
+uses a COCO stop-sign detector, calibrated monocular range, bearing EKF sign tracking and a
+distance-based stop/hold/resume planner with IDM free-road cruising.
+The driving detector and white-box scorer read the same local checkpoint. The stack composes a
+CocoStopSignDetector with a default StopSignTracker and StopSignPlanner; device is injected into
+the nested detector from the top-level setting. These configurations omit ReasoningPhraseRate because this policy produces no
+reasoning text.
+
+```bash
+avsectester nre serve configs/nurec_stop_sign_patch_modular_2601.yaml --gpu 0
+avsectester run configs/nurec_stop_sign_patch_modular_2601.yaml
+avsectester nre stop configs/nurec_stop_sign_patch_modular_2601.yaml
+```
+
+To compare driving systems on exactly the same units, first export metadata.save with one
+configuration, then set metadata.load in the other. Loading revalidates the frames, required
+user_data and deployment budget for the new system, and split still applies. This reuses selection
+without reusing optimization artifacts. See [Reuse the same segments](#reuse-the-same-segments) and
+[NuRec rule-based driving system](../guides/driving-systems.md#nurec-rule-based-driving-system).
+The planner stops stop_before_sign_m before the detected sign along the route. The geometric
+basis of its 5.5 m default and its lateral sign filter are described in the driving-system guide.
+Ranging assumes a known sign height, so errors in that assumption scale the estimated distance.
+The policy handles stop signs only; it does not avoid other vehicles or obstacles.
+
 ## Selection and placement
 
 The metabuilder uses the semantic stop sign and its associated stop-sign stop line, the recorded
 route, ego position, heading and speed. It selects at most one segment per scene. The approach
 must come from the entering side, face the sign, pass within 3 m of the stop line, and contain a
 recorded speed below 0.5 m/s within 15 m before it. The segment starts at the earliest frame
-within approach_m (default 50 m) of the line that leaves the 15 real past observations required
-by the driving adapter, and includes 20 hold decisions. If that start is closer to the line than
+within approach_m (default 50 m) of the line that leaves the recorded history required by the
+driving adapter (15 observations for Alpamayo; none for RuleBasedAVStack), and includes 20 hold decisions. If that start is closer to the line than
 min_approach_m (default 20 m), the approach is rejected: a recording that begins near the line
 gives the replica no distance in which to be seen. Scene versions are distinguished by
 configurations.

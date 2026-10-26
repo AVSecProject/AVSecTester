@@ -42,6 +42,11 @@ data and boundary modules can be imported without simulator servers or weights.
 | avsectester.closed_loop.avstacks.implemented.alpamayo | AlpamayoAVStack and its component bindings |
 | avsectester.closed_loop.avstacks.implemented.camera_forward_collision | CameraForwardCollisionAVStack |
 | avsectester.closed_loop.avstacks.implemented.modular | ModularAVStack, native hooks, dataset registration and component bindings |
+| avsectester.closed_loop.avstacks.implemented.rule_based.stack | RuleBasedAVStack: detection, known-size ranging, bearing EKF tracking and trajectory planning |
+| avsectester.closed_loop.avstacks.implemented.rule_based.tracker | StopSignTracker and SignTrack: stationary world-position tracks from range initialization and bearing updates |
+| avsectester.closed_loop.avstacks.implemented.rule_based.detector | Local COCO stop-sign model loading and 2D inference |
+| avsectester.closed_loop.avstacks.implemented.rule_based.ranging | Known-height monocular stop-sign position estimation |
+| avsectester.closed_loop.avstacks.implemented.rule_based.planner | NumPy route following, distance-based braking and stop/hold/resume planning |
 | avsectester.closed_loop.avstacks.implemented.scorers | Driving-model scorer implementations |
 | avsectester.closed_loop.avstacks.driving_adapter | DrivingAdapter, ComponentDescriptor and ScorerDescriptor |
 | avsectester.closed_loop.simulators.ground_contact | Mesh-based ego ground constraint |
@@ -1299,6 +1304,138 @@ addresses pixel centres at i + 0.5. Unsupported external distortion types raise 
 | `CameraForwardCollisionAVStack.component_log` | `component_log() -> dict[str, Any] \| None` |
 | `CameraForwardCollisionAVStack.close` | `close() -> None` |
 
+### avsectester.closed_loop.avstacks.implemented.rule_based.stack
+
+RuleBasedAVStack composes a CocoStopSignDetector, an optional StopSignTracker and an optional
+StopSignPlanner, validating their types. tracker=None and planner=None create the corresponding
+default instances. These classes and SignTrack are exported from
+avsectester.closed_loop.avstacks.implemented.rule_based; only RuleBasedAVStack has a built-in short
+configuration name. Nested components use full module:Class paths.
+
+CameraCalibration is required for camera_id in Observation.calibration. A missing entry explains
+that NuRec currently supplies the supported calibration. The stack emits trajectory commands and
+no canonical 3D detections. Each decision detects signs, estimates their rig positions from known
+size, updates stationary tracks with a bearing EKF, and plans cruising or constant-deceleration
+stopping from those tracks. reset clears the tracker, handled track IDs and planner stop state.
+The learned-model test boundary belongs to CocoStopSignDetector.model, not the stack constructor.
+
+| Public name | Signature or fields |
+|---|---|
+| `RuleBasedAVStack.__init__` | `__init__(detector: CocoStopSignDetector, tracker: StopSignTracker \| None = None, planner: StopSignPlanner \| None = None, camera_id: str = "camera_front_wide_120fov", sign_height_m: float = 0.762) -> None` |
+| `RuleBasedAVStack.command_modes` | `frozenset({"trajectory"})` |
+| `RuleBasedAVStack.reset` | `reset(observation: Observation, past: Sequence[Observation] = ()) -> None` |
+| `RuleBasedAVStack.__call__` | `__call__(observation: Observation) -> Control` |
+| `RuleBasedAVStack.component_log` | `component_log() -> Mapping[str, Any] \| None`; detections, estimated rig sign positions/ranges, tracks (track_id, world position, maximum position standard deviation), planner state/braking flag/target gap/first-step motion |
+| `RuleBasedAVStack.close` | `close() -> None`; releases the detector model reference |
+
+### avsectester.closed_loop.avstacks.implemented.rule_based.detector
+
+The model loader reads an existing local checkpoint, verifies that COCO_V1 labels identify
+stop sign as category 13, disables internal score filtering and freezes model parameters.
+It downloads neither detector nor backbone weights. Image gradients remain available to the
+attack scorer that reuses this loader. CocoStopSignDetector lazily loads the same model for
+inference and filters by category and score_threshold.
+
+| Public name | Signature or fields |
+|---|---|
+| `load_stop_sign_model` | `load_stop_sign_model(weights_path: str \| Path, device: str = "cuda:0") -> Any` |
+| `CocoStopSignDetector.__init__` | `__init__(weights_path: str \| Path, device: str = "cuda:0", score_threshold: float = 0.5, model: Any = None) -> None` |
+| `CocoStopSignDetector.detect` | `detect(rgb: np.ndarray) -> list[tuple[np.ndarray, float]]`; uint8 RGB to original-image xyxy boxes and scores |
+| `CocoStopSignDetector.close` | `close() -> None`; releases the loaded or injected model; detect then raises RuntimeError |
+
+### avsectester.closed_loop.avstacks.implemented.rule_based.ranging
+
+The range estimate uses the angle θ between rays through the top and bottom box centres:
+r = sign_height_m / (2 tan(θ / 2)). The normalized box-centre ray times r is transformed from optical
+camera to rig by calibration.rig_from_camera, validated as a rigid transform when used.
+Camera and torchvision box coordinates share the continuous pixel convention; no half-pixel
+adjustment is applied. Range error scales with the
+assumed sign height relative to the real sign height.
+
+| Public name | Signature or fields |
+|---|---|
+| `estimate_stop_sign_position` | `estimate_stop_sign_position(box_xyxy: tuple[float, float, float, float] \| np.ndarray, calibration: CameraCalibration, sign_height_m: float = 0.762) -> np.ndarray`; returns the sign centre in rig metres |
+
+### avsectester.closed_loop.avstacks.implemented.rule_based.tracker
+
+StopSignTracker associates stationary signs in horizontal world coordinates. Known-size ranges
+initialize tracks and enter their anisotropic association uncertainty; existing tracks are updated
+only with camera bearings through an EKF. Each measurement uses the model-visible PlanarEgoState
+and the camera optical centre in rig coordinates. Association minimizes Mahalanobis distance with
+track covariance plus measurement covariance. Bearing residuals wrap to (−π, π]; there is no
+process noise. Tracks persist when detections are absent.
+
+The default bearing standard deviation 0.007 rad rounds the measured 0.0067 rad. The range fraction
+0.3 accommodates measured systematic size bias and jitter (worst error −35%); the 0.3 m position
+floor limits measurement overconfidence and duplicate association. These are measurement-noise
+settings, not a fixed spatial association radius.
+
+| Public name | Signature or fields |
+|---|---|
+| `SignTrack` | Frozen dataclass: `track_id: int`, `position: np.ndarray` (2D horizontal world position), `covariance: np.ndarray` (2×2 world-position covariance) |
+| `StopSignTracker.__init__` | `__init__(range_sigma_fraction: float = 0.3, bearing_sigma_rad: float = 0.007, min_position_sigma_m: float = 0.3, max_association_mahalanobis_distance: float = 3.5) -> None` |
+| `StopSignTracker.reset` | `reset() -> None`; clears all tracks and restarts track IDs at zero |
+| `StopSignTracker.update` | `update(vehicle_state: PlanarEgoState, camera_position_rig: np.ndarray, sign_positions_rig: Sequence[np.ndarray]) -> None`; camera optical centre and measured sign positions are in rig coordinates |
+| `StopSignTracker.tracks` | `tuple[SignTrack, ...]`; current stationary sign tracks |
+
+### avsectester.closed_loop.avstacks.implemented.rule_based.planner
+
+StopSignPlanner is a NumPy trajectory planner independent of detection and tracking. Each step
+accepts SignTrack records, converts world positions into the current rig frame using
+Observation.vehicle_state and projects them onto the route. It remembers handled track IDs and
+the active target ID, not sign positions or radius associations. Signs behind the origin, beyond
+sign_lookahead_m, or further than max_sign_lateral_offset_m from the nearest route point are
+ignored. End tangents extend short routes; None uses a forward line.
+
+The default stop_before_sign_m=5.5 m comes from stop-line geometry and ego front overhang in
+32 NuRec segments: 29/32 (90.6%) have at least 0.5 m geometric front clearance, satisfying the 90%
+condition. The calculation excludes monocular ranging error. The default lateral limit 10 m is
+ceil(7.2283 m + 2 m); the measured sign-to-recorded-route range is 2.8108–7.2283 m. Other-direction
+stop signs inside the accepted range can still trigger a stop.
+
+CRUISE and approach motion before braking use the IDM free-road term:
+a_free = max_acceleration_mps2 [1 - (v / v0)^acceleration_exponent].
+Its standard symbols are a=max_acceleration_mps2 and δ=acceleration_exponent. The planner has no
+virtual-leader, minimum-gap or time-headway term.
+
+For an active stop target and remaining route distance d>0, required=v²/(2d). Braking begins when
+required reaches comfortable_deceleration_mps2, or immediately at d≤0. The braking flag is latched
+across integration substeps and decisions for that target, clearing when the target changes, the
+planner enters STOPPED, or no target remains. Before braking the planner uses a_free. Once latched,
+it uses -required capped at -max_deceleration_mps2; at d≤0 it uses -max_deceleration_mps2.
+It does not accelerate again for the same target while latched. A late detection requiring more
+than max_deceleration_mps2 is capped and can overshoot the target.
+
+STOPPED requires speed below stop_speed_mps and remaining target distance at most
+stop_position_tolerance_m, then holds for stop_duration_s before marking the sign handled.
+Commands start at the rig origin with identity orientation and the observation timestamp.
+Positions follow route arc length and tangents; STOPPED repeats the origin with increasing
+integer microsecond timestamps. trajectory_horizon_s must be at least trajectory_step_s; the
+step must round to a positive integer number of microseconds.
+
+| Constructor option | Default and meaning |
+|---|---|
+| stop_before_sign_m | 5.5 m; route distance before the sign for the stopping target |
+| stop_duration_s | 2.0 s; hold time in STOPPED |
+| stop_speed_mps | 0.1 m/s; stopped-speed threshold |
+| stop_position_tolerance_m | 2.0 m; maximum remaining target gap when entering STOPPED |
+| sign_lookahead_m | 60.0 m; forward route distance limit |
+| max_sign_lateral_offset_m | 10.0 m; maximum lateral distance to the route |
+| cruise_speed_mps | None; use reset speed when unspecified |
+| min_cruise_speed_mps | 5.0 m/s; floor for reset-derived cruise speed |
+| max_acceleration_mps2 | 1.0 m/s²; IDM acceleration parameter |
+| comfortable_deceleration_mps2 | 3.0 m/s²; required-deceleration threshold for starting braking |
+| max_deceleration_mps2 | 6.0 m/s²; planning deceleration limit |
+| acceleration_exponent | 4.0; IDM free-road exponent |
+| trajectory_horizon_s | 5.0 s; planned duration |
+| trajectory_step_s | 0.1 s; integration and waypoint interval |
+
+| Public name | Signature or fields |
+|---|---|
+| `StopSignPlanner.__init__` | Constructor options and defaults are listed above |
+| `StopSignPlanner.reset` | `reset(observation: Observation) -> None`; clears handled track IDs and CRUISE/STOPPING/STOPPED state |
+| `StopSignPlanner.step` | `step(observation: Observation, tracks: Sequence[SignTrack]) -> Control`; accepts stationary world-position tracks |
+| `StopSignPlanner.component_log` | Mapping with state, braking (bool), distance_to_stop_m, acceleration_mps2 and planned_speed_mps; acceleration and speed describe the first planned integration step, not the physical response to the whole controller-tracked trajectory |
 
 ### avsectester.closed_loop.avstacks.implemented.scorers
 

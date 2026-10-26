@@ -6,6 +6,7 @@ from typing import Any, TYPE_CHECKING
 
 from avsectester.attack.optimization import Scorer
 from avsectester.data_types import TargetSpec
+from avsectester.closed_loop.avstacks.implemented.rule_based.detector import load_stop_sign_model
 
 if TYPE_CHECKING:
     import torch
@@ -44,18 +45,7 @@ class StopSignDetector(Scorer):
             return self._loaded_model
         model = self.model
         if model is None:
-            from torchvision.models.detection import (
-                FasterRCNN_ResNet50_FPN_Weights, fasterrcnn_resnet50_fpn,
-            )
-
-            categories = FasterRCNN_ResNet50_FPN_Weights.COCO_V1.meta["categories"]
-            if categories.index("stop sign") != self.stop_sign_label:
-                raise ValueError("COCO_V1 metadata does not identify stop sign as category 13")
-            if not self.weights_path.is_file():
-                raise FileNotFoundError(f"Existing detector weights are required: {self.weights_path}")
-            model = fasterrcnn_resnet50_fpn(weights=None, weights_backbone=None)
-            state = torch.load(self.weights_path, map_location="cpu", weights_only=True)
-            model.load_state_dict(state)
+            model = load_stop_sign_model(self.weights_path, self.device)
         if not isinstance(model, torch.nn.Module):
             raise TypeError("model must implement torchvision's torch.nn.Module detection interface")
         if not hasattr(model, "roi_heads") or not hasattr(model.roi_heads, "score_thresh"):
