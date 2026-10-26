@@ -7,6 +7,9 @@ actions; :mod:`~avsectester.attack.segments` holds the ``split_segments`` helper
 """
 
 from avsectester.attack.attack import Attack, AttackSegment, OfflineContext
+from avsectester.attack.offline_report import (
+    OfflineReport, ReportImage, ReportSeries, ReportTable, ReportValue,
+)
 from avsectester.attack.segments import split_segments
 from avsectester.attack.runtime import (
     AttackAction,
@@ -25,6 +28,11 @@ __all__ = [
     "AttackRuntime",
     "AttackSegment",
     "OfflineContext",
+    "OfflineReport",
+    "ReportValue",
+    "ReportSeries",
+    "ReportTable",
+    "ReportImage",
     "OnlineContext",
     "ResultSubscription",
     "SensorAttackAction",

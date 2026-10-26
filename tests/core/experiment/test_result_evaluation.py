@@ -55,6 +55,14 @@ def test_evaluate(tmp_path, segment, make_log):
     assert report.groups[0]["treatment_attacks"] == {"clean": None, "attacked": "attack", "rain": "other"}
     assert [group["part"] for group in report.groups] == ["train", "train", "test", "test"]
     assert (tmp_path / "evaluation/report.json").is_file()
+    assert (tmp_path / "evaluation_report.html").is_file()
+    assert report.experiment["dataset_type"] == "tests.fakes:MemoryDataset"
+    assert report.experiment["scenarios_considered"] == 1
+    assert report.experiment["decision_steps"] is None
+    assert report.experiment["comparison_groups"] == 4
+    assert report.experiment["treatments"][0] == {
+        "treatment": "clean", "attack": None, "attack_type": None,
+    }
     with (tmp_path / "evaluation/runs.csv").open() as stream:
         rows = list(csv.DictReader(stream))
     assert len(rows) == 12 and rows[-1]["status"] == "failed"

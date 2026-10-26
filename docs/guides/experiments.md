@@ -24,7 +24,7 @@ deployment budget and builds shared segment units. With split, it assigns these 
 validation and test before any offline phase. Each attack receives only its train segments as
 OfflineContext.metadata and its validation segments as validation_metadata. Without split the
 offline metadata contains all its selected segments. PreparedExperiment retains all metadata, units
-and explicit artifacts without live simulator or model history. To combine actions in one run,
+explicit artifacts and offline_reports without live simulator or model history. To combine actions in one run,
 implement one composite Attack.
 
 Preparation uses runs.seeds[0]. OfflineContext.environment merges runs.environment with the attack
@@ -95,6 +95,38 @@ the default format is trusted pickle with a content hash. Only load trusted prep
 Loading requires an explicit compatible configuration and does not select or optimize again. See
 [compatibility checks](../reference/configuration.md#saved-preparation-compatibility).
 
+## Offline and evaluation reports
+
+Each offline stage receives `OfflineContext.report`, an `OfflineReport` for its structured results.
+It stores complete frozen ReportValue, ReportSeries, ReportTable and ReportImage entries and
+can publish scalar values, numeric series, flat tables and RGB/RGBA images through
+`set_value`, `set_series`, `set_table` and `set_image`. `report.directory` is
+`runs.output/offline/<attack>/files` when an output is configured, otherwise None. Attacks can use
+that directory for their own additional files; they do not need an output-directory parameter.
+
+A saved preparation writes `offline/<attack>/report.json`, CSV tables and PNG images, with the
+attack's additional files under `files/`. `offline_report.html` combines all attack reports,
+including attacks without optimization. The HTML is rebuilt after each completed stage and when
+saving a preparation. `PreparedExperiment.offline_reports` restores these reports on load;
+saving into another directory copies their additional files along with artifacts. Older
+preparations without offline reports load with empty reports.
+
+Offline exceptions, including interruption, trigger a partial report save with status failed and an
+HTML refresh before propagating. A reporting failure is attached as a note to the original exception
+so the original offline error is preserved. Resuming an unfinished attack preserves its previous
+`offline/<attack>/` directory under `offline-incomplete/<attack>-<UTC timestamp>/` before starting a
+new report. The framework archives the whole report rather than requiring individual attacks to
+manage old rollout directories.
+
+Evaluation writes `evaluation/report.json`, `evaluation/runs.csv`, `evaluation/plots/` and the
+root-level `evaluation_report.html`.
+The offline and evaluation HTML files use saved data and relative image links, so the CLI
+`evaluate` command can rebuild both without loading driving models or executing attacks.
+The pages link to each other and to their structured data. All visible report text is English.
+The console reports every metric field by part and metric label with units; pairwise differences
+are available in the evaluation JSON and HTML. Displayed floats always use four decimal places, including integral-valued floats,
+while JSON and CSV keep full precision. Offline train/validation counts come from saved units.
+
 ## Resume interrupted work
 
 ```python
@@ -106,7 +138,7 @@ result = Experiment.execute(prepared, resume=True)
 ```
 
 Preparation writes each attack's metadata and preparation-progress.json immediately after selection
-and splitting. After every completed offline phase it saves that attack's artifacts and checkpoints
+and splitting. After every completed offline phase it saves that attack's artifacts and report, then checkpoints
 the completed attack names. prepared.json is written only after all attacks finish. With resume=True,
 a complete preparation is loaded directly; otherwise the progress configuration and preparation
 record are checked before restoring saved selection and units. Completed artifacts are loaded and

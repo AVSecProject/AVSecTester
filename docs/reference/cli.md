@@ -57,7 +57,12 @@ continue. Obsolete treatment directories are reported and skipped.
 
 Metric types/options can change before reevaluation. Known configuration errors are rejected before
 evaluation. A metric-code failure is an evaluation failure: report.json and runs.csv still record
-run states and the metric error. Terminal output includes summaries, difference matrices and notes.
+run states and the metric error. Terminal output includes one treatment table per part and metric class, plus notes and errors.
+Headers include units; numeric cells use four decimal places, mean ± population standard deviation
+and n = k (standard deviation is omitted for n < 2). Boolean summaries show a true fraction and N of K groups. JSON/CSV retain full precision.
+All metric fields are shown; pairwise differences are retained in evaluation/report.json and evaluation_report.html.
+Both run and evaluate print the offline_report.html and evaluation_report.html paths.
+Evaluate rebuilds both HTML reports from saved output.
 
 ## Interruptions
 
@@ -81,9 +86,16 @@ replaced or incomplete. Re-run evaluate to regenerate them without simulation.
   attacks/<attack-name>/metadata.json
   attacks/<attack-name>/artifacts.pkl
   attacks/<attack-name>/manifest.json
+  offline/<attack-name>/report.json
+  offline/<attack-name>/<table>.csv
+  offline/<attack-name>/<image-or-series>.png
+  offline/<attack-name>/files/
+  offline_report.html
+  offline-incomplete/<attack-name>-<UTC timestamp>/
   maps/<scenario-id>.json
   runs/segment-<NNNNN>/seed-<S>/<treatment>/
   evaluation/report.json
+  evaluation_report.html
   evaluation/runs.csv
   evaluation/plots/
 ```

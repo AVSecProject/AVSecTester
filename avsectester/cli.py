@@ -45,7 +45,10 @@ def _configuration_error(error: Exception) -> NoReturn:
 
 def _evaluate_result(result: ExperimentResult, configuration: ExperimentConfiguration) -> Any:
     from avsectester.experiment import evaluate
+    from avsectester.experiment.html_report import write_offline_html
 
+    assert configuration.runs.output is not None
+    write_offline_html(configuration.runs.output)
     return evaluate(result, configuration)
 
 
@@ -54,6 +57,9 @@ def _print_report(report: Any, result: ExperimentResult,
     for notice in result.notices:
         typer.echo(notice)
     typer.echo(report.format_summary())
+    assert configuration.runs.output is not None
+    typer.echo(f"Offline HTML: {configuration.runs.output / 'offline_report.html'}")
+    typer.echo(f"Evaluation HTML: {configuration.runs.output / 'evaluation_report.html'}")
     for failure in result.failures:
         assert configuration.runs.output is not None
         destination = run_directory(configuration.runs.output, failure.segment_index,

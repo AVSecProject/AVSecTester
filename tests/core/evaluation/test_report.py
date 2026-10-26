@@ -6,7 +6,8 @@ import json
 
 import numpy as np
 
-from avsectester.evaluation import EvaluationReport
+from avsectester.evaluation import DrivingMetrics, EvaluationReport, UnavailableMetricValue
+from avsectester.evaluation.report import format_number, format_statistic
 
 
 def test_evaluation_report(tmp_path):
@@ -25,8 +26,9 @@ def test_evaluation_report(tmp_path):
         treatment_summaries=[{
             "part": None, "treatment": "clean", "groups": 1, "total_groups": 1,
             "failed_runs": 0, "metrics": {
-                "DrivingMetrics.final_speed": {"kind": "number", "mean": 3., "std": 0.},
-                "DrivingMetrics.stopped": {"kind": "proportion", "true_fraction": 0.},
+                "DrivingMetrics.final_speed": {"kind": "number", "mean": 3., "std": 0., "count": 1},
+                "DrivingMetrics.stopped": {"kind": "proportion", "true_fraction": 0., "count": 1},
+                "UserMetric.seed": {"kind": "number", "mean": 9., "std": 0., "count": 1},
             },
         }, {
             "part": None, "treatment": "attacked", "groups": 0, "total_groups": 1,
@@ -36,10 +38,18 @@ def test_evaluation_report(tmp_path):
             "part": None, "treatment_a": "clean", "treatment_b": "attacked",
             "deltas": {"DrivingMetrics.final_speed": {"mean": None}},
         }],
+        metrics=[
+            {"label": "DrivingMetrics", "fields": {
+                name: {"description": field.description, "unit": field.unit}
+                for name, field in DrivingMetrics().describe().fields.items()}},
+            {"label": "UserMetric", "fields": {"seed": {"unit": None}}},
+        ],
         notes=["Only recorded measurements are available."],
     )
     text = report.format_summary()
-    assert "B - A" in text and "(mean)" in text and "(ratio)" in text
+    assert "DrivingMetrics" in text and "final_speed" in text and "stopped" in text
+    assert "final_speed (m/s)" in text and "3.0000" in text and "0 of 1 groups" in text and "—" in text
+    assert "UserMetric" in text and "seed" in text and "9.0000" in text and "n = 1" in text
     assert report.notes[0] in text
     assert report.save(tmp_path) == tmp_path and report.path == tmp_path
     data = json.loads((tmp_path / "report.json").read_text())
@@ -120,3 +130,18 @@ def test_record_error():
         "metric": "UserMetric", "error": "RuntimeError: missing evidence",
         "seed": 4, "treatment_a": "clean",
     }]
+
+
+def test_format_number():
+    assert format_number(7) == "7"
+    assert format_number(1.0) == "1.0000" and format_number(3.0) == "3.0000"
+    assert format_number(-0.0) == "0.0000"
+    assert format_number(float("inf")) == "—" and format_number(float("nan")) == "—"
+    assert format_number(1.23456789) == "1.2346"
+    assert format_number(-.000001) == "0.0000"
+    assert format_number(True) == "yes" and format_number(False) == "no"
+    assert format_number(None) == "—"
+    assert format_number(UnavailableMetricValue("Missing evidence")) == "—"
+    assert format_statistic({"mean": 1.23456789, "std": .1, "count": 3}) == "1.2346 ± 0.1000\nn = 3"
+    assert format_statistic({"mean": 3., "std": 0., "count": 1}) == "3.0000\nn = 1"
+    assert format_statistic({"kind": "proportion", "true_fraction": 2 / 3, "count": 3}) == "0.6667\n2 of 3 groups"

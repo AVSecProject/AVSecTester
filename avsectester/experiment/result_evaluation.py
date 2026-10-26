@@ -13,6 +13,9 @@ from avsectester.evaluation.report import EvaluationReport
 from avsectester.evaluation.visualization import plot_group
 from avsectester.data_types import Unavailable
 
+from .configuration_summary import type_name
+from .html_report import write_evaluation_html
+
 if TYPE_CHECKING:
     from .config import ExperimentConfiguration
     from .models import ExperimentResult, TreatmentResult
@@ -57,6 +60,27 @@ def evaluate(result: ExperimentResult, configuration: ExperimentConfiguration) -
         ))
     report = evaluate_groups(groups, metrics, notes=notes)
     report.selections = [item.as_dict() for item in result.selections]
+    avstack_type = getattr(configuration.avstack.factory, "avstack_type", None)
+    scenarios = {item.scenario_id for item in result.selections}
+    if not scenarios:
+        scenarios = {group.segment.scenario_id for group in groups}
+    report.experiment = {
+        "dataset_type": type_name(configuration.dataset),
+        "scenarios_considered": len(scenarios),
+        "simulator_type": type_name(configuration.simulator),
+        "avstack_type": (f"{avstack_type.__module__}:{avstack_type.__qualname__}"
+                         if avstack_type is not None else type_name(configuration.avstack)),
+        "seeds": list(configuration.runs.seeds),
+        "decision_steps": configuration.runs.decision_steps,
+        "executed_parts": list(configuration.split.execute) if configuration.split else ["all (no split)"],
+        "comparison_groups": len(groups),
+        "treatments": [
+            {"treatment": treatment.name, "attack": treatment.attack_name,
+             "attack_type": type_name(configuration.attacks[treatment.attack_name])
+             if treatment.attack_name is not None else None}
+            for treatment in configuration.runs.treatments
+        ],
+    }
     if configuration.runs.output is not None:
         destination = Path(configuration.runs.output) / "evaluation"
         # Publish statuses before plotting so a plotting failure preserves useful results.
@@ -74,4 +98,5 @@ def evaluate(result: ExperimentResult, configuration: ExperimentConfiguration) -
                 report.record_error("plot_group", error, part=group.part,
                                     segment_index=group.segment_index, seed=group.seed)
         report.save(destination)
+        write_evaluation_html(Path(configuration.runs.output))
     return report

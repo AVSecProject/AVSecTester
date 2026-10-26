@@ -282,6 +282,19 @@ def test_prepare_resume(tmp_path):
     with pytest.raises(ValueError, match="exist"):
         Experiment.prepare(config)
 
+    retained_output = tmp_path / "retained"
+    retained_output.mkdir()
+    retained_report = retained_output / "offline_report.html"
+    retained_report.write_text("previous report")
+    retained_config = configuration(MinimalAttack(), output=retained_output)
+    with pytest.raises(ValueError, match="already exists"):
+        Experiment.prepare(retained_config)
+    assert retained_report.read_text() == "previous report"
+    retained_report.unlink()
+    (retained_output / "offline-incomplete").mkdir()
+    with pytest.raises(ValueError, match="already exists"):
+        Experiment.prepare(retained_config)
+
 
 def test_execute_resume(tmp_path):
     config = configuration(MinimalAttack(max_segments=1), output=tmp_path / "resume", treatments=(
@@ -363,3 +376,65 @@ def test_execute_resume(tmp_path):
     assert {path: path.read_bytes() for path in short_manifests if path != pending_manifest} == {
         path: content for path, content in short_manifests.items() if path != pending_manifest
     }
+
+
+def test_offline_reports(tmp_path):
+    class ReportingAttack(MinimalAttack):
+        def __init__(self, ready_path):
+            super().__init__(max_segments=1)
+            self.ready_path = ready_path
+
+        def run_offline(self, context):
+            context.report.set_value("training_segments", len(context.metadata))
+            context.report.set_table("samples", [{"frame": context.metadata[0].start.position}])
+            evidence = context.report.directory / "evidence.txt"
+            evidence.write_text("completed" if self.ready_path.exists() else "partial")
+            if not self.ready_path.exists():
+                raise KeyboardInterrupt("offline interrupted")
+            return "prepared"
+
+    ready = tmp_path / "ready"
+    output = tmp_path / "output"
+    config = configuration(ReportingAttack(ready), output=output)
+    with pytest.raises(KeyboardInterrupt, match="offline interrupted"):
+        Experiment.prepare(config)
+    failed = output / "offline" / "probe"
+    assert json.loads((failed / "report.json").read_text())["status"] == "failed"
+    assert (failed / "files" / "evidence.txt").read_text() == "partial"
+    assert (output / "offline_report.html").is_file()
+    ready.touch()
+    prepared = Experiment.prepare(config, resume=True)
+    assert prepared.offline_reports["probe"].status == "completed"
+    archives = tuple((output / "offline-incomplete").glob("probe-*"))
+    assert len(archives) == 1
+    assert json.loads((archives[0] / "report.json").read_text())["status"] == "failed"
+    assert (archives[0] / "files" / "evidence.txt").read_text() == "partial"
+    loaded = PreparedExperiment.load(config, output)
+    assert loaded.offline_reports["probe"].values["training_segments"].value == 1
+    assert loaded.offline_reports["probe"].directory == failed / "files"
+    assert (loaded.offline_reports["probe"].directory / "evidence.txt").read_text() == "completed"
+    copied = tmp_path / "copied"
+    loaded.save(copied)
+    restored = PreparedExperiment.load(config, copied)
+    assert restored.offline_reports["probe"].values == loaded.offline_reports["probe"].values
+    assert (copied / "offline" / "probe" / "files" / "evidence.txt").read_text() == "completed"
+    assert (copied / "offline_report.html").is_file()
+    # Preparations saved before offline reports were added remain loadable.
+    import shutil
+
+    shutil.rmtree(copied / "offline")
+    legacy = PreparedExperiment.load(config, copied)
+    assert legacy.offline_reports["probe"].values == {}
+    assert legacy.offline_reports["probe"].directory is None
+
+    class UnpersistableAttack(MinimalAttack):
+        def run_offline(self, context):
+            # A filesystem boundary failure must not replace the offline exception.
+            (context.report.directory.parent / "report.json").mkdir()
+            raise RuntimeError("original offline failure")
+
+    blocked_config = configuration(UnpersistableAttack(max_segments=1), output=tmp_path / "blocked")
+    with pytest.raises(RuntimeError, match="original offline failure") as caught:
+        Experiment.prepare(blocked_config)
+    assert any("Failed to save the partial offline report" in note
+               for note in caught.value.__notes__)

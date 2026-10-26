@@ -2,15 +2,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-import csv
-from datetime import datetime, timezone
-import json
 from numbers import Integral
 from pathlib import Path
 from typing import Any, TYPE_CHECKING, cast
 
 import numpy as np
-from PIL import Image
 
 from avsectester.attack import AttackSegment, OfflineContext
 from avsectester.attack.optimization import (
@@ -141,26 +137,11 @@ class SingleTextureSource(DataSource):
         return [AdversarialSample(self.original, self.target) for _ in range(batch)]
 
 
-def _write_json(path: Path, value: Any) -> None:
-    temporary = path.with_suffix(".json.tmp")
-    temporary.write_text(json.dumps(value, indent=2, allow_nan=False) + "\n")
-    temporary.replace(path)
-
-
-def _write_csv(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
-    columns = ["evaluation", "start_index", "scenario_id", "start_position",
-               "forward_m", "status", "error", "run_log"]
-    with path.open("w", newline="") as stream:
-        writer = csv.DictWriter(stream, fieldnames=columns)
-        writer.writeheader()
-        writer.writerows(rows)
-
-
 class RolloutForwardScorer(Scorer):
     """Mean planned forward metres across fixed one-decision starts.
 
     ``image`` in the generic Scorer interface is a physical RGBA texture here; ``target``
-    is unused. Records remain in memory. The caller owns CSV persistence, while the
+    is unused. Records remain in memory. The caller owns report persistence, while the
     configured optimizer determines the number of evaluations and rollout queries.
     """
 
@@ -169,7 +150,7 @@ class RolloutForwardScorer(Scorer):
     def __init__(
         self, session: ClosedLoopSession, segments: Sequence[AttackSegment], attack: StopSignPatchAttack,
         *, seed: int, environment: Mapping[str, Any], horizon_s: float,
-        rollout_directory: str | Path,
+        rollout_directory: str | Path | None = None,
     ) -> None:
         if not segments or any(segment.decision_steps != 1 for segment in segments):
             raise ValueError("RolloutForwardScorer requires nonempty one-decision segments")
@@ -180,7 +161,7 @@ class RolloutForwardScorer(Scorer):
         self.seed = seed
         self.environment = dict(environment)
         self.horizon_s = horizon_s
-        self.rollout_directory = Path(rollout_directory)
+        self.rollout_directory = None if rollout_directory is None else Path(rollout_directory)
         self.records: list[dict[str, Any]] = []
         self.evaluations = 0
 
@@ -189,11 +170,14 @@ class RolloutForwardScorer(Scorer):
         self.evaluations += 1
         forwards = []
         for start_index, segment in enumerate(self.segments):
-            output = self.rollout_directory / f"{len(self.records):04d}"
+            output = (None if self.rollout_directory is None else
+                      self.rollout_directory / f"{len(self.records):04d}")
             row: dict[str, Any] = {
                 "evaluation": evaluation, "start_index": start_index,
                 "scenario_id": segment.scenario_id, "start_position": segment.start.position,
-                "forward_m": None, "status": "incomplete", "error": "", "run_log": str(output),
+                "forward_m": None, "status": "incomplete", "error": "",
+                "run_log": (None if output is None or self.rollout_directory is None else
+                            output.relative_to(self.rollout_directory.parent).as_posix()),
             }
             self.records.append(row)
             try:
@@ -224,19 +208,12 @@ def optimize_patch_by_rollouts(
     mask = attack.mask
     if not context.metadata:
         raise ValueError("Rollout patch optimization requires at least one training segment")
-    output = Path(options.output_directory)
-    rollout_directory = output / "rollouts"
-    archived_rollouts = None
-    if rollout_directory.exists() and any(rollout_directory.iterdir()):
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
-        archive = output / f"rollouts-incomplete-{stamp}"
-        suffix = 0
-        while archive.exists() or archive.is_symlink():
-            suffix += 1
-            archive = output / f"rollouts-incomplete-{stamp}-{suffix}"
-        rollout_directory.rename(archive)
-        archived_rollouts = str(archive)
-    rollout_directory.mkdir(parents=True, exist_ok=True)
+    rollout_directory = (None if context.report.directory is None else
+                         context.report.directory / "rollouts")
+    context.report.set_value(
+        "training_segments", len(context.metadata[:options.max_training_segments]), unit="segments",
+        description="Training segments used, after max_training_segments.",
+    )
     perturbation = MaskedTexturePerturbation(original, mask)
     scorer = None
     try:
@@ -249,24 +226,56 @@ def optimize_patch_by_rollouts(
                     session.can_start_at, options.start_distances_m,
                 )
             )
+            context.report.set_table("starts", [
+                {"scenario_id": start.scenario_id, "start_position": start.start.position,
+                 "stop_position": start.stop.position, "timestamp": start.start.timestamp}
+                for start in starts
+            ], description="Fixed one-decision candidate starts selected from the training segments.",
+                columns={
+                    "scenario_id": "Dataset scenario identifier.",
+                    "start_position": "First candidate decision frame position (frames, zero-based).",
+                    "stop_position": "Candidate terminal frame position (frames, zero-based).",
+                    "timestamp": "Recorded timestamp at the candidate start (s).",
+                },
+            )
             scorer = RolloutForwardScorer(
                 session, starts, attack, seed=context.seed, environment=context.environment,
                 horizon_s=options.horizon_s, rollout_directory=rollout_directory,
             )
             result = options.optimizer.run(SingleTextureSource(original), perturbation, scorer, MaximizeScore())
     finally:
-        _write_csv(output / "rollouts.csv", scorer.records if scorer is not None else [])
-    Image.fromarray(perturbation.export(perturbation.init())).save(output / "initial_patch.png")
+        records = scorer.records if scorer is not None else []
+        context.report.set_table(
+            "rollouts", records,
+            description="One-decision closed-loop candidate queries, in execution order, including failed queries.",
+            columns={} if not records else {
+                "evaluation": "Texture evaluation index (zero-based). Each evaluation queries every fixed start.",
+                "start_index": "Fixed start index within the texture evaluation (zero-based).",
+                "scenario_id": "Dataset scenario identifier.",
+                "start_position": "Candidate decision frame position (frames, zero-based).",
+                "forward_m": f"Produced command's planned forward distance over horizon_s "
+                f"({options.horizon_s} s), relative to its first waypoint (m).",
+                "status": "Query status: completed or failed.",
+                "error": "Exception type and message for a failed query; empty on success.",
+                "run_log": "RunLog directory relative to offline/<attack>/files/; unavailable when no report directory is set.",
+            },
+        )
+        context.report.set_value(
+            "rollout_count", len(records), unit="rollouts",
+            description="Closed-loop candidate rollouts executed by NES.",
+        )
     optimized = attack.replica_texture(result.export)
-    Image.fromarray(optimized).save(output / "optimized_texture.png")
-    _write_json(output / "optimization.json", {
-        "history": result.history, "final_score": result.final_score,
-        "archived_rollouts": archived_rollouts,
-        "max_training_segments": options.max_training_segments,
-        "training_segments": len(context.metadata[:options.max_training_segments]),
-        "start_distances_m": list(options.start_distances_m), "horizon_s": options.horizon_s,
-        "starts": [{"scenario_id": start.scenario_id, "start_position": start.start.position,
-                    "stop_position": start.stop.position, "timestamp": start.start.timestamp}
-                   for start in starts],
-    })
+    context.report.set_image(
+        "optimized_texture", optimized, description="Replica face with the optimized patch.",
+    )
+    context.report.set_value(
+        "final_planned_forward_m", -float(result.final_score), unit="m",
+        description="Mean planned forward distance within horizon_s across starts for the final texture. "
+        "Higher is better for the attack (the car keeps driving).",
+    )
+    context.report.set_series(
+        "planned_forward_m", [-value for value in result.history],
+        x_label="NES step (0 = initial texture)", y_unit="m",
+        description="Mean planned forward distance per NES step.",
+    )
     return optimized

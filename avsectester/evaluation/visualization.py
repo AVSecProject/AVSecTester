@@ -331,26 +331,32 @@ def save_sequence(log: RunLog, out_dir: str | Path, name: str = "sequence", cols
 
 
 def plot_group(runs: Mapping[str, Any], path: str | Path, *, title: str | None = None) -> Path:
-    """Plot physical speeds and executed brakes without changing matplotlib's global backend."""
+    """Plot physical speeds; add an actuator-brake panel only when some run records that evidence."""
     from matplotlib.backends.backend_agg import FigureCanvasAgg
     from matplotlib.figure import Figure
 
-    figure = Figure(figsize=(9, 6))
+    braking = {name: executed_brakes(log) for name, log in runs.items()}
+    has_brakes = any(values is not None for values in braking.values())
+    figure = Figure(figsize=(9, 6 if has_brakes else 4))
     FigureCanvasAgg(figure)
-    speed_axis, brake_axis = figure.subplots(2, 1, sharex=True)
+    speed_axis = figure.add_subplot(2, 1, 1) if has_brakes else figure.add_subplot(1, 1, 1)
+    axes = [speed_axis]
+    if has_brakes:
+        axes.append(figure.add_subplot(2, 1, 2, sharex=speed_axis))
     if title:
         figure.suptitle(title)
     for name, log in runs.items():
         positions = [step.step for step in log.steps]
-        physical_speeds, braking = speeds(log), executed_brakes(log)
+        physical_speeds = speeds(log)
         if physical_speeds is not None:
             speed_axis.plot(positions, physical_speeds, label=name)
-        if braking is not None:
-            brake_axis.plot(positions, braking, label=name)
+        if has_brakes and braking[name] is not None:
+            axes[1].plot(positions, braking[name], label=name)
     speed_axis.set_ylabel("ego speed (m/s)")
-    brake_axis.set_ylabel("executed brake")
-    brake_axis.set_xlabel("decision step")
-    for axis in (speed_axis, brake_axis):
+    if has_brakes:
+        axes[1].set_ylabel("executed brake")
+    axes[-1].set_xlabel("decision step")
+    for axis in axes:
         axis.grid(alpha=0.25)
         if axis.lines:
             axis.legend()

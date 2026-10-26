@@ -1,15 +1,12 @@
 """Stop-sign selection, patched replica placement and real offline optimization."""
-import csv
 from dataclasses import replace
-from pathlib import Path
-import json
 
 import numpy as np
 import pytest
 import torch
 from PIL import Image
 
-from avsectester.attack import OfflineContext, OnlineContext
+from avsectester.attack import OfflineContext, OfflineReport, OnlineContext
 from avsectester.attack.insertion import InsertObject
 from avsectester.attack.optimization import AdversarialSample, NES, PGD
 from avsectester.data_types import TargetSpec
@@ -96,7 +93,7 @@ def test_initial_patch_texture():
         StopSignPatchAttack(initial_patch="red")
     with pytest.raises(ValueError, match="cannot be optimized"):
         StopSignPatchAttack(initial_patch="none", optimization=RolloutPatchOptimization(
-            NES(steps=1, population_size=2), "unused"))
+            NES(steps=1, population_size=2)))
     with pytest.raises(TypeError, match="optimization"):
         StopSignPatchAttack(optimization=object())
 
@@ -182,14 +179,13 @@ def test_create_runtime(approach_view):
 @pytest.mark.parametrize(("max_training_segments", "expected_starts"), [
     (None, [15, 16]), (1, [15]), (10, [15, 16]),
 ])
-def test_detector_patch_optimization(nurec_patch_services, replica_detector_model, tmp_path,
+def test_detector_patch_optimization(nurec_patch_services, replica_detector_model,
                                      max_training_segments, expected_starts):
     services, make_segment = nurec_patch_services
-    output = tmp_path / "detector"
     attack = StopSignPatchAttack(initial_patch="white", harmonizer=ExposureHarmonizer(reference="under"),
                                 optimization=DetectorPatchOptimization(
         detector=StopSignDetector(model=replica_detector_model),
-        optimizer=PGD(steps=3, batch=1, seed=0), output_directory=output,
+        optimizer=PGD(steps=3, batch=1, seed=0),
         camera_id="front", min_visible_pixels=5, detection_threshold=0.,
         braking_deceleration_mps2=10., max_training_segments=max_training_segments, samples_per_scene=4,
     ))
@@ -200,30 +196,49 @@ def test_detector_patch_optimization(nurec_patch_services, replica_detector_mode
     face = replica_face()
     np.testing.assert_array_equal(texture[..., 3], face[..., 3])
     np.testing.assert_array_equal(texture[..., :3][~attack.mask], face[..., :3][~attack.mask])
-    assert all((output / name).is_file() for name in (
-        "calibration.json", "sample_manifest.csv", "pgd_scores.csv", "heldout_scores.csv",
-        "detection_rate_vs_distance.csv", "optimization.json", "initial_patch.png",
-        "optimized_texture.png", "pgd_curve.png",
-    ))
-    calibration = json.loads((output / "calibration.json").read_text())
-    assert [row["selected_start"] for row in calibration] == expected_starts
+    report = context.report
+    assert set(report.tables) == {"calibration", "calibration_probes", "sample_manifest", "heldout_scores",
+                                  "heldout_summary", "detection_rate_vs_distance"}
+    assert set(report.images) == {"initial_texture", "optimized_texture"}
+    assert set(report.series) == {"pgd_confidence"}
+    assert report.values["training_segments"].value == len(expected_starts)
+    assert set(report.values) == {"train_frames", "heldout_frames", "training_segments",
+                                  "mask_pixels", "final_confidence"}
+    calibration = report.tables["calibration"].rows
+    assert list(dict.fromkeys(row["selected_start"] for row in calibration)) == expected_starts
     assert calibration[0]["d_min_m"] == pytest.approx(5.)
     with pytest.raises(ValueError, match="training segment"):
         attack.run_offline(replace(context, metadata=()))
     with pytest.raises(ValueError, match="max_training_segments"):
         replace(attack.optimization, max_training_segments=0)
-    with (output / "sample_manifest.csv").open(newline="") as stream:
-        samples = list(csv.DictReader(stream))
+    samples = report.tables["sample_manifest"].rows
     train = {(row["scene"], row["frame"]) for row in samples if row["split"] == "train"}
     heldout = {(row["scene"], row["frame"]) for row in samples if row["split"] == "heldout"}
     assert train and heldout and not train.intersection(heldout)
-    with (output / "heldout_scores.csv").open(newline="") as stream:
-        rows = list(csv.DictReader(stream))
-    scores = {(row["scene"], row["frame"], row["texture"]): float(row["score"]) for row in rows}
-    assert {row["texture"] for row in rows} == {"clean", "replica", "initial", "optimized"}
-    for scene, frame in heldout:
-        assert scores[scene, frame, "optimized"] < scores[scene, frame, "initial"]
-    initial = np.asarray(Image.open(output / "initial_patch.png"))
+    rows = report.tables["heldout_scores"].rows
+    assert {key for row in rows for key in row} == {
+        "scene", "frame", "distance_m", "confidence_clean", "confidence_replica", "confidence_initial", "confidence_optimized"}
+    for row in rows:
+        assert row["confidence_optimized"] < row["confidence_initial"]
+    summary = report.tables["heldout_summary"].rows
+    assert {row["texture"] for row in summary} == {"clean", "replica", "initial", "optimized"}
+    assert set(summary[0]) == {"texture", "frames", "mean_confidence", "detection_rate"}
+    assert all(row["frames"] == len(rows) == report.values["heldout_frames"].value for row in summary)
+    assert set(calibration[0]) == {
+        "scene", "selected_start", "approach_speed_mps", "d_min_m", "d_max_m",
+        "search_first_frame", "search_last_frame", "status", "error"}
+    probes = report.tables["calibration_probes"].rows
+    assert set(probes[0]) == {
+        "scene", "frame", "timestamp_s", "distance_m", "stage", "visible_pixels", "status", "reason",
+        "occlusion_source", "target_box_left_px", "target_box_top_px", "target_box_right_px",
+        "target_box_bottom_px", "replica_score"}
+    initial = report.images["initial_texture"].pixels
+    assert report.images["initial_texture"].description
+    assert report.values["final_confidence"].unit == "ratio (0–1)"
+    assert report.series["pgd_confidence"].y_unit == "ratio (0–1)"
+    for table in report.tables.values():
+        assert table.description
+        assert set(table.columns) == {key for row in table.rows for key in row}
     asset, pose = attack.replica_placement(segment, initial)
     control = control_from_user_data(segment.user_data)
     frames = tuple(services.dataset.frames(segment.scenario_id))
@@ -233,7 +248,7 @@ def test_detector_patch_optimization(nurec_patch_services, replica_detector_mode
                 "front", actions=[InsertObject("stop_sign_replica", asset, pose, harmonizer=attack.harmonizer)]))
             view = rendered.view
             expected = project_box(view.camera, view.cam_from_world, control.pose, control.extent)
-            np.testing.assert_allclose(json.loads(row["target_box"]), expected)
+            np.testing.assert_allclose([row[f"target_box_{coordinate}_px"] for coordinate in ("left", "top", "right", "bottom")], expected)
             ys, xs = np.nonzero(view.composition.plan.visible_mask)
             replica_bounds = (xs.min(), ys.min(), xs.max() + 1, ys.max() + 1)
             assert not np.allclose(expected, replica_bounds)
@@ -247,56 +262,55 @@ def test_rollout_patch_optimization(nurec_patch_services, tmp_path,
     services, make_segment = nurec_patch_services
     output = tmp_path / "rollout"
     options = RolloutPatchOptimization(
-        NES(steps=1, population_size=2, seed=0), output,
+        NES(steps=1, population_size=2, seed=0),
         start_distances_m=(12., 8.), max_training_segments=max_training_segments,
     )
     attack = StopSignPatchAttack(initial_patch="white", optimization=options,
                                 harmonizer=ExposureHarmonizer(reference="under"))
     training = (make_segment(), make_segment(start=16))
     context = OfflineContext(services, training, seed=0,
-                             validation_metadata=(make_segment(start=23),))
-    old_query = output / "rollouts" / "old-query"
-    old_query.mkdir(parents=True)
-    old_evidence = old_query / "evidence.txt"
-    old_evidence.write_text("unfinished query evidence")
+                             validation_metadata=(make_segment(start=23),),
+                             report=OfflineReport(output / "files"))
     texture = attack.run_offline(context)
-    with (output / "rollouts.csv").open(newline="") as stream:
-        rows = list(csv.DictReader(stream))
+    report = context.report
+    rows = report.tables["rollouts"].rows
     assert len(rows) == 8 * expected_segments
     assert {row["status"] for row in rows} == {"completed"}
     assert all(float(row["forward_m"]) == pytest.approx(21.) for row in rows)
     for row in rows:
-        log = RunLog.read(row["run_log"])
+        log = RunLog.read(report.directory / row["run_log"])
         assert log.status == "completed" and len(log.steps) == 1
         assert planned_forward_distance(log.steps[0].produced_command.trajectory) == pytest.approx(21.)
-    summary = json.loads((output / "optimization.json").read_text())
-    assert summary["training_segments"] == expected_segments
-    archive = Path(summary["archived_rollouts"])
-    assert archive.parent == output and archive.name.startswith("rollouts-incomplete-")
-    assert (archive / "old-query" / "evidence.txt").read_text() == "unfinished query evidence"
-    assert not (output / "rollouts" / "old-query").exists()
-    assert summary["max_training_segments"] == max_training_segments
-    assert len(summary["starts"]) == 2 * expected_segments
+    assert report.values["training_segments"].value == expected_segments
+    assert report.values["rollout_count"].value == 8 * expected_segments
+    assert report.values["final_planned_forward_m"].value == pytest.approx(21.)
+    assert report.values["final_planned_forward_m"].unit == "m"
+    assert all(row["run_log"].startswith("rollouts/") for row in rows)
+    assert set(report.tables["rollouts"].columns) == set(rows[0])
+    assert len(report.tables["starts"].rows) == 2 * expected_segments
     assert {row["scenario_id"] for row in rows} == {training[0].scenario_id}
-    assert len(summary["history"]) == 2
-    assert summary["history"] == pytest.approx([-21., -21.])
-    initial = np.asarray(Image.open(output / "initial_patch.png"))
+    assert len(report.series["planned_forward_m"].y) == 2
+    assert report.series["planned_forward_m"].y == pytest.approx([21., 21.])
+    initial = report.images["initial_texture"].pixels
     np.testing.assert_array_equal(texture, initial)
     with pytest.raises(ValueError, match="training segment"):
         attack.run_offline(replace(context, metadata=()))
     with pytest.raises(ValueError, match="max_training_segments"):
         replace(options, max_training_segments=0)
     failed_output = tmp_path / "failed"
-    failed = StopSignPatchAttack(optimization=replace(options, output_directory=failed_output,
-                                                     horizon_s=6.), harmonizer=attack.harmonizer)
+    failed_context = replace(context, report=OfflineReport(failed_output / "files"))
+    failed = StopSignPatchAttack(optimization=replace(options, horizon_s=6.),
+                                harmonizer=attack.harmonizer)
     with pytest.raises(ValueError, match="does not cover the requested horizon"):
-        failed.run_offline(context)
-    with (failed_output / "rollouts.csv").open(newline="") as stream:
-        rows = list(csv.DictReader(stream))
+        failed.run_offline(failed_context)
+    rows = failed_context.report.tables["rollouts"].rows
     assert len(rows) == 1 and rows[0]["status"] == "failed"
-    assert rows[0]["forward_m"] == "" and "does not cover" in rows[0]["error"]
-    assert RunLog.read(rows[0]["run_log"]).status == "completed"
-    assert not (failed_output / "optimization.json").exists()
+    assert rows[0]["forward_m"] is None and "does not cover" in rows[0]["error"]
+    assert RunLog.read(failed_context.report.directory / rows[0]["run_log"]).status == "completed"
+    assert "optimized_texture" not in failed_context.report.images
+    in_memory = replace(context, metadata=training[:1], report=OfflineReport(None))
+    np.testing.assert_array_equal(attack.run_offline(in_memory), initial)
+    assert all(row["run_log"] is None for row in in_memory.report.tables["rollouts"].rows)
 
 
 def test_read_patch_mask(tmp_path):

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -17,18 +16,12 @@ if TYPE_CHECKING:
     from .attack import StopSignPatchAttack
 
 
-def _output_path(value: str | Path) -> None:
-    if not isinstance(value, (str, Path)) or not str(value).strip():
-        raise ValueError("output_directory must be a nonempty filesystem path")
-
-
 @dataclass(frozen=True)
 class DetectorPatchOptimization:
     """PGD settings; an optional segment cap limits cost within the training metadata."""
 
     detector: Scorer
     optimizer: GradientOptimizer
-    output_directory: str | Path
     camera_id: str = "camera_front_wide_120fov"
     max_training_segments: int | None = None
     samples_per_scene: int = 8
@@ -43,7 +36,6 @@ class DetectorPatchOptimization:
             raise TypeError("detector must be a Scorer")
         if not isinstance(self.optimizer, PGD):
             raise TypeError("optimizer must be PGD for detector patch optimization")
-        _output_path(self.output_directory)
         if not isinstance(self.camera_id, str) or not self.camera_id:
             raise ValueError("camera_id must be a nonempty sensor name")
         if self.max_training_segments is not None:
@@ -65,7 +57,6 @@ class RolloutPatchOptimization:
     """NES settings; use at most one training segment by default to bound query cost."""
 
     optimizer: GradientOptimizer
-    output_directory: str | Path
     start_distances_m: tuple[float, ...] = (40., 30., 20.)
     horizon_s: float = 3.
     max_training_segments: int | None = 1
@@ -73,7 +64,6 @@ class RolloutPatchOptimization:
     def __post_init__(self) -> None:
         if not isinstance(self.optimizer, NES):
             raise TypeError("optimizer must be NES for rollout patch optimization")
-        _output_path(self.output_directory)
         distances = tuple(self.start_distances_m)
         if not distances:
             raise ValueError("start_distances_m must not be empty")
@@ -89,6 +79,10 @@ def run_offline(attack: StopSignPatchAttack, context: OfflineContext) -> np.ndar
     """Create the configured initial patch, then optionally optimize that same texture."""
     initial = initial_patch_texture(attack.initial_patch, attack.mask,
                                    noise_std=attack.noise_std, noise_seed=attack.noise_seed)
+    context.report.set_image(
+        "initial_texture", attack.replica_texture(initial),
+        description="Replica face with the initial patch, before any optimization.",
+    )
     if attack.optimization is None:
         return initial
     if isinstance(attack.optimization, DetectorPatchOptimization):

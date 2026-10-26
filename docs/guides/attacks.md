@@ -20,6 +20,15 @@ assets unchanged. A selection-only attack uses the default None artifacts and em
 Attack configuration holds reusable parameters; mutable online history belongs to its runtime.
 Artifacts are explicit return values, never a second mutable Attack property.
 
+OfflineContext.report is an OfflineReport for measured offline results. Use its set_value,
+set_series, set_table and set_image methods; the framework saves report.json, CSV tables and PNG
+images under runs.output/offline/<attack>/ and builds offline_report.html. report.directory is
+the files/ directory for additional evidence, or None for an in-memory preparation. Report values
+do not replace returned artifacts. An attack without optimization can still report its initial
+asset. Add descriptions and units so readers can interpret values, curves, images and every table
+column. Interrupted offline work preserves its partial report with status failed and is archived
+by the framework before that attack is retried; see [Offline reports](optimization.md#offline-reports).
+
 One experiment supports one or more attacks, each selecting its own metadata. Identical complete
 segments form one unit, including scenario, start, stop and user_data. A comparison group is one
 unit and seed: it contains each treatment without attack_name once and treatments for every attack

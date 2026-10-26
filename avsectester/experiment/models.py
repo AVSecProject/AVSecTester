@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Literal, TYPE_CHECKING
 
 from avsectester.validation import require_nonnegative_integer
-from avsectester.attack import AttackSegment
+from avsectester.attack import AttackSegment, OfflineReport
 from avsectester.closed_loop.environment import merge_environments, normalize_environment
 from avsectester.data_types import Unavailable
 from avsectester.maps import ScenarioMap
@@ -187,6 +187,7 @@ class PreparedExperiment:
     preparation: Mapping[str, Any] = field(kw_only=True)
     units: tuple[SegmentUnit, ...] = field(default=(), kw_only=True)
     deployment: DeploymentPlan | None = field(default=None, kw_only=True)
+    offline_reports: Mapping[str, OfflineReport] = field(default_factory=dict, kw_only=True)
 
     def __post_init__(self) -> None:
         validated_preparation(self.preparation, self.metadata)

@@ -150,14 +150,19 @@ above the configured threshold. Held-out scores compare the reconstructed sign w
 between PGD training and held-out frames within the selected training segments. These held-out
 frames are an internal detector diagnostic, separate from the framework validation split. The
 supplied settings use all four framework training segments (max_training_segments=None), eight
-samples per segment, 20 PGD updates, batch 1 and step size 4/255. Outputs include calibration and sample tables,
-PGD scores and curve, held-out scores and detection rates, and initial and optimized textures.
+samples per segment, 20 PGD updates, batch 1 and step size 4/255. The offline report includes calibration and sample tables, the pgd_confidence series,
+held-out scores and detection rates, and initial and optimized textures. Calibration has one row per training segment, and calibration_probes has one row per capture
+with explicitly named evidence columns. heldout_summary compares the four texture variants;
+heldout_scores and detection_rate_vs_distance use one row per frame and per 10 m bin,
+respectively, with the variants in separate columns.
 
 RolloutPatchOptimization uses NES and single-decision candidate rollouts. It scores the selected
 produced command by interpolating its forward X displacement at a 3 s horizon, then maximizes the
-mean across configured starts. Every query saves its one-step RunLog; rollouts.csv preserves the
-query identity, forward distance, completion status and errors. Each query constructs an independent
-driving system and can reload model weights.
+mean across configured starts. With persistent output, every query saves its one-step RunLog under
+offline/<attack>/files/rollouts; the rollouts table preserves query identity, forward distance,
+completion status, errors and paths relative to offline/<attack>/files/ (for example rollouts/0003). The scalar rollout_count records the number
+of queries and planned_forward_m records the per-step mean planned forward distance. Without persistent output, query logs
+are not written. Each query constructs an independent driving system and can reload model weights.
 
 The rollout budget is:
 
@@ -172,8 +177,13 @@ integer limit or None, and neither reads validation_metadata.
 
 The supplied YAML uses max_training_segments=1, start_distances_m=[40, 30, 20], steps=1 and
 population_size=4: three starts times six evaluations, or 18 rollouts per NES attack.
-The three initial patches each have their own optimization output directory. Optimization strength
-and driving impact must be measured; successful preparation alone establishes neither.
+Each attack has an offline/<attack>/ report directory, including the unoptimized no_patch control.
+The framework owns these paths; optimization options have no output_directory setting.
+offline_report.html combines all attacks' values, curves, tables and images. It includes
+initial_texture, the complete replica face, even for attacks without optimization. Structured data lives in each report.json,
+with CSV tables and PNG images beside it. evaluation_report.html presents the closed-loop results.
+Optimization strength and driving impact must be measured; successful preparation alone
+establishes neither.
 
 ## Resume
 
@@ -189,11 +199,10 @@ with --prepared. Python provides Experiment.prepare(configuration, resume=True) 
 Experiment.execute(prepared, resume=True).
 
 Resume checkpoints whole attacks, not individual PGD updates or NES queries. An unfinished offline
-phase starts from its beginning. If output_directory/rollouts is nonempty, the black-box optimizer
-renames it to rollouts-incomplete-<UTC timestamp> in the same output directory, then starts a fresh
-rollouts directory. The previous query logs are preserved rather than deleted or merged, and
-optimization.json records the archive path in archived_rollouts (or null when no archive was
-needed). Matching completed executions are retained only when their full expected metadata still
+phase starts from its beginning. The framework first archives the whole existing
+offline/<attack>/ directory to offline-incomplete/<attack>-<UTC timestamp>/, preserving its
+partial failed report and query logs. The new attempt starts with a fresh report directory.
+Matching completed executions are retained only when their full expected metadata still
 agrees, including segment, part, environment, decision counts and deployment budget. See [Resume interrupted work](../guides/experiments.md#resume-interrupted-work).
 
 ## One renderer for both scene versions
@@ -267,3 +276,46 @@ be loaded or reevaluated with this version.
 
 Read [Evaluation](../guides/evaluation.md) and the
 [Python API](../reference/python-api.md#avsectesterimplemented_attacksstop_sign_patch_attackattack).
+
+
+## Add a replica-specific evaluation metric
+
+ReplicaVisibility is an example of an attack-specific custom Metric, implemented in
+[stop_sign_patch_attack/metrics.py](../../avsectester/implemented_attacks/stop_sign_patch_attack/metrics.py).
+Subclass Metric and implement evaluate(group): iterate over group.runs and return a mapping from
+each treatment to its field/value mapping. Read only saved RunLog evidence and return
+UnavailableMetricValue with a reason when the evidence is absent; custom metrics do not need a
+framework type-registry entry. Also implement describe() to return MetricDescription with a summary
+and a MetricField for every output. For ReplicaVisibility, the visible_steps field has unit
+"decision steps" and explains the configured pixel threshold, camera and missing-replica case.
+
+This metric reads each step's object_visibility using REPLICA_OBJECT_ID, shared with online
+insertion and detector sampling. visible_steps counts decisions with at least min_visible_pixels
+(default 100) in camera_id (default camera_front_wide_120fov). A missing camera entry counts as
+invisible. Empty runs and treatments that never recorded the replica, including clean, are
+unavailable rather than zero.
+
+Configure a custom metric with its complete module path and optional constructor parameters:
+
+```yaml
+evaluation:
+  metrics:
+    - type: StopLineMetrics
+    - type: avsectester.implemented_attacks.stop_sign_patch_attack.metrics:ReplicaVisibility
+      options:
+        camera_id: camera_front_wide_120fov
+        min_visible_pixels: 100
+```
+
+The supplied stop-sign configurations include ReplicaVisibility. Its field appears alongside the
+built-in metrics in evaluation/report.json, evaluation/runs.csv and evaluation_report.html.
+The page displays the custom metric's own meaning and unit alongside built-in definitions.
+
+
+The offline values use measurement names: final_confidence is the final detector confidence
+(lower is better for the attack), while final_planned_forward_m is the final mean planned forward
+distance (higher is better for the attack). pgd_confidence shows the batch confidence before each
+update; planned_forward_m shows NES steps with step 0 representing the initial texture. Initial
+and optimized images both show the complete replica face for direct comparison. Every offline
+table includes column explanations and units. The two root-level HTML pages link to one another;
+their numeric display uses four decimal places and their JSON/CSV links retain full precision.

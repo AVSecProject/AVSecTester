@@ -89,7 +89,6 @@ attacks:
               seed: 0
           max_training_segments: null
           samples_per_scene: 8
-          output_directory: ../results/nurec_stop_sign_patch_2604/optimization/white_detector_pgd
   black_detector_pgd:
     type: StopSignPatchAttack
     options:
@@ -111,7 +110,6 @@ attacks:
               seed: 0
           max_training_segments: null
           samples_per_scene: 8
-          output_directory: ../results/nurec_stop_sign_patch_2604/optimization/black_detector_pgd
   noise_detector_pgd:
     type: StopSignPatchAttack
     options:
@@ -133,7 +131,6 @@ attacks:
               seed: 0
           max_training_segments: null
           samples_per_scene: 8
-          output_directory: ../results/nurec_stop_sign_patch_2604/optimization/noise_detector_pgd
   white_rollout_nes:
     type: StopSignPatchAttack
     options:
@@ -156,7 +153,6 @@ attacks:
           - 20
           horizon_s: 3
           max_training_segments: 1
-          output_directory: ../results/nurec_stop_sign_patch_2604/optimization/white_rollout_nes
   black_rollout_nes:
     type: StopSignPatchAttack
     options:
@@ -179,7 +175,6 @@ attacks:
           - 20
           horizon_s: 3
           max_training_segments: 1
-          output_directory: ../results/nurec_stop_sign_patch_2604/optimization/black_rollout_nes
   noise_rollout_nes:
     type: StopSignPatchAttack
     options:
@@ -202,7 +197,6 @@ attacks:
           - 20
           horizon_s: 3
           max_training_segments: 1
-          output_directory: ../results/nurec_stop_sign_patch_2604/optimization/noise_rollout_nes
 evaluation:
   metrics:
   - type: StopLineMetrics

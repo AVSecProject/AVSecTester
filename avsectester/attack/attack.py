@@ -26,6 +26,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 from avsectester.attack.runtime import AttackRuntime
+from avsectester.attack.offline_report import OfflineReport
 from avsectester.datasets.base import FrameReference
 
 if TYPE_CHECKING:
@@ -71,6 +72,7 @@ class OfflineContext:
     environment: Mapping[str, Any] = field(default_factory=dict)
     deployment: DeploymentPlan | None = None
     validation_metadata: tuple[AttackSegment, ...] = ()
+    report: OfflineReport = field(default_factory=lambda: OfflineReport(None))
 
 
 class Attack(ABC):

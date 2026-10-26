@@ -64,7 +64,7 @@ data and boundary modules can be imported without simulator servers or weights.
 | avsectester.closed_loop.simulators.nurec.probe_assets | ProbeAsset and probe_asset: single-colour Gaussian copies of ObjectAssets for NRE insertion |
 | avsectester.closed_loop.simulators.nurec.simulator | NuRec simulator configuration and runtime |
 | avsectester.closed_loop.simulators.recorded | RecordedReplaySimulator and RecordedReplaySimulatorRuntime |
-| avsectester.attack | Attack, AttackSegment, OfflineContext, AttackRuntime and actions |
+| avsectester.attack | Attack, AttackSegment, OfflineContext, OfflineReport, ReportValue, ReportSeries, ReportTable, ReportImage, AttackRuntime and actions |
 | avsectester.attack.attack | Attack, AttackSegment and OfflineContext |
 | avsectester.attack.insertion | InsertObject, sensor insertion, assets, placement, compositing and visibility |
 | avsectester.attack.insertion.action | InsertObject and InsertionAttackAction |
@@ -426,12 +426,12 @@ PairMetric evaluates TreatmentPair; TrajectoryDeviation is symmetric. StopImpact
 comparisons in both directions. Pair differences for single-run values are B minus A.
 
 evaluate(result, configuration), exported by avsectester.experiment and implemented in
-experiment.result_evaluation, writes report.json, runs.csv and plots. The evaluation package owns
+experiment.result_evaluation, writes report.json, runs.csv, plots and report.html. The evaluation package owns
 RunGroup evaluation, metrics, report records, statistics and visualization without depending on
 experiment types. Experiment evaluation orders logs, chooses defaults, attaches selections and
 saves report/plot files. Metric
 specifications, notes and errors remain in the report. EvaluationReport.format_summary() prints
-treatment tables, pair difference matrices and notes; treatment_summaries and pair_summaries use
+one treatment table per part and metric class, plus notes and errors; pair differences are in report.json and report.html; treatment_summaries and pair_summaries use
 population standard deviation (ddof=0). summarize recalculates summaries; record_error records an
 exception with its source and context. as_dict returns data, and save writes it. No inference or
 dataset read occurs.
@@ -498,7 +498,7 @@ not discover attacks. Third-party registry specifications remain the owning cons
 | `SelectionDecision.from_dict` | `from_dict(value: Mapping[str, Any]) -> SelectionDecision` |
 | `treatment_applies` | `treatment_applies(treatment: Any, attack_name: str) -> bool` |
 | `SegmentUnit` | `index: int`<br>`segment: AttackSegment`<br>`attack_names: tuple[str, ...]`<br>`part: str \| None = None` |
-| `PreparedExperiment` | `configuration: ExperimentConfiguration`<br>`metadata: Mapping[str, tuple[AttackSegment, ...]]`<br>`artifacts: Mapping[str, Any]`<br>`selections: tuple[SelectionDecision, ...] = ()`<br>`preparation: Mapping[str, Any]` (required, keyword-only)<br>`units: tuple[SegmentUnit, ...] = ()` (keyword-only)<br>`deployment: DeploymentPlan \| None = None` (keyword-only) |
+| `PreparedExperiment` | `configuration: ExperimentConfiguration`<br>`metadata: Mapping[str, tuple[AttackSegment, ...]]`<br>`artifacts: Mapping[str, Any]`<br>`selections: tuple[SelectionDecision, ...] = ()`<br>`preparation: Mapping[str, Any]` (required, keyword-only)<br>`units: tuple[SegmentUnit, ...] = ()` (keyword-only)<br>`deployment: DeploymentPlan \| None = None` (keyword-only)<br>`offline_reports: Mapping[str, OfflineReport]` (keyword-only, default empty) |
 | `PreparedExperiment.save` | `save(directory: str \| Path) -> Path` |
 | `PreparedExperiment.load` | `load(config: ExperimentConfiguration \| Mapping[str, Any] \| str \| Path, directory: str \| Path) -> PreparedExperiment` |
 | `TreatmentResult` | `attack_name: str \| None`<br>`segment_index: int`<br>`segment: AttackSegment`<br>`treatment: str`<br>`seed: int`<br>`log: RunLog`<br>`error: str \| None = None`<br>`part: str \| None = None` |
@@ -544,7 +544,7 @@ methods provide the usual save/load entry points.
 |---|---|
 | `AttackSegment` | `scenario_id: str`<br>`start: FrameReference`<br>`stop: FrameReference`<br>`user_data: Mapping[str, Any] = field(default_factory=dict)` |
 | `AttackSegment.decision_steps` | `decision_steps: int` |
-| `OfflineContext` | `services: ClosedLoopServices`<br>`metadata: tuple[AttackSegment, ...]`<br>`seed: int = 0`<br>`environment: Mapping[str, Any] = field(default_factory=dict)`<br>`deployment: DeploymentPlan \| None = None`<br>`validation_metadata: tuple[AttackSegment, ...] = ()` |
+| `OfflineContext` | `services: ClosedLoopServices`<br>`metadata: tuple[AttackSegment, ...]`<br>`seed: int = 0`<br>`environment: Mapping[str, Any] = field(default_factory=dict)`<br>`deployment: DeploymentPlan \| None = None`<br>`validation_metadata: tuple[AttackSegment, ...] = ()`<br>`report: OfflineReport = field(default_factory=lambda: OfflineReport(None))` |
 | `Attack` | `environment: Mapping[str, Any] = MappingProxyType({})` |
 | `Attack.build_metadata` | `build_metadata(scenario: ScenarioView) -> Sequence[AttackSegment]` |
 | `Attack.run_offline` | `run_offline(context: OfflineContext) -> Any` |
@@ -1373,8 +1373,8 @@ plus offset_m times that mode's normal. panel_height_m is required.
 
 | Public name | Signature or fields |
 |---|---|
-| `DetectorPatchOptimization` | Frozen dataclass: `detector: Scorer`, `optimizer: PGD`, `output_directory: str \| Path`, `camera_id='camera_front_wide_120fov'`, `max_training_segments=None`, `samples_per_scene=8`, `min_visible_pixels=100`, `detection_threshold=0.5`, `braking_deceleration_mps2=3.4` |
-| `RolloutPatchOptimization` | Frozen dataclass: `optimizer: NES`, `output_directory: str \| Path`, `start_distances_m=(40.0, 30.0, 20.0)`, `horizon_s=3.0`, `max_training_segments=1` |
+| `DetectorPatchOptimization` | Frozen dataclass: `detector: Scorer`, `optimizer: PGD`, `camera_id='camera_front_wide_120fov'`, `max_training_segments=None`, `samples_per_scene=8`, `min_visible_pixels=100`, `detection_threshold=0.5`, `braking_deceleration_mps2=3.4` |
+| `RolloutPatchOptimization` | Frozen dataclass: `optimizer: NES`, `start_distances_m=(40.0, 30.0, 20.0)`, `horizon_s=3.0`, `max_training_segments=1` |
 | `run_offline` | `run_offline(attack, context) -> np.ndarray` |
 
 Both optimizers start from the attack's generated initial patch. Detector options require PGD;
@@ -1948,6 +1948,46 @@ command. The component log includes route_waypoints, navigation_command, navigat
 history_pose_count and selected_image_times (simulation seconds by camera). Control.trajectory
 starts at rig-frame origin with identity rotation at t0, followed by full model waypoint poses.
 
+### avsectester.attack.offline_report
+
+| Public name | Signature or fields |
+|---|---|
+| `OfflineReport` | Pure data collection; exported from avsectester.attack |
+| `OfflineReport.__init__` | `__init__(directory: str \| Path \| None = None)` |
+| `OfflineReport.directory` | Optional attack workspace; persisted as offline/<attack>/files/ |
+| `OfflineReport.status` | completed or failed |
+| `OfflineReport.values` | `dict[str, ReportValue]` |
+| `OfflineReport.series` | `dict[str, ReportSeries]` |
+| `OfflineReport.tables` | `dict[str, ReportTable]` |
+| `OfflineReport.images` | `dict[str, ReportImage]` |
+| `ReportValue` | Frozen dataclass: `value`, `unit=None`, `description=None` |
+| `ReportSeries` | Frozen dataclass: `x`, `y`, `x_label="iteration"`, `y_label=None`, `x_unit=None`, `y_unit=None`, `description=None` |
+| `ReportTable` | Frozen dataclass: `rows`, `description=None`, `columns=None` (column explanations) |
+| `ReportImage` | Frozen dataclass: `pixels`, `description=None` |
+| `OfflineReport.set_value` | `set_value(name, value, *, unit=None, description=None)`; bool/int/finite float/string |
+| `OfflineReport.set_series` | `set_series(name, y, *, x=None, x_label="iteration", y_label=None, x_unit=None, y_unit=None, description=None)` |
+| `OfflineReport.set_table` | `set_table(name, rows, *, description=None, columns=None)`; flat JSON-scalar mappings |
+| `OfflineReport.set_image` | `set_image(name, pixels, *, description=None)`; uint8 RGB/RGBA |
+| `OfflineReport.save` | `save(directory: str \| Path) -> None` |
+| `OfflineReport.load` | `load(directory: str \| Path) -> OfflineReport`; classmethod |
+
+Names match `^[A-Za-z0-9][A-Za-z0-9_.-]*$`, cannot collide across kinds, and replace
+previous data within the same kind. Series contain finite equal-length numeric vectors.
+Tables preserve column appearance order and scalar types; columns maps existing column names to
+explanations, including their units. Optional units and descriptions survive save/load for every
+report item. CSV/JSON retain full precision. save writes report.json, CSV and PNG
+files and copies the optional workspace into files/. OfflineContext.report receives this collection;
+attacks set measurements without writing framework reports themselves. PreparedExperiment.offline_reports
+retains the per-attack reports through save/load, preparation resume and prepared reuse.
+ReportValue, ReportSeries, ReportTable and ReportImage are exported from avsectester.attack.
+Each collection contains its complete frozen entry, so a scalar is read as values[name].value,
+table data as tables[name].rows, and image pixels as images[name].pixels. There are no parallel
+metadata maps. report.json mirrors the entries: values include value/unit/description; series
+include coordinates and axis metadata; tables include file/description/columns/rows; images
+include file/description. CSV column order follows first occurrence in rows. This entry layout
+replaces the earlier scalar/filename layout; old offline report files must be read with their
+matching version.
+
 ### avsectester.implemented_attacks.stop_sign_patch_attack.metrics
 
 | Public name | Signature or fields |
@@ -1966,3 +2006,50 @@ sample as time_to_stop; distance_to_line_at_min_speed at the first minimum-speed
 before-line interval; and distance_to_line_at_brake_onset at the start of the first physical
 deceleration interval reaching brake_deceleration_mps2. Distances are positive before the line and
 negative after crossing. Missing stopping/braking evidence remains unavailable with a reason.
+
+### avsectester.experiment.html_report
+
+| Public name | Signature or fields |
+|---|---|
+| `write_offline_html` | `write_offline_html(output_root)`; rebuild offline_report.html from saved files |
+| `write_evaluation_html` | `write_evaluation_html(output_root)`; rebuild evaluation_report.html from saved files |
+
+Reports use inline CSS, relative image/CSV links, no JavaScript and no external resources. Offline
+series become 640-pixel-wide PNG curves with integer x ticks when appropriate.
+Tables with at most 20 rows and 8 columns are expanded summary tables; other tables are folded
+details containing their descriptions, column explanations, CSV link and complete rows.
+Evaluation results have measurement rows and treatment columns. Field links jump to definitions;
+paired differences can use any treatment as reference, and group values use missing-evidence footnotes.
+Type cells show the class name with its complete path as a tooltip.
+The evaluation page includes treatment statistics per part and metric class, pair differences,
+selection decisions, metric errors, notes and expandable group evidence.
+
+### avsectester.evaluation.report statistic formatting
+
+`format_number(value) -> str` formats bool as yes/no and int without decimals. Float always has
+four decimal places, including 1.0 → 1.0000 and -0.0 → 0.0000. None, unavailable and non-finite
+numbers become an em dash. `format_statistic(statistic)` uses a four-decimal mean and population
+standard deviation, with a second line n = k; for n < 2 the standard deviation is omitted.
+Boolean summaries show a four-decimal true fraction and a second line N of K groups. JSON and
+CSV keep full precision.
+
+
+### Metric descriptions
+
+MetricField and MetricDescription are frozen dataclasses exported from avsectester.evaluation.
+Metric.describe() is an instance method, so descriptions can explain the actual configured
+thresholds. Its default summary is the first paragraph of the class docstring and its default
+field mapping is empty.
+
+| Public name | Signature or fields |
+|---|---|
+| `MetricField` | `description: str`; `unit: str \| None = None` |
+| `MetricDescription` | `summary: str`; `fields: Mapping[str, MetricField]` |
+| `Metric.describe` | `describe() -> MetricDescription` |
+
+Field keys are evaluate output names without the metric label prefix. Every built-in metric
+describes all of its fields. Saved metric specifications contain type, options, label, summary and
+fields (description and unit). The exact label identifies the field prefix even when a field itself
+contains dots or a label uses a complete module path. EvaluationReport.experiment records the
+experiment setup when evaluate(result, configuration) supplies it; standalone evaluate_groups
+leaves that mapping empty.

@@ -7,18 +7,14 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 import csv
 import json
+import math
+from numbers import Integral, Real
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from .metric import Metric
-
-
-_SUMMARY_FIELDS = (
-    "DrivingMetrics.final_speed", "DrivingMetrics.brake_steps", "DrivingMetrics.stopped",
-    "DrivingMetrics.collision", "DetectionMetrics.precision", "DetectionMetrics.recall",
-)
+from .metric import Metric, UnavailableMetricValue
 
 
 @dataclass(frozen=True)
@@ -49,6 +45,7 @@ class EvaluationReport:
     notes: list[str] = field(default_factory=list)
     metric_errors: list[dict[str, Any]] = field(default_factory=list)
     path: Path | None = None
+    experiment: dict[str, Any] = field(default_factory=dict)
 
     def summarize(self) -> None:
         """Rebuild treatment and pair population statistics from the recorded group rows."""
@@ -85,55 +82,47 @@ class EvaluationReport:
             "groups": self.groups, "treatment_summaries": self.treatment_summaries,
             "pair_summaries": self.pair_summaries, "selections": self.selections,
             "metrics": self.metrics, "notes": self.notes, "metric_errors": self.metric_errors,
+            "experiment": self.experiment,
             "statistics": {"std_ddof": 0, "groups": "completed runs or completed treatment pairs",
                            "deltas": "treatment B minus treatment A; booleans use 0 and 1"},
         })
 
     def format_summary(self) -> str:
-        """Format treatment tables, mean pairwise-difference matrices and report explanations."""
+        """Format every metric class by part and treatment, followed by report explanations."""
         lines = []
         parts = list(dict.fromkeys(row["part"] for row in self.treatment_summaries))
         for part in parts:
             rows = [row for row in self.treatment_summaries if row["part"] == part]
-            fields = [name for name in _SUMMARY_FIELDS if any(name in row["metrics"] for row in rows)]
-            kinds = {name: next(row["metrics"][name]["kind"] for row in rows if name in row["metrics"])
-                     for name in fields}
-            headers = ["treatment", "completed/total", "failed"] + [
-                f"{name.split('.')[-1]} ({'ratio' if kinds[name] == 'proportion' else 'mean'})"
-                for name in fields]
-            table = [headers]
-            for row in rows:
-                values = []
-                for name in fields:
-                    measurement = row["metrics"].get(name, {})
-                    value = measurement.get("true_fraction") if kinds[name] == "proportion" else measurement.get("mean")
-                    values.append(_format_number(value))
-                table.append([row["treatment"], f"{row['groups']}/{row['total_groups']}",
-                              str(row["failed_runs"]), *values])
+            names = list(dict.fromkeys(name for row in rows for name in row["metrics"]))
+            classes: dict[str, list[tuple[str, str, str | None]]] = {}
+            for specification in self.metrics:
+                label = specification.get("label")
+                if not label:
+                    continue
+                fields = [(name, name[len(label) + 1:],
+                           specification.get("fields", {}).get(name[len(label) + 1:], {}).get("unit"))
+                          for name in names if name.startswith(label + ".")]
+                if fields:
+                    classes[label] = fields
+            matched = {name for fields in classes.values() for name, _, _ in fields}
+            other: list[tuple[str, str, str | None]] = [(name, name, None) for name in names if name not in matched]
+            if other:
+                classes["Metrics"] = other
             if part is not None:
                 lines.append(f"Part: {part}")
-            lines.extend(_table(table))
-            treatments = [row["treatment"] for row in rows]
-            for field_name in ("DrivingMetrics.final_speed", "DrivingMetrics.brake_steps"):
-                pairs = [row for row in self.pair_summaries if row["part"] == part]
-                if any(field_name in row["deltas"] for row in pairs):
-                    lines.append(f"Mean difference B - A: {field_name} (row A, column B)")
-                    matrix = [["A \\ B", *treatments]]
-                    for first in treatments:
-                        cells = []
-                        for second in treatments:
-                            if first == second:
-                                cells.append("—")
-                                continue
-                            match = next((row for row in pairs if {row["treatment_a"], row["treatment_b"]}
-                                          == {first, second}), None)
-                            sample = match["deltas"].get(field_name, {}) if match is not None else {}
-                            value = sample.get("mean")
-                            if value is not None and match is not None and match["treatment_a"] != first:
-                                value = -value
-                            cells.append(_format_number(value))
-                        matrix.append([first, *cells])
-                    lines.extend(_table(matrix))
+            for label, fields in classes.items():
+                lines.append(label)
+                table = [["treatment", "completed/total", "failed",
+                          *[f"{field} ({unit})" if unit else field for _, field, unit in fields]]]
+                for row in rows:
+                    table.append([row["treatment"], f"{row['groups']}/{row['total_groups']}",
+                                  str(row["failed_runs"]),
+                                  *[format_statistic(row["metrics"].get(name, {})) for name, _, _ in fields]])
+                lines.extend(_table(table))
+            if not classes:
+                lines.extend(_table([["treatment", "completed/total", "failed"], *[
+                    [row["treatment"], f"{row['groups']}/{row['total_groups']}",
+                     str(row["failed_runs"])] for row in rows]]))
         lines.extend(self.notes)
         for error in self.metric_errors:
             lines.append(f"Evaluation error ({error['metric']}): {error['error']}")
@@ -167,14 +156,45 @@ class EvaluationReport:
 
 
 def _table(rows: Sequence[Sequence[str]]) -> list[str]:
-    widths = [max(len(row[index]) for row in rows) for index in range(len(rows[0]))]
-    return ["  ".join(value.ljust(width) for value, width in zip(row, widths)).rstrip() for row in rows]
+    expanded = []
+    for row in rows:
+        cells = [value.splitlines() or [""] for value in row]
+        expanded.extend([[cell[line] if line < len(cell) else "" for cell in cells]
+                         for line in range(max(map(len, cells)))])
+    widths = [max(len(row[index]) for row in expanded) for index in range(len(expanded[0]))]
+    return ["  ".join(value.ljust(width) for value, width in zip(row, widths)).rstrip()
+            for row in expanded]
 
 
-def _format_number(value: float | None) -> str:
+def format_number(value: Any) -> str:
+    """Format report scalars without changing JSON/CSV precision; missing values use an em dash."""
+    if value is None or isinstance(value, UnavailableMetricValue):
+        return "—"
+    if isinstance(value, (bool, np.bool_)):
+        return "yes" if value else "no"
+    if isinstance(value, Integral):
+        return str(int(value))
+    if isinstance(value, Real):
+        number = float(value)
+        if not math.isfinite(number):
+            return "—"
+        formatted = f"{number:.4f}"
+        return "0.0000" if formatted == "-0.0000" else formatted
+    return str(value)
+
+
+def format_statistic(statistic: Mapping[str, Any]) -> str:
+    """Format population statistics on two lines, with available-group counts below the value."""
+    value = (statistic.get("true_fraction") if statistic.get("kind") == "proportion"
+             else statistic.get("mean"))
     if value is None:
-        return "n/a"
-    return f"{0.0 if value == 0 else value:.3g}"
+        return "—"
+    count = statistic.get("count", 0)
+    if statistic.get("kind") == "proportion":
+        return f"{format_number(float(value))}\n{round(value * count)} of {count} groups"
+    mean = format_number(float(value))
+    spread = f" ± {format_number(float(statistic['std']))}" if count >= 2 and statistic.get("std") is not None else ""
+    return f"{mean}{spread}\nn = {count}"
 
 
 def _json_data(value: Any) -> Any:

@@ -37,6 +37,10 @@ def test_run(tmp_path):
     assert (output / "evaluation/report.json").is_file()
     assert (output / "evaluation/runs.csv").is_file()
     assert list((output / "evaluation/plots").glob("*.png"))
+    assert str(output / "offline_report.html") in completed.output
+    assert str(output / "evaluation_report.html") in completed.output
+    assert (output / "offline_report.html").is_file()
+    assert (output / "evaluation_report.html").is_file()
     assert str(output) in completed.output
     report = (output / "evaluation/report.json").read_bytes()
     repeated = runner.invoke(cli.app, ["run", str(path)])

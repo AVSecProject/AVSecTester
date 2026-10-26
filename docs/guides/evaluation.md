@@ -134,23 +134,32 @@ configuration error: the report and runs.csv still preserve run status and the m
 
 ## Reports
 
-`evaluate(result, configuration)` writes these files under `output/evaluation/`:
+`evaluate(result, configuration)` writes these files under `runs.output`:
 
 | Output | Content |
 |---|---|
-| report.json | Metric types/options, groups, treatment values, pair values, reasons and errors |
-| runs.csv | part, segment_index, scenario_id, seed, treatment, attack_name, status, error, then metric-prefixed value columns |
-| plots/ | Per-group speed and braking by decision index, named segment-xxxxx-seed-s.png |
+| evaluation/report.json | Experiment setup, metric labels/options/descriptions/units, groups, values, reasons and errors |
+| evaluation_report.html | Definitions, setup, status, results, paired differences, selections and group details |
+| evaluation/runs.csv | part, segment_index, scenario_id, seed, treatment, attack_name, status, error, then metric-prefixed value columns |
+| evaluation/plots/ | Per-group speed and optional actuator braking, named segment-xxxxx-seed-s.png |
 
 Treatment summaries show completed group counts, total groups, failures, numeric mean/population
 standard deviation (ddof=0), and boolean true proportions. Missing evidence is excluded from numeric
 denominators. Boolean fields retain proportion formatting even when every value is unavailable. Pair
 summaries include single-run differences and pair metrics. Treatment statistics are grouped by
 (part, treatment), and pair statistics by (part, treatment_a, treatment_b). format_summary prints
-separate tables per part; without split there is only one table. The
-terminal table shows available primary fields: final_speed, brake_steps, stopped, collision,
-precision and recall. It also prints major metric difference matrices, notes and output location.
-The JSON and CSV retain all metric fields.
+one table per part and metric class, with every field of that class plus completed/total and failed
+counts. Field headers include units from Metric.describe(). Numeric cells show a four-decimal mean ± population
+standard deviation and a second line n = k; when n < 2 only the mean is displayed; boolean cells show the true fraction and N of K groups.
+Unavailable cells show "—". Floats always use four decimal places, including integral-valued floats; integer counts have no
+decimals, and booleans in group details use yes/no. JSON and CSV keep full precision. Without split there is one set of metric tables. Notes, metric errors
+and selection errors remain in terminal output; pair differences are in evaluation_report.html and evaluation/report.json
+rather than terminal matrices. The JSON and CSV retain all metric fields.
+
+The HTML overview includes group and run counts and selection status counts. Each group has an
+expandable section containing its run values and saved plot. The HTML uses saved files only and
+can be rebuilt without a simulator or model. The CLI evaluate command rebuilds both
+offline_report.html and evaluation_report.html and prints their paths.
 
 EvaluationReport.summarize() recalculates treatment and pair summaries from report groups.
 record_error(source, error, **context) records an error with its source and contextual fields.
@@ -238,3 +247,35 @@ print(report.format_summary())
 Read [Runtime](../reference/runtime.md#runlog), [Python
 API](../reference/python-api.md#evaluation-api) and
 [Configuration](../reference/configuration.md#evaluation).
+
+
+## Metric descriptions
+
+A metric can describe its results through the public Metric.describe() instance method, returning
+MetricDescription(summary, fields). Each field maps its unprefixed output name to
+MetricField(description, unit=None). Use a concise summary and explain how each value is measured
+and when it is unavailable. Descriptions can include the instance's configured thresholds.
+All built-in metrics describe every output field; custom metrics may omit descriptions, in which
+case the report displays "No description provided".
+
+The evaluator saves the exact metric label, summary, field meanings and units in report.json.
+Pages and console summaries match fields by that complete label, so nested field names such as
+a_to_b.reference_drove remain part of StopImpact rather than becoming a separate metric.
+Description failures are recorded as metric errors.
+
+The root-level evaluation_report.html explains treatments, comparison groups, parts, statuses,
+population statistics and paired B − A differences. It includes experiment setup, parameter and
+field definitions, per-part results, paired tables, group-level unavailable reasons and saved plots.
+A group with only trajectory commands has one speed panel; an actuator-brake panel is shown only
+when recorded executed commands supply actuator evidence.
+
+
+The HTML result tables use measurement rows, a separate unit column and one column per treatment.
+Each measurement links to its definition. Paired differences are organized by reference treatment:
+every column is the compared treatment minus that reference; reversing a saved pair negates its
+mean and retains its standard deviation and available count. PairMetric tables instead have one
+column per saved treatment pair. Group details start with status, group measurements by metric,
+and attach numbered footnotes to unavailable cells. Selection begins with attack/status counts;
+per-scene evidence is folded under each attack. Type cells show class names with full paths as
+tooltips. Decimal values are shown with four decimal places; whole-number counts are shown as
+integers. JSON and CSV keep full precision.

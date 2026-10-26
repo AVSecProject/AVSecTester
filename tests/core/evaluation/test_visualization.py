@@ -88,9 +88,20 @@ def test_filmstrip(camera_log):
 
 
 def test_plot_group(tmp_path, make_log):
+    from PIL import Image
+
+    from avsectester.data_types import Control
+
     path = plot_group({"clean": make_log([3., 2.]),
                        "attacked": make_log([2., 0.], [0., 1.])}, tmp_path / "plot.png",
                       title="Small recorded experiment")
-    assert path.read_bytes().startswith(b"\x89PNG")
+    assert path.read_bytes().startswith(bytes.fromhex("89504e47"))
+    trajectory = make_log([3., 2.])
+    for step in trajectory.steps:
+        step.executed_command = Control(trajectory=[])
+    single = plot_group({"trajectory": trajectory}, tmp_path / "speed.png")
+    with Image.open(path) as two_panels, Image.open(single) as one_panel:
+        assert one_panel.width == two_panels.width
+        assert one_panel.height < two_panels.height
     empty = plot_group({}, tmp_path / "empty.png")
     assert empty.is_file()

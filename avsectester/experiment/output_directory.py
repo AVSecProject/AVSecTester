@@ -13,7 +13,7 @@ import math
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
-from avsectester.attack import AttackSegment
+from avsectester.attack import AttackSegment, OfflineReport
 from avsectester.data_types import Unavailable
 from avsectester.serialization import DEFAULT_REGISTRY
 from avsectester.maps import ScenarioMap
@@ -131,7 +131,12 @@ def save_completed_artifact(prepared: PreparedExperiment, name: str, directory: 
     """Publish one completed offline artifact before advancing the preparation checkpoint."""
     root = Path(directory)
     prepared.configuration.attacks[name].save_artifacts(prepared.artifacts[name], root / "attacks" / name)
-    return save_preparation_progress(prepared, root, completed_attacks)
+    prepared.offline_reports.get(name, OfflineReport(None)).save(root / "offline" / name)
+    save_preparation_progress(prepared, root, completed_attacks)
+    from .html_report import write_offline_html
+
+    write_offline_html(root)
+    return root
 
 
 def save_prepared(prepared: PreparedExperiment, directory: str | Path) -> Path:
@@ -140,7 +145,11 @@ def save_prepared(prepared: PreparedExperiment, directory: str | Path) -> Path:
     _save_metadata(prepared, root)
     for name, attack in prepared.configuration.attacks.items():
         attack.save_artifacts(prepared.artifacts[name], root / "attacks" / name)
+        prepared.offline_reports.get(name, OfflineReport(None)).save(root / "offline" / name)
     _write_json(root / "prepared.json", _preparation_manifest(prepared))
+    from .html_report import write_offline_html
+
+    write_offline_html(root)
     return root
 
 
@@ -289,6 +298,13 @@ def load_prepared_metadata(configuration: ExperimentConfiguration,
     return _load_metadata(configuration, directory, validate_dataset=False)
 
 
+def _load_offline_reports(names: Sequence[str], root: Path) -> dict[str, OfflineReport]:
+    """Restore reports separately from executable artifacts, including older empty outputs."""
+    return {name: (OfflineReport.load(root / "offline" / name)
+                   if (root / "offline" / name / "report.json").is_file()
+                   else OfflineReport(None)) for name in names}
+
+
 def load_prepared(configuration: ExperimentConfiguration,
                   directory: str | Path) -> PreparedExperiment:
     """Validate execution inputs and load all artifacts; never return a partially usable object."""
@@ -298,7 +314,8 @@ def load_prepared(configuration: ExperimentConfiguration,
     artifacts = {name: attack.load_artifacts(root / "attacks" / name)
                  for name, attack in configuration.attacks.items()}
     return PreparedExperiment(configuration, saved.metadata, artifacts, saved.selections,
-                              preparation=saved.preparation, units=saved.units, deployment=saved.deployment)
+                              preparation=saved.preparation, units=saved.units, deployment=saved.deployment,
+                              offline_reports=_load_offline_reports(tuple(configuration.attacks), root))
 
 
 def load_preparation_progress(configuration: ExperimentConfiguration,
@@ -314,7 +331,8 @@ def load_preparation_progress(configuration: ExperimentConfiguration,
     artifacts = {name: configuration.attacks[name].load_artifacts(root / "attacks" / name)
                  for name in completed}
     return (PreparedExperiment(configuration, saved.metadata, artifacts, saved.selections,
-                               preparation=saved.preparation, units=saved.units, deployment=saved.deployment),
+                               preparation=saved.preparation, units=saved.units, deployment=saved.deployment,
+                               offline_reports=_load_offline_reports(tuple(configuration.attacks), root)),
             completed)
 
 

@@ -6,11 +6,12 @@ from collections.abc import Mapping
 from contextlib import ExitStack
 from copy import deepcopy
 from dataclasses import asdict, dataclass, replace
+from datetime import datetime, timezone
 import shutil
 from pathlib import Path
 from typing import Any
 
-from avsectester.attack import AttackSegment, OfflineContext
+from avsectester.attack import AttackSegment, OfflineContext, OfflineReport
 from avsectester.datasets import ScenarioStart
 from avsectester.data_types import Unavailable
 from avsectester.validation import require_nonnegative_integer
@@ -115,7 +116,8 @@ class Experiment:
             return PreparedExperiment.load(configuration, output)
         if output is not None and not resume and any(
             (output / name).exists() for name in
-            ("prepared.json", "preparation-progress.json", "attacks", "runs")
+            ("prepared.json", "preparation-progress.json", "attacks", "runs", "offline",
+             "offline_report.html", "evaluation_report.html", "offline-incomplete")
         ):
             raise ValueError(f"Preparation output already exists: {output}")
         cache = FrameDataCache()
@@ -189,7 +191,8 @@ class Experiment:
             if output is not None:
                 save_preparation_progress(prepared, output, completed)
         artifacts = dict(prepared.artifacts)
-        prepared = replace(prepared, artifacts=artifacts)
+        reports = dict(prepared.offline_reports)
+        prepared = replace(prepared, artifacts=artifacts, offline_reports=reports)
         for name, attack in configuration.attacks.items():
             if name in completed:
                 continue
@@ -204,13 +207,44 @@ class Experiment:
                 training = tuple(x for x in prepared.metadata[name] if segment_key(x) in training_keys)
                 validation = tuple(x for x in prepared.metadata[name] if segment_key(x) in validation_keys)
             environment = merge_environments(configuration.runs.environment, attack.environment)
-            with ClosedLoopServices(
-                configuration.dataset, configuration.simulator, configuration.avstack,
-                cache, deployment=deployment,
-            ) as services:
-                artifacts[name] = attack.run_offline(OfflineContext(
-                    services, training, seed, environment, deployment, validation,
-                ))
+            report_root = None if output is None else output / "offline" / name
+            if output is not None and report_root is not None and report_root.exists():
+                archive_root = output / "offline-incomplete"
+                archive_root.mkdir(parents=True, exist_ok=True)
+                stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+                archive = archive_root / f"{name}-{stamp}"
+                suffix = 1
+                while archive.exists():
+                    archive = archive_root / f"{name}-{stamp}-{suffix}"
+                    suffix += 1
+                report_root.rename(archive)
+            report = OfflineReport(None if report_root is None else report_root / "files")
+            reports[name] = report
+            if report.directory is not None:
+                report.directory.mkdir(parents=True, exist_ok=True)
+            try:
+                with ClosedLoopServices(
+                    configuration.dataset, configuration.simulator, configuration.avstack,
+                    cache, deployment=deployment,
+                ) as services:
+                    artifacts[name] = attack.run_offline(OfflineContext(
+                        services, training, seed, environment, deployment, validation, report,
+                    ))
+            except BaseException as error:
+                report.status = "failed"
+                try:
+                    if output is not None and report_root is not None:
+                        report.save(report_root)
+                        from .html_report import write_offline_html
+
+                        write_offline_html(output)
+                except BaseException as report_error:
+                    error.add_note(
+                        "Failed to save the partial offline report: "
+                        f"{type(report_error).__name__}: {report_error}"
+                    )
+                raise
+            report.status = "completed"
             completed.append(name)
             if output is not None:
                 save_completed_artifact(prepared, name, output, completed)
