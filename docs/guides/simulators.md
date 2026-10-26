@@ -247,6 +247,9 @@ The renderer receives the resulting three-dimensional rig pose rather than retai
 height or tilt. The plane-centroid fit rotates about the box centre, as in AlpaSim, so it is
 an approximate contact correction rather than a penetration solver.
 
+The full scene mesh also contains roadside geometry such as parked vehicles and poles; rays that
+hit it can tilt the ego and shake the cameras. The stop-sign configurations use `"mesh_ground"`.
+
 ### Camera resolution
 
 NuRecRenderer.resolution_hw maps native camera IDs to requested (height, width). Its default
@@ -272,7 +275,7 @@ the single-camera preset's camera:
 |---|---|---|
 | Controller | base_config.yaml: default linear MPC | AlpaSimController with linear MPC |
 | Navigation | route_generator_type: MAP | route_generator: map |
-| Ground contact | physics_update_mode: EGO_ONLY; use_ground_mesh=False | ego_only; ground_mesh: mesh |
+| Ground contact | physics_update_mode: EGO_ONLY; use_ground_mesh=False | ego_only; ground_mesh: mesh (mesh_ground in the stop-sign configurations) |
 | Camera | 1cam_1080.yaml: camera_front_wide_120fov, requested 1080×1900 | Same camera and request; actual NRE size is probed |
 | Camera timing | frame_interval_us: 100000 (10 Hz); alpamayo1_5.yaml subsample_factor: 1, four images at 10 Hz | dt: 0.1; frame_subsample: 1 |
 | Reactive traffic | AlpaSim trafficsim | **Not yet implemented.** Other actors follow recorded tracks or explicit overrides |

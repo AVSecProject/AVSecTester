@@ -286,7 +286,8 @@ timeouts, image/cache options and cleanup.
 
 The supplied configurations share results/nre-probes with NRE at /mnt/nre-probes. Rendered probes
 determine scene occlusion, and visible_pixels counts visible replica pixels. The configurations use
-depth=none; ego ground contact still uses mesh in 26.01 and mesh_ground in 26.04. They use map
+depth=none and ground_mesh=mesh_ground (see
+[Ground contact](../guides/simulators.md#ground-contact)). They use map
 navigation, ego_only physics updates and AlpaSimController. Alpamayo receives four consecutive 10 Hz
 image frames through frame_subsample=1.
 
