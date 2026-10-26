@@ -135,14 +135,20 @@ class NuRecDataset(Dataset):
     (for example ``camera_front_wide_120fov``). Sensor names remain native here; simulators
     configure any observation aliases. Native annotations are available per scenario through
     ``raw_metadata``; ``open_archive`` provides read-only archive access.
+
+    Give either ``dataroot``, a directory whose ``.usdz`` archives (searched recursively and
+    ordered by path) are all scenarios, or an explicit list of ``usdz_paths``. The directory is
+    read when scenarios are first used, so configurations load without the data present.
     """
 
     def __init__(
         self,
-        usdz_paths: list[str | Path],
+        usdz_paths: list[str | Path] | None = None,
         camera_id: str = "camera_front_wide_120fov",
         vehicle_labels: tuple[str, ...] = _VEHICLE_LABELS,
         time_step: float = 0.1,
+        *,
+        dataroot: str | Path | None = None,
     ) -> None:
         if isinstance(time_step, bool) or not math.isfinite(time_step) or time_step <= 0:
             raise ValueError("time_step must be positive and finite")
@@ -150,16 +156,26 @@ class NuRecDataset(Dataset):
         if self._step_us < 1 or abs(time_step * 1e6 - self._step_us) > 1e-6:
             raise ValueError("time_step must be representable in integer microseconds")
         self.time_step = self._step_us / 1e6
-        self.usdz_paths = [str(p) for p in usdz_paths]
+        if (usdz_paths is None) == (dataroot is None):
+            raise ValueError("NuRecDataset requires exactly one of dataroot and usdz_paths")
+        self.dataroot = None if dataroot is None else str(dataroot)
+        self._usdz_paths = None if usdz_paths is None else [str(p) for p in usdz_paths]
         self.camera_id = camera_id
         self.vehicle_labels = tuple(vehicle_labels)
         self._paths_by_id: dict[str, str] | None = None
 
-    @classmethod
-    def from_glob(cls, pattern: str | Path, **kwargs) -> NuRecDataset:
-        import glob
-
-        return cls(sorted(glob.glob(str(pattern), recursive=True)), **kwargs)
+    @property
+    def usdz_paths(self) -> list[str]:
+        """Scenario archive paths: the configured list, or every archive below dataroot."""
+        if self._usdz_paths is None:
+            root = Path(str(self.dataroot))
+            if not root.is_dir():
+                raise ValueError(f"NuRec dataroot {str(root)!r} is not a directory")
+            paths = sorted(str(path) for path in root.rglob("*.usdz"))
+            if not paths:
+                raise ValueError(f"NuRec dataroot {str(root)!r} contains no .usdz archives")
+            self._usdz_paths = paths
+        return list(self._usdz_paths)
 
     @staticmethod
     def open_archive(path: str | Path) -> zipfile.ZipFile:

@@ -3,26 +3,13 @@
 dataset:
   type: NuRecDataset
   options:
-    usdz_paths:
-    - ../data/nurec/6d986fb9-6694-4570-910b-d8bf4ffa8550/6d986fb9-6694-4570-910b-d8bf4ffa8550.usdz
-    - ../data/nurec/3e9966a3-c42d-4fd1-b588-6f5cc02b7c25/3e9966a3-c42d-4fd1-b588-6f5cc02b7c25.usdz
-    - ../data/nurec/f3fd4dbd-5c4e-4774-8b41-ebb9b515e9cb/f3fd4dbd-5c4e-4774-8b41-ebb9b515e9cb.usdz
-    - ../data/nurec/85a26192-7b37-43a2-bd5d-96cd858cb86b/85a26192-7b37-43a2-bd5d-96cd858cb86b.usdz
-    - ../data/nurec/1e5435de-0e4f-4f9c-943b-c44275544715/1e5435de-0e4f-4f9c-943b-c44275544715.usdz
-    - ../data/nurec/7d257301-a9d1-433b-8f08-85023a4d0fac/7d257301-a9d1-433b-8f08-85023a4d0fac.usdz
-    - ../data/nurec/f922e4bc-7bf3-4c4d-a254-63fadb4fd2fe/f922e4bc-7bf3-4c4d-a254-63fadb4fd2fe.usdz
-    - ../data/nurec/cda8a096-0982-4a91-b721-624dac7c83b8/cda8a096-0982-4a91-b721-624dac7c83b8.usdz
-    - ../data/nurec/b40f4729-29c4-4846-a04b-72c78832a062/b40f4729-29c4-4846-a04b-72c78832a062.usdz
-    - ../data/nurec/56263647-352f-45b7-95c5-1d077a512b66/56263647-352f-45b7-95c5-1d077a512b66.usdz
-    - ../data/nurec/22ab49c5-2c92-463b-b890-0b2208c436b1/22ab49c5-2c92-463b-b890-0b2208c436b1.usdz
-    - ../data/nurec/7fd4d554-b155-45c6-a46a-646486029d85/7fd4d554-b155-45c6-a46a-646486029d85.usdz
-    - ../data/nurec/3e265bc2-2a8b-4c5c-8e6b-1de009b6672d/3e265bc2-2a8b-4c5c-8e6b-1de009b6672d.usdz
-    - ../data/nurec/0bd5202f-5f7c-4748-b78d-20d1f921b4db/0bd5202f-5f7c-4748-b78d-20d1f921b4db.usdz
-    - ../data/nurec/904af7cf-d4ad-4ebc-867a-c77044eac8bb/904af7cf-d4ad-4ebc-867a-c77044eac8bb.usdz
-    - ../data/nurec/adb72a39-1e21-46ef-80f2-9c86a8e9504a/adb72a39-1e21-46ef-80f2-9c86a8e9504a.usdz
-    - ../data/nurec/325a6911-8ee8-4a04-8b84-55dbfcada98f/325a6911-8ee8-4a04-8b84-55dbfcada98f.usdz
+    dataroot: ../data/nurec/26.04_release
     camera_id: camera_front_wide_120fov
     time_step: 0.1
+split:
+  train_segments: 4
+  seed: 0
+  execute: [test]
 simulator:
   type: NuRecSimulator
   options:
@@ -59,7 +46,7 @@ avstack:
     frame_subsample: 1
     output_frequency_hz: 10
 attacks:
-  replica:
+  no_patch:
     type: StopSignPatchAttack
     options:
       initial_patch: none
@@ -226,15 +213,11 @@ evaluation:
     options:
       phrase: stop sign
   - type: DrivingMetrics
-split:
-  train_segments: 4
-  seed: 0
-  execute: [test]
 runs:
   treatments:
   - name: clean
-  - name: replica
-    attack_name: replica
+  - name: no_patch
+    attack_name: no_patch
   - name: white
     attack_name: white
   - name: black

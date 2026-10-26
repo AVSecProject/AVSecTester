@@ -17,6 +17,10 @@ Constructor filesystem options follow the [annotation rules](#constructor-filesy
 Type resolution and attack discovery live in avsectester.experiment.type_registry; the
 configuration loader owns YAML structure and validation.
 
+Section order does not affect loading. Supplied configurations use dataset, split, simulator,
+avstack, attacks, evaluation and runs, so the data and how its selected segments are divided come
+first.
+
 Every object constructor uses `type` and `options`. A name without a colon selects a built-in class.
 `package.module:name` imports a user class or function. The name may contain dots for nested
 attributes, such as `package.module:Container.CustomAttack`; the resolved value must be callable.

@@ -3,30 +3,13 @@
 dataset:
   type: NuRecDataset
   options:
-    usdz_paths:
-    - ../data/nurec/df113232-421d-4a88-8b1e-310291b08674/df113232-421d-4a88-8b1e-310291b08674.usdz
-    - ../data/nurec/6d95a6b3-ef42-4cc0-941f-dbed4d15901a/6d95a6b3-ef42-4cc0-941f-dbed4d15901a.usdz
-    - ../data/nurec/c6a47fa1-6d26-449e-a544-3c5be1051dfd/c6a47fa1-6d26-449e-a544-3c5be1051dfd.usdz
-    - ../data/nurec/1a7b81b8-9bca-4385-a591-64f74eb59db2/1a7b81b8-9bca-4385-a591-64f74eb59db2.usdz
-    - ../data/nurec/5775a998-77f9-472a-8d12-f2b036a4cfe8/5775a998-77f9-472a-8d12-f2b036a4cfe8.usdz
-    - ../data/nurec/13a9767e-35c2-4d91-bba1-4326fc018dfc/13a9767e-35c2-4d91-bba1-4326fc018dfc.usdz
-    - ../data/nurec/07981e6a-22dd-4796-ad2f-1252037ecd28/07981e6a-22dd-4796-ad2f-1252037ecd28.usdz
-    - ../data/nurec/d4c97cc1-1297-41fd-9ad8-87d269b65e4d/d4c97cc1-1297-41fd-9ad8-87d269b65e4d.usdz
-    - ../data/nurec/1316f5fa-9b99-4979-90eb-1a8d56b32a73/1316f5fa-9b99-4979-90eb-1a8d56b32a73.usdz
-    - ../data/nurec/d2fcf4b2-2a4b-47e3-a2ec-a9e3372c3a8a/d2fcf4b2-2a4b-47e3-a2ec-a9e3372c3a8a.usdz
-    - ../data/nurec/ada590cf-e6eb-4d6b-bed7-ecbc1f5ad9cd/ada590cf-e6eb-4d6b-bed7-ecbc1f5ad9cd.usdz
-    - ../data/nurec/fe6c404c-cca9-46f1-a662-8091b3389a67/fe6c404c-cca9-46f1-a662-8091b3389a67.usdz
-    - ../data/nurec/7eaac028-ff62-4f54-9cca-52c8f49ba87e/7eaac028-ff62-4f54-9cca-52c8f49ba87e.usdz
-    - ../data/nurec/aeeaa73d-9274-4610-9669-193ff356a53d/aeeaa73d-9274-4610-9669-193ff356a53d.usdz
-    - ../data/nurec/7b186d92-d6f5-4e27-a324-d705d1fad7e1/7b186d92-d6f5-4e27-a324-d705d1fad7e1.usdz
-    - ../data/nurec/c0de5bb2-4c11-4348-8369-7d231699e7b3/c0de5bb2-4c11-4348-8369-7d231699e7b3.usdz
-    - ../data/nurec/0b54c8d4-8119-431e-9ae8-5c70f5e64716/0b54c8d4-8119-431e-9ae8-5c70f5e64716.usdz
-    - ../data/nurec/86ad21f0-5c8e-4733-9e48-585b3b3c0607/86ad21f0-5c8e-4733-9e48-585b3b3c0607.usdz
-    - ../data/nurec/3b9f9fa6-c966-41a5-9a6c-c64374d97e7c/3b9f9fa6-c966-41a5-9a6c-c64374d97e7c.usdz
-    - ../data/nurec/2a356a82-3672-4fd5-ad80-174a780ae0c9/2a356a82-3672-4fd5-ad80-174a780ae0c9.usdz
-    - ../data/nurec/0e002edd-c307-437c-9b97-6a1f6d28ac91/0e002edd-c307-437c-9b97-6a1f6d28ac91.usdz
+    dataroot: ../data/nurec/26.01_release
     camera_id: camera_front_wide_120fov
     time_step: 0.1
+split:
+  train_segments: 4
+  seed: 0
+  execute: [test]
 simulator:
   type: NuRecSimulator
   options:
@@ -63,7 +46,7 @@ avstack:
     frame_subsample: 1
     output_frequency_hz: 10
 attacks:
-  replica:
+  no_patch:
     type: StopSignPatchAttack
     options:
       initial_patch: none
@@ -230,15 +213,11 @@ evaluation:
     options:
       phrase: stop sign
   - type: DrivingMetrics
-split:
-  train_segments: 4
-  seed: 0
-  execute: [test]
 runs:
   treatments:
   - name: clean
-  - name: replica
-    attack_name: replica
+  - name: no_patch
+    attack_name: no_patch
   - name: white
     attack_name: white
   - name: black

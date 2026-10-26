@@ -50,7 +50,9 @@ to generate and cache it; it does not attach generated data to the Dataset.
 
 ## NuRec
 
-NuRecDataset reads USDZ records. Configure camera_id for the recorded camera; frame data keeps
+NuRecDataset reads USDZ records: either every archive below `dataroot` (searched recursively
+and ordered by path) or an explicit `usdz_paths` list; attack metabuilders then choose the
+scenarios they can use. Configure camera_id for the recorded camera; frame data keeps
 that native sensor name. Scene identifiers returned by dataset.scenarios() are native clip
 identifiers, not filesystem paths. Configure model-visible aliases only on NuRecSimulator through
 camera_aliases, for example `{camera_front_wide_120fov: front}`.

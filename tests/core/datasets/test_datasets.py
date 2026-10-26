@@ -1,5 +1,7 @@
 """Dataset components share one public timeline contract; interpolation stays numerical."""
 from dataclasses import replace
+from pathlib import Path
+import shutil
 import zipfile
 
 import numpy as np
@@ -152,6 +154,25 @@ def test_nurec_usdz_path(nurec_dataset, nurec_usdz_path):
     assert nurec_dataset.usdz_path("scene") == nurec_usdz_path
     with pytest.raises(KeyError, match="Unknown NuRec scenario"):
         nurec_dataset.usdz_path("missing")
+
+    # A dataroot lists every archive below it, ordered by path.
+    root = Path(nurec_usdz_path).parent
+    nested = root / "nested" / "scene.usdz"
+    nested.parent.mkdir()
+    shutil.copy(nurec_usdz_path, nested)
+    with pytest.raises(ValueError, match="occurs in"):
+        list(NuRecDataset(dataroot=root).scenarios())
+    nested.unlink()
+    from_root = NuRecDataset(dataroot=root)
+    assert [item.id for item in from_root.scenarios()] == ["scene"]
+    assert from_root.usdz_path("scene") == str(nurec_usdz_path)
+    for options in ({}, {"usdz_paths": [nurec_usdz_path], "dataroot": root}):
+        with pytest.raises(ValueError, match="exactly one of dataroot"):
+            NuRecDataset(**options)
+    # The directory is read on first use, so a configuration loads without data present.
+    empty = NuRecDataset(dataroot=nested.parent)
+    with pytest.raises(ValueError, match="contains no .usdz archives"):
+        list(empty.scenarios())
 
 
 def test_nurec_scene_mesh(nurec_dataset, nurec_usdz_path, tmp_path):

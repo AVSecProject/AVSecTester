@@ -97,7 +97,8 @@ returns into LiDAR.
 
 ## Data split and treatments
 
-Both supplied configurations use the framework split:
+Both supplied configurations list every archive in the version's release directory through
+NuRecDataset dataroot, place the split directly after the dataset, and use the framework split:
 
 ```yaml
 split:
@@ -121,7 +122,8 @@ distinct units and conditional transfer are not implemented. See
 ## Initial patches and preparation
 
 initial_patch accepts none, white, black or gaussian_noise. none deploys the unpatched replica
-and cannot be optimized; it separates the effect of the replica from the effect of the patch.
+and cannot be optimized; it separates the effect of the replica from the effect of the patch. The
+supplied configurations name this control attack and its treatment no_patch.
 White and black set every mask pixel to 255 or 0. Gaussian noise samples independent RGB values
 from clip(0.5 + noise_std * N(0, 1), 0, 1), then rounds to uint8. noise_std defaults to 0.25 and
 noise_seed to 0. Every texture keeps the face's alpha and its colours outside the mask; deployed

@@ -699,8 +699,7 @@ online attack context still receives no semantic map.
 |---|---|
 | `read_scene_mesh` | `read_scene_mesh(usdz_path: str \| Path) -> tuple[np.ndarray, np.ndarray]` |
 | `NuRecDataset` | Class; see methods below |
-| `NuRecDataset.__init__` | `__init__(usdz_paths: list[str \| Path], camera_id: str = 'camera_front_wide_120fov', vehicle_labels: tuple[str, ...] = _VEHICLE_LABELS, time_step: float = 0.1) -> None` |
-| `NuRecDataset.from_glob` | `from_glob(pattern: str \| Path, **kwargs) -> NuRecDataset` |
+| `NuRecDataset.__init__` | `__init__(usdz_paths: list[str \| Path] \| None = None, camera_id: str = 'camera_front_wide_120fov', vehicle_labels: tuple[str, ...] = _VEHICLE_LABELS, time_step: float = 0.1, *, dataroot: str \| Path \| None = None) -> None`; exactly one of dataroot (all .usdz archives below it, ordered by path) and usdz_paths |
 | `NuRecDataset.open_archive` | `open_archive(path: str \| Path) -> zipfile.ZipFile` |
 | `NuRecDataset.raw_metadata` | `raw_metadata(scenario_id: str) -> dict[str, Any]` |
 | `NuRecDataset.camera_geometry` | `camera_geometry(scenario_id: str)` |
