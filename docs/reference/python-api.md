@@ -14,7 +14,7 @@ data and boundary modules can be imported without simulator servers or weights.
 | Module | Public purpose |
 |---|---|
 | avsectester.geometry.boxes | Oriented-box ray distances and overlap |
-| avsectester.geometry.cameras | Camera, PinholeCamera, FThetaCamera, WindshieldDistortion and lens/ray conventions |
+| avsectester.geometry.cameras | Camera, CameraCalibration, PinholeCamera, FThetaCamera, WindshieldDistortion and lens/ray conventions |
 | avsectester.geometry.mesh | MeshRaycaster and calibrated camera_depth |
 | avsectester.geometry.poses | Canonical transforms, quaternions, interpolation and Y-axis mirroring |
 | avsectester.geometry.projection | Plane grids, box projection and plane visibility |
@@ -1206,7 +1206,7 @@ addresses pixel centres at i + 0.5. Unsupported external distortion types raise 
 | `ftheta_camera_from_spec` | `ftheta_camera_from_spec(spec: Any) -> FThetaCamera` |
 | `pose_from_proto` | `pose_from_proto(pose: Any) -> np.ndarray` |
 | `planar_rig_pose` | `planar_rig_pose(x: float, y: float, yaw: float, z: float = 0.0) -> np.ndarray` |
-| `Renderer` | `cameras: ClassVar[list[str]] = ['camera_front']`<br>`calibration: ClassVar[dict] = {}` |
+| `Renderer` | `cameras: ClassVar[list[str]] = ['camera_front']`<br>`calibration`: read-only property returning an empty dict by default |
 | `Renderer.copy` | `copy() -> Renderer` |
 | `Renderer.reset_origin` | `reset_origin(start = None)` |
 | `Renderer.origin_transform` | `origin_transform: Any` |
@@ -1218,9 +1218,10 @@ addresses pixel centres at i + 0.5. Unsupported external distortion types raise 
 | `Renderer.camera_model` | `camera_model(camera: str \| None = None) -> Camera \| None` |
 | `Renderer.cam_from_world` | `cam_from_world(world_from_rig: np.ndarray, camera: str \| None = None) -> np.ndarray` |
 | `Renderer.close` | `close() -> None` |
-| `NuRecRenderer` | `endpoint: str = '127.0.0.1:50051'`<br>`scene_id: str \| None = None`<br>`cameras: list[str] = field(default_factory=lambda: ['camera_front_wide_120fov'])`<br>`calibration: dict = field(default_factory=dict)`<br>`image_quality: float = 95.0`<br>`resolution_hw: Mapping[str, tuple[int, int]] = field(default_factory=dict)`<br>`probe_directory: str \| Path \| None = None`<br>`server_probe_directory: str \| None = None`<br>`track_padding_m: tuple[float, float, float] = (1.0, 1.0, 0.25)` |
+| `NuRecRenderer` | `endpoint: str = '127.0.0.1:50051'`<br>`scene_id: str \| None = None`<br>`cameras: list[str] = field(default_factory=lambda: ['camera_front_wide_120fov'])`<br>`image_quality: float = 95.0`<br>`resolution_hw: Mapping[str, tuple[int, int]] = field(default_factory=dict)`<br>`probe_directory: str \| Path \| None = None`<br>`server_probe_directory: str \| None = None`<br>`track_padding_m: tuple[float, float, float] = (1.0, 1.0, 0.25)` |
 | `NuRecRenderer.copy` | `copy() -> NuRecRenderer` |
 | `NuRecRenderer.load_scene` | `load_scene(scene: Any) -> None` |
+| `NuRecRenderer.calibration` | `calibration: dict[str, CameraCalibration]`; empty before load_scene, then one lens and rig-from-camera transform per configured camera |
 | `NuRecRenderer.service` | `service: Any` |
 | `NuRecRenderer.close` | `close()` |
 | `NuRecRenderer.camera_model` | `camera_model(camera: str \| None = None) -> Camera` |
@@ -1874,6 +1875,7 @@ them and undistorts the rays it unprojects.
 | `Camera` | `width: int`<br>`height: int` |
 | `Camera.project` | `project(pts_cam: np.ndarray) -> np.ndarray` |
 | `Camera.unproject` | `unproject(uv: np.ndarray) -> np.ndarray` |
+| `CameraCalibration` | Frozen dataclass: `camera: Camera`<br>`rig_from_camera: np.ndarray`; 4×4 optical-camera-to-rig transform; array fields are not validated at construction, so generators and consumers validate the transform when producing or using it |
 | `PinholeCamera` | `K: np.ndarray`<br>`width: int`<br>`height: int` |
 | `PinholeCamera.project` | `project(pts_cam: np.ndarray) -> np.ndarray` |
 | `PinholeCamera.unproject` | `unproject(uv: np.ndarray) -> np.ndarray` |

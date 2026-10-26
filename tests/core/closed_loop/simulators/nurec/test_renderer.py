@@ -9,8 +9,9 @@ from avsectester.closed_loop.simulators.nurec import NuRecRenderer, NuRecSimulat
 from avsectester.closed_loop.simulators.nurec.renderer import ftheta_camera_from_spec, pose_from_proto
 from avsectester.datasets.nurec import NuRecDataset
 from avsectester.geometry.poses import rotation_matrix
+from avsectester.geometry import CameraCalibration
 from avsectester.data_types import Control
-from tests.fakes import NuRecRpcBoundary
+from tests.fakes import NuRecRpcBoundary, StubRenderer
 
 
 def test_recorded_support(nurec_usdz_path, monkeypatch):
@@ -37,6 +38,26 @@ def test_recorded_support(nurec_usdz_path, monkeypatch):
         assert runtime.native["renderer"].origin_bounds is None
         assert runtime.observe().t == 0.
 
+
+
+def test_calibration(monkeypatch):
+    assert StubRenderer().calibration == {}
+    boundary = NuRecRpcBoundary().install(monkeypatch)
+    renderer = NuRecRenderer(cameras=["front"], resolution_hw={"front": (6, 7)})
+    assert renderer.calibration == {}
+    try:
+        renderer.load_scene("scene")
+        calibration = renderer.calibration["front"]
+        assert isinstance(calibration, CameraCalibration)
+        assert (calibration.camera.height, calibration.camera.width) == (6, 8)
+        np.testing.assert_allclose(calibration.rig_from_camera, pose_from_proto(boundary.mount))
+        np.testing.assert_allclose(
+            calibration.rig_from_camera @ renderer.cam_from_world(np.eye(4), "front"), np.eye(4),
+            atol=1e-12,
+        )
+        assert renderer.copy().calibration == {}
+    finally:
+        renderer.close()
 
 def test_resolution(nurec_dataset, monkeypatch):
     boundary = NuRecRpcBoundary().install(monkeypatch)

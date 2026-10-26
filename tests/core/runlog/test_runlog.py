@@ -9,7 +9,9 @@ import pytest
 
 from avsectester.data_types import Control, Detection, Observation, RecordedOutput, WorldSnapshot
 from avsectester.closed_loop.simulators.base import ClockSnapshot
-from avsectester.geometry import FThetaCamera, PinholeCamera, WindshieldDistortion
+from avsectester.geometry import CameraCalibration, FThetaCamera, PinholeCamera, WindshieldDistortion
+from avsectester.geometry.cameras import BODY_FROM_OPTICAL
+from avsectester.execution.runner import RecordingPolicy
 from avsectester.rendering import ObjectVisibility
 from avsectester.runlog import Recorder, RunLog, StepRecord, read_table
 
@@ -101,6 +103,27 @@ def test_record_and_read(tmp_path, value, expected):
     assert step.outputs == outputs
     with pytest.raises(RuntimeError, match="closed"):
         recorder.record_step(StepRecord(1))
+
+
+def test_observation_calibration(tmp_path):
+    lens = FThetaCamera(16., 12., (0., 20.), 32, 24, (0., .05), max_angle=1.4,
+                        windshield=WindshieldDistortion(
+                            (0., 1., 0., 0., 0., 0.), (0., 0., 0., 1., 0., 0.),
+                            (0., 1., 0., 0., 0., 0.), (0., 0., 0., 1., 0., 0.)))
+    observation = Observation(
+        .1, 1, {"front": np.zeros((24, 32, 3), np.uint8)},
+        calibration={"front": CameraCalibration(lens, BODY_FROM_OPTICAL)},
+    )
+    recorded = RecordingPolicy(representations=()).observation(observation, 0, "model_input")
+    assert recorded.sensor_data == {}
+    with Recorder(tmp_path / "calibrated") as recorder:
+        recorder.record_step(StepRecord(0, model_observation=recorded))
+    decoded = RunLog.read(tmp_path / "calibrated").steps[0].model_observation
+    assert_value(decoded.calibration, observation.calibration)
+    references = RunLog.read(tmp_path / "calibrated", load_payloads=False)
+    calibration = references.steps[0].model_observation.calibration["front"]
+    assert isinstance(calibration, CameraCalibration)
+    assert isinstance(calibration.camera, FThetaCamera)
 
 
 def test_read_selected_columns(tmp_path):

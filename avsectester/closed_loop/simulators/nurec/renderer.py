@@ -18,7 +18,7 @@ from avsectester.validation import require_nonnegative_number, require_positive_
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from avsectester.geometry.cameras import Camera, FThetaCamera
+    from avsectester.geometry.cameras import Camera, CameraCalibration, FThetaCamera
     from avsectester.rendering import PlacedObject
     from .probe_assets import ProbeAsset
     import numpy as np
@@ -83,7 +83,10 @@ class Renderer(ABC):
     """Renders sensor observations from the reconstructed scene at a given ego pose."""
 
     cameras: ClassVar[list[str]] = ["camera_front"]
-    calibration: ClassVar[dict] = {}
+    @property
+    def calibration(self) -> dict[str, CameraCalibration]:
+        """Camera calibrations supplied by a loaded renderer; empty by default."""
+        return {}
 
     def copy(self) -> Renderer:
         """A renderer with this configuration and no connection, loaded scene or run origin.
@@ -166,7 +169,6 @@ class NuRecRenderer(Renderer):
     endpoint: str = "127.0.0.1:50051"
     scene_id: str | None = None
     cameras: list[str] = field(default_factory=lambda: ["camera_front_wide_120fov"])
-    calibration: dict = field(default_factory=dict)
     image_quality: float = 95.0
     resolution_hw: Mapping[str, tuple[int, int]] = field(default_factory=dict)
     probe_directory: str | Path | None = None
@@ -267,6 +269,17 @@ class NuRecRenderer(Renderer):
                 pixeldist_to_angle=tuple(value * scale ** -power
                                          for power, value in enumerate(native.pixeldist_to_angle)),
             )
+
+    @property
+    def calibration(self) -> dict[str, CameraCalibration]:
+        """Loaded camera lenses and optical-camera-to-rig poses; empty before loading."""
+        from avsectester.geometry.cameras import CameraCalibration
+
+        if self._stub is None:
+            return {}
+        return {name: CameraCalibration(
+                    self.camera_model(name), validated_transform(pose_from_proto(self._camera_poses[name])))
+                for name in self.cameras}
 
     @property
     def service(self):

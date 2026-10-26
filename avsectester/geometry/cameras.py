@@ -44,6 +44,20 @@ class Camera(Protocol):
     def unproject(self, uv: np.ndarray) -> np.ndarray: ...
 
 
+@dataclass(frozen=True)
+class CameraCalibration:
+    """A lens and optical-camera-to-rig transform, in metres.
+
+    The 4x4 rigid transform maps optical axes (right, down, forward) into rig
+    axes (forward, left, up). Array fields are not validated at construction,
+    so recording can restore payload references without loading their arrays.
+    Producers and consumers validate the transform when they use it.
+    """
+
+    camera: Camera
+    rig_from_camera: np.ndarray
+
+
 def camera_ray_mask(camera: Camera, rays: np.ndarray) -> np.ndarray:
     """Finite forward camera rays inside the lens's optional maximum viewing angle."""
     valid = np.isfinite(rays).all(axis=1) & (rays[:, 2] > 0)
