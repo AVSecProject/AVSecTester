@@ -210,6 +210,7 @@ evaluation:
     options:
       phrase: stop sign
   - type: DrivingMetrics
+  - type: avsectester.implemented_attacks.stop_sign_patch_attack.metrics:ReplicaVisibility
 runs:
   treatments:
   - name: clean

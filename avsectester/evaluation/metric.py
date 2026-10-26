@@ -65,6 +65,22 @@ class TreatmentPair:
     log_b: RunLog
 
 
+@dataclass(frozen=True)
+class MetricField:
+    """Meaning, calculation and missing-evidence conditions of one scalar field."""
+
+    description: str
+    unit: str | None = None
+
+
+@dataclass(frozen=True)
+class MetricDescription:
+    """A metric summary and fields keyed exactly as returned by evaluate."""
+
+    summary: str
+    fields: Mapping[str, MetricField]
+
+
 class Metric(ABC):
     """Evaluate recorded data; return scalars or UnavailableMetricValue values carrying their reasons.
 
@@ -72,6 +88,11 @@ class Metric(ABC):
     PairMetric implementations accept TreatmentPair and return one field mapping per pair.
     Evaluation must not start simulators or run driving-system components.
     """
+
+    def describe(self) -> MetricDescription:
+        """Describe this instance; custom metrics may provide field explanations and units."""
+        paragraph = (type(self).__doc__ or "").strip().split("\n\n", 1)[0]
+        return MetricDescription(" ".join(paragraph.split()), {})
 
     @abstractmethod
     def evaluate(self, data: Any) -> Mapping[str, Any]: ...
@@ -131,6 +152,24 @@ class DrivingMetrics(Metric):
         require_nonnegative_number(stop_speed, "stop_speed")
         self.stop_speed = stop_speed
 
+    def describe(self) -> MetricDescription:
+        return MetricDescription(
+            "Ego speed after each decision, actuator braking, and distance and collision with other recorded actors.",
+            {
+                "final_speed": MetricField("Speed after the last decision.", "m/s"),
+                "peak_speed": MetricField("Highest speed after any decision.", "m/s"),
+                "mean_speed": MetricField("Mean speed after each decision.", "m/s"),
+                "stopped": MetricField("Final speed is at most stop_speed."),
+                "brake_steps": MetricField(
+                    "Decisions whose executed command has brake > 0 and throttle = 0. "
+                    "Unavailable for trajectory commands (e.g. Alpamayo).", "decision steps"),
+                "min_distance": MetricField(
+                    "Smallest ego-to-actor box-centre distance over all recorded states.", "m"),
+                "collision": MetricField(
+                    "The ego and an actor bounding box overlapped in top-down view at some recorded state."),
+            },
+        )
+
     def evaluate(self, group: ComparisonGroup) -> TreatmentMeasurements:
         result: dict[str, dict[str, MetricScalar]] = {}
         for name, log in group.runs.items():
@@ -181,6 +220,19 @@ class DrivingMetrics(Metric):
 class TrajectoryDeviation(PairMetric):
     """Symmetric distance between true ego positions at matching decision indices (metres)."""
 
+    def describe(self) -> MetricDescription:
+        common = ("Physical ego positions after matching decision indices in the two runs are compared "
+                  "in 3D. Unavailable if indices differ, either run is empty, or a physical ego pose is missing.")
+        return MetricDescription(
+            "Distance between the two physical ego trajectories at matching decision indices; "
+            "the comparison is symmetric.",
+            {
+                "mean_deviation": MetricField("Mean positional distance over decisions. " + common, "m"),
+                "max_deviation": MetricField("Largest positional distance over decisions. " + common, "m"),
+                "final_deviation": MetricField("Positional distance after the last decision. " + common, "m"),
+            },
+        )
+
     def evaluate(self, pair: TreatmentPair) -> FieldMeasurements:
         fields = ("mean_deviation", "max_deviation", "final_deviation")
         if ([step.step for step in pair.log_a.steps] != [step.step for step in pair.log_b.steps]
@@ -211,6 +263,28 @@ class DetectionMetrics(Metric):
             require_positive_number(max_range, "max_range")
         self.match_distance, self.max_range = match_distance, max_range
         self.category_map = dict(category_map or {})
+
+    def describe(self) -> MetricDescription:
+        common = ("Counts accumulate over captured frames after range filtering and greedy nearest-centre "
+                  "matching in the ego horizontal plane. Unavailable if physical ground-truth poses are missing.")
+        return MetricDescription(
+            "Detection quality against recorded actors, using greedy nearest-centre matching within "
+            f"match_distance ({self.match_distance} m). A category map enables class-aware matching.",
+            {
+                "tp": MetricField("Matched detections. " + common, "detections"),
+                "fp": MetricField("Unmatched detections. " + common, "detections"),
+                "fn": MetricField("Unmatched ground-truth actors. " + common, "actors"),
+                "precision": MetricField(
+                    "tp / (tp + fp). Unavailable when no predictions define the denominator, or "
+                    "physical ground-truth poses are missing.", "ratio (0–1)"),
+                "recall": MetricField(
+                    "tp / (tp + fn). Unavailable when no ground-truth opportunities define the denominator, "
+                    "or physical ground-truth poses are missing.", "ratio (0–1)"),
+                "f1": MetricField(
+                    "2 × tp / (2 × tp + fp + fn). Unavailable when the denominator is zero, or physical "
+                    "ground-truth poses are missing.", "ratio (0–1)"),
+            },
+        )
 
     def evaluate(self, group: ComparisonGroup) -> TreatmentMeasurements:
         result: dict[str, dict[str, MetricScalar]] = {}
@@ -289,6 +363,30 @@ class StopImpact(PairMetric):
         require_positive_integer(min_overdrive_steps, "min_overdrive_steps")
         self.stop_speed, self.reference_speed = stop_speed, reference_speed
         self.min_overdrive_steps = min_overdrive_steps
+
+    def describe(self) -> MetricDescription:
+        fields = {}
+        for direction, reference, compared in (("a_to_b", "A", "B"), ("b_to_a", "B", "A")):
+            common = (f" Run {reference} is the reference and run {compared} is compared. "
+                      "Unavailable if physical speeds are missing or decision indices differ.")
+            descriptions = {
+                "reference_drove": "The reference reached reference_speed at some decision.",
+                "induced_braking": "The compared run had more actuator-only braking decisions than the reference. "
+                                  "Also unavailable for missing actuator commands or trajectory commands.",
+                "induced_stop": "The compared final speed is at most stop_speed and the reference final speed is above it.",
+                "suppressed_stop": "The reference final speed is at most stop_speed and overdrive_steps is at least "
+                                   "min_overdrive_steps.",
+                "overdrive_steps": "Decisions where reference speed is at most stop_speed and compared speed is above "
+                                   "reference_speed.",
+            }
+            fields.update({f"{direction}.{name}": MetricField(
+                description + common, "decision steps" if name == "overdrive_steps" else None)
+                for name, description in descriptions.items()})
+        return MetricDescription(
+            "Directional changes in stopping and actuator braking, measured in both A-to-B and B-to-A directions. "
+            "Each direction uses the first run as its reference.",
+            fields,
+        )
 
     def evaluate(self, pair: TreatmentPair) -> FieldMeasurements:
         result: dict[str, MetricScalar] = {}
@@ -405,6 +503,7 @@ _STOP_LINE_FIELDS = (
     "stopped_before_line", "crossed_without_stop", "line_crossed", "speed_at_line",
     "min_speed_before_line", "max_deceleration", "time_to_stop",
     "min_vehicle_distance_after_line", "initial_distance_to_line", "final_distance_to_line",
+    "distance_to_line_at_stop", "distance_to_line_at_min_speed", "distance_to_line_at_brake_onset",
 )
 _STOP_LINE_BOOLEAN_FIELDS = frozenset({"stopped_before_line", "crossed_without_stop", "line_crossed"})
 
@@ -420,14 +519,56 @@ class StopLineMetrics(Metric):
     The segment must store its line ID in user_data["stop_line_id"]; geometry comes
     from ComparisonGroup.scenario_map.stop_lines. The initial position is assumed
     to be before the stop line. Distances use the horizontal polyline with endpoint
-    extensions, rather than recorded route arc positions.
+    extensions, rather than recorded route arc positions. Distances are positive before
+    crossing and negative after it. distance_to_line_at_stop uses the first sampled
+    speed below stop_speed, like time_to_stop; distance_to_line_at_min_speed uses the
+    first minimum-speed sample before crossing. distance_to_line_at_brake_onset uses
+    the start of the first physical deceleration interval meeting brake_deceleration_mps2,
+    not an actuator brake command. Unobserved stops or qualifying brake intervals are unavailable.
     """
 
-    def __init__(self, stop_speed: float = .5, endpoint_tolerance_m: float = 3.) -> None:
+    def __init__(self, stop_speed: float = .5, endpoint_tolerance_m: float = 3.,
+                 brake_deceleration_mps2: float = 1.) -> None:
         require_nonnegative_number(stop_speed, "stop_speed")
         require_nonnegative_number(endpoint_tolerance_m, "endpoint_tolerance_m")
         self.stop_speed = stop_speed
         self.endpoint_tolerance_m = endpoint_tolerance_m
+        require_nonnegative_number(brake_deceleration_mps2, "brake_deceleration_mps2")
+        self.brake_deceleration_mps2 = brake_deceleration_mps2
+
+    def describe(self) -> MetricDescription:
+        return MetricDescription(
+            "Driving behaviour relative to the map stop line of the selected stop sign, from the physical ego trace "
+            "(the initial state and the state after every decision). Distances are signed horizontal distances to "
+            "the stop line: positive before the line, negative after crossing it.",
+            {
+                "stopped_before_line": MetricField(
+                    "Speed fell below stop_speed at some sample before the line was crossed "
+                    "(anywhere in the run if it was never crossed)."),
+                "crossed_without_stop": MetricField("The ego crossed the line without stopping before it."),
+                "line_crossed": MetricField("The ego crossed the stop line during the run."),
+                "speed_at_line": MetricField(
+                    "Speed interpolated at the crossing point. Unavailable if the line was not crossed.", "m/s"),
+                "min_speed_before_line": MetricField(
+                    "Lowest sampled speed before the crossing (whole run if not crossed).", "m/s"),
+                "max_deceleration": MetricField(
+                    "Largest speed decrease rate between consecutive samples; 0 if the ego never slowed.", "m/s²"),
+                "time_to_stop": MetricField(
+                    "Time from the run start to the first sample below stop_speed. "
+                    "Unavailable if the ego never stopped.", "s"),
+                "distance_to_line_at_stop": MetricField(
+                    "Signed distance at the first sample below stop_speed. Unavailable if the ego never stopped.", "m"),
+                "distance_to_line_at_min_speed": MetricField(
+                    "Signed distance at the lowest-speed sample before the crossing.", "m"),
+                "distance_to_line_at_brake_onset": MetricField(
+                    "Signed distance at the start of the first interval whose deceleration reaches "
+                    "brake_deceleration_mps2. Measured from physical speed, not from a brake command.", "m"),
+                "initial_distance_to_line": MetricField("Signed distance at the run start.", "m"),
+                "final_distance_to_line": MetricField("Signed distance after the last decision.", "m"),
+                "min_vehicle_distance_after_line": MetricField(
+                    "Smallest centre-to-centre distance between the ego and any recorded vehicle after the crossing.", "m"),
+            },
+        )
 
     def evaluate(self, group: ComparisonGroup) -> TreatmentMeasurements:
         if isinstance(group.scenario_map, Unavailable):
@@ -466,6 +607,8 @@ class StopLineMetrics(Metric):
         before = slice(None, crossing[0] + 1) if crossing is not None else slice(None)
         stopped_before = bool(np.any(velocities[before] < self.stop_speed))
         stop_indices = np.flatnonzero(velocities < self.stop_speed)
+        decelerations = (velocities[:-1] - velocities[1:]) / np.diff(times)
+        brake_indices = np.flatnonzero(decelerations >= self.brake_deceleration_mps2)
         measurements: dict[str, MetricScalar] = {
             "stopped_before_line": stopped_before,
             "crossed_without_stop": crossing is not None and not stopped_before,
@@ -475,11 +618,17 @@ class StopLineMetrics(Metric):
                               if crossing is not None else UnavailableMetricValue(
                                   "The physical trace has no crossing of the selected stop line")),
             "min_speed_before_line": float(velocities[before].min()),
-            "max_deceleration": (float(max(0., np.max(-np.diff(velocities) / np.diff(times))))
+            "max_deceleration": (float(max(0., np.max(decelerations)))
                                  if len(times) > 1 else UnavailableMetricValue(
                                      "At least two physical samples are needed for deceleration")),
             "time_to_stop": (float(times[stop_indices[0]] - times[0]) if len(stop_indices)
                              else UnavailableMetricValue("No sampled speed is below the stop threshold")),
+            "distance_to_line_at_stop": (float(distances[stop_indices[0]]) if len(stop_indices)
+                else UnavailableMetricValue("No sampled speed is below the stop threshold")),
+            "distance_to_line_at_min_speed": float(distances[np.argmin(velocities[before])]),
+            "distance_to_line_at_brake_onset": (float(distances[brake_indices[0]]) if len(brake_indices)
+                else UnavailableMetricValue("At least two physical samples are needed for deceleration"
+                    if len(times) < 2 else "No physical deceleration interval reaches the brake threshold")),
             "initial_distance_to_line": float(distances[0]),
             "final_distance_to_line": float(distances[-1]),
         }
@@ -515,6 +664,17 @@ class ReasoningPhraseRate(Metric):
         if not isinstance(component, str) or not component or not isinstance(field, str) or not field:
             raise ValueError("component and field must be nonempty strings")
         self.phrase, self.component, self.field = phrase, component, field
+
+    def describe(self) -> MetricDescription:
+        return MetricDescription(
+            "How often the driving model's reasoning text mentions a phrase (case-insensitive).",
+            {
+                "phrase_steps": MetricField("Decisions whose text contains the phrase.", "decision steps"),
+                "reasoning_steps": MetricField("Decisions with recorded text.", "decision steps"),
+                "phrase_rate": MetricField(
+                    "phrase_steps divided by all decisions. Unavailable if any decision has no text.", "ratio (0–1)"),
+            },
+        )
 
     def evaluate(self, group: ComparisonGroup) -> TreatmentMeasurements:
         results: dict[str, dict[str, MetricScalar]] = {}

@@ -18,7 +18,9 @@ from avsectester.data_types import Unavailable
 from avsectester.maps import ScenarioMap
 from avsectester.runlog import RunLog
 
-from .metric import ComparisonGroup, Metric, PairMetric, TreatmentPair, UnavailableMetricValue
+from .metric import (
+    ComparisonGroup, Metric, MetricDescription, MetricField, PairMetric, TreatmentPair, UnavailableMetricValue,
+)
 from .report import EvaluationReport, _json_data
 
 
@@ -55,17 +57,21 @@ def evaluate_groups(
     other measurements. The caller chooses metrics and owns all output files.
     """
     report = EvaluationReport(notes=list(notes))
-    for metric in metrics:
-        try:
-            report.metrics.append(_metric_specification(metric))
-        except Exception as error:
-            report.metrics.append({"type": f"{type(metric).__module__}:{type(metric).__qualname__}",
-                                   "options": None})
-            report.record_error(type(metric).__name__, error, phase="parameter description")
     labels = {type(metric): (type(metric).__name__
                             if sum(type(item).__name__ == type(metric).__name__ for item in metrics) == 1
                             else f"{type(metric).__module__}:{type(metric).__qualname__}")
               for metric in metrics}
+    for metric in metrics:
+        label = labels[type(metric)]
+        try:
+            report.metrics.append(_metric_specification(metric, label))
+        except Exception as error:
+            report.metrics.append({
+                "type": f"{type(metric).__module__}:{type(metric).__qualname__}", "options": None,
+                "label": label, "summary": "", "fields": {},
+                "kind": "pair" if isinstance(metric, PairMetric) else "run",
+            })
+            report.record_error(label, error, phase="metric description")
     for source in groups:
         complete = {name: log for name, log in source.logs.items() if log.status == "completed"}
         group = ComparisonGroup(source.segment, source.seed, complete,
@@ -164,7 +170,7 @@ def _measurements(values: Any, metric: Metric, label: str) -> tuple[dict[str, An
     return measurements, reasons, kinds
 
 
-def _metric_specification(metric: Metric) -> dict[str, Any]:
+def _metric_specification(metric: Metric, label: str) -> dict[str, Any]:
     options = {}
     unavailable = []
     for name, parameter in inspect.signature(type(metric).__init__).parameters.items():
@@ -174,8 +180,19 @@ def _metric_specification(metric: Metric) -> dict[str, Any]:
             options[name] = _json_data(getattr(metric, name))
         else:
             unavailable.append(name)
+    description = metric.describe()
+    if not isinstance(description, MetricDescription):
+        raise TypeError("Metric.describe must return MetricDescription")
+    if any(not isinstance(name, str) or not name or not isinstance(value, MetricField)
+           for name, value in description.fields.items()):
+        raise TypeError("MetricDescription.fields must map nonempty field names to MetricField")
     specification: dict[str, Any] = {
-        "type": f"{type(metric).__module__}:{type(metric).__qualname__}", "options": options}
+        "type": f"{type(metric).__module__}:{type(metric).__qualname__}", "options": options,
+        "label": label, "summary": description.summary,
+        "kind": "pair" if isinstance(metric, PairMetric) else "run",
+        "fields": {name: {"description": value.description, "unit": value.unit}
+                   for name, value in description.fields.items()},
+    }
     if unavailable:
         specification["unavailable_parameters"] = unavailable
     # Invalid user parameter metadata is reported without losing run-status files.

@@ -11,6 +11,11 @@ from avsectester.runlog import RunLog
 
 
 class UserMetric(Metric):
+    """User measurements from saved evidence.
+
+    This second paragraph is excluded from the default summary.
+    """
+
     def evaluate(self, group):
         return {name: {"seed": np.int64(group.seed),
                        "confidence": UnavailableMetricValue("No confidence measurement"),
@@ -26,6 +31,11 @@ class BrokenMetric(Metric):
 class InvalidMetric(Metric):
     def evaluate(self, group):
         return {"clean": {"probe": 1.}, "unknown": {"probe": 2.}}
+
+
+class BrokenDescriptionMetric(UserMetric):
+    def describe(self):
+        raise RuntimeError("description unavailable")
 
 
 class InterruptedMetric(Metric):
@@ -78,5 +88,22 @@ def test_evaluate_groups(segment, make_log):
     assert report.notes == ["Recorded evidence only."]
     assert [row["treatment"] for row in report.treatment_summaries] == ["clean", "attacked", "rain"]
     assert {metric["type"].split(":")[-1] for metric in report.metrics} >= {"DrivingMetrics", "UserMetric"}
+    specifications = {item["label"]: item for item in report.as_dict()["metrics"]}
+    driving = specifications["DrivingMetrics"]
+    assert driving["summary"] == DrivingMetrics().describe().summary
+    assert driving["fields"]["final_speed"] == {
+        "description": "Speed after the last decision.", "unit": "m/s",
+    }
+    assert specifications["StopImpact"]["kind"] == "pair"
+    assert "a_to_b.reference_drove" in specifications["StopImpact"]["fields"]
+    assert specifications["UserMetric"]["summary"] == "User measurements from saved evidence."
+    assert specifications["UserMetric"]["fields"] == {}
+    described = evaluate_groups(groups[:1], (BrokenDescriptionMetric(),))
+    assert described.metric_errors == [{
+        "metric": "BrokenDescriptionMetric", "error": "RuntimeError: description unavailable",
+        "phase": "metric description",
+    }]
+    assert described.groups[0]["treatments"]["clean"]["metrics"]["BrokenDescriptionMetric.seed"] == 1
+    assert described.metrics[0]["label"] == "BrokenDescriptionMetric"
     with pytest.raises(KeyboardInterrupt):
         evaluate_groups(groups[:1], (InterruptedMetric(),))

@@ -1752,7 +1752,7 @@ metrics, contains completed logs only.
 | `executed_brakes` | `executed_brakes(log: RunLog) -> list[float] \| None` |
 | `brake_steps` | `brake_steps(log: RunLog) -> int \| None` |
 | `signed_stop_line_distances` | `signed_stop_line_distances(positions, line_points, *, endpoint_tolerance_m=3.0) -> tuple[np.ndarray, tuple[int, float] \| None]` |
-| `StopLineMetrics` | `StopLineMetrics(stop_speed: float = 0.5, endpoint_tolerance_m: float = 3.0)` |
+| `StopLineMetrics` | `StopLineMetrics(stop_speed: float = 0.5, endpoint_tolerance_m: float = 3.0, brake_deceleration_mps2: float = 1.0)` |
 | `StopLineMetrics.evaluate` | `evaluate(group: ComparisonGroup) -> TreatmentMeasurements` |
 | `ReasoningPhraseRate` | `ReasoningPhraseRate(phrase: str, component: str = 'policy', field: str = 'reasoning_text')` |
 | `ReasoningPhraseRate.evaluate` | `evaluate(group: ComparisonGroup) -> TreatmentMeasurements` |
@@ -1947,3 +1947,22 @@ Observation.route supplies rig-relative navigation; the official AlpaSim helper 
 command. The component log includes route_waypoints, navigation_command, navigation_note,
 history_pose_count and selected_image_times (simulation seconds by camera). Control.trajectory
 starts at rig-frame origin with identity rotation at t0, followed by full model waypoint poses.
+
+### avsectester.implemented_attacks.stop_sign_patch_attack.metrics
+
+| Public name | Signature or fields |
+|---|---|
+| `ReplicaVisibility` | `ReplicaVisibility(camera_id="camera_front_wide_120fov", min_visible_pixels=100)` |
+| `ReplicaVisibility.evaluate` | `evaluate(group: ComparisonGroup) -> TreatmentMeasurements` |
+| `ReplicaVisibility.describe` | `describe() -> MetricDescription`; visible_steps description and decision-step unit |
+
+visible_steps counts decisions whose replica visibility for the selected camera reaches the pixel
+threshold. Missing camera entries count as invisible; an empty run or a run with no replica record is
+unavailable. The shared object ID is `online.REPLICA_OBJECT_ID = "stop_sign_replica"`.
+Reference this custom metric in YAML by its full module path.
+
+StopLineMetrics additionally reports signed distance_to_line_at_stop at the same first low-speed
+sample as time_to_stop; distance_to_line_at_min_speed at the first minimum-speed sample in the
+before-line interval; and distance_to_line_at_brake_onset at the start of the first physical
+deceleration interval reaching brake_deceleration_mps2. Distances are positive before the line and
+negative after crossing. Missing stopping/braking evidence remains unavailable with a reason.

@@ -1,5 +1,6 @@
 """Every metric uses the same numerical and missing-evidence contract template."""
 
+from collections.abc import Mapping
 from operator import itemgetter
 
 import pytest
@@ -82,6 +83,8 @@ CASES = [
             "speed_at_line": 3., "min_speed_before_line": 4., "max_deceleration": 40.,
             "time_to_stop": .2, "min_vehicle_distance_after_line": 8.,
             "initial_distance_to_line": 1.25, "final_distance_to_line": -.75,
+            "distance_to_line_at_stop": -.75, "distance_to_line_at_min_speed": 1.25,
+            "distance_to_line_at_brake_onset": .25,
         }, id="stop-line"),
     pytest.param(
         ReasoningPhraseRate, {"phrase": "stop sign"},
@@ -94,7 +97,10 @@ CASES = [
 @pytest.mark.parametrize("metric_type,options,build_input,build_missing,select_result,expected", CASES)
 def test_evaluate(metric_type, options, build_input, build_missing, select_result, expected, metric_inputs):
     metric = metric_type(**options)
-    values = select_result(metric.evaluate(build_input(metric_inputs)))
+    measurements = metric.evaluate(build_input(metric_inputs))
+    fields = set().union(*(set(value) for value in measurements.values() if isinstance(value, Mapping)))
+    assert set(metric.describe().fields) == (fields or set(measurements))
+    values = select_result(measurements)
     for name, value in expected.items():
         assert values[name] == pytest.approx(value), name
     missing = select_result(metric.evaluate(build_missing(metric_inputs)))
@@ -110,6 +116,19 @@ def test_stop_line_metrics(make_log, make_actor, stop_line_group):
     log = make_log([8., 4.])
     values = StopLineMetrics().evaluate(stop_line_group({"attacked": log}))["attacked"]
     assert values["speed_at_line"] == 7.  # x=1.25 is one quarter of the x=1 -> 2 step.
+    stopping = make_log([4., 2., 0.])
+    stopped = StopLineMetrics().evaluate(stop_line_group({"attacked": stopping}, line_x=5.))["attacked"]
+    assert stopped["distance_to_line_at_stop"] == 2.
+    assert stopped["distance_to_line_at_min_speed"] == 2.
+    assert stopped["distance_to_line_at_brake_onset"] == 4.
+    assert stopped["time_to_stop"] == pytest.approx(.3)
+    uniform = StopLineMetrics().evaluate(stop_line_group({"attacked": make_log([3., 3.])}))["attacked"]
+    assert uniform["line_crossed"] is True
+    assert uniform["distance_to_line_at_min_speed"] == 1.25  # First tied minimum before crossing.
+    assert isinstance(uniform["distance_to_line_at_stop"], UnavailableMetricValue)
+    assert isinstance(uniform["distance_to_line_at_brake_onset"], UnavailableMetricValue)
+    with pytest.raises(ValueError, match="brake_deceleration_mps2"):
+        StopLineMetrics(brake_deceleration_mps2=-1.)
     distant = make_log([8., 4.])
     for step in distant.steps:
         step.physical_pre = replace(step.physical_pre,
@@ -133,6 +152,7 @@ def test_stop_line_metrics(make_log, make_actor, stop_line_group):
     assert initial["min_speed_before_line"] == 8.
     assert initial["line_crossed"] is False
     assert isinstance(initial["max_deceleration"], UnavailableMetricValue)
+    assert isinstance(initial["distance_to_line_at_brake_onset"], UnavailableMetricValue)
 
 
 def test_reasoning_phrase_rate(make_log, make_group):

@@ -68,7 +68,7 @@ and treatment_attacks.
 | TrajectoryDeviation | — | Mean, maximum and final matched-decision ego position distance |
 | DetectionMetrics | match_distance=2.0, max_range=50.0, category_map=— | TP, FP, FN, precision, recall and F1 |
 | StopImpact | stop_speed=0.5, reference_speed=1.0, min_overdrive_steps=3 | Stopping and braking comparisons in both directions |
-| StopLineMetrics | stop_speed=0.5, endpoint_tolerance_m=3.0 | Saved stop_line_id and scenario map; physical stopping, crossing speed and distances |
+| StopLineMetrics | stop_speed=0.5, endpoint_tolerance_m=3.0, brake_deceleration_mps2=1.0 | Saved stop_line_id and scenario map; physical stopping, crossing speed and distances |
 | ReasoningPhraseRate | phrase (required), component=policy, field=reasoning_text | Case-insensitive phrase steps, text steps and rate over all decisions |
 
 The default metric set is chosen once for the entire experiment: DrivingMetrics and
@@ -95,10 +95,24 @@ detection without a category cannot match a class. Zero denominators and missing
 produce unavailable values with reasons. TN and AP/mAP are not defined by these thresholded outputs.
 
 StopLineMetrics looks up segment.user_data["stop_line_id"] in the saved scenario map and assumes
-the initial position is before the line. signed_stop_line_distances uses horizontal distances to
+the initial position is before the line. stop_speed is in m/s, endpoint_tolerance_m in m, and
+brake_deceleration_mps2 in m/s². signed_stop_line_distances uses horizontal distances to
 the stop-line polyline, extends its endpoints by endpoint_tolerance_m and identifies the first
-crossing between adjacent physical positions. Crossing speed is linearly interpolated. Missing
-line, map or physical evidence produces unavailable values with reasons. ReasoningPhraseRate reads
+crossing between adjacent physical positions. Distances are positive before crossing and negative
+following crossing. Crossing speed is linearly interpolated. The metric also reports:
+
+- distance_to_line_at_stop: distance at the first physical sample with speed below stop_speed,
+  the same sample used by time_to_stop; unavailable when no sample meets that condition.
+- distance_to_line_at_min_speed: distance at the first minimum-speed sample before crossing,
+  using the same interval as min_speed_before_line. Without a crossing, all samples are considered.
+- distance_to_line_at_brake_onset: distance at the start of the first adjacent physical sample
+  interval whose speed decrease divided by elapsed time is at least brake_deceleration_mps2
+  (default 1.0 m/s²). It is unavailable with fewer than two samples or no qualifying interval.
+
+The brake onset uses physical deceleration, not an actuator brake command; trajectory commands do
+not supply actuator braking evidence. A stop after crossing therefore has a negative
+distance_to_line_at_stop. Missing line, map or physical evidence produces unavailable values with
+reasons. ReasoningPhraseRate reads
 a mapping field or native component attribute; phrase_rate is unavailable if any decision lacks
 text and otherwise uses all decisions as its denominator.
 
@@ -151,9 +165,15 @@ instead. Keep missing-value reasons in the returned value rather than mutable me
 
 <!-- runnable -->
 ```python
-from avsectester.evaluation.metric import Metric
+from avsectester.evaluation import Metric, MetricDescription, MetricField
 
 class DecisionCount(Metric):
+    def describe(self):
+        return MetricDescription(
+            "Number of recorded decisions in a run.",
+            {"decision_count": MetricField("Decisions saved in the run log.", "decision steps")},
+        )
+
     def evaluate(self, group):
         return {name: {"decision_count": len(log.steps)}
                 for name, log in group.runs.items()}
