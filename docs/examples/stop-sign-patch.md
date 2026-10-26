@@ -12,8 +12,8 @@
 Run either version from the repository root after setting its local data, model and device paths:
 
 ```bash
-avsectester run configs/nurec_stop_sign_patch_2601.yaml
-avsectester run configs/nurec_stop_sign_patch_2604.yaml
+avsectester run configs/nurec_stop_sign_patch_alpamayo_2601.yaml
+avsectester run configs/nurec_stop_sign_patch_alpamayo_2604.yaml
 ```
 
 The configurations contain 21 scenes from 26.01 and 17 scenes from 26.04. The duplicated
@@ -188,7 +188,7 @@ objects in the attack's offline module. Preparation alone can be invoked through
 ```python
 from avsectester.experiment import Experiment, load_configuration
 
-configuration = load_configuration("configs/nurec_stop_sign_patch_2601.yaml")
+configuration = load_configuration("configs/nurec_stop_sign_patch_alpamayo_2601.yaml")
 prepared = Experiment.prepare(configuration)  # Also saved to runs.output.
 ```
 
@@ -239,7 +239,7 @@ establishes neither.
 ## Resume
 
 ```bash
-avsectester run configs/nurec_stop_sign_patch_2601.yaml --resume
+avsectester run configs/nurec_stop_sign_patch_alpamayo_2601.yaml --resume
 ```
 
 Resume validates the saved preparation inputs and reuses the saved units and parts. Completed
@@ -263,8 +263,8 @@ archives and mounts each file read-only, including the probe directory configure
 
 ```bash
 nvidia-smi
-avsectester nre serve configs/nurec_stop_sign_patch_2601.yaml --gpu 0
-avsectester nre stop configs/nurec_stop_sign_patch_2601.yaml
+avsectester nre serve configs/nurec_stop_sign_patch_alpamayo_2601.yaml --gpu 0
+avsectester nre stop configs/nurec_stop_sign_patch_alpamayo_2601.yaml
 ```
 
 The `--gpu` option selects the host GPU for NRE. The YAML `device` selects devices for constructors
@@ -276,7 +276,7 @@ is `avsectester-nre-<port>`; `stop` stops and removes that container. Use `--nam
 select a different name. To print the exact command without creating files or using Docker:
 
 ```bash
-avsectester nre serve configs/nurec_stop_sign_patch_2601.yaml --gpu 0 --dry-run
+avsectester nre serve configs/nurec_stop_sign_patch_alpamayo_2601.yaml --gpu 0 --dry-run
 ```
 
 Every resolved archive filename must be unique. A configuration that includes both releases of the
@@ -293,8 +293,8 @@ image frames through frame_subsample=1.
 ## Evaluation and visualization
 
 ```bash
-avsectester evaluate configs/nurec_stop_sign_patch_2601.yaml
-python -m scripts.visualization.plot_stop_line_approaches configs/nurec_stop_sign_patch_2601.yaml
+avsectester evaluate configs/nurec_stop_sign_patch_alpamayo_2601.yaml
+python -m scripts.visualization.plot_stop_line_approaches configs/nurec_stop_sign_patch_alpamayo_2601.yaml
 ```
 
 Evaluation writes evaluation/ under runs.output. StopLineMetrics reads stop_line_id from each

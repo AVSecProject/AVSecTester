@@ -10,8 +10,8 @@ avsectester run configs/carla_object_insertion.yaml
 avsectester run configs/nurec_speed_feedback.yaml
 avsectester run configs/nurec_object_insertion.yaml
 avsectester run configs/nurec_patch.yaml
-avsectester run configs/nurec_stop_sign_patch_2601.yaml
-avsectester run configs/nurec_stop_sign_patch_2604.yaml
+avsectester run configs/nurec_stop_sign_patch_alpamayo_2601.yaml
+avsectester run configs/nurec_stop_sign_patch_alpamayo_2604.yaml
 avsectester run configs/nuscenes_object_insertion.yaml
 ```
 
@@ -57,7 +57,7 @@ python -m scripts.validation.validate_carla_visibility --help
 python -m scripts.validation.validate_nurec_depth --help
 python -m scripts.visualization.visualize_scene_labels --help
 python -m scripts.visualization.visualize_augmentations --help
-python -m scripts.visualization.plot_stop_line_approaches configs/nurec_stop_sign_patch_2601.yaml
+python -m scripts.visualization.plot_stop_line_approaches configs/nurec_stop_sign_patch_alpamayo_2601.yaml
 ```
 
 - [patch_hide_probe.py](validation/patch_hide_probe.py) compares patch sizes and harmonization
@@ -116,5 +116,5 @@ preparation process. Start that process with CUBLAS_WORKSPACE_CONFIG=:4096:8 set
 CuBLAS operations support the deterministic mode enabled by PGD. For example:
 
 ```bash
-CUBLAS_WORKSPACE_CONFIG=:4096:8 avsectester run configs/nurec_stop_sign_patch_2601.yaml
+CUBLAS_WORKSPACE_CONFIG=:4096:8 avsectester run configs/nurec_stop_sign_patch_alpamayo_2601.yaml
 ```

@@ -1,4 +1,4 @@
-# Run with: avsectester run configs/nurec_stop_sign_patch_2604.yaml
+# Run with: avsectester run configs/nurec_stop_sign_patch_alpamayo_2604.yaml
 # Paths are relative to this file; set data/model paths for your machine.
 device: cuda:0
 dataset:
@@ -237,4 +237,4 @@ runs:
     representations:
     - model_input
     every_n_steps: 10
-  output: ../results/nurec_stop_sign_patch_2604
+  output: ../results/nurec_stop_sign_patch_alpamayo_2604

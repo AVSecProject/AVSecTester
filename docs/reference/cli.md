@@ -73,9 +73,9 @@ localhost, 0.0.0.0 or ::1. Dataset archive paths are resolved and mounted separa
 duplicate archive filenames are a configuration error.
 
 ```bash
-avsectester nre serve configs/nurec_stop_sign_patch_2601.yaml --gpu 0
-avsectester nre serve configs/nurec_stop_sign_patch_2601.yaml --gpu 0 --dry-run
-avsectester nre stop configs/nurec_stop_sign_patch_2601.yaml
+avsectester nre serve configs/nurec_stop_sign_patch_alpamayo_2601.yaml --gpu 0
+avsectester nre serve configs/nurec_stop_sign_patch_alpamayo_2601.yaml --gpu 0 --dry-run
+avsectester nre stop configs/nurec_stop_sign_patch_alpamayo_2601.yaml
 ```
 
 `--gpu` is the host GPU selected by Docker's `--gpus device=N`, independently of top-level

@@ -292,8 +292,8 @@ Serve the configured archives on an available GPU:
 
 ```bash
 nvidia-smi
-avsectester nre serve configs/nurec_stop_sign_patch_2601.yaml --gpu 0
-avsectester nre stop configs/nurec_stop_sign_patch_2601.yaml
+avsectester nre serve configs/nurec_stop_sign_patch_alpamayo_2601.yaml --gpu 0
+avsectester nre stop configs/nurec_stop_sign_patch_alpamayo_2601.yaml
 ```
 
 Set the dataset dataroot or explicit usdz_paths and the renderer endpoint/probe paths in that
