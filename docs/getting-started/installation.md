@@ -288,17 +288,31 @@ hf download nvidia/PhysicalAI-Autonomous-Vehicles-NuRec \
   --local-dir /path/to/nurec-scenes
 ```
 
-Serve it with nre-ga on a separate available GPU:
+Serve the configured archives on an available GPU:
 
 ```bash
-mkdir -p /path/to/nre-probes
-docker run -d --name nre --net=host --gpus 'device=0' -e HOME=/tmp \
-  -v /path/to/nurec-scenes/sample_set/26.01_release:/mnt/nre-data \
+nvidia-smi
+avsectester nre serve configs/nurec_stop_sign_patch_2601.yaml --gpu 0
+avsectester nre stop configs/nurec_stop_sign_patch_2601.yaml
+```
+
+Set the dataset dataroot or explicit usdz_paths and the renderer endpoint/probe paths in that
+configuration first. The NRE GPU is selected by `--gpu`, independently of the model's YAML device.
+The command mounts each resolved archive read-only, creates the probe directory and waits for
+Serving on. Archive filenames must be unique; a duplicate is rejected. Startup failures and timeouts
+print the last 50 log lines and stop/remove the container. See [NRE commands](../reference/cli.md#nre).
+Use `--dry-run` to print argv as a shell command without accessing Docker or creating directories.
+
+For an equivalent single-archive configuration with endpoint 127.0.0.1:50051 and these probe paths,
+the generated Docker command is:
+
+```bash
+docker run -d --name avsectester-nre-50051 --network host --gpus device=0 -e HOME=/tmp \
+  -v /path/to/nurec-scenes/scene.usdz:/mnt/nre-data/scene.usdz:ro \
   -v /path/to/nre-probes:/mnt/nre-probes:ro \
   --entrypoint /app/internal/scripts/pycena/runtime/pycena_nrm_full \
   nvcr.io/nvidia/nre/nre-ga:26.04 serve-grpc --host=0.0.0.0 --port=50051 \
-  '--artifact-glob=/mnt/nre-data/**/*.usdz' --cache-size=2 \
-  --enable-editing-actors
+  '--artifact-glob=/mnt/nre-data/*.usdz' --cache-size=2 --enable-editing-actors
 ```
 
 NuRecRenderer accepts a served scene id or an unambiguous substring. NuRecDataset.scenarios()

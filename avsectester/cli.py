@@ -3,20 +3,31 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, NoReturn
+import shlex
+import shutil
+import subprocess
+import time
+from typing import Any, NoReturn, TYPE_CHECKING
 
 import typer
 import yaml  # type: ignore[import-untyped]
 
 from avsectester import __version__
+from avsectester.closed_loop.simulators.nurec.server import DEFAULT_NRE_IMAGE
 from avsectester.experiment import (
     ConfigurationMismatchError, Experiment, ExperimentConfiguration, ExperimentResult,
     PreparedExperiment, load_configuration,
 )
 from avsectester.experiment.engine import validate_configuration_environment
 from avsectester.experiment.output_directory import run_directory
+from avsectester.validation import require_positive_number
+
+if TYPE_CHECKING:
+    from avsectester.closed_loop.simulators.nurec import NuRecRenderer
 
 app = typer.Typer(help="Adversarial security testing for AV systems.")
+nre_app = typer.Typer(help="Start and stop the configured local NuRec renderer.")
+app.add_typer(nre_app, name="nre")
 _CONFIGURATION_ERRORS = (ValueError, TypeError, ImportError, AttributeError, FileNotFoundError,
                          yaml.YAMLError)
 
@@ -206,6 +217,140 @@ def evaluate(
         raise typer.Exit(1) from error
     typer.echo(f"Output directory: {configuration.runs.output}")
     raise typer.Exit(_exit_code(result, report))
+
+
+def _nre_configuration(config: Path) -> tuple[ExperimentConfiguration, NuRecRenderer]:
+    from avsectester.closed_loop.simulators.nurec import NuRecRenderer
+
+    try:
+        configuration = load_configuration(config)
+        renderer = getattr(configuration.simulator, "renderer", None)
+        if not isinstance(renderer, NuRecRenderer):
+            raise ValueError("NRE commands require NuRecRenderer")
+        return configuration, renderer
+    except _CONFIGURATION_ERRORS as error:
+        _configuration_error(error)
+
+
+def _nre_launch_spec(config: Path, gpu: str, name: str | None, image: str,
+                     cache_size: int) -> tuple[ExperimentConfiguration, list[str], str]:
+    from avsectester.closed_loop.simulators.nurec.server import (
+        default_container_name, renderer_command,
+    )
+
+    configuration, renderer = _nre_configuration(config)
+    try:
+        chosen_name = name or default_container_name(renderer)
+        command = renderer_command(configuration.dataset, renderer, gpu=gpu,
+                                   name=chosen_name, image=image, cache_size=cache_size)
+        return configuration, command, chosen_name
+    except _CONFIGURATION_ERRORS as error:
+        _configuration_error(error)
+
+
+def _docker_available() -> None:
+    if shutil.which("docker") is None:
+        typer.echo("docker is not on PATH; use nre serve --dry-run to print the command.", err=True)
+        raise typer.Exit(1)
+
+
+def _docker_call(arguments: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["docker", *arguments], capture_output=True, text=True, check=False)
+
+
+def _remove_nre(name: str) -> None:
+    _docker_call(["stop", name])
+    _docker_call(["rm", name])
+
+
+@nre_app.command("serve")
+def nre_serve(
+    config: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True),
+    gpu: str = typer.Option(..., help="Host GPU index passed to Docker --gpus device=N."),
+    name: str | None = typer.Option(None, help="Container name; default avsectester-nre-PORT."),
+    image: str = typer.Option(DEFAULT_NRE_IMAGE),
+    cache_size: int = typer.Option(2, min=1),
+    timeout: float = typer.Option(600., min=0.001),
+    dry_run: bool = typer.Option(False, help="Only print the command; create no files or containers."),
+) -> None:
+    """Start the configured local NRE and wait for its Serving on log message."""
+    try:
+        require_positive_number(timeout, "timeout")
+    except _CONFIGURATION_ERRORS as error:
+        _configuration_error(error)
+    configuration, command, chosen_name = _nre_launch_spec(config, gpu, name, image, cache_size)
+    if dry_run:
+        typer.echo(shlex.join(command))
+        return
+    _docker_available()
+    if _docker_call(["inspect", chosen_name]).returncode == 0:
+        typer.echo(f"Container already exists: {chosen_name}; choose --name or stop it explicitly.", err=True)
+        raise typer.Exit(1)
+    renderer = getattr(configuration.simulator, "renderer", None)
+    assert renderer is not None  # Checked by _nre_launch_spec.
+    if renderer.probe_directory is not None:
+        Path(renderer.probe_directory).mkdir(parents=True, exist_ok=True)
+    created = False
+    try:
+        launched = subprocess.run(command, capture_output=True, text=True, check=False)
+        # The name did not exist before this invocation, so failed startup containers belong to it.
+        created = True
+        if launched.returncode:
+            raise RuntimeError(launched.stderr.strip() or launched.stdout.strip() or "docker run failed")
+        deadline = time.monotonic() + timeout
+        logs = ""
+        while True:
+            response = _docker_call(["logs", "--tail", "50", chosen_name])
+            logs = response.stdout + response.stderr
+            state = _docker_call(["inspect", "--format", "{{.State.Running}}", chosen_name])
+            if state.returncode or state.stdout.strip() != "true":
+                raise RuntimeError("NRE container exited before becoming ready")
+            if "Serving on" in logs:
+                typer.echo(f"NRE ready: endpoint={renderer.endpoint}, GPU={gpu}, "
+                           f"scenes={len(configuration.dataset.usdz_paths)}, container={chosen_name}")
+                typer.echo(f"Stop command: {shlex.join(['avsectester', 'nre', 'stop', str(config), '--name', chosen_name])}")
+                return
+            if time.monotonic() >= deadline:
+                raise RuntimeError(f"NRE startup timed out after {timeout:g} seconds")
+            time.sleep(min(.5, max(0., deadline - time.monotonic())))
+    except BaseException as error:
+        if created:
+            response = _docker_call(["logs", "--tail", "50", chosen_name])
+            logs = response.stdout + response.stderr
+            typer.echo("\n".join(logs.splitlines()[-50:]), err=True)
+            _remove_nre(chosen_name)
+        if isinstance(error, KeyboardInterrupt):
+            typer.echo("NRE startup interrupted.", err=True)
+            raise typer.Exit(130) from None
+        if not isinstance(error, Exception):
+            raise
+        typer.echo(f"NRE startup error: {error}", err=True)
+        raise typer.Exit(1) from error
+
+
+@nre_app.command("stop")
+def nre_stop(
+    config: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True),
+    name: str | None = typer.Option(None),
+) -> None:
+    """Stop and remove the local renderer container selected by this configuration."""
+    from avsectester.closed_loop.simulators.nurec.server import default_container_name
+
+    _, renderer = _nre_configuration(config)
+    try:
+        chosen_name = name or default_container_name(renderer)
+    except _CONFIGURATION_ERRORS as error:
+        _configuration_error(error)
+    _docker_available()
+    stopped = _docker_call(["stop", chosen_name])
+    if stopped.returncode:
+        typer.echo(stopped.stderr.strip() or f"NRE container does not exist: {chosen_name}", err=True)
+        raise typer.Exit(1)
+    removed = _docker_call(["rm", chosen_name])
+    if removed.returncode:
+        typer.echo(removed.stderr.strip() or f"Unable to remove NRE container: {chosen_name}", err=True)
+        raise typer.Exit(1)
+    typer.echo(f"Stopped and removed NRE container: {chosen_name}")
 
 
 if __name__ == "__main__":

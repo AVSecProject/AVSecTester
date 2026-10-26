@@ -1,6 +1,9 @@
 """The CLI runs and evaluates actual in-memory experiments through YAML configuration."""
 
 import json
+import os
+import shlex
+import sys
 
 from typer.testing import CliRunner
 import yaml
@@ -124,3 +127,114 @@ def test_version():
     completed = runner.invoke(cli.app, ["version"])
     assert completed.exit_code == 0
     assert completed.output.strip() == f"avsectester {__version__}"
+
+
+def nre_configuration(directory):
+    path = write_configuration(directory)
+    specification = yaml.safe_load(path.read_text())
+    data = directory / "data"
+    data.mkdir()
+    (data / "scene.usdz").touch()
+    specification["dataset"] = {"type": "NuRecDataset", "options": {"dataroot": str(data)}}
+    specification["simulator"] = {"type": "NuRecSimulator", "options": {
+        "config": {"dt": .1}, "depth": "none", "physics_update_mode": "none", "route_generator": "none",
+        "renderer": {"type": "avsectester.closed_loop.simulators.nurec:NuRecRenderer", "options": {
+            "endpoint": "127.0.0.1:50152", "probe_directory": str(directory / "probes"),
+            "server_probe_directory": "/mnt/probes",
+        }},
+    }}
+    path.write_text(yaml.safe_dump(specification))
+    return path
+
+
+def fake_docker(directory, monkeypatch):
+    bin_path = directory / "bin"
+    bin_path.mkdir()
+    state = directory / "docker-state"
+    calls = directory / "docker-calls.jsonl"
+    executable = bin_path / "docker"
+    executable.write_text(f"#!{sys.executable}\n" + r'''
+import json, os, sys
+from pathlib import Path
+state = Path(os.environ["FAKE_DOCKER_STATE"])
+with open(os.environ["FAKE_DOCKER_CALLS"], "a") as stream:
+    stream.write(json.dumps(sys.argv[1:]) + "\n")
+arguments = sys.argv[1:]
+mode = os.environ.get("FAKE_DOCKER_MODE", "ready")
+if arguments[0] == "run":
+    state.write_text("false" if mode == "exit" else "true")
+    print("fake-container-id")
+    raise SystemExit(1 if mode == "run-fail" else 0)
+if arguments[0] == "inspect":
+    if not state.exists():
+        raise SystemExit(1)
+    print(state.read_text())
+elif arguments[0] == "logs":
+    print("Serving on 0.0.0.0:50152" if mode == "ready" else "NRE startup diagnostic")
+elif arguments[0] == "stop":
+    if not state.exists():
+        print("No such container", file=sys.stderr)
+        raise SystemExit(1)
+    state.write_text("false")
+elif arguments[0] == "rm":
+    state.unlink()
+''')
+    executable.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bin_path) + os.pathsep + os.environ.get("PATH", ""))
+    monkeypatch.setenv("FAKE_DOCKER_STATE", str(state))
+    monkeypatch.setenv("FAKE_DOCKER_CALLS", str(calls))
+    return state, calls
+
+
+def test_nre_serve(tmp_path, monkeypatch):
+    path = nre_configuration(tmp_path)
+    state, calls = fake_docker(tmp_path, monkeypatch)
+    dry = runner.invoke(cli.app, ["nre", "serve", str(path), "--gpu", "2", "--dry-run"])
+    assert dry.exit_code == 0, dry.output
+    command = shlex.split(dry.output.strip())
+    assert command[:4] == ["docker", "run", "-d", "--name"]
+    assert command[4] == "avsectester-nre-50152" and "device=2" in command
+    assert not calls.exists() and not (tmp_path / "probes").exists()
+    served = runner.invoke(cli.app, ["nre", "serve", str(path), "--gpu", "2"])
+    assert served.exit_code == 0, served.output
+    assert "endpoint=127.0.0.1:50152" in served.output and "scenes=1" in served.output
+    assert "Stop command:" in served.output and state.exists() and (tmp_path / "probes").is_dir()
+    repeated = runner.invoke(cli.app, ["nre", "serve", str(path), "--gpu", "2"])
+    assert repeated.exit_code == 1 and "already exists" in repeated.output
+    runner.invoke(cli.app, ["nre", "stop", str(path)])
+    monkeypatch.setenv("FAKE_DOCKER_MODE", "exit")
+    failed = runner.invoke(cli.app, ["nre", "serve", str(path), "--gpu", "2"])
+    assert failed.exit_code == 1 and "NRE startup diagnostic" in failed.output
+    assert not state.exists()
+    monkeypatch.setenv("FAKE_DOCKER_MODE", "timeout")
+    timed_out = runner.invoke(cli.app, ["nre", "serve", str(path), "--gpu", "2", "--timeout", ".001"])
+    assert timed_out.exit_code == 1 and "timed out" in timed_out.output and not state.exists()
+    monkeypatch.setenv("PATH", "")
+    unavailable = runner.invoke(cli.app, ["nre", "serve", str(path), "--gpu", "2"])
+    assert unavailable.exit_code == 1 and "--dry-run" in unavailable.output
+    assert runner.invoke(cli.app, ["nre", "serve", str(path), "--gpu", "2", "--dry-run"]).exit_code == 0
+    invalid = write_configuration(tmp_path / "wrong-components")
+    rejected = runner.invoke(cli.app, ["nre", "serve", str(invalid), "--gpu", "2", "--dry-run"])
+    assert rejected.exit_code == 2, rejected.output
+
+
+def test_nre_stop(tmp_path, monkeypatch):
+    path = nre_configuration(tmp_path)
+    state, calls = fake_docker(tmp_path, monkeypatch)
+    served = runner.invoke(cli.app, ["nre", "serve", str(path), "--gpu", "1", "--name", "owned-nre"])
+    assert served.exit_code == 0, served.output
+    # Stop must work even after the dataset has moved; it needs only the renderer endpoint.
+    (tmp_path / "data" / "scene.usdz").unlink()
+    (tmp_path / "data").rmdir()
+    stopped = runner.invoke(cli.app, ["nre", "stop", str(path), "--name", "owned-nre"])
+    assert stopped.exit_code == 0 and "Stopped and removed" in stopped.output
+    assert not state.exists()
+    recorded = [json.loads(line) for line in calls.read_text().splitlines()]
+    assert recorded[-2:] == [["stop", "owned-nre"], ["rm", "owned-nre"]]
+    missing = runner.invoke(cli.app, ["nre", "stop", str(path), "--name", "owned-nre"])
+    assert missing.exit_code == 1 and "No such container" in missing.output
+    state.write_text("true")
+    default = runner.invoke(cli.app, ["nre", "stop", str(path)])
+    assert default.exit_code == 0, default.output
+    recorded = [json.loads(line) for line in calls.read_text().splitlines()]
+    assert recorded[-2:] == [["stop", "avsectester-nre-50152"], ["rm", "avsectester-nre-50152"]]

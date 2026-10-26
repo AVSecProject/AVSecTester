@@ -64,6 +64,38 @@ All metric fields are shown; pairwise differences are retained in evaluation/rep
 Both run and evaluate print the offline_report.html and evaluation_report.html paths.
 Evaluate rebuilds both HTML reports from saved output.
 
+## NRE
+
+`nre serve CONFIG --gpu N [--name NAME] [--image IMAGE] [--cache-size 2] [--timeout 600] [--dry-run]`
+loads configuration without validating the experiment environment, starts Docker and waits for
+"Serving on". It requires NuRecDataset and NuRecRenderer with a local endpoint: 127.0.0.1,
+localhost, 0.0.0.0 or ::1. Dataset archive paths are resolved and mounted separately read-only;
+duplicate archive filenames are a configuration error.
+
+```bash
+avsectester nre serve configs/nurec_stop_sign_patch_2601.yaml --gpu 0
+avsectester nre serve configs/nurec_stop_sign_patch_2601.yaml --gpu 0 --dry-run
+avsectester nre stop configs/nurec_stop_sign_patch_2601.yaml
+```
+
+`--gpu` is the host GPU selected by Docker's `--gpus device=N`, independently of top-level
+YAML device. The default image is nvcr.io/nvidia/nre/nre-ga:26.04 and the default container name
+is avsectester-nre-<port>. The probe directory is created before launch; its server mount uses
+server_probe_directory, or the same absolute client path when no server path is configured.
+
+`--dry-run` only prints the shell-quoted command: it creates no directories, starts no process and
+does not require Docker on PATH. A normal launch without Docker reports an error and suggests
+--dry-run. A pre-existing container with the chosen name is left untouched and reported as an error.
+On successful startup the command prints endpoint, GPU, scene count, container name and a stop
+command. On early exit or timeout it prints the last 50 lines of logs and stops/removes the
+container it started. Containers do not use --rm, allowing startup diagnostics to be read first.
+
+`nre stop CONFIG [--name NAME]` only loads configuration and derives the same default name from
+the renderer endpoint. It does not enumerate datasets or build a serve command. It runs docker stop followed by
+docker rm, and exits 1 if the container does not exist. Invalid configuration exits 2; Docker
+startup, stop and timeout errors exit 1. Check nvidia-smi before selecting an available card and
+stop the service as soon as it is no longer needed.
+
 ## Interruptions
 
 Ctrl-C prints an interruption message, cleans up owned resources and exits with code 130. Selection

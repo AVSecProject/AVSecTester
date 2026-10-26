@@ -2024,6 +2024,19 @@ Type cells show the class name with its complete path as a tooltip.
 The evaluation page includes treatment statistics per part and metric class, pair differences,
 selection decisions, metric errors, notes and expandable group evidence.
 
+### avsectester.closed_loop.simulators.nurec.server
+
+| Public name | Signature or fields |
+|---|---|
+| `renderer_command` | `renderer_command(dataset, renderer, *, gpu, name, image, cache_size) -> list[str]` |
+| `default_container_name` | `default_container_name(renderer) -> str`; avsectester-nre-<port> without dataset access |
+| `DEFAULT_NRE_IMAGE` | `nvcr.io/nvidia/nre/nre-ga:26.04` |
+
+Constructs a local Docker NRE command without filesystem or process changes. It requires NuRecDataset
+and NuRecRenderer, rejects duplicate archive basenames and remote endpoints, mounts each resolved
+archive read-only, and mounts the optional probe directory at its server-side path.
+Use the nre serve/stop CLI for process management.
+
 ### avsectester.evaluation.report statistic formatting
 
 `format_number(value) -> str` formats bool as yes/no and int without decimals. Float always has

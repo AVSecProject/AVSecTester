@@ -205,49 +205,39 @@ partial failed report and query logs. The new attempt starts with a fresh report
 Matching completed executions are retained only when their full expected metadata still
 agrees, including segment, part, environment, decision counts and deployment budget. See [Resume interrupted work](../guides/experiments.md#resume-interrupted-work).
 
-## One renderer for both scene versions
+## NRE service
 
-Use a single directory of absolute archive symlinks with one file per scene ID. Deduplicate
-07981e6a by keeping its 26.01 archive. For example, for a local sample_set containing both releases:
+Start NRE from the same configuration used for the experiment. The command resolves the dataset's
+archives and mounts each file read-only, including the probe directory configured on the renderer.
 
 ```bash
-DATA=/absolute/path/to/sample_set
-mkdir -p results/nre-scenes results/nre-probes
-python - "$DATA" "$PWD/results/nre-scenes" <<'PY'
-from pathlib import Path
-import sys
-source, destination = map(Path, sys.argv[1:])
-archives = {}
-for archive in sorted(source.glob("*_release/*/*.usdz")):
-    archives.setdefault(archive.stem, archive.resolve())
-for scene, archive in archives.items():
-    (destination / f"{scene}.usdz").symlink_to(archive)
-PY
 nvidia-smi
-# Set NVIDIA_VISIBLE_DEVICES to an idle card before starting the renderer.
-docker run -d --rm --name nre --network host \
-  -e NVIDIA_VISIBLE_DEVICES=0 -e HOME=/tmp \
-  -v "$DATA":"$DATA":ro \
-  -v "$PWD/results/nre-scenes":/mnt/nre-data:ro \
-  -v "$PWD/results/nre-probes":/mnt/nre-probes:ro \
-  --entrypoint /app/internal/scripts/pycena/runtime/pycena_nrm_full \
-  nvcr.io/nvidia/nre/nre-ga:26.04 \
-  serve-grpc --host=0.0.0.0 --port=50051 \
-  '--artifact-glob=/mnt/nre-data/*.usdz' --cache-size=2 --enable-editing-actors
+avsectester nre serve configs/nurec_stop_sign_patch_2601.yaml --gpu 0
+avsectester nre stop configs/nurec_stop_sign_patch_2601.yaml
 ```
 
-Wait for the renderer to log Serving on before running experiments. Both client configurations
-use results/nre-probes; mount that same host directory into the renderer at /mnt/nre-probes.
-Rendered probes determine scene occlusion, and visible_pixels counts visible replica pixels.
-The configurations use depth=none; ego ground contact still uses mesh in 26.01 and mesh_ground
-in 26.04. They use map navigation, ego_only physics updates and AlpaSimController. Alpamayo
-receives four consecutive 10 Hz image frames through frame_subsample=1.
-Stop the renderer as soon as all requested runs are finished:
+The `--gpu` option selects the host GPU for NRE. The YAML `device` selects devices for constructors
+such as the driving model and detector; it does not select the NRE GPU. Choose available resources
+before starting either process. Use the 2604 configuration when serving its dataset instead.
+
+`serve` creates the client probe directory and waits for "Serving on". Its default container name
+is `avsectester-nre-<port>`; `stop` stops and removes that container. Use `--name` consistently to
+select a different name. To print the exact command without creating files or using Docker:
 
 ```bash
-docker stop nre
-docker ps -a --filter name=nre
+avsectester nre serve configs/nurec_stop_sign_patch_2601.yaml --gpu 0 --dry-run
 ```
+
+Every resolved archive filename must be unique. A configuration that includes both releases of the
+same archive is rejected instead of silently choosing one; configure the intended scene version.
+No symlink staging directory is required. See [NRE commands](../reference/cli.md#nre) for startup
+timeouts, image/cache options and cleanup.
+
+The supplied configurations share results/nre-probes with NRE at /mnt/nre-probes. Rendered probes
+determine scene occlusion, and visible_pixels counts visible replica pixels. The configurations use
+depth=none; ego ground contact still uses mesh in 26.01 and mesh_ground in 26.04. They use map
+navigation, ego_only physics updates and AlpaSimController. Alpamayo receives four consecutive 10 Hz
+image frames through frame_subsample=1.
 
 ## Evaluation and visualization
 
