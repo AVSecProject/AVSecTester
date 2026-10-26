@@ -75,6 +75,26 @@ class _ConfiguredAttacks(dict[str, Attack]):
 
 
 @dataclass(frozen=True)
+class MetadataConfiguration:
+    """Save selected units or load one shared dataset-specific metadata file."""
+
+    save: Path | None = None
+    load: Path | None = None
+
+    def __post_init__(self) -> None:
+        if self.save is not None and self.load is not None:
+            raise ValueError("metadata.save and metadata.load are mutually exclusive")
+        for name in ("save", "load"):
+            value = getattr(self, name)
+            if value is not None:
+                if not isinstance(value, (str, PathLike)):
+                    raise TypeError(f"metadata.{name} must be a filesystem path")
+                if not str(value).strip():
+                    raise ValueError(f"metadata.{name} must be a nonempty path")
+                object.__setattr__(self, name, Path(value).expanduser().resolve())
+
+
+@dataclass(frozen=True)
 class SplitConfiguration:
     """Random segment-unit partition sizes and independently selectable execution parts."""
 
@@ -149,6 +169,7 @@ class ExperimentConfiguration:
     evaluation: EvaluationConfiguration = field(default_factory=EvaluationConfiguration)
     runs: RunsConfiguration = field(default_factory=RunsConfiguration)
     split: SplitConfiguration | None = None
+    metadata: MetadataConfiguration = field(default_factory=MetadataConfiguration)
     # Loader-owned constructor descriptions. Keeping the source object alongside its options
     # prevents dataclasses.replace(attacks=...) from reusing another attack's description.
     _attack_specifications: Mapping[str, tuple[Attack, Mapping[str, Any]]] = field(
@@ -158,7 +179,8 @@ class ExperimentConfiguration:
     def __post_init__(self) -> None:
         for name, expected in (("dataset", Dataset), ("simulator", Simulator),
                                ("avstack", DrivingAdapter), ("runs", RunsConfiguration),
-                               ("evaluation", EvaluationConfiguration)):
+                               ("evaluation", EvaluationConfiguration),
+                               ("metadata", MetadataConfiguration)):
             if not isinstance(getattr(self, name), expected):
                 raise TypeError(f"{name} must be {expected.__name__}")
         if self.split is not None and not isinstance(self.split, SplitConfiguration):
@@ -194,11 +216,13 @@ class ExperimentConfiguration:
         """
         return self.describe_configuration()
 
-    def describe_configuration(self, *, scenarios: Sequence[str] | None = None) -> dict[str, Any]:
+    def describe_configuration(self, *, scenarios: Sequence[str] | None = None,
+                               metadata_sha256: str | None = None) -> dict[str, Any]:
         """Describe preparation inputs without requiring dataset access.
 
         Supplied scenario IDs avoid enumerating the dataset. Run settings are intentionally
-        excluded from this compatibility summary.
+        excluded from this compatibility summary. Supplied metadata_sha256 reuses a previously
+        read document; metadata compatibility depends on its bytes, never its path.
         """
         descriptions = {}
         for name, attack in self.attacks.items():
@@ -223,13 +247,20 @@ class ExperimentConfiguration:
             if parameters is None:
                 description["parameters_verified"] = False
             descriptions[name] = description
-        return {
+        summary: dict[str, Any] = {
             "dataset": {"type": configuration_summary.type_name(self.dataset),
                         "scenarios": list(scenarios) if scenarios is not None else
                         [scenario.id for scenario in self.dataset.scenarios()]},
             "simulator": configuration_summary.summary_value(self.simulator.identity),
             "attacks": descriptions,
         }
+        if self.metadata.load is not None:
+            if metadata_sha256 is None:
+                from .metadata_file import _read_document
+
+                metadata_sha256 = _read_document(self.metadata.load).sha256
+            summary["metadata"] = {"sha256": metadata_sha256}
+        return summary
 
 
 def load_configuration(
@@ -243,10 +274,11 @@ def load_configuration(
     if isinstance(config, ExperimentConfiguration):
         _require_attacks(config.attacks)
         _validate_metric_configuration(config)
+        _validate_metadata_configuration(config)
         return config
     spec, directory = _mapping(config, Path.cwd(), "Experiment")
     _keys(spec, {
-        "dataset", "simulator", "avstack", "attacks", "hooks", "evaluation", "runs", "split", "device",
+        "dataset", "simulator", "avstack", "attacks", "hooks", "evaluation", "runs", "split", "device", "metadata",
     }, "experiment")
     device = spec.get("device")
     if "device" in spec:
@@ -276,9 +308,30 @@ def load_configuration(
         hooks=_hooks(spec.get("hooks"), directory, device),
         evaluation=_evaluation(spec.get("evaluation"), directory, device),
         runs=runs, split=_split(spec.get("split")),
+        metadata=_metadata(spec.get("metadata"), directory),
     )
     _validate_metric_configuration(configuration)
+    _validate_metadata_configuration(configuration)
     return configuration
+
+
+def _metadata(value: Any, directory: Path) -> MetadataConfiguration:
+    if value is None:
+        return MetadataConfiguration()
+    if isinstance(value, MetadataConfiguration):
+        return value
+    if not isinstance(value, Mapping):
+        raise TypeError("metadata must be a mapping or MetadataConfiguration")
+    _keys(value, {"save", "load"}, "metadata")
+    paths = {}
+    for name, path in value.items():
+        if path is not None:
+            if not isinstance(path, (str, PathLike)):
+                raise TypeError(f"metadata.{name} must be a filesystem path")
+            if not str(path).strip():
+                raise ValueError(f"metadata.{name} must be a nonempty path")
+            paths[name] = _path(path, directory)
+    return MetadataConfiguration(**paths)
 
 
 def _split(value: Any) -> SplitConfiguration | None:
@@ -326,6 +379,16 @@ def _runs(value: Any, directory: Path, device: str | None = None) -> RunsConfigu
 def _require_attacks(attacks: Mapping[str, Any]) -> None:
     if not attacks:
         raise ValueError("An experiment requires at least one attack; attack metadata selects its segments")
+
+
+
+def _validate_metadata_configuration(configuration: ExperimentConfiguration) -> None:
+    if configuration.metadata.load is not None:
+        return
+    missing = [name for name, attack in configuration.attacks.items()
+               if type(attack).build_metadata is Attack.build_metadata]
+    if missing:
+        raise ValueError("Attacks without build_metadata require metadata.load: " + ", ".join(missing))
 
 
 def _validate_metric_configuration(configuration: ExperimentConfiguration) -> None:

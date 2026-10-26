@@ -386,6 +386,17 @@ class DeceleratingAVStack(AVStack):
         ])
 
 
+class MetadataOnlyAttack(Attack):
+    """A user attack that accepts supplied segments and has no scenario selector."""
+
+    def __init__(self, required_key=None):
+        self.required_key = required_key
+
+    def validate_segment(self, segment):
+        if self.required_key is not None and self.required_key not in segment.user_data:
+            raise ValueError(f"Missing required user_data key {self.required_key!r}")
+
+
 class MinimalAttack(Attack):
     """Select deterministic consecutive windows and record per-run progress."""
 

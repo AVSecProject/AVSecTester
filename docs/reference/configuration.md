@@ -17,7 +17,7 @@ Constructor filesystem options follow the [annotation rules](#constructor-filesy
 Type resolution and attack discovery live in avsectester.experiment.type_registry; the
 configuration loader owns YAML structure and validation.
 
-Section order does not affect loading. Supplied configurations use device, dataset, split,
+Section order does not affect loading. Supplied configurations use device, dataset, metadata, split,
 simulator, avstack, attacks, evaluation and runs.
 
 Every object constructor uses `type` and `options`. A name without a colon selects a built-in class.
@@ -138,6 +138,52 @@ PCTNetHarmonizer uses the same string device convention and falls back to CPU wh
 dataset supplies the recorded or recipe scenario source. NuRecDataset accepts either dataroot, a
 directory searched recursively for .usdz archives, or an explicit usdz_paths list. The dataset does
 not choose a GPU or launch a renderer server.
+
+## Metadata
+
+Use one metadata file for the whole experiment. It contains complete AttackSegment records, including
+user_data; clean and every configured attack share these segments. There are no per-attack or
+per-treatment metadata overrides.
+
+```yaml
+metadata:
+  save: ../results/metadata/stop_sign_2601.json
+```
+
+Choose save or load, never both. Both default to None, and unknown metadata keys are rejected.
+Paths resolve relative to the containing YAML file. Python configurations use
+MetadataConfiguration(save=...) or MetadataConfiguration(load=...) in ExperimentConfiguration.metadata.
+
+- save writes all shared units, in unit order, after selection and the common deployment-budget
+  checks, before offline preparation. An existing identical file is accepted; different content
+  is an error and is not overwritten.
+- load skips every attack's build_metadata. Every attack receives all file segments, so they form
+  shared comparison groups. The dataset type must match the file. Scenario/frame membership,
+  decision windows, attack validate_segment, the common deployment budget and simulator start
+  validation must all pass. Invalid input is a configuration error naming its segment and cause;
+  no loaded segment is silently discarded. Loading and saving reject duplicate complete segments
+  (same scenario, start, stop and user_data), with the two item indices in the error.
+
+```yaml
+metadata:
+  load: ../results/metadata/stop_sign_2601.json
+```
+
+split still partitions the shared units and controls which segments reach offline and closed-loop
+execution. No selection decisions are produced when loading metadata. prepared.json records
+metadata_source with the load path and the SHA256 of the file's raw bytes. The compatibility
+summary contains only metadata.sha256; the recorded path is provenance, not an identity check.
+Moving the file or changing its mount path preserves compatibility when its bytes stay identical.
+Changing whitespace or any other raw bytes changes the hash.
+
+Resuming or loading a prepared experiment for execution reads the current file and compares its
+hash. ExperimentResult.load and CLI evaluate use the saved hash and saved segments without reading
+the metadata file, so evaluation works after that file has been moved or removed. Adding or
+removing metadata.load relative to the saved configuration is incompatible.
+
+Resuming preparation from preparation-progress.json or using --prepared restores saved segments
+without running selection or writing metadata.save. This option exports a fresh preparation's
+selection; it does not copy metadata files during reuse.
 
 ## Data split
 
@@ -271,7 +317,7 @@ across supported scenarios of one simulator.
 
 ## Attack specification
 
-The attacks mapping contains one or more entries. Each attack selects its own metadata. Complete
+The attacks mapping contains one or more entries. Each attack selects its own metadata unless metadata.load supplies the shared segments. Complete
 identical segments form one unit shared by their selecting attacks. A comparison group is a unit
 and seed. Every treatment without attack_name runs once in that group; a treatment with attack_name
 runs only when that attack selected the unit. All group treatments are paired, including treatments
@@ -280,7 +326,7 @@ clean treatment has no attack_name. To apply several actions together in one run
 composite Attack.
 
 An attack specification has `type`, `options` and optional `environment`. Selection parameters,
-input assets and optimization belong to the Attack constructor. The framework calls its metabuilder
+input assets and optimization belong to the Attack constructor. Unless metadata.load is configured, the framework calls its metabuilder
 for each scene, then its offline phase once. Selection, host ranking and score semantics belong
 entirely to build_metadata; the framework only validates and saves AttackSegment records. It never
 reruns selection after optimization.
@@ -439,7 +485,8 @@ dataclasses are recorded as their configuration-summary data.
 
 `PreparedExperiment.load(config, directory)` and CLI --prepared check dataset/scenario, simulator
 and attack compatibility, then compare the saved preparation seed, split counts/seed and each offline
-environment with the supplied configuration. The saved units are recomputed from saved metadata and
+environment with the supplied configuration. When metadata.load is configured, the current file's
+raw-byte SHA256 must match the saved metadata.sha256; its path may differ. The saved units are recomputed from saved metadata and
 the configured split and compared item by item; a different allocation is incompatible. A mismatch raises ConfigurationMismatchError naming the differing
 fields and their saved and new values; the CLI maps it to exit code 2. Corrupt or unreadable files
 are result-reading failures (exit code 1).
@@ -454,7 +501,8 @@ omitting it. prepared.json uses deterministic key order. Values passed to offlin
 simulation remain unchanged.
 
 ExperimentResult.load and CLI evaluate read saved logs through load_prepared_metadata without
-constraining runs. Historical analysis does not require preparation to be reusable for new runs,
+constraining runs or reading the external metadata file. They use the saved content hash;
+metadata.load must still be present or absent as it was during preparation. Historical analysis does not require preparation to be reusable for new runs,
 but the old attack-prefixed run directory layout, including v5/v6 outputs, is not supported by this
 version. Use the matching historical version to load or evaluate those results.
 

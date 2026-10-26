@@ -146,3 +146,10 @@ def test_html_reports(tmp_path):
 
     assert strip_time(write_offline_html(tmp_path).read_text()) == strip_time(offline_text)
     assert strip_time(write_evaluation_html(tmp_path).read_text()) == strip_time(evaluation_text)
+
+    manifest["metadata_source"] = {"load": "/data/selected<signs>.json", "sha256": "saved-hash"}
+    (tmp_path / "prepared.json").write_text(json.dumps(manifest))
+    loaded_text = write_evaluation_html(tmp_path).read_text()
+    assert "Metadata loaded from /data/selected&lt;signs&gt;.json (4 segments); no selection was run." in loaded_text
+    selection = re.search(r'<section id="selection">(.*?)</section>', loaded_text, re.S).group(1)
+    assert "<table>" not in selection

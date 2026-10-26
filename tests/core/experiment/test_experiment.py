@@ -438,3 +438,124 @@ def test_offline_reports(tmp_path):
         Experiment.prepare(blocked_config)
     assert any("Failed to save the partial offline report" in note
                for note in caught.value.__notes__)
+
+
+def test_metadata(tmp_path):
+    from avsectester.experiment import MetadataConfiguration, load_metadata, save_metadata
+    from avsectester.experiment.models import segment_key
+    from tests.fakes import MetadataOnlyAttack
+
+    path = tmp_path / "metadata.json"
+    original = configuration(MinimalAttack(), output=tmp_path / "selected")
+    original = replace(original, metadata=MetadataConfiguration(save=path))
+    selected = Experiment.prepare(original)
+    assert [segment_key(segment) for segment in load_metadata(path)] == [
+        segment_key(unit.segment) for unit in selected.units]
+    # Reusing complete preparations never selects or rewrites an external metadata file.
+    saved_bytes = path.read_bytes()
+    path.unlink()
+    assert len(Experiment.prepare(original, resume=True).units) == len(selected.units)
+    assert not path.exists()
+    PreparedExperiment.load(original, original.runs.output)
+    assert not path.exists()
+    path.write_bytes(saved_bytes)
+
+    loaded_config = replace(
+        original, attacks={"one": MetadataOnlyAttack(), "two": MetadataOnlyAttack()},
+        metadata=MetadataConfiguration(load=path),
+        runs=RunsConfiguration(output=tmp_path / "loaded"),
+    )
+    loaded = Experiment.prepare(loaded_config)
+    assert [segment_key(unit.segment) for unit in loaded.units] == [
+        segment_key(unit.segment) for unit in selected.units]
+    assert all(unit.attack_names == ("one", "two") for unit in loaded.units)
+    assert loaded.selections == ()
+    result = Experiment.execute(loaded)
+    assert set(result.groups) == {(0, 0), (1, 0)}
+    assert all(set(runs) == {"clean", "one", "two"}
+               for runs in result.groups.values())
+    manifest = json.loads((loaded_config.runs.output / "prepared.json").read_text())
+    assert manifest["metadata_source"]["load"] == str(path)
+    assert len(manifest["metadata_source"]["sha256"]) == 64
+    partitioned = Experiment.prepare(replace(
+        loaded_config, split=SplitConfiguration(1), runs=RunsConfiguration(),
+    ))
+    assert [unit.part for unit in partitioned.units].count("train") == 1
+    assert len(Experiment.execute(partitioned).groups) == 1
+    restored = PreparedExperiment.load(loaded_config, loaded_config.runs.output)
+    assert restored.metadata_source == loaded.metadata_source
+
+    rejected = replace(loaded_config, attacks={"one": MetadataOnlyAttack("allowed")},
+                       runs=RunsConfiguration())
+    with pytest.raises(ValueError, match="segment 0.*one.*Missing required.*allowed"):
+        Experiment.prepare(rejected)
+    # Start eligibility is checked against the same shared history/deployment budget.
+    with pytest.raises(ValueError, match="segment 0.*insufficient recorded history"):
+        Experiment.prepare(replace(
+            loaded_config, runs=RunsConfiguration(),
+            avstack=DrivingAdapter(lambda seed: ConstantAVStack(), past_steps=1),
+        ))
+    invalid = AttackSegment("absent", replace(selected.units[0].segment.start, scenario_id="absent"),
+                            replace(selected.units[0].segment.stop, scenario_id="absent"))
+    bad_path = tmp_path / "invalid.json"
+    save_metadata((invalid,), bad_path, dataset_type="tests.fakes:MemoryDataset")
+    with pytest.raises(ValueError, match="segment 0.*Unknown scenario"):
+        Experiment.prepare(replace(loaded_config, metadata=MetadataConfiguration(load=bad_path),
+                                   runs=RunsConfiguration()))
+    save_metadata(load_metadata(path), tmp_path / "wrong-type.json", dataset_type="user.data:OtherDataset")
+    with pytest.raises(ValueError, match="dataset_type"):
+        Experiment.prepare(replace(
+            loaded_config, metadata=MetadataConfiguration(load=tmp_path / "wrong-type.json"),
+            runs=RunsConfiguration(),
+        ))
+    # A changed source content is a preparation compatibility mismatch.
+    document = json.loads(path.read_text())
+    document["segments"] = document["segments"][:1]
+    path.write_text(json.dumps(document))
+    with pytest.raises(ConfigurationMismatchError, match="metadata"):
+        PreparedExperiment.load(loaded_config, loaded_config.runs.output)
+
+
+def test_metadata_compatibility(tmp_path):
+    import hashlib
+
+    from avsectester.experiment import MetadataConfiguration, save_metadata
+
+    frames = MemoryDataset().frames("scene")
+    path = tmp_path / "original.json"
+    save_metadata((AttackSegment("scene", frames[0], frames[2]),), path,
+                  dataset_type="tests.fakes:MemoryDataset")
+    config = replace(configuration(MinimalAttack(max_segments=1), output=tmp_path / "results"),
+                     metadata=MetadataConfiguration(load=path))
+    prepared = Experiment.prepare(config)
+    Experiment.execute(prepared)
+    summary = json.loads((config.runs.output / "prepared.json").read_text())["configuration"]
+    payload = path.read_bytes()
+    assert summary["metadata"] == {"sha256": hashlib.sha256(payload).hexdigest()}
+    relocated = tmp_path / "relocated.json"
+    path.rename(relocated)
+    moved = replace(config, metadata=MetadataConfiguration(load=relocated))
+    restored = PreparedExperiment.load(moved, config.runs.output)
+    assert restored.metadata_source == prepared.metadata_source  # Historical path is preserved.
+    assert len(Experiment.prepare(moved, resume=True).units) == 1
+    relocated.unlink()
+    # Saving a loaded preparation and evaluating saved evidence do not need the source file.
+    restored.save(tmp_path / "copied-preparation")
+    result = ExperimentResult.load(config.runs.output, moved)
+    report = evaluate(result, moved)
+    assert not report.metric_errors
+    assert (config.runs.output / "evaluation_report.html").is_file()
+    without_load = replace(moved, metadata=MetadataConfiguration())
+    with pytest.raises(ConfigurationMismatchError, match="metadata.load"):
+        ExperimentResult.load(config.runs.output, without_load)
+    no_source = replace(without_load, runs=replace(config.runs, output=tmp_path / "no-source"))
+    Experiment.execute(Experiment.prepare(no_source))
+    with pytest.raises(ConfigurationMismatchError, match="metadata.load"):
+        ExperimentResult.load(no_source.runs.output, moved)
+    # Byte identity, rather than semantic JSON identity, defines preparation compatibility.
+    relocated.write_bytes(payload + b"\n")
+    with pytest.raises(ConfigurationMismatchError, match="metadata"):
+        Experiment.prepare(moved, resume=True)
+    relocated.write_text(json.dumps({"format": "invalid"}))
+    with pytest.raises(ConfigurationMismatchError, match="Current metadata file cannot be validated"):
+        PreparedExperiment.load(moved, config.runs.output)

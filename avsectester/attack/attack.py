@@ -13,7 +13,7 @@ The offline and online phases have defaults, so either may be trivial.
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
+from abc import ABC
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -79,9 +79,14 @@ class Attack(ABC):
     """One attack with its own parameters and optional offline preparation."""
     environment: Mapping[str, Any] = MappingProxyType({})
 
-    @abstractmethod
     def build_metadata(self, scenario: ScenarioView) -> Sequence[AttackSegment]:
-        """Select this scenario's segments, using its data and the closed-loop services."""
+        """Select segments, or leave selection to a shared metadata.load file."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not select segments; set metadata.load"
+        )
+
+    def validate_segment(self, segment: AttackSegment) -> None:
+        """Accept shared metadata, or raise ValueError explaining why it is unsuitable."""
 
     def run_offline(self, context: OfflineContext) -> Any:
         """Return the artifacts used by the online phase, or None when no preparation is needed."""

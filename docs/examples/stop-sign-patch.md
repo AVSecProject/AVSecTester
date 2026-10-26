@@ -119,6 +119,29 @@ even for the same window, so images can overlap between train and test. Sharing 
 distinct units and conditional transfer are not implemented. See
 [Data split](../reference/configuration.md#data-split).
 
+## Reuse the same segments
+
+Export a selection independently of optimization artifacts by adding:
+
+```yaml
+metadata:
+  save: ../results/metadata/stop_sign_2601.json
+```
+
+For a later experiment, use metadata.load with that path instead of save. All configured attacks
+then receive every saved segment, skip selection and share the same clean comparison groups.
+StopSignPatchAttack validates the required sign, stop-line and route user_data before preparation.
+The dataset type, frame windows, shared deployment budget and simulator start must also match.
+split still determines training and test units; optimization runs only on training segments.
+
+An existing metadata export is accepted only if its content is identical. Preparation resumes
+from preparation-progress.json and --prepared reuse do not run selection or write metadata.save.
+Compatibility checks use the file's raw-byte SHA256, so a byte-identical file may move to another
+path. Evaluation reads saved segments and the saved hash, without requiring the metadata file.
+For a custom subset, use load_metadata and save_metadata from avsectester.experiment in a user
+script; pass the original dataset_type when saving. See
+[Metadata](../reference/configuration.md#metadata) for the format and compatibility rules.
+
 ## Initial patches and preparation
 
 initial_patch accepts none, white, black or gaussian_noise. none deploys the unpatched replica

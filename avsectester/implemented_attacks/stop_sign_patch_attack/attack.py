@@ -17,7 +17,7 @@ from .assets import (
     DEFAULT_MASK_PATH, INITIAL_PATCHES, read_patch_mask, replica_asset, replica_pose,
     validate_replica_texture,
 )
-from .metabuilder import control_from_user_data, select_stop_approach
+from .metabuilder import control_from_user_data, route_progress, select_stop_approach
 from .offline import DetectorPatchOptimization, RolloutPatchOptimization, run_offline
 from .online import StopSignPatchAttackRuntime
 
@@ -82,6 +82,54 @@ class StopSignPatchAttack(Attack):
     def build_metadata(self, scenario: ScenarioView) -> Sequence[AttackSegment]:
         selected = select_stop_approach(scenario, self.approach_m, self.hold_steps, self.min_approach_m)
         return () if selected is None else (selected.to_segment(),)
+
+    def validate_segment(self, segment: AttackSegment) -> None:
+        """Validate the sign geometry and recorded-route inputs used by both optimizers.
+
+        The route must include the selected decision interval and recorded stop. Additional
+        selection evidence is checked when supplied, but unused fields are not mandatory.
+        """
+        data = segment.user_data
+        required = ("sign_id", "sign_pose", "sign_extent", "sign_native_category",
+                    "route_points", "recorded_stop_frame", "line_route_distance_m")
+        missing = [name for name in required if name not in data]
+        if missing:
+            raise ValueError(f"Stop-approach metadata is missing {missing}")
+        for name in ("sign_id", "sign_native_category"):
+            if not isinstance(data[name], str) or not data[name]:
+                raise ValueError(f"{name} must be a nonempty string")
+        control = control_from_user_data(data)
+        require_positive_number(control.extent[1], "sign width")
+        require_positive_number(control.extent[2], "sign height")
+        # This also checks the selected orientation's horizontal-normal requirement.
+        replica_pose(control, self.offset_m, panel_height_m=control.extent[2],
+                     face_orientation=self.face_orientation)
+        route = np.asarray(data["route_points"], dtype=float)
+        route_progress(route, route)
+        if len(route) <= segment.stop.position:
+            raise ValueError("route_points must cover the selected segment's terminal frame")
+        stop = data["recorded_stop_frame"]
+        require_nonnegative_integer(stop, "recorded_stop_frame")
+        if not segment.start.position <= stop < len(route):
+            raise ValueError("recorded_stop_frame must be on the route at or after segment start")
+        require_nonnegative_number(data["line_route_distance_m"], "line_route_distance_m")
+        for name in ("recorded_stop_timestamp_s", "approach_distance_m"):
+            if name in data:
+                require_nonnegative_number(data[name], name)
+        if "stop_line_id" in data and (
+            not isinstance(data["stop_line_id"], str) or not data["stop_line_id"]
+        ):
+            raise ValueError("stop_line_id must be a nonempty string")
+        if "stop_line_points" in data:
+            line = np.asarray(data["stop_line_points"], dtype=float)
+            if (line.ndim != 2 or line.shape[1] != 3 or len(line) < 2
+                    or not np.isfinite(line).all()):
+                raise ValueError("stop_line_points must be finite (N, 3) points with N >= 2")
+        if "stop_line_lane_ids" in data and (
+            isinstance(data["stop_line_lane_ids"], (str, bytes))
+            or any(not isinstance(value, str) or not value for value in data["stop_line_lane_ids"])
+        ):
+            raise ValueError("stop_line_lane_ids must contain nonempty strings")
 
     def run_offline(self, context: OfflineContext) -> np.ndarray:
         return run_offline(self, context)

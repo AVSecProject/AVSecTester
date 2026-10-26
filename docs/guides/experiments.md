@@ -19,7 +19,7 @@ report = evaluate(result, prepared.configuration)
 print(report.format_summary())
 ```
 
-`prepare` first selects every attack's metadata, validates segments against the experiment-wide
+`prepare` first selects every attack's metadata (or loads shared metadata), validates segments against the experiment-wide
 deployment budget and builds shared segment units. With split, it assigns these units to train,
 validation and test before any offline phase. Each attack receives only its train segments as
 OfflineContext.metadata and its validation segments as validation_metadata. Without split the
@@ -77,6 +77,42 @@ at least one test unit. execute defaults to [test]; omitting split executes all 
 Units include user_data. Different attacker settings for the same window may therefore enter train
 and test separately, and test images may have been seen during training. No conditional transfer or
 cross-user_data sharing of un-attacked runs is implemented.
+
+## Save and reuse selected metadata
+
+Metadata files are independent of offline artifacts and run results. To export a selection, set
+metadata.save in the configuration. Preparation writes the complete shared unit segments after
+all selection and common deployment checks, before any offline optimization. Existing identical
+content is accepted; a different existing file is an error, never overwritten.
+
+To reuse that selection with other attack settings or driving systems, replace save with load:
+
+```yaml
+metadata:
+  load: ../results/metadata/stop_sign_2601.json
+```
+
+Every attack then receives exactly the same segments; build_metadata is not called and selections
+is empty. The framework checks the dataset type and every segment against dataset frame/window
+rules, each attack's validate_segment, the common deployment budget and simulator start validation.
+Invalid input stops preparation with a configuration error; loaded segments are not filtered away.
+The usual split assigns these shared units to train, validation and test.
+
+Python users can generate complete AttackSegment records by their own criteria and call
+save_metadata(segments, path, dataset_type="package.module:DatasetClass"), then use metadata.load.
+load_metadata(path) reads them back as a tuple. Both functions are exported from
+avsectester.experiment. The file stores format avsectester.metadata, version 1, dataset_type and
+DEFAULT_REGISTRY-encoded segments. Loading and saving reject duplicate complete segments and
+identify their item indices. The loaded path and raw-byte SHA256 are recorded in prepared.json,
+but compatibility uses only the content hash. A byte-identical file at another path is compatible;
+changing any bytes invalidates execution reuse. Progress resume and --prepared check the current
+file. Evaluation reads the saved hash and segments, so it needs neither the original metadata
+file nor its original mount path. The metadata.load setting must still be present in the analysis
+configuration when it was used during preparation.
+
+A preparation resume from preparation-progress.json and --prepared reuse saved metadata without
+selection or a metadata.save write. Reusing preparation includes artifacts; metadata.load reuses
+only segments and runs each configured attack's offline phase again.
 
 ## Save and reload preparation
 

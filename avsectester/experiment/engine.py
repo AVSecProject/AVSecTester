@@ -28,6 +28,8 @@ from avsectester.runlog import Recorder, RunLog
 from avsectester.maps import ScenarioMap
 
 from .config import ExperimentConfiguration, TreatmentConfiguration, load_configuration
+from .configuration_summary import type_name
+from .metadata_file import _read_document, save_metadata
 from .models import (
     ExperimentResult, PreparedExperiment, SelectionDecision, TreatmentResult,
     preparation_record, treatment_applies, build_units, segment_key,
@@ -76,6 +78,7 @@ def _segments(attack_name: str, attack: Any, view: Any,
         config.dataset.checked_frame(segment.scenario_id, segment.start)
         config.dataset.checked_frame(segment.scenario_id, segment.stop)
         config.dataset.decision_window(segment.scenario_id, segment.start, segment.decision_steps)
+        attack.validate_segment(segment)
     deployment = _deployment_plan(config, attack_name, selected)
     accepted = []
     with ClosedLoopServices(config.dataset, config.simulator, config.avstack,
@@ -95,6 +98,122 @@ def _segments(attack_name: str, attack: Any, view: Any,
                     continue
                 accepted.append(segment)
     return tuple(accepted)
+
+
+@dataclass(frozen=True)
+class _ExperimentSegments:
+    metadata: Mapping[str, tuple[AttackSegment, ...]]
+    deployment: DeploymentPlan
+    selections: tuple[SelectionDecision, ...]
+    source: Mapping[str, str] | None
+
+
+def _selected_metadata(configuration: ExperimentConfiguration, cache: FrameDataCache,
+                       seed: int, scenarios: tuple[Any, ...]) -> _ExperimentSegments:
+    """Select each attack and recheck its starts against the shared deployment budget."""
+    metadata: dict[str, tuple[AttackSegment, ...]] = {}
+    selections: list[SelectionDecision] = []
+    for name, attack in configuration.attacks.items():
+        selected: list[AttackSegment] = []
+        for scenario in scenarios:
+            view = None
+            try:
+                with ClosedLoopServices(
+                    configuration.dataset, configuration.simulator,
+                    configuration.avstack, cache,
+                ) as services:
+                    view = services.scenario(scenario.id, seed=seed)
+                    values = _segments(name, attack, view, configuration)
+                selected.extend(values)
+                selections.append(SelectionDecision(
+                    name, scenario.id, "selected" if values else "not_selected", tuple(view.reasons),
+                ))
+            except Exception as error:
+                selections.append(SelectionDecision(
+                    name, scenario.id, "error", tuple(view.reasons) if view is not None else (),
+                    f"{type(error).__name__}: {error}",
+                ))
+                if configuration.runs.strict:
+                    raise
+        metadata[name] = tuple(selected)
+    plans = {name: _deployment_plan(configuration, name, segments)
+             for name, segments in metadata.items()}
+    deployment = DeploymentPlan(max((plan.ticks for plan in plans.values()), default=0))
+    for name, segments in metadata.items():
+        # Selection may have used smaller per-scenario budgets within this attack.
+        # Recheck every selected start against the final experiment-wide budget.
+        rejected: dict[str, list[str]] = {}
+        accepted = []
+        with ClosedLoopServices(
+            configuration.dataset, configuration.simulator, configuration.avstack,
+            cache, deployment=deployment,
+        ) as services, services.session(seed) as session:
+            for segment in segments:
+                if session.can_start_at(segment.start.position):
+                    accepted.append(segment)
+                else:
+                    rejected.setdefault(segment.scenario_id, []).append(
+                        f"Segment at position {segment.start.position} cannot start with shared "
+                        f"deployment budget {deployment.ticks}: insufficient recorded history "
+                        "or deployment window")
+        metadata[name] = tuple(accepted)
+        for index, decision in enumerate(selections):
+            if decision.attack_name == name and decision.scenario_id in rejected:
+                remains = any(x.scenario_id == decision.scenario_id for x in accepted)
+                selections[index] = replace(
+                    decision, status="selected" if remains else "not_selected",
+                    reasons=decision.reasons + tuple(rejected[decision.scenario_id]),
+                )
+    return _ExperimentSegments(metadata, deployment, tuple(selections), None)
+
+
+def _loaded_metadata(configuration: ExperimentConfiguration, cache: FrameDataCache,
+                     seed: int, scenarios: tuple[Any, ...]) -> _ExperimentSegments:
+    """Strictly validate a user-provided segment list without running selection."""
+    path = configuration.metadata.load
+    assert path is not None
+    document = _read_document(path)
+    dataset_type = type_name(configuration.dataset)
+    if document.dataset_type != dataset_type:
+        raise ValueError(f"Metadata dataset_type {document.dataset_type!r} does not match "
+                         f"the configured dataset type {dataset_type!r}")
+    segments = document.segments
+    source = {"load": str(path.resolve()), "sha256": document.sha256}
+    scenario_ids = {scenario.id for scenario in scenarios}
+    for index, segment in enumerate(segments):
+        try:
+            if segment.scenario_id not in scenario_ids:
+                raise ValueError(f"Unknown scenario {segment.scenario_id!r}")
+            configuration.dataset.checked_frame(segment.scenario_id, segment.start)
+            configuration.dataset.checked_frame(segment.scenario_id, segment.stop)
+            configuration.dataset.decision_window(segment.scenario_id, segment.start, segment.decision_steps)
+            for name, attack in configuration.attacks.items():
+                try:
+                    attack.validate_segment(segment)
+                except (TypeError, ValueError) as error:
+                    raise ValueError(f"Attack {name!r} rejected the segment: {error}") from error
+        except Exception as error:
+            raise ValueError(f"Metadata segment {index} ({segment.scenario_id}, "
+                             f"{segment.start.position}–{segment.stop.position}): {error}") from error
+    metadata = {name: segments for name in configuration.attacks}
+    deployment = DeploymentPlan(max(
+        (_deployment_plan(configuration, name, segments).ticks for name in configuration.attacks), default=0,
+    ))
+    with ClosedLoopServices(
+        configuration.dataset, configuration.simulator, configuration.avstack,
+        cache, deployment=deployment,
+    ) as services, services.session(seed) as session:
+        for index, segment in enumerate(segments):
+            try:
+                if not session.can_start_at(segment.start.position):
+                    raise ValueError(f"Cannot start with shared deployment budget {deployment.ticks}: "
+                                     "insufficient recorded history or deployment window")
+                configuration.simulator.validate_start(
+                    configuration.dataset.scenario_start(segment.scenario_id, segment.start))
+            except Exception as error:
+                raise ValueError(f"Metadata segment {index} ({segment.scenario_id}, "
+                                 f"{segment.start.position}–{segment.stop.position}): {error}") from error
+    return _ExperimentSegments(metadata, deployment, (), source)
 
 
 class Experiment:
@@ -129,64 +248,19 @@ class Experiment:
             if deployment is None:
                 raise ValueError("Preparation progress requires a deployment budget")
         else:
-            metadata: dict[str, tuple[AttackSegment, ...]] = {}
-            selections: list[SelectionDecision] = []
             preparation = preparation_record(configuration)
             scenarios = tuple(configuration.dataset.scenarios())
-            for name, attack in configuration.attacks.items():
-                selected: list[AttackSegment] = []
-                for scenario in scenarios:
-                    view = None
-                    try:
-                        with ClosedLoopServices(
-                            configuration.dataset, configuration.simulator,
-                            configuration.avstack, cache,
-                        ) as services:
-                            view = services.scenario(scenario.id, seed=seed)
-                            values = _segments(name, attack, view, configuration)
-                        selected.extend(values)
-                        selections.append(SelectionDecision(
-                            name, scenario.id, "selected" if values else "not_selected", tuple(view.reasons),
-                        ))
-                    except Exception as error:
-                        selections.append(SelectionDecision(
-                            name, scenario.id, "error", tuple(view.reasons) if view is not None else (),
-                            f"{type(error).__name__}: {error}",
-                        ))
-                        if configuration.runs.strict:
-                            raise
-                metadata[name] = tuple(selected)
-            plans = {name: _deployment_plan(configuration, name, segments)
-                     for name, segments in metadata.items()}
-            deployment = DeploymentPlan(max((plan.ticks for plan in plans.values()), default=0))
-            for name, segments in metadata.items():
-                # Selection may have used smaller per-scenario budgets within this attack.
-                # Recheck every selected start against the final experiment-wide budget.
-                rejected: dict[str, list[str]] = {}
-                accepted = []
-                with ClosedLoopServices(
-                    configuration.dataset, configuration.simulator, configuration.avstack,
-                    cache, deployment=deployment,
-                ) as services, services.session(seed) as session:
-                    for segment in segments:
-                        if session.can_start_at(segment.start.position):
-                            accepted.append(segment)
-                        else:
-                            rejected.setdefault(segment.scenario_id, []).append(
-                                f"Segment at position {segment.start.position} cannot start with shared "
-                                f"deployment budget {deployment.ticks}: insufficient recorded history "
-                                "or deployment window")
-                metadata[name] = tuple(accepted)
-                for index, decision in enumerate(selections):
-                    if decision.attack_name == name and decision.scenario_id in rejected:
-                        remains = any(x.scenario_id == decision.scenario_id for x in accepted)
-                        selections[index] = replace(
-                            decision, status="selected" if remains else "not_selected",
-                            reasons=decision.reasons + tuple(rejected[decision.scenario_id]),
-                        )
+            segments = (_loaded_metadata(configuration, cache, seed, scenarios)
+                        if configuration.metadata.load is not None else
+                        _selected_metadata(configuration, cache, seed, scenarios))
+            metadata, deployment = segments.metadata, segments.deployment
             units = build_units(configuration, metadata, scenario_ids=tuple(x.id for x in scenarios))
-            prepared = PreparedExperiment(configuration, metadata, {}, tuple(selections),
-                                          preparation=preparation, units=units, deployment=deployment)
+            prepared = PreparedExperiment(configuration, metadata, {}, segments.selections,
+                                          preparation=preparation, units=units, deployment=deployment,
+                                          metadata_source=segments.source)
+            if configuration.metadata.save is not None:
+                save_metadata(tuple(unit.segment for unit in units), configuration.metadata.save,
+                              dataset_type=type_name(configuration.dataset))
             completed = []
             if output is not None:
                 save_preparation_progress(prepared, output, completed)

@@ -69,6 +69,24 @@ def test_build_metadata(approach_view):
         StopSignPatchAttack(approach_m=10.)
 
 
+
+def test_validate_segment(approach_view):
+    attack = StopSignPatchAttack()
+    segment, = attack.build_metadata(approach_view())
+    attack.validate_segment(segment)
+    missing = dict(segment.user_data)
+    del missing["route_points"]
+    with pytest.raises(ValueError, match="route_points"):
+        attack.validate_segment(replace(segment, user_data=missing))
+    invalid_route = np.array(segment.user_data["route_points"], copy=True)
+    invalid_route[0, 0] = np.nan
+    with pytest.raises(ValueError, match="finite"):
+        attack.validate_segment(replace(segment, user_data={**segment.user_data, "route_points": invalid_route}))
+    with pytest.raises(ValueError, match="recorded_stop_frame"):
+        attack.validate_segment(replace(segment, user_data={**segment.user_data, "recorded_stop_frame": 1000}))
+    with pytest.raises(ValueError, match="sign width"):
+        attack.validate_segment(replace(segment, user_data={**segment.user_data, "sign_extent": [.05, 0., .8]}))
+
 def test_initial_patch_texture():
     mask = read_patch_mask(DEFAULT_MASK_PATH)
     face = replica_face()

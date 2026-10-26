@@ -102,6 +102,7 @@ data and boundary modules can be imported without simulator servers or weights.
 | avsectester.experiment.result_evaluation | Order experiment logs, select metrics and save reports/plots |
 | avsectester.experiment.engine | Experiment preparation and execution |
 | avsectester.experiment.models | Prepared/result records and preparation provenance |
+| avsectester.experiment.metadata_file | Save/load complete shared segment files |
 | avsectester.experiment.output_directory | Experiment output layout, prepared metadata, artifacts, maps and result loading |
 
 ## Experiment API
@@ -112,7 +113,9 @@ Save/load are methods on PreparedExperiment. ExperimentResult.load(output, confi
 for evaluation without starting a simulator or loading artifacts for deployment.
 
 ExperimentConfiguration contains the dataset, simulator, avstack, attacks, hooks, evaluation and a
-frozen RunsConfiguration under runs and optional frozen SplitConfiguration under split. Read or
+frozen RunsConfiguration under runs, optional frozen SplitConfiguration under split, and
+MetadataConfiguration under metadata. MetadataConfiguration(save=None, load=None) selects one
+shared metadata export or input file; setting both is an error. Read or
 change treatments, seeds, decision_steps, environment,
 recording, output and strict through configuration.runs. YAML uses the same runs nesting; old
 top-level run settings are rejected rather than converted. Relative runs.output paths resolve
@@ -139,9 +142,14 @@ defines what reuse checks.
 OfflineContext.environment merges runs.environment with the attack environment. Metabuilder
 sensor/render requests use the original world unless they specify an environment explicitly.
 ExperimentResult.load and CLI evaluate read historical logs through load_prepared_metadata without
-constraining runs.
+constraining runs or reading an external metadata file. describe_configuration accepts an already
+known metadata_sha256 for saved summaries; with metadata.load its compatibility entry contains only
+metadata.sha256, never the recorded source path.
 
-Configurations contain one or more attacks, each with its own metadata. A treatment enables one
+Configurations contain one or more attacks, each selecting its own metadata unless metadata.load
+provides the same segments to every attack. Attack.validate_segment checks the segments before
+offline preparation. Without a metadata load every attack must implement build_metadata; load_configuration checks this and the CLI uses exit code 2 for the configuration error.
+A treatment enables one
 attack by attack_name, or none, with optional environment overrides; a treatment without attack_name
 runs once per complete segment unit and seed. Identical metadata selected by different attacks
 shares a unit; different user_data means a different unit even for the same window. Every group
@@ -453,11 +461,31 @@ avsectester.implemented_attacks.patch_attack import PatchAttack`.
 |---|---|
 | `TreatmentConfiguration` | `name: str`<br>`attack_name: str \| None = None`<br>`environment: Mapping[str, Any] = field(default_factory=dict)` |
 | `RunsConfiguration` | `treatments: tuple[TreatmentConfiguration, ...] = ()`<br>`seeds: tuple[int, ...] = (0,)`<br>`decision_steps: int \| None = None`<br>`environment: Mapping[str, Any] = field(default_factory=dict)`<br>`recording: RecordingPolicy = field(default_factory=RecordingPolicy)`<br>`output: Path \| None = None`<br>`strict: bool = False` |
+| `MetadataConfiguration` | `save: str \| Path \| None = None`<br>`load: str \| Path \| None = None`; mutually exclusive |
 | `SplitConfiguration` | `train_segments: int`<br>`validation_segments: int = 0`<br>`seed: int = 0`<br>`execute: tuple[str, ...] = ("test",)` |
-| `ExperimentConfiguration` | `dataset: Dataset`<br>`simulator: Simulator`<br>`avstack: DrivingAdapter`<br>`attacks: Mapping[str, Attack] = field(default_factory=dict)`<br>`hooks: HookConfiguration = None`<br>`evaluation: EvaluationConfiguration = field(default_factory=EvaluationConfiguration)`<br>`runs: RunsConfiguration = field(default_factory=RunsConfiguration)`<br>`split: SplitConfiguration \| None = None` |
+| `ExperimentConfiguration` | `dataset: Dataset`<br>`simulator: Simulator`<br>`avstack: DrivingAdapter`<br>`attacks: Mapping[str, Attack] = field(default_factory=dict)`<br>`hooks: HookConfiguration = None`<br>`evaluation: EvaluationConfiguration = field(default_factory=EvaluationConfiguration)`<br>`runs: RunsConfiguration = field(default_factory=RunsConfiguration)`<br>`split: SplitConfiguration \| None = None`<br>`metadata: MetadataConfiguration = field(default_factory=MetadataConfiguration)` |
 | `ExperimentConfiguration.configuration_summary` | `configuration_summary: dict[str, Any]` |
-| `ExperimentConfiguration.describe_configuration` | `describe_configuration(*, scenarios: Sequence[str] \| None = None) -> dict[str, Any]` |
+| `ExperimentConfiguration.describe_configuration` | `describe_configuration(*, scenarios: Sequence[str] \| None = None, metadata_sha256: str \| None = None) -> dict[str, Any]` |
 | `load_configuration` | `load_configuration(config: ExperimentConfiguration \| Mapping[str, Any] \| str \| Path) -> ExperimentConfiguration` |
+
+### avsectester.experiment.metadata_file
+
+Both functions are also exported from avsectester.experiment. The file envelope contains
+format="avsectester.metadata", version=1, dataset_type and DEFAULT_REGISTRY-encoded segments.
+save_metadata accepts identical existing content and refuses to overwrite different content.
+load_metadata checks the envelope and returns segments; Experiment.prepare additionally checks
+dataset_type against the configured dataset and validates each segment. Both loading and saving
+reject duplicate complete segments, identifying their item indices. Compatibility uses the raw-byte
+SHA256 as metadata.sha256, excluding the file path. A byte-identical file can move without changing
+compatibility. Prepared metadata_source retains its original path and SHA256 as provenance.
+Resuming progress or reusing --prepared does not export metadata.save; execution reuse checks the
+current input hash. ExperimentResult.load and CLI evaluate use the saved hash and never read the
+external metadata file.
+
+| Public name | Signature or fields |
+|---|---|
+| `save_metadata` | `save_metadata(segments: Sequence[AttackSegment], path: str \| Path, *, dataset_type: str) -> None` |
+| `load_metadata` | `load_metadata(path: str \| Path) -> tuple[AttackSegment, ...]` |
 
 ### avsectester.experiment.type_registry
 
@@ -546,7 +574,8 @@ methods provide the usual save/load entry points.
 | `AttackSegment.decision_steps` | `decision_steps: int` |
 | `OfflineContext` | `services: ClosedLoopServices`<br>`metadata: tuple[AttackSegment, ...]`<br>`seed: int = 0`<br>`environment: Mapping[str, Any] = field(default_factory=dict)`<br>`deployment: DeploymentPlan \| None = None`<br>`validation_metadata: tuple[AttackSegment, ...] = ()`<br>`report: OfflineReport = field(default_factory=lambda: OfflineReport(None))` |
 | `Attack` | `environment: Mapping[str, Any] = MappingProxyType({})` |
-| `Attack.build_metadata` | `build_metadata(scenario: ScenarioView) -> Sequence[AttackSegment]` |
+| `Attack.build_metadata` | `build_metadata(scenario: ScenarioView) -> Sequence[AttackSegment]`; default raises NotImplementedError, use metadata.load or override |
+| `Attack.validate_segment` | `validate_segment(segment: AttackSegment) -> None`; default accepts, raise ValueError to reject |
 | `Attack.run_offline` | `run_offline(context: OfflineContext) -> Any` |
 | `Attack.deployment_ticks` | `deployment_ticks(segment: AttackSegment) -> int` |
 | `Attack.create_runtime` | `create_runtime(segment: AttackSegment, artifacts: Any) -> AttackRuntime` |

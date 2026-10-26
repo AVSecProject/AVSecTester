@@ -79,6 +79,15 @@ def test_run(tmp_path):
     invalid = runner.invoke(cli.app, ["run", str(invalid_path)])
     assert invalid.exit_code == 2 and "Configuration error" in invalid.output
 
+    no_selector_path = write_configuration(tmp_path / "without-selector")
+    no_selector = yaml.safe_load(no_selector_path.read_text())
+    no_selector["attacks"] = {"supplied": {"type": "tests.fakes:MetadataOnlyAttack"}}
+    no_selector_path.write_text(yaml.safe_dump(no_selector))
+    invalid = runner.invoke(cli.app, ["run", str(no_selector_path)])
+    assert invalid.exit_code == 2 and "Configuration error" in invalid.output
+    assert "supplied" in invalid.output and "metadata.load" in invalid.output
+    assert not (no_selector_path.parent / "results").exists()
+
 
 def test_run_resume(tmp_path):
     path = write_configuration(tmp_path)

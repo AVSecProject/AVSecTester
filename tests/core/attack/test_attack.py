@@ -21,6 +21,10 @@ def test_attack(tmp_path):
         artifacts = attack.run_offline(OfflineContext(services, metadata))
     assert metadata and metadata[0].decision_steps == 2
     assert artifacts is None
+    supplied = Attack()
+    supplied.validate_segment(metadata[0])
+    with pytest.raises(NotImplementedError, match="metadata.load"):
+        supplied.build_metadata(None)
     artifacts = {"image": np.full((2, 3, 4), 120, np.uint8)}
     attack.save_artifacts(artifacts, tmp_path)
     restored = attack.load_artifacts(tmp_path)

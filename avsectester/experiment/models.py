@@ -188,6 +188,7 @@ class PreparedExperiment:
     units: tuple[SegmentUnit, ...] = field(default=(), kw_only=True)
     deployment: DeploymentPlan | None = field(default=None, kw_only=True)
     offline_reports: Mapping[str, OfflineReport] = field(default_factory=dict, kw_only=True)
+    metadata_source: Mapping[str, str] | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         validated_preparation(self.preparation, self.metadata)

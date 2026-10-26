@@ -10,11 +10,21 @@
 
 | Entry point | Input | Return |
 |---|---|---|
-| `build_metadata(scenario)` | ScenarioView, user assets and parameters | Sequence of AttackSegment |
+| `build_metadata(scenario)` | ScenarioView, user assets and parameters | Sequence of AttackSegment; optional with metadata.load |
+| `validate_segment(segment)` | A selected or loaded AttackSegment | None, or ValueError with a rejection reason |
 | `run_offline(context)` | ClosedLoopServices, training metadata and optional validation metadata | Artifacts; defaults to None |
 | `create_runtime(segment, artifacts)` | One selected segment and prepared artifacts | Fresh AttackRuntime |
 
-Only `build_metadata` is abstract. The base Attack owns no assets. An attack that needs assets
+`build_metadata` is optional when metadata.load supplies the experiment's segments. Its base
+implementation raises NotImplementedError explaining that metadata.load is required.
+load_configuration rejects an attack that leaves it unchanged without a metadata load, listing
+the attack names; the CLI reports this as a configuration error with exit code 2. Override validate_segment to
+check the user_data and other constraints your attack needs, and raise ValueError with a useful
+reason on rejection. The default validate_segment accepts the segment. It applies to selected and
+loaded segments before offline preparation. StopSignPatchAttack uses it to validate its placement
+and route metadata.
+
+The base Attack owns no assets. An attack that needs assets
 defines its own constructor parameter and run_offline implementation, which may return those
 assets unchanged. A selection-only attack uses the default None artifacts and empty runtime.
 Attack configuration holds reusable parameters; mutable online history belongs to its runtime.
@@ -29,7 +39,8 @@ asset. Add descriptions and units so readers can interpret values, curves, image
 column. Interrupted offline work preserves its partial report with status failed and is archived
 by the framework before that attack is retried; see [Offline reports](optimization.md#offline-reports).
 
-One experiment supports one or more attacks, each selecting its own metadata. Identical complete
+One experiment supports one or more attacks, each selecting its own metadata unless metadata.load
+supplies the same segments to all of them. Identical complete
 segments form one unit, including scenario, start, stop and user_data. A comparison group is one
 unit and seed: it contains each treatment without attack_name once and treatments for every attack
 that selected that unit. All treatment pairs are evaluated, including pairs from different attacks.

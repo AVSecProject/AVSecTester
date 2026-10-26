@@ -521,7 +521,12 @@ def _group_details(root: Path, report: Mapping[str, Any], manifest: Mapping[str,
         result.append("</details>")
     return result
 
-def _selection(report: Mapping[str, Any]) -> list[str]:
+def _selection(report: Mapping[str, Any], manifest: Mapping[str, Any]) -> list[str]:
+    source = manifest.get("metadata_source")
+    if source and source.get("load"):
+        filename = escape(str(source["load"]))
+        count = len(manifest.get("units", []))
+        return [f"<p>Metadata loaded from {filename} ({count} segments); no selection was run.</p>"]
     rows = report.get("selections", [])
     if not rows:
         return []
@@ -583,7 +588,7 @@ def write_evaluation_html(output_root: str | Path) -> Path:
     body.append(_section("results", "Results", _results(report)))
     body.append(_section("paired-differences", "Paired differences", _pairs(report)))
     body.append(_section("group-details", "Group details", _group_details(root, report, manifest)))
-    body.append(_section("selection", "Selection", _selection(report)))
+    body.append(_section("selection", "Selection", _selection(report, manifest)))
     errors = report.get("metric_errors", [])
     error_content = ["<h3>Metric errors</h3>" + _table(
         ["metric", "error", "part", "segment", "seed", "treatment"],

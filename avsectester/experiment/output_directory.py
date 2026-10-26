@@ -107,12 +107,19 @@ def _save_metadata(prepared: PreparedExperiment, root: Path) -> None:
 
 
 def _preparation_manifest(prepared: PreparedExperiment) -> dict[str, Any]:
+    sha256 = None
+    if prepared.configuration.metadata.load is not None:
+        if (prepared.metadata_source is None
+                or not isinstance(prepared.metadata_source.get("sha256"), str)):
+            raise ValueError("Loaded metadata preparation requires its recorded source SHA256")
+        sha256 = prepared.metadata_source["sha256"]
     return {"attacks": list(prepared.metadata),
-            "configuration": prepared.configuration.configuration_summary,
+            "configuration": prepared.configuration.describe_configuration(metadata_sha256=sha256),
             "preparation": prepared.preparation,
             "selections": [item.as_dict() for item in prepared.selections],
             "units": [unit.as_dict() for unit in prepared.units],
-            "deployment_ticks": None if prepared.deployment is None else prepared.deployment.ticks}
+            "deployment_ticks": None if prepared.deployment is None else prepared.deployment.ticks,
+            "metadata_source": prepared.metadata_source}
 
 
 def save_preparation_progress(prepared: PreparedExperiment, directory: str | Path,
@@ -210,6 +217,7 @@ class PreparedMetadata:
     preparation: Mapping[str, Any]
     units: tuple[SegmentUnit, ...]
     deployment: DeploymentPlan | None
+    metadata_source: Mapping[str, str] | None = None
 
 
 def _canonical_text(value: Any) -> str:
@@ -257,8 +265,28 @@ def _load_metadata(configuration: ExperimentConfiguration, directory: str | Path
         raise ConfigurationMismatchError("Saved preparation.split differs from the supplied configuration")
     saved = manifest.get("configuration")
     _require_parameters(saved)
+    has_saved_metadata = "metadata" in saved
+    if has_saved_metadata != (configuration.metadata.load is not None):
+        raise ConfigurationMismatchError("Saved metadata.load configuration differs from the supplied configuration")
+    sha256 = None
+    if has_saved_metadata:
+        if validate_dataset:
+            from .metadata_file import _read_document
+
+            assert configuration.metadata.load is not None
+            try:
+                sha256 = _read_document(configuration.metadata.load).sha256
+            except (OSError, TypeError, ValueError) as error:
+                raise ConfigurationMismatchError(
+                    f"Current metadata file cannot be validated against the saved preparation: {error}"
+                ) from error
+        else:
+            description = saved["metadata"]
+            if not isinstance(description, Mapping) or not isinstance(description.get("sha256"), str):
+                raise ConfigurationMismatchError("Saved metadata SHA256 is unavailable")
+            sha256 = description["sha256"]
     scenarios = None if validate_dataset else saved["dataset"]["scenarios"]
-    expected = configuration.describe_configuration(scenarios=scenarios)
+    expected = configuration.describe_configuration(scenarios=scenarios, metadata_sha256=sha256)
     _require_parameters(expected)
     mismatches = [key for key in expected if saved.get(key) != expected[key]]
     mismatches.extend(key for key in saved if key not in expected)
@@ -289,7 +317,7 @@ def _load_metadata(configuration: ExperimentConfiguration, directory: str | Path
         raise ConfigurationMismatchError("Saved preparation units or partition differ from the supplied configuration")
     ticks = manifest["deployment_ticks"]
     deployment = None if ticks is None else DeploymentPlan(ticks)
-    return PreparedMetadata(metadata, decisions, preparation, units, deployment)
+    return PreparedMetadata(metadata, decisions, preparation, units, deployment, manifest.get("metadata_source"))
 
 
 def load_prepared_metadata(configuration: ExperimentConfiguration,
@@ -315,7 +343,8 @@ def load_prepared(configuration: ExperimentConfiguration,
                  for name, attack in configuration.attacks.items()}
     return PreparedExperiment(configuration, saved.metadata, artifacts, saved.selections,
                               preparation=saved.preparation, units=saved.units, deployment=saved.deployment,
-                              offline_reports=_load_offline_reports(tuple(configuration.attacks), root))
+                              offline_reports=_load_offline_reports(tuple(configuration.attacks), root),
+                              metadata_source=saved.metadata_source)
 
 
 def load_preparation_progress(configuration: ExperimentConfiguration,
@@ -332,7 +361,8 @@ def load_preparation_progress(configuration: ExperimentConfiguration,
                  for name in completed}
     return (PreparedExperiment(configuration, saved.metadata, artifacts, saved.selections,
                                preparation=saved.preparation, units=saved.units, deployment=saved.deployment,
-                               offline_reports=_load_offline_reports(tuple(configuration.attacks), root)),
+                               offline_reports=_load_offline_reports(tuple(configuration.attacks), root),
+                              metadata_source=saved.metadata_source),
             completed)
 
 

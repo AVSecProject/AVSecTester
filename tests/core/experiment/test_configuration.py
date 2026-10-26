@@ -1,6 +1,7 @@
 """Configuration is loaded through its public constructors and validation API."""
 
 from collections.abc import Sequence
+from dataclasses import replace
 from copy import deepcopy
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -9,9 +10,9 @@ import pytest
 import yaml
 
 from avsectester.attack import Attack
-from avsectester.experiment import SplitConfiguration, load_configuration
+from avsectester.experiment import MetadataConfiguration, SplitConfiguration, load_configuration
 from avsectester.experiment.engine import validate_configuration_environment
-from tests.fakes import ConstantAVStack, MemoryDataset, MemorySimulator, MinimalAttack
+from tests.fakes import ConstantAVStack, MemoryDataset, MemorySimulator, MinimalAttack, MetadataOnlyAttack
 
 if TYPE_CHECKING:
     import pathlib as annotation_paths
@@ -299,3 +300,39 @@ def test_split_configuration():
         spec["split"] = value
         with pytest.raises(error, match=message):
             load_configuration(spec)
+
+
+def test_metadata_configuration(tmp_path):
+    spec = specification()
+    assert load_configuration(spec).metadata == MetadataConfiguration()
+    spec["metadata"] = {"save": "../metadata/selected.json"}
+    directory = tmp_path / "configs"
+    directory.mkdir()
+    path = directory / "experiment.yaml"
+    path.write_text(yaml.safe_dump(spec))
+    configuration = load_configuration(path)
+    destination = tmp_path / "metadata" / "selected.json"
+    assert configuration.metadata == MetadataConfiguration(save=destination)
+    assert replace(configuration, metadata=MetadataConfiguration(load=destination)).metadata.load == destination
+    spec["metadata"] = {"load": "../metadata/selected.json"}
+    path.write_text(yaml.safe_dump(spec))
+    assert load_configuration(path).metadata.load == destination
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        load_configuration({**spec, "metadata": {"save": "first.json", "load": "second.json"}})
+    with pytest.raises(ValueError, match="Unknown metadata keys"):
+        load_configuration({**spec, "metadata": {"attack": "first.json"}})
+    with pytest.raises(TypeError, match="filesystem path"):
+        load_configuration({**spec, "metadata": {"load": 7}})
+
+    # Missing selectors are configuration errors before any experiment preparation.
+    without_selector = specification()
+    without_selector["attacks"] = {"supplied": {"type": "tests.fakes:MetadataOnlyAttack"}}
+    with pytest.raises(ValueError, match="metadata.load.*supplied|supplied.*metadata.load"):
+        load_configuration(without_selector)
+    supplied = replace(configuration, attacks={"probe": MetadataOnlyAttack()})
+    with pytest.raises(ValueError, match="metadata.load.*probe|probe.*metadata.load"):
+        load_configuration(supplied)
+    supplied = replace(supplied, metadata=MetadataConfiguration(load=destination))
+    assert load_configuration(supplied) is supplied
+    without_selector["metadata"] = {"load": str(destination)}
+    assert isinstance(load_configuration(without_selector).attacks["supplied"], MetadataOnlyAttack)
