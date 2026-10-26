@@ -1,9 +1,9 @@
 """AVStack components share one construction, input and output template."""
 import pytest
 
-from avsectester.closed_loop.avstacks.alpamayo import AlpamayoAVStack
-from avsectester.closed_loop.avstacks.camera_forward_collision import CameraForwardCollisionAVStack
-from avsectester.closed_loop.avstacks.modular import ModularAVStack
+from avsectester.closed_loop.avstacks.implemented.alpamayo import AlpamayoAVStack
+from avsectester.closed_loop.avstacks.implemented.camera_forward_collision import CameraForwardCollisionAVStack
+from avsectester.closed_loop.avstacks.implemented.modular import ModularAVStack
 from avsectester.data_types import Control, Detection
 from avsectester.closed_loop.avstacks.driving_adapter import DrivingAdapter
 

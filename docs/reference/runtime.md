@@ -136,7 +136,7 @@ replacements. Adapter-specific stages must be declared; unsupported stages fail 
 Simulator setup and step handlers use explicit native operations and return None. A pre-hook uses
 CallInputs(args, kwargs) to retain native calling conventions. A post-hook returns the replacement
 output directly. NativeHook adapts an explicitly registered avstack-library hook's tuple convention.
-NativeHook is defined in closed_loop/avstacks/modular.py.
+NativeHook is defined in closed_loop/avstacks/implemented/modular.py.
 
 ## Contexts and lifecycle
 

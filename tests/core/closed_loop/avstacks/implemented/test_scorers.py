@@ -4,8 +4,8 @@ import numpy as np
 import pytest
 
 from avsectester.data_types import TargetSpec
-from avsectester.closed_loop.avstacks.camera_forward_collision import CameraForwardCollisionAVStack
-from avsectester.closed_loop.avstacks.modular import modular_driving_adapter
+from avsectester.closed_loop.avstacks.implemented.camera_forward_collision import CameraForwardCollisionAVStack
+from avsectester.closed_loop.avstacks.implemented.modular import modular_driving_adapter
 from avsectester.execution.services import ClosedLoopServices
 from tests.fakes import MemoryDataset, MemorySimulator
 
@@ -13,7 +13,7 @@ from tests.fakes import MemoryDataset, MemorySimulator
 @pytest.fixture
 def rpn_case():
     torch = pytest.importorskip("torch")
-    from avsectester.closed_loop.avstacks.scorers import MMDetRPNObjectnessScorer
+    from avsectester.closed_loop.avstacks.implemented.scorers import MMDetRPNObjectnessScorer
 
     image = torch.full((3, 16, 16), .5, requires_grad=True)
     return MMDetRPNObjectnessScorer, image, float(torch.sigmoid(torch.tensor(.5))), True
@@ -21,7 +21,7 @@ def rpn_case():
 
 @pytest.fixture
 def inference_case():
-    from avsectester.closed_loop.avstacks.scorers import MMDetInferenceScorer
+    from avsectester.closed_loop.avstacks.implemented.scorers import MMDetInferenceScorer
 
     image = np.full((16, 16, 3), (30, 60, 90), np.uint8)
     return MMDetInferenceScorer, image, .9, False
@@ -50,7 +50,7 @@ def test_target_score(case_fixture, binding, request, camera_detector_boundary):
 
 def test_rpn_score_retains_image_gradient(camera_detector_boundary):
     torch = pytest.importorskip("torch")
-    from avsectester.closed_loop.avstacks.scorers import MMDetRPNObjectnessScorer
+    from avsectester.closed_loop.avstacks.implemented.scorers import MMDetRPNObjectnessScorer
 
     image = torch.full((3, 16, 16), .5, requires_grad=True)
     score = MMDetRPNObjectnessScorer(camera_detector_boundary).target_score(
@@ -63,7 +63,7 @@ def test_rpn_score_retains_image_gradient(camera_detector_boundary):
 
 
 def test_inference_score_uses_bgr_input(camera_detector_boundary):
-    from avsectester.closed_loop.avstacks.scorers import MMDetInferenceScorer
+    from avsectester.closed_loop.avstacks.implemented.scorers import MMDetInferenceScorer
 
     image = np.full((16, 16, 3), (30, 60, 90), np.uint8)
     MMDetInferenceScorer(camera_detector_boundary).target_score(image, TargetSpec((0., 0., 16., 16.)))

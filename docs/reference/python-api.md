@@ -39,10 +39,10 @@ data and boundary modules can be imported without simulator servers or weights.
 | avsectester.rendering.textures | STOP_SIGN_FACE, Texture, CheckerboardTexture and load_rgba_image |
 | avsectester.closed_loop.avstacks.base | AVStack, ObservationPipeline and command compatibility checks |
 | avsectester.closed_loop.avstacks | AVStack, ObservationPipeline and driving-adapter interfaces |
-| avsectester.closed_loop.avstacks.alpamayo | AlpamayoAVStack and its component bindings |
-| avsectester.closed_loop.avstacks.camera_forward_collision | CameraForwardCollisionAVStack |
-| avsectester.closed_loop.avstacks.modular | ModularAVStack, native hooks, dataset registration and component bindings |
-| avsectester.closed_loop.avstacks.scorers | Driving-model scorer implementations |
+| avsectester.closed_loop.avstacks.implemented.alpamayo | AlpamayoAVStack and its component bindings |
+| avsectester.closed_loop.avstacks.implemented.camera_forward_collision | CameraForwardCollisionAVStack |
+| avsectester.closed_loop.avstacks.implemented.modular | ModularAVStack, native hooks, dataset registration and component bindings |
+| avsectester.closed_loop.avstacks.implemented.scorers | Driving-model scorer implementations |
 | avsectester.closed_loop.avstacks.driving_adapter | DrivingAdapter, ComponentDescriptor and ScorerDescriptor |
 | avsectester.closed_loop.simulators.ground_contact | Mesh-based ego ground constraint |
 | avsectester.closed_loop.simulators.navigation | RouteGenerator: map or recorded navigation intent |
@@ -305,8 +305,8 @@ Implementations supply _observe_recorded(position), leaving observe_past to the 
 ## Driving-system API
 
 closed_loop.avstacks exports AVStack, ObservationPipeline, command compatibility and driving-adapter
-interfaces. Import concrete driving systems from avstacks.modular, avstacks.alpamayo or
-avstacks.camera_forward_collision.
+interfaces. Import concrete driving systems from avstacks.implemented.modular, avstacks.implemented.alpamayo or
+avstacks.implemented.camera_forward_collision.
 
 AVStack.__call__(observation) returns Control. reset(observation, past=()) receives the first already
 processed input and preceding recorded observations ordered oldest to newest. AVStack.past_steps is a
@@ -1215,7 +1215,7 @@ addresses pixel centres at i + 0.5. Unsupported external distortion types raise 
 | `RecordedReplaySimulatorRuntime.sensor_view` | `sensor_view(sensor: str) -> SensorView` |
 | `RecordedReplaySimulatorRuntime.close` | `close()` |
 
-### avsectester.closed_loop.avstacks.modular
+### avsectester.closed_loop.avstacks.implemented.modular
 
 | Public name | Signature or fields |
 |---|---|
@@ -1239,7 +1239,7 @@ addresses pixel centres at i + 0.5. Unsupported external distortion types raise 
 | `ModularAVStack.detections` | `detections() -> Sequence[Detection] \| None` |
 | `ModularAVStack.__call__` | `__call__(observation: Observation) -> Control` |
 
-### avsectester.closed_loop.avstacks.alpamayo
+### avsectester.closed_loop.avstacks.implemented.alpamayo
 
 | Public name | Signature or fields |
 |---|---|
@@ -1256,7 +1256,7 @@ addresses pixel centres at i + 0.5. Unsupported external distortion types raise 
 | `AlpamayoAVStack.__call__` | `__call__(observation: Observation) -> Control` |
 | `AlpamayoAVStack.component_log` | `component_log() -> dict[str, Any] \| None` |
 
-### avsectester.closed_loop.avstacks.camera_forward_collision
+### avsectester.closed_loop.avstacks.implemented.camera_forward_collision
 
 | Public name | Signature or fields |
 |---|---|
@@ -1269,7 +1269,8 @@ addresses pixel centres at i + 0.5. Unsupported external distortion types raise 
 | `CameraForwardCollisionAVStack.component_log` | `component_log() -> dict[str, Any] \| None` |
 | `CameraForwardCollisionAVStack.close` | `close() -> None` |
 
-### avsectester.closed_loop.avstacks.scorers
+
+### avsectester.closed_loop.avstacks.implemented.scorers
 
 | Public name | Signature or fields |
 |---|---|

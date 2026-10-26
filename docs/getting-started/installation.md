@@ -343,7 +343,7 @@ a probe directory, insert world objects with `object_occlusion="geometry"`. See
 The script stores checkpoints under models/work_dirs/, models/work_dirs_2d/ and models/checkpoints/,
 and links them into the vendored detector checkouts. Existing files are reused. No training data is
 required for model metadata registration. ModularAVStack registers CARLA metadata; external model
-construction can call closed_loop.avstacks.modular.register_carla_dataset explicitly.
+construction can call closed_loop.avstacks.implemented.modular.register_carla_dataset explicitly.
 
 ### Alpamayo checkpoint
 

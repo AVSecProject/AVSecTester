@@ -69,7 +69,7 @@ avstack:
     area_brake: 0.03
     throttle: 0.55
   bindings:
-    type: avsectester.closed_loop.avstacks.modular:modular_driving_adapter
+    type: avsectester.closed_loop.avstacks.implemented.modular:modular_driving_adapter
     options:
       scorers:
       - mmdet.rpn_objectness

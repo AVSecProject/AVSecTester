@@ -12,7 +12,7 @@ from avsectester.attack.insertion.compositor import PatchCompositor
 from avsectester.attack.insertion.action import InsertionAttackAction
 from avsectester.rendering.harmonizers import ClassicHarmonizer, PCTNetHarmonizer
 from avsectester.attack.insertion.placement import AttachedPlacement, Orientation
-from avsectester.closed_loop.avstacks.camera_forward_collision import CameraForwardCollisionAVStack
+from avsectester.closed_loop.avstacks.implemented.camera_forward_collision import CameraForwardCollisionAVStack
 from avsectester.data_types import Control
 from avsectester.closed_loop.simulators.carla import CarlaSimulator
 from avsectester.datasets.carla import CarlaDataset

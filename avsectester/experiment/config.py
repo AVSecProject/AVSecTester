@@ -35,7 +35,7 @@ from avsectester.validation import require_nonnegative_integer, require_positive
 from avsectester.attack import Attack
 from avsectester.closed_loop.avstacks.base import AVStack
 from avsectester.closed_loop.hooks import Hook, HookSet
-from avsectester.closed_loop.avstacks.modular import NativeHook
+from avsectester.closed_loop.avstacks.implemented.modular import NativeHook
 from avsectester.execution.runner import RecordingPolicy
 from avsectester.closed_loop.avstacks.driving_adapter import DrivingAdapter
 from avsectester.closed_loop.simulators.base import Simulator

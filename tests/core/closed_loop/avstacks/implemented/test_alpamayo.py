@@ -5,7 +5,7 @@ import os
 import numpy as np
 import pytest
 
-from avsectester.closed_loop.avstacks.alpamayo import AlpamayoAVStack, alpamayo_driving_adapter
+from avsectester.closed_loop.avstacks.implemented.alpamayo import AlpamayoAVStack, alpamayo_driving_adapter
 from avsectester.geometry.poses import quaternion_to_rotation, rotation_matrix
 from avsectester.runlog import Recorder, RunLog, StepRecord
 from avsectester.execution.services import ClosedLoopServices

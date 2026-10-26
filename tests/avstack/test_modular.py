@@ -7,10 +7,10 @@ import pytest
 
 pytest.importorskip("avstack.config")
 
-from avsectester.closed_loop.avstacks.modular import ModularAVStack
+from avsectester.closed_loop.avstacks.implemented.modular import ModularAVStack
 from avsectester.data_types import Observation
 from avsectester.runlog import Recorder, RunLog, StepRecord
-from avsectester.closed_loop.avstacks.modular import NativeHook
+from avsectester.closed_loop.avstacks.implemented.modular import NativeHook
 from avsectester.closed_loop.hooks import Hook, HookSet
 from tests.fakes import MemorySimulator
 

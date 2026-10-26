@@ -36,9 +36,10 @@ tests/
       avstacks/
         test_base.py               driving interface and observation pipeline
         test_avstacks.py           AVStack/DrivingAdapter component template
-        test_scorers.py            model scorer bindings
-        test_alpamayo.py           actual input history, routes, trajectories and model ownership
-        test_camera_forward_collision.py   image detection policy
+        implemented/
+          test_scorers.py          model scorer bindings
+          test_alpamayo.py         actual input history, routes, trajectories and model ownership
+          test_camera_forward_collision.py   image detection policy
     datasets/                      dataset contract template and interpolation
     maps/                          semantic records and clipgt map reader
     attack/

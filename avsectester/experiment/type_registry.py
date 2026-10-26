@@ -20,7 +20,7 @@ def resolve_type(value: Any) -> Callable[..., Any]:
 
 
 _BUILTINS = {
-    "CameraForwardCollisionAVStack": "avsectester.closed_loop.avstacks.camera_forward_collision:CameraForwardCollisionAVStack",
+    "CameraForwardCollisionAVStack": "avsectester.closed_loop.avstacks.implemented.camera_forward_collision:CameraForwardCollisionAVStack",
     "DrivingMetrics": "avsectester.evaluation.metric:DrivingMetrics",
     "DetectionMetrics": "avsectester.evaluation.metric:DetectionMetrics",
     "TrajectoryDeviation": "avsectester.evaluation.metric:TrajectoryDeviation",
@@ -34,8 +34,8 @@ _BUILTINS = {
     "CarlaSimulator": "avsectester.closed_loop.simulators.carla:CarlaSimulator",
     "NuRecSimulator": "avsectester.closed_loop.simulators.nurec:NuRecSimulator",
     "RecordedReplaySimulator": "avsectester.closed_loop.simulators.recorded:RecordedReplaySimulator",
-    "ModularAVStack": "avsectester.closed_loop.avstacks.modular:ModularAVStack",
-    "AlpamayoAVStack": "avsectester.closed_loop.avstacks.alpamayo:AlpamayoAVStack",
+    "ModularAVStack": "avsectester.closed_loop.avstacks.implemented.modular:ModularAVStack",
+    "AlpamayoAVStack": "avsectester.closed_loop.avstacks.implemented.alpamayo:AlpamayoAVStack",
 }
 
 

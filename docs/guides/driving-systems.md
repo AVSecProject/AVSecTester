@@ -6,6 +6,14 @@
 >
 > **Prerequisites:** [Architecture](../concepts/architecture.md).
 
+The interfaces live in `avsectester.closed_loop.avstacks` (`base.py` and
+`driving_adapter.py`). Framework-provided driving systems live in
+`avsectester.closed_loop.avstacks.implemented`; import each implementation from its own module.
+The interfaces package does not import concrete driving systems.
+
+User-defined driving systems belong in their own package. Configure them with
+`type: package.module:Class`; adding one does not require editing the framework.
+
 ## AVStack interface
 
 An AVStack accepts Observation and returns Control. It owns model-visible ObservationPipeline and per-run
@@ -95,7 +103,7 @@ by the wrapper is owned and receives its optional close callback during cleanup.
 
 <!-- runnable -->
 ```python
-from avsectester.closed_loop.avstacks.alpamayo import AlpamayoAVStack
+from avsectester.closed_loop.avstacks.implemented.alpamayo import AlpamayoAVStack
 
 avstack = AlpamayoAVStack(checkpoint_path="/path/to/Alpamayo-1.5-10B", device="cuda:1")
 assert avstack.command_modes == frozenset({"trajectory"})
@@ -160,8 +168,8 @@ attaches the configured AVStack type to its factory. alpamayo_driving_adapter ex
 
 An optional `avstack.bindings` constructor receives the configured AVStack factory. It returns a
 DrivingAdapter from closed_loop/avstacks/driving_adapter.py. The modular_driving_adapter binding lives in
-closed_loop/avstacks/modular.py; alpamayo_driving_adapter lives in closed_loop/avstacks/alpamayo.py.
-Detector scorers live in closed_loop/avstacks/scorers.py.
+closed_loop/avstacks/implemented/modular.py; alpamayo_driving_adapter lives in closed_loop/avstacks/implemented/alpamayo.py.
+Detector scorers live in closed_loop/avstacks/implemented/scorers.py.
 
 Your own binding adds scorers without editing framework files. This one keeps Alpamayo's policy
 component and adds a black-box scorer over the planned trajectory: the forward progress of the
@@ -171,7 +179,7 @@ returns a tensor and declares its differentiable inputs.
 
 <!-- runnable -->
 ```python
-from avsectester.closed_loop.avstacks.alpamayo import alpamayo_driving_adapter
+from avsectester.closed_loop.avstacks.implemented.alpamayo import alpamayo_driving_adapter
 from avsectester.closed_loop.avstacks.driving_adapter import DrivingAdapter, ScorerDescriptor
 
 def planned_progress(avstack, inputs, target):

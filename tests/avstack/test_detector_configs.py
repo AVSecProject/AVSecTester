@@ -14,7 +14,7 @@ pytest.importorskip("avstack.config")
 
 from avstack.modules.perception.object2dfv import MMDetObjectDetector2D
 from avstack.modules.perception.object3d import MMDetObjectDetector3D
-from avsectester.closed_loop.avstacks.camera_forward_collision import CameraForwardCollisionAVStack
+from avsectester.closed_loop.avstacks.implemented.camera_forward_collision import CameraForwardCollisionAVStack
 
 
 def configured_options(avstack_type):
@@ -40,7 +40,7 @@ def point_cloud_detectors():
 
 
 def carla_metadata():
-    from avsectester.closed_loop.avstacks.modular import register_carla_dataset
+    from avsectester.closed_loop.avstacks.implemented.modular import register_carla_dataset
     register_carla_dataset()
 
 

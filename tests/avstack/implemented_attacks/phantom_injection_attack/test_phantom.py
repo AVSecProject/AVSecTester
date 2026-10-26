@@ -6,7 +6,7 @@ pytest.importorskip("avstack.config")
 
 from avsectester.implemented_attacks.phantom_injection_attack import PhantomInjectionAttack
 from avsectester.attack.runtime import OnlineContext
-from avsectester.closed_loop.avstacks.modular import ModularAVStack
+from avsectester.closed_loop.avstacks.implemented.modular import ModularAVStack
 from avsectester.closed_loop.hooks import Hook, HookSet
 from tests.fakes import MemorySimulator
 
