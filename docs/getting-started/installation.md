@@ -361,7 +361,7 @@ from avsectester.attack.insertion.compositor import PatchCompositor
 from avsectester.rendering.harmonizers import PCTNetHarmonizer
 
 harmonizer = PCTNetHarmonizer(
-    libcom_directory="/path/to/libcom", device=0, weights="/path/to/PCTNet.pth", strict=True,
+    libcom_directory="/path/to/libcom", device="cuda:0", weights="/path/to/PCTNet.pth", strict=True,
 )
 compositor = PatchCompositor(harmonizer)
 ```

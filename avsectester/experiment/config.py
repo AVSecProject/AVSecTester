@@ -246,8 +246,14 @@ def load_configuration(
         return config
     spec, directory = _mapping(config, Path.cwd(), "Experiment")
     _keys(spec, {
-        "dataset", "simulator", "avstack", "attacks", "hooks", "evaluation", "runs", "split",
+        "dataset", "simulator", "avstack", "attacks", "hooks", "evaluation", "runs", "split", "device",
     }, "experiment")
+    device = spec.get("device")
+    if "device" in spec:
+        if not isinstance(device, str):
+            raise TypeError("device must be a nonempty string")
+        if not device.strip():
+            raise ValueError("device must be a nonempty string")
     for key in ("dataset", "simulator", "avstack"):
         if key not in spec:
             raise ValueError(f"Experiment requires {key!r}")
@@ -255,20 +261,20 @@ def load_configuration(
     if not isinstance(attack_specs, Mapping):
         raise TypeError("attacks must map names to Attack objects or constructor specifications")
     _require_attacks(attack_specs)
-    constructed_attacks = {name: _attack(value, directory) for name, value in attack_specs.items()}
+    constructed_attacks = {name: _attack(value, directory, device) for name, value in attack_specs.items()}
     attacks = {name: pair[0] for name, pair in constructed_attacks.items()}
     attack_specifications = {
         name: (attack, parameters) for name, (attack, parameters) in constructed_attacks.items()
         if parameters is not None
     }
-    runs = _runs(spec.get("runs", {}), directory)
+    runs = _runs(spec.get("runs", {}), directory, device)
     configuration = ExperimentConfiguration(
-        dataset=_construct(spec["dataset"], directory, Dataset),
-        simulator=_construct(spec["simulator"], directory, Simulator),
-        avstack=_avstack(spec["avstack"], directory),
+        dataset=_construct(spec["dataset"], directory, Dataset, device),
+        simulator=_construct(spec["simulator"], directory, Simulator, device),
+        avstack=_avstack(spec["avstack"], directory, device),
         attacks=_ConfiguredAttacks(attacks, attack_specifications),
-        hooks=_hooks(spec.get("hooks"), directory),
-        evaluation=_evaluation(spec.get("evaluation"), directory),
+        hooks=_hooks(spec.get("hooks"), directory, device),
+        evaluation=_evaluation(spec.get("evaluation"), directory, device),
         runs=runs, split=_split(spec.get("split")),
     )
     _validate_metric_configuration(configuration)
@@ -289,7 +295,7 @@ def _split(value: Any) -> SplitConfiguration | None:
     )
 
 
-def _runs(value: Any, directory: Path) -> RunsConfiguration:
+def _runs(value: Any, directory: Path, device: str | None = None) -> RunsConfiguration:
     if isinstance(value, RunsConfiguration):
         return value
     if not isinstance(value, Mapping):
@@ -309,10 +315,10 @@ def _runs(value: Any, directory: Path) -> RunsConfiguration:
     if output is not None:
         output = _path(output, directory)
     return RunsConfiguration(
-        treatments=_treatments(value.get("treatments"), directory),
+        treatments=_treatments(value.get("treatments"), directory, device),
         seeds=_sequence(value.get("seeds", (0,)), "runs.seeds"),
         decision_steps=value.get("decision_steps"),
-        environment=_configured_environment(value.get("environment", {}), directory),
+        environment=_configured_environment(value.get("environment", {}), directory, device),
         recording=recording, output=output, strict=value.get("strict", False),
     )
 
@@ -336,7 +342,7 @@ def _validate_metric_configuration(configuration: ExperimentConfiguration) -> No
                          "does not provide detection output")
 
 
-def _evaluation(value: Any, directory: Path) -> EvaluationConfiguration:
+def _evaluation(value: Any, directory: Path, device: str | None = None) -> EvaluationConfiguration:
     if value is None:
         return EvaluationConfiguration()
     if isinstance(value, EvaluationConfiguration):
@@ -347,12 +353,12 @@ def _evaluation(value: Any, directory: Path) -> EvaluationConfiguration:
     metrics = value.get("metrics")
     return EvaluationConfiguration(
         metrics=None if metrics is None else tuple(
-            _construct(item, directory, Metric) for item in _sequence(metrics, "evaluation.metrics")
+            _construct(item, directory, Metric, device) for item in _sequence(metrics, "evaluation.metrics")
         ),
     )
 
 
-def _treatments(value: Any, directory: Path) -> tuple[TreatmentConfiguration, ...]:
+def _treatments(value: Any, directory: Path, device: str | None = None) -> tuple[TreatmentConfiguration, ...]:
     if value is None:
         return ()
     entries = ({"name": name, **dict(options)} for name, options in value.items()) if (
@@ -367,44 +373,44 @@ def _treatments(value: Any, directory: Path) -> tuple[TreatmentConfiguration, ..
             raise TypeError("Each treatment must be a mapping")
         _keys(entry, {"name", "attack_name", "environment"}, "treatment")
         options = dict(entry)
-        options["environment"] = _configured_environment(options.get("environment", {}), directory)
+        options["environment"] = _configured_environment(options.get("environment", {}), directory, device)
         result.append(TreatmentConfiguration(**options))
     return tuple(result)
 
 
-def _attack(value: Any, directory: Path) -> tuple[Attack, Mapping[str, Any] | None]:
+def _attack(value: Any, directory: Path, device: str | None = None) -> tuple[Attack, Mapping[str, Any] | None]:
     if isinstance(value, Attack):
         return value, None
     spec, directory = _mapping(value, directory, "Attack")
     _keys(spec, {"type", "options", "environment"}, "Attack")
-    constructor, options = _constructor(spec, directory)
+    constructor, options = _constructor(spec, directory, device)
     attack = constructor(**options)
     if not isinstance(attack, Attack):
         raise TypeError("Attack constructor must return Attack")
     if "environment" in spec:
-        attack.environment = _configured_environment(spec["environment"], directory)
-    return attack, _options(spec.get("options", {}), directory, constructor, construct=False)
+        attack.environment = _configured_environment(spec["environment"], directory, device)
+    return attack, _options(spec.get("options", {}), directory, constructor, construct=False, device=device)
 
 
-def _construct(value: Any, directory: Path, expected: type) -> Any:
+def _construct(value: Any, directory: Path, expected: type, device: str | None = None) -> Any:
     if isinstance(value, expected):
         return value
     spec, directory = _mapping(value, directory, expected.__name__)
     _keys(spec, {"type", "options"}, expected.__name__)
-    constructor, options = _constructor(spec, directory)
+    constructor, options = _constructor(spec, directory, device)
     result = constructor(**options)
     if not isinstance(result, expected):
         raise TypeError(f"Constructor must return {expected.__name__}, got {type(result).__name__}")
     return result
 
 
-def _avstack(value: Any, directory: Path) -> DrivingAdapter:
+def _avstack(value: Any, directory: Path, device: str | None = None) -> DrivingAdapter:
     """Build the per-run AVStack factory and its optional service bindings."""
     if isinstance(value, DrivingAdapter):
         return value
     spec, directory = _mapping(value, directory, "avstack")
     _keys(spec, {"type", "options", "observation_pipeline", "command_modes", "bindings"}, "avstack")
-    constructor, options = _constructor(spec, directory)
+    constructor, options = _constructor(spec, directory, device)
     if isinstance(constructor, type) and not issubclass(constructor, AVStack):
         raise TypeError(f"avstack.type must name an AVStack class or a callable returning AVStack, "
                         f"got {constructor.__name__}")
@@ -419,7 +425,7 @@ def _avstack(value: Any, directory: Path) -> DrivingAdapter:
             raise ValueError("A constructor requires type")
         pipeline_constructor = type_registry.resolve_type(pipeline_spec["type"])
         pipeline_options = _options(pipeline_spec.get("options", {}), pipeline_directory,
-                                    pipeline_constructor, construct=False)
+                                    pipeline_constructor, construct=False, device=device)
     modes = spec.get("command_modes")
     if modes is not None:
         modes = frozenset(_sequence(modes, "command_modes"))
@@ -442,7 +448,7 @@ def _avstack(value: Any, directory: Path) -> DrivingAdapter:
             if io_spec is not None:
                 pipeline = (io_spec if pipeline_constructor is None else
                             pipeline_constructor(**_options(pipeline_options, pipeline_directory,
-                                                            pipeline_constructor)))
+                                                            pipeline_constructor, device=device)))
                 if not isinstance(pipeline, ObservationPipeline):
                     raise TypeError("Constructor must return ObservationPipeline, "
                                     f"got {type(pipeline).__name__}")
@@ -465,14 +471,14 @@ def _avstack(value: Any, directory: Path) -> DrivingAdapter:
     if not isinstance(bindings, Mapping):
         raise TypeError("avstack.bindings must be a mapping with type and options")
     _keys(bindings, {"type", "options"}, "avstack.bindings")
-    bind, arguments = _constructor(bindings, directory)
+    bind, arguments = _constructor(bindings, directory, device)
     adapter = bind(factory, **arguments)
     if not isinstance(adapter, DrivingAdapter):
         raise TypeError("avstack.bindings must return DrivingAdapter")
     return adapter
 
 
-def _hooks(value: Any, directory: Path) -> HookConfiguration:
+def _hooks(value: Any, directory: Path, device: str | None = None) -> HookConfiguration:
     if value is None or isinstance(value, HookSet) or callable(value):
         return value
     entries = _sequence(value, "hooks")
@@ -509,7 +515,7 @@ def _hooks(value: Any, directory: Path) -> HookConfiguration:
 
             constructors.append(native_hook)
         else:
-            constructor, options = _constructor(entry, directory)
+            constructor, options = _constructor(entry, directory, device)
             def user_hook(
                 stage: str = stage, constructor: Callable[..., Any] = constructor,
                 options: dict[str, Any] = options,
@@ -535,11 +541,11 @@ def _mapping(value: Any, directory: Path, label: str) -> tuple[dict[str, Any], P
     return dict(value), directory
 
 
-def _constructor(spec: Mapping[str, Any], directory: Path) -> tuple[Callable[..., Any], dict]:
+def _constructor(spec: Mapping[str, Any], directory: Path, device: str | None = None) -> tuple[Callable[..., Any], dict]:
     if "type" not in spec:
         raise ValueError("A constructor requires type")
     constructor = type_registry.resolve_type(spec["type"])
-    return constructor, _options(spec.get("options", {}), directory, constructor)
+    return constructor, _options(spec.get("options", {}), directory, constructor, device=device)
 
 
 def _parameter_annotations(constructor: Callable[..., Any]) -> dict[str, Any]:
@@ -608,7 +614,7 @@ def _resolve_path_argument(value: Any, annotation: Any, directory: Path) -> Any:
 
 
 def _options(value: Any, directory: Path, constructor: Callable[..., Any], *,
-             construct: bool = True) -> dict[str, Any]:
+             construct: bool = True, device: str | None = None) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise TypeError("Constructor options must be a mapping")
     annotations = _parameter_annotations(constructor)
@@ -622,7 +628,7 @@ def _options(value: Any, directory: Path, constructor: Callable[..., Any], *,
                 _keys(item, {"type", "options"}, "nested constructor")
                 nested_constructor = type_registry.resolve_type(kind)
                 arguments = _options(item.get("options", {}), directory, nested_constructor,
-                                     construct=construct)
+                                     construct=construct, device=device)
                 if not construct:
                     return {"type": item["type"], "options": arguments}
                 return nested_constructor(**arguments)
@@ -632,8 +638,18 @@ def _options(value: Any, directory: Path, constructor: Callable[..., Any], *,
             return tuple(values) if isinstance(item, tuple) else values
         return deepcopy(item)
 
-    return {key: _resolve_path_argument(resolve(item), annotations.get(key), directory)
-            for key, item in value.items()}
+    options = {key: _resolve_path_argument(resolve(item), annotations.get(key), directory)
+               for key, item in value.items()}
+    if device is not None and "device" not in options:
+        try:
+            parameter = inspect.signature(constructor).parameters.get("device")
+        except (TypeError, ValueError):
+            parameter = None
+        if parameter is not None and parameter.kind not in {
+            inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD,
+        }:
+            options["device"] = device
+    return options
 
 
 def _path(value: str | PathLike[str], directory: Path) -> Path:
@@ -649,7 +665,8 @@ def _environment_override(value: Mapping[str, Any]) -> dict[str, Any]:
     return {key: normalized[key] for key in value}
 
 
-def _configured_environment(value: Mapping[str, Any] | None, directory: Path) -> dict[str, Any]:
+def _configured_environment(value: Mapping[str, Any] | None, directory: Path,
+                            device: str | None = None) -> dict[str, Any]:
     """Resolve corruption constructor arguments while retaining the environment declaration."""
     from avsectester.closed_loop.sensor_corruptions import CORRUPTIONS
 
@@ -658,7 +675,7 @@ def _configured_environment(value: Mapping[str, Any] | None, directory: Path) ->
         for specification in result["sensors"]:
             kind = specification["type"]
             constructor = (type_registry.resolve_type(kind) if ":" in kind else CORRUPTIONS[kind])
-            specification["options"] = _options(specification["options"], directory, constructor)
+            specification["options"] = _options(specification["options"], directory, constructor, device=device)
     return result
 
 

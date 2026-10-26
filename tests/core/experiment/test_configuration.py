@@ -71,6 +71,28 @@ class SeededAVStack(ConstantAVStack):
         self.seed = seed
 
 
+class DeviceOptions:
+    """A user component with an explicit execution device."""
+
+    def __init__(self, device="fallback"):
+        self.device = device
+
+
+class DeviceAttack(Attack):
+    def __init__(self, device="fallback", nested=None):
+        self.device = device
+        self.nested = nested
+
+    def build_metadata(self, scenario):
+        return ()
+
+
+class DeviceAVStack(ConstantAVStack):
+    def __init__(self, device="fallback"):
+        super().__init__()
+        self.device = device
+
+
 def specification():
     return {
         "dataset": {"type": "tests.fakes:MemoryDataset"},
@@ -132,6 +154,42 @@ def test_load_configuration(tmp_path):
     several = specification()
     several["attacks"]["other"] = {"type": "tests.fakes:MinimalAttack"}
     assert set(load_configuration(several).attacks) == {"probe", "other"}
+
+
+def test_configuration_device():
+    spec = specification()
+    spec["device"] = "cpu"
+    spec["avstack"] = {"type": f"{__name__}:DeviceAVStack"}
+    spec["attacks"] = {"probe": {"type": f"{__name__}:DeviceAttack", "options": {
+        "nested": {
+            "inherited": {"type": f"{__name__}:DeviceOptions"},
+            "explicit": {"type": f"{__name__}:DeviceOptions", "options": {"device": "cuda:1"}},
+        },
+    }}}
+    configuration = load_configuration(spec)
+    attack = configuration.attacks["probe"]
+    assert attack.device == "cpu"
+    assert attack.nested["inherited"].device == "cpu"
+    assert attack.nested["explicit"].device == "cuda:1"
+    assert configuration.avstack.factory(0).device == "cpu"
+    assert isinstance(configuration.dataset, MemoryDataset)
+    assert isinstance(configuration.simulator, MemorySimulator)
+
+    explicit = deepcopy(spec)
+    explicit.pop("device")
+    explicit["avstack"]["options"] = {"device": "cpu"}
+    explicit["attacks"]["probe"]["options"]["device"] = "cpu"
+    explicit["attacks"]["probe"]["options"]["nested"]["inherited"]["options"] = {"device": "cpu"}
+    assert configuration.configuration_summary == load_configuration(explicit).configuration_summary
+    assert load_configuration({**spec, "device": "cuda:2"}).attacks["probe"].nested["explicit"].device == "cuda:1"
+    assert load_configuration({**spec, "attacks": {"probe": attack}}).attacks["probe"] is attack
+    without = deepcopy(spec)
+    without.pop("device")
+    assert load_configuration(without).attacks["probe"].device == "fallback"
+    with pytest.raises(TypeError, match="device.*string"):
+        load_configuration({**spec, "device": 0})
+    with pytest.raises(ValueError, match="device.*nonempty"):
+        load_configuration({**spec, "device": ""})
 
 
 def test_constructor_paths(tmp_path):

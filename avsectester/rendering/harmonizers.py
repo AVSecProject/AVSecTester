@@ -267,14 +267,15 @@ class PCTNetHarmonizer(Harmonizer):
     :class:`ClassicHarmonizer` on any error (or set ``strict`` to raise instead).
 
     ``libcom_directory`` is the repository root containing ``libcom/image_harmonization``.
+    ``device`` is a PyTorch device string; inference falls back to CPU when CUDA is unavailable.
     """
 
     def __init__(
-        self, libcom_directory: str | Path, device: int = 0,
+        self, libcom_directory: str | Path, device: str = "cuda:0",
         weights: str | Path | None = None, strict: bool = False,
     ) -> None:
         self.libcom_directory = Path(libcom_directory)
-        self.device_id = device
+        self.device = device
         self.weights = weights
         self.strict = strict
         self._net = None
@@ -310,7 +311,7 @@ class PCTNetHarmonizer(Harmonizer):
         _load_file("libcom.image_harmonization.source.functions", src / "functions.py")
         pct = _load_file("libcom.image_harmonization.source.pct_net", src / "pct_net.py")
         weights = Path(self.weights) if self.weights else self._resolve_weights(root)
-        self._dev = f"cuda:{self.device_id}" if torch.cuda.is_available() else "cpu"
+        self._dev = self.device if torch.cuda.is_available() else "cpu"
         net = pct.PCTNet()
         net.load_state_dict(torch.load(str(weights), map_location="cpu", weights_only=True))
         self._net = net.to(self._dev).eval()

@@ -17,9 +17,8 @@ Constructor filesystem options follow the [annotation rules](#constructor-filesy
 Type resolution and attack discovery live in avsectester.experiment.type_registry; the
 configuration loader owns YAML structure and validation.
 
-Section order does not affect loading. Supplied configurations use dataset, split, simulator,
-avstack, attacks, evaluation and runs, so the data and how its selected segments are divided come
-first.
+Section order does not affect loading. Supplied configurations use device, dataset, split,
+simulator, avstack, attacks, evaluation and runs.
 
 Every object constructor uses `type` and `options`. A name without a colon selects a built-in class.
 `package.module:name` imports a user class or function. The name may contain dots for nested
@@ -28,6 +27,7 @@ Explicit paths use `avsectester.type_paths.import_type_path`. Such imports execu
 be trusted. The same rule applies to nested objects, hooks and sensor corruptions.
 
 ```yaml
+device: cuda:0
 dataset:
   type: CarlaDataset
   options:
@@ -104,15 +104,82 @@ containing-file rules.
 
 | Key | Meaning |
 |---|---|
+| `device` | Optional default for explicit device constructor parameters |
 | `dataset` | Dataset object specification |
+| `split` | Optional SplitConfiguration assigning complete segment units to train, validation and test |
 | `simulator` | Simulator object specification |
 | `avstack` | Driving specification, inline or a file reference |
 | `attacks` | One or more names mapped to Attack specifications or file references |
 | `hooks` | One stage-hook configuration applied to every treatment |
 | `evaluation` | Metrics and all-treatment pair comparisons |
-| `split` | Optional SplitConfiguration assigning complete segment units to train, validation and test |
+| `runs` | Treatments, seeds, environment, recording and output |
 
-### Dataset and simulator
+## Device
+
+The optional top-level device is a nonempty string, for example device: cuda:0. It supplies a
+default only to type/options constructors whose signatures explicitly declare a device parameter.
+An explicit device in that constructor's options takes priority, including a value with another
+type required by that component. Constructors without the parameter receive no extra argument;
+accepting only **kwargs does not opt a constructor in.
+
+The rule applies to dataset, simulator, avstack, observation_pipeline, service bindings, attacks,
+hooks, metrics and sensor corruptions, and recursively to nested constructors. Deferred AVStack
+and pipeline construction retains the same default. Omitting the top-level key preserves each
+constructor's own default. Supplied Python component objects are not changed.
+
+Injection resolves to ordinary constructor options before configuration summaries are saved.
+The resulting preparation identity is the same as explicitly writing those device options; the
+top-level shorthand does not add a separate prepared-compatibility setting. For example,
+AlpamayoAVStack, StopSignDetector, PatchOptimization and PCTNetHarmonizer can share device: cuda:0.
+PCTNetHarmonizer uses the same string device convention and falls back to CPU when CUDA is unavailable.
+
+## Dataset
+
+dataset supplies the recorded or recipe scenario source. NuRecDataset accepts either dataroot, a
+directory searched recursively for .usdz archives, or an explicit usdz_paths list. The dataset does
+not choose a GPU or launch a renderer server.
+
+## Data split
+
+Omit split for the all-segments preparation and execution behavior. With split, all attacks finish
+selection before the framework builds a shared unit list and starts any offline phase:
+
+```yaml
+split:
+  train_segments: 4
+  validation_segments: 0
+  seed: 0
+  execute: [test]
+```
+
+| Key under split | Meaning |
+|---|---|
+| train_segments | Required positive integer number of training units |
+| validation_segments | Nonnegative integer number of validation units; default 0 |
+| seed | Nonnegative integer permutation seed; default 0 |
+| execute | Unique list drawn from train, validation, test; default [test]; [] executes no units |
+
+Unknown split keys are rejected. Executing validation requires validation_segments greater than zero.
+Training plus validation must be smaller than the actual number of units, leaving at least one test
+unit. Invalid counts report that actual number.
+
+A unit is a complete AttackSegment: scenario, start, stop and user_data must all match. Identity is
+canonical JSON from DEFAULT_REGISTRY.encode(segment) with sorted keys. Units are ordered by dataset
+scenario order, then start position, stop position and configuration attack order. A seeded
+np.random.default_rng(seed).permutation assigns the first requested units to train, the next to
+validation and the remainder to test. Different attacks selecting an identical segment share its
+part; the same window with different user_data forms different units and is split independently.
+Consequently test inputs may include images already seen during training. This is a metadata split,
+not a guarantee of disjoint scene windows or images.
+
+OfflineContext.metadata contains only each attack's train segments and validation_metadata contains
+its validation segments, both in original selection order. PreparedExperiment.metadata still keeps
+all selected segments. PreparedExperiment.units records each unit, its selecting attacks and part;
+without split the part is None. The maximum deployment budget over all attacks is used for offline
+and online work; segments unable to start under that common budget are removed before splitting and
+the scenario selection record explains why. split.execute changes only which parts run closed loop.
+
+## Simulator
 
 CARLA scene content is solely in `CarlaRecipe.scenario`. The simulator receives runtime client
 settings, optional settling iterations and a depth-camera name. Recipe motion explicitly covers ego
@@ -176,7 +243,7 @@ the required past; preparation also discards invalid segments. See
 [Simulators](../guides/simulators.md#alpasim-defaults) and
 [Driving systems](../guides/driving-systems.md#alpamayo).
 
-### Driving specification
+## Driving specification
 
 `avstack.type` names an AVStack class or a callable returning one. It receives its `options`; a
 constructor that declares a `seed` parameter also receives the run seed, and `seed` is then
@@ -202,7 +269,7 @@ expected command modes and must match the AVStack declaration. These keys descri
 driving boundary, while options are constructor arguments. A driving configuration can be reused
 across supported scenarios of one simulator.
 
-### Attack specification
+## Attack specification
 
 The attacks mapping contains one or more entries. Each attack selects its own metadata. Complete
 identical segments form one unit shared by their selecting attacks. A comparison group is a unit
@@ -247,7 +314,7 @@ Lowercase shortcuts and inferred placement types are rejected. Image assets can 
 SignAsset.face, PatchAttack.assets and PatchOptimization.init_texture follow the
 [constructor filesystem rules](#constructor-filesystem-parameters).
 
-### Hooks
+## Hooks
 
 ```yaml
 hooks:
@@ -272,7 +339,7 @@ attack preparation and deployment. Hook stage names and contexts are in
 The same hooks apply to every treatment, including treatments with no attack_name. Treatments differ
 only in attack enablement and environment settings.
 
-### Evaluation
+## Evaluation
 
 There is no baseline option. Every ordered-by-configuration treatment pair is compared once, with
 single-run metric differences calculated as B minus A. TrajectoryDeviation is symmetric and
@@ -296,46 +363,6 @@ evaluation:
 
 User metrics use type/options, including package.module:Class. See
 [Evaluation](../guides/evaluation.md#built-in-metrics) for fields and evidence requirements.
-
-## Data split
-
-Omit split for the all-segments preparation and execution behavior. With split, all attacks finish
-selection before the framework builds a shared unit list and starts any offline phase:
-
-```yaml
-split:
-  train_segments: 4
-  validation_segments: 0
-  seed: 0
-  execute: [test]
-```
-
-| Key under split | Meaning |
-|---|---|
-| train_segments | Required positive integer number of training units |
-| validation_segments | Nonnegative integer number of validation units; default 0 |
-| seed | Nonnegative integer permutation seed; default 0 |
-| execute | Unique list drawn from train, validation, test; default [test]; [] executes no units |
-
-Unknown split keys are rejected. Executing validation requires validation_segments greater than zero.
-Training plus validation must be smaller than the actual number of units, leaving at least one test
-unit. Invalid counts report that actual number.
-
-A unit is a complete AttackSegment: scenario, start, stop and user_data must all match. Identity is
-canonical JSON from DEFAULT_REGISTRY.encode(segment) with sorted keys. Units are ordered by dataset
-scenario order, then start position, stop position and configuration attack order. A seeded
-np.random.default_rng(seed).permutation assigns the first requested units to train, the next to
-validation and the remainder to test. Different attacks selecting an identical segment share its
-part; the same window with different user_data forms different units and is split independently.
-Consequently test inputs may include images already seen during training. This is a metadata split,
-not a guarantee of disjoint scene windows or images.
-
-OfflineContext.metadata contains only each attack's train segments and validation_metadata contains
-its validation segments, both in original selection order. PreparedExperiment.metadata still keeps
-all selected segments. PreparedExperiment.units records each unit, its selecting attacks and part;
-without split the part is None. The maximum deployment budget over all attacks is used for offline
-and online work; segments unable to start under that common budget are removed before splitting and
-the scenario selection record explains why. split.execute changes only which parts run closed loop.
 
 ## Run settings
 

@@ -1588,7 +1588,7 @@ capture tolerance, exactly as simulator captures compose world objects.
 | `ClassicHarmonizer.__init__` | `__init__(color_transfer: bool = True, poisson: bool = True, preserve_chroma: bool = False, blend: str = 'poisson', feather: float = 1.2, gain_range: tuple = (0.35, 1.2)) -> None` |
 | `ClassicHarmonizer.__call__` | `__call__(composite_rgb, mask, background_rgb)` |
 | `PCTNetHarmonizer` | Class; see methods below |
-| `PCTNetHarmonizer.__init__` | `__init__(libcom_directory: str \| Path, device: int = 0, weights: str \| Path \| None = None, strict: bool = False) -> None` |
+| `PCTNetHarmonizer.__init__` | `__init__(libcom_directory: str \| Path, device: str = 'cuda:0', weights: str \| Path \| None = None, strict: bool = False) -> None` |
 | `PCTNetHarmonizer.__call__` | `__call__(composite_rgb, mask, background_rgb)` |
 
 Tensor harmonization accepts float RGB CHW composite, background and nominal-composite tensors in

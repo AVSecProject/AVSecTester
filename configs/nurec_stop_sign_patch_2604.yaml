@@ -1,5 +1,6 @@
 # Run with: avsectester run configs/nurec_stop_sign_patch_2604.yaml
 # Paths are relative to this file; set data/model paths for your machine.
+device: cuda:0
 dataset:
   type: NuRecDataset
   options:
@@ -40,7 +41,6 @@ avstack:
   type: AlpamayoAVStack
   options:
     checkpoint_path: ../models/Alpamayo-1.5-10B
-    device: cuda:0
     camera_ids:
     - camera_front_wide_120fov
     frame_subsample: 1
@@ -80,7 +80,6 @@ attacks:
             type: avsectester.implemented_attacks.stop_sign_patch_attack.detector:StopSignDetector
             options:
               weights_path: ../models/fasterrcnn_resnet50_fpn_coco-258fb6c6.pth
-              device: cuda:0
           optimizer:
             type: avsectester.attack.optimization:PGD
             options:
@@ -103,7 +102,6 @@ attacks:
             type: avsectester.implemented_attacks.stop_sign_patch_attack.detector:StopSignDetector
             options:
               weights_path: ../models/fasterrcnn_resnet50_fpn_coco-258fb6c6.pth
-              device: cuda:0
           optimizer:
             type: avsectester.attack.optimization:PGD
             options:
@@ -126,7 +124,6 @@ attacks:
             type: avsectester.implemented_attacks.stop_sign_patch_attack.detector:StopSignDetector
             options:
               weights_path: ../models/fasterrcnn_resnet50_fpn_coco-258fb6c6.pth
-              device: cuda:0
           optimizer:
             type: avsectester.attack.optimization:PGD
             options:

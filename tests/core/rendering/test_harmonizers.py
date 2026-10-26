@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 import torch
 
-from avsectester.rendering import ClassicHarmonizer, ExposureHarmonizer
+from avsectester.rendering import ClassicHarmonizer, ExposureHarmonizer, PCTNetHarmonizer
 
 
 @pytest.mark.parametrize(("reference", "reference_linear"), [("ring", .2), ("under", .1)])
@@ -90,3 +90,27 @@ def test_numpy_call():
                     {"feather_sigma": float("nan")}, {"gain_range": (1., .5)}):
         with pytest.raises(ValueError):
             ExposureHarmonizer(**options)
+
+
+def test_pctnet_harmonizer(tmp_path, monkeypatch):
+    # The learned-model source and checkpoint are the external inference boundary.
+    source = tmp_path / "libcom" / "image_harmonization" / "source"
+    source.mkdir(parents=True)
+    (source / "functions.py").write_text("")
+    (source / "pct_net.py").write_text(
+        "import torch\n"
+        "class PCTNet(torch.nn.Module):\n"
+        "    def forward(self, image_lr, image, mask_lr, mask):\n"
+        "        return torch.full_like(image, .5)[None]\n")
+    weights = tmp_path / "weights.pth"
+    torch.save({}, weights)
+    image = np.full((8, 9, 3), 220, dtype=np.uint8)
+    mask = np.full((8, 9), 255, dtype=np.uint8)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    harmonizer = PCTNetHarmonizer(tmp_path, device="cuda:4", weights=weights, strict=True)
+    assert harmonizer.device == "cuda:4"
+    np.testing.assert_array_equal(harmonizer(image, mask, image), np.full_like(image, 127))
+    # An explicit CPU string is also passed through unchanged when CUDA is present.
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    cpu = PCTNetHarmonizer(tmp_path, device="cpu", weights=weights, strict=True)
+    np.testing.assert_array_equal(cpu(image, mask, image), np.full_like(image, 127))
