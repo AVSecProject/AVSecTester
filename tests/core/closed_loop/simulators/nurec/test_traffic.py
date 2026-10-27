@@ -57,7 +57,36 @@ def test_get_metadata(traffic_service):
 
 
 def test_get_available_scenes(traffic_service):
-    assert AlpaSimTraffic(traffic_service.endpoint).get_available_scenes() == ("clipgt-scene",)
+    import grpc
+
+    traffic = AlpaSimTraffic(traffic_service.endpoint)
+    assert traffic.get_available_scenes() == ("clipgt-scene",)
+    traffic_service.delays["get_available_scenes"] = .1
+    with pytest.raises(RuntimeError, match="DEADLINE_EXCEEDED"):
+        traffic.get_available_scenes(timeout_s=.005)
+    traffic_service.delays.clear()
+    traffic_service.rpc_errors["get_available_scenes"] = (grpc.StatusCode.PERMISSION_DENIED, "not authorized")
+    with pytest.raises(RuntimeError, match="PERMISSION_DENIED.*not authorized"):
+        traffic.get_available_scenes()
+
+
+def test_served_scenes(traffic_service):
+    import grpc
+
+    traffic = AlpaSimTraffic(traffic_service.endpoint)
+    assert traffic.served_scenes() == ("clipgt-scene",)
+    for code in (grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.DEADLINE_EXCEEDED):
+        traffic_service.rpc_errors["get_available_scenes"] = (code, "endpoint not ready")
+        assert traffic.served_scenes() is None
+    traffic_service.rpc_errors.clear()
+    traffic_service.delays["get_available_scenes"] = .1
+    assert traffic.served_scenes(timeout_s=.005) is None
+    traffic_service.delays.clear()
+    traffic_service.rpc_errors["get_available_scenes"] = (grpc.StatusCode.PERMISSION_DENIED, "not authorized")
+    with pytest.raises(RuntimeError, match="PERMISSION_DENIED.*not authorized"):
+        traffic.served_scenes()
+    with pytest.raises(ValueError, match="timeout_s"):
+        traffic.served_scenes(timeout_s=0.)
 
 
 def test_open_session(traffic_service, traffic_inputs, monkeypatch):

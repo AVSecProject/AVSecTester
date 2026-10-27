@@ -11,7 +11,7 @@ NVIDIA NuRec with Alpamayo. nuScenes supports recorded open-loop playback.
 
 The CARLA experiment needs NVIDIA GPUs, model checkpoints and Docker with the NVIDIA runtime. Before
 starting, follow the [Docker prerequisites](docs/getting-started/installation.md#prerequisites) and
-adjust both `NVIDIA_VISIBLE_DEVICES` entries in `docker-compose.yml` for your machine.
+run `scripts/preparation/write_compose_env.sh` and set the GPU values in `.env` for your machine.
 
 ```bash
 git clone https://github.com/AVSecProject/AVSecTester.git
@@ -21,14 +21,19 @@ git -c url.https://github.com/.insteadOf=git@github.com: submodule update --init
 git -C third_party/avstack-core -c url.https://github.com/.insteadOf=git@github.com: \
   submodule update --init --depth 1 -- third_party/mmdetection third_party/mmdetection3d
 ./scripts/preparation/fetch_models.sh
+scripts/preparation/write_compose_env.sh
 docker compose up -d --build
-docker compose exec avsectester avsectester run configs/carla_phantom.yaml
+docker compose exec carla-experiment avsectester run configs/carla_phantom.yaml
 ```
 
 Set the server address and model device on the configured components; set treatments and output
 under runs.treatments and runs.output. `run`
 prepares, executes and evaluates the experiment. `evaluate` recalculates metrics from saved logs
 after the simulator closes. See [Quickstart](docs/getting-started/quickstart.md).
+
+For NuRec, use `NUREC_GPU=0 docker compose run --rm nurec-experiment run CONFIG`.
+The command starts missing local NRE/trafficsim services and stops only those it started. See
+[NuRec setup](docs/getting-started/installation.md#nurec-and-alpamayo-environment).
 
 ## Documentation
 

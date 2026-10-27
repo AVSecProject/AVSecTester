@@ -47,6 +47,24 @@ The terminal prints the output directory, selection/execution errors including e
 failed runs in non-strict mode. Reports retain every available run status and summarize each part
 separately. A partial report does not imply successful completion.
 
+### Automatic local services
+
+Run accepts --nre-gpu N, --nre-name NAME, --trafficsim-gpu N,
+--trafficsim-models DIR, --trafficsim-name NAME and --service-timeout SECONDS (default 600).
+Configuration, preparation compatibility and output checks run before any service launch.
+The service check uses the configured renderer/traffic endpoints and requires all dataset scenes.
+A compatible running service is reused and left running; an endpoint serving other scenes is an
+error. Missing services can only be started on local endpoints. Starting traffic also requires
+--trafficsim-models. The physical GPU comes from the explicit option, or from
+AVSECTESTER_HOST_GPU, which the nurec-experiment Compose service sets to NUREC_GPU; otherwise
+supply the GPU option.
+
+Services started by run cover preparation, execution and evaluation. They are stopped and removed
+in reverse launch order on success, exceptions and Ctrl-C. Existing services are never stopped.
+Startup, reuse and shutdown each print a progress line. Cleanup failures are attached to an active
+exception; after a completed experiment they are reported without replacing its result.
+Manual nre/trafficsim serve and stop commands remain available for longer-lived reuse.
+
 ## Evaluate
 
 `evaluate EXPERIMENT.yaml` reads runs.output and recomputes all treatment-pair metrics. It

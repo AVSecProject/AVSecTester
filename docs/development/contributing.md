@@ -137,7 +137,7 @@ docker run --rm -u "$(id -u):$(id -g)" \
   -v "$PWD":/app -w /app \
   -e HOME=/tmp -e PYTHONDONTWRITEBYTECODE=1 -e MPLBACKEND=Agg \
   -e NO_ALBUMENTATIONS_UPDATE=1 -e NVIDIA_VISIBLE_DEVICES=void \
-  --entrypoint python avsectester:latest \
+  --entrypoint python avsectester:carla \
   -m pytest tests/core tests/avstack -q -p no:cacheprovider
 ```
 

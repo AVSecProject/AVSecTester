@@ -102,3 +102,26 @@ def test_windshield_spec():
     assert ftheta_camera_from_spec(spec).windshield is None
     with pytest.raises(ValueError, match="Unsupported NuRec external distortion"):
         ftheta_camera_from_spec(SimpleNamespace(**{**vars(spec), "WhichOneof": lambda group: "other_model"}))
+
+
+def test_served_scenes(monkeypatch):
+    boundary = NuRecRpcBoundary().install(monkeypatch)
+    renderer = NuRecRenderer(cameras=["front"])
+    assert renderer.served_scenes(timeout_s=.05) == ("scene",)
+    assert boundary.scene_query_timeouts[-1] == .05
+    assert renderer.calibration == {}
+    renderer.load_scene("scene")
+    try:
+        assert renderer.served_scenes() == ("scene",)
+        assert renderer.camera_model("front").width == boundary.spec.resolution_w
+        for code in ("UNAVAILABLE", "DEADLINE_EXCEEDED"):
+            boundary.scene_query_error = (code, "endpoint not ready")
+            assert renderer.served_scenes() is None
+        boundary.scene_query_error = ("PERMISSION_DENIED", "not authorized")
+        with pytest.raises(RuntimeError, match="PERMISSION_DENIED.*not authorized"):
+            renderer.served_scenes()
+        with pytest.raises(ValueError, match="timeout_s"):
+            renderer.served_scenes(timeout_s=0.)
+        assert renderer.camera_model("front").width == boundary.spec.resolution_w
+    finally:
+        renderer.close()

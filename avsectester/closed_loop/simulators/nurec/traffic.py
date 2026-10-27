@@ -117,13 +117,26 @@ class AlpaSimTraffic:
             return _call(service.TrafficServiceStub(channel).get_metadata, common.Empty(),
                          self.rpc_timeout_s if timeout_s is None else timeout_s)
 
-    def get_available_scenes(self) -> tuple[str, ...]:
+    def get_available_scenes(self, *, timeout_s: float | None = None) -> tuple[str, ...]:
         """Return the scene IDs served by this endpoint."""
         grpc, common, _traffic, service = _grpc_modules()
         with grpc.insecure_channel(self.endpoint) as channel:
             result = _call(service.TrafficServiceStub(channel).get_available_scenes, common.Empty(),
-                           self.rpc_timeout_s)
+                           self.rpc_timeout_s if timeout_s is None else timeout_s)
         return tuple(result.scene_ids)
+
+    def served_scenes(self, timeout_s: float = 2.0) -> tuple[str, ...] | None:
+        """Query scene support; unavailable endpoints and deadline expiry return None."""
+        require_positive_number(timeout_s, "timeout_s")
+        grpc, *_ = _grpc_modules()
+        try:
+            return self.get_available_scenes(timeout_s=timeout_s)
+        except RuntimeError as error:
+            cause = error.__cause__
+            if (isinstance(cause, grpc.RpcError)
+                    and cause.code() in {grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.DEADLINE_EXCEEDED}):
+                return None
+            raise
 
     def open_session(
         self, *, scene_id: str, random_seed: int, start_us: int, end_us: int,

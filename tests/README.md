@@ -108,7 +108,7 @@ For the existing Docker environment, run the complete offline suite:
 ```bash
 docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
   -e NVIDIA_VISIBLE_DEVICES=void -e PYTHONDONTWRITEBYTECODE=1 -e PYTHONPATH=/app \
-  -v "$PWD":/app -w /app --entrypoint bash avsectester:latest \
+  -v "$PWD":/app -w /app --entrypoint bash avsectester:carla \
   -lc 'python -m pytest -p no:cacheprovider -q && ruff check . && mypy'
 ```
 

@@ -173,12 +173,18 @@ arguments = sys.argv[1:]
 mode = os.environ.get("FAKE_DOCKER_MODE", "ready")
 if arguments[0] == "run":
     state.write_text("false" if mode == "exit" else "true")
+    owner = next((arguments[i + 1].split("=", 1)[1] for i, value in enumerate(arguments)
+                  if value == "--label" and arguments[i + 1].startswith("avsectester.service-owner=")), "")
+    state.with_suffix(".owner").write_text(owner)
     print("fake-container-id")
     raise SystemExit(1 if mode == "run-fail" else 0)
 if arguments[0] == "inspect":
     if not state.exists():
         raise SystemExit(1)
-    print(state.read_text())
+    if "--format" in arguments and ".Config.Labels" in arguments[arguments.index("--format") + 1]:
+        print("fake-container-id " + state.with_suffix(".owner").read_text())
+    else:
+        print(state.read_text())
 elif arguments[0] == "logs":
     print("Serving on 0.0.0.0:50152\nStarting CATK traffic gRPC server on 0.0.0.0:6200" if mode == "ready" else "NRE startup diagnostic")
 elif arguments[0] == "stop":
@@ -188,6 +194,7 @@ elif arguments[0] == "stop":
     state.write_text("false")
 elif arguments[0] == "rm":
     state.unlink()
+    state.with_suffix(".owner").unlink(missing_ok=True)
 ''')
     executable.chmod(0o755)
     monkeypatch.setenv("PATH", str(bin_path) + os.pathsep + os.environ.get("PATH", ""))
@@ -335,3 +342,101 @@ def test_trafficsim_stop(tmp_path, monkeypatch):
     assert named.exit_code == 0, named.output
     recorded = [json.loads(line) for line in calls.read_text().splitlines()]
     assert recorded[-2:] == [["stop", "owned-traffic"], ["rm", "owned-traffic"]]
+
+
+@pytest.fixture
+def managed_nurec_cli(tmp_path, monkeypatch, nurec_usdz_path):
+    from tests.fakes import NuRecRpcBoundary, NuRecRpcError
+
+    state, calls = fake_docker(tmp_path, monkeypatch)
+    boundary = NuRecRpcBoundary().install(monkeypatch)
+    path = nre_configuration(tmp_path / "configuration")
+    spec = yaml.safe_load(path.read_text())
+    spec["dataset"] = {"type": "NuRecDataset", "options": {"usdz_paths": [str(nurec_usdz_path)]}}
+    spec["simulator"]["options"]["object_occlusion"] = "geometry"
+    spec["simulator"]["options"]["min_track_duration_s"] = 0
+    spec["simulator"]["options"]["renderer"]["options"]["cameras"] = ["front"]
+    spec["attacks"]["probe"]["options"] = {"decision_steps": 1, "max_segments": 1}
+    path.write_text(yaml.safe_dump(spec))
+    original = boundary.get_available_scenes
+
+    def scenes(request, timeout=None):
+        if not state.exists():
+            raise NuRecRpcError("UNAVAILABLE", "not running")
+        return original(request, timeout=timeout)
+
+    monkeypatch.setattr(boundary, "get_available_scenes", scenes)
+    return path, state, calls, boundary
+
+
+def test_run_managed_nre(managed_nurec_cli, monkeypatch):
+    path, state, calls, boundary = managed_nurec_cli
+    monkeypatch.setenv("AVSECTESTER_HOST_GPU", "2")
+    result = runner.invoke(cli.app, ["run", str(path), "--nre-name", "owned-nre"])
+    assert result.exit_code == 0, result.output
+    assert "Starting NRE" in result.output and "Stopped" in result.output
+    assert not state.exists()
+    recorded = [json.loads(line) for line in calls.read_text().splitlines()]
+    command, = [row for row in recorded if row[0] == "run"]
+    assert "device=2" in command
+    assert recorded[-2:] == [["stop", "fake-container-id"], ["rm", "fake-container-id"]]
+    assert (path.parent / "results/evaluation/report.json").is_file()
+    before = calls.read_bytes()
+    repeated = runner.invoke(cli.app, ["run", str(path)])
+    assert repeated.exit_code == 2 and "already exists" in repeated.output
+    assert calls.read_bytes() == before
+    conflict = runner.invoke(cli.app, ["run", str(path), "--resume", "--prepared", str(path.parent / "results")])
+    assert conflict.exit_code == 2 and calls.read_bytes() == before
+    invalid = path.parent / "invalid.yaml"
+    invalid.write_text("unknown: true")
+    assert runner.invoke(cli.app, ["run", str(invalid)]).exit_code == 2
+    assert calls.read_bytes() == before
+
+
+def test_run_reused_nre(managed_nurec_cli):
+    path, state, calls, boundary = managed_nurec_cli
+    state.write_text("true")
+    result = runner.invoke(cli.app, ["run", str(path)])
+    assert result.exit_code == 0, result.output
+    assert "Reusing NRE" in result.output and state.read_text() == "true"
+    assert not calls.exists()
+
+
+def test_run_nre_scene_mismatch(managed_nurec_cli):
+    path, state, calls, boundary = managed_nurec_cli
+    state.write_text("true")
+    boundary.available_scenes = ("other-scene",)
+    result = runner.invoke(cli.app, ["run", str(path)])
+    assert result.exit_code == 2 and "scenes" in result.output
+    assert state.read_text() == "true" and not calls.exists()
+
+
+@pytest.mark.parametrize(("failure", "exit_code"), [(RuntimeError, 1), (KeyboardInterrupt, 130)])
+def test_run_managed_nre_failure(managed_nurec_cli, monkeypatch, failure, exit_code):
+    path, state, calls, boundary = managed_nurec_cli
+
+    def failed_capture(request):
+        raise failure("synthetic camera failure")
+
+    monkeypatch.setattr(boundary, "render_rgb", failed_capture)
+    result = runner.invoke(cli.app, ["run", str(path), "--nre-gpu", "0", "--nre-name", "owned-nre"])
+    assert result.exit_code == exit_code, result.output
+    assert not state.exists()
+    recorded = [json.loads(line) for line in calls.read_text().splitlines()]
+    assert recorded[-2:] == [["stop", "fake-container-id"], ["rm", "fake-container-id"]]
+
+
+def test_run_service_gpu_configuration(managed_nurec_cli, monkeypatch):
+    path, state, calls, boundary = managed_nurec_cli
+    monkeypatch.setenv("AVSECTESTER_HOST_GPU", "all")
+    result = runner.invoke(cli.app, ["run", str(path)])
+    assert result.exit_code == 2, result.output
+    assert "GPU" in result.output and not state.exists() and not calls.exists()
+
+
+def test_run_resume_output_file(managed_nurec_cli):
+    path, state, calls, boundary = managed_nurec_cli
+    (path.parent / "results").write_text("not a directory")
+    result = runner.invoke(cli.app, ["run", str(path), "--resume"])
+    assert result.exit_code == 2 and "must be a directory" in result.output
+    assert not calls.exists() and not boundary.scene_query_timeouts

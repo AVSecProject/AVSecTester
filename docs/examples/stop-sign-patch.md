@@ -13,8 +13,8 @@ Use the modular configurations for detector PGD (white-box) and the Alpamayo con
 rollout NES (black-box). Run from the repository root after setting data, model and device paths:
 
 ```bash
-avsectester run configs/nurec_stop_sign_patch_modular_2601.yaml
-avsectester run configs/nurec_stop_sign_patch_alpamayo_2601.yaml
+NUREC_GPU=0 docker compose run --rm nurec-experiment run configs/nurec_stop_sign_patch_modular_2601.yaml
+NUREC_GPU=0 docker compose run --rm nurec-experiment run configs/nurec_stop_sign_patch_alpamayo_2601.yaml
 ```
 
 Each driving-system variant has a 2601 and 2604 configuration. NuRecDataset enumerates archives
@@ -36,20 +36,22 @@ options:
   width_scale: 1.1
 ```
 
+NRE is started automatically by run when no compatible service is already running, and stopped
+when the command exits if it was started by that command. Set NUREC_GPU in .env or per command;
+--nre-gpu can select a different card. See [Compose setup](../getting-started/installation.md#nurec-and-alpamayo-environment).
+
 Both optimization paths run inside Experiment.prepare. Seeded Alpamayo enables
 deterministic PyTorch algorithms, which need CUBLAS_WORKSPACE_CONFIG before the first GPU matrix
 product; the framework sets it when configuration loading imports the adapter. See
 [Driving systems](../guides/driving-systems.md#alpamayo).
 
-When the NuRec image runs a source checkout through PYTHONPATH and has no installed
-avsectester console executable, invoke the same public CLI as
-python -m avsectester.cli run CONFIG (or evaluate CONFIG).
+The nurec-experiment entrypoint invokes python -m avsectester.cli from the mounted checkout.
 
 
 ## Optional reactive traffic
 
 Reactive traffic is off by default; add `simulator.options.traffic: {type: avsectester.closed_loop.simulators.nurec:AlpaSimTraffic}` to enable it.
-Start `avsectester trafficsim serve CONFIG --gpu N --models DIR` alongside NRE for execution and offline rollouts, then stop both services.
+Supply `--trafficsim-models DIR` to the Compose run command; it automatically manages missing local NRE and trafficsim services for execution and offline rollouts.
 Traffic requires 0.1 s steps and 1.5 s history; `metadata.load` shares selected windows between modes.
 See [Reactive traffic](../guides/simulators.md#reactive-traffic) for filtering and actor overrides.
 
@@ -67,9 +69,7 @@ the nested detector from the top-level setting. These configurations omit Reason
 reasoning text.
 
 ```bash
-avsectester nre serve configs/nurec_stop_sign_patch_modular_2601.yaml --gpu 0
-avsectester run configs/nurec_stop_sign_patch_modular_2601.yaml
-avsectester nre stop configs/nurec_stop_sign_patch_modular_2601.yaml
+NUREC_GPU=0 docker compose run --rm nurec-experiment run configs/nurec_stop_sign_patch_modular_2601.yaml
 ```
 
 To compare driving systems on exactly the same units, first export metadata.save with one
@@ -255,7 +255,7 @@ establishes neither.
 ## Resume
 
 ```bash
-avsectester run configs/nurec_stop_sign_patch_alpamayo_2601.yaml --resume
+NUREC_GPU=0 docker compose run --rm nurec-experiment run configs/nurec_stop_sign_patch_alpamayo_2601.yaml --resume
 ```
 
 Resume validates the saved preparation inputs and reuses the saved units and parts. Completed
@@ -274,13 +274,14 @@ agrees, including segment, part, environment, decision counts and deployment bud
 
 ## NRE service
 
-Start NRE from the same configuration used for the experiment. The command resolves the dataset's
+Run automatically starts a missing local NRE and stops it on exit. To keep a renderer for multiple
+commands, optionally start it manually from the same configuration. The command resolves the dataset's
 archives and mounts each file read-only, including the probe directory configured on the renderer.
 
 ```bash
 nvidia-smi
-avsectester nre serve configs/nurec_stop_sign_patch_alpamayo_2601.yaml --gpu 0
-avsectester nre stop configs/nurec_stop_sign_patch_alpamayo_2601.yaml
+NUREC_GPU=0 docker compose run --rm nurec-experiment nre serve configs/nurec_stop_sign_patch_alpamayo_2601.yaml --gpu 0
+NUREC_GPU=0 docker compose run --rm nurec-experiment nre stop configs/nurec_stop_sign_patch_alpamayo_2601.yaml
 ```
 
 The `--gpu` option selects the host GPU for NRE. The YAML `device` selects devices for constructors
@@ -292,7 +293,7 @@ is `avsectester-nre-<port>`; `stop` stops and removes that container. Use `--nam
 select a different name. To print the exact command without creating files or using Docker:
 
 ```bash
-avsectester nre serve configs/nurec_stop_sign_patch_alpamayo_2601.yaml --gpu 0 --dry-run
+NUREC_GPU=0 docker compose run --rm nurec-experiment nre serve configs/nurec_stop_sign_patch_alpamayo_2601.yaml --gpu 0 --dry-run
 ```
 
 Every resolved archive filename must be unique. A configuration that includes both releases of the
@@ -310,7 +311,7 @@ image frames through frame_subsample=1.
 ## Evaluation and visualization
 
 ```bash
-avsectester evaluate configs/nurec_stop_sign_patch_alpamayo_2601.yaml
+docker compose run --rm nurec-experiment evaluate configs/nurec_stop_sign_patch_alpamayo_2601.yaml
 python -m scripts.visualization.plot_stop_line_approaches configs/nurec_stop_sign_patch_alpamayo_2601.yaml
 ```
 

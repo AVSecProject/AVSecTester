@@ -3,9 +3,10 @@
 # on a CUDA 12.1 base (mirrors the verified avsec311 env).
 #
 # Usually built via docker-compose.yml (which also runs a CARLA 0.9.16 server):
-#   docker compose up --build
+#   scripts/preparation/write_compose_env.sh
+#   docker compose up --build carla-server carla-experiment
 # Standalone build:
-#   docker build -t avsectester .
+#   docker build --target carla -t avsectester:carla .
 #
 # OpenMMLab-official stack: torch 2.1.0+cu121, mmcv 2.1.0, mmdet 3.2.0, mmdet3d 1.4.0 — every version
 # cap is satisfied, so no source build and no cap patching. mmcv ships the CUDA ops (prebuilt wheel).
@@ -78,7 +79,7 @@ RUN uv sync --inexact --python 3.12 --package alpasim_driver \
 WORKDIR /app
 CMD ["bash"]
 
-FROM nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
+FROM nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04 AS carla
 
 COPY --from=uv /uv /usr/local/bin/uv
 
@@ -121,5 +122,6 @@ RUN python -m pip install --no-cache-dir -e third_party/avstack-core -c constrai
 RUN python -m pip install --no-cache-dir -e ".[dev,augment,nurec]" "setuptools==69.5.1" \
  && python -c "import pyarrow.parquet; from embreex.rtcore_scene import EmbreeScene; from embreex.mesh_construction import TriangleMesh"
 
-# default to a shell — run attacks/recordings explicitly (see docs/getting-started/installation.md#docker / docker-compose.yml)
+# Default carla-experiment to a shell; run experiments explicitly with docker compose exec.
+# See docs/getting-started/installation.md#docker and docker-compose.yml.
 CMD ["bash"]

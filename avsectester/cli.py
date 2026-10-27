@@ -5,16 +5,15 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 import shlex
-import shutil
-import subprocess
-import time
 from typing import Any, NoReturn, TYPE_CHECKING
 
 import typer
 import yaml  # type: ignore[import-untyped]
 
 from avsectester import __version__
-from avsectester.closed_loop.simulators.nurec.server import DEFAULT_NRE_IMAGE, DEFAULT_TRAFFIC_IMAGE
+from avsectester.closed_loop.simulators.nurec.server import (
+    DEFAULT_NRE_IMAGE, DEFAULT_TRAFFIC_IMAGE, local_services, start_container, stop_container,
+)
 from avsectester.experiment import (
     ConfigurationMismatchError, Experiment, ExperimentConfiguration, ExperimentResult,
     PreparedExperiment, load_configuration,
@@ -118,6 +117,12 @@ def run(
         help="Reuse metadata and artifacts saved in this directory.",
     ),
     resume: bool = typer.Option(False, help="Resume preparation and unfinished runs in runs.output."),
+    nre_gpu: str | None = typer.Option(None, help="Host GPU for an automatically started NRE."),
+    nre_name: str | None = typer.Option(None, help="Name of an automatically started NRE container."),
+    trafficsim_gpu: str | None = typer.Option(None, help="Host GPU for automatically started traffic."),
+    trafficsim_models: Path | None = typer.Option(None, file_okay=False, help="Local CATK weights directory."),
+    trafficsim_name: str | None = typer.Option(None, help="Name of an automatically started traffic container."),
+    service_timeout: float = typer.Option(600., min=.001, help="Service startup timeout in seconds."),
 ) -> None:
     """Prepare attacks, execute treatments and write the configured evaluation report."""
     if resume and prepared is not None:
@@ -125,7 +130,9 @@ def run(
     configuration = _configuration(config)
     output = configuration.runs.output
     assert output is not None
-    if not resume and output.exists() and (not output.is_dir() or any(output.iterdir())):
+    if output.exists() and not output.is_dir():
+        _configuration_error(ValueError(f"Experiment output must be a directory: {output}"))
+    if not resume and output.exists() and any(output.iterdir()):
         _configuration_error(ValueError(f"Experiment output already exists: {output}"))
     preparation = None
     source = prepared
@@ -143,42 +150,47 @@ def run(
             typer.echo(f"Preparation load error: {type(error).__name__}: {error}", err=True)
             raise typer.Exit(1) from error
     saved_this_call = resume and (output / "prepared.json").is_file()
+    phase = "services"
     try:
-        if preparation is None:
-            preparation = Experiment.prepare(configuration, resume=resume)
-            # Preparation writes its manifest last. A failed prepare must never evaluate a
-            # manifest left by an earlier invocation in the same output directory.
-            saved_this_call = (output / "prepared.json").is_file()
-        else:
-            if not resume:
-                preparation.save(output)
-            saved_this_call = True
-        result = Experiment.execute(preparation, resume=resume)
+        with local_services(configuration.dataset, configuration.simulator,
+                            nre_gpu=nre_gpu, nre_name=nre_name,
+                            trafficsim_gpu=trafficsim_gpu, trafficsim_models=trafficsim_models,
+                            trafficsim_name=trafficsim_name, timeout_s=service_timeout, log=typer.echo):
+            phase = "execution"
+            if preparation is None:
+                preparation = Experiment.prepare(configuration, resume=resume)
+                saved_this_call = (output / "prepared.json").is_file()
+            else:
+                if not resume:
+                    preparation.save(output)
+                saved_this_call = True
+            result = Experiment.execute(preparation, resume=resume)
+            phase = "evaluation"
+            report = _evaluate_result(result, configuration)
+            _print_report(report, result, configuration)
     except ConfigurationMismatchError as error:
         _configuration_error(error)
     except KeyboardInterrupt:
-        typer.echo("Preparation or execution interrupted.", err=True)
-        _partial_report(configuration, saved_this_call)
+        if phase == "services":
+            typer.echo("Service startup interrupted.", err=True)
+        elif phase == "evaluation":
+            typer.echo("Evaluation interrupted; report files may be incomplete. Saved run logs remain "
+                       "available for evaluation.", err=True)
+        else:
+            typer.echo("Preparation or execution interrupted.", err=True)
+            _partial_report(configuration, saved_this_call)
         if saved_this_call:
             typer.echo(f"Output directory: {output}")
         raise typer.Exit(130) from None
     except Exception as error:
-        typer.echo(f"Execution error: {type(error).__name__}: {error}", err=True)
-        _partial_report(configuration, saved_this_call)
+        if phase == "services" and isinstance(error, _CONFIGURATION_ERRORS):
+            _configuration_error(error)
+        label = {"services": "Service", "execution": "Execution", "evaluation": "Evaluation"}[phase]
+        typer.echo(f"{label} error: {type(error).__name__}: {error}", err=True)
+        if phase == "execution":
+            _partial_report(configuration, saved_this_call)
         if saved_this_call:
             typer.echo(f"Output directory: {output}")
-        raise typer.Exit(1) from error
-    try:
-        report = _evaluate_result(result, configuration)
-        _print_report(report, result, configuration)
-    except KeyboardInterrupt:
-        typer.echo("Evaluation interrupted; report files may be incomplete. Saved run logs remain "
-                   "available for evaluation.", err=True)
-        typer.echo(f"Output directory: {output}")
-        raise typer.Exit(130) from None
-    except Exception as error:
-        typer.echo(f"Evaluation error: {type(error).__name__}: {error}", err=True)
-        typer.echo(f"Output directory: {output}")
         raise typer.Exit(1) from error
     typer.echo(f"Output directory: {configuration.runs.output}")
     raise typer.Exit(_exit_code(result, report))
@@ -251,89 +263,30 @@ def _nre_launch_spec(config: Path, gpu: str, name: str | None, image: str,
         _configuration_error(error)
 
 
-def _docker_available(service: str) -> None:
-    if shutil.which("docker") is None:
-        typer.echo(f"docker is not on PATH; use {service.lower()} serve --dry-run to print the command.", err=True)
-        raise typer.Exit(1)
-
-
-def _docker_call(arguments: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(["docker", *arguments], capture_output=True, text=True, check=False)
-
-
-def _remove_container(name: str) -> None:
-    _docker_call(["stop", name])
-    _docker_call(["rm", name])
-
-
-def _serve_container(command: list[str], *, name: str, service: str, timeout: float,
-                     dry_run: bool, ready_log: str, readiness: Callable[[float], Any] | None = None,
-                     prepare: Callable[[], Any] | None = None) -> None:
-    """Start one owned service container, wait for readiness and clean failed startups."""
+def _start_service(command: list[str], *, name: str, service: str, timeout: float,
+                   dry_run: bool, ready_log: str, readiness: Callable[[float], Any] | None = None,
+                   prepare: Callable[[], Any] | None = None) -> None:
+    """Adapt lifecycle exceptions and dry-run output to CLI exit conventions."""
     if dry_run:
         typer.echo(shlex.join(command))
         return
-    _docker_available(service)
-    if _docker_call(["inspect", name]).returncode == 0:
-        typer.echo(f"Container already exists: {name}; choose --name or stop it explicitly.", err=True)
-        raise typer.Exit(1)
-    created = False
     try:
-        if prepare is not None:
-            prepare()
-        # The name was absent before this invocation; any startup container belongs to it.
-        created = True
-        launched = subprocess.run(command, capture_output=True, text=True, check=False)
-        if launched.returncode:
-            raise RuntimeError(launched.stderr.strip() or launched.stdout.strip() or "docker run failed")
-        deadline = time.monotonic() + timeout
-        readiness_error = None
-        while True:
-            response = _docker_call(["logs", "--tail", "50", name])
-            logs = response.stdout + response.stderr
-            state = _docker_call(["inspect", "--format", "{{.State.Running}}", name])
-            if state.returncode or state.stdout.strip() != "true":
-                raise RuntimeError(f"{service} container exited before becoming ready")
-            remaining = deadline - time.monotonic()
-            if ready_log in logs:
-                if readiness is None:
-                    return
-                if remaining > 0:
-                    try:
-                        readiness(remaining)
-                    except RuntimeError as error:
-                        readiness_error = str(error)
-                    else:
-                        return
-            if time.monotonic() >= deadline:
-                detail = "" if readiness_error is None else f": {readiness_error}"
-                raise RuntimeError(f"{service} startup timed out after {timeout:g} seconds{detail}")
-            time.sleep(min(.5, max(0., deadline - time.monotonic())))
-    except BaseException as error:
-        if created:
-            response = _docker_call(["logs", "--tail", "50", name])
-            logs = response.stdout + response.stderr
-            typer.echo("\n".join(logs.splitlines()[-50:]), err=True)
-            _remove_container(name)
-        if isinstance(error, KeyboardInterrupt):
-            typer.echo(f"{service} startup interrupted.", err=True)
-            raise typer.Exit(130) from None
-        if not isinstance(error, Exception):
-            raise
+        start_container(command, name=name, ready_log=ready_log, timeout_s=timeout,
+                        readiness=readiness, prepare=prepare, log=typer.echo)
+    except KeyboardInterrupt:
+        typer.echo(f"{service} startup interrupted.", err=True)
+        raise typer.Exit(130) from None
+    except Exception as error:
         typer.echo(f"{service} startup error: {error}", err=True)
         raise typer.Exit(1) from error
 
 
-def _stop_container(name: str, service: str) -> None:
-    _docker_available(service)
-    stopped = _docker_call(["stop", name])
-    if stopped.returncode:
-        typer.echo(stopped.stderr.strip() or f"{service} container does not exist: {name}", err=True)
-        raise typer.Exit(1)
-    removed = _docker_call(["rm", name])
-    if removed.returncode:
-        typer.echo(removed.stderr.strip() or f"Unable to remove {service} container: {name}", err=True)
-        raise typer.Exit(1)
+def _stop_service(name: str, service: str) -> None:
+    try:
+        stop_container(name)
+    except Exception as error:
+        typer.echo(str(error), err=True)
+        raise typer.Exit(1) from error
     typer.echo(f"Stopped and removed {service} container: {name}")
 
 
@@ -360,7 +313,7 @@ def nre_serve(
         if renderer.probe_directory is not None:
             Path(renderer.probe_directory).mkdir(parents=True, exist_ok=True)
 
-    _serve_container(command, name=chosen_name, service="NRE", timeout=timeout, dry_run=dry_run,
+    _start_service(command, name=chosen_name, service="NRE", timeout=timeout, dry_run=dry_run,
                      ready_log="Serving on", prepare=prepare)
     if not dry_run:
         typer.echo(f"NRE ready: endpoint={renderer.endpoint}, GPU={gpu}, "
@@ -381,7 +334,7 @@ def nre_stop(
         chosen_name = name or default_renderer_container_name(renderer)
     except _CONFIGURATION_ERRORS as error:
         _configuration_error(error)
-    _stop_container(chosen_name, "NRE")
+    _stop_service(chosen_name, "NRE")
 
 
 def _traffic_configuration(config: Path) -> tuple[ExperimentConfiguration, AlpaSimTraffic]:
@@ -426,7 +379,7 @@ def trafficsim_serve(
     def ready(remaining: float) -> Any:
         return traffic.get_metadata(timeout_s=min(1., remaining))
 
-    _serve_container(command, name=chosen_name, service="trafficsim", timeout=timeout, dry_run=dry_run,
+    _start_service(command, name=chosen_name, service="trafficsim", timeout=timeout, dry_run=dry_run,
                      ready_log="Starting CATK traffic gRPC server on", readiness=ready)
     if not dry_run:
         typer.echo(f"Trafficsim ready: endpoint={traffic.endpoint}, GPU={gpu}, "
@@ -447,7 +400,7 @@ def trafficsim_stop(
         chosen_name = name or default_traffic_container_name(traffic)
     except _CONFIGURATION_ERRORS as error:
         _configuration_error(error)
-    _stop_container(chosen_name, "trafficsim")
+    _stop_service(chosen_name, "trafficsim")
 
 
 if __name__ == "__main__":

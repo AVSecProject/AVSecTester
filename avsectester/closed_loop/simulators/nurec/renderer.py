@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, ClassVar, TYPE_CHECKING
 
 from avsectester.geometry.poses import validated_transform
-from avsectester.validation import require_nonnegative_number, require_positive_integer
+from avsectester.validation import require_nonnegative_number, require_positive_integer, require_positive_number
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -210,6 +210,26 @@ class NuRecRenderer(Renderer):
         self._t0 = (
             0  # Scene start timestamp in microseconds, corresponding to simulation time zero.
         )
+
+    def served_scenes(self, timeout_s: float = 2.0) -> tuple[str, ...] | None:
+        """Query supported scene IDs without changing this renderer's loaded scene.
+
+        Unavailable endpoints and deadline expiry return None. Other gRPC errors
+        retain their status and details in a RuntimeError.
+        """
+        require_positive_number(timeout_s, "timeout_s")
+        import grpc
+        from alpasim_grpc.v0 import common_pb2, sensorsim_pb2_grpc
+
+        try:
+            with grpc.insecure_channel(self.endpoint) as channel:
+                response = sensorsim_pb2_grpc.SensorsimServiceStub(channel).get_available_scenes(
+                    common_pb2.Empty(), timeout=timeout_s)
+                return tuple(response.scene_ids)
+        except grpc.RpcError as error:
+            if error.code() in {grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.DEADLINE_EXCEEDED}:
+                return None
+            raise RuntimeError(f"NuRec renderer RPC {error.code()}: {error.details()}") from error
 
     def load_scene(self, scene: Any) -> None:
         """Connect to the nre-ga renderer and read the scene id, camera spec, and start pose/time."""

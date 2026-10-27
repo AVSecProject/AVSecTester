@@ -12,9 +12,12 @@ Configure the dedicated CARLA server address and GPU in `configs/carla_phantom.y
 and prescribed motion belong to the dataset recipe; server connection and timing belong to the
 simulator. The perception device is `avstack.options.pipeline_cfg.perception.gpu`.
 
+Run `scripts/preparation/write_compose_env.sh` once and select CARLA_SERVER_GPU and
+CARLA_EXPERIMENT_GPU in `.env`.
+
 ```bash
 docker compose up -d --build
-docker compose exec avsectester avsectester run configs/carla_phantom.yaml
+docker compose exec carla-experiment avsectester run configs/carla_phantom.yaml
 ```
 
 The phantom experiment selects segments, prepares its artifacts once, then runs clean and attacked
@@ -42,7 +45,7 @@ Compose mounts model weights but does not mount the checkout or results. Copy re
 recreating its container:
 
 ```bash
-docker compose cp avsectester:/app/results/carla_phantom ./results/carla_phantom
+docker compose cp carla-experiment:/app/results/carla_phantom ./results/carla_phantom
 ```
 
 To retain outputs directly on the host, use a suitable bind mount and configure its container path
@@ -89,10 +92,8 @@ runs are involved. Keep runs.output pointing to the results to analyze.
 
 Declared filesystem parameters are relative to the configuration file containing them; see
 [path resolution](../reference/configuration.md#constructor-filesystem-parameters). Set dataset roots,
-renderer endpoint, checkpoint paths and device options for your environment. NuRec uses the
-AlpaSim driver
-interpreter; from the checkout, use `python -m avsectester.cli run CONFIG.yaml` with that
-interpreter.
+renderer endpoint, checkpoint paths and device options for your environment. NuRec runs through Compose: `NUREC_GPU=0 docker compose run --rm nurec-experiment run CONFIG.yaml`.
+Missing local services are started and cleaned up automatically. See [NuRec setup](installation.md#nurec-and-alpamayo-environment).
 
 ## Next steps
 

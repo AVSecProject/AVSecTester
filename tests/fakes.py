@@ -478,6 +478,9 @@ class NuRecRpcBoundary:
         self.returned_resolution_hw = returned_resolution_hw
         self.last_request = None
         self.requests = []
+        self.available_scenes = ("scene",)
+        self.scene_query_error = None
+        self.scene_query_timeouts = []
         self.tracks = {}
         self.scene_tracks = None
         self.hidden = None
@@ -490,9 +493,12 @@ class NuRecRpcBoundary:
             linear_cde=SimpleNamespace(linear_c=1., linear_d=0., linear_e=0.)),
             WhichOneof=lambda group: None)
 
-    def get_available_scenes(self, request):
+    def get_available_scenes(self, request, timeout=None):
         self.requests.append(request)
-        return SimpleNamespace(scene_ids=["scene"])
+        self.scene_query_timeouts.append(timeout)
+        if self.scene_query_error is not None:
+            raise NuRecRpcError(*self.scene_query_error)
+        return SimpleNamespace(scene_ids=list(self.available_scenes))
 
     def get_available_cameras(self, request):
         self.requests.append(request)
@@ -559,6 +565,21 @@ class NuRecRpcBoundary:
         return lambda request, timeout=None: self.edit_assets(request)
 
     def install(self, monkeypatch):
+        boundary = self
+
+        class Channel:
+            def close(self):
+                pass
+
+            def unary_unary(self, *args, **kwargs):
+                return boundary._unary_unary(*args, **kwargs)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self.close()
+
         common = SimpleNamespace(Pose=SimpleNamespace, Quat=SimpleNamespace,
                                  Vec3=SimpleNamespace, Empty=SimpleNamespace)
         sensor = SimpleNamespace(AvailableCamerasRequest=SimpleNamespace,
@@ -566,10 +587,11 @@ class NuRecRpcBoundary:
             PosePair=SimpleNamespace, DynamicObject=SimpleNamespace,
             ImageFormat=SimpleNamespace(JPEG=1))
         modules = {
-            "grpc": {"insecure_channel": lambda endpoint: SimpleNamespace(
-                         close=lambda: None, unary_unary=self._unary_unary),
+            "grpc": {"insecure_channel": lambda endpoint: Channel(),
                      "RpcError": NuRecRpcError,
-                     "StatusCode": SimpleNamespace(INVALID_ARGUMENT="INVALID_ARGUMENT")},
+                     "StatusCode": SimpleNamespace(INVALID_ARGUMENT="INVALID_ARGUMENT",
+                         UNAVAILABLE="UNAVAILABLE", DEADLINE_EXCEEDED="DEADLINE_EXCEEDED",
+                         PERMISSION_DENIED="PERMISSION_DENIED")},
             "alpasim_grpc": {}, "alpasim_grpc.v0": {"common_pb2": common,
                 "sensorsim_pb2": sensor,
                 "sensorsim_pb2_grpc": SimpleNamespace(SensorsimServiceStub=lambda channel: self)},

@@ -350,7 +350,7 @@ The controller uses the official VehicleModel.Parameters defaults, taken from th
 read from the USDZ. The USDZ ego extent and box centre still determine ground contact and geometry.
 AlpaSim packages load only on the first reset; constructing this configuration does not load a
 controller, model weights or a rendering service. See the
-[driver installation](../getting-started/installation.md#driver-environment) for its dependencies.
+[driver installation](../getting-started/installation.md#one-time-preparation) for its dependencies.
 
 PlanarEgoState contains x, y and yaw in world coordinates; longitudinal speed and lateral_speed in
 ego axes; t in seconds; yaw_rate in radians per second; and longitudinal acceleration in m/s².

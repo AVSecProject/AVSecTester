@@ -1187,7 +1187,8 @@ min_track_duration_s filters controllable tracks using their whole-recording dur
 | `AlpaSimTraffic` | Optional synchronous CATK traffic-session client; gRPC imports are lazy |
 | `AlpaSimTraffic.__init__` | `__init__(endpoint: str = '127.0.0.1:6200', history_steps: int = 16, rpc_timeout_s: float = 300.0) -> None` |
 | `AlpaSimTraffic.get_metadata` | `get_metadata(*, timeout_s: float \| None = None)`; returns TrafficModuleMetadata |
-| `AlpaSimTraffic.get_available_scenes` | `get_available_scenes() -> tuple[str, ...]` |
+| `AlpaSimTraffic.get_available_scenes` | `get_available_scenes(*, timeout_s: float \| None = None) -> tuple[str, ...]` |
+| `AlpaSimTraffic.served_scenes` | `served_scenes(timeout_s=2.0) -> tuple[str, ...] \| None` |
 | `AlpaSimTraffic.open_session` | `open_session(*, scene_id: str, random_seed: int, start_us: int, end_us: int, ego_extent: tuple[float, float, float], ego_trajectory: Sequence[tuple[int, np.ndarray]], tracks: Sequence[TrafficTrack]) -> TrafficSession` |
 | `TrafficTrack` | Frozen dataclass: `track_id: str`, `trajectory: tuple[tuple[int, np.ndarray], ...]`, `extent: tuple[float, float, float]`, `label_class: str`, `is_static: bool` |
 | `TrafficSession` | One active session owning its channel and override history |
@@ -1238,7 +1239,7 @@ values rather than USDZ measurements. The first reset lazily imports AlpaSim and
 subsequent resets create fresh systems. An internal 10-second offset keeps protobuf timestamps
 nonnegative while returned state times remain on the simulator clock. State time must match the
 controller's last propagated time, and plans must start at t0 with a zero position and unit rotation.
-See [controller installation](../getting-started/installation.md#driver-environment) for the editable
+See [controller installation](../getting-started/installation.md#one-time-preparation) for the editable
 workspace package and required linear entry point.
 
 ### avsectester.closed_loop.simulators.nurec.renderer
@@ -1266,6 +1267,7 @@ addresses pixel centres at i + 0.5. Unsupported external distortion types raise 
 | `Renderer.close` | `close() -> None` |
 | `NuRecRenderer` | `endpoint: str = '127.0.0.1:50051'`<br>`scene_id: str \| None = None`<br>`cameras: list[str] = field(default_factory=lambda: ['camera_front_wide_120fov'])`<br>`image_quality: float = 95.0`<br>`resolution_hw: Mapping[str, tuple[int, int]] = field(default_factory=dict)`<br>`probe_directory: str \| Path \| None = None`<br>`server_probe_directory: str \| None = None`<br>`track_padding_m: tuple[float, float, float] = (1.0, 1.0, 0.25)` |
 | `NuRecRenderer.copy` | `copy() -> NuRecRenderer` |
+| `NuRecRenderer.served_scenes` | `served_scenes(timeout_s=2.0) -> tuple[str, ...] \| None` |
 | `NuRecRenderer.load_scene` | `load_scene(scene: Any) -> None` |
 | `NuRecRenderer.calibration` | `calibration: dict[str, CameraCalibration]`; empty before load_scene, then one lens and rig-from-camera transform per configured camera |
 | `NuRecRenderer.service` | `service: Any` |
@@ -2255,6 +2257,16 @@ selection decisions, metric errors, notes and expandable group evidence.
 | `default_traffic_container_name` | `default_traffic_container_name(traffic) -> str`; avsectester-trafficsim-<port> without dataset access |
 | `DEFAULT_TRAFFIC_IMAGE` | `avsectester:trafficsim` |
 | `DEFAULT_NRE_IMAGE` | `nvcr.io/nvidia/nre/nre-ga:26.04` |
+
+start_container(command, *, name, ready_log, timeout_s, readiness=None, prepare=None, log)
+launches a new container, waits for its readiness marker and optional check, and raises an exception
+with the last 50 log lines on failure after cleaning up. stop_container(name) stops then removes it.
+local_services(dataset, simulator, *, nre_gpu, nre_name, trafficsim_gpu, trafficsim_models,
+trafficsim_name, timeout_s, log) is a context manager that reuses compatible services or starts
+missing local ones, then stops only containers it started in reverse order. Cleanup errors add
+notes to an active exception; after success they are reported through log.
+NuRecRenderer.served_scenes and AlpaSimTraffic.served_scenes use short RPC deadlines and return
+None only for UNAVAILABLE or DEADLINE_EXCEEDED; other errors propagate.
 
 Constructs a local Docker NRE command without filesystem or process changes. It requires NuRecDataset
 and NuRecRenderer, rejects duplicate archive basenames and remote endpoints, mounts each resolved

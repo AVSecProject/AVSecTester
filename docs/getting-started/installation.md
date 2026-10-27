@@ -13,7 +13,7 @@
 | Docker | CARLA + ModularAVStack, CLI and offline checks |
 | Local core | Interfaces, stub simulation, CPU tests and log analysis |
 | Local full | Native CARLA + modular perception on the host |
-| NuRec and Alpamayo | AlpaSim driver interpreter with rendering/model dependencies |
+| NuRec and Alpamayo | Compose experiment service with Python 3.12 and automatic local services |
 
 Weights and scene archives are separate downloads. Installing a package does not supply them.
 
@@ -46,8 +46,8 @@ contain the AlpaSim driver or Alpamayo model environment.
 ### Prerequisites
 
 - NVIDIA GPUs, Docker Compose and NVIDIA runtime configured as Docker's default runtime.
-- Adjust both NVIDIA_VISIBLE_DEVICES entries in docker-compose.yml for your physical devices.
-  The supplied values select GPU 2 for CARLA and GPU 1 for AVSecTester.
+- Run scripts/preparation/write_compose_env.sh once, then set CARLA_SERVER_GPU,
+  CARLA_EXPERIMENT_GPU and NUREC_GPU in .env. All default to GPU 0.
 - Free host ports: Compose uses host networking, CARLA RPC 2000 and traffic manager 8000.
 - Initialized avstack/detector submodules and downloaded perception checkpoints.
 
@@ -58,12 +58,14 @@ contain the AlpaSim driver or Alpamayo model environment.
 ### Build and start
 
 ```bash
+scripts/preparation/write_compose_env.sh
 docker compose up -d --build
-docker compose exec avsectester avsectester version
-docker compose exec avsectester avsectester run configs/carla_phantom.yaml
+docker compose exec carla-experiment avsectester version
+docker compose exec carla-experiment avsectester run configs/carla_phantom.yaml
 ```
 
-The service image is avsectester:latest. Stop both services with docker compose down. Model
+The carla-server service uses carlasim/carla:0.9.16; carla-experiment uses avsectester:carla.
+A standalone build is `docker build --target carla -t avsectester:carla .`. Stop both services with docker compose down. Model
 inference uses the GPU number visible inside the container, configured in avstack options. Compose
 uses Low rendering quality and 2 GB of shared memory for the CARLA server.
 
@@ -73,7 +75,7 @@ Semantic-map reads use local OpenDRIVE files. With CARLA running, export the tow
 recipes from an environment containing the carla client package:
 
 ```bash
-docker compose exec avsectester python -m scripts.preparation.export_carla_maps \
+docker compose exec carla-experiment python -m scripts.preparation.export_carla_maps \
   --host 127.0.0.1 --port 2000 --town Town03 Town05 --output data/carla_maps
 ```
 
@@ -90,14 +92,14 @@ Only models/ is bind-mounted by default. Code is copied at build time, and exper
 in the container's writable layer. Copy needed results to the host before recreation:
 
 ```bash
-docker compose cp avsectester:/app/results/carla_phantom ./results/carla_phantom
+docker compose cp carla-experiment:/app/results/carla_phantom ./results/carla_phantom
 ```
 
 After editing code or dependencies, rebuild and recreate the service. Building the image alone does
 not update the running container:
 
 ```bash
-docker compose up -d --build --no-deps avsectester
+docker compose up -d --build --no-deps carla-experiment
 ```
 
 The no-deps option leaves the existing CARLA service running. For development checks, mount the
@@ -112,7 +114,7 @@ tree read-only at its detector lookup path:
 docker run --rm --gpus 'device=1' --net=host \
   -v "$PWD":/app -w /app \
   -v "$PWD/models/work_dirs":/app/third_party/avstack-core/third_party/mmdetection3d/work_dirs:ro \
-  --entrypoint python avsectester:latest \
+  --entrypoint python avsectester:carla \
   -m avsectester.cli run configs/carla_phantom.yaml
 ```
 
@@ -199,152 +201,101 @@ available device in avstack options. Stop this server with docker rm -f carla-av
 
 ## NuRec and Alpamayo environment
 
-NuRec experiments combine the AlpaSim alpasim_driver Python 3.12 environment and the nre-ga
-rendering service. They do not use the CARLA Python 3.11 inference environment.
+The nurec-experiment Compose service uses avsectester:nurec, with AlpaSim's Python 3.12 driver,
+controller, rendering and report dependencies. It imports the bind-mounted checkout through
+PYTHONPATH instead of installing the Python 3.11 CARLA package. The nurec profile keeps it out
+of ordinary `docker compose up`; an explicit `docker compose run nurec-experiment` enables it.
 
-### Driver environment
-
-Build AlpaSim's Python 3.12 workspace with both its driver and controller packages:
-
-```bash
-cd /path/to/alpasim
-uv sync --python 3.12 --package alpasim_driver --package alpasim_controller --no-dev
-uv run --no-sync compile-protos
-```
-
-Keep alpasim_controller installed as an editable workspace package. Its upstream setuptools
-package list omits alpasim_controller.mpc_impl from a non-editable wheel, while MPC discovery
-requires the installed alpasim.mpc entry points. The workspace installs the controller's OSQP,
-do-mpc and CasADi dependencies. Verify the implementation and entry point before running NuRec:
+### One-time preparation
 
 ```bash
-/path/to/alpasim/.venv/bin/python - <<'PYTHON'
-import json
-from importlib.metadata import distribution, entry_points
-import alpasim_controller.mpc_impl
-
-metadata = json.loads(distribution("alpasim_controller").read_text("direct_url.json"))
-assert metadata["dir_info"]["editable"]
-implementations = {entry.name: entry for entry in entry_points(group="alpasim.mpc")}
-assert "linear" in implementations
-print(implementations["linear"].load())
-PYTHON
+scripts/preparation/write_compose_env.sh
+docker login nvcr.io
+docker compose build nurec-experiment
 ```
 
-The environment must also provide Alpamayo, alpasim_driver and alpasim_grpc. Install
-AVSecTester's exact PyArrow pin into that interpreter:
+The script writes the repository's absolute path, user/group IDs, Docker socket group, host Docker
+executable and default GPU selections to .env. It refuses to overwrite existing settings unless
+--force is supplied. Set NUREC_GPU in .env or override it per command. The experiment runs as that
+user, with the Docker socket group added.
+
+For data and models outside the repository, create docker-compose.override.yml with read-only
+mounts at the same absolute host paths:
+
+```yaml
+services:
+  nurec-experiment:
+    volumes:
+      - /srv/datasets:/srv/datasets:ro
+      - /srv/models:/srv/models:ro
+```
+
+Then link the existing files into the repository paths used by configurations, for example:
 
 ```bash
-cd /path/to/AVSecTester
-arrow_requirement=$(/path/to/alpasim/.venv/bin/python -c \
-  'import tomllib; print(next(d for d in tomllib.load(open("pyproject.toml", "rb"))["project"]["dependencies"] if d.startswith("pyarrow==")))')
-uv pip install --python /path/to/alpasim/.venv/bin/python "$arrow_requirement"
+mkdir -p data models
+ln -s /srv/datasets/nurec/sample_set data/nurec
+ln -s /srv/models/Alpamayo-1.5-10B models/Alpamayo-1.5-10B
+ln -s /srv/models/fasterrcnn_resnet50_fpn_coco-258fb6c6.pth models/fasterrcnn_resnet50_fpn_coco-258fb6c6.pth
 ```
 
-Repeat after uv sync if it removes dependencies outside AlpaSim's lockfile. The package metadata
-targets Python 3.11, so use the checkout from the driver's interpreter rather than installing the
-full CARLA package into Python 3.12. Install the CLI, report and insertion-image dependencies into
-that interpreter, retaining its existing model and numerical-library versions:
+Compose automatically merges this ignored override file. The repository, archives and probe files
+must have identical absolute paths inside the experiment container and on the host: its Docker
+commands launch sibling service containers using host paths. It mounts the Docker socket and host
+Docker CLI for this purpose.
+
+### Run
+
+Set dataset paths, renderer endpoint/probe paths, weights and model device in the configuration:
 
 ```bash
-uv pip install --python /path/to/alpasim/.venv/bin/python \
-  "pyyaml>=6,<7" "typer>=0.15,<0.17" "matplotlib>=3.6" "Pillow>=10" \
-  "opencv-python-headless>=4.9,<4.12" "$arrow_requirement" \
-  "trimesh==5.1.1" "embreex==4.4.0.post1"
+NUREC_GPU=0 docker compose run --rm nurec-experiment run configs/nurec_stop_sign_patch_modular_2601.yaml
 ```
 
-Do not apply the CARLA Python 3.11 constraints or replace the driver's Torch installation. Then run
-the same CLI module:
-
-```bash
-cd /path/to/AVSecTester
-/path/to/alpasim/.venv/bin/python -m avsectester.cli run configs/nurec_object_insertion.yaml
-```
-
-Set dataset paths, renderer endpoint, checkpoint_path and device in the configuration first. The
-avsectester:nurec image can supply an already prepared driver environment where available; use its
-driver interpreter with the checkout mounted.
-
-The repository's Dockerfile supplies this environment as its nurec target:
-
-```bash
-docker build --target nurec -t avsectester:nurec .
-```
-
-That target installs both editable AlpaSim workspace packages, verifies the linear MPC entry point,
-and installs the framework's CLI, report, Parquet and nurec-extra dependencies into Python 3.12
-while preserving AlpaSim's NumPy version. It imports AVSecTester from the mounted checkout rather
-than installing the Python 3.11 package. Rebuild an older image before using the supplied NuRec
-configurations with AlpaSimController. The optional nurec extra supplies mesh-ray dependencies;
-it does not install the AlpaSim workspace or controller on its own.
+The run command checks the configured services, reuses compatible running instances, and starts
+missing local NRE/trafficsim services before preparation. It stops and removes only containers it
+started, including on errors and interruption. Started services use the experiment's GPU (NUREC_GPU)
+unless --nre-gpu or --trafficsim-gpu selects another host GPU. YAML device indexes address devices
+visible inside the experiment container.
 
 ### NuRec renderer and scenes
 
-Authenticate and obtain dataset access before downloading the selected USDZ scene:
+Obtain dataset access and place the selected USDZ archives under data/nurec or configure dataroot /
+usdz_paths explicitly. NuRecDataset returns native clip identifiers. NuRec requires ScenarioStart;
+the experiment supplies its recorded clock, initial ego pose, map and actors. Decision timing comes
+from dataset.time_step.
 
-```bash
-hf download nvidia/PhysicalAI-Autonomous-Vehicles-NuRec \
-  --repo-type dataset --revision 26.01 "sample_set/26.01_release/<uuid>/<uuid>.usdz" \
-  --local-dir /path/to/nurec-scenes
-```
-
-Serve the configured archives on an available GPU:
-
-```bash
-nvidia-smi
-avsectester nre serve configs/nurec_stop_sign_patch_alpamayo_2601.yaml --gpu 0
-avsectester nre stop configs/nurec_stop_sign_patch_alpamayo_2601.yaml
-```
-
-Set the dataset dataroot or explicit usdz_paths and the renderer endpoint/probe paths in that
-configuration first. The NRE GPU is selected by `--gpu`, independently of the model's YAML device.
-The command mounts each resolved archive read-only, creates the probe directory and waits for
-Serving on. Archive filenames must be unique; a duplicate is rejected. Startup failures and timeouts
-print the last 50 log lines and stop/remove the container. See [NRE commands](../reference/cli.md#nre).
-Use `--dry-run` to print argv as a shell command without accessing Docker or creating directories.
-
-For an equivalent single-archive configuration with endpoint 127.0.0.1:50051 and these probe paths,
-the generated Docker command is:
-
-```bash
-docker run -d --name avsectester-nre-50051 --network host --gpus device=0 -e HOME=/tmp \
-  -v /path/to/nurec-scenes/scene.usdz:/mnt/nre-data/scene.usdz:ro \
-  -v /path/to/nre-probes:/mnt/nre-probes:ro \
-  --entrypoint /app/internal/scripts/pycena/runtime/pycena_nrm_full \
-  nvcr.io/nvidia/nre/nre-ga:26.04 serve-grpc --host=0.0.0.0 --port=50051 \
-  '--artifact-glob=/mnt/nre-data/*.usdz' --cache-size=2 --enable-editing-actors
-```
-
-NuRecRenderer accepts a served scene id or an unambiguous substring. NuRecDataset.scenarios()
-returns native clip identifiers. The simulator's decision step comes from dataset time_step.
-
---enable-editing-actors is required. Every render sends the poses of all currently supported
-recorded tracks, including those not moved by an attack. NRE may render an omitted track at its
-recorded pose; the simulator explicitly moves filtered-out controllable tracks below the scene. Render
-requests move reconstructed actors; inserted world objects are composited onto the renders. See
+NRE receives --enable-editing-actors. The simulator moves filtered controllable tracks below the
+scene; inserted world objects are composited onto rendered images. See
 [NuRec actor movement](../guides/simulators.md#move-recorded-actors).
+The renderer's probe_directory is created before launch and mounted at server_probe_directory,
+or at its same absolute path if no server path is set. This supports rendered-probe occlusion;
+see [Rendered-probe occlusion](../guides/simulators.md#rendered-probe-occlusion).
 
-World objects inserted into NuRec are hidden by probes rendered in the reconstruction by default.
-The server reads the probe files that NuRecRenderer writes from the mounted directory; set
-`NuRecRenderer(probe_directory="/path/to/nre-probes", server_probe_directory="/mnt/nre-probes")`.
-Create the directory before starting the container, so Docker does not create it as root. Without
-a probe directory, insert world objects with `object_occlusion="geometry"`. See
-[Rendered-probe occlusion](../guides/simulators.md#rendered-probe-occlusion).
+For optional manual service reuse:
+
+```bash
+NUREC_GPU=0 docker compose run --rm nurec-experiment nre serve CONFIG.yaml --gpu 0
+NUREC_GPU=0 docker compose run --rm nurec-experiment run CONFIG.yaml
+NUREC_GPU=0 docker compose run --rm nurec-experiment nre stop CONFIG.yaml
+```
+
+A compatible existing service is left running after run. --dry-run on nre serve prints its command
+without Docker or filesystem changes. See [NRE commands](../reference/cli.md#nre).
 
 ### Reactive traffic service
 
-Build nurec first, then the optional CATK service:
+Build nurec before the optional CATK service, which extends that image:
 
 ```bash
-DOCKER_BUILDKIT=1 docker build --target nurec -t avsectester:nurec .
-# Requires the avsectester:nurec image built above; the service extends that image.
+docker compose build nurec-experiment
 DOCKER_BUILDKIT=1 docker build --target trafficsim -t avsectester:trafficsim .
 ```
 
 Download the four files from the pinned AlpaSim commit, preserving their subdirectories:
 
 ```bash
-traffic_models_dir=/path/to/alpasim-trafficsim
+traffic_models_dir=/srv/models/alpasim-trafficsim
 traffic_models_url=https://media.githubusercontent.com/media/NVlabs/alpasim/affc2eab209fa43bdfa2f26c0f8d437922d78a68/data/trafficsim-models
 mkdir -p "$traffic_models_dir/catk_v120" "$traffic_models_dir/tokens"
 for file in catk_v120/config.yaml catk_v120/latest.ckpt \
@@ -353,11 +304,10 @@ for file in catk_v120/config.yaml catk_v120/latest.ckpt \
 done
 ```
 
-Check both SHA256 and byte count against the Git LFS pointers bundled in avsectester:nurec:
+Check SHA256 and byte count against the Git LFS pointers bundled in the image:
 
 ```bash
-docker run --rm -i -e NVIDIA_VISIBLE_DEVICES=void \
-  -v "$traffic_models_dir":/models:ro --entrypoint python avsectester:nurec - <<'PYTHON'
+docker compose run --rm -T --entrypoint python nurec-experiment - <<'PYTHON'
 from pathlib import Path
 import hashlib
 
@@ -368,7 +318,7 @@ for relative in (
     "tokens/cabs_tc_base_agent_vocab_c1024.pkl",
 ):
     fields = dict(line.split(" ", 1) for line in (source / relative).read_text().splitlines())
-    data = (Path("/models") / relative).read_bytes()
+    data = (Path("/srv/models/alpasim-trafficsim") / relative).read_bytes()
     digest = hashlib.sha256(data).hexdigest()
     assert len(data) == int(fields["size"]), relative
     assert digest == fields["oid"].removeprefix("sha256:"), relative
@@ -376,16 +326,15 @@ for relative in (
 PYTHON
 ```
 
-Set NuRecSimulator.traffic in the experiment configuration, then start both services:
+Set NuRecSimulator.traffic in the configuration and supply the existing model directory:
 
 ```bash
-avsectester nre serve CONFIG.yaml --gpu 0
-avsectester trafficsim serve CONFIG.yaml --gpu 1 --models "$traffic_models_dir"
-avsectester run CONFIG.yaml
-avsectester trafficsim stop CONFIG.yaml
-avsectester nre stop CONFIG.yaml
+NUREC_GPU=0 docker compose run --rm nurec-experiment run CONFIG.yaml \
+  --trafficsim-models /srv/models/alpasim-trafficsim
 ```
 
+Run automatically manages both services. --trafficsim-gpu can select another physical GPU.
+Manual trafficsim serve/stop commands remain available through the same Compose service.
 
 
 ## Model weights and assets

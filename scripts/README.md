@@ -17,8 +17,8 @@ avsectester run configs/nuscenes_object_insertion.yaml
 
 Before running, set the server, device, model and dataset locations in the selected configuration.
 Paths are relative to that configuration file. CARLA uses a dedicated synchronous server and the
-Modular or camera driving policy. NuRec uses a running neural renderer and Alpamayo in its driver
-environment. nuScenes uses recorded images; commands do not alter recorded trajectories. Its
+Modular or camera driving policy. NuRec uses the nurec-experiment Compose service; run automatically manages missing local renderer
+and traffic services. nuScenes uses recorded images; commands do not alter recorded trajectories. Its
 configuration uses the supported Faster R-CNN/nuScenes detector pair and requires the checkpoint
 downloaded by scripts/preparation/fetch_models.sh.
 
@@ -36,6 +36,8 @@ configurations. The stop-sign patch configurations include nine independently pr
 the clean treatment repeats in every attack group.
 
 ## Preparation
+
+- [write_compose_env.sh](preparation/write_compose_env.sh) writes local Compose user, Docker and GPU settings to the repository .env; --force replaces an existing file.
 
 - [fetch_models.sh](preparation/fetch_models.sh) downloads the perception models used by the
   supplied driving configurations.
