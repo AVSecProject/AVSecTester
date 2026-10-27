@@ -1,4 +1,4 @@
-"""White-box ``Scorer`` over an mmdet two-stage detector: RPN objectness in the target region.
+"""Differentiable RPN objectness and inference-confidence scorers for mmdet detectors.
 
 The deployed AV perception is an avstack ``MMDetObjectDetector2D`` whose underlying ``self.model`` is
 a raw mmdet ``nn.Module``. ``target_score`` runs a differentiable forward
@@ -22,6 +22,7 @@ class MMDetRPNObjectnessScorer:
     """RPN-objectness confidence in the target box for an mmdet two-stage detector (white-box)."""
 
     differentiable = True
+    'Whether input-image gradients are supported by this component.'
 
     def __init__(self, model, strides=FPN_STRIDES):
         self.model = model
@@ -29,6 +30,7 @@ class MMDetRPNObjectnessScorer:
         self.device = next(model.parameters()).device
 
     def target_score(self, image: torch.Tensor, target: data_types.TargetSpec) -> torch.Tensor:
+        """Return differentiable RPN objectness within the target region."""
         from mmdet.structures import DetDataSample
 
         x = image.to(self.device) * 255.0  # the preprocessor expects a 0..255 image
@@ -65,11 +67,13 @@ class MMDetInferenceScorer:
     """
 
     differentiable = False
+    'Whether input-image gradients are supported by this component.'
 
     def __init__(self, model):
         self.model = model
 
     def target_score(self, image, target: data_types.TargetSpec) -> float:
+        """Return matched detection confidence without requiring input gradients."""
         import numpy as np
         from mmdet.apis import inference_detector
 
@@ -84,3 +88,9 @@ class MMDetInferenceScorer:
             if x0 <= cx <= x1 and y0 <= cy <= y1:
                 best = max(best, float(sc))
         return best
+
+
+__all__ = [
+    'MMDetRPNObjectnessScorer',
+    'MMDetInferenceScorer',
+]

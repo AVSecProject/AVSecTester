@@ -59,7 +59,7 @@ def _trajectory_message(points: Sequence[tuple[int, np.ndarray]]) -> Any:
 
 @dataclass(frozen=True)
 class TrafficTrack:
-    """A recorded box-centre trajectory and its native dimensions and class."""
+    """A recorded box-center trajectory and its native dimensions and class."""
 
     track_id: str
     trajectory: tuple[tuple[int, np.ndarray], ...]
@@ -283,3 +283,10 @@ class TrafficSession:
                   traffic.TrafficSessionCloseRequest(session_uuid=self.uuid), self._rpc_timeout_s)
         finally:
             channel.close()
+
+
+__all__ = [
+    'TrafficTrack',
+    'AlpaSimTraffic',
+    'TrafficSession',
+]

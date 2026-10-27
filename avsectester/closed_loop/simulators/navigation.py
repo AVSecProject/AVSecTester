@@ -1,6 +1,6 @@
 """Navigation intentions derived from a scenario's map or recorded ego trajectory.
 
-Map routes follow AlpaSim's lane-consistency and centreline-extension rules. Navigation is
+Map routes follow AlpaSim's lane-consistency and centerline-extension rules. Navigation is
 recomputed from the actual ego pose; it never constrains the simulated vehicle's motion.
 """
 from __future__ import annotations
@@ -52,7 +52,7 @@ def _check_foldback(points: np.ndarray) -> None:
 
 
 class RouteGenerator:
-    """Generate 20 ego-frame navigation points spaced ``80 / 19`` metres apart.
+    """Generate 20 ego-frame navigation points spaced ``80 / 19`` meters apart.
 
     ``kind`` is ``map``, ``recorded`` or ``none``. ``recorded_points`` contains canonical-world
     positions in recording order. Map routes use only driving lanes, project the recording
@@ -198,3 +198,8 @@ class RouteGenerator:
         ego_points = (sampled - pose[:3, 3]) @ pose[:3, :3]
         ego_points[:, 2] = 0.0
         return ego_points
+
+
+__all__ = [
+    'RouteGenerator',
+]

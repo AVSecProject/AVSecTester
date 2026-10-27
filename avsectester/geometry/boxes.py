@@ -1,4 +1,4 @@
-"""Ray intersections and top-down overlap for box-centred rigid transforms."""
+"""Ray intersections and top-down overlap for box-centered rigid transforms."""
 
 from __future__ import annotations
 
@@ -14,9 +14,9 @@ from .poses import validated_transform, validated_vector
 def box_ray_distances(
     world_from_box: ArrayLike, extent: ArrayLike, rays: np.ndarray, world_from_cam: ArrayLike,
 ) -> np.ndarray:
-    """Ray/slab intersection distances in metres along camera-frame unit rays.
+    """Ray/slab intersection distances in meters along camera-frame unit rays.
 
-    ``extent`` is the full box size, and ``world_from_box`` locates its centre.
+    ``extent`` is the full box size, and ``world_from_box`` locates its center.
     A ray starting inside the box reaches its exit face. Misses and boxes with
     a zero dimension return positive infinity.
     """
@@ -74,3 +74,9 @@ def oriented_boxes_overlap(
             if abs(float(offset @ axis)) > sum(radii):
                 return False
     return True
+
+
+__all__ = [
+    'box_ray_distances',
+    'oriented_boxes_overlap',
+]

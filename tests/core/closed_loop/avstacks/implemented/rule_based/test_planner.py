@@ -19,31 +19,27 @@ def test_stop_sign_planner(stop_before_sign_m):
     planner = StopSignPlanner(stop_before_sign_m=stop_before_sign_m, stop_duration_s=2.)
     state = PlanarEgoState(speed=13.)
     planner.reset(observation(state))
-    stopped_at = None
-    stopped_position = None
-    resumed_at = None
+    records = []
     for frame in range(260):
-        # The same tracked sign remains present after its stop has been served.
         tracks = [SignTrack(0, np.array([50., 0.]), np.eye(2))]
         command = planner.step(observation(state), tracks)
         log = planner.component_log
-        if frame == 0:
-            assert log["braking"] is False
-            assert log["acceleration_mps2"] == pytest.approx(0.)
-            assert command.trajectory[-1][0][0] < 13. * planner.trajectory_horizon_s
-        if log["braking"]:
-            assert log["acceleration_mps2"] <= 0.
-        if planner.component_log["state"] == "STOPPED":
-            if stopped_at is None:
-                stopped_at, stopped_position = state.t, state.x
-            assert state.t - stopped_at < 2. + 1e-9
-            np.testing.assert_allclose([point[0] for point in command.trajectory], 0.)
-        elif stopped_at is not None and resumed_at is None:
-            resumed_at = state.t
-        elif resumed_at is not None:
-            assert planner.component_log["state"] == "CRUISE"
-        speed = planner.component_log["planned_speed_mps"]
+        records.append((state, command, log))
+        speed = log["planned_speed_mps"]
         state = PlanarEgoState(x=state.x + speed * .1, speed=speed, t=(frame + 1) * .1)
+    stopped = [(current, command, log) for current, command, log in records if log["state"] == "STOPPED"]
+    stopped_at, stopped_position = stopped[0][0].t, stopped[0][0].x
+    resumed = [(current, command, log) for current, command, log in records
+               if current.t > stopped_at and log["state"] != "STOPPED"]
+    resumed_at = resumed[0][0].t
+    assert records[0][2]["braking"] is False
+    assert records[0][2]["acceleration_mps2"] == pytest.approx(0.)
+    assert records[0][1].trajectory[-1][0][0] < 13. * planner.trajectory_horizon_s
+    assert all(log["acceleration_mps2"] <= 0. for _, _, log in records if log["braking"])
+    for _, command, _ in stopped:
+        np.testing.assert_allclose([point[0] for point in command.trajectory], 0.)
+    assert all(current.t - stopped_at < 2. + 1e-9 for current, _, _ in stopped)
+    assert all(log["state"] == "CRUISE" for _, _, log in resumed)
     target = 50. - planner.stop_before_sign_m
     assert stopped_position is not None and target - .5 <= stopped_position <= target + .2
     assert stopped_at <= 2 * target / 13. + 1.
@@ -89,18 +85,20 @@ def test_late_detection():
     state = PlanarEgoState(speed=13.)
     planner.reset(observation(state))
     stopped = None
+    records = []
     for index in range(100):
         planner.step(observation(state), [SignTrack(0, np.array([15.5, 0.]), np.eye(2))])
         log = planner.component_log
-        if index == 0:
-            assert log["braking"] is True
-            assert log["acceleration_mps2"] == -planner.max_deceleration_mps2
+        records.append(log)
         if log["state"] == "STOPPED":
             stopped = state
             break
-        assert log["braking"] is True and log["acceleration_mps2"] <= 0.
         speed = log["planned_speed_mps"]
         state = PlanarEgoState(x=state.x + speed * .1, speed=speed, t=(index + 1) * .1)
+    assert records[0]["braking"] is True
+    assert records[0]["acceleration_mps2"] == -planner.max_deceleration_mps2
+    assert all(log["braking"] is True and log["acceleration_mps2"] <= 0.
+               for log in records if log["state"] != "STOPPED")
     assert stopped is not None
     assert stopped.speed < planner.stop_speed_mps
     assert stopped.x > 15.5 - planner.stop_before_sign_m

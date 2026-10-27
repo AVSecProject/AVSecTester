@@ -1,4 +1,4 @@
-"""Immutable semantic map records in canonical world coordinates, measured in metres."""
+"""Immutable semantic map records in canonical world coordinates, measured in meters."""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ from avsectester.geometry.poses import validated_transform
 STOP_LINE_KIND_BY_CONTROL_KIND: Mapping[str, str] = MappingProxyType({
     "stop_sign": "stop_sign", "yield_sign": "yield_sign", "traffic_light": "traffic_light",
 })
+'Mapping from traffic-control kind to the corresponding stop-line kind.'
 _STOP_LINE_KINDS = frozenset({"stop_sign", "yield_sign", "traffic_light", "unknown"})
 _CONTROL_KINDS = frozenset({"stop_sign", "yield_sign", "speed_limit", "traffic_light", "other"})
 
@@ -44,7 +45,7 @@ def _identities(values: Sequence[str], name: str) -> tuple[str, ...]:
 
 @dataclass(frozen=True)
 class Lane:
-    """One lane with direction-ordered centreline and left/right boundary polylines."""
+    """One lane with direction-ordered centerline and left/right boundary polylines."""
 
     id: str
     centerline: np.ndarray
@@ -80,7 +81,7 @@ class Lane:
 class TrafficControl:
     """A static control facing approaching traffic, with (thickness, width, height) extent.
 
-    The pose origin is either the face centre or the source's signal position, as declared
+    The pose origin is either the face center or the source's signal position, as declared
     by ``pose_reference``. A signal position need not locate the visible sign or lamp head.
     """
 
@@ -186,3 +187,12 @@ _UNAVAILABLE_KEYS = frozenset({
     *(f"stop_lines.{item.name}" for item in fields(StopLine) if item.name != "id"),
     *(f"traffic_controls.{kind}" for kind in _CONTROL_KINDS),
 })
+
+
+__all__ = [
+    'STOP_LINE_KIND_BY_CONTROL_KIND',
+    'Lane',
+    'TrafficControl',
+    'StopLine',
+    'ScenarioMap',
+]

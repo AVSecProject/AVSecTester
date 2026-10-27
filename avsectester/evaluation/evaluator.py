@@ -198,3 +198,9 @@ def _metric_specification(metric: Metric, label: str) -> dict[str, Any]:
     # Invalid user parameter metadata is reported without losing run-status files.
     json.dumps(specification, allow_nan=False)
     return specification
+
+
+__all__ = [
+    'RunGroup',
+    'evaluate_groups',
+]

@@ -27,7 +27,7 @@ class StopSignPatchAttack(Attack):
 
     One approach is selected per scenario. The replica is the canonical MUTCD face, scaled
     by the MUTCD size closest to the mapped height and placed upright in front of the mapped
-    face centre. Optional map orientation and width modes preserve the annotation geometry.
+    face center. Optional map orientation and width modes preserve the annotation geometry.
     The patch lies in face-texture coordinates and never moves the legend.
     ``initial_patch="none"`` deploys the unpatched replica as a control. Optional detector PGD
     or rollout NES optimizes the masked pixels of the initial patch offline.
@@ -144,7 +144,7 @@ class StopSignPatchAttack(Attack):
     ) -> tuple[ObjectAsset, np.ndarray]:
         """Share the selected MUTCD/map width and upright/map orientation across all phases.
 
-        Preserve the mapped face centre and offset along the selected normal; no positional
+        Preserve the mapped face center and offset along the selected normal; no positional
         or yaw correction is applied to individual scenarios.
         """
         control = control_from_user_data(segment.user_data)
@@ -154,9 +154,15 @@ class StopSignPatchAttack(Attack):
         return asset, pose
 
     def replica_texture(self, artifacts: object) -> np.ndarray:
+        """Return the replica face with the supplied patch in its editable region."""
         return validate_replica_texture(artifacts, self.mask)
 
     def create_runtime(self, segment: AttackSegment, artifacts: object) -> AttackRuntime:
         texture = self.replica_texture(artifacts)
         asset, pose = self.replica_placement(segment, texture)
         return StopSignPatchAttackRuntime(asset, pose, self.harmonizer)
+
+
+__all__ = [
+    'StopSignPatchAttack',
+]

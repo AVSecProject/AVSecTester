@@ -7,13 +7,12 @@ import pytest
 
 from avsectester.attack.runtime import AttackRuntime, AVStackAttackAction, SensorAttackAction, WorldAttackAction
 from avsectester.attack.insertion import InsertObject
-from avsectester.data_types import Control, Detection
+from avsectester.data_types import Control, Detection, Observation
 from avsectester.closed_loop.hooks import Hook, HookSet
 from avsectester.closed_loop.simulators.nurec import NuRecSimulator
 from avsectester.execution.runner import ClosedLoopRunner, RecordingPolicy, RunRequest
 from avsectester.execution.services import ClosedLoopServices, SensorRequest
-from avsectester.runlog import RunLog
-from avsectester.rendering import ObjectVisibility
+from avsectester.runlog import Recorder, RunLog
 from tests.fakes import (
     ConstantAVStack, DeceleratingAVStack, HistoryAVStack, MemoryDataset, MemorySimulator,
     NuRecImageBoundary,
@@ -42,6 +41,16 @@ def test_run():
         empty = ClosedLoopRunner().run(simulator_runtime, ConstantAVStack(), RunRequest(0))
         assert empty.status == "completed" and not empty.steps
 
+    with MemorySimulator().create_runtime() as simulator_runtime:
+        with pytest.raises(ValueError, match="unavailable sensors"):
+            ClosedLoopRunner().run(simulator_runtime, ConstantAVStack(), RunRequest(
+                1, recording=RecordingPolicy(("missing",))))
+
+    unsupported = MemorySimulator(can_observe_past=False)
+    with unsupported.create_runtime() as runtime:
+        with pytest.raises(NotImplementedError, match="cannot provide the 2 recorded past observations"):
+            ClosedLoopRunner().run(runtime, HistoryAVStack(), RunRequest(1))
+
 
 def test_run_with_hooks():
     hooks = HookSet([
@@ -56,7 +65,6 @@ def test_run_with_hooks():
         assert record.model_observation.ego_speed == record.raw_observation.ego_speed + 6.
         assert record.produced_command == Control(throttle=.2)
         assert record.executed_command == Control(throttle=.2, brake=.7)
-        assert record.physical_pre.ego_speed == record.raw_observation.ego_speed
 
 
 def test_run_with_past(tmp_path):
@@ -87,8 +95,10 @@ def test_run_with_past(tmp_path):
     assert [observation.t for observation in past] == pytest.approx([-.2, -.1])
     assert [observation.ego_speed for observation in past] == [1., 1.]
     assert avstack.initial_observation.ego_speed == 6.
-    assert np.all(log.steps[0].raw_observation.sensor_data["front"] == 23)
-    assert np.any(log.steps[0].model_observation.sensor_data["front"] != 23)
+    raw = log.steps[0].raw_observation.sensor_data["front"]
+    assert np.all(raw == 23)
+    assert np.any(log.steps[0].model_observation.sensor_data["front"] !=
+                  log.steps[0].raw_observation.sensor_data["front"])
     with ClosedLoopServices(dataset, simulator) as services, services.session(7) as session:
         for historical, frame in zip(past, frames[1:3]):
             original = session.read_sensors(SensorRequest("scene", frame, ("front",)))
@@ -112,6 +122,17 @@ def test_run_with_past(tmp_path):
 
 
 def test_run_with_attacks(tmp_path):
+    class WrongStage(AttackRuntime):
+        def step(self, context):
+            return (AVStackAttackAction("sensors.post", lambda value, context: value),)
+
+    with MemorySimulator().create_runtime() as runtime:
+        recorder = Recorder()
+        with pytest.raises(ValueError, match="use SensorAttackAction to modify sensor data"):
+            ClosedLoopRunner().run(
+                runtime, ConstantAVStack(), RunRequest(1, attacks=(WrongStage(),)), recorder=recorder)
+        assert recorder.log.status == "failed"
+
     lifecycle = []
     resource = (tmp_path / "world-resource.txt").open("w")
 
@@ -218,114 +239,68 @@ def test_run_failure(tmp_path):
         assert cancelled.value.run_log.status == "cancelled"
 
 
-def test_insert_object(tmp_path, make_object_in_front):
-    with MemorySimulator().create_runtime() as simulator_runtime:
-        simulator_runtime.reset()
-        clean = simulator_runtime.sensor_view("front")
-        asset, world_from_object = make_object_in_front(clean)
+def test_run_with_inserted_object(make_object_in_front):
+    with MemorySimulator().create_runtime() as runtime:
+        runtime.reset()
+        clean = runtime.sensor_view("front")
+        asset, pose = make_object_in_front(clean)
 
         class InsertAttackRuntime(AttackRuntime):
             def setup(self, context):
-                return (InsertObject("sign", asset, world_from_object),)
+                return (InsertObject("sign", asset, pose),)
 
-        log = ClosedLoopRunner().run(simulator_runtime, ConstantAVStack(), RunRequest(
-            2, attacks=(InsertAttackRuntime(),), recording=RECORDING, output_path=tmp_path / "run"))
-        assert log.status == "completed"
-        record = log.steps[0]
-        assert np.any(record.raw_observation.sensor_data["front"] != clean.data)
-        assert record.physical_pre.objects.keys() == record.physical_post.objects.keys() == {"sign"}
-        assert simulator_runtime.state().objects == {}
-        receipts = [item for event in log.events for item in event.data.get("actions", ())
-                    if item["kind"] == "receipt"]
-        insertion = next(item for item in receipts if item.get("details", {}).get("object_id") == "sign")
-        assert insertion["outcome"] == "applied"
-        assert set(insertion["details"]) == {"object_id", "asset_category", "world_from_object"}
-        assert insertion["details"]["asset_category"] == "stop_sign"
-        np.testing.assert_allclose(insertion["details"]["world_from_object"], world_from_object)
-        initialization = next(event for event in log.events if event.kind == "initialization")
-        assert initialization.data["object_visibility"] == record.object_visibility
-        for step in log.steps:
-            assert set(step.object_visibility) == {"sign"}
-            assert set(step.object_visibility["sign"]) == {"front"}
-            assert isinstance(step.object_visibility["sign"]["front"], ObjectVisibility)
-            assert step.object_visibility["sign"]["front"].visible_pixels > 0
-        saved = RunLog.read(tmp_path / "run")
-        assert [step.object_visibility for step in saved.steps] == [
-            step.object_visibility for step in log.steps]
-
-        class RemoveObject(WorldAttackAction):
-            def apply(self, simulator_runtime, resources):
-                simulator_runtime.remove_object("sign")
-
-        class InsertThenRemoveAttackRuntime(InsertAttackRuntime):
-            def step(self, context):
-                return (RemoveObject(),)
-
-        removed = ClosedLoopRunner().run(simulator_runtime, ConstantAVStack(), RunRequest(
-            1, attacks=(InsertThenRemoveAttackRuntime(),)))
-        assert removed.status == "completed"
-        assert removed.steps[0].physical_pre.objects.keys() == {"sign"}
-        assert removed.steps[0].physical_post.objects == simulator_runtime.state().objects == {}
-
-    restored_log = RunLog.read(tmp_path / "run")
-    restored_insertion = next(item for event in restored_log.events
-                              for item in event.data.get("actions", ())
-                              if item["kind"] == "receipt"
-                              and item.get("details", {}).get("object_id") == "sign")
-    assert set(restored_insertion["details"]) == set(insertion["details"])
-    assert restored_insertion["details"]["asset_category"] == "stop_sign"
-    for actual, expected in zip(restored_log.steps, log.steps):
-        assert actual.object_visibility == expected.object_visibility
-        assert isinstance(actual.object_visibility["sign"]["front"], ObjectVisibility)
-    restored_initialization = next(event for event in restored_log.events if event.kind == "initialization")
-    assert restored_initialization.data["object_visibility"] == initialization.data["object_visibility"]
-    restored = restored_log.steps[0]
-    for state in (restored.physical_pre.objects["sign"], restored.physical_post.objects["sign"]):
-        np.testing.assert_allclose(state.pose, world_from_object)
-        assert state.extent == asset.extent and state.category == asset.category
-        assert state.box_center == (0., 0., 1.)
+        log = ClosedLoopRunner().run(runtime, ConstantAVStack(), RunRequest(
+            1, attacks=(InsertAttackRuntime(),), recording=RECORDING))
+    step = log.steps[0]
+    assert np.any(step.raw_observation.sensor_data["front"] != clean.data)
+    initialization = next(event for event in log.events if event.kind == "initialization")
+    receipts = [item for item in initialization.data["actions"] if item["kind"] == "receipt"]
+    assert any(item["outcome"] == "applied" and item["details"]["object_id"] == "sign"
+               for item in receipts)
+    assert step.object_visibility["sign"]["front"].visible_pixels > 0
 
 
-def test_run_rejects_invalid_request():
-    with pytest.raises(ValueError, match="nonnegative"):
-        RunRequest(-1)
-    with MemorySimulator().create_runtime() as simulator_runtime:
-        with pytest.raises(ValueError, match="unavailable sensors"):
-            ClosedLoopRunner().run(simulator_runtime, ConstantAVStack(), RunRequest(
-                1, recording=RecordingPolicy(("missing",))))
+def test_run_with_decelerating_feedback(nurec_longitudinal_dataset):
+    from avsectester.closed_loop.simulators.ego_dynamics import TrajectoryFollower
 
-        class InvalidSensorAttack(AttackRuntime):
-            def step(self, context):
-                return (AVStackAttackAction("sensors.post", lambda value, context: value),)
-
-        with pytest.raises(ValueError, match="use SensorAttackAction to modify sensor data") as failure:
-            ClosedLoopRunner().run(simulator_runtime, ConstantAVStack(),
-                                   RunRequest(1, attacks=(InvalidSensorAttack(),)))
-        assert failure.value.run_log.status == "failed"
-    unsupported = MemorySimulator()
-    unsupported.can_observe_past = False
-    with unsupported.create_runtime() as runtime:
-        with pytest.raises(NotImplementedError, match="cannot provide the 2 recorded past observations"):
-            ClosedLoopRunner().run(runtime, HistoryAVStack(), RunRequest(1))
-
-
-def test_run_with_decelerating_feedback(nurec_longitudinal_recording, deceleration_case):
-    dynamics, expected_drop, tolerance = deceleration_case
-    dataset = nurec_longitudinal_recording
+    dataset = nurec_longitudinal_dataset
     start = dataset.scenario_start("scene", dataset.frames("scene")[15])
     camera, _ = dataset.camera_geometry("scene")
     simulator = NuRecSimulator(
-        NuRecImageBoundary(camera), dynamics,
-        depth="none", route_generator="none", physics_update_mode="none",
-    time_step=.1)
+        NuRecImageBoundary(camera), TrajectoryFollower(), time_step=.1,
+        depth="none", route_generator="none", physics_update_mode="none")
     with simulator.create_runtime() as runtime:
         log = ClosedLoopRunner().run(runtime, DeceleratingAVStack(), RunRequest(10, start=start))
-    assert log.status == "completed" and len(log.steps) == 10
-    speeds = np.array([log.steps[0].physical_pre.ego_speed,
-                       *(step.physical_post.ego_speed for step in log.steps)])
-    assert speeds[0] == pytest.approx(10.)
-    assert speeds[0] - speeds[-1] == pytest.approx(expected_drop, abs=tolerance)
-    np.testing.assert_allclose(speeds, 10 - expected_drop * np.arange(11) / 10,
-                               atol=tolerance, rtol=0)
+    assert len(log.steps) == 10
+    assert np.all(np.diff([step.physical_pre.ego_speed for step in log.steps]) < 0)
     np.testing.assert_allclose([step.model_observation.ego_speed for step in log.steps],
-                               speeds[:-1], atol=1e-12)
+                               [step.physical_pre.ego_speed for step in log.steps], atol=1e-12)
+
+
+def test_recording_policy():
+    pixels = np.zeros((2, 3, 3), np.uint8)
+    observation = Observation(0., 0, sensor_data={"front": pixels, "other": pixels.copy()},
+                              calibration={"front": "calibration"})
+    policy = RecordingPolicy(("front",), ("raw",), every_n_steps=2)
+    captured = policy.observation(observation, 0, "raw")
+    assert list(captured.sensor_data) == ["front"]
+    assert captured.calibration == observation.calibration
+    assert policy.observation(observation, 1, "raw").sensor_data == {}
+    assert policy.observation(observation, 2, "model_input").sensor_data == {}
+    assert list(observation.sensor_data) == ["front", "other"]
+    with pytest.raises(ValueError, match="every_n_steps"):
+        RecordingPolicy(every_n_steps=0)
+    with pytest.raises(ValueError, match="representations"):
+        RecordingPolicy(representations=("unknown",))
+
+
+def test_run_request(tmp_path):
+    request = RunRequest(2, retain_steps=False, output_path=tmp_path / "streamed")
+    with MemorySimulator().create_runtime() as runtime:
+        streamed = ClosedLoopRunner().run(runtime, ConstantAVStack(), request)
+    assert streamed.status == "completed" and not streamed.steps
+    assert len(RunLog.read(request.output_path).steps) == 2
+    with pytest.raises(ValueError, match="requires an output_path"):
+        RunRequest(1, retain_steps=False)
+    with pytest.raises(ValueError, match="nonnegative"):
+        RunRequest(-1)

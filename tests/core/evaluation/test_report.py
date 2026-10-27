@@ -3,15 +3,19 @@
 import csv
 from copy import deepcopy
 import json
+import re
 
 import numpy as np
+import pytest
 
-from avsectester.evaluation import DrivingMetrics, EvaluationReport, UnavailableMetricValue
-from avsectester.evaluation.report import format_number, format_statistic
+from avsectester.evaluation import (
+    DrivingMetrics, EvaluationConfiguration, EvaluationReport,
+)
 
 
-def test_evaluation_report(tmp_path):
-    report = EvaluationReport(
+@pytest.fixture
+def report():
+    return EvaluationReport(
         groups=[{
             "part": None, "treatment_attacks": {"clean": None, "attacked": "attack"}, "segment_index": 0, "scenario_id": "scene", "seed": 0,
             "treatments": {
@@ -46,11 +50,40 @@ def test_evaluation_report(tmp_path):
         ],
         notes=["Only recorded measurements are available."],
     )
+
+
+def test_format_summary(report):
     text = report.format_summary()
     assert "DrivingMetrics" in text and "final_speed" in text and "stopped" in text
     assert "final_speed (m/s)" in text and "3.0000" in text and "0 of 1 groups" in text and "—" in text
     assert "UserMetric" in text and "seed" in text and "9.0000" in text and "n = 1" in text
     assert report.notes[0] in text
+    metric_values = report.treatment_summaries[0]["metrics"]
+    metric_values["DrivingMetrics.final_speed"] = {"mean": 1.23456789, "std": .1, "count": 3}
+    metric_values["DrivingMetrics.stopped"] = {"kind": "proportion", "true_fraction": 2 / 3, "count": 3}
+    text = report.format_summary()
+    assert "1.2346 ± 0.1000" in text and "n = 3" in text
+    assert "0.6667" in text and "2 of 3 groups" in text
+    metric_values["DrivingMetrics.final_speed"] = {"mean": -0., "std": 0., "count": 1}
+    assert "-0.0000" not in report.format_summary()
+    assert "0.0000" in report.format_summary()
+    nonfinite = deepcopy(report)
+    nonfinite.treatment_summaries[0]["metrics"] = {
+        "UserMetric.infinite": {"mean": float("inf"), "std": 0., "count": 1},
+    }
+    formatted = nonfinite.format_summary()
+    assert "infinite" in formatted
+    assert re.search(r"clean\s+1/1\s+0\s+—\n", formatted)
+    for summary in report.treatment_summaries:
+        summary["part"] = "train"
+    validation = deepcopy(report.treatment_summaries[0])
+    validation["part"] = "validation"
+    report.treatment_summaries.append(validation)
+    assert "Part: train" in report.format_summary()
+    assert "Part: validation" in report.format_summary()
+
+
+def test_save(report, tmp_path):
     assert report.save(tmp_path) == tmp_path and report.path == tmp_path
     data = json.loads((tmp_path / "report.json").read_text())
     assert data == report.as_dict() and data["statistics"]["std_ddof"] == 0
@@ -120,7 +153,6 @@ def test_summarize():
     assert summaries["train", "clean"]["metrics"]["speed"]["mean"] == 4.
     assert summaries["validation", "clean"]["metrics"]["speed"]["mean"] == 100.
     assert [row["part"] for row in report.pair_summaries] == ["train", "validation"]
-    assert "Part: train" in report.format_summary() and "Part: validation" in report.format_summary()
 
 
 def test_record_error():
@@ -132,16 +164,12 @@ def test_record_error():
     }]
 
 
-def test_format_number():
-    assert format_number(7) == "7"
-    assert format_number(1.0) == "1.0000" and format_number(3.0) == "3.0000"
-    assert format_number(-0.0) == "0.0000"
-    assert format_number(float("inf")) == "—" and format_number(float("nan")) == "—"
-    assert format_number(1.23456789) == "1.2346"
-    assert format_number(-.000001) == "0.0000"
-    assert format_number(True) == "yes" and format_number(False) == "no"
-    assert format_number(None) == "—"
-    assert format_number(UnavailableMetricValue("Missing evidence")) == "—"
-    assert format_statistic({"mean": 1.23456789, "std": .1, "count": 3}) == "1.2346 ± 0.1000\nn = 3"
-    assert format_statistic({"mean": 3., "std": 0., "count": 1}) == "3.0000\nn = 1"
-    assert format_statistic({"kind": "proportion", "true_fraction": 2 / 3, "count": 3}) == "0.6667\n2 of 3 groups"
+def test_evaluation_configuration():
+    metric = DrivingMetrics()
+    configuration = EvaluationConfiguration([metric])
+    assert configuration.metrics == (metric,)
+    assert EvaluationConfiguration().metrics is None
+    with pytest.raises(TypeError, match="Metric instances"):
+        EvaluationConfiguration((object(),))
+    with pytest.raises(ValueError, match="repeat a metric type"):
+        EvaluationConfiguration((metric, DrivingMetrics()))

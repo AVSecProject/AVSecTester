@@ -7,10 +7,10 @@ masks. Writes ``<out>/person_XXX.png`` (RGBA, tight crop, transparent background
 (source image, box, 3-D height, SAM score).
 
 nuScenes is CC BY-NC-SA 4.0: the cutouts are derived data — keep them out of the repo, next to your
-datasets (e.g. ``/workspace/hdd/users/<you>/assets/pedestrians``), and credit nuScenes where shown.
+datasets (e.g. ``data/assets/pedestrians``), and credit nuScenes where shown.
 
-    python -m scripts.preparation.extract_person_cutouts --nuscenes /workspace/hdd/datasets/nuscenes \
-        --out /workspace/hdd/users/<you>/assets/pedestrians --n 12
+    python -m scripts.preparation.extract_person_cutouts --nuscenes data/nuscenes \
+        --out data/assets/pedestrians --n 12
 """
 
 import argparse

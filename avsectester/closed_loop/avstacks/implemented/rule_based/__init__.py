@@ -5,5 +5,12 @@ from .planner import StopSignPlanner
 from .stack import RuleBasedAVStack, rule_based_driving_adapter
 from .tracker import SignTrack, StopSignTracker
 
-__all__ = ["RuleBasedAVStack", "CocoStopSignDetector", "StopSignPlanner", "StopSignTracker", "SignTrack",
-           "rule_based_driving_adapter"]
+
+__all__ = [
+    'RuleBasedAVStack',
+    'CocoStopSignDetector',
+    'StopSignPlanner',
+    'StopSignTracker',
+    'SignTrack',
+    'rule_based_driving_adapter',
+]

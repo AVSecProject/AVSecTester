@@ -1,29 +1,27 @@
 # Attack implementations
 
-Built-in and user-defined attacks use the same structure and discovery rule. Place a user
-attack here in a folder named after the class in snake_case. For example, `MyNNAttack` lives
-in `my_nn_attack/`, whose `__init__.py` exports only `MyNNAttack`. Configuration can then use
-`type: MyNNAttack`; an external package can use `type: package.module:MyNNAttack`.
-Consecutive uppercase letters stay together until the final capital starts a word: `MyNNAttack`
-becomes `my_nn_attack`. A capital after a digit starts a word, so `Attack2D` becomes `attack2_d`.
+> **Audience:** Attack implementers.
+>
+> **Outcome:** Place an attack in a package with explicit public exports.
+>
+> **Prerequisites:** [Attack guide](../../docs/guides/attacks.md).
 
-Each folder contains:
+Prefer a user-owned package and reference it with `type: my_project.attacks:MyAttack`. The
+framework's supplied attacks use the class name converted to `snake_case` as their directory
+name: `PatchAttack` belongs in `patch_attack/`. Discovery by class name depends on this rule.
 
-- `attack.py`: the `Attack` subclass, its validated parameters and three entry points;
-- `metabuilder.py`: `build_metadata` selection logic;
-- `offline.py`: optional optimization; omit it when there is no offline work;
-- `online.py`: the `AttackRuntime` and its actions;
-- `assets.py`: optional attack-specific assets;
-- `__init__.py`: exports only the attack class.
+A supplied attack package exports only its `Attack` subclass through `__init__.py` and `__all__`.
+Its implementation modules keep selection, offline preparation, runtime actions and assets
+separate. An offline phase or an online phase may be a no-op.
 
-A phase may use additional modules in the same folder when it needs them, for example
-`patch_attack/optimization_data.py` for the patch optimization data source.
+The [attack guide](../../docs/guides/attacks.md) owns phase contracts and deployment tick
+budget. The [architecture](../../docs/concepts/architecture.md#dependency-layers) owns
+dependency rules; concrete attacks do not import one another.
 
-Core interfaces do not import insertion tools, optimization tools or concrete attacks. Tools
-use core interfaces and never import another tool or a concrete attack. Concrete attacks use
-core interfaces and tools, and never import another attack. Placement types live in `attack/insertion/placement.py`; insertion and optimization are
-user-facing framework tools.
+Public modules declare `__all__`. Internal modules and helpers are not public imports. See
+[tests](../../tests/README.md#writing-tests) for component contract tests.
 
-`PatchAttack` ranks candidate hosts independently within each selected time window. It keeps
-`hosts_per_window` candidates and records their host binding, score and zero-based rank. Its
-`max_windows` parameter limits time windows, not the number of host candidates.
+## Next steps
+
+-  [Public API](../../docs/reference/python-api.md)
+-  [Supplied configurations](../../docs/examples/README.md)

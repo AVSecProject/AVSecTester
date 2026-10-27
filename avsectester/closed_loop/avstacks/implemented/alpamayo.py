@@ -1,8 +1,8 @@
-"""Alpamayo end-to-end camera policy as an :class:`~avsectester.closed_loop.avstacks.base.AVStack`.
+"""Alpamayo end-to-end camera policy as an `avsectester.closed_loop.avstacks.base.AVStack`.
 
 Wraps AlpaSim's own Alpamayo model (``alpasim_driver.models.alpamayo1_5_model.Alpamayo15Model``) so
-it plugs into ``ClosedLoopRunner``: an :class:`~avsectester.data_types.Observation`
-(a rendered camera + ego state) in, a :class:`~avsectester.data_types.Control` (the planned trajectory) out.
+it plugs into ``ClosedLoopRunner``: an `avsectester.data_types.Observation`
+(a rendered camera + ego state) in, a `avsectester.data_types.Control` (the planned trajectory) out.
 
 Alpamayo is a trajectory-output policy: ``predict(PredictionInput) -> ModelPrediction`` with
 ``candidate_positions`` of shape ``(K, T, 3)`` in the **rig frame**. We keep a short temporal buffer
@@ -74,7 +74,7 @@ DEFAULT_REGISTRY.register_native('alpasim_utils.geometry', 'Trajectory', _alpasi
 
 
 def alpamayo_driving_adapter(factory):
-    """Expose a fresh end-to-end policy decision, including the adapter's history reset."""
+    """Bind one ``policy`` component (observation + past → Control) and no scorers."""
     def evaluate(avstack, inputs):
         if not isinstance(inputs, Mapping) or set(inputs) != {"observation", "past"}:
             raise TypeError("Alpamayo policy inputs require observation and past")
@@ -105,8 +105,11 @@ class AlpamayoAVStack(AVStack):
     """
 
     provides_detections = False
+    'Whether decisions expose detections compatible with detection metrics.'
     past_steps: ClassVar[int] = 15
+    'Recorded decision steps required before the selected start.'
     decision_time_step: ClassVar[float | None] = 0.1
+    'Decision interval in seconds; None leaves the interval unrestricted.'
 
     def __init__(
         self,
@@ -156,7 +159,7 @@ class AlpamayoAVStack(AVStack):
 
     @property
     def supported_stages(self) -> frozenset[str]:
-        """The end-to-end policy has no separate perception or tracking stage."""
+        """Expose ``policy.pre`` and ``policy.post`` around the end-to-end policy."""
         return frozenset(("policy.pre", "policy.post"))
 
     @property
@@ -264,6 +267,7 @@ class AlpamayoAVStack(AVStack):
                 failure.add_note(f"CUDA cache release also failed: {cleanup!r}")
 
     EPOCH_US = 10_000_000  # fixed offset for nonnegative protobuf timestamps
+    'Timestamp offset in microseconds used by the trajectory interface.'
 
     @staticmethod
     def _validate_interval(first: float, second: float) -> None:
@@ -369,6 +373,7 @@ class AlpamayoAVStack(AVStack):
         )
 
     def __call__(self, observation: Observation) -> Control:
+        """Append the current capture and infer a rig-frame trajectory from camera and ego history."""
         if self._closed:
             raise RuntimeError("AlpamayoAVStack is closed")
         if not self._ready:
@@ -435,3 +440,9 @@ class AlpamayoAVStack(AVStack):
             (tuple(float(value) for value in position), rotation_to_quaternion(rotation), time)
             for position, rotation, time in zip(positions, rotations, times)
         ]]
+
+
+__all__ = [
+    'alpamayo_driving_adapter',
+    'AlpamayoAVStack',
+]

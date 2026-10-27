@@ -2,7 +2,7 @@
 
 ``AVStack`` knows nothing about how the system works: a modular perception->tracking->planning
 ->control pipeline and a single end-to-end model both satisfy it. Implementations live in
-:mod:`avsectester.closed_loop.avstacks`. This module imports nothing from avstack, avcarla or
+`avsectester.closed_loop.avstacks`. This module imports nothing from avstack, avcarla or
 carla; the implementations carry those dependencies.
 """
 
@@ -39,6 +39,7 @@ class ObservationPipeline:
         self.localizer = localizer
 
     def process(self, observation: Observation, dispatcher: HookDispatcher) -> Observation:
+        """Apply localization and plugins, emitting their supported hook stages."""
         from avsectester.closed_loop.hooks import _invoke
 
         dispatcher.control = None
@@ -73,8 +74,11 @@ class AVStack(_StageAdapter, ABC):
     """
 
     provides_detections: bool | None = None
+    'Whether decisions expose detections compatible with detection metrics.'
     past_steps: ClassVar[int] = 0
+    'Recorded decision steps required before the selected start.'
     decision_time_step: ClassVar[float | None] = None
+    'Decision interval in seconds; None leaves the interval unrestricted.'
 
     @property
     def observation_pipeline(self) -> ObservationPipeline:
@@ -85,6 +89,7 @@ class AVStack(_StageAdapter, ABC):
 
     @observation_pipeline.setter
     def observation_pipeline(self, value: ObservationPipeline) -> None:
+        """Optional localization and observation transformation pipeline applied before driving decisions."""
         if not isinstance(value, ObservationPipeline):
             raise TypeError("observation_pipeline must be ObservationPipeline")
         self._observation_pipeline = value
@@ -127,7 +132,12 @@ class AVStack(_StageAdapter, ABC):
 
     @abstractmethod
     def __call__(self, observation: Observation) -> Control:
-        """Decide the control command for this Observation."""
+        """Advance driving inference once and return a command in ``command_modes``.
+
+        Call after ``reset`` with the current model-visible observation. Keep per-run history
+        in this instance; do not modify or advance the simulator. Trajectories use the current
+        rig frame and integer-microsecond timestamps.
+        """
 
 
 class CommandCompatibilityError(ValueError):
@@ -153,3 +163,11 @@ def validate_command_compatibility(
             f"{type(avstack).__name__} produces {sorted(missing)} commands unsupported by "
             f"{type(simulator_runtime).__name__}. Select compatible dynamics or add a command conversion hook."
         )
+
+
+__all__ = [
+    'ObservationPipeline',
+    'AVStack',
+    'CommandCompatibilityError',
+    'validate_command_compatibility',
+]

@@ -10,6 +10,16 @@ from avsectester.closed_loop.hooks import Hook, HookSet, Plugin, UnsupportedStag
 from tests.fakes import ConstantAVStack, MemorySimulator
 
 
+def test_hook():
+    callback = lambda value, context: value
+    hook = Hook("observation", callback)
+    assert hook.stage == "observation" and hook.handler is callback
+    with pytest.raises(ValueError, match="stage"):
+        Hook("", callback)
+    with pytest.raises(TypeError, match="Hook handler"):
+        Hook("command", object())
+
+
 def test_with_hooks():
     base = HookSet([Hook("observation", lambda value, context: replace(
         value, ego_speed=value.ego_speed + 2.))])
@@ -35,8 +45,6 @@ def test_validate_stages():
     with pytest.raises(UnsupportedStageError, match="Unsupported hook stages"):
         HookSet([Hook("not.a.stage", lambda value, context: value)]).validate_stages(
             simulator_runtime, avstack)
-    with pytest.raises(TypeError, match="Hook handler"):
-        Hook("command", object())
 
 
 def test_session():
@@ -64,6 +72,11 @@ def test_session():
         hooks = HookSet([Hook("observation", plugin),
                          Hook("command", lambda value, context: replace(value, brake=.4))])
         with hooks.session(simulator_runtime, ConstantAVStack()).activate() as session:
+            with pytest.raises(RuntimeError, match="already active"):
+                with session.activate():
+                    pytest.fail("an active hook session was entered twice")
+            with pytest.raises(ValueError, match="unsupported stage"):
+                session.emit("unavailable.stage", None)
             simulator_runtime.reset()
             raw = simulator_runtime.observe()
             seen = session.observe(raw)
@@ -75,6 +88,9 @@ def test_session():
             session.after_step(next_raw)
             assert feedback == [(simulator_runtime.clock.t, next_raw.frame, next_raw.ego_speed)]
             assert session.outputs[0].value == seen.ego_speed
+            context = session.stage_context("observation")
+        with pytest.raises(RuntimeError, match="active hook callback"):
+            context.record_output("late", 1.)
         assert events == ["reset", "transform", "close"]
         # Invalid replacements stop the chain before downstream consumers see a wrong type.
         broken = HookSet([Hook("command", lambda value, context: 1),

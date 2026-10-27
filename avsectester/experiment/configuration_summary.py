@@ -46,3 +46,5 @@ def summary_value(value: Any) -> Any:
         return summary_value(value.item())
     raise TypeError(f"Cannot summarize configuration parameter {type(value).__name__}; "
                     "override Attack.configuration_parameters() with a data description")
+
+

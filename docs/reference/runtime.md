@@ -8,17 +8,21 @@
 
 ## Initialization
 
-The caller creates SimulatorRuntime and AVStack. The runner validates stages, world settings and
-command compatibility before resetting the world. For selected CARLA origins, reset follows
-prescribed motion without attack hooks to the shared deployment window. simulator.setup applies
-world actions, then deployment and capture ticks produce the selected observation. At position zero
-these ticks hold base actors. A positive origin earlier than the window is rejected.
+The caller creates `SimulatorRuntime` and `AVStack`. The runner validates hook stages,
+environments and command compatibility before reset. The simulator prepares the selected origin
+using the shared deployment tick budget, applies setup actions and captures the initial
+observation. Simulator-specific origin and capture behavior is described
+in [Simulators](../guides/simulators.md).
 
-AttackRuntime.setup receives subscribed setup state and returns only WorldAttackAction. Its
-setup_ticks declares its deployment budget. Preparation and execution share the maximum budget over
-all configured attacks, selected segments, seeds and treatments. Actions register cleanup on the provided ExitStack. The
-simulator runtime records actual initial state; it does not compare against replay-error thresholds
-or reselect the origin.
+`AttackRuntime.setup` receives its subscribed state and returns zero or more `WorldAttackAction`
+values. Its `setup_ticks` must not exceed `Attack.deployment_ticks(segment)`. Actions
+register cleanup on the supplied `ExitStack`. Budget declarations belong to
+[Writing attacks](../guides/attacks.md).
+
+Driving-history acquisition follows
+[Past observations](../guides/simulators.md#recorded-past-observations). The initialization
+event records `past_steps` and each historical observation's `t` and `vehicle_state` without
+sensor images.
 
 ## One decision
 
@@ -27,66 +31,77 @@ sequenceDiagram
     participant R as ClosedLoopRunner
     participant S as SimulatorRuntime
     participant A as AttackRuntime
-    participant V as ObservationPipeline
-    participant D as AVStack
+    participant D as Driving system
     participant L as Recorder
-    R->>S: observe and state (no advancement)
-    S->>S: compose registered world objects into captured camera data
-    S-->>R: composed capture
-    R->>A: step(subscribed snapshots)
-    A-->>R: world, sensor and AVStack actions
-    R->>R: apply sensor actions, then sensor environment
-    R->>V: sensor hooks, localization, observation hooks
-    R->>D: processed observation
-    D-->>R: produced command and component outputs
-    R->>R: command actions and hooks, validate
-    R->>S: apply queued world actions, step(executed command)
-    S-->>R: post-state and next capture
-    R->>L: step record, actions and receipts
+    R->>S: reset selected origin
+    S->>A: setup subscribed state
+    S-->>R: initial capture and physical state
+    R->>L: initialization event
+    loop each decision
+        R->>S: observe and state without advancement
+        S-->>R: capture with composed world objects
+        R->>A: step subscribed snapshots
+        A-->>R: world, sensor and AVStack actions
+        R->>R: sensor actions, then sensor environment
+        R->>D: ObservationPipeline hooks and localization
+        opt first decision
+            R->>D: AVStack.reset(processed observation, past)
+        end
+        R->>D: AVStack(processed observation)
+        D-->>R: produced command and component outputs
+        R->>R: command actions, hooks and validation
+        R->>S: queued world actions and step(executed command)
+        S-->>R: post-state and next capture
+        R->>R: record_end subscriptions at step.end
+        R->>R: after_step feedback
+        R->>L: record_step with actions and receipts
+    end
 ```
 
-Decision zero resets AVStack history with the same already processed observation used for its first
-call. Input transforms execute once; the localizer is not reset again. World actions returned during
-a decision cannot change its already captured input. They affect subsequent capture. Sensor and
-AVStack actions operate on current-decision values.
+`ObservationPipeline` processes a decision's input once. Decision zero uses that same processed
+observation for `AVStack.reset` and the first driving call; the localizer is not reset between
+them. World actions returned during a decision affect the next capture. Sensor and `AVStack`
+actions affect the current decision.
 
-InsertObject is a WorldAttackAction with setup_ticks=0. A setup insertion appears from the first
-capture; a step insertion appears from the next one. All camera composition happens before sensor
-attack actions, sensor environment and ObservationPipeline. state().objects is separate from native
-actors,
-and StepRecord.physical_pre/physical_post retain those object records in RunLog. The receipt's
-details contain only object_id, asset_category and world_from_object. Capture-time visibility is
-recorded separately in StepRecord.object_visibility and the initialization event as
-object ID → camera name → ObjectVisibility. See
-[Insert a world object](../guides/attacks.md#insert-a-world-object).
+`InsertObject` is a `WorldAttackAction` with `setup_ticks=0`. A setup insertion appears in the
+first capture; a step insertion appears in the next capture. Camera composition precedes
+sensor actions, sensor environment and `ObservationPipeline`. Framework objects remain separate
+from native actors in `WorldSnapshot.objects`.
 
-Attack actions have three boundaries: WorldAttackAction changes the simulated world;
-SensorAttackAction changes any sensor capture, including LiDAR, GNSS and IMU; AVStackAttackAction
-changes driving-system values from localization.pre through command. Sensor actions chain in issue
-order on private data, preserving the original capture. Native data wrappers retain calibration
-and acquisition metadata; camera buffers remain RGB uint8. AVStackAttackAction rejects sensors.post.
-That stage remains a normal HookSet stage.
+### Attack actions
 
-SensorView.camera and cam_from_world are optional and only describe optical camera geometry.
-sensor_from_world is the world-to-sensor-body transform (x forward, y left, z up), including for
-cameras. It is distinct from cam_from_world (x right, y down, z forward) and is None when pose data
-is unavailable. SimulatorRuntime.sensors lists all sensor views, and camera_sensors is its subset.
-SensorView.objects maps visible object IDs to their PlacedObject values for this camera and capture.
-Cuboid-based insertion visibility uses their alpha-aware surfaces alongside the native actor boxes.
+| Action | Boundary |
+|---|---|
+| `WorldAttackAction` | Simulated-world changes |
+| `SensorAttackAction` | Sensor capture changes, including camera, LiDAR, GNSS and IMU |
+| `AVStackAttackAction` | Driving-system values from `localization.pre` through command |
+
+Sensor actions chain in issue order on independent data, preserving the original capture. Native
+wrappers retain calibration and acquisition metadata; camera buffers remain RGB uint8.
+`AVStackAttackAction` rejects `sensors.post`, which remains a normal hook stage. A requested
+`AVStack` stage not reached in that decision makes the decision fail.
+Action stages are checked when actions are issued. Hook stages and command modes are checked
+when each run starts.
+
+### Sensor views
+
+`SensorView.camera` and `cam_from_world` describe optical geometry when available. Optical axes
+are x right, y down, z forward. `sensor_from_world` describes the sensor body axes: x forward, y
+left, z up; it is None when the sensor pose is unavailable. The two transforms are distinct for
+cameras. `SimulatorRuntime.sensors` lists all views; `camera_sensors` lists its camera subset.
+`SensorView.objects` contains the inserted objects associated with the capture.
 
 ### CARLA LiDAR data
 
-A CARLA LiDAR view's data is an owned SensorCapture. Its raw_data buffer contains packed float32
-records in the order x, y, z, intensity: four values, or 16 bytes, per point. Coordinates use
-CARLA's local left-handed sensor frame: x forward, y right, z up. These raw bytes have not been
-flipped; they differ from sensor_from_world's canonical body axes, whose y points left.
+A CARLA LiDAR view contains an owned `SensorCapture`. `raw_data` holds packed float32 records x,
+y, z, intensity: four values, or 16 bytes, per point. These bytes use CARLA sensor axes: x
+forward, y right, z up. `sensor_from_world` uses the canonical body axes whose y points left.
 
-Writing a replacement capture retains the native LidarData wrapper and its flipy setting. With
-flipy=True, the native export conversion negates y. Return points in the original CARLA axes;
-do not pre-flip y and then apply that conversion again. Preserve the capture's frame, timestamp
-and metadata when constructing replacement bytes.
+Replacing the capture retains the native `LidarData` wrapper and its flipy setting. With
+flipy=True, the native exporter negates y. Supply replacement points in the original CARLA axes
+and preserve the capture's frame, timestamp and metadata.
 
-This action decodes the points, shifts them one metre forward and returns a new SensorCapture:
+This action shifts the points one meter forward:
 
 <!-- runnable -->
 ```python
@@ -109,131 +124,128 @@ class ShiftLidarPointsAction(SensorAttackAction):
         )
 ```
 
-Return the action from AttackRuntime.step; the runner supplies its current capture and SensorView.
+Return it from `AttackRuntime.step`. The runner supplies its current capture and `SensorView`.
 
-## Hook stages
+## `Hook` stages
 
-A hook is `Hook(stage, handler)`. The handler is callable `(value, StageContext) -> value`, or
-provides transform with that signature. Handlers run in registration order, consuming previous
-replacements. Adapter-specific stages must be declared; unsupported stages fail before reset.
+`Hook(stage, handler)` accepts a callable or an object with `transform(value, context)`,
+where `context` is a `StageContext`.
+Handlers execute in registration order and consume preceding replacements. Adapters declare
+their supported stages; unsupported stages fail before reset.
 
 | Stage | Value |
 |---|---|
-| simulator.setup | None; native world setup |
-| simulator.step.pre/post | None; before/after physical advancement |
-| sensors.post | Observation |
-| localization.pre | Observation |
-| localization.post | StateEstimate |
-| observation | Observation after localization |
-| perception.pre/post | CallInputs / component output, when declared |
-| tracking.pre/post | CallInputs / component output, when declared |
-| planning.pre/post | CallInputs / component output, when declared |
-| control.pre/post | CallInputs / component output, when declared |
-| policy.pre/post | End-to-end policy inputs/output, when declared |
-| command | Control before execution |
-| render.pre/post | CameraPoseRequest / rendered sensor, when declared; NuRec's request pose is the 4×4 world_from_rig rendering pose |
+| `simulator.setup` | None; native world setup |
+| `simulator.step.pre` / `simulator.step.post` | None; before/after physical advancement |
+| `sensors.post` | `Observation` |
+| `localization.pre` | `Observation`; present only with a configured localizer |
+| `localization.post` | `StateEstimate` |
+| `observation` | `Observation` after localization |
+| `perception.pre` / `perception.post` | `CallInputs` / component output, when declared |
+| `tracking.pre` / `tracking.post` | `CallInputs` / component output, when declared |
+| `planning.pre` / `planning.post` | `CallInputs` / component output, when declared |
+| `control.pre` / `control.post` | `CallInputs` / component output, when declared |
+| `policy.pre` / `policy.post` | Policy inputs / output, when declared |
+| `command` | `Control` before execution |
+| `render.pre` / `render.post` | `CameraPoseRequest` / rendered sensor, when declared |
 
-Simulator setup and step handlers use explicit native operations and return None. A pre-hook uses
-CallInputs(args, kwargs) to retain native calling conventions. A post-hook returns the replacement
-output directly. NativeHook adapts an explicitly registered avstack-library hook's tuple convention.
-NativeHook is defined in closed_loop/avstacks/implemented/modular.py.
+NuRec `render.pre` uses a 4×4 `world_from_rig` pose in `CameraPoseRequest`. `Simulator` setup
+and step handlers return `None`. A component pre-hook returns `CallInputs(args, kwargs)`; a
+post-hook returns the replacement output. `NativeHook` adapts an explicitly registered
+avstack-library hook.
 
 ## Contexts and lifecycle
 
-StageContext exposes step, stage, sensor, physical_state, observation, control, run resources, rng
-and record_output. Native access is explicit under simulator_runtime and avstack. A handler that
-uses native SDK objects gives up adapter portability.
+`OnlineContext` exposes `step`, `stage`, `sim_time`, `frame` and optional subscribed
+`observation` and `physical_state` snapshots. `record_output` writes named output during a run.
+It carries no native runtime or time-advancing service.
+Bound `AVStackAttackAction` methods also receive the actual stage value.
 
-OnlineContext exposes only subscribed observation/physical_state snapshots and physical time; it
-cannot advance simulation. AVStackAttackAction bound methods also receive the actual stage value.
-All online state should remain in one AttackRuntime.
+`StageContext` exposes step, stage, sensor, `physical_state`, observation, control, run
+resources, rng and `record_output`. `simulator_runtime` and avstack expose borrowed native
+resources. Using native SDK objects ties a handler to that adapter.
 
-Plugin optionally provides reset(RunContext), transform(value, StageContext), after_step(context)
-and close(). Plugin.after_step receives the next raw capture and real post-step clock. HookSet
-manages each handler owner's lifecycle once even if registered at several stages. Stateful objects
-must reset per run or be newly constructed. ObservationPipeline owns its localizer, and the
-dispatcher manages
-its lifecycle with other handlers.
+`Plugin.transform` is required. `reset(context)`, `after_step(context)` and `close()`
+are optional. `after_step` receives the next raw capture and the post-step clock. `HookSet`
+manages each handler owner's lifecycle once, including owners registered at several stages.
+Stateful handlers reset per run or are newly constructed. `ObservationPipeline` owns its
+localizer, whose lifecycle joins the other handlers.
 
 ## Randomness
 
-HookSet.seed creates a fresh per-run hook RNG. Sensor corruptions use a separate generator keyed
-by run seed, absolute dataset position and corruption index. A segment beginning at position p uses
-p+i at decision i. Offline requests and formal runs at the same position align their sensor noise.
-Native frames can include initialization ticks and are not the dataset position.
+Sensor corruptions and hooks follow the [randomness rules](../guides/environments.md#randomness).
 
 ## Physical and model-visible records
 
+`StateEstimate` contains the model-visible `vehicle_state` and `ego_speed` produced by
+localization. Physical snapshots remain separate from these values.
+
 | Record | Fields and coordinates |
 |---|---|
-| Observation | t, frame, sensor_data, calibration, vehicle_state, ego_speed, route; model-visible |
-| Control | throttle, steer, brake, optional trajectory |
-| WorldSnapshot | t, frame, vehicle_state, ego_speed, ego, actors, traffic_lights and objects; physical |
-| ActorState | world-from-actor pose, velocity, category, extent, local box center |
-| Detection | ego-frame position, full extent, yaw, category and score |
-| RecordedOutput | name, copied value, decision step, stage, physical frame/time and sensor |
+| `Observation` | t, frame, `sensor_data`, calibration, `vehicle_state`, `ego_speed`, route; model-visible |
+| `Control` | throttle, steer, brake, optional trajectory |
+| `WorldSnapshot` | t, frame, `vehicle_state`, `ego_speed`, ego, actors, `traffic_lights`, objects; physical |
+| `ActorState` | world-from-actor pose, velocity, category, optional extent, local `box_center` and `box_rotation` |
+| `Detection` | ego-frame box center, full extent, yaw, category, score |
+| `RecordedOutput` | name, copied value, decision step, stage, physical frame/time, sensor |
 
-ActorState.extent is full length, width and height in metres; None means unavailable. box_center is
-the actor-local box center; ActorState.box_transform() returns its oriented world-box-center
-transform. Unknown extent is None, distinct from known zero dimensions. Pose-only use remains valid;
-operations requiring dimensions report missing evidence rather than substituting zero. Detection
-position is its box center in the true ego frame at capture time, using sensor mounting extrinsics,
-independently of driving localization, with ego x forward, y left, z up; yaw is radians. None
-detections means unsupported, while an empty sequence means supported with no detections.
+`ActorState.extent` is full length, width and height in meters; None means unavailable.
+`box_center` is the actor-local box center; `box_rotation` is local roll/pitch/yaw in degrees.
+`box_transform()` combines these with the actor pose to return the world-from-box transform.
+Operations requiring dimensions report missing evidence when extent is None.
 
-WorldSnapshot.traffic_lights maps semantic-map TrafficControl IDs to red, yellow, green, off or
-unknown. CARLA reads signal actors using their OpenDRIVE IDs; NuRec and recorded replay currently
-return an empty mapping. The static map itself is available to selection and saved evaluation,
-not to OnlineContext or AVStack input.
+`Detection` uses the true capture-time ego frame, independently of driving localization: x
+forward, y left, z up, and yaw in radians. None detections means unsupported; an empty sequence
+means supported with no detections. `WorldSnapshot.traffic_lights` maps map control IDs to red,
+yellow, green, off or unknown. `Simulator` support is described
+in [Simulators](../guides/simulators.md).
 
-## RunLog
+## `RunLog`
 
-StepRecord stores raw_observation, model_observation, physical_pre, physical_post, produced_command,
-executed_command, components, detections, actions, outputs, typed sensor_geometry, object_visibility
-and telemetry.
-physical_pre and physical_post are StepRecord fields. Action requests and receipts distinguish what
-was requested from what actually applied. Every receipt has a details mapping, filled when the
-action applies and defaulting to {}. InsertionAttackAction adds rendered, reason, occlusion_source
-(depth or actor_cuboids) and ignored_occluders (actors without extent). InsertObject adds
-object_id, asset_category and world_from_object.
+Registered dataclasses use JSON objects with `_avsectester_type: "dataclass"`,
+`type: "module:Class"` and an encoded `fields` mapping. Mapping-key order is encoded separately;
+user mappings containing reserved serialization keys are escaped and round-trip unchanged.
+Payload retention defaults are defined in [Configuration reference](configuration.md#recording).
 
-StepRecord.object_visibility, the initialization event and RenderResult.object_visibility map object
-ID → camera name → ObjectVisibility for that capture. ObjectVisibility is a frozen record with
-occlusion_source, ignored_occluders and visible_pixels. Camera entries follow
-[Inserted world objects](../guides/simulators.md#inserted-world-objects). EventRecord captures
-initialization, termination and
-failure/cleanup information outside a decision. RunLog.status distinguishes completed, failed,
-cancelled and incomplete logs.
+`StepRecord` separates `raw_observation` from `model_observation`, `physical_pre` from
+`physical_post`, and `produced_command` from `executed_command`. It also stores components,
+detections, actions, outputs, `sensor_geometry`, `object_visibility` and telemetry. Physical
+records retain framework object state.
 
-Parquet stores typed scalars and nested struct/list values. Large arrays and images occupy bounded
-payload shards referenced by records. Each steps/part-NNNNN.parquet and event part is closed before
-publication. Payloads publish before referring records; completion metadata is written last. A crash
-leaves completed parts readable and can lose the open part of each stream.
+Action requests and receipts distinguish requested changes from applied changes. A receipt's
+outcome is applied or `not_applied`, describing the action rather than its driving impact. Every
+receipt has a details mapping, empty when there is no detail. `InsertionAttackAction` adds
+rendered, reason, `occlusion_source` and `ignored_occluders`. `InsertObject` records `object_id`,
+`asset_category` and `world_from_object`.
 
-Records include typed camera geometry under sensor_geometry, with bounding-box offsets for
-log-only evaluation. Readers consume the current record layout without legacy-format conversion.
-SerializationRegistry provides JSON-compatible encode/decode and independent in-process snapshots.
-RunLog, experiment output and driving adapters share it. A registered dataclass encodes as
-`{"_avsectester_type": "dataclass", "type": "package.module:Name", "fields": {...}}` and is
-reconstructed on read. Field names such as record remain ordinary entries inside fields.
-Native objects are registered by their adapters when the adapter module is imported. Persisted native
-values decode to ordinary data. snapshot(value) returns detached data, preserving supported Python
-containers and native types without converting them through JSON.
-DEFAULT_REGISTRY registers framework records by string path without importing simulator SDKs,
-AVStack, AlpaSim or torch when the registry is created.
+`StepRecord.object_visibility`, the initialization event and `RenderResult.object_visibility`
+use object ID → camera name → `ObjectVisibility`. `ObjectVisibility` contains `occlusion_source`,
+`ignored_occluders` and `visible_pixels`. `Visibility` and composition behavior is described
+under [Object visibility](../guides/simulators.md#inserted-world-objects).
 
-The record layout has changed. Older RunLog files and experiment output directories may no longer
-be readable; there is no automatic format conversion.
+`EventRecord` captures initialization, termination and failure/cleanup information outside a
+decision. NuRec termination includes `ground_contact_failures`, counts by rejected ground-fit
+reason. `RunLog.status` distinguishes completed, failed, cancelled and incomplete runs.
 
-Register your dataclass before writing it. Before reading a log that contains user records, import
-the module defining and registering those records. An unregistered type raises an error explaining
-how to register it.
+Parquet stores typed scalar and nested values. Large arrays occupy payload shards. Payloads
+publish before referring record parts; completion metadata publishes last. A crash leaves
+published parts readable and may lose an open part. Readers ignore `*.open` files.
+
+`SerializationRegistry` handles JSON-compatible encoding and independent in-memory snapshots.
+Registered dataclasses reconstruct on read; native values decode to ordinary data. Import and
+register user dataclasses before reading them. Missing registrations raise an error identifying
+the required registration. Framework registrations use type paths without eagerly
+importing SDKs.
+
+This self-contained example stores a user record in a temporary directory:
 
 <!-- runnable -->
 ```python
 from dataclasses import dataclass
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
-from avsectester.serialization import DEFAULT_REGISTRY
+from avsectester.serialization import SerializationRegistry
 from avsectester.runlog import Recorder, RunLog
 
 @dataclass(frozen=True)
@@ -241,33 +253,24 @@ class CameraCheck:
     sensor: str
     visible_pixels: int
 
-DEFAULT_REGISTRY.register_dataclass(CameraCheck)
-recorder = Recorder("example-run")
-recorder.record_event("camera_check", value=CameraCheck("front", 12))
-recorder.finish()
-restored = RunLog.read("example-run")
-assert restored.events[0].data["value"] == CameraCheck("front", 12)
+registry = SerializationRegistry()
+registry.register_dataclass(CameraCheck)
+with TemporaryDirectory() as directory:
+    path = Path(directory) / "run"
+    with Recorder(path, registry=registry) as recorder:
+        recorder.record_event("camera_check", value=CameraCheck("front", 12))
+    restored = RunLog.read(path, registry=registry)
+    assert restored.events[0].data["value"] == CameraCheck("front", 12)
 ```
 
-RecordingPolicy(sensor_ids=(), representations=("model_input",), every_n_steps=1) controls sensor
-payload retention. State, commands and available component outputs/detections remain per decision.
-Recorder supports chunk_steps, chunk_bytes, payload_shard_bytes and retain_steps. Disabling
-in-memory retention requires a persistent output directory.
+`Recorder` supports bounded chunks and in-memory
+retention. Disabling in-memory retention requires a persistent output directory. Reader and
+recorder signatures are in the [Python API](python-api.md).
 
 ## Failures and cleanup
 
-Unsupported stages, commands and environments are configuration errors. A failing decision stops
-attacks, records unapplied actions and cleans resources. World claims are released only after
-native cleanup. Never interpret a requested action as applied without its receipt, or a
-partial log as a completed run.
-
-See [Python API](python-api.md#runlog-api) for readers and recorder signatures.
-
-NuRec termination events include ground_contact_failures, a count per rejected ground-fit reason.
-
-Driving systems may declare past_steps. Before the first decision, the runner obtains that many
-recorded past observations and applies only the treatment's sensor corruptions at each absolute
-dataset position. Past observations bypass hooks, ObservationPipeline and attacks, but contain the
-world objects present at the start, such as objects inserted during setup. AVStack.reset
-receives them from oldest to newest. The initialization event includes past_steps and
-past_observations, containing only each observation's t and vehicle_state, without images.
+Unsupported environments are rejected during validation. Unsupported hook stages and command
+modes fail each run at its start, producing exit 1. A failing decision stops
+attack runtimes, records unapplied actions and cleans run resources. A requested action without
+an applied receipt is not evidence of an applied change; an incomplete log is not a
+completed run.

@@ -127,3 +127,8 @@ class NuScenesDataset(Dataset):
         return ScenarioStart("NuScenesDataset", scenario_id, frame, {
             "frame_data": data[frame.position:],
         }, recorded_ego=tuple(item.ego for item in data), scenario_map=self.scenario_map(scenario_id))
+
+
+__all__ = [
+    'NuScenesDataset',
+]

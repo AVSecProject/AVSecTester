@@ -2,7 +2,7 @@
 
 The modular (white-box) AVStack: perception -> tracking -> planning -> control, built from config.
 Heavy avstack imports are lazy (done when the pipeline is built), so this module — and the
-``avsectester.closed_loop.avstacks`` package — imports without avstack, matching :class:`AlpamayoAVStack`.
+``avsectester.closed_loop.avstacks`` package — imports without avstack, matching `AlpamayoAVStack`.
 """
 
 from __future__ import annotations
@@ -361,19 +361,20 @@ def _register_avstack_modules() -> None:
 
 
 class ModularAVStack(AVStack):
-    """An :class:`~avsectester.closed_loop.avstacks.base.AVStack` backed by an avstack ``ModularDrivingPipeline``.
+    """An `avsectester.closed_loop.avstacks.base.AVStack` backed by an avstack ``ModularDrivingPipeline``.
 
     Observation -> the pipeline (perception -> tracking -> planning -> control) -> a Control command.
     CARLA-trained MMDetection3D checkpoint configurations register their dataset metadata
     automatically before the pipeline is built.
     Runtime transforms replace each available stage's inputs and outputs. Use NativeHook
     to adapt explicitly registered native hooks to the stage chain.
-    :meth:`instrument` optionally captures component outputs for :meth:`component_log`.
-    Perception is always captured when supported, allowing :meth:`detections` to return
+    `instrument` optionally captures component outputs for `component_log`.
+    Perception is always captured when supported, allowing `detections` to return
     canonical boxes without additional inference.
     """
 
     provides_detections = True
+    'Whether decisions expose detections compatible with detection metrics.'
 
     def __init__(self, pipeline_cfg: dict) -> None:
         _register_avstack_modules()
@@ -487,7 +488,7 @@ class ModularAVStack(AVStack):
                     _remove_hook(hooks, hook)
 
     def instrument(self, stages: tuple[str, ...] = ("perception", "tracking", "planning", "control")) -> None:
-        """Capture named stage outputs after attack hooks, enabling :meth:`component_log`."""
+        """Capture named stage outputs after attack hooks, enabling `component_log`."""
         modules = self._stage_modules()
         missing = set(stages) - modules.keys()
         if missing:
@@ -508,9 +509,10 @@ class ModularAVStack(AVStack):
             modules["perception"].register_post_hook(self._perception_capture)
 
     def component_log(self) -> dict[str, Any] | None:
-        """The most recent per-stage outputs ``{stage: output}`` (needs :meth:`instrument` first), or
-        None if the AVStack is not instrumented. Outputs are snapshots of native values;
-        canonical evaluation boxes are separately available from :meth:`detections`."""
+        """Return the most recent per-stage outputs after ``instrument``, or None otherwise.
+
+        Outputs are snapshots of native values;
+        canonical evaluation boxes are separately available from `detections`."""
         return {stage: cap.last for stage, cap in self._captures.items()} if self._captures else None
 
     def detections(self) -> Sequence[Detection] | None:
@@ -582,6 +584,7 @@ class ModularAVStack(AVStack):
                 break
 
     def __call__(self, observation: Observation) -> Control:
+        """Run the native perception-to-control pipeline once using the current capture reference."""
         self._remember_capture_reference(observation)
         if self._perception_capture is not None:
             hooks = self.pipeline.perception.post_hooks
@@ -591,3 +594,11 @@ class ModularAVStack(AVStack):
         return Control(
             throttle=float(ctrl.throttle), steer=float(ctrl.steer), brake=float(ctrl.brake)
         )
+
+
+__all__ = [
+    'NativeHook',
+    'register_carla_dataset',
+    'modular_driving_adapter',
+    'ModularAVStack',
+]

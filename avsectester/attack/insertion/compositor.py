@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+
 import numpy as np
 
 from .assets import ResolvedInsertion
@@ -14,6 +16,7 @@ from avsectester.attack.insertion.types import VisibilityEvidence
 from avsectester.rendering import Harmonizer, blend_rgba, render_surfaces
 
 
+@dataclass(frozen=True)
 class PatchCompositor:
     """Appearance settings for geometry-based insertion compositing.
 
@@ -23,15 +26,15 @@ class PatchCompositor:
     softening apply independently of the selected harmonizer.
     """
 
-    def __init__(
-        self, harmonizer: Harmonizer | None = None, *, soften: float = 0.0,
-    ) -> None:
-        if not np.isfinite(soften) or soften < 0:
+    harmonizer: Harmonizer | None = None
+    soften: float = field(default=0.0, kw_only=True)
+
+    def __post_init__(self) -> None:
+        if not np.isfinite(self.soften) or self.soften < 0:
             raise ValueError("soften must be finite and nonnegative")
-        if harmonizer is not None and not callable(harmonizer):
+        if self.harmonizer is not None and not callable(self.harmonizer):
             raise TypeError("harmonizer must implement Harmonizer")
-        self.soften = float(soften)
-        self.harmonizer = harmonizer
+        object.__setattr__(self, "soften", float(self.soften))
 
 
 def render_resolved(
@@ -73,3 +76,9 @@ def render_resolved(
                         soften=0.0 if compositor is None else compositor.soften)
     union = active.astype(np.uint8) * 255
     return output, union
+
+
+__all__ = [
+    'PatchCompositor',
+    'render_resolved',
+]

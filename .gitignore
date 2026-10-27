@@ -220,12 +220,13 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# avstack sibling-name compatibility symlinks (see docs/SETUP.md)
+# avstack sibling-name links created by the Dockerfile
 third_party/lib-avstack-core
 third_party/lib-avstack-api
 
 # Model weights are fetched via scripts/preparation/fetch_models.sh (kept out of git).
 # The ./models structure + README are tracked; the binaries are not.
+/models/alpasim-trafficsim/
 /models/**/*.pth
 /models/**/*.onnx
 /models/**/*.engine

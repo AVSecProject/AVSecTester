@@ -148,3 +148,8 @@ class CocoStopSignDetector:
         self._closed = True
         self._loaded_model = None
         self.model = None
+
+
+__all__ = [
+    'CocoStopSignDetector',
+]

@@ -1,6 +1,9 @@
 """Real policy context and trajectory transport with only checkpoint weights replaced."""
 from dataclasses import replace
 import os
+from pathlib import Path
+import subprocess
+import sys
 
 import numpy as np
 import pytest
@@ -16,6 +19,7 @@ def test_driving_adapter(alpamayo_model_boundary, alpamayo_observations):
     adapter = alpamayo_driving_adapter(lambda seed: AlpamayoAVStack(
         model=alpamayo_model_boundary.create(), camera_ids=["front"], device="cpu"))
     assert adapter.past_steps == 15
+    assert adapter.decision_time_step == .1
     observations = alpamayo_observations()
     with ClosedLoopServices(MemoryDataset(), MemorySimulator(), adapter) as services:
         with services.session(7) as session:
@@ -65,6 +69,20 @@ def test_trajectory_context(alpamayo_model_boundary, alpamayo_observations):
     assert model.last_input.previous_plan is None
     avstack.close()
 
+    model = alpamayo_model_boundary.create()
+    avstack = AlpamayoAVStack(model=model, camera_ids=["front"], device="cpu", frame_subsample=3)
+    observations = alpamayo_observations(count=17)
+    avstack.reset(observations[15], past=observations[:15])
+    avstack(observations[15])
+    selected = model.last_input.camera_images["front"]
+    assert [frame.image[0, 0, 0] for frame in selected] == [6, 9, 12, 15]
+    np.testing.assert_allclose(avstack.component_log()["selected_image_times"]["front"], [-.9, -.6, -.3, 0.])
+    avstack(observations[16])
+    assert [frame.image[0, 0, 0] for frame in model.last_input.camera_images["front"]] == [7, 10, 13, 16]
+    avstack.close()
+    with pytest.raises(ValueError, match="frame_subsample must be a positive integer"):
+        AlpamayoAVStack(model=model, frame_subsample=0)
+
 
 def test_reset(alpamayo_model_boundary, alpamayo_observations):
     model = alpamayo_model_boundary.create()
@@ -85,22 +103,6 @@ def test_reset(alpamayo_model_boundary, alpamayo_observations):
     with pytest.raises(ValueError, match="0.1 second decision interval"):
         avstack(replace(observations[-1], t=.05))
     avstack.close()
-
-
-def test_frame_subsample(alpamayo_model_boundary, alpamayo_observations):
-    model = alpamayo_model_boundary.create()
-    avstack = AlpamayoAVStack(model=model, camera_ids=["front"], device="cpu", frame_subsample=3)
-    observations = alpamayo_observations(count=17)
-    avstack.reset(observations[15], past=observations[:15])
-    avstack(observations[15])
-    selected = model.last_input.camera_images["front"]
-    assert [frame.image[0, 0, 0] for frame in selected] == [6, 9, 12, 15]
-    np.testing.assert_allclose(avstack.component_log()["selected_image_times"]["front"], [-.9, -.6, -.3, 0.])
-    avstack(observations[16])
-    assert [frame.image[0, 0, 0] for frame in model.last_input.camera_images["front"]] == [7, 10, 13, 16]
-    avstack.close()
-    with pytest.raises(ValueError, match="frame_subsample must be a positive integer"):
-        AlpamayoAVStack(model=model, frame_subsample=0)
 
 
 @pytest.mark.parametrize("route,command", [
@@ -179,6 +181,18 @@ def test_close(alpamayo_model_boundary, alpamayo_observations):
         AlpamayoAVStack(checkpoint_path="", device="cpu", camera_ids=["front"]).reset(observation, past=past)
 
 
+def test_cublas_workspace_config():
+    environment = dict(os.environ)
+    environment.pop("CUBLAS_WORKSPACE_CONFIG", None)
+    process = subprocess.run(
+        [sys.executable, "-c",
+         "import os; import avsectester.closed_loop.avstacks.implemented.alpamayo; "
+         "print(os.environ['CUBLAS_WORKSPACE_CONFIG'])"],
+        cwd=Path(__file__).resolve().parents[5], env=environment,
+        capture_output=True, text=True, check=True)
+    assert process.stdout.strip() == ":4096:8"
+
+
 def test_seed(alpamayo_model_boundary, alpamayo_observations):
     observations = alpamayo_observations(count=18)
     observation, past = observations[15], observations[:15]
@@ -198,8 +212,6 @@ def test_seed(alpamayo_model_boundary, alpamayo_observations):
             assert seeds == expected
         assert model.options["model_cfg"].force_determinism is determinism
         avstack.close()
-    # Deterministic cuBLAS must be configured before any GPU work; importing the adapter does it.
-    assert os.environ["CUBLAS_WORKSPACE_CONFIG"] in (":4096:8", ":16:8")
     with pytest.raises(ValueError, match="seed"):
         AlpamayoAVStack(camera_ids=["front"], seed=-1)
 

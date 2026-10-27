@@ -135,12 +135,12 @@ def replica_pose(
     control: TrafficControl, offset_m: float = .10, *, panel_height_m: float,
     face_orientation: str,
 ) -> np.ndarray:
-    """Place a panel in front of the mapped face centre using the selected orientation.
+    """Place a panel in front of the mapped face center using the selected orientation.
 
     ``upright`` projects the mapped +X normal onto the horizontal plane and uses world
-    +Z as its up axis; ``map`` preserves the mapped rotation. Offset the face centre along
+    +Z as its up axis; ``map`` preserves the mapped rotation. Offset the face center along
     the selected +X, then lower the ObjectAsset origin by half the panel height along
-    the selected +Z. The mapped face centre itself is never corrected.
+    the selected +Z. The mapped face center itself is never corrected.
     """
     _check_control(control)
     require_nonnegative_number(offset_m, "offset_m")
@@ -163,7 +163,7 @@ def replica_pose(
 
 def texture_from_colors(original_rgba: np.ndarray, mask: np.ndarray,
                         colors_chw_numpy: np.ndarray) -> np.ndarray:
-    """Export masked RGB colours in [0, 1], preserving all unmasked pixels and alpha."""
+    """Export masked RGB colors in [0, 1], preserving all unmasked pixels and alpha."""
     original = np.asarray(original_rgba)
     colors = np.asarray(colors_chw_numpy)
     mask = np.asarray(mask)
@@ -175,3 +175,5 @@ def texture_from_colors(original_rgba: np.ndarray, mask: np.ndarray,
     pixels = np.rint(np.clip(np.moveaxis(colors, 0, -1), 0., 1.) * 255).astype(np.uint8)
     result[..., :3][mask] = pixels[mask]
     return result
+
+

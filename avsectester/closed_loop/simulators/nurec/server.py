@@ -329,3 +329,6 @@ def local_services(
                 log(message)
             else:
                 log(f"Stopped and removed {service} container: {name}")
+
+
+__all__ = ['local_services']

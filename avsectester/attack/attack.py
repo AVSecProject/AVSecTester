@@ -59,6 +59,7 @@ class AttackSegment:
 
     @property
     def decision_steps(self) -> int:
+        """Number of decisions between the inclusive start and exclusive stop references."""
         return self.stop.position - self.start.position
 
 
@@ -78,6 +79,7 @@ class OfflineContext:
 class Attack(ABC):
     """One attack with its own parameters and optional offline preparation."""
     environment: Mapping[str, Any] = MappingProxyType({})
+    'Environment settings merged with experiment settings during selection and the offline phase.'
 
     def build_metadata(self, scenario: ScenarioView) -> Sequence[AttackSegment]:
         """Select segments, or leave selection to a shared metadata.load file."""
@@ -144,3 +146,10 @@ class Attack(ABC):
         if hashlib.sha256(payload).hexdigest() != manifest.get("sha256"):
             raise ValueError("Artifact content hash does not match the saved manifest")
         return pickle.loads(payload)
+
+
+__all__ = [
+    'AttackSegment',
+    'OfflineContext',
+    'Attack',
+]

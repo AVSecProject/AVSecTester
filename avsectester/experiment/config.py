@@ -47,6 +47,7 @@ from . import configuration_summary, type_registry
 
 
 HookConfiguration: TypeAlias = HookSet | Callable[[int], HookSet] | None
+"""A hook set, a seed-to-hook-set factory, or no hooks."""
 
 
 @dataclass(frozen=True)
@@ -224,7 +225,7 @@ class ExperimentConfiguration:
         """Describe preparation inputs without requiring dataset access.
 
         Supplied scenario IDs avoid enumerating the dataset. Run settings are intentionally
-        excluded from this compatibility summary. Supplied metadata_sha256 reuses a previously
+        excluded from this compatibility summary. Supplied metadata_sha256 reuses a saved
         read document; metadata compatibility depends on its bytes, never its path.
         """
         descriptions = {}
@@ -771,3 +772,14 @@ def _sequence(value: Any, label: str) -> tuple:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
         raise TypeError(f"{label} must be a sequence")
     return tuple(value)
+
+
+__all__ = [
+    'HookConfiguration',
+    'TreatmentConfiguration',
+    'MetadataConfiguration',
+    'SplitConfiguration',
+    'RunsConfiguration',
+    'ExperimentConfiguration',
+    'load_configuration',
+]

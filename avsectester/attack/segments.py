@@ -74,3 +74,8 @@ def validate_segment_options(decision_steps: int, max_segments: int | None,
         require_positive_integer(max_segments, "max_segments")
     if not isinstance(keep_tail, bool):
         raise TypeError("keep_tail must be boolean")
+
+
+__all__ = [
+    'split_segments',
+]

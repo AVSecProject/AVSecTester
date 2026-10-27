@@ -63,6 +63,7 @@ class CandidateRequest:
 
 @dataclass(frozen=True)
 class SensorRequest:
+    """Recorded sensor request with an optional camera selection."""
     scenario_id: str
     frame: FrameReference
     sensor_ids: tuple[str, ...]
@@ -124,6 +125,7 @@ class RenderResult:
 
 @dataclass(frozen=True)
 class ComponentResult:
+    """Outputs returned by an explicitly evaluated driving-system component."""
     value: Any
     descriptor: driving_adapter.ComponentDescriptor
     provenance: Mapping[str, Any]
@@ -131,6 +133,7 @@ class ComponentResult:
 
 @dataclass(frozen=True)
 class ScoreResult:
+    """Score returned by a named scorer, including its serialized representation."""
     value: Any
     descriptor: driving_adapter.ScorerDescriptor
     provenance: Mapping[str, Any]
@@ -138,6 +141,7 @@ class ScoreResult:
 
 @dataclass(frozen=True)
 class ClosedLoopCapabilities:
+    """Capabilities exposed by the dataset, simulator and driving adapter combination."""
     dataset_kinds: tuple[str, ...]
     sensor_data: bool
     render: bool
@@ -201,6 +205,7 @@ def stop_unstarted_attacks(runtimes: Sequence[Any], frame: FrameReference,
 
 
 class ClosedLoopServices:
+    """Factory for isolated scenario and closed-loop sessions using shared frame-data caching."""
     def __init__(
         self, dataset: Dataset, simulator: Simulator,
         driving_adapter: driving_adapter.DrivingAdapter | None = None, frame_data_cache: FrameDataCache | None = None,
@@ -241,6 +246,7 @@ class ClosedLoopServices:
 
     @property
     def capabilities(self) -> ClosedLoopCapabilities:
+        """Capabilities available without constructing a simulator runtime."""
         driver = self.driving_adapter
         return ClosedLoopCapabilities(
             self.simulator.dataset_kinds, True, self.simulator.can_render,
@@ -250,10 +256,9 @@ class ClosedLoopServices:
             tuple(deepcopy(pair[0]) for pair in driver.scorer_bindings.values()) if driver else (),
         )
 
-    def session(self, seed: int, history: str = "fresh") -> ClosedLoopSession:
+    def session(self, seed: int) -> ClosedLoopSession:
+        """Create an isolated session with fresh world and driving history for ``seed``."""
         require_nonnegative_integer(seed, "seed")
-        if history != "fresh":
-            raise ValueError("Candidate scopes require fresh history")
         if self._closed:
             raise RuntimeError("Closed-loop services are closed")
         scope = ClosedLoopSession(self, seed)
@@ -261,12 +266,14 @@ class ClosedLoopServices:
         return scope
 
     def scenario(self, scenario_id: str, *, seed: int) -> ScenarioView:
+        """Create a selection view for the requested scenario and seed."""
         self.dataset.frames(scenario_id)  # validate without generating anything
         require_nonnegative_integer(seed, "seed")
         return ScenarioView(scenario_id, self, seed)
 
 
 class ClosedLoopSession:
+    """Owned simulator and driving-system services for selection, rendering, scoring and rollouts."""
     def __init__(self, services: ClosedLoopServices, seed: int) -> None:
         self.services, self.seed = services, seed
         self._closed = False
@@ -311,6 +318,7 @@ class ClosedLoopSession:
                 self._busy.release()
 
     def close(self) -> None:
+        """Close session resources and release world ownership."""
         if not self._busy.acquire(blocking=False):
             raise RuntimeError("Cannot close a scope while its operation is active")
         try:
@@ -392,6 +400,7 @@ class ClosedLoopSession:
 
     def frame_data(self, scenario: str, frame: FrameReference,
                   environment: Mapping[str, Any] | None = None) -> FrameData:
+        """Return recorded frame data through the shared cache."""
         self._check()
         record = self.services.dataset.frame_data(scenario, frame)
         if isinstance(record, Unavailable):
@@ -420,7 +429,7 @@ class ClosedLoopSession:
                 "interpolation": start.payload.get("interpolation")}
 
     def read_sensors(self, request: SensorRequest) -> SensorSample:
-        """Read prescribed source motion, reusing one action-free runtime for forward scans.
+        """Read environment-processed sensor observations at the requested recorded frame.
 
         A different scenario/environment, a backwards frame request, render or rollout closes
         the scan. Repeated reads of a frame do not advance the simulator. Optional views retain
@@ -479,6 +488,7 @@ class ClosedLoopSession:
                 raise
 
     def render(self, request: RenderRequest) -> RenderResult:
+        """Render the requested frame or viewpoint using this session."""
         if not self.services.simulator.can_render:
             raise NotImplementedError("The simulator does not provide sensor views")
         world = [e for e in request.actions if isinstance(e, WorldAttackAction)]
@@ -510,10 +520,12 @@ class ClosedLoopSession:
                     self._provenance(start, request.environment, simulator_runtime), object_visibility)
 
     def components(self) -> Sequence[driving_adapter.ComponentDescriptor]:
+        """Return the available driving-system component descriptors."""
         self._check()
         return self.services.capabilities.components
 
     def scorers(self) -> Sequence[driving_adapter.ScorerDescriptor]:
+        """Return the available driving-system scorer descriptors."""
         self._check()
         return self.services.capabilities.scorers
 
@@ -530,6 +542,7 @@ class ClosedLoopSession:
         return self._scoring_avstack
 
     def evaluate(self, component_id: str, inputs: Any) -> ComponentResult:
+        """Evaluate an explicitly bound driving-system component."""
         adapter = self.services.driving_adapter
         if adapter is None or component_id not in adapter.component_bindings:
             raise ValueError(f"Unavailable component: {component_id!r}")
@@ -539,6 +552,7 @@ class ClosedLoopSession:
             return ComponentResult(value, deepcopy(descriptor), {"seed": self.seed})
 
     def score(self, scorer_id: str, inputs: Any, target: Any, require_grad: bool = False) -> ScoreResult:
+        """Evaluate a bound scorer with the requested target and codec."""
         adapter = self.services.driving_adapter
         if adapter is None or scorer_id not in adapter.scorer_bindings:
             raise ValueError(f"Unavailable scorer: {scorer_id!r}")
@@ -552,6 +566,7 @@ class ClosedLoopSession:
             return ScoreResult(value, deepcopy(descriptor), {"seed": self.seed, "require_grad": require_grad})
 
     def rollout(self, request: CandidateRequest) -> RunLog:
+        """Execute one candidate rollout from its recorded start."""
         self._check()
         if request.seed != self.seed:
             raise ValueError("Candidate seed must match its scope")
@@ -622,6 +637,7 @@ OTHER_SELECTION_REASONS = "Other selection reasons"
 
 @dataclass(frozen=True)
 class ScenarioView:
+    """Recorded scenario and selection services, with candidate-rejection reasons."""
     scenario_id: str
     services: ClosedLoopServices
     seed: int
@@ -642,6 +658,7 @@ class ScenarioView:
 
     @property
     def frames(self) -> Sequence[FrameReference]:
+        """Ordered decision-frame references available to this selection view."""
         return self.services.dataset.frames(self.scenario_id)
 
     def frame_data(self, frame: FrameReference) -> FrameData:
@@ -652,3 +669,18 @@ class ScenarioView:
     def scenario_map(self) -> ScenarioMap | Unavailable:
         """Read this scenario's semantic map without starting a simulator."""
         return self.services.dataset.scenario_map(self.scenario_id)
+
+
+__all__ = [
+    'CandidateRequest',
+    'SensorRequest',
+    'RenderRequest',
+    'SensorSample',
+    'RenderResult',
+    'ComponentResult',
+    'ScoreResult',
+    'ClosedLoopCapabilities',
+    'ClosedLoopServices',
+    'ClosedLoopSession',
+    'ScenarioView',
+]

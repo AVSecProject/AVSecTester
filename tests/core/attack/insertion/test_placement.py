@@ -15,6 +15,15 @@ def test_placement_from_spec():
     np.testing.assert_allclose(attached.local_position((4., 2., 1.5)), [-2.1, 0., .2])
     world = placement_from_spec({"type": "avsectester.attack.insertion.placement:WorldPlacement", "options": {"position_m": [8., 1., 0.]}})
     assert world == WorldPlacement((8., 1., 0.))
-    assert orientation_from_spec({"type": "avsectester.attack.insertion.placement:Orientation", "options": {"mode": "face_ego"}}) == Orientation("face_ego")
     with pytest.raises(ValueError, match="Unknown placement"):
         placement_from_spec({"type": "UnknownPlacement"})
+
+
+def test_orientation_from_spec():
+    orientation = orientation_from_spec({
+        "type": "avsectester.attack.insertion.placement:Orientation",
+        "options": {"mode": "face_ego"},
+    })
+    assert orientation == Orientation("face_ego")
+    with pytest.raises(ValueError, match="full module:Class"):
+        orientation_from_spec({"type": "UnknownOrientation"})

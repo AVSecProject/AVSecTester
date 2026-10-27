@@ -1,7 +1,7 @@
 """Explicit insertion geometry, independent of a simulator or attack implementation.
 
-World and actor frames use metres and right-handed x-forward, y-left, z-up axes. An actor
-pose identifies its origin; box_transform() locates its bounding-box centre. Assets use the same axes, with their front along +X.
+World and actor frames use meters and right-handed x-forward, y-left, z-up axes. An actor
+pose identifies its origin; box_transform() locates its bounding-box center. Assets use the same axes, with their front along +X.
 Placement determines position, while orientation independently determines rotation.
 """
 
@@ -25,12 +25,14 @@ from avsectester.attack.insertion.placement import AttachedPlacement, WorldPlace
 class PlanarAsset(Protocol):
     """Extension point for assets composed of local textured rectangular surfaces."""
 
-    def planes(self) -> Sequence[PlaneSurface]: ...
+    def planes(self) -> Sequence[PlaneSurface]:
+        """Resolve the asset into textured planes in its local coordinate frame."""
+        ...
 
 
 @dataclass(frozen=True)
 class PlaneAsset:
-    """RGBA patch or sign, centred at the origin in the local YZ plane.
+    """RGBA patch or sign, centered at the origin in the local YZ plane.
 
     The front normal is +X and the top is +Z. Transparent pixels are not part of the silhouette.
     A file path is loaded once at construction. Image loading requires Pillow.
@@ -54,6 +56,7 @@ class PlaneAsset:
         return np.array([[0, -w, h], [0, w, h], [0, w, -h], [0, -w, -h]])
 
     def planes(self) -> tuple[PlaneSurface, ...]:
+        """Resolve the asset into textured planes in its local coordinate frame."""
         return (PlaneSurface(self._corners(), self.texture),)
 
 
@@ -92,6 +95,7 @@ class ResolvedInsertion:
         object.__setattr__(self, "pose", poses.validated_transform(self.pose))
 
     def planes(self) -> tuple[PlaneSurface, ...]:
+        """Resolve the asset into textured planes in its local coordinate frame."""
         rotation, translation = self.pose[:3, :3], self.pose[:3, 3]
         return tuple(
             replace(surface, corners=surface.corners @ rotation.T + translation)
@@ -148,3 +152,12 @@ def resolve_insertion(
         insertion.asset,
         placement.host if isinstance(placement, AttachedPlacement) else None,
     )
+
+
+__all__ = [
+    'PlanarAsset',
+    'PlaneAsset',
+    'Insertion',
+    'ResolvedInsertion',
+    'resolve_insertion',
+]

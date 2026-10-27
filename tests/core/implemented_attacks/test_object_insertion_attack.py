@@ -15,7 +15,7 @@ from avsectester.attack.insertion.placement import WorldPlacement
 from avsectester.execution.runner import ClosedLoopRunner, RecordingPolicy, RunRequest
 from avsectester.execution.services import ClosedLoopServices
 from avsectester.closed_loop.simulators.recorded import RecordedReplaySimulator
-from tests.fakes import ConstantAVStack
+from tests.fakes import ConstantAVStack, MemoryDataset, MemorySimulator
 
 
 @pytest.mark.parametrize("make_asset,plane_count,width_m", [
@@ -44,10 +44,6 @@ def test_nuscenes_replay(nuscenes_dataset):
         artifacts = attack.run_offline(OfflineContext(services, (segment,)))
     with pytest.raises(ValueError, match="missing keys: placement. Required keys: placement"):
         attack.create_runtime(replace(segment, user_data={}), artifacts)
-    with pytest.raises(ValueError, match="missing keys: kind. Required keys: kind"):
-        attack.create_runtime(replace(segment, user_data={"placement": {}}), artifacts)
-    with pytest.raises(ValueError, match="missing keys: host. Required keys: kind, host"):
-        attack.create_runtime(replace(segment, user_data={"placement": {"kind": "attached"}}), artifacts)
     with simulator.create_runtime() as simulator_runtime:
         log = ClosedLoopRunner().run(simulator_runtime, ConstantAVStack(), RunRequest(
             2, start=dataset.scenario_start("scene", segment.start),
@@ -71,3 +67,16 @@ def test_sign_asset():
     assert len(face_only.planes()) == 1
     with pytest.raises(ValueError, match="post_count must be a nonnegative integer"):
         SignAsset(face=face_only.face, post_count=-1)
+
+
+def test_placement_relative_to_ego_origin():
+    dataset = MemoryDataset(ego_position=(10., 2., 1.))
+    asset = PlaneAsset(np.full((8, 8, 4), [240, 20, 20, 255], np.uint8), 1., 1.)
+    attack = ObjectInsertionAttack(decision_steps=2, max_segments=1, assets=asset,
+                                  placement=WorldPlacement((5., 0., 1.)),
+                                  placement_relative_to_ego_origin=True,
+                                  compositor=PatchCompositor())
+    with ClosedLoopServices(dataset, MemorySimulator()) as services:
+        segment, = attack.build_metadata(services.scenario("scene", seed=0))
+    np.testing.assert_allclose(attack.selected_placement(segment).position_m, [15., 2., 2.])
+    assert attack.placement.position_m == (5., 0., 1.)

@@ -1,8 +1,7 @@
 """Preparation models define the canonical inputs used by selection and offline work."""
 
 from avsectester.closed_loop.avstacks.driving_adapter import DrivingAdapter
-from avsectester.experiment import ExperimentConfiguration, RunsConfiguration
-from avsectester.experiment.models import preparation_record
+from avsectester.experiment import Experiment, ExperimentConfiguration, ExperimentResult, RunsConfiguration, SelectionDecision
 from tests.fakes import ConstantAVStack, MemoryDataset, MemorySimulator, MinimalAttack
 
 
@@ -16,7 +15,7 @@ def test_preparation_record():
             "weather": "rain", "lighting": {"street_lights": {"color": color}},
         }}),
     )
-    assert preparation_record(configuration) == {
+    assert Experiment.prepare(configuration).preparation == {
         "seed": 3,
         "split": None,
         "offline_environments": {"probe": {
@@ -27,3 +26,11 @@ def test_preparation_record():
     }
     actual_color = configuration.runs.environment["world"]["lighting"]["street_lights"]["color"]
     assert actual_color == color and isinstance(actual_color, tuple)
+
+
+def test_selection_errors():
+    selected = SelectionDecision("probe", "first", "selected")
+    rejected = SelectionDecision("probe", "second", "not_selected", ("No candidate",))
+    failed = SelectionDecision("probe", "third", "error", error="Map unavailable")
+    result = ExperimentResult((), selections=(selected, rejected, failed))
+    assert result.selection_errors == (failed,)

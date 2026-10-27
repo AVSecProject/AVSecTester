@@ -3,7 +3,6 @@
 import numpy as np
 import pytest
 
-from avsectester.geometry.cameras import FThetaCamera, PinholeCamera
 from avsectester.geometry.mesh import MeshRaycaster, camera_depth
 
 
@@ -39,11 +38,8 @@ def test_distances():
         raycaster.distances(np.zeros((1, 3)), np.zeros((1, 3)))
 
 
-@pytest.mark.parametrize("camera", [
-    PinholeCamera(np.array([[1., 0., 1.], [0., 1., 1.], [0., 0., 1.]]), 2, 2),
-    FThetaCamera(1., 1., (0., 1.), 2, 2, (0., 1.), max_angle=1.5),
-], ids=["pinhole", "f-theta"])
-def test_camera_depth(camera):
+def test_camera_depth(tiny_camera):
+    camera = tiny_camera
     far = MeshRaycaster(VERTICES, FACES)
     near_vertices = VERTICES.copy()
     near_vertices[:, 2] = 2.

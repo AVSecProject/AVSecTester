@@ -130,8 +130,8 @@ class SensorView:
     to sensor body axes (x forward, y left, z up), including for a camera; it is not the optical
     transform. It is None when the sensor pose is unavailable. ``actors`` holds world poses by
     stable actor ID and ``ego`` is the physical ego state. Use ``box_transform()`` for
-    world bounding-box centres; each state's ``pose`` is its actor origin.
-    ``depth`` is optical-axis depth in metres per pixel, when the simulator measures it;
+    world bounding-box centers; each state's ``pose`` is its actor origin.
+    ``depth`` is optical-axis depth in meters per pixel, when the simulator measures it;
     without it, occlusion is estimated from actor cuboids and ``depth`` remains None after
     object composition. Existing measured depth includes composed objects. ``objects`` contains
     the placed world objects whose projection lies in this camera's current image, keyed by
@@ -143,7 +143,7 @@ class SensorView:
     ``occlusion_tolerance_m`` is the simulator's occlusion tolerance: scene content hides a
     composed object only when it lies more than about this distance in front of the object.
     ``native`` gives
-    simulator-specific access and gives up portability. World units are metres, with x forward,
+    simulator-specific access and gives up portability. World units are meters, with x forward,
     y left, z up.
     """
 
@@ -168,7 +168,7 @@ class SensorView:
 
         The plan uses this view's camera, its measured depth or, without depth, its actor
         cuboids, and its occlusion tolerance. ``plan.composite`` therefore reproduces
-        the deployed capture differentiably in surface colours. Plan on a view captured
+        the deployed capture differentiably in surface colors. Plan on a view captured
         without these objects, for example a clean ``ClosedLoopSession.render`` result. Only
         ``"geometry"`` object occlusion can be planned here; ``"rendered_probes"`` needs the objects
         in the scene: capture the view with them inserted and use its ``composition`` instead.
@@ -207,6 +207,7 @@ class FrameDataSequence:
     provenance: Mapping[str, Any]
 
     def at(self, frame: FrameReference) -> FrameData:
+        """Return frame data at the requested recorded time."""
         if frame.position >= len(self.frames) or self.frames[frame.position].frame != frame:
             raise ValueError("Reference cache does not match the requested source frame")
         return deepcopy(self.frames[frame.position])
@@ -232,16 +233,25 @@ class Simulator(ABC):
     """
 
     dataset_kinds: tuple[str, ...] = ()
+    'Dataset kinds supported by this simulator.'
     can_render: bool = False
+    'Whether arbitrary-view rendering is supported.'
     can_replay: bool = False
+    'Whether recorded-tick replay is supported.'
     can_observe_past: bool = False
+    'Whether observations before a selected start can be reconstructed.'
     can_insert_objects: bool = False
+    'Whether world objects can be inserted into sensor rendering.'
     supported_world_settings: frozenset[str] = frozenset()
+    'World-setting keys accepted by the simulator.'
     simulator_version = "1"
+    'Version identifier included in simulator compatibility summaries.'
     # Native ticks that make simulator.setup actions visible in the first capture. A simulator
     # that renders on every tick (CARLA) needs one; one that renders at capture time needs none.
     capture_ticks = 0
+    'Simulator ticks consumed by a sensor capture.'
     occlusion_tolerance_m: float = 0.1
+    'Depth tolerance in meters for deciding whether an inserted object is occluded.'
 
     @abstractmethod
     def create_runtime(self, seed: int | None = None) -> SimulatorRuntime:
@@ -254,6 +264,7 @@ class Simulator(ABC):
 
     @property
     def decision_time_step(self) -> float | None:
+        """Decision interval in seconds; None leaves the interval unrestricted."""
         return None
 
     @property
@@ -263,10 +274,12 @@ class Simulator(ABC):
 
     @property
     def supported_stages(self) -> frozenset[str]:
+        """Hook stages supported by the component."""
         return frozenset({"simulator.setup", "simulator.step.pre", "simulator.step.post"})
 
     @property
     def identity(self) -> Mapping[str, Any]:
+        """Configuration identity used to check saved-preparation compatibility."""
         identity = {"simulator": type(self).__name__, "version": self.simulator_version,
                     "time_step": self.decision_time_step, "capture_ticks": self.capture_ticks}
         if self.can_insert_objects:
@@ -351,38 +364,47 @@ class SimulatorRuntime(_StageAdapter, ABC):
     # Declarations of the configured simulator.
     @property
     def dataset_kinds(self) -> tuple[str, ...]:
+        """Dataset kinds supported by this simulator."""
         return self.simulator.dataset_kinds
 
     @property
     def can_render(self) -> bool:
+        """Whether arbitrary-view rendering is supported."""
         return self.simulator.can_render
 
     @property
     def can_replay(self) -> bool:
+        """Whether recorded-tick replay is supported."""
         return self.simulator.can_replay
 
     @property
     def can_observe_past(self) -> bool:
+        """Whether observations before a selected start can be reconstructed."""
         return self.simulator.can_observe_past
 
     @property
     def can_insert_objects(self) -> bool:
+        """Whether world objects can be inserted into sensor rendering."""
         return self.simulator.can_insert_objects
 
     @property
     def supported_world_settings(self) -> frozenset[str]:
+        """World-setting keys accepted by the simulator."""
         return self.simulator.supported_world_settings
 
     @property
     def capture_ticks(self) -> int:
+        """Simulator ticks consumed by a sensor capture."""
         return self.simulator.capture_ticks
 
     @property
     def decision_time_step(self) -> float | None:
+        """Decision interval in seconds; None leaves the interval unrestricted."""
         return self.simulator.decision_time_step
 
     @property
     def command_modes(self) -> frozenset[str] | None:
+        """Control command modes accepted or produced by this component."""
         return self.simulator.command_modes
 
     @property
@@ -391,6 +413,7 @@ class SimulatorRuntime(_StageAdapter, ABC):
 
     @property
     def identity(self) -> Mapping[str, Any]:
+        """Configuration identity used to check saved-preparation compatibility."""
         return self.simulator.identity
 
     @property
@@ -399,6 +422,7 @@ class SimulatorRuntime(_StageAdapter, ABC):
         return {}
 
     def validate_start(self, start: ScenarioStart | None) -> None:
+        """Check dataset and simulator constraints for a recorded scenario start."""
         self.simulator.validate_start(start)
 
     def validate_command(self, command: Control) -> None:
@@ -468,6 +492,7 @@ class SimulatorRuntime(_StageAdapter, ABC):
 
     @property
     def clock(self) -> ClockSnapshot:
+        """Return the current ``ClockSnapshot`` containing time and decision frame."""
         state = self.state()
         return ClockSnapshot(t=state.t, frame=state.frame)
 
@@ -615,7 +640,7 @@ class SimulatorRuntime(_StageAdapter, ABC):
     def reset(self, start: ScenarioStart | None = None, initialization: Any = None, *,
               deployment: DeploymentPlan | None = None,
               world: Mapping[str, Any] | None = None) -> None:
-        """Start a run: reset to ``start`` (or the configured origin) and capture the first frame.
+        """Start a run at ``start`` or the configured origin and capture the first frame.
 
         The order is native initialization, pre-roll to the deployment window, simulator.setup
         and its deployment ticks, the capture ticks, then the first capture. Read it with
@@ -678,6 +703,7 @@ class SimulatorRuntime(_StageAdapter, ABC):
             self._resetting = False
 
     def setup_tick(self) -> None:
+        """Advance one setup tick without requesting a driving decision."""
         if not self._in_setup:
             raise RuntimeError("setup_tick is only available during simulator.setup")
         if self._setup_ticks_used >= self._deployment.ticks:
@@ -896,3 +922,16 @@ class SimulatorRuntime(_StageAdapter, ABC):
     def _frame_data_provenance(self) -> Mapping[str, Any]:
         """Simulator-specific provenance of generated frame data."""
         return {}
+
+
+__all__ = [
+    'DeploymentPlan',
+    'ClockSnapshot',
+    'SensorGeometry',
+    'SensorView',
+    'Initialization',
+    'FrameDataSequence',
+    'UnsupportedStartError',
+    'Simulator',
+    'SimulatorRuntime',
+]

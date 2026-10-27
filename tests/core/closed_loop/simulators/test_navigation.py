@@ -13,7 +13,7 @@ def lane(identity, points, **options):
     return Lane(identity, centerline, centerline + [0, 1, 0], centerline - [0, 1, 0], **options)
 
 
-def test_route():
+def test_map_route():
     road = lane("road", [[0, 0, 0], [120, 0, 0]])
     generator = RouteGenerator("map", [[0, 0, 0], [10, 0, 0]], ScenarioMap(lanes={road.id: road}))
     route = generator.route(np.eye(4))
@@ -22,6 +22,11 @@ def test_route():
     np.testing.assert_allclose(generator.route(make_pose(np.eye(3), (10, 0, 0)))[:, 0],
                                np.linspace(0, 80, 20))
     assert RouteGenerator("none", (), None).route(np.eye(4)) is None
+
+    with pytest.raises(ValueError, match="more than 10 m"):
+        RouteGenerator("map", [[0, 20, 0], [1, 20, 0]], ScenarioMap(lanes={road.id: road}))
+    with pytest.raises(ValueError, match="choose route_generator='recorded' or 'none'"):
+        RouteGenerator("map", [[0, 0, 0], [1, 0, 0]], Unavailable("no map"))
 
 
 def test_lane_sequence():
@@ -63,7 +68,7 @@ def test_heading():
     np.testing.assert_allclose(generator.route(np.eye(4))[0], [0, 3, 0])
 
 
-def test_recorded():
+def test_recorded_route():
     generator = RouteGenerator("recorded", [[0, 0, 0], [10, 0, 0]], None)
     route = generator.route(np.eye(4))
     np.testing.assert_allclose(route[:3, 0], np.arange(3) * (80 / 19))
@@ -71,20 +76,13 @@ def test_recorded():
     stationary = RouteGenerator("recorded", [[2, 3, 4], [2, 3, 4]], None)
     np.testing.assert_allclose(stationary.route(np.eye(4)), np.tile([2, 3, 0], (20, 1)))
 
-
-def test_validation():
-    road = lane("road", [[0, 0, 0], [100, 0, 0]])
-    with pytest.raises(ValueError, match="more than 10 m"):
-        RouteGenerator("map", [[0, 20, 0], [1, 20, 0]], ScenarioMap(lanes={road.id: road}))
     with pytest.raises(ValueError, match="folds back"):
         RouteGenerator("recorded", [[0, 0, 0], [5, 0, 0], [0, 0, 0]], None)
-    with pytest.raises(ValueError, match="choose route_generator='recorded' or 'none'"):
-        RouteGenerator("map", [[0, 0, 0], [1, 0, 0]], Unavailable("no map"))
     with pytest.raises(ValueError, match="at least two finite"):
         RouteGenerator("recorded", [[0, 0, 0]], None)
 
 
-def test_projection():
+def test_route_in_ego_coordinates():
     generator = RouteGenerator("recorded", [[0, 0, 0], [100, 0, 0]], None)
     route = generator.route(make_pose(rotation_matrix((0, 0, 90)), (10, 5, 2)))
     np.testing.assert_allclose(route[0], [-5, 0, 0], atol=1e-12)

@@ -69,10 +69,7 @@ class StopSignPlanner:
     extends the trajectory horizon without choosing a new navigation branch.
     With no route, the planner follows a straight line ahead.
 
-    The default stop distance of 5.5 m is based on 32 selected NuRec segments:
-    map geometry and ego front overhang put the front at least 0.5 m before
-    the line in at least 90% of them. This geometric criterion excludes
-    monocular ranging error.
+    The default stopping target is 5.5 m before the sign along the route.
 
     Before braking, IDM's free-flow term is
     max_acceleration_mps2 * (1 - (v / cruise_speed)**acceleration_exponent).
@@ -87,10 +84,8 @@ class StopSignPlanner:
     to overshooting the target because deceleration is capped.
 
     A sign is relevant only within sign_lookahead_m along the route and
-    max_sign_lateral_offset_m of it. The latter defaults to 10 m: the 32
-    selected NuRec segments have offsets of 2.81–7.23 m; adding 2 m to the
-    maximum and rounding up gives 10 m. Other approaches' stop signs inside
-    this lateral range may still trigger a stop.
+    max_sign_lateral_offset_m of it, which defaults to 10 m. Other approaches'
+    stop signs inside this lateral range may still trigger a stop.
     """
 
     def __init__(
@@ -281,3 +276,8 @@ class StopSignPlanner:
             "acceleration_mps2": acceleration, "planned_speed_mps": first_speed,
         }
         return Control(trajectory=trajectory)
+
+
+__all__ = [
+    'StopSignPlanner',
+]

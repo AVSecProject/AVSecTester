@@ -235,3 +235,12 @@ class OfflineReport:
             with Image.open(source / image["file"]) as pixels:
                 result.set_image(name, np.asarray(pixels), description=image.get("description"))
         return result
+
+
+__all__ = [
+    'ReportValue',
+    'ReportSeries',
+    'ReportTable',
+    'ReportImage',
+    'OfflineReport',
+]

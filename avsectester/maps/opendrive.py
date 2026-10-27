@@ -70,8 +70,8 @@ def _sample_lane(native: Any, road: int, lane: int, start: float, stop: float) -
 
     The SDK's bulk generator covers driving lanes only. Explicit road/lane/s queries also
     cover shoulders, sidewalks and isolated sections. Offset curves can be longer than the
-    road reference line, so native midpoint queries refine the centre and both boundaries
-    until every adjacent pair is at most two metres apart.
+    road reference line, so native midpoint queries refine the center and both boundaries
+    until every adjacent pair is at most two meters apart.
     """
     margin = min(1e-4, (stop - start) / 4)
     count = max(1, int(np.ceil((stop - start - 2 * margin) / 2)))
@@ -270,7 +270,7 @@ def _control_pose(landmark: Any, waypoints: list[Any]) -> np.ndarray:
 def read_opendrive(xodr_text: str, *, name: str) -> ScenarioMap | Unavailable:
     """Read OpenDRIVE without a simulator connection, or report a missing CARLA client package.
 
-    Lanes use two-metre waypoint samples and native topology. Drivable polygons are
+    Lanes use two-meter waypoint samples and native topology. Drivable polygons are
     driving-lane polygons, whose set union is the drivable area. Each OpenDRIVE junction with
     driving lanes gives one intersection polygon, the convex hull of those lanes. Road
     boundaries exclude junctions and use each side's outermost non-sidewalk lane. References
@@ -351,3 +351,8 @@ def read_opendrive(xodr_text: str, *, name: str) -> ScenarioMap | Unavailable:
         unavailable["road_boundaries"] = "No driving-lane outer boundaries could be constructed"
     return ScenarioMap(lanes, drivable, boundaries, crosswalks, intersections,
                        controls, stop_lines, unavailable)
+
+
+__all__ = [
+    'read_opendrive',
+]

@@ -62,3 +62,8 @@ class ReplicaVisibility(Metric):
                 value = visible_steps
             measurements[name] = {"visible_steps": value}
         return measurements
+
+
+__all__ = [
+    'ReplicaVisibility',
+]

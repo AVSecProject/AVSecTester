@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Fetch AV perception model checkpoints into ./models and link them where avstack expects.
+# Download AV perception checkpoints into ./models and link them for local installations.
+# Docker images create their model links in the Dockerfile.
 #
 # avstack's MM detectors resolve config/checkpoint paths relative to two vendored roots:
 #   LiDAR (mmdet3d): third_party/avstack-core/third_party/mmdetection3d   (mm3d_root)

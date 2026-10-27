@@ -31,7 +31,7 @@ def fingerprint(value: Any) -> str:
 
 
 class FrameDataCache:
-    """Owned by preparation; no mutation or hidden attachment to a Dataset.
+    """Cache simulator-generated frame sequences independently of the dataset.
 
     A failed generation is never published. The identity includes the complete recipe,
     simulator adapter/configuration/version and seed, supplied explicitly by preparation.
@@ -42,12 +42,14 @@ class FrameDataCache:
 
     @staticmethod
     def key(start: ScenarioStart, simulator_identity: Mapping[str, Any], seed: int) -> str:
+        """Hash start kind, scenario, payload, simulator identity and seed."""
         return fingerprint({"kind": start.kind, "scenario": start.scenario_id,
                             "payload": start.payload, "simulator": simulator_identity, "seed": seed})
 
     def get_or_generate(
         self, key: str, generate: Callable[[], FrameDataSequence],
     ) -> FrameDataSequence:
+        """Return cached frame data or generate and retain it once for this key."""
         if key not in self._sequences:
             sequence = generate()
             if not sequence.frames or any(record.frame.position != i
@@ -57,4 +59,10 @@ class FrameDataCache:
         return deepcopy(self._sequences[key])
 
     def get(self, key: str) -> FrameDataSequence:
+        """Return a copy of the cached sequence; raise ``KeyError`` when the key is absent."""
         return deepcopy(self._sequences[key])
+
+
+__all__ = [
+    'FrameDataCache',
+]

@@ -18,7 +18,7 @@ from avsectester.validation import (
 
 
 def route_progress(points: np.ndarray, route_points: np.ndarray) -> np.ndarray:
-    """Project world points onto the recording's horizontal arc length, in metres.
+    """Project world points onto the recording's horizontal arc length, in meters.
 
     The first and last nonzero segments extend beyond recorded support for distance
     measurement only. This lets analysis distinguish crossing beyond a recording that
@@ -63,7 +63,7 @@ def line_distances(points: np.ndarray, line_points: np.ndarray) -> np.ndarray:
 
 
 def control_from_user_data(user_data: Mapping[str, Any]) -> TrafficControl:
-    """Reconstruct the selected face-centred sign using only persisted attack metadata."""
+    """Reconstruct the selected face-centered sign using only persisted attack metadata."""
     required = ("sign_id", "sign_pose", "sign_extent", "sign_native_category")
     missing = [name for name in required if name not in user_data]
     if missing:

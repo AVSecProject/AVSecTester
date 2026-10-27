@@ -13,7 +13,7 @@ def panel(position=(10, 0, 0)):
         WorldPlacement(position), Orientation("fixed_world", (0, 0, 180))), {}, ActorState(np.eye(4)))
 
 
-def test_visibility_from_masks_and_depth():
+def test_visibility_from_masks():
     reference = np.ones((2, 4), bool)
     visible = reference.copy()
     visible[:, :2] = False
@@ -21,6 +21,10 @@ def test_visibility_from_masks_and_depth():
     assert masked.fraction == .5 and masked.source == "rendered_masks"
     assert visibility_from_masks(reference, reference, camera="front", image_bounds=(0, 0, 2, 2)).fraction == .5
     assert visibility_from_masks(np.zeros((2, 4)), reference, camera="front") is None
+
+
+def test_visibility_from_depth():
+    reference = np.ones((2, 4), bool)
     target, scene = np.full((2, 4), 5.), np.full((2, 4), 10.)
     scene[:, :2] = 2
     measured = visibility_from_depth(reference, target, scene, camera="front")

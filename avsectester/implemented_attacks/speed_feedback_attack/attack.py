@@ -29,3 +29,8 @@ class SpeedFeedbackAttack(Attack):
 
     def create_runtime(self, segment, artifacts):
         return SpeedFeedbackAttackRuntime(self)
+
+
+__all__ = [
+    'SpeedFeedbackAttack',
+]

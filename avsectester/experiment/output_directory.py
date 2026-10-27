@@ -327,10 +327,8 @@ def load_prepared_metadata(configuration: ExperimentConfiguration,
 
 
 def _load_offline_reports(names: Sequence[str], root: Path) -> dict[str, OfflineReport]:
-    """Restore reports separately from executable artifacts, including older empty outputs."""
-    return {name: (OfflineReport.load(root / "offline" / name)
-                   if (root / "offline" / name / "report.json").is_file()
-                   else OfflineReport(None)) for name in names}
+    """Restore every attack report from its required offline output."""
+    return {name: OfflineReport.load(root / "offline" / name) for name in names}
 
 
 def load_prepared(configuration: ExperimentConfiguration,
@@ -361,7 +359,7 @@ def load_preparation_progress(configuration: ExperimentConfiguration,
                  for name in completed}
     return (PreparedExperiment(configuration, saved.metadata, artifacts, saved.selections,
                                preparation=saved.preparation, units=saved.units, deployment=saved.deployment,
-                               offline_reports=_load_offline_reports(tuple(configuration.attacks), root),
+                               offline_reports=_load_offline_reports(completed, root),
                               metadata_source=saved.metadata_source),
             completed)
 

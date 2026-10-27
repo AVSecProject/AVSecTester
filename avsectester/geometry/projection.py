@@ -120,7 +120,7 @@ def project_box(
     camera: Camera, cam_from_world: np.ndarray, world_from_box: np.ndarray,
     extent: tuple[float, float, float] | np.ndarray,
 ) -> tuple[float, float, float, float] | None:
-    """Project a box-centred rigid pose and full dimensions to an image-clipped rectangle.
+    """Project a box-centered rigid pose and full dimensions to an image-clipped rectangle.
 
     Box edges crossing the camera plane are clipped to a small positive optical depth.
     F-theta bounds include the curved edge projections conservatively, after deflecting edge
@@ -158,3 +158,8 @@ def project_box(
     if (upper <= lower).any():
         return None
     return float(lower[0]), float(lower[1]), float(upper[0]), float(upper[1])
+
+
+__all__ = [
+    'project_box',
+]

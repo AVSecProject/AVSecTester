@@ -92,10 +92,9 @@ jobs:
           # Install only the adapters: their full dataset/Open3D extras and stale sibling-path
           # dependencies are unnecessary here. Required import dependencies are installed above.
           python -m pip install --no-deps -e third_party/avstack-api -e third_party/lib-avstack-carla
-      - name: Test attacks and the real avstack pipeline without a server
+      - name: Test the core framework and native avstack without a server
         run: >-
-          python -m pytest tests/avstack tests/core/closed_loop/avstacks
-          tests/core/implemented_attacks/test_implemented_attacks.py -q
+          python -m pytest tests/avstack tests/core -q
           --junitxml=reports/avstack.xml
           --cov=avsectester --cov-report=term-missing:skip-covered
           --cov-report=xml:reports/avstack-coverage.xml

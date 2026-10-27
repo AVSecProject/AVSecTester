@@ -15,10 +15,10 @@ from avsectester.rendering.textures import STOP_SIGN_FACE, load_rgba_image
 
 @dataclass
 class SignAsset:
-    """A local planar sign and optional posts in a bottom-centred object frame.
+    """A local planar sign and optional posts in a bottom-centered object frame.
 
     The origin is on the ground beneath the face. Local +X is the front face normal,
-    +Y points left and +Z points up. Lengths are in metres: ``width_m`` is the face width,
+    +Y points left and +Z points up. Lengths are in meters: ``width_m`` is the face width,
     ``mount_height_m`` locates the bottom edge of the face and ``post_width_m`` is each post's
     width. World position and orientation belong to a PlacedObject.
     """
@@ -38,7 +38,7 @@ class SignAsset:
         require_nonnegative_integer(self.post_count, "post_count")
 
     def object_asset(self, category: str) -> ObjectAsset:
-        """Return this sign's panel and optional supports as a bottom-centred object asset."""
+        """Return this sign's panel and optional supports as a bottom-centered object asset."""
         return ObjectAsset.from_panel(
             self.face, category=category, width_m=self.width_m,
             mount_height_m=self.mount_height_m,
@@ -46,6 +46,7 @@ class SignAsset:
         )
 
     def planes(self) -> Sequence[PlaneSurface]:
+        """Resolve the asset into textured planes in its local coordinate frame."""
         return self.object_asset("sign").surfaces
 
 
@@ -53,7 +54,7 @@ def poster_rgba(person: np.ndarray, aspect: float = 1.5, fill: float = 0.86,
                 paper: tuple = (228, 226, 218), border: tuple = (40, 40, 42), border_frac: float = 0.025) -> np.ndarray:
     """Print ``person`` on an opaque poster (height/width = ``aspect``) with a thin frame.
 
-    The figure is scaled to ``fill`` of the poster height, centred horizontally, feet near the bottom.
+    The figure is scaled to ``fill`` of the poster height, centered horizontally, feet near the bottom.
     """
     from PIL import Image
 
@@ -153,7 +154,7 @@ def roadside_rig(face: np.ndarray | str | Path, width_m: float = 2.4, mount_heig
 class PersonAsset:
     """A cut-out standee or a printed person poster, with its origin at ground level.
 
-    Lengths are in metres: a standee uses ``height_m``; a billboard uses ``width_m`` and
+    Lengths are in meters: a standee uses ``height_m``; a billboard uses ``width_m`` and
     ``mount_height_m``."""
 
     image: np.ndarray | str | Path
@@ -171,6 +172,7 @@ class PersonAsset:
             raise ValueError("Person height_m and width_m must be positive, mount_height_m nonnegative")
 
     def planes(self):
+        """Resolve the asset into textured planes in its local coordinate frame."""
         asset = (billboard(self.image, self.width_m, self.mount_height_m) if self.mode == "billboard"
                  else standee(self.image, self.height_m))
         return asset.planes()
@@ -181,7 +183,7 @@ class TrafficLightAsset:
     """A traffic-light board and post, whose origin is the ground beneath the board.
 
     ``texture_height_pixels`` sets each head's raster resolution. ``width_m`` and
-    ``mount_height_m`` set the board width and bottom height in world metres."""
+    ``mount_height_m`` set the board width and bottom height in world meters."""
 
     head_count: int = 3
     lit: str = "red"
@@ -204,5 +206,9 @@ class TrafficLightAsset:
             raise ValueError("Traffic-light width_m must be positive and mount_height_m nonnegative")
 
     def planes(self):
+        """Resolve the asset into textured planes in its local coordinate frame."""
         face = traffic_lights_rgba(self.head_count, self.lit, self.texture_height_pixels, self.gap_fraction, self.board)
         return roadside_rig(face, self.width_m, self.mount_height_m).planes()
+
+
+__all__ = ['SignAsset', 'PersonAsset', 'TrafficLightAsset']

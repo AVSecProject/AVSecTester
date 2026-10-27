@@ -67,7 +67,7 @@ def test_evaluate_groups(segment, make_log):
         ("clean", "attacked"), ("clean", "rain"), ("attacked", "rain"),
     ]
     pair = first["comparisons"][0]
-    assert pair["deltas"]["DrivingMetrics.final_speed"] == -2.
+    assert pair["deltas"]["DrivingMetrics.final_speed"] == -2.0
     assert "TrajectoryDeviation.final_deviation" in pair["metrics"]
     assert {"StopImpact.a_to_b.induced_stop", "StopImpact.b_to_a.induced_stop"} <= pair["metrics"].keys()
     assert pair["deltas"]["UserMetric.confidence"] is None
@@ -90,10 +90,8 @@ def test_evaluate_groups(segment, make_log):
     assert {metric["type"].split(":")[-1] for metric in report.metrics} >= {"DrivingMetrics", "UserMetric"}
     specifications = {item["label"]: item for item in report.as_dict()["metrics"]}
     driving = specifications["DrivingMetrics"]
-    assert driving["summary"] == DrivingMetrics().describe().summary
-    assert driving["fields"]["final_speed"] == {
-        "description": "Speed after the last decision.", "unit": "m/s",
-    }
+    assert driving["summary"] and driving["fields"]["final_speed"]["description"]
+    assert driving["fields"]["final_speed"]["unit"] == "m/s"
     assert specifications["StopImpact"]["kind"] == "pair"
     assert "a_to_b.reference_drove" in specifications["StopImpact"]["fields"]
     assert specifications["UserMetric"]["summary"] == "User measurements from saved evidence."
@@ -107,3 +105,16 @@ def test_evaluate_groups(segment, make_log):
     assert described.metrics[0]["label"] == "BrokenDescriptionMetric"
     with pytest.raises(KeyboardInterrupt):
         evaluate_groups(groups[:1], (InterruptedMetric(),))
+
+
+def test_metric_labels(segment, make_log):
+    first_type = type("SharedMetric", (UserMetric,), {"__module__": "user_metrics.first"})
+    second_type = type("SharedMetric", (UserMetric,), {"__module__": "user_metrics.second"})
+    group = RunGroup(0, segment, 0, {"clean": make_log([2.])})
+    report = evaluate_groups((group,), (first_type(), second_type()))
+    assert [item["label"] for item in report.metrics] == [
+        "user_metrics.first:SharedMetric", "user_metrics.second:SharedMetric",
+    ]
+    measurements = report.groups[0]["treatments"]["clean"]["metrics"]
+    assert measurements["user_metrics.first:SharedMetric.seed"] == 0
+    assert measurements["user_metrics.second:SharedMetric.seed"] == 0

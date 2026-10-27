@@ -159,3 +159,8 @@ def _destroy_panel(actor):
             actor.destroy()
     except RuntimeError:
         pass
+
+
+__all__ = [
+    'CarlaPatchPanel',
+]

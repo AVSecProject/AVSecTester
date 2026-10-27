@@ -68,9 +68,9 @@ class PlaneSurface:
 
 @dataclass(frozen=True)
 class ObjectAsset:
-    """Local rectangular faces in x-forward, y-left, z-up axes, with bottom-centre origin.
+    """Local rectangular faces in x-forward, y-left, z-up axes, with bottom-center origin.
 
-    ``extent`` gives full (length, width, height). The horizontal footprint is centred on
+    ``extent`` gives full (length, width, height). The horizontal footprint is centered on
     the origin and the bottom is z=0. A planar object may have zero extent on one axis.
     """
 
@@ -97,7 +97,7 @@ class ObjectAsset:
 
     @classmethod
     def from_surfaces(cls, surfaces: Sequence[PlaneSurface], category: str) -> ObjectAsset:
-        """Infer full extent from local corners without moving the bottom-centre origin."""
+        """Infer full extent from local corners without moving the bottom-center origin."""
         surfaces = tuple(surfaces)
         if not surfaces or any(not isinstance(surface, PlaneSurface) for surface in surfaces):
             raise ValueError("ObjectAsset requires at least one PlaneSurface")
@@ -116,7 +116,7 @@ class ObjectAsset:
         """Build a +X-facing panel and optional support posts above a ground-level origin.
 
         The image's aspect ratio determines the face height. Posts stand 3 cm behind
-        the face and reach its centre; several posts are spaced across +/-35% of its
+        the face and reach its center; several posts are spaced across +/-35% of its
         width. Surfaces list the posts first and the panel last. ``nominal_texture`` is
         the panel's unmodified appearance; see PlaneSurface.
         """
@@ -169,3 +169,10 @@ class PlacedObject:
         rotation, translation = self.world_from_object[:3, :3], self.world_from_object[:3, 3]
         return tuple(replace(surface, corners=surface.corners @ rotation.T + translation)
                      for surface in self.asset.surfaces)
+
+
+__all__ = [
+    'PlaneSurface',
+    'ObjectAsset',
+    'PlacedObject',
+]

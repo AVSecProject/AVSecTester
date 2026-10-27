@@ -80,6 +80,7 @@ class WorldAttackAction(AttackAction, ABC):
     """
 
     setup_ticks: int = 0
+    'Simulator setup ticks requested by this participant before decisions begin.'
 
     @abstractmethod
     def apply(self, simulator_runtime: SimulatorRuntime, resources: ExitStack) -> None:
@@ -95,6 +96,7 @@ class SensorAttackAction(AttackAction, ABC):
     """
 
     sensor: str
+    'Name of the sensor whose captured data this action modifies.'
 
     @abstractmethod
     def apply(self, data: Any, view: SensorView) -> Any:
@@ -128,13 +130,29 @@ class AttackRuntime:
     """
 
     subscriptions: Sequence[ResultSubscription] = ()
+    'Result subscriptions delivered to the runtime during execution.'
     setup_ticks: int = 0
+    'Simulator setup ticks requested by this participant before decisions begin.'
 
     def setup(self, context: OnlineContext) -> Sequence[WorldAttackAction]:
+        """Initialize online-phase state and return actions applied before the first decision."""
         return ()
 
     def step(self, context: OnlineContext) -> Sequence[AttackAction]:
+        """Return attack actions for the current decision."""
         return ()
 
     def stop(self, context: OnlineContext) -> None:
+        """Release online-phase resources; the default implementation has no effect."""
         pass
+
+
+__all__ = [
+    'ResultSubscription',
+    'OnlineContext',
+    'AttackAction',
+    'WorldAttackAction',
+    'SensorAttackAction',
+    'AVStackAttackAction',
+    'AttackRuntime',
+]

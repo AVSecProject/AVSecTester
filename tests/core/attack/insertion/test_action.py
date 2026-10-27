@@ -54,3 +54,5 @@ def test_insert_object(make_object_in_front):
         with ExitStack() as resources:
             action.apply(simulator_runtime, resources)
             simulator_runtime.remove_object("sign")
+            assert "sign" not in simulator_runtime.state().objects
+        assert "sign" not in simulator_runtime.state().objects

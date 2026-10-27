@@ -1,46 +1,26 @@
 """The NuRec RPC boundary retains recorded sensor pose, tilt, height and timing."""
 
-from dataclasses import replace
-
 import numpy as np
 import pytest
 
-from avsectester.closed_loop.simulators.nurec import NuRecRenderer, NuRecSimulator
-from avsectester.closed_loop.simulators.nurec.renderer import ftheta_camera_from_spec, pose_from_proto
-from avsectester.datasets.nurec import NuRecDataset
-from avsectester.geometry.poses import rotation_matrix
-from avsectester.geometry import CameraCalibration
-from avsectester.data_types import Control
-from tests.fakes import NuRecRpcBoundary, StubRenderer
+from avsectester.closed_loop.simulators.nurec import NuRecRenderer
+from avsectester.geometry import CameraCalibration, FThetaCamera
+from tests.fakes import CAMERA, NuRecImageBoundary, NuRecRpcBoundary, proto_world_pose
 
 
-def test_recorded_support(nurec_usdz_path, monkeypatch):
-    boundary = NuRecRpcBoundary().install(monkeypatch)
-    dataset = NuRecDataset([nurec_usdz_path], time_step=.1)
-    start = dataset.scenario_start("scene", dataset.frames("scene")[-2])
-    origin = start.payload["ego"].pose.copy()
-    origin[:3, :3] = rotation_matrix((8., -12., 30.))
-    start = replace(start, payload={**start.payload, "ego": replace(start.payload["ego"], pose=origin)})
-    with NuRecSimulator(NuRecRenderer(cameras=["front"]),
-                        route_generator="none", physics_update_mode="none", time_step=.1).create_runtime() as runtime:
-        runtime.reset(start)
-        assert runtime.native["renderer"].origin_timestamp_us == 400000
-        assert runtime.native["renderer"].origin_bounds == (0., .5)
-        np.testing.assert_allclose(runtime.state().ego.pose, origin, atol=1e-12)
-        np.testing.assert_allclose(pose_from_proto(boundary.last_request.sensor_pose.start_pose),
-                                   origin @ pose_from_proto(boundary.mount), atol=1e-12)
-        runtime.step(Control())
-        assert runtime.sensor_view("front").native["timestamp_us"] == 500000
-        assert (boundary.last_request.frame_start_us, boundary.last_request.frame_end_us) == (500000, 500001)
-        with pytest.raises(ValueError, match="terminal recorded support"):
-            runtime.step(Control())
-        with pytest.raises(ValueError, match="NuRec requires a ScenarioStart"):
-            runtime.reset()
-
+def test_reset_origin(nurec_dataset):
+    renderer = NuRecRenderer(cameras=["front"])
+    start = nurec_dataset.scenario_start("scene", nurec_dataset.frames("scene")[-2])
+    renderer.reset_origin(start)
+    assert renderer.origin_timestamp_us == 400000
+    assert renderer.origin_bounds == (0., .5)
+    np.testing.assert_array_equal(renderer.origin_transform, start.payload["ego"].pose)
+    renderer.reset_origin()
+    assert renderer.origin_transform is None and renderer.origin_timestamp_us is None
 
 
 def test_calibration(monkeypatch):
-    assert StubRenderer().calibration == {}
+    assert NuRecImageBoundary(CAMERA).calibration == {}
     boundary = NuRecRpcBoundary().install(monkeypatch)
     renderer = NuRecRenderer(cameras=["front"], resolution_hw={"front": (6, 7)})
     assert renderer.calibration == {}
@@ -49,7 +29,7 @@ def test_calibration(monkeypatch):
         calibration = renderer.calibration["front"]
         assert isinstance(calibration, CameraCalibration)
         assert (calibration.camera.height, calibration.camera.width) == (6, 8)
-        np.testing.assert_allclose(calibration.rig_from_camera, pose_from_proto(boundary.mount))
+        np.testing.assert_allclose(calibration.rig_from_camera, proto_world_pose(boundary.mount))
         np.testing.assert_allclose(
             calibration.rig_from_camera @ renderer.cam_from_world(np.eye(4), "front"), np.eye(4),
             atol=1e-12,
@@ -58,37 +38,28 @@ def test_calibration(monkeypatch):
     finally:
         renderer.close()
 
-def test_resolution(nurec_dataset, monkeypatch):
-    boundary = NuRecRpcBoundary().install(monkeypatch)
-    start = nurec_dataset.scenario_start("scene", nurec_dataset.frames("scene")[0])
+
+def test_camera_model(monkeypatch):
+    NuRecRpcBoundary().install(monkeypatch)
     renderer = NuRecRenderer(cameras=["front"], resolution_hw={"front": (6, 7)})
-    simulator = NuRecSimulator(renderer, route_generator="none",
-                               physics_update_mode="none", time_step=.1)
-    with simulator.create_runtime() as runtime:
-        runtime.reset(start)
-        view = runtime.sensor_view("front")
-        geometry = runtime.sensor_geometry("front")
-        native_camera = ftheta_camera_from_spec(boundary.spec)
-        scale = .5
-        assert (boundary.last_request.resolution_h, boundary.last_request.resolution_w) == (6, 7)
-        assert (view.camera.height, view.camera.width) == (6, 8)
-        assert view.data.shape == (6, 8, 3) and view.depth.shape == (6, 8)
-        assert geometry.camera == view.camera
+    try:
+        renderer.load_scene("scene")
+        camera = renderer.camera_model("front")
+        native = FThetaCamera(8.5, 6.5, (0., 8.), 16, 12, (0., .125), 1.5)
         points = np.array([[0., 0., 1.], [1., 2., 3.], [-2., 1., 4.]])
-        projected = native_camera.project(points)
-        np.testing.assert_allclose(view.camera.project(points), projected * scale, atol=1e-12)
-        np.testing.assert_allclose(view.camera.unproject(projected * scale),
-                                   native_camera.unproject(projected), atol=1e-12)
-        boundary.returned_resolution_hw = (7, 9)
-        with pytest.raises(ValueError, match="NRE image dimensions for camera 'front' changed"):
-            runtime.step(Control())
-    with pytest.raises(ValueError, match="resolution_hw names an unconfigured camera 'side'"):
+        np.testing.assert_allclose(camera.project(points), native.project(points) * .5)
+        np.testing.assert_allclose(camera.unproject(native.project(points) * .5),
+                                   native.unproject(native.project(points)), atol=1e-12)
+        assert (camera.height, camera.width) == (6, 8)
+    finally:
+        renderer.close()
+    with pytest.raises(ValueError, match="resolution_hw names an unconfigured camera"):
         NuRecRenderer(cameras=["front"], resolution_hw={"side": (6, 8)})
     with pytest.raises(ValueError, match="height must be a positive integer"):
         NuRecRenderer(cameras=["front"], resolution_hw={"front": (0, 8)})
 
 
-def test_windshield_spec():
+def test_windshield_spec(monkeypatch):
     from types import SimpleNamespace
 
     spec = NuRecRpcBoundary().spec
@@ -97,11 +68,24 @@ def test_windshield_spec():
                                  vertical_poly_inverse=[0., 0., 0., 1., 0., 0.])
     distorted = SimpleNamespace(**{**vars(spec), "bivariate_windshield_model_param": windshield,
                                    "WhichOneof": lambda group: "bivariate_windshield_model_param"})
-    camera = ftheta_camera_from_spec(distorted)
-    assert camera.windshield is not None and camera.windshield.vertical_poly == (0., 0., 0., 1., 0., 0.)
-    assert ftheta_camera_from_spec(spec).windshield is None
-    with pytest.raises(ValueError, match="Unsupported NuRec external distortion"):
-        ftheta_camera_from_spec(SimpleNamespace(**{**vars(spec), "WhichOneof": lambda group: "other_model"}))
+    boundary = NuRecRpcBoundary().install(monkeypatch)
+    boundary.spec = distorted
+    renderer = NuRecRenderer(cameras=["front"])
+    try:
+        renderer.load_scene("scene")
+        camera = renderer.camera_model("front")
+        assert camera.windshield is not None
+        assert camera.windshield.vertical_poly == (0., 0., 0., 1., 0., 0.)
+        renderer.close()
+        boundary.spec = spec
+        renderer.load_scene("scene")
+        assert renderer.camera_model("front").windshield is None
+        renderer.close()
+        boundary.spec = SimpleNamespace(**{**vars(spec), "WhichOneof": lambda group: "other_model"})
+        with pytest.raises(ValueError, match="Unsupported NuRec external distortion"):
+            renderer.load_scene("scene")
+    finally:
+        renderer.close()
 
 
 def test_served_scenes(monkeypatch):

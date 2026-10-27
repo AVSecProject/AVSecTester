@@ -1,75 +1,85 @@
 # TODO
 
-This file lists open work. Items are planned capabilities, not implemented features.
+This page lists capabilities to implement.
 
-## Reactive traffic in NuRec
+## AlpaSim-dependent tests in CI
 
-Optional AlpaSim trafficsim is integrated; see [Reactive traffic](../guides/simulators.md#reactive-traffic).
+- [ ] Install AlpaSim dependencies in a CI job and run the traffic-protocol and controller tests.
 
-- [ ] Fit trafficsim actors to the selected ground_mesh instead of using the service's nearest-lane
-  height plus half the vehicle height.
-- [ ] Support traffic-session checkpoint/restore and caller-controlled CATK sampling seeds.
-  The current service exposes neither capability.
+## Traffic actor ground contact
+
+-  [ ] Fit trafficsim actors to the selected ground mesh instead of the service's
+  nearest-lane height.
+-  [ ] Support traffic-session checkpoint/restore and caller-controlled CATK sampling seeds.
+
+See [reactive traffic](../guides/simulators.md#reactive-traffic) for supported behavior.
 
 ## Rolling-shutter rendering
 
-- [ ] Support AlpaSim's shutter_duration_us when requesting camera captures. Current requests
-  render instantaneous frames without rolling-shutter timing.
+-  [ ] Support `shutter_duration_us` when requesting camera captures.
 
 ## Driving-impact metrics
 
-- [ ] Detect induced stopping events over time, including a stop followed by resumed driving.
-  Specify prior motion, duration and matched clean windows; exclude initially stationary frames.
+-  [ ] Detect induced stopping events, including resumed driving, with matched clean windows and
+  explicit prior-motion and duration requirements.
 
 ## Actor-aware adaptive attack
 
-- [ ] Add a reference TTC phantom Attack whose runtime estimates another actor from perception
-  outputs and adapts its actions. Keep history in AttackRuntime, reset each run and record decisions
-  through OnlineContext.record_output. SpeedFeedbackAttack estimates no other actor and does not
-  satisfy this example. Add offline tests and a supplied YAML configuration.
+-  [ ] Supply a reference TTC phantom attack that estimates actors from perception outputs and
+  records its runtime decisions.
 
 ## Defenses
 
-- [ ] Define defense lifecycle and comparison semantics, including clean, attack and
-  attack-plus-defense treatments with reusable preparation.
-- [ ] Supply reference defense algorithms and metrics for outputs such as alarms.
+-  [ ] Define defense lifecycle and comparison semantics.
+-  [ ] Supply reference defenses and output metrics.
 
 ## Recorded static occlusion
 
-- [ ] Supply aligned static-scene depth or geometry for RecordedReplaySimulator. Its image
-  insertion currently uses actor cuboids without static mesh occlusion.
+-  [ ] Supply aligned static-scene depth or geometry for `RecordedReplaySimulator`.
 
 ## NuRec rendered-probe conventions
 
-- [ ] Replace the measured NRE asset conventions (PLY axes, object_size scaling, track padding)
-  with documented ones once NVIDIA publishes them, and recheck probe alignment for each NRE release.
-  Probe silhouettes differ from composited surfaces by about one pixel at edges.
+-  [ ] Use published NRE asset conventions for PLY axes, scaling and track padding.
 
 ## Inserted objects in non-camera sensors
 
-- [ ] Include framework-inserted ObjectAsset geometry in LiDAR and other non-camera captures.
-  Current object composition changes camera images and WorldSnapshot.objects only.
+-  [ ] Include inserted `ObjectAsset` geometry in LiDAR and other non-camera captures.
 
 ## Physical patch geometry
 
-- [ ] Make CARLA native patch dimensions explicit and verifiable against the requested planar
-  geometry, or support native mesh scaling. Current width_m/height_m do not rescale a prop. Measure
-  physical materials/texture sampling against the differentiable optimization surrogate.
+-  [ ] Make CARLA native patch dimensions explicit or support native mesh scaling.
+-  [ ] Validate physical material sampling against the differentiable optimization model.
 
 ## Attack impact
 
-- [ ] Measure migrated attacks' impact against the intended driving models and compare
-  with established baselines. Successful preparation, execution and evaluation alone do not establish
-  equivalent attack strength.
+-  [ ] Measure supplied attacks against intended driving models and established baselines.
+
+See [experiment interpretation](../examples/README.md#attack-impact).
 
 ## Cross-simulator driving configurations
 
-- [ ] Evaluate ModularAVStack on NuRec and AlpamayoAVStack on CARLA, including sensor formats,
-  calibration and command compatibility. Current reuse guarantees cover supported scenarios within the
-  same simulator.
+-  [ ] Provide `ModularAVStack` on NuRec and `AlpamayoAVStack` or `RuleBasedAVStack` on CARLA
+  with compatible sensors and commands.
 
 ## Shared runs across different user data
 
-- [ ] Reuse treatments without attack_name across units with the same scenario and decision window
-  but different user_data. Current units include all user_data in their identity and keep these
-  runs separate. Conditional transfer between training and testing is also not implemented.
+-  [ ] Reuse treatments without attacks for units sharing a scenario and window but differing
+  in `user_data`.
+
+## Environment transfer
+
+-  [ ] Evaluate artifacts trained under one set of environment conditions on testing segments
+  under different conditions.
+
+## nuScenes semantic maps
+
+-  [ ] Read nuScenes semantic maps through `ScenarioMap`.
+
+## Traffic-light state recording
+
+-  [ ] Provide traffic-light states in NuRec and recorded playback.
+
+
+## External benchmark integrations
+
+-  [ ] Supply reference evaluation workflows and published benchmark adapters.

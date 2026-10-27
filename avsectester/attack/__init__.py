@@ -1,10 +1,4 @@
-"""The attack: the user's ``Attack`` (metabuilder and offline phase) and its online ``AttackRuntime``.
-
-:mod:`~avsectester.attack.attack` holds ``Attack``, ``AttackSegment`` and ``OfflineContext``;
-:mod:`~avsectester.attack.runtime` holds ``AttackRuntime``, ``OnlineContext`` and the attack
-actions; :mod:`~avsectester.attack.segments` holds the ``split_segments`` helper for
-``build_metadata``. The user-facing names are re-exported here.
-"""
+"""Attack contracts, runtime actions and structured offline reports."""
 
 from avsectester.attack.attack import Attack, AttackSegment, OfflineContext
 from avsectester.attack.offline_report import (
@@ -21,21 +15,22 @@ from avsectester.attack.runtime import (
     WorldAttackAction,
 )
 
+
 __all__ = [
-    "AVStackAttackAction",
-    "Attack",
-    "AttackAction",
-    "AttackRuntime",
-    "AttackSegment",
-    "OfflineContext",
-    "OfflineReport",
-    "ReportValue",
-    "ReportSeries",
-    "ReportTable",
-    "ReportImage",
-    "OnlineContext",
-    "ResultSubscription",
-    "SensorAttackAction",
-    "WorldAttackAction",
-    "split_segments",
+    'AVStackAttackAction',
+    'Attack',
+    'AttackAction',
+    'AttackRuntime',
+    'AttackSegment',
+    'OfflineContext',
+    'OfflineReport',
+    'ReportValue',
+    'ReportSeries',
+    'ReportTable',
+    'ReportImage',
+    'OnlineContext',
+    'ResultSubscription',
+    'SensorAttackAction',
+    'WorldAttackAction',
+    'split_segments',
 ]

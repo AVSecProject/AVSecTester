@@ -1,5 +1,9 @@
 """Every supplied attack follows one public preparation and execution template."""
 
+from collections.abc import Mapping
+from dataclasses import replace
+import warnings
+
 import numpy as np
 import pytest
 
@@ -46,9 +50,14 @@ def test_implemented_attack(attack_type, options, invalid, driving_options_fixtu
     }
     configured = load_configuration(configuration)
     attack = configured.attacks["attack"]
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert replace(configured, attacks={"attack": attack}).describe_configuration()["attacks"]["attack"]["parameters"] is not None
     with ClosedLoopServices(configured.dataset, configured.simulator, configured.avstack) as services:
         metadata = attack.build_metadata(services.scenario("scene", seed=0))
         assert len(metadata) == 1 and metadata[0].decision_steps == 2
+        assert attack.validate_segment(metadata[0]) is None
+        assert isinstance(attack.configuration_parameters(), Mapping)
         artifacts = attack.run_offline(OfflineContext(services, tuple(metadata)))
     history_driver = DrivingAdapter(lambda seed: configured.avstack.factory(seed), past_steps=1)
     with ClosedLoopServices(configured.dataset, configured.simulator, history_driver) as services:

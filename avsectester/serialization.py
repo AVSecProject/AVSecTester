@@ -295,6 +295,7 @@ def _is_tensor(value: Any) -> bool:
 
 
 DEFAULT_REGISTRY = SerializationRegistry()
+'Serialization registry with framework record types and array codecs registered.'
 for _module, _names in (
     ("avsectester.data_types", (
         "ActorState", "Unavailable", "TargetSpec", "Control", "Observation", "WorldSnapshot",
@@ -310,3 +311,9 @@ for _module, _names in (
 ):
     for _name in _names:
         DEFAULT_REGISTRY.register_dataclass(f"{_module}:{_name}")
+
+
+__all__ = [
+    'SerializationRegistry',
+    'DEFAULT_REGISTRY',
+]

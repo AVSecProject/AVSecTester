@@ -6,42 +6,10 @@ import zipfile
 import numpy as np
 import pytest
 
-from avsectester.attack import AttackSegment
 from avsectester.datasets import FrameReference
+from avsectester.datasets.nurec import NuRecDataset
 from avsectester.data_types import ActorState, Control, WorldSnapshot
 from avsectester.runlog import RunLog, StepRecord
-
-
-
-@pytest.fixture
-def nurec_map_variants(nurec_usdz_path, tmp_path):
-    """The same reconstruction with a light placeholder or only implicit wait lines."""
-    import io
-    import pyarrow as arrow
-    import pyarrow.parquet as parquet
-
-    with zipfile.ZipFile(nurec_usdz_path) as archive:
-        line_rows = parquet.read_table(io.BytesIO(archive.read("clipgt/wait_line.parquet"))).to_pylist()
-    for row in line_rows:
-        row["wait_line"]["is_implicit"] = True
-    replacements = {
-        "placeholder_lights": ("traffic_light", [{"key": {"map_id": None}, "traffic_light": {
-            "center": None, "dimensions": None, "orientation": None, "category": None}}]),
-        "implicit_only_lines": ("wait_line", line_rows),
-    }
-    paths = {}
-    for variant, (layer, rows) in replacements.items():
-        path = tmp_path / f"{variant}.usdz"
-        member_name = f"clipgt/{layer}.parquet"
-        output = arrow.BufferOutputStream()
-        parquet.write_table(arrow.Table.from_pylist(rows), output)
-        with zipfile.ZipFile(nurec_usdz_path) as source, zipfile.ZipFile(path, "w") as destination:
-            for member in source.infolist():
-                if member.filename != member_name:
-                    destination.writestr(member.filename, source.read(member.filename))
-            destination.writestr(member_name, output.getvalue().to_pybytes())
-        paths[variant] = str(path)
-    return paths
 
 
 @pytest.fixture
@@ -115,28 +83,6 @@ def nurec_dataset(nurec_usdz_path):
 
 
 @pytest.fixture
-def assert_camera_views_equal():
-    def compare(first, second):
-        assert first.sensor == second.sensor
-        assert first.native == second.native == {}
-        np.testing.assert_array_equal(first.data, second.data)
-        np.testing.assert_equal(first.depth, second.depth)
-        np.testing.assert_allclose(first.cam_from_world, second.cam_from_world)
-        np.testing.assert_allclose(first.sensor_from_world, second.sensor_from_world)
-        assert type(first.camera) is type(second.camera)
-        assert (first.camera.width, first.camera.height) == (second.camera.width, second.camera.height)
-        pixels = np.array([[.5, .5], [first.camera.width / 2, first.camera.height / 2]])
-        np.testing.assert_allclose(first.camera.unproject(pixels), second.camera.unproject(pixels))
-        assert first.actors.keys() == second.actors.keys()
-        for identity in first.actors:
-            np.testing.assert_allclose(first.actors[identity].box_transform(), second.actors[identity].box_transform())
-            assert first.actors[identity].extent == second.actors[identity].extent
-        np.testing.assert_allclose(first.ego.box_transform(), second.ego.box_transform())
-        assert first.ego.extent == second.ego.extent
-    return compare
-
-
-@pytest.fixture
 def make_object_in_front():
     """An opaque rectangular face two metres along the selected camera's optical axis."""
     from avsectester.rendering import ObjectAsset, PlaneSurface
@@ -183,5 +129,205 @@ def make_log(make_actor):
 
 @pytest.fixture
 def segment():
+    from avsectester.attack import AttackSegment
+
     return AttackSegment("scene", FrameReference("scene", 0, 0, 0.),
                          FrameReference("scene", 3, 3, .3))
+
+
+@pytest.fixture
+def nurec_usdz_path(tmp_path):
+    import pyarrow as arrow
+    import pyarrow.parquet as parquet
+
+    camera = "camera_front_wide_120fov@scene"
+    transforms = []
+    for position in range(3):
+        pose = np.eye(4)
+        pose[:3, 3] = [position * .5, 0., .3]
+        transforms.append([pose.tolist(), pose.tolist()])
+    rig = {
+        "camera_calibrations": {camera: {
+            "camera_model": {"parameters": {"resolution": [16, 12],
+                "principal_point": [8, 6], "angle_to_pixeldist_poly": [0, 8],
+                "pixeldist_to_angle_poly": [0, .125], "max_angle": 1.5}},
+            "T_sensor_rig": [[0, 0, 1, 0], [-1, 0, 0, 0], [0, -1, 0, 1.5], [0, 0, 0, 1]],
+        }},
+        "rig_trajectories": [{"sequence_id": "scene", "rig_bbox": {
+            "dim": [4., 2., 1.5], "centroid": [.2, 0., .7]},
+            "cameras_frame_timestamps_us": {camera: [[0, 1], [250000, 250001], [500000, 500001]]},
+            "cameras_frame_T_rig_worlds": {camera: transforms}}],
+    }
+    tracks = {"scene": {"tracks_data": {
+        "tracks_id": ["host", "brief"], "tracks_label_class": ["automobile", "pedestrian"],
+        "tracks_flags": ["CONTROLLABLE", "CONTROLLABLE"],
+        "tracks_timestamps_us": [[0, 500000], [200000, 300000]],
+        "tracks_poses": [[[8, 0, 1, 0, 0, 0, 1], [10, 0, 1, 0, 0, 1, 0]],
+                         [[5, 2, 1, 0, 0, 0, 1], [5, 2, 1, 0, 0, 0, 1]]]},
+        "cuboidtracks_data": {"cuboids_dims": [[4, 2, 2], [1, 1, 2]]}}}
+    path = tmp_path / "scene.usdz"
+
+    def points(coordinates):
+        return [dict(zip(("x", "y", "z"), point)) for point in coordinates]
+
+    def lane(center_y, vehicle_types, use_types=(), speed_limit="25"):
+        return {"left_rail": points([(-2, center_y + 2, 0), (4, center_y + 2, 0)]),
+                "right_rail": points([(-2, center_y - 2, 0), (4, center_y - 2, 0)]),
+                "speed_limit": speed_limit, "vehicle_types": vehicle_types, "use_types": use_types}
+
+    def control(category, y):
+        return {"center": {"x": 3., "y": y, "z": 1.5},
+                "dimensions": {"x": .1, "y": .8, "z": 1.2},
+                "orientation": {"x": 0., "y": 0., "z": 1., "w": 0.}, "category": category}
+
+    layers = {
+        "lane": [("lane", lane(0, ["CAR", "BICYCLE"])),
+                 ("signal-lane", lane(6, ["CAR"])), ("bike-lane", lane(-6, ["BICYCLE"], speed_limit="0")),
+                 ("ambiguous-lane", lane(12, ["CAR"])),
+                 ("shoulder-lane", lane(18, ["CAR"], ["SHOULDER_LANE"])),
+                 ("parking-lane", lane(-12, ["CAR"], ["PARKING_LANE"])),
+                 ("bus-lane", lane(-18, ["BUS"]))],
+        "traffic_sign": [("stop", control("TRAFFIC_SIGN_REGULATORY_R1_STOP", 2.)),
+            ("no-stopping", control("TRAFFIC_SIGN_REGULATORY_R8_NO_STOPPING_ANYTIME", -10.)),
+            ("yield", control("TRAFFIC_SIGN_REGULATORY_R1_YIELD", -4.)),
+            ("speed-limit", control("TRAFFIC_SIGN_REGULATORY_R2_SPEED_LIMIT", 2.))],
+        "traffic_light": [("light", control("traffic_light", 8.)),
+                          ("second-light", control("traffic_light", 14.))],
+        "wait_line": [("stop-line", {"category": "STOP", "is_implicit": False,
+            "location": points([(3, -2, 0), (3, 2, 0)])}),
+            ("signal-line", {"category": "STOP", "is_implicit": False,
+                             "location": points([(3, 4, 0), (3, 8, 0)])}),
+            ("yield-line", {"category": "STOP", "is_implicit": False,
+                            "location": points([(3, -8, 0), (3, -4, 0)])}),
+            ("ambiguous-line", {"category": "STOP", "is_implicit": False,
+                                "location": points([(3, 10, 0), (3, 14, 0)])}),
+            ("unknown-line", {"category": "STOP", "is_implicit": False,
+                              "location": points([(3, -14, 0), (3, -10, 0)])}),
+            ("unbound-line", {"category": "STOP", "is_implicit": False,
+                              "location": points([(2, -14, 0), (2, -10, 0)])}),
+            ("implicit-line", {"category": "STOP", "is_implicit": True,
+                               "location": points([(2, -2, 0), (2, 2, 0)])}),
+            ("unspecified-line", {"category": "STOP", "is_implicit": None,
+                                  "location": points([(1, -2, 0), (1, 2, 0)])})],
+        "drivable_space": [(None, {"location": None})],
+    }
+    associations = [
+        {"key": {"map_id": "lane", "kind": "SIGN_TO_LANE"},
+         "association": {"subjects": ["lane"], "objects": ["stop"]}},
+        {"key": {"map_id": "lane", "kind": "WAIT_LINE_TO_LANE"},
+         "association": {"subjects": ["lane"], "objects": ["stop-line"]}},
+        {"key": {"map_id": "stop-line", "kind": "WAIT_LINE_TO_SIGN"},
+         "association": {"subjects": ["stop-line"], "objects": ["stop"]}},
+        {"key": {"map_id": "lane", "kind": "RIGHT_LANE"},
+         "association": {"subjects": ["lane"], "objects": ["-1"]}},
+    ]
+    for kind, lane_id, other_id in (
+        ("SIGN_TO_LANE", "parking-lane", "no-stopping"), ("SIGN_TO_LANE", "lane", "speed-limit"),
+        ("SIGN_TO_LANE", "bike-lane", "yield"), ("LIGHT_TO_LANE", "signal-lane", "light"),
+        ("LIGHT_TO_LANE", "ambiguous-lane", "light"),
+        ("LIGHT_TO_LANE", "ambiguous-lane", "second-light"),
+        ("WAIT_LINE_TO_LANE", "signal-lane", "signal-line"),
+        ("WAIT_LINE_TO_LANE", "bike-lane", "yield-line"),
+        ("WAIT_LINE_TO_LANE", "ambiguous-lane", "ambiguous-line"),
+        ("WAIT_LINE_TO_LANE", "parking-lane", "unknown-line"),
+        ("WAIT_LINE_TO_LANE", "lane", "implicit-line"),
+        ("WAIT_LINE_TO_LANE", "lane", "unspecified-line"),
+    ):
+        associations.append({"key": {"map_id": lane_id, "kind": kind},
+                             "association": {"subjects": [lane_id], "objects": [other_id]}})
+
+    def mesh_ply(vertices, faces):
+        header = (f"ply\nformat ascii 1.0\nelement vertex {len(vertices)}\n"
+                  "property float x\nproperty float y\nproperty float z\n"
+                  f"element face {len(faces)}\nproperty list uchar int vertex_indices\nend_header\n")
+        return header + "\n".join(" ".join(map(str, point)) for point in vertices) + "\n" + "\n".join(
+            "3 " + " ".join(map(str, face)) for face in faces) + "\n"
+
+    cube_vertices = [(4, -1, 0), (6, -1, 0), (6, 1, 0), (4, 1, 0),
+                     (4, -1, 2), (6, -1, 2), (6, 1, 2), (4, 1, 2)]
+    cube_faces = [(0, 2, 1), (0, 3, 2), (4, 5, 6), (4, 6, 7),
+                  (0, 1, 5), (0, 5, 4), (1, 2, 6), (1, 6, 5),
+                  (2, 3, 7), (2, 7, 6), (3, 0, 4), (3, 4, 7)]
+    ground_vertices = [(-20, -20, 0), (20, -20, 0), (20, 20, 0), (-20, 20, 0)]
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("rig_trajectories.json", json.dumps(rig))
+        archive.writestr("sequence_tracks.json", json.dumps(tracks))
+        archive.writestr("mesh.ply", mesh_ply(cube_vertices, cube_faces))
+        archive.writestr("mesh_ground.ply", mesh_ply(ground_vertices, [(0, 1, 2), (0, 2, 3)]))
+        archive.writestr("map.xodr", '<OpenDRIVE><road><type><speed max="25" unit="mph"/>'
+                        '</type></road></OpenDRIVE>')
+        for layer, values in layers.items():
+            rows = [{"key": {"clip_id": "scene", "label_class_id": "test", "map_id": identity},
+                     layer: data, "version": 0} for identity, data in values]
+            output = arrow.BufferOutputStream()
+            parquet.write_table(arrow.Table.from_pylist(rows), output)
+            archive.writestr(f"clipgt/{layer}.parquet", output.getvalue().to_pybytes())
+        output = arrow.BufferOutputStream()
+        parquet.write_table(arrow.Table.from_pylist(associations), output)
+        archive.writestr("clipgt/association.parquet", output.getvalue().to_pybytes())
+    return str(path)
+
+
+@pytest.fixture
+def nurec_longitudinal_dataset(nurec_usdz_path, tmp_path):
+    path = tmp_path / "longitudinal.usdz"
+    with zipfile.ZipFile(nurec_usdz_path) as source:
+        metadata = json.loads(source.read("rig_trajectories.json"))
+        recording = metadata["rig_trajectories"][0]
+        camera = next(iter(metadata["camera_calibrations"]))
+        timestamps, transforms = [], []
+        for position in range(31):
+            timestamp = position * 100000
+            pose = np.eye(4)
+            pose[:3, 3] = [position, 0., .3]
+            timestamps.append([timestamp, timestamp + 1])
+            transforms.append([pose.tolist(), pose.tolist()])
+        recording["cameras_frame_timestamps_us"][camera] = timestamps
+        recording["cameras_frame_T_rig_worlds"][camera] = transforms
+        with zipfile.ZipFile(path, "w") as target:
+            for name in source.namelist():
+                target.writestr(name, json.dumps(metadata) if name == "rig_trajectories.json"
+                                else source.read(name))
+    return NuRecDataset([path], time_step=.1)
+
+
+@pytest.fixture(params=["pinhole", "ftheta"])
+def lens(request):
+    """One lens family, with explicit ordinary, cropped and miniature calibrations."""
+    from types import SimpleNamespace
+    from avsectester.geometry.cameras import FThetaCamera, PinholeCamera
+
+    if request.param == "pinhole":
+        return SimpleNamespace(
+            camera=PinholeCamera(np.array([[50., 0., 50.], [0., 50., 40.], [0., 0., 1.]]), 100, 80),
+            cropped=PinholeCamera(np.array([[50., 0., 0.], [0., 50., 40.], [0., 0., 1.]]), 100, 80),
+            tiny=PinholeCamera(np.array([[1., 0., 1.], [0., 1., 1.], [0., 0., 1.]]), 2, 2),
+            offset=10., tiny_offset=1 / 3,
+        )
+    return SimpleNamespace(
+        camera=FThetaCamera(50., 40., (0., 50.), 100, 80, (0., .02), max_angle=1.5),
+        cropped=FThetaCamera(0., 40., (0., 50.), 100, 80, (0., .02), max_angle=1.5),
+        tiny=FThetaCamera(1., 1., (0., 1.), 2, 2, (0., 1.), max_angle=1.5),
+        offset=np.arctan(.2) * 50, tiny_offset=np.arctan(1 / 3),
+    )
+
+
+@pytest.fixture
+def camera(lens):
+    return lens.camera
+
+
+@pytest.fixture
+def camera_pair(lens):
+    return lens.camera, lens.cropped
+
+
+@pytest.fixture
+def tiny_camera(lens):
+    return lens.tiny
+
+
+@pytest.fixture
+def optical_from_world():
+    return np.array([[0., -1., 0., 0.], [0., 0., -1., 0.],
+                     [1., 0., 0., 0.], [0., 0., 0., 1.]])

@@ -34,6 +34,7 @@ class RecordingPolicy:
             raise ValueError("sensor_ids must be unique")
 
     def observation(self, value: Observation, step: int, representation: str) -> Observation:
+        """Apply the sensor recording policy while preserving observation metadata."""
         retained = (
             set(self.sensor_ids)
             if representation in self.representations and step % self.every_n_steps == 0
@@ -86,6 +87,7 @@ class ClosedLoopRunner:
         recorder: Recorder | None = None,
         release_owned_resources: Callable[[], None] | None = None,
     ) -> RunLog:
+        """Execute the requested treatment, record its decisions and close all run resources."""
         from avsectester.attack.runtime import OnlineContext
         from avsectester.execution.attack_dispatch import AttackDispatcher
 
@@ -358,3 +360,10 @@ class ClosedLoopRunner:
             except (AttributeError, TypeError):
                 pass
             raise
+
+
+__all__ = [
+    'RecordingPolicy',
+    'RunRequest',
+    'ClosedLoopRunner',
+]

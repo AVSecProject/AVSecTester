@@ -1,4 +1,4 @@
-"""Contract for gradient-based adversarial optimization — PGD and friends, over any threat model.
+"""Contracts for gradient-based and sampling-based optimization over perturbation models.
 
 The optimization algorithm, the threat model, the model access, and the goal are **four orthogonal
 axes**, so PGD (or FGSM/MI-FGSM) is *not* patch-specific — a physical patch is just one
@@ -90,10 +90,11 @@ class Scorer(ABC):
     """
 
     differentiable: bool = True
+    'Whether input-image gradients are supported by this component.'
 
     @abstractmethod
     def target_score(self, image: Tensor, target: data_types.TargetSpec) -> Tensor:
-        """Confidence in [0, 1] that ``target`` is detected in ``image`` (scalar tensor)."""
+        """Return a scalar tensor in [0, 1] for detecting ``target`` in ``image``."""
 
 
 class OptimizationObjective(ABC):
@@ -105,7 +106,7 @@ class OptimizationObjective(ABC):
 
 
 class HideObject(OptimizationObjective):
-    """Suppress the target's detection: ``loss = score`` (minimizing drives its confidence to 0)."""
+    """Suppress the target's detection by minimizing ``loss = score`` toward zero."""
 
     def loss(self, score: Tensor) -> Tensor:
         return score
@@ -129,11 +130,10 @@ class OptimizationResult:
 
 
 class GradientOptimizer(ABC):
-    """A gradient-based optimization algorithm (PGD, FGSM, ...), generic over the threat model.
+    """Optimization algorithm over a data source, perturbation, scorer and objective.
 
-    ``run`` iterates: draw an EoT batch from ``data``, ``perturbation.apply`` δ into each input,
-    take ``objective.loss(scorer.target_score(...))`` averaged over the batch, backprop to δ, take an
-    algorithm-specific step, then ``perturbation.project``. Requires ``scorer.differentiable``.
+    Implementations sample inputs, evaluate the objective and project candidate perturbations.
+    Gradient-based implementations require a differentiable scorer; sampling-based ones do not.
     """
 
     @abstractmethod
@@ -144,4 +144,17 @@ class GradientOptimizer(ABC):
         scorer: Scorer,
         objective: OptimizationObjective,
     ) -> OptimizationResult:
-        """Optimize δ and return the result. Concrete algorithms (PGD, ...) live in ``whitebox.py``."""
+        """Optimize δ with exact input gradients in PGD or sampled gradient estimates in NES."""
+
+
+__all__ = [
+    'AdversarialSample',
+    'DataSource',
+    'Perturbation',
+    'Scorer',
+    'OptimizationObjective',
+    'HideObject',
+    'SpoofObject',
+    'OptimizationResult',
+    'GradientOptimizer',
+]

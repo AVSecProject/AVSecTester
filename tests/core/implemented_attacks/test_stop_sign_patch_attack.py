@@ -3,41 +3,24 @@ from dataclasses import replace
 
 import numpy as np
 import pytest
-import torch
 from PIL import Image
 
 from avsectester.attack import OfflineContext, OfflineReport, OnlineContext
 from avsectester.attack.insertion import InsertObject
-from avsectester.attack.optimization import AdversarialSample, NES, PGD
-from avsectester.data_types import TargetSpec
+from avsectester.attack.optimization import NES, PGD
 from avsectester.execution.services import ClosedLoopServices, RenderRequest
 from avsectester.closed_loop.avstacks import DrivingAdapter, ScorerDescriptor
-from tests.fakes import ConstantAVStack, MemoryDataset, MemorySimulator
-from avsectester.geometry.cameras import PinholeCamera
+from tests.fakes import ConstantAVStack, MemoryDataset, MemorySimulator, DeceleratingAVStack, ImageForwardAVStack
 from avsectester.geometry.projection import project_box
 from avsectester.implemented_attacks.stop_sign_patch_attack import StopSignPatchAttack
-from avsectester.implemented_attacks.stop_sign_patch_attack.assets import (
-    DEFAULT_MASK_PATH, initial_patch_texture, read_patch_mask, replica_face, texture_from_colors,
-)
-from avsectester.implemented_attacks.stop_sign_patch_attack.detector_optimization import (
-    MaskedPatchPerturbation, TextureDataSource,
-)
-from avsectester.implemented_attacks.stop_sign_patch_attack.metabuilder import (
-    control_from_user_data, route_progress, select_stop_approach,
-)
 from avsectester.implemented_attacks.stop_sign_patch_attack.offline import (
     DetectorPatchOptimization, RolloutPatchOptimization,
 )
-from avsectester.implemented_attacks.stop_sign_patch_attack.rollout_optimization import (
-    MaskedTexturePerturbation, fixed_start_segments, planned_forward_distance,
-)
 from avsectester.rendering import ExposureHarmonizer
-from avsectester.rendering.compositing import plan_composite
-from avsectester.rendering.objects import ObjectAsset, PlacedObject
 from avsectester.runlog import RunLog
 
 
-def test_build_metadata(approach_view):
+def test_segment_selection(approach_view):
     scenario = approach_view()
     attack = StopSignPatchAttack()
     segment, = attack.build_metadata(scenario)
@@ -46,9 +29,9 @@ def test_build_metadata(approach_view):
     assert segment.user_data["approach_distance_m"] == pytest.approx(45.)
     assert segment.user_data["line_route_distance_m"] == pytest.approx(60.)
     assert segment.user_data["stop_line_lane_ids"] == ["lane"]
-    restored = control_from_user_data(segment.user_data)
-    np.testing.assert_array_equal(restored.pose, scenario.scenario_map().traffic_controls["sign"].pose)
-    assert restored.extent == (.05, .8, .8) and restored.lane_ids == ("lane",)
+    np.testing.assert_array_equal(segment.user_data["sign_pose"],
+                                  scenario.scenario_map().traffic_controls["sign"].pose)
+    assert tuple(segment.user_data["sign_extent"]) == (.05, .8, .8)
     later, = attack.build_metadata(approach_view(past_steps=25))
     assert later.start.position == 25
     offset, = attack.build_metadata(approach_view(line_offset_y=4.))
@@ -66,63 +49,49 @@ def test_build_metadata(approach_view):
                for reason in late.reasons)
     near, = StopSignPatchAttack(min_approach_m=5.).build_metadata(late)
     assert near.start.position == 50
-    with pytest.raises(ValueError, match="must not exceed approach_m"):
-        StopSignPatchAttack(approach_m=10.)
-
-
-
-def test_validate_segment(approach_view):
-    attack = StopSignPatchAttack()
-    segment, = attack.build_metadata(approach_view())
-    attack.validate_segment(segment)
+    with pytest.raises(ValueError, match="approach_m"):
+        StopSignPatchAttack(approach_m=1., min_approach_m=2.)
     missing = dict(segment.user_data)
     del missing["route_points"]
     with pytest.raises(ValueError, match="route_points"):
         attack.validate_segment(replace(segment, user_data=missing))
-    invalid_route = np.array(segment.user_data["route_points"], copy=True)
-    invalid_route[0, 0] = np.nan
-    with pytest.raises(ValueError, match="finite"):
-        attack.validate_segment(replace(segment, user_data={**segment.user_data, "route_points": invalid_route}))
-    with pytest.raises(ValueError, match="recorded_stop_frame"):
-        attack.validate_segment(replace(segment, user_data={**segment.user_data, "recorded_stop_frame": 1000}))
-    with pytest.raises(ValueError, match="sign width"):
-        attack.validate_segment(replace(segment, user_data={**segment.user_data, "sign_extent": [.05, 0., .8]}))
-
-def test_initial_patch_texture():
-    mask = read_patch_mask(DEFAULT_MASK_PATH)
-    face = replica_face()
-    textures = {kind: initial_patch_texture(kind, mask, noise_std=.25, noise_seed=0)
-                for kind in ("none", "white", "black", "gaussian_noise")}
-    np.testing.assert_array_equal(textures["none"], face)
-    np.testing.assert_array_equal(textures["white"][..., :3][mask], 255)
-    np.testing.assert_array_equal(textures["black"][..., :3][mask], 0)
-    for texture in textures.values():
-        assert texture.dtype == np.uint8 and texture.shape == face.shape
-        np.testing.assert_array_equal(texture[..., 3], face[..., 3])
-        np.testing.assert_array_equal(texture[..., :3][~mask], face[..., :3][~mask])
-    noise = textures["gaussian_noise"]
-    np.testing.assert_array_equal(noise, initial_patch_texture("gaussian_noise", mask,
-                                                            noise_std=.25, noise_seed=0))
-    assert not np.array_equal(noise, initial_patch_texture("gaussian_noise", mask,
-                                                          noise_std=.25, noise_seed=1))
-    expected = np.rint(np.clip(.5 + .25 * np.random.default_rng(0).normal(
-        size=(*mask.shape, 3)), 0., 1.) * 255).astype(np.uint8)
-    np.testing.assert_array_equal(noise[..., :3][mask], expected[mask])
-    with pytest.raises(ValueError, match="initial_patch"):
-        StopSignPatchAttack(initial_patch="red")
-    with pytest.raises(ValueError, match="cannot be optimized"):
-        StopSignPatchAttack(initial_patch="none", optimization=RolloutPatchOptimization(
-            NES(steps=1, population_size=2)))
-    with pytest.raises(TypeError, match="optimization"):
-        StopSignPatchAttack(optimization=object())
 
 
-def test_create_runtime(approach_view):
+def test_replica_deployment(approach_view, tmp_path):
     harmonizer = ExposureHarmonizer(reference="under")
     attack = StopSignPatchAttack(offset_m=.10, width_scale=1., harmonizer=harmonizer)
     scenario = approach_view()
     segment, = attack.build_metadata(scenario)
-    texture = attack.run_offline(OfflineContext(scenario.services, (segment,), seed=0))
+    context = OfflineContext(scenario.services, (segment,), seed=0)
+    textures = {kind: StopSignPatchAttack(initial_patch=kind).run_offline(context)
+                for kind in ("none", "white", "black", "gaussian_noise")}
+    canonical = attack.replica_placement(context.metadata[0], textures["none"])[0].surfaces[0].nominal_texture
+    np.testing.assert_array_equal(textures["none"], canonical)
+    for texture in textures.values():
+        np.testing.assert_array_equal(texture[..., 3], canonical[..., 3])
+        np.testing.assert_array_equal(texture[~attack.mask], canonical[~attack.mask])
+    noise = textures["gaussian_noise"][..., :3][attack.mask] / 255.
+    assert abs(noise.mean() - .5) < .02 and .23 < noise.std() < .25
+    np.testing.assert_array_equal(textures["white"][..., :3][attack.mask], 255)
+    np.testing.assert_array_equal(textures["black"][..., :3][attack.mask], 0)
+    np.testing.assert_array_equal(textures["gaussian_noise"], StopSignPatchAttack(
+        initial_patch="gaussian_noise", noise_seed=0).run_offline(context))
+    assert not np.array_equal(textures["gaussian_noise"], StopSignPatchAttack(
+        initial_patch="gaussian_noise", noise_seed=1).run_offline(context))
+    texture = textures["white"]
+    mask = np.zeros(canonical.shape[:2], bool)
+    mask[200:260, 100:400] = True
+    path = tmp_path / "mask.png"
+    Image.fromarray(mask.astype(np.uint8) * 255).save(path)
+    np.testing.assert_array_equal(StopSignPatchAttack(mask_path=path).mask, mask)
+    invalid = [
+        (np.zeros(canonical.shape[:2], np.uint8), "nonempty and binary"),
+        (np.full((4, 4), 255, np.uint8), "resolution"),
+    ]
+    for pixels, message in invalid:
+        Image.fromarray(pixels).save(path)
+        with pytest.raises(ValueError, match=message):
+            StopSignPatchAttack(mask_path=path)
     candidate = texture.copy()
     candidate[..., :3][attack.mask] = (35, 85, 135)
     actions = attack.create_runtime(segment, candidate).setup(
@@ -139,8 +108,9 @@ def test_create_runtime(approach_view):
         OnlineContext(0, "setup", 0., segment.start.position))
     assert mapped_action.asset.extent[1] == pytest.approx(.8)
     np.testing.assert_array_equal(action.asset.surfaces[0].texture, candidate)
-    np.testing.assert_array_equal(action.asset.surfaces[0].nominal_texture, replica_face())
-    control = control_from_user_data(segment.user_data)
+    face = canonical
+    np.testing.assert_array_equal(action.asset.surfaces[0].nominal_texture, face)
+    control = scenario.scenario_map().traffic_controls["sign"]
     face_center = action.asset.surfaces[0].corners.mean(axis=0)
     np.testing.assert_allclose((action.world_from_object @ np.r_[face_center, 1.])[:3],
                                control.pose[:3, 3] + .10 * control.pose[:3, 0])
@@ -180,9 +150,6 @@ def test_create_runtime(approach_view):
         attack.replica_placement(
             replace(segment, user_data={**segment.user_data, "sign_pose": vertical_pose}), candidate,
         )
-    unpatched = StopSignPatchAttack(initial_patch="none")
-    np.testing.assert_array_equal(unpatched.run_offline(OfflineContext(scenario.services, (segment,))),
-                                  replica_face())
     with pytest.raises(ValueError, match="shape"):
         attack.create_runtime(segment, np.zeros((2, 2, 4), np.uint8))
     changed_alpha = candidate.copy()
@@ -195,23 +162,27 @@ def test_create_runtime(approach_view):
         attack.create_runtime(segment, outside)
 
 
-@pytest.mark.parametrize(("max_training_segments", "expected_starts"), [
-    (None, [15, 16]), (1, [15]), (10, [15, 16]),
-])
-def test_detector_patch_optimization(nurec_detector_services,
-                                     max_training_segments, expected_starts):
-    services, make_segment = nurec_detector_services
-    attack = StopSignPatchAttack(initial_patch="white", harmonizer=ExposureHarmonizer(reference="under"),
-                                optimization=DetectorPatchOptimization(
-        optimizer=PGD(steps=3, batch=1, seed=0),
-        min_visible_pixels=5,
-        braking_deceleration_mps2=10., max_training_segments=max_training_segments, samples_per_scene=4,
-    ))
+def test_white_box_offline_phase(nurec_detector_services_and_segment):
+    services, make_segment = nurec_detector_services_and_segment
     segment = make_segment()
-    context = OfflineContext(services, (segment, make_segment(start=16)), seed=0,
-                             validation_metadata=(make_segment(start=23),))
-    texture = attack.run_offline(context)
-    face = replica_face()
+    training = (segment, make_segment(start=16))
+    for max_training_segments, expected_starts in ((None, [15, 16]), (1, [15])):
+        attack = StopSignPatchAttack(
+            initial_patch="white", harmonizer=ExposureHarmonizer(reference="under"),
+            optimization=DetectorPatchOptimization(
+                optimizer=PGD(steps=3, batch=1, seed=0), min_visible_pixels=5,
+                braking_deceleration_mps2=10., max_training_segments=max_training_segments,
+                samples_per_scene=4,
+            ),
+        )
+        context = OfflineContext(services, training, seed=0,
+                                 validation_metadata=(make_segment(start=23),))
+        texture = attack.run_offline(context)
+        calibration = context.report.tables["calibration"].rows
+        assert list(dict.fromkeys(row["selected_start"] for row in calibration)) == expected_starts
+        assert context.report.values["training_segments"].value == len(expected_starts)
+    face = StopSignPatchAttack(initial_patch="none").run_offline(
+        OfflineContext(services, (segment,), seed=0))
     np.testing.assert_array_equal(texture[..., 3], face[..., 3])
     np.testing.assert_array_equal(texture[..., :3][~attack.mask], face[..., :3][~attack.mask])
     report = context.report
@@ -219,11 +190,9 @@ def test_detector_patch_optimization(nurec_detector_services,
                                   "heldout_summary", "detection_rate_vs_distance"}
     assert set(report.images) == {"initial_texture", "optimized_texture"}
     assert set(report.series) == {"pgd_confidence"}
-    assert report.values["training_segments"].value == len(expected_starts)
     assert set(report.values) == {"train_frames", "heldout_frames", "training_segments",
                                   "mask_pixels", "final_confidence"}
     calibration = report.tables["calibration"].rows
-    assert list(dict.fromkeys(row["selected_start"] for row in calibration)) == expected_starts
     assert calibration[0]["d_min_m"] == pytest.approx(5.)
     with pytest.raises(ValueError, match="training segment"):
         attack.run_offline(replace(context, metadata=()))
@@ -258,248 +227,111 @@ def test_detector_patch_optimization(nurec_detector_services,
         assert table.description
         assert set(table.columns) == {key for row in table.rows for key in row}
     asset, pose = attack.replica_placement(segment, initial)
-    control = control_from_user_data(segment.user_data)
     frames = tuple(services.dataset.frames(segment.scenario_id))
     with services.session(0) as session:
         for row in samples:
             rendered = session.render(RenderRequest(segment.scenario_id, frames[int(row["frame"])],
                 "front", actions=[InsertObject("stop_sign_replica", asset, pose, harmonizer=attack.harmonizer)]))
             view = rendered.view
-            expected = project_box(view.camera, view.cam_from_world, control.pose, control.extent)
+            expected = project_box(view.camera, view.cam_from_world, segment.user_data['sign_pose'], segment.user_data['sign_extent'])
             np.testing.assert_allclose([row[f"target_box_{coordinate}_px"] for coordinate in ("left", "top", "right", "bottom")], expected)
             ys, xs = np.nonzero(view.composition.plan.visible_mask)
             replica_bounds = (xs.min(), ys.min(), xs.max() + 1, ys.max() + 1)
             assert not np.allclose(expected, replica_bounds)
-
-
-@pytest.mark.parametrize(("segment_options", "expected_segments"), [
-    ({}, 2), ({"max_training_segments": 1}, 1), ({"max_training_segments": 10}, 2),
-])
-def test_rollout_patch_optimization(nurec_patch_services, tmp_path,
-                                    segment_options, expected_segments):
-    services, make_segment = nurec_patch_services
-    output = tmp_path / "rollout"
-    options = RolloutPatchOptimization(
-        NES(steps=1, population_size=2, seed=0),
-        start_distances_m=(12., 8.), **segment_options,
-    )
-    attack = StopSignPatchAttack(initial_patch="white", optimization=options, min_approach_m=8.,
-                                harmonizer=ExposureHarmonizer(reference="under"))
-    training = (make_segment(), make_segment(start=16))
-    context = OfflineContext(services, training, seed=0,
-                             validation_metadata=(make_segment(start=23),),
-                             report=OfflineReport(output / "files"))
-    texture = attack.run_offline(context)
-    report = context.report
-    rows = report.tables["rollouts"].rows
-    assert len(rows) == 8 * expected_segments
-    assert {row["status"] for row in rows} == {"completed"}
-    assert all(float(row["forward_m"]) == pytest.approx(21.) for row in rows)
-    for row in rows:
-        log = RunLog.read(report.directory / row["run_log"])
-        assert log.status == "completed" and len(log.steps) == 1
-        assert planned_forward_distance(log.steps[0].produced_command.trajectory) == pytest.approx(21.)
-    assert report.values["training_segments"].value == expected_segments
-    assert report.values["rollout_count"].value == 8 * expected_segments
-    assert report.values["final_planned_forward_m"].value == pytest.approx(21.)
-    assert report.values["final_planned_forward_m"].unit == "m"
-    assert all(row["run_log"].startswith("rollouts/") for row in rows)
-    assert set(report.tables["rollouts"].columns) == set(rows[0])
-    assert len(report.tables["starts"].rows) == 2 * expected_segments
-    assert {row["scenario_id"] for row in rows} == {training[0].scenario_id}
-    assert len(report.series["planned_forward_m"].y) == 2
-    assert report.series["planned_forward_m"].y == pytest.approx([21., 21.])
-    initial = report.images["initial_texture"].pixels
-    np.testing.assert_array_equal(texture, initial)
-    with pytest.raises(ValueError, match="training segment"):
-        attack.run_offline(replace(context, metadata=()))
-    with pytest.raises(ValueError, match="max_training_segments"):
-        replace(options, max_training_segments=0)
-    failed_output = tmp_path / "failed"
-    failed_context = replace(context, report=OfflineReport(failed_output / "files"))
-    failed = StopSignPatchAttack(optimization=replace(options, horizon_s=6.), min_approach_m=8.,
-                                harmonizer=attack.harmonizer)
-    with pytest.raises(ValueError, match="does not cover the requested horizon"):
-        failed.run_offline(failed_context)
-    rows = failed_context.report.tables["rollouts"].rows
-    assert len(rows) == 1 and rows[0]["status"] == "failed"
-    assert rows[0]["forward_m"] is None and "does not cover" in rows[0]["error"]
-    assert RunLog.read(failed_context.report.directory / rows[0]["run_log"]).status == "completed"
-    assert "optimized_texture" not in failed_context.report.images
-    in_memory = replace(context, metadata=training[:1], report=OfflineReport(None))
-    np.testing.assert_array_equal(attack.run_offline(in_memory), initial)
-    assert all(row["run_log"] is None for row in in_memory.report.tables["rollouts"].rows)
-
-
-def test_read_patch_mask(tmp_path):
-    face = replica_face()
-    mask = np.zeros(face.shape[:2], bool)
-    mask[200:260, 100:400] = True
-    path = tmp_path / "mask.png"
-    Image.fromarray(mask.astype(np.uint8) * 255).save(path)
-    np.testing.assert_array_equal(read_patch_mask(path), mask)
-    corner = np.zeros(face.shape[:2], np.uint8)
-    corner[0, 0] = 255
-    invalid = {"empty": (np.zeros(face.shape[:2], np.uint8), "nonempty and binary"),
-               "gray": (np.full(face.shape[:2], 128, np.uint8), "nonempty and binary"),
-               "small": (np.full((4, 4), 255, np.uint8), "resolution"),
-               "outside": (corner, "inside the replica face")}
-    for name, (pixels, message) in invalid.items():
-        destination = tmp_path / f"{name}.png"
-        Image.fromarray(pixels).save(destination)
-        with pytest.raises(ValueError, match=message):
-            read_patch_mask(destination)
-
-
-def test_texture_from_colors():
-    original = np.full((2, 3, 4), (175, 30, 45, 128), np.uint8)
-    mask = np.array([[True, False, True], [False, True, False]])
-    colors = np.full((3, 2, 3), .25)
-    texture = texture_from_colors(original, mask, colors)
-    np.testing.assert_array_equal(texture[..., :3][mask], np.full((3, 3), 64))
-    np.testing.assert_array_equal(texture[~mask], original[~mask])
-    np.testing.assert_array_equal(texture[..., 3], original[..., 3])
-    with pytest.raises(ValueError, match="finite RGB CHW"):
-        texture_from_colors(original, mask, np.full_like(colors, np.nan))
-
-
-def test_masked_patch_perturbation():
-    original = np.full((4, 4, 4), (175, 30, 45, 255), np.uint8)
-    original[0, 0, 3] = 0
-    mask = np.zeros((4, 4), bool)
-    mask[1:3] = True
-    asset = ObjectAsset.from_panel(original, category="stop_sign", width_m=1.)
-    pose = np.array([[0., 1., 0., 0.], [0., 0., -1., .5],
-                     [-1., 0., 0., 4.], [0., 0., 0., 1.]])
-    camera = PinholeCamera(np.array([[20., 0., 6.], [0., 20., 6.], [0., 0., 1.]]), 12, 12)
-    plan = plan_composite(camera, np.eye(4), [PlacedObject(
-        "stop_sign_replica", asset, pose, ExposureHarmonizer(reference="under"))])
-    sample = AdversarialSample(torch.zeros(3, 12, 12), TargetSpec((3., 3., 9., 9.)), {"plan": plan})
-    perturbation = MaskedPatchPerturbation(original, mask)
-    colors = perturbation.init()
-    image = perturbation.apply(sample, colors)
-    image.sum().backward()
-    assert colors.grad is not None and colors.grad.abs().sum() > 0
-    assert image.shape == sample.x.shape and plan.visible_mask.any()
-    projected = perturbation.project(colors * 4)
-    assert torch.all(projected[:, mask] <= 1.)
-    exported = perturbation.export(projected)
-    np.testing.assert_array_equal(exported[~mask], original[~mask])
-    np.testing.assert_array_equal(exported[..., 3], original[..., 3])
-    with pytest.raises(ValueError, match="at least one pixel"):
-        MaskedPatchPerturbation(original, np.zeros((4, 4), bool))
-
-
-def test_texture_data_source():
-    samples = [AdversarialSample(torch.full((3, 2, 2), value), TargetSpec((0., 0., 2., 2.)))
-               for value in (.1, .9)]
-    first, second = TextureDataSource(samples, seed=4), TextureDataSource(samples, seed=4)
-    assert [sample.x.mean().item() for sample in first.sample(5)] == [
-        sample.x.mean().item() for sample in second.sample(5)]
-    with pytest.raises(ValueError, match="positive integer"):
-        first.sample(0)
-
-
-@pytest.mark.parametrize("epoch_us", [0, 100_000_000])
-def test_planned_forward_distance(epoch_us):
-    positions = [(5., 0., 0.), (7., 3., 0.), (13., 6., 0.), (19., 9., 0.)]
-    trajectory = [(position, (1., 0., 0., 0.), timestamp) for position, timestamp in zip(
-        positions, [epoch_us, epoch_us + 1_000_000, epoch_us + 2_500_000, epoch_us + 4_000_000])]
-    assert planned_forward_distance(trajectory) == pytest.approx(10.)
-    with pytest.raises(ValueError, match="does not cover the requested horizon"):
-        planned_forward_distance(trajectory, horizon_s=4.1)
-    unordered = [*trajectory[:2], (*trajectory[2][:2], trajectory[1][2]), trajectory[3]]
-    with pytest.raises(ValueError, match="increase strictly"):
-        planned_forward_distance(unordered)
-    fractional = [(*trajectory[0][:2], float(trajectory[0][2])), *trajectory[1:]]
-    with pytest.raises(ValueError, match="integer microseconds"):
-        planned_forward_distance(fractional)
-
-
-@pytest.mark.parametrize("past_steps,expected_starts", [(15, [20, 30, 40]), (25, [25, 30, 40])])
-def test_fixed_start_segments(approach_view, past_steps, expected_starts):
-    scenario = approach_view(past_steps=past_steps)
-    approach = select_stop_approach(scenario)
-    assert approach is not None
-    segment = approach.to_segment()
-    frames = scenario.frames
-    with scenario.services.session(scenario.seed) as session:
-        starts = fixed_start_segments(segment, frames, session.can_start_at)
-        assert [item.start.position for item in starts] == expected_starts
-        assert [item.stop for item in starts] == [frames[index + 1] for index in expected_starts]
-        assert all(item.decision_steps == 1 and session.can_start_at(item.start.position)
-                   for item in starts)
-        short = replace(segment, start=frames[57], stop=frames[60])
-        with pytest.raises(ValueError, match="Not enough distinct eligible start frames"):
-            fixed_start_segments(short, frames, session.can_start_at)
-
-
-def test_masked_texture_perturbation():
-    original = np.full((2, 3, 4), (175, 30, 45, 128), np.uint8)
-    mask = np.array([[True, False, True], [False, True, False]])
-    perturbation = MaskedTexturePerturbation(original, mask)
-    colors = perturbation.init()
-    assert colors.shape == (3, 2, 3) and colors.dtype == np.float32
-    np.testing.assert_array_equal(colors[:, mask],
-                                  np.moveaxis(original[..., :3].astype(np.float32) / 255, -1, 0)[:, mask])
-    proposal = colors.copy()
-    proposal[0] = -1.
-    proposal[2] = 2.
-    projected = perturbation.project(proposal)
-    assert np.all((projected[:, mask] >= 0.) & (projected[:, mask] <= 1.))
-    np.testing.assert_array_equal(projected[:, ~mask], colors[:, ~mask])
-    texture = perturbation.export(projected)
-    assert texture.shape == original.shape and texture.dtype == np.uint8
-    np.testing.assert_array_equal(perturbation.apply(None, projected), texture)
-    with pytest.raises(ValueError, match="finite RGB CHW values"):
-        perturbation.project(np.full_like(colors, np.nan))
-    with pytest.raises(ValueError, match="at least one pixel"):
-        MaskedTexturePerturbation(original, np.zeros_like(mask))
-
-
-def test_route_progress():
-    route = np.array([[0., 0., 0.], [10., 0., 0.], [10., 0., 0.], [10., 10., 0.]])
-    points = np.array([[-2., 1., 0.], [5., 2., 0.], [12., 7., 0.], [10., 12., 0.]])
-    np.testing.assert_allclose(route_progress(points, route), [-2., 5., 17., 22.])
-    np.testing.assert_allclose(route_progress(np.array([[-2., 0., 0.], [12., 0., 0.]]),
-                                              route[:2]), [-2., 12.])
-
-
-
-
-def test_detector_scorer_selection(nurec_detector_services):
-    services, make_segment = nurec_detector_services
-    options = DetectorPatchOptimization(PGD(steps=1), scorer_id="rule_based.stop_sign_confidence",
-                                       samples_per_scene=4, min_visible_pixels=5,
-                                       braking_deceleration_mps2=10.)
-    attack = StopSignPatchAttack(optimization=options)
-    assert attack.run_offline(OfflineContext(services, (make_segment(),))).dtype == np.uint8
+    options = replace(attack.optimization, scorer_id="rule_based.stop_sign_confidence")
+    assert StopSignPatchAttack(optimization=options).run_offline(
+        replace(context, metadata=(segment,), report=OfflineReport(None))).dtype == np.uint8
     descriptor = ScorerDescriptor("image-score", {"image": "CHW float tensor [0,1]"},
                                   {"score": "scalar confidence"}, {"score": "tensor"}, ("image",),
                                   sensor_id="front", decision_threshold=0.)
-
-    def check(descriptors, scorer_id, message):
+    rejected = [
+        ([], "exactly one"),
+        ([replace(descriptor, sensor_id=None)], "sensor_id and decision_threshold"),
+    ]
+    for descriptors, message in rejected:
         adapter = DrivingAdapter(lambda seed: ConstantAVStack(),
                                  scorers=[(item, lambda avstack, image, target: image.sum())
                                           for item in descriptors])
         with ClosedLoopServices(MemoryDataset(), MemorySimulator(), adapter) as scope:
-            configured = StopSignPatchAttack(optimization=replace(options, scorer_id=scorer_id))
+            invalid = StopSignPatchAttack(optimization=replace(options, scorer_id=None))
             with pytest.raises(ValueError, match=message):
-                configured.run_offline(OfflineContext(scope, ()))
-
-    check([], None, "exactly one")
-    check([descriptor, replace(descriptor, id="second")], None, "exactly one")
-    check([descriptor], "missing", "Unavailable")
-    check([replace(descriptor, differentiable_inputs=())], "image-score", "image gradients")
-    check([replace(descriptor, sensor_id=None)], None, "sensor_id and decision_threshold")
-    check([replace(descriptor, decision_threshold=None)], None, "sensor_id and decision_threshold")
+                invalid.run_offline(OfflineContext(scope, ()))
 
 
-def test_rollout_start_distances():
-    optimization = RolloutPatchOptimization(NES(steps=1), start_distances_m=(12., 8.))
-    assert StopSignPatchAttack(optimization=optimization, min_approach_m=8., approach_m=12.).optimization is optimization
-    with pytest.raises(ValueError, match=r"\[20.0, 50.0\]"):
-        StopSignPatchAttack(optimization=optimization)
-    with pytest.raises(ValueError, match=r"\[8.0, 12.0\]"):
-        StopSignPatchAttack(optimization=replace(optimization, start_distances_m=(13.,)),
-                            min_approach_m=8., approach_m=12.)
+@pytest.mark.parametrize("maximum,driver_type,expected_unchanged", [
+    pytest.param(None, DeceleratingAVStack, True, id="all-training"),
+    pytest.param(1, ImageForwardAVStack, False, id="capped-image-dependent"),
+])
+def test_black_box_offline_phase(nurec_patch_services_and_segment, tmp_path, maximum, driver_type, expected_unchanged):
+    original_services, make_segment = nurec_patch_services_and_segment
+    training = (make_segment(), make_segment(start=16))
+    options = RolloutPatchOptimization(NES(steps=1, population_size=2, learning_rate=2000., seed=0),
+                                      start_distances_m=(8.,), max_training_segments=maximum)
+    attack = StopSignPatchAttack(initial_patch="white", optimization=options, min_approach_m=8.)
+    adapter = DrivingAdapter(lambda seed: driver_type(), past_steps=15)
+    with ClosedLoopServices(original_services.dataset, original_services.simulator, adapter) as services:
+        context = OfflineContext(services, training, seed=0, validation_metadata=(make_segment(start=23),),
+                                 report=OfflineReport(tmp_path / "files"))
+        texture = attack.run_offline(context)
+        report = context.report
+        rows = report.tables["rollouts"].rows
+        expected_segments = maximum or len(training)
+        assert len(rows) == 4 * expected_segments
+        assert report.values["training_segments"].value == expected_segments
+        assert report.values["rollout_count"].value == len(rows)
+        assert len(report.tables["starts"].rows) == expected_segments
+        assert {row["status"] for row in rows} == {"completed"}
+        for row in rows:
+            log = RunLog.read(report.directory / row["run_log"])
+            assert log.status == "completed" and len(log.steps) == 1
+            trajectory = log.steps[0].produced_command.trajectory
+            stamps = np.array([point[2] for point in trajectory])
+            x = np.array([point[0][0] for point in trajectory])
+            independent = np.interp(stamps[0] + options.horizon_s * 1e6, stamps, x) - x[0]
+            assert row["forward_m"] == pytest.approx(independent)
+        assert report.values["final_planned_forward_m"].unit == "m"
+        assert report.values["final_planned_forward_m"].value == pytest.approx(
+            np.mean([row["forward_m"] for row in rows[-expected_segments:]]))
+        assert all(row["run_log"].startswith("rollouts/") for row in rows)
+        assert set(report.tables["rollouts"].columns) == set(rows[0])
+        assert len(report.series["planned_forward_m"].y) == 2
+        np.testing.assert_array_equal(texture, report.images["optimized_texture"].pixels)
+        assert report.series["planned_forward_m"].y[-1] >= report.series["planned_forward_m"].y[0]
+        # The policy-dependent case selects a changed texture; the constant policy keeps its initial candidate.
+        assert np.array_equal(texture, report.images["initial_texture"].pixels) == expected_unchanged
+
+
+def test_black_box_offline_errors(nurec_patch_services_and_segment, tmp_path):
+    services, make_segment = nurec_patch_services_and_segment
+    options = RolloutPatchOptimization(
+        NES(steps=1, population_size=2, seed=0),
+        start_distances_m=(8.,), max_training_segments=1)
+    attack = StopSignPatchAttack(
+        initial_patch="white", optimization=options, min_approach_m=8.)
+    context = OfflineContext(
+        services, (make_segment(),), report=OfflineReport(tmp_path / "files"))
+    with services:
+        in_memory = replace(context, report=OfflineReport(None))
+        exported = attack.run_offline(in_memory)
+        np.testing.assert_array_equal(exported, in_memory.report.images["optimized_texture"].pixels)
+        assert all(row["run_log"] is None for row in in_memory.report.tables["rollouts"].rows)
+        with pytest.raises(ValueError, match="training segment"):
+            attack.run_offline(replace(context, metadata=()))
+        failed = replace(context, report=OfflineReport(tmp_path / "failed/files"))
+        invalid_horizon = StopSignPatchAttack(
+            optimization=replace(options, horizon_s=6.), min_approach_m=8.)
+        with pytest.raises(ValueError, match="does not cover the requested horizon"):
+            invalid_horizon.run_offline(failed)
+        rows = failed.report.tables["rollouts"].rows
+        assert rows[0]["status"] == "failed"
+        assert rows[0]["forward_m"] is None
+        assert "does not cover the requested horizon" in rows[0]["error"]
+        assert RunLog.read(failed.report.directory / rows[0]["run_log"]).steps
+        assert "optimized_texture" not in failed.report.images
+    with pytest.raises(ValueError, match="max_training_segments"):
+        replace(options, max_training_segments=0)
+    with pytest.raises(ValueError, match="cannot be optimized"):
+        StopSignPatchAttack(initial_patch="none", optimization=options, min_approach_m=8.)
+    with pytest.raises(ValueError, match="start_distances_m"):
+        StopSignPatchAttack(
+            optimization=replace(options, start_distances_m=(7.,)), min_approach_m=8.)

@@ -15,11 +15,11 @@ from avsectester.validation import require_positive_integer, require_positive_nu
 
 @dataclass
 class PlanarEgoState:
-    """Planar physical ego state in metres, radians and seconds.
+    """Planar physical ego state in meters, radians and seconds.
 
     X/Y/yaw locate the ego origin in world coordinates. Speed and lateral_speed are
     longitudinal and lateral velocity in ego axes; yaw_rate is radians per second and
-    acceleration is longitudinal metres per second squared.
+    acceleration is longitudinal meters per second squared.
     """
 
     x: float = 0.0
@@ -46,9 +46,9 @@ class EgoDynamics(Protocol):
 
 @dataclass
 class KinematicBicycle:
-    """A simple, transparent ego dynamics model — the shared 'physical control' for NuRec worlds.
+    """Integrate actuator commands with a deterministic kinematic bicycle model.
 
-    Maps a :class:`~avsectester.data_types.Control` (throttle/steer/brake) to motion. Pure and in-process,
+    Maps a `avsectester.data_types.Control` (throttle/steer/brake) to motion. Pure and in-process,
     so a step is trivially inspectable and deterministic.
     """
 
@@ -57,11 +57,13 @@ class KinematicBicycle:
     max_brake: float = 8.0  # m/s^2 at full brake
     max_steer: float = 0.6  # rad at full steer
     command_modes: ClassVar[frozenset[str]] = frozenset({"actuator"})
+    'Control command modes accepted or produced by this component.'
 
     def reset(self, state: PlanarEgoState) -> None:
         """No warmup is needed: this integrator carries all state in its argument."""
 
     def step(self, pose: PlanarEgoState, control: Control, dt: float) -> PlanarEgoState:
+        """Integrate actuator commands for one time interval using bicycle dynamics."""
         validate_command_modes(control, self.command_modes)
         require_positive_number(dt, "dt")
         accel = control.throttle * self.max_accel - control.brake * self.max_brake
@@ -81,7 +83,7 @@ class KinematicBicycle:
 
 @dataclass
 class TrajectoryFollower:
-    """Advance the ego along a planned trajectory (for trajectory-output stacks like Alpamayo).
+    """Realize a rig-frame planned trajectory by direct position interpolation.
 
     ``Control.trajectory`` is ``[((x,y,z),(w,x,y,z),t_us), ...]`` in the **rig frame** (x forward,
     y left) at absolute microsecond timestamps. Each step interpolates the rig-frame position at
@@ -91,11 +93,13 @@ class TrajectoryFollower:
 
     decel: float = 4.0  # m/s^2 when coasting with no plan
     command_modes: ClassVar[frozenset[str]] = frozenset({"trajectory"})
+    'Control command modes accepted or produced by this component.'
 
     def reset(self, state: PlanarEgoState) -> None:
         """No warmup is needed: the provided state anchors each planned trajectory."""
 
     def step(self, pose: PlanarEgoState, control: Control, dt: float) -> PlanarEgoState:
+        """Track the requested trajectory for one time interval."""
         validate_command_modes(control, self.command_modes)
         require_positive_number(dt, "dt")
         traj = control.trajectory or []
@@ -152,7 +156,9 @@ class AlpaSimController:
     dt_mpc: float = .1
     gains: Mapping[str, float | int] | None = None
     command_modes: ClassVar[frozenset[str]] = frozenset({"trajectory"})
+    'Control command modes accepted or produced by this component.'
     EPOCH_US: ClassVar[int] = 10_000_000
+    'Timestamp offset in microseconds used by the trajectory interface.'
 
     def __post_init__(self) -> None:
         require_positive_integer(self.n_horizon, "n_horizon")
@@ -274,3 +280,12 @@ class AlpaSimController:
             yaw_rate=dynamic.angular_velocity.z,
             acceleration=dynamic.linear_acceleration.x,
         )
+
+
+__all__ = [
+    'PlanarEgoState',
+    'EgoDynamics',
+    'KinematicBicycle',
+    'TrajectoryFollower',
+    'AlpaSimController',
+]

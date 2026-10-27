@@ -1,10 +1,8 @@
-"""Single-colour Gaussian-splat copies of framework objects for insertion into NRE scenes.
+"""Single-color Gaussian-splat copies of framework objects for insertion into NRE scenes.
 
-NRE inserts a 3D Gaussian PLY as a dynamic-object track. Its public documentation does not state
-how PLY coordinates map to the track, so the mapping below was measured on nre-ga 26.04: the track
-frame (origin at the object's bounding-box centre) holds ``TRACK_FROM_PLY @ p * scale``, where
-``scale = max(object_size - track_padding_m)``. Probe objects inserted with it land on their
-projected pixels within 0.1 px.
+NRE inserts a 3D Gaussian PLY as a dynamic-object track. The track frame has its origin at the
+object bounding-box center and holds ``TRACK_FROM_PLY @ p * scale``, where
+``scale = max(object_size - track_padding_m)``.
 """
 
 from __future__ import annotations
@@ -25,9 +23,9 @@ _PLY_PROPERTIES = ("x", "y", "z", "f_dc_0", "f_dc_1", "f_dc_2", "opacity",
 
 @dataclass(frozen=True)
 class ProbeAsset:
-    """An opaque, single-colour Gaussian PLY of an asset's visible texels, and its NRE track box.
+    """An opaque, single-color Gaussian PLY of an asset's visible texels, and its NRE track box.
 
-    The track origin is the asset's bounding-box centre, ``object_from_track`` places it in the
+    The track origin is the asset's bounding-box center, ``object_from_track`` places it in the
     asset frame, and ``object_size`` is the box size plus NRE's track padding.
     """
 

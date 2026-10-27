@@ -1,4 +1,4 @@
-"""Documentation checks: links and anchors resolve, code blocks parse, runnable examples run.
+"""Documentation contracts: public imports, generated API tables, links and offline runnable examples.
 
 Mark a self-contained example as runnable by placing ``<!-- runnable -->`` on the line directly
 before its code fence. Runnable Python examples are executed. Runnable YAML examples are complete
@@ -9,7 +9,13 @@ GPUs or model weights.
 
 from __future__ import annotations
 
+import ast
+import fnmatch
+import importlib
+import importlib.util
+import os
 import re
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -17,14 +23,41 @@ from pathlib import Path
 import pytest
 import yaml
 
+
 ROOT = Path(__file__).resolve().parents[2]
-DOCS = sorted(
-    [ROOT / "README.md", ROOT / "scripts" / "README.md", ROOT / "tests" / "README.md",
-     ROOT / "benchmarks" / "README.md", ROOT / "models" / "README.md"]
-    + list((ROOT / "docs").rglob("*.md"))
-)
+
+
+def documentation_paths():
+    excluded = {"third_party", "tmp", "results", ".git", ".venv", "node_modules"}
+    try:
+        names = subprocess.check_output(
+            ["git", "ls-files", "--cached", "--others", "--exclude-standard", "*.md"],
+            cwd=ROOT, text=True, stderr=subprocess.DEVNULL,
+        ).splitlines()
+        paths = [ROOT / name for name in names]
+    except (OSError, subprocess.CalledProcessError):
+        paths = []
+        patterns = [line.strip().strip("/") for line in (ROOT / ".gitignore").read_text().splitlines()
+                    if line.strip() and not line.lstrip().startswith(("#", "!"))]
+        for directory, subdirectories, files in os.walk(ROOT):
+            relative = Path(directory).relative_to(ROOT)
+            subdirectories[:] = [
+                name for name in subdirectories
+                if not name.startswith(".") and name not in excluded
+                and not any(
+                    fnmatch.fnmatch((relative / name).as_posix(), pattern)
+                    or ("/" not in pattern and fnmatch.fnmatch(name, pattern))
+                    for pattern in patterns)]
+            paths.extend(Path(directory) / name for name in files if name.endswith(".md"))
+    return sorted(path for path in paths if path.is_file()
+                  and not excluded.intersection(path.relative_to(ROOT).parts))
+
+
+DOCS = documentation_paths()
+
 RUNNABLE = "<!-- runnable -->"
 LINK = re.compile(r"!?\[[^\]]*\]\(([^)\s]+)\)")
+HTML_IMAGE = re.compile(r"""<img[^>]+src=["']([^"']+)["']""", re.I)
 FENCE = re.compile(r"^(```+|~~~+)\s*([\w+-]*)")
 
 
@@ -38,6 +71,7 @@ def _blocks(text: str):
             index += 1
             continue
         fence, language = match.groups()
+        language = "python" if language == "py" else language
         runnable = index > 0 and lines[index - 1].strip() == RUNNABLE
         start = index + 1
         index += 1
@@ -47,7 +81,7 @@ def _blocks(text: str):
         index += 1
 
 
-def _prose(text: str) -> str:
+def _prose(text: str, *, inline_code: bool = False) -> str:
     """Remove fenced blocks and inline code so only rendered Markdown remains."""
     kept, fence = [], None
     for line in text.splitlines():
@@ -59,7 +93,7 @@ def _prose(text: str) -> str:
             if line.startswith(fence):
                 fence = None
             continue
-        kept.append(re.sub(r"`[^`]*`", "", line))
+        kept.append(line if inline_code else re.sub(r"`[^`]*`", "", line))
     return "\n".join(kept)
 
 
@@ -72,7 +106,7 @@ def _slug(heading: str) -> str:
 def _anchors(path: Path) -> set[str]:
     seen: dict[str, int] = {}
     anchors = set()
-    for line in _prose(path.read_text()).splitlines():
+    for line in _prose(path.read_text(), inline_code=True).splitlines():
         match = re.match(r"^#{1,6}\s+(.*?)\s*#*\s*$", line)
         if not match:
             continue
@@ -86,7 +120,8 @@ def _anchors(path: Path) -> set[str]:
 @pytest.mark.parametrize("path", DOCS, ids=lambda p: str(p.relative_to(ROOT)))
 def test_links_and_anchors_resolve(path):
     broken = []
-    for target in LINK.findall(_prose(path.read_text())):
+    for target in (LINK.findall(_prose(path.read_text()))
+                   + HTML_IMAGE.findall(_prose(path.read_text()))):
         if re.match(r"^[a-z][a-z0-9+.-]*:", target):
             continue
         file_part, _, anchor = target.partition("#")
@@ -135,7 +170,7 @@ RUNNABLE_YAML_BLOCKS = [
     for language, code, line, runnable in _blocks(path.read_text())
     if runnable and language in {"yaml", "yml"}
 ]
-RUNNABLE_LANGUAGES = {"python", "py", "yaml", "yml"}
+RUNNABLE_LANGUAGES = {"python", "yaml", "yml"}
 
 
 def test_runnable_marker_is_only_used_for_supported_languages():
@@ -155,3 +190,101 @@ def test_runnable_yaml_examples_load(code, tmp_path):
     path = tmp_path / "experiment.yaml"
     path.write_text(code)
     load_configuration(path)
+
+
+def _import_module(name):
+    try:
+        return importlib.import_module(name)
+    except ModuleNotFoundError as error:
+        if error.name and not error.name.startswith("avsectester"):
+            pytest.skip(f"Optional dependency {error.name} unavailable for {name}")
+        raise
+
+
+def python_imports():
+    for path in DOCS:
+        for language, code, line, runnable in _blocks(path.read_text()):
+            if language != "python" or runnable:
+                continue
+            for statement in ast.walk(ast.parse(code)):
+                if isinstance(statement, ast.Import):
+                    for alias in statement.names:
+                        if alias.name.startswith("avsectester"):
+                            yield pytest.param(
+                                alias.name, None,
+                                id=f"{path.relative_to(ROOT)}:{line}:{alias.name}")
+                elif (isinstance(statement, ast.ImportFrom) and statement.module
+                      and statement.module.startswith("avsectester")):
+                    for name in statement.names:
+                        yield pytest.param(
+                            statement.module, name.name,
+                            id=f"{path.relative_to(ROOT)}:{line}:{statement.module}.{name.name}")
+
+
+@pytest.mark.parametrize("module_name,name", list(python_imports()))
+def test_python_imports_resolve(module_name, name):
+    module = _import_module(module_name)
+    assert hasattr(module, "__all__"), f"Internal module {module_name}"
+    if name not in (None, "*"):
+        assert name in module.__all__, f"{module_name}.{name} is not exported"
+
+
+def _api_generator():
+    path = ROOT / "scripts/development/write_api_reference.py"
+    spec = importlib.util.spec_from_file_location("api_reference_generator", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_public_api_reference():
+    generator = _api_generator()
+    text = (ROOT / "docs/reference/python-api.md").read_text()
+    expected = generator.render(text)
+    blocks = re.compile(r"<!-- api:begin module=(.*?) -->(.*?)<!-- api:end -->", re.S)
+    actual_sections = dict(blocks.findall(text))
+    for module, block in blocks.findall(expected):
+        assert actual_sections.get(module) == block, f"Regenerate API module {module}"
+    sections = re.findall(r"^### (avsectester[\w.]*)$", text, re.M)
+    assert len(sections) == len(set(sections))
+    assert set(sections) == set(generator.public_modules())
+    for module, block in re.findall(r"<!-- api:begin module=(.*?) -->(.*?)<!-- api:end -->", text, re.S):
+        if module == "module-map":
+            continue
+        names = []
+        for line in block.splitlines():
+            if not line.startswith("|") or line.startswith(("| Name and signature", "|---")):
+                continue
+            match = re.fullmatch(r"\| `([^`]+)` \| .+ \|", line)
+            assert match, f"Unparseable row in {module}: {line}"
+            name = re.split(r"[(: =]", match[1], maxsplit=1)[0]
+            assert name not in names, f"Duplicate {module}.{name}"
+            names.append(name)
+
+
+@pytest.mark.parametrize("path", DOCS, ids=lambda p: str(p.relative_to(ROOT)))
+def test_documentation_format(path):
+    prose = _prose(path.read_text(), inline_code=True)
+    errors = []
+    lines = prose.splitlines()
+    for number, line in enumerate(lines, 1):
+        if re.search(r"`[^`]+`\s+(?:\.\w|\(|'s\b|=|-\w)", line):
+            errors.append(f"{number}: separated code fragment: {line}")
+        if any(re.search(r"&(?:#\d+|#x[\da-f]+|\w+);", code)
+               for code in re.findall(r"`([^`]+)`", line)):
+            errors.append(f"{number}: HTML entity in code: {line}")
+        if line.lstrip().startswith("> >"):
+            errors.append(f"{number}: nested task header")
+        if re.match(r"^\s*\d+\.\s", line) and re.search(r"\s\d+\.\s", line):
+            errors.append(f"{number}: multiple ordered-list items")
+        if (re.fullmatch(r"[A-Za-z][A-Za-z-]*[.,;:]?", line.strip())
+                and number < len(lines) and lines[number].strip()
+                and not lines[number].startswith(("#", "|", ">"))):
+            errors.append(f"{number}: isolated word: {line}")
+    for first, second in zip(lines, lines[1:]):
+        if re.match(r"^> \*\*(?:Audience|Outcome):", first) and re.match(
+                r"^> \*\*(?:Outcome|Prerequisites):", second):
+            errors.append("Task-header fields need a separate > line")
+    if path.name == "python-api.md":
+        assert "lambda:" not in prose and "&#124;" not in prose
+    assert not errors, "\n".join(errors)

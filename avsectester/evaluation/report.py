@@ -232,3 +232,6 @@ def _summarize_rows(rows: Sequence[dict[str, Any]], key: str) -> dict[str, Any]:
         kind = "boolean" if boolean and key == "metrics" else "number"
         result[name] = _statistics(samples, kind)
     return result
+
+
+__all__ = ['EvaluationConfiguration', 'EvaluationReport']

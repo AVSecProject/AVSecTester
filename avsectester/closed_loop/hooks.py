@@ -27,7 +27,9 @@ if TYPE_CHECKING:
 class StageEmitter(Protocol):
     """What an adapter is bound to during a run: normally the run's hook dispatcher."""
 
-    def emit(self, stage: str, value: Any, sensor: str | None = None) -> Any: ...
+    def emit(self, stage: str, value: Any, sensor: str | None = None) -> Any:
+        """Run registered callbacks for a supported stage and return the resulting value."""
+        ...
 
 
 class _StageAdapter:
@@ -37,14 +39,17 @@ class _StageAdapter:
 
     @property
     def supported_stages(self) -> frozenset[str]:
+        """Return the hook stages supported by this adapter."""
         return frozenset()
 
     @property
     def native(self) -> Mapping[str, Any]:
+        """Expose native components available to callbacks, keyed by component name."""
         return {}
 
     @contextmanager
     def bind_hooks(self, dispatcher: StageEmitter) -> Iterator[None]:
+        """Bind one dispatcher for the scope; reject an already active binding."""
         if getattr(self, "_dispatcher", None) is not None:
             raise RuntimeError("Adapter is already bound to an active run")
         self._dispatcher = dispatcher
@@ -99,6 +104,7 @@ class RunContext:
 
     @property
     def native(self) -> Mapping[str, Mapping[str, Any]]:
+        """Access a simulator- or driving-system-native run resource by name."""
         return {"simulator_runtime": self.simulator_runtime.native, "avstack": self.avstack.native}
 
 
@@ -135,22 +141,27 @@ class StageContext:
 
     @property
     def simulator_runtime(self) -> SimulatorRuntime:
+        """Simulator runtime associated with the active run."""
         return self.run.simulator_runtime
 
     @property
     def avstack(self) -> AVStack:
+        """Driving system associated with the active run."""
         return self.run.avstack
 
     @property
     def rng(self) -> np.random.Generator:
+        """Random generator assigned to this callback invocation."""
         return self.run.rng
 
     @property
     def native(self) -> Mapping[str, Mapping[str, Any]]:
+        """Access a native resource through the active run context."""
         return self.run.native
 
     @property
     def sim_time(self) -> float:
+        """Physical simulation time at the active stage."""
         return self.physical_state.t
 
 
@@ -256,6 +267,7 @@ class HookSet:
 class HookDispatcher:
     """One bound run. Custom adapters publish supported stages through ``emit``."""
     CORE_STAGES = frozenset({"sensors.post", "localization.post", "observation", "command"})
+    """Framework stages available independently of native adapter stages."""
 
     def __init__(self, hook_set: HookSet, simulator_runtime: SimulatorRuntime, avstack: AVStack) -> None:
         self.hook_set = hook_set
@@ -278,6 +290,7 @@ class HookDispatcher:
 
     @contextmanager
     def activate(self) -> Iterator[HookDispatcher]:
+        """Bind both adapters and reset participants, closing them when the scope exits."""
         if self._active:
             raise RuntimeError("Hook dispatcher is already active")
         resources = ExitStack()
@@ -308,6 +321,7 @@ class HookDispatcher:
                 failure.add_note(f"Hook cleanup also failed: {error!r}")
 
     def stage_context(self, stage: str, sensor: str | None = None) -> StageContext:
+        """Capture current physical state and model-visible values for a callback."""
         physical_state = self.context.simulator_runtime.state()
         return StageContext(
             self.context, self.step, stage, physical_state, sensor,
@@ -316,6 +330,7 @@ class HookDispatcher:
         )
 
     def record_output(self, context: StageContext, name: str, value: Any) -> None:
+        """Snapshot a named output; reject recording outside an active dispatcher scope."""
         if not self._active:
             raise RuntimeError("Outputs can only be recorded from an active hook callback")
         self.outputs.append(RecordedOutput(
@@ -334,6 +349,7 @@ class HookDispatcher:
         return result
 
     def emit(self, stage: str, value: Any, sensor: str | None = None) -> Any:
+        """Transform a value through the supported stage's ordered callbacks."""
         if stage not in self.available:
             raise ValueError(f"Adapter emitted an unsupported stage: {stage!r}")
         # Context describes the current input, including replacements by earlier handlers.
@@ -369,6 +385,7 @@ class HookDispatcher:
         return self.observation_pipeline.process(observation, self)
 
     def command(self, control: Control) -> Control:
+        """Apply command hooks and validate the resulting command against the simulator."""
         self._require(control, Control, "avstack")
         self.control = control
         control = self.emit("command", control)
@@ -378,6 +395,7 @@ class HookDispatcher:
         return control
 
     def after_step(self, observation: Observation) -> None:
+        """Notify participants with independent copies of the next raw measurement."""
         # Feedback sees the next raw measurement, before input transforms for the next decision.
         self.observation = self.context.simulator_runtime.copy_observation(observation)
         for handler in self.participants:
@@ -395,3 +413,17 @@ class HookDispatcher:
     def _require(value: Any, expected: type, stage: str) -> None:
         if not isinstance(value, expected):
             raise TypeError(f"{stage} must return {expected.__name__}, got {type(value).__name__}")
+
+
+__all__ = [
+    'StageEmitter',
+    'UnsupportedStageError',
+    'CallInputs',
+    'CameraPoseRequest',
+    'RunContext',
+    'StageContext',
+    'Plugin',
+    'Hook',
+    'HookSet',
+    'HookDispatcher',
+]

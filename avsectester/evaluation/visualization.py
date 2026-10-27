@@ -18,6 +18,7 @@ from avsectester.runlog import RunLog, StepRecord
 from .metric import executed_brakes, speeds
 
 View = Callable[[StepRecord], Any]
+"""A callable that renders one recorded step into an image-compatible value."""
 _BOX_EDGES = ((0, 1), (1, 2), (2, 3), (3, 0), (4, 5), (5, 6), (6, 7), (7, 4),
               (0, 4), (1, 5), (2, 6), (3, 7))
 
@@ -366,3 +367,23 @@ def plot_group(runs: Mapping[str, Any], path: str | Path, *, title: str | None =
     figure.savefig(destination, dpi=130)
     figure.clear()
     return destination
+
+
+__all__ = [
+    'View',
+    'as_rgb',
+    'camera_view',
+    'lidar_bev',
+    'annotate',
+    'box3d_corners',
+    'draw_boxes3d',
+    'sensor_view',
+    'labels_view',
+    'detections_view',
+    'save_image',
+    'record_run',
+    'filmstrip',
+    'save_gif',
+    'save_sequence',
+    'plot_group',
+]

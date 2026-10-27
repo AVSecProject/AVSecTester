@@ -12,6 +12,7 @@ from avsectester.validation import require_nonnegative_integer, require_positive
 
 @dataclass(frozen=True)
 class ComponentDescriptor:
+    """Description of an evaluable driving-system component and its input/output formats."""
     id: str
     inputs: Mapping[str, str]
     outputs: Mapping[str, str]
@@ -21,6 +22,7 @@ class ComponentDescriptor:
 
 @dataclass(frozen=True)
 class ScorerDescriptor(ComponentDescriptor):
+    """Description of a scoring component, gradient support and optional sensor decision threshold."""
     output_shape: tuple[int, ...] = ()
     direction: str = "minimize"
     sensor_id: str | None = None
@@ -38,10 +40,10 @@ class ScorerDescriptor(ComponentDescriptor):
 
 
 class DrivingAdapter:
-    """Explicit component/scorer bindings over a fresh AVStack factory.
+    """Bind component callbacks ``(avstack, inputs)`` and scorer callbacks
+    ``(avstack, inputs, target)`` to a fresh AVStack factory.
 
-    Callbacks receive (avstack, inputs), or (avstack, inputs, target) for scorers. Input
-    schemas describe native argument conventions; adapters own conversion and warmup.
+    Input schemas describe native argument conventions; adapters own conversion and warmup.
     Component evaluations and rollouts use fresh AVStack instances. Scoring reuses one
     AVStack per session to keep weights loaded; scorer callbacks must isolate each request
     from driving history. Separate sessions and rollouts never share that instance.
@@ -100,3 +102,10 @@ class DrivingAdapter:
                 raise ValueError("Differentiable inputs must name declared inputs")
             result[descriptor.id] = (deepcopy(descriptor), callback)
         return result
+
+
+__all__ = [
+    'ComponentDescriptor',
+    'ScorerDescriptor',
+    'DrivingAdapter',
+]

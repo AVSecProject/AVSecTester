@@ -30,3 +30,11 @@ def require_positive_number(value: float, name: str) -> None:
     """Require a finite real number greater than zero, excluding booleans."""
     if isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value) or value <= 0:
         raise ValueError(f"{name} must be a positive number")
+
+
+__all__ = [
+    'require_nonnegative_integer',
+    'require_positive_integer',
+    'require_nonnegative_number',
+    'require_positive_number',
+]

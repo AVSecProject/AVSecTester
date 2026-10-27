@@ -600,3 +600,9 @@ def write_evaluation_html(output_root: str | Path) -> Path:
         if notes else '<p class="none">None</p>'))
     body.append(_section("errors-and-notes", "Errors and notes", error_content))
     return _document(f"Evaluation report — {root.name}", body, root / "evaluation_report.html")
+
+
+__all__ = [
+    'write_offline_html',
+    'write_evaluation_html',
+]

@@ -122,6 +122,7 @@ class SegmentUnit:
     part: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
+        """Serialize this unit's index, segment identity, attack membership and split part."""
         return {"index": self.index, "scenario_id": self.segment.scenario_id,
                 "start": self.segment.start.position, "stop": self.segment.stop.position,
                 "attack_names": list(self.attack_names), "part": self.part}
@@ -196,6 +197,7 @@ class PreparedExperiment:
             object.__setattr__(self, "units", build_units(self.configuration, self.metadata))
 
     def save(self, directory: str | Path) -> Path:
+        """Save preparation metadata, artifacts and offline reports to an output directory."""
         from .output_directory import save_prepared
 
         return save_prepared(self, directory)
@@ -231,6 +233,7 @@ class TreatmentResult:
 
     @property
     def group(self) -> tuple[int, int]:
+        """Comparison-group key containing the segment index and seed."""
         return self.segment_index, self.seed
 
 
@@ -249,6 +252,7 @@ class ExperimentResult:
 
     @property
     def groups(self) -> dict[tuple[int, int], dict[str, RunLog]]:
+        """Group treatment results by segment index and seed."""
         result: dict[tuple[int, int], dict[str, RunLog]] = {}
         for run in self.runs:
             result.setdefault(run.group, {})[run.treatment] = run.log
@@ -256,10 +260,12 @@ class ExperimentResult:
 
     @property
     def failures(self) -> tuple[TreatmentResult, ...]:
+        """Failed or incomplete treatment runs."""
         return tuple(run for run in self.runs if run.log.status != "completed")
 
     @property
     def selection_errors(self) -> tuple[SelectionDecision, ...]:
+        """Selection decisions whose status is error."""
         return tuple(item for item in self.selections if item.status == "error")
 
     @classmethod
@@ -274,3 +280,12 @@ class ExperimentResult:
         from .output_directory import load_result
 
         return load_result(output, configuration)
+
+
+__all__ = [
+    'SelectionDecision',
+    'SegmentUnit',
+    'PreparedExperiment',
+    'TreatmentResult',
+    'ExperimentResult',
+]

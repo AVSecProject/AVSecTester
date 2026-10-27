@@ -12,7 +12,7 @@ from tests.fakes import MemoryDataset, MemorySimulator
 
 @pytest.fixture
 def rpn_case():
-    torch = pytest.importorskip("torch")
+    import torch
     from avsectester.closed_loop.avstacks.implemented.scorers import MMDetRPNObjectnessScorer
 
     image = torch.full((3, 16, 16), .5, requires_grad=True)
@@ -49,7 +49,7 @@ def test_target_score(case_fixture, binding, request, camera_detector_boundary):
 
 
 def test_rpn_score_retains_image_gradient(camera_detector_boundary):
-    torch = pytest.importorskip("torch")
+    import torch
     from avsectester.closed_loop.avstacks.implemented.scorers import MMDetRPNObjectnessScorer
 
     image = torch.full((3, 16, 16), .5, requires_grad=True)

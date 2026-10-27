@@ -14,36 +14,32 @@ def ground(pitch, height=0.0):
     return MeshRaycaster(vertices, np.array([[0, 1, 2], [0, 2, 3]]))
 
 
-@pytest.mark.parametrize("pitch", [-5.0, 5.0])
-def test_constrain_to_ground(pitch):
+def test_constrain_to_ground():
+    for pitch in (-5., 5.):
+        pose = make_pose(np.eye(3), (0., 1., .75))
+        updated, status = constrain_to_ground(ground(pitch), pose, (4., 2., 1.5))
+        assert status == "successful_update"
+        np.testing.assert_allclose(updated[:3, :3], rotation_matrix((0, -pitch, 0)), atol=1e-12)
+        np.testing.assert_allclose(updated[:3, 3], pose[:3, 3], atol=1e-12)
+        bottom = np.array([[-2., -1., -.75], [2., -1., -.75],
+                           [2., 1., -.75], [-2., 1., -.75]])
+        world_bottom = bottom @ updated[:3, :3].T + updated[:3, 3]
+        residual = world_bottom[:, 2] - np.tan(np.deg2rad(pitch)) * world_bottom[:, 0]
+        # The official centroid-and-rotation fit leaves a small second-order contact residual.
+        np.testing.assert_allclose(residual, -.75 * (1 / np.cos(np.deg2rad(pitch)) - 1), atol=1e-12)
+        assert np.max(np.abs(residual)) < .003
+        np.testing.assert_array_equal(pose, make_pose(np.eye(3), (0., 1., .75)))
+        with pytest.raises(ValueError, match="positive box dimensions"):
+            constrain_to_ground(ground(pitch), pose, (4., 0., 1.5))
+
     pose = make_pose(np.eye(3), (0., 1., .75))
-    updated, status = constrain_to_ground(ground(pitch), pose, (4., 2., 1.5))
-    assert status == "successful_update"
-    np.testing.assert_allclose(updated[:3, :3], rotation_matrix((0, -pitch, 0)), atol=1e-12)
-    np.testing.assert_allclose(updated[:3, 3], pose[:3, 3], atol=1e-12)
-    bottom = np.array([[-2., -1., -.75], [2., -1., -.75],
-                       [2., 1., -.75], [-2., 1., -.75]])
-    world_bottom = bottom @ updated[:3, :3].T + updated[:3, 3]
-    residual = world_bottom[:, 2] - np.tan(np.deg2rad(pitch)) * world_bottom[:, 0]
-    # The official centroid-and-rotation fit leaves a small second-order contact residual.
-    np.testing.assert_allclose(residual, -.75 * (1 / np.cos(np.deg2rad(pitch)) - 1), atol=1e-12)
-    assert np.max(np.abs(residual)) < .003
-    np.testing.assert_array_equal(pose, make_pose(np.eye(3), (0., 1., .75)))
-    with pytest.raises(ValueError, match="positive box dimensions"):
-        constrain_to_ground(ground(pitch), pose, (4., 0., 1.5))
+    for surface, expected in [(ground(0., 3.), "high_translation"),
+                              (ground(15.), "high_rotation"),
+                              (ground(-15.), "high_rotation")]:
+        updated, status = constrain_to_ground(surface, pose, (4., 2., 1.5))
+        assert status == expected
+        np.testing.assert_array_equal(updated, pose)
 
-
-@pytest.mark.parametrize("pitch,height,status", [(0.0, 3.0, "high_translation"),
-                                                 (15.0, 0.0, "high_rotation"),
-                                                 (-15.0, 0.0, "high_rotation")])
-def test_rejected_correction(pitch, height, status):
-    pose = make_pose(np.eye(3), (0., 1., .75))
-    updated, actual_status = constrain_to_ground(ground(pitch, height), pose, (4., 2., 1.5))
-    assert actual_status == status
-    np.testing.assert_array_equal(updated, pose)
-
-
-def test_insufficient_intersections():
     empty = MeshRaycaster(np.empty((0, 3)), np.empty((0, 3), dtype=int))
     pose = make_pose(np.eye(3), (0., 1., .75))
     updated, status = constrain_to_ground(empty, pose, (4., 2., 1.5))

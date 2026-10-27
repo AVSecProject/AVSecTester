@@ -9,12 +9,15 @@ from avsectester.validation import require_positive_integer
 
 # Bundled public-domain texture shared by attacks; sources are listed in assets/SOURCES.md.
 STOP_SIGN_FACE = Path(__file__).resolve().with_name("assets") / "mutcd_r1-1_stop.png"
+'Path to the bundled nominal stop-sign face texture.'
 
 
 class Texture(Protocol):
     """A user-provided texture that returns an RGB or RGBA uint8 image."""
 
-    def rgba(self) -> np.ndarray: ...
+    def rgba(self) -> np.ndarray:
+        """Produce an H×W×3 RGB or H×W×4 RGBA uint8 image."""
+        ...
 
 
 def load_rgba_image(value: np.ndarray | str | Path | Texture) -> np.ndarray:
@@ -59,7 +62,16 @@ class CheckerboardTexture:
             raise ValueError("colors must contain two RGB integer colors in [0, 255]")
 
     def rgba(self) -> np.ndarray:
+        """Produce the texture as an H×W×4 uint8 RGBA image."""
         positions = np.arange(self.size) * self.cells // self.size
         pattern = (positions[:, None] + positions[None, :]) % 2
         rgb = np.asarray(self.colors, dtype=np.uint8)[pattern]
         return np.concatenate((rgb, np.full((self.size, self.size, 1), 255, np.uint8)), axis=2)
+
+
+__all__ = [
+    'STOP_SIGN_FACE',
+    'Texture',
+    'load_rgba_image',
+    'CheckerboardTexture',
+]

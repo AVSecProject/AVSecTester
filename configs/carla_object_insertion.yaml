@@ -1,4 +1,3 @@
-# Run with: avsectester run configs/carla_object_insertion.yaml
 # Paths are relative to this file; set data/model paths for your machine.
 dataset:
   type: CarlaDataset

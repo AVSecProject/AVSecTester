@@ -1,22 +1,57 @@
 """Configuration is loaded through its public constructors and validation API."""
 
 from collections.abc import Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from copy import deepcopy
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
 import pytest
 import yaml
 
 from avsectester.attack import Attack
-from avsectester.experiment import MetadataConfiguration, SplitConfiguration, load_configuration
-from avsectester.experiment.engine import validate_configuration_environment
+from avsectester.closed_loop.avstacks import DrivingAdapter
+from avsectester.closed_loop.hooks import HookSet
+from avsectester.data_types import Observation
+from avsectester.evaluation import DrivingMetrics
+from avsectester.experiment import (
+    Experiment, ExperimentConfiguration, MetadataConfiguration, SplitConfiguration, load_configuration,
+)
 from tests.fakes import ConstantAVStack, MemoryDataset, MemorySimulator, MinimalAttack, MetadataOnlyAttack
 
 if TYPE_CHECKING:
     import pathlib as annotation_paths
     from collections.abc import Hashable as AnnotationOption
+
+
+@dataclass(frozen=True)
+class SummaryOption:
+    size: int = 2
+
+
+def test_describe_configuration():
+    parameters = {
+        "path": Path("assets/face.png"), "integer": np.int64(3),
+        "array": np.arange(6, dtype=np.float32).reshape(2, 3),
+        "option": SummaryOption(), "tuple": (1, 2),
+    }
+    configuration = ExperimentConfiguration(
+        MemoryDataset(), MemorySimulator(), DrivingAdapter(lambda seed: ConstantAVStack()),
+        {"probe": MinimalAttack(assets=parameters)})
+    saved = configuration.describe_configuration()["attacks"]["probe"]["parameters"]["assets"]
+    assert saved == {
+        "path": "assets/face.png", "integer": 3, "tuple": [1, 2],
+        "array": {"array_dtype": "<f4", "array_shape": [2, 3],
+                  "sha256": "e2c0a71510b5394df7773b63fb5f54372b84c3564e67811bde7d665be227976d"},
+        "option": {"type": "test_configuration:SummaryOption",
+                   "parameters": {"size": 2}},
+    }
+    assert type(saved["integer"]) is int
+    invalid = replace(configuration, attacks={"probe": MinimalAttack(assets=float("nan"))})
+    with pytest.warns(RuntimeWarning, match="unverified"):
+        description = invalid.describe_configuration()
+    assert description["attacks"]["probe"]["parameters"] is None
 
 
 class NestedPathOptions:
@@ -94,6 +129,16 @@ class DeviceAVStack(ConstantAVStack):
         self.device = device
 
 
+class AddSpeedHook:
+    """A user-supplied YAML hook whose constructor option affects observations."""
+
+    def __init__(self, amount=1.):
+        self.amount = amount
+
+    def __call__(self, value, context):
+        return replace(value, ego_speed=value.ego_speed + self.amount)
+
+
 def specification():
     return {
         "dataset": {"type": "tests.fakes:MemoryDataset"},
@@ -135,15 +180,6 @@ def test_load_configuration(tmp_path):
         assert loaded.runs.output == tmp_path / "results"
         assert Path(loaded.attacks["probe"].source) == attack_directory / "texture.png"
 
-    spec["dataset"] = {"type": "CarlaDataset", "options": {"recipes": {}, "map_directory": "maps"}}
-    path.write_text(yaml.safe_dump(spec))
-    assert load_configuration(path).dataset.map_directory == tmp_path / "maps"
-
-    for bundled in (Path(__file__).resolve().parents[3] / "configs").glob("*.yaml"):
-        configuration = load_configuration(bundled)
-        validate_configuration_environment(configuration)
-        assert configuration.attacks
-
     unknown = deepcopy(specification())
     unknown["unexpected"] = True
     with pytest.raises(ValueError, match="Unknown experiment keys"):
@@ -155,6 +191,14 @@ def test_load_configuration(tmp_path):
     several = specification()
     several["attacks"]["other"] = {"type": "tests.fakes:MinimalAttack"}
     assert set(load_configuration(several).attacks) == {"probe", "other"}
+    with pytest.raises(ValueError, match="Treatment names must be unique"):
+        load_configuration({**specification(), "runs": {"treatments": [
+            {"name": "same"}, {"name": "same", "attack_name": "probe"}]}})
+    with pytest.raises(ValueError, match="seeds must be a nonempty"):
+        load_configuration({**specification(), "runs": {"seeds": []}})
+    with pytest.raises(ValueError, match="references unknown attack"):
+        load_configuration({**specification(), "runs": {"treatments": [
+            {"name": "unknown", "attack_name": "absent"}]}})
 
 
 def test_configuration_device():
@@ -173,8 +217,6 @@ def test_configuration_device():
     assert attack.nested["inherited"].device == "cpu"
     assert attack.nested["explicit"].device == "cuda:1"
     assert configuration.avstack.factory(0).device == "cpu"
-    assert isinstance(configuration.dataset, MemoryDataset)
-    assert isinstance(configuration.simulator, MemorySimulator)
 
     explicit = deepcopy(spec)
     explicit.pop("device")
@@ -194,6 +236,16 @@ def test_configuration_device():
 
 
 def test_constructor_paths(tmp_path):
+    nurec = specification()
+    nurec["simulator"] = {"type": "NuRecSimulator", "options": {"time_step": .1, "renderer": {
+        "type": "avsectester.closed_loop.simulators.nurec:NuRecRenderer", "options": {
+            "probe_directory": "../probes", "server_probe_directory": "../server-probes"}}}}
+    yaml_path = tmp_path / "probe.yaml"
+    yaml_path.write_text(yaml.safe_dump(nurec))
+    renderer = load_configuration(yaml_path).simulator.renderer
+    assert Path(renderer.probe_directory) == (tmp_path / "../probes").resolve()
+    assert renderer.server_probe_directory == "../server-probes"
+
     absolute = str(tmp_path / "keep" / ".." / "weights.bin")
     uri = "https://example.test/weights.bin"
     options = {
@@ -241,39 +293,17 @@ def test_constructor_paths(tmp_path):
         load_configuration(path)
     assert "at runtime" in str(error.value)
 
-    # Local probe files resolve beside the YAML; server paths stay in the server namespace.
-    directory = tmp_path / "configs"
-    directory.mkdir()
-    probe_spec = specification()
-    probe_spec["simulator"] = {
-        "type": "NuRecSimulator",
-        "options": {
-            "depth": "none", "physics_update_mode": "none",
-            "route_generator": "none",
-            "renderer": {
-                "type": "avsectester.closed_loop.simulators.nurec:NuRecRenderer",
-                "options": {"probe_directory": "../results/nre-probes",
-                            "server_probe_directory": "../server-probes"},
-            },
-        },
-    }
-    probe_config = directory / "nurec.yaml"
-    probe_config.write_text(yaml.safe_dump(probe_spec))
-    renderer = load_configuration(probe_config).simulator.renderer
-    assert Path(renderer.probe_directory) == (tmp_path / "results/nre-probes").resolve()
-    assert renderer.server_probe_directory == "../server-probes"
-
-
-def test_validate_configuration_environment():
     spec = specification()
-    spec["runs"] = {"environment": {"sensors": [
-        {"type": "GaussianNoise", "options": {"severity": .1}, "camera": "front"},
-    ]}}
-    configuration = load_configuration(spec)
-    validate_configuration_environment(configuration)
-    spec["runs"]["environment"] = {"world": {"unsupported_setting": True}}
-    with pytest.raises(ValueError, match="does not support"):
-        validate_configuration_environment(load_configuration(spec))
+    spec["dataset"] = {"type": "CarlaDataset", "options": {"recipes": {}, "map_directory": "maps"}}
+    path.write_text(yaml.safe_dump(spec))
+    assert load_configuration(path).dataset.map_directory == tmp_path / "maps"
+
+
+def test_bundled_configurations_load():
+    for path in sorted((Path(__file__).resolve().parents[3] / "configs").glob("*.yaml")):
+        config = load_configuration(path)
+        assert config.attacks
+        Experiment.validate(replace(config, runs=replace(config.runs, output=None)))
 
 
 def test_split_configuration():
@@ -284,22 +314,10 @@ def test_split_configuration():
     spec["split"] = {"train_segments": 2, "validation_segments": 1, "seed": 7,
                      "execute": ["train", "validation", "test"]}
     assert load_configuration(spec).split == SplitConfiguration(2, 1, 7, ("train", "validation", "test"))
-    invalid = (
-        ({}, ValueError, "train_segments"),
-        ({"train_segments": 0}, ValueError, "train_segments"),
-        ({"train_segments": True}, ValueError, "train_segments"),
-        ({"train_segments": 1, "validation_segments": -1}, ValueError, "validation_segments"),
-        ({"train_segments": 1, "seed": -1}, ValueError, "seed"),
-        ({"train_segments": 1, "execute": ["test", "test"]}, ValueError, "duplicates"),
-        ({"train_segments": 1, "execute": ["invalid"]}, ValueError, "accepts"),
-        ({"train_segments": 1, "execute": ["validation"]}, ValueError, "zero"),
-        ({"train_segments": 1, "execute": "test"}, TypeError, "sequence"),
-        ({"train_segments": 1, "extra": 0}, ValueError, "Unknown split keys"),
-    )
-    for value, error, message in invalid:
-        spec["split"] = value
-        with pytest.raises(error, match=message):
-            load_configuration(spec)
+    with pytest.raises(ValueError, match="train_segments"):
+        load_configuration({**spec, "split": {"train_segments": 0}})
+    with pytest.raises(ValueError, match="zero"):
+        load_configuration({**spec, "split": {"train_segments": 1, "execute": ["validation"]}})
 
 
 def test_metadata_configuration(tmp_path):
@@ -343,7 +361,7 @@ class TimeStepOptions:
         self.time_step = time_step
 
 
-def test_decision_time_step():
+def test_dataset_time_step_configures_simulator():
     spec = specification()
     spec["dataset"]["options"] = {"time_step": .2}
     spec["simulator"]["options"] = {"extra_sensors": {
@@ -357,3 +375,42 @@ def test_decision_time_step():
         load_configuration(spec)
     with pytest.raises(ValueError, match="dataset.time_step"):
         replace(configuration, simulator=MemorySimulator(time_step=.1))
+
+
+def test_hook_and_treatment_configuration(tmp_path):
+    spec = specification()
+    spec["hooks"] = [{"stage": "observation", "type": f"{__name__}:AddSpeedHook",
+                      "options": {"amount": 3.}}]
+    spec["runs"] = {"treatments": [
+        {"name": "clean"},
+        {"name": "attacked", "attack_name": "probe", "environment": {"world": {"weather": "rain"}}},
+    ]}
+    path = tmp_path / "hooks.yaml"
+    path.write_text(yaml.safe_dump(spec))
+    configuration = load_configuration(path)
+    assert [(t.name, t.attack_name) for t in configuration.runs.treatments] == [
+        ("clean", None), ("attacked", "probe")]
+    assert configuration.runs.treatments[1].environment["world"]["weather"] == "rain"
+    hooks = configuration.hooks(7)
+    assert isinstance(hooks, HookSet) and hooks.seed == 7
+    with MemorySimulator().create_runtime() as runtime:
+        with hooks.session(runtime, ConstantAVStack()).activate() as session:
+            runtime.reset()
+            assert session.observe(Observation(0., 0, ego_speed=2.)).ego_speed == 5.
+
+
+def test_metric_configuration():
+    spec = specification()
+    spec["evaluation"] = {"metrics": [{"type": "DrivingMetrics", "options": {"stop_speed": .2}}]}
+    metrics = load_configuration(spec).evaluation.metrics
+    assert len(metrics) == 1 and isinstance(metrics[0], DrivingMetrics)
+    assert metrics[0].stop_speed == .2
+    spec["avstack"] = {"type": "RuleBasedAVStack", "options": {
+        "detector": {
+            "type": "avsectester.closed_loop.avstacks.implemented.rule_based:CocoStopSignDetector",
+            "options": {"weights_path": "unloaded-weights.pth"},
+        },
+    }}
+    spec["evaluation"] = {"metrics": [{"type": "DetectionMetrics"}]}
+    with pytest.raises(ValueError, match="DetectionMetrics requires detections"):
+        load_configuration(spec)

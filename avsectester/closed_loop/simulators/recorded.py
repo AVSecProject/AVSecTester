@@ -30,9 +30,13 @@ class RecordedReplaySimulator(Simulator):
     """
 
     dataset_kinds = ("NuScenesDataset",)
+    'Dataset kinds supported by this simulator.'
     can_render = True
+    'Whether arbitrary-view rendering is supported.'
     can_replay = True
+    'Whether recorded-tick replay is supported.'
     can_insert_objects = True
+    'Whether world objects can be inserted into sensor rendering.'
 
     def __init__(self, start: ScenarioStart | None = None, *,
                  camera_aliases: Mapping[str, str] = {}, occlusion_tolerance_m: float = 0.1) -> None:
@@ -179,3 +183,9 @@ class RecordedReplaySimulatorRuntime(SimulatorRuntime):
     def close(self):
         self._frames = ()
         super().close()
+
+
+__all__ = [
+    'RecordedReplaySimulator',
+    'RecordedReplaySimulatorRuntime',
+]

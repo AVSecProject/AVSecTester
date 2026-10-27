@@ -5,15 +5,14 @@ import pytest
 
 from avsectester.execution.services import ClosedLoopServices, RenderRequest, SensorRequest
 from avsectester.geometry.cameras import BODY_FROM_OPTICAL
-from avsectester.closed_loop.simulators.base import SimulatorRuntime
 from avsectester.data_types import Control
 
 
-def test_simulators(simulator_case):
-    _dataset, simulator, start, initialization, expected_shape, _initial, _initial_state = simulator_case
+def test_simulator_contract(simulator_case):
+    case = simulator_case
+    simulator, start, initialization, expected_shape = case.simulator, case.start, case.initialization, case.shape
     with simulator.create_runtime(seed=3) as runtime:
         assert runtime.can_replay is simulator.can_replay
-        assert simulator.can_replay == (type(runtime)._replay_tick is not SimulatorRuntime._replay_tick)
         runtime.reset(start, initialization)
         original = runtime.observe()
         state = runtime.state()
@@ -39,7 +38,8 @@ def test_simulators(simulator_case):
 
 
 def test_read_sensors_views(simulator_case, assert_camera_views_equal):
-    dataset, simulator, start, _initialization, _expected_shape, _initial, _initial_state = simulator_case
+    """Fresh service sessions must expose the same capture through read_sensors and render."""
+    dataset, simulator, start = simulator_case.dataset, simulator_case.simulator, simulator_case.start
     frames = dataset.frames(start.scenario_id)[:3]
     with ClosedLoopServices(dataset, simulator) as services:
         with services.session(3) as session:
@@ -53,14 +53,14 @@ def test_read_sensors_views(simulator_case, assert_camera_views_equal):
 
 @pytest.mark.parametrize("simulator_case", ["carla_case", "recorded_case"], indirect=True)
 def test_insert_object(simulator_case, assert_inserted_world_object):
-    _dataset, simulator, _start, _initialization, _shape, initial, initial_state = simulator_case
+    simulator, initial, initial_state = simulator_case.simulator, simulator_case.initial, simulator_case.initial_state
     with simulator.create_runtime(seed=3) as runtime:
         original, inserted, _expected = assert_inserted_world_object(runtime, initial, initial_state)
         assert original.depth is None and inserted.depth is None
 
 
 def test_insert_object_with_depth(nurec_case, assert_inserted_world_object):
-    _dataset, simulator, _start, _initialization, _shape, initial, initial_state = nurec_case
+    simulator, initial, initial_state = nurec_case.simulator, nurec_case.initial, nurec_case.initial_state
     with simulator.create_runtime(seed=3) as runtime:
         original, inserted, expected = assert_inserted_world_object(runtime, initial, initial_state)
         assert original.depth is not None

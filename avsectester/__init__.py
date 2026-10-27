@@ -22,3 +22,9 @@ native and model dependencies retain their lazy imports in the adapters that use
 """
 
 __version__ = "0.1.0"
+'Framework package version.'
+
+
+__all__ = [
+    '__version__',
+]

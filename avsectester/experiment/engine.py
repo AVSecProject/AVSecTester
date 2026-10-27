@@ -167,8 +167,8 @@ def _selected_metadata(configuration: ExperimentConfiguration, cache: FrameDataC
     return _ExperimentSegments(metadata, deployment, tuple(selections), None)
 
 
-def _loaded_metadata(configuration: ExperimentConfiguration, cache: FrameDataCache,
-                     seed: int, scenarios: tuple[Any, ...]) -> _ExperimentSegments:
+def _validated_metadata(configuration: ExperimentConfiguration,
+                        scenarios: tuple[Any, ...]) -> _ExperimentSegments:
     """Strictly validate a user-provided segment list without running selection."""
     path = configuration.metadata.load
     assert path is not None
@@ -201,8 +201,8 @@ def _loaded_metadata(configuration: ExperimentConfiguration, cache: FrameDataCac
     ))
     with ClosedLoopServices(
         configuration.dataset, configuration.simulator, configuration.avstack,
-        cache, deployment=deployment,
-    ) as services, services.session(seed) as session:
+        deployment=deployment,
+    ) as services, services.session(configuration.runs.seeds[0]) as session:
         for index, segment in enumerate(segments):
             try:
                 if not session.can_start_at(segment.start.position):
@@ -216,6 +216,44 @@ def _loaded_metadata(configuration: ExperimentConfiguration, cache: FrameDataCac
     return _ExperimentSegments(metadata, deployment, (), source)
 
 
+@dataclass(frozen=True)
+class _Validation:
+    segments: _ExperimentSegments | None = None
+    scenarios: tuple[Any, ...] = ()
+    prepared: PreparedExperiment | None = None
+    progress: tuple[PreparedExperiment, tuple[str, ...]] | None = None
+
+
+def _validate(configuration: ExperimentConfiguration, resume: bool) -> _Validation:
+    """Validate once and retain loaded preparation inputs for the preparation workflow."""
+    validate_configuration_environment(configuration)
+    output = configuration.runs.output
+    if output is not None:
+        if output.exists() and not output.is_dir():
+            raise ValueError(f"Preparation output is not a directory: {output}")
+        if resume and (output / "prepared.json").is_file():
+            return _Validation(prepared=PreparedExperiment.load(configuration, output))
+        elif resume and (output / "preparation-progress.json").is_file():
+            prepared, completed = load_preparation_progress(configuration, output)
+            return _Validation(progress=(prepared, completed))
+        elif not resume and any(
+            (output / name).exists() for name in
+            ("prepared.json", "preparation-progress.json", "attacks", "runs", "offline",
+             "offline_report.html", "evaluation_report.html", "offline-incomplete")
+        ):
+            raise ValueError(f"Preparation output already exists: {output}")
+    if configuration.metadata.load is not None:
+        scenarios = tuple(configuration.dataset.scenarios())
+        segments = _validated_metadata(configuration, scenarios)
+        build_units(configuration, segments.metadata, scenario_ids=tuple(x.id for x in scenarios))
+        return _Validation(segments=segments, scenarios=scenarios)
+    else:
+        # Construction checks adapter compatibility; sessions and native resources stay unopened.
+        with ClosedLoopServices(configuration.dataset, configuration.simulator, configuration.avstack):
+            pass
+    return _Validation()
+
+
 class Experiment:
     """The fixed build_metadata → run_offline → online experiment workflow.
 
@@ -225,33 +263,36 @@ class Experiment:
     """
 
     @staticmethod
+    def validate(config: ExperimentConfiguration | Mapping[str, Any] | str | Path,
+                 resume: bool = False) -> None:
+        """Validate preparation inputs without creating a runtime or connecting to services.
+
+        Loaded metadata is checked against the dataset, attacks, shared deployment budget and
+        simulator start requirements. Resuming also checks the saved preparation configuration.
+        """
+        _validate(load_configuration(config), resume)
+
+    @staticmethod
     def prepare(config: ExperimentConfiguration | Mapping[str, Any] | str | Path,
                 resume: bool = False) -> PreparedExperiment:
         """Select all attacks, partition units and checkpoint each completed offline stage."""
         configuration = load_configuration(config)
-        validate_configuration_environment(configuration)
+        validated = _validate(configuration, resume)
         output = configuration.runs.output
-        if output is not None and resume and (output / "prepared.json").is_file():
-            return PreparedExperiment.load(configuration, output)
-        if output is not None and not resume and any(
-            (output / name).exists() for name in
-            ("prepared.json", "preparation-progress.json", "attacks", "runs", "offline",
-             "offline_report.html", "evaluation_report.html", "offline-incomplete")
-        ):
-            raise ValueError(f"Preparation output already exists: {output}")
+        if validated.prepared is not None:
+            return validated.prepared
         cache = FrameDataCache()
         seed = configuration.runs.seeds[0]
-        if output is not None and resume and (output / "preparation-progress.json").is_file():
-            prepared, completed_names = load_preparation_progress(configuration, output)
+        if validated.progress is not None:
+            prepared, completed_names = validated.progress
             completed = list(completed_names)
             deployment = prepared.deployment
             if deployment is None:
                 raise ValueError("Preparation progress requires a deployment budget")
         else:
             preparation = preparation_record(configuration)
-            scenarios = tuple(configuration.dataset.scenarios())
-            segments = (_loaded_metadata(configuration, cache, seed, scenarios)
-                        if configuration.metadata.load is not None else
+            scenarios = validated.scenarios or tuple(configuration.dataset.scenarios())
+            segments = (validated.segments if validated.segments is not None else
                         _selected_metadata(configuration, cache, seed, scenarios))
             metadata, deployment = segments.metadata, segments.deployment
             units = build_units(configuration, metadata, scenario_ids=tuple(x.id for x in scenarios))
@@ -602,3 +643,8 @@ class _Execution:
             for seed in self.configuration.runs.seeds:
                 self._run_group(_Group(unit.attack_names, unit.index, unit.segment, seed, steps, unit.part))
         return ExperimentResult(tuple(self.runs), self.prepared.selections, scenario_maps=scenario_maps)
+
+
+__all__ = [
+    'Experiment',
+]

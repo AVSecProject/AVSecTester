@@ -1,7 +1,7 @@
 """AlpaSim-style ego ground contact using CPU mesh-ray intersections.
 
 Only the vehicle box's height and orientation change. The plane-fit correction rotates about
-its predicted centre, matching AlpaSim PhysicsBackend.update_pose without requiring Warp.
+its predicted center, matching AlpaSim PhysicsBackend.update_pose without requiring Warp.
 """
 from __future__ import annotations
 
@@ -28,13 +28,13 @@ def _plane(points: np.ndarray) -> tuple[np.ndarray, np.ndarray] | None:
 def constrain_to_ground(
     raycaster: MeshRaycaster, world_from_box: np.ndarray, extent: tuple[float, float, float],
 ) -> tuple[np.ndarray, str]:
-    """Fit a vehicle's bottom to nearby ground, preserving its predicted centre's XY.
+    """Fit a vehicle's bottom to nearby ground, preserving its predicted center's XY.
 
     Six successful intersections are required from a 4-by-4 bottom grid, queried in both
     vertical directions within 100 m. Corrections exceeding 1.5 m or 10 degrees are rejected.
     The returned status is ``successful_update``, ``insufficient_intersections``,
     ``high_translation`` or ``high_rotation``. Failed updates return the original pose.
-    Like AlpaSim, rotating about the box centre after centroid alignment approximates contact;
+    Like AlpaSim, rotating about the box center after centroid alignment approximates contact;
     it does not perform another translation to eliminate the small residual on a slope.
     """
     pose = validated_transform(world_from_box)
@@ -72,3 +72,8 @@ def constrain_to_ground(
     updated[:3, 3] += displacement
     updated[:2, 3] = pose[:2, 3]
     return updated, "successful_update"
+
+
+__all__ = [
+    'constrain_to_ground',
+]

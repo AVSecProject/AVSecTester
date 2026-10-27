@@ -5,7 +5,13 @@ from .base import (
 )
 from .driving_adapter import ComponentDescriptor, DrivingAdapter, ScorerDescriptor
 
+
 __all__ = [
-    "AVStack", "ObservationPipeline", "CommandCompatibilityError", "validate_command_compatibility",
-    "DrivingAdapter", "ComponentDescriptor", "ScorerDescriptor",
+    'AVStack',
+    'ObservationPipeline',
+    'CommandCompatibilityError',
+    'validate_command_compatibility',
+    'DrivingAdapter',
+    'ComponentDescriptor',
+    'ScorerDescriptor',
 ]

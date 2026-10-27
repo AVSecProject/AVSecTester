@@ -1,12 +1,13 @@
 """Canonical detections and camera transport use small, explicit numeric payloads."""
 import numpy as np
 import pytest
-from operator import attrgetter
 from types import SimpleNamespace
 from avsectester.data_types import (
-    ActorState, Detection, Observation, read_camera_rgb, write_camera_rgb, write_sensor_data,
+    ActorState, Control, Detection, Observation, read_camera_rgb, validate_command_modes,
+    write_camera_rgb, write_sensor_data,
 )
 from avsectester.geometry.poses import make_pose, rotation_matrix
+from tests.fakes import CarlaImageData
 
 
 def test_actor_state():
@@ -40,6 +41,9 @@ def test_read_camera_rgb():
     assert read_camera_rgb(observation, "missing") is None
     assert read_camera_rgb(Observation(0, 0, {"lidar": np.zeros((3, 4))})) is None
     assert np.all(read_camera_rgb(observation, "rear")[1] == 70)
+    native = CarlaImageData(data=np.full((2, 3, 3), 45, np.uint8), calibration="native lens")
+    observation = Observation(0, 0, {"front": native})
+    np.testing.assert_array_equal(read_camera_rgb(observation, "front")[1], 45)
 
 
 def test_write_camera_rgb():
@@ -50,28 +54,51 @@ def test_write_camera_rgb():
     assert changed.sensor_data["front"].dtype == np.uint8
     assert np.all(read_camera_rgb(observation, "front")[1] == 20)
     np.testing.assert_array_equal(changed.sensor_data["lidar"], observation.sensor_data["lidar"])
+    native = CarlaImageData(data=np.full((2, 3, 3), 20, np.uint8), calibration="native lens")
+    native_observation = Observation(0, 0, {"front": native})
+    changed = write_camera_rgb(native_observation, "front", np.full((2, 3, 3), 80, np.uint8))
+    assert changed.sensor_data["front"] is not native
+    assert changed.sensor_data["front"].calibration == "native lens"
+    np.testing.assert_array_equal(read_camera_rgb(changed, "front")[1], 80)
+    np.testing.assert_array_equal(read_camera_rgb(native_observation, "front")[1], 20)
 
 
-@pytest.mark.parametrize("sensor,payload,data,array,expected,metadata", [
-    pytest.param("lidar", np.zeros((2, 3, 4), np.float32), np.full((2, 3, 4), 80.5, np.float32),
-                 lambda value: value, np.full((2, 3, 4), 80.5, np.float32), (), id="range-image"),
-    pytest.param("lidar", np.zeros((2, 4), np.float32), np.full((2, 4), 4.5, np.float32),
-                 lambda value: value, np.full((2, 4), 4.5, np.float32), (), id="point-array"),
-    pytest.param("gnss", SimpleNamespace(data=np.zeros(3), timestamp=.3), np.full(3, 1.25),
-                 attrgetter("data"), np.full(3, 1.25), ("timestamp",), id="native-gnss"),
-    pytest.param("imu", SimpleNamespace(data={"dv": np.zeros(3)}, timestamp=.3),
-                 {"dv": np.full(3, 2.5)}, lambda value: value.data["dv"],
-                 np.full(3, 2.5), ("timestamp",), id="native-imu"),
-])
-def test_write_sensor_data(sensor, payload, data, array, expected, metadata):
-    original = array(payload).copy()
-    observation = Observation(.3, 3, {sensor: payload})
-    changed = write_sensor_data(observation, sensor, data)
+def test_write_sensor_data():
+    original = np.zeros((2, 3, 4), np.float32)
+    native = SimpleNamespace(data={"dv": np.zeros(3)}, timestamp=.3)
+    observation = Observation(.3, 3, {"lidar": original, "imu": native})
+    changed = write_sensor_data(observation, "lidar", np.full_like(original, 80.5))
     assert changed is not observation
-    np.testing.assert_array_equal(array(changed.sensor_data[sensor]), expected)
-    assert array(changed.sensor_data[sensor]).dtype == expected.dtype
-    np.testing.assert_array_equal(array(observation.sensor_data[sensor]), original)
-    for name in metadata:
-        assert getattr(changed.sensor_data[sensor], name) == getattr(payload, name)
+    np.testing.assert_array_equal(changed.sensor_data["lidar"], 80.5)
+    assert changed.sensor_data["lidar"].dtype == np.float32
+    np.testing.assert_array_equal(observation.sensor_data["lidar"], 0.)
+    changed = write_sensor_data(observation, "imu", {"dv": np.full(3, 2.5)})
+    np.testing.assert_array_equal(changed.sensor_data["imu"].data["dv"], 2.5)
+    np.testing.assert_array_equal(observation.sensor_data["imu"].data["dv"], 0.)
+    assert changed.sensor_data["imu"].timestamp == native.timestamp
     with pytest.raises(KeyError):
-        write_sensor_data(observation, "missing", data)
+        write_sensor_data(observation, "missing", np.zeros(3))
+
+
+def test_set_calibration():
+    native = CarlaImageData(data=np.zeros((2, 3, 3), np.uint8), calibration="original")
+    observation = Observation(0., 0, {"front": native, "rear": np.zeros((2, 3, 3), np.uint8)})
+    observation.set_calibration("front", "replacement")
+    assert observation.calibration["front"] == native.calibration == "replacement"
+    observation.set_calibration("rear", "array lens")
+    assert observation.calibration["rear"] == "array lens"
+    with pytest.raises(KeyError, match="Unknown observation sensor"):
+        observation.set_calibration("missing", "lens")
+
+
+def test_validate_command_modes():
+    assert validate_command_modes(Control(throttle=.5), frozenset({"actuator"})) is None
+    trajectory = [((0., 0., 0.), (1., 0., 0., 0.), 0)]
+    assert validate_command_modes(Control(trajectory=trajectory), frozenset({"trajectory"})) is None
+    assert validate_command_modes(Control(throttle=.5), None) is None
+    with pytest.raises(ValueError, match="trajectory commands"):
+        validate_command_modes(Control(trajectory=trajectory), frozenset({"actuator"}))
+    with pytest.raises(ValueError, match="actuator command fields"):
+        validate_command_modes(Control(brake=.5), frozenset({"trajectory"}))
+    with pytest.raises(TypeError, match="Expected Control"):
+        validate_command_modes(object(), None)

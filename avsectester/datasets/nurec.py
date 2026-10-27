@@ -99,7 +99,7 @@ def _interpolate_rig(timestamps, transforms, timestamp_us):
 def read_scene_mesh(usdz_path: str | Path) -> tuple[np.ndarray, np.ndarray]:
     """Merge mesh.ply and mesh_ground.ply without loading camera or trajectory metadata.
 
-    The indexed vertices use the archive's metre-based, Z-up scene-world frame.
+    The indexed vertices use the archive's meter-based, Z-up scene-world frame.
     The neural volume's separate ``world_to_nre`` offset is not applied.
     """
     try:
@@ -349,7 +349,7 @@ class NuRecDataset(Dataset):
         )
 
     def track_trajectories(self, scenario_id: str) -> dict[str, dict[str, Any]]:
-        """Return independent complete box-centre tracks without smoothing or cropping.
+        """Return independent complete box-center tracks without smoothing or cropping.
 
         Each track ID maps to trajectory (timestamp_us, world_from_box) pairs,
         controllable (a boolean), native label_class, full extent and canonical category.
@@ -422,3 +422,9 @@ class NuRecDataset(Dataset):
                 pose = _interpolate_pose(ts, poses, timestamp_us)
                 if pose is not None:
                     yield str(tid), str(label), tuple(float(v) for v in extent), pose
+
+
+__all__ = [
+    'read_scene_mesh',
+    'NuRecDataset',
+]

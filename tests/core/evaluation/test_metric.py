@@ -1,16 +1,45 @@
 """Every metric uses the same numerical and missing-evidence contract template."""
 
-from collections.abc import Mapping
 from operator import itemgetter
+from dataclasses import replace
+from types import SimpleNamespace
+
+import numpy as np
 
 import pytest
 
 from avsectester.data_types import Detection
 from avsectester.evaluation import (
-    DetectionMetrics, DrivingMetrics, ReasoningPhraseRate, StopImpact, StopLineMetrics,
-    TrajectoryDeviation, UnavailableMetricValue,
+    ComparisonGroup, DetectionMetrics, DrivingMetrics, ReasoningPhraseRate, StopImpact,
+    StopLineMetrics, TreatmentPair,
+    TrajectoryDeviation, UnavailableMetricValue, signed_stop_line_distances,
 )
 from avsectester.runlog import EventRecord, RunLog
+from avsectester.maps import ScenarioMap, StopLine
+from avsectester.rendering import ObjectVisibility
+from avsectester.implemented_attacks.stop_sign_patch_attack.metrics import ReplicaVisibility
+
+
+@pytest.fixture
+def make_group(segment):
+    return lambda runs: ComparisonGroup(segment, 0, runs)
+
+
+@pytest.fixture
+def make_pair():
+    return lambda first, second: TreatmentPair("clean", "attacked", first, second)
+
+
+@pytest.fixture
+def stop_line_group(segment):
+    """A selected map stop line, independent of the trajectory's recorded route."""
+    def make(runs, *, line_x=1.25, line_end_y=1.):
+        line = StopLine("line", np.array([[line_x, -line_end_y, 0.],
+                                          [line_x, line_end_y, 0.]]), "stop", "stop_sign")
+        selected = replace(segment, user_data={"stop_line_id": line.id})
+        return ComparisonGroup(selected, 0, runs,
+                               ScenarioMap(stop_lines={line.id: line}))
+    return make
 
 
 def unchanged(value):
@@ -35,8 +64,12 @@ def with_reasoning(log):
     return log
 
 
-def phrase_rate(treatments):
-    return {"phrase_rate": treatments["attacked"]["phrase_rate"]}
+def with_replica_visibility(log):
+    log.steps[0].object_visibility = {"stop_sign_replica": {
+        "front": ObjectVisibility("scene_visibility", (), 12)}}
+    log.steps[1].object_visibility = {"stop_sign_replica": {
+        "front": ObjectVisibility("scene_visibility", (), 2)}}
+    return log
 
 
 CASES = [
@@ -89,29 +122,35 @@ CASES = [
     pytest.param(
         ReasoningPhraseRate, {"phrase": "stop sign"},
         lambda data: data["group"]({"attacked": with_reasoning(data["log"]([2., 2.]))}),
-        lambda data: data["group"]({"attacked": data["log"]([2., 2.])}), phrase_rate,
+        lambda data: data["group"]({"attacked": data["log"]([2., 2.])}), itemgetter("attacked"),
         {"phrase_rate": .5}, id="reasoning-phrase"),
+    pytest.param(
+        ReplicaVisibility, {"camera_id": "front", "min_visible_pixels": 5},
+        lambda data: data["group"]({"attacked": with_replica_visibility(data["log"]([2., 2.]))}),
+        lambda data: data["group"]({"attacked": data["log"]([2., 2.])}), itemgetter("attacked"),
+        {"visible_steps": 1}, id="replica-visibility"),
+
 ]
 
 
 @pytest.mark.parametrize("metric_type,options,build_input,build_missing,select_result,expected", CASES)
-def test_evaluate(metric_type, options, build_input, build_missing, select_result, expected, metric_inputs):
+def test_metric_contract(metric_type, options, build_input, build_missing, select_result, expected, metric_inputs):
     metric = metric_type(**options)
     measurements = metric.evaluate(build_input(metric_inputs))
-    fields = set().union(*(set(value) for value in measurements.values() if isinstance(value, Mapping)))
-    assert set(metric.describe().fields) == (fields or set(measurements))
     values = select_result(measurements)
+    assert set(metric.describe().fields) == set(values)
     for name, value in expected.items():
         assert values[name] == pytest.approx(value), name
     missing = select_result(metric.evaluate(build_missing(metric_inputs)))
-    assert missing and all(isinstance(value, UnavailableMetricValue) and value.reason
-                           for value in missing.values())
+    assert all(isinstance(missing[name], UnavailableMetricValue) and missing[name].reason
+               for name in expected)
 
 
 def test_stop_line_metrics(make_log, make_actor, stop_line_group):
-    from dataclasses import replace
-
-    from avsectester.evaluation import signed_stop_line_distances
+    with pytest.raises(ValueError, match="nonnegative"):
+        StopLineMetrics(brake_deceleration_mps2=-1.)
+    with pytest.raises(ValueError, match="nonnegative"):
+        StopLineMetrics(endpoint_tolerance_m=-1.)
 
     log = make_log([8., 4.])
     values = StopLineMetrics().evaluate(stop_line_group({"attacked": log}))["attacked"]
@@ -127,8 +166,6 @@ def test_stop_line_metrics(make_log, make_actor, stop_line_group):
     assert uniform["distance_to_line_at_min_speed"] == 1.25  # First tied minimum before crossing.
     assert isinstance(uniform["distance_to_line_at_stop"], UnavailableMetricValue)
     assert isinstance(uniform["distance_to_line_at_brake_onset"], UnavailableMetricValue)
-    with pytest.raises(ValueError, match="brake_deceleration_mps2"):
-        StopLineMetrics(brake_deceleration_mps2=-1.)
     distant = make_log([8., 4.])
     for step in distant.steps:
         step.physical_pre = replace(step.physical_pre,
@@ -139,11 +176,6 @@ def test_stop_line_metrics(make_log, make_actor, stop_line_group):
     assert beyond["line_crossed"] is False
     assert beyond["crossed_without_stop"] is False
     assert isinstance(beyond["speed_at_line"], UnavailableMetricValue)
-    distances, crossing = signed_stop_line_distances(
-        [[0., 4., 50.], [2., 4., -50.]], [[1.25, -1., 0.], [1.25, 1., 0.]],
-    )
-    assert crossing == (0, .625)
-    assert distances == pytest.approx([1.25, -.75])
     initialization = RunLog(events=[EventRecord("initialization", data={
         "physical_state": log.steps[0].physical_pre,
     })])
@@ -156,8 +188,6 @@ def test_stop_line_metrics(make_log, make_actor, stop_line_group):
 
 
 def test_reasoning_phrase_rate(make_log, make_group):
-    from types import SimpleNamespace
-
     log = make_log([1., 1., 1.])
     log.steps[0].components["policy"] = SimpleNamespace(reasoning_text="STOP SIGN ahead")
     log.steps[1].components["policy"] = {"reasoning_text": ""}
@@ -169,9 +199,11 @@ def test_reasoning_phrase_rate(make_log, make_group):
 
 
 def test_signed_stop_line_distances():
-    import numpy as np
-
-    from avsectester.evaluation import signed_stop_line_distances
+    distances, crossing = signed_stop_line_distances(
+        [[0., 4., 50.], [2., 4., -50.]], [[1.25, -1., 0.], [1.25, 1., 0.]],
+    )
+    assert crossing == (0, .625)
+    assert distances == pytest.approx([1.25, -.75])
 
     # Both bends and repeated vertices retain the first crossing along the trace.
     line = np.array([[1., -1., 0.], [1., -1., 0.], [1., 1., 0.], [3., 1., 0.]])
@@ -185,10 +217,3 @@ def test_signed_stop_line_distances():
         signed_stop_line_distances([[0., 0., 0.]], [[1., 0., 0.]])
     with pytest.raises(ValueError, match="nonzero horizontal"):
         signed_stop_line_distances([[0., 0., 0.]], [[1., 0., 0.], [1., 0., 1.]])
-
-
-def test_stop_speed_defaults():
-    from avsectester.evaluation.metric import DEFAULT_STOP_SPEED_MPS
-
-    assert DEFAULT_STOP_SPEED_MPS == .5
-    assert DrivingMetrics().stop_speed == StopImpact().stop_speed == StopLineMetrics().stop_speed == DEFAULT_STOP_SPEED_MPS

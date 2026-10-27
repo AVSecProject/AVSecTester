@@ -34,7 +34,9 @@ class RuleBasedAVStack(AVStack):
     """
 
     command_modes = frozenset({"trajectory"})
+    'Control command modes accepted or produced by this component.'
     provides_detections = False
+    'Whether decisions expose detections compatible with detection metrics.'
 
     def __init__(
         self, detector: CocoStopSignDetector, tracker: StopSignTracker | None = None,
@@ -75,6 +77,7 @@ class RuleBasedAVStack(AVStack):
         self._last = None
 
     def __call__(self, observation: Observation) -> Control:
+        """Detect, range and track stop signs, then return the planner's rig-frame trajectory."""
         if self._closed:
             raise RuntimeError("RuleBasedAVStack has been closed")
         calibration = self._calibration(observation)
@@ -140,3 +143,9 @@ def rule_based_driving_adapter(factory: Callable[[int], AVStack]) -> DrivingAdap
         return avstack.detector.target_score(inputs, target)
 
     return DrivingAdapter(factory, scorers=((descriptor, score),))
+
+
+__all__ = [
+    'RuleBasedAVStack',
+    'rule_based_driving_adapter',
+]

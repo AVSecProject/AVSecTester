@@ -26,27 +26,33 @@ BODY_FROM_OPTICAL = np.array([
 """Map optical points (x right, y down, z forward) to body axes (x forward, y left, z up)."""
 
 NEAR_Z: float = 1e-5
-"""Minimum positive optical z used for geometric projection and ray intersections, in metres."""
+"""Minimum positive optical z used for geometric projection and ray intersections, in meters."""
 
 
 class Camera(Protocol):
-    """Optical-frame lens contract. Coordinates address pixel centres at (x + .5, y + .5).
+    """Optical-frame lens contract. Coordinates address pixel centers at (x + .5, y + .5).
 
     ``project`` maps N camera points to N pixel coordinates. ``unproject`` returns N
     unit rays. A lens may additionally expose ``max_angle`` in radians.
     """
 
     width: int
+    'Image width in pixels.'
     height: int
+    'Image height in pixels.'
 
-    def project(self, pts_cam: np.ndarray) -> np.ndarray: ...
+    def project(self, pts_cam: np.ndarray) -> np.ndarray:
+        """Project camera-coordinate points into continuous image coordinates."""
+        ...
 
-    def unproject(self, uv: np.ndarray) -> np.ndarray: ...
+    def unproject(self, uv: np.ndarray) -> np.ndarray:
+        """Convert continuous image coordinates into unit optical-camera rays."""
+        ...
 
 
 @dataclass(frozen=True)
 class CameraCalibration:
-    """A lens and optical-camera-to-rig transform, in metres.
+    """A lens and optical-camera-to-rig transform, in meters.
 
     The 4x4 rigid transform maps optical axes (right, down, forward) into rig
     axes (forward, left, up). Array fields are not validated at construction,
@@ -154,11 +160,11 @@ class FThetaCamera:
     """NVIDIA f-theta fisheye: ``r_px = angle_to_pixeldist(theta)`` with ``theta`` the ray's angle to
     the optical axis, ``r_px`` its pixel distance from the principal point (``cx``, ``cy``).
 
-    ``pixeldist_to_angle`` is the inverse polynomial used by :meth:`unproject`. Polynomials are
+    ``pixeldist_to_angle`` is the inverse polynomial used by `unproject`. Polynomials are
     coefficient lists in increasing order (c0 + c1*x + c2*x^2 ...), exactly as NuRec's ``ftheta_param``
     and ``.usdz`` calibration store them. ``linear_cde`` is the small affine screen correction
     ``[[c, d], [e, 1]]`` applied to the radial offset (identity ``(1, 0, 0)`` in NuRec).
-    :meth:`unproject` inverts that affine correction before the radial polynomial. A
+    `unproject` inverts that affine correction before the radial polynomial. A
     ``windshield`` deflects scene rays before the lens projects them, and unprojected lens rays
     are mapped back to the scene, matching NuRec's rendering cameras.
     """
@@ -179,6 +185,7 @@ class FThetaCamera:
         return np.polynomial.polynomial.polyval(x, np.asarray(coeffs, dtype=np.float64))
 
     def project(self, pts_cam: np.ndarray) -> np.ndarray:
+        """Project camera-coordinate points into continuous image coordinates."""
         p = np.atleast_2d(np.asarray(pts_cam, dtype=np.float64))
         if self.windshield is not None:
             p = self.windshield.distort(p)
@@ -196,6 +203,7 @@ class FThetaCamera:
         return camera_ray_mask(self, p)
 
     def unproject(self, uv: np.ndarray) -> np.ndarray:
+        """Convert continuous image coordinates into unit optical-camera rays."""
         if not len(self.pixeldist_to_angle):
             raise NotImplementedError("unproject needs the inverse polynomial pixeldist_to_angle")
         uv = np.asarray(uv, dtype=np.float64)
@@ -213,3 +221,14 @@ class FThetaCamera:
         if self.windshield is not None:
             rays = self.windshield.undistort(rays)
         return rays / np.linalg.norm(rays, axis=1, keepdims=True)
+
+
+__all__ = [
+    'Camera',
+    'CameraCalibration',
+    'camera_ray_mask',
+    'PinholeCamera',
+    'WindshieldDistortion',
+    'FThetaCamera',
+    'BODY_FROM_OPTICAL',
+]

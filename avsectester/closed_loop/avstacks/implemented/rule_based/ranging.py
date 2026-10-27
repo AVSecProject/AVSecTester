@@ -14,12 +14,12 @@ def estimate_stop_sign_position(
     calibration: CameraCalibration,
     sign_height_m: float = .762,
 ) -> np.ndarray:
-    """Estimate the sign centre in rig metres from its angular image height.
+    """Estimate the sign center in rig meters from its angular image height.
 
     The top/bottom box midpoints define angle theta and range
     sign_height_m / (2 * tan(theta / 2)). Range error is proportional to
     the difference between assumed and actual sign height. Pixel coordinates
-    share the camera's continuous pixel-centre convention; no offset is added.
+    share the camera's continuous pixel-center convention; no offset is added.
     """
     require_positive_number(sign_height_m, "sign_height_m")
     if not isinstance(calibration, CameraCalibration):
@@ -46,3 +46,8 @@ def estimate_stop_sign_position(
     camera_position = rays[2] * distance
     transform = validated_transform(calibration.rig_from_camera)
     return transform[:3, :3] @ camera_position + transform[:3, 3]
+
+
+__all__ = [
+    'estimate_stop_sign_position',
+]

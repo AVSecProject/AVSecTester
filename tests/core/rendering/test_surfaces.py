@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 
 from avsectester.rendering import PlaneSurface, render_surfaces
-from avsectester.rendering.surfaces import plane_sampling, premultiplied_texture, prepare_surface, sample_texture
+from avsectester.rendering.surfaces import plane_sampling, prepare_surface, sample_texture
 
 
 def square(distance, half, texture):
@@ -41,11 +41,11 @@ def test_distant_texture_is_filtered(camera):
 
 
 def test_sample_texture_gradient(camera):
-    torch = pytest.importorskip("torch")
+    import torch
     surface = square(20., 2., np.full((32, 32, 4), 255, np.uint8))
     sampler = prepare_surface(surface, camera, np.eye(4))
     sampling = plane_sampling(sampler, camera, sampler.image_bounds(camera))
-    texture = premultiplied_texture(surface.texture).requires_grad_(True)
+    texture = (torch.tensor(surface.texture, dtype=torch.float32).permute(2, 0, 1) / 255).requires_grad_(True)
     sample_texture(texture, sampling).sum().backward()
     assert (texture.grad > 0).all()
     with torch.no_grad():

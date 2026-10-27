@@ -2,2304 +2,3203 @@
 
 > **Audience:** Python experiment, attack and adapter authors.
 >
-> **Outcome:** Locate public contracts and their current signatures.
+> **Outcome:** Find exported names, signatures, constraints and errors.
 >
 > **Prerequisites:** [Architecture](../concepts/architecture.md).
 
-## Module map
-
-Imports are from the owning modules below. Heavy SDK/model imports belong to implementations; plain
-data and boundary modules can be imported without simulator servers or weights.
-
-| Module | Public purpose |
-|---|---|
-| avsectester.geometry.boxes | Oriented-box ray distances and overlap |
-| avsectester.geometry.cameras | Camera, CameraCalibration, PinholeCamera, FThetaCamera, WindshieldDistortion and lens/ray conventions |
-| avsectester.geometry.mesh | MeshRaycaster and calibrated camera_depth |
-| avsectester.geometry.poses | Canonical transforms, quaternions, interpolation and Y-axis mirroring |
-| avsectester.geometry.projection | Plane grids, box projection and plane visibility |
-| avsectester.serialization | SerializationRegistry and DEFAULT_REGISTRY for JSON encoding/decoding and independent snapshots |
-| avsectester.type_paths | Callable imports using explicit module and attribute paths |
-| avsectester.validation | Reusable integer and finite real-number parameter validation |
-| avsectester.data_types | Shared observations, commands, world/actor state, detections, availability and image targets |
-| avsectester.datasets | Dataset and frame/start records |
-| avsectester.datasets.base | Dataset interface, timeline records and ScenarioStart |
-| avsectester.datasets.carla | CarlaDataset, CarlaRecipe and PrescribedMotion |
-| avsectester.datasets.nurec | NuRecDataset and camera-independent read_scene_mesh |
-| avsectester.datasets.nuscenes | NuScenesDataset |
-| avsectester.maps | ScenarioMap, Lane, TrafficControl, StopLine, STOP_LINE_KIND_BY_CONTROL_KIND and read_opendrive |
-| avsectester.maps.clipgt | NuRec clipgt semantic-map archive reader |
-| avsectester.maps.opendrive | OpenDRIVE semantic-map reader |
-| avsectester.maps.scenario_map | Semantic-map records and stopping-control classification |
-| avsectester.rendering | Object assets, surface rendering, composition and harmonizers |
-| avsectester.rendering.compositing | ObjectVisibility, CompositePlan, CompositeResult, ObjectComposition, plan_composite, composite_objects and blend_rgba |
-| avsectester.rendering.harmonizers | Harmonizer, ExposureHarmonizer, ClassicHarmonizer and PCTNetHarmonizer |
-| avsectester.rendering.objects | PlaneSurface, ObjectAsset and PlacedObject |
-| avsectester.rendering.surfaces | Calibrated planar sampling and render_surfaces |
-| avsectester.rendering.textures | STOP_SIGN_FACE, Texture, CheckerboardTexture and load_rgba_image |
-| avsectester.closed_loop.avstacks.base | AVStack, ObservationPipeline and command compatibility checks |
-| avsectester.closed_loop.avstacks | AVStack, ObservationPipeline and driving-adapter interfaces |
-| avsectester.closed_loop.avstacks.implemented.alpamayo | AlpamayoAVStack and its component bindings |
-| avsectester.closed_loop.avstacks.implemented.camera_forward_collision | CameraForwardCollisionAVStack |
-| avsectester.closed_loop.avstacks.implemented.modular | ModularAVStack, native hooks, dataset registration and component bindings |
-| avsectester.closed_loop.avstacks.implemented.rule_based.stack | RuleBasedAVStack: detection, known-size ranging, bearing EKF tracking and trajectory planning |
-| avsectester.closed_loop.avstacks.implemented.rule_based.tracker | StopSignTracker and SignTrack: stationary world-position tracks from range initialization and bearing updates |
-| avsectester.closed_loop.avstacks.implemented.rule_based.detector | Local COCO stop-sign model loading and 2D inference |
-| avsectester.closed_loop.avstacks.implemented.rule_based.ranging | Known-height monocular stop-sign position estimation |
-| avsectester.closed_loop.avstacks.implemented.rule_based.planner | NumPy route following, distance-based braking and stop/hold/resume planning |
-| avsectester.closed_loop.avstacks.implemented.scorers | Driving-model scorer implementations |
-| avsectester.closed_loop.avstacks.driving_adapter | DrivingAdapter, ComponentDescriptor and ScorerDescriptor |
-| avsectester.closed_loop.simulators.ground_contact | Mesh-based ego ground constraint |
-| avsectester.closed_loop.simulators.navigation | RouteGenerator: map or recorded navigation intent |
-| avsectester.closed_loop.simulators.ego_dynamics | PlanarEgoState, EgoDynamics and vehicle-motion implementations |
-| avsectester.closed_loop.environment | Environment validation/merge and SensorEnvironment |
-| avsectester.closed_loop.hooks | HookSet, Hook, Plugin, contexts and stage values |
-| avsectester.closed_loop.sensor_corruptions | Built-in image corruptions and AlbumentationsCorruption |
-| avsectester.closed_loop.simulators | Simulator/runtime, sensor-view, initialization and deployment interfaces |
-| avsectester.closed_loop.simulators.base | Simulator/runtime, sensor views, initialization, frame sequences and deployment plans |
-| avsectester.closed_loop.simulators.carla | CarlaSimulator and CarlaSimulatorRuntime exports |
-| avsectester.closed_loop.simulators.carla.conversions | CARLA rotation and canonical-state conversion |
-| avsectester.closed_loop.simulators.carla.recipe_replay | RecipeReplay |
-| avsectester.closed_loop.simulators.carla.scenario | CARLA scenario preparation and seed resolution |
-| avsectester.closed_loop.simulators.carla.sensors | SensorCapture, sensor alignment, depth decoding and pinhole registration |
-| avsectester.closed_loop.simulators.carla.simulator | CARLA simulator configuration and runtime |
-| avsectester.closed_loop.simulators.nurec | NuRecSimulator, NuRecSimulatorRuntime, NuRecRenderer, AlpaSimTraffic, TrafficSession and TrafficTrack exports |
-| avsectester.closed_loop.simulators.nurec.traffic | Optional AlpaSim traffic-session client |
-| avsectester.closed_loop.simulators.nurec.renderer | Renderer, NuRecRenderer and RPC pose/camera conversion |
-| avsectester.closed_loop.simulators.nurec.asset_editing | NRE edit_assets messages declared from NVIDIA's public gRPC API reference |
-| avsectester.closed_loop.simulators.nurec.probe_assets | ProbeAsset and probe_asset: single-colour Gaussian copies of ObjectAssets for NRE insertion |
-| avsectester.closed_loop.simulators.nurec.simulator | NuRec simulator configuration and runtime |
-| avsectester.closed_loop.simulators.recorded | RecordedReplaySimulator and RecordedReplaySimulatorRuntime |
-| avsectester.attack | Attack, AttackSegment, OfflineContext, OfflineReport, ReportValue, ReportSeries, ReportTable, ReportImage, AttackRuntime and actions |
-| avsectester.attack.attack | Attack, AttackSegment and OfflineContext |
-| avsectester.attack.insertion | InsertObject, sensor insertion, assets, placement, compositing and visibility |
-| avsectester.attack.insertion.action | InsertObject and InsertionAttackAction |
-| avsectester.attack.insertion.assets | Planar assets, insertion descriptors and placement resolution |
-| avsectester.attack.insertion.compositor | PatchCompositor and sensor insertion rendering |
-| avsectester.attack.insertion.placement | AttachedPlacement, WorldPlacement and Orientation |
-| avsectester.attack.insertion.types | Visibility and visibility evidence records |
-| avsectester.attack.insertion.visibility | Depth/cuboid visibility estimators and mask evidence |
-| avsectester.attack.optimization | Generic optimization contracts, PGD, NES, perturbations and SessionScorer |
-| avsectester.attack.optimization.blackbox | NES optimizer |
-| avsectester.attack.optimization.interface | Generic data, perturbation, scoring and objective contracts |
-| avsectester.attack.optimization.perturbations | PatchPerturbation and LinfImage |
-| avsectester.attack.optimization.scorers | SessionScorer |
-| avsectester.attack.optimization.whitebox | PGD optimizer |
-| avsectester.attack.runtime | AttackRuntime, actions, subscriptions and OnlineContext |
-| avsectester.attack.segments | split_segments |
-| avsectester.runlog | RunLog, Recorder, StepRecord, EventRecord and read_table |
-| avsectester.runlog.log | RunLog, Recorder, step/event records and selected-column reads |
-| avsectester.execution.frame_data_cache | Preparation-owned frame data cache and fingerprints |
-| avsectester.execution.runner | ClosedLoopRunner, RunRequest and RecordingPolicy |
-| avsectester.execution.services | ClosedLoopServices/session, ScenarioView and request/result records |
-| avsectester.implemented_attacks.<attack_folder> | Concrete Attack class exported by its folder |
-| avsectester.implemented_attacks.stop_sign_patch_attack.attack | StopSignPatchAttack selection, preparation and replica placement |
-| avsectester.implemented_attacks.stop_sign_patch_attack.offline | DetectorPatchOptimization and RolloutPatchOptimization |
-| avsectester.evaluation | RunGroup, evaluate_groups, metrics and report records |
-| avsectester.evaluation.evaluator | Standalone ordered log groups and metric evaluation |
-| avsectester.evaluation.metric | ComparisonGroup, Metric and built-in metrics |
-| avsectester.evaluation.report | EvaluationConfiguration, EvaluationReport, statistics and formatting |
-| avsectester.evaluation.visualization | Group plots, log-only frames, overlays, filmstrips and animation exports |
-| avsectester.experiment | Experiment, configuration/prepared/result records and evaluate |
-| avsectester.experiment.config | Configuration records, YAML structure, validation and loading |
-| avsectester.experiment.type_registry | Built-in type resolution and concrete attack discovery |
-| avsectester.experiment.configuration_summary | Configuration value and type descriptions |
-| avsectester.experiment.result_evaluation | Order experiment logs, select metrics and save reports/plots |
-| avsectester.experiment.engine | Experiment preparation and execution |
-| avsectester.experiment.models | Prepared/result records and preparation provenance |
-| avsectester.experiment.metadata_file | Save/load complete shared segment files |
-| avsectester.experiment.output_directory | Experiment output layout, prepared metadata, artifacts, maps and result loading |
-
-## Experiment API
-
-Use Experiment.prepare(config, resume=False) and execute(prepared, resume=False). Configuration can
-be an existing typed object, mapping or YAML path. PreparedExperiment owns explicit metadata and artifacts and no live resources.
-Save/load are methods on PreparedExperiment. ExperimentResult.load(output, config) loads saved runs
-for evaluation without starting a simulator or loading artifacts for deployment.
-
-ExperimentConfiguration contains the dataset, simulator, avstack, attacks, hooks, evaluation and a
-frozen RunsConfiguration under runs, optional frozen SplitConfiguration under split, and
-MetadataConfiguration under metadata. MetadataConfiguration(save=None, load=None) selects one
-shared metadata export or input file; setting both is an error. Read or
-change treatments, seeds, decision_steps, environment,
-recording, output and strict through configuration.runs. YAML uses the same runs nesting; old
-top-level run settings are rejected rather than converted. Relative runs.output paths resolve
-against the containing YAML file.
-
-Constructor path resolution follows Path/os.PathLike annotations, including unions and sequence
-item types. Strings and Path values in these parameters become absolute path strings relative to
-the containing YAML, with ~ expanded; URI strings containing :// and non-path objects are unchanged.
-Plain str, Any, unannotated parameters, **kwargs and ordinary nested dictionaries are not path
-signals. Unresolved annotations mentioning Path are configuration errors; their names must be
-available at runtime. Other unresolved annotations are ignored. This applies to every framework
-type/options constructor. See
-[filesystem parameters](configuration.md#constructor-filesystem-parameters).
-
-Configuration summaries are lazy. Direct Python attacks override configuration_parameters when
-constructor inputs cannot be read from same-named attributes. Unverifiable parameters warn on save,
-are explicitly marked unverified, and prevent validated preparation loading. They do not prevent
-configuration construction or in-memory execution.
-
-PreparedExperiment.preparation records the preparation inputs (seed, offline_environments and split
-counts/seed, excluding split.execute) as canonical data; [Saved preparation compatibility](configuration.md#saved-preparation-compatibility)
-defines what reuse checks.
-
-OfflineContext.environment merges runs.environment with the attack environment. Metabuilder
-sensor/render requests use the original world unless they specify an environment explicitly.
-ExperimentResult.load and CLI evaluate read historical logs through load_prepared_metadata without
-constraining runs or reading an external metadata file. describe_configuration accepts an already
-known metadata_sha256 for saved summaries; with metadata.load its compatibility entry contains only
-metadata.sha256, never the recorded source path.
-
-Configurations contain one or more attacks, each selecting its own metadata unless metadata.load
-provides the same segments to every attack. Attack.validate_segment checks the segments before
-offline preparation. Without a metadata load every attack must implement build_metadata; load_configuration checks this and the CLI uses exit code 2 for the configuration error.
-A treatment enables one
-attack by attack_name, or none, with optional environment overrides; a treatment without attack_name
-runs once per complete segment unit and seed. Identical metadata selected by different attacks
-shares a unit; different user_data means a different unit even for the same window. Every group
-treatment pair is evaluated, including different attacks; no baseline is
-configured. The same hooks apply to every treatment. Result failures and selection errors remain
-available independently.
-
-ConfigurationMismatchError identifies an incompatible saved summary or preparation input. Other
-result-reading exceptions remain read failures rather than configuration errors.
-ExperimentResult.notices contains ordinary messages for skipped saved runs that the configuration or
-saved preparation does not expect, such as removed treatments. The output_directory module defines
-the run layout through run_directory; saved_run_directories lists saved runs by that layout.
-Run directories are runs/segment-xxxxx/seed-s/treatment/; old attack-prefixed v5/v6 results are not
-loadable or evaluable by this version. Preparation checkpoints selection/units before optimization
-and saves each completed artifact before the next attack. Resume validates the saved configuration
-and preparation record, reuses saved selection and runs only unfinished offline work. Execution
-resume retains completed manifests only when the full expected metadata matches: segment_index,
-seed, treatment, attack_name, part, segment, environment, decision_steps, selected_decision_steps
-and deployment_ticks. Segment data uses its canonical serialized comparison. Any mismatch reruns
-that one expected run; unchanged metadata preserves its log and directory.
-
-## Attack API
-
-Attack parameters remain reusable configuration. build_metadata(scenario) is the metabuilder;
-run_offline(context) defaults to None; create_runtime(segment, artifacts) defaults to
-an empty runtime. The explicit artifact argument is the sole saved/executed value.
-
-AttackSegment start/stop belong to the same scenario, stop > start and decision_steps is their
-position difference. Its only fields are scenario_id, start, stop and user_data. Actor IDs,
-placement parameters, scores and other attack-specific data belong to user_data. Persisted custom
-data must contain only JSON-like values or numpy arrays. The framework checks boundaries without
-interpreting custom data, checking selected actors or ranking candidates.
-
-AttackRuntime setup returns only world actions; step returns typed actions once per decision; stop
-closes the online lifecycle. All history and bound AVStack callbacks share one runtime instance.
-subscriptions supports observation and physical_state snapshots. OnlineContext gives physical
-frame/time and record_output but no live time-advancing resources.
-
-Attack.deployment_ticks(segment) declares physical setup needs. OfflineContext includes training
-metadata, validation_metadata, selection seed, resolved experiment/attack environment and the
-experiment-wide maximum DeploymentPlan. Without split, metadata contains all selected segments and
-validation_metadata is empty; with split each attack receives only its units in the respective
-parts. PreparedExperiment retains all selected metadata and units.
-
-World actions receive SimulatorRuntime and an ExitStack for cleanup. Sensor actions receive the
-current sensor value and a SensorView containing the original capture, for cameras, LiDAR, GNSS
-and IMU alike. AVStack actions can target localization.pre through command, excluding sensors.post;
-they receive the
-current value at their declared stage and OnlineContext. See [Runtime](runtime.md).
-
-## Dataset API
-
-Dataset methods expose recorded records or recipes and never own simulation. Shared ActorState
-and Unavailable records are imported from avsectester.data_types. N decisions require N+1
-supported FrameReference records. Frames use canonical timeline position separately from native
-frame_id. ActorState.pose is world-from-actor; box_center is its local bounding-box center, extent
-is full length/width/height in metres and velocity is world-frame m/s. box_rotation describes local
-box orientation. box_transform() composes the world-from-box-center pose; pose remains the actor
-origin. Unknown extent is None, distinct from explicit zero dimensions. Pose-only
-operations accept unknown extent; attached placement and cuboid occlusion require known dimensions.
-FrameData.actors excludes ego, which is only in .ego.
-
-Dataset.scenario_map returns ScenarioMap or Unavailable(reason); its default provides no map.
-ScenarioView.scenario_map forwards that method for selection. Map records use canonical world
-metres, frozen dataclasses and copied read-only geometry arrays. NuRec reads clipgt where present;
-CARLA reads exported OpenDRIVE through its optional client package. See [Semantic
-maps](../guides/scenarios.md#semantic-maps) for source coverage and coordinate conventions.
-
-ExperimentResult.scenario_maps retains one map or unavailable reason per selected scene.
-Persistent results store it under maps/<scenario_id>.json. Evaluation uses these saved values through
-ComparisonGroup.scenario_map without dataset access. Maps are not online attack or AVStack inputs.
-WorldSnapshot.traffic_lights stores dynamic signal states keyed by TrafficControl.id.
-
-read_scene_mesh(usdz_path) in datasets.nurec merges mesh.ply and mesh_ground.ply into world-coordinate
-vertices (N×3) and indexed triangle faces (M×3), without a camera or calibration lookup.
-NuRecDataset.scene_mesh and the simulator share this reader. NuRecSimulator depth="mesh" is the
-default and requires the optional nurec dependencies at construction; depth="none" disables it.
-sensor_view computes optical-axis mesh/actor-box depth on demand and caches it per capture and camera. A
-two-scene process cache holds static mesh BVHs. See [Mesh depth](../guides/simulators.md#mesh-depth).
-In mesh mode, NuRecSimulatorRuntime.reset with a recorded Dataset ScenarioStart verifies that
-mesh.ply and mesh_ground.ply exist in its USDZ before the first NRE request. Missing entries raise
-ValueError naming the files. depth="none" disables this depth preflight, while ego ground contact
-still requires the selected ground_mesh file unless physics_update_mode="none".
-
-NuRecDataset uses a fixed time_step timeline, interpolates only within recording support, and uses
-the native camera_id in FrameData.sensor_references. Dataset public camera and trajectory methods
-take scenario_id. Sensor aliases belong only to simulators: NuRecSimulator.camera_aliases maps
-recorded camera IDs, and RecordedReplaySimulator.camera_aliases maps names such as CAM_FRONT to
-model-visible names such as front. CARLA generated data lives in FrameDataCache, while CarlaDataset
-itself remains recipe-only.
-
-## Simulator API
-
-closed_loop.simulators exports interfaces from simulators.base. Import concrete simulators from
-their implementation modules, such as simulators.carla, simulators.nurec or simulators.recorded.
-
-SimulatorRuntime.world_key identifies the underlying world. Its default is ("simulator", id(self));
-runtimes attached to the same external CARLA world share a key. claim_world(owner) assigns that
-world to an owner within the process. The same owner object may nest claims; a different owner is
-rejected immediately. The world becomes unclaimed after the outermost context exits. exclusive()
-allows one operation
-at a time on that simulator runtime and can be used inside a world claim.
-
-Simulator.create_runtime(seed) creates a new owned world. SimulatorRuntime.reset receives
-ScenarioStart, optional initialization/deployment and only world settings. SimulatorRuntime.step
-advances and captures; observe returns an independent current capture and never renders or advances.
-state returns physical WorldSnapshot, including ego, other actors and separate inserted objects.
-The creator closes the simulator runtime.
-
-Simulator.can_insert_objects enables shared camera composition. insert_object registers an ObjectAsset
-under a unique ID and rigid world_from_object pose; remove_object removes it. state().objects reflects
-the registration immediately, while images change at the next capture. Each inserted ActorState has
-zero velocity and box_center=(0, 0, height/2). sensor_view returns composed camera data. Existing
-native depth is merged with object depth by pixelwise minimum; missing native depth stays None.
-object_visibility(object_id) returns the latest capture's camera-to-ObjectVisibility mapping; see
-[Inserted world objects](../guides/simulators.md#inserted-world-objects). InsertObject registers
-cleanup. See [Insert a world object](../guides/attacks.md#insert-a-world-object) for a runnable
-setup action.
-
-Custom simulator runtime classes implement native operations, not reset/step. Simulator declarations
-include dataset_kinds, decision_time_step, command_modes, supported_stages,
-supported_world_settings, can_render, can_insert_objects, can_replay, can_observe_past,
-capture_ticks and identity.
-validate_world_settings checks supported names and values without native startup; validate_start checks
-dataset/time-step compatibility and raises UnsupportedStartError, a ValueError, when the configuration
-is valid but a particular start's data cannot be used. Experiment preparation skips such segments and
-records the reason.
-
-SensorGeometry contains sensor, typed camera and cam_from_world. camera_sensors declares eligible
-cameras. The base sensor_geometry derives it from _sensor_view; an optional lightweight override
-can avoid image or depth work. Implementations supply native _sensor_view and leave public
-sensor_view to the shared simulator-runtime composition path.
-
-SimulatorRuntime.sensors declares every sensor supported by sensor_view; camera_sensors is its
-camera subset. SensorView contains data, actors, ego, time, frame, native metadata and the
-objects composited into this camera (see
-[Inserted world objects](../guides/simulators.md#inserted-world-objects)). Camera views provide
-camera and cam_from_world (optical
-x right, y down, z forward). sensor_from_world maps world
-points to the sensor body (x forward, y left, z up), including for cameras, and is None if its pose
-is unavailable. Optional depth belongs to camera views. Camera project/unproject use Nx3 points
-and Nx2 pixel coordinates. BODY_FROM_OPTICAL in geometry/cameras.py converts optical points to
-body axes. CARLA LiDAR views snapshot raw SDK bytes without changing their axes; the native wrapper
-retains its flipy option. See [CARLA LiDAR data](runtime.md#carla-lidar-data) for the byte layout,
-coordinate convention and a replacement action.
-
-start_replay initializes and captures a recorded or recipe boundary while retaining prescribed ego
-motion. Both replay methods reject bound hooks. advance_replay(count) advances that motion and
-captures without stage hooks; it requires an initialized runtime and can_replay=True. CARLA and
-recorded playback declare True; NuRec declares False and supports raw
-frame reads through repeated start_replay calls. SimulatorRuntime owns both public methods;
-implementations supply _replay_tick rather than overriding them.
-
-Simulator.can_observe_past declares access to recorded observations before the selected start.
-After reset, observe_past(count) returns that many observations from oldest to newest, with negative
-run-relative t and frame values. It requires start.frame.position >= count and nonempty
-start.recorded_ego. Reading the past neither changes the current capture/world nor includes inserted
-objects or attack actions. NuRec supports this capability; CARLA and recorded replay do not.
-Implementations supply _observe_recorded(position), leaving observe_past to the base lifecycle.
-
-## Driving-system API
-
-closed_loop.avstacks exports AVStack, ObservationPipeline, command compatibility and driving-adapter
-interfaces. Import concrete driving systems from avstacks.implemented.modular, avstacks.implemented.alpamayo or
-avstacks.implemented.camera_forward_collision.
-
-AVStack.__call__(observation) returns Control. reset(observation, past=()) receives the first already
-processed input and preceding recorded observations ordered oldest to newest. AVStack.past_steps is a
-class-level declaration, defaulting to 0. Each past input receives the treatment's sensor corruptions
-at its own absolute frame position, without stage hooks, ObservationPipeline or attacks. The
-initialization event records past_steps and past_observations containing t and vehicle_state; past
-images are not recorded there.
-ObservationPipeline applies sensors.post hooks, localization, localization hooks and observation
-hooks, and owns the localizer lifecycle. It does not process output commands. AVStack also
-declares command_modes, supported_stages, models, component_log and detections. None detections
-means unsupported; an empty sequence is valid zero detections. Base close() is a no-op.
-AVStack.observation_pipeline is an assignable ObservationPipeline property. Detection uses the
-true capture-time ego frame
-box center, full extent and yaw in radians, plus optional category/score. Conversion uses sensor
-mounting extrinsics, independently of model-visible localization.
-
-The configured AVStack constructor receives only options and creates a fresh instance per run.
-DrivingAdapter separately binds component/scorer callables. Its Python factory accepts a seed; YAML
-avstack.bindings receives the loader's configured factory and returns DrivingAdapter. Scorers
-declare differentiable inputs and direction; services reject unavailable gradients.
-DrivingAdapter.past_steps and decision_time_step read the corresponding class attributes on
-factory.avstack_type when it is an AVStack subclass, otherwise their explicit constructor options.
-The YAML factory also exposes avstack_options as an independent, read-only copy of configured
-constructor options, so bindings can inspect nested detector settings without creating a stack.
-This inspection never creates an
-AVStack or loads model weights. ClosedLoopSession.can_start_at(position) combines this history
-requirement with the shared deployment-window check. The Alpamayo binding explicitly supplies a
-15-step fallback for factories without AVStack-type metadata.
-
-## Closed-loop service API
-
-The execution package owns runner, services, candidate dispatch and preparation caches. Its package
-initializer stays lightweight; import public contracts from execution.runner or execution.services.
-
-ClosedLoopServices from execution.services exposes capabilities and
-session(seed, history="fresh"). Each session owns cleanup. Sensor-only scans reuse a simulator
-runtime when its simulator declares can_replay=True; NuRec resets to each requested frame with
-start_replay. Rendering with attack actions and rollouts create independent worlds.
-World claims span operation cleanup. Native handles do not escape closed operations in returned views.
-capabilities.insert_objects reflects Simulator.can_insert_objects and can be checked during
-selection. An unsupported InsertObject returned by setup raises NotImplementedError during reset
-and fails the run; dynamically created setup actions cannot be inspected in preflight.
-
-SensorRequest selects scenario/frame/sensor_ids/environment and optional views=False. With
-views=True, SensorSample.views maps each requested sensor to a detached SensorView with native={};
-its data precedes sensor corruptions, while observation contains the transformed input.
-The default returns an empty views mapping to avoid depth computation and copying. A simulator
-without can_render rejects views=True with the same NotImplementedError as render.
-See [Use the selected scenario](../guides/attacks.md#use-the-selected-scenario) for a runnable
-multi-frame optimization-sampling example.
-
-read_sensors reads the action-free world and can reuse supported forward scans; render applies
-attack actions in
-a newly created world for each request. RenderRequest additionally selects
-sensor_id and world/sensor actions. AVStack actions require a rollout. CandidateRequest declares
-segment, seed, decision_steps, environment, recording and optional Attack/artifacts/output_path. Its
-decision count must equal the segment interval. The simulator receives ScenarioStart, never the
-segment metadata.
-
-ScenarioView supplies scenario_id, seed, frames, frame_data and selection reasons. ComponentResult
-and ScoreResult return value, descriptor and provenance. evaluate uses fresh driving state, while
-score reuses one isolated scoring AVStack within its session and releases it at session close.
-Rollouts remain fresh; unknown bindings or gradient mismatch fail explicitly.
-
-## Hook and environment API
-
-Hook binds stage and callable/plugin. HookSet preserves registration order, validates adapter stages
-and owns one lifecycle per shared handler owner. StageContext supplies simulator_runtime, avstack,
-physical_state, model-visible input/control, RNG and copied outputs. NativeHook is specific to
-avstack and requires explicit registration imports.
-
-normalize_environment, merge_environments and validate_environment manage the `{world, sensors}`
-shape. SensorEnvironment.apply(observation, position) receives absolute timeline position. Custom
-corruptions implement apply(rgb, rng). read_camera_rgb returns None for an unknown explicit camera;
-it never substitutes another camera. write_sensor_data replaces arrays directly or shallow-copies
-native wrappers and replaces their data, without inspecting array shapes or converting dtypes.
-The runner chooses write_camera_rgb only when SensorView.camera is present, keeping
-camera writes RGB uint8; other sensor writes use write_sensor_data.
-read_camera_rgb, write_camera_rgb and write_sensor_data live in
-data_types.py and preserve sensor payload transport conventions.
-
-## RunLog API
-
-RunLog holds metadata, steps, events, status and optional path. read loads published Parquet parts.
-read_table selects Parquet columns without loading all
-payloads. Recorder captures independent in-memory snapshots, records steps/events, flushes closed
-parts, finishes or aborts. It does not close caller-owned simulators/models.
-
-StepRecord fields include raw/model observations, pre/post physical state, produced/executed
-commands, components, canonical detections, actions/receipts, outputs, typed sensor_geometry,
-object_visibility and telemetry. sensor_geometry maps declared camera names to lightweight typed
-SensorGeometry records, not SensorView images. physical_pre and physical_post are StepRecord
-fields, not fields on RunLog. Receipt details and object_visibility are described in
-[RunLog](runtime.md#runlog); RunLog.read restores those typed records using DEFAULT_REGISTRY.
-Recorder and RunLog.read accept an explicit registry when isolation is needed. The same registry
-encodes prepared metadata and saved maps. Register user dataclasses before writing, and import
-their defining and registration modules before reading. Native encoders are registered by their
-adapters and persist ordinary data for analysis without Python SDK classes.
-Payload retention is controlled by RecordingPolicy. Older RunLog files and experiment output
-directories may no longer be readable after the record layout change; there is no format conversion.
-
-## Evaluation API
-
-RunGroup contains all treatment logs in their supplied order, including unfinished or failed runs,
-plus optional errors and a scenario map. evaluate_groups(groups, metrics, notes=()) evaluates
-already available logs without an Experiment or dataset. It passes only completed logs to the
-ComparisonGroup used by metrics and returns an EvaluationReport with statuses and summaries.
-The evaluation package exports RunGroup and evaluate_groups. It also exports StopLineMetrics,
-ReasoningPhraseRate and signed_stop_line_distances. StopLineMetrics requires stop_line_id in the
-segment user_data and a matching saved scenario-map stop line, and assumes the start is before
-the line. signed_stop_line_distances returns horizontal distances and the first crossing as an
-adjacent-sample index and interpolation fraction; signs turn negative after that crossing.
-ReasoningPhraseRate reads the configured component field from native objects or mappings.
-
-Metric.evaluate receives ComparisonGroup and returns per-treatment scalar dictionaries.
-UnavailableMetricValue(reason, value_type="number" or "boolean") carries missing evidence without
-mutable metric state. MetricScalar is one scalar or unavailable value; FieldMeasurements maps field
-names to these values, and TreatmentMeasurements maps treatment names to FieldMeasurements.
-PairMetric evaluates TreatmentPair; TrajectoryDeviation is symmetric. StopImpact reports stopping
-comparisons in both directions. Pair differences for single-run values are B minus A.
-
-evaluate(result, configuration), exported by avsectester.experiment and implemented in
-experiment.result_evaluation, writes report.json, runs.csv, plots and report.html. The evaluation package owns
-RunGroup evaluation, metrics, report records, statistics and visualization without depending on
-experiment types. Experiment evaluation orders logs, chooses defaults, attaches selections and
-saves report/plot files. Metric
-specifications, notes and errors remain in the report. EvaluationReport.format_summary() prints
-one treatment table per part and metric class, plus notes and errors; pair differences are in report.json and report.html; treatment_summaries and pair_summaries use
-population standard deviation (ddof=0). summarize recalculates summaries; record_error records an
-exception with its source and context. as_dict returns data, and save writes it. No inference or
-dataset read occurs.
-
-Visualization functions consume StepRecord/RunLog: camera_view, lidar_bev, labels_view,
-detections_view, filmstrip, record_run, save_gif and save_sequence. sensor_view reconstructs only
-logged geometric evidence. record_run exports recorded frames; it does not execute an experiment.
-
-## Public signatures
-
-Properties appear as name: Type. Method signatures omit self/cls. Dataclass constructor fields are
-listed in declaration order; optional inherited behavior is described in the owning guide. Concrete
-Attack classes are imported from their folder, for example `from
-avsectester.implemented_attacks.patch_attack import PatchAttack`.
-
-### avsectester.experiment.config
-
-| Public name | Signature or fields |
-|---|---|
-| `TreatmentConfiguration` | `name: str`<br>`attack_name: str \| None = None`<br>`environment: Mapping[str, Any] = field(default_factory=dict)` |
-| `RunsConfiguration` | `treatments: tuple[TreatmentConfiguration, ...] = ()`<br>`seeds: tuple[int, ...] = (0,)`<br>`decision_steps: int \| None = None`<br>`environment: Mapping[str, Any] = field(default_factory=dict)`<br>`recording: RecordingPolicy = field(default_factory=RecordingPolicy)`<br>`output: Path \| None = None`<br>`strict: bool = False` |
-| `MetadataConfiguration` | `save: str \| Path \| None = None`<br>`load: str \| Path \| None = None`; mutually exclusive |
-| `SplitConfiguration` | `train_segments: int`<br>`validation_segments: int = 0`<br>`seed: int = 0`<br>`execute: tuple[str, ...] = ("test",)` |
-| `ExperimentConfiguration` | `dataset: Dataset`<br>`simulator: Simulator`<br>`avstack: DrivingAdapter`<br>`attacks: Mapping[str, Attack] = field(default_factory=dict)`<br>`hooks: HookConfiguration = None`<br>`evaluation: EvaluationConfiguration = field(default_factory=EvaluationConfiguration)`<br>`runs: RunsConfiguration = field(default_factory=RunsConfiguration)`<br>`split: SplitConfiguration \| None = None`<br>`metadata: MetadataConfiguration = field(default_factory=MetadataConfiguration)` |
-| `ExperimentConfiguration.configuration_summary` | `configuration_summary: dict[str, Any]` |
-| `ExperimentConfiguration.describe_configuration` | `describe_configuration(*, scenarios: Sequence[str] \| None = None, metadata_sha256: str \| None = None) -> dict[str, Any]` |
-| `load_configuration` | `load_configuration(config: ExperimentConfiguration \| Mapping[str, Any] \| str \| Path) -> ExperimentConfiguration` |
-
-### avsectester.experiment.metadata_file
-
-Both functions are also exported from avsectester.experiment. The file envelope contains
-format="avsectester.metadata", version=1, dataset_type and DEFAULT_REGISTRY-encoded segments.
-save_metadata accepts identical existing content and refuses to overwrite different content.
-load_metadata checks the envelope and returns segments; Experiment.prepare additionally checks
-dataset_type against the configured dataset and validates each segment. Both loading and saving
-reject duplicate complete segments, identifying their item indices. Compatibility uses the raw-byte
-SHA256 as metadata.sha256, excluding the file path. A byte-identical file can move without changing
-compatibility. Prepared metadata_source retains its original path and SHA256 as provenance.
-Resuming progress or reusing --prepared does not export metadata.save; execution reuse checks the
-current input hash. ExperimentResult.load and CLI evaluate use the saved hash and never read the
-external metadata file.
-
-| Public name | Signature or fields |
-|---|---|
-| `save_metadata` | `save_metadata(segments: Sequence[AttackSegment], path: str \| Path, *, dataset_type: str) -> None` |
-| `load_metadata` | `load_metadata(path: str \| Path) -> tuple[AttackSegment, ...]` |
-
-### avsectester.experiment.type_registry
-
-resolve_type accepts a built-in component name, a discovered concrete Attack name or an explicit
-module:attribute path. is_builtin_type_name checks only the built-in component registry; it does
-not discover attacks. Third-party registry specifications remain the owning constructor's concern.
-
-| Public name | Signature or fields |
-|---|---|
-| `resolve_type` | `resolve_type(value: Any) -> Callable[..., Any]` |
-| `attack_directory_name` | `attack_directory_name(class_name: str) -> str` |
-| `available_attacks` | `available_attacks() -> tuple[str, ...]` |
-| `is_builtin_type_name` | `is_builtin_type_name(value: str) -> bool` |
-
-### avsectester.experiment.configuration_summary
-
-| Public name | Signature or fields |
-|---|---|
-| `summary_value` | `summary_value(value: Any) -> Any` |
-| `type_name` | `type_name(value: Any) -> str` |
-
-### avsectester.experiment.engine
-
-| Public name | Signature or fields |
-|---|---|
-| `validate_configuration_environment` | `validate_configuration_environment(config: ExperimentConfiguration) -> None` |
-| `Experiment` | Class; see methods below |
-| `Experiment.prepare` | `prepare(config: ExperimentConfiguration \| Mapping[str, Any] \| str \| Path, resume: bool = False) -> PreparedExperiment` |
-| `Experiment.execute` | `execute(prepared: PreparedExperiment, resume: bool = False) -> ExperimentResult` |
-
-### avsectester.experiment.models
-
-| Public name | Signature or fields |
-|---|---|
-| `preparation_record` | `preparation_record(configuration: ExperimentConfiguration) -> dict[str, Any]` |
-| `SelectionDecision` | `attack_name: str`<br>`scenario_id: str`<br>`status: Literal['selected', 'not_selected', 'error']`<br>`reasons: tuple[str, ...] = ()`<br>`error: str \| None = None` |
-| `SelectionDecision.as_dict` | `as_dict() -> dict[str, Any]` |
-| `SelectionDecision.from_dict` | `from_dict(value: Mapping[str, Any]) -> SelectionDecision` |
-| `treatment_applies` | `treatment_applies(treatment: Any, attack_name: str) -> bool` |
-| `SegmentUnit` | `index: int`<br>`segment: AttackSegment`<br>`attack_names: tuple[str, ...]`<br>`part: str \| None = None` |
-| `PreparedExperiment` | `configuration: ExperimentConfiguration`<br>`metadata: Mapping[str, tuple[AttackSegment, ...]]`<br>`artifacts: Mapping[str, Any]`<br>`selections: tuple[SelectionDecision, ...] = ()`<br>`preparation: Mapping[str, Any]` (required, keyword-only)<br>`units: tuple[SegmentUnit, ...] = ()` (keyword-only)<br>`deployment: DeploymentPlan \| None = None` (keyword-only)<br>`offline_reports: Mapping[str, OfflineReport]` (keyword-only, default empty) |
-| `PreparedExperiment.save` | `save(directory: str \| Path) -> Path` |
-| `PreparedExperiment.load` | `load(config: ExperimentConfiguration \| Mapping[str, Any] \| str \| Path, directory: str \| Path) -> PreparedExperiment` |
-| `TreatmentResult` | `attack_name: str \| None`<br>`segment_index: int`<br>`segment: AttackSegment`<br>`treatment: str`<br>`seed: int`<br>`log: RunLog`<br>`error: str \| None = None`<br>`part: str \| None = None` |
-| `TreatmentResult.group` | `group: tuple[int, int]` |
-| `ExperimentResult` | `runs: tuple[TreatmentResult, ...] = ()`<br>`selections: tuple[SelectionDecision, ...] = ()`<br>`notices: tuple[str, ...] = ()`<br>`scenario_maps: Mapping[str, ScenarioMap \| Unavailable] = field(default_factory=dict)` |
-| `ExperimentResult.groups` | `groups: dict[tuple[int, int], dict[str, RunLog]]` |
-| `ExperimentResult.failures` | `failures: tuple[TreatmentResult, ...]` |
-| `ExperimentResult.selection_errors` | `selection_errors: tuple[SelectionDecision, ...]` |
-| `ExperimentResult.load` | `load(output: str \| Path, configuration: ExperimentConfiguration) -> ExperimentResult` |
-
-### avsectester.experiment.output_directory
-
-Defines the experiment output layout and reads/writes its files other than individual RunLog parts.
-ExperimentResult.load delegates to load_result here; evaluation restores these saved records
-without reading the dataset. PreparedMetadata contains analysis metadata without executable
-artifacts; load_prepared always restores the artifacts required by execute. PreparedExperiment
-methods provide the usual save/load entry points.
-
-| Public name | Signature or fields |
-|---|---|
-| `PreparedMetadata` | `metadata: Mapping[str, tuple[AttackSegment, ...]]`<br>`selections: tuple[SelectionDecision, ...]`<br>`preparation: Mapping[str, Any]`<br>`units: tuple[SegmentUnit, ...]`<br>`deployment: DeploymentPlan \| None` |
-| `save_prepared` | `save_prepared(prepared: PreparedExperiment, directory: str \| Path) -> Path` |
-| `load_prepared` | `load_prepared(configuration: ExperimentConfiguration, directory: str \| Path) -> PreparedExperiment` |
-| `load_prepared_metadata` | `load_prepared_metadata(configuration: ExperimentConfiguration, directory: str \| Path) -> PreparedMetadata` |
-| `runs_directory` | `runs_directory(root: Path) -> Path` |
-| `run_directory` | `run_directory(root: Path, segment_index: int, seed: int, treatment: str) -> Path` |
-| `saved_run_directories` | `saved_run_directories(root: Path) -> tuple[tuple[tuple[int, int, str], Path], ...]` |
-| `load_result` | `load_result(directory: str \| Path, configuration: ExperimentConfiguration) -> ExperimentResult` |
-| `recorded_data_equal` | `recorded_data_equal(first: Any, second: Any) -> bool`; compares saved plain data, treating lists and tuples alike and arrays by value |
-| `ConfigurationMismatchError` | `ConfigurationMismatchError(ValueError)`; raised when a saved preparation and the supplied configuration describe different attacks or inputs |
-| `save_scenario_maps` | `save_scenario_maps(maps: Mapping[str, ScenarioMap \| Unavailable], directory: str \| Path) -> None` |
-| `load_scenario_maps` | `load_scenario_maps(directory: str \| Path, scenario_ids: tuple[str, ...]) -> dict[str, ScenarioMap \| Unavailable]` |
-
-### avsectester.experiment.result_evaluation
-
-| Public name | Signature or fields |
-|---|---|
-| `evaluate` | `evaluate(result: ExperimentResult, configuration: ExperimentConfiguration) -> EvaluationReport` |
-
-### avsectester.attack.attack
-
-| Public name | Signature or fields |
-|---|---|
-| `AttackSegment` | `scenario_id: str`<br>`start: FrameReference`<br>`stop: FrameReference`<br>`user_data: Mapping[str, Any] = field(default_factory=dict)` |
-| `AttackSegment.decision_steps` | `decision_steps: int` |
-| `OfflineContext` | `services: ClosedLoopServices`<br>`metadata: tuple[AttackSegment, ...]`<br>`seed: int = 0`<br>`environment: Mapping[str, Any] = field(default_factory=dict)`<br>`deployment: DeploymentPlan \| None = None`<br>`validation_metadata: tuple[AttackSegment, ...] = ()`<br>`report: OfflineReport = field(default_factory=lambda: OfflineReport(None))` |
-| `Attack` | `environment: Mapping[str, Any] = MappingProxyType({})` |
-| `Attack.build_metadata` | `build_metadata(scenario: ScenarioView) -> Sequence[AttackSegment]`; default raises NotImplementedError, use metadata.load or override |
-| `Attack.validate_segment` | `validate_segment(segment: AttackSegment) -> None`; default accepts, raise ValueError to reject |
-| `Attack.run_offline` | `run_offline(context: OfflineContext) -> Any` |
-| `Attack.deployment_ticks` | `deployment_ticks(segment: AttackSegment) -> int` |
-| `Attack.create_runtime` | `create_runtime(segment: AttackSegment, artifacts: Any) -> AttackRuntime` |
-| `Attack.configuration_parameters` | `configuration_parameters() -> Mapping[str, Any]` |
-| `Attack.save_artifacts` | `save_artifacts(artifacts: Any, directory: str \| Path) -> None` |
-| `Attack.load_artifacts` | `load_artifacts(directory: str \| Path) -> Any` |
-
-### avsectester.attack.runtime
-
-| Public name | Signature or fields |
-|---|---|
-| `ResultSubscription` | `kind: Literal['observation', 'physical_state']` |
-| `OnlineContext` | `step: int`<br>`stage: str`<br>`sim_time: float`<br>`frame: int`<br>`observation: Observation \| None = None`<br>`physical_state: WorldSnapshot \| None = None` |
-| `OnlineContext.record_output` | `record_output(name: str, value: Any) -> None` |
-| `AttackAction` | Class; see methods below |
-| `AttackAction.receipt_details` | `receipt_details() -> Mapping[str, Any]` |
-| `WorldAttackAction` | `setup_ticks: int = 0` |
-| `WorldAttackAction.apply` | `apply(simulator_runtime: SimulatorRuntime, resources: ExitStack) -> None` |
-| `SensorAttackAction` | `sensor: str` |
-| `SensorAttackAction.apply` | `apply(data: Any, view: SensorView) -> Any` |
-| `AVStackAttackAction` | `stage: str`<br>`apply: Callable[[Any, OnlineContext], Any]` |
-| `AttackRuntime` | `subscriptions: Sequence[ResultSubscription] = ()`<br>`setup_ticks: int = 0` |
-| `AttackRuntime.setup` | `setup(context: OnlineContext) -> Sequence[WorldAttackAction]` |
-| `AttackRuntime.step` | `step(context: OnlineContext) -> Sequence[AttackAction]` |
-| `AttackRuntime.stop` | `stop(context: OnlineContext) -> None` |
-
-### avsectester.attack.segments
-
-| Public name | Signature or fields |
-|---|---|
-| `split_segments` | `split_segments(frames: Sequence[FrameReference], eligible: Callable[[FrameReference], bool], *, decision_steps: int, keep_tail: bool = False) -> tuple[AttackSegment, ...]` |
-| `validate_segment_options` | `validate_segment_options(decision_steps: int, max_segments: int \| None, keep_tail: bool) -> None` |
-
-### avsectester.attack.insertion.placement
-
-| Public name | Signature or fields |
-|---|---|
-| `validate_attached_mount` | `validate_attached_mount(anchor: str, offset_m: tuple[float, float, float]) -> tuple[float, float, float]` |
-| `AttachedPlacement` | `host: str`<br>`anchor: str = 'center'`<br>`offset_m: tuple[float, float, float] = (0.0, 0.0, 0.0)` |
-| `AttachedPlacement.local_position` | `local_position(extent: tuple[float, float, float]) -> np.ndarray` |
-| `WorldPlacement` | `position_m: tuple[float, float, float]` |
-| `Orientation` | `mode: str = 'fixed_world'`<br>`rotation_deg: tuple[float, float, float] = (0.0, 0.0, 0.0)`<br>`target_offset_m: tuple[float, float, float] = (0.0, 0.0, 0.0)` |
-| `placement_from_spec` | `placement_from_spec(value: Any) -> AttachedPlacement \| WorldPlacement` |
-| `orientation_from_spec` | `orientation_from_spec(value: Any) -> Orientation` |
-
-### avsectester.validation
-
-Framework code and user extensions can share these parameter checks. Integer validators reject
-booleans. Number validators accept finite real numbers and reject booleans. Positive values must
-exceed zero; nonnegative values may be zero. Invalid inputs raise ValueError naming the parameter
-and the required positive/nonnegative integer or number. The functions validate without coercion.
-
-| Public name | Signature or fields |
-|---|---|
-| `require_nonnegative_integer` | `require_nonnegative_integer(value: int, name: str) -> None` |
-| `require_positive_integer` | `require_positive_integer(value: int, name: str) -> None` |
-| `require_nonnegative_number` | `require_nonnegative_number(value: float, name: str) -> None` |
-| `require_positive_number` | `require_positive_number(value: float, name: str) -> None` |
-
-### avsectester.type_paths
-
-split_type_path validates an explicit package.module:name path and returns the module and
-attribute names without importing anything. The attribute name may contain dots, as in
-package.module:Container.CustomAttack. import_type_path uses the same validation, imports the
-module, resolves nested attributes and requires the value to be callable. Configuration type
-resolution and custom sensor environments use this import rule; importing a module executes its
-Python code.
-
-| Public name | Signature or fields |
-|---|---|
-| `split_type_path` | `split_type_path(value: str) -> tuple[str, str]` |
-| `import_type_path` | `import_type_path(value: str) -> Any` |
-
-### avsectester.serialization
-
-SerializationRegistry provides JSON-compatible encode/decode and independent snapshot(value).
-Dataclasses encode as `{"_avsectester_type": "dataclass", "type": "package.module:Name",
-"fields": {...}}`. Dataclass fields, including a field named record, remain inside fields. String
-registrations import their types only during decoding. Native encoders produce ordinary data,
-which remains ordinary data after decoding. DEFAULT_REGISTRY pre-registers framework records
-without importing heavy SDKs or models. See [RunLog](runtime.md#runlog) for user registration.
-The optional encode/decode callbacks provide recursive transport for persistence layers.
-
-| Public name | Signature or fields |
-|---|---|
-| `SerializationRegistry` | Class; see methods below |
-| `SerializationRegistry.__init__` | `__init__() -> None` |
-| `SerializationRegistry.register_dataclass` | `register_dataclass(cls_or_path: type \| str) -> None` |
-| `SerializationRegistry.register_native` | `register_native(module: str, name: str, encode: Callable[[Any], Any], *, snapshot: Callable[[Any, Callable[[Any], Any]], Any] \| None = None) -> None` |
-| `SerializationRegistry.snapshot` | `snapshot(value: Any) -> Any` |
-| `SerializationRegistry.encode` | `encode(value: Any, *, encode_child: Callable[[Any], Any] \| None = None, encode_field: Callable[[str, Any], Any] \| None = None, encode_leaf: Callable[[Any], Any] \| None = None) -> Any` |
-| `SerializationRegistry.decode` | `decode(data: Any, *, decode_child: Callable[[Any], Any] \| None = None) -> Any` |
-| `DEFAULT_REGISTRY` | `SerializationRegistry`; shared framework and adapter registrations |
-
-### avsectester.datasets.base
-
-| Public name | Signature or fields |
-|---|---|
-| `FrameReference` | `scenario_id: str`<br>`position: int`<br>`frame_id: str \| int`<br>`timestamp: float` |
-| `ScenarioDescriptor` | `id: str`<br>`kind: str`<br>`payload: Mapping[str, Any] = field(default_factory=dict)` |
-| `SensorDataReference` | `uri: str`<br>`sensor: str`<br>`timestamp: float`<br>`metadata: Mapping[str, Any] = field(default_factory=dict)` |
-| `FrameData` | `frame: FrameReference`<br>`actors: Mapping[str, ActorState] = field(default_factory=dict)`<br>`sensor_references: Mapping[str, SensorDataReference] = field(default_factory=dict)`<br>`provenance: Mapping[str, Any] = field(default_factory=dict)`<br>`ego: ActorState \| None = None` |
-| `ScenarioStart` | `kind: str`<br>`scenario_id: str`<br>`frame: FrameReference`<br>`payload: Mapping[str, Any]`<br>`recorded_ego: tuple[ActorState, ...] = ()`<br>`scenario_map: ScenarioMap \| Unavailable = Unavailable('The dataset provides no scenario map')` |
-| `Dataset` | Class; see methods below |
-| `Dataset.scenarios` | `scenarios() -> Iterator[ScenarioDescriptor]` |
-| `Dataset.frames` | `frames(scenario_id: str) -> Sequence[FrameReference]` |
-| `Dataset.frame_data` | `frame_data(scenario_id: str, frame: FrameReference) -> FrameData \| Unavailable` |
-| `Dataset.native` | `native(scenario_id: str) -> Any` |
-| `Dataset.scenario_start` | `scenario_start(scenario_id: str, frame: FrameReference) -> ScenarioStart` |
-| `Dataset.scenario_map` | `scenario_map(scenario_id: str) -> ScenarioMap \| Unavailable` |
-| `Dataset.checked_frame` | `checked_frame(scenario_id: str, frame: FrameReference) -> FrameReference` |
-| `Dataset.decision_window` | `decision_window(scenario_id: str, start: FrameReference, decision_steps: int) -> tuple[FrameReference, ...]` |
-
-ScenarioStart.recorded_ego is the complete recorded ego trajectory on the decision timeline:
-positions and length match Dataset.frames and each state matches FrameData.ego. It is empty when
-there is no recording, as for CARLA recipes. scenario_map is read-only and shared without copying;
-datasets cache parsed maps per scene. NuRec fills both fields, nuScenes fills the trajectory, and
-CARLA fills the map when an exported OpenDRIVE map is available. These are simulator inputs;
-online attack context still receives no semantic map.
-
-### avsectester.datasets.carla
-
-| Public name | Signature or fields |
-|---|---|
-| `CARLA_WEATHER_PRESETS` | `tuple[str, ...]`; curated native weather preset names |
-| `CARLA_WORLD_SETTINGS` | `frozenset[str]`; supported native world-setting names |
-| `validate_carla_world_settings` | `validate_carla_world_settings(settings: Mapping[str, Any]) -> None` |
-| `PrescribedMotion` | `controls: tuple[Control, ...] = ()`<br>`trajectory: tuple[ActorState, ...] = ()`<br>`constant_control: Control \| None = None` |
-| `PrescribedMotion.expanded` | `expanded(decision_steps: int) -> PrescribedMotion` |
-| `PrescribedMotion.validate` | `validate(decision_steps: int) -> None` |
-| `CarlaRecipe` | `scenario: dict`<br>`decision_steps: int`<br>`time_step: float`<br>`motion: Mapping[str, PrescribedMotion]`<br>`metadata: Mapping = field(default_factory=dict)` |
-| `CarlaDataset` | Class; see methods below |
-| `CarlaDataset.__init__` | `__init__(recipes: Mapping[str, CarlaRecipe], map_directory: str \| Path \| None = None) -> None` |
-| `CarlaDataset.scenarios` | `scenarios()` |
-| `CarlaDataset.frames` | `frames(scenario_id)` |
-| `CarlaDataset.frame_data` | `frame_data(scenario_id, frame)` |
-| `CarlaDataset.native` | `native(scenario_id)` |
-| `CarlaDataset.scenario_start` | `scenario_start(scenario_id, frame)` |
-| `CarlaDataset.scenario_map` | `scenario_map(scenario_id: str) -> ScenarioMap \| Unavailable` |
-
-### avsectester.maps.clipgt
-
-| Public name | Signature or fields |
-|---|---|
-| `read_clipgt` | `read_clipgt(archive: zipfile.ZipFile) -> ScenarioMap` |
-
-### avsectester.datasets.nurec
-
-| Public name | Signature or fields |
-|---|---|
-| `read_scene_mesh` | `read_scene_mesh(usdz_path: str \| Path) -> tuple[np.ndarray, np.ndarray]` |
-| `NuRecDataset` | Class; see methods below |
-| `NuRecDataset.__init__` | `__init__(usdz_paths: list[str \| Path] \| None = None, camera_id: str = 'camera_front_wide_120fov', vehicle_labels: tuple[str, ...] = _VEHICLE_LABELS, time_step: float = 0.1, *, dataroot: str \| Path \| None = None) -> None`; exactly one of dataroot (all .usdz archives below it, ordered by path) and usdz_paths |
-| `NuRecDataset.open_archive` | `open_archive(path: str \| Path) -> zipfile.ZipFile` |
-| `NuRecDataset.raw_metadata` | `raw_metadata(scenario_id: str) -> dict[str, Any]` |
-| `NuRecDataset.camera_geometry` | `camera_geometry(scenario_id: str)` |
-| `NuRecDataset.camera_timestamps` | `camera_timestamps(scenario_id: str) -> np.ndarray` |
-| `NuRecDataset.usdz_path` | `usdz_path(scenario_id: str) -> str` |
-| `NuRecDataset.scenarios` | `scenarios()` |
-| `NuRecDataset.frames` | `frames(scenario_id)` |
-| `NuRecDataset.frame_data` | `frame_data(scenario_id, frame)` |
-| `NuRecDataset.native` | `native(scenario_id)` |
-| `NuRecDataset.scenario_start` | `scenario_start(scenario_id, frame)` |
-| `NuRecDataset.scenario_map` | `scenario_map(scenario_id: str) -> ScenarioMap \| Unavailable` |
-| `NuRecDataset.scene_mesh` | `scene_mesh(scenario_id: str) -> tuple[np.ndarray, np.ndarray]` |
-| `NuRecDataset.ego_state` | `ego_state(scenario_id: str, timestamp_us: int) -> ActorState` |
-| `NuRecDataset.actor_states` | `actor_states(scenario_id: str, timestamp_us: int) -> dict[str, ActorState]` |
-| `NuRecDataset.track_trajectories` | `track_trajectories(scenario_id: str) -> dict[str, dict[str, Any]]`; complete independent native trajectories with fields trajectory, controllable (boolean), label_class, extent and category |
-
-camera_geometry returns an independent FThetaCamera and rig-from-camera pose, preserving the
-archive's native forward and inverse polynomials and its windshield distortion when present. Missing native pixeldist_to_angle remains empty;
-unproject then raises NotImplementedError instead of using a fitted inverse.
-
-### avsectester.datasets.nuscenes
-
-| Public name | Signature or fields |
-|---|---|
-| `NuScenesDataset` | Class; see methods below |
-| `NuScenesDataset.__init__` | `__init__(dataroot: str \| Path, version: str = 'v1.0-trainval', camera: str = 'CAM_FRONT') -> None` |
-| `NuScenesDataset.scenarios` | `scenarios()` |
-| `NuScenesDataset.frames` | `frames(scenario_id)` |
-| `NuScenesDataset.frame_data` | `frame_data(scenario_id, frame)` |
-| `NuScenesDataset.native` | `native(scenario_id)` |
-| `NuScenesDataset.scenario_start` | `scenario_start(scenario_id, frame)` |
-
-### avsectester.maps.scenario_map
-
-All records are frozen. Construction copies geometry arrays and makes them read-only. Coordinates
-are canonical world metres. Polygon and polyline arrays have shape N×3; poses have shape 4×4.
-
-| Public name | Signature or fields |
-|---|---|
-| `STOP_LINE_KIND_BY_CONTROL_KIND` | Read-only `Mapping[str, str]`: stop_sign, yield_sign and traffic_light map to themselves |
-| `ScenarioMap` | `lanes: Mapping[str, Lane] = field(default_factory=dict)`<br>`drivable_area: tuple[np.ndarray, ...] = ()`<br>`road_boundaries: tuple[np.ndarray, ...] = ()`<br>`crosswalks: tuple[np.ndarray, ...] = ()`<br>`intersections: tuple[np.ndarray, ...] = ()`<br>`traffic_controls: Mapping[str, TrafficControl] = field(default_factory=dict)`<br>`stop_lines: Mapping[str, StopLine] = field(default_factory=dict)`<br>`unavailable_layers: Mapping[str, str] = field(default_factory=dict)` |
-| `Lane` | `id: str`<br>`centerline: np.ndarray`<br>`left_boundary: np.ndarray`<br>`right_boundary: np.ndarray`<br>`lane_type: Literal['driving', 'shoulder', 'bike', 'parking', 'other'] = 'driving'`<br>`predecessors: tuple[str, ...] = ()`<br>`successors: tuple[str, ...] = ()`<br>`left_neighbor: str \| None = None`<br>`right_neighbor: str \| None = None`<br>`speed_limit_mps: float \| None = None` |
-| `TrafficControl` | `id: str`<br>`kind: Literal['stop_sign', 'yield_sign', 'speed_limit', 'traffic_light', 'other']`<br>`native_category: str`<br>`pose: np.ndarray`<br>`extent: tuple[float, float, float]`<br>`pose_reference: Literal['face_center', 'signal_position']`<br>`lane_ids: tuple[str, ...] = ()`<br>`stop_line_id: str \| None = None` |
-| `StopLine` | `id: str`<br>`points: np.ndarray`<br>`native_category: str`<br>`kind: Literal['stop_sign', 'traffic_light', 'yield_sign', 'unknown'] = 'unknown'`<br>`lane_ids: tuple[str, ...] = ()`<br>`control_id: str \| None = None` |
-
-Field values, the pose_reference sources, unavailable_layers keys and per-source mappings are
-defined in [Semantic maps](../guides/scenarios.md#semantic-maps) and its
-[Data-source coverage](../guides/scenarios.md#data-source-coverage) section.
-
-### avsectester.maps.opendrive
-
-| Public name | Signature or fields |
-|---|---|
-| `read_opendrive` | `read_opendrive(xodr_text: str, *, name: str) -> ScenarioMap \| Unavailable` |
-
-Uses carla.Map(name, xodr_text) locally, without a server. Missing carla returns Unavailable.
-Every lane type is sampled at intervals of at most two metres; lateral neighbors must travel in
-the same direction. Each signal reference generates one stop line per governed lane. A control's
-lane_ids unions its references; stop_line_id is set only when exactly one line belongs to it.
-See [Semantic maps](../guides/scenarios.md#semantic-maps) for lane sampling and stop-line generation.
-
-### avsectester.data_types
-
-Shared data records for every layer: driving-system observations and commands, world and actor
-state, detections, unavailable-evidence reasons and image target regions. This module has no
-dataset, simulator or model dependencies.
-
-| Public name | Signature or fields |
-|---|---|
-| `Unavailable` | `reason: str` |
-| `ActorState` | `pose: Any`<br>`velocity: tuple[float, float, float] \| None = None`<br>`category: str \| None = None`<br>`extent: tuple[float, float, float] \| None = None`<br>`box_center: tuple[float, float, float] = (0.0, 0.0, 0.0)`<br>`box_rotation: tuple[float, float, float] = (0.0, 0.0, 0.0)` |
-| `ActorState.box_transform` | `box_transform() -> np.ndarray` |
-| `TargetSpec` | `box: tuple[float, float, float, float]`<br>`label: str \| None = None` |
-| `Control` | `throttle: float = 0.0`<br>`steer: float = 0.0`<br>`brake: float = 0.0`<br>`trajectory: Any = None` |
-| `Observation` | `t: float`<br>`frame: int`<br>`sensor_data: dict[str, Any] = field(default_factory=dict)`<br>`calibration: dict[str, Any] = field(default_factory=dict)`<br>`vehicle_state: Any = None`<br>`ego_speed: float = 0.0`<br>`route: np.ndarray \| None = None` |
-| `Observation.set_calibration` | `set_calibration(sensor_id: str, calibration: Any) -> None` |
-| `WorldSnapshot` | `t: float`<br>`frame: int`<br>`vehicle_state: Any = None`<br>`ego_speed: float = 0.0`<br>`actors: Mapping[str, Any] = field(default_factory=dict)`<br>`ego: ActorState \| None = None`<br>`traffic_lights: Mapping[str, str] = field(default_factory=dict)`<br>`objects: Mapping[str, ActorState] = field(default_factory=dict)` |
-| `StateEstimate` | `vehicle_state: Any = None`<br>`ego_speed: float = 0.0` |
-| `RecordedOutput` | `name: str`<br>`value: Any`<br>`step: int`<br>`stage: str`<br>`frame: int`<br>`t: float`<br>`sensor: str \| None = None` |
-| `Detection` | `position: tuple[float, float, float]`<br>`extent: tuple[float, float, float]`<br>`yaw: float`<br>`category: str \| None = None`<br>`score: float \| None = None` |
-| `validate_command_modes` | `validate_command_modes(command: Control, modes: frozenset[str] \| None) -> None` |
-| `read_camera_rgb` | `read_camera_rgb(observation: Observation, camera: str \| None = None) -> tuple[str, np.ndarray] \| None` |
-| `write_sensor_data` | `write_sensor_data(observation: Observation, sensor: str, data: Any) -> Observation` |
-| `write_camera_rgb` | `write_camera_rgb(observation: Observation, key: str, rgb: np.ndarray) -> Observation` |
-
-### avsectester.closed_loop.simulators.base
-
-| Public name | Signature or fields |
-|---|---|
-| `Initialization` | `expected: FrameData`<br>`resolved_scenario: Mapping[str, Any] = field(default_factory=dict)`<br>`provenance: Mapping[str, Any] = field(default_factory=dict)` |
-| `FrameDataSequence` | `frames: tuple[FrameData, ...]`<br>`resolved_scenario: Mapping[str, Any]`<br>`provenance: Mapping[str, Any]` |
-| `FrameDataSequence.at` | `at(frame: FrameReference) -> FrameData` |
-| `DeploymentPlan` | `ticks: int = 0` |
-| `UnsupportedStartError` | `UnsupportedStartError(ValueError)`; raised by validate_start when a valid configuration cannot start at a particular scenario start; preparation skips the segment |
-| `validated_camera_aliases` | `validated_camera_aliases(camera_aliases: Mapping[str, str]) -> dict[str, str]`; validates nonempty camera names and unique outputs, returning a copy |
-| `can_deploy_at` | `can_deploy_at(position: int, deployment: DeploymentPlan, capture_ticks: int) -> bool` |
-| `ClockSnapshot` | `t: float`<br>`frame: int` |
-| `SensorGeometry` | `sensor: str`<br>`camera: Camera`<br>`cam_from_world: np.ndarray` |
-| `SensorView` | `sensor: str`<br>`data: Any`<br>`camera: Camera \| None`<br>`cam_from_world: np.ndarray \| None`<br>`actors: Mapping[str, ActorState]`<br>`ego: ActorState`<br>`time: float`<br>`frame: int`<br>`sensor_from_world: np.ndarray \| None = None`<br>`depth: np.ndarray \| None = None`<br>`native: Mapping[str, Any] = field(default_factory=dict)`<br>`objects: Mapping[str, PlacedObject] = field(default_factory=dict)`<br>`composition: ObjectComposition \| None = None`<br>`object_occlusion: str = 'geometry'`<br>`occlusion_tolerance_m: float = 0.1` |
-| `Simulator` | `dataset_kinds: tuple[str, ...] = ()`<br>`can_render: bool = False`<br>`can_insert_objects: bool = False`<br>`can_replay: bool = False`<br>`can_observe_past: bool = False`<br>`supported_world_settings: frozenset[str] = frozenset()`<br>`occlusion_tolerance_m: float = 0.1` |
-| `Simulator.create_runtime` | `create_runtime(seed: int \| None = None) -> SimulatorRuntime` |
-| `Simulator.past_steps` | `past_steps: int`; preceding recorded decisions required by the simulator, default 0 |
-| `Simulator.decision_time_step` | `decision_time_step: float \| None` |
-| `Simulator.command_modes` | `command_modes: frozenset[str] \| None` |
-| `Simulator.supported_stages` | `supported_stages: frozenset[str]` |
-| `Simulator.identity` | `identity: Mapping[str, Any]` |
-| `Simulator.validate_world_settings` | `validate_world_settings(settings: Mapping[str, Any]) -> None` |
-| `Simulator.validate_start` | `validate_start(start: ScenarioStart \| None) -> None` |
-| `SimulatorRuntime` | Class; see methods below |
-| `SimulatorRuntime.__init__` | `__init__(simulator: Simulator) -> None` |
-| `SimulatorRuntime.dataset_kinds` | `dataset_kinds: tuple[str, ...]` |
-| `SimulatorRuntime.can_render` | `can_render: bool` |
-| `SimulatorRuntime.can_insert_objects` | `can_insert_objects: bool` |
-| `SimulatorRuntime.can_replay` | `can_replay: bool` |
-| `SimulatorRuntime.can_observe_past` | `can_observe_past: bool` |
-| `SimulatorRuntime.supported_world_settings` | `supported_world_settings: frozenset[str]` |
-| `SimulatorRuntime.capture_ticks` | `capture_ticks: int` |
-| `SimulatorRuntime.decision_time_step` | `decision_time_step: float \| None` |
-| `SimulatorRuntime.command_modes` | `command_modes: frozenset[str] \| None` |
-| `SimulatorRuntime.supported_stages` | `supported_stages: frozenset[str]` |
-| `SimulatorRuntime.termination_details` | `termination_details: Mapping[str, Any]` |
-| `SimulatorRuntime.identity` | `identity: Mapping[str, Any]` |
-| `SimulatorRuntime.validate_start` | `validate_start(start: ScenarioStart \| None) -> None` |
-| `SimulatorRuntime.validate_command` | `validate_command(command: Control) -> None` |
-| `SimulatorRuntime.copy_observation` | `copy_observation(observation: Observation) -> Observation` |
-| `SimulatorRuntime.close` | `close() -> None` |
-| `SimulatorRuntime.world_key` | `world_key: Hashable` |
-| `SimulatorRuntime.claim_world` | `claim_world(owner: object) -> Iterator[None]` |
-| `SimulatorRuntime.exclusive` | `exclusive() -> Iterator[None]` |
-| `SimulatorRuntime.clock` | `clock: ClockSnapshot` |
-| `SimulatorRuntime.state` | `state() -> WorldSnapshot` |
-| `SimulatorRuntime.sensors` | `sensors: frozenset[str]` |
-| `SimulatorRuntime.camera_sensors` | `camera_sensors: frozenset[str]` |
-| `SimulatorRuntime.sensor_geometry` | `sensor_geometry(sensor: str) -> SensorGeometry` |
-| `SimulatorRuntime.sensor_view` | `sensor_view(sensor: str) -> SensorView` |
-| `SensorView.composite_plan` | `composite_plan(objects: Sequence[PlacedObject]) -> CompositePlan` |
-| `SimulatorRuntime.control_actor` | `control_actor(actor_id: str, control: Control) -> None` |
-| `SimulatorRuntime.set_actor_state` | `set_actor_state(actor_id: str, state: ActorState) -> None` |
-| `SimulatorRuntime.insert_object` | `insert_object(object_id: str, asset: ObjectAsset, world_from_object: np.ndarray, *, harmonizer: Harmonizer \| None = None) -> None` |
-| `SimulatorRuntime.remove_object` | `remove_object(object_id: str) -> None` |
-| `SimulatorRuntime.object_visibility` | `object_visibility(object_id: str) -> Mapping[str, ObjectVisibility]` |
-| `SimulatorRuntime.reset` | `reset(start: ScenarioStart \| None = None, initialization: Any = None, *, deployment: DeploymentPlan \| None = None, world: Mapping[str, Any] \| None = None) -> None` |
-| `SimulatorRuntime.start_replay` | `start_replay(start: ScenarioStart, initialization: Initialization \| None = None, *, world: Mapping[str, Any] \| None = None, deployment: DeploymentPlan \| None = None) -> None` |
-| `SimulatorRuntime.advance_replay` | `advance_replay(count: int) -> None` |
-| `SimulatorRuntime.setup_tick` | `setup_tick() -> None` |
-| `SimulatorRuntime.step` | `step(control: Control) -> None` |
-| `SimulatorRuntime.observe` | `observe() -> Observation` |
-| `SimulatorRuntime.observe_past` | `observe_past(count: int) -> tuple[Observation, ...]` |
-| `SimulatorRuntime.generate_frame_data` | `generate_frame_data(start: ScenarioStart, frames: Sequence[FrameReference], *, world: Mapping[str, Any] \| None = None, deployment: DeploymentPlan \| None = None) -> FrameDataSequence` |
-
-### avsectester.closed_loop.avstacks.base
-
-| Public name | Signature or fields |
-|---|---|
-| `ObservationPipeline` | Class; see methods below |
-| `ObservationPipeline.__init__` | `__init__(localizer: Any = None) -> None` |
-| `ObservationPipeline.process` | `process(observation: Observation, dispatcher: HookDispatcher) -> Observation` |
-| `AVStack` | `provides_detections: bool \| None = None`<br>`past_steps: ClassVar[int] = 0`<br>`decision_time_step: ClassVar[float \| None] = None` |
-| `AVStack.observation_pipeline` | `observation_pipeline: ObservationPipeline` |
-| `AVStack.reset` | `reset(observation: Observation, past: Sequence[Observation] = ()) -> None` |
-| `AVStack.command_modes` | `command_modes: frozenset[str] \| None` |
-| `AVStack.models` | `models: Mapping[str, Any]` |
-| `AVStack.component_log` | `component_log() -> Mapping[str, Any] \| None` |
-| `AVStack.detections` | `detections() -> Sequence[Detection] \| None` |
-| `AVStack.close` | `close() -> None` |
-| `AVStack.__call__` | `__call__(observation: Observation) -> Control` |
-| `CommandCompatibilityError` | Class; see methods below |
-| `validate_command_compatibility` | `validate_command_compatibility(simulator_runtime: SimulatorRuntime, avstack: AVStack, hooks: HookSet \| None = None) -> None` |
-
-### avsectester.closed_loop.hooks
-
-| Public name | Signature or fields |
-|---|---|
-| `StageEmitter` | Class; see methods below |
-| `StageEmitter.emit` | `emit(stage: str, value: Any, sensor: str \| None = None) -> Any` |
-| `UnsupportedStageError` | Class; see methods below |
-| `CallInputs` | `args: tuple = ()`<br>`kwargs: dict[str, Any] = field(default_factory=dict)` |
-| `CameraPoseRequest` | `pose: Any`<br>`camera: str`; camera and render pose editable at render.pre |
-| `RunContext` | `simulator_runtime: SimulatorRuntime`<br>`avstack: AVStack`<br>`rng: np.random.Generator` |
-| `RunContext.native` | `native: Mapping[str, Mapping[str, Any]]` |
-| `StageContext` | `run: RunContext`<br>`step: int`<br>`stage: str`<br>`physical_state: WorldSnapshot`<br>`sensor: str \| None = None`<br>`observation: Observation \| None = None`<br>`control: Control \| None = None` |
-| `StageContext.record_output` | `record_output(name: str, value: Any) -> None` |
-| `StageContext.simulator_runtime` | `simulator_runtime: SimulatorRuntime` |
-| `StageContext.avstack` | `avstack: AVStack` |
-| `StageContext.rng` | `rng: np.random.Generator` |
-| `StageContext.native` | `native: Mapping[str, Mapping[str, Any]]` |
-| `StageContext.sim_time` | `sim_time: float` |
-| `Plugin` | Class; see methods below |
-| `Plugin.reset` | `reset(context: RunContext) -> None` |
-| `Plugin.transform` | `transform(value: Any, context: StageContext) -> Any` |
-| `Plugin.after_step` | `after_step(context: StageContext) -> None` |
-| `Plugin.close` | `close() -> None` |
-| `Hook` | `stage: str`<br>`handler: Any` |
-| `HookSet` | Class; see methods below |
-| `HookSet.__init__` | `__init__(hooks: Iterable[Hook] = (), *, seed: int \| None = 0) -> None` |
-| `HookSet.with_hooks` | `with_hooks(hooks: Iterable[Hook], *, prepend: bool = False) -> Self` |
-| `HookSet.validate_stages` | `validate_stages(simulator_runtime: SimulatorRuntime, avstack: AVStack) -> frozenset[str]` |
-| `HookSet.setup_ticks` | `setup_ticks: int` |
-| `HookSet.session` | `session(simulator_runtime: SimulatorRuntime, avstack: AVStack) -> HookDispatcher` |
-| `HookDispatcher` | Class; see methods below |
-| `HookDispatcher.__init__` | `__init__(hook_set: HookSet, simulator_runtime: SimulatorRuntime, avstack: AVStack) -> None` |
-| `HookDispatcher.activate` | `activate() -> Iterator[HookDispatcher]` |
-| `HookDispatcher.stage_context` | `stage_context(stage: str, sensor: str \| None = None) -> StageContext` |
-| `HookDispatcher.record_output` | `record_output(context: StageContext, name: str, value: Any) -> None` |
-| `HookDispatcher.drain_outputs` | `drain_outputs() -> list[RecordedOutput]` |
-| `HookDispatcher.emit` | `emit(stage: str, value: Any, sensor: str \| None = None) -> Any` |
-| `HookDispatcher.observe` | `observe(observation: Observation) -> Observation` |
-| `HookDispatcher.command` | `command(control: Control) -> Control` |
-| `HookDispatcher.after_step` | `after_step(observation: Observation) -> None` |
-
-### avsectester.closed_loop.avstacks.driving_adapter
-
-| Public name | Signature or fields |
-|---|---|
-| `ComponentDescriptor` | `id: str`<br>`inputs: Mapping[str, str]`<br>`outputs: Mapping[str, str]`<br>`codecs: Mapping[str, str]`<br>`differentiable_inputs: tuple[str, ...] = ()` |
-| `ScorerDescriptor` | Extends ComponentDescriptor: `output_shape: tuple[int, ...] = ()`<br>`direction: str = 'minimize'`<br>`sensor_id: str \| None = None` (nonempty when set)<br>`decision_threshold: float \| None = None` (finite, in [0, 1]) |
-| `DrivingAdapter` | Class; see methods below |
-| `DrivingAdapter.__init__` | `__init__(factory: Callable[[int], AVStack], *, components: Sequence[tuple[ComponentDescriptor, Callable[..., Any]]] = (), scorers: Sequence[tuple[ScorerDescriptor, Callable[..., Any]]] = (), past_steps: int = 0, decision_time_step: float \| None = None) -> None` |
-| `DrivingAdapter.past_steps` | `past_steps: int` |
-| `DrivingAdapter.decision_time_step` | `decision_time_step: float \| None`; optional required simulator step |
-
-### avsectester.execution.services
-
-| Public name | Signature or fields |
-|---|---|
-| `CandidateRequest` | `segment: AttackSegment`<br>`seed: int`<br>`decision_steps: int`<br>`environment: Mapping[str, Any]`<br>`recording: RecordingPolicy`<br>`attack: Any = None`<br>`artifacts: Any = None`<br>`output_path: str \| Path \| None = None` |
-| `SensorRequest` | `scenario_id: str`<br>`frame: FrameReference`<br>`sensor_ids: tuple[str, ...]`<br>`environment: Mapping[str, Any] = field(default_factory=dict)`<br>`views: bool = False` |
-| `RenderRequest` | `scenario_id: str`<br>`frame: FrameReference`<br>`sensor_id: str`<br>`actions: Sequence[AttackAction] = ()`<br>`environment: Mapping[str, Any] = field(default_factory=dict)` |
-| `SensorSample` | `frame: FrameReference`<br>`observation: Observation`<br>`provenance: Mapping[str, Any]`<br>`views: Mapping[str, SensorView] = field(default_factory=dict)` |
-| `RenderResult` | `frame: FrameReference`<br>`observation: Observation`<br>`view: SensorView`<br>`provenance: Mapping[str, Any]`<br>`object_visibility: Mapping[str, Mapping[str, ObjectVisibility]] = field(default_factory=dict)` |
-| `ComponentResult` | `value: Any`<br>`descriptor: ComponentDescriptor`<br>`provenance: Mapping[str, Any]` |
-| `ScoreResult` | `value: Any`<br>`descriptor: ScorerDescriptor`<br>`provenance: Mapping[str, Any]` |
-| `ClosedLoopCapabilities` | `dataset_kinds: tuple[str, ...]`<br>`sensor_data: bool`<br>`render: bool`<br>`insert_objects: bool`<br>`rollout: bool`<br>`components: tuple[ComponentDescriptor, ...]`<br>`scorers: tuple[ScorerDescriptor, ...]` |
-| `ensure_fresh` | `ensure_fresh(resource: Any) -> Any` |
-| `create_simulator_runtime` | `create_simulator_runtime(simulator: Simulator, seed: int \| None, resources: ExitStack) -> SimulatorRuntime` |
-| `create_avstack` | `create_avstack(adapter: DrivingAdapter, seed: int, resources: ExitStack) -> AVStack` |
-| `stop_unstarted_attacks` | `stop_unstarted_attacks(runtimes: Sequence[Any], frame: FrameReference, error: BaseException) -> None` |
-| `ClosedLoopServices` | Class; see methods below |
-| `ClosedLoopServices.__init__` | `__init__(dataset: Dataset, simulator: Simulator, driving_adapter: DrivingAdapter \| None = None, frame_data_cache: FrameDataCache \| None = None, *, deployment: DeploymentPlan = DeploymentPlan()) -> None` |
-| `ClosedLoopServices.close` | `close() -> None` |
-| `ClosedLoopServices.capabilities` | `capabilities: ClosedLoopCapabilities` |
-| `ClosedLoopServices.session` | `session(seed: int, history: str = 'fresh') -> ClosedLoopSession` |
-| `ClosedLoopServices.scenario` | `scenario(scenario_id: str, *, seed: int) -> ScenarioView` |
-| `ClosedLoopSession` | Class; see methods below |
-| `ClosedLoopSession.__init__` | `__init__(services: ClosedLoopServices, seed: int) -> None` |
-| `ClosedLoopSession.close` | `close() -> None` |
-| `ClosedLoopSession.can_start_at` | `can_start_at(position: int) -> bool` |
-| `ClosedLoopSession.frame_data` | `frame_data(scenario: str, frame: FrameReference, environment: Mapping[str, Any] \| None = None) -> FrameData` |
-| `ClosedLoopSession.initialization` | `initialization(start: ScenarioStart, environment: Mapping[str, Any], deployment: DeploymentPlan \| None = None) -> Initialization \| None` |
-| `ClosedLoopSession.read_sensors` | `read_sensors(request: SensorRequest) -> SensorSample` |
-| `ClosedLoopSession.render` | `render(request: RenderRequest) -> RenderResult` |
-| `ClosedLoopSession.components` | `components() -> Sequence[ComponentDescriptor]` |
-| `ClosedLoopSession.scorers` | `scorers() -> Sequence[ScorerDescriptor]` |
-| `ClosedLoopSession.evaluate` | `evaluate(component_id: str, inputs: Any) -> ComponentResult` |
-| `ClosedLoopSession.score` | `score(scorer_id: str, inputs: Any, target: Any, require_grad: bool = False) -> ScoreResult` |
-| `ClosedLoopSession.rollout` | `rollout(request: CandidateRequest) -> RunLog` |
-| `ScenarioView` | `scenario_id: str`<br>`services: ClosedLoopServices`<br>`seed: int` |
-| `ScenarioView.record_reason` | `record_reason(text: str) -> None` |
-| `ScenarioView.reasons` | `reasons: tuple[str, ...]` |
-| `ScenarioView.frames` | `frames: Sequence[FrameReference]` |
-| `ScenarioView.frame_data` | `frame_data(frame: FrameReference) -> FrameData` |
-| `ScenarioView.scenario_map` | `scenario_map() -> ScenarioMap \| Unavailable` |
-
-### avsectester.execution.runner
-
-| Public name | Signature or fields |
-|---|---|
-| `RecordingPolicy` | `sensor_ids: tuple[str, ...] = ()`<br>`representations: tuple[str, ...] = ('model_input',)`<br>`every_n_steps: int = 1` |
-| `RecordingPolicy.observation` | `observation(value: Observation, step: int, representation: str) -> Observation` |
-| `RunRequest` | `decision_steps: int`<br>`hooks: HookSet \| None = None`<br>`attacks: Sequence[Any] = ()`<br>`recording: RecordingPolicy = field(default_factory=RecordingPolicy)`<br>`output_path: str \| Path \| None = None`<br>`retain_steps: bool = True`<br>`metadata: Mapping[str, Any] = field(default_factory=dict)`<br>`start: Any = None`<br>`initialization: Any = None`<br>`deployment: Any = None`<br>`environment: Mapping[str, Any] = field(default_factory=dict)` |
-| `ClosedLoopRunner` | Class; see methods below |
-| `ClosedLoopRunner.run` | `run(simulator_runtime: SimulatorRuntime, avstack: AVStack, request: RunRequest, *, recorder: Recorder \| None = None, release_owned_resources: Callable[[], None] \| None = None) -> RunLog` |
-
-### avsectester.closed_loop.environment
-
-| Public name | Signature or fields |
-|---|---|
-| `normalize_environment` | `normalize_environment(value: Mapping[str, Any] \| None = None) -> dict[str, Any]` |
-| `merge_environments` | `merge_environments(*values: Mapping[str, Any]) -> dict[str, Any]` |
-| `validate_environment` | `validate_environment(value: Mapping[str, Any], simulator: Any) -> dict[str, Any]` |
-| `SensorEnvironment` | Class; see methods below |
-| `SensorEnvironment.__init__` | `__init__(environment: Mapping[str, Any], seed: int = 0) -> None` |
-| `SensorEnvironment.apply` | `apply(observation: Observation, position: int) -> Observation` |
-
-### avsectester.closed_loop.sensor_corruptions
-
-| Public name | Signature or fields |
-|---|---|
-| `Corruption` | `category: str = 'sensor'` |
-| `Corruption.__init__` | `__init__(severity: float = 0.5) -> None` |
-| `Corruption.name` | `name: str` |
-| `Corruption.apply` | `apply(rgb: np.ndarray, rng: np.random.Generator) -> np.ndarray` |
-| `Fog` | Class; see methods below |
-| `Fog.apply` | `apply(rgb: np.ndarray, rng: np.random.Generator) -> np.ndarray` |
-| `Rain` | Class; see methods below |
-| `Rain.apply` | `apply(rgb: np.ndarray, rng: np.random.Generator) -> np.ndarray` |
-| `Snow` | Class; see methods below |
-| `Snow.apply` | `apply(rgb: np.ndarray, rng: np.random.Generator) -> np.ndarray` |
-| `Brightness` | Class; see methods below |
-| `Brightness.apply` | `apply(rgb: np.ndarray, rng: np.random.Generator) -> np.ndarray` |
-| `LowLight` | Class; see methods below |
-| `LowLight.apply` | `apply(rgb: np.ndarray, rng: np.random.Generator) -> np.ndarray` |
-| `Contrast` | Class; see methods below |
-| `Contrast.apply` | `apply(rgb: np.ndarray, rng: np.random.Generator) -> np.ndarray` |
-| `Gamma` | Class; see methods below |
-| `Gamma.apply` | `apply(rgb: np.ndarray, rng: np.random.Generator) -> np.ndarray` |
-| `ColorTemp` | Class; see methods below |
-| `ColorTemp.__init__` | `__init__(severity: float = 0.5, warm: bool = True) -> None` |
-| `ColorTemp.apply` | `apply(rgb: np.ndarray, rng: np.random.Generator) -> np.ndarray` |
-| `GaussianNoise` | Class; see methods below |
-| `GaussianNoise.apply` | `apply(rgb: np.ndarray, rng: np.random.Generator) -> np.ndarray` |
-| `ShotNoise` | Class; see methods below |
-| `ShotNoise.apply` | `apply(rgb: np.ndarray, rng: np.random.Generator) -> np.ndarray` |
-| `MotionBlur` | Class; see methods below |
-| `MotionBlur.apply` | `apply(rgb: np.ndarray, rng: np.random.Generator) -> np.ndarray` |
-| `DefocusBlur` | Class; see methods below |
-| `DefocusBlur.apply` | `apply(rgb: np.ndarray, rng: np.random.Generator) -> np.ndarray` |
-| `JPEGCompression` | Class; see methods below |
-| `JPEGCompression.apply` | `apply(rgb: np.ndarray, rng: np.random.Generator) -> np.ndarray` |
-| `ChromaticAberration` | Class; see methods below |
-| `ChromaticAberration.apply` | `apply(rgb: np.ndarray, rng: np.random.Generator) -> np.ndarray` |
-| `AlbumentationsCorruption` | Class; see methods below |
-| `AlbumentationsCorruption.__init__` | `__init__(transform: str, severity: float = 0.5) -> None` |
-| `AlbumentationsCorruption.name` | `name: str` |
-| `AlbumentationsCorruption.apply` | `apply(rgb: np.ndarray, rng: np.random.Generator) -> np.ndarray` |
-
-### avsectester.closed_loop.simulators.carla.simulator
-
-| Public name | Signature or fields |
-|---|---|
-| `CarlaSimulator` | Class; see methods below |
-| `CarlaSimulator.__init__` | `__init__(client: dict, settle_iters: int = 100, *, simulator_version = '0.9.16', depth_camera: str \| None = None, occlusion_tolerance_m: float = 0.1) -> None` |
-| `CarlaSimulator.validate_world_settings` | `validate_world_settings(world: Mapping[str, Any]) -> None` |
-| `CarlaSimulator.create_runtime` | `create_runtime(seed: int \| None = None) -> CarlaSimulatorRuntime` |
-| `CarlaSimulator.command_modes` | `command_modes: frozenset[str]` |
-| `CarlaSimulator.decision_time_step` | `decision_time_step: Any` |
-| `CarlaSimulator.identity` | `identity: Any` |
-| `CarlaSimulator.validate_start` | `validate_start(start)` |
-| `CarlaSimulatorRuntime` | Class; see methods below |
-| `CarlaSimulatorRuntime.__init__` | `__init__(simulator: CarlaSimulator, seed: int \| None = None) -> None` |
-| `CarlaSimulatorRuntime.world_key` | `world_key: tuple[str, str, int]` |
-| `CarlaSimulatorRuntime.native` | `native: dict[str, Any]` |
-| `CarlaSimulatorRuntime.control_actor` | `control_actor(actor_id, control)` |
-| `CarlaSimulatorRuntime.set_actor_state` | `set_actor_state(actor_id, state)` |
-| `CarlaSimulatorRuntime.copy_observation` | `copy_observation(observation: Observation) -> Observation` |
-| `CarlaSimulatorRuntime.sensors` | `sensors: frozenset[str]` |
-| `CarlaSimulatorRuntime.camera_sensors` | `camera_sensors: frozenset[str]` |
-| `CarlaSimulatorRuntime.sensor_geometry` | `sensor_geometry(sensor: str) -> SensorGeometry` |
-| `CarlaSimulatorRuntime.sensor_view` | `sensor_view(sensor: str) -> SensorView` |
-| `CarlaSimulatorRuntime.close` | `close() -> None` |
-
-### avsectester.closed_loop.simulators.carla.scenario
-
-| Public name | Signature or fields |
-|---|---|
-| `resolve_scenario_seed` | `resolve_scenario_seed(scenario: dict) -> dict` |
-| `prepare_scenario` | `prepare_scenario(scenario: dict) -> dict` |
-
-### avsectester.closed_loop.simulators.carla.sensors
-
-| Public name | Signature or fields |
-|---|---|
-| `SensorCapture` | `native_type: str`<br>`raw_bytes: bytes`<br>`frame: int`<br>`timestamp: float`<br>`metadata: dict[str, Any] = field(default_factory=dict)` |
-| `SensorCapture.raw_data` | `raw_data: memoryview` |
-| `SensorAlignmentError` | Class; see methods below |
-| `SensorAlignmentError.__init__` | `__init__(report: Mapping[str, Any]) -> None` |
-| `register_pinhole_camera` | `register_pinhole_camera()` |
-| `decode_carla_depth` | `decode_carla_depth(image)` |
-
-### avsectester.closed_loop.simulators.carla.conversions
-
-| Public name | Signature or fields |
-|---|---|
-| `rotation_to_carla` | `rotation_to_carla(rotation: ArrayLike) -> tuple[float, float, float]` |
-
-### avsectester.closed_loop.simulators.carla.recipe_replay
-
-| Public name | Signature or fields |
-|---|---|
-| `RecipeReplay` | Class; see methods below |
-| `RecipeReplay.__init__` | `__init__(simulator_runtime, recipe)` |
-| `RecipeReplay.initialize` | `initialize()` |
-| `RecipeReplay.activate` | `activate()` |
-| `RecipeReplay.hold_origin` | `hold_origin()` |
-| `RecipeReplay.finish_holding` | `finish_holding()` |
-| `RecipeReplay.before_step` | `before_step()` |
-| `RecipeReplay.after_step` | `after_step()` |
-| `RecipeReplay.ego_command` | `ego_command()` |
-| `RecipeReplay.release` | `release(identity)` |
-| `RecipeReplay.release_ego` | `release_ego()` |
-
-### avsectester.closed_loop.simulators.nurec.simulator
-
-| Public name | Signature or fields |
-|---|---|
-| `NuRecSimulator` | Class; see methods below |
-| `NuRecSimulator.__init__` | `__init__(renderer: Renderer, dynamics: EgoDynamics \| None = None, *, time_step: float \| None = None, camera_aliases: Mapping[str, str] \| None = None, depth: str = 'mesh', route_generator: str = 'map', physics_update_mode: str = 'ego_only', ground_mesh: str = 'mesh', object_occlusion: str = 'rendered_probes', occlusion_tolerance_m: float = 0.15, traffic: AlpaSimTraffic \| None = None, min_track_duration_s: float = 3.0) -> None` |
-| `NuRecSimulator.create_runtime` | `create_runtime(seed: int \| None = None) -> NuRecSimulatorRuntime` |
-| `NuRecSimulator.supported_stages` | `supported_stages: frozenset[str]` |
-| `NuRecSimulator.command_modes` | `command_modes: frozenset[str] \| None` |
-| `NuRecSimulator.time_step` | `time_step: float`; required explicitly in Python, inherited from dataset.time_step by YAML loading |
-| `NuRecSimulator.camera_aliases` | `camera_aliases: dict[str, str]`; native camera names to observation and sensor-view names; outputs are unique |
-| `NuRecSimulator.decision_time_step` | `decision_time_step: float`; returns time_step |
-| `NuRecSimulator.past_steps` | `past_steps: int`; traffic.history_steps − 1 when enabled, otherwise 0 |
-| `NuRecSimulator.identity` | `identity: Any` |
-| `NuRecSimulator.validate_start` | `validate_start(start: ScenarioStart \| None) -> None`; also raises UnsupportedStartError when the configured navigation route cannot be built from the start's recording and map, checked once per recording |
-| `NuRecSimulatorRuntime` | Class; see methods below |
-| `NuRecSimulatorRuntime.__init__` | `__init__(simulator: NuRecSimulator, seed: int \| None = None) -> None` |
-| `NuRecSimulatorRuntime.native` | `native: dict[str, Any]` |
-| `NuRecSimulatorRuntime.render_request` | `render_request(camera: str) -> CameraPoseRequest` |
-| `NuRecSimulatorRuntime.sensors` | `sensors: frozenset[str]` |
-| `NuRecSimulatorRuntime.camera_sensors` | `camera_sensors: frozenset[str]` |
-| `NuRecSimulatorRuntime.sensor_geometry` | `sensor_geometry(sensor: str) -> SensorGeometry` |
-| `NuRecSimulatorRuntime.sensor_view` | `sensor_view(sensor: str) -> SensorView` |
-| `NuRecSimulatorRuntime.set_actor_state` | `set_actor_state(actor_id: str, state: ActorState) -> None` |
-| `NuRecSimulatorRuntime.close` | `close() -> None` |
-| `NuRecSimulatorRuntime.checkpoint` | `checkpoint() -> dict` |
-| `NuRecSimulatorRuntime.restore` | `restore(ckpt: dict) -> None` |
-
-NuRecRenderer is explicitly configured on NuRecSimulator; it is not constructed automatically.
-NuRecSimulatorRuntime.reset requires a ScenarioStart for the recorded time, ego state and scene.
-Without dynamics, the simulator uses KinematicBicycle(); configure dynamics explicitly to tune it.
-The package root exports NuRecSimulator, NuRecSimulatorRuntime, NuRecRenderer, AlpaSimTraffic, TrafficSession and TrafficTrack.
-Renderer and the RPC conversion functions are imported from nurec.renderer.
-render_scene_visibility returns a boolean image, true where the reconstruction does not hide the
-objects; NuRecSimulator's default object_occlusion="rendered_probes" passes it to plan_composite
-as scene_visibility, with the simulator's occlusion_tolerance_m. NuRecRenderer moves each probe
-that distance toward the camera, at most halfway, while the composed object keeps its pose. See [Rendered-probe occlusion](../guides/simulators.md#rendered-probe-occlusion).
-
-dynamic_objects is a sequence of (track_id, world_from_actor) pairs. NuRecRenderer serializes each
-pose into both endpoints of DynamicObject.pose_pair, retaining the dataset's world pose and
-quaternion convention without a box-height shift. Runtime rendering supplies every currently
-present tracked actor, including unchanged tracks. NRE must enable actor editing; see
-[NuRec actor movement](../guides/simulators.md#move-recorded-actors).
-
-NuRecSimulatorRuntime.set_actor_state accepts a current, unfiltered CONTROLLABLE track and an
-ActorState with explicit world velocity. Parked tracks cannot be moved by NRE and are rejected.
-The override moves at constant velocity until reset or replacement; traffic-session overrides
-backfill history_steps−1 earlier samples once and resend their complete history in each request.
-min_track_duration_s filters controllable tracks using their whole-recording duration (default
-3 s; 0 disables filtering); parked tracks always follow their recorded support. See
-[Reactive traffic](../guides/simulators.md#reactive-traffic) for actor precedence.
-
-### avsectester.closed_loop.simulators.nurec.traffic
-
-| Public name | Signature or fields |
-|---|---|
-| `AlpaSimTraffic` | Optional synchronous CATK traffic-session client; gRPC imports are lazy |
-| `AlpaSimTraffic.__init__` | `__init__(endpoint: str = '127.0.0.1:6200', history_steps: int = 16, rpc_timeout_s: float = 300.0) -> None` |
-| `AlpaSimTraffic.get_metadata` | `get_metadata(*, timeout_s: float \| None = None)`; returns TrafficModuleMetadata |
-| `AlpaSimTraffic.get_available_scenes` | `get_available_scenes(*, timeout_s: float \| None = None) -> tuple[str, ...]` |
-| `AlpaSimTraffic.served_scenes` | `served_scenes(timeout_s=2.0) -> tuple[str, ...] \| None` |
-| `AlpaSimTraffic.open_session` | `open_session(*, scene_id: str, random_seed: int, start_us: int, end_us: int, ego_extent: tuple[float, float, float], ego_trajectory: Sequence[tuple[int, np.ndarray]], tracks: Sequence[TrafficTrack]) -> TrafficSession` |
-| `TrafficTrack` | Frozen dataclass: `track_id: str`, `trajectory: tuple[tuple[int, np.ndarray], ...]`, `extent: tuple[float, float, float]`, `label_class: str`, `is_static: bool` |
-| `TrafficSession` | One active session owning its channel and override history |
-| `TrafficSession.uuid` | Session UUID |
-| `TrafficSession.handover_time_us` | Selected start plus one CATK step |
-| `TrafficSession.track_ids` | IDs of tracks actually sent after window clipping |
-| `TrafficSession.record_override` | `record_override(track_id: str, time_us: int, world_from_box: np.ndarray, velocity: Sequence[float]) -> None` |
-| `TrafficSession.simulate` | `simulate(time_query_us: int, ego_world_from_box: np.ndarray, override_world_from_box: Mapping[str, np.ndarray]) -> dict[str, np.ndarray]` |
-| `TrafficSession.close` | `close() -> None`; idempotent, releasing the channel even after an RPC failure |
-| `TRAFFIC_STEP_US` | CATK step: 100000 microseconds |
-
-Trajectory points are (integer timestamp_us, world_from_box) pairs. open_session checks scene and
-history support, clips native tracks to the required window and sends EGO first. simulate sends
-EGO and full override histories and returns only current movable, non-overridden session tracks.
-Its override keys must match previously recorded overrides. Errors close the session; cleanup
-errors are attached to the original exception. RPC failures include server status and details.
-random_seed is forwarded but does not control CATK sampling.
-See [Reactive traffic](../guides/simulators.md#reactive-traffic).
-
-### avsectester.closed_loop.simulators.ego_dynamics
-
-| Public name | Signature or fields |
-|---|---|
-| `PlanarEgoState` | `x: float = 0.0`<br>`y: float = 0.0`<br>`yaw: float = 0.0`<br>`speed: float = 0.0`<br>`t: float = 0.0`<br>`lateral_speed: float = 0.0`<br>`yaw_rate: float = 0.0`<br>`acceleration: float = 0.0` |
-| `EgoDynamics` | Class; see methods below |
-| `EgoDynamics.reset` | `reset(state: PlanarEgoState) -> None` |
-| `EgoDynamics.step` | `step(pose: PlanarEgoState, control: Control, dt: float) -> PlanarEgoState` |
-| `KinematicBicycle` | `wheelbase: float = 2.8`<br>`max_accel: float = 3.0`<br>`max_brake: float = 8.0`<br>`max_steer: float = 0.6`<br>`command_modes: ClassVar[frozenset[str]] = frozenset({'actuator'})` |
-| `KinematicBicycle.reset` | `reset(state: PlanarEgoState) -> None` |
-| `KinematicBicycle.step` | `step(pose: PlanarEgoState, control: Control, dt: float) -> PlanarEgoState` |
-| `TrajectoryFollower` | `decel: float = 4.0`<br>`command_modes: ClassVar[frozenset[str]] = frozenset({'trajectory'})` |
-| `TrajectoryFollower.reset` | `reset(state: PlanarEgoState) -> None` |
-| `TrajectoryFollower.step` | `step(pose: PlanarEgoState, control: Control, dt: float) -> PlanarEgoState` |
-| `AlpaSimController` | `mpc_implementation: str = 'linear'`<br>`n_horizon: int = 20`<br>`dt_mpc: float = 0.1`<br>`gains: Mapping[str, float \| int] \| None = None`<br>`command_modes: ClassVar[frozenset[str]] = frozenset({'trajectory'})`<br>`EPOCH_US: ClassVar[int] = 10000000` |
-| `AlpaSimController.reset` | `reset(state: PlanarEgoState) -> None` |
-| `AlpaSimController.step` | `step(pose: PlanarEgoState, control: Control, dt: float) -> PlanarEgoState` |
-
-PlanarEgoState uses world X/Y and yaw for the rig origin, ego-axis longitudinal/lateral speeds,
-seconds for t, radians per second for yaw_rate and m/s² for longitudinal acceleration. NuRec
-initializes these from the recording and calls the dynamics reset method when present.
-KinematicBicycle and TrajectoryFollower need no warmup; their step results include difference-based
-yaw_rate and acceleration. TrajectoryFollower is an explicitly selected ideal follower.
-
-AlpaSimController tracks t0-led trajectory commands through AlpaSim's in-process MPC and dynamic
-bicycle model. Its defaults match AlpaSim affc2ea ControllerConfig. gains overrides named MPCGains
-fields, retaining unspecified defaults. VehicleModel.Parameters uses the official Ford Fusion
-values rather than USDZ measurements. The first reset lazily imports AlpaSim and creates a system;
-subsequent resets create fresh systems. An internal 10-second offset keeps protobuf timestamps
-nonnegative while returned state times remain on the simulator clock. State time must match the
-controller's last propagated time, and plans must start at t0 with a zero position and unit rotation.
-See [controller installation](../getting-started/installation.md#one-time-preparation) for the editable
-workspace package and required linear entry point.
-
-### avsectester.closed_loop.simulators.nurec.renderer
-
-ftheta_camera_from_spec includes the spec's bivariate windshield distortion and shifts the
-principal point by half a pixel: NRE renders pixel i from the spec's image point i, whereas Camera
-addresses pixel centres at i + 0.5. Unsupported external distortion types raise ValueError.
-
-| Public name | Signature or fields |
-|---|---|
-| `ftheta_camera_from_spec` | `ftheta_camera_from_spec(spec: Any) -> FThetaCamera` |
-| `pose_from_proto` | `pose_from_proto(pose: Any) -> np.ndarray` |
-| `planar_rig_pose` | `planar_rig_pose(x: float, y: float, yaw: float, z: float = 0.0) -> np.ndarray` |
-| `Renderer` | `cameras: ClassVar[list[str]] = ['camera_front']`<br>`calibration`: read-only property returning an empty dict by default |
-| `Renderer.copy` | `copy() -> Renderer` |
-| `Renderer.reset_origin` | `reset_origin(start = None)` |
-| `Renderer.origin_transform` | `origin_transform: Any` |
-| `Renderer.origin_timestamp_us` | `origin_timestamp_us: Any` |
-| `Renderer.origin_bounds` | `origin_bounds: Any` |
-| `Renderer.load_scene` | `load_scene(scene: Any) -> None` |
-| `Renderer.render` | `render(world_from_rig: np.ndarray, timestamp_us: int, camera: str, dynamic_objects=()) -> Any` |
-| `Renderer.render_scene_visibility` | `render_scene_visibility(world_from_rig: np.ndarray, timestamp_us: int, camera: str, objects: Sequence[PlacedObject], dynamic_objects=(), *, occlusion_tolerance_m: float = 0.0) -> np.ndarray` |
-| `Renderer.camera_model` | `camera_model(camera: str \| None = None) -> Camera \| None` |
-| `Renderer.cam_from_world` | `cam_from_world(world_from_rig: np.ndarray, camera: str \| None = None) -> np.ndarray` |
-| `Renderer.close` | `close() -> None` |
-| `NuRecRenderer` | `endpoint: str = '127.0.0.1:50051'`<br>`scene_id: str \| None = None`<br>`cameras: list[str] = field(default_factory=lambda: ['camera_front_wide_120fov'])`<br>`image_quality: float = 95.0`<br>`resolution_hw: Mapping[str, tuple[int, int]] = field(default_factory=dict)`<br>`probe_directory: str \| Path \| None = None`<br>`server_probe_directory: str \| None = None`<br>`track_padding_m: tuple[float, float, float] = (1.0, 1.0, 0.25)` |
-| `NuRecRenderer.copy` | `copy() -> NuRecRenderer` |
-| `NuRecRenderer.served_scenes` | `served_scenes(timeout_s=2.0) -> tuple[str, ...] \| None` |
-| `NuRecRenderer.load_scene` | `load_scene(scene: Any) -> None` |
-| `NuRecRenderer.calibration` | `calibration: dict[str, CameraCalibration]`; empty before load_scene, then one lens and rig-from-camera transform per configured camera |
-| `NuRecRenderer.service` | `service: Any` |
-| `NuRecRenderer.close` | `close()` |
-| `NuRecRenderer.camera_model` | `camera_model(camera: str \| None = None) -> Camera` |
-| `NuRecRenderer.cam_from_world` | `cam_from_world(world_from_rig: np.ndarray, camera: str \| None = None) -> np.ndarray` |
-| `NuRecRenderer.render` | `render(world_from_rig: np.ndarray, timestamp_us: int, camera: str, dynamic_objects=())` |
-| `NuRecRenderer.render_at` | `render_at(world_from_rig, timestamp_us: int, camera: str, dynamic_objects=())` |
-| `NuRecRenderer.render_scene_visibility` | `render_scene_visibility(world_from_rig: np.ndarray, timestamp_us: int, camera: str, objects: Sequence[PlacedObject], dynamic_objects=(), *, occlusion_tolerance_m: float = 0.0) -> np.ndarray` |
-
-### avsectester.closed_loop.simulators.recorded
-
-| Public name | Signature or fields |
-|---|---|
-| `RecordedReplaySimulator` | Class; see methods below |
-| `RecordedReplaySimulator.__init__` | `__init__(start: ScenarioStart \| None = None, *, camera_aliases: Mapping[str, str] = {}, occlusion_tolerance_m: float = 0.1) -> None` |
-| `RecordedReplaySimulator.create_runtime` | `create_runtime(seed: int \| None = None) -> RecordedReplaySimulatorRuntime` |
-| `RecordedReplaySimulatorRuntime` | Class; see methods below |
-| `RecordedReplaySimulatorRuntime.__init__` | `__init__(simulator: RecordedReplaySimulator) -> None` |
-| `RecordedReplaySimulatorRuntime.sensors` | `sensors: frozenset[str]` |
-| `RecordedReplaySimulatorRuntime.camera_sensors` | `camera_sensors: frozenset[str]` |
-| `RecordedReplaySimulatorRuntime.sensor_geometry` | `sensor_geometry(sensor: str) -> SensorGeometry` |
-| `RecordedReplaySimulatorRuntime.sensor_view` | `sensor_view(sensor: str) -> SensorView` |
-| `RecordedReplaySimulatorRuntime.close` | `close()` |
-
-### avsectester.closed_loop.avstacks.implemented.modular
-
-| Public name | Signature or fields |
-|---|---|
-| `register_carla_dataset` | `register_carla_dataset() -> type` |
-| `NativeHook` | Class; see methods below |
-| `NativeHook.__init__` | `__init__(config: Mapping[str, Any], *, phase: str = 'post') -> None` |
-| `NativeHook.reset` | `reset(context: RunContext) -> None` |
-| `NativeHook.transform` | `transform(value: Any, context: StageContext) -> Any` |
-| `NativeHook.close` | `close() -> None` |
-| `modular_driving_adapter` | `modular_driving_adapter(factory, *, components = (), scorers = ())` |
-| `ModularAVStack` | Class; see methods below |
-| `ModularAVStack.__init__` | `__init__(pipeline_cfg: dict) -> None` |
-| `ModularAVStack.reset` | `reset(observation: Observation, past: Sequence[Observation] = ()) -> None` |
-| `ModularAVStack.command_modes` | `command_modes: frozenset[str]` |
-| `ModularAVStack.supported_stages` | `supported_stages: frozenset[str]` |
-| `ModularAVStack.native` | `native: Mapping[str, Any]` |
-| `ModularAVStack.models` | `models: Mapping[str, Any]` |
-| `ModularAVStack.bind_hooks` | `bind_hooks(dispatcher: StageEmitter) -> Iterator[None]` |
-| `ModularAVStack.instrument` | `instrument(stages: tuple[str, ...] = ('perception', 'tracking', 'planning', 'control')) -> None` |
-| `ModularAVStack.component_log` | `component_log() -> dict[str, Any] \| None` |
-| `ModularAVStack.detections` | `detections() -> Sequence[Detection] \| None` |
-| `ModularAVStack.__call__` | `__call__(observation: Observation) -> Control` |
-
-### avsectester.closed_loop.avstacks.implemented.alpamayo
-
-| Public name | Signature or fields |
-|---|---|
-| `alpamayo_driving_adapter` | `alpamayo_driving_adapter(factory)` |
-| `AlpamayoAVStack` | Class; see methods below |
-| `AlpamayoAVStack.past_steps` | `past_steps: ClassVar[int] = 15` |
-| `AlpamayoAVStack.decision_time_step` | `decision_time_step: ClassVar[float \| None] = 0.1` |
-| `AlpamayoAVStack.__init__` | `__init__(checkpoint_path: str \| Path \| None = None, camera_ids: list[str] \| None = None, device: str = 'cuda:0', context_length: int = 4, frame_subsample: int = 1, output_frequency_hz: int = 10, model: Any \| None = None, seed: int \| None = None) -> None` |
-| `AlpamayoAVStack.command_modes` | `command_modes: frozenset[str]` |
-| `AlpamayoAVStack.supported_stages` | `supported_stages: frozenset[str]` |
-| `AlpamayoAVStack.native` | `native: Mapping[str, Any]` |
-| `AlpamayoAVStack.models` | `models: Mapping[str, Any]` |
-| `AlpamayoAVStack.reset` | `reset(observation: Observation, past: Sequence[Observation] = ()) -> None` |
-| `AlpamayoAVStack.close` | `close() -> None` |
-| `AlpamayoAVStack.__call__` | `__call__(observation: Observation) -> Control` |
-| `AlpamayoAVStack.component_log` | `component_log() -> dict[str, Any] \| None` |
-
-### avsectester.closed_loop.avstacks.implemented.camera_forward_collision
-
-| Public name | Signature or fields |
-|---|---|
-| `CameraForwardCollisionAVStack` | Class; see methods below |
-| `CameraForwardCollisionAVStack.__init__` | `__init__(gpu: int = 0, camera: str = 'front', area_brake: float = 0.03, throttle: float = 0.55, detector_dataset: str = 'carla-vehicle', threshold: float = 0.3, area_max: float = 0.3, max_height_frac: float = 0.6) -> None` |
-| `CameraForwardCollisionAVStack.models` | `models: dict[str, Any]` |
-| `CameraForwardCollisionAVStack.detect` | `detect(rgb: Any) -> list` |
-| `CameraForwardCollisionAVStack.reset` | `reset(observation: Observation, past: Sequence[Observation] = ()) -> None` |
-| `CameraForwardCollisionAVStack.__call__` | `__call__(observation: Observation) -> Control` |
-| `CameraForwardCollisionAVStack.component_log` | `component_log() -> dict[str, Any] \| None` |
-| `CameraForwardCollisionAVStack.close` | `close() -> None` |
-
-### avsectester.closed_loop.avstacks.implemented.rule_based.stack
-
-RuleBasedAVStack composes a CocoStopSignDetector, an optional StopSignTracker and an optional
-StopSignPlanner, validating their types. tracker=None and planner=None create the corresponding
-default instances. These classes and SignTrack are exported from
-avsectester.closed_loop.avstacks.implemented.rule_based; only RuleBasedAVStack has a built-in short
-configuration name. Nested components use full module:Class paths.
-
-CameraCalibration is required for camera_id in Observation.calibration. A missing entry explains
-that NuRec currently supplies the supported calibration. The stack emits trajectory commands and
-no canonical 3D detections. Each decision detects signs, estimates their rig positions from known
-size, updates stationary tracks with a bearing EKF, and plans cruising or constant-deceleration
-stopping from those tracks. reset clears the tracker, handled track IDs and planner stop state.
-The learned-model test boundary belongs to CocoStopSignDetector.model, not the stack constructor.
-
-| Public name | Signature or fields |
-|---|---|
-| `RuleBasedAVStack.__init__` | `__init__(detector: CocoStopSignDetector, tracker: StopSignTracker \| None = None, planner: StopSignPlanner \| None = None, camera_id: str = "camera_front_wide_120fov", sign_height_m: float = 0.762) -> None` |
-| `RuleBasedAVStack.command_modes` | `frozenset({"trajectory"})` |
-| `RuleBasedAVStack.reset` | `reset(observation: Observation, past: Sequence[Observation] = ()) -> None` |
-| `RuleBasedAVStack.__call__` | `__call__(observation: Observation) -> Control` |
-| `RuleBasedAVStack.component_log` | `component_log() -> Mapping[str, Any] \| None`; detections, estimated rig sign positions/ranges, tracks (track_id, world position, maximum position standard deviation), planner state/braking flag/target gap/first-step motion |
-| `RuleBasedAVStack.close` | `close() -> None`; releases the detector model reference |
-| `rule_based_driving_adapter` | `rule_based_driving_adapter(factory) -> DrivingAdapter`; exports the image-differentiable scorer rule_based.stop_sign_confidence |
-
-The binding requires factory.avstack_options containing a configured CocoStopSignDetector. It
-reads sensor_id from camera_id (default camera_front_wide_120fov) and decision_threshold from
-detector.score_threshold, without constructing the driving system or loading model weights.
-
-### avsectester.closed_loop.avstacks.implemented.rule_based.detector
-
-The model loader reads an existing local checkpoint, verifies that COCO_V1 labels identify
-stop sign as category 13, disables internal score filtering and freezes model parameters.
-It downloads neither detector nor backbone weights. Image gradients remain available to the
-victim-model scorer exposed through rule_based_driving_adapter. CocoStopSignDetector lazily
-loads one model for detection and target scoring. detect filters by category and score_threshold;
-target_score uses the internal unfiltered scores.
-
-| Public name | Signature or fields |
-|---|---|
-| `load_stop_sign_model` | `load_stop_sign_model(weights_path: str \| Path, device: str = "cuda:0") -> Any` |
-| `CocoStopSignDetector.__init__` | `__init__(weights_path: str \| Path, device: str = "cuda:0", score_threshold: float = 0.5, model: Any = None) -> None` |
-| `CocoStopSignDetector.detect` | `detect(rgb: np.ndarray) -> list[tuple[np.ndarray, float]]`; uint8 RGB to original-image xyxy boxes and scores |
-| `CocoStopSignDetector.target_score` | `target_score(image: torch.Tensor, target: TargetSpec) -> torch.Tensor`; differentiable maximum COCO-13 confidence among boxes with target IoU ≥ 0.3 |
-| `CocoStopSignDetector.close` | `close() -> None`; releases the loaded or injected model; detect and target_score then raise RuntimeError |
-
-target_score accepts finite CHW float RGB in [0, 1] and a valid xyxy TargetSpec labelled None or
-"stop sign". It returns image.sum() * 0 when no stop-sign box matches; this preserves a zero
-input gradient. Internal detection filtering is disabled, and target_score leaves autograd
-enabled. Discrete box selection and NMS themselves are not differentiable.
-
-### avsectester.closed_loop.avstacks.implemented.rule_based.ranging
-
-The range estimate uses the angle θ between rays through the top and bottom box centres:
-r = sign_height_m / (2 tan(θ / 2)). The normalized box-centre ray times r is transformed from optical
-camera to rig by calibration.rig_from_camera, validated as a rigid transform when used.
-Camera and torchvision box coordinates share the continuous pixel convention; no half-pixel
-adjustment is applied. Range error scales with the
-assumed sign height relative to the real sign height.
-
-| Public name | Signature or fields |
-|---|---|
-| `estimate_stop_sign_position` | `estimate_stop_sign_position(box_xyxy: tuple[float, float, float, float] \| np.ndarray, calibration: CameraCalibration, sign_height_m: float = 0.762) -> np.ndarray`; returns the sign centre in rig metres |
-
-### avsectester.closed_loop.avstacks.implemented.rule_based.tracker
-
-StopSignTracker associates stationary signs in horizontal world coordinates. Known-size ranges
-initialize tracks and enter their anisotropic association uncertainty; existing tracks are updated
-only with camera bearings through an EKF. Each measurement uses the model-visible PlanarEgoState
-and the camera optical centre in rig coordinates. Association minimizes Mahalanobis distance with
-track covariance plus measurement covariance. Bearing residuals wrap to (−π, π]; there is no
-process noise. Tracks persist when detections are absent.
-
-The default bearing standard deviation 0.007 rad rounds the measured 0.0067 rad. The range fraction
-0.3 accommodates measured systematic size bias and jitter (worst error −35%); the 0.3 m position
-floor limits measurement overconfidence and duplicate association. These are measurement-noise
-settings, not a fixed spatial association radius.
-
-| Public name | Signature or fields |
-|---|---|
-| `SignTrack` | Frozen dataclass: `track_id: int`, `position: np.ndarray` (2D horizontal world position), `covariance: np.ndarray` (2×2 world-position covariance) |
-| `StopSignTracker.__init__` | `__init__(range_sigma_fraction: float = 0.3, bearing_sigma_rad: float = 0.007, min_position_sigma_m: float = 0.3, max_association_mahalanobis_distance: float = 3.5) -> None` |
-| `StopSignTracker.reset` | `reset() -> None`; clears all tracks and restarts track IDs at zero |
-| `StopSignTracker.update` | `update(vehicle_state: PlanarEgoState, camera_position_rig: np.ndarray, sign_positions_rig: Sequence[np.ndarray]) -> None`; camera optical centre and measured sign positions are in rig coordinates |
-| `StopSignTracker.tracks` | `tuple[SignTrack, ...]`; current stationary sign tracks |
-
-### avsectester.closed_loop.avstacks.implemented.rule_based.planner
-
-StopSignPlanner is a NumPy trajectory planner independent of detection and tracking. Each step
-accepts SignTrack records, converts world positions into the current rig frame using
-Observation.vehicle_state and projects them onto the route. It remembers handled track IDs and
-the active target ID, not sign positions or radius associations. Signs behind the origin, beyond
-sign_lookahead_m, or further than max_sign_lateral_offset_m from the nearest route point are
-ignored. End tangents extend short routes; None uses a forward line.
-
-The default stop_before_sign_m=5.5 m comes from stop-line geometry and ego front overhang in
-32 NuRec segments: 29/32 (90.6%) have at least 0.5 m geometric front clearance, satisfying the 90%
-condition. The calculation excludes monocular ranging error. The default lateral limit 10 m is
-ceil(7.2283 m + 2 m); the measured sign-to-recorded-route range is 2.8108–7.2283 m. Other-direction
-stop signs inside the accepted range can still trigger a stop.
-
-CRUISE and approach motion before braking use the IDM free-road term:
-a_free = max_acceleration_mps2 [1 - (v / v0)^acceleration_exponent].
-Its standard symbols are a=max_acceleration_mps2 and δ=acceleration_exponent. The planner has no
-virtual-leader, minimum-gap or time-headway term.
-
-For an active stop target and remaining route distance d>0, required=v²/(2d). Braking begins when
-required reaches comfortable_deceleration_mps2, or immediately at d≤0. The braking flag is latched
-across integration substeps and decisions for that target, clearing when the target changes, the
-planner enters STOPPED, or no target remains. Before braking the planner uses a_free. Once latched,
-it uses -required capped at -max_deceleration_mps2; at d≤0 it uses -max_deceleration_mps2.
-It does not accelerate again for the same target while latched. A late detection requiring more
-than max_deceleration_mps2 is capped and can overshoot the target.
-
-STOPPED requires speed below stop_speed_mps and remaining target distance at most
-stop_position_tolerance_m, then holds for stop_duration_s before marking the sign handled.
-Commands start at the rig origin with identity orientation and the observation timestamp.
-Positions follow route arc length and tangents; STOPPED repeats the origin with increasing
-integer microsecond timestamps. trajectory_horizon_s must be at least trajectory_step_s; the
-step must round to a positive integer number of microseconds.
-
-| Constructor option | Default and meaning |
-|---|---|
-| stop_before_sign_m | 5.5 m; route distance before the sign for the stopping target |
-| stop_duration_s | 2.0 s; hold time in STOPPED |
-| stop_speed_mps | 0.1 m/s; stopped-speed threshold |
-| stop_position_tolerance_m | 2.0 m; maximum remaining target gap when entering STOPPED |
-| sign_lookahead_m | 60.0 m; forward route distance limit |
-| max_sign_lateral_offset_m | 10.0 m; maximum lateral distance to the route |
-| cruise_speed_mps | None; use reset speed when unspecified |
-| min_cruise_speed_mps | 5.0 m/s; floor for reset-derived cruise speed |
-| max_acceleration_mps2 | 1.0 m/s²; IDM acceleration parameter |
-| comfortable_deceleration_mps2 | 3.0 m/s²; required-deceleration threshold for starting braking |
-| max_deceleration_mps2 | 6.0 m/s²; planning deceleration limit |
-| acceleration_exponent | 4.0; IDM free-road exponent |
-| trajectory_horizon_s | 5.0 s; planned duration |
-| trajectory_step_s | 0.1 s; integration and waypoint interval |
-
-| Public name | Signature or fields |
-|---|---|
-| `StopSignPlanner.__init__` | Constructor options and defaults are listed above |
-| `StopSignPlanner.reset` | `reset(observation: Observation) -> None`; clears handled track IDs and CRUISE/STOPPING/STOPPED state |
-| `StopSignPlanner.step` | `step(observation: Observation, tracks: Sequence[SignTrack]) -> Control`; accepts stationary world-position tracks |
-| `StopSignPlanner.component_log` | Mapping with state, braking (bool), distance_to_stop_m, acceleration_mps2 and planned_speed_mps; acceleration and speed describe the first planned integration step, not the physical response to the whole controller-tracked trajectory |
-
-### avsectester.closed_loop.avstacks.implemented.scorers
-
-| Public name | Signature or fields |
-|---|---|
-| `MMDetRPNObjectnessScorer` | Class; see methods below |
-| `MMDetRPNObjectnessScorer.__init__` | `__init__(model, strides = FPN_STRIDES)` |
-| `MMDetRPNObjectnessScorer.target_score` | `target_score(image: torch.Tensor, target: TargetSpec) -> torch.Tensor` |
-| `MMDetInferenceScorer` | Class; see methods below |
-| `MMDetInferenceScorer.__init__` | `__init__(model)` |
-| `MMDetInferenceScorer.target_score` | `target_score(image, target: TargetSpec) -> float` |
-
-
-### avsectester.execution.frame_data_cache
-
-| Public name | Signature or fields |
-|---|---|
-| `fingerprint` | `fingerprint(value: Any) -> str` |
-| `FrameDataCache` | Class; see methods below |
-| `FrameDataCache.__init__` | `__init__() -> None` |
-| `FrameDataCache.key` | `key(start: ScenarioStart, simulator_identity: Mapping[str, Any], seed: int) -> str` |
-| `FrameDataCache.get_or_generate` | `get_or_generate(key: str, generate: Callable[[], FrameDataSequence]) -> FrameDataSequence` |
-| `FrameDataCache.get` | `get(key: str) -> FrameDataSequence` |
-
-### avsectester.implemented_attacks.phantom_injection_attack.attack
-
-| Public name | Signature or fields |
-|---|---|
-| `PhantomInjectionAttack` | Class; see methods below |
-| `PhantomInjectionAttack.__init__` | `__init__(*, decision_steps: int, max_segments: int \| None = None, target_xyz = (6.0, 0.0, -0.7), object_type = 'Car', score = 0.9, extent = (4.0, 1.8, 1.6), object_id = 90002, keep_tail: bool = False)` |
-| `PhantomInjectionAttack.build_metadata` | `build_metadata(scenario)` |
-| `PhantomInjectionAttack.create_runtime` | `create_runtime(segment, artifacts)` |
-
-### avsectester.implemented_attacks.speed_feedback_attack.attack
-
-| Public name | Signature or fields |
-|---|---|
-| `SpeedFeedbackAttack` | Class; see methods below |
-| `SpeedFeedbackAttack.__init__` | `__init__(*, decision_steps: int, target_speed: float, gain: float = 0.1, max_bias: float = 5.0, initial_bias: float = 0.0, max_segments: int \| None = None, keep_tail: bool = False)` |
-| `SpeedFeedbackAttack.build_metadata` | `build_metadata(scenario)` |
-| `SpeedFeedbackAttack.create_runtime` | `create_runtime(segment, artifacts)` |
-
-### avsectester.implemented_attacks.patch_attack.attack
-
-| Public name | Signature or fields |
-|---|---|
-| `PatchAttack` | Class; see methods below |
-| `PatchAttack.__init__` | `__init__(*, decision_steps, assets: np.ndarray \| str \| Path \| Texture \| None = None, candidate_hosts = None, hosts_per_window = 1, sensor = 'front', width_m = 1.0, height_m = 0.5, anchor = 'rear_center', offset_m = (-0.01, 0.0, 0.0), orientation = None, max_distance = None, min_visible_fraction = 0.0, max_windows = None, keep_tail = False, optimization = None, prop = DEFAULT_PROP, emissive = True, compositor = None)` |
-| `PatchAttack.placement_for` | `placement_for(host)` |
-| `PatchAttack.selected_placement` | `selected_placement(segment)` |
-| `PatchAttack.insertion` | `insertion(artifacts, *, host = None, placement = None)` |
-| `PatchAttack.build_metadata` | `build_metadata(scenario)` |
-| `PatchAttack.run_offline` | `run_offline(context)` |
-| `PatchAttack.deployment_ticks` | `deployment_ticks(segment)` |
-| `PatchAttack.create_runtime` | `create_runtime(segment, artifacts)` |
-
-### avsectester.implemented_attacks.stop_sign_patch_attack.attack
-
-| Public name | Signature or fields |
-|---|---|
-| `StopSignPatchAttack` | Class; see methods below |
-| `StopSignPatchAttack.__init__` | `__init__(initial_patch='white', optimization=None, mask_path=DEFAULT_MASK_PATH, noise_std=0.25, noise_seed=0, approach_m=50.0, hold_steps=20, offset_m=0.10, width_scale=1.1, harmonizer: Harmonizer \| None = None, face_orientation='upright', face_size='mutcd_standard', min_approach_m=20.0)` |
-| `StopSignPatchAttack.build_metadata` | `build_metadata(scenario)` |
-| `StopSignPatchAttack.run_offline` | `run_offline(context)` |
-| `StopSignPatchAttack.replica_placement` | `replica_placement(segment, texture) -> tuple[ObjectAsset, np.ndarray]` |
-| `StopSignPatchAttack.replica_texture` | `replica_texture(artifacts) -> np.ndarray` |
-| `StopSignPatchAttack.create_runtime` | `create_runtime(segment, artifacts)` |
-
-initial_patch is none, white, black or gaussian_noise; none deploys the unpatched replica and
-cannot be optimized. The default mask is masks/rp2_bars.png inside this attack package. The
-folder's __init__.py exports only StopSignPatchAttack. Artifacts are uint8 RGBA replica faces
-with the alpha of STOP_SIGN_FACE and its colours outside the mask. The runtime inserts one
-stop_sign_replica object at setup. Its configured harmonizer is passed to the same InsertObject
-in deployment and white-box sampling; differentiable composition includes that harmonizer. The
-replica panel's nominal_texture is the canonical face, so exposure is measured on the unpatched
-replica.
-
-replica_placement(segment, texture) is shared by online deployment and both optimization paths.
-It applies face_orientation and face_size to the selected map control. face_orientation="upright"
-(the default) normalizes the annotated normal's horizontal projection, uses world positive Z as
-up and cross(up, normal) as the left axis. A horizontal normal magnitude below 1e-6 raises
-ValueError. face_orientation="map" preserves the annotated rotation. face_size="mutcd_standard"
-(the default) selects the standard width nearest the annotated height; face_size="map_width"
-uses the annotated width. width_scale multiplies either choice. Unsupported option values raise
-ValueError. Neither mode corrects the annotated center or yaw.
-
-### avsectester.implemented_attacks.stop_sign_patch_attack.assets
-
-| Public name | Signature or fields |
-|---|---|
-| `MUTCD_STOP_SIGN_SIZES_M` | `(0.762, 0.914, 1.219)` metres: 30, 36 and 48 inch R1-1 faces |
-| `replica_asset` | `replica_asset(control, texture, width_scale, face_size) -> ObjectAsset` |
-| `replica_pose` | `replica_pose(control, offset_m, *, panel_height_m, face_orientation) -> np.ndarray` |
-
-replica_asset chooses the width by face_size, multiplies it by width_scale, and derives panel
-height from the texture aspect ratio. Only map_width warns about a mismatch with the annotated
-height. replica_pose constructs the selected orientation at the annotated face center, moves
-along its positive X axis by offset_m, then moves down its positive Z axis by half panel_height_m
-to obtain the bottom-center object pose. Thus the deployed face center is the annotated center
-plus offset_m times that mode's normal. panel_height_m is required.
-
-### avsectester.implemented_attacks.stop_sign_patch_attack.offline
-
-| Public name | Signature or fields |
-|---|---|
-| `DetectorPatchOptimization` | Frozen dataclass: `optimizer: PGD`, `scorer_id: str \| None = None`, `device: str = 'cpu'`, `max_training_segments=None`, `samples_per_scene=8`, `min_visible_pixels=100`, `braking_deceleration_mps2=3.4` |
-| `RolloutPatchOptimization` | Frozen dataclass: `optimizer: NES`, `start_distances_m=(40.0, 30.0, 20.0)`, `horizon_s=3.0`, `max_training_segments=None` |
-| `run_offline` | `run_offline(attack, context) -> np.ndarray` |
-
-Both optimizers start from the attack's generated initial patch. Detector options require PGD;
-rollout options require NES. Detector optimization selects the unique image-differentiable scorer
-when scorer_id is None; otherwise it uses that ID. The description must supply sensor_id and
-decision_threshold. Calibration, PGD and evaluation use one SessionScorer.
-braking_deceleration_mps2 controls only the attacker's training-frame sampling window.
-Rollout start distances must lie within the attack's [min_approach_m, approach_m] interval. Neither
-preparation path executes the final treatment suite. Both max_training_segments options default
-to None, using all training segments; a positive integer limits cost without changing the split.
-
-### avsectester.implemented_attacks.object_insertion_attack.attack
-
-| Public name | Signature or fields |
-|---|---|
-| `ObjectInsertionAttack` | Class; see methods below |
-| `ObjectInsertionAttack.__init__` | `__init__(*, decision_steps, placement, assets = None, orientation = None, sensor = 'front', min_visible_fraction = 0.0, max_segments = None, keep_tail = False, placement_relative_to_ego_origin = False, compositor = None)` |
-| `ObjectInsertionAttack.insertion` | `insertion(artifacts, placement = None)` |
-| `ObjectInsertionAttack.build_metadata` | `build_metadata(scenario)` |
-| `ObjectInsertionAttack.run_offline` | `run_offline(context)` |
-| `ObjectInsertionAttack.selected_placement` | `selected_placement(segment)` |
-| `ObjectInsertionAttack.create_runtime` | `create_runtime(segment, artifacts)` |
-
-### avsectester.implemented_attacks.object_insertion_attack.assets
-
-SignAsset defaults to avsectester.rendering.STOP_SIGN_FACE, the bundled MUTCD R1-1 texture.
-Its bottom-center origin, +X front, +Y left and +Z up match ObjectAsset. object_asset delegates to
-ObjectAsset.from_panel; planes returns that object's surfaces, with posts before the face.
-post_count is nonnegative; zero omits support posts.
-
-| Public name | Signature or fields |
-|---|---|
-| `SignAsset` | `face: np.ndarray \| str \| Path = ...`<br>`width_m: float = 0.9`<br>`mount_height_m: float = 1.5`<br>`post_width_m: float = 0.07`<br>`post_count: int = 1` |
-| `SignAsset.planes` | `planes() -> Sequence[PlaneSurface]` |
-| `SignAsset.object_asset` | `object_asset(category: str) -> ObjectAsset` |
-| `poster_rgba` | `poster_rgba(person: np.ndarray, aspect: float = 1.5, fill: float = 0.86, paper: tuple = (228, 226, 218), border: tuple = (40, 40, 42), border_frac: float = 0.025) -> np.ndarray` |
-| `standee` | `standee(person: np.ndarray, height_m: float = 1.75) -> SignAsset` |
-| `billboard` | `billboard(person: np.ndarray, width_m: float = 1.4, mount_height_m: float = 0.6) -> SignAsset` |
-| `signal_head_rgba` | `signal_head_rgba(lit: str = 'red', texture_height_pixels: int = 300) -> np.ndarray` |
-| `traffic_lights_rgba` | `traffic_lights_rgba(head_count: int = 3, lit: str = 'red', texture_height_pixels: int = 300, gap_fraction: float = 0.25, board: tuple \| None = (35, 37, 40)) -> np.ndarray` |
-| `roadside_rig` | `roadside_rig(face: np.ndarray \| str \| Path, width_m: float = 2.4, mount_height_m: float = 2.2) -> SignAsset` |
-| `PersonAsset` | `image: np.ndarray \| str \| Path`<br>`mode: str = 'billboard'`<br>`height_m: float = 1.75`<br>`width_m: float = 1.4`<br>`mount_height_m: float = 0.6` |
-| `PersonAsset.planes` | `planes()` |
-| `TrafficLightAsset` | `head_count: int = 3`<br>`lit: str = 'red'`<br>`texture_height_pixels: int = 300`<br>`gap_fraction: float = 0.25`<br>`board: tuple \| None = (35, 37, 40)`<br>`width_m: float = 2.4`<br>`mount_height_m: float = 2.2` |
-| `TrafficLightAsset.planes` | `planes()` |
-
-### avsectester.attack.insertion.assets
-
-| Public name | Signature or fields |
-|---|---|
-| `PlanarAsset` | Class; see methods below |
-| `PlanarAsset.planes` | `planes() -> Sequence[PlaneSurface]` |
-| `PlaneAsset` | `texture: np.ndarray \| str \| Path`<br>`width_m: float`<br>`height_m: float` |
-| `PlaneAsset.planes` | `planes() -> tuple[PlaneSurface, ...]` |
-| `Insertion` | `id: str`<br>`asset: PlanarAsset`<br>`placement: AttachedPlacement \| WorldPlacement`<br>`orientation: Orientation = field(default_factory=Orientation)` |
-| `ResolvedInsertion` | `id: str`<br>`pose: np.ndarray`<br>`asset: PlanarAsset`<br>`host_id: str \| None = None` |
-| `ResolvedInsertion.planes` | `planes() -> tuple[PlaneSurface, ...]` |
-| `resolve_insertion` | `resolve_insertion(insertion: Insertion, actors: Mapping[str, ActorState], ego: ActorState) -> ResolvedInsertion` |
-
-### avsectester.attack.insertion.types
-
-| Public name | Signature or fields |
-|---|---|
-| `Visibility` | `fraction: float`<br>`source: str`<br>`camera: str \| None = None`<br>`label: str \| None = None` |
-| `VisibilityEvidence` | `visibility: Visibility \| None`<br>`reference_mask: np.ndarray`<br>`visible_mask: np.ndarray`<br>`target_depth: np.ndarray`<br>`reference_pixels: int`<br>`reason: str = ''`<br>`sampled_rgba: np.ndarray \| None = None`<br>`ignored_occluders: tuple[str, ...] = ()` |
-
-Visibility.source uses depth, actor_cuboids or rendered_masks. VisibilityEvidence.ignored_occluders
-lists actor IDs whose missing extent prevents cuboid occlusion; they are skipped, not treated as
-blocking. CuboidVisibilityEstimator also treats world_objects' alpha-aware surfaces as occluders.
-
-### avsectester.rendering.textures
-
-Texture implements rgba() and can be passed to load_rgba_image alongside an array or image path.
-The loader returns an independent uint8 RGBA image.
-
-| Public name | Signature or fields |
-|---|---|
-| `STOP_SIGN_FACE` | `Path` to the bundled public-domain MUTCD R1-1 face, 512×512 RGBA, transparent outside the octagon; sources in `rendering/assets/SOURCES.md` |
-| `Texture` | Protocol; see method below |
-| `Texture.rgba` | `rgba() -> np.ndarray` |
-| `CheckerboardTexture` | `size: int = 256`<br>`cells: int = 8`<br>`colors: tuple = ((255, 0, 0), (255, 255, 255))` |
-| `CheckerboardTexture.rgba` | `rgba() -> np.ndarray` |
-| `load_rgba_image` | `load_rgba_image(value: np.ndarray \| str \| Path \| Texture) -> np.ndarray` |
-
-
-### avsectester.rendering.objects
-
-ObjectAsset and PlacedObject use the canonical right-handed world convention. Object-local origin
-is the bottom center, with +X front, +Y left and +Z up. Extent is full length, width and height.
-PlaneSurface corners, textures and rigid object transforms are copied and read-only. A surface's
-optional nominal_texture is its unmodified appearance, with the texture's shape and alpha;
-harmonizers measure scene statistics on it, so texture edits do not change them. from_panel reads
-a texture array, image path or Texture and creates a panel facing +X; nominal_texture, if given,
-belongs to the panel. Its face height follows the texture aspect ratio; mount_height_m is the lower
-face edge height. Optional posts sit 3 cm behind the face and precede it in surfaces.
-from_surfaces derives the final extent. world_surfaces keeps each surface's textures.
-
-| Public name | Signature or fields |
-|---|---|
-| `PlaneSurface` | `corners: np.ndarray`<br>`texture: np.ndarray`<br>`nominal_texture: np.ndarray \| None = None` |
-| `ObjectAsset` | `surfaces: tuple[PlaneSurface, ...]`<br>`extent: tuple[float, float, float]`<br>`category: str` |
-| `ObjectAsset.from_surfaces` | `from_surfaces(surfaces: Sequence[PlaneSurface], category: str) -> ObjectAsset` |
-| `ObjectAsset.from_panel` | `from_panel(texture: np.ndarray \| str \| Path \| Texture, *, category: str, width_m: float, mount_height_m: float = 0.0, post_count: int = 0, post_width_m: float = 0.07, nominal_texture: np.ndarray \| str \| Path \| Texture \| None = None) -> ObjectAsset` |
-| `PlacedObject` | `object_id: str`<br>`asset: ObjectAsset`<br>`world_from_object: np.ndarray`<br>`harmonizer: Harmonizer \| None = None` |
-| `PlacedObject.world_surfaces` | `world_surfaces() -> tuple[PlaneSurface, ...]` |
-
-### avsectester.rendering.surfaces
-
-Every pixel averages SUBSAMPLES x SUBSAMPLES rays; each ray reads a trilinear mipmap of the
-premultiplied texture at its own footprint level. Coverage is geometric: rays outside the
-rectangle contribute nothing, so filtered edges are antialiased without spreading. Rendering,
-visibility and PatchPerturbation call the same sample_texture, so optimization filters the patch
-exactly as deployment renders it.
-
-| Public name | Signature or fields |
-|---|---|
-| `SUBSAMPLES` | `2`; rays per pixel along each image axis |
-| `edge_points` | `edge_points(corners: np.ndarray) -> np.ndarray` |
-| `SurfaceSampler` | `corners: np.ndarray`<br>`texture: np.ndarray`<br>`bounds: tuple[int, int, int, int] \| None`<br>`reason: str = ''` |
-| `SurfaceSampler.intersect` | `intersect(rays: np.ndarray) -> tuple[np.ndarray, np.ndarray]` |
-| `SurfaceSampler.sample` | `sample(rays: np.ndarray) -> tuple[np.ndarray, np.ndarray]` |
-| `SurfaceSampler.image_bounds` | `image_bounds(camera: Camera) -> tuple[int, int, int, int] \| None` |
-| `prepare_surface` | `prepare_surface(surface: PlaneSurface, camera: Camera, cam_from_world) -> SurfaceSampler` |
-| `PlaneSampling` | Frozen record: `bounds: tuple[int, int, int, int]`<br>`coordinates: np.ndarray`<br>`derivatives: np.ndarray`<br>`depth: np.ndarray` |
-| `plane_sampling` | `plane_sampling(sampler: SurfaceSampler, camera: Camera, bounds: tuple[int, int, int, int]) -> PlaneSampling` |
-| `premultiplied_texture` | `premultiplied_texture(rgba: np.ndarray) -> torch.Tensor` |
-| `sample_texture` | `sample_texture(texture: torch.Tensor, sampling: PlaneSampling) -> torch.Tensor` |
-| `Projection` | `reference: np.ndarray`<br>`depth: np.ndarray`<br>`rays: np.ndarray`<br>`rgba: np.ndarray`<br>`x0: int`<br>`y0: int` |
-| `rasterize` | `rasterize(surfaces: Sequence[PlaneSurface], camera: Camera, cam_from_world, max_reference_pixels)` |
-| `render_surfaces` | `render_surfaces(surfaces: Sequence[PlaneSurface], camera: Camera, cam_from_world: np.ndarray) -> tuple[np.ndarray, np.ndarray]` |
-
-SurfaceSampler.sample is a point query for occlusion: a ray is blocked where the full-resolution
-bilinear alpha exceeds 127. PlaneSampling stores texture-independent footprint geometry, so one
-sampling serves any texture size. sample_texture takes and returns premultiplied (4, H, W)
-tensors and requires torch. Covered pixels returned by render_surfaces have finite depth; their
-alpha is the filtered coverage.
-
-### avsectester.attack.insertion.compositor
-
-| Public name | Signature or fields |
-|---|---|
-| `PatchCompositor` | Class; see methods below |
-| `PatchCompositor.__init__` | `__init__(harmonizer: Harmonizer \| None = None, *, soften: float = 0.0) -> None` |
-| `render_resolved` | `render_resolved(frame: np.ndarray, camera: Camera, cam_from_world: np.ndarray, resolved: ResolvedInsertion, evidence: VisibilityEvidence \| None = None, *, compositor: PatchCompositor \| None = None) -> tuple[np.ndarray, np.ndarray]` |
-
-### avsectester.rendering.compositing
-
-The rendering package root exports ObjectAsset, PlacedObject, PlaneSurface, Harmonizer,
-ExposureHarmonizer, ClassicHarmonizer, PCTNetHarmonizer, render_surfaces, ObjectVisibility, CompositePlan, CompositeResult,
-ObjectComposition, blend_rgba, plan_composite, composite_objects, Texture, CheckerboardTexture and load_rgba_image.
-Plane surfaces are in world coordinates when passed to render_surfaces. Its RGBA and depth outputs
-have calibrated image dimensions; depth is optical-axis z, with inf where no surface is hit.
-
-| Public name | Signature or fields |
-|---|---|
-| `ObjectVisibility` | Frozen record: `occlusion_source: str`<br>`ignored_occluders: tuple[str, ...]`<br>`visible_pixels: int` |
-| `CompositeResult` | `image: np.ndarray`<br>`depth: np.ndarray`<br>`visible_mask: np.ndarray`<br>`occlusion_source: str`<br>`ignored_occluders: tuple[str, ...] = ()`<br>`object_visibility: Mapping[str, ObjectVisibility] = field(default_factory=dict)` |
-| `blend_rgba` | `blend_rgba(image: np.ndarray, rgba: np.ndarray, visible_mask: np.ndarray, *, harmonizer: Harmonizer \| None = None, soften: float = 0.0) -> np.ndarray` |
-| `composite_objects` | `composite_objects(image: np.ndarray, camera: Camera, cam_from_world: np.ndarray, objects: Sequence[PlacedObject], *, scene_depth: np.ndarray \| None = None, occluders: Mapping[str, ActorState] \| None = None, occlusion_tolerance_m: float = 0.1) -> CompositeResult` |
-| `plan_composite` | `plan_composite(camera: Camera, cam_from_world: np.ndarray, objects: Sequence[PlacedObject], *, scene_depth: np.ndarray \| None = None, occluders: Mapping[str, ActorState] \| None = None, occlusion_tolerance_m: float = 0.1, scene_visibility: np.ndarray \| None = None) -> CompositePlan` |
-| `ObjectComposition` | Frozen record: `background: np.ndarray`<br>`plan: CompositePlan` |
-| `CompositePlan` | Frozen record: `objects: tuple[PlacedObject, ...]`<br>`depth: np.ndarray`<br>`visible_mask: np.ndarray`<br>`occlusion_source: str`<br>`ignored_occluders: tuple[str, ...]`<br>`object_visibility: Mapping[str, ObjectVisibility]`<br>`footprints: tuple[...]` (internal) |
-| `CompositePlan.apply` | `apply(image: np.ndarray) -> CompositeResult` |
-| `CompositePlan.composite` | `composite(image: torch.Tensor, textures: Mapping[tuple[str, int], torch.Tensor] \| None = None) -> torch.Tensor` |
-
-composite_objects accepts uint8 RGB, resolves the nearest object surfaces, and blends only visible
-pixels. Each PlacedObject carries its own optional harmonizer. Supplied scene_depth is the sole
-scene occlusion source (occlusion_source="depth"), and the result depth merges it with object depth.
-Without scene_depth, actor cuboids supply estimates only in the candidate projection regions
-expanded by two pixels (occlusion_source="actor_cuboids"). The fallback result is inf outside those
-regions and is not complete sensor-depth evidence. ignored_occluders lists actors with extent=None
-in input mapping order; they cannot supply cuboid occlusion. It is empty in scene-depth mode,
-which does not consult the occluders mapping. object_visibility provides one ObjectVisibility per
-input object, including its visible-pixel count. PlacedObject.world_surfaces() returns the
-asset's surfaces in world coordinates.
-
-composite_objects is plan_composite followed by CompositePlan.apply. The plan fixes everything that
-does not depend on surface colours: subpixel sampling, coverage from each asset's alpha,
-nearest-surface ownership, occlusion and object visibility. composite blends a (3, H, W) tensor in
-[0, 1] and accepts replacement straight-RGB colours, keyed by (object_id, surface index in the asset),
-at the surface texture's size. Each differentiable harmonizer receives the same unadjusted blend,
-its object's visible mask, the original background and the nominal blend, in which surfaces with a
-nominal_texture show it instead of their texture or replacement colours, and changes only its mask. apply uses this
-same floating-point blend and tensor harmonization before one uint8 rounding; if the plan has only
-differentiable harmonizers, apply(image) equals round(composite(image/255) times 255) pixel for
-pixel. Gradients reach the image and replacement colours through the harmonizer calculation.
-Non-differentiable harmonizers still run after rounding through the numpy deployment path;
-composite rejects only those objects, reporting their IDs and harmonizer types.
-SensorView.composite_plan(objects) plans with the view's camera, depth or actor cuboids and the
-capture tolerance, exactly as simulator captures compose world objects.
-
-### avsectester.rendering.harmonizers
-
-| Public name | Signature or fields |
-|---|---|
-| `Harmonizer` | Class; see methods below |
-| `Harmonizer.__call__` | `__call__(composite_rgb: np.ndarray, mask: np.ndarray, background_rgb: np.ndarray) -> np.ndarray` |
-| `Harmonizer.differentiable` | Class attribute; False by default |
-| `Harmonizer.harmonize_tensor` | `harmonize_tensor(composite: torch.Tensor, mask: torch.Tensor, background: torch.Tensor, nominal_composite: torch.Tensor) -> torch.Tensor`; default raises NotImplementedError |
-| `ExposureHarmonizer` | Frozen dataclass: `reference: str = 'ring'`, `ring_px: int = 12`, `gain_range: tuple[float, float] = (0.05, 1.2)`, `feather_sigma: float = 1.2`; differentiable=True |
-| `ExposureHarmonizer.harmonize_tensor` | `harmonize_tensor(composite, mask, background, nominal_composite) -> torch.Tensor` |
-| `ExposureHarmonizer.exposure_gain` | `exposure_gain(composite, mask, background) -> torch.Tensor \| None` |
-| `ExposureHarmonizer.__call__` | `__call__(composite_rgb: np.ndarray, mask: np.ndarray, background_rgb: np.ndarray) -> np.ndarray`; same tensor calculation, rounded to uint8 |
-| `ClassicHarmonizer` | Class; see methods below |
-| `ClassicHarmonizer.__init__` | `__init__(color_transfer: bool = True, poisson: bool = True, preserve_chroma: bool = False, blend: str = 'poisson', feather: float = 1.2, gain_range: tuple = (0.35, 1.2)) -> None` |
-| `ClassicHarmonizer.__call__` | `__call__(composite_rgb, mask, background_rgb)` |
-| `PCTNetHarmonizer` | Class; see methods below |
-| `PCTNetHarmonizer.__init__` | `__init__(libcom_directory: str \| Path, device: str = 'cuda:0', weights: str \| Path \| None = None, strict: bool = False) -> None` |
-| `PCTNetHarmonizer.__call__` | `__call__(composite_rgb, mask, background_rgb)` |
-
-Tensor harmonization accepts float RGB CHW composite, background and nominal-composite tensors in
-[0, 1] and a boolean HW visible mask, and must preserve the input outside that mask. The nominal
-composite shows each surface's nominal_texture where one is set and equals the composite elsewhere.
-ExposureHarmonizer converts sRGB to linear RGB, computes Y=0.2126R+0.7152G+0.0722B and clamps the
-reference-background/nominal-object mean luminance ratio (denominator plus 1e-6) to gain_range. It
-scales the object's linear RGB by this gain, converts back to sRGB and optionally feathers to the
-original background inside the mask. Its numpy __call__ has no nominal composite and measures the
-gain on the composite itself.
-reference is ring or under; empty visible/reference areas return the input unchanged, and
-exposure_gain returns None. ClassicHarmonizer and PCTNetHarmonizer keep differentiable=False.
-See the [exposure formulas and parameters](../examples/image-insertion.md#differentiable-exposure).
-
-### avsectester.attack.insertion.visibility
-
-| Public name | Signature or fields |
-|---|---|
-| `CuboidVisibilityEstimator` | Class; see methods below |
-| `CuboidVisibilityEstimator.estimate` | `estimate(subject: ResolvedInsertion, camera: Camera, cam_from_world: np.ndarray, *, occluders: Mapping[str, ActorState], camera_name: str, other_insertions: Sequence[ResolvedInsertion] = (), world_objects: Sequence[PlacedObject] = ()) -> VisibilityEvidence` |
-| `DepthVisibilityEstimator` | Class; see methods below |
-| `DepthVisibilityEstimator.__init__` | `__init__(*, tolerance_m: float = 0.0002, max_reference_pixels: int = 4000000)` |
-| `DepthVisibilityEstimator.estimate` | `estimate(subject: ResolvedInsertion, camera: Camera, cam_from_world: np.ndarray, *, scene_depth: np.ndarray, depth_convention: str, camera_name: str, other_insertions: Sequence[ResolvedInsertion] = ()) -> VisibilityEvidence` |
-| `visibility_from_masks` | `visibility_from_masks(reference, visible, *, camera: str, image_bounds = None) -> Visibility \| None` |
-| `visibility_from_depth` | `visibility_from_depth(footprint, target_depth, scene_depth, *, camera: str, tolerance_m: float = 0.0002, image_bounds = None) -> Visibility \| None` |
-
-### avsectester.attack.insertion.action
-
-| Public name | Signature or fields |
-|---|---|
-| `InsertObject` | `object_id: str`<br>`asset: ObjectAsset`<br>`world_from_object: np.ndarray`<br>`harmonizer: Harmonizer \| None = None` |
-| `InsertObject.apply` | `apply(simulator_runtime: SimulatorRuntime, resources: ExitStack) -> None` |
-| `InsertObject.receipt_details` | `receipt_details() -> Mapping[str, Any]` |
-| `InsertionAttackAction` | `sensor: str`<br>`insertion: Insertion`<br>`compositor: PatchCompositor \| None = None`<br>`rendered: bool = field(default=False, init=False)`<br>`reason: str = field(default='', init=False)`<br>`occlusion_source: str = field(default='', init=False)`<br>`ignored_occluders: tuple[str, ...] = field(default=(), init=False)` |
-| `InsertionAttackAction.receipt_details` | `receipt_details()` |
-| `InsertionAttackAction.resolve` | `resolve(view)` |
-| `InsertionAttackAction.evidence` | `evidence(view, resolved = None)` |
-| `InsertionAttackAction.apply` | `apply(data: Any, view)` |
-
-### avsectester.attack.optimization.interface
-
-| Public name | Signature or fields |
-|---|---|
-| `AdversarialSample` | `x: Tensor`<br>`target: TargetSpec`<br>`context: dict = field(default_factory=dict)` |
-| `DataSource` | Class; see methods below |
-| `DataSource.sample` | `sample(batch: int) -> list[AdversarialSample]` |
-| `Perturbation` | Class; see methods below |
-| `Perturbation.init` | `init() -> Tensor` |
-| `Perturbation.apply` | `apply(sample: AdversarialSample, delta: Tensor) -> Tensor` |
-| `Perturbation.project` | `project(delta: Tensor) -> Tensor` |
-| `Perturbation.export` | `export(delta: Tensor) -> np.ndarray \| None` |
-| `Scorer` | `differentiable: bool = True` |
-| `Scorer.target_score` | `target_score(image: Tensor, target: TargetSpec) -> Tensor` |
-| `OptimizationObjective` | Class; see methods below |
-| `OptimizationObjective.loss` | `loss(score: Tensor) -> Tensor` |
-| `HideObject` | Class; see methods below |
-| `HideObject.loss` | `loss(score: Tensor) -> Tensor` |
-| `SpoofObject` | Class; see methods below |
-| `SpoofObject.loss` | `loss(score: Tensor) -> Tensor` |
-| `OptimizationResult` | `delta: Tensor`<br>`export: np.ndarray \| None`<br>`history: list[float]`<br>`final_score: float` |
-| `GradientOptimizer` | Class; see methods below |
-| `GradientOptimizer.run` | `run(data: DataSource, perturbation: Perturbation, scorer: Scorer, objective: OptimizationObjective) -> OptimizationResult` |
-
-### avsectester.attack.optimization.scorers
-
-| Public name | Signature or fields |
-|---|---|
-| `SessionScorer` | Class; see methods below |
-| `SessionScorer.__init__` | `__init__(session, scorer_id, *, require_grad, input_format = None, device = 'cpu')` |
-| `SessionScorer.target_score` | `target_score(image, target)` |
-
-### avsectester.attack.optimization.perturbations
-
-| Public name | Signature or fields |
-|---|---|
-| `PatchPerturbation` | Class; see methods below |
-| `PatchPerturbation.__init__` | `__init__(size = (128, 128), device = 'cuda:0', init = 'random', seed = 0, alpha = None)` |
-| `PatchPerturbation.init` | `init() -> torch.Tensor` |
-| `PatchPerturbation.apply` | `apply(sample: AdversarialSample, delta: torch.Tensor) -> torch.Tensor` |
-| `PatchPerturbation.project` | `project(delta: torch.Tensor) -> torch.Tensor` |
-| `PatchPerturbation.export` | `export(delta: torch.Tensor) -> np.ndarray` |
-| `LinfImage` | Class; see methods below |
-| `LinfImage.__init__` | `__init__(epsilon = 8 / 255, image_hw = (600, 800), device = 'cuda:0')` |
-| `LinfImage.init` | `init() -> torch.Tensor` |
-| `LinfImage.apply` | `apply(sample: AdversarialSample, delta: torch.Tensor) -> torch.Tensor` |
-| `LinfImage.project` | `project(delta: torch.Tensor) -> torch.Tensor` |
-
-### avsectester.implemented_attacks.patch_attack.offline
-
-| Public name | Signature or fields |
-|---|---|
-| `PatchOptimization` | `algorithm: GradientOptimizer`<br>`scorer_id: str \| None = None`<br>`size: tuple[int, int] = (64, 64)`<br>`device: str \| None = None`<br>`target_box: tuple[float, float, float, float] \| None = None`<br>`brightness: tuple[float, float] = (0.8, 1.2)`<br>`contrast: tuple[float, float] = (0.8, 1.2)`<br>`validate_rollout: bool = False`<br>`init_texture: np.ndarray \| str \| Path \| Texture \| None = None` |
-| `render_candidate` | `render_candidate(session, attack, segment, frame, texture, environment, observation = None)` |
-| `optimize_patch` | `optimize_patch(attack, context, options: PatchOptimization)` |
-| `to_rgba_uint8` | `to_rgba_uint8(delta: np.ndarray) -> np.ndarray` |
-| `run_offline` | `run_offline(attack, context)` |
-
-### avsectester.implemented_attacks.patch_attack.optimization_data
-
-| Public name | Signature or fields |
-|---|---|
-| `native_sampling_grid` | `native_sampling_grid(black, white)` |
-| `SessionDataSource` | Class; see methods below |
-| `SessionDataSource.__init__` | `__init__(session, attack, metadata, *, size, device, target_box = None, brightness = (0.8, 1.2), contrast = (0.8, 1.2), seed = 0, at_segment_start = False, environment = None, require_patch_grid = True)` |
-| `SessionDataSource.sample` | `sample(batch)` |
-
-### avsectester.attack.optimization.whitebox
-
-| Public name | Signature or fields |
-|---|---|
-| `PGD` | `steps: int = 200`<br>`step_size: float = 4.0 / 255.0`<br>`batch: int = 4`<br>`tv_weight: float = 0.0`<br>`seed: int = 0`<br>`verbose: bool = False`<br>`log_every: int = 25` |
-| `PGD.run` | `run(data: DataSource, perturbation: Perturbation, scorer: Scorer, objective: OptimizationObjective) -> OptimizationResult` |
-
-### avsectester.attack.optimization.blackbox
-
-| Public name | Signature or fields |
-|---|---|
-| `NES` | `steps: int = 40`<br>`population_size: int = 20`<br>`sigma: float = 0.08`<br>`learning_rate: float = 0.03`<br>`seed: int = 0`<br>`verbose: bool = False`<br>`log_every: int = 5` |
-| `NES.run` | `run(data: DataSource, perturbation: Perturbation, scorer: Scorer, objective: OptimizationObjective) -> OptimizationResult` |
-
-### avsectester.runlog.log
-
-| Public name | Signature or fields |
-|---|---|
-| `StepRecord` | `step: int`<br>`raw_observation: Any = None`<br>`model_observation: Any = None`<br>`physical_pre: Any = None`<br>`physical_post: Any = None`<br>`produced_command: Any = None`<br>`executed_command: Any = None`<br>`components: dict[str, Any] = field(default_factory=dict)`<br>`detections: Sequence[Detection] \| None = None`<br>`sensor_geometry: Mapping[str, SensorGeometry] = field(default_factory=dict)`<br>`object_visibility: Mapping[str, Mapping[str, ObjectVisibility]] = field(default_factory=dict)`<br>`actions: list[Any] = field(default_factory=list)`<br>`outputs: list[Any] = field(default_factory=list)`<br>`telemetry: dict[str, Any] = field(default_factory=dict)` |
-| `EventRecord` | `kind: str`<br>`step: int \| None = None`<br>`data: dict[str, Any] = field(default_factory=dict)` |
-| `RunLog` | `metadata: dict[str, Any] = field(default_factory=dict)`<br>`steps: list[StepRecord] = field(default_factory=list)`<br>`events: list[EventRecord] = field(default_factory=list)`<br>`status: str = 'incomplete'`<br>`path: Path \| None = None` |
-| `RunLog.read` | `read(path: str \| Path, *, registry: SerializationRegistry = DEFAULT_REGISTRY, load_payloads: bool = True) -> RunLog` |
-| `Recorder` | Class; see methods below |
-| `Recorder.__init__` | `__init__(path: str \| Path \| None = None, *, metadata: dict[str, Any] \| None = None, registry: SerializationRegistry = DEFAULT_REGISTRY, chunk_steps: int = 128, chunk_bytes: int = 8 * 1024 * 1024, payload_shard_bytes: int = 64 * 1024 * 1024, retain_steps: bool = True) -> None` |
-| `Recorder.snapshot` | `snapshot(value: Any) -> Any` |
-| `Recorder.record_step` | `record_step(record: StepRecord) -> StepRecord` |
-| `Recorder.record_event` | `record_event(kind: str, *, step: int \| None = None, **data) -> EventRecord` |
-| `Recorder.flush` | `flush() -> None` |
-| `Recorder.finish` | `finish(status: str = 'completed', **details) -> RunLog` |
-| `Recorder.abort` | `abort() -> None` |
-| `read_table` | `read_table(path: str \| Path, columns: Sequence[str] \| None = None, *, stream: str = 'steps') -> Any` |
-
-### avsectester.evaluation.evaluator
-
-RunGroup is frozen and retains every log status and its mapping order. ComparisonGroup, passed to
-metrics, contains completed logs only.
-
-| Public name | Signature or fields |
-|---|---|
-| `RunGroup` | `segment_index: int`<br>`segment: AttackSegment`<br>`seed: int`<br>`logs: Mapping[str, RunLog]`<br>`errors: Mapping[str, str] = field(default_factory=dict)`<br>`scenario_map: ScenarioMap \| Unavailable = field(default_factory=lambda: Unavailable('No saved scenario map is available'))`<br>`treatment_attacks: Mapping[str, str \| None] = field(default_factory=dict)`<br>`part: str \| None = None` |
-| `evaluate_groups` | `evaluate_groups(groups: Sequence[RunGroup], metrics: Sequence[Metric], *, notes: Sequence[str] = ()) -> EvaluationReport` |
-
-### avsectester.evaluation.metric
-
-| Public name | Signature or fields |
-|---|---|
-| `UnavailableMetricValue` | `reason: str`<br>`value_type: Literal['number', 'boolean'] = 'number'` |
-| `ComparisonGroup` | `segment: AttackSegment`<br>`seed: int`<br>`runs: Mapping[str, RunLog]`<br>`scenario_map: ScenarioMap \| Unavailable = field(default_factory=lambda: Unavailable('No saved scenario map is available'))`<br>`treatment_attacks: Mapping[str, str \| None] = field(default_factory=dict)` |
-| `TreatmentPair` | `treatment_a: str`<br>`treatment_b: str`<br>`log_a: RunLog`<br>`log_b: RunLog` |
-| `Metric` | Class; see methods below |
-| `Metric.evaluate` | `evaluate(data: Any) -> Mapping[str, Any]` |
-| `PairMetric` | Class; see methods below |
-| `PairMetric.evaluate` | `evaluate(pair: TreatmentPair) -> FieldMeasurements` |
-| `speeds` | `speeds(log: RunLog) -> list[float] \| None` |
-| `executed_brakes` | `executed_brakes(log: RunLog) -> list[float] \| None` |
-| `brake_steps` | `brake_steps(log: RunLog) -> int \| None` |
-| `signed_stop_line_distances` | `signed_stop_line_distances(positions, line_points, *, endpoint_tolerance_m=3.0) -> tuple[np.ndarray, tuple[int, float] \| None]` |
-| `StopLineMetrics` | `StopLineMetrics(stop_speed: float = 0.5, endpoint_tolerance_m: float = 3.0, brake_deceleration_mps2: float = 1.0)` |
-| `StopLineMetrics.evaluate` | `evaluate(group: ComparisonGroup) -> TreatmentMeasurements` |
-| `ReasoningPhraseRate` | `ReasoningPhraseRate(phrase: str, component: str = 'policy', field: str = 'reasoning_text')` |
-| `ReasoningPhraseRate.evaluate` | `evaluate(group: ComparisonGroup) -> TreatmentMeasurements` |
-| `DrivingMetrics` | Class; see methods below |
-| `DrivingMetrics.__init__` | `__init__(stop_speed: float = 0.5) -> None` |
-| `DrivingMetrics.evaluate` | `evaluate(group: ComparisonGroup) -> TreatmentMeasurements` |
-| `TrajectoryDeviation` | Class; see methods below |
-| `TrajectoryDeviation.evaluate` | `evaluate(pair: TreatmentPair) -> FieldMeasurements` |
-| `DetectionMetrics` | Class; see methods below |
-| `DetectionMetrics.__init__` | `__init__(match_distance: float = 2.0, max_range: float \| None = 50.0, category_map: Mapping[str, str] \| None = None) -> None` |
-| `DetectionMetrics.evaluate` | `evaluate(group: ComparisonGroup) -> TreatmentMeasurements` |
-| `StopImpact` | Class; see methods below |
-| `StopImpact.__init__` | `__init__(stop_speed: float = 0.5, reference_speed: float = 1.0, min_overdrive_steps: int = 3) -> None` |
-| `StopImpact.evaluate` | `evaluate(pair: TreatmentPair) -> FieldMeasurements` |
-
-### avsectester.evaluation.report
-
-| Public name | Signature or fields |
-|---|---|
-| `EvaluationConfiguration` | `metrics: tuple[Metric, ...] \| None = None` |
-| `EvaluationReport` | `groups: list[dict[str, Any]] = field(default_factory=list)`<br>`treatment_summaries: list[dict[str, Any]] = field(default_factory=list)`<br>`pair_summaries: list[dict[str, Any]] = field(default_factory=list)`<br>`selections: list[dict[str, Any]] = field(default_factory=list)`<br>`metrics: list[dict[str, Any]] = field(default_factory=list)`<br>`notes: list[str] = field(default_factory=list)`<br>`metric_errors: list[dict[str, Any]] = field(default_factory=list)`<br>`path: Path \| None = None` |
-| `EvaluationReport.summarize` | `summarize() -> None` |
-| `EvaluationReport.record_error` | `record_error(source: str, error: Exception, **context: Any) -> None` |
-| `EvaluationReport.as_dict` | `as_dict() -> dict[str, Any]` |
-| `EvaluationReport.format_summary` | `format_summary() -> str` |
-| `EvaluationReport.save` | `save(directory: str \| Path) -> Path` |
-
-### avsectester.evaluation.visualization
-
-| Public name | Signature or fields |
-|---|---|
-| `plot_group` | `plot_group(runs: Mapping[str, Any], path: str \| Path, *, title: str \| None = None) -> Path` |
-| `as_rgb` | `as_rgb(frame: Any) -> np.ndarray \| None` |
-| `camera_view` | `camera_view(record: StepRecord \| Observation, camera: str \| None = None) -> np.ndarray \| None` |
-| `lidar_bev` | `lidar_bev(record: StepRecord \| Observation, size: int = 800, meters: float = 60.0) -> np.ndarray \| None` |
-| `annotate` | `annotate(image: Any, detections: Sequence[Any], threshold: float = 0.3) -> np.ndarray` |
-| `box3d_corners` | `box3d_corners(center: Any, extent: Any, yaw: float) -> np.ndarray` |
-| `draw_boxes3d` | `draw_boxes3d(image: Any, view: SensorView, *, actors: Mapping[str, Any] \| None = None, target: str \| None = None, subdiv: int = 8, max_distance: float \| None = None, color: tuple[int, int, int] = (40, 200, 40), target_color: tuple[int, int, int] = (235, 64, 52)) -> np.ndarray` |
-| `sensor_view` | `sensor_view(record: StepRecord, camera: str \| None = None) -> SensorView \| None` |
-| `labels_view` | `labels_view(record: StepRecord, camera: str \| None = None, *, target: str \| None = None, max_distance: float \| None = None) -> np.ndarray \| None` |
-| `detections_view` | `detections_view(record: StepRecord, camera: str \| None = None, *, threshold: float = 0.3) -> np.ndarray \| None` |
-| `save_image` | `save_image(image: Any, path: str \| Path) -> None` |
-| `record_run` | `record_run(log: RunLog, out_dir: str \| Path, *, visualize: View = camera_view, prefix: str = 'frame') -> tuple[Path, ...]` |
-| `filmstrip` | `filmstrip(source: RunLog \| Sequence[Any], cols: int = 4, pad: int = 6, bg: tuple[int, int, int] = (20, 20, 20), *, visualize: View = camera_view) -> np.ndarray` |
-| `save_gif` | `save_gif(source: RunLog \| Sequence[Any], path: str \| Path, fps: int = 5, *, visualize: View = camera_view) -> None` |
-| `save_sequence` | `save_sequence(log: RunLog, out_dir: str \| Path, name: str = 'sequence', cols: int = 4, fps: int = 4, *, visualize: View = camera_view) -> tuple[str, str] \| None` |
-
-### avsectester.geometry.poses
-
-Pose helpers operate on canonical world transforms and accept no simulator SDK objects.
-MIRROR_Y reflects the Y axis; mirror_y_transform changes both world and local bases between
-CARLA/Unreal and canonical axes. ActorState.pose locates the actor origin. Use box_transform()
-when a geometry function needs the box center, including a local center offset and rotation.
-
-| Public name | Signature or fields |
-|---|---|
-| `validated_vector` | `validated_vector(value: ArrayLike, name: str) -> np.ndarray` |
-| `validated_transform` | `validated_transform(value: ArrayLike) -> np.ndarray` |
-| `rotation_matrix` | `rotation_matrix(rotation_deg: ArrayLike) -> np.ndarray` |
-| `quaternion_to_rotation` | `quaternion_to_rotation(w: float, x: float, y: float, z: float) -> np.ndarray` |
-| `rotation_to_quaternion` | `rotation_to_quaternion(rotation: ArrayLike) -> tuple[float, float, float, float]` |
-| `interpolate_transform` | `interpolate_transform(first: ArrayLike, second: ArrayLike, fraction: float) -> np.ndarray` |
-| `make_pose` | `make_pose(rotation: np.ndarray, translation: ArrayLike) -> np.ndarray` |
-| `transform` | `transform(T: np.ndarray, pts: np.ndarray) -> np.ndarray` |
-| `MIRROR_Y` | Read-only 4×4 Y-axis reflection matrix |
-| `mirror_y_points` | `mirror_y_points(points: ArrayLike) -> np.ndarray` |
-| `mirror_y_transform` | `mirror_y_transform(matrix: ArrayLike) -> np.ndarray` |
-
-quaternion_to_rotation takes components in (w, x, y, z) order. rotation_to_quaternion returns that
-same order and remains stable near a half-turn. interpolate_transform linearly interpolates the
-translation and uses spherical interpolation for rotation.
-
-### avsectester.geometry.cameras
-
-BODY_FROM_OPTICAL is a 4x4 ndarray mapping optical axes (x right, y down, z forward) to sensor-body
-axes (x forward, y left, z up). Left-multiply cam_from_world to obtain sensor_from_world.
-NEAR_Z is the shared 1e-5 m optical near-depth threshold for geometric projection and surface
-sampling. camera_ray_mask accepts finite forward rays and respects an optional lens max_angle.
-WindshieldDistortion is the vehicle-windshield ray deflection of NVIDIA ncore's bivariate model:
-distort maps scene-side rays to lens-side rays with the forward polynomials and undistort applies
-the inverse polynomials. An FThetaCamera with a windshield distorts rays before its lens projects
-them and undistorts the rays it unprojects.
-
-| Public name | Signature or fields |
-|---|---|
-| `BODY_FROM_OPTICAL` | `np.ndarray`; 4×4 optical-to-sensor-body transform |
-| `NEAR_Z` | `float = 1e-5` |
-| `camera_ray_mask` | `camera_ray_mask(camera: Camera, rays: np.ndarray) -> np.ndarray` |
-| `Camera` | `width: int`<br>`height: int` |
-| `Camera.project` | `project(pts_cam: np.ndarray) -> np.ndarray` |
-| `Camera.unproject` | `unproject(uv: np.ndarray) -> np.ndarray` |
-| `CameraCalibration` | Frozen dataclass: `camera: Camera`<br>`rig_from_camera: np.ndarray`; 4×4 optical-camera-to-rig transform; array fields are not validated at construction, so generators and consumers validate the transform when producing or using it |
-| `PinholeCamera` | `K: np.ndarray`<br>`width: int`<br>`height: int` |
-| `PinholeCamera.project` | `project(pts_cam: np.ndarray) -> np.ndarray` |
-| `PinholeCamera.unproject` | `unproject(uv: np.ndarray) -> np.ndarray` |
-| `FThetaCamera` | `cx: float`<br>`cy: float`<br>`angle_to_pixeldist: tuple`<br>`width: int`<br>`height: int`<br>`pixeldist_to_angle: tuple = ()`<br>`max_angle: float = math.pi / 2`<br>`linear_cde: tuple = (1.0, 0.0, 0.0)`<br>`windshield: WindshieldDistortion \| None = None` |
-| `FThetaCamera.project` | `project(pts_cam: np.ndarray) -> np.ndarray` |
-| `FThetaCamera.in_view` | `in_view(pts_cam: np.ndarray) -> np.ndarray` |
-| `FThetaCamera.unproject` | `unproject(uv: np.ndarray) -> np.ndarray` |
-| `WindshieldDistortion` | Frozen record: `horizontal_poly: tuple`<br>`vertical_poly: tuple`<br>`horizontal_poly_inverse: tuple`<br>`vertical_poly_inverse: tuple` |
-| `WindshieldDistortion.distort` | `distort(rays: np.ndarray) -> np.ndarray` |
-| `WindshieldDistortion.undistort` | `undistort(rays: np.ndarray) -> np.ndarray` |
-
-### avsectester.geometry.projection
-
-These helpers accept camera models, world transforms and geometry directly, without SensorView or
-attack metadata. Both pinhole and f-theta lenses are supported.
-
-| Public name | Signature or fields |
-|---|---|
-| `project_box` | `project_box(camera, cam_from_world, world_from_box, extent) -> tuple[float, float, float, float] \| None` |
-
-project_box returns the image rectangle (x0, y0, x1, y1), or None when the box has no visible
-projection.
+## Modules
+
+<!-- api:begin module=module-map -->
+| Layer | Public module |
+|---|---|
+| L0 | [`avsectester`](#avsectester) |
+| L0 | [`avsectester.geometry`](#avsectestergeometry) |
+| L0 | [`avsectester.geometry.boxes`](#avsectestergeometryboxes) |
+| L0 | [`avsectester.geometry.cameras`](#avsectestergeometrycameras) |
+| L0 | [`avsectester.geometry.mesh`](#avsectestergeometrymesh) |
+| L0 | [`avsectester.geometry.poses`](#avsectestergeometryposes) |
+| L0 | [`avsectester.geometry.projection`](#avsectestergeometryprojection) |
+| L0 | [`avsectester.serialization`](#avsectesterserialization) |
+| L0 | [`avsectester.type_paths`](#avsectestertype_paths) |
+| L0 | [`avsectester.validation`](#avsectestervalidation) |
+| L0′ | [`avsectester.data_types`](#avsectesterdata_types) |
+| L1 | [`avsectester.datasets`](#avsectesterdatasets) |
+| L1 | [`avsectester.datasets.base`](#avsectesterdatasetsbase) |
+| L1 | [`avsectester.datasets.carla`](#avsectesterdatasetscarla) |
+| L1 | [`avsectester.datasets.nurec`](#avsectesterdatasetsnurec) |
+| L1 | [`avsectester.datasets.nuscenes`](#avsectesterdatasetsnuscenes) |
+| L1 | [`avsectester.maps`](#avsectestermaps) |
+| L1 | [`avsectester.maps.clipgt`](#avsectestermapsclipgt) |
+| L1 | [`avsectester.maps.opendrive`](#avsectestermapsopendrive) |
+| L1 | [`avsectester.maps.scenario_map`](#avsectestermapsscenario_map) |
+| L1 | [`avsectester.rendering`](#avsectesterrendering) |
+| L1 | [`avsectester.rendering.compositing`](#avsectesterrenderingcompositing) |
+| L1 | [`avsectester.rendering.harmonizers`](#avsectesterrenderingharmonizers) |
+| L1 | [`avsectester.rendering.objects`](#avsectesterrenderingobjects) |
+| L1 | [`avsectester.rendering.surfaces`](#avsectesterrenderingsurfaces) |
+| L1 | [`avsectester.rendering.textures`](#avsectesterrenderingtextures) |
+| L2 | [`avsectester.closed_loop`](#avsectesterclosed_loop) |
+| L2 | [`avsectester.closed_loop.avstacks`](#avsectesterclosed_loopavstacks) |
+| L2 | [`avsectester.closed_loop.avstacks.base`](#avsectesterclosed_loopavstacksbase) |
+| L2 | [`avsectester.closed_loop.avstacks.driving_adapter`](#avsectesterclosed_loopavstacksdriving_adapter) |
+| L2 | [`avsectester.closed_loop.avstacks.implemented`](#avsectesterclosed_loopavstacksimplemented) |
+| L2 | [`avsectester.closed_loop.avstacks.implemented.alpamayo`](#avsectesterclosed_loopavstacksimplementedalpamayo) |
+| L2 | [`avsectester.closed_loop.avstacks.implemented.camera_forward_collision`](#avsectesterclosed_loopavstacksimplementedcamera_forward_collision) |
+| L2 | [`avsectester.closed_loop.avstacks.implemented.modular`](#avsectesterclosed_loopavstacksimplementedmodular) |
+| L2 | [`avsectester.closed_loop.avstacks.implemented.rule_based`](#avsectesterclosed_loopavstacksimplementedrule_based) |
+| L2 | [`avsectester.closed_loop.avstacks.implemented.rule_based.detector`](#avsectesterclosed_loopavstacksimplementedrule_baseddetector) |
+| L2 | [`avsectester.closed_loop.avstacks.implemented.rule_based.planner`](#avsectesterclosed_loopavstacksimplementedrule_basedplanner) |
+| L2 | [`avsectester.closed_loop.avstacks.implemented.rule_based.ranging`](#avsectesterclosed_loopavstacksimplementedrule_basedranging) |
+| L2 | [`avsectester.closed_loop.avstacks.implemented.rule_based.stack`](#avsectesterclosed_loopavstacksimplementedrule_basedstack) |
+| L2 | [`avsectester.closed_loop.avstacks.implemented.rule_based.tracker`](#avsectesterclosed_loopavstacksimplementedrule_basedtracker) |
+| L2 | [`avsectester.closed_loop.avstacks.implemented.scorers`](#avsectesterclosed_loopavstacksimplementedscorers) |
+| L2 | [`avsectester.closed_loop.environment`](#avsectesterclosed_loopenvironment) |
+| L2 | [`avsectester.closed_loop.hooks`](#avsectesterclosed_loophooks) |
+| L2 | [`avsectester.closed_loop.sensor_corruptions`](#avsectesterclosed_loopsensor_corruptions) |
+| L2 | [`avsectester.closed_loop.simulators`](#avsectesterclosed_loopsimulators) |
+| L2 | [`avsectester.closed_loop.simulators.base`](#avsectesterclosed_loopsimulatorsbase) |
+| L2 | [`avsectester.closed_loop.simulators.carla`](#avsectesterclosed_loopsimulatorscarla) |
+| L2 | [`avsectester.closed_loop.simulators.carla.conversions`](#avsectesterclosed_loopsimulatorscarlaconversions) |
+| L2 | [`avsectester.closed_loop.simulators.carla.sensors`](#avsectesterclosed_loopsimulatorscarlasensors) |
+| L2 | [`avsectester.closed_loop.simulators.carla.simulator`](#avsectesterclosed_loopsimulatorscarlasimulator) |
+| L2 | [`avsectester.closed_loop.simulators.ego_dynamics`](#avsectesterclosed_loopsimulatorsego_dynamics) |
+| L2 | [`avsectester.closed_loop.simulators.ground_contact`](#avsectesterclosed_loopsimulatorsground_contact) |
+| L2 | [`avsectester.closed_loop.simulators.navigation`](#avsectesterclosed_loopsimulatorsnavigation) |
+| L2 | [`avsectester.closed_loop.simulators.nurec`](#avsectesterclosed_loopsimulatorsnurec) |
+| L2 | [`avsectester.closed_loop.simulators.nurec.renderer`](#avsectesterclosed_loopsimulatorsnurecrenderer) |
+| L2 | [`avsectester.closed_loop.simulators.nurec.server`](#avsectesterclosed_loopsimulatorsnurecserver) |
+| L2 | [`avsectester.closed_loop.simulators.nurec.simulator`](#avsectesterclosed_loopsimulatorsnurecsimulator) |
+| L2 | [`avsectester.closed_loop.simulators.nurec.traffic`](#avsectesterclosed_loopsimulatorsnurectraffic) |
+| L2 | [`avsectester.closed_loop.simulators.recorded`](#avsectesterclosed_loopsimulatorsrecorded) |
+| L3 | [`avsectester.attack`](#avsectesterattack) |
+| L3 | [`avsectester.attack.attack`](#avsectesterattackattack) |
+| L3 | [`avsectester.attack.insertion`](#avsectesterattackinsertion) |
+| L3 | [`avsectester.attack.insertion.action`](#avsectesterattackinsertionaction) |
+| L3 | [`avsectester.attack.insertion.assets`](#avsectesterattackinsertionassets) |
+| L3 | [`avsectester.attack.insertion.compositor`](#avsectesterattackinsertioncompositor) |
+| L3 | [`avsectester.attack.insertion.placement`](#avsectesterattackinsertionplacement) |
+| L3 | [`avsectester.attack.insertion.types`](#avsectesterattackinsertiontypes) |
+| L3 | [`avsectester.attack.insertion.visibility`](#avsectesterattackinsertionvisibility) |
+| L3 | [`avsectester.attack.offline_report`](#avsectesterattackoffline_report) |
+| L3 | [`avsectester.attack.optimization`](#avsectesterattackoptimization) |
+| L3 | [`avsectester.attack.optimization.blackbox`](#avsectesterattackoptimizationblackbox) |
+| L3 | [`avsectester.attack.optimization.interface`](#avsectesterattackoptimizationinterface) |
+| L3 | [`avsectester.attack.optimization.perturbations`](#avsectesterattackoptimizationperturbations) |
+| L3 | [`avsectester.attack.optimization.scorers`](#avsectesterattackoptimizationscorers) |
+| L3 | [`avsectester.attack.optimization.whitebox`](#avsectesterattackoptimizationwhitebox) |
+| L3 | [`avsectester.attack.runtime`](#avsectesterattackruntime) |
+| L3 | [`avsectester.attack.segments`](#avsectesterattacksegments) |
+| L3 | [`avsectester.runlog`](#avsectesterrunlog) |
+| L3 | [`avsectester.runlog.log`](#avsectesterrunloglog) |
+| L4 | [`avsectester.execution`](#avsectesterexecution) |
+| L4 | [`avsectester.execution.frame_data_cache`](#avsectesterexecutionframe_data_cache) |
+| L4 | [`avsectester.execution.runner`](#avsectesterexecutionrunner) |
+| L4 | [`avsectester.execution.services`](#avsectesterexecutionservices) |
+| L5 | [`avsectester.evaluation`](#avsectesterevaluation) |
+| L5 | [`avsectester.evaluation.evaluator`](#avsectesterevaluationevaluator) |
+| L5 | [`avsectester.evaluation.metric`](#avsectesterevaluationmetric) |
+| L5 | [`avsectester.evaluation.report`](#avsectesterevaluationreport) |
+| L5 | [`avsectester.evaluation.visualization`](#avsectesterevaluationvisualization) |
+| L6 | [`avsectester.implemented_attacks`](#avsectesterimplemented_attacks) |
+| L6 | [`avsectester.implemented_attacks.object_insertion_attack`](#avsectesterimplemented_attacksobject_insertion_attack) |
+| L6 | [`avsectester.implemented_attacks.object_insertion_attack.assets`](#avsectesterimplemented_attacksobject_insertion_attackassets) |
+| L6 | [`avsectester.implemented_attacks.object_insertion_attack.attack`](#avsectesterimplemented_attacksobject_insertion_attackattack) |
+| L6 | [`avsectester.implemented_attacks.patch_attack`](#avsectesterimplemented_attackspatch_attack) |
+| L6 | [`avsectester.implemented_attacks.patch_attack.attack`](#avsectesterimplemented_attackspatch_attackattack) |
+| L6 | [`avsectester.implemented_attacks.patch_attack.offline`](#avsectesterimplemented_attackspatch_attackoffline) |
+| L6 | [`avsectester.implemented_attacks.patch_attack.online`](#avsectesterimplemented_attackspatch_attackonline) |
+| L6 | [`avsectester.implemented_attacks.phantom_injection_attack`](#avsectesterimplemented_attacksphantom_injection_attack) |
+| L6 | [`avsectester.implemented_attacks.phantom_injection_attack.attack`](#avsectesterimplemented_attacksphantom_injection_attackattack) |
+| L6 | [`avsectester.implemented_attacks.speed_feedback_attack`](#avsectesterimplemented_attacksspeed_feedback_attack) |
+| L6 | [`avsectester.implemented_attacks.speed_feedback_attack.attack`](#avsectesterimplemented_attacksspeed_feedback_attackattack) |
+| L6 | [`avsectester.implemented_attacks.stop_sign_patch_attack`](#avsectesterimplemented_attacksstop_sign_patch_attack) |
+| L6 | [`avsectester.implemented_attacks.stop_sign_patch_attack.attack`](#avsectesterimplemented_attacksstop_sign_patch_attackattack) |
+| L6 | [`avsectester.implemented_attacks.stop_sign_patch_attack.metrics`](#avsectesterimplemented_attacksstop_sign_patch_attackmetrics) |
+| L6 | [`avsectester.implemented_attacks.stop_sign_patch_attack.offline`](#avsectesterimplemented_attacksstop_sign_patch_attackoffline) |
+| L7 | [`avsectester.experiment`](#avsectesterexperiment) |
+| L7 | [`avsectester.experiment.config`](#avsectesterexperimentconfig) |
+| L7 | [`avsectester.experiment.engine`](#avsectesterexperimentengine) |
+| L7 | [`avsectester.experiment.html_report`](#avsectesterexperimenthtml_report) |
+| L7 | [`avsectester.experiment.metadata_file`](#avsectesterexperimentmetadata_file) |
+| L7 | [`avsectester.experiment.models`](#avsectesterexperimentmodels) |
+| L7 | [`avsectester.experiment.result_evaluation`](#avsectesterexperimentresult_evaluation) |
+| L7 | [`avsectester.experiment.type_registry`](#avsectesterexperimenttype_registry) |
+| L8 | [`avsectester.cli`](#avsectestercli) |
+<!-- api:end -->
+
+## Public modules
+
+### avsectester
+
+<!-- api:begin module=avsectester -->
+Adversarial testing for autonomous driving, organized by internal dependency layer.
+
+| Name and signature | Meaning |
+|---|---|
+| `__version__` | Framework package version. |
+<!-- api:end -->
+
+### avsectester.geometry
+
+<!-- api:begin module=avsectester.geometry -->
+Camera models and geometric operations in canonical world coordinates.
+
+| Name and signature | Meaning |
+|---|---|
+| `Camera` | [Camera](#avsectestergeometrycameras) |
+| `CameraCalibration` | [CameraCalibration](#avsectestergeometrycameras) |
+| `FThetaCamera` | [FThetaCamera](#avsectestergeometrycameras) |
+| `PinholeCamera` | [PinholeCamera](#avsectestergeometrycameras) |
+| `WindshieldDistortion` | [WindshieldDistortion](#avsectestergeometrycameras) |
+| `MIRROR_Y` | [MIRROR_Y](#avsectestergeometryposes) |
+| `box_ray_distances` | [box_ray_distances](#avsectestergeometryboxes) |
+| `interpolate_transform` | [interpolate_transform](#avsectestergeometryposes) |
+| `make_pose` | [make_pose](#avsectestergeometryposes) |
+| `mirror_y_points` | [mirror_y_points](#avsectestergeometryposes) |
+| `mirror_y_transform` | [mirror_y_transform](#avsectestergeometryposes) |
+| `oriented_boxes_overlap` | [oriented_boxes_overlap](#avsectestergeometryboxes) |
+| `quaternion_to_rotation` | [quaternion_to_rotation](#avsectestergeometryposes) |
+| `rotation_matrix` | [rotation_matrix](#avsectestergeometryposes) |
+| `rotation_to_quaternion` | [rotation_to_quaternion](#avsectestergeometryposes) |
+| `transform` | [transform](#avsectestergeometryposes) |
+<!-- api:end -->
 
 ### avsectester.geometry.boxes
 
-These functions receive a world-from-box-center transform and full (length, width, height).
-Pass ActorState.box_transform(), rather than its actor-origin pose. Rays are unit vectors in the
-camera frame; missed rays and zero-sized boxes return infinity. Overlap tests use both boxes' yaw
-and horizontal dimensions, include touching, and ignore height.
+<!-- api:begin module=avsectester.geometry.boxes -->
+Ray intersections and top-down overlap for box-centered rigid transforms.
 
-| Public name | Signature or fields |
+| Name and signature | Meaning |
 |---|---|
-| `box_ray_distances` | `box_ray_distances(world_from_box: ArrayLike, extent: ArrayLike, rays: np.ndarray, world_from_cam: ArrayLike) -> np.ndarray` |
-| `oriented_boxes_overlap` | `oriented_boxes_overlap(world_from_box_a: ArrayLike, extent_a: ArrayLike, world_from_box_b: ArrayLike, extent_b: ArrayLike) -> bool` |
+| `box_ray_distances(world_from_box: ArrayLike, extent: ArrayLike, rays: np.ndarray, world_from_cam: ArrayLike) -> np.ndarray` | Ray/slab intersection distances in meters along camera-frame unit rays. |
+| `oriented_boxes_overlap(world_from_box_a: ArrayLike, extent_a: ArrayLike, world_from_box_b: ArrayLike, extent_b: ArrayLike) -> bool` | Whether full-extent boxes overlap in the horizontal plane, including touching. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+Boxes use center poses and full local-axis extents. Ray misses are infinity; overlap is
+evaluated in top-down geometry for the recorded states.
+
+### avsectester.geometry.cameras
+
+<!-- api:begin module=avsectester.geometry.cameras -->
+Camera lens models shared by datasets and simulators.
+
+| Name and signature | Meaning |
+|---|---|
+| `Camera(Protocol)` | Optical-frame lens contract. Coordinates address pixel centers at (x + .5, y + .5). |
+| `Camera.width: int` | Image width in pixels. |
+| `Camera.height: int` | Image height in pixels. |
+| `Camera.project(pts_cam: np.ndarray) -> np.ndarray` | Project camera-coordinate points into continuous image coordinates. |
+| `Camera.unproject(uv: np.ndarray) -> np.ndarray` | Convert continuous image coordinates into unit optical-camera rays. |
+| `CameraCalibration(camera: Camera, rig_from_camera: np.ndarray)` | A lens and optical-camera-to-rig transform, in meters. |
+| `camera_ray_mask(camera: Camera, rays: np.ndarray) -> np.ndarray` | Finite forward camera rays inside the lens's optional maximum viewing angle. |
+| `PinholeCamera(K: np.ndarray, width: int, height: int)` | Ideal pinhole camera with 3x3 intrinsics `K`. |
+| `PinholeCamera.project(pts_cam: np.ndarray) -> np.ndarray` | (N,3) camera-frame points -> (N,2) pixels (valid only for z > 0). |
+| `PinholeCamera.unproject(uv: np.ndarray) -> np.ndarray` | (N,2) pixels -> (N,3) unit rays in the camera frame. |
+| `WindshieldDistortion(horizontal_poly: tuple, vertical_poly: tuple, horizontal_poly_inverse: tuple, vertical_poly_inverse: tuple)` | Refraction of camera rays by the vehicle windshield, as in NVIDIA ncore's bivariate model. |
+| `WindshieldDistortion.distort(rays: np.ndarray) -> np.ndarray` | Scene-side rays to the lens-side rays that the f-theta lens projects. |
+| `WindshieldDistortion.undistort(rays: np.ndarray) -> np.ndarray` | Lens-side rays to the scene-side rays they observe. |
+| `FThetaCamera(cx: float, cy: float, angle_to_pixeldist: tuple, width: int, height: int, pixeldist_to_angle: tuple = (), max_angle: float = math.pi / 2, linear_cde: tuple = (1.0, 0.0, 0.0), windshield: WindshieldDistortion \| None = None)` | NVIDIA f-theta fisheye: `r_px = angle_to_pixeldist(theta)` with `theta` the ray's angle to the optical axis, `r_px` its pixel distance from the principal point (`cx`, `cy`). |
+| `FThetaCamera.project(pts_cam: np.ndarray) -> np.ndarray` | Project camera-coordinate points into continuous image coordinates. |
+| `FThetaCamera.in_view(pts_cam: np.ndarray) -> np.ndarray` | Which camera-frame points project: in front of the camera and within `max_angle`. |
+| `FThetaCamera.unproject(uv: np.ndarray) -> np.ndarray` | Convert continuous image coordinates into unit optical-camera rays. |
+| `BODY_FROM_OPTICAL` | Map optical points (x right, y down, z forward) to body axes (x forward, y left, z up). |
+<!-- api:end -->
+
+#### Constraints and errors
+
+`Camera` axes are optical: x right, y down, z forward. Pixel centers are (x+0.5, y+0.5).
+project/unproject accept N×3 points and N×2 pixels. `BODY_FROM_OPTICAL` maps to body axes (x
+forward, y left, z up). `CameraCalibration` does not validate array payloads at construction;
+producers and consumers validate transforms. `FThetaCamera.unproject` raises
+`NotImplementedError` without `pixeldist_to_angle` and uses that inverse polynomial directly
+rather than solving the forward polynomial. Screen correction must be invertible (`c - d * e
+!= 0`).
 
 ### avsectester.geometry.mesh
 
-| Public name | Signature or fields |
+<!-- api:begin module=avsectester.geometry.mesh -->
+CPU triangle-mesh ray queries requiring Embree through the optional nurec extra.
+
+| Name and signature | Meaning |
 |---|---|
-| `MeshRaycaster` | Class; see methods below |
-| `MeshRaycaster.__init__` | `__init__(vertices: np.ndarray, faces: np.ndarray) -> None` |
-| `MeshRaycaster.check_dependencies` | `check_dependencies() -> None` |
-| `MeshRaycaster.distances` | `distances(origins: np.ndarray, directions: np.ndarray) -> np.ndarray` |
-| `camera_depth` | `camera_depth(camera: Camera, cam_from_world: np.ndarray, raycasters: Sequence[MeshRaycaster]) -> np.ndarray` |
+| `MeshRaycaster(vertices: np.ndarray, faces: np.ndarray)` | An immutable triangle mesh accelerated by Embree. |
+| `MeshRaycaster.check_dependencies() -> None` | Fail early when the optional CPU mesh-query dependencies are unavailable. |
+| `MeshRaycaster.distances(origins: np.ndarray, directions: np.ndarray) -> np.ndarray` | First-hit distances for paired `(N, 3)` origins and directions. |
+| `camera_depth(camera: Camera, cam_from_world: np.ndarray, raycasters: Sequence[MeshRaycaster]) -> np.ndarray` | Optical-axis z depth at pixel centers, taking the nearest of all supplied meshes. |
+<!-- api:end -->
 
-MeshRaycaster copies finite N×3 vertices and integer M×3 triangular faces and builds an Embree
-acceleration structure. distances accepts matching N×3 ray origins/directions, normalizes
-directions and returns N Euclidean first-hit distances, with inf for a miss. These are ray
-distances, not optical-axis z depth. Optional libraries load when the class is used; the explicit
-dependency check raises ImportError with the installation extra when they are unavailable.
+#### Constraints and errors
 
-camera_depth unprojects each pixel center through the supplied lens, casts world-coordinate rays
-through every supplied MeshRaycaster, and keeps the nearest hit. Its float64 (H, W) output is
-optical-axis z depth, with inf where all raycasters miss. It is shared by the simulator and offline
-validation, and needs no native renderer or default-camera configuration.
+Mesh vertices are N×3 and faces are indexed triangles. Ray distances are metric and misses are
+infinity. `camera_depth` returns optical-axis depth. Embree is an optional
+mesh-query dependency.
 
-### avsectester.closed_loop.simulators.navigation
+`MeshRaycaster.check_dependencies` raises `ImportError` when Embree dependencies
+are unavailable.
 
-| Name | Signature |
+### avsectester.geometry.poses
+
+<!-- api:begin module=avsectester.geometry.poses -->
+Canonical world/actor poses in meters and right-handed x-forward, y-left, z-up axes.
+
+| Name and signature | Meaning |
 |---|---|
-| `RouteGenerator` | `RouteGenerator(kind, recorded_points, scenario_map)` |
-| `RouteGenerator.route` | `route(world_from_ego: np.ndarray) -> np.ndarray \| None` |
+| `MIRROR_Y` | Homogeneous transform that reverses the Y coordinate. |
+| `validated_vector(value: ArrayLike, name: str) -> np.ndarray` | Return a finite three-dimensional vector, rejecting invalid shapes or values. |
+| `validated_transform(value: ArrayLike) -> np.ndarray` | Return an independent, read-only right-handed rigid transform. |
+| `rotation_matrix(rotation_deg: ArrayLike) -> np.ndarray` | Return Rz(yaw) @ Ry(pitch) @ Rx(roll) for right-handed degree angles. |
+| `mirror_y_points(points: ArrayLike) -> np.ndarray` | Mirror the y component of points or vectors with trailing coordinate dimension three. |
+| `mirror_y_transform(matrix: ArrayLike) -> np.ndarray` | Express a homogeneous transform in the opposite y-axis convention on both sides. |
+| `quaternion_to_rotation(w: float, x: float, y: float, z: float) -> np.ndarray` | Return a rotation matrix from a finite, nonzero quaternion in w/x/y/z order. |
+| `rotation_to_quaternion(rotation: ArrayLike) -> tuple[float, float, float, float]` | Return a normalized w/x/y/z quaternion, including for rotations close to pi. |
+| `interpolate_transform(first: ArrayLike, second: ArrayLike, fraction: float) -> np.ndarray` | Interpolate rigid poses with linear translation and shortest-path quaternion slerp. |
+| `make_pose(rotation: np.ndarray, translation: ArrayLike) -> np.ndarray` | Build a homogeneous transform from a rotation matrix and translation vector. |
+| `transform(T: np.ndarray, pts: np.ndarray) -> np.ndarray` | Transform an array of three-dimensional points into the destination frame. |
+<!-- api:end -->
 
-Routes are model-visible navigation intent in ego coordinates, in metres with Z=0. Map mode
-uses driving lanes, resolves lane transitions along the recording, and extends through successors.
-Recorded mode uses the recorded path without extension. Each query projects the current physical
-ego origin onto the route, samples 20 points across 80 m, and repeats the endpoint when short.
-None disables navigation.
+#### Constraints and errors
+
+Rigid transforms are 4×4 matrices. Quaternion order is (w, x, y, z). `validated_transform`
+rejects non-rigid rotations and malformed homogeneous rows.
+
+### avsectester.geometry.projection
+
+<!-- api:begin module=avsectester.geometry.projection -->
+Lens-aware projected bounds of boxes, using only geometric data.
+
+| Name and signature | Meaning |
+|---|---|
+| `project_box(camera: Camera, cam_from_world: np.ndarray, world_from_box: np.ndarray, extent: tuple[float, float, float] \| np.ndarray) -> tuple[float, float, float, float] \| None` | Project a box-centered rigid pose and full dimensions to an image-clipped rectangle. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+`project_box` returns visible image-clipped xyxy bounds of a 3-D box, including curved projected
+edges. It returns None when no projection intersects the image; extents must be nonnegative.
+
+### avsectester.serialization
+
+<!-- api:begin module=avsectester.serialization -->
+Shared JSON-compatible serialization and independent in-memory snapshots.
+
+| Name and signature | Meaning |
+|---|---|
+| `SerializationRegistry()` | Explicit dataclass reconstruction and data-only native encoding. |
+| `SerializationRegistry.register_dataclass(cls_or_path: type \| str) -> None` | Register a dataclass, or a path imported only when that dataclass is decoded. |
+| `SerializationRegistry.register_native(module: str, name: str, encode: Callable[[Any], Any], *, snapshot: Callable[[Any, Callable[[Any], Any]], Any] \| None = None) -> None` | Register native conversion without importing the native module. |
+| `SerializationRegistry.snapshot(value: Any) -> Any` | Take an independent snapshot, preserving native wrappers and container subclasses. |
+| `SerializationRegistry.encode(value: Any, *, encode_child: Callable[[Any], Any] \| None = None, encode_field: Callable[[str, Any], Any] \| None = None, encode_leaf: Callable[[Any], Any] \| None = None) -> Any` | Convert a registered value into tagged JSON-compatible data. |
+| `SerializationRegistry.decode(data: Any, *, decode_child: Callable[[Any], Any] \| None = None) -> Any` | Reconstruct registered dataclasses; encoded native values remain ordinary data. |
+| `DEFAULT_REGISTRY` | Serialization registry with framework record types and array codecs registered. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+Register custom dataclasses before writing and import their defining/registration modules before
+reading. Snapshots are independent copies.
+
+#### See also
+
+[Runtime reference](runtime.md).
+
+### avsectester.type_paths
+
+<!-- api:begin module=avsectester.type_paths -->
+Resolve callable Python objects from explicit module-and-attribute paths.
+
+| Name and signature | Meaning |
+|---|---|
+| `split_type_path(value: str) -> tuple[str, str]` | Validate `package.module:name` without importing it and return its two parts. |
+| `import_type_path(value: str) -> Any` | Import a callable `package.module:name`, following dotted attributes in `name`. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+Paths use `package.module:Name`. Malformed paths raise `ValueError`; non-callable targets
+raise `TypeError`. Missing modules and attributes retain Python's import and attribute errors.
+
+#### See also
+
+[Configuration reference](configuration.md).
+
+### avsectester.validation
+
+<!-- api:begin module=avsectester.validation -->
+Reusable value checks for framework components and user implementations.
+
+| Name and signature | Meaning |
+|---|---|
+| `require_nonnegative_integer(value: int, name: str) -> None` | Require an integer greater than or equal to zero, excluding booleans. |
+| `require_positive_integer(value: int, name: str) -> None` | Require an integer greater than zero, excluding booleans, without converting it. |
+| `require_nonnegative_number(value: float, name: str) -> None` | Require a finite real number greater than or equal to zero, excluding booleans. |
+| `require_positive_number(value: float, name: str) -> None` | Require a finite real number greater than zero, excluding booleans. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+Integers exclude bool. Numeric validators reject non-finite values; positive and nonnegative
+bounds are checked separately.
+
+Validation helpers raise `ValueError` naming the invalid parameter.
+
+### avsectester.data_types
+
+<!-- api:begin module=avsectester.data_types -->
+Data types exchanged between framework components.
+
+| Name and signature | Meaning |
+|---|---|
+| `ActorState(pose: Any, velocity: tuple[float, float, float] \| None = None, category: str \| None = None, extent: tuple[float, float, float] \| None = None, box_center: tuple[float, float, float] = (0.0, 0.0, 0.0), box_rotation: tuple[float, float, float] = (0.0, 0.0, 0.0))` | An actor's world-from-origin pose, world velocity and optional bounding-box geometry. |
+| `ActorState.box_transform() -> np.ndarray` | World-from-box-center transform, including local roll/pitch/yaw degree rotation. |
+| `Unavailable(reason: str)` | A dataset cannot supply the requested evidence, with an explicit reason. |
+| `TargetSpec(box: tuple[float, float, float, float], label: str \| None = None)` | The object to attack, with an image-space xyxy `box` and an optional class label. |
+| `Control(throttle: float = 0.0, steer: float = 0.0, brake: float = 0.0, trajectory: Any = None)` | The driving system's output — a vehicle control *command* (the decision). |
+| `Observation(t: float, frame: int, sensor_data: dict[str, Any] = dict(), calibration: dict[str, Any] = dict(), vehicle_state: Any = None, ego_speed: float = 0.0, route: np.ndarray \| None = None)` | What the simulator sends the driving system each frame — and the only thing it sends. |
+| `Observation.set_calibration(sensor_id: str, calibration: Any) -> None` | Replace model-visible calibration and its native payload reference together. |
+| `WorldSnapshot(t: float, frame: int, vehicle_state: Any = None, ego_speed: float = 0.0, actors: Mapping[str, Any] = dict(), ego: ActorState \| None = None, traffic_lights: Mapping[str, str] = dict(), objects: Mapping[str, ActorState] = dict())` | An independent snapshot of the simulator's actual ego state and other actors' states. |
+| `StateEstimate(vehicle_state: Any = None, ego_speed: float = 0.0)` | Model-visible ego state and speed produced by a localization adapter. |
+| `RecordedOutput(name: str, value: Any, step: int, stage: str, frame: int, t: float, sensor: str \| None = None)` | A named output captured by an attack, defense or localization callback. |
+| `Detection(position: tuple[float, float, float], extent: tuple[float, float, float], yaw: float, category: str \| None = None, score: float \| None = None)` | One 3D detection in the capture-time true ego frame (x forward, y left, z up). |
+| `validate_command_modes(command: Control, modes: frozenset[str] \| None) -> None` | Validate the fields consumed by a simulator or independently called dynamics model. |
+| `read_camera_rgb(observation: Observation, camera: str \| None = None) -> tuple[str, np.ndarray] \| None` | Return the selected sensor ID and H×W×3 uint8 RGB pixels, or `None` if unavailable. |
+| `write_camera_rgb(observation: Observation, key: str, rgb: np.ndarray) -> Observation` | Return an observation copy with sensor `key` replaced by pixels cast to uint8. |
+| `write_sensor_data(observation: Observation, sensor: str, data: Any) -> Observation` | Return an observation copy with one sensor's data replaced. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+`ActorState.pose` is world-from-actor. `extent` is full length/width/height in meters or `None`;
+zero dimensions are distinct from unknown dimensions. `box_center` is local; `box_rotation` is
+local right-handed roll/pitch/yaw in degrees. `box_transform()` composes the world-from-box pose.
+`write_camera_rgb` casts input to RGB uint8; generic sensor writes preserve transport conventions.
+
+#### See also
+
+[Runtime reference](runtime.md).
+
+### avsectester.datasets
+
+<!-- api:begin module=avsectester.datasets -->
+Stateless recorded-data and recipe providers; no simulator ownership.
+
+| Name and signature | Meaning |
+|---|---|
+| `SensorDataReference` | [SensorDataReference](#avsectesterdatasetsbase) |
+| `Dataset` | [Dataset](#avsectesterdatasetsbase) |
+| `FrameReference` | [FrameReference](#avsectesterdatasetsbase) |
+| `FrameData` | [FrameData](#avsectesterdatasetsbase) |
+| `ScenarioDescriptor` | [ScenarioDescriptor](#avsectesterdatasetsbase) |
+| `ScenarioStart` | [ScenarioStart](#avsectesterdatasetsbase) |
+<!-- api:end -->
+
+#### See also
+
+[Datasets and semantic maps](../guides/datasets.md).
+
+### avsectester.datasets.base
+
+<!-- api:begin module=avsectester.datasets.base -->
+Dataset interfaces, frame references and recorded scenario starts.
+
+| Name and signature | Meaning |
+|---|---|
+| `FrameReference(scenario_id: str, position: int, frame_id: str \| int, timestamp: float)` | One frame of a scenario's timeline: its position, native frame ID and scenario time (s). |
+| `ScenarioDescriptor(id: str, kind: str, payload: Mapping[str, Any] = dict())` | A scenario's `id`, dataset class name in `kind`, and adapter-specific `payload`. |
+| `SensorDataReference(uri: str, sensor: str, timestamp: float, metadata: Mapping[str, Any] = dict())` | Location of one recorded sensor payload; adapters decide how it is decoded. |
+| `FrameData(frame: FrameReference, actors: Mapping[str, data_types.ActorState] = dict(), sensor_references: Mapping[str, SensorDataReference] = dict(), provenance: Mapping[str, Any] = dict(), ego: data_types.ActorState \| None = None)` | World-frame actor states and recorded sensor references at one dataset position. |
+| `ScenarioStart(kind: str, scenario_id: str, frame: FrameReference, payload: Mapping[str, Any], recorded_ego: tuple[data_types.ActorState, ...] = (), scenario_map: ScenarioMap \| data_types.Unavailable = data_types.Unavailable("The dataset provides no scenario map"))` | What a simulator needs to start a scenario at a frame; no attack or selection metadata. |
+| `Dataset(ABC)()` | Read scenarios with identical behavior before and after simulator execution. |
+| `Dataset.scenarios() -> Iterator[ScenarioDescriptor]` | Abstract. Enumerate available scenarios in dataset order. |
+| `Dataset.frames(scenario_id: str) -> Sequence[FrameReference]` | Abstract. Return the ordered frame references for a scenario. |
+| `Dataset.frame_data(scenario_id: str, frame: FrameReference) -> FrameData \| data_types.Unavailable` | Abstract. Load frame data for the requested scenario reference. |
+| `Dataset.native(scenario_id: str) -> Any` | Abstract. Return the native record for `scenario_id`. |
+| `Dataset.scenario_start(scenario_id: str, frame: FrameReference) -> ScenarioStart` | Abstract. Build the recorded ego, map and simulator payload for a scenario reference. |
+| `Dataset.scenario_map(scenario_id: str) -> ScenarioMap \| data_types.Unavailable` | Return immutable semantic map data, or explain why this dataset has none. |
+| `Dataset.checked_frame(scenario_id: str, frame: FrameReference) -> FrameReference` | Validate a frame reference against the scenario timeline and return the canonical reference. |
+| `Dataset.decision_window(scenario_id: str, start: FrameReference, decision_steps: int) -> tuple[FrameReference, ...]` | Require N+1 actual frames (the last is the terminal state); never pad or truncate. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+N decisions require N+1 supported frame references. `FrameReference.position` is a canonical
+timeline position, separate from native `frame_id`. `Dataset` is stateless; unavailable source
+values are explicit. `FrameData.actors` excludes ego.
+
+#### See also
+
+[Datasets and semantic maps](../guides/datasets.md).
+
+### avsectester.datasets.carla
+
+<!-- api:begin module=avsectester.datasets.carla -->
+CARLA scenario recipes and semantic-map-backed dataset access.
+
+| Name and signature | Meaning |
+|---|---|
+| `PrescribedMotion(controls: tuple[Control, ...] = (), trajectory: tuple[ActorState, ...] = (), constant_control: Control \| None = None)` | One control sequence, trajectory, or constant actuator control. |
+| `PrescribedMotion.expanded(decision_steps: int) -> PrescribedMotion` | Expand `constant_control` into one control per decision and validate the motion. |
+| `PrescribedMotion.validate(decision_steps: int) -> None` | Require N actuator controls or N+1 states with velocity for N=`decision_steps`. |
+| `CarlaRecipe(scenario: dict, decision_steps: int, time_step: float, motion: Mapping[str, PrescribedMotion], metadata: Mapping = dict())` | Serializable CARLA world, ego and recorded-actor scenario recipe. |
+| `CarlaDataset(Dataset)(recipes: Mapping[str, CarlaRecipe], map_directory: str \| Path \| None = None)` | Dataset of CARLA recipes and optional exported semantic maps. |
+| `CarlaDataset.scenario_map(scenario_id: str) -> ScenarioMap \| Unavailable` | Read an exported OpenDRIVE map without connecting to a CARLA server. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+`CarlaRecipe` raises `ValueError` for zero decisions or nonpositive/nonfinite `time_step`.
+Every prescribed control sequence needs N controls; trajectories need N+1 states with velocity.
+Generated frame data is owned by preparation caches rather than `Dataset`.
+
+#### See also
+
+[Datasets and semantic maps](../guides/datasets.md).
+
+### avsectester.datasets.nurec
+
+<!-- api:begin module=avsectester.datasets.nurec -->
+Read NuRec USDZ annotations and recorded initial sequences without a rendering service.
+
+| Name and signature | Meaning |
+|---|---|
+| `read_scene_mesh(usdz_path: str \| Path) -> tuple[np.ndarray, np.ndarray]` | Merge mesh.ply and mesh_ground.ply without loading camera or trajectory metadata. |
+| `NuRecDataset(Dataset)(usdz_paths: list[str \| Path] \| None = None, camera_id: str = "camera_front_wide_120fov", vehicle_labels: tuple[str, ...] = _VEHICLE_LABELS, time_step: float = 0.1, *, dataroot: str \| Path \| None = None)` | Labeled NuRec scenes on a decision timeline generated at `time_step`. |
+| `NuRecDataset.usdz_paths: list[str]` | Scenario archive paths: the configured list, or every archive below dataroot. |
+| `NuRecDataset.open_archive(path: str \| Path) -> zipfile.ZipFile` | Open the scene archive read-only. The caller closes it, preferably with `with`. |
+| `NuRecDataset.raw_metadata(scenario_id: str) -> dict[str, Any]` | Return an independent copy of this scenario's native annotations. |
+| `NuRecDataset.camera_geometry(scenario_id: str)` | Return an independent optical camera model and its rig-from-camera pose. |
+| `NuRecDataset.camera_timestamps(scenario_id: str) -> np.ndarray` | Recorded video-frame timestamps in seconds, distinct from decision positions. |
+| `NuRecDataset.usdz_path(scenario_id: str) -> str` | Return this scenario's source archive path without creating a simulator. |
+| `NuRecDataset.scene_mesh(scenario_id: str) -> tuple[np.ndarray, np.ndarray]` | Merge the static and ground PLY meshes in canonical scene-world coordinates. |
+| `NuRecDataset.scenario_map(scenario_id: str) -> ScenarioMap \| Unavailable` | Read canonical-world clipgt geometry, preserving missing-layer reasons. |
+| `NuRecDataset.ego_state(scenario_id: str, timestamp_us: int) -> ActorState` | Interpolate the recorded rig pose and world velocity within its support. |
+| `NuRecDataset.track_trajectories(scenario_id: str) -> dict[str, dict[str, Any]]` | Return independent complete box-center tracks without smoothing or cropping. |
+| `NuRecDataset.actor_states(scenario_id: str, timestamp_us: int) -> dict[str, ActorState]` | Recorded actors at this timestamp: world pose, velocity and category, by track ID. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+Exactly one of `usdz_paths` and `dataroot` must be supplied. Timelines interpolate only within
+recorded support. `camera_id` selects the camera whose timestamps define the decision timeline.
+`read_scene_mesh` returns world-coordinate vertices and indexed triangle faces. `clipgt` shares
+the recorded rig world frame. An OpenDRIVE fallback requires a confirmed transform into that
+frame; geographic reference alone is insufficient and unconfirmed alignment
+returns `Unavailable`.
+
+Each `track_trajectories` entry contains `trajectory` as timestamp-microsecond/world-from-box
+pairs, boolean `controllable`, native `label_class`, full `extent` and canonical `category`.
+
+#### See also
+
+[Datasets and semantic maps](../guides/datasets.md).
+
+### avsectester.datasets.nuscenes
+
+<!-- api:begin module=avsectester.datasets.nuscenes -->
+Read nuScenes records without simulator dependencies.
+
+| Name and signature | Meaning |
+|---|---|
+| `NuScenesDataset(Dataset)(dataroot: str \| Path, version: str = "v1.0-trainval", camera: str = "CAM_FRONT")` | nuScenes scenes as scenario timelines of linked keyframes. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+The nuScenes SDK and requested dataset version must be available. Sensor names remain native
+nuScenes names.
+
+#### See also
+
+[Datasets and semantic maps](../guides/datasets.md).
+
+### avsectester.maps
+
+<!-- api:begin module=avsectester.maps -->
+Semantic scenario maps and offline source readers.
+
+| Name and signature | Meaning |
+|---|---|
+| `Lane` | [Lane](#avsectestermapsscenario_map) |
+| `ScenarioMap` | [ScenarioMap](#avsectestermapsscenario_map) |
+| `STOP_LINE_KIND_BY_CONTROL_KIND` | [STOP_LINE_KIND_BY_CONTROL_KIND](#avsectestermapsscenario_map) |
+| `StopLine` | [StopLine](#avsectestermapsscenario_map) |
+| `TrafficControl` | [TrafficControl](#avsectestermapsscenario_map) |
+| `read_opendrive` | [read_opendrive](#avsectestermapsopendrive) |
+<!-- api:end -->
+
+#### See also
+
+[Datasets and semantic maps](../guides/datasets.md).
+
+### avsectester.maps.clipgt
+
+<!-- api:begin module=avsectester.maps.clipgt -->
+Read NuRec clipgt semantic geometry without dataset or simulator dependencies.
+
+| Name and signature | Meaning |
+|---|---|
+| `read_clipgt(archive: zipfile.ZipFile) -> ScenarioMap` | Read canonical semantic layers from clipgt parquet tables in an open scene archive. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+Read an open USDZ ZIP archive. `Lane` rails remain recorded boundaries; centerline construction
+resamples both at matching normalized arc-length fractions, using the larger point count, then
+takes paired midpoints. Connectivity and control/line associations require source records.
+`Lane` classification applies in order: `SHOULDER_LANE` →shoulder; `PARKING_LANE` →parking;
+`vehicle_types` containing CAR→driving; only BICYCLE→bike; otherwise other. `HOV_LANE` and
+`SERVICE_ROAD` with CAR remain driving. `TrafficControl` poses retain raw centers and XYZ dimensions
+with `face_center`. Exact traffic-sign categories `TRAFFIC_SIGN_REGULATORY_R1_STOP`,
+`TRAFFIC_SIGN_REGULATORY_R1_YIELD` and `TRAFFIC_SIGN_REGULATORY_R2_SPEED_LIMIT` map to
+`stop_sign`, `yield_sign` and `speed_limit`; other categories remain other and retain their
+source `native_category`. Only wait-line rows explicitly marked `is_implicit=False` are
+retained. All-implicit rows mean a known empty `stop_lines` layer. `native_category` keeps paint
+labels such as STOP; subtypes ENTRY, `NOT_APPLICABLE` and `CROSSWALK_ENTRY` are not categories
+or filters. Kind is derived only from explicit control/lane associations, never paint or nearest
+geometry. Multiple controls of one recognized kind may establish kind; `control_id` requires one
+unique control. Missing/ambiguous evidence gives unknown. Missing or unusable geometry is
+reported in `unavailable_layers`. An empty or unsupported traffic-light table does not make the
+whole mixed `traffic_controls` layer unavailable. `read_clipgt` returns the archive coordinates
+without applying a coordinate transform.
+
+#### See also
+
+[Datasets and semantic maps](../guides/datasets.md).
+
+### avsectester.maps.opendrive
+
+<!-- api:begin module=avsectester.maps.opendrive -->
+Read canonical semantic layers through CARLA's offline OpenDRIVE client parser.
+
+| Name and signature | Meaning |
+|---|---|
+| `read_opendrive(xodr_text: str, *, name: str) -> ScenarioMap \| Unavailable` | Read OpenDRIVE without a simulator connection, or report a missing CARLA client package. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+The optional CARLA parser reads exported OpenDRIVE without a server. Canonical conversion
+reflects the Y axis. Every lane type is sampled at spacing at most two meters on the center and
+both boundaries. Native midpoint refinement handles continuous geometry; unresolved source
+discontinuities subdivide the existing straight connector while preserving its endpoints.
+Left/right neighbours refer only to the same travel direction. Driving-lane polygons form the
+drivable area. A junction intersection is the convex hull of its driving lanes. Landmark types
+206, 205, 274 and 1000001 map to `stop_sign`, `yield_sign`, `speed_limit` and `traffic_light`.
+Each signal reference resolves its own road and governed lanes. A stop line spans each
+controlled lane perpendicular to its local heading, with ID
+`stop-line:<signal_id>:<road_id>:<lane_id>`. `TrafficControl.lane_ids` unions those references;
+`stop_line_id` is set only for one line; otherwise follow `StopLine.control_id`. Generated lines
+approximate reference positions, not surveyed painted markings; `native_category` is
+`opendrive_signal_reference`. Positive-height non-light landmarks shift up half their height and
+use `face_center`; lights and zero-height landmarks retain `signal_position`. `Orientation`
+opposes the mean normalized governed-lane direction when its horizontal magnitude is at least
+0.5, otherwise uses the converted landmark heading plus 180° local Z. Extent is
+(0,width,height); unavailable thickness and unconfirmed speed limits are reported explicitly.
+
+#### See also
+
+[Datasets and semantic maps](../guides/datasets.md).
+
+### avsectester.maps.scenario_map
+
+<!-- api:begin module=avsectester.maps.scenario_map -->
+Immutable semantic map records in canonical world coordinates, measured in meters.
+
+| Name and signature | Meaning |
+|---|---|
+| `STOP_LINE_KIND_BY_CONTROL_KIND` | Mapping from traffic-control kind to the corresponding stop-line kind. |
+| `Lane(id: str, centerline: np.ndarray, left_boundary: np.ndarray, right_boundary: np.ndarray, lane_type: Literal["driving", "shoulder", "bike", "parking", "other"] = "driving", predecessors: tuple[str, ...] = (), successors: tuple[str, ...] = (), left_neighbor: str \| None = None, right_neighbor: str \| None = None, speed_limit_mps: float \| None = None)` | One lane with direction-ordered centerline and left/right boundary polylines. |
+| `TrafficControl(id: str, kind: Literal["stop_sign", "yield_sign", "speed_limit", "traffic_light", "other"], native_category: str, pose: np.ndarray, extent: tuple[float, float, float], pose_reference: Literal["face_center", "signal_position"], lane_ids: tuple[str, ...] = (), stop_line_id: str \| None = None)` | A static control facing approaching traffic, with (thickness, width, height) extent. |
+| `StopLine(id: str, points: np.ndarray, native_category: str, kind: Literal["stop_sign", "traffic_light", "yield_sign", "unknown"] = "unknown", lane_ids: tuple[str, ...] = (), control_id: str \| None = None)` | A world-coordinate transverse line associated with lanes and optionally a control. |
+| `ScenarioMap(lanes: Mapping[str, Lane] = dict(), drivable_area: tuple[np.ndarray, ...] = (), road_boundaries: tuple[np.ndarray, ...] = (), crosswalks: tuple[np.ndarray, ...] = (), intersections: tuple[np.ndarray, ...] = (), traffic_controls: Mapping[str, TrafficControl] = dict(), stop_lines: Mapping[str, StopLine] = dict(), unavailable_layers: Mapping[str, str] = dict())` | Semantic layers in canonical right-handed world axes, with explicit missing-layer reasons. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+All four records are frozen; geometry inputs are copied and made read-only in canonical world
+meters. `ScenarioMap` contains lanes, drivable polygons, road boundaries, crosswalks,
+intersections, traffic controls, stop lines and `unavailable_layers`. `Lane` geometry is N×3 and
+speed limits are m/s; `StopLine.points` is N×3. `TrafficControl.pose` has +X pointing out of its
+front face toward approaching traffic. extent is full (thickness, width, height) on local X/Y/Z.
+`pose_reference` is required:
+
+| Source | `pose_reference` | Origin and extent |
+|---|---|---|
+| NuRec signs/lights | `face_center` | Recorded box center and XYZ dimensions |
+| CARLA positive-height non-light landmark | `face_center` | Signal position plus half its height in world Z; thickness is unavailable |
+| CARLA traffic light or zero-height landmark | `signal_position` | OpenDRIVE signal position; a light head or face size is not established |
+
+Only `face_center` puts the extent center at the pose origin. `Lane` kinds are driving,
+shoulder, bike, parking or other. `TrafficControl` kinds are `stop_sign`, `yield_sign`, `speed_limit`,
+`traffic_light` or other; stop-line kinds are `stop_sign`, `traffic_light`, `yield_sign` or
+unknown. `STOP_LINE_KIND_BY_CONTROL_KIND` maps recognized stopping-control associations.
+`native_category` retains source text independently. `unavailable_layers` keys are a layer,
+`<layer>.partial`, `<layer>.<record field>`, or `traffic_controls.<kind>`. They identify absent
+layers, partially readable records, absent fields or missing control kinds. Other keys raise
+`ValueError`; missing evidence is never filled with invented associations.
+
+#### See also
+
+[Datasets and semantic maps](../guides/datasets.md).
+
+### avsectester.rendering
+
+<!-- api:begin module=avsectester.rendering -->
+Simulator-independent world objects, planar rendering and appearance compositing.
+
+| Name and signature | Meaning |
+|---|---|
+| `ObjectAsset` | [ObjectAsset](#avsectesterrenderingobjects) |
+| `PlacedObject` | [PlacedObject](#avsectesterrenderingobjects) |
+| `PlaneSurface` | [PlaneSurface](#avsectesterrenderingobjects) |
+| `ClassicHarmonizer` | [ClassicHarmonizer](#avsectesterrenderingharmonizers) |
+| `ExposureHarmonizer` | [ExposureHarmonizer](#avsectesterrenderingharmonizers) |
+| `Harmonizer` | [Harmonizer](#avsectesterrenderingharmonizers) |
+| `PCTNetHarmonizer` | [PCTNetHarmonizer](#avsectesterrenderingharmonizers) |
+| `render_surfaces` | [render_surfaces](#avsectesterrenderingsurfaces) |
+| `CompositePlan` | [CompositePlan](#avsectesterrenderingcompositing) |
+| `CompositeResult` | [CompositeResult](#avsectesterrenderingcompositing) |
+| `ObjectComposition` | [ObjectComposition](#avsectesterrenderingcompositing) |
+| `ObjectVisibility` | [ObjectVisibility](#avsectesterrenderingcompositing) |
+| `blend_rgba` | [blend_rgba](#avsectesterrenderingcompositing) |
+| `composite_objects` | [composite_objects](#avsectesterrenderingcompositing) |
+| `plan_composite` | [plan_composite](#avsectesterrenderingcompositing) |
+| `STOP_SIGN_FACE` | [STOP_SIGN_FACE](#avsectesterrenderingtextures) |
+| `CheckerboardTexture` | [CheckerboardTexture](#avsectesterrenderingtextures) |
+| `Texture` | [Texture](#avsectesterrenderingtextures) |
+| `load_rgba_image` | [load_rgba_image](#avsectesterrenderingtextures) |
+<!-- api:end -->
+
+#### See also
+
+[Implement an attack](../guides/attacks.md).
+
+### avsectester.rendering.compositing
+
+<!-- api:begin module=avsectester.rendering.compositing -->
+Depth-aware composition of world objects, differentiable in surface colors, and
+visible-region blending.
+
+| Name and signature | Meaning |
+|---|---|
+| `SurfaceFootprint(object_index: int, surface_index: int, sampling: PlaneSampling, alpha: np.ndarray, premultiplied: np.ndarray, owned: np.ndarray)` | One surface's sampling over its clipped image region and the visible pixels it owns. |
+| `ObjectVisibility(occlusion_source: str, ignored_occluders: tuple[str, ...], visible_pixels: int)` | One world object's camera visibility and the evidence used to measure it. |
+| `CompositeResult(image: np.ndarray, depth: np.ndarray, visible_mask: np.ndarray, occlusion_source: str, ignored_occluders: tuple[str, ...] = (), object_visibility: Mapping[str, ObjectVisibility] = dict())` | Composite pixels, optical z-depth, visibility, occlusion source and ignored_occluders. |
+| `blend_rgba(image: np.ndarray, rgba: np.ndarray, visible_mask: np.ndarray, *, harmonizer: Harmonizer \| None = None, soften: float = 0.0) -> np.ndarray` | Blend sampled RGBA only at visible pixels, optionally softening and harmonizing there. |
+| `CompositePlan(objects: tuple[PlacedObject, ...], depth: np.ndarray, visible_mask: np.ndarray, occlusion_source: str, ignored_occluders: tuple[str, ...], object_visibility: Mapping[str, ObjectVisibility], footprints: tuple[SurfaceFootprint, ...])` | Texture-independent geometry and composition for one camera image. |
+| `CompositePlan.composite(image: torch.Tensor, textures: Mapping[tuple[str, int], torch.Tensor] \| None = None) -> torch.Tensor` | Blend surfaces and differentiable harmonizers over a (3, H, W) image in [0, 1]. |
+| `CompositePlan.apply(image: np.ndarray) -> CompositeResult` | Deploy uint8 RGB, rounding once after differentiable composition. |
+| `ObjectComposition(background: np.ndarray, plan: CompositePlan)` | How placed objects were composed into one capture: the image beneath them and the plan. |
+| `plan_composite(camera: Camera, cam_from_world: np.ndarray, objects: Sequence[PlacedObject], *, scene_depth: np.ndarray \| None = None, occluders: Mapping[str, ActorState] \| None = None, occlusion_tolerance_m: float = 0.1, scene_visibility: np.ndarray \| None = None) -> CompositePlan` | Plan the nearest object surfaces and their unoccluded pixels in one camera. |
+| `composite_objects(image: np.ndarray, camera: Camera, cam_from_world: np.ndarray, objects: Sequence[PlacedObject], *, scene_depth: np.ndarray \| None = None, occluders: Mapping[str, ActorState] \| None = None, occlusion_tolerance_m: float = 0.1) -> CompositeResult` | Plan and apply a composite; see `plan_composite` and `CompositePlan.apply`. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+`CompositePlan` shares texture sampling, alpha, visibility and differentiable harmonization
+between deployment and optimization; `apply(image)` equals `round(composite(image/255) * 255)`
+when all harmonizers are differentiable. `composite` raises `ValueError` for a
+non-differentiable harmonizer, identifying its object.
+
+Each object's harmonizer sees the same unadjusted composite, original background, its visible
+mask and a nominal composite. Surface `nominal_texture` values replace candidate colors in that
+nominal view, so exposure estimation can retain the unpatched face as reference.
+
+`scene_visibility` is the sole occlusion evidence when provided, excluding scene depth and
+occluders; the plan depth then contains only visible object surfaces. Otherwise supplied scene
+optical-axis depth is the sole scene-occlusion evidence; without depth, known actor cuboids
+approximate occlusion in candidate regions. Missing actor extents are listed as
+`ignored_occluders`. The nearest surface wins; surface order breaks exact depth ties.
+
+Surfaces without `nominal_texture` keep their own candidate colors in the nominal blend.
+Non-differentiable harmonizers run through NumPy after uint8 rounding during `apply`; `composite`
+rejects them. Both differentiable paths round only once at final uint8 conversion.
+
+`CompositePlan.composite` accepts replacement colors keyed by `(object_id, surface_index)`; an
+unknown planned surface raises `KeyError`. `occlusion_source` is `scene_visibility`, `depth` or
+`actor_cuboids`, according to the supplied evidence.
+
+#### See also
+
+[Simulators](../guides/simulators.md).
+
+### avsectester.rendering.harmonizers
+
+<!-- api:begin module=avsectester.rendering.harmonizers -->
+Image harmonization with optional in-process PCTNet inference.
+
+| Name and signature | Meaning |
+|---|---|
+| `Harmonizer(ABC)()` | Adjust the pasted foreground to fit the background. Must preserve the patch's texture. |
+| `Harmonizer.differentiable: ClassVar[bool] = False` | Whether input-image gradients are supported by this component. |
+| `Harmonizer.harmonize_tensor(composite: torch.Tensor, mask: torch.Tensor, background: torch.Tensor, nominal_composite: torch.Tensor) -> torch.Tensor` | Adjust CHW floating sRGB only within the HW boolean visible mask. |
+| `Harmonizer.__call__(composite_rgb: np.ndarray, mask: np.ndarray, background_rgb: np.ndarray) -> np.ndarray` | Abstract. Return H×W×3 uint8 RGB adjusted only inside the H×W boolean visible mask. |
+| `ExposureHarmonizer(Harmonizer)(reference: str = "ring", ring_px: int = 12, gain_range: tuple[float, float] = (.05, 1.2), feather_sigma: float = 1.2)` | Match visible foreground exposure to a background reference in linear RGB. |
+| `ExposureHarmonizer.differentiable: ClassVar[bool] = True` | Whether input-image gradients are supported by this component. |
+| `ExposureHarmonizer.exposure_gain(composite: torch.Tensor, mask: torch.Tensor, background: torch.Tensor) -> torch.Tensor \| None` | Return the clipped gain from `composite`'s visible luminance to the reference. |
+| `ExposureHarmonizer.__call__(composite_rgb: np.ndarray, mask: np.ndarray, background_rgb: np.ndarray) -> np.ndarray` | Apply exposure matching and return uint8 RGB without changing mask-exterior pixels. |
+| `ClassicHarmonizer(Harmonizer)(color_transfer: bool = True, poisson: bool = True, preserve_chroma: bool = False, blend: str = "poisson", feather: float = 1.2, gain_range: tuple = (0.35, 1.2))` | Reinhard color transfer (match the patch's Lab mean/std to the scene) + Poisson seamless blend. |
+| `ClassicHarmonizer.__call__(composite_rgb, mask, background_rgb)` | Transfer foreground color statistics and optionally blend its boundary with Poisson editing. |
+| `PCTNetHarmonizer(Harmonizer)(libcom_directory: str \| Path, device: str = "cuda:0", weights: str \| Path \| None = None, strict: bool = False)` | Learned harmonization via libcom's **PCTNet**, run **in-process**. |
+| `PCTNetHarmonizer.__call__(composite_rgb, mask, background_rgb)` | Harmonize visible foreground with PCTNet, applying the configured strict error policy. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+`ExposureHarmonizer` converts sRGB c to linear l: l=c/12.92 for c≤0.04045;
+otherwise l=((c+0.055)/1.055)^2.4.
+
+Luminance is Y=0.2126R+0.7152G+0.0722B. Gain is
+`g = clip(mean(Y_reference) / (mean(Y_nominal_visible) + 1e-6), gain_range)`.
+The reference is
+the outside ring or the original background under the object. `CompositePlan` obtains nominal
+visible color from each surface's `nominal_texture` when available; without a separate nominal
+view, NumPy calls estimate gain from the composite itself.
+
+Multiply visible candidate linear RGB by g. Encode sRGB: c=12.92l for l≤0.0031308; otherwise
+c=1.055l^(1/2.4)−0.055. Pixels outside the mask retain input; empty visible/reference regions
+return input unchanged.
+
+`ClassicHarmonizer` and `PCTNetHarmonizer` are non-differentiable. PCTNet accepts a string
+device and falls back to CPU when CUDA is unavailable.
+
+Tensor harmonizers receive CHW float `composite/background/nominal_composite` in [0,1] and an HW
+boolean visible mask; the nominal tensor matches composite shape, dtype and device.
+`ExposureHarmonizer.exposure_gain` returns the clipped scalar gain or None for an empty
+visible/reference region. Feathering is output=a×adjusted+(1−a)×background inside the mask,
+where a is the Gaussian-blurred float mask; `feather_sigma=0` disables it.
+
+Custom tensor harmonizers declare differentiable=True, implement `harmonize_tensor` and preserve
+mask-exterior pixels. The base tensor method raises `NotImplementedError`.
+
+PCTNet construction neither loads a model nor downloads weights. First harmonization loads only
+libcom's source modules. Explicit weights take precedence; otherwise it
+uses `<libcom_directory>/libcom/image_harmonization/pretrained_models/PCTNet.pth`. If that
+file is absent, first use requests `PCTNet.pth` from `BCMIZB/Libcom_pretrained_models` through
+`huggingface_hub` into the same directory. strict=True wraps loading/inference failure in
+`RuntimeError`; strict=False uses `ClassicHarmonizer` fallback.
+
+#### Extension contract
+
+Implement `Harmonizer.__call__(composite, mask, background)` for HWC RGB arrays.
+Return matching shape and dtype, preserve pixels outside the mask and leave inputs unchanged.
+For differentiable composition, declare `differentiable=True` and implement `harmonize_tensor`
+with CHW floating RGB, an HW mask and gradients connected to candidate colors.
+
+#### See also
+
+[Simulators](../guides/simulators.md).
+
+### avsectester.rendering.objects
+
+<!-- api:begin module=avsectester.rendering.objects -->
+Textured world-object descriptions, independent of simulators and attacks.
+
+| Name and signature | Meaning |
+|---|---|
+| `PlaneSurface(corners: np.ndarray, texture: np.ndarray, nominal_texture: np.ndarray \| None = None)` | A textured rectangle, with corners ordered TL, TR, BR, BL from its front. |
+| `ObjectAsset(surfaces: tuple[PlaneSurface, ...], extent: tuple[float, float, float], category: str)` | Local rectangular faces in x-forward, y-left, z-up axes, with bottom-center origin. |
+| `ObjectAsset.from_surfaces(surfaces: Sequence[PlaneSurface], category: str) -> ObjectAsset` | Infer full extent from local corners without moving the bottom-center origin. |
+| `ObjectAsset.from_panel(texture: np.ndarray \| str \| Path \| Texture, *, category: str, width_m: float, mount_height_m: float = 0.0, post_count: int = 0, post_width_m: float = 0.07, nominal_texture: np.ndarray \| str \| Path \| Texture \| None = None) -> ObjectAsset` | Build a +X-facing panel and optional support posts above a ground-level origin. |
+| `PlacedObject(object_id: str, asset: ObjectAsset, world_from_object: np.ndarray, harmonizer: Harmonizer \| None = None)` | One asset at a rigid world-from-object transform with its own optional harmonizer. |
+| `PlacedObject.world_surfaces() -> tuple[PlaneSurface, ...]` | The asset's surfaces with corners in world coordinates. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+RGBA surfaces are uint8 in object-local coordinates. `ObjectAsset.extent` is (thickness, width,
+height); `from_panel` uses +X as the face normal. Transparent texture pixels do not cover
+the background.
+
+`PlaneSurface.nominal_texture` is optional RGBA with the same shape and alpha as texture. It
+records the unmodified appearance used for exposure estimation while candidate colors
+can change.
+
+`ObjectAsset.from_panel` lists support posts first and the face last. `mount_height_m` is the
+height of the face bottom above the ground-level object origin; posts reach the face center.
+
+#### See also
+
+[Implement an attack](../guides/attacks.md).
+
+### avsectester.rendering.surfaces
+
+<!-- api:begin module=avsectester.rendering.surfaces -->
+Prefiltered planar texture sampling shared by composition, visibility and optimization.
+
+| Name and signature | Meaning |
+|---|---|
+| `SurfaceSampler(corners: np.ndarray, texture: np.ndarray, bounds: tuple[int, int, int, int] \| None, reason: str = "")` | A camera-space rectangle, its RGBA texture and its full projected pixel bounds. |
+| `SurfaceSampler.intersect(rays: np.ndarray) -> tuple[np.ndarray, np.ndarray]` | Distances to the unbounded plane along each ray and its (s, t) plane coordinates. |
+| `SurfaceSampler.sample(rays: np.ndarray) -> tuple[np.ndarray, np.ndarray]` | Distances to opaque texels and the full-resolution RGBA they hit, for any rays. |
+| `SurfaceSampler.image_bounds(camera: Camera) -> tuple[int, int, int, int] \| None` | The projection bounds clipped to the image, the whole image when they are unavailable, or None when the surface is behind the camera or projects outside the image. |
+| `PlaneSampling(bounds: tuple[int, int, int, int], coordinates: np.ndarray, derivatives: np.ndarray, depth: np.ndarray)` | Footprint geometry of one plane over an integer pixel region, independent of texture size. |
+| `plane_sampling(sampler: SurfaceSampler, camera: Camera, bounds: tuple[int, int, int, int]) -> PlaneSampling` | Unproject the region's subpixel rays through the lens and intersect them with the plane. |
+| `prepare_surface(surface: PlaneSurface, camera: Camera, cam_from_world) -> SurfaceSampler` | Transform a surface into the camera and bound its full projection, including off-image pixels. |
+| `sample_texture(texture: torch.Tensor, sampling: PlaneSampling) -> torch.Tensor` | Filtered premultiplied RGBA `(4, H, W)` of a `(4, h, w)` premultiplied texture. |
+| `render_surfaces(surfaces: Sequence[PlaneSurface], camera: Camera, cam_from_world: np.ndarray) -> tuple[np.ndarray, np.ndarray]` | Image-sized uint8 RGBA and optical-axis depth of the nearest covering surface per pixel. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+The public sampling functions expose `PlaneSampling`, surface preparation, differentiable
+texture sampling and surface rendering. Tensor textures use premultiplied CHW RGBA; RGB channels
+must already be multiplied by alpha. `SurfaceSampler` is the public result of `prepare_surface`;
+its image bounds feed `plane_sampling`. Rasterization helpers remain internal.
+
+A rendered surface sample counts as an occlusion hit only when normalized alpha exceeds
+`0.5 / 255`; lower alpha still contributes its original blending weight.
+
+#### See also
+
+[Implement an attack](../guides/attacks.md).
+
+### avsectester.rendering.textures
+
+<!-- api:begin module=avsectester.rendering.textures -->
+Texture descriptions and independent RGBA image loading for rendering assets.
+
+| Name and signature | Meaning |
+|---|---|
+| `STOP_SIGN_FACE` | Path to the bundled nominal stop-sign face texture. |
+| `Texture(Protocol)` | A user-provided texture that returns an RGB or RGBA uint8 image. |
+| `Texture.rgba() -> np.ndarray` | Produce an H×W×3 RGB or H×W×4 RGBA uint8 image. |
+| `load_rgba_image(value: np.ndarray \| str \| Path \| Texture) -> np.ndarray` | Load one RGB/RGBA image as an independent uint8 RGBA array. |
+| `CheckerboardTexture(size: int = 256, cells: int = 8, colors: tuple = ((255, 0, 0), (255, 255, 255)))` | An opaque square checkerboard with an explicit pixel size and cell count. |
+| `CheckerboardTexture.rgba() -> np.ndarray` | Produce the texture as an H×W×4 uint8 RGBA image. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+Textures produce RGB/RGBA pixels at requested sizes. Invalid shapes and unsupported color
+specifications raise `ValueError`.
+
+`STOP_SIGN_FACE` points to the packaged 512×512 RGBA stop-sign face.
+
+#### See also
+
+[Implement an attack](../guides/attacks.md).
+
+### avsectester.closed_loop
+
+<!-- api:begin module=avsectester.closed_loop -->
+Closed-loop components and their shared hooks and environment.
+
+No exports; import from submodules.
+<!-- api:end -->
+
+#### See also
+
+[Runtime reference](runtime.md).
+
+### avsectester.closed_loop.avstacks
+
+<!-- api:begin module=avsectester.closed_loop.avstacks -->
+Driving-system interfaces; import implementations from their own modules.
+
+| Name and signature | Meaning |
+|---|---|
+| `AVStack` | [AVStack](#avsectesterclosed_loopavstacksbase) |
+| `ObservationPipeline` | [ObservationPipeline](#avsectesterclosed_loopavstacksbase) |
+| `CommandCompatibilityError` | [CommandCompatibilityError](#avsectesterclosed_loopavstacksbase) |
+| `validate_command_compatibility` | [validate_command_compatibility](#avsectesterclosed_loopavstacksbase) |
+| `DrivingAdapter` | [DrivingAdapter](#avsectesterclosed_loopavstacksdriving_adapter) |
+| `ComponentDescriptor` | [ComponentDescriptor](#avsectesterclosed_loopavstacksdriving_adapter) |
+| `ScorerDescriptor` | [ScorerDescriptor](#avsectesterclosed_loopavstacksdriving_adapter) |
+<!-- api:end -->
+
+#### See also
+
+[Driving systems](../guides/driving-systems.md).
+
+### avsectester.closed_loop.avstacks.base
+
+<!-- api:begin module=avsectester.closed_loop.avstacks.base -->
+The driving-system interface: an Observation in, a Control out.
+
+| Name and signature | Meaning |
+|---|---|
+| `ObservationPipeline(localizer: Any = None)` | Process driving-system inputs without changing output commands. |
+| `ObservationPipeline.process(observation: Observation, dispatcher: HookDispatcher) -> Observation` | Apply localization and plugins, emitting their supported hook stages. |
+| `AVStack(ABC)()` | The driving system: an Observation in, a Control out. |
+| `AVStack.provides_detections: bool \| None = None` | Whether decisions expose detections compatible with detection metrics. |
+| `AVStack.past_steps: ClassVar[int] = 0` | Recorded decision steps required before the selected start. |
+| `AVStack.decision_time_step: ClassVar[float \| None] = None` | Decision interval in seconds; None leaves the interval unrestricted. |
+| `AVStack.observation_pipeline: ObservationPipeline` | Driving-system input processing, including its localizer lifecycle. |
+| `AVStack.reset(observation: Observation, past: Sequence[Observation] = ()) -> None` | Initialize from the first observation and recorded past, ordered oldest to newest. |
+| `AVStack.command_modes: frozenset[str] \| None` | Possible output command representations, or None for an undeclared adapter. |
+| `AVStack.models: Mapping[str, Any]` | Loaded native models available to user handlers. Adapters expose their own names. |
+| `AVStack.component_log() -> Mapping[str, Any] \| None` | Already-produced component outputs for the current decision, or None. |
+| `AVStack.detections() -> Sequence[Detection] \| None` | Current decision's ego-frame detections; None means no detection output. |
+| `AVStack.close() -> None` | Release driving-system resources. The default implementation owns none. |
+| `AVStack.__call__(observation: Observation) -> Control` | Abstract. Advance driving inference once and return a command in `command_modes`. |
+| `AVStack.supported_stages: frozenset[str]` | Return the hook stages supported by this adapter. |
+| `AVStack.native: Mapping[str, Any]` | Expose native components available to callbacks, keyed by component name. |
+| `AVStack.bind_hooks(dispatcher: StageEmitter) -> Iterator[None]` | Context manager. Bind one dispatcher for the scope; reject an already active binding. |
+| `CommandCompatibilityError(ValueError)` | Declared AVStack commands cannot be consumed by the selected simulator. |
+| `validate_command_compatibility(simulator_runtime: SimulatorRuntime, avstack: AVStack, hooks: HookSet \| None = None) -> None` | Check declared commands before world setup, allowing explicit hook conversion. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+`AVStack` declares `past_steps` and optional `decision_time_step` without model construction.
+reset receives the current processed observation and chronological past observations. None
+detections means unsupported; an empty sequence means zero detections. `ObservationPipeline`
+handles inputs and localization, not output commands.
+
+#### Extension contract
+
+Implement `AVStack.__call__(observation) -> Control`. The runner calls it once per decision
+after `reset` with processed model-visible input. Retain history only within that run and
+return a declared command mode. Trajectory poses use rig axes and absolute run timestamps;
+do not mutate the supplied observation.
+
+#### See also
+
+[Driving systems](../guides/driving-systems.md).
+
+### avsectester.closed_loop.avstacks.driving_adapter
+
+<!-- api:begin module=avsectester.closed_loop.avstacks.driving_adapter -->
+Driving-system component schemas, scorer capabilities and fresh instance bindings.
+
+| Name and signature | Meaning |
+|---|---|
+| `ComponentDescriptor(id: str, inputs: Mapping[str, str], outputs: Mapping[str, str], codecs: Mapping[str, str], differentiable_inputs: tuple[str, ...] = ())` | Description of an evaluable driving-system component and its input/output formats. |
+| `ScorerDescriptor(ComponentDescriptor)(id: str, inputs: Mapping[str, str], outputs: Mapping[str, str], codecs: Mapping[str, str], differentiable_inputs: tuple[str, ...] = (), output_shape: tuple[int, ...] = (), direction: str = "minimize", sensor_id: str \| None = None, decision_threshold: float \| None = None)` | Description of a scoring component, gradient support and optional sensor decision threshold. |
+| `DrivingAdapter(factory: Callable[[int], AVStack], *, components: Sequence[tuple[ComponentDescriptor, Callable[..., Any]]] = (), scorers: Sequence[tuple[ScorerDescriptor, Callable[..., Any]]] = (), past_steps: int = 0, decision_time_step: float \| None = None)` | Bind component callbacks `(avstack, inputs)` and scorer callbacks `(avstack, inputs, target)` to a fresh AVStack factory. |
+| `DrivingAdapter.past_steps: int` | Required recorded history, declared by the AVStack type or this adapter. |
+| `DrivingAdapter.decision_time_step: float \| None` | Required decision interval, read without constructing the driving system. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+Factory `avstack_type` declarations take precedence for `past_steps` and `decision_time_step`.
+Bindings need unique IDs, callable callbacks, schemas/codecs and valid differentiable inputs.
+`ScorerDescriptor.sensor_id` identifies the image sensor; `decision_threshold` is the
+driving-system threshold in [0,1].
+
+A driving-system factory is called as `factory(seed)`.
+
+#### Extension contract
+
+Component callbacks use `(avstack, inputs)`; scorer callbacks use `(avstack, inputs, target)`.
+They operate on the session's fresh stack and must match their declared schemas.
+Differentiable scorers preserve the input gradient when gradient recording is enabled.
+
+#### See also
+
+[Driving systems](../guides/driving-systems.md).
+
+### avsectester.closed_loop.avstacks.implemented
+
+<!-- api:begin module=avsectester.closed_loop.avstacks.implemented -->
+Driving systems provided with the framework; import each from its own module.
+
+No exports; import from submodules.
+<!-- api:end -->
+
+#### See also
+
+[Driving systems](../guides/driving-systems.md).
+
+### avsectester.closed_loop.avstacks.implemented.alpamayo
+
+<!-- api:begin module=avsectester.closed_loop.avstacks.implemented.alpamayo -->
+Alpamayo end-to-end camera policy as an `avsectester.closed_loop.avstacks.base.AVStack`.
+
+| Name and signature | Meaning |
+|---|---|
+| `alpamayo_driving_adapter(factory)` | Bind one `policy` component (observation + past → Control) and no scorers. |
+| `AlpamayoAVStack(AVStack)(checkpoint_path: str \| Path \| None = None, camera_ids: list[str] \| None = None, device: str = "cuda:0", context_length: int = 4, frame_subsample: int = 1, output_frequency_hz: int = 10, model: Any \| None = None, seed: int \| None = None)` | A policy using real 10 Hz observations, image context and model-visible navigation. |
+| `AlpamayoAVStack.provides_detections = False` | Whether decisions expose detections compatible with detection metrics. |
+| `AlpamayoAVStack.past_steps: ClassVar[int] = 15` | Recorded decision steps required before the selected start. |
+| `AlpamayoAVStack.decision_time_step: ClassVar[float \| None] = 0.1` | Decision interval in seconds; None leaves the interval unrestricted. |
+| `AlpamayoAVStack.supported_stages: frozenset[str]` | Expose `policy.pre` and `policy.post` around the end-to-end policy. |
+| `AlpamayoAVStack.native: Mapping[str, Any]` | Expose native components available to callbacks, keyed by component name. |
+| `AlpamayoAVStack.models: Mapping[str, Any]` | The loaded policy model. Empty until reset or the first inference loads it. |
+| `AlpamayoAVStack.reset(observation: Observation, past: Sequence[Observation] = ()) -> None` | Initialize policy context from recorded observations before the selected origin. |
+| `AlpamayoAVStack.close() -> None` | Release this adapter's references and any model it loaded itself. |
+| `AlpamayoAVStack.EPOCH_US = 10_000_000` | Timestamp offset in microseconds used by the trajectory interface. |
+| `AlpamayoAVStack.__call__(observation: Observation) -> Control` | Append the current capture and infer a rig-frame trajectory from camera and ego history. |
+| `AlpamayoAVStack.component_log() -> dict[str, Any] \| None` | Already-produced policy prediction and Control under `policy` and `command`. |
+| `AlpamayoAVStack.bind_hooks(dispatcher: StageEmitter) -> Iterator[None]` | Context manager. Bind one dispatcher for the scope; reject an already active binding. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+Alpamayo requires 0.1 s decisions and recorded history. Its binding reads declarations without
+creating a model. Returned plans use rig-frame coordinates and integer-microsecond timestamps.
+
+History sampling requires `(context_length - 1) * frame_subsample <= 15`.
+
+#### See also
+
+[Driving systems](../guides/driving-systems.md).
+
+### avsectester.closed_loop.avstacks.implemented.camera_forward_collision
+
+<!-- api:begin module=avsectester.closed_loop.avstacks.implemented.camera_forward_collision -->
+Camera detection with the box-area forward-collision braking rule.
+
+| Name and signature | Meaning |
+|---|---|
+| `CameraForwardCollisionAVStack(AVStack)(gpu: int = 0, camera: str = "front", area_brake: float = .03, throttle: float = .55, detector_dataset: str = "carla-vehicle", threshold: float = .3, area_max: float = .3, max_height_frac: float = .6)` | Brake for a plausible detected vehicle whose image area exceeds `area_brake`. |
+| `CameraForwardCollisionAVStack.provides_detections = False` | Whether decisions expose detections compatible with detection metrics. |
+| `CameraForwardCollisionAVStack.command_modes = frozenset({"actuator"})` | Control command modes accepted or produced by this component. |
+| `CameraForwardCollisionAVStack.supported_stages = frozenset({"perception.pre", "perception.post"})` | Hook stages supported by the component. |
+| `CameraForwardCollisionAVStack.detect(rgb: Any) -> list` | Return current image detections as `(xyxy, score, vehicle)` tuples. |
+| `CameraForwardCollisionAVStack.__call__(observation: Observation) -> Control` | Detect the selected RGB image and choose braking from the largest image-box area. |
+| `CameraForwardCollisionAVStack.native: Mapping[str, Any]` | Expose native components available to callbacks, keyed by component name. |
+| `CameraForwardCollisionAVStack.bind_hooks(dispatcher: StageEmitter) -> Iterator[None]` | Context manager. Bind one dispatcher for the scope; reject an already active binding. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+Camera inputs use their declared RGB transport and native detector preprocessing. Component
+logs expose produced perception output without additional inference.
+
+#### See also
+
+[Driving systems](../guides/driving-systems.md).
+
+### avsectester.closed_loop.avstacks.implemented.modular
+
+<!-- api:begin module=avsectester.closed_loop.avstacks.implemented.modular -->
+ModularAVStack — an AVStack backed by an avstack `ModularDrivingPipeline`.
+
+| Name and signature | Meaning |
+|---|---|
+| `NativeHook(Plugin)(config: Mapping[str, Any], *, phase: str = "post")` | Adapt a registered avstack hook's tuple convention to an ordered stage hook. |
+| `register_carla_dataset() -> type` | Return the CARLA dataset class, registering its vendored declaration if needed. |
+| `modular_driving_adapter(factory, *, components=(), scorers=())` | Expose explicitly selected native Modular components and existing detector scorers. |
+| `ModularAVStack(AVStack)(pipeline_cfg: dict)` | An `avsectester.closed_loop.avstacks.base.AVStack` backed by an avstack `ModularDrivingPipeline`. |
+| `ModularAVStack.provides_detections = True` | Whether decisions expose detections compatible with detection metrics. |
+| `ModularAVStack.reset(observation: Observation, past: Sequence[Observation] = ()) -> None` | Clear telemetry. Use a fresh AVStack for independent pipeline histories. |
+| `ModularAVStack.supported_stages: frozenset[str]` | Return the hook stages supported by this adapter. |
+| `ModularAVStack.native: Mapping[str, Any]` | The pipeline and its actual modules, including non-hookable modules. |
+| `ModularAVStack.models: Mapping[str, Any]` | Public handles for the built components and their loaded models. |
+| `ModularAVStack.bind_hooks(dispatcher: StageEmitter) -> Iterator[None]` | Context manager. Bridge hook callbacks for one run, preserving native hook order. |
+| `ModularAVStack.instrument(stages: tuple[str, ...] = ("perception", "tracking", "planning", "control")) -> None` | Capture named stage outputs after attack hooks, enabling `component_log`. |
+| `ModularAVStack.component_log() -> dict[str, Any] \| None` | Return the most recent per-stage outputs after `instrument`, or None otherwise. |
+| `ModularAVStack.detections() -> Sequence[Detection] \| None` | Boxes from the current decision in observation-time ego coordinates. |
+| `ModularAVStack.__call__(observation: Observation) -> Control` | Run the native perception-to-control pipeline once using the current capture reference. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+The native avstack configuration and optional SDK must be available. `NativeHook` adapts
+explicitly registered native stages; `modular_driving_adapter` declares component/scorer schemas
+without changing the pipeline.
+
+#### See also
+
+[Driving systems](../guides/driving-systems.md).
+
+### avsectester.closed_loop.avstacks.implemented.rule_based
+
+<!-- api:begin module=avsectester.closed_loop.avstacks.implemented.rule_based -->
+Detect and range signs, track bearings with an EKF, then cruise and brake to stops.
+
+| Name and signature | Meaning |
+|---|---|
+| `RuleBasedAVStack` | [RuleBasedAVStack](#avsectesterclosed_loopavstacksimplementedrule_basedstack) |
+| `CocoStopSignDetector` | [CocoStopSignDetector](#avsectesterclosed_loopavstacksimplementedrule_baseddetector) |
+| `StopSignPlanner` | [StopSignPlanner](#avsectesterclosed_loopavstacksimplementedrule_basedplanner) |
+| `StopSignTracker` | [StopSignTracker](#avsectesterclosed_loopavstacksimplementedrule_basedtracker) |
+| `SignTrack` | [SignTrack](#avsectesterclosed_loopavstacksimplementedrule_basedtracker) |
+| `rule_based_driving_adapter` | [rule_based_driving_adapter](#avsectesterclosed_loopavstacksimplementedrule_basedstack) |
+<!-- api:end -->
+
+#### See also
+
+[Driving systems](../guides/driving-systems.md).
+
+### avsectester.closed_loop.avstacks.implemented.rule_based.detector
+
+<!-- api:begin module=avsectester.closed_loop.avstacks.implemented.rule_based.detector -->
+Local COCO stop-sign detection shared by rule driving and detector scorers.
+
+| Name and signature | Meaning |
+|---|---|
+| `CocoStopSignDetector(weights_path: str \| Path, device: str = "cuda:0", score_threshold: float = .5, model: Any = None)` | Detect only COCO category 13 in uint8 RGB images using a local checkpoint. |
+| `CocoStopSignDetector.detect(rgb: np.ndarray) -> list[tuple[np.ndarray, float]]` | Return original-image xyxy boxes and scores at or above score_threshold. |
+| `CocoStopSignDetector.target_score(image: torch.Tensor, target: TargetSpec) -> torch.Tensor` | Return a scalar confidence for a float RGB `(3, H, W)` image in [0, 1]. |
+| `CocoStopSignDetector.close() -> None` | Release the model; a closed detector cannot detect or score again. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+Only local `COCO_V1` Faster R-CNN weights are loaded, lazily on first inference. detect filters
+stop-sign class 13 by `score_threshold`. `target_score` requires a finite floating RGB (3,H,W)
+image in [0,1] and a `TargetSpec` with label None or stop sign and finite positive-area xyxy
+coordinates. It selects the highest confidence among class-13 boxes with `IoU` ≥0.3. Box/NMS
+selection is discrete; gradients flow through the selected confidence. No match returns an
+input-connected zero.
+
+A closed detector rejects `detect` and `target_score` with `RuntimeError`.
+
+#### See also
+
+[Driving systems](../guides/driving-systems.md).
+
+### avsectester.closed_loop.avstacks.implemented.rule_based.planner
+
+<!-- api:begin module=avsectester.closed_loop.avstacks.implemented.rule_based.planner -->
+Route-following cruise and constant-deceleration stops at tracked signs.
+
+| Name and signature | Meaning |
+|---|---|
+| `StopSignPlanner(stop_before_sign_m: float = 5.5, stop_duration_s: float = 2., stop_speed_mps: float = .1, stop_position_tolerance_m: float = 2., sign_lookahead_m: float = 60., max_sign_lateral_offset_m: float = 10., cruise_speed_mps: float \| None = None, min_cruise_speed_mps: float = 5., max_acceleration_mps2: float = 1., comfortable_deceleration_mps2: float = 3., max_deceleration_mps2: float = 6., acceleration_exponent: float = 4., trajectory_horizon_s: float = 5., trajectory_step_s: float = .1)` | Plan rig-frame trajectories from bearing-EKF sign tracks. |
+| `StopSignPlanner.component_log: Mapping[str, Any]` | State, target track ID, target distance and acceleration/speed at the first planned step. |
+| `StopSignPlanner.reset(observation: Observation) -> None` | Forget served track IDs and initialize cruise speed from the observation. |
+| `StopSignPlanner.step(observation: Observation, tracks: Sequence[SignTrack]) -> Control` | Use horizontal world tracks to return an absolute-time rig-frame plan. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+Cruise uses the IDM free-road term. Braking latches when required deceleration reaches the
+comfortable threshold; it clears when the target ID changes, disappears or reaches STOPPED.
+Deceleration is limited by `max_deceleration_mps2`. Each track ID is served once per reset.
+
+`trajectory_horizon_s` must be at least `trajectory_step_s`; rounding the step to integer
+microseconds must yield a positive interval. See [Driving systems](../guides/driving-systems.md)
+for cruise-speed and braking behavior.
+
+| Parameter | Meaning |
+|---|---|
+| `stop_before_sign_m` | Route distance from the sign projection back to the stop target |
+| `stop_duration_s` | Time held after entering STOPPED |
+| `stop_speed_mps` | Strict upper speed bound for declaring the vehicle stopped |
+| `stop_position_tolerance_m` | Maximum remaining target distance when declaring a stop |
+| `sign_lookahead_m` | Farthest sign projection considered ahead along the route |
+| `max_sign_lateral_offset_m` | Maximum distance from sign to the finite route |
+| `cruise_speed_mps` | Fixed cruise reference; `None` derives it at reset |
+| `min_cruise_speed_mps` | Lower bound for the cruise reference derived at reset |
+| `max_acceleration_mps2` | Upper acceleration bound and free-road acceleration scale |
+| `comfortable_deceleration_mps2` | Required-deceleration threshold that latches braking |
+| `max_deceleration_mps2` | Maximum braking magnitude, including late detections |
+| `acceleration_exponent` | Exponent of the cruise-speed ratio |
+| `trajectory_horizon_s` | Duration of the forecast trajectory |
+| `trajectory_step_s` | Forecast integration and waypoint interval |
+
+#### See also
+
+[Driving systems](../guides/driving-systems.md).
+
+### avsectester.closed_loop.avstacks.implemented.rule_based.ranging
+
+<!-- api:begin module=avsectester.closed_loop.avstacks.implemented.rule_based.ranging -->
+Monocular stop-sign position from calibrated angular height.
+
+| Name and signature | Meaning |
+|---|---|
+| `estimate_stop_sign_position(box_xyxy: tuple[float, float, float, float] \| np.ndarray, calibration: CameraCalibration, sign_height_m: float = .762) -> np.ndarray` | Estimate the sign center in rig meters from its angular image height. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+Known-size range is `sign_height_m / (2 tan(θ/2))`, where θ is the angle between box-top and
+box-bottom rays. The point is transformed from optical camera to rig coordinates. Error scales
+with actual sign-size error.
+
+#### See also
+
+[Driving systems](../guides/driving-systems.md).
+
+### avsectester.closed_loop.avstacks.implemented.rule_based.stack
+
+<!-- api:begin module=avsectester.closed_loop.avstacks.implemented.rule_based.stack -->
+Detect signs, range by known size, track bearings and plan route-following stops.
+
+| Name and signature | Meaning |
+|---|---|
+| `RuleBasedAVStack(AVStack)(detector: CocoStopSignDetector, tracker: StopSignTracker \| None = None, planner: StopSignPlanner \| None = None, camera_id: str = DEFAULT_CAMERA_ID, sign_height_m: float = .762)` | Follow the route and stop for signs using calibrated camera observations. |
+| `RuleBasedAVStack.command_modes = frozenset({"trajectory"})` | Control command modes accepted or produced by this component. |
+| `RuleBasedAVStack.provides_detections = False` | Whether decisions expose detections compatible with detection metrics. |
+| `RuleBasedAVStack.reset(observation: Observation, past: Sequence[Observation] = ()) -> None` | Clear tracks and the stop state machine for a fresh run. |
+| `RuleBasedAVStack.__call__(observation: Observation) -> Control` | Detect, range and track stop signs, then return the planner's rig-frame trajectory. |
+| `RuleBasedAVStack.component_log() -> Mapping[str, Any] \| None` | Return detections, ranges, world tracks and current planner outputs. |
+| `RuleBasedAVStack.close() -> None` | Release the detection model and clear recorded decision outputs. |
+| `RuleBasedAVStack.supported_stages: frozenset[str]` | Return the hook stages supported by this adapter. |
+| `RuleBasedAVStack.native: Mapping[str, Any]` | Expose native components available to callbacks, keyed by component name. |
+| `RuleBasedAVStack.bind_hooks(dispatcher: StageEmitter) -> Iterator[None]` | Context manager. Bind one dispatcher for the scope; reject an already active binding. |
+| `rule_based_driving_adapter(factory: Callable[[int], AVStack]) -> DrivingAdapter` | Bind the configured rule driver's differentiable stop-sign confidence scorer. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+The detector must be a `CocoStopSignDetector`. tracker and planner must be `StopSignTracker` and
+`StopSignPlanner` instances or None; None constructs their defaults. Invalid component types
+raise `TypeError`. `CameraCalibration` is required for the selected camera. Logged acceleration
+and speed describe the first planned trajectory step; the controller follows the
+whole trajectory.
+
+#### See also
+
+[Driving systems](../guides/driving-systems.md).
+
+### avsectester.closed_loop.avstacks.implemented.rule_based.tracker
+
+<!-- api:begin module=avsectester.closed_loop.avstacks.implemented.rule_based.tracker -->
+Static stop-sign tracking from known-size ranges and bearing EKF updates.
+
+| Name and signature | Meaning |
+|---|---|
+| `SignTrack(track_id: int, position: np.ndarray, covariance: np.ndarray)` | A stationary sign's ID, horizontal world position and 2×2 covariance. |
+| `StopSignTracker(range_sigma_fraction: float = .3, bearing_sigma_rad: float = .007, min_position_sigma_m: float = .3, max_association_mahalanobis_distance: float = 3.5)` | Associate range measurements, then refine static sign positions by bearing EKF. |
+| `StopSignTracker.reset() -> None` | Forget all signs and restart track IDs at zero. |
+| `StopSignTracker.tracks: tuple[SignTrack, ...]` | Return detached snapshots of the horizontal world tracks. |
+| `StopSignTracker.update(vehicle_state: PlanarEgoState, camera_position_rig: np.ndarray, sign_positions_rig: Sequence[np.ndarray]) -> None` | Associate rig-frame measurements and update matched tracks by bearing. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+Tracks are stationary horizontal world positions. Range initializes and associates tracks;
+bearing alone performs EKF updates. Association uses joint covariance and a Mahalanobis gate.
+Reset clears tracks and restarts IDs.
+
+#### See also
+
+[Driving systems](../guides/driving-systems.md).
+
+### avsectester.closed_loop.avstacks.implemented.scorers
+
+<!-- api:begin module=avsectester.closed_loop.avstacks.implemented.scorers -->
+Differentiable RPN objectness and inference-confidence scorers for mmdet detectors.
+
+| Name and signature | Meaning |
+|---|---|
+| `MMDetRPNObjectnessScorer(model, strides=FPN_STRIDES)` | RPN-objectness confidence in the target box for an mmdet two-stage detector (white-box). |
+| `MMDetRPNObjectnessScorer.differentiable = True` | Whether input-image gradients are supported by this component. |
+| `MMDetRPNObjectnessScorer.target_score(image: torch.Tensor, target: data_types.TargetSpec) -> torch.Tensor` | Return differentiable RPN objectness within the target region. |
+| `MMDetInferenceScorer(model)` | Black-box (non-differentiable) scorer: the detector's actual max confidence in the target box. |
+| `MMDetInferenceScorer.differentiable = False` | Whether input-image gradients are supported by this component. |
+| `MMDetInferenceScorer.target_score(image, target: data_types.TargetSpec) -> float` | Return matched detection confidence without requiring input gradients. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+These scorers use the modular stack's loaded MMDetection model. The RPN scorer returns a
+disconnected scalar zero when no anchor lies in the target box.
+
+#### See also
+
+[Driving systems](../guides/driving-systems.md).
+
+### avsectester.closed_loop.environment
+
+<!-- api:begin module=avsectester.closed_loop.environment -->
+World settings and deterministic sensor corruptions.
+
+| Name and signature | Meaning |
+|---|---|
+| `normalize_environment(value: Mapping[str, Any] \| None = None) -> dict[str, Any]` | Copy and validate the public `{world, sensors}` structure. |
+| `merge_environments(*values: Mapping[str, Any]) -> dict[str, Any]` | Merge world mappings recursively. An explicit later sensors list replaces the earlier list. |
+| `validate_environment(value: Mapping[str, Any], simulator: Any) -> dict[str, Any]` | Reject unsupported world settings before opening any simulator resources. |
+| `SensorEnvironment(environment: Mapping[str, Any], seed: int = 0)` | One run's corruption instances, with randomness indexed by seed and absolute dataset frame position. |
+| `SensorEnvironment.apply(observation: Observation, position: int) -> Observation` | Apply configured corruptions to eligible sensors using the decision random generator. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+Environment support follows [Configuration](configuration.md#environment).
+Sensor and hook randomization follow [Randomness](../guides/environments.md#randomness).
+
+#### See also
+
+[Experiment environments](../guides/environments.md).
+
+### avsectester.closed_loop.hooks
+
+<!-- api:begin module=avsectester.closed_loop.hooks -->
+Ordered attack and defense callbacks with per-run lifecycle management.
+
+| Name and signature | Meaning |
+|---|---|
+| `StageEmitter(Protocol)` | What an adapter is bound to during a run: normally the run's hook dispatcher. |
+| `StageEmitter.emit(stage: str, value: Any, sensor: str \| None = None) -> Any` | Run registered callbacks for a supported stage and return the resulting value. |
+| `UnsupportedStageError(ValueError)` | A requested hook stage is absent from the selected adapters. |
+| `CallInputs(args: tuple = (), kwargs: dict[str, Any] = dict())` | Inputs to a component pre-hook, retaining positional and keyword arguments. |
+| `CameraPoseRequest(pose: Any, camera: str)` | Camera name and rendering pose editable at a rendering simulator's `render.pre` stage. |
+| `RunContext(simulator_runtime: SimulatorRuntime, avstack: AVStack, rng: np.random.Generator)` | Borrowed run resources. Model, native SDK and metadata access is unrestricted. |
+| `RunContext.native: Mapping[str, Mapping[str, Any]]` | Access a simulator- or driving-system-native run resource by name. |
+| `StageContext(run: RunContext, step: int, stage: str, physical_state: WorldSnapshot, sensor: str \| None = None, observation: Observation \| None = None, control: Control \| None = None)` | One callback invocation and an independent snapshot of the physical state at it. |
+| `StageContext.record_output(name: str, value: Any) -> None` | Save a named, independent output in this run's RunLog with callback timing. |
+| `StageContext.simulator_runtime: SimulatorRuntime` | Simulator runtime associated with the active run. |
+| `StageContext.avstack: AVStack` | Driving system associated with the active run. |
+| `StageContext.rng: np.random.Generator` | Random generator assigned to this callback invocation. |
+| `StageContext.native: Mapping[str, Mapping[str, Any]]` | Access a native resource through the active run context. |
+| `StageContext.sim_time: float` | Physical simulation time at the active stage. |
+| `Plugin(ABC)()` | Optional lifecycle base for a stateful attack, defense or localization adapter. |
+| `Plugin.reset(context: RunContext) -> None` | Clear per-run history. Actors may not exist until `simulator.setup`. |
+| `Plugin.transform(value: Any, context: StageContext) -> Any` | Abstract. Return the value consumed by the next handler or downstream component. |
+| `Plugin.after_step(context: StageContext) -> None` | Receive feedback after the command has affected the world. Optional. |
+| `Plugin.close() -> None` | Release resources, including partially initialized resources after an error. |
+| `Hook(stage: str, handler: Any)` | Bind a function or a lifecycle plugin to an adapter-supported execution stage. |
+| `HookSet(hooks: Iterable[Hook] = (), *, seed: int \| None = 0)` | Reusable ordered hooks, independent of the driving system's ObservationPipeline. |
+| `HookSet.with_hooks(hooks: Iterable[Hook], *, prepend: bool = False) -> Self` | Copy this configuration with additional ordered hooks. |
+| `HookSet.validate_stages(simulator_runtime: SimulatorRuntime, avstack: AVStack) -> frozenset[str]` | Check adapter capabilities without binding a dispatcher or invoking handlers. |
+| `HookSet.setup_ticks: int` | Required deployment ticks, shared by every treatment in a comparison group. |
+| `HookSet.session(simulator_runtime: SimulatorRuntime, avstack: AVStack) -> HookDispatcher` | Create one execution session before resetting the world. |
+| `HookDispatcher(hook_set: HookSet, simulator_runtime: SimulatorRuntime, avstack: AVStack)` | One bound run. Custom adapters publish supported stages through `emit`. |
+| `HookDispatcher.CORE_STAGES = frozenset({"sensors.post", "localization.post", "observation", "command"})` | Framework stages available independently of native adapter stages. |
+| `HookDispatcher.activate() -> Iterator[HookDispatcher]` | Context manager. Bind both adapters and reset participants, closing them when the scope exits. |
+| `HookDispatcher.stage_context(stage: str, sensor: str \| None = None) -> StageContext` | Capture current physical state and model-visible values for a callback. |
+| `HookDispatcher.record_output(context: StageContext, name: str, value: Any) -> None` | Snapshot a named output; reject recording outside an active dispatcher scope. |
+| `HookDispatcher.drain_outputs() -> list[RecordedOutput]` | Transfer recorded outputs to a consumer without retaining the run's history. |
+| `HookDispatcher.emit(stage: str, value: Any, sensor: str \| None = None) -> Any` | Transform a value through the supported stage's ordered callbacks. |
+| `HookDispatcher.observe(observation: Observation) -> Observation` | Apply the driving system's ObservationPipeline with this run's ordered hooks. |
+| `HookDispatcher.command(control: Control) -> Control` | Apply command hooks and validate the resulting command against the simulator. |
+| `HookDispatcher.after_step(observation: Observation) -> None` | Notify participants with independent copies of the next raw measurement. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+`Plugin.transform` must be implemented. Hooks retain registration order and shared handlers have
+one lifecycle per run. `record_output` requires an active callback.
+`emit` checks that the requested stage is supported; it does not require a callback.
+`HookSet.setup_ticks` sums setup ticks declared by `simulator.setup` handlers; those ticks count
+toward the deployment budget. The upper bound against `Attack.deployment_ticks` applies to
+`AttackRuntime.setup_ticks`, not to `HookSet`.
+
+#### Extension contract
+
+Implement `Plugin.transform(value, context)` to return the next stage value.
+Optional lifecycle methods reset per-run state, receive step feedback and release resources.
+A handler registered at `simulator.setup` can declare nonnegative integer `setup_ticks`;
+it may call `context.simulator_runtime.setup_tick()` within that budget.
+
+#### See also
+
+[Runtime reference](runtime.md).
+
+### avsectester.closed_loop.sensor_corruptions
+
+<!-- api:begin module=avsectester.closed_loop.sensor_corruptions -->
+Image-space sensor corruptions used by experiment environments.
+
+| Name and signature | Meaning |
+|---|---|
+| `CORRUPTIONS` | Mapping from configuration names to the supplied sensor corruption classes. |
+| `Corruption(ABC)(severity: float = 0.5)` | One image-space corruption. `apply(rgb, rng) -> rgb` maps an `(H,W,3)` uint8 RGB frame to a corrupted one; `severity` in `[0, 1]` scales the corruption strength (0 ≈ identity). |
+| `Corruption.category: str = "sensor"` | Environment corruption category used to group related sensor effects. |
+| `Corruption.name: str` | Configuration name identifying this corruption. |
+| `Corruption.apply(rgb: np.ndarray, rng: np.random.Generator) -> np.ndarray` | Abstract. Transform one sensor payload using the supplied random generator. |
+| `Fog(Corruption)(severity: float = 0.5)` | Atmospheric haze: blend toward a bright airlight and flatten contrast (uniform, depth-free). |
+| `Fog.category = "weather"` | Environment corruption category used to group related sensor effects. |
+| `Rain(Corruption)(severity: float = 0.5)` | Darken, then add motion-blurred bright streaks (procedural). |
+| `Rain.category = "weather"` | Environment corruption category used to group related sensor effects. |
+| `Snow(Corruption)(severity: float = 0.5)` | Bright speckles plus a slight brighten and blur (procedural). |
+| `Snow.category = "weather"` | Environment corruption category used to group related sensor effects. |
+| `Brightness(Corruption)(severity: float = 0.5)` | Multiplicative brightening (over-exposure / bright sun). |
+| `Brightness.category = "lighting"` | Environment corruption category used to group related sensor effects. |
+| `LowLight(Corruption)(severity: float = 0.5)` | Night / underexposure: darken and add read noise (a dark sensor is a noisy sensor). |
+| `LowLight.category = "lighting"` | Environment corruption category used to group related sensor effects. |
+| `Contrast(Corruption)(severity: float = 0.5)` | Reduce contrast toward the frame mean (flat, washed-out light). |
+| `Contrast.category = "lighting"` | Environment corruption category used to group related sensor effects. |
+| `Gamma(Corruption)(severity: float = 0.5)` | Non-linear tone shift (darker mid-tones), as from a different exposure curve. |
+| `Gamma.category = "lighting"` | Environment corruption category used to group related sensor effects. |
+| `ColorTemp(Corruption)(severity: float = 0.5, warm: bool = True)` | Color-cast shift — warm (default, sodium street-lights / sunset) or cool. |
+| `ColorTemp.category = "lighting"` | Environment corruption category used to group related sensor effects. |
+| `GaussianNoise(Corruption)(severity: float = 0.5)` | Additive Gaussian read noise. |
+| `ShotNoise(Corruption)(severity: float = 0.5)` | Poisson (photon shot) noise — signal-dependent, as in low light. |
+| `MotionBlur(Corruption)(severity: float = 0.5)` | Directional blur from ego/scene motion (random angle, length scales with severity). |
+| `DefocusBlur(Corruption)(severity: float = 0.5)` | Out-of-focus blur (Gaussian, radius scales with severity). |
+| `JPEGCompression(Corruption)(severity: float = 0.5)` | Lossy-compression block artefacts (encoder quality drops with severity). |
+| `ChromaticAberration(Corruption)(severity: float = 0.5)` | Lateral color fringing — shift the red and blue channels apart. |
+| `AlbumentationsCorruption(Corruption)(transform: str, severity: float = 0.5)` | Named Albumentations transform with deterministic, severity-scaled parameters. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+Corruptions transform camera RGB with an explicit random generator. Albumentations operators
+require their optional package. Missing sensor IDs are errors rather than implicit
+camera substitutions.
+
+#### See also
+
+[Experiment environments](../guides/environments.md).
+
+### avsectester.closed_loop.simulators
+
+<!-- api:begin module=avsectester.closed_loop.simulators -->
+Simulator interfaces; import concrete implementations from their own modules.
+
+| Name and signature | Meaning |
+|---|---|
+| `Simulator` | [Simulator](#avsectesterclosed_loopsimulatorsbase) |
+| `SimulatorRuntime` | [SimulatorRuntime](#avsectesterclosed_loopsimulatorsbase) |
+| `SensorView` | [SensorView](#avsectesterclosed_loopsimulatorsbase) |
+| `SensorGeometry` | [SensorGeometry](#avsectesterclosed_loopsimulatorsbase) |
+| `ClockSnapshot` | [ClockSnapshot](#avsectesterclosed_loopsimulatorsbase) |
+| `DeploymentPlan` | [DeploymentPlan](#avsectesterclosed_loopsimulatorsbase) |
+| `Initialization` | [Initialization](#avsectesterclosed_loopsimulatorsbase) |
+| `FrameDataSequence` | [FrameDataSequence](#avsectesterclosed_loopsimulatorsbase) |
+| `UnsupportedStartError` | [UnsupportedStartError](#avsectesterclosed_loopsimulatorsbase) |
+<!-- api:end -->
+
+#### See also
+
+[Simulators](../guides/simulators.md).
+
+### avsectester.closed_loop.simulators.base
+
+<!-- api:begin module=avsectester.closed_loop.simulators.base -->
+The simulator: a configuration (`Simulator`) and its live worlds (`SimulatorRuntime`).
+
+| Name and signature | Meaning |
+|---|---|
+| `DeploymentPlan(ticks: int = 0)` | Shared tick budget for all treatments, including frame data generation. |
+| `ClockSnapshot(t: float, frame: int)` | Physical simulator time and frame, never a model-visible timestamp. |
+| `SensorGeometry(sensor: str, camera: Camera, cam_from_world: np.ndarray)` | Physical optical-camera geometry at one capture, without image or SDK handles. |
+| `SensorView(sensor: str, data: Any, camera: Camera \| None, cam_from_world: np.ndarray \| None, actors: Mapping[str, ActorState], ego: ActorState, time: float, frame: int, sensor_from_world: np.ndarray \| None = None, depth: np.ndarray \| None = None, native: Mapping[str, Any] = dict(), objects: Mapping[str, PlacedObject] = dict(), composition: ObjectComposition \| None = None, object_occlusion: str = "geometry", occlusion_tolerance_m: float = 0.1)` | One sensor capture, including world objects composed by the framework. |
+| `SensorView.composite_plan(objects: Sequence[PlacedObject]) -> CompositePlan` | Plan composing `objects` into this camera view exactly as simulator captures do. |
+| `Initialization(expected: FrameData, resolved_scenario: Mapping[str, Any] = dict(), provenance: Mapping[str, Any] = dict())` | Source replay inputs only. No attack origin, score or placement enters the simulator. |
+| `FrameDataSequence(frames: tuple[FrameData, ...], resolved_scenario: Mapping[str, Any], provenance: Mapping[str, Any])` | Detached generated frames and the resolved scenario and provenance that produced them. |
+| `FrameDataSequence.at(frame: FrameReference) -> FrameData` | Return frame data at the requested recorded time. |
+| `UnsupportedStartError(ValueError)` | A correctly configured simulator cannot start at this particular scenario start. |
+| `Simulator(ABC)()` | A configured simulator: settings and declarations, without world state. |
+| `Simulator.dataset_kinds: tuple[str, ...] = ()` | Dataset kinds supported by this simulator. |
+| `Simulator.can_render: bool = False` | Whether arbitrary-view rendering is supported. |
+| `Simulator.can_replay: bool = False` | Whether recorded-tick replay is supported. |
+| `Simulator.can_observe_past: bool = False` | Whether observations before a selected start can be reconstructed. |
+| `Simulator.can_insert_objects: bool = False` | Whether world objects can be inserted into sensor rendering. |
+| `Simulator.supported_world_settings: frozenset[str] = frozenset()` | World-setting keys accepted by the simulator. |
+| `Simulator.simulator_version = "1"` | Version identifier included in simulator compatibility summaries. |
+| `Simulator.capture_ticks = 0` | Simulator ticks consumed by a sensor capture. |
+| `Simulator.occlusion_tolerance_m: float = 0.1` | Depth tolerance in meters for deciding whether an inserted object is occluded. |
+| `Simulator.create_runtime(seed: int \| None = None) -> SimulatorRuntime` | Abstract. Create a new live world with this configuration; `seed` seeds its random choices. |
+| `Simulator.past_steps: int` | Recorded decision steps required before a selected start. |
+| `Simulator.decision_time_step: float \| None` | Decision interval in seconds; None leaves the interval unrestricted. |
+| `Simulator.command_modes: frozenset[str] \| None` | Command representations consumed by this simulator, or None if undeclared. |
+| `Simulator.supported_stages: frozenset[str]` | Hook stages supported by the component. |
+| `Simulator.identity: Mapping[str, Any]` | Configuration identity used to check saved-preparation compatibility. |
+| `Simulator.validate_world_settings(settings: Mapping[str, Any]) -> None` | Check world-setting names and values without creating a live world. |
+| `Simulator.validate_start(start: ScenarioStart \| None) -> None` | Reject a scenario start this simulator cannot reset to, before any world exists. |
+| `SimulatorRuntime(ABC)(simulator: Simulator)` | One live world of a `Simulator`: world state, clock, actors, sensors and sensor views. |
+| `SimulatorRuntime.dataset_kinds: tuple[str, ...]` | Dataset kinds supported by this simulator. |
+| `SimulatorRuntime.can_render: bool` | Whether arbitrary-view rendering is supported. |
+| `SimulatorRuntime.can_replay: bool` | Whether recorded-tick replay is supported. |
+| `SimulatorRuntime.can_observe_past: bool` | Whether observations before a selected start can be reconstructed. |
+| `SimulatorRuntime.can_insert_objects: bool` | Whether world objects can be inserted into sensor rendering. |
+| `SimulatorRuntime.supported_world_settings: frozenset[str]` | World-setting keys accepted by the simulator. |
+| `SimulatorRuntime.capture_ticks: int` | Simulator ticks consumed by a sensor capture. |
+| `SimulatorRuntime.decision_time_step: float \| None` | Decision interval in seconds; None leaves the interval unrestricted. |
+| `SimulatorRuntime.command_modes: frozenset[str] \| None` | Control command modes accepted or produced by this component. |
+| `SimulatorRuntime.supported_stages: frozenset[str]` | Return the hook stages supported by this adapter. |
+| `SimulatorRuntime.identity: Mapping[str, Any]` | Configuration identity used to check saved-preparation compatibility. |
+| `SimulatorRuntime.termination_details: Mapping[str, Any]` | Simulator diagnostics saved with the run's termination event. |
+| `SimulatorRuntime.validate_start(start: ScenarioStart \| None) -> None` | Check dataset and simulator constraints for a recorded scenario start. |
+| `SimulatorRuntime.validate_command(command: Control) -> None` | Reject active command fields that this simulator would silently ignore. |
+| `SimulatorRuntime.copy_observation(observation: Observation) -> Observation` | Detach the complete mutable data graph before model-visible processing. |
+| `SimulatorRuntime.close() -> None` | Release the world and native connections. Optional. |
+| `SimulatorRuntime.world_key: Hashable` | Identify the mutable world owned by this runtime. |
+| `SimulatorRuntime.claim_world(owner: object) -> Iterator[None]` | Context manager. Claim the world for an owner until exit, allowing that owner's nested claims. |
+| `SimulatorRuntime.exclusive() -> Iterator[None]` | Context manager. Claim the world and allow only one operation on this runtime at a time. |
+| `SimulatorRuntime.clock: ClockSnapshot` | Return the current `ClockSnapshot` containing time and decision frame. |
+| `SimulatorRuntime.state() -> WorldSnapshot` | Read detached physical state without a capture, callback or simulator tick. |
+| `SimulatorRuntime.sensors: frozenset[str]` | All sensor IDs for which this runtime can provide a current SensorView. |
+| `SimulatorRuntime.camera_sensors: frozenset[str]` | Explicit camera IDs whose current physical geometry can be recorded. |
+| `SimulatorRuntime.sensor_geometry(sensor: str) -> SensorGeometry` | Read optical-camera geometry; override for a lightweight, image-free path. |
+| `SimulatorRuntime.sensor_view(sensor: str) -> SensorView` | Return the view of the current capture of `sensor`; it never advances time. |
+| `SimulatorRuntime.insert_object(object_id: str, asset: ObjectAsset, world_from_object: np.ndarray, *, harmonizer: Harmonizer \| None = None) -> None` | Register a physical world object, visible from the next sensor capture. |
+| `SimulatorRuntime.remove_object(object_id: str) -> None` | Remove a world object; the previous capture remains unchanged. |
+| `SimulatorRuntime.object_visibility(object_id: str) -> Mapping[str, ObjectVisibility]` | Visibility of an object in the latest capture, for every camera whose image contains it. |
+| `SimulatorRuntime.control_actor(actor_id: str, control: Control) -> None` | Drive another actor with an actuator command from the next world step. |
+| `SimulatorRuntime.set_actor_state(actor_id: str, state: ActorState) -> None` | Move another actor to a canonical world state; visible from the next capture. |
+| `SimulatorRuntime.reset(start: ScenarioStart \| None = None, initialization: Any = None, *, deployment: DeploymentPlan \| None = None, world: Mapping[str, Any] \| None = None) -> None` | Start a run at `start` or the configured origin and capture the first frame. |
+| `SimulatorRuntime.setup_tick() -> None` | Advance one setup tick without requesting a driving decision. |
+| `SimulatorRuntime.step(control: Control) -> None` | Apply `control`, advance the world one decision and capture; read it with `observe`. |
+| `SimulatorRuntime.observe() -> Observation` | Return an independent copy of the current capture; never advance or recapture. |
+| `SimulatorRuntime.observe_past(count: int) -> tuple[Observation, ...]` | Read recorded observations before the selected start, from oldest to newest. |
+| `SimulatorRuntime.start_replay(start: ScenarioStart, initialization: Initialization \| None = None, *, world: Mapping[str, Any] \| None = None, deployment: DeploymentPlan \| None = None) -> None` | Reset for reading prescribed motion, without hooks or a driving system. |
+| `SimulatorRuntime.advance_replay(count: int) -> None` | Advance prescribed motion and capture each frame, without hooks or a driver. |
+| `SimulatorRuntime.generate_frame_data(start: ScenarioStart, frames: Sequence[FrameReference], *, world: Mapping[str, Any] \| None = None, deployment: DeploymentPlan \| None = None) -> FrameDataSequence` | Record actual frame data by replaying `start`'s prescribed motion over `frames`. |
+| `SimulatorRuntime.native: Mapping[str, Any]` | Expose native components available to callbacks, keyed by component name. |
+| `SimulatorRuntime.bind_hooks(dispatcher: StageEmitter) -> Iterator[None]` | Context manager. Bind one dispatcher for the scope; reject an already active binding. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+`validate_start` raises `TypeError` for a non-`ScenarioStart` and `ValueError` for an
+incompatible dataset kind or decision interval. A supported configuration whose particular start
+lacks required support raises `UnsupportedStartError`. Past captures and world ownership follow
+[Simulators](../guides/simulators.md)
+and [Architecture](../concepts/architecture.md#world-ownership).
+
+#### Extension contract
+
+Implement `Simulator.create_runtime(seed)` and declare dataset kinds, capabilities, stages,
+decision timing and command modes on the configuration class.
+Runtime subclasses must implement
+`_initialize_world(start: ScenarioStart | None, initialization: Any, environment: Mapping[str, Any]) -> None`,
+`_advance_native(control)`, `_observe()` and `_state()`.
+Optional native lifecycle methods are `_sensor_view`, `_replay_tick`, `_observe_recorded`,
+`_recorded_sensor_geometry`, `_recorded_sensor_view`, `_capture_frame_data`, `_hold_tick`,
+`_replay_position`, `_check_initialization`, `_before_selected_capture`, `_replayed_scenario`
+and `_frame_data_provenance`. The default `_hold_tick` raises `ValueError` when deployment
+ticks require holding an origin. Overriding
+`reset`, `step`, `sensor_view`, `start_replay`, `advance_replay` or `observe_past` raises
+`TypeError`. `MemorySimulator` in [tests/fakes.py](../../tests/fakes.py) is a
+minimal implementation.
+
+The default `SimulatorRuntime.world_key` is `("simulator", id(self))`. For optical camera views,
+`sensor_from_world = BODY_FROM_OPTICAL @ cam_from_world`. `setup_tick` raises `RuntimeError`
+outside `simulator.setup` or after the deployment tick budget is exhausted.
+
+#### See also
+
+[Simulators](../guides/simulators.md).
+
+### avsectester.closed_loop.simulators.carla
+
+<!-- api:begin module=avsectester.closed_loop.simulators.carla -->
+CARLA simulator configuration and live-world runtime.
+
+| Name and signature | Meaning |
+|---|---|
+| `CarlaSimulator` | [CarlaSimulator](#avsectesterclosed_loopsimulatorscarlasimulator) |
+| `CarlaSimulatorRuntime` | [CarlaSimulatorRuntime](#avsectesterclosed_loopsimulatorscarlasimulator) |
+<!-- api:end -->
+
+#### See also
+
+[Simulators](../guides/simulators.md).
+
+### avsectester.closed_loop.simulators.carla.conversions
+
+<!-- api:begin module=avsectester.closed_loop.simulators.carla.conversions -->
+Convert native CARLA actors, signal states and rotations to canonical world records.
+
+| Name and signature | Meaning |
+|---|---|
+| `rotation_to_carla(rotation: ArrayLike) -> tuple[float, float, float]` | Return native CARLA (pitch, yaw, roll) degrees from a native rotation matrix. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+`rotation_to_carla` converts a native CARLA rotation matrix to pitch/yaw/roll.
+Callers apply canonical Y-axis reflection before calling it.
+
+#### See also
+
+[Simulators](../guides/simulators.md).
+
+### avsectester.closed_loop.simulators.carla.sensors
+
+<!-- api:begin module=avsectester.closed_loop.simulators.carla.sensors -->
+CARLA sensor alignment, pinhole registration, depth decoding and owned SDK captures.
+
+| Name and signature | Meaning |
+|---|---|
+| `SensorCapture(native_type: str, raw_bytes: bytes, frame: int, timestamp: float, metadata: dict[str, Any] = dict())` | Owned bytes from a CARLA sensor capture; contains no simulator handle. |
+| `SensorCapture.raw_data: memoryview` | Native sensor payload before conversion to framework records. |
+| `SensorAlignmentError(RuntimeError)` | A configured sensor has no capture for the current world frame. |
+| `decode_carla_depth(image)` | Decode CARLA's 24-bit depth image to forward camera depth in meters. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+`decode_carla_depth` converts CARLA's encoded depth bytes to metric optical-axis depth.
+The pinhole provider raises `ValueError` for nonzero distortion attributes.
+
+#### See also
+
+[Simulators](../guides/simulators.md).
+
+### avsectester.closed_loop.simulators.carla.simulator
+
+<!-- api:begin module=avsectester.closed_loop.simulators.carla.simulator -->
+Configured CARLA simulations and their live native-world runtimes.
+
+| Name and signature | Meaning |
+|---|---|
+| `CarlaSimulator(Simulator)(client: dict, settle_iters: int = 100, *, simulator_version="0.9.16", depth_camera: str \| None = None, occlusion_tolerance_m: float = 0.1)` | CARLA runtime settings, with scene content supplied by a dataset recipe. |
+| `CarlaSimulator.dataset_kinds = ("CarlaDataset",)` | Dataset kinds supported by this simulator. |
+| `CarlaSimulator.capture_ticks = 1` | Simulator ticks consumed by a sensor capture. |
+| `CarlaSimulator.can_render = True` | Whether arbitrary-view rendering is supported. |
+| `CarlaSimulator.can_replay = True` | Whether recorded-tick replay is supported. |
+| `CarlaSimulator.can_insert_objects = True` | Whether world objects can be inserted into sensor rendering. |
+| `CarlaSimulator.supported_world_settings = CARLA_WORLD_SETTINGS` | World-setting keys accepted by the simulator. |
+| `CarlaSimulator.validate_world_settings(world: Mapping[str, Any]) -> None` | Validate keys, native enum names, types and ranges without connecting to CARLA. |
+| `CarlaSimulator.create_runtime(seed: int \| None = None) -> CarlaSimulatorRuntime` | A new live world; an explicit run seed overrides the configured client seed. |
+| `CarlaSimulatorRuntime(SimulatorRuntime)(simulator: CarlaSimulator, seed: int \| None = None)` | One live CARLA world of a `CarlaSimulator`. |
+| `CarlaSimulatorRuntime.native: dict[str, Any]` | Expose live simulator resources for explicit world-level interventions. |
+| `CarlaSimulatorRuntime.copy_observation(observation: Observation) -> Observation` | Detach mutable payloads, calibration and reference graphs in one copy operation. |
+| `CarlaSimulatorRuntime.supported_stages: frozenset[str]` | Return the hook stages supported by this adapter. |
+| `CarlaSimulatorRuntime.bind_hooks(dispatcher: StageEmitter) -> Iterator[None]` | Context manager. Bind one dispatcher for the scope; reject an already active binding. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+CARLA SDK/server dependencies belong to this implementation. World claims cover the full
+operation; native actor handles are not persisted in `RunLog`.
+
+#### See also
+
+[Simulators](../guides/simulators.md).
+
+### avsectester.closed_loop.simulators.ego_dynamics
+
+<!-- api:begin module=avsectester.closed_loop.simulators.ego_dynamics -->
+In-process ego motion from actuator or rig-frame trajectory commands.
+
+| Name and signature | Meaning |
+|---|---|
+| `PlanarEgoState(x: float = 0.0, y: float = 0.0, yaw: float = 0.0, speed: float = 0.0, t: float = 0.0, lateral_speed: float = 0.0, yaw_rate: float = 0.0, acceleration: float = 0.0)` | Planar physical ego state in meters, radians and seconds. |
+| `EgoDynamics(Protocol)` | A custom ego-motion implementation, with an optional `command_modes` declaration. |
+| `EgoDynamics.reset(state: PlanarEgoState) -> None` | Optionally initialize integrator state at the recorded start. |
+| `EgoDynamics.step(pose: PlanarEgoState, control: Control, dt: float) -> PlanarEgoState` | Advance the physical ego state by `dt` seconds using the final command. |
+| `KinematicBicycle(wheelbase: float = 2.8, max_accel: float = 3.0, max_brake: float = 8.0, max_steer: float = 0.6)` | Integrate actuator commands with a deterministic kinematic bicycle model. |
+| `KinematicBicycle.command_modes: ClassVar[frozenset[str]] = frozenset({"actuator"})` | Control command modes accepted or produced by this component. |
+| `KinematicBicycle.reset(state: PlanarEgoState) -> None` | No warmup is needed: this integrator carries all state in its argument. |
+| `KinematicBicycle.step(pose: PlanarEgoState, control: Control, dt: float) -> PlanarEgoState` | Integrate actuator commands for one time interval using bicycle dynamics. |
+| `TrajectoryFollower(decel: float = 4.0)` | Realize a rig-frame planned trajectory by direct position interpolation. |
+| `TrajectoryFollower.command_modes: ClassVar[frozenset[str]] = frozenset({"trajectory"})` | Control command modes accepted or produced by this component. |
+| `TrajectoryFollower.reset(state: PlanarEgoState) -> None` | No warmup is needed: the provided state anchors each planned trajectory. |
+| `TrajectoryFollower.step(pose: PlanarEgoState, control: Control, dt: float) -> PlanarEgoState` | Track the requested trajectory for one time interval. |
+| `AlpaSimController(mpc_implementation: str = "linear", n_horizon: int = 20, dt_mpc: float = .1, gains: Mapping[str, float \| int] \| None = None)` | AlpaSim's in-process controller and dynamic bicycle model. |
+| `AlpaSimController.command_modes: ClassVar[frozenset[str]] = frozenset({"trajectory"})` | Control command modes accepted or produced by this component. |
+| `AlpaSimController.EPOCH_US: ClassVar[int] = 10_000_000` | Timestamp offset in microseconds used by the trajectory interface. |
+| `AlpaSimController.reset(state: PlanarEgoState) -> None` | Create a fresh controller at the supplied recorded physical state. |
+| `AlpaSimController.step(pose: PlanarEgoState, control: Control, dt: float) -> PlanarEgoState` | Track the t0-led rig-frame plan and return the controller's final physical state. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+`AlpaSimController` requires position/quaternion trajectory points with strictly increasing
+integer-microsecond timestamps and a rig-frame origin at the current step time.
+Optional MPC dependencies are imported lazily.
+
+`AlpaSimController.gains` must be a mapping whose keys name `MPCGains` fields. A step whose
+state time differs from the latest propagated time raises `ValueError`. `PlanarEgoState.x`, `y`
+and `yaw` locate the ego origin in world coordinates; `speed` and `lateral_speed` are ego-axis
+velocities, `yaw_rate` is radians per second, `acceleration` is longitudinal meters per second
+squared, and `t` is seconds.
+
+#### See also
+
+[Simulators](../guides/simulators.md).
 
 ### avsectester.closed_loop.simulators.ground_contact
 
-| Name | Signature |
+<!-- api:begin module=avsectester.closed_loop.simulators.ground_contact -->
+AlpaSim-style ego ground contact using CPU mesh-ray intersections.
+
+| Name and signature | Meaning |
 |---|---|
-| `constrain_to_ground` | `constrain_to_ground(raycaster: MeshRaycaster, world_from_box: np.ndarray, extent: tuple[float, float, float]) -> tuple[np.ndarray, str]` |
+| `constrain_to_ground(raycaster: MeshRaycaster, world_from_box: np.ndarray, extent: tuple[float, float, float]) -> tuple[np.ndarray, str]` | Fit a vehicle's bottom to nearby ground, preserving its predicted center's XY. |
+<!-- api:end -->
 
-A 4×4 box-bottom grid is raycast vertically in both directions within 100 m. At least six hits
-are needed. Plane-fit displacement over 1.5 m or rotation over 10° rejects the update; the
-original pose is returned with insufficient_intersections, high_translation or high_rotation.
-Successful updates return successful_update and preserve box-centre horizontal position.
+#### Constraints and errors
 
-SimulatorRuntime.termination_details supplies diagnostics for the termination event; NuRec
-records ground_contact_failures grouped by reason.
+`world_from_box` must be a finite rigid transform and `extent` must contain three positive
+finite box dimensions. A 4×4 bottom grid is queried vertically in both directions within 100
+meters. At least six intersections are required. Corrections greater than 1.5 meters or 10
+degrees are rejected. Status is `successful_update`, `insufficient_intersections`,
+`high_translation` or `high_rotation`; rejected updates retain the input pose.
 
-NuRecRenderer.resolution_hw sets requested height and width per camera; missing entries use
-native resolution. Loading probes each camera to obtain the server's actual aspect-preserving
-output size. Its optical model uses that size, with lens coefficients and principal point scaled
-by returned_height/native_height. Later size changes are rejected. Depth and insertion use this
-same scaled model. AlpamayoAVStack.frame_subsample selects image context from a strided recent
-window, retaining the current frame. The official single-camera preset uses a factor of 3.
+#### See also
 
-AlpamayoAVStack requires 15 actual past decisions and 0.1 s observation intervals. reset seeds
-its image and pose caches; each call appends the current observation. The latest 16 received poses
-provide the model history and pose-difference speed and acceleration. It rejects missing images
-and a context span `(context_length - 1) * frame_subsample` greater than 15. No temporal padding
-is used. Model timestamps use round(t * 1e6) + EPOCH_US.
+[Simulators](../guides/simulators.md).
 
-The policy component bound by alpamayo_driving_adapter takes a mapping with observation and past.
-Its DrivingAdapter fallback past_steps is 15 even for an ordinary Python factory without
-avstack_type; configured class metadata still takes precedence.
-Observation.route supplies rig-relative navigation; the official AlpaSim helper determines the
-command. The component log includes route_waypoints, navigation_command, navigation_note,
-history_pose_count and selected_image_times (simulation seconds by camera). Control.trajectory
-starts at rig-frame origin with identity rotation at t0, followed by full model waypoint poses.
+### avsectester.closed_loop.simulators.navigation
 
-### avsectester.attack.offline_report
+<!-- api:begin module=avsectester.closed_loop.simulators.navigation -->
+Navigation intentions derived from a scenario's map or recorded ego trajectory.
 
-| Public name | Signature or fields |
+| Name and signature | Meaning |
 |---|---|
-| `OfflineReport` | Pure data collection; exported from avsectester.attack |
-| `OfflineReport.__init__` | `__init__(directory: str \| Path \| None = None)` |
-| `OfflineReport.directory` | Optional attack workspace; persisted as offline/<attack>/files/ |
-| `OfflineReport.status` | completed or failed |
-| `OfflineReport.values` | `dict[str, ReportValue]` |
-| `OfflineReport.series` | `dict[str, ReportSeries]` |
-| `OfflineReport.tables` | `dict[str, ReportTable]` |
-| `OfflineReport.images` | `dict[str, ReportImage]` |
-| `ReportValue` | Frozen dataclass: `value`, `unit=None`, `description=None` |
-| `ReportSeries` | Frozen dataclass: `x`, `y`, `x_label="iteration"`, `y_label=None`, `x_unit=None`, `y_unit=None`, `description=None` |
-| `ReportTable` | Frozen dataclass: `rows`, `description=None`, `columns=None` (column explanations) |
-| `ReportImage` | Frozen dataclass: `pixels`, `description=None` |
-| `OfflineReport.set_value` | `set_value(name, value, *, unit=None, description=None)`; bool/int/finite float/string |
-| `OfflineReport.set_series` | `set_series(name, y, *, x=None, x_label="iteration", y_label=None, x_unit=None, y_unit=None, description=None)` |
-| `OfflineReport.set_table` | `set_table(name, rows, *, description=None, columns=None)`; flat JSON-scalar mappings |
-| `OfflineReport.set_image` | `set_image(name, pixels, *, description=None)`; uint8 RGB/RGBA |
-| `OfflineReport.save` | `save(directory: str \| Path) -> None` |
-| `OfflineReport.load` | `load(directory: str \| Path) -> OfflineReport`; classmethod |
+| `RouteGenerator(kind: str, recorded_points: Sequence[Sequence[float]] \| np.ndarray, scenario_map: ScenarioMap \| Unavailable \| None)` | Generate 20 ego-frame navigation points spaced `80 / 19` meters apart. |
+| `RouteGenerator.route(world_from_ego: np.ndarray) -> np.ndarray \| None` | Return forward navigation from the actual ego projection, in ego axes, with z=0. |
+<!-- api:end -->
 
-Names match `^[A-Za-z0-9][A-Za-z0-9_.-]*$`, cannot collide across kinds, and replace
-previous data within the same kind. Series contain finite equal-length numeric vectors.
-Tables preserve column appearance order and scalar types; columns maps existing column names to
-explanations, including their units. Optional units and descriptions survive save/load for every
-report item. CSV/JSON retain full precision. save writes report.json, CSV and PNG
-files and copies the optional workspace into files/. OfflineContext.report receives this collection;
-attacks set measurements without writing framework reports themselves. PreparedExperiment.offline_reports
-retains the per-attack reports through save/load, preparation resume and prepared reuse.
-ReportValue, ReportSeries, ReportTable and ReportImage are exported from avsectester.attack.
-Each collection contains its complete frozen entry, so a scalar is read as values[name].value,
-table data as tables[name].rows, and image pixels as images[name].pixels. There are no parallel
-metadata maps. report.json mirrors the entries: values include value/unit/description; series
-include coordinates and axis metadata; tables include file/description/columns/rows; images
-include file/description. CSV column order follows first occurrence in rows. This entry layout
-replaces the earlier scalar/filename layout; old offline report files must be read with their
-matching version.
+#### Constraints and errors
 
-### avsectester.implemented_attacks.stop_sign_patch_attack.metrics
+Routes require at least two finite recorded world positions. A reversal exceeding 150 degrees
+raises `ValueError`. Map navigation requires an available map containing driving lanes and
+rejects recorded waypoints more than 10 meters from the derived map route. Use `recorded`
+navigation when only recorded motion is available, or `none` to disable routes.
 
-| Public name | Signature or fields |
+#### See also
+
+[Simulators](../guides/simulators.md).
+
+### avsectester.closed_loop.simulators.nurec
+
+<!-- api:begin module=avsectester.closed_loop.simulators.nurec -->
+NuRec simulator configuration, live runtime and RPC renderer.
+
+| Name and signature | Meaning |
 |---|---|
-| `ReplicaVisibility` | `ReplicaVisibility(camera_id: str \| None = None, min_visible_pixels=100)` |
-| `ReplicaVisibility.evaluate` | `evaluate(group: ComparisonGroup) -> TreatmentMeasurements` |
-| `ReplicaVisibility.describe` | `describe() -> MetricDescription`; visible_steps description and decision-step unit |
+| `AlpaSimTraffic` | [AlpaSimTraffic](#avsectesterclosed_loopsimulatorsnurectraffic) |
+| `TrafficSession` | [TrafficSession](#avsectesterclosed_loopsimulatorsnurectraffic) |
+| `TrafficTrack` | [TrafficTrack](#avsectesterclosed_loopsimulatorsnurectraffic) |
+| `NuRecSimulator` | [NuRecSimulator](#avsectesterclosed_loopsimulatorsnurecsimulator) |
+| `NuRecSimulatorRuntime` | [NuRecSimulatorRuntime](#avsectesterclosed_loopsimulatorsnurecsimulator) |
+| `NuRecRenderer` | [NuRecRenderer](#avsectesterclosed_loopsimulatorsnurecrenderer) |
+<!-- api:end -->
 
-With camera_id=None, the metric selects the unique camera with replica visibility records across
-the comparison group. Multiple cameras raise ValueError requiring an explicit camera_id; no
-recorded replica visibility yields unavailable values. A missing chosen-camera entry is invisible.
+#### See also
 
-visible_steps counts decisions whose replica visibility for the selected camera reaches the pixel
-threshold. Missing camera entries count as invisible; an empty run or a run with no replica record is
-unavailable. The shared object ID is `online.REPLICA_OBJECT_ID = "stop_sign_replica"`.
-Reference this custom metric in YAML by its full module path.
+[Simulators](../guides/simulators.md).
 
-StopLineMetrics additionally reports signed distance_to_line_at_stop at the same first low-speed
-sample as time_to_stop; distance_to_line_at_min_speed at the first minimum-speed sample in the
-before-line interval; and distance_to_line_at_brake_onset at the start of the first physical
-deceleration interval reaching brake_deceleration_mps2. Distances are positive before the line and
-negative after crossing. Missing stopping/braking evidence remains unavailable with a reason.
+### avsectester.closed_loop.simulators.nurec.renderer
 
-### avsectester.experiment.html_report
+<!-- api:begin module=avsectester.closed_loop.simulators.nurec.renderer -->
+NuRec RGB rendering and native camera/pose conversion at the RPC boundary.
 
-| Public name | Signature or fields |
+| Name and signature | Meaning |
 |---|---|
-| `write_offline_html` | `write_offline_html(output_root)`; rebuild offline_report.html from saved files |
-| `write_evaluation_html` | `write_evaluation_html(output_root)`; rebuild evaluation_report.html from saved files |
+| `Renderer(ABC)()` | Renders sensor observations from the reconstructed scene at a given ego pose. |
+| `Renderer.cameras: ClassVar[list[str]] = ["camera_front"]` | Camera names rendered by this renderer. |
+| `Renderer.calibration: dict[str, CameraCalibration]` | Camera calibrations supplied by a loaded renderer; empty by default. |
+| `Renderer.copy() -> Renderer` | A renderer with this configuration and no connection, loaded scene or run origin. |
+| `Renderer.reset_origin(start=None)` | Set the run origin from the dataset start; configured renderers have no origin. |
+| `Renderer.origin_transform` | World transform locating the loaded scene origin. |
+| `Renderer.origin_timestamp_us` | Recorded timestamp in microseconds at the scene origin. |
+| `Renderer.origin_bounds` | Spatial bounds of the loaded scene origin. |
+| `Renderer.load_scene(scene: Any) -> None` | Load a reconstruction once; renderers without a service may leave this empty. |
+| `Renderer.render(world_from_rig: np.ndarray, timestamp_us: int, camera: str, dynamic_objects=()) -> Any` | Abstract. Render one camera at the explicit three-dimensional rig pose and scene timestamp. |
+| `Renderer.render_scene_visibility(world_from_rig: np.ndarray, timestamp_us: int, camera: str, objects: Sequence[PlacedObject], dynamic_objects=(), *, occlusion_tolerance_m: float = 0.) -> np.ndarray` | Pixels where the reconstructed scene does not hide `objects` in this capture. |
+| `Renderer.camera_model(camera: str \| None = None) -> Camera \| None` | Optical camera model, or None when this renderer supplies no geometry. |
+| `Renderer.cam_from_world(world_from_rig: np.ndarray, camera: str \| None = None) -> np.ndarray` | World-to-optical-camera transform for the rendered pose. |
+| `Renderer.close() -> None` | Release renderer resources; the default implementation has no effect. |
+| `NuRecRenderer(Renderer)(endpoint: str = "127.0.0.1:50051", scene_id: str \| None = None, cameras: list[str] = ["camera_front_wide_120fov"], image_quality: float = 95.0, resolution_hw: Mapping[str, tuple[int, int]] = dict(), probe_directory: str \| Path \| None = None, server_probe_directory: str \| None = None, track_padding_m: tuple[float, float, float] = (1.0, 1.0, 0.25))` | Real NuRec renderer: one stateless `SensorsimService.render_rgb` per frame to an nre server. |
+| `NuRecRenderer.copy() -> NuRecRenderer` | The same configuration without a connection, loaded scene or run origin. |
+| `NuRecRenderer.served_scenes(timeout_s: float = 2.0) -> tuple[str, ...] \| None` | Query supported scene IDs without changing this renderer's loaded scene. |
+| `NuRecRenderer.load_scene(scene: Any) -> None` | Connect to the nre-ga renderer and read the scene id, camera spec, and start pose/time. |
+| `NuRecRenderer.calibration: dict[str, CameraCalibration]` | Loaded camera lenses and optical-camera-to-rig poses; empty before loading. |
+| `NuRecRenderer.service` | Native SensorsimService client, including metadata APIs not normalized by this adapter. |
+| `NuRecRenderer.camera_model(camera: str \| None = None) -> Camera` | The lens scaled to the image dimensions actually returned by NRE during load_scene. |
+| `NuRecRenderer.cam_from_world(world_from_rig: np.ndarray, camera: str \| None = None) -> np.ndarray` | World-to-optical-camera transform at the explicit three-dimensional rig pose. |
+| `NuRecRenderer.render(world_from_rig: np.ndarray, timestamp_us: int, camera: str, dynamic_objects=())` | Render one RGB frame at an explicit three-dimensional rig pose and scene timestamp. |
+| `NuRecRenderer.render_at(world_from_rig, timestamp_us: int, camera: str, dynamic_objects=())` | Render an absolute rig pose/time and all present track-ID/world-pose pairs. |
+| `NuRecRenderer.render_scene_visibility(world_from_rig: np.ndarray, timestamp_us: int, camera: str, objects: Sequence[PlacedObject], dynamic_objects=(), *, occlusion_tolerance_m: float = 0.) -> np.ndarray` | Pixels where the reconstructed scene does not hide `objects` in an NRE render. |
+<!-- api:end -->
 
-Reports use inline CSS, relative image/CSV links, no JavaScript and no external resources. Offline
-series become 640-pixel-wide PNG curves with integer x ticks when appropriate.
-Tables with at most 20 rows and 8 columns are expanded summary tables; other tables are folded
-details containing their descriptions, column explanations, CSV link and complete rows.
-Evaluation results have measurement rows and treatment columns. Field links jump to definitions;
-paired differences can use any treatment as reference, and group values use missing-evidence footnotes.
-Type cells show the class name with its complete path as a tooltip.
-The evaluation page includes treatment statistics per part and metric class, pair differences,
-selection decisions, metric errors, notes and expandable group evidence.
+#### Constraints and errors
+
+`load_scene` establishes calibration from the same native extrinsics as `cam_from_world`.
+`served_scenes` returns None only for UNAVAILABLE or `DEADLINE_EXCEEDED`; other RPC errors
+propagate. Probe paths follow client/server configuration rules.
+
+#### See also
+
+[Simulators](../guides/simulators.md).
 
 ### avsectester.closed_loop.simulators.nurec.server
 
-| Public name | Signature or fields |
+<!-- api:begin module=avsectester.closed_loop.simulators.nurec.server -->
+Build, start, reuse and stop local NuRec renderer and traffic-service containers.
+
+| Name and signature | Meaning |
 |---|---|
-| `renderer_command` | `renderer_command(dataset, renderer, *, gpu, name, image, cache_size) -> list[str]` |
-| `default_renderer_container_name` | `default_renderer_container_name(renderer) -> str`; avsectester-nre-<port> without dataset access |
-| `traffic_command` | `traffic_command(dataset, traffic, *, gpu, name, image, models: str \| Path) -> list[str]` |
-| `default_traffic_container_name` | `default_traffic_container_name(traffic) -> str`; avsectester-trafficsim-<port> without dataset access |
-| `DEFAULT_TRAFFIC_IMAGE` | `avsectester:trafficsim` |
-| `DEFAULT_NRE_IMAGE` | `nvcr.io/nvidia/nre/nre-ga:26.04` |
+| `local_services(dataset: Dataset, simulator: Simulator, *, nre_gpu: str \| int \| None = None, nre_name: str \| None = None, trafficsim_gpu: str \| int \| None = None, trafficsim_models: str \| Path \| None = None, trafficsim_name: str \| None = None, timeout_s: float = 600., log: Callable[[str], Any] = print) -> Iterator[None]` | Context manager. Reuse compatible services or own local NRE/CATK containers for one experiment. |
+<!-- api:end -->
 
-start_container(command, *, name, ready_log, timeout_s, readiness=None, prepare=None, log)
-launches a new container, waits for its readiness marker and optional check, and raises an exception
-with the last 50 log lines on failure after cleaning up. stop_container(name) stops then removes it.
-local_services(dataset, simulator, *, nre_gpu, nre_name, trafficsim_gpu, trafficsim_models,
-trafficsim_name, timeout_s, log) is a context manager that reuses compatible services or starts
-missing local ones, then stops only containers it started in reverse order. Cleanup errors add
-notes to an active exception; after success they are reported through log.
-NuRecRenderer.served_scenes and AlpaSimTraffic.served_scenes use short RPC deadlines and return
-None only for UNAVAILABLE or DEADLINE_EXCEEDED; other errors propagate.
+#### Constraints and errors
 
-Constructs a local Docker NRE command without filesystem or process changes. It requires NuRecDataset
-and NuRecRenderer, rejects duplicate archive basenames and remote endpoints, mounts each resolved
-archive read-only, and mounts the optional probe directory at its server-side path.
-traffic_command applies the same archive/endpoint checks and mounts the model directory read-only
-at /mnt/trafficsim-models. Use nre serve/stop and trafficsim serve/stop for process management.
+Commands mount client paths as host paths. Automatic startup requires a local endpoint and an
+unambiguous GPU; an existing compatible service is reused. `local_services` stops only
+containers it starts, in reverse order. Startup failures include recent logs and clean up
+owned containers.
 
-### avsectester.evaluation.report statistic formatting
+#### See also
 
-`format_number(value) -> str` formats bool as yes/no and int without decimals. Float always has
-four decimal places, including 1.0 → 1.0000 and -0.0 → 0.0000. None, unavailable and non-finite
-numbers become an em dash. `format_statistic(statistic)` uses a four-decimal mean and population
-standard deviation, with a second line n = k; for n < 2 the standard deviation is omitted.
-Boolean summaries show a four-decimal true fraction and a second line N of K groups. JSON and
-CSV keep full precision.
+[Simulators](../guides/simulators.md).
 
+### avsectester.closed_loop.simulators.nurec.simulator
 
-### Metric descriptions
+<!-- api:begin module=avsectester.closed_loop.simulators.nurec.simulator -->
+NuRec live worlds with independent renderer, actor state and ego dynamics.
 
-MetricField and MetricDescription are frozen dataclasses exported from avsectester.evaluation.
-Metric.describe() is an instance method, so descriptions can explain the actual configured
-thresholds. Its default summary is the first paragraph of the class docstring and its default
-field mapping is empty.
-
-| Public name | Signature or fields |
+| Name and signature | Meaning |
 |---|---|
-| `MetricField` | `description: str`; `unit: str \| None = None` |
-| `MetricDescription` | `summary: str`; `fields: Mapping[str, MetricField]` |
-| `Metric.describe` | `describe() -> MetricDescription` |
+| `NuRecSimulator(Simulator)(renderer: Renderer, dynamics: EgoDynamics \| None = None, *, time_step: float \| None = None, camera_aliases: Mapping[str, str] \| None = None, depth: str = "mesh", route_generator: str = "map", physics_update_mode: str = "ego_only", ground_mesh: str = "mesh", object_occlusion: str = "rendered_probes", occlusion_tolerance_m: float = 0.15, traffic: AlpaSimTraffic \| None = None, min_track_duration_s: float = 3.)` | A NuRec neural reconstruction with in-process ego dynamics and a pluggable renderer. |
+| `NuRecSimulator.dataset_kinds = ("NuRecDataset",)` | Dataset kinds supported by this simulator. |
+| `NuRecSimulator.can_render = True` | Whether arbitrary-view rendering is supported. |
+| `NuRecSimulator.can_observe_past = True` | Whether observations before a selected start can be reconstructed. |
+| `NuRecSimulator.can_insert_objects = True` | Whether world objects can be inserted into sensor rendering. |
+| `NuRecSimulator.create_runtime(seed: int \| None = None) -> NuRecSimulatorRuntime` | A new world; the optional traffic session receives seed for its log. |
+| `NuRecSimulator.past_steps: int` | Recorded decision history needed by the optional traffic model. |
+| `NuRecSimulator.command_modes: frozenset[str] \| None` | Delegate command capabilities to the selected ego dynamics implementation. |
+| `NuRecSimulatorRuntime(SimulatorRuntime)(simulator: NuRecSimulator, seed: int \| None = None)` | One live NuRec world: the ego pose and dynamics loop, and its own renderer connection. |
+| `NuRecSimulatorRuntime.native: dict[str, Any]` | Native resources for explicit world changes or custom renderer operations. |
+| `NuRecSimulatorRuntime.render_request(camera: str) -> CameraPoseRequest` | Return the effective request that produced this camera's current observation. |
+| `NuRecSimulatorRuntime.set_actor_state(actor_id: str, state: ActorState) -> None` | Override a current reconstructed actor's pose and world velocity until reset. |
+| `NuRecSimulatorRuntime.checkpoint() -> dict` | Capture a replay checkpoint; active reactive-traffic sessions cannot be checkpointed. |
+| `NuRecSimulatorRuntime.restore(ckpt: dict) -> None` | Restore a saved replay checkpoint into this runtime. |
+| `NuRecSimulatorRuntime.supported_stages: frozenset[str]` | Return the hook stages supported by this adapter. |
+| `NuRecSimulatorRuntime.bind_hooks(dispatcher: StageEmitter) -> Iterator[None]` | Context manager. Bind one dispatcher for the scope; reject an already active binding. |
+<!-- api:end -->
 
-Field keys are evaluate output names without the metric label prefix. Every built-in metric
-describes all of its fields. Saved metric specifications contain type, options, label, summary and
-fields (description and unit). The exact label identifies the field prefix even when a field itself
-contains dots or a label uses a complete module path. EvaluationReport.experiment records the
-experiment setup when evaluate(result, configuration) supplies it; standalone evaluate_groups
-leaves that mapping empty.
+#### Constraints and errors
+
+NuRec requires `ScenarioStart` and a decision `time_step`. In `rendered_probes` mode, capture
+with the objects inserted, then use `view.composition.plan`; `SensorView.composite_plan` raises
+`ValueError` for these views. Ground contact requires the selected mesh unless
+`physics_update_mode` is none.
+
+#### See also
+
+[Simulators](../guides/simulators.md).
+
+### avsectester.closed_loop.simulators.nurec.traffic
+
+<!-- api:begin module=avsectester.closed_loop.simulators.nurec.traffic -->
+AlpaSim CATK configuration, stateless RPC and owned live traffic sessions.
+
+| Name and signature | Meaning |
+|---|---|
+| `TrafficTrack(track_id: str, trajectory: tuple[tuple[int, np.ndarray], ...], extent: tuple[float, float, float], label_class: str, is_static: bool)` | A recorded box-center trajectory and its native dimensions and class. |
+| `AlpaSimTraffic(endpoint: str = "127.0.0.1:6200", history_steps: int = 16, rpc_timeout_s: float = 300.)` | Configure stateless RPC and open owned CATK sessions; seed is only logged. |
+| `AlpaSimTraffic.get_metadata(*, timeout_s: float \| None = None) -> Any` | Fetch TrafficModuleMetadata over a short-lived connection. |
+| `AlpaSimTraffic.get_available_scenes(*, timeout_s: float \| None = None) -> tuple[str, ...]` | Return the scene IDs served by this endpoint. |
+| `AlpaSimTraffic.served_scenes(timeout_s: float = 2.0) -> tuple[str, ...] \| None` | Query scene support; unavailable endpoints and deadline expiry return None. |
+| `AlpaSimTraffic.open_session(*, scene_id: str, random_seed: int, start_us: int, end_us: int, ego_extent: tuple[float, float, float], ego_trajectory: Sequence[tuple[int, np.ndarray]], tracks: Sequence[TrafficTrack]) -> TrafficSession` | Validate support and open a session with EGO first and clipped native tracks. |
+| `TrafficSession(channel: Any, session_uuid: str, handover_time_us: int, tracks: Sequence[TrafficTrack], *, history_steps: int, rpc_timeout_s: float)` | One live CATK session, its channel and complete constant-velocity override history. |
+| `TrafficSession.record_override(track_id: str, time_us: int, world_from_box: np.ndarray, velocity: Sequence[float]) -> None` | Record an override, backfilling only its first constant-velocity history. |
+| `TrafficSession.simulate(time_query_us: int, ego_world_from_box: np.ndarray, override_world_from_box: Mapping[str, np.ndarray]) -> dict[str, np.ndarray]` | Send current EGO and full override histories; return current movable poses. |
+| `TrafficSession.close() -> None` | Close once and release the channel even when the close RPC fails. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+A session checks scene availability and the configured history length before starting. The first
+trajectory is `EGO`; track trajectories are clipped to the history-supported recording window
+and empty tracks are omitted. Handover is one traffic step after `start_us`. `record_override`
+backfills the initial constant-velocity history; `simulate` requires override keys to match
+recorded override tracks exactly. Returned poses exclude static, overridden and unknown tracks.
+Missing requested timestamps or RPC failures close the session before propagating the error.
+RPC failures raise `RuntimeError` containing the RPC status code and details.
+
+#### See also
+
+[Simulators](../guides/simulators.md).
+
+### avsectester.closed_loop.simulators.recorded
+
+<!-- api:begin module=avsectester.closed_loop.simulators.recorded -->
+Bounded open-loop replay of recorded frames.
+
+| Name and signature | Meaning |
+|---|---|
+| `RecordedReplaySimulator(Simulator)(start: ScenarioStart \| None = None, *, camera_aliases: Mapping[str, str] = {}, occlusion_tolerance_m: float = 0.1)` | Open-loop replay with native camera names or explicitly configured output aliases. |
+| `RecordedReplaySimulator.dataset_kinds = ("NuScenesDataset",)` | Dataset kinds supported by this simulator. |
+| `RecordedReplaySimulator.can_render = True` | Whether arbitrary-view rendering is supported. |
+| `RecordedReplaySimulator.can_replay = True` | Whether recorded-tick replay is supported. |
+| `RecordedReplaySimulator.can_insert_objects = True` | Whether world objects can be inserted into sensor rendering. |
+| `RecordedReplaySimulator.create_runtime(seed: int \| None = None) -> RecordedReplaySimulatorRuntime` | A new replay; recorded frames are fixed, so `seed` is unused. |
+| `RecordedReplaySimulatorRuntime(SimulatorRuntime)(simulator: RecordedReplaySimulator)` | One replay of recorded frames. |
+| `RecordedReplaySimulatorRuntime.supported_stages: frozenset[str]` | Return the hook stages supported by this adapter. |
+| `RecordedReplaySimulatorRuntime.native: Mapping[str, Any]` | Expose native components available to callbacks, keyed by component name. |
+| `RecordedReplaySimulatorRuntime.bind_hooks(dispatcher: StageEmitter) -> Iterator[None]` | Context manager. Bind one dispatcher for the scope; reject an already active binding. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+Reset requires a nuScenes `ScenarioStart`, no environment overrides and no CARLA replay
+initialization. Frames must begin at the requested start, be contiguous and contain ego state at
+every frame. Duplicate aliased sensor names, unknown or uncalibrated cameras, absent RGB
+captures and steps beyond terminal support raise `ValueError`. State or geometry access before
+reset raises `RuntimeError`.
+
+#### See also
+
+[Simulators](../guides/simulators.md).
+
+### avsectester.attack
+
+<!-- api:begin module=avsectester.attack -->
+Attack contracts, runtime actions and structured offline reports.
+
+| Name and signature | Meaning |
+|---|---|
+| `AVStackAttackAction` | [AVStackAttackAction](#avsectesterattackruntime) |
+| `Attack` | [Attack](#avsectesterattackattack) |
+| `AttackAction` | [AttackAction](#avsectesterattackruntime) |
+| `AttackRuntime` | [AttackRuntime](#avsectesterattackruntime) |
+| `AttackSegment` | [AttackSegment](#avsectesterattackattack) |
+| `OfflineContext` | [OfflineContext](#avsectesterattackattack) |
+| `OfflineReport` | [OfflineReport](#avsectesterattackoffline_report) |
+| `ReportValue` | [ReportValue](#avsectesterattackoffline_report) |
+| `ReportSeries` | [ReportSeries](#avsectesterattackoffline_report) |
+| `ReportTable` | [ReportTable](#avsectesterattackoffline_report) |
+| `ReportImage` | [ReportImage](#avsectesterattackoffline_report) |
+| `OnlineContext` | [OnlineContext](#avsectesterattackruntime) |
+| `ResultSubscription` | [ResultSubscription](#avsectesterattackruntime) |
+| `SensorAttackAction` | [SensorAttackAction](#avsectesterattackruntime) |
+| `WorldAttackAction` | [WorldAttackAction](#avsectesterattackruntime) |
+| `split_segments` | [split_segments](#avsectesterattacksegments) |
+<!-- api:end -->
+
+#### See also
+
+[Implement an attack](../guides/attacks.md).
+
+### avsectester.attack.attack
+
+<!-- api:begin module=avsectester.attack.attack -->
+The user's attack: the metabuilder, the offline phase and the online phase.
+
+| Name and signature | Meaning |
+|---|---|
+| `AttackSegment(scenario_id: str, start: FrameReference, stop: FrameReference, user_data: Mapping[str, Any] = dict())` | One selected scenario and decision interval with attack-owned data. |
+| `AttackSegment.decision_steps: int` | Number of decisions between the inclusive start and exclusive stop references. |
+| `OfflineContext(services: ClosedLoopServices, metadata: tuple[AttackSegment, ...], seed: int = 0, environment: Mapping[str, Any] = dict(), deployment: DeploymentPlan \| None = None, validation_metadata: tuple[AttackSegment, ...] = (), report: OfflineReport = OfflineReport(None))` | What `run_offline` receives: the closed-loop services and the attack metadata. |
+| `Attack(ABC)()` | One attack with its own parameters and optional offline preparation. |
+| `Attack.environment: Mapping[str, Any] = MappingProxyType({})` | Environment settings merged with experiment settings during selection and the offline phase. |
+| `Attack.build_metadata(scenario: ScenarioView) -> Sequence[AttackSegment]` | Select segments, or leave selection to a shared metadata.load file. |
+| `Attack.validate_segment(segment: AttackSegment) -> None` | Accept shared metadata, or raise ValueError explaining why it is unsuitable. |
+| `Attack.run_offline(context: OfflineContext) -> Any` | Return the artifacts used by the online phase, or None when no preparation is needed. |
+| `Attack.deployment_ticks(segment: AttackSegment) -> int` | Declare native setup ticks before preparing artifacts; default has no world deployment. |
+| `Attack.create_runtime(segment: AttackSegment, artifacts: Any) -> AttackRuntime` | Create the runtime for one run. By default, a runtime without attack actions. |
+| `Attack.configuration_parameters() -> Mapping[str, Any]` | Describe the constructor parameters used to validate saved preparations. |
+| `Attack.save_artifacts(artifacts: Any, directory: str \| Path) -> None` | Save the explicit `artifacts` value as pickle plus its content hash. |
+| `Attack.load_artifacts(directory: str \| Path) -> Any` | Return saved artifacts without changing this attack's configuration or state. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+`AttackSegment` requires matching scenario IDs on both frame references, an exclusive stop
+after the start, and mapping-valued `user_data`. Invalid intervals raise `ValueError`;
+non-mapping `user_data` raises `TypeError` at construction. The default `Attack.build_metadata` raises
+`NotImplementedError` and requires `metadata.load` for experiments.
+
+#### See also
+
+[Implement an attack](../guides/attacks.md).
+
+### avsectester.attack.insertion
+
+<!-- api:begin module=avsectester.attack.insertion -->
+Public assets, calibrated compositing, visibility and actions for user attacks.
+
+| Name and signature | Meaning |
+|---|---|
+| `Insertion` | [Insertion](#avsectesterattackinsertionassets) |
+| `PlaneAsset` | [PlaneAsset](#avsectesterattackinsertionassets) |
+| `PlanarAsset` | [PlanarAsset](#avsectesterattackinsertionassets) |
+| `ResolvedInsertion` | [ResolvedInsertion](#avsectesterattackinsertionassets) |
+| `resolve_insertion` | [resolve_insertion](#avsectesterattackinsertionassets) |
+| `PatchCompositor` | [PatchCompositor](#avsectesterattackinsertioncompositor) |
+| `render_resolved` | [render_resolved](#avsectesterattackinsertioncompositor) |
+| `InsertObject` | [InsertObject](#avsectesterattackinsertionaction) |
+| `InsertionAttackAction` | [InsertionAttackAction](#avsectesterattackinsertionaction) |
+| `Visibility` | [Visibility](#avsectesterattackinsertiontypes) |
+| `VisibilityEvidence` | [VisibilityEvidence](#avsectesterattackinsertiontypes) |
+| `CuboidVisibilityEstimator` | [CuboidVisibilityEstimator](#avsectesterattackinsertionvisibility) |
+| `DepthVisibilityEstimator` | [DepthVisibilityEstimator](#avsectesterattackinsertionvisibility) |
+| `visibility_from_depth` | [visibility_from_depth](#avsectesterattackinsertionvisibility) |
+| `visibility_from_masks` | [visibility_from_masks](#avsectesterattackinsertionvisibility) |
+<!-- api:end -->
+
+#### See also
+
+[Implement an attack](../guides/attacks.md).
+
+### avsectester.attack.insertion.action
+
+<!-- api:begin module=avsectester.attack.insertion.action -->
+World-object and captured-image insertion actions for user attacks.
+
+| Name and signature | Meaning |
+|---|---|
+| `InsertObject(WorldAttackAction)(object_id: str, asset: ObjectAsset, world_from_object: np.ndarray, harmonizer: Harmonizer \| None = None)` | Insert arbitrary textured geometry into all cameras through the simulator. |
+| `InsertionAttackAction(SensorAttackAction)(sensor: str, insertion: Insertion, compositor: PatchCompositor \| None = None)` | Render explicit planes with aligned depth when present, otherwise actor cuboids. |
+| `InsertionAttackAction.resolve(view)` | Resolve the insertion asset, pose and placement for the current sensor geometry. |
+| `InsertionAttackAction.evidence(view, resolved=None)` | Return insertion placement and visibility evidence for the action record. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+`Insertion` is a specification. `InsertObject` is a `WorldAttackAction` that registers cleanup;
+`InsertionAttackAction` is a `SensorAttackAction`. `InsertObject` raises `NotImplementedError`
+when the simulator does not declare `can_insert_objects`.
+
+#### See also
+
+[Implement an attack](../guides/attacks.md).
+
+### avsectester.attack.insertion.assets
+
+<!-- api:begin module=avsectester.attack.insertion.assets -->
+Explicit insertion geometry, independent of a simulator or attack implementation.
+
+| Name and signature | Meaning |
+|---|---|
+| `PlanarAsset(Protocol)` | Extension point for assets composed of local textured rectangular surfaces. |
+| `PlanarAsset.planes() -> Sequence[PlaneSurface]` | Resolve the asset into textured planes in its local coordinate frame. |
+| `PlaneAsset(texture: np.ndarray \| str \| Path, width_m: float, height_m: float)` | RGBA patch or sign, centered at the origin in the local YZ plane. |
+| `PlaneAsset.planes() -> tuple[PlaneSurface, ...]` | Resolve the asset into textured planes in its local coordinate frame. |
+| `Insertion(id: str, asset: PlanarAsset, placement: AttachedPlacement \| WorldPlacement, orientation: Orientation = Orientation())` | An independently configured object. No placement coordinates are searched or adjusted. |
+| `ResolvedInsertion(id: str, pose: np.ndarray, asset: PlanarAsset, host_id: str \| None = None)` | An insertion's world pose at one instant, shared by rendering and selection. |
+| `ResolvedInsertion.planes() -> tuple[PlaneSurface, ...]` | Resolve the asset into textured planes in its local coordinate frame. |
+| `resolve_insertion(insertion: Insertion, actors: Mapping[str, ActorState], ego: ActorState) -> ResolvedInsertion` | Resolve a user-specified installation against current actor poses without mutation. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+Attached placement requires known actor dimensions. Unknown extent is not treated as zero.
+Placement resolves against the current actor pose.
+
+#### See also
+
+[Implement an attack](../guides/attacks.md).
+
+### avsectester.attack.insertion.compositor
+
+<!-- api:begin module=avsectester.attack.insertion.compositor -->
+Shared geometry-based insertion rendering and compositing.
+
+| Name and signature | Meaning |
+|---|---|
+| `PatchCompositor(harmonizer: Harmonizer \| None = None, *, soften: float = 0.0)` | Appearance settings for geometry-based insertion compositing. |
+| `render_resolved(frame: np.ndarray, camera: Camera, cam_from_world: np.ndarray, resolved: ResolvedInsertion, evidence: VisibilityEvidence \| None = None, *, compositor: PatchCompositor \| None = None) -> tuple[np.ndarray, np.ndarray]` | Composite a resolved insertion with per-pixel surface depth and visibility. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+Composition requires calibrated camera geometry and RGB/RGBA input. Harmonizers change only the
+resolved visible region.
+
+#### See also
+
+[Implement an attack](../guides/attacks.md).
+
+### avsectester.attack.insertion.placement
+
+<!-- api:begin module=avsectester.attack.insertion.placement -->
+Insertion positions and orientations shared by attack metadata.
+
+| Name and signature | Meaning |
+|---|---|
+| `validate_attached_mount(anchor: str, offset_m: tuple[float, float, float]) -> tuple[float, float, float]` | Validate host-independent mounting options and return a finite metric offset. |
+| `AttachedPlacement(host: str, anchor: str = "center", offset_m: tuple[float, float, float] = (0.0, 0.0, 0.0))` | A user-specified host-local point. Named anchors refer to bounding-box faces. |
+| `AttachedPlacement.local_position(extent: tuple[float, float, float]) -> np.ndarray` | Return this mounting point in host-local axes for full bounding-box dimensions. |
+| `WorldPlacement(position_m: tuple[float, float, float])` | A fixed position in the canonical world frame, in meters. |
+| `Orientation(mode: str = "fixed_world", rotation_deg: tuple[float, float, float] = (0.0, 0.0, 0.0), target_offset_m: tuple[float, float, float] = (0.0, 0.0, 0.0))` | Rotation relative to a host, absolute in world, or directed at the ego. |
+| `placement_from_spec(value: Any) -> AttachedPlacement \| WorldPlacement` | Read an explicit placement object or a `{type, options}` specification. |
+| `orientation_from_spec(value: Any) -> Orientation` | Read an explicit orientation; default image insertions face the ego. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+World placement uses canonical world coordinates. Attached placement always uses the host's
+bounding-box frame.
+
+#### See also
+
+[Implement an attack](../guides/attacks.md).
+
+### avsectester.attack.insertion.types
+
+<!-- api:begin module=avsectester.attack.insertion.types -->
+Data shared by visibility providers and insertion renderers.
+
+| Name and signature | Meaning |
+|---|---|
+| `Visibility(fraction: float, source: str, camera: str \| None = None, label: str \| None = None)` | Measured fraction or a coarse dataset representative. None camera means source-wide scope. |
+| `VisibilityEvidence(visibility: Visibility \| None, reference_mask: np.ndarray, visible_mask: np.ndarray, target_depth: np.ndarray, reference_pixels: int, reason: str = "", sampled_rgba: np.ndarray \| None = None, ignored_occluders: tuple[str, ...] = ())` | One insertion's visibility and image-sized sampling results for one camera/instant. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+`Visibility` fractions describe visible projected coverage, not a driving outcome. Evidence
+keeps the camera and occlusion source needed to interpret that measurement.
+
+#### See also
+
+[Implement an attack](../guides/attacks.md).
+
+### avsectester.attack.insertion.visibility
+
+<!-- api:begin module=avsectester.attack.insertion.visibility -->
+Depth-based visibility and explicitly approximate cuboid visibility for insertions.
+
+| Name and signature | Meaning |
+|---|---|
+| `CuboidVisibilityEstimator(*, tolerance_m: float = 0.002, max_reference_pixels: int = 4_000_000)` | Estimate opacity occlusion by known 3D boxes and other proposed planar insertions. |
+| `CuboidVisibilityEstimator.estimate(subject: ResolvedInsertion, camera: Camera, cam_from_world: np.ndarray, *, occluders: Mapping[str, ActorState], camera_name: str, other_insertions: Sequence[ResolvedInsertion] = (), world_objects: Sequence[PlacedObject] = ()) -> VisibilityEvidence` | Measure target visibility using the configured camera and occlusion evidence. |
+| `DepthVisibilityEstimator(*, tolerance_m: float = 0.0002, max_reference_pixels: int = 4_000_000)` | Compare known insertion surfaces with calibrated, aligned scene depth. |
+| `DepthVisibilityEstimator.estimate(subject: ResolvedInsertion, camera: Camera, cam_from_world: np.ndarray, *, scene_depth: np.ndarray, depth_convention: str, camera_name: str, other_insertions: Sequence[ResolvedInsertion] = ()) -> VisibilityEvidence` | Measure target visibility using the configured camera and occlusion evidence. |
+| `visibility_from_masks(reference, visible, *, camera: str, image_bounds=None) -> Visibility \| None` | Divide visible in-image pixels by the FULL unoccluded reference silhouette. |
+| `visibility_from_depth(footprint, target_depth, scene_depth, *, camera: str, tolerance_m: float = 0.0002, image_bounds=None) -> Visibility \| None` | Compare target and scene depth in the same convention and pixel projection. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+Visibility uses calibrated camera geometry and explicit depth or cuboid occluders.
+A target fully behind the camera has zero visible coverage.
+
+The cuboid estimator reports `Visibility.source="actor_cuboids"`, the depth estimator reports
+`"depth"`, and rendered-mask evidence reports `"rendered_masks"`.
+
+#### See also
+
+[Implement an attack](../guides/attacks.md).
+
+### avsectester.attack.offline_report
+
+<!-- api:begin module=avsectester.attack.offline_report -->
+Structured, portable outputs produced by an attack's offline phase.
+
+| Name and signature | Meaning |
+|---|---|
+| `ReportValue(value: Any, unit: str \| None = None, description: str \| None = None)` | One scalar measurement with its unit and explanation. |
+| `ReportSeries(x: list[float], y: list[float], x_label: str = "iteration", y_label: str \| None = None, x_unit: str \| None = None, y_unit: str \| None = None, description: str \| None = None)` | A finite numeric series and its axis labels, units and explanation. |
+| `ReportTable(rows: list[dict[str, Any]], description: str \| None = None, columns: dict[str, str] \| None = None)` | Flat scalar rows and explanations keyed by existing column names. |
+| `ReportImage(pixels: np.ndarray, description: str \| None = None)` | Copied RGB/RGBA pixels and their caption. |
+| `OfflineReport(directory: str \| Path \| None = None)` | Collect offline measurements and files independently of experiment execution. |
+| `OfflineReport.set_value(name: str, value: Any, *, unit: str \| None = None, description: str \| None = None) -> None` | Set a scalar with its optional unit and human-readable explanation. |
+| `OfflineReport.set_series(name: str, y: Sequence[float] \| np.ndarray, *, x: Sequence[float] \| np.ndarray \| None = None, x_label: str = "iteration", y_label: str \| None = None, x_unit: str \| None = None, y_unit: str \| None = None, description: str \| None = None) -> None` | Set a finite one-dimensional series and optional matching x coordinates. |
+| `OfflineReport.set_table(name: str, rows: Sequence[Mapping[str, Any]], *, description: str \| None = None, columns: Mapping[str, str] \| None = None) -> None` | Set flat scalar rows and descriptions of existing columns. |
+| `OfflineReport.set_image(name: str, pixels: np.ndarray, *, description: str \| None = None) -> None` | Set a copied uint8 RGB/RGBA image and optional caption. |
+| `OfflineReport.save(directory: str \| Path) -> None` | Write structured entries, CSV/PNG files and the optional workspace. |
+| `OfflineReport.load(directory: str \| Path) -> OfflineReport` | Read a saved report without constructing an attack, simulator or model. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+Names are shared across entry kinds and match ^[A-Za-z0-9][A-Za-z0-9_.-]*$. Tables contain flat
+JSON scalar rows; series contain finite numbers; images are uint8 RGB/RGBA. Reusing a name
+within its kind replaces its value.
+
+`set_value` accepts booleans, strings, integers and finite real numbers; `None` and non-finite
+numbers are rejected. Saving or loading rejects a status other than `"completed"` or `"failed"`.
+
+#### See also
+
+[Optimize attack artifacts](../guides/optimization.md).
+
+### avsectester.attack.optimization
+
+<!-- api:begin module=avsectester.attack.optimization -->
+Public contracts, algorithms, parameterizations and session scoring for user attacks.
+
+| Name and signature | Meaning |
+|---|---|
+| `AdversarialSample` | [AdversarialSample](#avsectesterattackoptimizationinterface) |
+| `DataSource` | [DataSource](#avsectesterattackoptimizationinterface) |
+| `GradientOptimizer` | [GradientOptimizer](#avsectesterattackoptimizationinterface) |
+| `HideObject` | [HideObject](#avsectesterattackoptimizationinterface) |
+| `OptimizationObjective` | [OptimizationObjective](#avsectesterattackoptimizationinterface) |
+| `OptimizationResult` | [OptimizationResult](#avsectesterattackoptimizationinterface) |
+| `Perturbation` | [Perturbation](#avsectesterattackoptimizationinterface) |
+| `Scorer` | [Scorer](#avsectesterattackoptimizationinterface) |
+| `SpoofObject` | [SpoofObject](#avsectesterattackoptimizationinterface) |
+| `NES` | [NES](#avsectesterattackoptimizationblackbox) |
+| `PGD(GradientOptimizer)(steps: int = 200, step_size: float = 4.0 / 255.0, batch: int = 4, tv_weight: float = 0.0, seed: int = 0, verbose: bool = False, log_every: int = 25)` | Projected Gradient Descent (sign-gradient descent on the loss, minimizing it). |
+| `LinfImage(Perturbation)(epsilon=8 / 255, image_hw=(600, 800), device="cuda:0")` | A whole-image additive L-inf perturbation without an exported artifact. |
+| `PatchPerturbation(Perturbation)(size=(128, 128), device="cuda:0", init="random", seed=0, alpha=None)` | A rectangular texture rendered into each sample's background, with photometric jitter. |
+| `SessionScorer` | [SessionScorer](#avsectesterattackoptimizationscorers) |
+<!-- api:end -->
+
+#### See also
+
+[Optimize attack artifacts](../guides/optimization.md).
+
+### avsectester.attack.optimization.blackbox
+
+<!-- api:begin module=avsectester.attack.optimization.blackbox -->
+Natural Evolution Strategies over arbitrary user-defined samples and perturbations.
+
+| Name and signature | Meaning |
+|---|---|
+| `NES(GradientOptimizer)(steps: int = 40, population_size: int = 20, sigma: float = 0.08, learning_rate: float = 0.03, seed: int = 0, verbose: bool = False, log_every: int = 5)` | Natural Evolution Strategies — gradient-free; estimates a gradient by Gaussian sampling. |
+<!-- api:end -->
+
+#### See also
+
+[Optimize attack artifacts](../guides/optimization.md).
+
+### avsectester.attack.optimization.interface
+
+<!-- api:begin module=avsectester.attack.optimization.interface -->
+Contracts for gradient-based and sampling-based optimization over perturbation models.
+
+| Name and signature | Meaning |
+|---|---|
+| `AdversarialSample(x: Tensor, target: data_types.TargetSpec, context: dict = dict())` | One clean input to attack. `context` carries threat-model specifics — e.g. a patch's calibrated sampling grid and visibility mask — and is empty for a whole-image perturbation. |
+| `DataSource(ABC)()` | Yields batches of clean inputs. A single fixed image for an L-inf attack; sampled backgrounds + placements + photometric jitter (Expectation-over-Transformation) for a physical patch. |
+| `DataSource.sample(batch: int) -> list[AdversarialSample]` | Abstract. Return `batch` samples (with any per-sample randomness freshly drawn). |
+| `Perturbation(ABC)()` | A threat model: the adversarial variable δ, how it enters the input, and its feasible set. |
+| `Perturbation.init() -> Tensor` | Abstract. Return an initial δ (zeros / random) of this threat model's shape. |
+| `Perturbation.apply(sample: AdversarialSample, delta: Tensor) -> Tensor` | Abstract. Form the adversarial input from a clean `sample` and δ (differentiable in δ). |
+| `Perturbation.project(delta: Tensor) -> Tensor` | Abstract. Project δ back onto the feasible set (in place or returned). |
+| `Perturbation.export(delta: Tensor) -> np.ndarray \| None` | Physical realization of δ, if any — a patch returns `(Hp,Wp,4)` uint8; default None. |
+| `Scorer(ABC)()` | Access to the perception under attack: image -> target detection confidence in [0, 1]. |
+| `Scorer.differentiable: bool = True` | Whether input-image gradients are supported by this component. |
+| `Scorer.target_score(image: Tensor, target: data_types.TargetSpec) -> Tensor` | Abstract. Return a scalar tensor in [0, 1] for detecting `target` in `image`. |
+| `OptimizationObjective(ABC)()` | Shape the target confidence into a scalar loss to MINIMIZE (lower == attack succeeds). |
+| `OptimizationObjective.loss(score: Tensor) -> Tensor` | Abstract. Map a target confidence in [0, 1] to the scalar loss to minimize. |
+| `HideObject(OptimizationObjective)()` | Suppress the target's detection by minimizing `loss = score` toward zero. |
+| `SpoofObject(OptimizationObjective)()` | Fabricate / keep a detection where the target box is: `loss = 1 - score`. |
+| `OptimizationResult(delta: Tensor, export: np.ndarray \| None, history: list[float], final_score: float)` | Output of an optimization run. |
+| `GradientOptimizer(ABC)()` | Optimization algorithm over a data source, perturbation, scorer and objective. |
+| `GradientOptimizer.run(data: DataSource, perturbation: Perturbation, scorer: Scorer, objective: OptimizationObjective) -> OptimizationResult` | Abstract. Optimize δ with exact input gradients in PGD or sampled gradient estimates in NES. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+`DataSource` yields `AdversarialSample` values. `Perturbation` owns parameters and export.
+Differentiable scorers return an input-connected scalar; objective direction is explicit.
+
+#### See also
+
+[Optimize attack artifacts](../guides/optimization.md).
+
+### avsectester.attack.optimization.perturbations
+
+<!-- api:begin module=avsectester.attack.optimization.perturbations -->
+Concrete threat models (`Perturbation`): a physical patch and a whole-image L-inf perturbation.
+
+| Name and signature | Meaning |
+|---|---|
+| `PatchPerturbation(Perturbation)(size=(128, 128), device="cuda:0", init="random", seed=0, alpha=None)` | A rectangular texture rendered into each sample's background, with photometric jitter. |
+| `LinfImage(Perturbation)(epsilon=8 / 255, image_hw=(600, 800), device="cuda:0")` | A whole-image additive L-inf perturbation without an exported artifact. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+`PatchPerturbation` requires two positive integer dimensions, `init="random"` or `"gray"`, and
+an optional uint8 alpha array matching that size. Its RGB variable is CHW in [0, 1]; projection
+clamps each value to this interval. Applying it requires a `(1, H, W)` visible mask and either
+in-image `PlaneSampling` bounds or an `(H, W, 2)` sampling grid. Export produces HWC uint8 RGBA
+with the supplied alpha unchanged. `LinfImage` initializes a zero additive CHW variable,
+projects each element into [−epsilon, epsilon], and clamps `sample.x + delta` into [0, 1]; it
+uses the base perturbation export behavior.
+
+#### See also
+
+[Optimize attack artifacts](../guides/optimization.md).
+
+### avsectester.attack.optimization.scorers
+
+<!-- api:begin module=avsectester.attack.optimization.scorers -->
+Score arbitrary images using a closed-loop session's driving-system binding.
+
+| Name and signature | Meaning |
+|---|---|
+| `SessionScorer(Scorer)(session, scorer_id, *, require_grad, input_format=None, device="cpu")` | Use a session scorer for user-generated images, preserving requested gradients. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+`SessionScorer` resolves a declared scorer. Gradient requests require a differentiable input and
+connected result. `no_grad` evaluation uses the same scorer without requiring gradients.
+
+#### See also
+
+[Optimize attack artifacts](../guides/optimization.md).
+
+### avsectester.attack.optimization.whitebox
+
+<!-- api:begin module=avsectester.attack.optimization.whitebox -->
+Gradient-based optimization algorithms (torch).
+
+| Name and signature | Meaning |
+|---|---|
+| `PGD(GradientOptimizer)(steps: int = 200, step_size: float = 4.0 / 255.0, batch: int = 4, tv_weight: float = 0.0, seed: int = 0, verbose: bool = False, log_every: int = 25)` | Projected Gradient Descent (sign-gradient descent on the loss, minimizing it). |
+<!-- api:end -->
+
+#### Constraints and errors
+
+`PGD` raises `ValueError` when the scorer declares no differentiable input.
+Perturbation projection applies that perturbation's feasible bounds.
+
+#### See also
+
+[Optimize attack artifacts](../guides/optimization.md).
+
+### avsectester.attack.runtime
+
+<!-- api:begin module=avsectester.attack.runtime -->
+The online phase: one AttackRuntime per run and the attack actions it returns.
+
+| Name and signature | Meaning |
+|---|---|
+| `ResultSubscription(kind: Literal["observation", "physical_state"])` | Declare a closed-loop result read by an attack runtime. |
+| `OnlineContext(step: int, stage: str, sim_time: float, frame: int, observation: Observation \| None = None, physical_state: WorldSnapshot \| None = None)` | Independent snapshots of subscribed results, with a read-only physical clock. |
+| `OnlineContext.record_output(name: str, value: Any) -> None` | Save a named copy of `value`, such as an attack decision, in this run's log. |
+| `AttackAction()` | Base of everything the online phase applies. Subclasses state where it acts. |
+| `AttackAction.receipt_details() -> Mapping[str, Any]` | Data-only evidence from the most recent application, included in its receipt. |
+| `WorldAttackAction(AttackAction, ABC)()` | Change the simulated world. The simulator applies it; it is visible from the next capture. |
+| `WorldAttackAction.setup_ticks: int = 0` | Simulator setup ticks requested by this participant before decisions begin. |
+| `WorldAttackAction.apply(simulator_runtime: SimulatorRuntime, resources: ExitStack) -> None` | Abstract. Change the world through the simulator's native access. |
+| `SensorAttackAction(AttackAction, ABC)()` | Change one captured sensor's data before ObservationPipeline, in the current decision. |
+| `SensorAttackAction.sensor: str` | Name of the sensor whose captured data this action modifies. |
+| `SensorAttackAction.apply(data: Any, view: SensorView) -> Any` | Abstract. Return the changed sensor data. |
+| `AVStackAttackAction(AttackAction)(stage: str, apply: Callable[[Any, OnlineContext], Any])` | Change the value at a driving-system stage in the current decision. |
+| `AttackRuntime()` | One online-phase instance per run; every callback shares this object's state. |
+| `AttackRuntime.subscriptions: Sequence[ResultSubscription] = ()` | Result subscriptions delivered to the runtime during execution. |
+| `AttackRuntime.setup_ticks: int = 0` | Simulator setup ticks requested by this participant before decisions begin. |
+| `AttackRuntime.setup(context: OnlineContext) -> Sequence[WorldAttackAction]` | Initialize online-phase state and return actions applied before the first decision. |
+| `AttackRuntime.step(context: OnlineContext) -> Sequence[AttackAction]` | Return attack actions for the current decision. |
+| `AttackRuntime.stop(context: OnlineContext) -> None` | Release online-phase resources; the default implementation has no effect. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+`setup` emits world actions; `step` emits typed actions. Sensor actions operate on captured-data
+copies. `AVStackAttackAction` targets `localization.pre` through `command`,
+excluding `sensors.post`.
+Receipts describe application status and always include details; they do not measure
+driving impact.
+
+#### See also
+
+[Implement an attack](../guides/attacks.md).
+
+### avsectester.attack.segments
+
+<!-- api:begin module=avsectester.attack.segments -->
+Split a scenario timeline into attack segments for an attack's own `build_metadata`.
+
+| Name and signature | Meaning |
+|---|---|
+| `split_segments(frames: Sequence[FrameReference], eligible: Callable[[FrameReference], bool], *, decision_steps: int, keep_tail: bool = False) -> tuple[AttackSegment, ...]` | Cut each run of consecutive eligible decision frames into segments of `decision_steps`. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+Eligible windows retain canonical frame references and a terminal stop boundary. Selection only
+splits supported decision windows; it does not advance a simulator.
+
+#### See also
+
+[Implement an attack](../guides/attacks.md).
+
+### avsectester.runlog
+
+<!-- api:begin module=avsectester.runlog -->
+The run log: one record of everything captured during a run, with Parquet persistence.
+
+| Name and signature | Meaning |
+|---|---|
+| `EventRecord` | [EventRecord](#avsectesterrunloglog) |
+| `Recorder` | [Recorder](#avsectesterrunloglog) |
+| `RunLog` | [RunLog](#avsectesterrunloglog) |
+| `StepRecord` | [StepRecord](#avsectesterrunloglog) |
+| `read_table` | [read_table](#avsectesterrunloglog) |
+<!-- api:end -->
+
+#### See also
+
+[Runtime reference](runtime.md).
+
+### avsectester.runlog.log
+
+<!-- api:begin module=avsectester.runlog.log -->
+Independent run snapshots and incremental Parquet persistence.
+
+| Name and signature | Meaning |
+|---|---|
+| `StepRecord(step: int, raw_observation: Any = None, model_observation: Any = None, physical_pre: Any = None, physical_post: Any = None, produced_command: Any = None, executed_command: Any = None, components: dict[str, Any] = dict(), detections: Sequence[Detection] \| None = None, sensor_geometry: Mapping[str, SensorGeometry] = dict(), object_visibility: Mapping[str, Mapping[str, ObjectVisibility]] = dict(), actions: list[Any] = list(), outputs: list[Any] = list(), telemetry: dict[str, Any] = dict())` | One decision, with independently captured physical and model-visible data. |
+| `EventRecord(kind: str, step: int \| None = None, data: dict[str, Any] = dict())` | An initialization, termination or other non-step event. |
+| `RunLog(metadata: dict[str, Any] = dict(), steps: list[StepRecord] = list(), events: list[EventRecord] = list(), status: str = "incomplete", path: Path \| None = None)` | Captured records, optionally backed by an incrementally written directory. |
+| `RunLog.read(path: str \| Path, *, registry: SerializationRegistry = DEFAULT_REGISTRY, load_payloads: bool = True) -> RunLog` | Read completed parts, including those left by an interrupted writer. |
+| `Recorder(path: str \| Path \| None = None, *, metadata: dict[str, Any] \| None = None, registry: SerializationRegistry = DEFAULT_REGISTRY, chunk_steps: int = 128, chunk_bytes: int = 8 * 1024 * 1024, payload_shard_bytes: int = 64 * 1024 * 1024, retain_steps: bool = True)` | Capture a run in memory and optionally stream it to Parquet. |
+| `Recorder.snapshot(value: Any) -> Any` | Copy mutable data now; tensors are detached without importing torch. |
+| `Recorder.record_step(record: StepRecord) -> StepRecord` | Append a decision record and flush a complete row group when due. |
+| `Recorder.record_event(kind: str, *, step: int \| None = None, **data: Any) -> EventRecord` | Append a timestamped runtime event to the recording. |
+| `Recorder.flush() -> None` | Publish the current chunks without marking the run complete. |
+| `Recorder.finish(status: str = "completed", **details: Any) -> RunLog` | Finish recording with a valid terminal status and persist its manifest. |
+| `Recorder.abort() -> None` | Discard unpublished records and leave the persisted run incomplete. |
+| `read_table(path: str \| Path, columns: Sequence[str] \| None = None, *, stream: str = "steps") -> Any` | Read selected top-level columns without loading arrays or other columns. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+`RunLog` contains metadata, steps, events, status and an optional storage path. read restores
+typed records through its explicit/default registry; `load_payloads=False` leaves payload
+references unresolved.
+
+#### See also
+
+[Runtime reference](runtime.md).
+
+### avsectester.execution
+
+<!-- api:begin module=avsectester.execution -->
+Closed-loop execution, isolated services, attack dispatch and frame-data caching.
+
+No exports; import from submodules.
+<!-- api:end -->
+
+#### See also
+
+[Runtime reference](runtime.md).
+
+### avsectester.execution.frame_data_cache
+
+<!-- api:begin module=avsectester.execution.frame_data_cache -->
+Preparation-owned caching of simulator-generated frame data.
+
+| Name and signature | Meaning |
+|---|---|
+| `FrameDataCache()` | Cache simulator-generated frame sequences independently of the dataset. |
+| `FrameDataCache.key(start: ScenarioStart, simulator_identity: Mapping[str, Any], seed: int) -> str` | Hash start kind, scenario, payload, simulator identity and seed. |
+| `FrameDataCache.get_or_generate(key: str, generate: Callable[[], FrameDataSequence]) -> FrameDataSequence` | Return cached frame data or generate and retain it once for this key. |
+| `FrameDataCache.get(key: str) -> FrameDataSequence` | Return a copy of the cached sequence; raise `KeyError` when the key is absent. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+Cache identity uses start kind, scenario and payload, simulator identity and seed.
+Services include environment and deployment ticks in the simulator identity.
+
+#### See also
+
+[Implement an attack](../guides/attacks.md).
+
+### avsectester.execution.runner
+
+<!-- api:begin module=avsectester.execution.runner -->
+One closed-loop scheduler with independent RunLog captures.
+
+| Name and signature | Meaning |
+|---|---|
+| `RecordingPolicy(sensor_ids: tuple[str, ...] = (), representations: tuple[str, ...] = ("model_input",), every_n_steps: int = 1)` | Choose sensor payloads without sampling commands or physical state. |
+| `RecordingPolicy.observation(value: Observation, step: int, representation: str) -> Observation` | Apply the sensor recording policy while preserving observation metadata. |
+| `RunRequest(decision_steps: int, hooks: HookSet \| None = None, attacks: Sequence[Any] = (), recording: RecordingPolicy = RecordingPolicy(), output_path: str \| Path \| None = None, retain_steps: bool = True, metadata: Mapping[str, Any] = dict(), start: Any = None, initialization: Any = None, deployment: Any = None, environment: Mapping[str, Any] = dict())` | One caller-owned simulator/driving-system run, independent of experiment orchestration. |
+| `ClosedLoopRunner()` | Schedule one driving loop; never close caller-owned simulator/driving objects. |
+| `ClosedLoopRunner.run(simulator_runtime: SimulatorRuntime, avstack: AVStack, request: RunRequest, *, recorder: Recorder \| None = None, release_owned_resources: Callable[[], None] \| None = None) -> RunLog` | Execute the requested treatment, record its decisions and close all run resources. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+Raw/model observations and produced/executed commands are separate evidence. `RecordingPolicy`
+controls retained payloads.
+
+#### See also
+
+[Runtime reference](runtime.md).
+
+### avsectester.execution.services
+
+<!-- api:begin module=avsectester.execution.services -->
+The metabuilder and the offline phase share one isolated closed-loop service boundary.
+
+| Name and signature | Meaning |
+|---|---|
+| `CandidateRequest(segment: AttackSegment, seed: int, decision_steps: int, environment: Mapping[str, Any], recording: RecordingPolicy, attack: Any = None, artifacts: Any = None, output_path: str \| Path \| None = None)` | One candidate rollout. `attack` creates the deployed runtime with its create_runtime. |
+| `SensorRequest(scenario_id: str, frame: FrameReference, sensor_ids: tuple[str, ...], environment: Mapping[str, Any] = dict(), views: bool = False)` | Recorded sensor request with an optional camera selection. |
+| `RenderRequest(scenario_id: str, frame: FrameReference, sensor_id: str, actions: Sequence[AttackAction] = (), environment: Mapping[str, Any] = dict())` | Capture `sensor_id` at `frame` with attack actions applied. |
+| `SensorSample(frame: FrameReference, observation: Observation, provenance: Mapping[str, Any], views: Mapping[str, SensorView] = dict())` | An environment-processed observation and optional detached raw sensor views. |
+| `RenderResult(frame: FrameReference, observation: Observation, view: SensorView, provenance: Mapping[str, Any], object_visibility: Mapping[str, Mapping[str, ObjectVisibility]] = dict())` | The changed capture and the requested sensor's view before its sensor actions. |
+| `ComponentResult(value: Any, descriptor: driving_adapter.ComponentDescriptor, provenance: Mapping[str, Any])` | Outputs returned by an explicitly evaluated driving-system component. |
+| `ScoreResult(value: Any, descriptor: driving_adapter.ScorerDescriptor, provenance: Mapping[str, Any])` | Score returned by a named scorer, including its serialized representation. |
+| `ClosedLoopCapabilities(dataset_kinds: tuple[str, ...], sensor_data: bool, render: bool, insert_objects: bool, rollout: bool, components: tuple[driving_adapter.ComponentDescriptor, ...], scorers: tuple[driving_adapter.ScorerDescriptor, ...])` | Capabilities exposed by the dataset, simulator and driving adapter combination. |
+| `ClosedLoopServices(dataset: Dataset, simulator: Simulator, driving_adapter: driving_adapter.DrivingAdapter \| None = None, frame_data_cache: FrameDataCache \| None = None, *, deployment: DeploymentPlan = DeploymentPlan())` | Factory for isolated scenario and closed-loop sessions using shared frame-data caching. |
+| `ClosedLoopServices.close() -> None` | Close all sessions, including sessions a metabuilder left open on error. |
+| `ClosedLoopServices.capabilities: ClosedLoopCapabilities` | Capabilities available without constructing a simulator runtime. |
+| `ClosedLoopServices.session(seed: int) -> ClosedLoopSession` | Create an isolated session with fresh world and driving history for `seed`. |
+| `ClosedLoopServices.scenario(scenario_id: str, *, seed: int) -> ScenarioView` | Create a selection view for the requested scenario and seed. |
+| `ClosedLoopSession(services: ClosedLoopServices, seed: int)` | Owned simulator and driving-system services for selection, rendering, scoring and rollouts. |
+| `ClosedLoopSession.close() -> None` | Close session resources and release world ownership. |
+| `ClosedLoopSession.can_start_at(position: int) -> bool` | Check deployment and recorded-history requirements without starting a runtime. |
+| `ClosedLoopSession.frame_data(scenario: str, frame: FrameReference, environment: Mapping[str, Any] \| None = None) -> FrameData` | Return recorded frame data through the shared cache. |
+| `ClosedLoopSession.initialization(start: ScenarioStart, environment: Mapping[str, Any], deployment: DeploymentPlan \| None = None) -> Initialization \| None` | Resolve replay inputs for a selected start, using the preparation-owned cache. |
+| `ClosedLoopSession.read_sensors(request: SensorRequest) -> SensorSample` | Read environment-processed sensor observations at the requested recorded frame. |
+| `ClosedLoopSession.render(request: RenderRequest) -> RenderResult` | Render the requested frame or viewpoint using this session. |
+| `ClosedLoopSession.components() -> Sequence[driving_adapter.ComponentDescriptor]` | Return the available driving-system component descriptors. |
+| `ClosedLoopSession.scorers() -> Sequence[driving_adapter.ScorerDescriptor]` | Return the available driving-system scorer descriptors. |
+| `ClosedLoopSession.evaluate(component_id: str, inputs: Any) -> ComponentResult` | Evaluate an explicitly bound driving-system component. |
+| `ClosedLoopSession.score(scorer_id: str, inputs: Any, target: Any, require_grad: bool = False) -> ScoreResult` | Evaluate a bound scorer with the requested target and codec. |
+| `ClosedLoopSession.rollout(request: CandidateRequest) -> RunLog` | Execute one candidate rollout from its recorded start. |
+| `ScenarioView(scenario_id: str, services: ClosedLoopServices, seed: int)` | Recorded scenario and selection services, with candidate-rejection reasons. |
+| `ScenarioView.record_reason(text: str) -> None` | Attach a user-supplied selection explanation to this scenario's preparation record. |
+| `ScenarioView.reasons: tuple[str, ...]` | Bounded, insertion-ordered reason counts; repeated candidates add no entries. |
+| `ScenarioView.frames: Sequence[FrameReference]` | Ordered decision-frame references available to this selection view. |
+| `ScenarioView.frame_data(frame: FrameReference) -> FrameData` | Resolve recorded data or a preparation-owned cache, without mutating Dataset. |
+| `ScenarioView.scenario_map() -> ScenarioMap \| Unavailable` | Read this scenario's semantic map without starting a simulator. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+Sessions reject overlapping operations and reused component instances. Reading sensor views or
+rendering raises `NotImplementedError` when the simulator does not support rendering.
+`CandidateRequest.decision_steps` must equal the segment interval, and its seed must match the
+session. The terminal frame must match `dataset.decision_window`; deployment actions must fit
+the shared budget.
+`score(require_grad=True)` rejects unsupported or detached scores. Closing an active operation
+raises `RuntimeError`.
+Each `evaluate` call constructs a fresh `AVStack`.
+
+#### See also
+
+[Implement an attack](../guides/attacks.md).
+
+### avsectester.evaluation
+
+<!-- api:begin module=avsectester.evaluation -->
+Metrics, reports and visualization derived solely from recorded experiment logs.
+
+| Name and signature | Meaning |
+|---|---|
+| `ComparisonGroup` | [ComparisonGroup](#avsectesterevaluationmetric) |
+| `DetectionMetrics` | [DetectionMetrics](#avsectesterevaluationmetric) |
+| `DrivingMetrics` | [DrivingMetrics](#avsectesterevaluationmetric) |
+| `FieldMeasurements` | [FieldMeasurements](#avsectesterevaluationmetric) |
+| `Metric` | [Metric](#avsectesterevaluationmetric) |
+| `MetricDescription` | [MetricDescription](#avsectesterevaluationmetric) |
+| `MetricField` | [MetricField](#avsectesterevaluationmetric) |
+| `MetricScalar` | [MetricScalar](#avsectesterevaluationmetric) |
+| `PairMetric` | [PairMetric](#avsectesterevaluationmetric) |
+| `ReasoningPhraseRate` | [ReasoningPhraseRate](#avsectesterevaluationmetric) |
+| `StopImpact` | [StopImpact](#avsectesterevaluationmetric) |
+| `StopLineMetrics` | [StopLineMetrics](#avsectesterevaluationmetric) |
+| `TreatmentMeasurements` | [TreatmentMeasurements](#avsectesterevaluationmetric) |
+| `signed_stop_line_distances` | [signed_stop_line_distances](#avsectesterevaluationmetric) |
+| `TrajectoryDeviation` | [TrajectoryDeviation](#avsectesterevaluationmetric) |
+| `TreatmentPair` | [TreatmentPair](#avsectesterevaluationmetric) |
+| `UnavailableMetricValue` | [UnavailableMetricValue](#avsectesterevaluationmetric) |
+| `EvaluationConfiguration` | [EvaluationConfiguration](#avsectesterevaluationreport) |
+| `EvaluationReport` | [EvaluationReport](#avsectesterevaluationreport) |
+| `RunGroup` | [RunGroup](#avsectesterevaluationevaluator) |
+| `evaluate_groups` | [evaluate_groups](#avsectesterevaluationevaluator) |
+<!-- api:end -->
+
+#### See also
+
+[Evaluate experiments](../guides/evaluation.md).
+
+### avsectester.evaluation.evaluator
+
+<!-- api:begin module=avsectester.evaluation.evaluator -->
+Evaluate ordered recorded run groups independently of experiment configurations.
+
+| Name and signature | Meaning |
+|---|---|
+| `RunGroup(segment_index: int, segment: AttackSegment, seed: int, logs: Mapping[str, RunLog], errors: Mapping[str, str] = dict(), scenario_map: ScenarioMap \| Unavailable = Unavailable("No saved scenario map is available"), treatment_attacks: Mapping[str, str \| None] = dict(), part: str \| None = None)` | Ordered treatment logs sharing a segment and seed, including unsuccessful runs. |
+| `evaluate_groups(groups: Sequence[RunGroup], metrics: Sequence[Metric], *, notes: Sequence[str] = ()) -> EvaluationReport` | Evaluate run metrics and each treatment pair in the supplied group and log order. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+Pairs containing a non-completed run are marked unavailable. Metric errors are recorded
+without discarding other results.
+
+`evaluate_groups` leaves `EvaluationReport.experiment` empty; experiment-level evaluation fills
+that context.
+
+#### See also
+
+[Evaluate experiments](../guides/evaluation.md).
+
+### avsectester.evaluation.metric
+
+<!-- api:begin module=avsectester.evaluation.metric -->
+Metrics computed from recorded logs, without live simulators or driving models.
+
+| Name and signature | Meaning |
+|---|---|
+| `MetricScalar` | Scalar measurement value or an unavailable value with its reason. |
+| `FieldMeasurements` | Mapping from unprefixed metric fields to scalar measurements. |
+| `TreatmentMeasurements` | Mapping from treatment names to their field measurements. |
+| `UnavailableMetricValue(reason: str, value_type: Literal["number", "boolean"] = "number")` | A missing scalar and its reason; value_type preserves unavailable boolean fields. |
+| `ComparisonGroup(segment: AttackSegment, seed: int, runs: Mapping[str, RunLog], scenario_map: ScenarioMap \| Unavailable = Unavailable("No saved scenario map is available"), treatment_attacks: Mapping[str, str \| None] = dict())` | Completed treatments sharing one segment unit and seed, plus its saved scenario map. |
+| `TreatmentPair(treatment_a: str, treatment_b: str, log_a: RunLog, log_b: RunLog)` | A completed pair in configuration order; differences are defined as B minus A. |
+| `MetricField(description: str, unit: str \| None = None)` | Meaning, calculation and missing-evidence conditions of one scalar field. |
+| `MetricDescription(summary: str, fields: Mapping[str, MetricField])` | A metric summary and fields keyed exactly as returned by evaluate. |
+| `Metric(ABC)()` | Evaluate recorded data; return scalars or UnavailableMetricValue values carrying their reasons. |
+| `Metric.describe() -> MetricDescription` | Describe this instance; custom metrics may provide field explanations and units. |
+| `Metric.evaluate(data: Any) -> Mapping[str, Any]` | Abstract. Return treatment-to-field mappings for the completed runs in a comparison group. |
+| `PairMetric(Metric)()` | A metric evaluated once for each completed pair, rather than for individual runs. |
+| `PairMetric.evaluate(pair: TreatmentPair) -> FieldMeasurements` | Abstract. Return scalar fields comparing the two completed runs in `pair`. |
+| `DrivingMetrics(Metric)(stop_speed: float = DEFAULT_STOP_SPEED_MPS)` | Physical speed, actuator braking, actor distances and top-down box collisions. |
+| `TrajectoryDeviation(PairMetric)()` | Symmetric distance between true ego positions at matching decision indices (meters). |
+| `DetectionMetrics(Metric)(match_distance: float = 2.0, max_range: float \| None = 50.0, category_map: Mapping[str, str] \| None = None)` | Greedy nearest-center BEV matching in the true ego frame at capture time. |
+| `StopImpact(PairMetric)(stop_speed: float = DEFAULT_STOP_SPEED_MPS, reference_speed: float = 1.0, min_overdrive_steps: int = 3)` | Directional stopping/braking comparisons, evaluated in both A→B and B→A directions. |
+| `signed_stop_line_distances(positions: np.ndarray, line_points: np.ndarray, *, endpoint_tolerance_m: float = 3.) -> tuple[np.ndarray, tuple[int, float] \| None]` | Horizontal distances to an endpoint-extended stop polyline and first crossing. |
+| `StopLineMetrics(Metric)(stop_speed: float = DEFAULT_STOP_SPEED_MPS, endpoint_tolerance_m: float = 3., brake_deceleration_mps2: float = 1.)` | Physical stopping and crossing relative to the selected saved map stop line. |
+| `ReasoningPhraseRate(Metric)(phrase: str, component: str = "policy", field: str = "reasoning_text")` | Case-insensitive phrase counts and rate over all recorded decision texts. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+Metrics consume saved evidence without inference. `UnavailableMetricValue` retains type and
+reason. Stop-line distances are horizontal, positive before crossing and negative afterward; a
+run is assumed to start before its selected line.
+
+`signed_stop_line_distances` returns one signed distance per input position and either `None` or
+`(segment_index, fraction)` for the first crossing. Position arrays must be finite N×3; stop
+lines must have at least two finite 3D points and a nonzero horizontal segment.
+
+#### Extension contract
+
+Implement `PairMetric.evaluate(pair)` to return one scalar field mapping for the completed
+`TreatmentPair`. Missing evidence must produce `UnavailableMetricValue` with a reason rather
+than fabricated measurements. Describe those fields through `describe`.
+
+#### See also
+
+[Evaluate experiments](../guides/evaluation.md).
+
+### avsectester.evaluation.report
+
+<!-- api:begin module=avsectester.evaluation.report -->
+Offline report records, formatting and statistics for recorded measurements.
+
+| Name and signature | Meaning |
+|---|---|
+| `EvaluationConfiguration(metrics: tuple[Metric, ...] \| None = None)` | Metrics for the whole experiment; None chooses one data-aware default metric set. |
+| `EvaluationReport(groups: list[dict[str, Any]] = list(), treatment_summaries: list[dict[str, Any]] = list(), pair_summaries: list[dict[str, Any]] = list(), selections: list[dict[str, Any]] = list(), metrics: list[dict[str, Any]] = list(), notes: list[str] = list(), metric_errors: list[dict[str, Any]] = list(), path: Path \| None = None, experiment: dict[str, Any] = dict())` | Per-run and per-pair measurements, missing reasons and population statistics. |
+| `EvaluationReport.summarize() -> None` | Rebuild treatment and pair population statistics from the recorded group rows. |
+| `EvaluationReport.record_error(source: str, error: Exception, **context: Any) -> None` | Record an evaluation failure and its group or pair context without losing results. |
+| `EvaluationReport.as_dict() -> dict[str, Any]` | Return JSON-compatible report data, independent of live experiment objects. |
+| `EvaluationReport.format_summary() -> str` | Format every metric class by part and treatment, followed by report explanations. |
+| `EvaluationReport.save(directory: str \| Path) -> Path` | Write report.json and runs.csv; metric names prefix columns to protect identities. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+`format_summary` returns a string. Summaries use population std (ddof=0). Pair differences are
+B−A per group before aggregation. JSON/CSV keep full precision.
+
+#### See also
+
+[Evaluate experiments](../guides/evaluation.md).
+
+### avsectester.evaluation.visualization
+
+<!-- api:begin module=avsectester.evaluation.visualization -->
+Images, overlays and animations exported from RunLogs after simulators have closed.
+
+| Name and signature | Meaning |
+|---|---|
+| `View` | A callable that renders one recorded step into an image-compatible value. |
+| `as_rgb(frame: Any) -> np.ndarray \| None` | Read canonical pixels or a logged native camera payload without importing its SDK. |
+| `camera_view(record: StepRecord \| Observation, camera: str \| None = None) -> np.ndarray \| None` | Read a recorded model-visible camera image (or an explicit Observation). |
+| `lidar_bev(record: StepRecord \| Observation, size: int = 800, meters: float = 60.0) -> np.ndarray \| None` | Read a saved lidar cloud and draw x-forward up, y-left left. Non-lidar payloads skip. |
+| `annotate(image: Any, detections: Sequence[Any], threshold: float = 0.3) -> np.ndarray` | Draw explicit 2-D labels `(xyxy, score, text[, color])` on saved image pixels. |
+| `box3d_corners(center: Any, extent: Any, yaw: float) -> np.ndarray` | Eight cuboid corners from full x/y/z extents and right-handed yaw, in radians. |
+| `draw_boxes3d(image: Any, view: SensorView, *, actors: Mapping[str, Any] \| None = None, target: str \| None = None, subdiv: int = 8, max_distance: float \| None = None, color: tuple[int, int, int] = (40, 200, 40), target_color: tuple[int, int, int] = (235, 64, 52)) -> np.ndarray` | Project ActorState cuboids through a SensorView, without SceneGT. |
+| `sensor_view(record: StepRecord, camera: str \| None = None) -> SensorView \| None` | Rebuild projection geometry from recorded canonical sensor-view metadata/calibration. |
+| `labels_view(record: StepRecord, camera: str \| None = None, *, target: str \| None = None, max_distance: float \| None = None) -> np.ndarray \| None` | Overlay the saved physical_pre actors, using its real ego pose and recorded camera. |
+| `detections_view(record: StepRecord, camera: str \| None = None, *, threshold: float = 0.3) -> np.ndarray \| None` | Overlay StepRecord.detections; this never runs a detector or reads components. |
+| `save_image(image: Any, path: str \| Path) -> None` | Write an RGB frame without a plotting backend. |
+| `record_run(log: RunLog, out_dir: str \| Path, *, visualize: View = camera_view, prefix: str = "frame") -> tuple[Path, ...]` | Export a frame per recorded decision. Does not run an experiment or simulator. |
+| `filmstrip(source: RunLog \| Sequence[Any], cols: int = 4, pad: int = 6, bg: tuple[int, int, int] = (20, 20, 20), *, visualize: View = camera_view) -> np.ndarray` | Assemble recorded camera frames into one contact sheet. |
+| `save_gif(source: RunLog \| Sequence[Any], path: str \| Path, fps: int = 5, *, visualize: View = camera_view) -> None` | Write an animation from recorded frames, without model or simulator imports. |
+| `save_sequence(log: RunLog, out_dir: str \| Path, name: str = "sequence", cols: int = 4, fps: int = 4, *, visualize: View = camera_view) -> tuple[str, str] \| None` | Export a contact sheet and GIF from one recorded run; no frames yields None. |
+| `plot_group(runs: Mapping[str, Any], path: str \| Path, *, title: str \| None = None) -> Path` | Plot physical speeds; add an actuator-brake panel only when some run records that evidence. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+These helpers do not run models. `plot_group` omits the actuator-brake panel when actuator
+commands are unavailable.
+
+#### See also
+
+[Evaluate experiments](../guides/evaluation.md).
+
+### avsectester.implemented_attacks
+
+<!-- api:begin module=avsectester.implemented_attacks -->
+Attack implementations, discovered by class name.
+
+No exports; import from submodules.
+<!-- api:end -->
+
+#### See also
+
+[Implement an attack](../guides/attacks.md).
+
+### avsectester.implemented_attacks.object_insertion_attack
+
+<!-- api:begin module=avsectester.implemented_attacks.object_insertion_attack -->
+Public ObjectInsertionAttack implementation.
+
+| Name and signature | Meaning |
+|---|---|
+| `ObjectInsertionAttack` | [ObjectInsertionAttack](#avsectesterimplemented_attacksobject_insertion_attackattack) |
+<!-- api:end -->
+
+#### See also
+
+[Image object insertion](../examples/image-insertion.md).
+
+### avsectester.implemented_attacks.object_insertion_attack.assets
+
+<!-- api:begin module=avsectester.implemented_attacks.object_insertion_attack.assets -->
+Sign, person-poster and traffic-light assets owned by ObjectInsertionAttack.
+
+| Name and signature | Meaning |
+|---|---|
+| `SignAsset(face: np.ndarray \| str \| Path = STOP_SIGN_FACE, width_m: float = 0.9, mount_height_m: float = 1.5, post_width_m: float = 0.07, post_count: int = 1)` | A local planar sign and optional posts in a bottom-centered object frame. |
+| `SignAsset.object_asset(category: str) -> ObjectAsset` | Return this sign's panel and optional supports as a bottom-centered object asset. |
+| `SignAsset.planes() -> Sequence[PlaneSurface]` | Resolve the asset into textured planes in its local coordinate frame. |
+| `PersonAsset(image: np.ndarray \| str \| Path, mode: str = "billboard", height_m: float = 1.75, width_m: float = 1.4, mount_height_m: float = 0.6)` | A cut-out standee or a printed person poster, with its origin at ground level. |
+| `PersonAsset.planes()` | Resolve the asset into textured planes in its local coordinate frame. |
+| `TrafficLightAsset(head_count: int = 3, lit: str = "red", texture_height_pixels: int = 300, gap_fraction: float = 0.25, board: tuple \| None = (35, 37, 40), width_m: float = 2.4, mount_height_m: float = 2.2)` | A traffic-light board and post, whose origin is the ground beneath the board. |
+| `TrafficLightAsset.planes()` | Resolve the asset into textured planes in its local coordinate frame. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+`SignAsset` exposes the configured sign face and physical dimensions. Placement refers to the
+selected host frame or the ego origin, not an inferred map landmark.
+
+#### See also
+
+[Image object insertion](../examples/image-insertion.md).
+
+### avsectester.implemented_attacks.object_insertion_attack.attack
+
+<!-- api:begin module=avsectester.implemented_attacks.object_insertion_attack.attack -->
+Connect object assets, selection and online image insertion.
+
+| Name and signature | Meaning |
+|---|---|
+| `ObjectInsertionAttack(Attack)(*, decision_steps, placement, assets=None, orientation=None, sensor="front", min_visible_fraction=0.0, max_segments=None, keep_tail=False, placement_relative_to_ego_origin=False, compositor=None)` | Composite a placed sign, person poster or traffic-light asset in one camera. |
+| `ObjectInsertionAttack.insertion(artifacts, placement=None)` | Build a sensor insertion from the selected segment and prepared assets. |
+| `ObjectInsertionAttack.selected_placement(segment)` | Rebuild the placement selected by this attack from data-only metadata. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+Selection metadata identifies supported placement hosts.
+This attack inherits the base no-op `validate_segment`.
+
+#### See also
+
+[Image object insertion](../examples/image-insertion.md).
+
+### avsectester.implemented_attacks.patch_attack
+
+<!-- api:begin module=avsectester.implemented_attacks.patch_attack -->
+World-surface patch attack with offline preparation and online deployment.
+
+| Name and signature | Meaning |
+|---|---|
+| `PatchAttack` | [PatchAttack](#avsectesterimplemented_attackspatch_attackattack) |
+<!-- api:end -->
+
+#### See also
+
+[Physical patch](../examples/physical-patch.md).
+
+### avsectester.implemented_attacks.patch_attack.attack
+
+<!-- api:begin module=avsectester.implemented_attacks.patch_attack.attack -->
+Connect patch selection, optional optimization and online deployment.
+
+| Name and signature | Meaning |
+|---|---|
+| `PatchAttack(Attack)(*, decision_steps, assets: np.ndarray \| str \| Path \| Texture \| None = None, candidate_hosts=None, hosts_per_window=1, sensor="front", width_m=1.0, height_m=0.5, anchor="rear_center", offset_m=(-0.01, 0.0, 0.0), orientation=None, max_distance=None, min_visible_fraction=0.0, max_windows=None, keep_tail=False, optimization=None, prop=DEFAULT_PROP, emissive=True, compositor=None)` | Select the best visible hosts per time window, then deploy one patch artifact. |
+| `PatchAttack.placement_for(host)` | Resolve patch placement on the selected host actor. |
+| `PatchAttack.selected_placement(segment)` | Rebuild this attack's host-local placement from its data-only metadata. |
+| `PatchAttack.insertion(artifacts, *, host=None, placement=None)` | Build a patch insertion using the selected host and prepared texture. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+Patch selection and deployment use validated host/camera metadata. Optimization is supplied
+through explicit offline options; the artifact is passed to each online runtime.
+
+#### See also
+
+[Physical patch](../examples/physical-patch.md).
+
+### avsectester.implemented_attacks.patch_attack.offline
+
+<!-- api:begin module=avsectester.implemented_attacks.patch_attack.offline -->
+Patch-specific sampling, preparation and optional candidate rollout validation.
+
+| Name and signature | Meaning |
+|---|---|
+| `PatchOptimization(algorithm: GradientOptimizer, scorer_id: str \| None = None, size: tuple[int, int] = (64, 64), device: str \| None = None, target_box: tuple[float, float, float, float] \| None = None, brightness: tuple[float, float] = (0.8, 1.2), contrast: tuple[float, float] = (0.8, 1.2), validate_rollout: bool = False, init_texture: np.ndarray \| str \| Path \| Texture \| None = None)` | Typed patch optimization settings; the algorithm owns its optimization seed. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+Both optimization paths score rendered or differentiably composed images through a bound
+session scorer. NES renders candidate textures; optional `validate_rollout` runs rollouts
+after optimization.
+
+#### See also
+
+[Physical patch](../examples/physical-patch.md).
+
+### avsectester.implemented_attacks.patch_attack.online
+
+<!-- api:begin module=avsectester.implemented_attacks.patch_attack.online -->
+Deploy calibrated image patches or native CARLA panels from explicit artifacts.
+
+| Name and signature | Meaning |
+|---|---|
+| `CarlaPatchPanel(location: tuple, rotation: tuple, texture: np.ndarray, prop: str = DEFAULT_PROP, emissive: bool = True)` | A native CARLA panel owned by one run, with an explicit actor-local transform. |
+| `CarlaPatchPanel.apply(world: Any, target_actor: Any, *, tick: Callable[[], Any] \| None = None, on_spawn: Callable[[Any], None] \| None = None) -> list` | Spawn the panel on `target_actor` in `world` and paint it; return spawned actors. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+`CarlaPatchPanel` is the native CARLA panel transport. It requires native CARLA geometry and
+texture support; its setup/cleanup remains scoped to the attack runtime.
+
+#### See also
+
+[Physical patch](../examples/physical-patch.md).
+
+### avsectester.implemented_attacks.phantom_injection_attack
+
+<!-- api:begin module=avsectester.implemented_attacks.phantom_injection_attack -->
+Detection-injection attack with offline and online phases.
+
+| Name and signature | Meaning |
+|---|---|
+| `PhantomInjectionAttack` | [PhantomInjectionAttack](#avsectesterimplemented_attacksphantom_injection_attackattack) |
+<!-- api:end -->
+
+#### See also
+
+[Phantom injection](../examples/phantom-injection.md).
+
+### avsectester.implemented_attacks.phantom_injection_attack.attack
+
+<!-- api:begin module=avsectester.implemented_attacks.phantom_injection_attack.attack -->
+Fabricate a box in an AVStack detector's declared source frame.
+
+| Name and signature | Meaning |
+|---|---|
+| `PhantomInjectionAttack(Attack)(*, decision_steps: int, max_segments: int \| None = None, target_xyz=(6.0, 0.0, -0.7), object_type="Car", score=0.9, extent=(4.0, 1.8, 1.6), object_id=90002, keep_tail: bool = False)` | Append one AVStack BoxDetection, including to empty detection containers. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+The attack emits `AVStackAttackAction` at the fixed `perception.post` stage.
+
+#### See also
+
+[Phantom injection](../examples/phantom-injection.md).
+
+### avsectester.implemented_attacks.speed_feedback_attack
+
+<!-- api:begin module=avsectester.implemented_attacks.speed_feedback_attack -->
+Speed-feedback modification with offline and online phases.
+
+| Name and signature | Meaning |
+|---|---|
+| `SpeedFeedbackAttack` | [SpeedFeedbackAttack](#avsectesterimplemented_attacksspeed_feedback_attackattack) |
+<!-- api:end -->
+
+#### See also
+
+[Speed-feedback attack](../examples/speed-feedback-attack.md).
+
+### avsectester.implemented_attacks.speed_feedback_attack.attack
+
+<!-- api:begin module=avsectester.implemented_attacks.speed_feedback_attack.attack -->
+A feedback attack that changes the ego speed seen by the driving system.
+
+| Name and signature | Meaning |
+|---|---|
+| `SpeedFeedbackAttack(Attack)(*, decision_steps: int, target_speed: float, gain: float = 0.1, max_bias: float = 5.0, initial_bias: float = 0.0, max_segments: int \| None = None, keep_tail: bool = False)` | Adapt a nonnegative model-visible speed bias from actual physical speed. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+The attack changes model-visible speed feedback while physical state remains separately
+recorded. Constructor parameters are validated; `validate_segment` is the inherited no-op.
+
+#### See also
+
+[Speed-feedback attack](../examples/speed-feedback-attack.md).
+
+### avsectester.implemented_attacks.stop_sign_patch_attack
+
+<!-- api:begin module=avsectester.implemented_attacks.stop_sign_patch_attack -->
+Stop-sign patch attack.
+
+| Name and signature | Meaning |
+|---|---|
+| `StopSignPatchAttack` | [StopSignPatchAttack](#avsectesterimplemented_attacksstop_sign_patch_attackattack) |
+<!-- api:end -->
+
+#### See also
+
+[Stop-sign patch attack](../examples/stop-sign-patch.md).
+
+### avsectester.implemented_attacks.stop_sign_patch_attack.attack
+
+<!-- api:begin module=avsectester.implemented_attacks.stop_sign_patch_attack.attack -->
+Connect stop-approach selection, optional patch optimization and replica deployment.
+
+| Name and signature | Meaning |
+|---|---|
+| `StopSignPatchAttack(Attack)(initial_patch: str = "white", optimization: DetectorPatchOptimization \| RolloutPatchOptimization \| None = None, mask_path: str \| Path = DEFAULT_MASK_PATH, noise_std: float = .25, noise_seed: int = 0, approach_m: float = 50., hold_steps: int = 20, offset_m: float = .10, width_scale: float = 1.1, harmonizer: Harmonizer \| None = None, face_orientation: str = "upright", face_size: str = "mutcd_standard", min_approach_m: float = 20.)` | Cover a recorded stop sign with a replica face whose masked pixels form a patch. |
+| `StopSignPatchAttack.validate_segment(segment: AttackSegment) -> None` | Validate the sign geometry and recorded-route inputs used by both optimizers. |
+| `StopSignPatchAttack.replica_placement(segment: AttackSegment, texture: np.ndarray) -> tuple[ObjectAsset, np.ndarray]` | Share the selected MUTCD/map width and upright/map orientation across all phases. |
+| `StopSignPatchAttack.replica_texture(artifacts: object) -> np.ndarray` | Return the replica face with the supplied patch in its editable region. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+`replica_placement` is shared by offline sampling and online deployment. The inserted object ID
+is `stop_sign_replica`. See the supplied attack workflow for treatment
+names and phase behavior.
+
+#### See also
+
+[Stop-sign patch attack](../examples/stop-sign-patch.md).
+
+### avsectester.implemented_attacks.stop_sign_patch_attack.metrics
+
+<!-- api:begin module=avsectester.implemented_attacks.stop_sign_patch_attack.metrics -->
+Replica-specific visibility measurements from saved decision captures.
+
+| Name and signature | Meaning |
+|---|---|
+| `ReplicaVisibility(Metric)(camera_id: str \| None = None, min_visible_pixels: int = 100)` | Count decisions where the inserted replica reaches a camera's pixel threshold. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+Automatic camera selection requires one unique recorded replica-visibility camera. A treatment
+with no replica returns an unavailable value, not zero.
+
+#### See also
+
+[Stop-sign patch attack](../examples/stop-sign-patch.md).
+
+### avsectester.implemented_attacks.stop_sign_patch_attack.offline
+
+<!-- api:begin module=avsectester.implemented_attacks.stop_sign_patch_attack.offline -->
+Validated detector/rollout optimization options and offline dispatch.
+
+| Name and signature | Meaning |
+|---|---|
+| `DetectorPatchOptimization(optimizer: GradientOptimizer, scorer_id: str \| None = None, device: str = "cpu", max_training_segments: int \| None = None, samples_per_scene: int = 8, min_visible_pixels: int = 100, braking_deceleration_mps2: float = 3.4)` | White-box attack settings (algorithm used: PGD). |
+| `RolloutPatchOptimization(optimizer: GradientOptimizer, start_distances_m: tuple[float, ...] = (40., 30., 20.), horizon_s: float = 3., max_training_segments: int \| None = None)` | Black-box attack settings (algorithm used: NES). |
+<!-- api:end -->
+
+#### Constraints and errors
+
+`DetectorPatchOptimization` configures a white-box attack; algorithm used: `PGD`. A `scorer_id`
+of None requires exactly one differentiable scorer. The descriptor must declare its image sensor
+and decision threshold. `samples_per_scene` is at least four. `braking_deceleration_mps2` sets
+the sampling bound `d_min = v² / (2a)`. `RolloutPatchOptimization` configures a black-box attack;
+algorithm used: `NES`. The rollout budget is starts × training segments × (1 + steps ×
+(`population_size` + 1)). `max_training_segments` caps cost after the experiment split; None
+uses all training metadata. Validation metadata is not used.
+
+#### See also
+
+[Stop-sign patch attack](../examples/stop-sign-patch.md).
+
+### avsectester.experiment
+
+<!-- api:begin module=avsectester.experiment -->
+Prepare attacks and execute independent closed-loop treatments.
+
+| Name and signature | Meaning |
+|---|---|
+| `ConfigurationMismatchError(ValueError)` | Saved preparation and supplied execution configuration describe different inputs. |
+| `Experiment` | [Experiment](#avsectesterexperimentengine) |
+| `ExperimentConfiguration` | [ExperimentConfiguration](#avsectesterexperimentconfig) |
+| `MetadataConfiguration` | [MetadataConfiguration](#avsectesterexperimentconfig) |
+| `RunsConfiguration` | [RunsConfiguration](#avsectesterexperimentconfig) |
+| `SplitConfiguration` | [SplitConfiguration](#avsectesterexperimentconfig) |
+| `TreatmentConfiguration` | [TreatmentConfiguration](#avsectesterexperimentconfig) |
+| `load_configuration` | [load_configuration](#avsectesterexperimentconfig) |
+| `PreparedExperiment` | [PreparedExperiment](#avsectesterexperimentmodels) |
+| `ExperimentResult` | [ExperimentResult](#avsectesterexperimentmodels) |
+| `SelectionDecision` | [SelectionDecision](#avsectesterexperimentmodels) |
+| `SegmentUnit` | [SegmentUnit](#avsectesterexperimentmodels) |
+| `TreatmentResult` | [TreatmentResult](#avsectesterexperimentmodels) |
+| `evaluate` | [evaluate](#avsectesterexperimentresult_evaluation) |
+| `load_metadata` | [load_metadata](#avsectesterexperimentmetadata_file) |
+| `save_metadata` | [save_metadata](#avsectesterexperimentmetadata_file) |
+<!-- api:end -->
+
+#### See also
+
+[Experiments](../guides/experiments.md).
+
+### avsectester.experiment.config
+
+<!-- api:begin module=avsectester.experiment.config -->
+Construct experiment objects from Python mappings or YAML files.
+
+| Name and signature | Meaning |
+|---|---|
+| `HookConfiguration` | A hook set, a seed-to-hook-set factory, or no hooks. |
+| `TreatmentConfiguration(name: str, attack_name: str \| None = None, environment: Mapping[str, Any] = dict())` | One attack, or a clean run, with explicit environment overrides. |
+| `MetadataConfiguration(save: Path \| None = None, load: Path \| None = None)` | Save selected units or load one shared dataset-specific metadata file. |
+| `SplitConfiguration(train_segments: int, validation_segments: int = 0, seed: int = 0, execute: tuple[str, ...] = ("test",))` | Random segment-unit partition sizes and independently selectable execution parts. |
+| `RunsConfiguration(treatments: tuple[TreatmentConfiguration, ...] = (), seeds: tuple[int, ...] = (0,), decision_steps: int \| None = None, environment: Mapping[str, Any] = dict(), recording: RecordingPolicy = RecordingPolicy(), output: Path \| None = None, strict: bool = False)` | What to run on the configured components, and how to record and handle those runs. |
+| `ExperimentConfiguration(dataset: Dataset, simulator: Simulator, avstack: DrivingAdapter, attacks: Mapping[str, Attack] = dict(), hooks: HookConfiguration = None, evaluation: EvaluationConfiguration = EvaluationConfiguration(), runs: RunsConfiguration = RunsConfiguration(), split: SplitConfiguration \| None = None, metadata: MetadataConfiguration = MetadataConfiguration())` | Reusable components and run settings; every run owns fresh driving and simulator state. |
+| `ExperimentConfiguration.configuration_summary: dict[str, Any]` | Describe compatibility on demand, when saving or loading prepared results. |
+| `ExperimentConfiguration.describe_configuration(*, scenarios: Sequence[str] \| None = None, metadata_sha256: str \| None = None) -> dict[str, Any]` | Describe preparation inputs without requiring dataset access. |
+| `load_configuration(config: ExperimentConfiguration \| Mapping[str, Any] \| str \| Path) -> ExperimentConfiguration` | Load one experiment; file references are relative to their containing YAML file. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+Unknown keys and unsupported metric configurations raise `ValueError`.
+Injection, paths and compatibility follow [Configuration](configuration.md).
+
+#### See also
+
+[Configuration reference](configuration.md) and [Experiments](../guides/experiments.md).
+
+### avsectester.experiment.engine
+
+<!-- api:begin module=avsectester.experiment.engine -->
+Prepare each attack once, then run independent treatments at its selected starts.
+
+| Name and signature | Meaning |
+|---|---|
+| `Experiment()` | The fixed build_metadata → run_offline → online experiment workflow. |
+| `Experiment.validate(config: ExperimentConfiguration \| Mapping[str, Any] \| str \| Path, resume: bool = False) -> None` | Validate preparation inputs without creating a runtime or connecting to services. |
+| `Experiment.prepare(config: ExperimentConfiguration \| Mapping[str, Any] \| str \| Path, resume: bool = False) -> PreparedExperiment` | Select all attacks, partition units and checkpoint each completed offline stage. |
+| `Experiment.execute(prepared: PreparedExperiment, resume: bool = False) -> ExperimentResult` | Execute unit/seed groups, retaining matching completed runs when resuming. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+`validate` checks inputs without runtimes or service connections. Resume checks saved frames and
+compatibility; complete preparation is reused, while progress resumes unfinished offline stages.
+Invalid loaded metadata fails preparation directly. Unattacked runs create no `AttackRuntime`.
+
+#### See also
+
+[Experiments](../guides/experiments.md).
+
+### avsectester.experiment.html_report
+
+<!-- api:begin module=avsectester.experiment.html_report -->
+Build human-readable HTML reports solely from saved experiment files.
+
+| Name and signature | Meaning |
+|---|---|
+| `write_offline_html(output_root: str \| Path) -> Path` | Rebuild the offline page and series curves solely from saved entries. |
+| `write_evaluation_html(output_root: str \| Path) -> Path` | Rebuild root evaluation_report.html from saved evaluation and preparation files. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+Rebuild functions read saved files only and write the two top-level pages. Relative file/image
+links remain portable within the output tree.
+
+#### See also
+
+[Experiments](../guides/experiments.md).
+
+### avsectester.experiment.metadata_file
+
+<!-- api:begin module=avsectester.experiment.metadata_file -->
+Share selected segments as a dataset-specific, versioned JSON metadata file.
+
+| Name and signature | Meaning |
+|---|---|
+| `save_metadata(segments: Sequence[AttackSegment], path: str \| Path, *, dataset_type: str) -> None` | Save ordered segments without overwriting a different existing document. |
+| `load_metadata(path: str \| Path) -> tuple[AttackSegment, ...]` | Load ordered segments after validating their file format and dataset type declaration. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+Duplicate segments raise `ValueError` with both item indexes. File format and compatibility
+follow [Metadata configuration](configuration.md#metadata).
+
+#### See also
+
+[Configuration reference](configuration.md) and [Experiments](../guides/experiments.md).
+
+### avsectester.experiment.models
+
+<!-- api:begin module=avsectester.experiment.models -->
+Preparation inputs, their validation, prepared metadata and per-treatment results.
+
+| Name and signature | Meaning |
+|---|---|
+| `SelectionDecision(attack_name: str, scenario_id: str, status: Literal["selected", "not_selected", "error"], reasons: tuple[str, ...] = (), error: str \| None = None)` | One metabuilder outcome for an attack and scenario, including any rejection or error. |
+| `SelectionDecision.as_dict() -> dict[str, Any]` | Return the shared plain-data representation used by preparation and reports. |
+| `SelectionDecision.from_dict(value: Mapping[str, Any]) -> SelectionDecision` | Restore a saved selection outcome. |
+| `SegmentUnit(index: int, segment: AttackSegment, attack_names: tuple[str, ...], part: str \| None = None)` | One canonical segment shared by all attacks that selected exactly that segment. |
+| `SegmentUnit.as_dict() -> dict[str, Any]` | Serialize this unit's index, segment identity, attack membership and split part. |
+| `PreparedExperiment(configuration: ExperimentConfiguration, metadata: Mapping[str, tuple[AttackSegment, ...]], artifacts: Mapping[str, Any], selections: tuple[SelectionDecision, ...] = (), *, preparation: Mapping[str, Any], units: tuple[SegmentUnit, ...] = (), deployment: DeploymentPlan \| None = None, offline_reports: Mapping[str, OfflineReport] = dict(), metadata_source: Mapping[str, str] \| None = None)` | Configured factories, selected metadata and artifacts, never a live simulator or session. |
+| `PreparedExperiment.save(directory: str \| Path) -> Path` | Save preparation metadata, artifacts and offline reports to an output directory. |
+| `PreparedExperiment.load(config: ExperimentConfiguration \| Mapping[str, Any] \| str \| Path, directory: str \| Path) -> PreparedExperiment` | Load compatible metadata and artifacts without selecting or optimizing again. |
+| `TreatmentResult(attack_name: str \| None, segment_index: int, segment: AttackSegment, treatment: str, seed: int, log: RunLog, error: str \| None = None, part: str \| None = None)` | The recorded outcome of one segment, seed and named treatment. |
+| `TreatmentResult.group: tuple[int, int]` | Comparison-group key containing the segment index and seed. |
+| `ExperimentResult(runs: tuple[TreatmentResult, ...] = (), selections: tuple[SelectionDecision, ...] = (), notices: tuple[str, ...] = (), scenario_maps: Mapping[str, ScenarioMap \| Unavailable] = dict())` | Treatment runs, selection outcomes and saved maps for scenarios with selected segments. |
+| `ExperimentResult.groups: dict[tuple[int, int], dict[str, RunLog]]` | Group treatment results by segment index and seed. |
+| `ExperimentResult.failures: tuple[TreatmentResult, ...]` | Failed or incomplete treatment runs. |
+| `ExperimentResult.selection_errors: tuple[SelectionDecision, ...]` | Selection decisions whose status is error. |
+| `ExperimentResult.load(output: str \| Path, configuration: ExperimentConfiguration) -> ExperimentResult` | Read results without loading artifacts, driving models or simulator runtimes. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+`PreparedExperiment` owns metadata, artifacts and reports, never live resources. Canonically
+serialized segment data, including `user_data`, defines units. `TreatmentResult.group` is
+(`segment_index`, seed).
+
+#### See also
+
+[Experiments](../guides/experiments.md).
+
+### avsectester.experiment.result_evaluation
+
+<!-- api:begin module=avsectester.experiment.result_evaluation -->
+Organize experiment results for evaluation, saving and visualization.
+
+| Name and signature | Meaning |
+|---|---|
+| `evaluate(result: ExperimentResult, configuration: ExperimentConfiguration) -> EvaluationReport` | Group and order experiment logs, evaluate them, and save reports and plots. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+Evaluation consumes saved logs/maps and saves structured and HTML reports without dataset,
+simulator or model connections.
+
+#### See also
+
+[Experiments](../guides/experiments.md).
+
+### avsectester.experiment.type_registry
+
+<!-- api:begin module=avsectester.experiment.type_registry -->
+Resolve component names and discover attack classes without constructing components.
+
+| Name and signature | Meaning |
+|---|---|
+| `resolve_type(value: Any) -> Callable[..., Any]` | Resolve a built-in class name, or user code written as `package.module:name`. |
+| `available_attacks() -> tuple[str, ...]` | List exactly the exported Attack classes accepted by class-name lookup. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+Built-in short names identify framework components. Custom constructors use
+`package.module:Class`. Concrete attacks follow the
+[implemented-attack directory rules](../../avsectester/implemented_attacks/README.md).
+
+#### See also
+
+[Configuration reference](configuration.md) and [Experiments](../guides/experiments.md).
+
+### avsectester.cli
+
+<!-- api:begin module=avsectester.cli -->
+Prepare, execute and evaluate experiments through the public experiment API.
+
+| Name and signature | Meaning |
+|---|---|
+| `app` | Command-line application and its service subcommands. |
+<!-- api:end -->
+
+#### Constraints and errors
+
+Exit codes and automatic service ownership follow the [CLI reference](cli.md).
+
+#### See also
+
+[CLI reference](cli.md).

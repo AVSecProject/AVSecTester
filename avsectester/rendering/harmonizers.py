@@ -22,6 +22,7 @@ class Harmonizer(ABC):
     """Adjust the pasted foreground to fit the background. Must preserve the patch's texture."""
 
     differentiable: ClassVar[bool] = False
+    'Whether input-image gradients are supported by this component.'
 
     def harmonize_tensor(
         self, composite: torch.Tensor, mask: torch.Tensor, background: torch.Tensor,
@@ -38,7 +39,13 @@ class Harmonizer(ABC):
     @abstractmethod
     def __call__(
         self, composite_rgb: np.ndarray, mask: np.ndarray, background_rgb: np.ndarray
-    ) -> np.ndarray: ...
+    ) -> np.ndarray:
+        """Return H×W×3 uint8 RGB adjusted only inside the H×W boolean visible mask.
+
+        Inputs are aligned RGB uint8 images. Preserve pixels outside the mask and the
+        foreground texture's spatial structure; do not modify the input images in place.
+        """
+        ...
 
 
 def _linear_rgb(srgb: torch.Tensor) -> torch.Tensor:
@@ -116,6 +123,7 @@ class ExposureHarmonizer(Harmonizer):
     gain_range: tuple[float, float] = (.05, 1.2)
     feather_sigma: float = 1.2
     differentiable: ClassVar[bool] = True
+    'Whether input-image gradients are supported by this component.'
 
     def __post_init__(self) -> None:
         if self.reference not in {"ring", "under"}:
@@ -181,6 +189,7 @@ class ExposureHarmonizer(Harmonizer):
     def __call__(
         self, composite_rgb: np.ndarray, mask: np.ndarray, background_rgb: np.ndarray,
     ) -> np.ndarray:
+        """Apply exposure matching and return uint8 RGB without changing mask-exterior pixels."""
         import torch
 
         composite = torch.from_numpy(np.ascontiguousarray(composite_rgb)).permute(2, 0, 1).float() / 255
@@ -197,12 +206,12 @@ class ClassicHarmonizer(Harmonizer):
     Reliable, in-process, no model weights; texture-preserving (Poisson keeps the patch's gradients
     while shifting color/brightness to the background).
 
-    Both steps pull the patch's *colour* toward its surroundings, which suits a texture whose exact hue
-    does not matter but washes out objects whose colour carries meaning (a red STOP sign turns grey-brown
+    Both steps pull the patch's *color* toward its surroundings, which suits a texture whose exact hue
+    does not matter but washes out objects whose color carries meaning (a red STOP sign turns grey-brown
     on a grey road). For those, ``preserve_chroma=True`` instead scales only the Lab lightness by an
     exposure gain (surrounding mean / object mean, clipped to ``gain_range``), keeping a/b and the
     object's internal contrast; ``blend="feather"`` replaces the Poisson solve with a feathered alpha
-    edge, which keeps the object's own colours. Defaults reproduce the original behaviour.
+    edge, which keeps the object's own colors. Defaults reproduce the original behavior.
     """
 
     def __init__(
@@ -222,6 +231,7 @@ class ClassicHarmonizer(Harmonizer):
         self.feather = feather
 
     def __call__(self, composite_rgb, mask, background_rgb):
+        """Transfer foreground color statistics and optionally blend its boundary with Poisson editing."""
         import cv2
 
         out = composite_rgb.copy()
@@ -257,14 +267,14 @@ class ClassicHarmonizer(Harmonizer):
 
 
 class PCTNetHarmonizer(Harmonizer):
-    """Learned harmonization via libcom's **PCTNet**, run **in-process** (no subprocess, no separate env).
+    """Learned harmonization via libcom's **PCTNet**, run **in-process**.
 
     PCTNet is a self-contained color-transform CNN needing only torch / torchvision / numpy / einops —
     all compatible with the avstack stack (torch 2.1) — so we load just the ``pct_net`` module from
     ``libcom_directory``, bypassing libcom's package ``__init__`` (which eagerly imports
     diffusers-based models). PCTNet gives a milder, texture-preserving harmonization than the classic
     Poisson blend — better for keeping an adversarial pattern intact. Falls back to
-    :class:`ClassicHarmonizer` on any error (or set ``strict`` to raise instead).
+    `ClassicHarmonizer` on any error (or set ``strict`` to raise instead).
 
     ``libcom_directory`` is the repository root containing ``libcom/image_harmonization``.
     ``device`` is a PyTorch device string; inference falls back to CPU when CUDA is unavailable.
@@ -329,6 +339,7 @@ class PCTNetHarmonizer(Harmonizer):
                                     local_dir=str(cand.parent)))
 
     def __call__(self, composite_rgb, mask, background_rgb):
+        """Harmonize visible foreground with PCTNet, applying the configured strict error policy."""
         try:
             import cv2
             import torch
@@ -354,3 +365,11 @@ class PCTNetHarmonizer(Harmonizer):
                 raise RuntimeError(f"PCTNet harmonization failed: {exc}") from exc
             log.warning("PCTNet failed (%s) -> classic fallback", str(exc)[-200:])
             return self._fallback(composite_rgb, mask, background_rgb)
+
+
+__all__ = [
+    'Harmonizer',
+    'ExposureHarmonizer',
+    'ClassicHarmonizer',
+    'PCTNetHarmonizer',
+]

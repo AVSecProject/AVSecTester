@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from avsectester.closed_loop.simulators.nurec import AlpaSimTraffic, NuRecRenderer
 
 app = typer.Typer(help="Adversarial security testing for AV systems.")
+'Command-line application and its service subcommands.'
 nre_app = typer.Typer(help="Start and stop the configured local NuRec renderer.")
 app.add_typer(nre_app, name="nre")
 trafficsim_app = typer.Typer(help="Start and stop configured local CATK traffic.")
@@ -149,6 +150,18 @@ def run(
         except Exception as error:
             typer.echo(f"Preparation load error: {type(error).__name__}: {error}", err=True)
             raise typer.Exit(1) from error
+    if preparation is None:
+        try:
+            Experiment.validate(configuration, resume=resume)
+        except _CONFIGURATION_ERRORS as error:
+            _configuration_error(error)
+        except KeyboardInterrupt:
+            typer.echo("Preparation validation interrupted.", err=True)
+            raise typer.Exit(130) from None
+        except Exception as error:
+            typer.echo(f"Preparation validation error: {type(error).__name__}: {error}", err=True)
+            raise typer.Exit(1) from error
+
     saved_this_call = resume and (output / "prepared.json").is_file()
     phase = "services"
     try:
@@ -318,7 +331,7 @@ def nre_serve(
     if not dry_run:
         typer.echo(f"NRE ready: endpoint={renderer.endpoint}, GPU={gpu}, "
                    f"scenes={len(configuration.dataset.usdz_paths)}, container={chosen_name}")
-        typer.echo(f"Stop command: {shlex.join(['avsectester', 'nre', 'stop', str(config), '--name', chosen_name])}")
+        typer.echo(f"Stop it with: {shlex.join(['nre', 'stop', str(config), '--name', chosen_name])}")
 
 
 @nre_app.command("stop")
@@ -384,7 +397,7 @@ def trafficsim_serve(
     if not dry_run:
         typer.echo(f"Trafficsim ready: endpoint={traffic.endpoint}, GPU={gpu}, "
                    f"scenes={len(configuration.dataset.usdz_paths)}, container={chosen_name}")
-        typer.echo(f"Stop command: {shlex.join(['avsectester', 'trafficsim', 'stop', str(config), '--name', chosen_name])}")
+        typer.echo(f"Stop it with: {shlex.join(['trafficsim', 'stop', str(config), '--name', chosen_name])}")
 
 
 @trafficsim_app.command("stop")
@@ -405,3 +418,8 @@ def trafficsim_stop(
 
 if __name__ == "__main__":
     app()
+
+
+__all__ = [
+    'app',
+]

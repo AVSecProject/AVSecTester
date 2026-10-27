@@ -2,56 +2,48 @@
 
 > **Audience:** Attack authors.
 >
-> **Outcome:** Define selection, optional preparation and per-run attack actions.
+> **Outcome:** Select segments, prepare artifacts and deploy actions through public interfaces.
 >
 > **Prerequisites:** [Architecture](../concepts/architecture.md).
 
 ## What a user implements
 
-| Entry point | Input | Return |
-|---|---|---|
-| `build_metadata(scenario)` | ScenarioView, user assets and parameters | Sequence of AttackSegment; optional with metadata.load |
-| `validate_segment(segment)` | A selected or loaded AttackSegment | None, or ValueError with a rejection reason |
-| `run_offline(context)` | ClosedLoopServices, training metadata and optional validation metadata | Artifacts; defaults to None |
-| `create_runtime(segment, artifacts)` | One selected segment and prepared artifacts | Fresh AttackRuntime |
+Every attack has an offline phase and an online phase; either phase can be a no-op. Keep
+reusable parameters on `Attack` and mutable per-run state on a fresh `AttackRuntime`.
 
-`build_metadata` is optional when metadata.load supplies the experiment's segments. Its base
-implementation raises NotImplementedError explaining that metadata.load is required.
-load_configuration rejects an attack that leaves it unchanged without a metadata load, listing
-the attack names; the CLI reports this as a configuration error with exit code 2. Override validate_segment to
-check the user_data and other constraints your attack needs, and raise ValueError with a useful
-reason on rejection. The default validate_segment accepts the segment. It applies to selected and
-loaded segments before offline preparation. StopSignPatchAttack uses it to validate its placement
-and route metadata.
+| Entry point | Responsibility |
+|---|---|
+| `build_metadata(scenario)` | The metabuilder selects `AttackSegment` records; optional with `metadata.load` |
+| `validate_segment(segment)` | Reject metadata that lacks the data or geometry the attack requires |
+| `deployment_ticks(segment)` | Declare the deployment tick budget needed before the first capture |
+| `run_offline(context)` | Prepare and return artifacts; the default returns `None` |
+| `create_runtime(segment, artifacts)` | Create a fresh runtime for the online phase |
 
-The base Attack owns no assets. An attack that needs assets
-defines its own constructor parameter and run_offline implementation, which may return those
-assets unchanged. A selection-only attack uses the default None artifacts and empty runtime.
-Attack configuration holds reusable parameters; mutable online history belongs to its runtime.
-Artifacts are explicit return values, never a second mutable Attack property.
-
-OfflineContext.report is an OfflineReport for measured offline results. Use its set_value,
-set_series, set_table and set_image methods; the framework saves report.json, CSV tables and PNG
-images under runs.output/offline/<attack>/ and builds offline_report.html. report.directory is
-the files/ directory for additional evidence, or None for an in-memory preparation. Report values
-do not replace returned artifacts. An attack without optimization can still report its initial
-asset. Add descriptions and units so readers can interpret values, curves, images and every table
-column. Interrupted offline work preserves its partial report with status failed and is archived
-by the framework before that attack is retried; see [Offline reports](optimization.md#offline-reports).
-
-One experiment supports one or more attacks, each selecting its own metadata unless metadata.load
-supplies the same segments to all of them. Identical complete
-segments form one unit, including scenario, start, stop and user_data. A comparison group is one
-unit and seed: it contains each treatment without attack_name once and treatments for every attack
-that selected that unit. All treatment pairs are evaluated, including pairs from different attacks.
-Use one composite Attack to apply several actions together in one run. Different user_data creates
-a different unit even for the same window; sharing un-attacked runs across these units remains
-[planned](../development/TODO.md#shared-runs-across-different-user-data).
+Use [Experiment workflows](experiments.md) for preparation, execution and resume semantics.
+Constructor signatures, constraints and errors are in the
+[Python API](../reference/python-api.md).
 
 ## Write your first attack
 
-This attack changes the model-visible ego speed at the observation stage. It uses the same selection
-helper as environment-only experiments and keeps no live simulator handles.
+Put user implementations in your own importable package. Reference them by a full type path:
+
+```yaml
+attacks:
+  speed_spoof:
+    type: my_project.attacks:SpeedSpoofAttack
+    options:
+      decision_steps: 20
+      reported_speed: 0.0
+```
+
+A supplied attack uses the
+[implemented-attacks layout](../../avsectester/implemented_attacks/README.md). Keep explicit
+constructor parameters as attributes with the same names, or override
+`configuration_parameters()` to describe the configured inputs.
+Filesystem options follow
+[Path resolution](../reference/configuration.md#constructor-filesystem-parameters).
+
+This example defines a selection rule and an online phase that changes model-visible speed:
 
 <!-- runnable -->
 ```python
@@ -83,41 +75,65 @@ class SpeedSpoofAttackRuntime(AttackRuntime):
         return replace(observation, ego_speed=self.reported_speed)
 ```
 
-Place user attacks under implemented_attacks/speed_spoof_attack/ with __init__.py exporting
-only SpeedSpoofAttack. Use type: SpeedSpoofAttack and constructor options. The same layout applies
-to supplied and user attacks: attack.py connects entry points, metabuilder.py selects, optional
-offline.py prepares, online.py implements AttackRuntime/actions, and optional assets.py owns
-attack-specific assets. See the [folder
-guide](../../avsectester/implemented_attacks/README.md). An importable external class can
-instead use type: my_project.attacks:SpeedSpoofAttack. The modified speed reaches the driving system
-while StepRecord.physical_pre and physical_post retain actual world state.
+The modified observation reaches the driving system while physical states remain unchanged; the
+[Runtime reference](../reference/runtime.md) defines the recorded inputs, commands and
+action receipts.
 
-Mark filesystem constructor parameters as Path or str | Path so YAML resolves relative paths; see
-[filesystem parameters](../reference/configuration.md#constructor-filesystem-parameters).
+## Select segments
 
-## Use the selected scenario
+`ScenarioView` provides the decision timeline, frame data, semantic map and preparation
+services. Use `record_reason()` to explain rejected candidates, and
+`session.can_start_at(position)` to check start requirements before returning a segment.
+Placement and visibility criteria belong to the attack; the framework does not infer them
+from `user_data`.
 
-`ScenarioView.frames` is a supported decision timeline. `frame_data(frame)` supplies ego and actor
-states through recorded data or a preparation-owned cache. `record_reason(text)` aggregates
-selection explanations by reason with occurrence counts in the experiment result, without recording
-every rejected frame or host. Each scenario keeps at most 100 distinct reasons; later new reasons
-are counted under "Other selection reasons". Within `scenario.services.session(seed)`, request
-sensor samples, actions-based rendering, component evaluations, scores or rollouts.
+`AttackSegment` contains `scenario_id`, `start`, `stop` and `user_data`. The decision interval
+is `[start, stop)`, with `stop` as its terminal state. Store custom actor IDs, positions, ranks
+and other attack data in `user_data`, using JSON-like values and NumPy arrays for persisted
+metadata. Check these values in `validate_segment()` so user-supplied metadata follows the same
+attack rules. The [metadata configuration](../reference/configuration.md#metadata) controls saving and
+loading segments.
 
-Use SensorRequest(..., views=True) when offline preparation needs each sample's camera geometry,
-actors or ego pose. SensorSample.views contains one detached SensorView per requested sensor;
-view.native is empty. view.data is the capture before sensor corruptions, while
-sample.observation includes those transforms. views defaults to False and then the mapping is
-empty, avoiding depth computation and extra data copies. Requesting views requires can_render.
+`split_segments` groups adjacent eligible decisions. The following self-contained example
+includes an eligible tail:
 
-read_sensors reads a world without attack actions. When can_replay is True, it can reuse one
-simulator runtime for forward scans; NuRec resets to the requested recorded frame each time. render
-applies world or sensor attack actions and creates a fresh world for each request.
-Both can return calibrated views; render remains the entry point for evaluating deployed actions.
+<!-- runnable -->
+```python
+from avsectester.datasets import FrameReference
+from avsectester.attack.segments import split_segments
 
-This offline example uses the repository's shared in-memory components to collect several samples.
-A real attack substitutes its ScenarioView.services and selected frames, then passes the returned
-images and geometry into its own optimizer:
+frames = tuple(FrameReference("road", i, i, i * 0.1) for i in range(80))
+segments = split_segments(frames, lambda frame: frame.position >= 5,
+                          decision_steps=20, keep_tail=True)
+assert [(s.start.position, s.stop.position) for s in segments] == [
+    (5, 25), (25, 45), (45, 65), (65, 79)]
+assert [s.decision_steps for s in segments] == [20, 20, 20, 14]
+```
+
+## Offline phase
+
+A candidate rollout request is created from the chosen segment and deployment:
+
+```python
+from avsectester.execution.services import CandidateRequest
+from avsectester.execution.runner import RecordingPolicy
+
+request = CandidateRequest(
+    segment=segment, seed=context.seed, decision_steps=segment.decision_steps,
+    environment=context.environment, recording=RecordingPolicy(),
+    attack=self, artifacts=artifacts)
+```
+
+The metabuilder is not run again after the offline phase. Use
+[data split settings](../reference/configuration.md#data-split) to control training, validation
+and execution membership.
+
+Use [Optimization tools](optimization.md) to sample inputs, score candidates and collect
+offline reports.
+
+The services available through the context provide sensor reads, rendering, component
+evaluations, scores and candidate rollouts. This example reads detached geometry and separates
+captured pixels from sensor-environment output using the shared in-memory components:
 
 <!-- runnable -->
 ```python
@@ -147,112 +163,39 @@ assert all(sample["cam_from_world"].shape == (4, 4) for sample in optimization_s
 assert np.any(samples[0].observation.sensor_data["front"] != optimization_samples[0]["image"])
 ```
 
-`AttackSegment` has exactly four fixed fields: scenario_id, start, stop and user_data. Put all
-custom data, including actor IDs, placement parameters and any scores or ranks, in user_data.
-Data that must be persisted can contain only JSON-like values or numpy arrays; convert custom
-placement objects to data before storing them. The framework validates segment boundaries and
-saves records without interpreting custom data, checking selected actors, ranking records or
-supplying filters. An attack must report missing actors when it uses them. Each attack owns the
-metadata of the treatments that run on its segments.
+Use `session.render` to evaluate deployed world or sensor actions. Use `session.rollout` when
+the objective depends on a driving response; each candidate has its own run state. Service
+request records and capability checks are defined in the
+[Python API](../reference/python-api.md).
 
-`split_segments(frames, eligible, *, decision_steps, keep_tail=False)` returns AttackSegment
-records. `eligible(frame)` runs once in order for every nonterminal frame. It never runs on the
-terminal state. A short eligible tail is dropped unless keep_tail is true.
+## Online phase
 
-<!-- runnable -->
-```python
-from avsectester.datasets import FrameReference
-from avsectester.attack.segments import split_segments
+The deployment tick budget is the maximum of
+`hooks.setup_ticks + attack.deployment_ticks(segment)` across all configured attacks, segments,
+seeds and treatments. Every treatment uses that budget. Larger budgets can make early starts
+fail `can_start_at`.
 
-frames = tuple(FrameReference("road", i, i, i * 0.1) for i in range(80))
-segments = split_segments(frames, lambda frame: frame.position >= 5,
-                          decision_steps=20, keep_tail=True)
-assert [(s.start.position, s.stop.position) for s in segments] == [
-    (5, 25), (25, 45), (45, 65), (65, 79)]
-assert [s.decision_steps for s in segments] == [20, 20, 20, 14]
-```
+A runtime's `setup` returns world actions; `step` returns the actions for a decision; `stop`
+releases its own resources. Declare snapshot reads with `ResultSubscription`. The context
+supplies snapshots and a clock, rather than a service that advances the world.
 
-No default segment length is imposed. N decisions require N+1 timeline states. Requests beyond
-recorded support fail rather than padding or silently shortening the run.
+Choose `WorldAttackAction` for physical-world changes, `SensorAttackAction` for sensor-data
+replacement, and `AVStackAttackAction` for a driving-system stage value. The
+[Runtime reference](../reference/runtime.md) owns their application order and stage semantics.
+For insertion, `InsertObject` is a `WorldAttackAction`; `InsertionAttackAction` is a
+`SensorAttackAction`. Object coordinates use +X forward, +Y left and +Z up.
 
-## Offline preparation
+Placement tools belong to `attack.insertion`, not the dataset. A `SensorView` supplies camera
+geometry, actor poses and available depth for sensor composition. See
+[Image insertion](../examples/image-insertion.md) and
+[Physical patch](../examples/physical-patch.md) for the supplied deployment paths.
 
-`run_offline(OfflineContext)` receives training segments in metadata and validation segments in
-validation_metadata when split is configured. Both retain the attack's selection order. Without
-split, metadata contains all selected segments and validation_metadata is empty. The context uses
-the same closed-loop service boundary as selection and the experiment-wide deployment budget.
-The attack chooses whether to use validation_metadata. The user defines optimization and objectives. A candidate rollout
-declares every request field, for example:
-
-```python
-from avsectester.execution.services import CandidateRequest
-from avsectester.execution.runner import RecordingPolicy
-
-# Requires an Attack self, selected segment, artifacts and OfflineContext context.
-request = CandidateRequest(attack=self, segment=segment, artifacts=artifacts,
-                           seed=context.seed, decision_steps=segment.decision_steps,
-                           environment=context.environment, recording=RecordingPolicy())
-```
-
-The request calls the same runtime factory and actions as formal execution.
-
-Optimization does not cause reselection or a geometry-preservation check. Keep visibility and
-placement assumptions valid in your optimizer if the attack requires them. See
-[Optimization](optimization.md).
-
-## Reuse framework tools
-
-The public avsectester.attack.insertion package provides insertion assets, placement resolution,
-compositing and visibility. avsectester.rendering provides simulator-independent ObjectAsset,
-PlaneSurface, surface rendering, composition and harmonizer extension points. The public
-avsectester.attack.optimization package provides DataSource, objective, perturbation and scorer
-contracts plus PGD, NES and SessionScorer. An attack composes these tools in its own offline and
-online implementations. See [Image
-insertion](../examples/image-insertion.md#use-insertion-tools-in-your-attack) and
-[Optimization](optimization.md#use-the-optimization-tools).
-
-## Choose world or sensor insertion
-
-The two insertion paths are independent; an attack uses whichever matches its threat model.
-
-| | World insertion: InsertObject | Sensor insertion: InsertionAttackAction |
-|---|---|---|
-| Action kind | WorldAttackAction | SensorAttackAction |
-| Affects | Every camera, from the next capture | One named camera's data, in the current decision |
-| World state and RunLog | WorldSnapshot.objects; poses, extents and per-camera visibility | Receipts only; not part of world state |
-| Placement | Fixed world_from_object | World or host-attached placement, resolved per capture |
-| Occlusion | Scene depth, otherwise actor cuboids; 0.1 m tolerance | Scene depth or actor cuboids and other world objects; millimetre tolerances |
-| Appearance | PlacedObject.harmonizer | PatchCompositor and its harmonizer |
-| Differentiable path | SensorView.composition (or composite_plan with object_occlusion="geometry"), then CompositePlan.composite | PatchPerturbation over plane_sampling |
-| Simulator requirement | can_insert_objects | A calibrated camera SensorView |
-
-Use world insertion for a physical object that every sensor and the recorded world should contain,
-such as a sign. Use sensor insertion for a perturbation of one camera's data, such as an injected
-image or a patch that follows a host vehicle.
+A runtime must satisfy `runtime.setup_ticks <= attack.deployment_ticks(segment)`.
 
 ## Insert a world object
 
-Import InsertObject from avsectester.attack.insertion. Return it from AttackRuntime.setup to make
-an arbitrary textured object visible from the first capture. Returning it from step makes it
-visible from the next capture. The action registers
-cleanup, so the object is removed when the run ends. The framework composites it into every camera;
-the native simulator does not need a matching blueprint or reconstructed actor.
-
-ObjectAsset contains rectangular PlaneSurface faces with RGBA textures. Its right-handed local
-frame has its origin at the bottom center, +X pointing out of the front, +Y to the left and +Z up.
-extent is the full (length, width, height), with the horizontal box centered on the origin and its
-bottom at z=0. Every corner must lie inside that box. ObjectAsset.from_surfaces infers those extents
-without moving the origin. ObjectAsset.from_panel creates a front-facing textured panel with
-optional support posts. Pass an RGBA array, a Texture implementation or your own image path.
-Existing built-in attacks retain their own deployment implementations.
-
-world_from_object is a rigid 4×4 transform from that local frame into canonical world coordinates.
-Selection can derive it from ScenarioView.frame_data(frame).ego.pose, an actor pose or a semantic
-map feature, then save it in AttackSegment.user_data. Account for the source feature's reference
-point: a TrafficControl pose and an asset's bottom-center origin need not coincide. Compute any
-mounting offset before returning InsertObject.
-
-This minimal example inserts a sign eight metres ahead, facing ego:
+Return `InsertObject` from setup to include an object in the first capture. The action registers
+removal with the run's resources. This example needs no simulator server or model weights:
 
 <!-- runnable -->
 ```python
@@ -283,14 +226,10 @@ with MemorySimulator().create_runtime() as simulator_runtime:
 assert log.status == "completed"
 ```
 
-The following more complete example uses a semantic map supplied by the in-memory Dataset. The sign's
-pose_reference is face_center. Its ground height comes from the closest centerline point over all
-governed lanes, in world coordinates. If c is the vertical distance from that point to the face
-center, the object pose is control.pose @ translate(0, 0, -c), and the sign's mount height is
-c - face_height/2, where face_height is the inserted sign's own face height. This keeps the face at
-its mapped location and the post on the estimated ground.
-The same calculation supports nonzero world-ground heights. It needs no native simulator or model
-weights and imports no concrete attack:
+`ObjectAsset` uses a bottom-center local origin. Convert a map feature's reference point before
+placing the asset; geometry records and asset constraints are in the
+[Python API](../reference/python-api.md). This example derives a sign placement from a
+semantic map:
 
 <!-- runnable -->
 ```python
@@ -367,94 +306,18 @@ with MemorySimulator().create_runtime() as simulator_runtime:
 assert log.status == "completed"
 ```
 
-WorldSnapshot.objects keeps inserted objects separate from actors, and RunLog preserves their
-poses, categories, extents and zero velocities. Per-camera visibility is measured at every capture;
-[Inserted world objects](simulators.md#inserted-world-objects) defines it and
-[RunLog](../reference/runtime.md#runlog) describes the recorded receipts and visibility records.
-
-Selection may check scenario.services.capabilities.insert_objects, which reflects the simulator's
-can_insert_objects declaration. Returning InsertObject to an unsupported simulator raises
-NotImplementedError during the run and records failure. Setup actions are created inside reset, so
-the framework cannot inspect them during preflight.
-
-Pass harmonizer=None for unchanged appearance, ExposureHarmonizer for differentiable exposure
-matching, ClassicHarmonizer or PCTNetHarmonizer for non-differentiable adjustments, or an instance
-of your own avsectester.rendering.Harmonizer subclass. In an attack's YAML options,
-reference your class as package.module:Class and pass the constructed instance to InsertObject.
-See the [custom harmonizer example](../examples/image-insertion.md#harmonization). Harmonization
-changes only visible object pixels. When using composite_objects directly, set each
-PlacedObject.harmonizer; appearance belongs to the placed object, not a separate global argument.
-
-A harmonizer declares differentiable=False by default. CompositePlan.composite accepts one only
-when it declares differentiable=True and implements
-harmonize_tensor(composite, mask, background, nominal_composite). The tensors are RGB CHW floats
-in [0, 1] and a boolean HW visible mask. nominal_composite shows each surface's nominal_texture
-where one is set; estimate scene statistics from it so that texture edits do not change them.
-Differentiable harmonizers run in floating point in both composite and apply before the final
-uint8 rounding; they use the same unadjusted composite, original background and nominal composite
-for each object's mask. Thus deployment and optimization use the same calculation. Non-differentiable harmonizers remain available after
-rounding in apply, and composite rejects them by object ID and harmonizer type. See
-[differentiable exposure](../examples/image-insertion.md#differentiable-exposure).
-
-Inserted objects affect camera images and recorded world state. They do not add native collision
-geometry. **Not yet implemented.** Inserted objects in LiDAR or other non-camera sensor data. See
-[TODO](../development/TODO.md#inserted-objects-in-non-camera-sensors).
-
-## Online actions
-
-| Action | Method | Application |
-|---|---|---|
-| WorldAttackAction | `apply(simulator_runtime, resources)` | Setup or before the world advances |
-| SensorAttackAction | `apply(data, view)` | Any captured sensor data, before sensor environment |
-| AVStackAttackAction | `apply(value, context)` | Driving-system stages from localization.pre to command |
-
-SensorAttackAction is the attack entry for camera, LiDAR, GNSS and IMU data. Actions for one sensor
-chain in issue order on a private copy; the view retains the original capture. The runner uses
-write_camera_rgb when SensorView.camera is present, keeping camera data RGB uint8. Other
-sensors use write_sensor_data, which preserves array shape and dtype, native wrappers and
-calibration. SensorView.camera and cam_from_world are None for non-camera sensors.
-sensor_from_world uses sensor-body axes, including for cameras, independently of the optical
-camera transform. See [CARLA LiDAR data](../reference/runtime.md#carla-lidar-data) for raw point
-decoding and a replacement action.
-
-AVStackAttackAction cannot target sensors.post; use SensorAttackAction for sensor data. The
-sensors.post stage remains available to ordinary HookSet handlers. Actions returned dynamically
-by step are validated before their requests are queued or any action is applied.
-
-`setup(context)` returns only world actions. Declare required setup_ticks for deployment.
-`step(context)` returns actions once each decision. `stop(context)` runs on completion and failure.
-Use its instance to hold histories, trigger counts and bound component-stage callbacks.
-
-Declare `ResultSubscription("observation")` or `ResultSubscription("physical_state")` when the
-runtime reads those snapshots in its callbacks. The OnlineContext exposes no simulator or service
-that can advance time. An AVStack action receives its current stage value; a bound method can use it
-without introducing another independently stateful handler.
-
-Multiple actions for one stage are applied sequentially in returned and registration order. Every
-action receives the preceding action's replacement; receipts reflect actual application. Action
-requests and actual application receipts are both recorded. Any AttackAction may return
-additional evidence from receipt_details(); every receipt has details, defaulting to {}. The
-built-in actions' details are listed in [RunLog](../reference/runtime.md#runlog).
+World insertion, visibility, depth, occlusion and non-camera limitations are defined by the
+[Simulator guide](simulators.md). Pass a harmonizer through the placed object or insertion
+action; [Optimization tools](optimization.md) explains the differentiable composition path.
 
 ## Persist artifacts
 
-The default `save_artifacts(artifacts, directory)` stores trusted pickle plus a content hash.
-`load_artifacts(directory)` returns the decoded value. Override both methods together for a portable
-custom format. Neither method should modify Attack configuration.
-
-Direct Python objects may override `configuration_parameters()` when constructor arguments are
-stored under different names. This is needed only for validated persistence, not for an in-memory
-experiment. Return configured inputs, excluding counters and live resources.
+Return artifacts explicitly from `run_offline`; pass them to each runtime. Override
+`save_artifacts` and `load_artifacts` together when a custom storage format is needed.
+Persistence must not change the attack's configured inputs. See the
+[Attack API](../reference/python-api.md#avsectesterattackattack) for the storage contract.
 
 ## Next steps
 
-Read [Examples](../examples/README.md), [Runtime](../reference/runtime.md) and [Python
-API](../reference/python-api.md#attack-api).
-
-A selected start must satisfy `session.can_start_at(position)`: the shared deployment window
-must fit and the position must provide the driving adapter's declared past_steps. Built-in
-metabuilders exclude earlier positions before splitting windows. Preparation also drops invalid
-custom-builder segments and records why they cannot start. It drops segments whose start the
-simulator rejects with UnsupportedStartError as well, for example a NuRec recording whose map
-navigation route cannot be built, so they reach neither offline optimization nor execution. Past observations initialize the
-driving system from the recording; attack actions do not modify them.
+Read [Optimization tools](optimization.md), [Examples](../examples/README.md)
+and [Evaluation](evaluation.md).

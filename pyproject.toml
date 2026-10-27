@@ -45,10 +45,10 @@ avstack = [
     "lib-avstack-carla",
 ]
 dev = [
-    "pytest>=8",
-    "pytest-cov>=5",
-    "ruff>=0.6",
-    "mypy>=1.10",
+    "pytest>=8,<10",
+    "pytest-cov>=5,<8",
+    "ruff==0.15.22",
+    "mypy==1.20.2",
 ]
 # Offline functional tests. Install CPU torch separately (see tests/README.md).
 test = [
@@ -85,9 +85,6 @@ src = ["avsectester", "scripts", "tests"]
 [tool.ruff.lint]
 # Check syntax, undefined names and unused imports. Formatting is not a CI gate.
 select = ["E9", "F"]
-# C408: allow the `dict(type=...)` config idiom (avstack/mmengine build-from-config convention).
-# B008: typer requires `typer.Argument(...)`/`typer.Option(...)` calls in CLI arg defaults.
-ignore = ["C408", "B008"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests/core", "tests/avstack"]

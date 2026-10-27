@@ -2,21 +2,20 @@
 
 > **Audience:** Experiment authors studying world or sensor conditions.
 >
-> **Outcome:** Configure explicit environmental treatments with reproducible sensor noise.
+> **Outcome:** Configure environmental treatments and explicit selection conditions.
 >
 > **Prerequisites:** [Configuration](../reference/configuration.md).
 
 ## Experiment environment
 
-An environment has two independent parts: `world`, applied by the simulator at reset, and `sensors`,
-applied to captured model inputs. Settings merge in this order: runs.environment, enabled
-Attack.environment, treatment overrides. World mappings merge recursively; an explicitly provided
-sensor list replaces the preceding list.
+An environment separates world settings, applied by the simulator at reset, from sensor
+corruptions, applied to captured model inputs. The merge order is `runs.environment`, the
+enabled `Attack.environment` and the treatment environment. World mappings merge recursively; an
+explicitly provided sensor list replaces the preceding list.
 
 ```yaml
 runs:
   environment:
-    world: {weather: SoftRainNoon}
     sensors:
       - {type: GaussianNoise, options: {severity: 0.2}, camera: front}
   treatments:
@@ -27,44 +26,41 @@ runs:
           - {type: GaussianNoise, options: {severity: 0.7}, camera: front}
 ```
 
-Metabuilders do not inherit the experiment base environment. They must request any alternative
-environment explicitly. The formal runner receives the resolved environment and passes only its
-world mapping to SimulatorRuntime.reset.
+The YAML keys and defaults are defined in
+[environment configuration](../reference/configuration.md#environment).
 
-## Sensor processing order
+## Selection and the offline phase
 
-The simulator captures the world, sensor attack actions change the selected samples, the sensor
-environment applies corruptions, and ObservationPipeline applies sensor hooks, localization and
-observation hooks.
-Images retained as raw and model_input document this distinction. Sensor corruptions never change
-physical world state.
+Metabuilders do not inherit the experiment environment. Selection requests must supply any
+desired environment explicitly. `OfflineContext.environment` merges `runs.environment` with the
+attack's environment; pass it to sensor reads, renders or candidate rollouts when those
+conditions are required.
 
-Supply `camera` explicitly when observations contain multiple sensors. If omitted, the first
-sensor_data entry is chosen; it must be readable RGB data. A LiDAR-first observation fails rather
-than silently searching for a camera.
+Changing an environment does not reselect segments. The attack owns eligibility decisions; see
+[selection and metadata](attacks.md).
 
-Randomness derives from run seed, absolute dataset timeline position and transform index. Offline
-sensor requests and online decisions at the same position receive matching noise. The relative
-decision index and native simulator frame number are different quantities.
+## Sensor processing
 
-## Built-in image corruptions
+Sensor corruptions change model-visible captures without changing physical state. The
+[runtime sequence](../reference/runtime.md#one-decision) places them between sensor attack
+actions and the observation pipeline.
 
-Built-in corruptions live in `closed_loop/sensor_corruptions.py`. Severity is in [0, 1].
+Camera selection follows [Environment configuration](../reference/configuration.md#environment).
 
-| Family | Classes |
-|---|---|
-| Weather approximation | Fog, Rain, Snow |
-| Lighting | Brightness, LowLight, Contrast, Gamma, ColorTemp |
-| Sensor and optics | GaussianNoise, ShotNoise, MotionBlur, DefocusBlur, JPEGCompression, ChromaticAberration |
+Camera transport preserves RGB uint8. Non-camera writes preserve the payload representation
+and dtype; neither path infers sensor type from array shape. See
+[data transport](../reference/python-api.md#avsectesterdata_types).
 
-These are image-space approximations. Fog does not integrate metric scene depth, and procedural rain
-does not reproduce physical rainfall. World settings remain separate.
+## Supplied corruptions
 
-`AlbumentationsCorruption` selects an Albumentations transform through its options and uses the
-augment extra. It is configured as a sensor corruption, not a parallel augmentation pipeline. The
-transform option is required and must name a supported transform; the recorded transform label
-includes that name. This complete configuration reuses the repository's small in-memory test
-components to demonstrate offline loading; it needs neither a simulator server nor model weights:
+Built-in image corruptions approximate weather, lighting and sensor effects in image space.
+`Fog` does not integrate metric scene depth, and procedural rain is not physical rainfall. They
+are separate from native world settings. The
+[corruption API](../reference/python-api.md#avsectesterclosed_loopsensor_corruptions) lists the
+classes and parameters.
+
+This complete configuration uses the repository's memory components and a built-in corruption.
+It loads without a simulator service, model weights or GPU.
 
 <!-- runnable -->
 ```yaml
@@ -76,20 +72,21 @@ attacks:
 runs:
   environment:
     sensors:
-      - type: AlbumentationsCorruption
-        options: {transform: Fog, severity: 0.5}
+      - type: GaussianNoise
+        options: {severity: 0.2}
         camera: front
 ```
 
+`AlbumentationsCorruption` selects an Albumentations transform through its transform option and
+requires the augment extra. It uses the same sensor-environment mechanism; see
+[constructor options](../reference/configuration.md#environment).
+
 ## Custom sensor corruptions
 
-Implement `apply(rgb, rng) -> rgb` or a callable with that signature. Return uint8 RGB with the same
-shape. Select the constructor using `type: package.module:Name` and `options`. The name can refer to
-nested attributes, as in `package.module:Container.DimImage`, and must resolve to a callable through
-[import_type_path](../reference/python-api.md#avsectestertype_paths).
-
-Constructor filesystem parameters use Path or str | Path annotations; see
-[filesystem parameters](../reference/configuration.md#constructor-filesystem-parameters).
+Implement apply(rgb, rng), or a callable with that signature, returning uint8 RGB with the same
+shape. Select it with a constructor path such as `my_project.corruptions:DimImage`.
+Filesystem constructor parameters follow
+[path resolution](../reference/configuration.md#constructor-filesystem-parameters).
 
 <!-- runnable -->
 ```python
@@ -106,16 +103,25 @@ image = np.full((4, 5, 3), 100, dtype=np.uint8)
 assert DimImage().apply(image, np.random.default_rng(0))[0, 0, 0] == 80
 ```
 
-## Native CARLA settings
+## Native world settings
 
-CarlaSimulator declares supported world setting names and validates values before a world is
-created. Its keys are weather, lighting, map_layers and road_friction. See its
-`supported_world_settings` declaration for the authoritative keys. Actor-dependent checks still
-require initialization. Use a dedicated server: each formal run reloads the world.
+World-setting support and keys are defined in
+[Configuration](../reference/configuration.md#environment).
 
-Unsupported settings fail explicitly. Do not substitute an image transform for native weather
-without specifying it under sensors. A world action can change the world during a run, but its
-timing and application are then recorded as attack actions rather than static environment.
+Conditions changed by a world attack action during execution are recorded as actions, rather
+than as static environment settings. Native simulator behavior is described
+in [Simulators](simulators.md).
+
+**Not yet implemented.** Reference evaluations that train and test artifacts under different
+conditions; see [Environment transfer](../development/TODO.md#environment-transfer).
+
+## Randomness
+
+Sensor corruptions use a fresh NumPy generator keyed by
+`(run_seed, absolute_dataset_position, corruption_index)`. Past and current captures at the same
+dataset position therefore use the same corruption randomness. Hooks share a run-scoped NumPy
+generator initialized from the hook seed. Registration and execution order determine its
+consumption; shared callback handlers retain their declared lifecycle.
 
 ## Next steps
 

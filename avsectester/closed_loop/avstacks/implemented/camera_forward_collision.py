@@ -1,4 +1,4 @@
-"""Camera detection with the existing box-area forward-collision braking rule."""
+"""Camera detection with the box-area forward-collision braking rule."""
 
 from __future__ import annotations
 
@@ -20,8 +20,11 @@ class CameraForwardCollisionAVStack(AVStack):
     """
 
     provides_detections = False
+    'Whether decisions expose detections compatible with detection metrics.'
     command_modes = frozenset({"actuator"})
+    'Control command modes accepted or produced by this component.'
     supported_stages = frozenset({"perception.pre", "perception.post"})
+    'Hook stages supported by the component.'
 
     def __init__(self, gpu: int = 0, camera: str = "front", area_brake: float = .03,
                  throttle: float = .55, detector_dataset: str = "carla-vehicle",
@@ -75,6 +78,7 @@ class CameraForwardCollisionAVStack(AVStack):
         self._last = None
 
     def __call__(self, observation: Observation) -> Control:
+        """Detect the selected RGB image and choose braking from the largest image-box area."""
         if self.camera not in observation.sensor_data:
             raise ValueError(f"Camera {self.camera!r} is absent from observation")
         captured = read_camera_rgb(observation, self.camera)
@@ -100,3 +104,8 @@ class CameraForwardCollisionAVStack(AVStack):
     def close(self) -> None:
         self._detector = None
         self._last = None
+
+
+__all__ = [
+    'CameraForwardCollisionAVStack',
+]

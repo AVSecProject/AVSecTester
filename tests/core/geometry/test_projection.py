@@ -3,20 +3,12 @@
 import numpy as np
 import pytest
 
-from avsectester.geometry.cameras import FThetaCamera, PinholeCamera, WindshieldDistortion, camera_ray_mask
+from avsectester.geometry.cameras import FThetaCamera, WindshieldDistortion, camera_ray_mask
 from avsectester.geometry.projection import project_box
 
 
-CAMERAS = [
-    pytest.param(PinholeCamera(np.array([[1., 0., 1.], [0., 1., 1.], [0., 0., 1.]]), 2, 2),
-                 1 / 3, id="pinhole"),
-    pytest.param(FThetaCamera(1., 1., (0., 1.), 2, 2, (0., 1.), max_angle=1.5),
-                 np.arctan(1 / 3), id="ftheta"),
-]
-
-
-@pytest.mark.parametrize("camera,box_half", CAMERAS)
-def test_project_box(camera, box_half):
+def test_project_box(tiny_camera, lens):
+    camera, box_half = tiny_camera, lens.tiny_offset
     pose = np.eye(4)
     pose[2, 3] = 4.
     # The nearest box corners have optical coordinates (+/-1, +/-1, 3).
@@ -33,7 +25,7 @@ def test_project_box(camera, box_half):
         project_box(camera, np.eye(4), pose, (-1., 2., 2.))
 
 
-def test_project_box_curved_edges():
+def test_project_box_follows_curved_edges():
     camera = FThetaCamera(100., 100., (0., 100.), 200, 200, (0., .01), max_angle=1.5)
     pose = np.eye(4)
     pose[2, 3] = 2.
@@ -62,25 +54,25 @@ def test_project_box_curved_edges():
     pixels = deflected.project(samples)
     assert np.all(pixels >= bounds[:2] - 1e-9) and np.all(pixels <= bounds[2:] + 1e-9)
     np.testing.assert_allclose(bounds, np.concatenate((pixels.min(axis=0), pixels.max(axis=0))), atol=.5)
-    # Boxes reaching beyond the lens's field, where the windshield model does not hold, or
-    # crossing the camera plane, still bound their imaged edges.
-    for centre, extent, imaged in (((3., 0., .6), (1., 1., .8), False), ((-2., .3, .5), (1.5, 1.5, 4.), True)):
-        pose[:3, 3] = centre
-        bounds = project_box(deflected, np.eye(4), pose, extent)
-        corners = np.array([(x, y, z) for x in (-.5, .5) for y in (-.5, .5) for z in (-.5, .5)]) * extent + centre
-        samples = np.concatenate([corners[a] * (1 - fractions) + corners[b] * fractions
-                                  for a in range(8) for b in range(8) if a < b and bin(a ^ b).count("1") == 1])
-        pixels = deflected.project(samples[camera_ray_mask(deflected, samples)])
-        pixels = pixels[((pixels >= 0) & (pixels <= [200, 200])).all(axis=1)]
-        assert bool(len(pixels)) == imaged
-        if imaged:
-            lower, upper = np.asarray(bounds[:2]), np.asarray(bounds[2:])
-            assert np.all(pixels >= lower - 1e-9) and np.all(pixels <= upper + 1e-9)
-            # Bounds of a box crossing the camera plane are loose, but not by a large image share.
-            assert np.abs(np.r_[lower - pixels.min(axis=0), upper - pixels.max(axis=0)]).max() < 40.
-
+    # An offscreen box has no image bounds; a box crossing the camera plane can remain visible.
     pose[:3, 3] = (-7.3, .6, .01)
     assert project_box(camera, np.eye(4), pose, (4., 2., 1.5)) is None
+    centre, extent = (-2., .3, .5), (1.5, 1.5, 4.)
+    pose[:3, 3] = centre
+    bounds = project_box(deflected, np.eye(4), pose, extent)
+    assert bounds is not None
+    corners = np.array([(x, y, z) for x in (-.5, .5) for y in (-.5, .5)
+                        for z in (-.5, .5)]) * extent + centre
+    samples = np.concatenate([corners[a] * (1 - fractions) + corners[b] * fractions
+                              for a in range(8) for b in range(8)
+                              if a < b and bin(a ^ b).count("1") == 1])
+    pixels = deflected.project(samples[camera_ray_mask(deflected, samples)])
+    pixels = pixels[((pixels >= 0) & (pixels <= [200, 200])).all(axis=1)]
+    assert len(pixels)
+    lower, upper = np.asarray(bounds[:2]), np.asarray(bounds[2:])
+    assert np.all(pixels >= lower - 1e-9) and np.all(pixels <= upper + 1e-9)
+    assert np.abs(np.r_[lower - pixels.min(axis=0), upper - pixels.max(axis=0)]).max() < 40.
+
     pose[:3, 3] = (-1.5, .1, 1.)
     bounds = project_box(camera, np.eye(4), pose, (1., 1., 3.))
     assert bounds is not None

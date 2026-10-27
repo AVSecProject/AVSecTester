@@ -31,7 +31,7 @@ def ftheta_camera_from_spec(spec: Any) -> FThetaCamera:
     """Build an f-theta lens from a NuRec CameraSpec, including its windshield distortion.
 
     NRE renders pixel ``i`` from the spec's image point ``i``, whereas ``Camera`` addresses pixel
-    centres at ``i + 0.5``; the principal point is shifted by half a pixel accordingly. Probe
+    centers at ``i + 0.5``; the principal point is shifted by half a pixel accordingly. Probe
     objects inserted into NRE scenes land on the projected pixels within 0.05 px.
     """
     from avsectester.geometry.cameras import FThetaCamera, WindshieldDistortion
@@ -83,6 +83,7 @@ class Renderer(ABC):
     """Renders sensor observations from the reconstructed scene at a given ego pose."""
 
     cameras: ClassVar[list[str]] = ["camera_front"]
+    'Camera names rendered by this renderer.'
     @property
     def calibration(self) -> dict[str, CameraCalibration]:
         """Camera calibrations supplied by a loaded renderer; empty by default."""
@@ -105,14 +106,17 @@ class Renderer(ABC):
 
     @property
     def origin_transform(self):
+        """World transform locating the loaded scene origin."""
         return deepcopy(getattr(self, "_origin_transform", None))
 
     @property
     def origin_timestamp_us(self):
+        """Recorded timestamp in microseconds at the scene origin."""
         return getattr(self, "_origin_timestamp_us", None)
 
     @property
     def origin_bounds(self):
+        """Spatial bounds of the loaded scene origin."""
         return getattr(self, "_origin_bounds", None)
 
     def load_scene(self, scene: Any) -> None:
@@ -147,6 +151,7 @@ class Renderer(ABC):
         raise NotImplementedError("This renderer does not provide camera geometry")
 
     def close(self) -> None:
+        """Release renderer resources; the default implementation has no effect."""
         pass
 
 
@@ -359,11 +364,11 @@ class NuRecRenderer(Renderer):
         Both probes are rendered with ``dynamic_objects`` at this capture, as maximum-quality JPEG:
         server-side PNG encoding is about fifteen times slower, and the resulting visibility
         differs only in single edge pixels. A pixel is visible when the white render exceeds the
-        black one by at least half the colour range.
+        black one by at least half the color range.
         Rejects probe pixels outside the objects' projected boxes, which indicate an asset scale
-        or axis convention that differs from the measured NRE behaviour.
+        or axis convention that differs from the measured NRE behavior.
         ``occlusion_tolerance_m`` moves each probe that distance toward the camera, along the ray
-        to its bounding-box centre and at most halfway there, so scene content less than about
+        to its bounding-box center and at most halfway there, so scene content less than about
         that distance in front of an object does not hide it. Composed objects keep their poses;
         the moved probe projects slightly larger, which the composition plan clips to the object.
         """
@@ -422,7 +427,7 @@ class NuRecRenderer(Renderer):
         return visible
 
     def _probe(self, asset: Any, colour: str, rgb: tuple[float, float, float]) -> tuple[ProbeAsset, str]:
-        """A probe of ``asset`` in one colour and its content-derived track ID, cached per asset."""
+        """A probe of ``asset`` in one color and its content-derived track ID, cached per asset."""
         import hashlib
 
         from .probe_assets import probe_asset
@@ -538,3 +543,9 @@ class NuRecRenderer(Renderer):
                 f"expected {(model.height, model.width)}, got {img.shape[:2]}"
             )
         return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)  # HWC uint8 RGB for the AVStack
+
+
+__all__ = [
+    'Renderer',
+    'NuRecRenderer',
+]

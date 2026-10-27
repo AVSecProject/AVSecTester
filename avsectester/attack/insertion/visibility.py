@@ -115,6 +115,7 @@ class CuboidVisibilityEstimator(_VisibilityEstimator):
         other_insertions: Sequence[ResolvedInsertion] = (),
         world_objects: Sequence[PlacedObject] = (),
     ) -> VisibilityEvidence:
+        """Measure target visibility using the configured camera and occlusion evidence."""
         source = "actor_cuboids"
         state, evidence = self._prepare(subject, camera, cam_from_world, source, camera_name)
         evidence = replace(evidence, ignored_occluders=tuple(
@@ -164,6 +165,7 @@ class DepthVisibilityEstimator(_VisibilityEstimator):
         camera_name: str,
         other_insertions: Sequence[ResolvedInsertion] = (),
     ) -> VisibilityEvidence:
+        """Measure target visibility using the configured camera and occlusion evidence."""
         if depth_convention not in {"z", "range"}:
             raise ValueError("depth_convention must be 'z' or 'range'")
         scene_depth = np.asarray(scene_depth, dtype=float)
@@ -270,3 +272,11 @@ def visibility_from_depth(
         image_bounds=image_bounds,
     )
     return None if result is None else Visibility(result.fraction, "depth", camera)
+
+
+__all__ = [
+    'CuboidVisibilityEstimator',
+    'DepthVisibilityEstimator',
+    'visibility_from_masks',
+    'visibility_from_depth',
+]

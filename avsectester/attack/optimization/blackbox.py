@@ -80,3 +80,8 @@ class NES(GradientOptimizer):
             history=history,
             final_score=history[-1],
         )
+
+
+__all__ = [
+    'NES',
+]

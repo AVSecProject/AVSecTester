@@ -54,7 +54,7 @@ class AttachedPlacement:
 
 @dataclass(frozen=True)
 class WorldPlacement:
-    """A fixed position in the canonical world frame, in metres."""
+    """A fixed position in the canonical world frame, in meters."""
 
     position_m: tuple[float, float, float]
 
@@ -122,3 +122,13 @@ def orientation_from_spec(value: Any) -> Orientation:
     if not isinstance(value, Orientation):
         raise TypeError("orientation must be Orientation")
     return value
+
+
+__all__ = [
+    'validate_attached_mount',
+    'AttachedPlacement',
+    'WorldPlacement',
+    'Orientation',
+    'placement_from_spec',
+    'orientation_from_spec',
+]

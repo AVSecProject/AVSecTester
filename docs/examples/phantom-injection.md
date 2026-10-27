@@ -1,50 +1,50 @@
 # Phantom injection
 
-> **Audience:** Users testing modular perception attacks.
+> **Audience:** Users testing modular perception inputs.
 >
-> **Outcome:** Insert a synthetic detection through the Attack interface.
+> **Outcome:** Run `PhantomInjectionAttack` and inspect its recorded effect on driving.
 >
-> **Prerequisites:** CARLA with ModularAVStack and [Installation](../getting-started/installation.md).
+> **Prerequisites:** [Installation](../getting-started/installation.md) with CARLA.
 
 ## Configuration
 
 ```bash
-avsectester run configs/carla_phantom.yaml
+docker compose exec carla-experiment avsectester run configs/carla_phantom.yaml
 ```
 
-PhantomInjectionAttack is defined in
-avsectester.implemented_attacks.phantom_injection_attack.attack. It takes explicit
-decision_steps and optional max_segments, target_xyz, object_type, score, extent, object_id and
-keep_tail. It needs no image asset or selected host.
+The supplied attack configuration is:
 
 ```yaml
 type: PhantomInjectionAttack
 options:
   decision_steps: 20
+  max_segments: 2
   target_xyz: [6.0, 0.0, -0.7]
   object_type: Car
   score: 0.9
-  max_segments: 2
+  extent: [4.0, 1.8, 1.6]
 ```
 
-## Workflow
+Constructor parameters and coordinate conventions are in the
+[Python API](../reference/python-api.md).
 
-The metabuilder partitions decision windows. The default offline phase produces no artifact. Each
-runtime returns an AVStackAttackAction at perception.post; the synthetic object reaches tracking,
-planning and control in the same decision. The physical world contains no such object. The action
-constructs the added detection directly; it does not register a separate native attack hook. Native
-avstack detection classes are imported only when their output format is used. Constructing
-ModularAVStack does not globally register attack hooks. Phantom extent uses full (length, width,
-height), consistently with canonical Detection.extent. target_xyz is the box center in the
-perception source coordinate system (metres), not its bottom. For the supplied LiDAR setup, z=-0.7
-preserves the original vehicle-sized phantom bottom.
+## Offline phase
+
+The attack selects decision windows. Its offline phase returns no artifact; selection and
+deployment budgets follow [Writing attacks](../guides/attacks.md).
+
+## Online phase
+
+Each runtime inserts a synthetic perception detection at `perception.post`. The physical world
+contains no corresponding actor. The same decision then continues through the driving system;
+stage order is defined in [Runtime](../reference/runtime.md).
 
 ## Evidence
 
-Inspect StepRecord.detections, components, commands and action receipts, then compare clean and
-attacked DrivingMetrics, DetectionMetrics and StopImpact. A changed detection count alone does not
-establish driving impact.
+Inspect the recorded detections, action receipts and commands, and use the configured metrics in
+[Evaluation](../guides/evaluation.md). The [example overview](README.md) explains how to
+interpret execution and attack impact.
 
 ## Next steps
 
-Read [Runtime](../reference/runtime.md) and [Evaluation](../guides/evaluation.md).
+Read [Driving systems](../guides/driving-systems.md) and [Runtime](../reference/runtime.md).

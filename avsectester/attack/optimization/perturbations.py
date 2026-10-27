@@ -18,7 +18,7 @@ class PatchPerturbation(Perturbation):
     δ is the patch pixels ``(3, Hp, Wp)`` in [0,1]. A sample's context supplies ``mask``, the
     visible region ``(1, H, W)``, and either ``plane_sampling`` or ``sampling_grid``.
     ``plane_sampling`` is the framework renderer's
-    :class:`~avsectester.rendering.surfaces.PlaneSampling`: the patch is filtered exactly as
+    `avsectester.rendering.surfaces.PlaneSampling`: the patch is filtered exactly as
     deployment renders it, so gradients reach every texel. ``sampling_grid`` is an image-sized
     ``grid_sample`` grid measured from a native renderer that samples the texture itself.
     ``project`` clamps to [0,1] (the whole surface is adversarial); ``export`` yields the
@@ -94,7 +94,7 @@ class PatchPerturbation(Perturbation):
 
 
 class LinfImage(Perturbation):
-    """A whole-image additive L-inf perturbation — same PGD, different threat model (no export)."""
+    """A whole-image additive L-inf perturbation without an exported artifact."""
 
     def __init__(self, epsilon=8 / 255, image_hw=(600, 800), device="cuda:0"):
         self.epsilon = epsilon
@@ -109,3 +109,9 @@ class LinfImage(Perturbation):
 
     def project(self, delta: torch.Tensor) -> torch.Tensor:
         return delta.clamp(-self.epsilon, self.epsilon)
+
+
+__all__ = [
+    'PatchPerturbation',
+    'LinfImage',
+]

@@ -3,19 +3,12 @@ import numpy as np
 import pytest
 
 from avsectester.geometry.cameras import (
-    BODY_FROM_OPTICAL, FThetaCamera, PinholeCamera, WindshieldDistortion, camera_ray_mask,
+    BODY_FROM_OPTICAL, FThetaCamera, WindshieldDistortion, camera_ray_mask,
 )
 
 
-CAMERAS = [PinholeCamera(np.array([[50., 0., 50.], [0., 50., 40.], [0., 0., 1.]]), 100, 80),
-           FThetaCamera(50, 40, (0, 50), 100, 80, (0, .02), max_angle=1.5)]
-
-
-@pytest.mark.parametrize("camera,delta", [
-    pytest.param(CAMERAS[0], 10., id="pinhole"),
-    pytest.param(CAMERAS[1], np.arctan(.2) * 50, id="ftheta"),
-])
-def test_project(camera, delta):
+def test_project(camera, lens):
+    delta = lens.offset
     points = np.array([[0., 0., 5.], [1., 0., 5.], [0., -1., 5.]])
     pixels = camera.project(points)
     np.testing.assert_allclose(pixels[0], [50, 40])
@@ -24,20 +17,18 @@ def test_project(camera, delta):
     np.testing.assert_allclose(camera.project(points * 2), pixels)
 
 
-@pytest.mark.parametrize("camera", CAMERAS, ids=["pinhole", "ftheta"])
 def test_unproject(camera):
     points = np.array([[0., 0., 1.], [.3, -.2, 1.], [-.7, .5, 1.]])
     rays = camera.unproject(camera.project(points))
     np.testing.assert_allclose(rays, points / np.linalg.norm(points, axis=1, keepdims=True), atol=1e-10)
 
 
-@pytest.mark.parametrize("camera", CAMERAS, ids=["pinhole", "ftheta"])
 def test_camera_ray_mask(camera):
     rays = np.array([[0., 0., 1.], [0., 0., -1.], [np.nan, 0., 1.]])
     np.testing.assert_array_equal(camera_ray_mask(camera, rays), [True, False, False])
 
 
-def test_camera_world_transform():
+def test_body_from_optical():
     np.testing.assert_array_equal(BODY_FROM_OPTICAL @ [1., 2., 3., 1.], [3., -1., -2., 1.])
 
 
@@ -77,3 +68,23 @@ def test_windshield_distortion():
     np.testing.assert_allclose(scene.unproject(scene.project(unit)), unit, atol=2e-4)
     with pytest.raises(ValueError, match="triangular"):
         WindshieldDistortion((0., 1.), (0., 0., 0., 1., 0., 0.), (0., 1., 0., 0., 0., 0.), (0., 0., 0., 1., 0., 0.))
+
+
+def test_ftheta_in_view():
+    camera = FThetaCamera(50., 40., (0., 50.), 100, 80, (0., .02), max_angle=.5)
+    points = np.array([[0., 0., 1.],
+                       [np.sin(.4), 0., np.cos(.4)],
+                       [np.sin(.6), 0., np.cos(.6)],
+                       [0., 0., -1.], [np.nan, 0., 1.]])
+    np.testing.assert_array_equal(camera.in_view(points), [True, True, False, False, False])
+
+
+def test_linear_screen_correction():
+    camera = FThetaCamera(50., 40., (0., 50.), 100, 80, (0., .02), max_angle=1.5,
+                          linear_cde=(1.1, .2, -.1))
+    rays = np.array([[np.sin(.4), 0., np.cos(.4)],
+                     [0., np.sin(.2), np.cos(.2)], [0., 0., 1.]])
+    # Radial offsets are (20, 0), (0, 10) and (0, 0), before the affine screen correction.
+    pixels = np.array([[72., 38.], [52., 50.], [50., 40.]])
+    np.testing.assert_allclose(camera.project(rays), pixels, atol=1e-12)
+    np.testing.assert_allclose(camera.unproject(pixels), rays, atol=1e-12)

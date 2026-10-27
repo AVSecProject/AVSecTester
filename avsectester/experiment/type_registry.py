@@ -122,3 +122,9 @@ def is_builtin_type_name(value: str) -> bool:
     names are left to their owning constructor when nested in configuration options.
     """
     return value in _BUILTINS
+
+
+__all__ = [
+    'resolve_type',
+    'available_attacks',
+]

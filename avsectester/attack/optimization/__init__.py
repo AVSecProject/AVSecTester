@@ -6,11 +6,6 @@ from .interface import (
 from .blackbox import NES
 from .scorers import SessionScorer
 
-__all__ = [
-    "AdversarialSample", "DataSource", "GradientOptimizer", "HideObject", "OptimizationObjective",
-    "OptimizationResult", "Perturbation", "Scorer", "SpoofObject", "NES", "PGD",
-    "LinfImage", "PatchPerturbation", "SessionScorer",
-]
 
 
 def __getattr__(name: str):
@@ -22,3 +17,21 @@ def __getattr__(name: str):
         from . import perturbations
         return getattr(perturbations, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+__all__ = [
+    'AdversarialSample',
+    'DataSource',
+    'GradientOptimizer',
+    'HideObject',
+    'OptimizationObjective',
+    'OptimizationResult',
+    'Perturbation',
+    'Scorer',
+    'SpoofObject',
+    'NES',
+    'PGD',
+    'LinfImage',
+    'PatchPerturbation',
+    'SessionScorer',
+]

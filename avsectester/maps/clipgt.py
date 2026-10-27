@@ -232,3 +232,8 @@ def read_clipgt(archive: zipfile.ZipFile) -> ScenarioMap:
             reasons = [missing_tables[layer] for layer in layers[name] if layer in missing_tables]
             unavailable[name] = "; ".join(reasons) or "NuRec source layer contains no valid geometry"
     return ScenarioMap(**values, unavailable_layers=unavailable)
+
+
+__all__ = [
+    'read_clipgt',
+]

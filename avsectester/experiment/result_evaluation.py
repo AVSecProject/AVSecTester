@@ -100,3 +100,8 @@ def evaluate(result: ExperimentResult, configuration: ExperimentConfiguration) -
         report.save(destination)
         write_evaluation_html(Path(configuration.runs.output))
     return report
+
+
+__all__ = [
+    'evaluate',
+]

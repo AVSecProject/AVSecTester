@@ -196,3 +196,8 @@ def run_offline(attack, context):
     if any(segment.user_data.get("deployment") == "world" for segment in context.metadata) and not attack.emissive:
         raise ValueError("Native CARLA patch optimization requires emissive=True")
     return optimize_patch(attack, context, attack.optimization)
+
+
+__all__ = [
+    'PatchOptimization',
+]

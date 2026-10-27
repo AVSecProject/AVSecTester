@@ -8,7 +8,44 @@ import pytest
 from avsectester.maps.clipgt import read_clipgt
 
 
-def test_read_clipgt(nurec_usdz_path, nurec_map_variants, tmp_path):
+@pytest.fixture
+def nurec_map_variants(nurec_usdz_path, tmp_path):
+    """The same reconstruction with a light placeholder or only implicit wait lines."""
+    import io
+    import pyarrow as arrow
+    import pyarrow.parquet as parquet
+
+    with zipfile.ZipFile(nurec_usdz_path) as archive:
+        line_rows = parquet.read_table(io.BytesIO(archive.read("clipgt/wait_line.parquet"))).to_pylist()
+    for row in line_rows:
+        row["wait_line"]["is_implicit"] = True
+    replacements = {
+        "placeholder_lights": ("traffic_light", [{"key": {"map_id": None}, "traffic_light": {
+            "center": None, "dimensions": None, "orientation": None, "category": None}}]),
+        "implicit_only_lines": ("wait_line", line_rows),
+    }
+    paths = {}
+    for variant, (layer, rows) in replacements.items():
+        path = tmp_path / f"{variant}.usdz"
+        member_name = f"clipgt/{layer}.parquet"
+        output = arrow.BufferOutputStream()
+        parquet.write_table(arrow.Table.from_pylist(rows), output)
+        with zipfile.ZipFile(nurec_usdz_path) as source, zipfile.ZipFile(path, "w") as destination:
+            for member in source.infolist():
+                if member.filename != member_name:
+                    destination.writestr(member.filename, source.read(member.filename))
+            destination.writestr(member_name, output.getvalue().to_pybytes())
+        paths[variant] = str(path)
+    unknown_units = tmp_path / "without-speed-unit.usdz"
+    with zipfile.ZipFile(nurec_usdz_path) as source, zipfile.ZipFile(unknown_units, "w") as destination:
+        for member in source.infolist():
+            if member.filename != "map.xodr":
+                destination.writestr(member.filename, source.read(member.filename))
+    paths["without_speed_unit"] = unknown_units
+    return paths
+
+
+def test_read_clipgt(nurec_usdz_path, nurec_map_variants):
     with zipfile.ZipFile(nurec_usdz_path) as archive:
         scenario_map = read_clipgt(archive)
     lane = scenario_map.lanes["lane"]
@@ -58,11 +95,7 @@ def test_read_clipgt(nurec_usdz_path, nurec_map_variants, tmp_path):
     assert implicit.stop_lines == {} and "stop_lines" not in implicit.unavailable_layers
     assert all(control.stop_line_id is None for control in implicit.traffic_controls.values())
 
-    unknown_units = tmp_path / "without-speed-unit.usdz"
-    with zipfile.ZipFile(nurec_usdz_path) as source, zipfile.ZipFile(unknown_units, "w") as destination:
-        for member in source.infolist():
-            if member.filename != "map.xodr":
-                destination.writestr(member.filename, source.read(member.filename))
+    unknown_units = nurec_map_variants["without_speed_unit"]
     with zipfile.ZipFile(unknown_units) as archive:
         unscaled = read_clipgt(archive)
     assert unscaled.lanes["lane"].speed_limit_mps is None

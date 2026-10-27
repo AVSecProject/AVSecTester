@@ -1,6 +1,6 @@
 # GPU stack for the end-to-end path: neural perception (CARLA-trained mmdet3d) in a closed-loop
-# CARLA simulation. Reproduces the local full installation in docs/getting-started/installation.md
-# on a CUDA 12.1 base (mirrors the verified avsec311 env).
+# CARLA simulation. The experiment environment uses CUDA 12.1; installation instructions are in
+# docs/getting-started/installation.md.
 #
 # Usually built via docker-compose.yml (which also runs a CARLA 0.9.16 server):
 #   scripts/preparation/write_compose_env.sh
@@ -100,6 +100,16 @@ WORKDIR /app
 COPY . /app
 # name-shim symlinks avcarla's metadata expects (avstack-core/api are our submodule names)
 RUN ln -sf avstack-core third_party/lib-avstack-core && ln -sf avstack-api third_party/lib-avstack-api
+
+# Model mounts are resolved inside the image; the checkout stays unchanged.
+RUN rm -rf third_party/avstack-core/third_party/mmdetection3d/checkpoints \
+      third_party/avstack-core/third_party/mmdetection3d/work_dirs \
+      third_party/avstack-core/third_party/mmdetection/checkpoints \
+      third_party/avstack-core/third_party/mmdetection/work_dirs \
+ && ln -s /app/models/checkpoints third_party/avstack-core/third_party/mmdetection3d/checkpoints \
+ && ln -s /app/models/work_dirs third_party/avstack-core/third_party/mmdetection3d/work_dirs \
+ && ln -s /app/models/checkpoints third_party/avstack-core/third_party/mmdetection/checkpoints \
+ && ln -s /app/models/work_dirs_2d third_party/avstack-core/third_party/mmdetection/work_dirs
 
 # 1. torch + torchvision (cu121)
 RUN python -m pip install --no-cache-dir torch==2.1.0 torchvision==0.16.0 \

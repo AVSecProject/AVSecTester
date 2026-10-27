@@ -19,7 +19,7 @@ class ObjectInsertionAttack(Attack):
 
     With ``placement_relative_to_ego_origin``, the configured world placement is interpreted
     once in the first reference ego actor's local frame. That origin is the actor origin
-    (normally ground level), not the bounding-box centre. Resolved metadata stores world metres.
+    (normally ground level), not the bounding-box center. Resolved metadata stores world meters.
     """
 
     def __init__(self, *, decision_steps, placement, assets=None, orientation=None,
@@ -47,6 +47,7 @@ class ObjectInsertionAttack(Attack):
         self.compositor = compositor
 
     def insertion(self, artifacts, placement=None):
+        """Build a sensor insertion from the selected segment and prepared assets."""
         if artifacts is None:
             raise ValueError("ObjectInsertionAttack requires explicit artifacts")
         return Insertion("object", artifacts, self.placement if placement is None else placement,
@@ -83,3 +84,8 @@ class ObjectInsertionAttack(Attack):
     def create_runtime(self, segment, artifacts):
         return ObjectInsertionAttackRuntime(
             self.sensor, self.insertion(artifacts, self.selected_placement(segment)), self.compositor)
+
+
+__all__ = [
+    'ObjectInsertionAttack',
+]

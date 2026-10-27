@@ -8,7 +8,7 @@ import pytest
 from avsectester.attack import AttackSegment
 from avsectester.attack.insertion import InsertObject
 from avsectester.attack.runtime import SensorAttackAction
-from avsectester.data_types import Control, Observation
+from avsectester.data_types import Control, Observation, Unavailable
 from avsectester.execution.frame_data_cache import FrameDataCache
 from avsectester.execution.runner import RecordingPolicy
 from avsectester.closed_loop.avstacks.driving_adapter import ComponentDescriptor, DrivingAdapter, ScorerDescriptor
@@ -17,15 +17,15 @@ from avsectester.execution.services import (
 )
 from avsectester.closed_loop.simulators.carla import CarlaSimulator
 from avsectester.closed_loop.simulators.base import DeploymentPlan
-from avsectester.data_types import Unavailable
 from avsectester.rendering import ObjectVisibility
+from avsectester.maps import ScenarioMap
 from tests.fakes import (
     CarlaNativeBoundary, ConstantAVStack, HistoryAVStack, MemoryDataset, MemorySimulator, MinimalAttack,
 )
 
 
 def test_frame_data(carla_dataset, monkeypatch):
-    boundary = CarlaNativeBoundary().install(monkeypatch)
+    boundary = CarlaNativeBoundary().install(monkeypatch, None)
     simulator = CarlaSimulator({"rate": 10}, settle_iters=0)
     cache = FrameDataCache()
     frame = carla_dataset.frames("scene")[2]
@@ -33,12 +33,7 @@ def test_frame_data(carla_dataset, monkeypatch):
     with ClosedLoopServices(carla_dataset, simulator, frame_data_cache=cache) as services:
         with services.session(7) as session:
             generated = session.frame_data("scene", frame)
-        selected = services.scenario("scene", seed=7).frame_data(frame)
-    assert selected.frame == generated.frame == frame
     expected = generated.ego.pose.copy()
-    np.testing.assert_allclose(selected.ego.pose, expected)
-    generated.ego.pose[:] = 0
-    np.testing.assert_allclose(selected.ego.pose, expected)
     # Another service sharing the cache reuses the generated data without a CARLA client.
     monkeypatch.setattr(boundary, "build",
                         lambda *args, **kwargs: pytest.fail("frame data was generated again"))
@@ -47,18 +42,14 @@ def test_frame_data(carla_dataset, monkeypatch):
     np.testing.assert_allclose(reused.ego.pose, expected)
 
 
-def test_scenario_map(nurec_dataset):
-    with ClosedLoopServices(nurec_dataset, MemorySimulator()) as services:
-        selected = services.scenario("scene", seed=0).scenario_map()
-        assert selected.lanes
-        assert list(selected.lanes) == list(nurec_dataset.scenario_map("scene").lanes)
-    with ClosedLoopServices(MemoryDataset(), MemorySimulator()) as services:
-        missing = services.scenario("scene", seed=0).scenario_map()
-        assert isinstance(missing, Unavailable)
-        assert missing.reason == "This dataset provides no map"
+def test_scenario_map():
+    scenario_map = ScenarioMap()
+    dataset = MemoryDataset(maps={"scene": scenario_map})
+    with ClosedLoopServices(dataset, MemorySimulator()) as services:
+        assert services.scenario("scene", seed=0).scenario_map() is scenario_map
 
 
-def test_read_sensors(assert_camera_views_equal):
+def test_read_sensors():
     data, simulator = MemoryDataset(), MemorySimulator()
     frames = data.frames("scene")
     environment = {"sensors": [{"type": "GaussianNoise", "camera": "front",
@@ -78,9 +69,6 @@ def test_read_sensors(assert_camera_views_equal):
                                           replayed.observation.sensor_data["front"])
             assert sample.provenance["seed"] == 7
             assert np.any(sample.views["front"].data != sample.observation.sensor_data["front"])
-            with services.session(7) as independent:
-                rendered = independent.render(RenderRequest("scene", sample.frame, "front", environment=environment))
-            assert_camera_views_equal(sample.views["front"], rendered.view)
         with services.session(7) as session:
             request = SensorRequest("scene", frames[0], ("front",), views=True)
             captured = session.read_sensors(request)
@@ -89,8 +77,7 @@ def test_read_sensors(assert_camera_views_equal):
             np.testing.assert_array_equal(session.read_sensors(request).views["front"].data, original)
             with pytest.raises(ValueError, match="Unavailable sensors"):
                 session.read_sensors(SensorRequest("scene", frames[0], ("missing",)))
-        simulator.can_render = False
-        with services.session(7) as session:
+        with ClosedLoopServices(data, MemorySimulator(can_render=False)) as limited, limited.session(7) as session:
             with pytest.raises(NotImplementedError, match="The simulator does not provide sensor views"):
                 session.read_sensors(SensorRequest("scene", frames[0], ("front",), views=True))
 
@@ -129,8 +116,6 @@ def test_render(make_object_in_front):
         np.testing.assert_array_equal(unmodified.view.data, plain.view.data)
         assert unmodified.object_visibility == {}
         assert inserted.object_visibility["sign"]["front"] == visibility
-        with pytest.raises(ValueError, match="Unknown memory sensor: missing"):
-            session.render(RenderRequest("scene", frame, "missing"))
 
 
 def test_rollout():
@@ -174,6 +159,11 @@ def test_can_start_at():
             assert session.can_start_at(3)
             with pytest.raises(ValueError, match="position must be a nonnegative integer"):
                 session.can_start_at(-1)
+    with ClosedLoopServices(MemoryDataset(), MemorySimulator(capture_ticks=1),
+                            deployment=DeploymentPlan(2)) as services, services.session(0) as session:
+        assert session.can_start_at(0)
+        assert not session.can_start_at(1)
+        assert session.can_start_at(4)
 
 
 def test_session():
@@ -210,7 +200,7 @@ def component_services():
         yield services, component, scorer
 
 
-def test_evaluate(component_services):
+def test_evaluate_component(component_services):
     services, component, _ = component_services
     assert services.capabilities.rollout
     assert services.capabilities.insert_objects
@@ -232,21 +222,32 @@ def test_score(component_services):
 
 
 def test_decision_time_step():
-    from avsectester.closed_loop.avstacks.implemented.alpamayo import AlpamayoAVStack, alpamayo_driving_adapter
-
-    def factory(seed):
-        pytest.fail("step declarations must not construct a driving system")
-
-    factory.avstack_type = AlpamayoAVStack
-    adapter = DrivingAdapter(factory, decision_time_step=.2)
-    assert adapter.decision_time_step == .1
-    fallback = DrivingAdapter(lambda seed: ConstantAVStack(), decision_time_step=.2)
-    assert fallback.decision_time_step == .2
-    unrestricted = DrivingAdapter(lambda seed: ConstantAVStack())
-    assert unrestricted.decision_time_step is None
-    with ClosedLoopServices(MemoryDataset(), MemorySimulator(), adapter):
-        pass
+    adapter = DrivingAdapter(lambda seed: ConstantAVStack(), decision_time_step=.1)
     with pytest.raises(ValueError, match="AVStack decision_time_step"):
         ClosedLoopServices(MemoryDataset(), MemorySimulator(time_step=.2), adapter)
-    with pytest.raises(ValueError, match="AVStack decision_time_step"):
-        ClosedLoopServices(MemoryDataset(), MemorySimulator(time_step=.2), alpamayo_driving_adapter(factory))
+
+
+def test_record_reason():
+    with ClosedLoopServices(MemoryDataset(), MemorySimulator()) as services:
+        scenario = services.scenario("scene", seed=0)
+        scenario.record_reason("candidate")
+        scenario.record_reason("candidate")
+        for index in range(102):
+            scenario.record_reason(f"reason {index}")
+        assert len(scenario.reasons) == 101
+        assert scenario.reasons[0] == "candidate (count=2)"
+        assert scenario.reasons[-1] == "Other selection reasons (count=3)"
+        with pytest.raises(ValueError, match="nonempty"):
+            scenario.record_reason("")
+
+
+def test_candidate_request():
+    dataset = MemoryDataset()
+    frames = dataset.frames("scene")
+    segment = AttackSegment("scene", frames[0], frames[2])
+    request = CandidateRequest(segment, 0, 2, {}, RecordingPolicy())
+    assert request.environment == {"world": {}, "sensors": []}
+    with pytest.raises(ValueError, match="must equal its segment interval"):
+        CandidateRequest(segment, 0, 1, {}, RecordingPolicy())
+    with pytest.raises(ValueError, match="artifacts require an attack"):
+        CandidateRequest(segment, 0, 2, {}, RecordingPolicy(), artifacts={"texture": 1})

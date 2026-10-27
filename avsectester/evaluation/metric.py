@@ -38,8 +38,11 @@ class UnavailableMetricValue:
 
 
 MetricScalar: TypeAlias = int | float | bool | None | UnavailableMetricValue
+'Scalar measurement value or an unavailable value with its reason.'
 FieldMeasurements: TypeAlias = Mapping[str, MetricScalar]
+'Mapping from unprefixed metric fields to scalar measurements.'
 TreatmentMeasurements: TypeAlias = Mapping[str, FieldMeasurements]
+'Mapping from treatment names to their field measurements.'
 
 
 @dataclass(frozen=True)
@@ -98,14 +101,18 @@ class Metric(ABC):
         return MetricDescription(" ".join(paragraph.split()), {})
 
     @abstractmethod
-    def evaluate(self, data: Any) -> Mapping[str, Any]: ...
+    def evaluate(self, data: Any) -> Mapping[str, Any]:
+        """Return treatment-to-field mappings for the completed runs in a comparison group."""
+        ...
 
 
 class PairMetric(Metric):
     """A metric evaluated once for each completed pair, rather than for individual runs."""
 
     @abstractmethod
-    def evaluate(self, pair: TreatmentPair) -> FieldMeasurements: ...
+    def evaluate(self, pair: TreatmentPair) -> FieldMeasurements:
+        """Return scalar fields comparing the two completed runs in ``pair``."""
+        ...
 
 
 def speeds(log: RunLog) -> list[float] | None:
@@ -221,7 +228,7 @@ class DrivingMetrics(Metric):
 
 
 class TrajectoryDeviation(PairMetric):
-    """Symmetric distance between true ego positions at matching decision indices (metres)."""
+    """Symmetric distance between true ego positions at matching decision indices (meters)."""
 
     def describe(self) -> MetricDescription:
         common = ("Physical ego positions after matching decision indices in the two runs are compared "
@@ -252,7 +259,7 @@ class TrajectoryDeviation(PairMetric):
 
 
 class DetectionMetrics(Metric):
-    """Greedy nearest-centre BEV matching in the true ego frame at capture time.
+    """Greedy nearest-center BEV matching in the true ego frame at capture time.
 
     Truths and predictions use the same BEV max_range; None disables the range limit.
     A nonempty category_map enables class-aware matching. Unlabelled detections then match
@@ -699,3 +706,24 @@ class ReasoningPhraseRate(Metric):
                                     "or there are no decisions")),
             }
         return results
+
+
+__all__ = [
+    'MetricScalar',
+    'FieldMeasurements',
+    'TreatmentMeasurements',
+    'UnavailableMetricValue',
+    'ComparisonGroup',
+    'TreatmentPair',
+    'MetricField',
+    'MetricDescription',
+    'Metric',
+    'PairMetric',
+    'DrivingMetrics',
+    'TrajectoryDeviation',
+    'DetectionMetrics',
+    'StopImpact',
+    'signed_stop_line_distances',
+    'StopLineMetrics',
+    'ReasoningPhraseRate',
+]

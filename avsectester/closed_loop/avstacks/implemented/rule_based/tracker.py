@@ -27,11 +27,11 @@ class SignTrack:
 class StopSignTracker:
     """Associate range measurements, then refine static sign positions by bearing EKF.
 
-    The bearing standard deviation rounds the measured 0.0067 rad to 0.007 rad.
-    Range is used only for initialization and association: a fractional sigma of
-    0.3 covers the measured systematic bias and jitter (worst error −35%). The
-    0.3 m position floor prevents overconfidence and duplicate tracks. Signs are
-    static, so there is no process noise.
+    Range is used only for initialization and association, with a default
+    fractional standard deviation of 0.3. Bearing updates use a default standard
+    deviation of 0.007 rad. The default 0.3 m position floor prevents
+    overconfidence and duplicate tracks. Signs are static, so there is no
+    process noise.
     """
 
     def __init__(
@@ -131,3 +131,9 @@ class StopSignTracker:
             # Preserve symmetry against floating-point roundoff in the EKF update.
             covariance = (covariance + covariance.T) / 2
             self._tracks[index] = SignTrack(track.track_id, position, covariance)
+
+
+__all__ = [
+    'SignTrack',
+    'StopSignTracker',
+]

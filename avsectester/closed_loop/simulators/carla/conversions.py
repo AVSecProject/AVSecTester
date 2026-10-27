@@ -49,3 +49,8 @@ def _actor_state(actor, type_id, box=None):
                 if box is not None and hasattr(box, "rotation") else (0., 0., 0.))
     return ActorState(pose, tuple(mirror_y_points((velocity.x, velocity.y, velocity.z))),
                       type_id.split(".")[0], extent, center, rotation)
+
+
+__all__ = [
+    'rotation_to_carla',
+]

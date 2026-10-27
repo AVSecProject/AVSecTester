@@ -12,9 +12,9 @@ from .online import PhantomInjectionAttackRuntime
 class PhantomInjectionAttack(Attack):
     """Append one AVStack BoxDetection, including to empty detection containers.
 
-    ``target_xyz`` is the box centre in the perception output's ``source_reference``
+    ``target_xyz`` is the box center in the perception output's ``source_reference``
     (x forward, y left, z up), independent of the frame of any existing boxes.
-    ``extent`` is full (length, width, height), in metres. The default centre keeps
+    ``extent`` is full (length, width, height), in meters. The default center keeps
     the default 1.6 m tall box's bottom at source-frame z=-1.5 m.
     """
 
@@ -40,3 +40,8 @@ class PhantomInjectionAttack(Attack):
 
     def create_runtime(self, segment, artifacts):
         return PhantomInjectionAttackRuntime(self)
+
+
+__all__ = [
+    'PhantomInjectionAttack',
+]

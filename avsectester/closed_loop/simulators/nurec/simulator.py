@@ -62,16 +62,20 @@ class NuRecSimulator(Simulator):
     the configured ``depth`` (mesh plus actor cuboids, or actor cuboids alone).
     ``occlusion_tolerance_m`` (default 0.15 m) applies to both: the reconstruction hides an
     object only when it lies more than about this distance in front of it. Reconstructed
-    Gaussians extend some centimetres in front of their surfaces, so an object placed on or just
+    Gaussians extend some centimeters in front of their surfaces, so an object placed on or just
     in front of a reconstructed surface needs this margin to stay visible.
     ``validate_start`` raises ``UnsupportedStartError`` when the configured navigation route
     cannot be built from the start's recording and map; each recording is checked once.
     """
 
     dataset_kinds = ("NuRecDataset",)
+    'Dataset kinds supported by this simulator.'
     can_render = True
+    'Whether arbitrary-view rendering is supported.'
     can_observe_past = True
+    'Whether observations before a selected start can be reconstructed.'
     can_insert_objects = True
+    'Whether world objects can be inserted into sensor rendering.'
 
     def __init__(
         self,
@@ -745,6 +749,7 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
     # In-process world checkpoints retain frozen assets and loaded harmonizer references.
 
     def checkpoint(self) -> dict:
+        """Capture a replay checkpoint; active reactive-traffic sessions cannot be checkpointed."""
         if self.simulator.traffic is not None:
             raise RuntimeError("AlpaSim traffic sessions cannot be checkpointed")
         return {"pose": asdict(self.pose), "frame": self.frame,
@@ -754,6 +759,7 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
                 "objects": dict(self._objects)}
 
     def restore(self, ckpt: dict) -> None:
+        """Restore a saved replay checkpoint into this runtime."""
         if self.simulator.traffic is not None:
             raise RuntimeError("AlpaSim traffic sessions cannot be restored from checkpoints")
         self.pose = PlanarEgoState(**ckpt["pose"])
@@ -798,3 +804,9 @@ def _compose_pose(a, b, pb):
         z=a.vec.z + tz + 2 * (aw * cz + ccz),
     )
     return pb.Pose(vec=vec, quat=q)
+
+
+__all__ = [
+    'NuRecSimulator',
+    'NuRecSimulatorRuntime',
+]

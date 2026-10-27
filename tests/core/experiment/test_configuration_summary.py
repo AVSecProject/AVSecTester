@@ -1,33 +1,25 @@
-"""Configuration summaries describe data without traversing arbitrary object state."""
-
-from pathlib import Path
-
-import numpy as np
+"""Configuration summaries describe public inputs and mark unverifiable attack parameters."""
 import pytest
 
-from avsectester.experiment.configuration_summary import summary_value, type_name
-from avsectester.data_types import Control
+from avsectester.closed_loop.avstacks import DrivingAdapter
+from avsectester.experiment import ExperimentConfiguration
+from tests.fakes import ConstantAVStack, MemoryDataset, MemorySimulator, MinimalAttack
 
 
-def test_summary_value():
-    summarized = summary_value({
-        "image": Path("texture.png"), "shape": (1, 3), "level": np.float32(.5),
-        "pixels": np.array([1, 2, 3], dtype=np.uint8),
-        "command": Control(throttle=.5),
-    })
-    assert summarized == {
-        "image": "texture.png", "shape": [1, 3], "level": .5,
-        "pixels": {"array_dtype": "|u1", "array_shape": [3],
-                   "sha256": "039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81"},
-        "command": {"type": "avsectester.data_types:Control", "parameters": {
-            "throttle": .5, "steer": 0., "brake": 0., "trajectory": None,
-        }},
-    }
-    with pytest.raises(TypeError, match="Cannot summarize configuration parameter object"):
-        summary_value(object())
-    with pytest.raises(ValueError, match="finite numbers"):
-        summary_value(float("nan"))
+class UnverifiedAttack(MinimalAttack):
+    def configuration_parameters(self):
+        return {"unsupported": object()}
 
 
-def test_type_name():
-    assert type_name(Control()) == "avsectester.data_types:Control"
+def test_configuration_summary():
+    configuration = ExperimentConfiguration(
+        MemoryDataset(), MemorySimulator(), DrivingAdapter(lambda seed: ConstantAVStack()),
+        {"probe": MinimalAttack(assets={"value": 3})})
+    summary = configuration.configuration_summary
+    assert summary["dataset"] == {"type": "tests.fakes:MemoryDataset", "scenarios": ["scene"]}
+    assert summary["attacks"]["probe"]["parameters"]["assets"] == {"value": 3}
+    unverified = ExperimentConfiguration(
+        MemoryDataset(), MemorySimulator(), configuration.avstack, {"probe": UnverifiedAttack()})
+    with pytest.warns(RuntimeWarning, match="parameter compatibility is unverified"):
+        description = unverified.configuration_summary["attacks"]["probe"]
+    assert description["parameters"] is None and description["parameters_verified"] is False

@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class DetectorPatchOptimization:
-    """PGD settings; an optional segment cap limits cost within the training metadata."""
+    """White-box attack settings (algorithm used: PGD)."""
 
     optimizer: GradientOptimizer
     scorer_id: str | None = None
@@ -48,7 +48,7 @@ class DetectorPatchOptimization:
 
 @dataclass(frozen=True)
 class RolloutPatchOptimization:
-    """NES settings; use all training segments unless a cost-limiting cap is supplied."""
+    """Black-box attack settings (algorithm used: NES)."""
 
     optimizer: GradientOptimizer
     start_distances_m: tuple[float, ...] = (40., 30., 20.)
@@ -88,3 +88,9 @@ def run_offline(attack: StopSignPatchAttack, context: OfflineContext) -> np.ndar
 
         return optimize_patch_by_rollouts(attack, context, initial)
     raise TypeError("optimization must be DetectorPatchOptimization or RolloutPatchOptimization")
+
+
+__all__ = [
+    'DetectorPatchOptimization',
+    'RolloutPatchOptimization',
+]

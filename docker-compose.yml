@@ -5,9 +5,7 @@
 #   docker compose exec carla-experiment avsectester run configs/carla_phantom.yaml   # the experiment
 #   docker compose exec carla-experiment bash                                       # open a shell
 #
-# The entrypoint symlinks the bind-mounted ./models into the mmdet3d root, then runs the command
-# (default: bash, kept alive by tty). The box's default docker runtime is nvidia, so both
-# containers use the CARLA_SERVER_GPU and CARLA_EXPERIMENT_GPU values from .env.
+# Model links are created by the Dockerfile. Containers use the GPU selections from .env.
 services:
   carla-server:
     image: carlasim/carla:0.9.16
@@ -22,14 +20,17 @@ services:
     image: avsectester:carla
     depends_on: [carla-server]
     network_mode: host
+    user: "${AVSECTESTER_UID:?Run scripts/preparation/write_compose_env.sh}:${AVSECTESTER_GID:?Run scripts/preparation/write_compose_env.sh}"
     environment:
       - NVIDIA_VISIBLE_DEVICES=${CARLA_EXPERIMENT_GPU:-0}
+      - PYTHONPATH=${AVSECTESTER_ROOT:?Run scripts/preparation/write_compose_env.sh}
+      - HOME=/tmp
     volumes:
+      - "${AVSECTESTER_ROOT:?Run scripts/preparation/write_compose_env.sh}:${AVSECTESTER_ROOT:?Run scripts/preparation/write_compose_env.sh}"
       - ./models:/app/models          # share fetched weights with the host
+    working_dir: "${AVSECTESTER_ROOT:?Run scripts/preparation/write_compose_env.sh}"
     stdin_open: true
     tty: true
-    # link the mounted weights into the mmdet3d root, then run the command (Dockerfile CMD = bash)
-    entrypoint: ["bash", "-lc", "bash scripts/preparation/fetch_models.sh >/dev/null 2>&1 || true; exec \"$@\"", "--"]
 
   nurec-experiment:
     profiles: [nurec]

@@ -2,100 +2,107 @@
 
 > **Audience:** Users running their first experiment.
 >
-> **Outcome:** Run a comparison and inspect saved results.
+> **Outcome:** Run a comparison and open its saved reports.
 >
-> **Prerequisites:** [Installation](installation.md), including services and model weights.
+> **Prerequisites:** [Installation](installation.md), including data and model weights.
 
 ## Run a CARLA comparison
 
-Configure the dedicated CARLA server address and GPU in `configs/carla_phantom.yaml`. World content
-and prescribed motion belong to the dataset recipe; server connection and timing belong to the
-simulator. The perception device is `avstack.options.pipeline_cfg.perception.gpu`.
-
-Run `scripts/preparation/write_compose_env.sh` once and select CARLA_SERVER_GPU and
-CARLA_EXPERIMENT_GPU in `.env`.
+Select the available CARLA server and experiment GPUs in the Compose settings described in
+[Installation](installation.md). Copy the configuration first:
 
 ```bash
-docker compose up -d --build
-docker compose exec carla-experiment avsectester run configs/carla_phantom.yaml
+cp configs/carla_phantom.yaml configs/my_carla.yaml
 ```
 
-The phantom experiment selects segments, prepares its artifacts once, then runs clean and attacked
-treatments from each selected start. The terminal displays metric summaries. It also writes
-metadata, artifacts, Parquet logs and an evaluation report under runs.output. An attack
-that changes nothing can still complete successfully: exit codes report execution, not scientific
-success.
-
-A configuration contains one or more attacks, each selecting its own segments. Complete identical
-segments form shared units. Each treatment without attack_name runs once per unit and seed, and
-treatments from all attacks selecting that unit are compared in one group. Optional split settings
-separate train, validation and test units. Combine actions within one Attack when they must act
-together in a run; see [Experiments](../guides/experiments.md).
-
-## Read the output
-
-Open `evaluation/report.json` for per-group metrics and summaries, `evaluation/runs.csv` for one row
-per run, and `evaluation/plots/` for speed and brake comparisons. `runs/` contains the underlying
-RunLog records. Failed runs and selection errors remain distinguishable from completed runs; missing
-values are reported with reasons where a metric cannot be calculated.
-
-## Save experiment outputs
-
-Compose mounts model weights but does not mount the checkout or results. Copy results before
-recreating its container:
+Edit `configs/my_carla.yaml`: `simulator.options.client.connect_ip` and
+`simulator.options.client.connect_port` select the endpoint;
+`avstack.options.pipeline_cfg.perception.gpu` selects the perception GPU.
 
 ```bash
-docker compose cp carla-experiment:/app/results/carla_phantom ./results/carla_phantom
+docker compose up -d carla-server carla-experiment
+docker compose exec carla-experiment avsectester run configs/my_carla.yaml
 ```
 
-To retain outputs directly on the host, use a suitable bind mount and configure its container path
-as runs.output. See [Devices, mounts and rebuilds](installation.md#devices-mounts-and-rebuilds).
+The command prepares the configured attacks, executes treatments and evaluates saved evidence.
+Workflow and resume behavior are described in [Experiments](../guides/experiments.md).
+
+## Run a NuRec comparison
+
+Place NuRec 26.01 scenes under `data/nurec/26.01_release` and prepare the COCO weights listed in
+[Installation](installation.md#coco-stop-sign-detector-weights).
+The supplied `split.train_segments: 5` requires at least six selected approaches.
+Copy the configuration within `configs/`, then edit the copy before running it. Set
+`NUREC_GPU` in `.env`; `simulator.options.renderer.options.endpoint` selects NRE, and the
+top-level `device` selects the detector device inside the experiment container.
+
+```bash
+cp configs/nurec_stop_sign_patch_modular_2601.yaml configs/my_stop_sign.yaml
+docker compose run --rm nurec-experiment run configs/my_stop_sign.yaml
+```
+
+The command manages NRE automatically. Service reuse and GPU options are described in the
+[CLI reference](../reference/cli.md#automatic-local-services). See
+[Stop-sign patch](../examples/stop-sign-patch.md) for white-box attack and black-box attack
+configurations, and [Supplied examples](../examples/README.md) for the full configuration list.
+
+## Read the reports
+
+Open `offline_report.html` and `evaluation_report.html` under `runs.output`. The output is in
+the mounted checkout on the host. Structured JSON/CSV and per-run evidence are described in the
+[Output layout](../reference/cli.md#output-layout).
 
 ## Reuse preparation
 
-Set a fresh runs.output directory in the experiment configuration and reference the previous saved
-preparation:
+Copy a configuration, then edit `configs/carla_phantom_reuse.yaml` to set `runs.output`
+to `../results/carla_phantom_reused`:
 
 ```bash
-avsectester run configs/carla_phantom.yaml --prepared results/carla_phantom
+cp configs/my_carla.yaml configs/carla_phantom_reuse.yaml
 ```
 
-The framework verifies dataset/scenario, simulator and attack compatibility, the first seed and
-the offline environments before executing. It does not rerun the metabuilder or offline
-optimization. It refuses to reuse a preparation whose attack parameters were not describable and
-therefore could not be verified. See
-[Saved preparation compatibility](../reference/configuration.md#saved-preparation-compatibility).
-
-## Reevaluate saved runs
-
-Edit only the desired `evaluation` settings, then run:
+Reuse preparation with the edited copy:
 
 ```bash
-avsectester evaluate configs/carla_phantom.yaml
+docker compose exec carla-experiment avsectester run \
+  configs/carla_phantom_reuse.yaml --prepared results/carla_phantom
 ```
 
-The command recalculates metrics and plots from the configured output. No simulator or new inference
-runs are involved. Keep runs.output pointing to the results to analyze.
+For NuRec, use the same command through `nurec-experiment`:
 
-## Supplied configurations
+```bash
+docker compose run --rm nurec-experiment run CONFIG.yaml --prepared RESULTS_DIRECTORY
+```
 
-| Configuration | Purpose |
-|---|---|
-| `configs/carla_phantom.yaml` | Phantom perception output with ModularAVStack |
-| `configs/carla_patch.yaml` | Fixed physical patch comparison |
-| `configs/carla_patch_optimized.yaml` | Optimized physical patch comparison |
-| `configs/carla_object_insertion.yaml` | Image object insertion with aligned camera depth |
-| `configs/nurec_speed_feedback.yaml` | Ego-speed feedback consumed by Alpamayo |
-| `configs/nurec_object_insertion.yaml` | Image insertion with Alpamayo |
-| `configs/nurec_patch.yaml` | Patch image synthesis with Alpamayo |
-| `configs/nuscenes_object_insertion.yaml` | Recorded insertion setup; real dataset/model run unverified |
+See [Saved-preparation compatibility](../reference/configuration.md#saved-preparation-compatibility).
+To continue interrupted preparation or execution, use `--resume`:
 
-Declared filesystem parameters are relative to the configuration file containing them; see
-[path resolution](../reference/configuration.md#constructor-filesystem-parameters). Set dataset roots,
-renderer endpoint, checkpoint paths and device options for your environment. NuRec runs through Compose: `NUREC_GPU=0 docker compose run --rm nurec-experiment run CONFIG.yaml`.
-Missing local services are started and cleaned up automatically. See [NuRec setup](installation.md#nurec-and-alpamayo-environment).
+```bash
+docker compose run --rm nurec-experiment run CONFIG.yaml --resume
+```
+
+## Re-evaluate saved evidence
+
+Evaluation reads the saved experiment outputs:
+
+```bash
+docker compose exec carla-experiment avsectester evaluate configs/my_carla.yaml
+docker compose run --rm nurec-experiment evaluate \
+  configs/my_stop_sign.yaml
+```
+
+See [Evaluation](../guides/evaluation.md) for metrics and comparison groups.
+
+## Stop CARLA
+
+When finished with CARLA commands, stop its services:
+
+```bash
+docker compose down
+```
 
 ## Next steps
 
-Read [Experiments](../guides/experiments.md), [Configuration](../reference/configuration.md) and
-[Attack examples](../examples/README.md).
+Choose a [supplied configuration](../examples/README.md), read
+[Writing attacks](../guides/attacks.md), or configure a
+[driving system](../guides/driving-systems.md).

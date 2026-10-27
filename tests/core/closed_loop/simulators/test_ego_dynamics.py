@@ -7,6 +7,7 @@ from avsectester.closed_loop.simulators.ego_dynamics import (
     AlpaSimController, KinematicBicycle, PlanarEgoState, TrajectoryFollower,
 )
 from avsectester.data_types import Control
+from tests.fakes import decelerating_command
 
 
 @pytest.mark.parametrize("dynamics,command,position,speed,yaw,yaw_rate", [
@@ -37,15 +38,6 @@ def test_step(dynamics, command, position, speed, yaw, yaw_rate):
     assert initial.x == 10. and initial.speed == 0.
 
 
-def _decelerating_plan(state, acceleration):
-    times = np.arange(51) * .1
-    positions = state.speed * times + acceleration * times ** 2 / 2
-    return Control(trajectory=[
-        ((float(position), 0., 0.), (1., 0., 0., 0.), round((state.t + time) * 1e6))
-        for time, position in zip(times, positions)
-    ])
-
-
 @pytest.mark.parametrize("acceleration,expected_speed,tolerance", [
     pytest.param(0., 10., .05, id="constant-speed"),
     pytest.param(-2., 8., .3, id="decelerating"),
@@ -57,7 +49,7 @@ def test_alpasim_controller_step(acceleration, expected_speed, tolerance):
     dynamics.reset(state)
     speeds = []
     for _ in range(10):
-        state = dynamics.step(state, _decelerating_plan(state, acceleration), .1)
+        state = dynamics.step(state, decelerating_command(state.speed, state.t, acceleration), .1)
         speeds.append(state.speed)
     assert state.speed == pytest.approx(expected_speed, abs=tolerance)
     np.testing.assert_allclose(speeds, 10 + acceleration * np.arange(1, 11) * .1,
@@ -72,13 +64,13 @@ def test_alpasim_controller_reset():
     dynamics = AlpaSimController()
     first = PlanarEgoState(speed=10.)
     with pytest.raises(RuntimeError, match="Reset AlpaSimController before stepping"):
-        dynamics.step(first, _decelerating_plan(first, 0.), .1)
+        dynamics.step(first, decelerating_command(first.speed, first.t, 0.), .1)
     dynamics.reset(first)
-    advanced = dynamics.step(first, _decelerating_plan(first, 0.), .1)
+    advanced = dynamics.step(first, decelerating_command(first.speed, first.t, 0.), .1)
     assert advanced.speed == pytest.approx(10., abs=.05)
     second = PlanarEgoState(x=40., y=-2., yaw=np.pi / 2, speed=3., t=-.5)
     dynamics.reset(second)
-    valid = _decelerating_plan(second, 0.)
+    valid = decelerating_command(second.speed, second.t, 0.)
     missing_origin = Control(trajectory=valid.trajectory[1:])
     with pytest.raises(ValueError, match="must start at t0"):
         dynamics.step(second, missing_origin, .1)

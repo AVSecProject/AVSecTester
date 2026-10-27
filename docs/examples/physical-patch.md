@@ -1,32 +1,40 @@
 # Physical patch
 
-> **Audience:** Users studying inserted patches and offline optimization.
+> **Audience:** Users deploying or optimizing a texture patch.
 >
-> **Outcome:** Deploy one patch Attack across CARLA and NuRec.
+> **Outcome:** Run a selected CARLA or NuRec `PatchAttack` configuration.
 >
-> **Prerequisites:** [Attacks](../guides/attacks.md) and the selected simulator environment.
+> **Prerequisites:** [Installation](../getting-started/installation.md) for the chosen
+> simulator.
 
 ## Configuration
 
 ```bash
-avsectester run configs/carla_patch.yaml
-avsectester run configs/carla_patch_optimized.yaml
-avsectester run configs/nurec_patch.yaml
+docker compose exec carla-experiment avsectester run configs/carla_patch.yaml
+docker compose exec carla-experiment avsectester run configs/carla_patch_optimized.yaml
+docker compose run --rm nurec-experiment run configs/nurec_patch.yaml
 ```
 
-PatchAttack is defined in avsectester.implemented_attacks.patch_attack.attack. The fixed and
-optimized CARLA variants are separate configurations, each with one attack and clean/attacked
-treatments on its selected metadata. NuRec uses the same class for image synthesis.
+Each configuration selects and prepares its own segments. The NuRec configuration includes:
 
-Required decision_steps is user-defined. Options include assets, candidate_hosts, hosts_per_window,
-sensor, width_m, height_m, anchor, offset_m, orientation, max_distance, min_visible_fraction,
-max_windows, keep_tail, optimization, prop and emissive. The assets option accepts a uint8 RGB/RGBA
-array, an image path, or any Texture object with rgba(). None selects CheckerboardTexture.
-load_rgba_image validates the supplied texture; invalid inputs do not select a fallback. YAML
-assets can be a direct image path; CheckerboardTexture and user Texture constructors use a full
-module:Class type/options specification. Unknown types and misspelled options fail.
+```yaml
+type: PatchAttack
+options:
+  decision_steps: 20
+  max_windows: 1
+  sensor: camera_front_wide_120fov
+  width_m: 1.0
+  height_m: 0.5
+  max_distance: 30.0
+  candidate_hosts: ['15']
+  hosts_per_window: 1
+  assets:
+    type: avsectester.rendering.textures:CheckerboardTexture
+    options: {size: 256, cells: 8}
+```
 
-A custom texture can return its pixels directly; no image-wrapper class is required:
+`Texture` and placement parameters are listed in the [Python API](../reference/python-api.md). A
+Python texture object can provide RGBA pixels directly:
 
 <!-- runnable -->
 ```python
@@ -40,41 +48,30 @@ class SolidTexture:
 attack = PatchAttack(decision_steps=5, assets=SolidTexture())
 ```
 
-## Selection and deployment
+## Offline phase
 
-The metabuilder scores eligible candidate_hosts independently within each decision window, then
-keeps the user-requested hosts_per_window best hosts. Omitting candidate_hosts considers non-ego
-actors. It reads clean SensorView geometry/evidence without deploying the attack for selection.
-Ranking is local to hosts in each window, not a ranking of windows. It returns AttackSegment records
-with host IDs, placement parameters and scores in user_data. Visibility thresholds and segment
-lengths are attack parameters, not framework defaults. anchor and offset_m describe a host-local
-mounting rule without naming a placeholder actor. AttachedPlacement is created only when a real
-candidate host is selected.
+Selection ranks candidate hosts within each eligible window. Without optimization, the input
+texture becomes the artifact. An optimization option prepares a texture using the selected
+training segments and configured scorer; see [Optimization](../guides/optimization.md).
 
-A CARLA physical panel is a WorldAttackAction, deployed during the shared initialization window.
-NuRec uses the patch's SensorAttackAction on the current capture. These are distinct physical
-models: an image composite does not exert physical forces or alter other sensor modalities.
+## Online phase
 
-The CARLA prop mesh has its blueprint's native dimensions. width_m and height_m configure the ideal
-planar asset used for image synthesis and visibility; they do not scale that native mesh. Do not
-assume an arbitrary requested plane size is physically reproduced. Check the chosen prop, its
-mounting and retained images in CARLA. CARLA optimization obtains the actual native prop region
-through calibration renders. PGD then uses a differentiable sampling surrogate; emissive deployment
-limits lighting differences but does not establish exact native material or texture equivalence.
+The runtime receives the explicit texture artifact. CARLA uses a native physical prop; NuRec
+composites into the selected camera capture. Their geometry and occlusion behavior are described
+in [Simulators](../guides/simulators.md).
 
-## Offline optimization
-
-Without optimization, assets pass through unchanged. Optional PGD or NES uses the selected metadata
-and configured scorer to return a texture artifact. Formal execution and candidate rollouts receive
-that explicit artifact through create_runtime. Selection is not rerun afterward. See
-[Optimization](../guides/optimization.md) for the option structure and scorer requirements.
+Scaling a CARLA prop mesh to arbitrary requested panel dimensions is **Not yet implemented.**
+See [Physical patch geometry](../development/TODO.md#physical-patch-geometry).
 
 ## Evidence
 
-Record front raw/model_input images to inspect visible texture. Read action receipts for actual
-deployment, artifact hashes for identity and driving/detection metrics for attack impacts. Geometric
-visibility and successful execution alone do not guarantee attack impact.
+Use the recorded camera input, deployment receipts and driving metrics described in
+[Evaluation](../guides/evaluation.md). The [example overview](README.md) explains the
+distinction between workflow execution and measured attack impact.
+
+The `carla_patch_optimized.yaml` configuration uses a white-box attack (algorithm used: `PGD`)
+through the `mmdet.rpn_objectness` scorer bound by `modular_driving_adapter`.
 
 ## Next steps
 
-Read [Image insertion](image-insertion.md) and [Evaluation](../guides/evaluation.md).
+Read [Image insertion](image-insertion.md) and [Optimization](../guides/optimization.md).

@@ -11,3 +11,8 @@ dev
 third_party/nuCarla
 **/*.pdf
 tmp/
+
+third_party/avstack-core/third_party/mmdetection3d/checkpoints
+third_party/avstack-core/third_party/mmdetection3d/work_dirs
+third_party/avstack-core/third_party/mmdetection/checkpoints
+third_party/avstack-core/third_party/mmdetection/work_dirs

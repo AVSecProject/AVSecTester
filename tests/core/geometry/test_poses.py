@@ -52,28 +52,38 @@ def test_interpolate_transform():
         interpolate_transform(first, second, 1.1)
 
 
-def test_make_pose_and_transform():
+def test_make_pose():
+    pose = make_pose(rotation_matrix((0., 0., 90.)), (10., 5., 1.))
+    np.testing.assert_allclose(pose[:3, 3], [10., 5., 1.])
+    np.testing.assert_allclose(pose[:3, :3], [[0., -1., 0.], [1., 0., 0.], [0., 0., 1.]], atol=1e-12)
+
+
+def test_transform():
     pose = make_pose(rotation_matrix((0., 0., 90.)), (10., 5., 1.))
     np.testing.assert_allclose(transform(pose, np.array([[1., 0., 2.]])), [[10., 6., 3.]])
     points = np.array([[1., 2., 3.], [-3., 2., 7.]])
     np.testing.assert_allclose(transform(np.linalg.inv(pose), transform(pose, points)), points)
 
 
-def test_mirror_y():
+def test_mirror_y_points():
     points = np.array([[1., 2., 3.], [-4., -5., 6.]])
     np.testing.assert_array_equal(mirror_y_points(points), [[1., -2., 3.], [-4., 5., 6.]])
     np.testing.assert_array_equal(mirror_y_points(points[0]), [1., -2., 3.])
+    with pytest.raises(ValueError, match="dimension of three"):
+        mirror_y_points([1., 2.])
+
+
+def test_mirror_y_transform():
+    points = np.array([[1., 2., 3.], [-4., -5., 6.]])
     pose = make_pose(rotation_matrix((20., -10., 45.)), (7., 8., 9.))
     reflected = mirror_y_transform(pose)
     np.testing.assert_allclose(reflected, MIRROR_Y @ pose @ MIRROR_Y)
     np.testing.assert_allclose(transform(reflected, mirror_y_points(points)),
                                mirror_y_points(transform(pose, points)))
     np.testing.assert_array_equal(mirror_y_transform(reflected), pose)
-    with pytest.raises(ValueError, match="dimension of three"):
-        mirror_y_points([1., 2.])
 
 
-def test_validated_transform_and_vector():
+def test_validated_transform():
     pose = np.eye(4)
     validated = validated_transform(pose)
     pose[0, 3] = 4.
@@ -81,6 +91,9 @@ def test_validated_transform_and_vector():
     assert not validated.flags.writeable
     with pytest.raises(ValueError, match="rigid"):
         validated_transform(np.zeros((4, 4)))
+
+
+def test_validated_vector():
     np.testing.assert_array_equal(validated_vector([1., 2., 3.], "point"), [1., 2., 3.])
     with pytest.raises(ValueError, match="three finite"):
         validated_vector([1., np.nan, 3.], "point")

@@ -8,12 +8,12 @@ import torch
 
 from avsectester.closed_loop.avstacks.implemented.rule_based.detector import CocoStopSignDetector
 from avsectester.data_types import TargetSpec
-from tests.fakes import CocoDetectionModel, ImageScoreDetector
+from tests.fakes import coco_detection_model
 
 
 def test_detect(tmp_path):
     boxes = ((1., 2., 10., 12.), (3., 4., 9., 11.), (2., 3., 8., 10.), (4., 5., 9., 12.))
-    model = CocoDetectionModel(boxes=boxes, scores=(.9, .49, .8, .5), labels=(13, 13, 1, 13))
+    model = coco_detection_model(boxes=boxes, scores=(.9, .49, .8, .5), labels=(13, 13, 1, 13))
     detector = CocoStopSignDetector("unused.pth", device="cpu", score_threshold=.5, model=model)
     rgb = np.full((20, 20, 3), 30, dtype=np.uint8)
     detections = detector.detect(rgb)
@@ -21,7 +21,7 @@ def test_detect(tmp_path):
     assert [score for box, score in detections] == pytest.approx([.9, .5])
     assert not model.training and model.roi_heads.score_thresh == 0.
     empty = CocoStopSignDetector(
-        "unused.pth", device="cpu", model=CocoDetectionModel(boxes=(), scores=(), labels=()),
+        "unused.pth", device="cpu", model=coco_detection_model(boxes=(), scores=(), labels=()),
     )
     assert empty.detect(rgb) == []
     with pytest.raises(ValueError, match="uint8 RGB"):
@@ -30,24 +30,8 @@ def test_detect(tmp_path):
         CocoStopSignDetector(tmp_path / "missing.pth", device="cpu").detect(rgb)
 
 
-def test_close():
-    model = CocoDetectionModel()
-    reference = weakref.ref(model)
-    detector = CocoStopSignDetector("unused.pth", device="cpu", model=model)
-    detector.detect(np.full((20, 20, 3), 30, dtype=np.uint8))
-    del model
-    detector.close()
-    assert detector.model is None
-    assert reference() is None
-    with pytest.raises(RuntimeError, match="closed"):
-        detector.detect(np.full((20, 20, 3), 30, dtype=np.uint8))
-
-
 def test_target_score():
-    model = ImageScoreDetector(
-        [[0., 0., 4., 4.], [0., 0., 4., 4.], [0., 0., 1., 1.], [0., 0., 4., 4.]],
-        [13, 1, 13, 13], [.2, .94, .93, .7],
-    )
+    model = coco_detection_model(boxes=[[0., 0., 4., 4.], [0., 0., 4., 4.], [0., 0., 1., 1.], [0., 0., 4., 4.]], labels=[13, 1, 13, 13], scores=[.2, .94, .93, .7], image_weight=.1)
     detector = CocoStopSignDetector("unused.pth", device="cpu", model=model)
     image = torch.full((3, 8, 8), .5, requires_grad=True)
     score = detector.target_score(image, TargetSpec((0., 0., 4., 4.), "stop sign"))
@@ -68,18 +52,27 @@ def test_target_score():
     with pytest.raises(RuntimeError, match="closed"):
         detector.target_score(image, TargetSpec((0., 0., 4., 4.)))
 
-
-def test_target_score_without_matching_detections():
     image = torch.ones(3, 4, 4, requires_grad=True)
-    empty = CocoStopSignDetector("unused.pth", device="cpu", model=ImageScoreDetector([], [], []))
+    empty = CocoStopSignDetector("unused.pth", device="cpu", model=coco_detection_model(boxes=[], labels=[], scores=[], image_weight=.1))
     zero = empty.target_score(image, TargetSpec((0., 0., 2., 2.)))
     assert zero.item() == 0.
     gradient, = torch.autograd.grad(zero, image)
     torch.testing.assert_close(gradient, torch.zeros_like(image))
-    unrelated = CocoStopSignDetector("unused.pth", device="cpu", model=ImageScoreDetector(
-        [[0., 0., 2., 2.], [2., 2., 4., 4.]], [1, 13], [.9, .8],
-    ))
+    unrelated = CocoStopSignDetector("unused.pth", device="cpu", model=coco_detection_model(boxes=[[0., 0., 2., 2.], [2., 2., 4., 4.]], labels=[1, 13], scores=[.9, .8], image_weight=.1))
     unmatched = unrelated.target_score(image, TargetSpec((0., 0., 2., 2.)))
     assert unmatched.item() == 0.
     gradient, = torch.autograd.grad(unmatched, image)
     torch.testing.assert_close(gradient, torch.zeros_like(image))
+
+
+def test_close():
+    model = coco_detection_model()
+    reference = weakref.ref(model)
+    detector = CocoStopSignDetector("unused.pth", device="cpu", model=model)
+    detector.detect(np.full((20, 20, 3), 30, dtype=np.uint8))
+    del model
+    detector.close()
+    assert detector.model is None
+    assert reference() is None
+    with pytest.raises(RuntimeError, match="closed"):
+        detector.detect(np.full((20, 20, 3), 30, dtype=np.uint8))

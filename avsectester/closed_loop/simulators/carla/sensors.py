@@ -28,6 +28,7 @@ class SensorCapture:
 
     @property
     def raw_data(self) -> memoryview:
+        """Native sensor payload before conversion to framework records."""
         return memoryview(self.raw_bytes)
 
 
@@ -115,7 +116,7 @@ def _require_pinhole_sensor(sensor):
 
 
 def decode_carla_depth(image):
-    """Decode CARLA's 24-bit depth image to forward camera depth in metres."""
+    """Decode CARLA's 24-bit depth image to forward camera depth in meters."""
     bgra = np.frombuffer(image.raw_data, np.uint8).reshape(image.height, image.width, 4)
     channels = bgra.astype(np.float64)
     return (channels[..., 2] + 256 * channels[..., 1] + 65536 * channels[..., 0]) * (
@@ -134,3 +135,10 @@ for _module in ("carla", "carla.libcarla"):
             _module, _name, _sdk_capture_data,
             snapshot=lambda value, capture_child: _sdk_capture(value),
         )
+
+
+__all__ = [
+    'SensorCapture',
+    'SensorAlignmentError',
+    'decode_carla_depth',
+]

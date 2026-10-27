@@ -1,4 +1,5 @@
 """Optional public camera-policy inference on one real nuScenes image."""
+import importlib.util
 import os
 from pathlib import Path
 
@@ -6,14 +7,22 @@ import pytest
 
 
 def test_camera_policy_with_real_detector():
-    torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA is unavailable")
+    import torch
     root = os.environ.get("AVSECTESTER_NUSCENES_ROOT")
-    checkpoint = (Path(__file__).resolve().parents[2] / "third_party/avstack-core/third_party/"
-                  "mmdetection/work_dirs/carla/faster_rcnn_r50_fpn_1x_carla_vehicle.pth")
+    specification = importlib.util.find_spec("avstack")
+    avstack_root = (Path(specification.origin).resolve().parents[1]
+                    if specification is not None and specification.origin is not None
+                    else Path(__file__).resolve().parents[2] / "third_party/avstack-core")
+    checkpoint = (avstack_root / "third_party/mmdetection/work_dirs/carla/"
+                  "faster_rcnn_r50_fpn_1x_carla_vehicle.pth")
+    required = (f"CUDA and local checkpoint {checkpoint}; "
+                "AVSECTESTER_NUSCENES_ROOT/v1.0-trainval with CAM_FRONT image files")
+    if specification is None or specification.origin is None:
+        pytest.skip(required + " (avstack SDK is unavailable)")
+    if not torch.cuda.is_available():
+        pytest.skip(required + " (CUDA is unavailable)")
     if root is None or not (Path(root) / "v1.0-trainval").is_dir() or not checkpoint.is_file():
-        pytest.skip("Set AVSECTESTER_NUSCENES_ROOT and fetch the CARLA image detector weights")
+        pytest.skip(required)
     pytest.importorskip("avstack.config")
     pytest.importorskip("mmdet.apis")
     pytest.importorskip("nuscenes.nuscenes")

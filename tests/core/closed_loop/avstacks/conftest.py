@@ -1,4 +1,4 @@
-"""Small stand-ins at the AlpaSim model and schema boundary; no checkpoints are loaded."""
+"""Camera observations and learned-model boundaries shared by driving-system tests."""
 import sys
 from types import ModuleType, SimpleNamespace
 
@@ -29,14 +29,11 @@ def alpamayo_model_boundary(monkeypatch):
         def close(self):
             self.closed = True
 
-    loaded = []
-
     class ModelLoader:
         @classmethod
         def from_config(cls, **options):
             model = PolicyModel()
             model.options = options
-            loaded.append(model)
             return model
 
     # Keep real AlpaSim protobufs, navigation and model input/output records. Only weights
@@ -45,7 +42,7 @@ def alpamayo_model_boundary(monkeypatch):
     module = ModuleType(name)
     module.Alpamayo15Model = ModelLoader
     monkeypatch.setitem(sys.modules, name, module)
-    return SimpleNamespace(create=PolicyModel, loaded=loaded)
+    return SimpleNamespace(create=PolicyModel)
 
 
 @pytest.fixture
@@ -90,11 +87,6 @@ def camera_detector_boundary(monkeypatch):
 
 
 @pytest.fixture
-def native_dependencies():
-    pytest.importorskip("avstack.config")
-
-
-@pytest.fixture
 def camera_observation():
     from avsectester.data_types import Observation
     return lambda: Observation(0., 0, {"front": np.zeros((32, 32, 3), np.uint8)})
@@ -105,11 +97,6 @@ def alpamayo_observations():
     from tests.fakes import recorded_policy_observations
 
     return recorded_policy_observations
-
-
-@pytest.fixture
-def empty_past():
-    return ()
 
 
 @pytest.fixture
@@ -124,9 +111,9 @@ def policy_observation(alpamayo_observations):
 
 @pytest.fixture
 def rule_based_detector_model():
-    from tests.fakes import CocoDetectionModel
+    from tests.fakes import coco_detection_model
 
-    return CocoDetectionModel(boxes=((48., 38., 52., 42.),))
+    return coco_detection_model(boxes=((48., 38., 52., 42.),))
 
 
 @pytest.fixture

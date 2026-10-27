@@ -1,4 +1,4 @@
-"""Depth-aware composition of world objects, differentiable in surface colours, and visible-region blending."""
+"""Depth-aware composition of world objects, differentiable in surface colors, and visible-region blending."""
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
@@ -79,7 +79,7 @@ def blend_rgba(
 
 
 @dataclass(frozen=True)
-class _Footprint:
+class SurfaceFootprint:
     """One surface's sampling over its clipped image region and the visible pixels it owns."""
 
     object_index: int
@@ -90,7 +90,9 @@ class _Footprint:
     owned: np.ndarray
 
 
-def _object_mask(footprints: Sequence[_Footprint], index: int, shape: tuple[int, ...]) -> np.ndarray:
+def _object_mask(
+    footprints: Sequence[SurfaceFootprint], index: int, shape: tuple[int, ...],
+) -> np.ndarray:
     """The visible pixels owned by one planned object's surfaces."""
     mask = np.zeros(shape, dtype=bool)
     for footprint in footprints:
@@ -105,12 +107,12 @@ class CompositePlan:
     """Texture-independent geometry and composition for one camera image.
 
     Sampling, coverage, nearest-surface ownership and occlusion are fixed when planning; only
-    surface colours remain free. Apply and composite share the floating-point blend and all
+    surface colors remain free. Apply and composite share the floating-point blend and all
     differentiable harmonizers, differing only in final 8-bit rounding. Non-differentiable
     harmonizers support deployment through apply only. Each object's harmonizer sees the same
     unadjusted composite and original background, and changes only its visible pixels.
     Differentiable harmonizers also see the nominal composite, in which surfaces with a
-    nominal texture show it instead of their texture or replacement colours.
+    nominal texture show it instead of their texture or replacement colors.
     Depth combines scene and surface evidence; scene_visibility keeps only visible surfaces.
     """
 
@@ -120,15 +122,15 @@ class CompositePlan:
     occlusion_source: str
     ignored_occluders: tuple[str, ...]
     object_visibility: Mapping[str, ObjectVisibility]
-    footprints: tuple[_Footprint, ...] = field(repr=False)
+    footprints: tuple[SurfaceFootprint, ...] = field(repr=False)
 
     def composite(self, image: torch.Tensor,
                   textures: Mapping[tuple[str, int], torch.Tensor] | None = None) -> torch.Tensor:
         """Blend surfaces and differentiable harmonizers over a (3, H, W) image in [0, 1].
 
-        Textures maps (object_id, surface index) to straight RGB (3, h, w) colours at the
+        Textures maps (object_id, surface index) to straight RGB (3, h, w) colors at the
         surface texture's size. Asset alpha preserves its shape; omitted surfaces keep their
-        asset colours. Gradients reach the image and replacement colours, not planned geometry.
+        asset colors. Gradients reach the image and replacement colors, not planned geometry.
         Each harmonizer receives the same unadjusted blend, its visible mask, the original
         background and the nominal blend. Non-differentiable harmonizers make this operation
         unavailable.
@@ -234,7 +236,7 @@ class ObjectComposition:
     """How placed objects were composed into one capture: the image beneath them and the plan.
 
     ``plan.apply(background).image`` is the composed capture, and ``plan.composite`` over
-    ``background`` reproduces it differentiably in surface colours.
+    ``background`` reproduces it differentiably in surface colors.
     """
 
     background: np.ndarray
@@ -330,7 +332,8 @@ def plan_composite(
         x0, y0, x1, y1 = sampling.bounds
         owned = visible[y0:y1, x0:x1] & (owners[y0:y1, x0:x1] == index)
         if owned.any():
-            footprints.append(_Footprint(object_index, surface_index, sampling, alpha, premultiplied, owned))
+            footprints.append(SurfaceFootprint(
+                object_index, surface_index, sampling, alpha, premultiplied, owned))
     ignored = tuple(ignored_occluders)
     visibility = {placed.object_id: ObjectVisibility(
         occlusion_source, ignored, int(np.count_nonzero(_object_mask(footprints, index, shape))))
@@ -356,3 +359,15 @@ def composite_objects(
         raise ValueError("image must be calibrated uint8 RGB with shape (H, W, 3)")
     return plan_composite(camera, cam_from_world, objects, scene_depth=scene_depth, occluders=occluders,
                           occlusion_tolerance_m=occlusion_tolerance_m).apply(image)
+
+
+__all__ = [
+    'SurfaceFootprint',
+    'ObjectVisibility',
+    'CompositeResult',
+    'blend_rgba',
+    'CompositePlan',
+    'ObjectComposition',
+    'plan_composite',
+    'composite_objects',
+]

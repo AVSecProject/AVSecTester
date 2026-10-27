@@ -74,7 +74,7 @@ class SurfaceSampler:
         """Distances to opaque texels and the full-resolution RGBA they hit, for any rays.
 
         Occlusion tests use this point query: a ray is blocked where the bilinear texture alpha
-        exceeds 127. Rendered colours come from ``sample_texture`` instead.
+        exceeds 127. Rendered colors come from ``sample_texture`` instead.
         """
         import cv2
 
@@ -257,8 +257,8 @@ class Projection:
     """Nearest-surface samples over the full, unclipped footprint of several surfaces.
 
     ``reference`` marks covered pixels of the footprint rectangle starting at ``(x0, y0)``.
-    ``depth`` is optical-axis depth, ``rays`` the unit pixel-centre rays and ``rgba`` uint8
-    straight colours, all flattened over that rectangle.
+    ``depth`` is optical-axis depth, ``rays`` the unit pixel-center rays and ``rgba`` uint8
+    straight colors, all flattened over that rectangle.
     """
 
     reference: np.ndarray
@@ -270,7 +270,7 @@ class Projection:
 
 
 def rasterize(surfaces: Sequence[PlaneSurface], camera: Camera, cam_from_world, max_reference_pixels):
-    """Full unbounded silhouette, nearest-surface depth and matching colours, or a reason."""
+    """Full unbounded silhouette, nearest-surface depth and matching colors, or a reason."""
     samplers = [prepare_surface(s, camera, cam_from_world) for s in surfaces]
     if not samplers:
         return None, "Asset has no planar surfaces"
@@ -321,3 +321,9 @@ def render_surfaces(
         region[closer] = depth[closer]
         premultiplied[y0:y1, x0:x1][closer] = colors[closer]
     return _straight_rgba(premultiplied), nearest
+
+
+__all__ = [
+    'SurfaceSampler', 'PlaneSampling', 'plane_sampling', 'prepare_surface',
+    'sample_texture', 'render_surfaces',
+]

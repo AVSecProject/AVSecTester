@@ -41,11 +41,17 @@ class CarlaSimulator(Simulator):
     """
 
     dataset_kinds = ("CarlaDataset",)
+    'Dataset kinds supported by this simulator.'
     capture_ticks = 1  # CARLA renders on ticks; the first capture follows simulator.setup
+    'Simulator ticks consumed by a sensor capture.'
     can_render = True
+    'Whether arbitrary-view rendering is supported.'
     can_replay = True
+    'Whether recorded-tick replay is supported.'
     can_insert_objects = True
+    'Whether world objects can be inserted into sensor rendering.'
     supported_world_settings = CARLA_WORLD_SETTINGS
+    'World-setting keys accepted by the simulator.'
 
     def __init__(
         self, client: dict, settle_iters: int = 100, *, simulator_version="0.9.16",
@@ -119,11 +125,11 @@ class CarlaSimulator(Simulator):
 
 
 class CarlaSimulatorRuntime(SimulatorRuntime):
-    """One live CARLA world of a :class:`CarlaSimulator`.
+    """One live CARLA world of a `CarlaSimulator`.
 
     Owns the client, the ego vehicle + its sensors, and the NPC traffic, and applies control through
     CARLA's shared physics. The ego's own avcarla pipeline is a no-op placeholder: driving is
-    *external* (the :class:`~avsectester.closed_loop.avstacks.base.AVStack`), so this runtime only senses (``_observe``)
+    *external* (the `avsectester.closed_loop.avstacks.base.AVStack`), so this runtime only senses (``_observe``)
     and actuates (``step`` -> ``apply_control``). ``reset`` also captures a strict-spawn
     ``replay_scenario`` that preparation can reuse for every treatment.
     """
@@ -703,7 +709,7 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         self.client.world.set_weather(params)
 
     def _spawn_lead(self, cfg: dict) -> Any:
-        """Spawn a stationary lead vehicle ``cfg['gap']`` metres directly ahead of the ego."""
+        """Spawn a stationary lead vehicle ``cfg['gap']`` meters directly ahead of the ego."""
         import carla
 
         world = self.client.world
@@ -743,3 +749,9 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
             self._depth_queue = None
             self.depth = self.depth_frame = None
             super().close()
+
+
+__all__ = [
+    'CarlaSimulator',
+    'CarlaSimulatorRuntime',
+]

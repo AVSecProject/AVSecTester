@@ -2,154 +2,176 @@
 
 > **Audience:** Experiment operators.
 >
-> **Outcome:** Look up commands, outputs and exit codes.
+> **Outcome:** Look up commands, options, output files and exit codes.
 >
 > **Prerequisites:** [Installation](../getting-started/installation.md).
 
 ## Commands
 
+Use the configured Compose experiment service. NuRec commands are:
+
 ```bash
-avsectester version
-avsectester run EXPERIMENT.yaml
-avsectester run EXPERIMENT.yaml --prepared DIRECTORY
-avsectester run EXPERIMENT.yaml --resume
-avsectester evaluate EXPERIMENT.yaml
+docker compose run --rm nurec-experiment version
+docker compose run --rm nurec-experiment run CONFIG.yaml
+docker compose run --rm nurec-experiment run CONFIG.yaml --prepared DIRECTORY
+docker compose run --rm nurec-experiment run CONFIG.yaml --resume
+docker compose run --rm nurec-experiment evaluate CONFIG.yaml
+docker compose run --rm nurec-experiment nre serve CONFIG.yaml --gpu N
+docker compose run --rm nurec-experiment nre stop CONFIG.yaml
+docker compose run --rm nurec-experiment trafficsim serve CONFIG.yaml --gpu N --models models/alpasim-trafficsim
+docker compose run --rm nurec-experiment trafficsim stop CONFIG.yaml
 ```
 
-`python -m avsectester.cli` provides the same commands from a source checkout.
+For an already started CARLA experiment service, use
+`docker compose exec carla-experiment avsectester COMMAND`.
+The [quickstart](../getting-started/quickstart.md) provides
+first-run examples.
 
 ## Run
 
-`run EXPERIMENT.yaml [--prepared DIRECTORY | --resume]` loads configuration, prepares artifacts,
-executes treatments and evaluates their logs. With --prepared, it validates and loads an existing
-complete preparation instead of selecting and optimizing again. Prepared artifacts must be fully
-loaded before execution. All attack inputs and returned artifacts remain explicit.
+`run CONFIG.yaml` loads configuration, prepares artifacts, executes treatments and evaluates
+saved evidence. It requires a nonempty attack mapping and `runs.output`. The
+[configuration reference](configuration.md) owns YAML keys, defaults and
+preparation compatibility.
 
-The configuration must provide runs.output and at least one attack. Treatments without attack_name
-run once per unit and seed. Attacked treatments run on units selected by their attack, and different
-attacks selecting identical complete metadata share a comparison group. With split, execution is
-restricted to split.execute, which defaults to test. See [Data split](configuration.md#data-split).
+| Option | Default | Meaning |
+|---|---|---|
+| `--prepared DIRECTORY` | omitted | Load a complete preparation into a fresh output directory |
+| `--resume` | false | Continue preparation and execution in `runs.output` |
+| `--nre-gpu N` | `AVSECTESTER_HOST_GPU` | GPU for an automatically started NRE |
+| `--nre-name NAME` | avsectester-nre-PORT | Name of an automatically started NRE container |
+| `--trafficsim-gpu N` | `AVSECTESTER_HOST_GPU` | GPU for automatically started traffic |
+| `--trafficsim-models DIR` | omitted | Local model directory required when starting traffic |
+| `--trafficsim-name NAME` | avsectester-trafficsim-PORT | Name of an automatically started traffic container |
+| `--service-timeout SECONDS` | 600 | Positive service startup timeout |
 
-Without --resume an existing nonempty output is rejected rather than overwritten. With --prepared,
-choose a fresh runs.output for execution. Reusing preparation requires compatible dataset,
-simulator, attack inputs, first seed, split counts/seed and offline environments. Execution parts,
-other run settings and metrics can change; see
-[Saved preparation compatibility](configuration.md#saved-preparation-compatibility).
+A nonempty output directory is rejected without `--resume`. `--prepared` and `--resume` are
+mutually exclusive.
 
---resume continues the same runs.output. If prepared.json exists it is loaded; otherwise preparation
-resumes from preparation-progress.json after compatibility checks. Saved metadata and parts are
-reused, completed artifacts are loaded and only unfinished attacks run offline. The execution phase
-keeps matching completed manifests and reads their logs, reruns only missing/failed/incomplete or
-mismatched runs, and skips initialization for groups already complete. It then evaluates the result.
---resume and --prepared together are a configuration error (exit code 2).
+### Preparation reuse
 
-The terminal prints the output directory, selection/execution errors including exception types, and
-failed runs in non-strict mode. Reports retain every available run status and summarize each part
-separately. A partial report does not imply successful completion.
+`--prepared` maps to loading a complete preparation; `--resume` continues saved preparation and
+execution. See [Experiments](../guides/experiments.md#resume-interrupted-work) for validation,
+resume and persistence semantics.
 
 ### Automatic local services
 
-Run accepts --nre-gpu N, --nre-name NAME, --trafficsim-gpu N,
---trafficsim-models DIR, --trafficsim-name NAME and --service-timeout SECONDS (default 600).
-Configuration, preparation compatibility and output checks run before any service launch.
-The service check uses the configured renderer/traffic endpoints and requires all dataset scenes.
-A compatible running service is reused and left running; an endpoint serving other scenes is an
-error. Missing services can only be started on local endpoints. Starting traffic also requires
---trafficsim-models. The physical GPU comes from the explicit option, or from
-AVSECTESTER_HOST_GPU, which the nurec-experiment Compose service sets to NUREC_GPU; otherwise
-supply the GPU option.
+With reactive traffic enabled, provide its local weights when a service may need starting:
 
-Services started by run cover preparation, execution and evaluation. They are stopped and removed
-in reverse launch order on success, exceptions and Ctrl-C. Existing services are never stopped.
-Startup, reuse and shutdown each print a progress line. Cleanup failures are attached to an active
-exception; after a completed experiment they are reported without replacing its result.
-Manual nre/trafficsim serve and stop commands remain available for longer-lived reuse.
+```bash
+docker compose run --rm nurec-experiment run CONFIG.yaml --trafficsim-models models/alpasim-trafficsim
+```
+
+`run` checks the configured NuRec renderer and traffic endpoints after configuration, output and
+preparation checks. A running service must contain every configured dataset scene. A compatible
+service is reused and left running; a scene mismatch is an error.
+
+Missing services can start only on local endpoints: `127.0.0.1`, `localhost`, `0.0.0.0` or `::1`.
+Starting traffic requires `--trafficsim-models`. GPU selection uses the explicit service option
+or `AVSECTESTER_HOST_GPU`, which the NuRec Compose service sets from `NUREC_GPU`. The value must
+be one nonnegative host GPU index. This selects the physical device independently of the model's
+YAML `device` option.
+
+Managed services cover preparation, execution and evaluation. Startup, reuse and shutdown each
+print a progress line. On completion, exceptions or Ctrl-C, only containers started by this
+command are stopped and removed, in reverse startup order. Cleanup errors are attached to an
+active exception; after a completed experiment they are reported without replacing its result.
+
+NRE startup creates its client probe directory. Docker mounts each archive read-only at
+`/mnt/nre-data/<filename>` and mounts the probe directory at `server_probe_directory`, or at the
+same absolute client path when that option is null. Archive filenames must be unique. The
+Compose host-path and Docker access setup is owned
+by [Installation](../getting-started/installation.md).
+
+The optional manual service commands below support reuse across multiple experiments.
 
 ## Evaluate
 
-`evaluate EXPERIMENT.yaml` reads runs.output and recomputes all treatment-pair metrics. It
-replaces evaluation outputs and leaves saved runs and preparation intact. No dataset scenarios or
-frames, model inference, simulator connection or attack artifacts are needed. Missing saved
-preparation/results produces a clear error. Corrupt run logs are recorded as failed; other logs
-continue. Obsolete treatment directories are reported and skipped.
+`evaluate CONFIG.yaml` reads `runs.output`, recomputes metrics and replaces evaluation outputs.
+It leaves run logs and preparation unchanged. It uses saved segments, maps and the metadata
+hash; the dataset, external metadata file, model inference and simulator services are
+not needed.
 
-Metric types/options can change before reevaluation. Known configuration errors are rejected before
-evaluation. A metric-code failure is an evaluation failure: report.json and runs.csv still record
-run states and the metric error. Terminal output includes one treatment table per part and metric class, plus notes and errors.
-Headers include units; numeric cells use four decimal places, mean ± population standard deviation
-and n = k (standard deviation is omitted for n < 2). Boolean summaries show a true fraction and N of K groups. JSON/CSV retain full precision.
-All metric fields are shown; pairwise differences are retained in evaluation/report.json and evaluation_report.html.
-Both run and evaluate print the offline_report.html and evaluation_report.html paths.
-Evaluate rebuilds both HTML reports from saved output.
+`Metric` configuration may change before reevaluation, subject to the saved
+[compatibility rules](configuration.md#saved-preparation-compatibility). Corrupt individual run
+logs are recorded as failures while other runs remain available. Saved directories for removed
+or unexpected treatments are reported and skipped.
+
+Both `run` and `evaluate` print `offline_report.html` and `evaluation_report.html` paths.
+Evaluate rebuilds both pages from saved files. Terminal summaries show every metric field,
+grouped by part and metric class, followed by notes and errors. Summary statistics and
+unavailable values are defined in [Evaluation](../guides/evaluation.md).
 
 ## NRE
 
 `nre serve CONFIG --gpu N [--name NAME] [--image IMAGE] [--cache-size 2] [--timeout 600] [--dry-run]`
-loads configuration without validating the experiment environment, starts Docker and waits for
-"Serving on". It requires NuRecDataset and NuRecRenderer with a local endpoint: 127.0.0.1,
-localhost, 0.0.0.0 or ::1. Dataset archive paths are resolved and mounted separately read-only;
-duplicate archive filenames are a configuration error.
+loads the configuration, starts Docker and waits for `Serving on`.
+
+| Option | Default |
+|---|---|
+| `--gpu N` | required host GPU index |
+| `--name NAME` | avsectester-nre-PORT |
+| `--image IMAGE` | `nvcr.io/nvidia/nre/nre-ga:26.04` |
+| `--cache-size K` | 2 |
+| `--timeout SECONDS` | 600 |
+| `--dry-run` | false |
+
+The configuration must contain `NuRecDataset` and `NuRecRenderer` with a local endpoint. This
+command does not validate experiment environments. Archive and probe mounts follow the
+[automatic service rules](#automatic-local-services).
 
 ```bash
-avsectester nre serve configs/nurec_stop_sign_patch_alpamayo_2601.yaml --gpu 0
-avsectester nre serve configs/nurec_stop_sign_patch_alpamayo_2601.yaml --gpu 0 --dry-run
-avsectester nre stop configs/nurec_stop_sign_patch_alpamayo_2601.yaml
+docker compose run --rm nurec-experiment nre serve configs/nurec_stop_sign_patch_alpamayo_2601.yaml --gpu N
+docker compose run --rm nurec-experiment nre serve configs/nurec_stop_sign_patch_alpamayo_2601.yaml --gpu N --dry-run
+docker compose run --rm nurec-experiment nre stop configs/nurec_stop_sign_patch_alpamayo_2601.yaml
 ```
 
-`--gpu` is the host GPU selected by Docker's `--gpus device=N`, independently of top-level
-YAML device. The default image is nvcr.io/nvidia/nre/nre-ga:26.04 and the default container name
-is avsectester-nre-<port>. The probe directory is created before launch; its server mount uses
-server_probe_directory, or the same absolute client path when no server path is configured.
+`--dry-run` prints a shell-quoted Docker command without creating directories or containers and
+does not require Docker on PATH. A normal launch requires Docker. A container with the chosen
+name is left untouched and reported as an error. Successful startup prints endpoint, GPU, scene
+count, container name and the corresponding stop command.
 
-`--dry-run` only prints the shell-quoted command: it creates no directories, starts no process and
-does not require Docker on PATH. A normal launch without Docker reports an error and suggests
---dry-run. A pre-existing container with the chosen name is left untouched and reported as an error.
-On successful startup the command prints endpoint, GPU, scene count, container name and a stop
-command. On early exit or timeout it prints the last 50 lines of logs and stops/removes the
-container it started. Containers do not use --rm, allowing startup diagnostics to be read first.
+Startup failure or timeout includes the last 50 log lines and removes the newly created
+container. The container is created without Docker's `--rm` so startup diagnostics
+remain readable.
 
-`nre stop CONFIG [--name NAME]` only loads configuration and derives the same default name from
-the renderer endpoint. It does not enumerate datasets or build a serve command. It runs docker stop followed by
-docker rm, and exits 1 if the container does not exist. Invalid configuration exits 2; Docker
-startup, stop and timeout errors exit 1. Check nvidia-smi before selecting an available card and
-stop the service as soon as it is no longer needed.
+`nre stop CONFIG [--name NAME]` derives the default name from the endpoint without enumerating
+dataset archives, then stops and removes that container. A missing container is an error.
 
 ## Trafficsim
 
 `trafficsim serve CONFIG --gpu N --models DIR [--name NAME] [--image IMAGE] [--timeout 600] [--dry-run]`
-requires a NuRecDataset and a configured AlpaSimTraffic with a local endpoint. The default image is
-avsectester:trafficsim; the default container name is avsectester-trafficsim-<port>. The host GPU is
-selected by --gpu independently of YAML device.
+requires `NuRecDataset` and a configured `AlpaSimTraffic` with a local endpoint.
+
+| Option | Default |
+|---|---|
+| `--gpu N` | required host GPU index |
+| `--models DIR` | required model directory |
+| `--name NAME` | avsectester-trafficsim-PORT |
+| `--image IMAGE` | avsectester:trafficsim |
+| `--timeout SECONDS` | 600 |
+| `--dry-run` | false |
 
 ```bash
-avsectester trafficsim serve CONFIG.yaml --gpu 1 --models /path/to/alpasim-trafficsim
-avsectester trafficsim stop CONFIG.yaml
+docker compose run --rm nurec-experiment trafficsim serve CONFIG.yaml --gpu N --models models/alpasim-trafficsim
+docker compose run --rm nurec-experiment trafficsim stop CONFIG.yaml
 ```
 
-The command mounts each uniquely named archive read-only under /mnt/nre-data and DIR read-only at
-/mnt/trafficsim-models. It uses prediction_steps=15, OMP_NUM_THREADS=1, MKL_NUM_THREADS=1 and a
-Hydra run directory under /tmp. Readiness requires the CATK traffic-server log message followed by
-a successful get_metadata RPC. Both renderer and traffic services reject remote endpoints and
-ambiguous archive filenames.
+Archives are mounted read-only under `/mnt/nre-data` and models at `/mnt/trafficsim-models`. The
+server uses `prediction_steps=15`, `OMP_NUM_THREADS=1` and `MKL_NUM_THREADS=1`. Readiness
+requires the CATK startup log followed by a successful metadata RPC. Startup errors, dry-run and
+existing container handling follow the [NRE rules](#nre).
 
-The shared lifecycle rules match nre: --dry-run only prints the command; an existing named
-container is left untouched; startup exit or timeout prints the last 50 log lines and stops/removes
-the new container. A successful launch prints endpoint, GPU, scene count, container name and stop
-command. `trafficsim stop CONFIG [--name NAME]` derives the name without enumerating datasets,
-then runs docker stop and docker rm. Use --name consistently for serve and stop.
+`trafficsim stop CONFIG [--name NAME]` derives the name without enumerating datasets, then stops
+and removes that container. Use the same explicit name for serve and stop. `Simulator` traffic
+behavior is described in [Simulators](../guides/simulators.md#reactive-traffic).
 
 ## Interruptions
 
-Ctrl-C prints an interruption message, cleans up owned resources and exits with code 130. Selection
-and splitting are checkpointed before offline optimization; a preparation interruption after that
-point retains preparation-progress.json and artifacts of completed attacks. A complete prepared.json
-is written only after all offline phases succeed. An interruption during selection may precede any
-checkpoint. Resume with the same configuration and --resume.
-
-Interrupted execution logs have cancelled status; missing expected logs are incomplete. A later
---resume preserves matching completed runs and reruns other expected runs individually. An
-interruption during evaluation does not restart evaluation; some report outputs may already be
-replaced or incomplete. Re-run evaluate to regenerate them without simulation.
+Ctrl-C exits 130, cleans up owned containers and prints the output directory when available.
+Partial reports may remain; `evaluate` regenerates them without simulation.
+Checkpoint and retry behavior follow
+[Resume interrupted work](../guides/experiments.md#resume-interrupted-work).
 
 ## Output layout
 
@@ -157,41 +179,48 @@ replaced or incomplete. Re-run evaluate to regenerate them without simulation.
 <output>/
   preparation-progress.json
   prepared.json
-  attacks/<attack-name>/metadata.json
-  attacks/<attack-name>/artifacts.pkl
-  attacks/<attack-name>/manifest.json
-  offline/<attack-name>/report.json
-  offline/<attack-name>/<table>.csv
-  offline/<attack-name>/<image-or-series>.png
-  offline/<attack-name>/files/
+  attacks/<attack>/metadata.json
+  attacks/<attack>/artifacts.pkl
+  attacks/<attack>/manifest.json
+  offline/<attack>/report.json
+  offline/<attack>/<table>.csv
+  offline/<attack>/<image-or-series>.png
+  offline/<attack>/files/
+  offline-incomplete/<attack>-<UTC timestamp>/
   offline_report.html
-  offline-incomplete/<attack-name>-<UTC timestamp>/
-  maps/<scenario-id>.json
+  maps/<scenario>.json
   runs/segment-<NNNNN>/seed-<S>/<treatment>/
   evaluation/report.json
-  evaluation_report.html
   evaluation/runs.csv
   evaluation/plots/
+  evaluation_report.html
 ```
 
-Artifact filenames above describe the default trusted-pickle format; attacks may override it. Each
-run directory is a [RunLog](runtime.md#runlog). Segment numbers are global unit indexes. The old
-attack-prefixed layout, including v5/v6 outputs, cannot be loaded or evaluated with this version. Metrics and all-pair summaries are described in
-[Evaluation](../guides/evaluation.md).
+Artifact filenames above describe the default trusted-pickle format; attacks may override
+artifact persistence. Segment numbers are global unit indexes. Each run directory contains
+`manifest.json`, published Parquet step/event parts and payload shards belonging to its
+[RunLog](runtime.md#runlog). Offline report content is described in
+[Optimization](../guides/optimization.md), and evaluation content
+in [Evaluation](../guides/evaluation.md).
 
 ## Exit codes
 
 | Code | Meaning |
 |---|---|
-| 0 | All runs completed and evaluation succeeded without selection errors |
-| 1 | Selection, execution, result reading or metric evaluation failed |
-| 2 | Known invalid configuration, output conflict or incompatible saved preparation |
+| 0 | Command completed without failed runs, selection errors or metric errors; this does not establish attack effectiveness |
+| 1 | Preparation load/validation error, selection, execution, result reading, metric evaluation or service startup/stop failed |
+| 2 | Invalid configuration or metadata contents, output conflict or incompatible saved preparation |
 | 130 | Keyboard interruption; available partial output is retained |
 
-Attack impact is assessed through metrics; successful execution is not an attack-impact
-claim.
+Service scene mismatch, a missing service at a nonlocal endpoint, absent `--trafficsim-models`
+and invalid GPU selection are configuration errors (exit 2). Container launch, readiness and
+explicit stop failures exit 1. Unsupported hook stages or incompatible commands fail the
+affected run at its start (exit 1). `evaluate` requires `prepared.json` and exits 1 if it is
+missing. With `--prepared`, hooks requiring more than the saved deployment tick budget cause
+execution to fail with exit 1. Saved-result and file-reading failures remain distinguishable
+from configuration incompatibility.
 
 ## Supplied configurations
 
-See [Quickstart](../getting-started/quickstart.md#supplied-configurations) and
-[Configuration](configuration.md).
+See the complete [configuration list](../examples/README.md) and
+[configuration reference](configuration.md).

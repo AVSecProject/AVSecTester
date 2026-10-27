@@ -132,7 +132,7 @@ class MeshRaycaster:
 
 def camera_depth(camera: Camera, cam_from_world: np.ndarray,
                  raycasters: Sequence[MeshRaycaster]) -> np.ndarray:
-    """Optical-axis z depth at pixel centres, taking the nearest of all supplied meshes.
+    """Optical-axis z depth at pixel centers, taking the nearest of all supplied meshes.
 
     Rays use the camera's own lens model and are transformed into world coordinates.
     Pixels outside the valid forward lens domain, and rays without a hit, are positive inf.
@@ -159,3 +159,9 @@ def camera_depth(camera: Camera, cam_from_world: np.ndarray,
             distances = np.minimum(distances, raycaster.distances(origins, world_rays))
         depth[indices[valid]] = distances * optical_rays[:, 2]
     return depth.reshape(camera.height, camera.width)
+
+
+__all__ = [
+    'MeshRaycaster',
+    'camera_depth',
+]

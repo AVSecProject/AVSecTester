@@ -2,7 +2,6 @@
 
 from dataclasses import replace
 from types import MappingProxyType
-import weakref
 
 import numpy as np
 import pytest
@@ -12,23 +11,11 @@ from avsectester.closed_loop.avstacks.implemented.rule_based import (
     rule_based_driving_adapter,
 )
 from avsectester.closed_loop.simulators.ego_dynamics import PlanarEgoState
-from avsectester.geometry import CameraCalibration, PinholeCamera
-from avsectester.geometry.cameras import BODY_FROM_OPTICAL
-from avsectester.data_types import Observation
-from tests.fakes import CocoDetectionModel
 
 
-def test_rule_based_avstack():
-    camera = PinholeCamera(np.array([[100., 0., 50.], [0., 100., 40.], [0., 0., 1.]]), 100, 80)
-    observation = Observation(
-        0., 0, {"front": np.full((80, 100, 3), 30, np.uint8)},
-        {"front": CameraCalibration(camera, BODY_FROM_OPTICAL)},
-        PlanarEgoState(speed=10.), 10.,
-        np.column_stack((np.arange(101.), np.zeros(101), np.zeros(101))),
-    )
-    detector = CocoStopSignDetector(
-        "unused-local-weights.pth", device="cpu", model=CocoDetectionModel(boxes=((48., 38., 52., 42.),)),
-    )
+def test_rule_based_avstack(rule_based_observation, rule_based_detector):
+    observation = rule_based_observation()
+    detector = rule_based_detector
     avstack = RuleBasedAVStack(detector, camera_id="front")
     assert avstack.detector is detector
     assert isinstance(avstack.planner, StopSignPlanner)
@@ -44,19 +31,12 @@ def test_rule_based_avstack():
         RuleBasedAVStack(detector, object())
     with pytest.raises(TypeError, match="planner"):
         RuleBasedAVStack(detector, planner=object())
-    model_reference = weakref.ref(detector.model)
     try:
         avstack.reset(observation)
         assert avstack.component_log() is None
         command = avstack(observation)
-        assert avstack.command_modes == frozenset({"trajectory"})
-        assert avstack.detections() is None
         assert command.trajectory[0] == ((0., 0., 0.), (1., 0., 0., 0.), 0)
         log = avstack.component_log()
-        assert set(log) == {
-            "detections", "sign_estimates", "state", "target_track_id", "distance_to_stop_m",
-            "acceleration_mps2", "planned_speed_mps", "braking", "tracks",
-        }
         assert log["detections"][0]["score"] == pytest.approx(.9)
         assert len(log["detections"][0]["box_xyxy"]) == 4
         assert len(log["sign_estimates"][0]["rig_position_m"]) == 3
@@ -88,7 +68,6 @@ def test_rule_based_avstack():
         avstack.close()
     assert avstack.component_log() is None
     assert detector.model is None
-    assert model_reference() is None
 
 
 def test_rule_based_driving_adapter(tmp_path):

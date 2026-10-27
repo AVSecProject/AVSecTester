@@ -156,6 +156,7 @@ class Recorder:
         return self.registry.snapshot(value)
 
     def record_step(self, record: StepRecord) -> StepRecord:
+        """Append a decision record and flush a complete row group when due."""
         self._check_open()
         if not isinstance(record, StepRecord):
             raise TypeError("record_step requires StepRecord")
@@ -171,6 +172,7 @@ class Recorder:
         return snapshot
 
     def record_event(self, kind: str, *, step: int | None = None, **data: Any) -> EventRecord:
+        """Append a timestamped runtime event to the recording."""
         self._check_open()
         event = self.snapshot(EventRecord(kind=kind, step=step, data=data))
         if self._writer is not None:
@@ -186,6 +188,7 @@ class Recorder:
             self._writer.flush()
 
     def finish(self, status: str = "completed", **details: Any) -> RunLog:
+        """Finish recording with a valid terminal status and persist its manifest."""
         if self._finished:
             return self.log
         if status not in {"completed", "failed", "cancelled"}:
@@ -572,3 +575,12 @@ def _memory_size(value: Any) -> int:
     elif isinstance(value, list):
         size += sum(_memory_size(item) for item in value)
     return size
+
+
+__all__ = [
+    'StepRecord',
+    'EventRecord',
+    'RunLog',
+    'Recorder',
+    'read_table',
+]

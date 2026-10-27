@@ -7,7 +7,22 @@ from .models import ExperimentResult, PreparedExperiment, SelectionDecision, Seg
 from .result_evaluation import evaluate
 from .metadata_file import load_metadata, save_metadata
 
+
 __all__ = [
-    "ConfigurationMismatchError", "Experiment", "ExperimentConfiguration", "MetadataConfiguration", "RunsConfiguration", "SplitConfiguration", "TreatmentConfiguration", "load_configuration",
-    "PreparedExperiment", "ExperimentResult", "SelectionDecision", "SegmentUnit", "TreatmentResult", "evaluate", "load_metadata", "save_metadata",
+    'ConfigurationMismatchError',
+    'Experiment',
+    'ExperimentConfiguration',
+    'MetadataConfiguration',
+    'RunsConfiguration',
+    'SplitConfiguration',
+    'TreatmentConfiguration',
+    'load_configuration',
+    'PreparedExperiment',
+    'ExperimentResult',
+    'SelectionDecision',
+    'SegmentUnit',
+    'TreatmentResult',
+    'evaluate',
+    'load_metadata',
+    'save_metadata',
 ]

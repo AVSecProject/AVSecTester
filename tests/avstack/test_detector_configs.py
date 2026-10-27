@@ -67,7 +67,7 @@ def detector_configuration(detector_type, model_name, detector_dataset):
 
 @pytest.mark.parametrize("model_name,detector_dataset", image_detectors())
 def test_image_detector(model_name, detector_dataset):
-    torch = pytest.importorskip("torch")
+    import torch
     api = pytest.importorskip("mmdet.apis")
     from mmdet.structures import DetDataSample
 
@@ -82,7 +82,7 @@ def test_image_detector(model_name, detector_dataset):
 
 @pytest.mark.parametrize("model_name,detector_dataset,prepare_metadata", point_cloud_detectors())
 def test_point_cloud_detector(model_name, detector_dataset, prepare_metadata):
-    torch = pytest.importorskip("torch")
+    import torch
     api = pytest.importorskip("mmdet3d.apis")
     from mmdet3d.structures import Det3DDataSample, LiDARInstance3DBoxes
 

@@ -1,4 +1,4 @@
-"""Dataset data_types. A frame reference identifies a dataset position, never a simulator handle."""
+"""Dataset interfaces, frame references and recorded scenario starts. A frame reference identifies a dataset position, never a simulator handle."""
 
 from __future__ import annotations
 
@@ -33,6 +33,7 @@ class FrameReference:
 
 @dataclass(frozen=True)
 class ScenarioDescriptor:
+    """A scenario's ``id``, dataset class name in ``kind``, and adapter-specific ``payload``."""
     id: str
     kind: str
     payload: Mapping[str, Any] = field(default_factory=dict)
@@ -95,25 +96,36 @@ class Dataset(ABC):
     """
 
     @abstractmethod
-    def scenarios(self) -> Iterator[ScenarioDescriptor]: ...
+    def scenarios(self) -> Iterator[ScenarioDescriptor]:
+        """Enumerate available scenarios in dataset order."""
+        ...
 
     @abstractmethod
-    def frames(self, scenario_id: str) -> Sequence[FrameReference]: ...
+    def frames(self, scenario_id: str) -> Sequence[FrameReference]:
+        """Return the ordered frame references for a scenario."""
+        ...
 
     @abstractmethod
-    def frame_data(self, scenario_id: str, frame: FrameReference) -> FrameData | data_types.Unavailable: ...
+    def frame_data(self, scenario_id: str, frame: FrameReference) -> FrameData | data_types.Unavailable:
+        """Load frame data for the requested scenario reference."""
+        ...
 
     @abstractmethod
-    def native(self, scenario_id: str) -> Any: ...
+    def native(self, scenario_id: str) -> Any:
+        """Return the native record for ``scenario_id``."""
+        ...
 
     @abstractmethod
-    def scenario_start(self, scenario_id: str, frame: FrameReference) -> ScenarioStart: ...
+    def scenario_start(self, scenario_id: str, frame: FrameReference) -> ScenarioStart:
+        """Build the recorded ego, map and simulator payload for a scenario reference."""
+        ...
 
     def scenario_map(self, scenario_id: str) -> ScenarioMap | data_types.Unavailable:
         """Return immutable semantic map data, or explain why this dataset has none."""
         return data_types.Unavailable("This dataset provides no map")
 
     def checked_frame(self, scenario_id: str, frame: FrameReference) -> FrameReference:
+        """Validate a frame reference against the scenario timeline and return the canonical reference."""
         frames = self.frames(scenario_id)
         if (frame.scenario_id != scenario_id or frame.position >= len(frames)
                 or frame != frames[frame.position]):
@@ -131,3 +143,13 @@ class Dataset(ABC):
         if stop >= len(frames):
             raise ValueError("Decision range exceeds the scenario's terminal frame")
         return tuple(frames[start.position:stop + 1])
+
+
+__all__ = [
+    'FrameReference',
+    'ScenarioDescriptor',
+    'SensorDataReference',
+    'FrameData',
+    'ScenarioStart',
+    'Dataset',
+]

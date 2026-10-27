@@ -15,16 +15,19 @@ class Corruption(ABC):
     corrupted one; ``severity`` in ``[0, 1]`` scales the corruption strength (0 ≈ identity)."""
 
     category: str = "sensor"
+    'Environment corruption category used to group related sensor effects.'
 
     def __init__(self, severity: float = 0.5) -> None:
         self.severity = float(np.clip(severity, 0.0, 1.0))
 
     @property
     def name(self) -> str:
+        """Configuration name identifying this corruption."""
         return f"{type(self).__name__}@{self.severity:.2f}"
 
     @abstractmethod
     def apply(self, rgb: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+        """Transform one sensor payload using the supplied random generator."""
         ...
 
 
@@ -42,6 +45,7 @@ class Fog(Corruption):
     """Atmospheric haze: blend toward a bright airlight and flatten contrast (uniform, depth-free)."""
 
     category = "weather"
+    'Environment corruption category used to group related sensor effects.'
 
     def apply(self, rgb: np.ndarray, rng: np.random.Generator) -> np.ndarray:
         t = 1.0 - 0.82 * self.severity          # transmission (1 = clear)
@@ -56,6 +60,7 @@ class Rain(Corruption):
     """Darken, then add motion-blurred bright streaks (procedural)."""
 
     category = "weather"
+    'Environment corruption category used to group related sensor effects.'
 
     def apply(self, rgb: np.ndarray, rng: np.random.Generator) -> np.ndarray:
         import cv2
@@ -80,6 +85,7 @@ class Snow(Corruption):
     """Bright speckles plus a slight brighten and blur (procedural)."""
 
     category = "weather"
+    'Environment corruption category used to group related sensor effects.'
 
     def apply(self, rgb: np.ndarray, rng: np.random.Generator) -> np.ndarray:
         import cv2
@@ -100,6 +106,7 @@ class Brightness(Corruption):
     """Multiplicative brightening (over-exposure / bright sun)."""
 
     category = "lighting"
+    'Environment corruption category used to group related sensor effects.'
 
     def apply(self, rgb: np.ndarray, rng: np.random.Generator) -> np.ndarray:
         return _u8(_f(rgb) * (1.0 + 0.8 * self.severity))
@@ -109,6 +116,7 @@ class LowLight(Corruption):
     """Night / underexposure: darken and add read noise (a dark sensor is a noisy sensor)."""
 
     category = "lighting"
+    'Environment corruption category used to group related sensor effects.'
 
     def apply(self, rgb: np.ndarray, rng: np.random.Generator) -> np.ndarray:
         out = _f(rgb) * (1.0 - 0.75 * self.severity)
@@ -120,6 +128,7 @@ class Contrast(Corruption):
     """Reduce contrast toward the frame mean (flat, washed-out light)."""
 
     category = "lighting"
+    'Environment corruption category used to group related sensor effects.'
 
     def apply(self, rgb: np.ndarray, rng: np.random.Generator) -> np.ndarray:
         mean = _f(rgb).mean(axis=(0, 1), keepdims=True)
@@ -130,6 +139,7 @@ class Gamma(Corruption):
     """Non-linear tone shift (darker mid-tones), as from a different exposure curve."""
 
     category = "lighting"
+    'Environment corruption category used to group related sensor effects.'
 
     def apply(self, rgb: np.ndarray, rng: np.random.Generator) -> np.ndarray:
         g = 1.0 + 1.6 * self.severity
@@ -137,9 +147,10 @@ class Gamma(Corruption):
 
 
 class ColorTemp(Corruption):
-    """Colour-cast shift — warm (default, sodium street-lights / sunset) or cool."""
+    """Color-cast shift — warm (default, sodium street-lights / sunset) or cool."""
 
     category = "lighting"
+    'Environment corruption category used to group related sensor effects.'
 
     def __init__(self, severity: float = 0.5, warm: bool = True) -> None:
         super().__init__(severity)
@@ -214,7 +225,7 @@ class JPEGCompression(Corruption):
 
 
 class ChromaticAberration(Corruption):
-    """Lateral colour fringing — shift the red and blue channels apart."""
+    """Lateral color fringing — shift the red and blue channels apart."""
 
     def apply(self, rgb: np.ndarray, rng: np.random.Generator) -> np.ndarray:
         s = round(self.severity * 8)
@@ -233,6 +244,7 @@ CORRUPTIONS: dict[str, type[Corruption]] = {
         GaussianNoise, ShotNoise, MotionBlur, DefocusBlur, JPEGCompression, ChromaticAberration,
     )
 }
+'Mapping from configuration names to the supplied sensor corruption classes.'
 
 
 ALBUMENTATIONS_TRANSFORMS = frozenset({
@@ -298,3 +310,24 @@ def _albumentations_builders() -> dict[str, tuple[str, Any]]:
 
 
 CORRUPTIONS["AlbumentationsCorruption"] = AlbumentationsCorruption
+
+
+__all__ = [
+    'CORRUPTIONS',
+    'Corruption',
+    'Fog',
+    'Rain',
+    'Snow',
+    'Brightness',
+    'LowLight',
+    'Contrast',
+    'Gamma',
+    'ColorTemp',
+    'GaussianNoise',
+    'ShotNoise',
+    'MotionBlur',
+    'DefocusBlur',
+    'JPEGCompression',
+    'ChromaticAberration',
+    'AlbumentationsCorruption',
+]

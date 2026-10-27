@@ -106,3 +106,8 @@ def load_metadata(path: str | Path) -> tuple[AttackSegment, ...]:
     """
     return _read_document(path).segments
 
+
+__all__ = [
+    'save_metadata',
+    'load_metadata',
+]

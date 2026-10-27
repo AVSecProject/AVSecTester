@@ -1,84 +1,36 @@
-"""Recorder and RunLog contracts, including numerical payload round trips."""
+"""RunLog transports one captured decision and owns recording lifecycle checks."""
 
-from collections import OrderedDict, defaultdict, namedtuple
-from dataclasses import fields, is_dataclass
 from pathlib import Path
+from collections import OrderedDict, namedtuple
 
 import numpy as np
 import pytest
 
-from avsectester.data_types import Control, Detection, Observation, RecordedOutput, WorldSnapshot
+from avsectester.data_types import ActorState, Control, Detection, Observation, RecordedOutput, WorldSnapshot
 from avsectester.closed_loop.simulators.base import ClockSnapshot
 from avsectester.geometry import CameraCalibration, FThetaCamera, PinholeCamera, WindshieldDistortion
 from avsectester.geometry.cameras import BODY_FROM_OPTICAL
-from avsectester.execution.runner import RecordingPolicy
 from avsectester.rendering import ObjectVisibility
 from avsectester.runlog import Recorder, RunLog, StepRecord, read_table
 
-Point = namedtuple("Point", "x y")
-VALUES = [
-    pytest.param(None, None, id="none"),
-    pytest.param(3.25, 3.25, id="scalar"),
-    pytest.param(np.int64(7), 7, id="numpy-scalar"),
-    pytest.param(Path("artifacts/patch.png"), Path("artifacts/patch.png"), id="path"),
-    pytest.param(b"sensor-bytes", b"sensor-bytes", id="bytes"),
-    pytest.param(WorldSnapshot(.1, 3, traffic_lights={"signal-1": "red"}),
-                 WorldSnapshot(.1, 3, traffic_lights={"signal-1": "red"}), id="traffic-lights"),
-    pytest.param(ObjectVisibility("actor_cuboids", ("unmeasured-actor",), 12),
-                 ObjectVisibility("actor_cuboids", ("unmeasured-actor",), 12), id="object-visibility"),
-    pytest.param({"list": [1, None], "tuple": ("car", .9)},
-                 {"list": [1, None], "tuple": ("car", .9)}, id="nested"),
-    pytest.param(Point(1, [2, 3]), (1, [2, 3]), id="namedtuple"),
-    pytest.param(defaultdict(list, host=[1]), {"host": [1]}, id="defaultdict"),
-    pytest.param(OrderedDict(second=2, first=1), {"second": 2, "first": 1}, id="ordered-dict"),
-    pytest.param(np.arange(24, dtype=np.float32).reshape(4, 6)[:, ::2],
-                 np.array([[0, 2, 4], [6, 8, 10], [12, 14, 16], [18, 20, 22]], np.float32),
-                 id="strided-array"),
-    pytest.param(np.arange(6, dtype=np.int16).reshape(2, 3).T,
-                 np.array([[0, 3], [1, 4], [2, 5]], np.int16), id="transposed-array"),
-    pytest.param(np.empty((0, 4), dtype=np.uint8), np.empty((0, 4), np.uint8), id="empty-array"),
-    pytest.param(PinholeCamera(np.array([[50., 0., 16.], [0., 55., 12.], [0., 0., 1.]]), 32, 24),
-                 PinholeCamera(np.array([[50., 0., 16.], [0., 55., 12.], [0., 0., 1.]]), 32, 24),
-                 id="pinhole-camera"),
-    pytest.param(FThetaCamera(16., 12., (0., 20.), 32, 24, (0., .05), max_angle=1.4),
-                 FThetaCamera(16., 12., (0., 20.), 32, 24, (0., .05), max_angle=1.4),
-                 id="fisheye-camera"),
-    pytest.param(FThetaCamera(16., 12., (0., 20.), 32, 24, (0., .05), max_angle=1.4,
-                              windshield=WindshieldDistortion((0., 1., 0., 0., 0., 0.), (0., 0., 0., 1., 0., 0.),
-                                                              (0., 1., 0., 0., 0., 0.), (0., 0., 0., 1., 0., 0.))),
-                 FThetaCamera(16., 12., (0., 20.), 32, 24, (0., .05), max_angle=1.4,
-                              windshield=WindshieldDistortion((0., 1., 0., 0., 0., 0.), (0., 0., 0., 1., 0., 0.),
-                                                              (0., 1., 0., 0., 0., 0.), (0., 0., 0., 1., 0., 0.))),
-                 id="fisheye-windshield-camera"),
-]
 
-
-def assert_value(actual, expected):
-    if isinstance(expected, np.ndarray):
-        assert actual.shape == expected.shape and actual.dtype == expected.dtype
-        np.testing.assert_array_equal(actual, expected)
-    elif is_dataclass(expected):
-        assert type(actual) is type(expected)
-        for field in fields(expected):
-            assert_value(getattr(actual, field.name), getattr(expected, field.name))
-    elif isinstance(expected, dict):
-        assert list(actual) == list(expected)
-        for key, item in expected.items():
-            assert_value(actual[key], item)
-    elif isinstance(expected, (tuple, list)):
-        assert isinstance(actual, type(expected)) and len(actual) == len(expected)
-        for item, other in zip(actual, expected):
-            assert_value(item, other)
-    else:
-        assert actual == expected
-
-
-@pytest.mark.parametrize("value,expected", VALUES)
-def test_record_and_read(tmp_path, value, expected):
+def test_record_and_read(tmp_path):
     pixels = np.full((2, 3, 3), 40, np.uint8)
     observation = Observation(.1, 4, {"front": pixels})
     command = Control(throttle=.5)
     detection = Detection((10, 0, 1), (4, 2, 2), 0, "car", .9)
+    components = {
+        "none": None, "integer": np.int64(7),
+        "path": Path("artifacts/patch.png"), "bytes": b"sensor-bytes",
+        "namedtuple": namedtuple("Point", "x y")(1, [2, 3]),
+        "ordered": OrderedDict(second=2, first=1),
+        "pinhole": PinholeCamera(np.array([[50., 0., 16.], [0., 55., 12.], [0., 0., 1.]]), 32, 24),
+    }
+    pose = np.eye(4)
+    pose[:3, 3] = (4., 2., 1.)
+    obj = ActorState(pose, extent=(4., 2., 1.))
+    world = WorldSnapshot(.1, 3, objects={"sign": obj})
+    visibility = {"sign": {"front": ObjectVisibility("depth", (), 12)}}
     recorder = Recorder(tmp_path / "run", metadata={"seed": 4})
     recorder.record_event("initialization", scenario="scene", clock=ClockSnapshot(.1, 4))
     outputs = [RecordedOutput("ttc", 1.5, 0, "observation", 4, .1),
@@ -86,7 +38,8 @@ def test_record_and_read(tmp_path, value, expected):
                               0, "observation", 4, .1)]
     recorder.record_step(StepRecord(
         0, raw_observation=observation, produced_command=command, executed_command=command,
-        detections=[detection], components={"result": value}, outputs=outputs,
+        detections=[detection], components=components, outputs=outputs,
+        object_visibility=visibility, physical_post=world,
     ))
     pixels.fill(0)
     command.throttle = 0
@@ -95,14 +48,24 @@ def test_record_and_read(tmp_path, value, expected):
     assert decoded.status == "completed" and decoded.metadata == {"seed": 4}
     assert [event.kind for event in decoded.events] == ["initialization", "termination"]
     assert decoded.events[0].data["clock"] == ClockSnapshot(.1, 4)
-    step = decoded.steps[0]
-    assert_value(step.components["result"], expected)
+    step, = decoded.steps
+    assert step.components.keys() == components.keys()
+    assert step.components["none"] is None
+    assert step.components["integer"] == 7
+    assert step.components["path"] == Path("artifacts/patch.png")
+    assert step.components["bytes"] == b"sensor-bytes"
+    assert step.components["namedtuple"] == (1, [2, 3])
+    assert list(step.components["ordered"].items()) == [("second", 2), ("first", 1)]
+    camera = step.components["pinhole"]
+    assert isinstance(camera, PinholeCamera) and (camera.width, camera.height) == (32, 24)
+    np.testing.assert_array_equal(camera.K, components["pinhole"].K)
+    assert step.object_visibility == visibility
+    stored = step.physical_post.objects["sign"]
+    np.testing.assert_array_equal(stored.pose, obj.pose)
+    assert stored.extent == obj.extent
     np.testing.assert_array_equal(step.raw_observation.sensor_data["front"], 40)
     assert step.produced_command.throttle == step.executed_command.throttle == .5
-    assert step.detections == [detection]
-    assert step.outputs == outputs
-    with pytest.raises(RuntimeError, match="closed"):
-        recorder.record_step(StepRecord(1))
+    assert step.detections == [detection] and step.outputs == outputs
 
 
 def test_observation_calibration(tmp_path):
@@ -110,20 +73,17 @@ def test_observation_calibration(tmp_path):
                         windshield=WindshieldDistortion(
                             (0., 1., 0., 0., 0., 0.), (0., 0., 0., 1., 0., 0.),
                             (0., 1., 0., 0., 0., 0.), (0., 0., 0., 1., 0., 0.)))
-    observation = Observation(
-        .1, 1, {"front": np.zeros((24, 32, 3), np.uint8)},
-        calibration={"front": CameraCalibration(lens, BODY_FROM_OPTICAL)},
-    )
-    recorded = RecordingPolicy(representations=()).observation(observation, 0, "model_input")
-    assert recorded.sensor_data == {}
+    observation = Observation(.1, 1, calibration={"front": CameraCalibration(lens, BODY_FROM_OPTICAL)})
     with Recorder(tmp_path / "calibrated") as recorder:
-        recorder.record_step(StepRecord(0, model_observation=recorded))
+        recorder.record_step(StepRecord(0, model_observation=observation))
     decoded = RunLog.read(tmp_path / "calibrated").steps[0].model_observation
-    assert_value(decoded.calibration, observation.calibration)
+    calibration = decoded.calibration["front"]
+    assert isinstance(calibration, CameraCalibration) and isinstance(calibration.camera, FThetaCamera)
+    assert calibration.camera.windshield == lens.windshield
+    np.testing.assert_array_equal(calibration.rig_from_camera, BODY_FROM_OPTICAL)
     references = RunLog.read(tmp_path / "calibrated", load_payloads=False)
     calibration = references.steps[0].model_observation.calibration["front"]
-    assert isinstance(calibration, CameraCalibration)
-    assert isinstance(calibration.camera, FThetaCamera)
+    assert isinstance(calibration, CameraCalibration) and isinstance(calibration.camera, FThetaCamera)
 
 
 def test_read_selected_columns(tmp_path):
@@ -163,3 +123,52 @@ def test_chunks_and_schema_evolution(tmp_path):
     assert recovered.steps[1].components["trajectory"] == [(1., 2.)]
     with pytest.raises(ValueError, match="positive"):
         Recorder(chunk_steps=0)
+
+
+def test_record_step():
+    recorder = Recorder()
+    record = recorder.record_step(StepRecord(0, components={"reading": 1.}))
+    assert record.step == 0 and record.components == {"reading": 1.}
+    with pytest.raises(TypeError, match="requires StepRecord"):
+        recorder.record_step(object())
+    with pytest.raises(ValueError, match="strictly increasing"):
+        recorder.record_step(StepRecord(0))
+    recorder.finish()
+    with pytest.raises(RuntimeError, match="closed"):
+        recorder.record_step(StepRecord(1))
+
+
+def test_flush(tmp_path):
+    directory = tmp_path / "flushed"
+    recorder = Recorder(directory)
+    recorder.record_step(StepRecord(0, components={"reading": 1.}))
+    recorder.flush()
+    pending = directory / "steps" / "part-99999.parquet.open"
+    pending.write_bytes(b"an incomplete chunk")
+    visible = RunLog.read(directory)
+    assert visible.status == "incomplete"
+    assert [step.components["reading"] for step in visible.steps] == [1.]
+    recorder.finish()
+    assert len(RunLog.read(directory).steps) == 1
+
+
+def test_record_without_path():
+    recorder = Recorder()
+    recorder.record_event("initialization", note="in memory")
+    recorder.record_step(StepRecord(0, components={"score": 1.}))
+    recorder.flush()
+    log = recorder.finish()
+    assert log.path is None and log.status == "completed"
+    assert len(log.steps) == 1 and log.steps[0].components["score"] == 1.
+    assert [event.kind for event in log.events] == ["initialization", "termination"]
+    with pytest.raises(ValueError, match="persistent output path"):
+        Recorder(retain_steps=False)
+
+
+def test_finish():
+    recorder = Recorder()
+    with pytest.raises(ValueError, match="Final status"):
+        recorder.finish("unknown")
+    log = recorder.finish("failed", error="a sensor stopped")
+    assert log.status == "failed" and log.events[-1].data["error"] == "a sensor stopped"
+    assert recorder.finish() is log

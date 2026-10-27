@@ -31,27 +31,6 @@ def test_harmonize_tensor(reference, reference_linear):
     result = harmonizer.harmonize_tensor(composite, mask, background, nominal)
     expected = 1.055 * (.4 * nominal_gain) ** (1 / 2.4) - .055
     torch.testing.assert_close(result[:, mask], torch.full((3, 9), expected))
-    with pytest.raises(ValueError, match="nominal composite"):
-        harmonizer.harmonize_tensor(composite, mask, background, nominal[:, :8])
-    assert replace(harmonizer, gain_range=(.6, .7)).exposure_gain(
-        composite, mask, background).item() == pytest.approx(.6)
-    assert replace(harmonizer, gain_range=(.05, .1)).exposure_gain(
-        composite, mask, background).item() == pytest.approx(.1)
-
-    colors = composite.clone()
-    colors[2, mask] = 0.
-    colors.requires_grad_()
-    harmonizer.harmonize_tensor(colors, mask, background, colors)[0, mask].sum().backward()
-    assert torch.isfinite(colors.grad).all() and colors.grad[:, mask].abs().sum() > 0
-    empty = torch.zeros_like(mask)
-    assert harmonizer.exposure_gain(composite, empty, background) is None
-    torch.testing.assert_close(harmonizer.harmonize_tensor(composite, empty, background, composite), composite)
-    ring = ExposureHarmonizer(reference="ring")
-    full = torch.ones_like(mask)
-    assert ring.exposure_gain(composite, full, background) is None
-    torch.testing.assert_close(ring.harmonize_tensor(composite, full, background, composite), composite)
-    with pytest.raises(NotImplementedError, match="ClassicHarmonizer.*not differentiable"):
-        ClassicHarmonizer().harmonize_tensor(composite, mask, background, composite)
 
 
 def test_feathering():
@@ -71,7 +50,7 @@ def test_feathering():
         composite[:, :1, :1], tiny, background[:, :1, :1], composite[:, :1, :1])).all()
 
 
-def test_numpy_call():
+def test_numpy_and_tensor_interfaces_match():
     composite = np.full((7, 8, 3), (224, 127, 0), dtype=np.uint8)
     background = np.full_like(composite, (31, 73, 104))
     mask = np.zeros((7, 8), dtype=np.uint8)
@@ -114,3 +93,55 @@ def test_pctnet_harmonizer(tmp_path, monkeypatch):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     cpu = PCTNetHarmonizer(tmp_path, device="cpu", weights=weights, strict=True)
     np.testing.assert_array_equal(cpu(image, mask, image), np.full_like(image, 127))
+    with pytest.raises(RuntimeError, match="PCTNet harmonization failed"):
+        PCTNetHarmonizer(tmp_path / "libcom", weights=str(tmp_path / "missing.pth"), strict=True)(
+            image, mask, image)
+
+
+def test_harmonize_tensor_gradient_and_empty_regions():
+    mask = torch.zeros(9, 9, dtype=torch.bool)
+    mask[3:6, 3:6] = True
+    background = torch.full((3, 9, 9), .3)
+    composite = torch.full((3, 9, 9), .7)
+    harmonizer = ExposureHarmonizer("under", ring_px=1, gain_range=(.1, 2.), feather_sigma=0.)
+    with pytest.raises(ValueError, match="nominal composite"):
+        harmonizer.harmonize_tensor(composite, mask, background, composite[:, :8])
+    assert replace(harmonizer, gain_range=(.6, .7)).exposure_gain(
+        composite, mask, background).item() == pytest.approx(.6)
+    assert replace(harmonizer, gain_range=(.05, .1)).exposure_gain(
+        composite, mask, background).item() == pytest.approx(.1)
+    colors = composite.clone()
+    colors[2, mask] = 0.
+    colors.requires_grad_()
+    harmonizer.harmonize_tensor(colors, mask, background, colors)[0, mask].sum().backward()
+    assert torch.isfinite(colors.grad).all() and colors.grad[:, mask].abs().sum() > 0
+    empty = torch.zeros_like(mask)
+    assert harmonizer.exposure_gain(composite, empty, background) is None
+    torch.testing.assert_close(harmonizer.harmonize_tensor(composite, empty, background, composite), composite)
+    ring = ExposureHarmonizer(reference="ring")
+    full = torch.ones_like(mask)
+    assert ring.exposure_gain(composite, full, background) is None
+    torch.testing.assert_close(ring.harmonize_tensor(composite, full, background, composite), composite)
+    with pytest.raises(NotImplementedError, match="ClassicHarmonizer.*not differentiable"):
+        ClassicHarmonizer().harmonize_tensor(composite, mask, background, composite)
+
+
+def test_classic_harmonizer():
+    image = np.full((8, 9, 3), [220, 20, 40], np.uint8)
+    background = np.full_like(image, 70)
+    mask = np.full((8, 9), 255, np.uint8)
+    harmonizer = ClassicHarmonizer(color_transfer=False, poisson=False)
+    np.testing.assert_array_equal(harmonizer(image, mask, background), image)
+    # Uniform source/target colours make full LAB transfer's expected result explicit.
+    background = np.full((32, 32, 3), [30, 80, 120], np.uint8)
+    image = background.copy()
+    mask = np.zeros((32, 32), np.uint8)
+    mask[8:24, 8:24] = 255
+    image[mask > 0] = [220, 60, 20]
+    transferred = ClassicHarmonizer(color_transfer=True, poisson=False, blend="none",
+                                     preserve_chroma=False)(image, mask, background)
+    np.testing.assert_allclose(transferred[mask > 0], background[mask > 0], atol=3)
+    cloned = ClassicHarmonizer(color_transfer=False, poisson=True, blend="poisson")(
+        image, mask, background)
+    np.testing.assert_allclose(cloned, background, atol=2)
+    assert not np.array_equal(cloned, image)

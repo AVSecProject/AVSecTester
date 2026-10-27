@@ -75,7 +75,7 @@ class MaskedPatchPerturbation(Perturbation):
 
 
 def _colors(texture: np.ndarray) -> torch.Tensor:
-    """Straight RGB colours of a uint8 RGBA texture as a CHW tensor in [0, 1]."""
+    """Straight RGB colors of a uint8 RGBA texture as a CHW tensor in [0, 1]."""
     return torch.as_tensor(texture[..., :3].copy(), dtype=torch.float32).permute(2, 0, 1) / 255
 
 

@@ -21,12 +21,12 @@ from avsectester.geometry.poses import rotation_matrix, validated_vector
 
 @dataclass(frozen=True)
 class ActorState:
-    """World-from-actor SE(3), world velocity, stable identity in canonical right-handed axes.
+    """An actor's world-from-origin pose, world velocity and optional bounding-box geometry.
 
     ``category`` is the actor's class, such as ``vehicle`` or a dataset-native category,
-    when known. ``extent`` is the full (length, width, height) in metres, not half extents.
-    ``box_center`` is the bounding-box centre in actor coordinates; ``pose`` remains the
-    actor/rig origin, so world box centres are ``pose @ [*box_center, 1]``.
+    when known. ``extent`` is the full (length, width, height) in meters, not half extents.
+    ``box_center`` is the bounding-box center in actor coordinates; ``pose`` remains the
+    actor/rig origin, so world box centers are ``pose @ [*box_center, 1]``.
     ``box_rotation`` is the local right-handed (roll, pitch, yaw) in degrees.
     """
 
@@ -55,7 +55,7 @@ class ActorState:
             object.__setattr__(self, "extent", tuple(float(value) for value in self.extent))
 
     def box_transform(self) -> np.ndarray:
-        """World-from-box-centre transform, including local roll/pitch/yaw degree rotation."""
+        """World-from-box-center transform, including local roll/pitch/yaw degree rotation."""
         local = np.eye(4)
         local[:3, :3] = rotation_matrix(self.box_rotation)
         local[:3, 3] = self.box_center
@@ -71,7 +71,7 @@ class Unavailable:
 
 @dataclass
 class TargetSpec:
-    """The object to attack, in image-space pixels (``box`` = xyxy) plus an optional class label."""
+    """The object to attack, with an image-space xyxy ``box`` and an optional class label."""
 
     box: tuple[float, float, float, float]
     label: str | None = None
@@ -102,7 +102,7 @@ class Observation:
     — the bridge from world/vehicle coordinates into each sensor. No world/ground-truth state is
     included: the driving system sees only what a real vehicle senses about the scene and itself.
     ``route`` is model-visible navigation intent in ego coordinates (X forward, Y left),
-    an (N, 3) array in metres with zero Z, or None. Hooks and attacks may modify it.
+    an (N, 3) array in meters with zero Z, or None. Hooks and attacks may modify it.
     """
 
     t: float
@@ -181,10 +181,10 @@ class RecordedOutput:
 class Detection:
     """One 3D detection in the capture-time true ego frame (x forward, y left, z up).
 
-    ``position`` is the cuboid centre in metres, ``extent`` its full length, width and
-    height in metres, and ``yaw`` its heading in radians about ego z. Sensor mounting
+    ``position`` is the cuboid center in meters, ``extent`` its full length, width and
+    height in meters, and ``yaw`` its heading in radians about ego z. Sensor mounting
     extrinsics define this frame, independently of the driving system's localization.
-    Its origin is the true ego actor origin, not the ego cuboid centre. Evaluation uses
+    Its origin is the true ego actor origin, not the ego cuboid center. Evaluation uses
     ``StepRecord.physical_pre.ego`` to transform ground-truth actors into this frame.
     """
 
@@ -228,9 +228,11 @@ def validate_command_modes(command: Control, modes: frozenset[str] | None) -> No
 
 
 def read_camera_rgb(observation: Observation, camera: str | None = None) -> tuple[str, np.ndarray] | None:
-    """``(sensor_id, (H,W,3) uint8 RGB)`` for a camera payload, or None. Duck-typed over the canonical
-    ndarray payload (NuRec/dataset) and an avstack ``ImageData`` (``.rgb_image``) — the read side of the
-    sensor-plane seam, so transforms need no simulator-specific image wrapper."""
+    """Return the selected sensor ID and H×W×3 uint8 RGB pixels, or ``None`` if unavailable.
+
+    Accept arrays and image wrappers exposing ``rgb_image``. With no camera name, inspect
+    only the first sensor entry.
+    """
     data = observation.sensor_data
     if not data:
         return None
@@ -247,9 +249,11 @@ def read_camera_rgb(observation: Observation, camera: str | None = None) -> tupl
 
 
 def write_camera_rgb(observation: Observation, key: str, rgb: np.ndarray) -> Observation:
-    """Return a copy of ``observation`` with sensor ``key``'s image replaced by ``rgb``. An ndarray
-    payload is replaced; an ``ImageData``-like payload is shallow-copied with only its pixel buffer
-    swapped (the write side of the seam, shared by attacks and augmentations)."""
+    """Return an observation copy with sensor ``key`` replaced by pixels cast to uint8.
+
+    Replace array payloads directly; shallow-copy image wrappers and replace their pixel buffer.
+    Other fields and sensor entries retain their values.
+    """
     payload = observation.sensor_data[key]
     new_rgb = np.asarray(rgb).astype(np.uint8)
     if isinstance(payload, np.ndarray):
@@ -278,3 +282,20 @@ def write_sensor_data(observation: Observation, sensor: str, data: Any) -> Obser
     sensor_data = dict(observation.sensor_data)
     sensor_data[sensor] = replacement
     return replace(observation, sensor_data=sensor_data)
+
+
+__all__ = [
+    'ActorState',
+    'Unavailable',
+    'TargetSpec',
+    'Control',
+    'Observation',
+    'WorldSnapshot',
+    'StateEstimate',
+    'RecordedOutput',
+    'Detection',
+    'validate_command_modes',
+    'read_camera_rgb',
+    'write_camera_rgb',
+    'write_sensor_data',
+]

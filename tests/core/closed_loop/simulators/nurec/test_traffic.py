@@ -5,7 +5,7 @@ import pytest
 
 from avsectester.closed_loop.simulators.nurec import AlpaSimTraffic, TrafficSession, TrafficTrack
 from avsectester.geometry.poses import make_pose, rotation_matrix
-from tests.fakes import TrafficServiceBoundary
+from tests.fakes import TrafficServiceBoundary, proto_world_pose
 
 
 @pytest.fixture
@@ -91,7 +91,6 @@ def test_served_scenes(traffic_service):
 
 def test_open_session(traffic_service, traffic_inputs, monkeypatch):
     import grpc
-    from avsectester.closed_loop.simulators.nurec.renderer import pose_from_proto
 
     traffic_service.capture_channels(monkeypatch)
     traffic = AlpaSimTraffic(traffic_service.endpoint)
@@ -128,16 +127,16 @@ def test_open_session(traffic_service, traffic_inputs, monkeypatch):
         assert session.handover_time_us == 1600000
         sent = traffic_service.sessions[-1].logged_object_trajectories[1].trajectory.poses
         assert [point.timestamp_us for point in sent] == [0, 2000000]
-        np.testing.assert_allclose(pose_from_proto(sent[0].pose)[:3, 3], [1., 0., 0.])
-        np.testing.assert_allclose(pose_from_proto(sent[-1].pose)[:3, 3], [21., 0., 0.])
+        np.testing.assert_allclose(proto_world_pose(sent[0].pose)[:3, 3], [1., 0., 0.])
+        np.testing.assert_allclose(proto_world_pose(sent[-1].pose)[:3, 3], [21., 0., 0.])
     finally:
         session.close()
     with pytest.raises(RuntimeError, match="does not serve"):
         traffic.open_session(**{**traffic_inputs, "scene_id": "missing"})
-    traffic_service.minimum_history_length_us = 1
-    with pytest.raises(RuntimeError, match="minimum_history_length_us=1"):
-        traffic.open_session(**traffic_inputs)
-    traffic_service.minimum_history_length_us = 1600000
+    with TrafficServiceBoundary(
+            scene_ids=("clipgt-scene",), minimum_history_length_us=1) as short_history:
+        with pytest.raises(RuntimeError, match="minimum_history_length_us=1"):
+            AlpaSimTraffic(short_history.endpoint).open_session(**traffic_inputs)
     duplicate = TrafficTrack("bad", ((0, pose), (0, pose)), (4., 2., 1.), "car", False)
     with pytest.raises(ValueError, match="strictly increasing"):
         traffic.open_session(**{**traffic_inputs, "tracks": (duplicate,)})
@@ -149,7 +148,6 @@ def test_open_session(traffic_service, traffic_inputs, monkeypatch):
 
 def test_record_override(traffic_service, traffic_inputs):
     from alpasim_grpc.v0 import traffic_pb2
-    from avsectester.closed_loop.simulators.nurec.renderer import pose_from_proto
 
     traffic_service.simulate_response = lambda request: traffic_pb2.TrafficReturn()
     session = AlpaSimTraffic(traffic_service.endpoint).open_session(**traffic_inputs)
@@ -171,26 +169,26 @@ def test_record_override(traffic_service, traffic_inputs):
         for sample in track[:15]:
             expected = pose.copy()
             expected[:3, 3] += velocity * ((sample.timestamp_us - 1600000) / 1e6)
-            np.testing.assert_allclose(pose_from_proto(sample.pose), expected)
-        np.testing.assert_allclose(pose_from_proto(track[15].pose), corrected)
-        np.testing.assert_allclose(pose_from_proto(track[16].pose), first)
+            np.testing.assert_allclose(proto_world_pose(sample.pose), expected)
+        np.testing.assert_allclose(proto_world_pose(track[15].pose), corrected)
+        np.testing.assert_allclose(proto_world_pose(track[16].pose), first)
         session.record_override("host", 1700000, first, (0., 0., 0.))
         session.simulate(1800000, np.eye(4), {"host": first})
         updated = traffic_service.requests[-1].object_trajectory_updates[1].trajectory.poses
         assert [point.timestamp_us for point in updated] == list(range(100000, 1800001, 100000))
-        np.testing.assert_allclose(pose_from_proto(updated[-1].pose), first)
+        np.testing.assert_allclose(proto_world_pose(updated[-1].pose), first)
     finally:
         session.close()
 
 
 def test_simulate(traffic_service, traffic_inputs, monkeypatch):
     from alpasim_grpc.v0 import common_pb2 as common, traffic_pb2 as traffic
-    from avsectester.closed_loop.simulators.nurec.renderer import pose_from_proto
 
     args = {**traffic_inputs, "tracks": (*traffic_inputs["tracks"],
             TrafficTrack("other", traffic_inputs["ego_trajectory"], (4., 2., 1.), "car", False))}
     session = AlpaSimTraffic(traffic_service.endpoint).open_session(**args)
     pose = make_pose(rotation_matrix((0., 0., 90.)), (7., 8., 9.))
+
     def response(request):
         return traffic.TrafficReturn(object_trajectory_updates=[
             traffic.ObjectTrajectoryUpdate(object_id=identity, trajectory=common.Trajectory(poses=[
@@ -208,7 +206,7 @@ def test_simulate(traffic_service, traffic_inputs, monkeypatch):
         assert [item.object_id for item in request.object_trajectory_updates] == ["EGO", "other"]
         ego, other = request.object_trajectory_updates
         assert [point.timestamp_us for point in ego.trajectory.poses] == [1700000]
-        np.testing.assert_allclose(pose_from_proto(ego.trajectory.poses[0].pose), pose, atol=1e-12)
+        np.testing.assert_allclose(proto_world_pose(ego.trajectory.poses[0].pose), pose, atol=1e-12)
         assert [point.timestamp_us for point in other.trajectory.poses] == list(range(100000, 1700001, 100000))
     finally:
         session.close()

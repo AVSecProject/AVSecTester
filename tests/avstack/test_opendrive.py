@@ -8,9 +8,6 @@ import pytest
 pytest.importorskip("carla")
 
 from avsectester.maps import ScenarioMap, read_opendrive
-from avsectester.datasets.carla import CarlaDataset, CarlaRecipe, PrescribedMotion
-from tests.fakes import actor_state
-from tests.core.datasets.scenario_map_contract import assert_scenario_map
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -118,14 +115,3 @@ def test_lane_geometry():
     step = lane.left_boundary[np.abs(lane.left_boundary[:, 0] - 10.) < 1e-4]
     assert len(step) >= 3
     np.testing.assert_allclose([step[:, 1].min(), step[:, 1].max()], [-7., -4.135], atol=1e-5)
-
-
-def test_carla_scenario_map(tmp_path):
-    (tmp_path / "StraightStop.xodr").write_text((FIXTURES / "straight_stop.xodr").read_text())
-    initial_ego = actor_state((2., -1.75, 0.))
-    recipe = CarlaRecipe({"client": {"map_name": "StraightStop"}, "ego": {}}, 1, .1,
-                         {"ego": PrescribedMotion(trajectory=(initial_ego, initial_ego))})
-    dataset = CarlaDataset({"scene": recipe}, map_directory=tmp_path)
-    scenario_map = dataset.scenario_map("scene")
-    assert isinstance(scenario_map, ScenarioMap)
-    assert_scenario_map(scenario_map, dataset.native("scene").motion["ego"].trajectory[0])

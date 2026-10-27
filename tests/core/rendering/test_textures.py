@@ -12,6 +12,7 @@ def test_load_rgba_image(tmp_path):
     rgba = np.full((2, 3, 4), [50, 80, 100, 255], np.uint8)
     path = tmp_path / "texture.png"
     Image.fromarray(rgba).save(path)
+
     class UserTexture:
         def rgba(self):
             return rgba
@@ -24,7 +25,6 @@ def test_load_rgba_image(tmp_path):
     np.testing.assert_array_equal(rgba[0, 0], [50, 80, 100, 255])
     with pytest.raises(ValueError, match="texture"):
         load_rgba_image(np.zeros((2, 3), np.uint8))
-
 
 
 def test_checkerboard_texture():

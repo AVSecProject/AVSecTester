@@ -77,6 +77,7 @@ class PatchAttack(Attack):
         self.assets = PlaneAsset(rgba, self.width_m, self.height_m).texture
 
     def placement_for(self, host):
+        """Resolve patch placement on the selected host actor."""
         return AttachedPlacement(host, self.anchor, self.offset_m)
 
     def selected_placement(self, segment):
@@ -89,6 +90,7 @@ class PatchAttack(Attack):
         return AttachedPlacement(segment.user_data["host"], **segment.user_data["placement"])
 
     def insertion(self, artifacts, *, host=None, placement=None):
+        """Build a patch insertion using the selected host and prepared texture."""
         if artifacts is None:
             raise ValueError("PatchAttack requires explicit artifacts")
         if placement is None:
@@ -115,3 +117,8 @@ class PatchAttack(Attack):
         if physical and self.orientation.mode != "follow_host":
             raise ValueError("CARLA physical patches require follow_host orientation")
         return PatchAttackRuntime(self, artifacts, physical, segment)
+
+
+__all__ = [
+    'PatchAttack',
+]

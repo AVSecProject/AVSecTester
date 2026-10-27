@@ -111,6 +111,7 @@ def test_composite_objects(camera, optical_from_world):
 
     far_pose = pose.copy()
     far_pose[:3, 3] = (9., 1.5, -1.)
+
     def yellow(composite, mask, background):
         composite[:] = [255, 255, 0]
         return composite
@@ -130,8 +131,8 @@ def test_composite_objects(camera, optical_from_world):
         composite_objects(image.astype(float), camera, optical_from_world, (placed,))
 
 
-def test_composite_plan_is_the_differentiable_deployment(camera, optical_from_world):
-    torch = pytest.importorskip("torch")
+def test_plan_composite_matches_deployment(camera, optical_from_world):
+    import torch
     rng = np.random.default_rng(0)
     texture = np.concatenate((rng.integers(0, 256, (16, 16, 3)), np.full((16, 16, 1), 255)), axis=2)
     texture[:2, :2, 3] = 0
@@ -171,8 +172,8 @@ def test_composite_plan_is_the_differentiable_deployment(camera, optical_from_wo
         harmonized.composite(background)
 
 
-def test_composite_plan_harmonizers(camera, optical_from_world):
-    torch = pytest.importorskip("torch")
+def test_plan_composite_harmonizers(camera, optical_from_world):
+    import torch
     rng = np.random.default_rng(7)
     texture = rng.integers(0, 256, (12, 12, 4), dtype=np.uint8)
     texture[..., 3] = 255

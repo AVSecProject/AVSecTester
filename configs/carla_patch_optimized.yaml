@@ -1,4 +1,3 @@
-# Run with: avsectester run configs/carla_patch_optimized.yaml
 # Paths are relative to this file; set data/model paths for your machine.
 dataset:
   type: CarlaDataset
@@ -87,7 +86,7 @@ attacks:
         type: avsectester.implemented_attacks.patch_attack.offline:PatchOptimization
         options:
           algorithm:
-            type: avsectester.attack.optimization.whitebox:PGD
+            type: avsectester.attack.optimization:PGD
             options:
               steps: 10
               step_size: 0.03

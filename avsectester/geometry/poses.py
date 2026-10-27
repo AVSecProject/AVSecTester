@@ -1,4 +1,4 @@
-"""Canonical world/actor poses in metres and right-handed x-forward, y-left, z-up axes."""
+"""Canonical world/actor poses in meters and right-handed x-forward, y-left, z-up axes."""
 
 import math
 
@@ -46,6 +46,7 @@ def rotation_matrix(rotation_deg: ArrayLike) -> np.ndarray:
 
 
 MIRROR_Y = np.diag([1., -1., 1., 1.])
+'Homogeneous transform that reverses the Y coordinate.'
 MIRROR_Y.setflags(write=False)
 """Reflection between left-handed x-forward/y-right/z-up and canonical y-left axes."""
 
@@ -133,3 +134,18 @@ def transform(T: np.ndarray, pts: np.ndarray) -> np.ndarray:
     """Transform an array of three-dimensional points into the destination frame."""
     pts = np.asarray(pts, dtype=np.float64)
     return (T[:3, :3] @ pts.T).T + T[:3, 3]
+
+
+__all__ = [
+    'MIRROR_Y',
+    'validated_vector',
+    'validated_transform',
+    'rotation_matrix',
+    'mirror_y_points',
+    'mirror_y_transform',
+    'quaternion_to_rotation',
+    'rotation_to_quaternion',
+    'interpolate_transform',
+    'make_pose',
+    'transform',
+]

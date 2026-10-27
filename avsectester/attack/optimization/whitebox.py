@@ -98,3 +98,8 @@ class PGD(GradientOptimizer):
             history=history,
             final_score=final,
         )
+
+
+__all__ = [
+    'PGD',
+]

@@ -122,6 +122,7 @@ class SensorEnvironment:
             self.corruptions.append((spec.get("camera"), apply))
 
     def apply(self, observation: Observation, position: int) -> Observation:
+        """Apply configured corruptions to eligible sensors using the decision random generator."""
         result = observation
         for index, (camera, apply) in enumerate(self.corruptions):
             if camera is not None and camera not in result.sensor_data:
@@ -136,3 +137,11 @@ class SensorEnvironment:
                 raise ValueError("Sensor environment corruptions must return uint8 RGB with unchanged shape")
             result = write_camera_rgb(result, sensor_id, corrupted)
         return result
+
+
+__all__ = [
+    'normalize_environment',
+    'merge_environments',
+    'validate_environment',
+    'SensorEnvironment',
+]

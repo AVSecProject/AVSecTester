@@ -2,4 +2,8 @@
 
 from .simulator import CarlaSimulator, CarlaSimulatorRuntime
 
-__all__ = ["CarlaSimulator", "CarlaSimulatorRuntime"]
+
+__all__ = [
+    'CarlaSimulator',
+    'CarlaSimulatorRuntime',
+]

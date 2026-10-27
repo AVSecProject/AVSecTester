@@ -32,7 +32,7 @@ def fixed_start_segments(
     """Choose distinct eligible one-decision starts nearest the requested sign distances.
 
     Search only the saved selected approach, before its recorded stop. Positions and the sign
-    centre come from the unchanged selection metadata; no route or placement is adjusted.
+    center come from the unchanged selection metadata; no route or placement is adjusted.
     """
     positions = np.asarray(segment.user_data["route_points"], dtype=float)
     sign = np.asarray(segment.user_data["sign_pose"], dtype=float)
@@ -55,7 +55,7 @@ def fixed_start_segments(
 
 
 def planned_forward_distance(trajectory: Sequence, horizon_s: float = 3.) -> float:
-    """Interpolate command X progress from its first timestamp, in metres.
+    """Interpolate command X progress from its first timestamp, in meters.
 
     Waypoints contain position, orientation and an integer microsecond timestamp. Their
     actual time axis must increase strictly and cover the requested horizon; no output
@@ -81,7 +81,7 @@ def planned_forward_distance(trajectory: Sequence, horizon_s: float = 3.) -> flo
 
 
 class MaskedTexturePerturbation(Perturbation):
-    """A NumPy RGB colour variable whose applied value is the physical uint8 RGBA texture.
+    """A NumPy RGB color variable whose applied value is the physical uint8 RGBA texture.
 
     Geometry and alpha stay fixed. This differs from white-box image composition: NES passes
     this exported texture to the rollout scorer, which deploys it as the replica face.
@@ -112,7 +112,7 @@ class MaskedTexturePerturbation(Perturbation):
 
 
 class MaximizeScore(OptimizationObjective):
-    """Turn positive forward metres into a loss minimized by the optimizer."""
+    """Turn positive forward meters into a loss minimized by the optimizer."""
 
     def loss(self, score: Any) -> Any:
         return -score
@@ -138,7 +138,7 @@ class SingleTextureSource(DataSource):
 
 
 class RolloutForwardScorer(Scorer):
-    """Mean planned forward metres across fixed one-decision starts.
+    """Mean planned forward meters across fixed one-decision starts.
 
     ``image`` in the generic Scorer interface is a physical RGBA texture here; ``target``
     is unused. Records remain in memory. The caller owns report persistence, while the

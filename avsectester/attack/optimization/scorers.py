@@ -44,3 +44,8 @@ class SessionScorer(Scorer):
         import torch
         return self.session.score(self.scorer_id, self._input(image), target,
                                   require_grad=self.differentiable and torch.is_grad_enabled()).value
+
+
+__all__ = [
+    'SessionScorer',
+]

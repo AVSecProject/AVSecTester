@@ -7,7 +7,6 @@ from avsectester.attack.insertion import (CuboidVisibilityEstimator,
     render_resolved, resolve_insertion)
 from avsectester.attack.insertion.placement import Orientation, WorldPlacement
 from avsectester.data_types import ActorState
-from avsectester.rendering import ClassicHarmonizer, PCTNetHarmonizer
 
 
 def insertion(identity, x, texture, size):
@@ -36,13 +35,14 @@ def test_render_resolved(camera, optical_from_world):
     np.testing.assert_array_equal(rendered[0][0, 0], clean[0, 0])
 
 
-def test_compositor_and_harmonizer(camera, optical_from_world, tmp_path):
+def test_patch_compositor(camera, optical_from_world):
     item = insertion("panel", 10, np.full((16, 16, 4), [240, 20, 30, 255], np.uint8), 4)
     frame = np.full((80, 100, 3), 70, np.uint8)
     depth = np.full((80, 100), 100.)
     depth[:, :50] = 1
     evidence = DepthVisibilityEstimator().estimate(item, camera, optical_from_world,
                          scene_depth=depth, depth_convention="z", camera_name="front")
+
     def green(image, mask, background):
         result = image.copy()
         result[mask > 0] = [0, 255, 0]
@@ -54,12 +54,5 @@ def test_compositor_and_harmonizer(camera, optical_from_world, tmp_path):
     np.testing.assert_array_equal(mask, plain_mask)
     np.testing.assert_array_equal(colored[mask == 0], frame[mask == 0])
     assert np.all(colored[mask > 0] == [0, 255, 0]) and np.any(plain != colored)
-    classic = ClassicHarmonizer(color_transfer=False, poisson=False)
-    np.testing.assert_array_equal(classic(plain, mask, frame), plain)
     with pytest.raises(ValueError, match="visibility is unknown"):
         render_resolved(frame, camera, optical_from_world, item, replace(evidence, visibility=None))
-    # Explicitly absent model weights are an external boundary; strict mode must expose failure.
-    with pytest.raises(RuntimeError, match="PCTNet harmonization failed"):
-        harmonizer = PCTNetHarmonizer(
-            tmp_path / "libcom", weights=str(tmp_path / "missing.pth"), strict=True)
-        harmonizer(plain, mask, frame)

@@ -26,7 +26,7 @@ log = logging.getLogger(__name__)
 class InsertObject(WorldAttackAction):
     """Insert arbitrary textured geometry into all cameras through the simulator.
 
-    The object's origin is its bottom centre; ``world_from_object`` maps that
+    The object's origin is its bottom center; ``world_from_object`` maps that
     right-handed object frame (+X front, +Y left, +Z up) into the world.
     Setup insertion is visible in the first capture; step insertion in the next.
     """
@@ -80,9 +80,11 @@ class InsertionAttackAction(SensorAttackAction):
                 "ignored_occluders": self.ignored_occluders}
 
     def resolve(self, view):
+        """Resolve the insertion asset, pose and placement for the current sensor geometry."""
         return resolve_insertion(self.insertion, view.actors, view.ego)
 
     def evidence(self, view, resolved=None):
+        """Return insertion placement and visibility evidence for the action record."""
         if view.camera is None or view.cam_from_world is None:
             raise ValueError("InsertionAttackAction requires a calibrated camera SensorView")
         resolved = self.resolve(view) if resolved is None else resolved
@@ -107,3 +109,9 @@ class InsertionAttackAction(SensorAttackAction):
             return data
         return render_resolved(data, view.camera, view.cam_from_world, resolved, evidence,
                                compositor=self.compositor)[0]
+
+
+__all__ = [
+    'InsertObject',
+    'InsertionAttackAction',
+]

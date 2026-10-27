@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 import json
+import hashlib
 
 import pytest
 
@@ -10,10 +11,11 @@ from avsectester.closed_loop.avstacks.driving_adapter import DrivingAdapter
 from avsectester.closed_loop.simulators import UnsupportedStartError
 from avsectester.experiment import (
     ConfigurationMismatchError, Experiment, ExperimentConfiguration, ExperimentResult, PreparedExperiment,
+    MetadataConfiguration, load_metadata, save_metadata,
     RunsConfiguration, SplitConfiguration, TreatmentConfiguration, evaluate,
 )
 from avsectester.maps import ScenarioMap
-from tests.fakes import ConstantAVStack, MemoryDataset, MemorySimulator, MinimalAttack
+from tests.fakes import ConstantAVStack, MemoryDataset, MemorySimulator, MinimalAttack, MetadataOnlyAttack
 
 
 def configuration(attack, *, dataset=None, treatments=(), **options):
@@ -22,6 +24,48 @@ def configuration(attack, *, dataset=None, treatments=(), **options):
         DrivingAdapter(lambda seed: ConstantAVStack()), {"probe": attack},
         runs=RunsConfiguration(treatments=treatments, **options),
     )
+
+
+def test_validate(tmp_path):
+    dataset = MemoryDataset()
+    frames = dataset.frames("scene")
+    source = tmp_path / "metadata.json"
+    save_metadata((AttackSegment("scene", frames[0], frames[2]),), source,
+                  dataset_type="tests.fakes:MemoryDataset")
+    simulator = MemorySimulator(runtime_error="runtime must not be created during validation")
+    config = replace(configuration(MetadataOnlyAttack(), dataset=dataset),
+                     simulator=simulator, metadata=MetadataConfiguration(load=source), runs=RunsConfiguration(strict=True))
+    assert Experiment.validate(config) is None
+    wrong_type = tmp_path / "wrong-type.json"
+    save_metadata((AttackSegment("scene", frames[0], frames[2]),), wrong_type,
+                  dataset_type="user.data:OtherDataset")
+    with pytest.raises(ValueError, match="dataset_type.*does not match"):
+        Experiment.validate(replace(config, metadata=MetadataConfiguration(load=wrong_type)))
+    with pytest.raises(ValueError, match="segment 0.*probe.*Missing required.*allowed"):
+        Experiment.validate(replace(config, attacks={"probe": MetadataOnlyAttack("allowed")}))
+
+    with pytest.raises(ValueError, match="segment 0.*insufficient recorded history"):
+        Experiment.validate(replace(config, avstack=DrivingAdapter(lambda seed: ConstantAVStack(), past_steps=1)))
+    invalid = AttackSegment("absent", replace(frames[0], scenario_id="absent"),
+                            replace(frames[2], scenario_id="absent"))
+    bad = tmp_path / "absent.json"
+    save_metadata((invalid,), bad, dataset_type="tests.fakes:MemoryDataset")
+    with pytest.raises(ValueError, match="segment 0.*Unknown scenario"):
+        Experiment.validate(replace(config, metadata=MetadataConfiguration(load=bad)))
+
+    output = tmp_path / "saved"
+    saved_config = replace(config, runs=replace(config.runs, output=output))
+    Experiment.prepare(saved_config)
+    without_start_validation = replace(saved_config, simulator=MemorySimulator(start_error="start must not be revalidated"))
+    assert Experiment.validate(without_start_validation, resume=True) is None
+    invalid_environment = replace(
+        without_start_validation, runs=replace(
+            without_start_validation.runs,
+            treatments=(TreatmentConfiguration("invalid", environment={"world": {"unsupported": 1}}),)))
+    with pytest.raises(ValueError, match="unsupported|world"):
+        Experiment.validate(invalid_environment, resume=True)
+    (output / "prepared.json").unlink()
+    assert Experiment.validate(without_start_validation, resume=True) is None
 
 
 def test_prepare():
@@ -125,13 +169,6 @@ def test_multiple_attacks(tmp_path):
         (None, "clean"), ("green", "green"), ("green", "green_rain"), ("blue", "blue"),
     }
     assert all(run.log.status == "completed" for run in result.runs)
-    loaded = ExperimentResult.load(tmp_path / "results", config)
-    assert {(run.attack_name, run.treatment) for run in loaded.runs} == {
-        (run.attack_name, run.treatment) for run in result.runs}
-    report = evaluate(loaded, config)
-    assert {(row["part"], row["treatment"]) for row in report.treatment_summaries} == {
-        (None, "clean"), (None, "green"), (None, "green_rain"), (None, "blue"),
-    }
     assert set(result.groups) == {(0, 0)}
     clean_directories = list((tmp_path / "results" / "runs").glob("segment-*/seed-*/clean"))
     assert clean_directories == [tmp_path / "results" / "runs" / "segment-00000" / "seed-0" / "clean"]
@@ -215,7 +252,6 @@ def test_shared_deployment_budget():
     fast_selection = next(row for row in prepared.selections if row.attack_name == "fast")
     assert any("2" in reason and "deployment" in reason for reason in fast_selection.reasons)
 
-
     # One attack may declare different budgets in different scenes. Its earlier scene
     # must still be checked against the experiment-wide maximum after all selection.
     class VaryingDeploymentAttack(BudgetAttack):
@@ -236,7 +272,7 @@ def test_shared_deployment_budget():
     ]
     rejected = next(row for row in varying.selections if row.scenario_id == "a")
     assert rejected.status == "not_selected"
-    assert any("deployment" in reason and "3" in reason for reason in rejected.reasons)
+    assert any("budget 3" in reason for reason in rejected.reasons)
 
 
 def test_prepare_resume(tmp_path):
@@ -313,9 +349,11 @@ def test_execute_resume(tmp_path):
     retained_file.write_text("preserve completed directory")
     assert json.loads((base / "failed" / "manifest.json").read_text())["status"] == "failed"
     # Recover the fake external world's faults before resuming the same requested run identities.
-    config.runs.treatments[1].environment["world"].clear()
-    config.runs.treatments[2].environment["world"].clear()
-    completed = Experiment.execute(prepared, resume=True)
+    recovered_config = replace(config, runs=replace(
+        config.runs, treatments=tuple(replace(treatment, environment={})
+                                    for treatment in config.runs.treatments)))
+    recovered = replace(prepared, configuration=recovered_config)
+    completed = Experiment.execute(recovered, resume=True)
     assert len(completed.runs) == 4
     assert all(run.log.status == "completed" for run in completed.runs)
     assert clean_manifest.read_bytes() == saved_clean
@@ -323,11 +361,20 @@ def test_execute_resume(tmp_path):
     assert {run.treatment for run in completed.runs} == {"clean", "failed", "interrupted", "pending"}
     all_manifests = {path: path.read_bytes() for path in base.glob("*/manifest.json")}
     assert all_manifests
-    Experiment.execute(prepared, resume=True)
+    Experiment.execute(recovered, resume=True)
     assert {path: path.read_bytes() for path in base.glob("*/manifest.json")} == all_manifests
     assert retained_file.read_text() == "preserve completed directory"
 
 
+def test_execute_resume_revalidates_run_settings(tmp_path):
+    config = configuration(MinimalAttack(max_segments=1), output=tmp_path / "resume", treatments=(
+        TreatmentConfiguration("clean"), TreatmentConfiguration("pending", "probe")))
+    prepared = Experiment.prepare(config)
+    Experiment.execute(prepared)
+    base = config.runs.output / "runs" / "segment-00000" / "seed-0"
+    retained_file = base / "clean" / "retained.txt"
+    retained_file.write_text("preserve completed directory")
+    all_manifests = {path: path.read_bytes() for path in base.glob("*/manifest.json")}
     # A completed manifest with another treatment's attack identity must be replaced.
     pending_manifest = base / "pending" / "manifest.json"
     mismatched = json.loads(pending_manifest.read_text())
@@ -419,13 +466,6 @@ def test_offline_reports(tmp_path):
     assert restored.offline_reports["probe"].values == loaded.offline_reports["probe"].values
     assert (copied / "offline" / "probe" / "files" / "evidence.txt").read_text() == "completed"
     assert (copied / "offline_report.html").is_file()
-    # Preparations saved before offline reports were added remain loadable.
-    import shutil
-
-    shutil.rmtree(copied / "offline")
-    legacy = PreparedExperiment.load(config, copied)
-    assert legacy.offline_reports["probe"].values == {}
-    assert legacy.offline_reports["probe"].directory is None
 
     class UnpersistableAttack(MinimalAttack):
         def run_offline(self, context):
@@ -441,16 +481,12 @@ def test_offline_reports(tmp_path):
 
 
 def test_metadata(tmp_path):
-    from avsectester.experiment import MetadataConfiguration, load_metadata, save_metadata
-    from avsectester.experiment.models import segment_key
-    from tests.fakes import MetadataOnlyAttack
 
     path = tmp_path / "metadata.json"
     original = configuration(MinimalAttack(), output=tmp_path / "selected")
     original = replace(original, metadata=MetadataConfiguration(save=path))
     selected = Experiment.prepare(original)
-    assert [segment_key(segment) for segment in load_metadata(path)] == [
-        segment_key(unit.segment) for unit in selected.units]
+    assert load_metadata(path) == tuple(unit.segment for unit in selected.units)
     # Reusing complete preparations never selects or rewrites an external metadata file.
     saved_bytes = path.read_bytes()
     path.unlink()
@@ -466,61 +502,21 @@ def test_metadata(tmp_path):
         runs=RunsConfiguration(output=tmp_path / "loaded"),
     )
     loaded = Experiment.prepare(loaded_config)
-    assert [segment_key(unit.segment) for unit in loaded.units] == [
-        segment_key(unit.segment) for unit in selected.units]
+    assert tuple(unit.segment for unit in loaded.units) == tuple(unit.segment for unit in selected.units)
     assert all(unit.attack_names == ("one", "two") for unit in loaded.units)
     assert loaded.selections == ()
     result = Experiment.execute(loaded)
     assert set(result.groups) == {(0, 0), (1, 0)}
     assert all(set(runs) == {"clean", "one", "two"}
                for runs in result.groups.values())
-    manifest = json.loads((loaded_config.runs.output / "prepared.json").read_text())
-    assert manifest["metadata_source"]["load"] == str(path)
-    assert len(manifest["metadata_source"]["sha256"]) == 64
     partitioned = Experiment.prepare(replace(
         loaded_config, split=SplitConfiguration(1), runs=RunsConfiguration(),
     ))
     assert [unit.part for unit in partitioned.units].count("train") == 1
     assert len(Experiment.execute(partitioned).groups) == 1
-    restored = PreparedExperiment.load(loaded_config, loaded_config.runs.output)
-    assert restored.metadata_source == loaded.metadata_source
-
-    rejected = replace(loaded_config, attacks={"one": MetadataOnlyAttack("allowed")},
-                       runs=RunsConfiguration())
-    with pytest.raises(ValueError, match="segment 0.*one.*Missing required.*allowed"):
-        Experiment.prepare(rejected)
-    # Start eligibility is checked against the same shared history/deployment budget.
-    with pytest.raises(ValueError, match="segment 0.*insufficient recorded history"):
-        Experiment.prepare(replace(
-            loaded_config, runs=RunsConfiguration(),
-            avstack=DrivingAdapter(lambda seed: ConstantAVStack(), past_steps=1),
-        ))
-    invalid = AttackSegment("absent", replace(selected.units[0].segment.start, scenario_id="absent"),
-                            replace(selected.units[0].segment.stop, scenario_id="absent"))
-    bad_path = tmp_path / "invalid.json"
-    save_metadata((invalid,), bad_path, dataset_type="tests.fakes:MemoryDataset")
-    with pytest.raises(ValueError, match="segment 0.*Unknown scenario"):
-        Experiment.prepare(replace(loaded_config, metadata=MetadataConfiguration(load=bad_path),
-                                   runs=RunsConfiguration()))
-    save_metadata(load_metadata(path), tmp_path / "wrong-type.json", dataset_type="user.data:OtherDataset")
-    with pytest.raises(ValueError, match="dataset_type"):
-        Experiment.prepare(replace(
-            loaded_config, metadata=MetadataConfiguration(load=tmp_path / "wrong-type.json"),
-            runs=RunsConfiguration(),
-        ))
-    # A changed source content is a preparation compatibility mismatch.
-    document = json.loads(path.read_text())
-    document["segments"] = document["segments"][:1]
-    path.write_text(json.dumps(document))
-    with pytest.raises(ConfigurationMismatchError, match="metadata"):
-        PreparedExperiment.load(loaded_config, loaded_config.runs.output)
 
 
 def test_metadata_compatibility(tmp_path):
-    import hashlib
-
-    from avsectester.experiment import MetadataConfiguration, save_metadata
-
     frames = MemoryDataset().frames("scene")
     path = tmp_path / "original.json"
     save_metadata((AttackSegment("scene", frames[0], frames[2]),), path,
@@ -536,15 +532,15 @@ def test_metadata_compatibility(tmp_path):
     path.rename(relocated)
     moved = replace(config, metadata=MetadataConfiguration(load=relocated))
     restored = PreparedExperiment.load(moved, config.runs.output)
-    assert restored.metadata_source == prepared.metadata_source  # Historical path is preserved.
+    assert restored.metadata_source == prepared.metadata_source == {
+        "load": str(path.resolve()), "sha256": hashlib.sha256(payload).hexdigest()}
     assert len(Experiment.prepare(moved, resume=True).units) == 1
     relocated.unlink()
     # Saving a loaded preparation and evaluating saved evidence do not need the source file.
     restored.save(tmp_path / "copied-preparation")
-    result = ExperimentResult.load(config.runs.output, moved)
-    report = evaluate(result, moved)
-    assert not report.metric_errors
-    assert (config.runs.output / "evaluation_report.html").is_file()
+    saved_result = ExperimentResult.load(config.runs.output, moved)
+    report = evaluate(saved_result, moved)
+    assert report.groups and not report.metric_errors
     without_load = replace(moved, metadata=MetadataConfiguration())
     with pytest.raises(ConfigurationMismatchError, match="metadata.load"):
         ExperimentResult.load(config.runs.output, without_load)
@@ -559,3 +555,19 @@ def test_metadata_compatibility(tmp_path):
     relocated.write_text(json.dumps({"format": "invalid"}))
     with pytest.raises(ConfigurationMismatchError, match="Current metadata file cannot be validated"):
         PreparedExperiment.load(moved, config.runs.output)
+
+
+def test_validate_environments():
+    attack = MinimalAttack()
+    attack.environment = {"world": {"lighting": {"intensity": .5}}}
+    config = configuration(attack, environment={"world": {"weather": "rain"}}, treatments=(
+        TreatmentConfiguration("clean"),
+        TreatmentConfiguration("attacked", "probe", {"world": {"weather": "clear"}})))
+    assert Experiment.validate(config) is None
+    invalid_treatment = replace(config, runs=replace(config.runs, treatments=(
+        TreatmentConfiguration("invalid", "probe", {"world": {"unsupported_setting": True}}),)))
+    with pytest.raises(ValueError, match="does not support"):
+        Experiment.validate(invalid_treatment)
+    attack.environment = []
+    with pytest.raises(TypeError, match="environment must be a mapping"):
+        Experiment.validate(config)

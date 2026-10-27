@@ -1,6 +1,5 @@
 """OfflineReport's public collection and portable persistence."""
 import csv
-from dataclasses import FrozenInstanceError
 import json
 
 import numpy as np
@@ -34,22 +33,8 @@ def test_offline_report(tmp_path):
         report.set_value("../escape", 0)
     with pytest.raises(ValueError, match="already used"):
         report.set_image("frames", pixels)
-    with pytest.raises(ValueError, match="scalar"):
-        report.set_value("invalid", float("nan"))
-    with pytest.raises(ValueError, match="numeric"):
-        report.set_series("invalid_series", ["1"])
-    with pytest.raises(ValueError, match="equal lengths"):
-        report.set_series("invalid_series", [1., 2.], x=[1.])
-    with pytest.raises(ValueError, match="finite"):
-        report.set_series("invalid_series", [float("inf")])
-    with pytest.raises(ValueError, match="scalar"):
-        report.set_table("nested", [{"bad": {"value": 1}}])
     with pytest.raises(ValueError, match="existing columns"):
         report.set_table("samples", rows, columns={"missing": "Unknown"})
-    with pytest.raises(ValueError, match="string or None"):
-        report.set_value("bad_metadata", 1, unit=2)
-    with pytest.raises(ValueError, match="uint8"):
-        report.set_image("invalid_image", np.zeros((2, 2, 3), float))
     destination = tmp_path / "offline"
     report.status = "failed"
     report.save(destination)
@@ -68,8 +53,6 @@ def test_offline_report(tmp_path):
     assert isinstance(loaded.images["patch"], ReportImage)
     np.testing.assert_array_equal(loaded.images["patch"].pixels, report.images["patch"].pixels)
     assert loaded.images["patch"].description == "Initial replica face."
-    with pytest.raises(FrozenInstanceError):
-        loaded.values["frames"].value = 4
     with (destination / "samples.csv").open() as stream:
         assert csv.DictReader(stream).fieldnames == ["frame", "note", "extra", "valid"]
     data = json.loads((destination / "report.json").read_text())

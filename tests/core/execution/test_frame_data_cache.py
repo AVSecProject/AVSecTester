@@ -18,7 +18,7 @@ def failed_generation():
     raise RuntimeError("frame data generation failed")
 
 
-def test_frame_data_cache():
+def test_key():
     start = ScenarioStart("memory", "scene", FrameReference("scene", 0, 0, 0.), {"time_step": .1})
     identity = {"type": "MemorySimulator", "environment": {"world": {}}}
     key = FrameDataCache.key(start, identity, 7)
@@ -26,6 +26,10 @@ def test_frame_data_cache():
     assert key != FrameDataCache.key(start, identity, 8)
     assert key != FrameDataCache.key(start, {**identity, "environment": {"world": {"weather": "rain"}}}, 7)
 
+
+def test_get_or_generate():
+    start = ScenarioStart("memory", "scene", FrameReference("scene", 0, 0, 0.), {"time_step": .1})
+    key = FrameDataCache.key(start, {"type": "MemorySimulator"}, 7)
     cache = FrameDataCache()
     with pytest.raises(RuntimeError, match="generation failed"):
         cache.get_or_generate(key, failed_generation)
