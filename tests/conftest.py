@@ -142,6 +142,7 @@ def nurec_usdz_path(tmp_path):
     }
     tracks = {"scene": {"tracks_data": {
         "tracks_id": ["host", "brief"], "tracks_label_class": ["automobile", "pedestrian"],
+        "tracks_flags": ["CONTROLLABLE", "CONTROLLABLE"],
         "tracks_timestamps_us": [[0, 500000], [200000, 300000]],
         "tracks_poses": [[[8, 0, 1, 0, 0, 0, 1], [10, 0, 1, 0, 0, 1, 0]],
                          [[5, 2, 1, 0, 0, 0, 1], [5, 2, 1, 0, 0, 0, 1]]]},
@@ -269,3 +270,44 @@ def nurec_longitudinal_recording(nurec_usdz_path, tmp_path):
                 target.writestr(name, json.dumps(metadata) if name == "rig_trajectories.json"
                                 else source.read(name))
     return NuRecDataset([path], time_step=.1)
+
+
+@pytest.fixture
+def traffic_recording(nurec_longitudinal_recording, tmp_path):
+    source_path = nurec_longitudinal_recording.usdz_paths[0]
+    target_path = tmp_path / "traffic.usdz"
+    with zipfile.ZipFile(source_path) as source:
+        rig = json.loads(source.read("rig_trajectories.json"))
+        recording = rig["rig_trajectories"][0]
+        camera = next(iter(recording["cameras_frame_timestamps_us"]))
+        times, poses = [], []
+        for i in range(41):
+            pose = np.eye(4)
+            pose[:3, 3] = [i, 0., .3]
+            times.append([i * 100000, i * 100000 + 1])
+            poses.append([pose.tolist(), pose.tolist()])
+        recording["cameras_frame_timestamps_us"][camera] = times
+        recording["cameras_frame_T_rig_worlds"][camera] = poses
+        tracks = {"scene": {"tracks_data": {
+            "tracks_id": ["host", "static", "fallback", "brief", "parked-brief", "expired"],
+            "tracks_label_class": ["automobile", "pedestrian", "truck", "pedestrian", "automobile", "truck"],
+            "tracks_flags": ["DYNAMIC|CONTROLLABLE", "NONE", "CONTROLLABLE", "CONTROLLABLE", "NONE", "CONTROLLABLE"],
+            "tracks_timestamps_us": [[0, 4000000], [0, 3000000], [0, 4000000], [1400000, 1800000],
+                                     [1400000, 1800000], [-2000000, 1600000]],
+            "tracks_poses": [
+                [[20, 0, 1, 0, 0, 0, 1], [24, 0, 1, 0, 0, 0, 1]],
+                [[8, 2, 1, 0, 0, 0, 1], [8, 2, 1, 0, 0, 0, 1]],
+                [[30, 0, 1, 0, 0, 0, 1], [34, 0, 1, 0, 0, 0, 1]],
+                [[7, 2, 1, 0, 0, 0, 1], [7, 2, 1, 0, 0, 0, 1]],
+                [[7, -2, 1, 0, 0, 0, 1], [7, -2, 1, 0, 0, 0, 1]],
+                [[30, 4, 1, 0, 0, 0, 1], [30, 4, 1, 0, 0, 0, 1]]]},
+            "cuboidtracks_data": {"cuboids_dims": [[4, 2, 2], [1, 1, 2], [6, 3, 3], [1, 1, 2], [2, 1, 2], [6, 3, 3]]}}}
+        with zipfile.ZipFile(target_path, "w") as target:
+            for name in source.namelist():
+                payload = source.read(name)
+                if name == "rig_trajectories.json":
+                    payload = json.dumps(rig)
+                elif name == "sequence_tracks.json":
+                    payload = json.dumps(tracks)
+                target.writestr(name, payload)
+    return NuRecDataset([target_path], time_step=.1)

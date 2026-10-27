@@ -5,6 +5,7 @@ import os
 import shlex
 import sys
 
+import pytest
 from typer.testing import CliRunner
 import yaml
 
@@ -179,7 +180,7 @@ if arguments[0] == "inspect":
         raise SystemExit(1)
     print(state.read_text())
 elif arguments[0] == "logs":
-    print("Serving on 0.0.0.0:50152" if mode == "ready" else "NRE startup diagnostic")
+    print("Serving on 0.0.0.0:50152\nStarting CATK traffic gRPC server on 0.0.0.0:6200" if mode == "ready" else "NRE startup diagnostic")
 elif arguments[0] == "stop":
     if not state.exists():
         print("No such container", file=sys.stderr)
@@ -247,3 +248,90 @@ def test_nre_stop(tmp_path, monkeypatch):
     assert default.exit_code == 0, default.output
     recorded = [json.loads(line) for line in calls.read_text().splitlines()]
     assert recorded[-2:] == [["stop", "avsectester-nre-50152"], ["rm", "avsectester-nre-50152"]]
+
+
+def traffic_configuration(directory, endpoint="127.0.0.1:6200"):
+    path = nre_configuration(directory)
+    specification = yaml.safe_load(path.read_text())
+    specification["simulator"]["options"]["traffic"] = {
+        "type": "avsectester.closed_loop.simulators.nurec:AlpaSimTraffic",
+        "options": {"endpoint": endpoint},
+    }
+    path.write_text(yaml.safe_dump(specification))
+    return path
+
+
+def test_trafficsim_dry_run(tmp_path, monkeypatch):
+    path = traffic_configuration(tmp_path)
+    state, calls = fake_docker(tmp_path, monkeypatch)
+    models = tmp_path / "not-created-models"
+    monkeypatch.setenv("PATH", "")
+    result = runner.invoke(cli.app, ["trafficsim", "serve", str(path), "--gpu", "2",
+                                     "--models", str(models), "--dry-run"])
+    assert result.exit_code == 0, result.output
+    command = shlex.split(result.output.strip())
+    assert command[:5] == ["docker", "run", "-d", "--name", "avsectester-trafficsim-6200"]
+    assert "device=2" in command and "avsectester:trafficsim" in command
+    assert f"{models}:/mnt/trafficsim-models:ro" in command
+    assert "OMP_NUM_THREADS=1" in command and "MKL_NUM_THREADS=1" in command
+    assert "catk.loader.prediction_steps=15" in command
+    assert not calls.exists() and not state.exists() and not models.exists()
+    assert not (tmp_path / "probes").exists()
+    wrong = write_configuration(tmp_path / "missing-traffic")
+    rejected = runner.invoke(cli.app, ["trafficsim", "serve", str(wrong), "--gpu", "2",
+                                       "--models", str(models), "--dry-run"])
+    assert rejected.exit_code == 2 and "AlpaSimTraffic" in rejected.output
+
+
+def test_trafficsim_serve(tmp_path, monkeypatch):
+    pytest.importorskip("alpasim_grpc.v0.traffic_pb2")
+    from tests.fakes import TrafficServiceBoundary
+
+    models = tmp_path / "models"
+    models.mkdir()
+    state, calls = fake_docker(tmp_path, monkeypatch)
+    with TrafficServiceBoundary() as service:
+        path = traffic_configuration(tmp_path / "configuration", service.endpoint)
+        served = runner.invoke(cli.app, ["trafficsim", "serve", str(path), "--gpu", "1",
+                                         "--models", str(models), "--name", "test-traffic"])
+        assert served.exit_code == 0, served.output
+        assert f"endpoint={service.endpoint}" in served.output and "scenes=1" in served.output
+        assert "Stop command:" in served.output and state.exists()
+        repeated = runner.invoke(cli.app, ["trafficsim", "serve", str(path), "--gpu", "1",
+                                           "--models", str(models), "--name", "test-traffic"])
+        assert repeated.exit_code == 1 and "already exists" in repeated.output
+        stopped = runner.invoke(cli.app, ["trafficsim", "stop", str(path), "--name", "test-traffic"])
+        assert stopped.exit_code == 0 and not state.exists()
+    # A startup log alone is insufficient: metadata must be reachable too.
+    failed = runner.invoke(cli.app, ["trafficsim", "serve", str(path), "--gpu", "1",
+                                     "--models", str(models), "--timeout", ".2"])
+    assert failed.exit_code == 1 and "timed out" in failed.output and not state.exists()
+    assert "Starting CATK traffic gRPC server on" in failed.output
+    recorded = [json.loads(line) for line in calls.read_text().splitlines()]
+    assert recorded[-2][0] == "stop" and recorded[-1][0] == "rm"
+    monkeypatch.setenv("PATH", "")
+    unavailable = runner.invoke(cli.app, ["trafficsim", "serve", str(path), "--gpu", "1",
+                                          "--models", str(models)])
+    assert unavailable.exit_code == 1 and "--dry-run" in unavailable.output
+
+
+def test_trafficsim_stop(tmp_path, monkeypatch):
+    path = traffic_configuration(tmp_path)
+    state, calls = fake_docker(tmp_path, monkeypatch)
+    state.write_text("true")
+    # Stopping needs only the traffic endpoint, not live archives or weights.
+    (tmp_path / "data" / "scene.usdz").unlink()
+    (tmp_path / "data").rmdir()
+    stopped = runner.invoke(cli.app, ["trafficsim", "stop", str(path)])
+    assert stopped.exit_code == 0 and "Stopped and removed" in stopped.output
+    recorded = [json.loads(line) for line in calls.read_text().splitlines()]
+    assert recorded[-2:] == [["stop", "avsectester-trafficsim-6200"],
+                            ["rm", "avsectester-trafficsim-6200"]]
+    assert not state.exists()
+    missing = runner.invoke(cli.app, ["trafficsim", "stop", str(path)])
+    assert missing.exit_code == 1 and "No such container" in missing.output
+    state.write_text("true")
+    named = runner.invoke(cli.app, ["trafficsim", "stop", str(path), "--name", "owned-traffic"])
+    assert named.exit_code == 0, named.output
+    recorded = [json.loads(line) for line in calls.read_text().splitlines()]
+    assert recorded[-2:] == [["stop", "owned-traffic"], ["rm", "owned-traffic"]]

@@ -45,6 +45,13 @@ avsectester console executable, invoke the same public CLI as
 python -m avsectester.cli run CONFIG (or evaluate CONFIG).
 
 
+## Optional reactive traffic
+
+Reactive traffic is off by default; add `simulator.options.traffic: {type: avsectester.closed_loop.simulators.nurec:AlpaSimTraffic}` to enable it.
+Start `avsectester trafficsim serve CONFIG --gpu N --models DIR` alongside NRE for execution and offline rollouts, then stop both services.
+Traffic requires 0.1 s steps and 1.5 s history; `metadata.load` shares selected windows between modes.
+See [Reactive traffic](../guides/simulators.md#reactive-traffic) for filtering and actor overrides.
+
 ## Run with the NuRec rule-based driving system
 
 Use configs/nurec_stop_sign_patch_modular_2601.yaml or

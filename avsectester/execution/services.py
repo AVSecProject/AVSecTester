@@ -382,7 +382,9 @@ class ClosedLoopSession:
         deployment_allowed = can_deploy_at(position, self.services.deployment,
                                             self.services.simulator.capture_ticks)
         adapter = self.services.driving_adapter
-        return deployment_allowed and position >= (adapter.past_steps if adapter is not None else 0)
+        required_history = max(self.services.simulator.past_steps,
+                               adapter.past_steps if adapter is not None else 0)
+        return deployment_allowed and position >= required_history
 
     def frame_data(self, scenario: str, frame: FrameReference,
                   environment: Mapping[str, Any] | None = None) -> FrameData:

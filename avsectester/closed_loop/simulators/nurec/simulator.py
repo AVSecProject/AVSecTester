@@ -25,6 +25,7 @@ from avsectester.data_types import ActorState, Observation, WorldSnapshot
 
 from .depth import _actor_depth, _scene_raycaster, _ground_raycaster
 from .renderer import Renderer, planar_rig_pose
+from .traffic import AlpaSimTraffic, TrafficSession, TrafficTrack, TRAFFIC_STEP_US
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -80,6 +81,8 @@ class NuRecSimulator(Simulator):
         ground_mesh: str = "mesh",
         object_occlusion: str = "rendered_probes",
         occlusion_tolerance_m: float = 0.15,
+        traffic: AlpaSimTraffic | None = None,
+        min_track_duration_s: float = 3.,
     ) -> None:
         if renderer is None:
             raise TypeError("NuRecSimulator requires a renderer; configure NuRecRenderer")
@@ -92,6 +95,7 @@ class NuRecSimulator(Simulator):
         if object_occlusion not in {"rendered_probes", "geometry"}:
             raise ValueError("object_occlusion must be 'rendered_probes' or 'geometry'")
         require_nonnegative_number(occlusion_tolerance_m, "occlusion_tolerance_m")
+        require_nonnegative_number(min_track_duration_s, "min_track_duration_s")
         if depth == "mesh" or physics_update_mode == "ego_only":
             from avsectester.geometry.mesh import MeshRaycaster
 
@@ -111,12 +115,20 @@ class NuRecSimulator(Simulator):
         self.dt = float(self.config.get("dt", 0.05))
         if not math.isfinite(self.dt) or self.dt <= 0:
             raise ValueError("NuRec decision time step must be positive and finite")
+        if traffic is not None and not isinstance(traffic, AlpaSimTraffic):
+            raise TypeError("traffic must be AlpaSimTraffic or None")
+        if traffic is not None and self.dt != TRAFFIC_STEP_US / 1e6:
+            raise ValueError(f"AlpaSim traffic requires a NuRec decision time step of {TRAFFIC_STEP_US / 1e6} s")
+        self.traffic = traffic
+        self.min_track_duration_s = min_track_duration_s
         self._route_failures: dict[tuple[str, str, str, bool], str | None] = {}
 
     def validate_start(self, start: ScenarioStart | None) -> None:
         import numpy as np
 
         super().validate_start(start)
+        if start is not None and start.frame.position < self.past_steps:
+            raise UnsupportedStartError(f"AlpaSim traffic requires {self.past_steps} past decision steps")
         if start is None or self.route_generator == "none":
             return
         # The route depends only on the complete recording and the map, not on the start frame.
@@ -135,8 +147,13 @@ class NuRecSimulator(Simulator):
             raise UnsupportedStartError(f"Navigation route cannot be built: {failure}")
 
     def create_runtime(self, seed: int | None = None) -> NuRecSimulatorRuntime:
-        """A new live world; NuRec rendering and ego dynamics are deterministic, so ``seed`` is unused."""
-        return NuRecSimulatorRuntime(self)
+        """A new world; the optional traffic session receives seed for its log."""
+        return NuRecSimulatorRuntime(self, seed)
+
+    @property
+    def past_steps(self) -> int:
+        """Recorded decision history needed by the optional traffic model."""
+        return 0 if self.traffic is None else self.traffic.history_steps - 1
 
     @property
     def supported_stages(self) -> frozenset[str]:
@@ -155,25 +172,39 @@ class NuRecSimulator(Simulator):
 
     @property
     def identity(self):
-        return {**super().identity, "config": deepcopy(self.config),
+        identity = {**super().identity, "config": deepcopy(self.config),
                 "depth": self.depth,
                 "route_generator": self.route_generator,
                 "physics_update_mode": self.physics_update_mode,
                 "ground_mesh": self.ground_mesh,
                 "object_occlusion": self.object_occlusion,
+                "min_track_duration_s": self.min_track_duration_s,
                 "renderer": type(self.renderer).__name__,
                 "resolution_hw": deepcopy(getattr(self.renderer, "resolution_hw", {})),
                 "dynamics": {"type": f"{type(self.dynamics).__module__}:{type(self.dynamics).__qualname__}",
                              "options": asdict(self.dynamics) if dataclasses.is_dataclass(self.dynamics) else {}},
                 "endpoint": getattr(self.renderer, "endpoint", None)}
+        if self.traffic is not None:
+            identity["traffic"] = {
+                "type": f"{type(self.traffic).__module__}:{type(self.traffic).__qualname__}",
+                "options": {name: getattr(self.traffic, name) for name in (
+                    "endpoint", "history_steps", "rpc_timeout_s")}}
+        return identity
 
 
 class NuRecSimulatorRuntime(SimulatorRuntime):
     """One live NuRec world: the ego pose and dynamics loop, and its own renderer connection."""
 
-    def __init__(self, simulator: NuRecSimulator) -> None:
+    def __init__(self, simulator: NuRecSimulator, seed: int | None = None) -> None:
         super().__init__(simulator)
         self.config = deepcopy(simulator.config)
+        self.seed = seed
+        self._traffic_session: TrafficSession | None = None
+        self._recorded_tracks: dict[str, dict[str, Any]] = {}
+        self._filtered_tracks: set[str] = set()
+        self._traffic_states: dict[str, ActorState] = {}
+        self._traffic_timestamp_us: int | None = None
+        self._capture_dynamic_objects: dict[str, tuple] = {}
         # Duck-typed renderers without ``copy`` are copied shallowly, like Renderer.copy.
         copy_renderer = getattr(simulator.renderer, "copy", None)
         self.renderer = copy_renderer() if callable(copy_renderer) else copy.copy(simulator.renderer)
@@ -295,7 +326,10 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
     def _actors_at(self, timestamp_us: int) -> dict[str, ActorState]:
         import numpy as np
 
-        actors = dict(self._recorded_actors(timestamp_us))
+        actors = {key: state for key, state in self._recorded_actors(timestamp_us).items()
+                  if key not in self._filtered_tracks}
+        if timestamp_us == self._traffic_timestamp_us:
+            actors.update(self._traffic_states)
         for actor_id, (origin_us, state) in self._actor_overrides.items():
             pose = state.pose.copy()
             pose[:3, 3] += np.asarray(state.velocity) * ((timestamp_us - origin_us) / 1e6)
@@ -307,10 +341,17 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
 
         The given pose is its physical state at the current clock. Subsequent captures
         extrapolate translation with the supplied velocity, retaining recorded appearance
-        and dimensions. A previous capture and its sensor-view geometry are unchanged.
+        and dimensions. Parked or duration-filtered tracks cannot be moved. A previous
+        capture and its sensor-view geometry are unchanged. For reactive traffic the
+        first override backfills constant-velocity history only in the service request.
         """
         if actor_id == "ego":
             raise ValueError("ego is controlled by the driving system")
+        if actor_id in self._filtered_tracks:
+            raise ValueError(f"Filtered NuRec track {actor_id!r} cannot be overridden")
+        track = self._recorded_tracks.get(actor_id)
+        if track is not None and not track["controllable"]:
+            raise ValueError(f"NRE cannot move parked NuRec track {actor_id!r}; it is baked into the background")
         actors = self.state().actors
         if actor_id not in actors:
             raise KeyError(f"Unknown NuRec actor {actor_id!r}; available: {sorted(actors)}")
@@ -321,9 +362,81 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
         velocity = tuple(float(value) for value in validated_vector(state.velocity, "velocity"))
         replacement = dataclasses.replace(actors[actor_id],
             pose=validated_transform(state.pose), velocity=velocity)
-        self._actor_overrides[actor_id] = (self._timestamp_us(self.pose), replacement)
+        timestamp_us = self._timestamp_us(self.pose)
+        self._actor_overrides[actor_id] = (timestamp_us, replacement)
+        session = self._traffic_session
+        if session is not None and actor_id in session.track_ids:
+            session.record_override(actor_id, timestamp_us, replacement.box_transform(), velocity)
+
+    def _close_traffic_session(self) -> None:
+        session, self._traffic_session = self._traffic_session, None
+        if session is not None:
+            session.close()
+
+    def _open_traffic_session(self, short_tracks: set[str]) -> None:
+        import numpy as np
+
+        traffic = self.simulator.traffic
+        assert traffic is not None
+        start = self._start
+        if start is None:
+            raise ValueError("AlpaSim traffic requires a recorded NuRec ScenarioStart")
+        ego = self._ego_state()
+        if ego.extent is None:
+            raise ValueError("AlpaSim traffic requires the ego bounding-box extent")
+        rig_from_box = np.linalg.inv(ego.pose) @ ego.box_transform()
+        first_time = start.payload["first_timestamp"]
+        time_step = start.payload["time_step"]
+        trajectory = tuple((round((first_time + index * time_step) * 1e6), state.pose @ rig_from_box)
+                           for index, state in enumerate(start.recorded_ego))
+        tracks = [TrafficTrack(identity, track["trajectory"], track["extent"],
+                               track["label_class"], not track["controllable"])
+                  for identity, track in self._recorded_tracks.items() if identity not in short_tracks]
+        self._traffic_session = traffic.open_session(
+            scene_id=start.payload["scene_id"], random_seed=0 if self.seed is None else self.seed,
+            start_us=self._timestamp_us(self.pose), end_us=round(start.payload["terminal_timestamp"] * 1e6),
+            ego_extent=ego.extent, ego_trajectory=trajectory, tracks=tracks)
+        self.initialization_report["traffic"] = {
+            "session_uuid": self._traffic_session.uuid,
+            "handover_time_us": self._traffic_session.handover_time_us,
+            "session_tracks": sorted(self._traffic_session.track_ids),
+        }
+
+    def _dynamic_objects(self, timestamp_us: int, actors: dict[str, ActorState]) -> tuple:
+        """The exact actor edits for ordinary captures and inserted-object probes."""
+        objects = [(identity, state.pose) for identity, state in actors.items()]
+        for identity, state in self._recorded_actors(timestamp_us).items():
+            if identity in self._filtered_tracks:
+                pose = state.pose.copy()
+                pose[2, 3] -= 100.
+                objects.append((identity, pose))
+        return tuple(objects)
+
+    def _simulate_traffic(self, previous: dict[str, ActorState]) -> None:
+        timestamp_us = self._timestamp_us(self.pose)
+        session = self._traffic_session
+        if session is None:
+            raise RuntimeError("AlpaSim traffic session is closed; reset the runtime before stepping")
+        current = self._actors_at(timestamp_us)
+        overrides = {identity: current[identity].box_transform()
+                     for identity in self._actor_overrides if identity in session.track_ids}
+        returned = session.simulate(timestamp_us, self._ego_state().box_transform(), overrides)
+        states = {}
+        for identity, pose in returned.items():
+            velocity = None if identity not in previous else tuple(
+                float(value) for value in ((pose[:3, 3] - previous[identity].pose[:3, 3]) / self.dt))
+            track = self._recorded_tracks[identity]
+            states[identity] = ActorState(pose, velocity, track["category"], track["extent"])
+        self._traffic_states = states
+        self._traffic_timestamp_us = timestamp_us
 
     def _initialize_world(self, start, initialization, environment):
+        self._close_traffic_session()
+        self._recorded_tracks.clear()
+        self._filtered_tracks.clear()
+        self._traffic_states.clear()
+        self._traffic_timestamp_us = None
+        self._capture_dynamic_objects.clear()
         if initialization is not None:
             raise ValueError("CARLA replay initialization does not apply to NuRec")
         if environment:
@@ -377,11 +490,29 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
             reset_dynamics(deepcopy(self.pose))
         self.renderer.load_scene(config.get("scene"))
         self.frame = 0
+        # Short tracks are measured over the whole recording: movable ones leave the world,
+        # and no short track joins a traffic session.
+        short_tracks: set[str] = set()
+        if start is not None and "usdz_path" in start.payload:
+            self._recorded_tracks = self._tracks().track_trajectories(start.payload["scene_id"])
+            minimum_us = round(self.simulator.min_track_duration_s * 1e6)
+            short_tracks = {
+                identity for identity, track in self._recorded_tracks.items()
+                if not track["trajectory"]
+                or track["trajectory"][-1][0] - track["trajectory"][0][0] < minimum_us
+            }
+            self._filtered_tracks = {identity for identity in short_tracks
+                                     if self._recorded_tracks[identity]["controllable"]}
+            self.initialization_report["filtered_tracks"] = sorted(self._filtered_tracks)
+        if self.simulator.traffic is not None:
+            self._open_traffic_session(short_tracks)
 
     def _advance_native(self, control):
         if self._recorded_end is not None and round((self.pose.t + self.dt) * 1e6) > round(self._recorded_end * 1e6):
             raise ValueError("NuRec step exceeds terminal recorded support")
         self._render_requests.clear()
+        uses_traffic = self.simulator.traffic is not None
+        previous_actors = self._actors_at(self._timestamp_us(self.pose)) if uses_traffic else {}
         previous_yaw = self.pose.yaw
         self.pose = self.dynamics.step(self.pose, control, self.dt)
         world_from_ego = planar_rig_pose(self.pose.x, self.pose.y, self.pose.yaw,
@@ -402,6 +533,8 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
             self.pose.x, self.pose.y = self._world_from_ego[:2, 3]
             self.pose.yaw = math.atan2(self._world_from_ego[1, 0], self._world_from_ego[0, 0])
         self.frame += 1
+        if uses_traffic:
+            self._simulate_traffic(previous_actors)
 
     @property
     def sensors(self) -> frozenset[str]:
@@ -451,7 +584,8 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
             self._capture_actor_states[native_camera], truth.ego, truth.t, truth.frame,
             sensor_from_world=BODY_FROM_OPTICAL @ cam_from_world,
             depth=self._camera_depth(native_camera, camera, cam_from_world),
-            native={"render_request": request, "timestamp_us": timestamp},
+            native={"render_request": request, "timestamp_us": timestamp,
+                    "dynamic_objects": deepcopy(self._capture_dynamic_objects[native_camera])},
             object_occlusion=self.simulator.object_occlusion,
             occlusion_tolerance_m=self.simulator.occlusion_tolerance_m,
         )
@@ -479,7 +613,9 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
         pose = validated_transform(start.recorded_ego[position].pose)
         relative_time = (position - start.frame.position) * self.dt
         timestamp_us = round((start.frame.timestamp + relative_time) * 1e6)
-        return pose, timestamp_us, self._tracks().actor_states(start.payload["scene_id"], timestamp_us)
+        actors = self._tracks().actor_states(start.payload["scene_id"], timestamp_us)
+        actors = {key: state for key, state in actors.items() if key not in self._filtered_tracks}
+        return pose, timestamp_us, actors
 
     def _recorded_sensor_geometry(self, position: int, sensor: str) -> SensorGeometry:
         aliases = self.config.get("camera_aliases", {})
@@ -515,7 +651,8 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
             geometry.sensor, captured[1], geometry.camera, geometry.cam_from_world, actors,
             self._start.recorded_ego[position], observation.t, observation.frame,
             sensor_from_world=BODY_FROM_OPTICAL @ geometry.cam_from_world, depth=depth,
-            native={"render_request": CameraPoseRequest(pose, native_camera), "timestamp_us": timestamp_us},
+            native={"render_request": CameraPoseRequest(pose, native_camera), "timestamp_us": timestamp_us,
+                    "dynamic_objects": self._dynamic_objects(timestamp_us, actors)},
             object_occlusion=self.simulator.object_occlusion,
             occlusion_tolerance_m=self.simulator.occlusion_tolerance_m,
         )
@@ -530,7 +667,7 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
         request = view.native["render_request"]
         visibility = self.renderer.render_scene_visibility(
             request.pose, view.native["timestamp_us"], request.camera, objects,
-            dynamic_objects=tuple((identity, state.pose) for identity, state in view.actors.items()),
+            dynamic_objects=view.native["dynamic_objects"],
             occlusion_tolerance_m=self.simulator.occlusion_tolerance_m)
         return plan_composite(view.camera, view.cam_from_world, objects, scene_visibility=visibility)
 
@@ -544,7 +681,7 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
         sensor_data = {
             aliases.get(camera, camera): self.renderer.render(
                 pose, timestamp_us, camera,
-                dynamic_objects=tuple((identity, state.pose) for identity, state in actors.items()))
+                dynamic_objects=self._dynamic_objects(timestamp_us, actors))
             for camera in self.renderer.cameras
         }
         vehicle_state = self._recorded_planar_state(position)
@@ -578,8 +715,10 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
                 if request.camera in self.renderer.calibration:
                     calibration[output_key] = self.renderer.calibration[request.camera]
             actors = self._actors_at(self._timestamp_us(self.pose))
+            dynamic_objects = self._dynamic_objects(self._timestamp_us(self.pose), actors)
             image = self.renderer.render(request.pose, self._timestamp_us(self.pose), request.camera,
-                dynamic_objects=tuple((identity, state.pose) for identity, state in actors.items()))
+                                         dynamic_objects=dynamic_objects)
+            self._capture_dynamic_objects[camera] = deepcopy(dynamic_objects)
             self._capture_actor_states[camera] = deepcopy(actors)
             sensor_data[aliases.get(camera, camera)] = self._emit(
                 "render.post", image, sensor=camera,
@@ -597,13 +736,18 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
     def close(self) -> None:
         self._capture_depth.clear()
         try:
-            self.renderer.close()
+            self._close_traffic_session()
         finally:
-            super().close()
+            try:
+                self.renderer.close()
+            finally:
+                super().close()
 
     # In-process world checkpoints retain frozen assets and loaded harmonizer references.
 
     def checkpoint(self) -> dict:
+        if self.simulator.traffic is not None:
+            raise RuntimeError("AlpaSim traffic sessions cannot be checkpointed")
         return {"pose": asdict(self.pose), "frame": self.frame,
                 "world_from_ego": self._world_from_ego.copy(),
                 "ground_contact_failures": dict(self._ground_contact_failures),
@@ -611,6 +755,8 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
                 "objects": dict(self._objects)}
 
     def restore(self, ckpt: dict) -> None:
+        if self.simulator.traffic is not None:
+            raise RuntimeError("AlpaSim traffic sessions cannot be restored from checkpoints")
         self.pose = PlanarEgoState(**ckpt["pose"])
         reset_dynamics = getattr(self.dynamics, "reset", None)
         if callable(reset_dynamics):

@@ -63,7 +63,8 @@ data and boundary modules can be imported without simulator servers or weights.
 | avsectester.closed_loop.simulators.carla.scenario | CARLA scenario preparation and seed resolution |
 | avsectester.closed_loop.simulators.carla.sensors | SensorCapture, sensor alignment, depth decoding and pinhole registration |
 | avsectester.closed_loop.simulators.carla.simulator | CARLA simulator configuration and runtime |
-| avsectester.closed_loop.simulators.nurec | NuRecSimulator, NuRecSimulatorRuntime and NuRecRenderer exports |
+| avsectester.closed_loop.simulators.nurec | NuRecSimulator, NuRecSimulatorRuntime, NuRecRenderer, AlpaSimTraffic, TrafficSession and TrafficTrack exports |
+| avsectester.closed_loop.simulators.nurec.traffic | Optional AlpaSim traffic-session client |
 | avsectester.closed_loop.simulators.nurec.renderer | Renderer, NuRecRenderer and RPC pose/camera conversion |
 | avsectester.closed_loop.simulators.nurec.asset_editing | NRE edit_assets messages declared from NVIDIA's public gRPC API reference |
 | avsectester.closed_loop.simulators.nurec.probe_assets | ProbeAsset and probe_asset: single-colour Gaussian copies of ObjectAssets for NRE insertion |
@@ -748,6 +749,7 @@ online attack context still receives no semantic map.
 | `NuRecDataset.scene_mesh` | `scene_mesh(scenario_id: str) -> tuple[np.ndarray, np.ndarray]` |
 | `NuRecDataset.ego_state` | `ego_state(scenario_id: str, timestamp_us: int) -> ActorState` |
 | `NuRecDataset.actor_states` | `actor_states(scenario_id: str, timestamp_us: int) -> dict[str, ActorState]` |
+| `NuRecDataset.track_trajectories` | `track_trajectories(scenario_id: str) -> dict[str, dict[str, Any]]`; complete independent native trajectories with fields trajectory, controllable (boolean), label_class, extent and category |
 
 camera_geometry returns an independent FThetaCamera and rig-from-camera pose, preserving the
 archive's native forward and inverse polynomials and its windshield distortion when present. Missing native pixeldist_to_angle remains empty;
@@ -833,6 +835,7 @@ dataset, simulator or model dependencies.
 | `SensorView` | `sensor: str`<br>`data: Any`<br>`camera: Camera \| None`<br>`cam_from_world: np.ndarray \| None`<br>`actors: Mapping[str, ActorState]`<br>`ego: ActorState`<br>`time: float`<br>`frame: int`<br>`sensor_from_world: np.ndarray \| None = None`<br>`depth: np.ndarray \| None = None`<br>`native: Mapping[str, Any] = field(default_factory=dict)`<br>`objects: Mapping[str, PlacedObject] = field(default_factory=dict)`<br>`composition: ObjectComposition \| None = None`<br>`object_occlusion: str = 'geometry'`<br>`occlusion_tolerance_m: float = 0.1` |
 | `Simulator` | `dataset_kinds: tuple[str, ...] = ()`<br>`can_render: bool = False`<br>`can_insert_objects: bool = False`<br>`can_replay: bool = False`<br>`can_observe_past: bool = False`<br>`supported_world_settings: frozenset[str] = frozenset()`<br>`occlusion_tolerance_m: float = 0.1` |
 | `Simulator.create_runtime` | `create_runtime(seed: int \| None = None) -> SimulatorRuntime` |
+| `Simulator.past_steps` | `past_steps: int`; preceding recorded decisions required by the simulator, default 0 |
 | `Simulator.decision_time_step` | `decision_time_step: float \| None` |
 | `Simulator.command_modes` | `command_modes: frozenset[str] \| None` |
 | `Simulator.supported_stages` | `supported_stages: frozenset[str]` |
@@ -1126,15 +1129,16 @@ dataset, simulator or model dependencies.
 | Public name | Signature or fields |
 |---|---|
 | `NuRecSimulator` | Class; see methods below |
-| `NuRecSimulator.__init__` | `__init__(config: dict, renderer: Renderer, dynamics: EgoDynamics \| None = None, *, depth: str = 'mesh', route_generator: str = 'map', physics_update_mode: str = 'ego_only', ground_mesh: str = 'mesh', object_occlusion: str = 'rendered_probes', occlusion_tolerance_m: float = 0.15) -> None` |
+| `NuRecSimulator.__init__` | `__init__(config: dict, renderer: Renderer, dynamics: EgoDynamics \| None = None, *, depth: str = 'mesh', route_generator: str = 'map', physics_update_mode: str = 'ego_only', ground_mesh: str = 'mesh', object_occlusion: str = 'rendered_probes', occlusion_tolerance_m: float = 0.15, traffic: AlpaSimTraffic \| None = None, min_track_duration_s: float = 3.0) -> None` |
 | `NuRecSimulator.create_runtime` | `create_runtime(seed: int \| None = None) -> NuRecSimulatorRuntime` |
 | `NuRecSimulator.supported_stages` | `supported_stages: frozenset[str]` |
 | `NuRecSimulator.command_modes` | `command_modes: frozenset[str] \| None` |
 | `NuRecSimulator.decision_time_step` | `decision_time_step: Any` |
+| `NuRecSimulator.past_steps` | `past_steps: int`; traffic.history_steps − 1 when enabled, otherwise 0 |
 | `NuRecSimulator.identity` | `identity: Any` |
 | `NuRecSimulator.validate_start` | `validate_start(start: ScenarioStart \| None) -> None`; also raises UnsupportedStartError when the configured navigation route cannot be built from the start's recording and map, checked once per recording |
 | `NuRecSimulatorRuntime` | Class; see methods below |
-| `NuRecSimulatorRuntime.__init__` | `__init__(simulator: NuRecSimulator) -> None` |
+| `NuRecSimulatorRuntime.__init__` | `__init__(simulator: NuRecSimulator, seed: int \| None = None) -> None` |
 | `NuRecSimulatorRuntime.native` | `native: dict[str, Any]` |
 | `NuRecSimulatorRuntime.render_request` | `render_request(camera: str) -> CameraPoseRequest` |
 | `NuRecSimulatorRuntime.sensors` | `sensors: frozenset[str]` |
@@ -1147,7 +1151,7 @@ dataset, simulator or model dependencies.
 | `NuRecSimulatorRuntime.restore` | `restore(ckpt: dict) -> None` |
 
 NuRecRenderer is explicitly configured on NuRecSimulator; it is not constructed automatically.
-The package root exports only NuRecSimulator, NuRecSimulatorRuntime and NuRecRenderer.
+The package root exports NuRecSimulator, NuRecSimulatorRuntime, NuRecRenderer, AlpaSimTraffic, TrafficSession and TrafficTrack.
 Renderer and the RPC conversion functions are imported from nurec.renderer.
 render_scene_visibility returns a boolean image, true where the reconstruction does not hide the
 objects; NuRecSimulator's default object_occlusion="rendered_probes" passes it to plan_composite
@@ -1160,11 +1164,40 @@ quaternion convention without a box-height shift. Runtime rendering supplies eve
 present tracked actor, including unchanged tracks. NRE must enable actor editing; see
 [NuRec actor movement](../guides/simulators.md#move-recorded-actors).
 
-NuRecSimulatorRuntime.set_actor_state accepts an existing non-ego track and an ActorState with
-explicit world velocity. Its pose is anchored at call time and advances linearly from the next
-capture; repeated calls replace the override. Unknown IDs raise KeyError, ego and missing velocity
-raise ValueError. control_actor remains unsupported. state() reports current actors, while sensor
-views retain the actor poses used for their capture. checkpoint/restore includes these overrides.
+NuRecSimulatorRuntime.set_actor_state accepts a current, unfiltered CONTROLLABLE track and an
+ActorState with explicit world velocity. Parked tracks cannot be moved by NRE and are rejected.
+The override moves at constant velocity until reset or replacement; traffic-session overrides
+backfill history_steps−1 earlier samples once and resend their complete history in each request.
+min_track_duration_s filters controllable tracks using their whole-recording duration (default
+3 s; 0 disables filtering); parked tracks always follow their recorded support. See
+[Reactive traffic](../guides/simulators.md#reactive-traffic) for actor precedence.
+
+### avsectester.closed_loop.simulators.nurec.traffic
+
+| Public name | Signature or fields |
+|---|---|
+| `AlpaSimTraffic` | Optional synchronous CATK traffic-session client; gRPC imports are lazy |
+| `AlpaSimTraffic.__init__` | `__init__(endpoint: str = '127.0.0.1:6200', history_steps: int = 16, rpc_timeout_s: float = 300.0) -> None` |
+| `AlpaSimTraffic.get_metadata` | `get_metadata(*, timeout_s: float \| None = None)`; returns TrafficModuleMetadata |
+| `AlpaSimTraffic.get_available_scenes` | `get_available_scenes() -> tuple[str, ...]` |
+| `AlpaSimTraffic.open_session` | `open_session(*, scene_id: str, random_seed: int, start_us: int, end_us: int, ego_extent: tuple[float, float, float], ego_trajectory: Sequence[tuple[int, np.ndarray]], tracks: Sequence[TrafficTrack]) -> TrafficSession` |
+| `TrafficTrack` | Frozen dataclass: `track_id: str`, `trajectory: tuple[tuple[int, np.ndarray], ...]`, `extent: tuple[float, float, float]`, `label_class: str`, `is_static: bool` |
+| `TrafficSession` | One active session owning its channel and override history |
+| `TrafficSession.uuid` | Session UUID |
+| `TrafficSession.handover_time_us` | Selected start plus one CATK step |
+| `TrafficSession.track_ids` | IDs of tracks actually sent after window clipping |
+| `TrafficSession.record_override` | `record_override(track_id: str, time_us: int, world_from_box: np.ndarray, velocity: Sequence[float]) -> None` |
+| `TrafficSession.simulate` | `simulate(time_query_us: int, ego_world_from_box: np.ndarray, override_world_from_box: Mapping[str, np.ndarray]) -> dict[str, np.ndarray]` |
+| `TrafficSession.close` | `close() -> None`; idempotent, releasing the channel even after an RPC failure |
+| `TRAFFIC_STEP_US` | CATK step: 100000 microseconds |
+
+Trajectory points are (integer timestamp_us, world_from_box) pairs. open_session checks scene and
+history support, clips native tracks to the required window and sends EGO first. simulate sends
+EGO and full override histories and returns only current movable, non-overridden session tracks.
+Its override keys must match previously recorded overrides. Errors close the session; cleanup
+errors are attached to the original exception. RPC failures include server status and details.
+random_seed is forwarded but does not control CATK sampling.
+See [Reactive traffic](../guides/simulators.md#reactive-traffic).
 
 ### avsectester.closed_loop.simulators.ego_dynamics
 
@@ -2198,13 +2231,17 @@ selection decisions, metric errors, notes and expandable group evidence.
 | Public name | Signature or fields |
 |---|---|
 | `renderer_command` | `renderer_command(dataset, renderer, *, gpu, name, image, cache_size) -> list[str]` |
-| `default_container_name` | `default_container_name(renderer) -> str`; avsectester-nre-<port> without dataset access |
+| `default_renderer_container_name` | `default_renderer_container_name(renderer) -> str`; avsectester-nre-<port> without dataset access |
+| `traffic_command` | `traffic_command(dataset, traffic, *, gpu, name, image, models: str \| Path) -> list[str]` |
+| `default_traffic_container_name` | `default_traffic_container_name(traffic) -> str`; avsectester-trafficsim-<port> without dataset access |
+| `DEFAULT_TRAFFIC_IMAGE` | `avsectester:trafficsim` |
 | `DEFAULT_NRE_IMAGE` | `nvcr.io/nvidia/nre/nre-ga:26.04` |
 
 Constructs a local Docker NRE command without filesystem or process changes. It requires NuRecDataset
 and NuRecRenderer, rejects duplicate archive basenames and remote endpoints, mounts each resolved
 archive read-only, and mounts the optional probe directory at its server-side path.
-Use the nre serve/stop CLI for process management.
+traffic_command applies the same archive/endpoint checks and mounts the model directory read-only
+at /mnt/trafficsim-models. Use nre serve/stop and trafficsim serve/stop for process management.
 
 ### avsectester.evaluation.report statistic formatting
 

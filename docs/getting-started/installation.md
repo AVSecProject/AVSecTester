@@ -318,10 +318,9 @@ docker run -d --name avsectester-nre-50051 --network host --gpus device=0 -e HOM
 NuRecRenderer accepts a served scene id or an unambiguous substring. NuRecDataset.scenarios()
 returns native clip identifiers. Set dataset time_step and simulator dt consistently.
 
---enable-editing-actors is required. Every render sends
-the poses of all currently supported recorded tracks, including those not moved by an attack;
-with editing enabled, the service renders only the dynamic actors present in that request. A
-request listing no dynamic actors renders every track along its recorded trajectory. Render
+--enable-editing-actors is required. Every render sends the poses of all currently supported
+recorded tracks, including those not moved by an attack. NRE may render an omitted track at its
+recorded pose; the simulator explicitly moves filtered-out controllable tracks below the scene. Render
 requests move reconstructed actors; inserted world objects are composited onto the renders. See
 [NuRec actor movement](../guides/simulators.md#move-recorded-actors).
 
@@ -331,6 +330,63 @@ The server reads the probe files that NuRecRenderer writes from the mounted dire
 Create the directory before starting the container, so Docker does not create it as root. Without
 a probe directory, insert world objects with `object_occlusion="geometry"`. See
 [Rendered-probe occlusion](../guides/simulators.md#rendered-probe-occlusion).
+
+### Reactive traffic service
+
+Build nurec first, then the optional CATK service:
+
+```bash
+DOCKER_BUILDKIT=1 docker build --target nurec -t avsectester:nurec .
+# Requires the avsectester:nurec image built above; the service extends that image.
+DOCKER_BUILDKIT=1 docker build --target trafficsim -t avsectester:trafficsim .
+```
+
+Download the four files from the pinned AlpaSim commit, preserving their subdirectories:
+
+```bash
+traffic_models_dir=/path/to/alpasim-trafficsim
+traffic_models_url=https://media.githubusercontent.com/media/NVlabs/alpasim/affc2eab209fa43bdfa2f26c0f8d437922d78a68/data/trafficsim-models
+mkdir -p "$traffic_models_dir/catk_v120" "$traffic_models_dir/tokens"
+for file in catk_v120/config.yaml catk_v120/latest.ckpt \
+  tokens/cabs_tc_map_vocab_c2048_t1000.pkl tokens/cabs_tc_base_agent_vocab_c1024.pkl; do
+  curl --fail --location "$traffic_models_url/$file" --output "$traffic_models_dir/$file"
+done
+```
+
+Check both SHA256 and byte count against the Git LFS pointers bundled in avsectester:nurec:
+
+```bash
+docker run --rm -i -e NVIDIA_VISIBLE_DEVICES=void \
+  -v "$traffic_models_dir":/models:ro --entrypoint python avsectester:nurec - <<'PYTHON'
+from pathlib import Path
+import hashlib
+
+source = Path("/opt/alpasim/data/trafficsim-models")
+for relative in (
+    "catk_v120/config.yaml", "catk_v120/latest.ckpt",
+    "tokens/cabs_tc_map_vocab_c2048_t1000.pkl",
+    "tokens/cabs_tc_base_agent_vocab_c1024.pkl",
+):
+    fields = dict(line.split(" ", 1) for line in (source / relative).read_text().splitlines())
+    data = (Path("/models") / relative).read_bytes()
+    digest = hashlib.sha256(data).hexdigest()
+    assert len(data) == int(fields["size"]), relative
+    assert digest == fields["oid"].removeprefix("sha256:"), relative
+    print(relative, len(data), digest)
+PYTHON
+```
+
+Set NuRecSimulator.traffic in the experiment configuration, then start both services:
+
+```bash
+avsectester nre serve CONFIG.yaml --gpu 0
+avsectester trafficsim serve CONFIG.yaml --gpu 1 --models "$traffic_models_dir"
+avsectester run CONFIG.yaml
+avsectester trafficsim stop CONFIG.yaml
+avsectester nre stop CONFIG.yaml
+```
+
+
 
 ## Model weights and assets
 

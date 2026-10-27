@@ -14,7 +14,9 @@ from avsectester.datasets.nurec import NuRecDataset
 from avsectester.geometry.cameras import FThetaCamera, PinholeCamera
 from avsectester.geometry.poses import rotation_matrix
 from avsectester.data_types import Control
-from tests.fakes import NuRecImageBoundary, NuRecRpcBoundary
+from avsectester.closed_loop.hooks import Hook, HookSet
+from avsectester.rendering import ObjectAsset
+from tests.fakes import ConstantAVStack, NuRecImageBoundary, NuRecRpcBoundary, NuRecTrafficImageBoundary
 
 
 def test_reset_requires_mesh(nurec_usdz_path, tmp_path, monkeypatch):
@@ -26,11 +28,11 @@ def test_reset_requires_mesh(nurec_usdz_path, tmp_path, monkeypatch):
     dataset = NuRecDataset([archive_path], time_step=.1)
     start = dataset.scenario_start("scene", dataset.frames("scene")[0])
     boundary = NuRecRpcBoundary().install(monkeypatch)
-    with NuRecSimulator({"dt": .1}, NuRecRenderer(cameras=["front"])).create_runtime() as runtime:
+    with NuRecSimulator({"dt": .1}, NuRecRenderer(cameras=["front"]), min_track_duration_s=0).create_runtime() as runtime:
         with pytest.raises(ValueError, match=r"missing: mesh_ground\.ply"):
             runtime.reset(start)
         assert boundary.requests == []
-    with NuRecSimulator({"dt": .1}, NuRecRenderer(cameras=["front"]), depth="none").create_runtime() as runtime:
+    with NuRecSimulator({"dt": .1}, NuRecRenderer(cameras=["front"]), depth="none", min_track_duration_s=0).create_runtime() as runtime:
         runtime.reset(start)
         assert runtime.sensor_view("front").depth is None
         assert boundary.last_request is not None
@@ -53,7 +55,7 @@ def test_reset_initializes_dynamics(nurec_dataset, monkeypatch):
                     payload={**start.payload, "ego": recorded[2]})
     simulator = NuRecSimulator({"dt": .1}, NuRecRenderer(cameras=["front"]),
                                ResetRecordingDynamics(), physics_update_mode="none",
-                               route_generator="none")
+                               route_generator="none", min_track_duration_s=0)
     with simulator.create_runtime() as runtime:
         runtime.reset(start)
         initial = runtime.native["dynamics"].initial_state
@@ -73,7 +75,7 @@ def test_checkpoint(monkeypatch):
     NuRecRpcBoundary().install(monkeypatch)
     simulator = NuRecSimulator({"dt": .1, "ego0": {"x": 10., "y": 5., "yaw": np.pi / 2}},
                                NuRecRenderer(cameras=["front"]), TrajectoryFollower(),
-                               route_generator="none", physics_update_mode="none")
+                               route_generator="none", physics_update_mode="none", min_track_duration_s=0)
     with simulator.create_runtime() as runtime:
         runtime.reset()
         runtime.step(Control(trajectory=[((2., 0., 0.), (1., 0., 0., 0.), 200000)]))
@@ -90,7 +92,7 @@ def test_set_actor_state(nurec_usdz_path, monkeypatch, make_object_in_front):
     dataset = NuRecDataset([nurec_usdz_path], time_step=.1)
     frames = dataset.frames("scene")
     start = dataset.scenario_start("scene", frames[2])
-    simulator = NuRecSimulator({"dt": .1}, NuRecRenderer(cameras=["front"]), object_occlusion="geometry")
+    simulator = NuRecSimulator({"dt": .1}, NuRecRenderer(cameras=["front"]), object_occlusion="geometry", min_track_duration_s=0)
     with simulator.create_runtime() as runtime:
         runtime.reset(start)
         recorded = dataset.frame_data("scene", frames[2]).actors
@@ -168,7 +170,7 @@ def test_set_actor_state(nurec_usdz_path, monkeypatch, make_object_in_front):
 ], ids=["pinhole", "f-theta"])
 def test_depth(nurec_dataset, camera, ground_depth):
     start = nurec_dataset.scenario_start("scene", nurec_dataset.frames("scene")[0])
-    simulator = NuRecSimulator({"dt": .1}, NuRecImageBoundary(camera))
+    simulator = NuRecSimulator({"dt": .1}, NuRecImageBoundary(camera), min_track_duration_s=0)
     with simulator.create_runtime() as runtime:
         runtime.reset(start)
         view = runtime.sensor_view("front")
@@ -190,11 +192,11 @@ def test_depth(nurec_dataset, camera, ground_depth):
         runtime.step(Control())
         np.testing.assert_allclose(runtime.sensor_view("front").depth[6, 8], .8,
                                    atol=1e-6, rtol=0)
-    with NuRecSimulator({"dt": .1}, NuRecImageBoundary(camera), depth="none").create_runtime() as runtime:
+    with NuRecSimulator({"dt": .1}, NuRecImageBoundary(camera), depth="none", min_track_duration_s=0).create_runtime() as runtime:
         runtime.reset(start)
         assert runtime.sensor_view("front").depth is None
     with pytest.raises(ValueError, match="depth must be 'mesh' or 'none'"):
-        NuRecSimulator({"dt": .1}, NuRecImageBoundary(camera), depth="unsupported")
+        NuRecSimulator({"dt": .1}, NuRecImageBoundary(camera), depth="unsupported", min_track_duration_s=0)
 
 
 def test_rendered_probe_occlusion(nurec_dataset, tmp_path, monkeypatch, make_object_in_front):
@@ -211,7 +213,7 @@ def test_rendered_probe_occlusion(nurec_dataset, tmp_path, monkeypatch, make_obj
     renderer = NuRecRenderer(cameras=["front"], probe_directory=str(tmp_path),
                              server_probe_directory="/server/assets")
     # Rendered probes are the default object occlusion.
-    simulator = NuRecSimulator({"dt": .1}, renderer, physics_update_mode="none", depth="none")
+    simulator = NuRecSimulator({"dt": .1}, renderer, physics_update_mode="none", depth="none", min_track_duration_s=0)
     with simulator.create_runtime() as runtime:
         runtime.reset(start)
         asset, world_from_object = make_object_in_front(runtime.sensor_view("front"))
@@ -266,7 +268,7 @@ def test_rendered_probe_occlusion(nurec_dataset, tmp_path, monkeypatch, make_obj
 
     def capture(tolerance):
         tolerant = NuRecSimulator({"dt": .1}, renderer, physics_update_mode="none", depth="none",
-                                  occlusion_tolerance_m=tolerance)
+                                  occlusion_tolerance_m=tolerance, min_track_duration_s=0)
         assert tolerant.identity["occlusion_tolerance_m"] == tolerance
         with tolerant.create_runtime() as runtime:
             runtime.reset(start)
@@ -283,10 +285,10 @@ def test_rendered_probe_occlusion(nurec_dataset, tmp_path, monkeypatch, make_obj
     ray = probe_centre - camera_centre
     np.testing.assert_allclose(moved_centre, probe_centre - .25 * ray / np.linalg.norm(ray), atol=1e-6)
     np.testing.assert_array_equal(moved_data, data)
-    assert NuRecSimulator({"dt": .1}, renderer).occlusion_tolerance_m == .15
+    assert NuRecSimulator({"dt": .1}, renderer, min_track_duration_s=0).occlusion_tolerance_m == .15
 
     unconfigured = NuRecSimulator({"dt": .1}, NuRecRenderer(cameras=["front"]), physics_update_mode="none",
-                                  depth="none")
+                                  depth="none", min_track_duration_s=0)
     with unconfigured.create_runtime() as runtime:
         runtime.reset(start)
         runtime.insert_object("sign", asset, world_from_object)
@@ -294,7 +296,7 @@ def test_rendered_probe_occlusion(nurec_dataset, tmp_path, monkeypatch, make_obj
         with pytest.raises(ValueError, match="probe_directory"):
             runtime.sensor_view("front")
     with pytest.raises(ValueError, match="object_occlusion must be"):
-        NuRecSimulator({"dt": .1}, renderer, object_occlusion="unsupported")
+        NuRecSimulator({"dt": .1}, renderer, object_occlusion="unsupported", min_track_duration_s=0)
 
 
 def test_depth_without_default_camera(nurec_usdz_path, tmp_path, monkeypatch):
@@ -318,7 +320,7 @@ def test_depth_without_default_camera(nurec_usdz_path, tmp_path, monkeypatch):
     camera, _ = dataset.camera_geometry("scene")
     np.testing.assert_allclose(camera.unproject([[8., 6.]]), [[0., 0., 1.]])
     NuRecRpcBoundary().install(monkeypatch)
-    with NuRecSimulator({"dt": .1}, NuRecRenderer(cameras=["front"])).create_runtime() as runtime:
+    with NuRecSimulator({"dt": .1}, NuRecRenderer(cameras=["front"]), min_track_duration_s=0).create_runtime() as runtime:
         runtime.reset(dataset.scenario_start("scene", dataset.frames("scene")[0]))
         np.testing.assert_allclose(runtime.sensor_view("front").depth[6, 8], 4., atol=1e-6)
 
@@ -328,7 +330,7 @@ def test_route(nurec_dataset, monkeypatch):
 
     NuRecRpcBoundary().install(monkeypatch)
     start = nurec_dataset.scenario_start("scene", nurec_dataset.frames("scene")[0])
-    with NuRecSimulator({"dt": .1}, NuRecRenderer(cameras=["front"])).create_runtime() as runtime:
+    with NuRecSimulator({"dt": .1}, NuRecRenderer(cameras=["front"]), min_track_duration_s=0).create_runtime() as runtime:
         runtime.reset(start)
         route = runtime.observe().route
         assert route.shape == (20, 3)
@@ -350,11 +352,11 @@ def test_validate_start(nurec_dataset):
     reversed_pose[0, 3] -= 1.
     folded = replace(start, recorded_ego=(*start.recorded_ego, replace(last, pose=reversed_pose)))
     for kind in ("map", "recorded"):
-        simulator = NuRecSimulator({"dt": .1}, NuRecRenderer(cameras=["front"]), route_generator=kind)
+        simulator = NuRecSimulator({"dt": .1}, NuRecRenderer(cameras=["front"]), route_generator=kind, min_track_duration_s=0)
         simulator.validate_start(start)
         with pytest.raises(UnsupportedStartError, match="folds back"):
             simulator.validate_start(folded)
-    NuRecSimulator({"dt": .1}, NuRecRenderer(cameras=["front"]), route_generator="none").validate_start(folded)
+    NuRecSimulator({"dt": .1}, NuRecRenderer(cameras=["front"]), route_generator="none", min_track_duration_s=0).validate_start(folded)
 
 
 @pytest.mark.parametrize("mode,height", [("ego_only", .05), ("none", .3)])
@@ -365,7 +367,7 @@ def test_ground_contact(mode, height, nurec_dataset, monkeypatch):
     NuRecRpcBoundary().install(monkeypatch)
     start = nurec_dataset.scenario_start("scene", nurec_dataset.frames("scene")[0])
     simulator = NuRecSimulator({"dt": .1}, NuRecRenderer(cameras=["front"]),
-                               physics_update_mode=mode, ground_mesh="mesh_ground")
+                               physics_update_mode=mode, ground_mesh="mesh_ground", min_track_duration_s=0)
     with simulator.create_runtime() as runtime:
         log = ClosedLoopRunner().run(runtime, ConstantAVStack(), RunRequest(1, start=start))
         assert log.steps[0].physical_post.ego.pose[2, 3] == pytest.approx(height)
@@ -383,7 +385,7 @@ def test_ground_contact_failure(nurec_dataset, monkeypatch):
     pose = ego.pose.copy()
     pose[0, 3] = 1000.
     start = replace(start, payload={**start.payload, "ego": replace(ego, pose=pose)})
-    simulator = NuRecSimulator({"dt": .1}, NuRecRenderer(cameras=["front"]), route_generator="none")
+    simulator = NuRecSimulator({"dt": .1}, NuRecRenderer(cameras=["front"]), route_generator="none", min_track_duration_s=0)
     with simulator.create_runtime() as runtime:
         log = ClosedLoopRunner().run(runtime, ConstantAVStack(), RunRequest(1, start=start))
         termination = next(event for event in log.events if event.kind == "termination")
@@ -399,7 +401,7 @@ def test_observe_past(nurec_dataset, monkeypatch, make_object_in_front):
     frames = nurec_dataset.frames("scene")
     start = nurec_dataset.scenario_start("scene", frames[3])
     simulator = NuRecSimulator({"dt": .1}, NuRecRenderer(cameras=["front"]),
-                               physics_update_mode="none", object_occlusion="geometry")
+                               physics_update_mode="none", object_occlusion="geometry", min_track_duration_s=0)
     with simulator.create_runtime() as runtime:
         hooks = HookSet([Hook("render.post", lambda image, context: image + 7)])
         with hooks.session(runtime, ConstantAVStack()).activate():
@@ -452,3 +454,235 @@ def test_observe_past(nurec_dataset, monkeypatch, make_object_in_front):
             for observation in runtime.observe_past(3):
                 image = observation.sensor_data["front"]
                 assert np.any(image != 30) and np.all(image[0, 0] == 30)
+
+
+@pytest.fixture
+def traffic_world(traffic_recording):
+    from types import SimpleNamespace
+
+    pytest.importorskip("alpasim_grpc")
+    from alpasim_grpc.v0 import common_pb2 as common, traffic_pb2 as traffic
+    from avsectester.closed_loop.simulators.nurec import AlpaSimTraffic
+    from tests.fakes import NuRecTrafficImageBoundary, TrafficServiceBoundary
+
+    def response(request):
+        t = request.time_query_us
+        return traffic.TrafficReturn(object_trajectory_updates=[
+            traffic.ObjectTrajectoryUpdate(object_id=key, trajectory=common.Trajectory(poses=[
+                common.PoseAtTime(timestamp_us=t, pose=common.Pose(
+                    vec=common.Vec3(x=x, y=2., z=1.), quat=common.Quat(w=1.)))]))
+            for key, x in [("host", 40 + t / 100000), ("static", 88.),
+                           ("expired", 100.), ("unknown", -20.), ("EGO", -30.)]])
+    camera = PinholeCamera(np.array([[20., 0., 16.], [0., 20., 12.], [0., 0., 1.]]), 32, 24)
+    boundary = NuRecTrafficImageBoundary(camera)
+    frames = traffic_recording.frames("scene")
+    start = traffic_recording.scenario_start("scene", frames[15])
+    with TrafficServiceBoundary(simulate_response=response) as service:
+        simulator = NuRecSimulator({"dt": .1}, boundary, depth="none", route_generator="none",
+                                   physics_update_mode="none", traffic=AlpaSimTraffic(service.endpoint))
+        yield SimpleNamespace(dataset=traffic_recording, simulator=simulator, boundary=boundary,
+                              service=service, frames=frames, start=start)
+
+
+def test_reset_traffic(traffic_world):
+    world = traffic_world
+    with world.simulator.create_runtime(7) as runtime:
+        runtime.reset(world.start)
+        request = world.service.sessions[-1]
+        assert request.scene_id == "scene" and request.random_seed == 7
+        assert request.handover_time_us == 1600000
+        assert [obj.object_id for obj in request.logged_object_trajectories] == [
+            "EGO", "host", "static", "fallback", "expired"]
+        ego = request.logged_object_trajectories[0]
+        np.testing.assert_allclose(pose_from_proto(ego.trajectory.poses[15].pose),
+                                   world.start.recorded_ego[15].box_transform())
+        assert (ego.aabb.size_x, ego.aabb.size_y, ego.aabb.size_z) == world.start.recorded_ego[15].extent
+        assert request.logged_object_trajectories[2].is_static
+        assert not request.logged_object_trajectories[1].is_static
+        assert set(runtime.state().actors) == {"host", "static", "fallback", "parked-brief", "expired"}
+        first_session = request.session_uuid
+        runtime.reset(world.start)
+        assert world.service.closed[0].session_uuid == first_session
+    assert len(world.service.closed) == 2
+    world.boundary.fail_render = True
+    with pytest.raises(RuntimeError, match="image service"):
+        with world.simulator.create_runtime(7) as runtime:
+            runtime.reset(world.start)
+    assert world.service.closed[-1].session_uuid == world.service.sessions[-1].session_uuid
+
+
+def test_traffic_world_recording(traffic_world, tmp_path):
+    from avsectester.attack import AttackSegment
+    from avsectester.closed_loop.avstacks.driving_adapter import DrivingAdapter
+    from avsectester.closed_loop.hooks import Hook, HookSet
+    from avsectester.execution.services import CandidateRequest, ClosedLoopServices
+    from avsectester.execution.runner import RecordingPolicy
+    from avsectester.rendering import ObjectAsset
+    from avsectester.runlog import RunLog
+    from tests.fakes import ConstantAVStack
+
+    world = traffic_world
+    panel = ObjectAsset.from_panel(np.full((8, 8, 4), 255, np.uint8),
+                                  category="panel", width_m=1., mount_height_m=0., post_count=0)
+    pose = np.diag([-1., -1., 1., 1.])
+    pose[:3, 3] = [20., 0., 1.]
+    setup = HookSet([Hook("simulator.setup", lambda value, context:
+        context.simulator_runtime.insert_object("panel", panel, pose))])
+    with world.simulator.create_runtime() as runtime, setup.session(runtime, ConstantAVStack()).activate():
+        runtime.reset(world.start)
+        runtime.step(Control())
+        runtime.sensor_view("front")
+        update = world.service.requests[-1]
+        assert update.time_query_us == 1600000
+        assert [item.object_id for item in update.object_trajectory_updates] == ["EGO"]
+        np.testing.assert_allclose(pose_from_proto(update.object_trajectory_updates[0].trajectory.poses[0].pose),
+                                   runtime.state().ego.box_transform())
+    adapter = DrivingAdapter(lambda seed: ConstantAVStack(), past_steps=0)
+    segment = AttackSegment("scene", world.frames[15], world.frames[17])
+    with ClosedLoopServices(world.dataset, world.simulator, adapter) as services, services.session(0) as session:
+        log = session.rollout(CandidateRequest(segment, 0, 2, {}, RecordingPolicy(), output_path=tmp_path/"rollout"))
+    assert log.status == "completed"
+    loaded = RunLog.read(tmp_path/"rollout")
+    assert len(loaded.steps) == 2
+    assert "brief" not in loaded.steps[0].physical_post.actors
+    state = loaded.steps[0].physical_post
+    np.testing.assert_allclose(state.actors["host"].pose[:3, 3], [56., 2., 1.])
+    np.testing.assert_allclose(state.actors["host"].pose, log.steps[0].physical_post.actors["host"].pose)
+    # Captures and probes receive the same current world poses.
+    matching = [objects["host"] for time, objects in world.boundary.rendered if time == 1600000]
+    assert matching
+    np.testing.assert_allclose(matching[-1], state.actors["host"].pose)
+    matching_probes = [objects["host"] for time, objects in world.boundary.probes if time == 1600000]
+    assert matching_probes
+    np.testing.assert_allclose(matching_probes[-1], state.actors["host"].pose)
+
+
+
+def test_traffic_velocity(traffic_world):
+    with traffic_world.simulator.create_runtime() as runtime:
+        runtime.reset(traffic_world.start)
+        runtime.step(Control())
+        assert runtime.state().actors["host"].velocity == pytest.approx((345., 20., 0.))
+
+
+def test_traffic_recorded_fallback(traffic_world):
+    with traffic_world.simulator.create_runtime() as runtime:
+        runtime.reset(traffic_world.start)
+        runtime.step(Control())
+        expected = traffic_world.dataset.actor_states("scene", 1600000)["fallback"]
+        np.testing.assert_array_equal(runtime.state().actors["fallback"].pose, expected.pose)
+        assert runtime.state().actors["fallback"].pose[0, 3] == pytest.approx(31.6)
+
+
+def test_traffic_parked_and_expired(traffic_world):
+    world = traffic_world
+    with world.simulator.create_runtime(7) as runtime:
+        runtime.reset(world.start)
+        np.testing.assert_allclose(runtime.state().actors["static"].pose,
+                                   world.dataset.actor_states("scene", 1500000)["static"].pose)
+        runtime.step(Control())
+        np.testing.assert_allclose(runtime.state().actors["static"].pose,
+                                   world.dataset.actor_states("scene", 1600000)["static"].pose)
+        view = runtime.sensor_view("front")
+        np.testing.assert_allclose(dict(view.native["dynamic_objects"])["host"], runtime.state().actors["host"].pose)
+        for _ in range(15):
+            runtime.step(Control())
+        state = runtime.state()
+        assert state.t == pytest.approx(1.6)
+        assert "static" not in state.actors
+        assert "static" not in world.dataset.actor_states("scene", 3100000)
+        assert "static" not in dict(runtime.sensor_view("front").native["dynamic_objects"])
+        assert state.actors["expired"].extent == (6., 3., 3.)
+        assert state.actors["expired"].category == "vehicle"
+        assert state.actors["expired"].pose[0, 3] == 100.
+
+
+def test_set_traffic_actor_state(traffic_world):
+    world = traffic_world
+    with world.simulator.create_runtime(7) as runtime:
+        runtime.reset(world.start)
+        actor = runtime.state().actors["host"]
+        with pytest.raises(ValueError, match="Filtered"):
+            runtime.set_actor_state("brief", actor)
+        with pytest.raises(ValueError, match="NRE cannot move parked"):
+            runtime.set_actor_state("static", actor)
+        pose = actor.pose.copy()
+        pose[:3, 3] = [70., 0., 1.]
+        velocity = np.array([1., -.5, .2])
+        runtime.set_actor_state("host", replace(actor, pose=pose, velocity=tuple(velocity)))
+        runtime.step(Control())
+        assert runtime.state().actors["host"].pose[0, 3] == pytest.approx(70.1)
+        runtime.step(Control())
+        assert runtime.state().actors["host"].pose[0, 3] == pytest.approx(70.2)
+        runtime.set_actor_state("host", replace(runtime.state().actors["host"], velocity=(0., 0., 0.)))
+        runtime.step(Control())
+        track = next(item for item in world.service.requests[-1].object_trajectory_updates if item.object_id == "host")
+        assert [point.timestamp_us for point in track.trajectory.poses] == list(range(0, 1800001, 100000))
+        assert track.trajectory.poses[-1].pose.vec.x == pytest.approx(70.2)
+
+
+def test_traffic_start_requirements(traffic_world):
+    from avsectester.closed_loop.simulators.base import UnsupportedStartError
+    from avsectester.execution.services import ClosedLoopServices
+
+    world = traffic_world
+    assert world.simulator.past_steps == 15
+    with ClosedLoopServices(world.dataset, world.simulator) as services, services.session(7) as session:
+        assert not session.can_start_at(14)
+        assert session.can_start_at(15)
+    with pytest.raises(UnsupportedStartError, match="15 past"):
+        world.simulator.validate_start(world.dataset.scenario_start("scene", world.frames[14]))
+    with pytest.raises(ValueError, match="0.1"):
+        NuRecSimulator({"dt": .2}, world.boundary, depth="none", physics_update_mode="none",
+                       traffic=world.simulator.traffic)
+
+
+def test_traffic_checkpoint(traffic_world):
+    world = traffic_world
+    with world.simulator.create_runtime() as runtime:
+        runtime.reset(world.start)
+        with pytest.raises(RuntimeError, match="checkpoint"):
+            runtime.checkpoint()
+
+
+def test_recorded_actor_filtering(traffic_recording):
+    camera = PinholeCamera(np.array([[20., 0., 16.], [0., 20., 12.], [0., 0., 1.]]), 32, 24)
+    boundary = NuRecTrafficImageBoundary(camera)
+    frames = traffic_recording.frames("scene")
+    start = traffic_recording.scenario_start("scene", frames[15])
+    simulator = NuRecSimulator({"dt": .1}, boundary, depth="none", route_generator="none",
+                               physics_update_mode="none")
+    assert simulator.identity["min_track_duration_s"] == 3.
+    panel = ObjectAsset.from_panel(np.full((8, 8, 4), 255, np.uint8),
+                                   category="panel", width_m=1., mount_height_m=0., post_count=0)
+    pose = np.diag([-1., -1., 1., 1.])
+    pose[:3, 3] = [20., 0., 1.]
+    setup = HookSet([Hook("simulator.setup", lambda value, context:
+        context.simulator_runtime.insert_object("panel", panel, pose))])
+    with simulator.create_runtime() as runtime, setup.session(runtime, ConstantAVStack()).activate():
+        runtime.reset(start)
+        actors = runtime.state().actors
+        assert "brief" not in actors and "parked-brief" in actors
+        assert "brief" not in runtime.sensor_view("front").actors
+        assert boundary.rendered[-1][1]["brief"][2, 3] == -99.
+        assert boundary.probes[-1][1]["brief"][2, 3] == -99.
+        runtime.observe_past(1)
+        assert boundary.rendered[-1][0] == 1400000
+        assert boundary.rendered[-1][1]["brief"][2, 3] == -99.
+        assert boundary.probes[-1][1]["brief"][2, 3] == -99.
+        with pytest.raises(ValueError, match="Filtered"):
+            runtime.set_actor_state("brief", actors["host"])
+        with pytest.raises(ValueError, match="NRE cannot move parked"):
+            runtime.set_actor_state("parked-brief", actors["host"])
+        runtime.set_actor_state("host", replace(actors["host"], velocity=(0., 0., 0.)))
+        for key, state in actors.items():
+            np.testing.assert_allclose(state.pose, traffic_recording.actor_states("scene", 1500000)[key].pose)
+    unfiltered = NuRecSimulator({"dt": .1}, boundary, depth="none", route_generator="none",
+                                physics_update_mode="none", min_track_duration_s=0)
+    assert unfiltered.identity["min_track_duration_s"] == 0
+    with unfiltered.create_runtime() as runtime:
+        runtime.reset(start)
+        assert runtime.state().actors.keys() == traffic_recording.actor_states("scene", 1500000).keys()
+        assert runtime.sensor_view("front").actors.keys() == runtime.state().actors.keys()
+        assert boundary.rendered[-1][1]["brief"][2, 3] == 1.
+        runtime.set_actor_state("brief", replace(runtime.state().actors["brief"], velocity=(0., 0., 0.)))

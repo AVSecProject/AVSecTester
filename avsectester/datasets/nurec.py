@@ -348,6 +348,37 @@ class NuRecDataset(Dataset):
             tuple(float(v) for v in bbox.get("centroid", (0, 0, 0))),
         )
 
+    def track_trajectories(self, scenario_id: str) -> dict[str, dict[str, Any]]:
+        """Return independent complete box-centre tracks without smoothing or cropping.
+
+        Each track ID maps to trajectory (timestamp_us, world_from_box) pairs,
+        controllable (a boolean), native label_class, full extent and canonical category.
+        Missing flags mean the reconstructed track cannot be moved.
+        """
+        result = {}
+        tracks = self._raw_metadata(self._path(scenario_id))["sequence_tracks.json"]
+        for sequence in tracks.values():
+            data = sequence["tracks_data"]
+            ids = data["tracks_id"]
+            flags = data.get("tracks_flags", [()] * len(ids))
+            for tid, label, extent, timestamps, poses, track_flags in zip(
+                ids, data["tracks_label_class"], sequence["cuboidtracks_data"]["cuboids_dims"],
+                data["tracks_timestamps_us"], data["tracks_poses"], flags, strict=True,
+            ):
+                label = str(label)
+                trajectory = tuple((int(timestamp), make_pose(
+                    quaternion_to_rotation(pose[6], pose[3], pose[4], pose[5]), pose[:3]))
+                    for timestamp, pose in zip(timestamps, poses, strict=True))
+                result[str(tid)] = {
+                    "trajectory": trajectory,
+                    "controllable": "CONTROLLABLE" in (
+                        track_flags.split("|") if isinstance(track_flags, str) else tuple(track_flags or ())),
+                    "label_class": label,
+                    "extent": tuple(float(value) for value in extent),
+                    "category": "vehicle" if any(value in label.lower() for value in self.vehicle_labels) else label,
+                }
+        return result
+
     def actor_states(self, scenario_id: str, timestamp_us: int) -> dict[str, ActorState]:
         """Recorded actors at this timestamp: world pose, velocity and category, by track ID.
 

@@ -251,6 +251,7 @@ simulator:
     route_generator: map
     physics_update_mode: ego_only
     ground_mesh: mesh
+    min_track_duration_s: 3.0
     renderer:
       type: avsectester.closed_loop.simulators.nurec:NuRecRenderer
       options:
@@ -269,7 +270,9 @@ avstack:
 route_generator accepts map, recorded or none. Map navigation requires a semantic map with driving
 lanes; recorded uses the recorded ego path without extending it. physics_update_mode accepts
 ego_only or none; ground_mesh selects mesh or mesh_ground independently of depth. Both ground
-contact and mesh depth require the nurec extra. NuRecRenderer.resolution_hw uses native camera IDs
+contact and mesh depth require the nurec extra. min_track_duration_s defaults to 3.0 s and filters
+CONTROLLABLE tracks by their whole-recording duration in both traffic modes; 0 disables it.
+Parked tracks are never filtered. NuRecRenderer.resolution_hw uses native camera IDs
 and requested (height, width). NRE may return another width to preserve the camera aspect ratio;
 projection, depth and insertion use its actual dimensions.
 
@@ -288,6 +291,22 @@ slower image cadence than it was trained on. Built-in attacks skip starts lackin
 the required past; preparation also discards invalid segments. See
 [Simulators](../guides/simulators.md#alpasim-defaults) and
 [Driving systems](../guides/driving-systems.md#alpamayo).
+
+### Reactive traffic
+
+```yaml
+traffic:
+  type: avsectester.closed_loop.simulators.nurec:AlpaSimTraffic
+  options:
+    endpoint: "127.0.0.1:6200"
+    history_steps: 16
+    rpc_timeout_s: 300.0
+```
+
+Add under simulator.options; traffic defaults to None, and enabling it requires config.dt=0.1
+and history_steps−1 preceding recorded decisions. Traffic settings affect prepared identity;
+use metadata.load to share segments between modes. Start the service for execution and offline
+rollouts; see [Reactive traffic](../guides/simulators.md#reactive-traffic).
 
 ## Driving specification
 

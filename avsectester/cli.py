@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 import shlex
 import shutil
@@ -13,7 +14,7 @@ import typer
 import yaml  # type: ignore[import-untyped]
 
 from avsectester import __version__
-from avsectester.closed_loop.simulators.nurec.server import DEFAULT_NRE_IMAGE
+from avsectester.closed_loop.simulators.nurec.server import DEFAULT_NRE_IMAGE, DEFAULT_TRAFFIC_IMAGE
 from avsectester.experiment import (
     ConfigurationMismatchError, Experiment, ExperimentConfiguration, ExperimentResult,
     PreparedExperiment, load_configuration,
@@ -23,11 +24,13 @@ from avsectester.experiment.output_directory import run_directory
 from avsectester.validation import require_positive_number
 
 if TYPE_CHECKING:
-    from avsectester.closed_loop.simulators.nurec import NuRecRenderer
+    from avsectester.closed_loop.simulators.nurec import AlpaSimTraffic, NuRecRenderer
 
 app = typer.Typer(help="Adversarial security testing for AV systems.")
 nre_app = typer.Typer(help="Start and stop the configured local NuRec renderer.")
 app.add_typer(nre_app, name="nre")
+trafficsim_app = typer.Typer(help="Start and stop configured local CATK traffic.")
+app.add_typer(trafficsim_app, name="trafficsim")
 _CONFIGURATION_ERRORS = (ValueError, TypeError, ImportError, AttributeError, FileNotFoundError,
                          yaml.YAMLError)
 
@@ -235,12 +238,12 @@ def _nre_configuration(config: Path) -> tuple[ExperimentConfiguration, NuRecRend
 def _nre_launch_spec(config: Path, gpu: str, name: str | None, image: str,
                      cache_size: int) -> tuple[ExperimentConfiguration, list[str], str]:
     from avsectester.closed_loop.simulators.nurec.server import (
-        default_container_name, renderer_command,
+        default_renderer_container_name, renderer_command,
     )
 
     configuration, renderer = _nre_configuration(config)
     try:
-        chosen_name = name or default_container_name(renderer)
+        chosen_name = name or default_renderer_container_name(renderer)
         command = renderer_command(configuration.dataset, renderer, gpu=gpu,
                                    name=chosen_name, image=image, cache_size=cache_size)
         return configuration, command, chosen_name
@@ -248,9 +251,9 @@ def _nre_launch_spec(config: Path, gpu: str, name: str | None, image: str,
         _configuration_error(error)
 
 
-def _docker_available() -> None:
+def _docker_available(service: str) -> None:
     if shutil.which("docker") is None:
-        typer.echo("docker is not on PATH; use nre serve --dry-run to print the command.", err=True)
+        typer.echo(f"docker is not on PATH; use {service.lower()} serve --dry-run to print the command.", err=True)
         raise typer.Exit(1)
 
 
@@ -258,9 +261,80 @@ def _docker_call(arguments: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(["docker", *arguments], capture_output=True, text=True, check=False)
 
 
-def _remove_nre(name: str) -> None:
+def _remove_container(name: str) -> None:
     _docker_call(["stop", name])
     _docker_call(["rm", name])
+
+
+def _serve_container(command: list[str], *, name: str, service: str, timeout: float,
+                     dry_run: bool, ready_log: str, readiness: Callable[[float], Any] | None = None,
+                     prepare: Callable[[], Any] | None = None) -> None:
+    """Start one owned service container, wait for readiness and clean failed startups."""
+    if dry_run:
+        typer.echo(shlex.join(command))
+        return
+    _docker_available(service)
+    if _docker_call(["inspect", name]).returncode == 0:
+        typer.echo(f"Container already exists: {name}; choose --name or stop it explicitly.", err=True)
+        raise typer.Exit(1)
+    created = False
+    try:
+        if prepare is not None:
+            prepare()
+        # The name was absent before this invocation; any startup container belongs to it.
+        created = True
+        launched = subprocess.run(command, capture_output=True, text=True, check=False)
+        if launched.returncode:
+            raise RuntimeError(launched.stderr.strip() or launched.stdout.strip() or "docker run failed")
+        deadline = time.monotonic() + timeout
+        readiness_error = None
+        while True:
+            response = _docker_call(["logs", "--tail", "50", name])
+            logs = response.stdout + response.stderr
+            state = _docker_call(["inspect", "--format", "{{.State.Running}}", name])
+            if state.returncode or state.stdout.strip() != "true":
+                raise RuntimeError(f"{service} container exited before becoming ready")
+            remaining = deadline - time.monotonic()
+            if ready_log in logs:
+                if readiness is None:
+                    return
+                if remaining > 0:
+                    try:
+                        readiness(remaining)
+                    except RuntimeError as error:
+                        readiness_error = str(error)
+                    else:
+                        return
+            if time.monotonic() >= deadline:
+                detail = "" if readiness_error is None else f": {readiness_error}"
+                raise RuntimeError(f"{service} startup timed out after {timeout:g} seconds{detail}")
+            time.sleep(min(.5, max(0., deadline - time.monotonic())))
+    except BaseException as error:
+        if created:
+            response = _docker_call(["logs", "--tail", "50", name])
+            logs = response.stdout + response.stderr
+            typer.echo("\n".join(logs.splitlines()[-50:]), err=True)
+            _remove_container(name)
+        if isinstance(error, KeyboardInterrupt):
+            typer.echo(f"{service} startup interrupted.", err=True)
+            raise typer.Exit(130) from None
+        if not isinstance(error, Exception):
+            raise
+        typer.echo(f"{service} startup error: {error}", err=True)
+        raise typer.Exit(1) from error
+
+
+def _stop_container(name: str, service: str) -> None:
+    _docker_available(service)
+    stopped = _docker_call(["stop", name])
+    if stopped.returncode:
+        typer.echo(stopped.stderr.strip() or f"{service} container does not exist: {name}", err=True)
+        raise typer.Exit(1)
+    removed = _docker_call(["rm", name])
+    if removed.returncode:
+        typer.echo(removed.stderr.strip() or f"Unable to remove {service} container: {name}", err=True)
+        raise typer.Exit(1)
+    typer.echo(f"Stopped and removed {service} container: {name}")
 
 
 @nre_app.command("serve")
@@ -279,53 +353,19 @@ def nre_serve(
     except _CONFIGURATION_ERRORS as error:
         _configuration_error(error)
     configuration, command, chosen_name = _nre_launch_spec(config, gpu, name, image, cache_size)
-    if dry_run:
-        typer.echo(shlex.join(command))
-        return
-    _docker_available()
-    if _docker_call(["inspect", chosen_name]).returncode == 0:
-        typer.echo(f"Container already exists: {chosen_name}; choose --name or stop it explicitly.", err=True)
-        raise typer.Exit(1)
     renderer = getattr(configuration.simulator, "renderer", None)
     assert renderer is not None  # Checked by _nre_launch_spec.
-    if renderer.probe_directory is not None:
-        Path(renderer.probe_directory).mkdir(parents=True, exist_ok=True)
-    created = False
-    try:
-        launched = subprocess.run(command, capture_output=True, text=True, check=False)
-        # The name did not exist before this invocation, so failed startup containers belong to it.
-        created = True
-        if launched.returncode:
-            raise RuntimeError(launched.stderr.strip() or launched.stdout.strip() or "docker run failed")
-        deadline = time.monotonic() + timeout
-        logs = ""
-        while True:
-            response = _docker_call(["logs", "--tail", "50", chosen_name])
-            logs = response.stdout + response.stderr
-            state = _docker_call(["inspect", "--format", "{{.State.Running}}", chosen_name])
-            if state.returncode or state.stdout.strip() != "true":
-                raise RuntimeError("NRE container exited before becoming ready")
-            if "Serving on" in logs:
-                typer.echo(f"NRE ready: endpoint={renderer.endpoint}, GPU={gpu}, "
-                           f"scenes={len(configuration.dataset.usdz_paths)}, container={chosen_name}")
-                typer.echo(f"Stop command: {shlex.join(['avsectester', 'nre', 'stop', str(config), '--name', chosen_name])}")
-                return
-            if time.monotonic() >= deadline:
-                raise RuntimeError(f"NRE startup timed out after {timeout:g} seconds")
-            time.sleep(min(.5, max(0., deadline - time.monotonic())))
-    except BaseException as error:
-        if created:
-            response = _docker_call(["logs", "--tail", "50", chosen_name])
-            logs = response.stdout + response.stderr
-            typer.echo("\n".join(logs.splitlines()[-50:]), err=True)
-            _remove_nre(chosen_name)
-        if isinstance(error, KeyboardInterrupt):
-            typer.echo("NRE startup interrupted.", err=True)
-            raise typer.Exit(130) from None
-        if not isinstance(error, Exception):
-            raise
-        typer.echo(f"NRE startup error: {error}", err=True)
-        raise typer.Exit(1) from error
+
+    def prepare() -> None:
+        if renderer.probe_directory is not None:
+            Path(renderer.probe_directory).mkdir(parents=True, exist_ok=True)
+
+    _serve_container(command, name=chosen_name, service="NRE", timeout=timeout, dry_run=dry_run,
+                     ready_log="Serving on", prepare=prepare)
+    if not dry_run:
+        typer.echo(f"NRE ready: endpoint={renderer.endpoint}, GPU={gpu}, "
+                   f"scenes={len(configuration.dataset.usdz_paths)}, container={chosen_name}")
+        typer.echo(f"Stop command: {shlex.join(['avsectester', 'nre', 'stop', str(config), '--name', chosen_name])}")
 
 
 @nre_app.command("stop")
@@ -334,23 +374,80 @@ def nre_stop(
     name: str | None = typer.Option(None),
 ) -> None:
     """Stop and remove the local renderer container selected by this configuration."""
-    from avsectester.closed_loop.simulators.nurec.server import default_container_name
+    from avsectester.closed_loop.simulators.nurec.server import default_renderer_container_name
 
     _, renderer = _nre_configuration(config)
     try:
-        chosen_name = name or default_container_name(renderer)
+        chosen_name = name or default_renderer_container_name(renderer)
     except _CONFIGURATION_ERRORS as error:
         _configuration_error(error)
-    _docker_available()
-    stopped = _docker_call(["stop", chosen_name])
-    if stopped.returncode:
-        typer.echo(stopped.stderr.strip() or f"NRE container does not exist: {chosen_name}", err=True)
-        raise typer.Exit(1)
-    removed = _docker_call(["rm", chosen_name])
-    if removed.returncode:
-        typer.echo(removed.stderr.strip() or f"Unable to remove NRE container: {chosen_name}", err=True)
-        raise typer.Exit(1)
-    typer.echo(f"Stopped and removed NRE container: {chosen_name}")
+    _stop_container(chosen_name, "NRE")
+
+
+def _traffic_configuration(config: Path) -> tuple[ExperimentConfiguration, AlpaSimTraffic]:
+    from avsectester.closed_loop.simulators.nurec import AlpaSimTraffic
+
+    try:
+        configuration = load_configuration(config)
+        traffic = getattr(configuration.simulator, "traffic", None)
+        if not isinstance(traffic, AlpaSimTraffic):
+            raise ValueError("Trafficsim commands require simulator.options.traffic: AlpaSimTraffic")
+        return configuration, traffic
+    except _CONFIGURATION_ERRORS as error:
+        _configuration_error(error)
+
+
+@trafficsim_app.command("serve")
+def trafficsim_serve(
+    config: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True),
+    gpu: str = typer.Option(..., help="Host GPU index passed to Docker --gpus device=N."),
+    models: Path = typer.Option(..., file_okay=False, help="Directory containing CATK weights and tokens."),
+    name: str | None = typer.Option(None, help="Container name; default avsectester-trafficsim-PORT."),
+    image: str = typer.Option(DEFAULT_TRAFFIC_IMAGE),
+    timeout: float = typer.Option(600., min=0.001),
+    dry_run: bool = typer.Option(False, help="Only print the command; create no files or containers."),
+) -> None:
+    """Start CATK traffic and wait for its startup log and successful metadata RPC."""
+    from avsectester.closed_loop.simulators.nurec.server import (
+        default_traffic_container_name, traffic_command,
+    )
+
+    configuration, traffic = _traffic_configuration(config)
+    try:
+        require_positive_number(timeout, "timeout")
+        chosen_name = name or default_traffic_container_name(traffic)
+        command = traffic_command(configuration.dataset, traffic, gpu=gpu, name=chosen_name,
+                                  image=image, models=models)
+        if not dry_run and not models.is_dir():
+            raise ValueError(f"Traffic model directory does not exist: {models}")
+    except _CONFIGURATION_ERRORS as error:
+        _configuration_error(error)
+
+    def ready(remaining: float) -> Any:
+        return traffic.get_metadata(timeout_s=min(1., remaining))
+
+    _serve_container(command, name=chosen_name, service="trafficsim", timeout=timeout, dry_run=dry_run,
+                     ready_log="Starting CATK traffic gRPC server on", readiness=ready)
+    if not dry_run:
+        typer.echo(f"Trafficsim ready: endpoint={traffic.endpoint}, GPU={gpu}, "
+                   f"scenes={len(configuration.dataset.usdz_paths)}, container={chosen_name}")
+        typer.echo(f"Stop command: {shlex.join(['avsectester', 'trafficsim', 'stop', str(config), '--name', chosen_name])}")
+
+
+@trafficsim_app.command("stop")
+def trafficsim_stop(
+    config: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True),
+    name: str | None = typer.Option(None),
+) -> None:
+    """Stop the configured traffic container without scanning the dataset or model paths."""
+    from avsectester.closed_loop.simulators.nurec.server import default_traffic_container_name
+
+    _, traffic = _traffic_configuration(config)
+    try:
+        chosen_name = name or default_traffic_container_name(traffic)
+    except _CONFIGURATION_ERRORS as error:
+        _configuration_error(error)
+    _stop_container(chosen_name, "trafficsim")
 
 
 if __name__ == "__main__":

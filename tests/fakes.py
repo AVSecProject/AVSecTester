@@ -603,6 +603,27 @@ class NuRecImageBoundary(Renderer):
         return np.full((self.camera.height, self.camera.width, 3), 30, np.uint8)
 
 
+class NuRecTrafficImageBoundary(NuRecImageBoundary):
+    """Record native image/probe requests while using a deterministic image service."""
+
+    def __init__(self, camera):
+        super().__init__(camera)
+        self.rendered = []
+        self.probes = []
+        self.fail_render = False
+
+    def render(self, world_from_rig, timestamp_us, camera, dynamic_objects=()):
+        if self.fail_render:
+            raise RuntimeError("image service failed")
+        self.rendered.append((timestamp_us, {key: pose.copy() for key, pose in dynamic_objects}))
+        return super().render(world_from_rig, timestamp_us, camera, dynamic_objects)
+
+    def render_scene_visibility(self, world_from_rig, timestamp_us, camera, objects,
+                                dynamic_objects=(), *, occlusion_tolerance_m=0.):
+        self.probes.append((timestamp_us, {key: pose.copy() for key, pose in dynamic_objects}))
+        return np.ones((self.camera.height, self.camera.width), dtype=bool)
+
+
 class CarlaVector:
     def __init__(self, x=0., y=0., z=0.):
         self.x, self.y, self.z = float(x), float(y), float(z)
@@ -1006,3 +1027,123 @@ def CocoDetectionModel(boxes=((42., 30., 58., 50.),), scores=(.9,), labels=(13,)
             } for image in images]
 
     return DetectionModel()
+
+
+class TrafficServiceBoundary:
+    """A real in-process gRPC TrafficService with deterministic responses and request records.
+
+    Session, simulate and close requests are copied into sessions, requests and
+    closed. Tests may set simulate_response(request), rpc_errors[method] =
+    (grpc.StatusCode, details), or delays[method] to replace this native boundary.
+    """
+
+    def __init__(self, scene_ids=("scene",), minimum_history_length_us=1_600_000,
+                 simulate_response=None):
+        self.scene_ids = tuple(scene_ids)
+        self.minimum_history_length_us = minimum_history_length_us
+        self.simulate_response = simulate_response
+        self.sessions = []
+        self.requests = []
+        self.closed = []
+        self.rpc_errors = {}
+        self.delays = {}
+        self.endpoint = None
+        self._server = None
+
+    def capture_channels(self, monkeypatch):
+        """Observe actual gRPC channel cleanup at the native transport boundary."""
+        import grpc
+
+        create = grpc.insecure_channel
+        self.channels = []
+
+        class Channel:
+            def __init__(self, *args, **kwargs):
+                self.native = create(*args, **kwargs)
+                self.closed = False
+                self.calls = []
+                owner.channels.append(self)
+
+            def __getattr__(self, name):
+                return getattr(self.native, name)
+
+            def close(self):
+                self.closed = True
+                self.native.close()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self.close()
+
+        owner = self
+        monkeypatch.setattr(grpc, "insecure_channel", Channel)
+
+    def __enter__(self):
+        from concurrent.futures import ThreadPoolExecutor
+        import time
+
+        import grpc
+        from alpasim_grpc.v0 import common_pb2, traffic_pb2, traffic_pb2_grpc
+
+        owner = self
+
+        def before(method, context):
+            time.sleep(owner.delays.get(method, 0.))
+            if method in owner.rpc_errors:
+                code, details = owner.rpc_errors[method]
+                context.abort(code, details)
+
+        class Service(traffic_pb2_grpc.TrafficServiceServicer):
+            def get_metadata(self, request, context):
+                before("get_metadata", context)
+                return traffic_pb2.TrafficModuleMetadata(
+                    minimum_history_length_us=owner.minimum_history_length_us)
+
+            def get_available_scenes(self, request, context):
+                before("get_available_scenes", context)
+                return common_pb2.AvailableScenesReturn(scene_ids=owner.scene_ids)
+
+            def start_session(self, request, context):
+                owner.sessions.append(deepcopy(request))
+                before("start_session", context)
+                return common_pb2.SessionRequestStatus()
+
+            def close_session(self, request, context):
+                owner.closed.append(deepcopy(request))
+                before("close_session", context)
+                return common_pb2.Empty()
+
+            def simulate(self, request, context):
+                owner.requests.append(deepcopy(request))
+                before("simulate", context)
+                if owner.simulate_response is not None:
+                    return owner.simulate_response(request)
+                # A deterministic replay response at the requested instant. The
+                # runtime tests can replace it with controlled reactive poses.
+                session = next(item for item in owner.sessions if item.session_uuid == request.session_uuid)
+                updates = []
+                for obj in session.logged_object_trajectories:
+                    points = obj.trajectory.poses
+                    if not points:
+                        continue
+                    timestamp = request.time_query_us
+                    if not obj.is_static and not (points[0].timestamp_us <= timestamp <= points[-1].timestamp_us):
+                        continue
+                    pose = min(points, key=lambda point: abs(point.timestamp_us - timestamp)).pose
+                    updates.append(traffic_pb2.ObjectTrajectoryUpdate(
+                        object_id=obj.object_id, trajectory=common_pb2.Trajectory(poses=[
+                            common_pb2.PoseAtTime(timestamp_us=timestamp, pose=pose)])))
+                return traffic_pb2.TrafficReturn(object_trajectory_updates=updates)
+
+        self._server = grpc.server(ThreadPoolExecutor(max_workers=4))
+        traffic_pb2_grpc.add_TrafficServiceServicer_to_server(Service(), self._server)
+        port = self._server.add_insecure_port("127.0.0.1:0")
+        self.endpoint = f"127.0.0.1:{port}"
+        self._server.start()
+        return self
+
+    def __exit__(self, *exc):
+        if self._server is not None:
+            self._server.stop(0).wait()

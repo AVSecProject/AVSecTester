@@ -64,6 +64,20 @@ WORKDIR /app
 ENV PYTHONPATH=/app
 CMD ["bash"]
 
+# Optional CATK traffic service: build avsectester:nurec first, then extend that image.
+#   docker build --target trafficsim -t avsectester:trafficsim .
+FROM avsectester:nurec AS trafficsim
+
+WORKDIR /opt/alpasim
+RUN uv sync --inexact --python 3.12 --package alpasim_driver \
+      --package alpasim_controller --package alpasim-trafficsim --no-dev \
+ && uv pip install --python /opt/alpasim/.venv/bin/python \
+      torch-cluster==1.6.3 torch-scatter==2.1.2 torch-sparse==0.6.18 \
+      -f https://data.pyg.org/whl/torch-2.8.0+cu128.html \
+ && python -c "import alpasim_trafficsim.grpc.catk_trafficsim, torch_geometric, torch_cluster, torch_scatter, torch_sparse"
+WORKDIR /app
+CMD ["bash"]
+
 FROM nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
 
 COPY --from=uv /uv /usr/local/bin/uv

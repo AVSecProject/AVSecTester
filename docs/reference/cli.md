@@ -96,6 +96,30 @@ docker rm, and exits 1 if the container does not exist. Invalid configuration ex
 startup, stop and timeout errors exit 1. Check nvidia-smi before selecting an available card and
 stop the service as soon as it is no longer needed.
 
+## Trafficsim
+
+`trafficsim serve CONFIG --gpu N --models DIR [--name NAME] [--image IMAGE] [--timeout 600] [--dry-run]`
+requires a NuRecDataset and a configured AlpaSimTraffic with a local endpoint. The default image is
+avsectester:trafficsim; the default container name is avsectester-trafficsim-<port>. The host GPU is
+selected by --gpu independently of YAML device.
+
+```bash
+avsectester trafficsim serve CONFIG.yaml --gpu 1 --models /path/to/alpasim-trafficsim
+avsectester trafficsim stop CONFIG.yaml
+```
+
+The command mounts each uniquely named archive read-only under /mnt/nre-data and DIR read-only at
+/mnt/trafficsim-models. It uses prediction_steps=15, OMP_NUM_THREADS=1, MKL_NUM_THREADS=1 and a
+Hydra run directory under /tmp. Readiness requires the CATK traffic-server log message followed by
+a successful get_metadata RPC. Both renderer and traffic services reject remote endpoints and
+ambiguous archive filenames.
+
+The shared lifecycle rules match nre: --dry-run only prints the command; an existing named
+container is left untouched; startup exit or timeout prints the last 50 log lines and stops/removes
+the new container. A successful launch prints endpoint, GPU, scene count, container name and stop
+command. `trafficsim stop CONFIG [--name NAME]` derives the name without enumerating datasets,
+then runs docker stop and docker rm. Use --name consistently for serve and stop.
+
 ## Interruptions
 
 Ctrl-C prints an interruption message, cleans up owned resources and exits with code 130. Selection

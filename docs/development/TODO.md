@@ -4,8 +4,12 @@ This file lists open work. Items are planned capabilities, not implemented featu
 
 ## Reactive traffic in NuRec
 
-- [ ] Make other actors react to ego motion. Confirm renderer support for per-frame actor poses
-  and integrate AlpaSim's trafficsim for reactive traffic.
+Optional AlpaSim trafficsim is integrated; see [Reactive traffic](../guides/simulators.md#reactive-traffic).
+
+- [ ] Fit trafficsim actors to the selected ground_mesh instead of using the service's nearest-lane
+  height plus half the vehicle height.
+- [ ] Support traffic-session checkpoint/restore and caller-controlled CATK sampling seeds.
+  The current service exposes neither capability.
 
 ## Rolling-shutter rendering
 

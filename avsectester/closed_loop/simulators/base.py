@@ -236,6 +236,11 @@ class Simulator(ABC):
         """Create a new live world with this configuration; ``seed`` seeds its random choices."""
 
     @property
+    def past_steps(self) -> int:
+        """Recorded decision steps required before a selected start."""
+        return 0
+
+    @property
     def decision_time_step(self) -> float | None:
         return None
 

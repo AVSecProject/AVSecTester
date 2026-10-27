@@ -10,7 +10,9 @@
 
 A Simulator stores reusable configuration and capability declarations. `create_runtime(seed)`
 creates a fresh SimulatorRuntime owning one live world, clock, sensors and native connections. Its
-creator closes it, including after errors. ClosedLoopRunner uses but does not own caller resources;
+creator closes it, including after errors. Simulator.past_steps declares the recorded decisions
+required before a start (default 0). Services require the larger of this value and the driving
+adapter's past_steps when selecting a start. ClosedLoopRunner uses but does not own caller resources;
 Experiment and ClosedLoopServices create and close their own resources.
 
 SimulatorRuntime `reset(start, initialization=None, *, deployment=None, world=None)` initializes a
@@ -169,7 +171,9 @@ its selected ground_mesh file unless physics_update_mode="none".
 NuRecRenderer connects to the reconstruction service and renders at requested times and ego poses.
 Start NRE with --enable-editing-actors, as in the
 [installation command](../getting-started/installation.md#nurec-renderer-and-scenes).
-Actors follow their recorded tracks unless explicitly moved; they do not react to traffic.
+Only tracks flagged CONTROLLABLE can be moved by NRE; parked tracks stay at their recorded poses,
+and set_actor_state rejects them. min_track_duration_s defaults to 3 s, matching AlpaSim; 0 disables
+short-track filtering for controllable tracks in both traffic modes.
 SimulatorRuntime.restore immediately captures its restored state; later observe calls do not render
 again.
 
@@ -278,7 +282,7 @@ the single-camera preset's camera:
 | Ground contact | physics_update_mode: EGO_ONLY; use_ground_mesh=False | ego_only; ground_mesh: mesh (mesh_ground in the stop-sign configurations) |
 | Camera | 1cam_1080.yaml: camera_front_wide_120fov, requested 1080×1900 | Same camera and request; actual NRE size is probed |
 | Camera timing | frame_interval_us: 100000 (10 Hz); alpamayo1_5.yaml subsample_factor: 1, four images at 10 Hz | dt: 0.1; frame_subsample: 1 |
-| Reactive traffic | AlpaSim trafficsim | **Not yet implemented.** Other actors follow recorded tracks or explicit overrides |
+| Reactive traffic | Disabled by default; optional AlpaSim trafficsim | traffic=None; see [Reactive traffic](#reactive-traffic) |
 | Rolling shutter | shutter_duration_us: 30000 in the camera preset | **Not yet implemented.** Captures render at one instant |
 
 AlpaSim's single-camera preset alpamayo1_5_1cam.yaml sets subsample_factor 3 for video-model
@@ -290,29 +294,37 @@ other dynamics implementations, navigation modes and camera resolutions.
 
 ### Move recorded actors
 
-NuRecSimulatorRuntime.set_actor_state(actor_id, state) moves an actor already reconstructed in the
-scene. The ID must be present in the recorded tracks at the current time. An unknown ID raises
-KeyError listing available IDs, and ego is rejected with ValueError because driving commands own
-ego motion. state.velocity must be an explicit world-coordinate vector; None raises ValueError.
+NuRecSimulatorRuntime.set_actor_state(actor_id, state) moves a current, unfiltered CONTROLLABLE
+track. Unknown IDs raise KeyError; ego, parked tracks and filtered tracks are rejected.
+state.velocity must be an explicit world-coordinate vector.
 
 The supplied pose is located at the call's physical time. Starting with the next capture, the
-actor leaves its recorded trajectory and moves at constant state.velocity, keeping its supplied
-orientation. Zero velocity holds it still. The override persists until reset or the end of the
-run, or until another set_actor_state call replaces it. state() reports current physical actors;
-sensor_view().actors retains the poses used for its capture and changes at the next capture.
-control_actor remains unsupported and raises NotImplementedError; this is kinematic editing
-rather than a traffic or actuator model.
+actor moves at constant state.velocity and fixed orientation until reset or another override.
+Zero velocity holds it still. state() changes immediately; sensor_view().actors changes at the
+next capture. control_actor remains unsupported. With traffic disabled, checkpoint/restore
+preserves overrides.
 
-Every render sends all tracked actors present at its timestamp: overridden poses for edited
-tracks, interpolated recorded poses for the others. Once actor editing is enabled, NRE omits
-dynamic actors absent from the request. Recorded track poses use [x, y, z, qx, qy, qz, qw], with
-the same world transform sent back through named quaternion fields. No half-height offset is
-added; recorded track ActorState uses a zero box_center. checkpoint/restore also preserves actor
-overrides.
+Recorded track poses are box-centre transforms [x, y, z, qx, qy, qz, qw], with no added height
+offset. NRE cannot insert new geometry or textures; framework object composition supplies those
+camera pixels.
 
-NRE can move only actors reconstructed in the source scene. Its editing interface cannot insert
-new geometry or textures; framework object composition supplies those camera pixels without sending
-the new objects to NRE.
+### Reactive traffic
+
+Reactive traffic is disabled by default. Add under simulator.options:
+```yaml
+traffic: {type: avsectester.closed_loop.simulators.nurec:AlpaSimTraffic}
+```
+With [NRE running](../reference/cli.md#nre), start trafficsim before execution or offline rollouts and stop both services afterward:
+```bash
+avsectester trafficsim serve CONFIG.yaml --gpu 1 --models /path/to/alpasim-trafficsim
+avsectester trafficsim stop CONFIG.yaml
+```
+Filtered controllable tracks are absent from state and rendered 100 m below their recorded poses.
+Other actors use recorded state, then current trafficsim poses for controllable session tracks, then overrides; parked tracks stay recorded and end with their recorded support.
+Session tracks meet the whole-recording duration threshold and have samples in the history window.
+The first override backfills history_steps−1 samples at its supplied constant velocity; requests resend the full override history.
+Traffic requires dt=0.1 s and 1.5 s history by default; trajectories are not smoothed, checkpoint is unavailable, and the seed does not control CATK sampling.
+Traffic settings affect prepared identity; metadata.load can share segments between modes. See [installation](../getting-started/installation.md#reactive-traffic-service).
 
 ### Ego dynamics
 
@@ -333,7 +345,8 @@ PlanarEgoState contains x, y and yaw in world coordinates; longitudinal speed an
 ego axes; t in seconds; yaw_rate in radians per second; and longitudinal acceleration in m/s².
 At each runtime reset, the recorded ego velocity is transformed into ego axes, and neighbouring
 recorded frames supply yaw_rate and acceleration. The runtime then calls dynamics.reset(state).
-Checkpoint/restore retains these planar state fields alongside the physical three-dimensional pose.
+With traffic disabled, checkpoint/restore retains these planar state fields alongside the physical
+three-dimensional pose.
 
 AlpaSimController accepts trajectory commands led by the rig origin at t0 with identity rotation,
 followed by future rig-frame poses. It advances through AlpaSim's controller and vehicle model,

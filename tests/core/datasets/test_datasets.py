@@ -1,5 +1,6 @@
 """Dataset components share one public timeline contract; interpolation stays numerical."""
 from dataclasses import replace
+import json
 from pathlib import Path
 import shutil
 import zipfile
@@ -224,3 +225,28 @@ def test_carla_recipe():
         CarlaRecipe({"ego": {}, "lead": {"gap": 8}}, 2, .1, recipe.motion)
     with pytest.raises(ValueError, match="runtime settings"):
         CarlaRecipe({"ego": {}, "client": {"seed": 1}}, 2, .1, recipe.motion)
+
+
+def test_nurec_track_trajectories(nurec_usdz_path, tmp_path):
+    path = tmp_path / "track-flags.usdz"
+    with zipfile.ZipFile(nurec_usdz_path) as source, zipfile.ZipFile(path, "w") as target:
+        for name in source.namelist():
+            data = source.read(name)
+            if name == "sequence_tracks.json":
+                tracks = json.loads(data)
+                tracks["scene"]["tracks_data"]["tracks_flags"] = ["DYNAMIC|CONTROLLABLE", "NONE"]
+                data = json.dumps(tracks).encode()
+            target.writestr(name, data)
+    dataset = NuRecDataset([path])
+    tracks = dataset.track_trajectories("scene")
+    assert set(tracks) == {"host", "brief"}
+    host = tracks["host"]
+    assert host["controllable"] is True
+    assert host["label_class"] == "automobile" and host["category"] == "vehicle"
+    assert host["extent"] == (4., 2., 2.)
+    assert [time for time, pose in host["trajectory"]] == [0, 500000]
+    np.testing.assert_allclose(host["trajectory"][0][1][:3, 3], [8., 0., 1.])
+    np.testing.assert_allclose(host["trajectory"][-1][1][:3, :3], rotation_matrix((0., 0., 180.)), atol=1e-12)
+    assert tracks["brief"]["category"] == "pedestrian" and tracks["brief"]["controllable"] is False
+    host["trajectory"][0][1][:] = 0.
+    np.testing.assert_allclose(dataset.track_trajectories("scene")["host"]["trajectory"][0][1][:3, 3], [8., 0., 1.])
