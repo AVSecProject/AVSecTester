@@ -229,3 +229,24 @@ def test_score(component_services):
         assert session.score("mean", np.full((2, 2), 5.), target=2.).value == 3.
         with pytest.raises(ValueError, match="does not support gradients"):
             session.score("mean", np.ones((2, 2)), target=0., require_grad=True)
+
+
+def test_decision_time_step():
+    from avsectester.closed_loop.avstacks.implemented.alpamayo import AlpamayoAVStack, alpamayo_driving_adapter
+
+    def factory(seed):
+        pytest.fail("step declarations must not construct a driving system")
+
+    factory.avstack_type = AlpamayoAVStack
+    adapter = DrivingAdapter(factory, decision_time_step=.2)
+    assert adapter.decision_time_step == .1
+    fallback = DrivingAdapter(lambda seed: ConstantAVStack(), decision_time_step=.2)
+    assert fallback.decision_time_step == .2
+    unrestricted = DrivingAdapter(lambda seed: ConstantAVStack())
+    assert unrestricted.decision_time_step is None
+    with ClosedLoopServices(MemoryDataset(), MemorySimulator(), adapter):
+        pass
+    with pytest.raises(ValueError, match="AVStack decision_time_step"):
+        ClosedLoopServices(MemoryDataset(), MemorySimulator(time_step=.2), adapter)
+    with pytest.raises(ValueError, match="AVStack decision_time_step"):
+        ClosedLoopServices(MemoryDataset(), MemorySimulator(time_step=.2), alpamayo_driving_adapter(factory))

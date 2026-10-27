@@ -147,7 +147,7 @@ def nre_configuration(directory):
     (data / "scene.usdz").touch()
     specification["dataset"] = {"type": "NuRecDataset", "options": {"dataroot": str(data)}}
     specification["simulator"] = {"type": "NuRecSimulator", "options": {
-        "config": {"dt": .1}, "depth": "none", "physics_update_mode": "none", "route_generator": "none",
+        "depth": "none", "physics_update_mode": "none", "route_generator": "none",
         "renderer": {"type": "avsectester.closed_loop.simulators.nurec:NuRecRenderer", "options": {
             "endpoint": "127.0.0.1:50152", "probe_directory": str(directory / "probes"),
             "server_probe_directory": "/mnt/probes",

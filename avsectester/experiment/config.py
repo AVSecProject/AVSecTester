@@ -25,7 +25,7 @@ from importlib import import_module
 import inspect
 from os import PathLike
 from pathlib import Path
-from types import SimpleNamespace, UnionType
+from types import MappingProxyType, SimpleNamespace, UnionType
 from typing import Annotated, Any, TypeAlias, Union, get_args, get_origin, get_type_hints
 import warnings
 
@@ -183,6 +183,9 @@ class ExperimentConfiguration:
                                ("metadata", MetadataConfiguration)):
             if not isinstance(getattr(self, name), expected):
                 raise TypeError(f"{name} must be {expected.__name__}")
+        dataset_step = getattr(self.dataset, "time_step", None)
+        if dataset_step is not None and dataset_step != self.simulator.decision_time_step:
+            raise ValueError("dataset.time_step does not match simulator.decision_time_step")
         if self.split is not None and not isinstance(self.split, SplitConfiguration):
             raise TypeError("split must be SplitConfiguration or None")
         specifications = self.attacks.specifications if isinstance(self.attacks, _ConfiguredAttacks) else {}
@@ -300,9 +303,11 @@ def load_configuration(
         if parameters is not None
     }
     runs = _runs(spec.get("runs", {}), directory, device)
+    dataset = _construct(spec["dataset"], directory, Dataset, device)
     configuration = ExperimentConfiguration(
-        dataset=_construct(spec["dataset"], directory, Dataset, device),
-        simulator=_construct(spec["simulator"], directory, Simulator, device),
+        dataset=dataset,
+        simulator=_construct(spec["simulator"], directory, Simulator, device,
+                             time_step=getattr(dataset, "time_step", None)),
         avstack=_avstack(spec["avstack"], directory, device),
         attacks=_ConfiguredAttacks(attacks, attack_specifications),
         hooks=_hooks(spec.get("hooks"), directory, device),
@@ -455,12 +460,19 @@ def _attack(value: Any, directory: Path, device: str | None = None) -> tuple[Att
     return attack, _options(spec.get("options", {}), directory, constructor, construct=False, device=device)
 
 
-def _construct(value: Any, directory: Path, expected: type, device: str | None = None) -> Any:
+def _construct(value: Any, directory: Path, expected: type, device: str | None = None,
+               *, time_step: float | None = None) -> Any:
     if isinstance(value, expected):
         return value
     spec, directory = _mapping(value, directory, expected.__name__)
     _keys(spec, {"type", "options"}, expected.__name__)
     constructor, options = _constructor(spec, directory, device)
+    if time_step is not None and "time_step" not in options:
+        parameter = inspect.signature(constructor).parameters.get("time_step")
+        if parameter is not None and parameter.kind not in {
+            inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD,
+        }:
+            options["time_step"] = time_step
     result = constructor(**options)
     if not isinstance(result, expected):
         raise TypeError(f"Constructor must return {expected.__name__}, got {type(result).__name__}")
@@ -528,6 +540,7 @@ def _avstack(value: Any, directory: Path, device: str | None = None) -> DrivingA
 
     # Static metadata enables validation without constructing a model or calling user code.
     factory.avstack_type = constructor  # type: ignore[attr-defined]
+    factory.avstack_options = MappingProxyType(deepcopy(options))  # type: ignore[attr-defined]
     bindings = spec.get("bindings")
     if bindings is None:
         return DrivingAdapter(factory)

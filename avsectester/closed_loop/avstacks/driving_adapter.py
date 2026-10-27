@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from avsectester.closed_loop.avstacks.base import AVStack
-from avsectester.validation import require_nonnegative_integer
+from avsectester.validation import require_nonnegative_integer, require_positive_number, require_nonnegative_number
 
 
 @dataclass(frozen=True)
@@ -23,10 +23,18 @@ class ComponentDescriptor:
 class ScorerDescriptor(ComponentDescriptor):
     output_shape: tuple[int, ...] = ()
     direction: str = "minimize"
+    sensor_id: str | None = None
+    decision_threshold: float | None = None
 
     def __post_init__(self) -> None:
         if self.direction not in {"minimize", "maximize"}:
             raise ValueError("Scorer direction must be minimize or maximize")
+        if self.sensor_id is not None and (not isinstance(self.sensor_id, str) or not self.sensor_id):
+            raise ValueError("sensor_id must be a nonempty string or None")
+        if self.decision_threshold is not None:
+            require_nonnegative_number(self.decision_threshold, "decision_threshold")
+            if self.decision_threshold > 1:
+                raise ValueError("decision_threshold must be at most 1")
 
 
 class DrivingAdapter:
@@ -44,8 +52,12 @@ class DrivingAdapter:
         components: Sequence[tuple[ComponentDescriptor, Callable[..., Any]]] = (),
         scorers: Sequence[tuple[ScorerDescriptor, Callable[..., Any]]] = (),
         past_steps: int = 0,
+        decision_time_step: float | None = None,
     ) -> None:
         require_nonnegative_integer(past_steps, "past_steps")
+        if decision_time_step is not None:
+            require_positive_number(decision_time_step, "decision_time_step")
+        self._decision_time_step = decision_time_step
         self.factory = factory
         self._past_steps = past_steps
         self.component_bindings = self._bindings(components)
@@ -64,6 +76,17 @@ class DrivingAdapter:
             require_nonnegative_integer(value, "past_steps")
             return value
         return self._past_steps
+
+    @property
+    def decision_time_step(self) -> float | None:
+        """Required decision interval, read without constructing the driving system."""
+        avstack_type = getattr(self.factory, "avstack_type", None)
+        value = (avstack_type.decision_time_step
+                 if isinstance(avstack_type, type) and issubclass(avstack_type, AVStack)
+                 else self._decision_time_step)
+        if value is not None:
+            require_positive_number(value, "decision_time_step")
+        return value
 
     @staticmethod
     def _bindings(entries: Sequence[Any]) -> dict[str, Any]:

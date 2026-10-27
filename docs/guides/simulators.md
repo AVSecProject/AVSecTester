@@ -154,14 +154,25 @@ simulator runtime constructs SensorView directly from native camera geometry and
 
 ## NuRec
 
-NuRecSimulator takes `config`, a required Renderer template, an optional ego-dynamics template, a
+NuRecSimulator takes a required Renderer template, an optional ego-dynamics template, a
 depth mode and an object_occlusion mode. Configure NuRecRenderer explicitly; there is no default renderer. Renderer is defined
 in closed_loop/simulators/nurec/renderer.py, and the dynamics interfaces and implementations live
 in closed_loop/simulators/ego_dynamics.py.
 Mesh depth and ego ground contact require the optional nurec dependencies at construction.
 To run without mesh queries, set both depth="none" and physics_update_mode="none". Each simulator
-runtime copies its renderer and dynamics, so connections, loaded scenes and mutations are isolated. Set
-`config.dt` to NuRecDataset.time_step; this mismatch is rejected before simulation starts.
+runtime copies its renderer and dynamics, so connections, loaded scenes and mutations are isolated.
+NuRecSimulator.time_step is the decision step. YAML loading supplies dataset.time_step when the
+top-level simulator constructor omits it; Python callers must pass it explicitly. ExperimentConfiguration
+rejects a dataset/simulator step mismatch. ClosedLoopServices also rejects a mismatch with an
+AVStack decision_time_step requirement; Alpamayo requires 0.1 s. Other stacks may leave that
+class attribute as None to accept any simulator step.
+
+Every NuRec runtime reset requires a ScenarioStart: its recorded clock, ego state, actors and
+scene geometry define the world. A reset without one raises ValueError. Use camera_aliases to
+map native NuRec camera IDs to names used by observations and sensor views, for example
+camera_aliases={"camera_front_wide_120fov": "front"}. Native and output names must be nonempty,
+and output names must be unique. The simulator uses KinematicBicycle() when dynamics is omitted;
+pass a configured dynamics object to change its parameters.
 
 With depth="mesh", a reset from a recorded Dataset ScenarioStart checks that its USDZ contains both
 mesh.ply and mesh_ground.ply before its first NRE request. Missing entries raise ValueError listing
@@ -186,9 +197,9 @@ from avsectester.closed_loop.simulators.ego_dynamics import AlpaSimController
 from avsectester.closed_loop.simulators.nurec import NuRecRenderer, NuRecSimulator
 
 simulator = NuRecSimulator(
-    {"dt": 0.1},
     renderer=NuRecRenderer(endpoint="127.0.0.1:50051"),
     dynamics=AlpaSimController(),
+    time_step=0.1,
     depth="none",
     physics_update_mode="none",
 )
@@ -281,7 +292,7 @@ the single-camera preset's camera:
 | Navigation | route_generator_type: MAP | route_generator: map |
 | Ground contact | physics_update_mode: EGO_ONLY; use_ground_mesh=False | ego_only; ground_mesh: mesh (mesh_ground in the stop-sign configurations) |
 | Camera | 1cam_1080.yaml: camera_front_wide_120fov, requested 1080×1900 | Same camera and request; actual NRE size is probed |
-| Camera timing | frame_interval_us: 100000 (10 Hz); alpamayo1_5.yaml subsample_factor: 1, four images at 10 Hz | dt: 0.1; frame_subsample: 1 |
+| Camera timing | frame_interval_us: 100000 (10 Hz); alpamayo1_5.yaml subsample_factor: 1, four images at 10 Hz | time_step: 0.1; frame_subsample: 1 |
 | Reactive traffic | Disabled by default; optional AlpaSim trafficsim | traffic=None; see [Reactive traffic](#reactive-traffic) |
 | Rolling shutter | shutter_duration_us: 30000 in the camera preset | **Not yet implemented.** Captures render at one instant |
 
@@ -323,7 +334,7 @@ Filtered controllable tracks are absent from state and rendered 100 m below thei
 Other actors use recorded state, then current trafficsim poses for controllable session tracks, then overrides; parked tracks stay recorded and end with their recorded support.
 Session tracks meet the whole-recording duration threshold and have samples in the history window.
 The first override backfills history_steps−1 samples at its supplied constant velocity; requests resend the full override history.
-Traffic requires dt=0.1 s and 1.5 s history by default; trajectories are not smoothed, checkpoint is unavailable, and the seed does not control CATK sampling.
+Traffic requires a 0.1 s time_step and 1.5 s history by default; trajectories are not smoothed, checkpoint is unavailable, and the seed does not control CATK sampling.
 Traffic settings affect prepared identity; metadata.load can share segments between modes. See [installation](../getting-started/installation.md#reactive-traffic-service).
 
 ### Ego dynamics

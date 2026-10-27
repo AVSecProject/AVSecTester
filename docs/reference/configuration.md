@@ -130,7 +130,8 @@ constructor's own default. Supplied Python component objects are not changed.
 Injection resolves to ordinary constructor options before configuration summaries are saved.
 The resulting preparation identity is the same as explicitly writing those device options; the
 top-level shorthand does not add a separate prepared-compatibility setting. For example,
-AlpamayoAVStack, StopSignDetector, PatchOptimization and PCTNetHarmonizer can share device: cuda:0.
+AlpamayoAVStack, CocoStopSignDetector, DetectorPatchOptimization, PatchOptimization and
+PCTNetHarmonizer can share device: cuda:0.
 PCTNetHarmonizer uses the same string device convention and falls back to CPU when CUDA is unavailable.
 
 ## Dataset
@@ -232,9 +233,14 @@ settings, optional settling iterations and a depth-camera name. Recipe motion ex
 and all other actors through `constant_control`, a control sequence or a state trajectory. A
 trajectory contains the terminal state. Traffic Manager is not a prescribed motion source.
 
-NuRec configures its dataset `time_step` and simulator `config.dt` to the same value, typically 0.1
-s. Recorded trajectories are interpolated only inside their support. Changing the time step changes
-segment positions. NuScenes uses RecordedReplaySimulator for open-loop playback.
+NuRecSimulator.time_step is supplied from dataset.time_step (typically 0.1 s) when its top-level
+constructor declares time_step and the simulator options omit it. This injection does not recurse
+into renderer, dynamics or other nested constructors. An explicit simulator value is retained, but
+ExperimentConfiguration rejects a dataset/simulator mismatch, including Python configurations.
+NuRecSimulator requires a non-None time_step and a ScenarioStart at reset. camera_aliases maps
+native camera names to observation and sensor-view names; output names must be unique. Recorded
+trajectories are interpolated only inside their support. Changing the time step changes segment
+positions. NuScenes uses RecordedReplaySimulator for open-loop playback.
 
 See [Scenarios](../guides/scenarios.md) and [Simulators](../guides/simulators.md).
 
@@ -247,7 +253,6 @@ against mesh.ply, and the official single-camera Alpamayo preset:
 simulator:
   type: NuRecSimulator
   options:
-    config: {dt: 0.1}
     route_generator: map
     physics_update_mode: ego_only
     ground_mesh: mesh
@@ -283,7 +288,10 @@ namespace; configuration loading leaves it unchanged. Mount the same probe files
 locations when client and NRE run in different containers.
 
 Alpamayo requires 15 preceding recorded decisions at 0.1 s intervals. Their images and poses are
-provided to reset; no startup padding is generated. frame_subsample defaults to 1, and the
+provided to reset; no startup padding is generated. AVStack.decision_time_step declares an
+optional fixed decision cadence; Alpamayo sets it to 0.1 s. DrivingAdapter reads it from
+factory.avstack_type without constructing the stack, or uses its explicit decision_time_step
+fallback. ClosedLoopServices rejects a mismatch with the simulator before running. frame_subsample defaults to 1, and the
 configured image span `(context_length - 1) * frame_subsample` must not exceed 15. NuRec captures
 arrive at 10 Hz, the image rate Alpamayo expects, so the supplied configurations use frame_subsample 1:
 four consecutive images spanning 0.3 s. A larger stride feeds Alpamayo a
@@ -303,7 +311,7 @@ traffic:
     rpc_timeout_s: 300.0
 ```
 
-Add under simulator.options; traffic defaults to None, and enabling it requires config.dt=0.1
+Add under simulator.options; traffic defaults to None, and enabling it requires time_step=0.1
 and history_steps−1 preceding recorded decisions. Traffic settings affect prepared identity;
 use metadata.load to share segments between modes. Start the service for execution and offline
 rollouts; see [Reactive traffic](../guides/simulators.md#reactive-traffic).
@@ -326,7 +334,11 @@ bindings:
 ```
 
 Optional `bindings.type` references `function(avstack_factory, **options) -> DrivingAdapter`.
-Bindings expose components and scorers; they do not replace the AVStack. Optional
+Bindings expose components and scorers; they do not replace the AVStack. The factory carries
+avstack_type and an independent, read-only avstack_options mapping for inspecting the configured
+constructor without creating a driving system. ScorerDescriptor may declare sensor_id and
+decision_threshold; the rule-based stop-sign binding uses these to share the victim detector
+configuration with white-box attacks. Optional
 avstack.observation_pipeline
 constructs ObservationPipeline from avsectester.closed_loop.avstacks.base using a {type, options}
 specification; avstack.command_modes asserts the

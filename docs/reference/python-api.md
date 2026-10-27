@@ -95,7 +95,6 @@ data and boundary modules can be imported without simulator servers or weights.
 | avsectester.implemented_attacks.<attack_folder> | Concrete Attack class exported by its folder |
 | avsectester.implemented_attacks.stop_sign_patch_attack.attack | StopSignPatchAttack selection, preparation and replica placement |
 | avsectester.implemented_attacks.stop_sign_patch_attack.offline | DetectorPatchOptimization and RolloutPatchOptimization |
-| avsectester.implemented_attacks.stop_sign_patch_attack.detector | Local differentiable stop-sign detector scorer |
 | avsectester.evaluation | RunGroup, evaluate_groups, metrics and report records |
 | avsectester.evaluation.evaluator | Standalone ordered log groups and metric evaluation |
 | avsectester.evaluation.metric | ComparisonGroup, Metric and built-in metrics |
@@ -341,8 +340,11 @@ The configured AVStack constructor receives only options and creates a fresh ins
 DrivingAdapter separately binds component/scorer callables. Its Python factory accepts a seed; YAML
 avstack.bindings receives the loader's configured factory and returns DrivingAdapter. Scorers
 declare differentiable inputs and direction; services reject unavailable gradients.
-DrivingAdapter.past_steps reads factory.avstack_type.past_steps when avstack_type is an AVStack
-subclass, otherwise its explicit past_steps constructor option. This inspection never creates an
+DrivingAdapter.past_steps and decision_time_step read the corresponding class attributes on
+factory.avstack_type when it is an AVStack subclass, otherwise their explicit constructor options.
+The YAML factory also exposes avstack_options as an independent, read-only copy of configured
+constructor options, so bindings can inspect nested detector settings without creating a stack.
+This inspection never creates an
 AVStack or loads model weights. ClosedLoopSession.can_start_at(position) combines this history
 requirement with the shared deployment-window check. The Alpamayo binding explicitly supplies a
 15-step fallback for factories without AVStack-type metadata.
@@ -829,6 +831,7 @@ dataset, simulator or model dependencies.
 | `FrameDataSequence.at` | `at(frame: FrameReference) -> FrameData` |
 | `DeploymentPlan` | `ticks: int = 0` |
 | `UnsupportedStartError` | `UnsupportedStartError(ValueError)`; raised by validate_start when a valid configuration cannot start at a particular scenario start; preparation skips the segment |
+| `validated_camera_aliases` | `validated_camera_aliases(camera_aliases: Mapping[str, str]) -> dict[str, str]`; validates nonempty camera names and unique outputs, returning a copy |
 | `can_deploy_at` | `can_deploy_at(position: int, deployment: DeploymentPlan, capture_ticks: int) -> bool` |
 | `ClockSnapshot` | `t: float`<br>`frame: int` |
 | `SensorGeometry` | `sensor: str`<br>`camera: Camera`<br>`cam_from_world: np.ndarray` |
@@ -891,7 +894,7 @@ dataset, simulator or model dependencies.
 | `ObservationPipeline` | Class; see methods below |
 | `ObservationPipeline.__init__` | `__init__(localizer: Any = None) -> None` |
 | `ObservationPipeline.process` | `process(observation: Observation, dispatcher: HookDispatcher) -> Observation` |
-| `AVStack` | `provides_detections: bool \| None = None`<br>`past_steps: ClassVar[int] = 0` |
+| `AVStack` | `provides_detections: bool \| None = None`<br>`past_steps: ClassVar[int] = 0`<br>`decision_time_step: ClassVar[float \| None] = None` |
 | `AVStack.observation_pipeline` | `observation_pipeline: ObservationPipeline` |
 | `AVStack.reset` | `reset(observation: Observation, past: Sequence[Observation] = ()) -> None` |
 | `AVStack.command_modes` | `command_modes: frozenset[str] \| None` |
@@ -949,10 +952,11 @@ dataset, simulator or model dependencies.
 | Public name | Signature or fields |
 |---|---|
 | `ComponentDescriptor` | `id: str`<br>`inputs: Mapping[str, str]`<br>`outputs: Mapping[str, str]`<br>`codecs: Mapping[str, str]`<br>`differentiable_inputs: tuple[str, ...] = ()` |
-| `ScorerDescriptor` | `output_shape: tuple[int, ...] = ()`<br>`direction: str = 'minimize'` |
+| `ScorerDescriptor` | Extends ComponentDescriptor: `output_shape: tuple[int, ...] = ()`<br>`direction: str = 'minimize'`<br>`sensor_id: str \| None = None` (nonempty when set)<br>`decision_threshold: float \| None = None` (finite, in [0, 1]) |
 | `DrivingAdapter` | Class; see methods below |
-| `DrivingAdapter.__init__` | `__init__(factory: Callable[[int], AVStack], *, components: Sequence[tuple[ComponentDescriptor, Callable[..., Any]]] = (), scorers: Sequence[tuple[ScorerDescriptor, Callable[..., Any]]] = (), past_steps: int = 0) -> None` |
+| `DrivingAdapter.__init__` | `__init__(factory: Callable[[int], AVStack], *, components: Sequence[tuple[ComponentDescriptor, Callable[..., Any]]] = (), scorers: Sequence[tuple[ScorerDescriptor, Callable[..., Any]]] = (), past_steps: int = 0, decision_time_step: float \| None = None) -> None` |
 | `DrivingAdapter.past_steps` | `past_steps: int` |
+| `DrivingAdapter.decision_time_step` | `decision_time_step: float \| None`; optional required simulator step |
 
 ### avsectester.execution.services
 
@@ -1129,11 +1133,13 @@ dataset, simulator or model dependencies.
 | Public name | Signature or fields |
 |---|---|
 | `NuRecSimulator` | Class; see methods below |
-| `NuRecSimulator.__init__` | `__init__(config: dict, renderer: Renderer, dynamics: EgoDynamics \| None = None, *, depth: str = 'mesh', route_generator: str = 'map', physics_update_mode: str = 'ego_only', ground_mesh: str = 'mesh', object_occlusion: str = 'rendered_probes', occlusion_tolerance_m: float = 0.15, traffic: AlpaSimTraffic \| None = None, min_track_duration_s: float = 3.0) -> None` |
+| `NuRecSimulator.__init__` | `__init__(renderer: Renderer, dynamics: EgoDynamics \| None = None, *, time_step: float \| None = None, camera_aliases: Mapping[str, str] \| None = None, depth: str = 'mesh', route_generator: str = 'map', physics_update_mode: str = 'ego_only', ground_mesh: str = 'mesh', object_occlusion: str = 'rendered_probes', occlusion_tolerance_m: float = 0.15, traffic: AlpaSimTraffic \| None = None, min_track_duration_s: float = 3.0) -> None` |
 | `NuRecSimulator.create_runtime` | `create_runtime(seed: int \| None = None) -> NuRecSimulatorRuntime` |
 | `NuRecSimulator.supported_stages` | `supported_stages: frozenset[str]` |
 | `NuRecSimulator.command_modes` | `command_modes: frozenset[str] \| None` |
-| `NuRecSimulator.decision_time_step` | `decision_time_step: Any` |
+| `NuRecSimulator.time_step` | `time_step: float`; required explicitly in Python, inherited from dataset.time_step by YAML loading |
+| `NuRecSimulator.camera_aliases` | `camera_aliases: dict[str, str]`; native camera names to observation and sensor-view names; outputs are unique |
+| `NuRecSimulator.decision_time_step` | `decision_time_step: float`; returns time_step |
 | `NuRecSimulator.past_steps` | `past_steps: int`; traffic.history_steps − 1 when enabled, otherwise 0 |
 | `NuRecSimulator.identity` | `identity: Any` |
 | `NuRecSimulator.validate_start` | `validate_start(start: ScenarioStart \| None) -> None`; also raises UnsupportedStartError when the configured navigation route cannot be built from the start's recording and map, checked once per recording |
@@ -1151,6 +1157,8 @@ dataset, simulator or model dependencies.
 | `NuRecSimulatorRuntime.restore` | `restore(ckpt: dict) -> None` |
 
 NuRecRenderer is explicitly configured on NuRecSimulator; it is not constructed automatically.
+NuRecSimulatorRuntime.reset requires a ScenarioStart for the recorded time, ego state and scene.
+Without dynamics, the simulator uses KinematicBicycle(); configure dynamics explicitly to tune it.
 The package root exports NuRecSimulator, NuRecSimulatorRuntime, NuRecRenderer, AlpaSimTraffic, TrafficSession and TrafficTrack.
 Renderer and the RPC conversion functions are imported from nurec.renderer.
 render_scene_visibility returns a boolean image, true where the reconstruction does not hide the
@@ -1314,6 +1322,7 @@ addresses pixel centres at i + 0.5. Unsupported external distortion types raise 
 | `alpamayo_driving_adapter` | `alpamayo_driving_adapter(factory)` |
 | `AlpamayoAVStack` | Class; see methods below |
 | `AlpamayoAVStack.past_steps` | `past_steps: ClassVar[int] = 15` |
+| `AlpamayoAVStack.decision_time_step` | `decision_time_step: ClassVar[float \| None] = 0.1` |
 | `AlpamayoAVStack.__init__` | `__init__(checkpoint_path: str \| Path \| None = None, camera_ids: list[str] \| None = None, device: str = 'cuda:0', context_length: int = 4, frame_subsample: int = 1, output_frequency_hz: int = 10, model: Any \| None = None, seed: int \| None = None) -> None` |
 | `AlpamayoAVStack.command_modes` | `command_modes: frozenset[str]` |
 | `AlpamayoAVStack.supported_stages` | `supported_stages: frozenset[str]` |
@@ -1360,21 +1369,33 @@ The learned-model test boundary belongs to CocoStopSignDetector.model, not the s
 | `RuleBasedAVStack.__call__` | `__call__(observation: Observation) -> Control` |
 | `RuleBasedAVStack.component_log` | `component_log() -> Mapping[str, Any] \| None`; detections, estimated rig sign positions/ranges, tracks (track_id, world position, maximum position standard deviation), planner state/braking flag/target gap/first-step motion |
 | `RuleBasedAVStack.close` | `close() -> None`; releases the detector model reference |
+| `rule_based_driving_adapter` | `rule_based_driving_adapter(factory) -> DrivingAdapter`; exports the image-differentiable scorer rule_based.stop_sign_confidence |
+
+The binding requires factory.avstack_options containing a configured CocoStopSignDetector. It
+reads sensor_id from camera_id (default camera_front_wide_120fov) and decision_threshold from
+detector.score_threshold, without constructing the driving system or loading model weights.
 
 ### avsectester.closed_loop.avstacks.implemented.rule_based.detector
 
 The model loader reads an existing local checkpoint, verifies that COCO_V1 labels identify
 stop sign as category 13, disables internal score filtering and freezes model parameters.
 It downloads neither detector nor backbone weights. Image gradients remain available to the
-attack scorer that reuses this loader. CocoStopSignDetector lazily loads the same model for
-inference and filters by category and score_threshold.
+victim-model scorer exposed through rule_based_driving_adapter. CocoStopSignDetector lazily
+loads one model for detection and target scoring. detect filters by category and score_threshold;
+target_score uses the internal unfiltered scores.
 
 | Public name | Signature or fields |
 |---|---|
 | `load_stop_sign_model` | `load_stop_sign_model(weights_path: str \| Path, device: str = "cuda:0") -> Any` |
 | `CocoStopSignDetector.__init__` | `__init__(weights_path: str \| Path, device: str = "cuda:0", score_threshold: float = 0.5, model: Any = None) -> None` |
 | `CocoStopSignDetector.detect` | `detect(rgb: np.ndarray) -> list[tuple[np.ndarray, float]]`; uint8 RGB to original-image xyxy boxes and scores |
-| `CocoStopSignDetector.close` | `close() -> None`; releases the loaded or injected model; detect then raises RuntimeError |
+| `CocoStopSignDetector.target_score` | `target_score(image: torch.Tensor, target: TargetSpec) -> torch.Tensor`; differentiable maximum COCO-13 confidence among boxes with target IoU ≥ 0.3 |
+| `CocoStopSignDetector.close` | `close() -> None`; releases the loaded or injected model; detect and target_score then raise RuntimeError |
+
+target_score accepts finite CHW float RGB in [0, 1] and a valid xyxy TargetSpec labelled None or
+"stop sign". It returns image.sum() * 0 when no stop-sign box matches; this preserves a zero
+input gradient. Internal detection filtering is disabled, and target_score leaves autograd
+enabled. Discrete box selection and NMS themselves are not differentiable.
 
 ### avsectester.closed_loop.avstacks.implemented.rule_based.ranging
 
@@ -1574,24 +1595,18 @@ plus offset_m times that mode's normal. panel_height_m is required.
 
 | Public name | Signature or fields |
 |---|---|
-| `DetectorPatchOptimization` | Frozen dataclass: `detector: Scorer`, `optimizer: PGD`, `camera_id='camera_front_wide_120fov'`, `max_training_segments=None`, `samples_per_scene=8`, `min_visible_pixels=100`, `detection_threshold=0.5`, `braking_deceleration_mps2=3.4` |
-| `RolloutPatchOptimization` | Frozen dataclass: `optimizer: NES`, `start_distances_m=(40.0, 30.0, 20.0)`, `horizon_s=3.0`, `max_training_segments=1` |
+| `DetectorPatchOptimization` | Frozen dataclass: `optimizer: PGD`, `scorer_id: str \| None = None`, `device: str = 'cpu'`, `max_training_segments=None`, `samples_per_scene=8`, `min_visible_pixels=100`, `braking_deceleration_mps2=3.4` |
+| `RolloutPatchOptimization` | Frozen dataclass: `optimizer: NES`, `start_distances_m=(40.0, 30.0, 20.0)`, `horizon_s=3.0`, `max_training_segments=None` |
 | `run_offline` | `run_offline(attack, context) -> np.ndarray` |
 
 Both optimizers start from the attack's generated initial patch. Detector options require PGD;
-rollout options require NES. Neither preparation path executes the final treatment suite.
-
-### avsectester.implemented_attacks.stop_sign_patch_attack.detector
-
-| Public name | Signature or fields |
-|---|---|
-| `StopSignDetector` | Scorer using local COCO_V1 Faster R-CNN weights; differentiable input scores |
-| `StopSignDetector.__init__` | `__init__(weights_path: str \| Path = 'fasterrcnn_resnet50_fpn_coco-258fb6c6.pth', device: str = 'cpu', model: Any = None)` |
-| `StopSignDetector.target_score` | `target_score(image: torch.Tensor, target: TargetSpec) -> torch.Tensor` |
-
-The maximum stop-sign score is selected among detections with target-box IoU at least 0.3.
-No matching detection returns a zero score connected to the image gradient. NMS and discrete
-box selection do not provide gradients. An injected model replaces only the learned-model boundary.
+rollout options require NES. Detector optimization selects the unique image-differentiable scorer
+when scorer_id is None; otherwise it uses that ID. The description must supply sensor_id and
+decision_threshold. Calibration, PGD and evaluation use one SessionScorer.
+braking_deceleration_mps2 controls only the attacker's training-frame sampling window.
+Rollout start distances must lie within the attack's [min_approach_m, approach_m] interval. Neither
+preparation path executes the final treatment suite. Both max_training_segments options default
+to None, using all training segments; a positive integer limits cost without changing the split.
 
 ### avsectester.implemented_attacks.object_insertion_attack.attack
 
@@ -2194,9 +2209,13 @@ matching version.
 
 | Public name | Signature or fields |
 |---|---|
-| `ReplicaVisibility` | `ReplicaVisibility(camera_id="camera_front_wide_120fov", min_visible_pixels=100)` |
+| `ReplicaVisibility` | `ReplicaVisibility(camera_id: str \| None = None, min_visible_pixels=100)` |
 | `ReplicaVisibility.evaluate` | `evaluate(group: ComparisonGroup) -> TreatmentMeasurements` |
 | `ReplicaVisibility.describe` | `describe() -> MetricDescription`; visible_steps description and decision-step unit |
+
+With camera_id=None, the metric selects the unique camera with replica visibility records across
+the comparison group. Multiple cameras raise ValueError requiring an explicit camera_id; no
+recorded replica visibility yields unavailable values. A missing chosen-camera entry is invisible.
 
 visible_steps counts decisions whose replica visibility for the selected camera reaches the pixel
 threshold. Missing camera entries count as invisible; an empty run or a run with no replica record is

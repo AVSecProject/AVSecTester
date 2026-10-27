@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from avsectester.attack import OfflineContext
-from avsectester.attack.optimization import GradientOptimizer, NES, Scorer
+from avsectester.attack.optimization import GradientOptimizer, NES
 from avsectester.validation import require_positive_integer, require_positive_number
 
 from .assets import initial_patch_texture
@@ -20,46 +20,40 @@ if TYPE_CHECKING:
 class DetectorPatchOptimization:
     """PGD settings; an optional segment cap limits cost within the training metadata."""
 
-    detector: Scorer
     optimizer: GradientOptimizer
-    camera_id: str = "camera_front_wide_120fov"
+    scorer_id: str | None = None
+    device: str = "cpu"
     max_training_segments: int | None = None
     samples_per_scene: int = 8
     min_visible_pixels: int = 100
-    detection_threshold: float = .5
     braking_deceleration_mps2: float = 3.4
 
     def __post_init__(self) -> None:
         from avsectester.attack.optimization import PGD
 
-        if not isinstance(self.detector, Scorer):
-            raise TypeError("detector must be a Scorer")
         if not isinstance(self.optimizer, PGD):
             raise TypeError("optimizer must be PGD for detector patch optimization")
-        if not isinstance(self.camera_id, str) or not self.camera_id:
-            raise ValueError("camera_id must be a nonempty sensor name")
+        if self.scorer_id is not None and (not isinstance(self.scorer_id, str) or not self.scorer_id):
+            raise ValueError("scorer_id must be a nonempty string or None")
+        if not isinstance(self.device, str) or not self.device:
+            raise ValueError("device must be a nonempty string")
         if self.max_training_segments is not None:
             require_positive_integer(self.max_training_segments, "max_training_segments")
         require_positive_integer(self.samples_per_scene, "samples_per_scene")
         if self.samples_per_scene < 4:
             raise ValueError("samples_per_scene must be at least 4")
         require_positive_integer(self.min_visible_pixels, "min_visible_pixels")
-        if (isinstance(self.detection_threshold, bool)
-                or not isinstance(self.detection_threshold, (int, float))
-                or not np.isfinite(self.detection_threshold)
-                or not 0 <= self.detection_threshold <= 1):
-            raise ValueError("detection_threshold must be in [0, 1]")
         require_positive_number(self.braking_deceleration_mps2, "braking_deceleration_mps2")
 
 
 @dataclass(frozen=True)
 class RolloutPatchOptimization:
-    """NES settings; use at most one training segment by default to bound query cost."""
+    """NES settings; use all training segments unless a cost-limiting cap is supplied."""
 
     optimizer: GradientOptimizer
     start_distances_m: tuple[float, ...] = (40., 30., 20.)
     horizon_s: float = 3.
-    max_training_segments: int | None = 1
+    max_training_segments: int | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.optimizer, NES):

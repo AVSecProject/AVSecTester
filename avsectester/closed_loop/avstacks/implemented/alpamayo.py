@@ -86,7 +86,8 @@ def alpamayo_driving_adapter(factory):
         "policy", {"observation": "Observation with configured camera IDs and ego pose",
                    "past": "Sequence[Observation] covering the previous 15 decisions"},
         {"command": "Control with rig-frame trajectory"}, {"command": "Control"},
-    ), evaluate),), past_steps=AlpamayoAVStack.past_steps)
+    ), evaluate),), past_steps=AlpamayoAVStack.past_steps,
+        decision_time_step=AlpamayoAVStack.decision_time_step)
 
 
 class AlpamayoAVStack(AVStack):
@@ -105,6 +106,7 @@ class AlpamayoAVStack(AVStack):
 
     provides_detections = False
     past_steps: ClassVar[int] = 15
+    decision_time_step: ClassVar[float | None] = 0.1
 
     def __init__(
         self,

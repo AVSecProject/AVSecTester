@@ -13,7 +13,9 @@ from typing import Any
 
 import numpy as np
 
-from avsectester.closed_loop.simulators.base import SensorGeometry, SensorView, Simulator, SimulatorRuntime
+from avsectester.closed_loop.simulators.base import (
+    SensorGeometry, SensorView, Simulator, SimulatorRuntime, validated_camera_aliases,
+)
 from avsectester.datasets.base import ScenarioStart
 from avsectester.data_types import Observation, WorldSnapshot
 from avsectester.geometry.cameras import BODY_FROM_OPTICAL
@@ -37,14 +39,7 @@ class RecordedReplaySimulator(Simulator):
         require_nonnegative_number(occlusion_tolerance_m, "occlusion_tolerance_m")
         self.start = deepcopy(start)
         self.occlusion_tolerance_m = occlusion_tolerance_m
-        if not isinstance(camera_aliases, Mapping) or any(
-            not isinstance(native, str) or not native or not isinstance(alias, str) or not alias
-            for native, alias in camera_aliases.items()
-        ):
-            raise ValueError("camera_aliases must map nonempty native camera names to nonempty aliases")
-        if len(set(camera_aliases.values())) != len(camera_aliases):
-            raise ValueError("camera_aliases must use unique output names")
-        self.camera_aliases = dict(camera_aliases)
+        self.camera_aliases = validated_camera_aliases(camera_aliases)
 
     @property
     def identity(self) -> Mapping[str, Any]:

@@ -21,8 +21,8 @@ def test_recorded_support(nurec_usdz_path, monkeypatch):
     origin = start.payload["ego"].pose.copy()
     origin[:3, :3] = rotation_matrix((8., -12., 30.))
     start = replace(start, payload={**start.payload, "ego": replace(start.payload["ego"], pose=origin)})
-    with NuRecSimulator({"dt": .1}, NuRecRenderer(cameras=["front"]),
-                        route_generator="none", physics_update_mode="none").create_runtime() as runtime:
+    with NuRecSimulator(NuRecRenderer(cameras=["front"]),
+                        route_generator="none", physics_update_mode="none", time_step=.1).create_runtime() as runtime:
         runtime.reset(start)
         assert runtime.native["renderer"].origin_timestamp_us == 400000
         assert runtime.native["renderer"].origin_bounds == (0., .5)
@@ -34,9 +34,8 @@ def test_recorded_support(nurec_usdz_path, monkeypatch):
         assert (boundary.last_request.frame_start_us, boundary.last_request.frame_end_us) == (500000, 500001)
         with pytest.raises(ValueError, match="terminal recorded support"):
             runtime.step(Control())
-        runtime.reset()
-        assert runtime.native["renderer"].origin_bounds is None
-        assert runtime.observe().t == 0.
+        with pytest.raises(ValueError, match="NuRec requires a ScenarioStart"):
+            runtime.reset()
 
 
 
@@ -63,8 +62,8 @@ def test_resolution(nurec_dataset, monkeypatch):
     boundary = NuRecRpcBoundary().install(monkeypatch)
     start = nurec_dataset.scenario_start("scene", nurec_dataset.frames("scene")[0])
     renderer = NuRecRenderer(cameras=["front"], resolution_hw={"front": (6, 7)})
-    simulator = NuRecSimulator({"dt": .1}, renderer, route_generator="none",
-                               physics_update_mode="none")
+    simulator = NuRecSimulator(renderer, route_generator="none",
+                               physics_update_mode="none", time_step=.1)
     with simulator.create_runtime() as runtime:
         runtime.reset(start)
         view = runtime.sensor_view("front")

@@ -20,6 +20,9 @@ from avsectester.validation import (
 )
 
 
+DEFAULT_STOP_SPEED_MPS = 0.5
+
+
 @dataclass(frozen=True)
 class UnavailableMetricValue:
     """A missing scalar and its reason; value_type preserves unavailable boolean fields."""
@@ -148,7 +151,7 @@ def _recorded_pose_is_available(actor: Any) -> TypeGuard[Any]:
 class DrivingMetrics(Metric):
     """Physical speed, actuator braking, actor distances and top-down box collisions."""
 
-    def __init__(self, stop_speed: float = 0.5) -> None:
+    def __init__(self, stop_speed: float = DEFAULT_STOP_SPEED_MPS) -> None:
         require_nonnegative_number(stop_speed, "stop_speed")
         self.stop_speed = stop_speed
 
@@ -356,7 +359,7 @@ class DetectionMetrics(Metric):
 class StopImpact(PairMetric):
     """Directional stopping/braking comparisons, evaluated in both A→B and B→A directions."""
 
-    def __init__(self, stop_speed: float = 0.5, reference_speed: float = 1.0,
+    def __init__(self, stop_speed: float = DEFAULT_STOP_SPEED_MPS, reference_speed: float = 1.0,
                  min_overdrive_steps: int = 3) -> None:
         require_nonnegative_number(stop_speed, "stop_speed")
         require_nonnegative_number(reference_speed, "reference_speed")
@@ -527,7 +530,7 @@ class StopLineMetrics(Metric):
     not an actuator brake command. Unobserved stops or qualifying brake intervals are unavailable.
     """
 
-    def __init__(self, stop_speed: float = .5, endpoint_tolerance_m: float = 3.,
+    def __init__(self, stop_speed: float = DEFAULT_STOP_SPEED_MPS, endpoint_tolerance_m: float = 3.,
                  brake_deceleration_mps2: float = 1.) -> None:
         require_nonnegative_number(stop_speed, "stop_speed")
         require_nonnegative_number(endpoint_tolerance_m, "endpoint_tolerance_m")

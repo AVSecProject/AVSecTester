@@ -1,4 +1,6 @@
 """Replica visibility counts use saved capture evidence, including unavailable treatments."""
+import pytest
+
 from avsectester.evaluation import ComparisonGroup, UnavailableMetricValue
 from avsectester.implemented_attacks.stop_sign_patch_attack.metrics import ReplicaVisibility
 from avsectester.implemented_attacks.stop_sign_patch_attack.online import REPLICA_OBJECT_ID
@@ -29,3 +31,17 @@ def test_replica_visibility(segment):
     assert values["clean"]["visible_steps"].reason
     assert isinstance(values["empty"]["visible_steps"], UnavailableMetricValue)
     assert values["empty"]["visible_steps"].reason
+
+    with pytest.raises(ValueError, match="camera_id explicitly"):
+        ReplicaVisibility().evaluate(group)
+    single = RunLog(status="completed", steps=[
+        StepRecord(0, object_visibility={REPLICA_OBJECT_ID: {
+            "front": ObjectVisibility("scene_visibility", (), 100)}}),
+        StepRecord(1, object_visibility={REPLICA_OBJECT_ID: {}}),
+    ])
+    automatic = ReplicaVisibility().evaluate(ComparisonGroup(segment, 0, {"one": single, "clean": clean}))
+    assert automatic["one"]["visible_steps"] == 1
+    assert isinstance(automatic["clean"]["visible_steps"], UnavailableMetricValue)
+    missing = RunLog(status="completed", steps=[StepRecord(0, object_visibility={REPLICA_OBJECT_ID: {}})])
+    assert isinstance(ReplicaVisibility().evaluate(ComparisonGroup(segment, 0, {"one": missing}))
+                      ["one"]["visible_steps"], UnavailableMetricValue)

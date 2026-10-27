@@ -226,8 +226,8 @@ def depth_overlays(dataset, scenario_id, frames, endpoint, output, edge_threshol
     from avsectester.evaluation.visualization import save_image
 
     renderer = NuRecRenderer(endpoint=endpoint, cameras=[dataset.camera_id])
-    simulator = NuRecSimulator({"dt": dataset.time_step}, renderer, depth="mesh",
-                               route_generator="none", physics_update_mode="none")
+    simulator = NuRecSimulator(renderer, depth="mesh",
+                               route_generator="none", physics_update_mode="none", time_step=dataset.time_step)
     images = []
     with simulator.create_runtime() as runtime:
         for frame in frames:

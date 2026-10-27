@@ -7,6 +7,9 @@ import torch
 
 from avsectester.attack import AttackSegment
 from avsectester.closed_loop.avstacks.driving_adapter import DrivingAdapter
+from avsectester.closed_loop.avstacks.implemented.rule_based import (
+    CocoStopSignDetector, RuleBasedAVStack, rule_based_driving_adapter,
+)
 from avsectester.closed_loop.simulators.ego_dynamics import TrajectoryFollower
 from avsectester.closed_loop.simulators.nurec import NuRecSimulator
 from avsectester.execution.services import ClosedLoopServices, ScenarioView
@@ -64,11 +67,12 @@ def native_driving_options():
 
 @pytest.fixture
 def nurec_patch_services(nurec_longitudinal_recording):
-    """Moving recorded camera, real patch composition and an image-independent driver."""
+    """Moving recorded camera, real binding, and image-independent candidate driver."""
     dataset = nurec_longitudinal_recording
     simulator = NuRecSimulator(
-        {"dt": .1}, NuRecImageBoundary(CAMERA), TrajectoryFollower(), depth="none",
+        NuRecImageBoundary(CAMERA), TrajectoryFollower(), depth="none",
         route_generator="none", physics_update_mode="none", object_occlusion="geometry",
+        time_step=.1,
     )
     adapter = DrivingAdapter(lambda seed: DeceleratingAVStack(), past_steps=15)
     frames = tuple(dataset.frames("scene"))
@@ -115,31 +119,24 @@ class ReplicaDetector(torch.nn.Module):
                  "scores": score.reshape(1)}]
 
 
-class ImageScoreDetector(torch.nn.Module):
-    """Tiny learned-model boundary with image-dependent detection confidences."""
-
-    def __init__(self, boxes, labels, offsets):
-        super().__init__()
-        self.roi_heads = SimpleNamespace(score_thresh=.5)
-        self.weight = torch.nn.Parameter(torch.tensor(.1))
-        self.boxes = boxes
-        self.labels = labels
-        self.offsets = offsets
-
-    def forward(self, images):
-        image = images[0]
-        return [{
-            "boxes": image.new_tensor(self.boxes).reshape(-1, 4),
-            "labels": torch.tensor(self.labels, dtype=torch.int64, device=image.device),
-            "scores": image.mean() * self.weight + image.new_tensor(self.offsets),
-        }]
-
-
 @pytest.fixture
 def replica_detector_model():
     return ReplicaDetector()
 
 
 @pytest.fixture
-def image_score_detector():
-    return ImageScoreDetector
+def nurec_detector_services(nurec_patch_services, replica_detector_model):
+    """Real rule-based scoring binding over the shared synthetic recorded camera world."""
+    services, make_segment = nurec_patch_services
+
+    def factory(seed):
+        return RuleBasedAVStack(CocoStopSignDetector(
+            "unused.pth", device="cpu", score_threshold=0., model=replica_detector_model,
+        ), camera_id="front")
+
+    factory.avstack_options = {
+        "camera_id": "front", "detector": CocoStopSignDetector("unused.pth", device="cpu", score_threshold=0.),
+    }
+    adapter = rule_based_driving_adapter(factory)
+    with ClosedLoopServices(services.dataset, services.simulator, adapter) as scope:
+        yield scope, make_segment

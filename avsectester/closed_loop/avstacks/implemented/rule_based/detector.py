@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 import numpy as np
 
+from avsectester.data_types import TargetSpec
 from avsectester.validation import require_nonnegative_number
+
+if TYPE_CHECKING:
+    import torch
 
 
 STOP_SIGN_LABEL = 13
@@ -101,8 +105,46 @@ class CocoStopSignDetector:
                 if int(label) == STOP_SIGN_LABEL and float(score) >= self.score_threshold]
 
 
+    def target_score(self, image: torch.Tensor, target: TargetSpec) -> torch.Tensor:
+        """Return a scalar confidence for a float RGB ``(3, H, W)`` image in [0, 1].
+
+        The target uses original-image xyxy pixel coordinates. No matching box yields
+        ``image.sum() * 0``, keeping a valid zero-gradient connection for PGD.
+        ``target.label`` may be None or ``"stop sign"``.
+        """
+        import torch
+
+        if self._closed:
+            raise RuntimeError("CocoStopSignDetector has been closed")
+        if (not isinstance(image, torch.Tensor) or image.ndim != 3 or image.shape[0] != 3
+                or 0 in image.shape or not image.is_floating_point()
+                or not bool(torch.isfinite(image).all())
+                or bool((image < 0).any()) or bool((image > 1).any())):
+            raise ValueError("image must be finite float RGB (3, H, W) values in [0, 1]")
+        if not isinstance(target, TargetSpec) or target.label not in (None, "stop sign"):
+            raise ValueError("target must be a TargetSpec for a stop sign")
+        image = image.to(self.device)
+        box = torch.as_tensor(target.box, dtype=image.dtype, device=image.device)
+        if (box.shape != (4,) or not bool(torch.isfinite(box).all())
+                or bool((box[2:] <= box[:2]).any())):
+            raise ValueError("target.box must be finite xyxy coordinates with positive width and height")
+        prediction = self._model_for_detection()([image])[0]
+        boxes, scores, labels = prediction["boxes"], prediction["scores"], prediction["labels"]
+        if not len(boxes):
+            return image.sum() * 0
+        intersection_size = (torch.minimum(boxes[:, 2:], box[2:])
+                             - torch.maximum(boxes[:, :2], box[:2])).clamp(min=0)
+        intersection = intersection_size.prod(dim=1)
+        areas = (boxes[:, 2:] - boxes[:, :2]).clamp(min=0).prod(dim=1)
+        union = areas + (box[2:] - box[:2]).prod() - intersection
+        overlaps = intersection / union.clamp(min=torch.finfo(image.dtype).eps)
+        matching = (labels == STOP_SIGN_LABEL) & (overlaps >= .3)
+        if not bool(matching.any()):
+            return image.sum() * 0
+        return scores[matching].max()
+
     def close(self) -> None:
-        """Release the loaded or injected model; a closed detector cannot detect again."""
+        """Release the model; a closed detector cannot detect or score again."""
         self._closed = True
         self._loaded_model = None
         self.model = None

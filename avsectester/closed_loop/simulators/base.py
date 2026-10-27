@@ -34,6 +34,18 @@ if TYPE_CHECKING:
     )
 
 
+def validated_camera_aliases(camera_aliases: Mapping[str, str]) -> dict[str, str]:
+    """Copy native-to-output camera names after checking names and output uniqueness."""
+    if not isinstance(camera_aliases, Mapping) or any(
+        not isinstance(native, str) or not native or not isinstance(alias, str) or not alias
+        for native, alias in camera_aliases.items()
+    ):
+        raise ValueError("camera_aliases must map nonempty native camera names to nonempty aliases")
+    if len(set(camera_aliases.values())) != len(camera_aliases):
+        raise ValueError("camera_aliases must use unique output names")
+    return dict(camera_aliases)
+
+
 _reservation_lock = Lock()
 _reservation_owners: dict[Hashable, tuple[object, int]] = {}
 

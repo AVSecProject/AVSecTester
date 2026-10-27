@@ -5,27 +5,28 @@
 > **Outcome:** Select stop approaches, prepare fixed or optimized patches, run closed-loop
 > treatments and evaluate the saved physical trajectories.
 >
-> **Prerequisites:** [Attacks](../guides/attacks.md), the NuRec renderer and a local Alpamayo model.
+> **Prerequisites:** [Attacks](../guides/attacks.md), the NuRec renderer and local driving-model weights.
 
 ## Configuration
 
-Run either version from the repository root after setting its local data, model and device paths:
+Use the modular configurations for detector PGD (white-box) and the Alpamayo configurations for
+rollout NES (black-box). Run from the repository root after setting data, model and device paths:
 
 ```bash
+avsectester run configs/nurec_stop_sign_patch_modular_2601.yaml
 avsectester run configs/nurec_stop_sign_patch_alpamayo_2601.yaml
-avsectester run configs/nurec_stop_sign_patch_alpamayo_2604.yaml
 ```
 
-The configurations contain 21 scenes from 26.01 and 17 scenes from 26.04. The duplicated
-07981e6a scene appears only in 26.01. Paths are relative to the configuration file. The supplied
-paths expect archives at data/nurec/SCENE/SCENE.usdz, Alpamayo at models/Alpamayo-1.5-10B and
-an existing Faster R-CNN COCO_V1 checkpoint at
-models/fasterrcnn_resnet50_fpn_coco-258fb6c6.pth. The attack uses local detector weights.
+Each driving-system variant has a 2601 and 2604 configuration. NuRecDataset enumerates archives
+under data/nurec/26.01_release or data/nurec/26.04_release. Paths are relative to the configuration
+file. Alpamayo uses models/Alpamayo-1.5-10B; the modular stack uses an existing Faster R-CNN
+COCO_V1 checkpoint at models/fasterrcnn_resnet50_fpn_coco-258fb6c6.pth.
 
 StopSignPatchAttack lives in avsectester.implemented_attacks.stop_sign_patch_attack.attack.
-Each configuration contains ten attack choices: the unpatched replica as a control, and white,
-black and Gaussian-noise initial patches, each deployed directly, optimized with detector PGD, or
-optimized with rollout NES. A minimal unoptimized attack specification is:
+Each configuration contains seven attacks: the unpatched replica control, three directly deployed
+patches (white, black and Gaussian noise), and three optimized versions. Modular configurations
+optimize with PGD; Alpamayo configurations optimize with NES. Treatments explicitly list clean
+and the seven attacks in that order. A minimal unoptimized attack specification is:
 
 ```yaml
 type: StopSignPatchAttack
@@ -35,7 +36,7 @@ options:
   width_scale: 1.1
 ```
 
-Detector PGD and seeded Alpamayo rollouts share one preparation process. Seeded Alpamayo enables
+Both optimization paths run inside Experiment.prepare. Seeded Alpamayo enables
 deterministic PyTorch algorithms, which need CUBLAS_WORKSPACE_CONFIG before the first GPU matrix
 product; the framework sets it when configuration loading imports the adapter. See
 [Driving systems](../guides/driving-systems.md#alpamayo).
@@ -56,10 +57,11 @@ See [Reactive traffic](../guides/simulators.md#reactive-traffic) for filtering a
 
 Use configs/nurec_stop_sign_patch_modular_2601.yaml or
 configs/nurec_stop_sign_patch_modular_2604.yaml to replace Alpamayo with RuleBasedAVStack.
-Their dataset, simulator, attacks and split settings match the Alpamayo examples, while driving
+Their dataset, simulator and split settings match the Alpamayo examples, while driving
 uses a COCO stop-sign detector, calibrated monocular range, bearing EKF sign tracking and a
 distance-based stop/hold/resume planner with IDM free-road cruising.
-The driving detector and white-box scorer read the same local checkpoint. The stack composes a
+The binding exposes the driving detector itself as the differentiable scorer; the attack does not
+construct a separate detector. The stack composes a
 CocoStopSignDetector with a default StopSignTracker and StopSignPlanner; device is injected into
 the nested detector from the top-level setting. These configurations omit ReasoningPhraseRate because this policy produces no
 reasoning text.
@@ -119,7 +121,7 @@ yaw without scene-specific correction. Annotation position and yaw errors can le
 sign visible around the replica's edges at close range; this is a data limitation. Occlusion is
 handled by the simulator's occlusion_tolerance_m rather than by adjusting attack placement.
 
-All ten supplied attack options use ExposureHarmonizer(reference="under"), written once as a
+All seven supplied attack options use ExposureHarmonizer(reference="under"), written once as a
 YAML anchor. It compares the original reconstructed sign's luminance under the replica's visible
 pixels with the unpatched replica's, because the replica panel's nominal_texture is the canonical
 face. The
@@ -137,17 +139,17 @@ NuRecDataset dataroot, place the split directly after the dataset, and use the f
 
 ```yaml
 split:
-  train_segments: 4
+  train_segments: 5
   seed: 0
   execute: [test]
 ```
 
-All ten attacks select their metadata before the framework forms complete segment units. Identical
-segments, including user_data, share a unit across attacks. Four units are assigned to train by the
+All seven attacks select their metadata before the framework forms complete segment units. Identical
+segments, including user_data, share a unit across attacks. Five units are assigned to train by the
 seeded permutation; the remainder are test units. No validation units are requested. Only training
 segments reach offline optimization. StopSignPatchAttack does not use validation_metadata.
 
-Closed-loop execution runs only test units. Each unit and seed has one clean treatment and the ten
+Closed-loop execution runs only test units. Each unit and seed has one clean treatment and the seven
 applicable attack treatments in one comparison group; all treatment pairs are evaluated. A clean
 run is shared by attacks selecting identical metadata. Different user_data means a different unit,
 even for the same window, so images can overlap between train and test. Sharing clean across those
@@ -199,16 +201,22 @@ configuration = load_configuration("configs/nurec_stop_sign_patch_alpamayo_2601.
 prepared = Experiment.prepare(configuration)  # Also saved to runs.output.
 ```
 
-DetectorPatchOptimization uses a stop-sign detector, PGD and HideObject. It renders the replica
+DetectorPatchOptimization uses the victim detector through avstack.bindings, PGD and HideObject.
+rule_based_driving_adapter declares rule_based.stop_sign_confidence, its sensor_id and the driving
+detector's decision_threshold. A SessionScorer uses that binding for calibration, PGD updates and
+held-out scoring. scorer_id=None selects the unique image-differentiable scorer; set an explicit
+scorer_id if the adapter offers more than one. The optimization device inherits the top-level
+device; camera and decision threshold come from the scorer description. It renders the replica
 using replica_placement, skips frames with too few visible replica pixels, and projects the map
 sign face for the target box. The sample range starts at speed squared divided by twice the
 braking deceleration and ends at the farthest frame where the detector finds the unpatched replica
-above the configured threshold. Held-out scores compare the reconstructed sign without insertion
+at or above the driving detector's decision threshold. braking_deceleration_mps2 (default 3.4)
+is an attacker sampling assumption for the near distance, not a planner setting. Held-out scores compare the reconstructed sign without insertion
 (clean), the unpatched replica, the initial patch and the optimized patch. Time-uniform samples alternate
 between PGD training and held-out frames within the selected training segments. These held-out
 frames are an internal detector diagnostic, separate from the framework validation split. The
-supplied settings use all four framework training segments (max_training_segments=None), eight
-samples per segment, 20 PGD updates, batch 1 and step size 4/255. The offline report includes calibration and sample tables, the pgd_confidence series,
+supplied settings use all five framework training segments (max_training_segments=None), eight
+samples per segment, 200 PGD updates, batch 4 and step size 4/255. The offline report includes calibration and sample tables, the pgd_confidence series,
 held-out scores and detection rates, and initial and optimized textures. Calibration has one row per training segment, and calibration_probes has one row per capture
 with explicitly named evidence columns. heldout_summary compares the four texture variants;
 heldout_scores and detection_rate_vs_distance use one row per frame and per 10 m bin,
@@ -220,21 +228,22 @@ mean across configured starts. With persistent output, every query saves its one
 offline/<attack>/files/rollouts; the rollouts table preserves query identity, forward distance,
 completion status, errors and paths relative to offline/<attack>/files/ (for example rollouts/0003). The scalar rollout_count records the number
 of queries and planned_forward_m records the per-step mean planned forward distance. Without persistent output, query logs
-are not written. Each query constructs an independent driving system and can reload model weights.
+are not written. Each query constructs an independent driving system and can reload model weights. All
+start_distances_m must lie in the attack's [min_approach_m, approach_m] interval.
 
 The rollout budget is:
 
 ```text
-number of starts * (1 + steps * (population_size + 1))
+number of starts per segment * training segments * (1 + steps * (population_size + 1))
 ```
 
-RolloutPatchOptimization uses at most max_training_segments training segments, default 1. This
-limits cost; it does not assign data to training or testing. DetectorPatchOptimization defaults to
-max_training_segments=None, using all available training segments. Both options accept a positive
-integer limit or None, and neither reads validation_metadata.
+Both RolloutPatchOptimization and DetectorPatchOptimization default to
+max_training_segments=None, using all available training segments. A positive integer limits
+cost; it does not assign data to training or testing. Neither reads validation_metadata.
 
-The supplied YAML uses max_training_segments=1, start_distances_m=[40, 30, 20], steps=1 and
-population_size=4: three starts times six evaluations, or 18 rollouts per NES attack.
+The supplied YAML uses all five training segments, start_distances_m=[40, 30, 20], steps=40 and
+population_size=20. Each black-box attack therefore executes
+3 × 5 × (1 + 40 × 21) = 12,615 single-decision candidate rollouts.
 Each attack has an offline/<attack>/ report directory, including the unoptimized no_patch control.
 The framework owns these paths; optimization options have no output_directory setting.
 offline_report.html combines all attacks' values, curves, tables and images. It includes
@@ -340,9 +349,10 @@ and a MetricField for every output. For ReplicaVisibility, the visible_steps fie
 
 This metric reads each step's object_visibility using REPLICA_OBJECT_ID, shared with online
 insertion and detector sampling. visible_steps counts decisions with at least min_visible_pixels
-(default 100) in camera_id (default camera_front_wide_120fov). A missing camera entry counts as
-invisible. Empty runs and treatments that never recorded the replica, including clean, are
-unavailable rather than zero.
+(default 100) in camera_id. The default camera_id=None selects the unique camera with replica
+visibility evidence across the comparison group. Multiple recorded cameras require an explicit
+camera_id; a missing entry for the chosen camera counts as invisible. Empty runs and treatments
+that never recorded the replica, including clean, are unavailable rather than zero.
 
 Configure a custom metric with its complete module path and optional constructor parameters:
 

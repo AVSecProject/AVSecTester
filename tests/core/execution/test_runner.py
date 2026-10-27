@@ -315,9 +315,9 @@ def test_run_with_decelerating_feedback(nurec_longitudinal_recording, decelerati
     start = dataset.scenario_start("scene", dataset.frames("scene")[15])
     camera, _ = dataset.camera_geometry("scene")
     simulator = NuRecSimulator(
-        {"dt": .1}, NuRecImageBoundary(camera), dynamics,
+        NuRecImageBoundary(camera), dynamics,
         depth="none", route_generator="none", physics_update_mode="none",
-    )
+    time_step=.1)
     with simulator.create_runtime() as runtime:
         log = ClosedLoopRunner().run(runtime, DeceleratingAVStack(), RunRequest(10, start=start))
     assert log.status == "completed" and len(log.steps) == 10

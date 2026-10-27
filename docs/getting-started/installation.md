@@ -316,7 +316,7 @@ docker run -d --name avsectester-nre-50051 --network host --gpus device=0 -e HOM
 ```
 
 NuRecRenderer accepts a served scene id or an unambiguous substring. NuRecDataset.scenarios()
-returns native clip identifiers. Set dataset time_step and simulator dt consistently.
+returns native clip identifiers. The simulator's decision step comes from dataset time_step.
 
 --enable-editing-actors is required. Every render sends the poses of all currently supported
 recorded tracks, including those not moved by an attack. NRE may render an omitted track at its

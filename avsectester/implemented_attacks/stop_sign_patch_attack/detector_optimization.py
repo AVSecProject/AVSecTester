@@ -10,7 +10,7 @@ import torch
 
 from avsectester.attack import OfflineContext
 from avsectester.attack.insertion import InsertObject
-from avsectester.attack.optimization import AdversarialSample, DataSource, HideObject, Perturbation
+from avsectester.attack.optimization import AdversarialSample, DataSource, HideObject, Perturbation, SessionScorer
 from avsectester.data_types import TargetSpec
 from avsectester.execution.services import ClosedLoopSession, RenderRequest
 from avsectester.geometry.projection import project_box
@@ -128,13 +128,14 @@ def _capture_row(scene: str, note: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def collect_samples(
-    attack: StopSignPatchAttack, context: OfflineContext, original: np.ndarray,
+    attack: StopSignPatchAttack, context: OfflineContext, original: np.ndarray, *,
+    session: ClosedLoopSession, scorer: SessionScorer, sensor_id: str, decision_threshold: float,
 ) -> tuple[list[AdversarialSample], list[AdversarialSample]]:
     """Calibrate exact detectable ranges and sample disjoint, time-spaced captures.
 
     The d_max search covers recording start through the recorded stop, on the entering route
     and facing the selected sign. Frames are searched by descending distance; the first frame
-    whose unpatched replica meets the attack's detection threshold is therefore the farthest
+    whose unpatched replica meets the driving scorer's decision threshold is therefore the farthest
     detectable eligible frame, without a monotonicity assumption. The configured visibility minimum excludes
     ineligible frames explicitly. d_min uses the recorded speed at the selected segment
     start, squared and divided by twice the configured braking deceleration.
@@ -159,14 +160,15 @@ def collect_samples(
                 for record in calibration]
         context.report.set_table(
             "calibration", rows,
-            description="Detectable-range calibration, with one row per training segment.",
+            description=f"Detectable-range calibration, with one row per training segment. Camera: {sensor_id}; "
+            f"decision_threshold: {decision_threshold}.",
             columns=_CALIBRATION_COLUMNS if rows else {},
         )
         probes = [_capture_row(record["scene"], probe)
                   for record in calibration for probe in record["probes"]]
         context.report.set_table(
             "calibration_probes", probes,
-            description="One row per attempted camera capture during range calibration and time-uniform sampling.",
+            description=f"One row per attempted capture from camera {sensor_id} during range calibration and time-uniform sampling.",
             columns=_PROBE_COLUMNS if probes else {},
         )
         samples = [{**_capture_row(row["scene"], row), "split": row["split"]} for row in manifest]
@@ -198,10 +200,10 @@ def collect_samples(
         def capture(session: ClosedLoopSession, index: int, stage: str) -> AdversarialSample | None:
             if index in cache:
                 return cache[index]
-            observation = session.render(RenderRequest(scene, frames[index], options.camera_id,
+            observation = session.render(RenderRequest(scene, frames[index], sensor_id,
                 actions=[InsertObject(REPLICA_OBJECT_ID, asset, pose, harmonizer=attack.harmonizer)],
                 environment=context.environment))
-            evidence = observation.object_visibility.get(REPLICA_OBJECT_ID, {}).get(options.camera_id)
+            evidence = observation.object_visibility.get(REPLICA_OBJECT_ID, {}).get(sensor_id)
             visible_pixels = 0 if evidence is None else evidence.visible_pixels
             note = {"frame": index, "timestamp_s": frames[index].timestamp,
                     "distance_m": float(distances[index]), "stage": stage, "visible_pixels": visible_pixels}
@@ -233,47 +235,46 @@ def collect_samples(
             before = progress <= float(segment.user_data["line_route_distance_m"])
             domain = [index for index in range(stop + 1) if before[index]
                       and dataset.frame_data(scene, frames[index]).ego.pose[:3, 0] @ control.pose[:3, 0] < -.5]
-            with context.services.session(context.seed) as session:
-                for index in sorted(domain, key=lambda value: (-distances[value], value)):
-                    sample = capture(session, index, "d_max_search")
-                    if sample is not None:
-                        with torch.no_grad():
-                            replica_image = sample.context["plan"].composite(
-                                sample.x, {(REPLICA_OBJECT_ID, 0): replica_colors})
-                            score = float(options.detector.target_score(replica_image, sample.target))
-                        sample.context["record"]["replica_score"] = score
-                        if score >= options.detection_threshold:
-                            record["d_max_m"] = float(distances[index])
-                            cache[index] = sample
-                            break
-                    update_report()
-                d_max = record["d_max_m"]
-                if d_max is None or d_max < d_min:
-                    raise ValueError(f"No detectable stopping-distance interval for {scene}: {d_min}, {d_max}")
-                eligible = [index for index in domain if d_min <= distances[index] <= d_max]
-                if len(eligible) < 4:
-                    raise ValueError(f"Too few eligible recorded frames for {scene}")
-                timestamps = np.asarray([frames[index].timestamp for index in eligible])
-                sample_times = np.linspace(timestamps[0], timestamps[-1],
-                                           min(options.samples_per_scene, len(eligible)))
-                chosen = np.unique([int(np.abs(timestamps - value).argmin()) for value in sample_times])
-                scene_samples: dict[str, list[AdversarialSample]] = {"train": [], "heldout": []}
-                for order, position in enumerate(chosen):
-                    index = eligible[int(position)]
-                    sample = capture(session, index, "time_uniform_sample")
-                    if sample is None:
-                        continue
-                    split = "train" if order % 2 == 0 else "heldout"
-                    entry = {"scene": scene, "split": split,
-                             **sample.context["record"]}
-                    manifest.append(entry)
-                    sample.context["record"] = entry
-                    scene_samples[split].append(sample)
-                if any(not values for values in scene_samples.values()):
-                    raise ValueError(f"Visibility leaves no disjoint train/held-out samples for {scene}")
-                train.extend(scene_samples["train"])
-                heldout.extend(scene_samples["heldout"])
-                record.update(status="calibrated")
+            for index in sorted(domain, key=lambda value: (-distances[value], value)):
+                sample = capture(session, index, "d_max_search")
+                if sample is not None:
+                    with torch.no_grad():
+                        replica_image = sample.context["plan"].composite(
+                            sample.x, {(REPLICA_OBJECT_ID, 0): replica_colors})
+                        score = float(scorer.target_score(replica_image, sample.target))
+                    sample.context["record"]["replica_score"] = score
+                    if score >= decision_threshold:
+                        record["d_max_m"] = float(distances[index])
+                        cache[index] = sample
+                        break
+                update_report()
+            d_max = record["d_max_m"]
+            if d_max is None or d_max < d_min:
+                raise ValueError(f"No detectable stopping-distance interval for {scene}: {d_min}, {d_max}")
+            eligible = [index for index in domain if d_min <= distances[index] <= d_max]
+            if len(eligible) < 4:
+                raise ValueError(f"Too few eligible recorded frames for {scene}")
+            timestamps = np.asarray([frames[index].timestamp for index in eligible])
+            sample_times = np.linspace(timestamps[0], timestamps[-1],
+                                       min(options.samples_per_scene, len(eligible)))
+            chosen = np.unique([int(np.abs(timestamps - value).argmin()) for value in sample_times])
+            scene_samples: dict[str, list[AdversarialSample]] = {"train": [], "heldout": []}
+            for order, position in enumerate(chosen):
+                index = eligible[int(position)]
+                sample = capture(session, index, "time_uniform_sample")
+                if sample is None:
+                    continue
+                split = "train" if order % 2 == 0 else "heldout"
+                entry = {"scene": scene, "split": split,
+                         **sample.context["record"]}
+                manifest.append(entry)
+                sample.context["record"] = entry
+                scene_samples[split].append(sample)
+            if any(not values for values in scene_samples.values()):
+                raise ValueError(f"Visibility leaves no disjoint train/held-out samples for {scene}")
+            train.extend(scene_samples["train"])
+            heldout.extend(scene_samples["heldout"])
+            record.update(status="calibrated")
         except BaseException as error:
             record.update(status="failed", error=f"{type(error).__name__}: {error}")
             update_report()
@@ -291,99 +292,122 @@ def optimize_patch(
     ``initial`` the initial patch and ``optimized`` the PGD result.
     """
     options = cast("DetectorPatchOptimization", attack.optimization)
-    mask = attack.mask
-    train, heldout = collect_samples(attack, context, original)
-    perturbation = MaskedPatchPerturbation(original, mask, device=getattr(options.detector, "device", "cpu"))
-    initial = perturbation.export(perturbation.init())
-    context.report.set_value(
-        "train_frames", len(train), unit="frames",
-        description="Captured frames used for PGD updates.",
-    )
-    context.report.set_value(
-        "heldout_frames", len(heldout), unit="frames",
-        description="Captured frames held out from updates and used only for scoring.",
-    )
-    context.report.set_value(
-        "training_segments", len(context.metadata[:options.max_training_segments]), unit="segments",
-        description="Training segments used, after max_training_segments.",
-    )
-    context.report.set_value(
-        "mask_pixels", int(mask.sum()), unit="pixels",
-        description="Texture pixels the patch may change.",
-    )
-    result = options.optimizer.run(TextureDataSource(train, seed=context.seed), perturbation,
-                                  options.detector, HideObject())
-    optimized = attack.replica_texture(result.export)
-    context.report.set_image(
-        "optimized_texture", optimized, description="Replica face with the optimized patch.",
-    )
-    context.report.set_value(
-        "final_confidence", float(result.final_score), unit="ratio (0–1)",
-        description="Mean detector stop-sign confidence on a fresh training batch after the last PGD update. "
-        "Lower is better for the attack.",
-    )
-    context.report.set_series(
-        "pgd_confidence", result.history, x_label="PGD iteration",
-        y_label="Mean stop-sign confidence", y_unit="ratio (0–1)",
-        description="Batch mean detector confidence before each update (HideObject loss).",
-    )
-    measured = []
-    with torch.no_grad():
-        for sample in heldout:
-            entry = sample.context["record"]
-            row = {"scene": sample.context["scene"], "frame": entry["frame"], "distance_m": entry["distance_m"]}
-            for name, candidate in [("clean", None), ("replica", replica_face()), ("initial", initial),
-                                    ("optimized", optimized)]:
-                image = sample.x
-                if candidate is not None:
-                    image = sample.context["plan"].composite(sample.x, {(REPLICA_OBJECT_ID, 0): _colors(candidate)})
-                row[f"confidence_{name}"] = float(options.detector.target_score(image, sample.target))
-            measured.append(row)
-    context.report.set_table(
-        "heldout_summary", [
-            {"texture": name, "frames": len(measured),
-             "mean_confidence": float(np.mean([row[f"confidence_{name}"] for row in measured])),
-             "detection_rate": sum(row[f"confidence_{name}"] >= options.detection_threshold for row in measured)
-             / len(measured)}
-            for name in _TEXTURES
-        ],
-        description="Detector confidence and detection rate across frames held out from PGD updates. " + _TEXTURE_MEANINGS,
-        columns={
-            "texture": "Texture variant: clean, replica, initial or optimized, as defined above.",
-            "frames": "Held-out frames used for this texture (frames).",
-            "mean_confidence": "Mean stop-sign confidence across held-out frames (ratio, 0–1).",
-            "detection_rate": f"Fraction with confidence ≥ detection_threshold ({options.detection_threshold}) (ratio, 0–1).",
-        },
-    )
-    context.report.set_table(
-        "heldout_scores", measured,
-        description="One row per held-out frame, comparing detector confidence for all four texture variants. " +
-        _TEXTURE_MEANINGS,
-        columns={
-            "scene": "Dataset scenario identifier.",
-            "frame": "Recorded capture frame position (frames, zero-based).",
-            "distance_m": "Recorded ego-to-sign face-centre distance in 3D (m).",
-            **{f"confidence_{name}": f"Detector stop-sign confidence for {name} (ratio, 0–1)."
-               for name in _TEXTURES},
-        },
-    )
-    grouped = defaultdict(list)
-    for row in measured:
-        grouped[int(row["distance_m"] // 10) * 10].append(row)
-    rates = [
-        {"distance_bin_m": f"[{lower},{lower + 10})", "frames": len(rows),
-         **{f"detection_rate_{name}": sum(row[f"confidence_{name}"] >= options.detection_threshold for row in rows)
-            / len(rows) for name in _TEXTURES}}
-        for lower, rows in sorted(grouped.items())
-    ]
-    context.report.set_table(
-        "detection_rate_vs_distance", rates,
-        description=f"Fraction of held-out frames with confidence ≥ detection_threshold "
-        f"({options.detection_threshold}), for each texture in 10 m distance bins.",
-        columns={
-            "distance_bin_m": "Ego-to-sign distance interval, inclusive lower and exclusive upper bound (m).",
-            "frames": "Held-out frames in this distance bin (frames).",
-            **{f"detection_rate_{name}": f"Detection rate for {name} (ratio, 0–1)." for name in _TEXTURES},
-        },
-    )
-    return optimized
+    with context.services.session(context.seed) as session:
+        descriptions = tuple(session.scorers())
+        if options.scorer_id is None:
+            candidates = [item for item in descriptions if "image" in item.differentiable_inputs]
+            if len(candidates) != 1:
+                raise ValueError("Detector patch optimization requires exactly one differentiable image scorer; "
+                                 "set scorer_id explicitly when multiple scorers are available")
+            descriptor = candidates[0]
+        else:
+            descriptor = next((item for item in descriptions if item.id == options.scorer_id), None)
+            if descriptor is None:
+                raise ValueError(f"Unavailable detector scorer: {options.scorer_id!r}")
+        if "image" not in descriptor.differentiable_inputs:
+            raise ValueError(f"Scorer {descriptor.id!r} must support image gradients")
+        if descriptor.sensor_id is None or descriptor.decision_threshold is None:
+            raise ValueError(f"Scorer {descriptor.id!r} must declare sensor_id and decision_threshold")
+        sensor_id = descriptor.sensor_id
+        decision_threshold = descriptor.decision_threshold
+        scorer = SessionScorer(session, descriptor.id, require_grad=True,
+                               input_format=descriptor.inputs.get("image"), device=options.device)
+        mask = attack.mask
+        train, heldout = collect_samples(
+            attack, context, original, session=session, scorer=scorer,
+            sensor_id=sensor_id, decision_threshold=decision_threshold,
+        )
+        perturbation = MaskedPatchPerturbation(original, mask, device=options.device)
+        initial = perturbation.export(perturbation.init())
+        context.report.set_value(
+            "train_frames", len(train), unit="frames",
+            description="Captured frames used for PGD updates.",
+        )
+        context.report.set_value(
+            "heldout_frames", len(heldout), unit="frames",
+            description="Captured frames held out from updates and used only for scoring.",
+        )
+        context.report.set_value(
+            "training_segments", len(context.metadata[:options.max_training_segments]), unit="segments",
+            description="Training segments used, after max_training_segments.",
+        )
+        context.report.set_value(
+            "mask_pixels", int(mask.sum()), unit="pixels",
+            description="Texture pixels the patch may change.",
+        )
+        result = options.optimizer.run(TextureDataSource(train, seed=context.seed), perturbation,
+                                      scorer, HideObject())
+        optimized = attack.replica_texture(result.export)
+        context.report.set_image(
+            "optimized_texture", optimized, description="Replica face with the optimized patch.",
+        )
+        context.report.set_value(
+            "final_confidence", float(result.final_score), unit="ratio (0–1)",
+            description="Mean detector stop-sign confidence on a fresh training batch after the last PGD update. "
+            "Lower is better for the attack.",
+        )
+        context.report.set_series(
+            "pgd_confidence", result.history, x_label="PGD iteration",
+            y_label="Mean stop-sign confidence", y_unit="ratio (0–1)",
+            description="Batch mean detector confidence before each update (HideObject loss).",
+        )
+        measured = []
+        with torch.no_grad():
+            for sample in heldout:
+                entry = sample.context["record"]
+                row = {"scene": sample.context["scene"], "frame": entry["frame"], "distance_m": entry["distance_m"]}
+                for name, candidate in [("clean", None), ("replica", replica_face()), ("initial", initial),
+                                        ("optimized", optimized)]:
+                    image = sample.x
+                    if candidate is not None:
+                        image = sample.context["plan"].composite(sample.x, {(REPLICA_OBJECT_ID, 0): _colors(candidate)})
+                    row[f"confidence_{name}"] = float(scorer.target_score(image, sample.target))
+                measured.append(row)
+        context.report.set_table(
+            "heldout_summary", [
+                {"texture": name, "frames": len(measured),
+                 "mean_confidence": float(np.mean([row[f"confidence_{name}"] for row in measured])),
+                 "detection_rate": sum(row[f"confidence_{name}"] >= decision_threshold for row in measured)
+                 / len(measured)}
+                for name in _TEXTURES
+            ],
+            description="Detector confidence and detection rate across frames held out from PGD updates. " + _TEXTURE_MEANINGS,
+            columns={
+                "texture": "Texture variant: clean, replica, initial or optimized, as defined above.",
+                "frames": "Held-out frames used for this texture (frames).",
+                "mean_confidence": "Mean stop-sign confidence across held-out frames (ratio, 0–1).",
+                "detection_rate": f"Fraction with confidence ≥ decision_threshold ({decision_threshold}) (ratio, 0–1).",
+            },
+        )
+        context.report.set_table(
+            "heldout_scores", measured,
+            description="One row per held-out frame, comparing detector confidence for all four texture variants. " +
+            _TEXTURE_MEANINGS,
+            columns={
+                "scene": "Dataset scenario identifier.",
+                "frame": "Recorded capture frame position (frames, zero-based).",
+                "distance_m": "Recorded ego-to-sign face-centre distance in 3D (m).",
+                **{f"confidence_{name}": f"Detector stop-sign confidence for {name} (ratio, 0–1)."
+                   for name in _TEXTURES},
+            },
+        )
+        grouped = defaultdict(list)
+        for row in measured:
+            grouped[int(row["distance_m"] // 10) * 10].append(row)
+        rates = [
+            {"distance_bin_m": f"[{lower},{lower + 10})", "frames": len(rows),
+             **{f"detection_rate_{name}": sum(row[f"confidence_{name}"] >= decision_threshold for row in rows)
+                / len(rows) for name in _TEXTURES}}
+            for lower, rows in sorted(grouped.items())
+        ]
+        context.report.set_table(
+            "detection_rate_vs_distance", rates,
+            description=f"Fraction of held-out frames with confidence ≥ decision_threshold "
+            f"({decision_threshold}), for each texture in 10 m distance bins.",
+            columns={
+                "distance_bin_m": "Ego-to-sign distance interval, inclusive lower and exclusive upper bound (m).",
+                "frames": "Held-out frames in this distance bin (frames).",
+                **{f"detection_rate_{name}": f"Detection rate for {name} (ratio, 0–1)." for name in _TEXTURES},
+            },
+        )
+        return optimized

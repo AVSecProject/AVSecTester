@@ -1147,3 +1147,24 @@ class TrafficServiceBoundary:
     def __exit__(self, *exc):
         if self._server is not None:
             self._server.stop(0).wait()
+
+
+def ImageScoreDetector(boxes, labels, offsets):
+    """Create image-dependent confidences at the learned-model boundary."""
+    import torch
+
+    class DetectionModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.roi_heads = SimpleNamespace(score_thresh=.5)
+            self.weight = torch.nn.Parameter(torch.tensor(.1))
+
+        def forward(self, images):
+            image = images[0]
+            return [{
+                "boxes": image.new_tensor(boxes).reshape(-1, 4),
+                "labels": torch.tensor(labels, dtype=torch.int64, device=image.device),
+                "scores": image.mean() * self.weight + image.new_tensor(offsets),
+            }]
+
+    return DetectionModel()

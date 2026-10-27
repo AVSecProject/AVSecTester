@@ -210,7 +210,7 @@ planned trajectory. The controller follows the whole trajectory and may begin sl
 so the logged first-step acceleration can be positive while the physical vehicle is decelerating.
 
 The detector reads a local Faster R-CNN COCO_V1 checkpoint; it downloads no weights.
-CocoStopSignDetector.close() releases its loaded or injected model, after which detect raises
+CocoStopSignDetector.close() releases its loaded or injected model, after which detect and target_score raise
 RuntimeError; RuleBasedAVStack.close() calls it. The supplied nurec_stop_sign_patch_modular_2601.yaml
 and nurec_stop_sign_patch_modular_2604.yaml configurations use the same checkpoint for driving and
 white-box scoring.
@@ -279,7 +279,8 @@ Observation.route becomes an AlpaSim Route at the same rounded microsecond epoch
 history. AlpaSim's determine_command_from_route supplies the navigation command. Without a route,
 the model receives route=None and STRAIGHT, with the fallback recorded in navigation_note.
 Control.trajectory begins at the current rig origin with identity rotation and t0, followed by the
-selected model waypoints and their rotations. Model-provided waypoint timestamps are preserved.
+selected model waypoints and their rotations. Model-provided waypoint timestamps are preserved. output_frequency_hz (default 10) is only the
+fallback when the model returns no waypoint timestamps; it does not set the experiment step.
 
 For one-shot offline policy evaluation, alpamayo_driving_adapter's policy component takes
 `{"observation": current, "past": past_observations}`. The caller must supply the actual history;

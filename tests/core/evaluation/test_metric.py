@@ -185,3 +185,10 @@ def test_signed_stop_line_distances():
         signed_stop_line_distances([[0., 0., 0.]], [[1., 0., 0.]])
     with pytest.raises(ValueError, match="nonzero horizontal"):
         signed_stop_line_distances([[0., 0., 0.]], [[1., 0., 0.], [1., 0., 1.]])
+
+
+def test_stop_speed_defaults():
+    from avsectester.evaluation.metric import DEFAULT_STOP_SPEED_MPS
+
+    assert DEFAULT_STOP_SPEED_MPS == .5
+    assert DrivingMetrics().stop_speed == StopImpact().stop_speed == StopLineMetrics().stop_speed == DEFAULT_STOP_SPEED_MPS

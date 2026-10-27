@@ -4,9 +4,11 @@ import weakref
 
 import numpy as np
 import pytest
+import torch
 
 from avsectester.closed_loop.avstacks.implemented.rule_based.detector import CocoStopSignDetector
-from tests.fakes import CocoDetectionModel
+from avsectester.data_types import TargetSpec
+from tests.fakes import CocoDetectionModel, ImageScoreDetector
 
 
 def test_detect(tmp_path):
@@ -39,3 +41,45 @@ def test_close():
     assert reference() is None
     with pytest.raises(RuntimeError, match="closed"):
         detector.detect(np.full((20, 20, 3), 30, dtype=np.uint8))
+
+
+def test_target_score():
+    model = ImageScoreDetector(
+        [[0., 0., 4., 4.], [0., 0., 4., 4.], [0., 0., 1., 1.], [0., 0., 4., 4.]],
+        [13, 1, 13, 13], [.2, .94, .93, .7],
+    )
+    detector = CocoStopSignDetector("unused.pth", device="cpu", model=model)
+    image = torch.full((3, 8, 8), .5, requires_grad=True)
+    score = detector.target_score(image, TargetSpec((0., 0., 4., 4.), "stop sign"))
+    assert score.item() == pytest.approx(.75)
+    gradient, = torch.autograd.grad(score, image)
+    torch.testing.assert_close(gradient, torch.full_like(image, .1 / image.numel()))
+    assert model.roi_heads.score_thresh == 0.
+    assert not model.training and not model.weight.requires_grad
+    with pytest.raises(ValueError, match="finite float RGB"):
+        detector.target_score(torch.ones(8, 8), TargetSpec((0., 0., 4., 4.)))
+    with pytest.raises(ValueError, match="TargetSpec for a stop sign"):
+        detector.target_score(image, TargetSpec((0., 0., 4., 4.), "car"))
+    with pytest.raises(ValueError, match="finite float RGB"):
+        detector.target_score(torch.full_like(image, float("nan")), TargetSpec((0., 0., 4., 4.)))
+    with pytest.raises(ValueError, match="positive width and height"):
+        detector.target_score(image, TargetSpec((4., 0., 0., 4.)))
+    detector.close()
+    with pytest.raises(RuntimeError, match="closed"):
+        detector.target_score(image, TargetSpec((0., 0., 4., 4.)))
+
+
+def test_target_score_without_matching_detections():
+    image = torch.ones(3, 4, 4, requires_grad=True)
+    empty = CocoStopSignDetector("unused.pth", device="cpu", model=ImageScoreDetector([], [], []))
+    zero = empty.target_score(image, TargetSpec((0., 0., 2., 2.)))
+    assert zero.item() == 0.
+    gradient, = torch.autograd.grad(zero, image)
+    torch.testing.assert_close(gradient, torch.zeros_like(image))
+    unrelated = CocoStopSignDetector("unused.pth", device="cpu", model=ImageScoreDetector(
+        [[0., 0., 2., 2.], [2., 2., 4., 4.]], [1, 13], [.9, .8],
+    ))
+    unmatched = unrelated.target_score(image, TargetSpec((0., 0., 2., 2.)))
+    assert unmatched.item() == 0.
+    gradient, = torch.autograd.grad(unmatched, image)
+    torch.testing.assert_close(gradient, torch.zeros_like(image))

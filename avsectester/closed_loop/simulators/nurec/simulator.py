@@ -11,16 +11,17 @@ from dataclasses import asdict
 from typing import Any, TYPE_CHECKING
 import zipfile
 from collections import Counter
+from collections.abc import Mapping
 
 from avsectester.closed_loop.simulators.ego_dynamics import EgoDynamics, PlanarEgoState, KinematicBicycle
 from avsectester.closed_loop.simulators.base import (
-    SensorGeometry, SensorView, Simulator, SimulatorRuntime, UnsupportedStartError,
+    SensorGeometry, SensorView, Simulator, SimulatorRuntime, UnsupportedStartError, validated_camera_aliases,
 )
 from avsectester.closed_loop.simulators.navigation import RouteGenerator
 from avsectester.maps import ScenarioMap
 from avsectester.geometry.cameras import BODY_FROM_OPTICAL
 from avsectester.geometry.poses import validated_transform, validated_vector
-from avsectester.validation import require_nonnegative_number
+from avsectester.validation import require_nonnegative_number, require_positive_number
 from avsectester.data_types import ActorState, Observation, WorldSnapshot
 
 from .depth import _actor_depth, _scene_raycaster, _ground_raycaster
@@ -45,6 +46,9 @@ def _route_generator(kind: str, start: ScenarioStart | None) -> RouteGenerator:
 
 class NuRecSimulator(Simulator):
     """A NuRec neural reconstruction with in-process ego dynamics and a pluggable renderer.
+
+    Every reset requires a ScenarioStart with the recorded clock, ego pose and scene.
+    Camera aliases map dataset-native names to observation and sensor-view names.
 
     ``renderer`` is a configuration template that is never connected itself: every runtime
     renders through its own copy (``Renderer.copy``), with its own connection, loaded scene and
@@ -71,10 +75,11 @@ class NuRecSimulator(Simulator):
 
     def __init__(
         self,
-        config: dict,
         renderer: Renderer,
         dynamics: EgoDynamics | None = None,
         *,
+        time_step: float | None = None,
+        camera_aliases: Mapping[str, str] | None = None,
         depth: str = "mesh",
         route_generator: str = "map",
         physics_update_mode: str = "ego_only",
@@ -84,6 +89,10 @@ class NuRecSimulator(Simulator):
         traffic: AlpaSimTraffic | None = None,
         min_track_duration_s: float = 3.,
     ) -> None:
+        if time_step is None:
+            raise ValueError("NuRec time_step is required; experiment configuration supplies dataset.time_step")
+        require_positive_number(time_step, "time_step")
+        self.time_step = float(time_step)
         if renderer is None:
             raise TypeError("NuRecSimulator requires a renderer; configure NuRecRenderer")
         if not isinstance(depth, str) or depth not in {"mesh", "none"}:
@@ -108,16 +117,12 @@ class NuRecSimulator(Simulator):
         self.ground_mesh = ground_mesh
         self.object_occlusion = object_occlusion
         self.occlusion_tolerance_m = occlusion_tolerance_m
-        self.config = deepcopy(config)
-        self.simulator_version = str(self.config.get("simulator_version", "1"))
+        self.camera_aliases = validated_camera_aliases({} if camera_aliases is None else camera_aliases)
         self.renderer = renderer
-        self.dynamics = dynamics or KinematicBicycle(**self.config.get("dynamics", {}))
-        self.dt = float(self.config.get("dt", 0.05))
-        if not math.isfinite(self.dt) or self.dt <= 0:
-            raise ValueError("NuRec decision time step must be positive and finite")
+        self.dynamics = dynamics or KinematicBicycle()
         if traffic is not None and not isinstance(traffic, AlpaSimTraffic):
             raise TypeError("traffic must be AlpaSimTraffic or None")
-        if traffic is not None and self.dt != TRAFFIC_STEP_US / 1e6:
+        if traffic is not None and self.time_step != TRAFFIC_STEP_US / 1e6:
             raise ValueError(f"AlpaSim traffic requires a NuRec decision time step of {TRAFFIC_STEP_US / 1e6} s")
         self.traffic = traffic
         self.min_track_duration_s = min_track_duration_s
@@ -126,10 +131,12 @@ class NuRecSimulator(Simulator):
     def validate_start(self, start: ScenarioStart | None) -> None:
         import numpy as np
 
+        if start is None:
+            raise ValueError("NuRec requires a ScenarioStart for the recorded clock, ego pose and scene")
         super().validate_start(start)
-        if start is not None and start.frame.position < self.past_steps:
+        if start.frame.position < self.past_steps:
             raise UnsupportedStartError(f"AlpaSim traffic requires {self.past_steps} past decision steps")
-        if start is None or self.route_generator == "none":
+        if self.route_generator == "none":
             return
         # The route depends only on the complete recording and the map, not on the start frame.
         # Within one configured simulator a scenario's recording and map are fixed.
@@ -168,11 +175,12 @@ class NuRecSimulator(Simulator):
 
     @property
     def decision_time_step(self):
-        return self.dt
+        return self.time_step
 
     @property
     def identity(self):
-        identity = {**super().identity, "config": deepcopy(self.config),
+        identity = {**super().identity, "camera_aliases": dict(self.camera_aliases),
+                "time_step": self.time_step,
                 "depth": self.depth,
                 "route_generator": self.route_generator,
                 "physics_update_mode": self.physics_update_mode,
@@ -197,7 +205,6 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
 
     def __init__(self, simulator: NuRecSimulator, seed: int | None = None) -> None:
         super().__init__(simulator)
-        self.config = deepcopy(simulator.config)
         self.seed = seed
         self._traffic_session: TrafficSession | None = None
         self._recorded_tracks: dict[str, dict[str, Any]] = {}
@@ -209,7 +216,7 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
         copy_renderer = getattr(simulator.renderer, "copy", None)
         self.renderer = copy_renderer() if callable(copy_renderer) else copy.copy(simulator.renderer)
         self.dynamics = deepcopy(simulator.dynamics)
-        self.dt = simulator.dt
+        self.dt = simulator.time_step
         self.depth = simulator.depth
         self.pose = PlanarEgoState()
         self.frame = 0
@@ -241,7 +248,7 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
         Both native camera names and configured output aliases are accepted. The returned
         request is independent of the stored geometry, including its ego pose.
         """
-        aliases = self.config.get("camera_aliases", {})
+        aliases = self.simulator.camera_aliases
         native_camera = next((key for key, alias in aliases.items() if alias == camera), camera)
         if native_camera not in self.renderer.cameras:
             raise ValueError(f"Unknown NuRec camera {camera!r}")
@@ -254,12 +261,10 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
         import numpy as np
 
         pose = self._world_from_ego.copy()
-        recorded = None if self._start is None else self._start.payload["ego"]
+        recorded = self._start.payload["ego"]
         velocity = pose[:3, :3] @ np.array([self.pose.speed, self.pose.lateral_speed, 0.])
         return ActorState(pose, tuple(float(value) for value in velocity), "vehicle",
-                          None if recorded is None else recorded.extent,
-                          (0., 0., 0.) if recorded is None else recorded.box_center,
-                          (0., 0., 0.) if recorded is None else recorded.box_rotation)
+                          recorded.extent, recorded.box_center, recorded.box_rotation)
 
     @property
     def termination_details(self) -> dict[str, Any]:
@@ -272,7 +277,7 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
                              ego=self._ego_state())
 
     def _timestamp_us(self, pose: PlanarEgoState) -> int:
-        origin = 0. if self._start is None else self._start.frame.timestamp
+        origin = self._start.frame.timestamp
         return round((origin + pose.t) * 1e6)
 
     def _recorded_planar_state(self, position: int, ego: ActorState | None = None) -> PlanarEgoState:
@@ -441,7 +446,7 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
             raise ValueError("CARLA replay initialization does not apply to NuRec")
         if environment:
             raise ValueError(f"Unsupported NuRec environment overrides: {sorted(environment)}")
-        if self.depth == "mesh" and start is not None:
+        if self.depth == "mesh":
             path = start.payload["usdz_path"]
             with zipfile.ZipFile(path) as archive:
                 members = set(archive.namelist())
@@ -456,44 +461,38 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
         self._recorded_end = None
         self._ground_contact_failures.clear()
         self._ground_contact = None
-        config = deepcopy(self.config)
-        if start is not None:
-            ego = start.payload["ego"]
-            config["scene"] = start.payload.get("scene_id")
-            config["ego0"] = asdict(self._recorded_planar_state(start.frame.position, ego))
-            self._recorded_end = start.payload["terminal_timestamp"] - start.frame.timestamp
-            self.initialization_report = {
-                "kind": "recorded", "start_frame": asdict(start.frame),
-                "time_step": start.payload.get("time_step"),
-                "interpolation": start.payload.get("interpolation"),
-                "terminal_timestamp": start.payload["terminal_timestamp"], "pre_roll_steps": 0,
-            }
+        ego = start.payload["ego"]
+        scene_id = start.payload["scene_id"]
+        initial_state = self._recorded_planar_state(start.frame.position, ego)
+        self._recorded_end = start.payload["terminal_timestamp"] - start.frame.timestamp
+        self.initialization_report = {
+            "kind": "recorded", "start_frame": asdict(start.frame),
+            "time_step": start.payload.get("time_step"),
+            "interpolation": start.payload.get("interpolation"),
+            "terminal_timestamp": start.payload["terminal_timestamp"], "pre_roll_steps": 0,
+        }
         reset_origin = getattr(self.renderer, "reset_origin", None)
         self._route = _route_generator(self.simulator.route_generator, start)
         if self.simulator.physics_update_mode == "ego_only":
-            if start is None:
-                raise ValueError("NuRec ground contact requires a ScenarioStart; "
-                                 "select physics_update_mode='none' without a recording")
             if start.payload["ego"].extent is None:
                 raise ValueError("NuRec ground contact requires ego bounding-box extent")
             self._ground_contact = _ground_raycaster(
                 start.payload["usdz_path"], self.simulator.ground_mesh + ".ply")
         if callable(reset_origin):
             reset_origin(start)
-        elif start is not None:
+        else:
             raise TypeError("Source initialization requires renderer.reset_origin(ScenarioStart)")
-        self.pose = PlanarEgoState(**config.get("ego0", {}))
-        self._world_from_ego = (start.payload["ego"].pose.copy() if start is not None else
-            planar_rig_pose(self.pose.x, self.pose.y, self.pose.yaw))
+        self.pose = initial_state
+        self._world_from_ego = ego.pose.copy()
         reset_dynamics = getattr(self.dynamics, "reset", None)
         if callable(reset_dynamics):
             reset_dynamics(deepcopy(self.pose))
-        self.renderer.load_scene(config.get("scene"))
+        self.renderer.load_scene(scene_id)
         self.frame = 0
         # Short tracks are measured over the whole recording: movable ones leave the world,
         # and no short track joins a traffic session.
         short_tracks: set[str] = set()
-        if start is not None and "usdz_path" in start.payload:
+        if "usdz_path" in start.payload:
             self._recorded_tracks = self._tracks().track_trajectories(start.payload["scene_id"])
             minimum_us = round(self.simulator.min_track_duration_s * 1e6)
             short_tracks = {
@@ -542,14 +541,14 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
 
     @property
     def camera_sensors(self) -> frozenset[str]:
-        aliases = self.config.get("camera_aliases", {})
+        aliases = self.simulator.camera_aliases
         return frozenset(aliases.get(camera, camera) for camera in self.renderer.cameras
                          if self.renderer.camera_model(camera) is not None)
 
     def sensor_geometry(self, sensor: str) -> SensorGeometry:
         if not self._world_initialized:
             raise RuntimeError("Reset the NuRec simulator before requesting camera geometry")
-        aliases = self.config.get("camera_aliases", {})
+        aliases = self.simulator.camera_aliases
         native_camera = next((key for key, alias in aliases.items() if alias == sensor), sensor)
         if native_camera not in self.renderer.cameras:
             raise ValueError(f"Unknown NuRec camera {sensor!r}")
@@ -566,7 +565,7 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
             raise ValueError("NuRec sensor views require a scenario start with recorded actors")
         from avsectester.data_types import read_camera_rgb
 
-        aliases = self.config.get("camera_aliases", {})
+        aliases = self.simulator.camera_aliases
         native_camera = next((key for key, alias in aliases.items() if alias == sensor), sensor)
         output_key = aliases.get(native_camera, native_camera)
         request = self.render_request(native_camera)
@@ -618,7 +617,7 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
         return pose, timestamp_us, actors
 
     def _recorded_sensor_geometry(self, position: int, sensor: str) -> SensorGeometry:
-        aliases = self.config.get("camera_aliases", {})
+        aliases = self.simulator.camera_aliases
         native_camera = next((key for key, alias in aliases.items() if alias == sensor), sensor)
         if native_camera not in self.renderer.cameras:
             raise ValueError(f"Unknown NuRec camera {sensor!r}")
@@ -636,7 +635,7 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
 
         geometry = self._recorded_sensor_geometry(position, sensor)
         pose, timestamp_us, actors = self._recorded_capture(position)
-        aliases = self.config.get("camera_aliases", {})
+        aliases = self.simulator.camera_aliases
         native_camera = next((key for key, alias in aliases.items() if alias == sensor), sensor)
         captured = read_camera_rgb(observation, geometry.sensor)
         if captured is None:
@@ -677,7 +676,7 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
         assert start is not None
         relative_frame = position - start.frame.position
         relative_time = relative_frame * self.dt
-        aliases = self.config.get("camera_aliases", {})
+        aliases = self.simulator.camera_aliases
         sensor_data = {
             aliases.get(camera, camera): self.renderer.render(
                 pose, timestamp_us, camera,
@@ -698,7 +697,7 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
     def _observe(self) -> Observation:
         from avsectester.closed_loop.hooks import CameraPoseRequest
 
-        aliases = self.config.get("camera_aliases", {})
+        aliases = self.simulator.camera_aliases
         sensor_data = {}
         self._capture_actor_states.clear()
         self._capture_depth.clear()

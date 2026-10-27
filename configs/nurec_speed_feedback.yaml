@@ -14,8 +14,6 @@ simulator:
     route_generator: map
     physics_update_mode: ego_only
     ground_mesh: mesh
-    config:
-      dt: 0.1
     renderer:
       type: avsectester.closed_loop.simulators.nurec:NuRecRenderer
       options:
@@ -25,7 +23,6 @@ simulator:
         - camera_front_wide_120fov
     dynamics:
       type: avsectester.closed_loop.simulators.ego_dynamics:AlpaSimController
-      options: {}
 avstack:
   type: AlpamayoAVStack
   options:

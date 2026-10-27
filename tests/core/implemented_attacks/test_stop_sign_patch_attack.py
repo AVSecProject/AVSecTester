@@ -10,14 +10,15 @@ from avsectester.attack import OfflineContext, OfflineReport, OnlineContext
 from avsectester.attack.insertion import InsertObject
 from avsectester.attack.optimization import AdversarialSample, NES, PGD
 from avsectester.data_types import TargetSpec
-from avsectester.execution.services import RenderRequest
+from avsectester.execution.services import ClosedLoopServices, RenderRequest
+from avsectester.closed_loop.avstacks import DrivingAdapter, ScorerDescriptor
+from tests.fakes import ConstantAVStack, MemoryDataset, MemorySimulator
 from avsectester.geometry.cameras import PinholeCamera
 from avsectester.geometry.projection import project_box
 from avsectester.implemented_attacks.stop_sign_patch_attack import StopSignPatchAttack
 from avsectester.implemented_attacks.stop_sign_patch_attack.assets import (
     DEFAULT_MASK_PATH, initial_patch_texture, read_patch_mask, replica_face, texture_from_colors,
 )
-from avsectester.implemented_attacks.stop_sign_patch_attack.detector import StopSignDetector
 from avsectester.implemented_attacks.stop_sign_patch_attack.detector_optimization import (
     MaskedPatchPerturbation, TextureDataSource,
 )
@@ -197,14 +198,13 @@ def test_create_runtime(approach_view):
 @pytest.mark.parametrize(("max_training_segments", "expected_starts"), [
     (None, [15, 16]), (1, [15]), (10, [15, 16]),
 ])
-def test_detector_patch_optimization(nurec_patch_services, replica_detector_model,
+def test_detector_patch_optimization(nurec_detector_services,
                                      max_training_segments, expected_starts):
-    services, make_segment = nurec_patch_services
+    services, make_segment = nurec_detector_services
     attack = StopSignPatchAttack(initial_patch="white", harmonizer=ExposureHarmonizer(reference="under"),
                                 optimization=DetectorPatchOptimization(
-        detector=StopSignDetector(model=replica_detector_model),
         optimizer=PGD(steps=3, batch=1, seed=0),
-        camera_id="front", min_visible_pixels=5, detection_threshold=0.,
+        min_visible_pixels=5,
         braking_deceleration_mps2=10., max_training_segments=max_training_segments, samples_per_scene=4,
     ))
     segment = make_segment()
@@ -272,18 +272,18 @@ def test_detector_patch_optimization(nurec_patch_services, replica_detector_mode
             assert not np.allclose(expected, replica_bounds)
 
 
-@pytest.mark.parametrize(("max_training_segments", "expected_segments"), [
-    (None, 2), (1, 1), (10, 2),
+@pytest.mark.parametrize(("segment_options", "expected_segments"), [
+    ({}, 2), ({"max_training_segments": 1}, 1), ({"max_training_segments": 10}, 2),
 ])
 def test_rollout_patch_optimization(nurec_patch_services, tmp_path,
-                                    max_training_segments, expected_segments):
+                                    segment_options, expected_segments):
     services, make_segment = nurec_patch_services
     output = tmp_path / "rollout"
     options = RolloutPatchOptimization(
         NES(steps=1, population_size=2, seed=0),
-        start_distances_m=(12., 8.), max_training_segments=max_training_segments,
+        start_distances_m=(12., 8.), **segment_options,
     )
-    attack = StopSignPatchAttack(initial_patch="white", optimization=options,
+    attack = StopSignPatchAttack(initial_patch="white", optimization=options, min_approach_m=8.,
                                 harmonizer=ExposureHarmonizer(reference="under"))
     training = (make_segment(), make_segment(start=16))
     context = OfflineContext(services, training, seed=0,
@@ -317,7 +317,7 @@ def test_rollout_patch_optimization(nurec_patch_services, tmp_path,
         replace(options, max_training_segments=0)
     failed_output = tmp_path / "failed"
     failed_context = replace(context, report=OfflineReport(failed_output / "files"))
-    failed = StopSignPatchAttack(optimization=replace(options, horizon_s=6.),
+    failed = StopSignPatchAttack(optimization=replace(options, horizon_s=6.), min_approach_m=8.,
                                 harmonizer=attack.harmonizer)
     with pytest.raises(ValueError, match="does not cover the requested horizon"):
         failed.run_offline(failed_context)
@@ -465,37 +465,41 @@ def test_route_progress():
                                               route[:2]), [-2., 12.])
 
 
-def test_target_score(image_score_detector):
-    model = image_score_detector(
-        [[0., 0., 4., 4.], [0., 0., 4., 4.], [0., 0., 1., 1.], [0., 0., 4., 4.]],
-        [13, 1, 13, 13], [.2, .94, .93, .7],
-    )
-    detector = StopSignDetector("unused.pth", model=model)
-    image = torch.full((3, 8, 8), .5, requires_grad=True)
-    score = detector.target_score(image, TargetSpec((0., 0., 4., 4.), "stop sign"))
-    assert detector.stop_sign_label == 13
-    assert score.item() == pytest.approx(.75)
-    gradient, = torch.autograd.grad(score, image)
-    torch.testing.assert_close(gradient, torch.full_like(image, .1 / image.numel()))
-    assert model.roi_heads.score_thresh == 0.
-    assert not model.training and not model.weight.requires_grad
-    with pytest.raises(ValueError, match="finite float RGB"):
-        detector.target_score(torch.ones(8, 8), TargetSpec((0., 0., 4., 4.)))
-    with pytest.raises(ValueError, match="positive width and height"):
-        detector.target_score(image, TargetSpec((4., 0., 0., 4.)))
 
 
-def test_target_score_without_matching_detections(image_score_detector):
-    image = torch.ones(3, 4, 4, requires_grad=True)
-    empty = StopSignDetector("unused.pth", model=image_score_detector([], [], []))
-    zero = empty.target_score(image, TargetSpec((0., 0., 2., 2.)))
-    assert zero.item() == 0.
-    gradient, = torch.autograd.grad(zero, image)
-    torch.testing.assert_close(gradient, torch.zeros_like(image))
-    unrelated = StopSignDetector("unused.pth", model=image_score_detector(
-        [[0., 0., 2., 2.], [2., 2., 4., 4.]], [1, 13], [.9, .8],
-    ))
-    unmatched = unrelated.target_score(image, TargetSpec((0., 0., 2., 2.)))
-    assert unmatched.item() == 0.
-    gradient, = torch.autograd.grad(unmatched, image)
-    torch.testing.assert_close(gradient, torch.zeros_like(image))
+def test_detector_scorer_selection(nurec_detector_services):
+    services, make_segment = nurec_detector_services
+    options = DetectorPatchOptimization(PGD(steps=1), scorer_id="rule_based.stop_sign_confidence",
+                                       samples_per_scene=4, min_visible_pixels=5,
+                                       braking_deceleration_mps2=10.)
+    attack = StopSignPatchAttack(optimization=options)
+    assert attack.run_offline(OfflineContext(services, (make_segment(),))).dtype == np.uint8
+    descriptor = ScorerDescriptor("image-score", {"image": "CHW float tensor [0,1]"},
+                                  {"score": "scalar confidence"}, {"score": "tensor"}, ("image",),
+                                  sensor_id="front", decision_threshold=0.)
+
+    def check(descriptors, scorer_id, message):
+        adapter = DrivingAdapter(lambda seed: ConstantAVStack(),
+                                 scorers=[(item, lambda avstack, image, target: image.sum())
+                                          for item in descriptors])
+        with ClosedLoopServices(MemoryDataset(), MemorySimulator(), adapter) as scope:
+            configured = StopSignPatchAttack(optimization=replace(options, scorer_id=scorer_id))
+            with pytest.raises(ValueError, match=message):
+                configured.run_offline(OfflineContext(scope, ()))
+
+    check([], None, "exactly one")
+    check([descriptor, replace(descriptor, id="second")], None, "exactly one")
+    check([descriptor], "missing", "Unavailable")
+    check([replace(descriptor, differentiable_inputs=())], "image-score", "image gradients")
+    check([replace(descriptor, sensor_id=None)], None, "sensor_id and decision_threshold")
+    check([replace(descriptor, decision_threshold=None)], None, "sensor_id and decision_threshold")
+
+
+def test_rollout_start_distances():
+    optimization = RolloutPatchOptimization(NES(steps=1), start_distances_m=(12., 8.))
+    assert StopSignPatchAttack(optimization=optimization, min_approach_m=8., approach_m=12.).optimization is optimization
+    with pytest.raises(ValueError, match=r"\[20.0, 50.0\]"):
+        StopSignPatchAttack(optimization=optimization)
+    with pytest.raises(ValueError, match=r"\[8.0, 12.0\]"):
+        StopSignPatchAttack(optimization=replace(optimization, start_distances_m=(13.,)),
+                            min_approach_m=8., approach_m=12.)

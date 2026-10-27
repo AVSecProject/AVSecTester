@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 import numpy as np
 
 from avsectester.closed_loop.avstacks.base import AVStack
+from avsectester.closed_loop.avstacks.driving_adapter import DrivingAdapter, ScorerDescriptor
 from avsectester.data_types import Control, Observation, read_camera_rgb
 from avsectester.geometry import CameraCalibration
 from avsectester.geometry.poses import validated_transform
@@ -17,6 +18,9 @@ from .detector import CocoStopSignDetector
 from .planner import StopSignPlanner
 from .ranging import estimate_stop_sign_position
 from .tracker import StopSignTracker
+
+
+DEFAULT_CAMERA_ID = "camera_front_wide_120fov"
 
 
 class RuleBasedAVStack(AVStack):
@@ -35,7 +39,7 @@ class RuleBasedAVStack(AVStack):
     def __init__(
         self, detector: CocoStopSignDetector, tracker: StopSignTracker | None = None,
         planner: StopSignPlanner | None = None,
-        camera_id: str = "camera_front_wide_120fov", sign_height_m: float = .762,
+        camera_id: str = DEFAULT_CAMERA_ID, sign_height_m: float = .762,
     ) -> None:
         if not isinstance(detector, CocoStopSignDetector):
             raise TypeError("detector must be a CocoStopSignDetector")
@@ -111,3 +115,28 @@ class RuleBasedAVStack(AVStack):
         self._closed = True
         self.detector.close()
         self._last = None
+
+
+def rule_based_driving_adapter(factory: Callable[[int], AVStack]) -> DrivingAdapter:
+    """Bind the configured rule driver's differentiable stop-sign confidence scorer.
+
+    The factory must declare ``avstack_options`` with its constructed detector. Reading
+    these options describes the scorer without constructing a driver or loading weights.
+    """
+    options = getattr(factory, "avstack_options", None)
+    if not isinstance(options, Mapping):
+        raise ValueError("rule_based_driving_adapter requires factory.avstack_options")
+    detector = options.get("detector")
+    if not isinstance(detector, CocoStopSignDetector):
+        raise ValueError("factory.avstack_options must include a CocoStopSignDetector detector")
+    descriptor = ScorerDescriptor(
+        "rule_based.stop_sign_confidence", {"image": "CHW float tensor [0,1]"},
+        {"score": "scalar confidence"}, {"score": "tensor"}, ("image",),
+        direction="minimize", sensor_id=options.get("camera_id", DEFAULT_CAMERA_ID),
+        decision_threshold=detector.score_threshold,
+    )
+
+    def score(avstack: RuleBasedAVStack, inputs: Any, target: Any) -> Any:
+        return avstack.detector.target_score(inputs, target)
+
+    return DrivingAdapter(factory, scorers=((descriptor, score),))

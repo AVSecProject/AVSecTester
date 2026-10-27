@@ -248,7 +248,7 @@ def test_constructor_paths(tmp_path):
     probe_spec["simulator"] = {
         "type": "NuRecSimulator",
         "options": {
-            "config": {"dt": .1}, "depth": "none", "physics_update_mode": "none",
+            "depth": "none", "physics_update_mode": "none",
             "route_generator": "none",
             "renderer": {
                 "type": "avsectester.closed_loop.simulators.nurec:NuRecRenderer",
@@ -336,3 +336,24 @@ def test_metadata_configuration(tmp_path):
     assert load_configuration(supplied) is supplied
     without_selector["metadata"] = {"load": str(destination)}
     assert isinstance(load_configuration(without_selector).attacks["supplied"], MetadataOnlyAttack)
+
+
+class TimeStepOptions:
+    def __init__(self, time_step=7.):
+        self.time_step = time_step
+
+
+def test_decision_time_step():
+    spec = specification()
+    spec["dataset"]["options"] = {"time_step": .2}
+    spec["simulator"]["options"] = {"extra_sensors": {
+        "nested": {"type": f"{__name__}:TimeStepOptions"},
+    }}
+    configuration = load_configuration(spec)
+    assert configuration.simulator.time_step == .2
+    assert configuration.simulator.extra_sensors["nested"].time_step == 7.
+    spec["simulator"]["options"]["time_step"] = .1
+    with pytest.raises(ValueError, match="dataset.time_step"):
+        load_configuration(spec)
+    with pytest.raises(ValueError, match="dataset.time_step"):
+        replace(configuration, simulator=MemorySimulator(time_step=.1))

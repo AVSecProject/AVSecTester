@@ -1,6 +1,7 @@
 """A calibrated camera driver records detection, ranging and trajectory decisions."""
 
 from dataclasses import replace
+from types import MappingProxyType
 import weakref
 
 import numpy as np
@@ -8,6 +9,7 @@ import pytest
 
 from avsectester.closed_loop.avstacks.implemented.rule_based import (
     CocoStopSignDetector, RuleBasedAVStack, StopSignPlanner, StopSignTracker,
+    rule_based_driving_adapter,
 )
 from avsectester.closed_loop.simulators.ego_dynamics import PlanarEgoState
 from avsectester.geometry import CameraCalibration, PinholeCamera
@@ -87,3 +89,30 @@ def test_rule_based_avstack():
     assert avstack.component_log() is None
     assert detector.model is None
     assert model_reference() is None
+
+
+def test_rule_based_driving_adapter(tmp_path):
+    # A missing checkpoint proves binding discovery does not construct the driver or load weights.
+    detector = CocoStopSignDetector(tmp_path / "not-loaded.pth", device="cpu", score_threshold=.7)
+
+    def factory(seed):
+        raise RuntimeError("Binding discovery must not construct an AVStack")
+
+    with pytest.raises(ValueError, match="factory.avstack_options"):
+        rule_based_driving_adapter(factory)
+    factory.avstack_options = MappingProxyType({})
+    with pytest.raises(ValueError, match="detector"):
+        rule_based_driving_adapter(factory)
+    factory.avstack_options = MappingProxyType({"detector": detector})
+    adapter = rule_based_driving_adapter(factory)
+    descriptor, score = adapter.scorer_bindings["rule_based.stop_sign_confidence"]
+    assert descriptor.inputs == {"image": "CHW float tensor [0,1]"}
+    assert descriptor.outputs == {"score": "scalar confidence"}
+    assert descriptor.codecs == {"score": "tensor"}
+    assert descriptor.differentiable_inputs == ("image",)
+    assert descriptor.direction == "minimize" and descriptor.output_shape == ()
+    assert descriptor.sensor_id == RuleBasedAVStack(detector).camera_id
+    assert descriptor.decision_threshold == .7
+    factory.avstack_options = MappingProxyType({"detector": detector, "camera_id": "front"})
+    custom, _ = rule_based_driving_adapter(factory).scorer_bindings[descriptor.id]
+    assert custom.sensor_id == "front" and custom.decision_threshold == .7

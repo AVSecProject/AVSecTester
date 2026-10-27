@@ -8,7 +8,7 @@ dataset:
     camera_id: camera_front_wide_120fov
     time_step: 0.1
 split:
-  train_segments: 4
+  train_segments: 5
   seed: 0
   execute: [test]
 simulator:
@@ -20,8 +20,6 @@ simulator:
     ground_mesh: mesh_ground
     physics_update_mode: ego_only
     route_generator: map
-    config:
-      dt: 0.1
     renderer:
       type: avsectester.closed_loop.simulators.nurec:NuRecRenderer
       options:
@@ -36,7 +34,6 @@ simulator:
         server_probe_directory: /mnt/nre-probes
     dynamics:
       type: avsectester.closed_loop.simulators.ego_dynamics:AlpaSimController
-      options: {}
 avstack:
   type: AlpamayoAVStack
   options:
@@ -44,7 +41,6 @@ avstack:
     camera_ids:
     - camera_front_wide_120fov
     frame_subsample: 1
-    output_frequency_hz: 10
 attacks:
   no_patch:
     type: StopSignPatchAttack
@@ -68,69 +64,6 @@ attacks:
     options:
       initial_patch: gaussian_noise
       harmonizer: *exposure_harmonizer
-  white_detector_pgd:
-    type: StopSignPatchAttack
-    options:
-      initial_patch: white
-      harmonizer: *exposure_harmonizer
-      optimization:
-        type: avsectester.implemented_attacks.stop_sign_patch_attack.offline:DetectorPatchOptimization
-        options:
-          detector:
-            type: avsectester.implemented_attacks.stop_sign_patch_attack.detector:StopSignDetector
-            options:
-              weights_path: ../models/fasterrcnn_resnet50_fpn_coco-258fb6c6.pth
-          optimizer:
-            type: avsectester.attack.optimization:PGD
-            options:
-              steps: 20
-              step_size: 0.01568627450980392
-              batch: 1
-              seed: 0
-          max_training_segments: null
-          samples_per_scene: 8
-  black_detector_pgd:
-    type: StopSignPatchAttack
-    options:
-      initial_patch: black
-      harmonizer: *exposure_harmonizer
-      optimization:
-        type: avsectester.implemented_attacks.stop_sign_patch_attack.offline:DetectorPatchOptimization
-        options:
-          detector:
-            type: avsectester.implemented_attacks.stop_sign_patch_attack.detector:StopSignDetector
-            options:
-              weights_path: ../models/fasterrcnn_resnet50_fpn_coco-258fb6c6.pth
-          optimizer:
-            type: avsectester.attack.optimization:PGD
-            options:
-              steps: 20
-              step_size: 0.01568627450980392
-              batch: 1
-              seed: 0
-          max_training_segments: null
-          samples_per_scene: 8
-  noise_detector_pgd:
-    type: StopSignPatchAttack
-    options:
-      initial_patch: gaussian_noise
-      harmonizer: *exposure_harmonizer
-      optimization:
-        type: avsectester.implemented_attacks.stop_sign_patch_attack.offline:DetectorPatchOptimization
-        options:
-          detector:
-            type: avsectester.implemented_attacks.stop_sign_patch_attack.detector:StopSignDetector
-            options:
-              weights_path: ../models/fasterrcnn_resnet50_fpn_coco-258fb6c6.pth
-          optimizer:
-            type: avsectester.attack.optimization:PGD
-            options:
-              steps: 20
-              step_size: 0.01568627450980392
-              batch: 1
-              seed: 0
-          max_training_segments: null
-          samples_per_scene: 8
   white_rollout_nes:
     type: StopSignPatchAttack
     options:
@@ -142,8 +75,8 @@ attacks:
           optimizer:
             type: avsectester.attack.optimization:NES
             options:
-              steps: 1
-              population_size: 4
+              steps: 40
+              population_size: 20
               sigma: 0.08
               learning_rate: 0.03
               seed: 0
@@ -152,7 +85,6 @@ attacks:
           - 30
           - 20
           horizon_s: 3
-          max_training_segments: 1
   black_rollout_nes:
     type: StopSignPatchAttack
     options:
@@ -164,8 +96,8 @@ attacks:
           optimizer:
             type: avsectester.attack.optimization:NES
             options:
-              steps: 1
-              population_size: 4
+              steps: 40
+              population_size: 20
               sigma: 0.08
               learning_rate: 0.03
               seed: 0
@@ -174,7 +106,6 @@ attacks:
           - 30
           - 20
           horizon_s: 3
-          max_training_segments: 1
   noise_rollout_nes:
     type: StopSignPatchAttack
     options:
@@ -186,8 +117,8 @@ attacks:
           optimizer:
             type: avsectester.attack.optimization:NES
             options:
-              steps: 1
-              population_size: 4
+              steps: 40
+              population_size: 20
               sigma: 0.08
               learning_rate: 0.03
               seed: 0
@@ -196,7 +127,6 @@ attacks:
           - 30
           - 20
           horizon_s: 3
-          max_training_segments: 1
 evaluation:
   metrics:
   - type: StopLineMetrics
@@ -216,12 +146,6 @@ runs:
     attack_name: black
   - name: noise
     attack_name: noise
-  - name: white_detector_pgd
-    attack_name: white_detector_pgd
-  - name: black_detector_pgd
-    attack_name: black_detector_pgd
-  - name: noise_detector_pgd
-    attack_name: noise_detector_pgd
   - name: white_rollout_nes
     attack_name: white_rollout_nes
   - name: black_rollout_nes

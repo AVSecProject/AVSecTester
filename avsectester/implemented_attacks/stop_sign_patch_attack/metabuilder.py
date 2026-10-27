@@ -95,13 +95,6 @@ class StopApproach:
     sign_lane_ids: tuple[str, ...] = ()
     stop_line_lane_ids: tuple[str, ...] = ()
 
-    @property
-    def control(self) -> TrafficControl:
-        """The selected sign, with +X facing the approaching recorded vehicle."""
-        return TrafficControl(self.sign_id, "stop_sign", self.sign_native_category,
-                              self.sign_pose, self.sign_extent, "face_center",
-                              lane_ids=self.sign_lane_ids)
-
     def to_segment(self) -> AttackSegment:
         """Persist JSON-like values and NumPy arrays; never put custom records in user_data."""
         return AttackSegment(self.scenario_id, self.start, self.stop, {

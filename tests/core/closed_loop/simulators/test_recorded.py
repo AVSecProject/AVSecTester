@@ -54,8 +54,6 @@ def test_sensor_aliases(nuscenes_dataset):
             assert runtime.sensor_geometry(output_name).sensor == output_name
             np.testing.assert_allclose(runtime.sensor_geometry(output_name).cam_from_world,
                                        geometry[native_name].cam_from_world)
-    with pytest.raises(ValueError, match="must map nonempty native camera names"):
-        RecordedReplaySimulator(camera_aliases={"CAM_FRONT": ""})
 
 
 def test_terminal_frame(nuscenes_dataset):

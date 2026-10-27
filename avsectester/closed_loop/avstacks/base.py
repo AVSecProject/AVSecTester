@@ -74,6 +74,7 @@ class AVStack(_StageAdapter, ABC):
 
     provides_detections: bool | None = None
     past_steps: ClassVar[int] = 0
+    decision_time_step: ClassVar[float | None] = None
 
     @property
     def observation_pipeline(self) -> ObservationPipeline:

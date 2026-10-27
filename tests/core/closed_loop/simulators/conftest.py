@@ -27,7 +27,7 @@ def carla_case(carla_dataset, monkeypatch):
 def nurec_case(nurec_dataset, monkeypatch):
     NuRecRpcBoundary().install(monkeypatch)
     # Shared simulator contracts compare inserted objects with geometric composites.
-    simulator = NuRecSimulator({"dt": .1}, NuRecRenderer(cameras=["front"]), object_occlusion="geometry")
+    simulator = NuRecSimulator(NuRecRenderer(cameras=["front"]), object_occlusion="geometry", time_step=.1)
     start = nurec_dataset.scenario_start("scene", nurec_dataset.frames("scene")[1])
     initial = nurec_dataset.scenario_start("scene", nurec_dataset.frames("scene")[0])
     return nurec_dataset, simulator, start, None, (12, 16, 3), initial, None

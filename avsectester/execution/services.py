@@ -210,6 +210,10 @@ class ClosedLoopServices:
         self.dataset = dataset
         if not isinstance(simulator, Simulator):
             raise TypeError("Services require a configured Simulator")
+        if (driving_adapter is not None and driving_adapter.decision_time_step is not None
+                and simulator.decision_time_step is not None
+                and driving_adapter.decision_time_step != simulator.decision_time_step):
+            raise ValueError("AVStack decision_time_step does not match simulator.decision_time_step")
         self.simulator = simulator
         self.deployment = deployment
         self.driving_adapter = driving_adapter
