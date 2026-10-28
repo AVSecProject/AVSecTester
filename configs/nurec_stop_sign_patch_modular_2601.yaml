@@ -121,7 +121,6 @@ evaluation:
 runs:
   treatments:
   - name: clean
-  - name: no_patch
     attack_name: no_patch
   - name: white
     attack_name: white

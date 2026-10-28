@@ -42,8 +42,7 @@ configurations contain the rollout-optimized treatments. Both include the same c
 
 | Treatment | Initial patch | Optimized | Attack type |
 |---|---|---|---|
-| `clean` | No replica | No | Baseline |
-| `no_patch` | Unpatched replica | No | Control |
+| `clean` | Unpatched replica | No | Baseline |
 | `white` | White | No | Fixed patch |
 | `black` | Black | No | Fixed patch |
 | `noise` | Gaussian noise | No | Fixed patch |
@@ -56,7 +55,9 @@ configurations contain the rollout-optimized treatments. Both include the same c
 
 Each attack has an offline phase and an online phase. With no optimization, the offline phase
 returns the initial texture. The online phase inserts that texture through the same placement
-path used during optimization. `no_patch` uses `initial_patch: none` and cannot be optimized.
+path used during optimization. The `clean` treatment runs the `no_patch` attack, which uses
+`initial_patch: none` and cannot be optimized, so every treatment shows the same inserted
+replica and differs only in its patch.
 
 ## Selection and placement
 
