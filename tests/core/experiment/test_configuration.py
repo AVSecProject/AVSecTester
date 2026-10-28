@@ -409,7 +409,7 @@ def test_metric_configuration():
     assert metrics[0].stop_speed == .2
     spec["avstack"] = {"type": "RuleBasedAVStack", "options": {
         "detector": {
-            "type": "avsectester.closed_loop.avstacks.implemented.rule_based:CocoStopSignDetector",
+            "type": "avsectester.closed_loop.avstacks.implemented.modules:YOLOXDetector",
             "options": {"weights_path": "unloaded-weights.pth"},
         },
     }}

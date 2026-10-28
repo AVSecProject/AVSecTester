@@ -71,7 +71,7 @@ from avsectester.attack.optimization import HideObject, PGD, SessionScorer
 
 # Requires OfflineContext context, a user DataSource and a Perturbation.
 with context.services.session(context.seed) as session:
-    scorer = SessionScorer(session, "rule_based.stop_sign_confidence", require_grad=True,
+    scorer = SessionScorer(session, "rule_based.detection_confidence", require_grad=True,
                            input_format="CHW float tensor [0,1]", device="cpu")
     result = PGD(steps=10).run(source, perturbation, scorer, HideObject())
 ```

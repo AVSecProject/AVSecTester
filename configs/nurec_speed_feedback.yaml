@@ -19,7 +19,6 @@ simulator:
       type: avsectester.closed_loop.simulators.nurec:NuRecRenderer
       options:
         endpoint: 127.0.0.1:50051
-        resolution_hw: {camera_front_wide_120fov: [1080, 1900]}
         cameras:
         - camera_front_wide_120fov
     dynamics:

@@ -60,9 +60,10 @@ requires a driving system that provides 3D detections; see [Evaluation](evaluati
 
 ## NuRec rule-based driving system
 
-`RuleBasedAVStack` composes a `CocoStopSignDetector`, `StopSignTracker` and `StopSignPlanner`.
+`RuleBasedAVStack` composes a `YOLOXDetector`, `StopSignTracker` and `StopSignPlanner`.
 Its processing chain is detection, known-size ranging, bearing EKF tracking and trajectory
-planning. It requires the selected camera's `CameraCalibration` and a planar ego state.
+planning. `YOLOXDetector` is a general COCO detector; the stack uses its `stop sign` detections.
+It requires the selected camera's `CameraCalibration` and a planar ego state.
 
 The cruise reference `v0` is `cruise_speed_mps`, or the speed at reset bounded below by
 `min_cruise_speed_mps` when cruise speed is omitted. The tracker never deletes tracks, adds no
@@ -70,7 +71,7 @@ process noise, and wraps bearing residuals across ±π. Stop signs facing anothe
 still trigger a stop if they pass the route filters. `provides_detections=False` makes this
 stack incompatible with `DetectionMetrics`.
 
-The detector returns COCO stop-sign boxes and confidence. Ranging uses the angular height of a
+The stack selects stop-sign boxes and confidence. Ranging uses the angular height of a
 box and the assumed sign height, then transforms the point from optical-camera coordinates into
 rig coordinates. Distance error scales with error in the assumed physical sign size.
 
@@ -140,15 +141,15 @@ driving systems. Discovery reads static declarations and configured options with
 a stack or loading model weights. Constructor injection belongs
 to [Configuration](../reference/configuration.md#driving-specification).
 
-`rule_based_driving_adapter` exposes `rule_based.stop_sign_confidence`. Its `sensor_id` comes
+`rule_based_driving_adapter` exposes `rule_based.detection_confidence`. Its `sensor_id` comes
 from the configured `camera_id` or the stack default, and `decision_threshold` comes from
 `detector.score_threshold`. Missing detector configuration or a detector other than
-`CocoStopSignDetector` raises `ValueError`.
+`YOLOXDetector` raises `ValueError`. The scorer accepts any COCO class name as `target.label`.
 
 | Binding | Purpose |
 |---|---|
 | `modular_driving_adapter` | Modular perception components and bound image scorers |
-| `rule_based_driving_adapter` | The rule-based driver's stop-sign confidence scorer |
+| `rule_based_driving_adapter` | The rule-based driver's detection-confidence scorer |
 | `alpamayo_driving_adapter` | Policy prediction from current and preceding observations |
 
 The Alpamayo binding declares 15 preceding decisions when a factory has no `AVStack`
@@ -193,7 +194,7 @@ stack.close()
 |---|---|
 | CARLA PointPillars | Modular 3D perception |
 | CARLA/nuScenes image detector | Camera forward-collision policy and bound scorers |
-| COCO Faster R-CNN ResNet-50 FPN | Rule-based stop-sign detection and its bound scorer |
+| COCO YOLOX-m | General COCO detection and its bound scorer; the rule-based stack selects stop signs |
 | Alpamayo-1.5-10B | Camera/history/navigation policy |
 | PCTNet | Optional image harmonization |
 | SAM | Extraction of insertion assets |

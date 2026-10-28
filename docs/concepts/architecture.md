@@ -74,7 +74,7 @@ Paths are relative to `avsectester/`.
 | `closed_loop/simulators/carla/` | CARLA world and sensor integration |
 | `closed_loop/simulators/nurec/` | NuRec rendering; `traffic.py` sessions and `server.py` local services |
 | `closed_loop/avstacks/` | Driving interfaces and `DrivingAdapter` |
-| `closed_loop/avstacks/implemented/` | Supplied driving systems, including `rule_based/` |
+| `closed_loop/avstacks/implemented/` | Supplied driving systems, including `modules/` |
 | `attack/` | `Attack` contracts and structured `offline_report` outputs |
 | `attack/insertion/` | Assets, placement, visibility and insertion actions |
 | `attack/optimization/` | Optimization interfaces, algorithms and scorer bindings |

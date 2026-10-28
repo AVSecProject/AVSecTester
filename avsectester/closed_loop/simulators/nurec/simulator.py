@@ -188,7 +188,6 @@ class NuRecSimulator(Simulator):
                 "object_occlusion": self.object_occlusion,
                 "min_track_duration_s": self.min_track_duration_s,
                 "renderer": type(self.renderer).__name__,
-                "resolution_hw": deepcopy(getattr(self.renderer, "resolution_hw", {})),
                 "dynamics": {"type": f"{type(self.dynamics).__module__}:{type(self.dynamics).__qualname__}",
                              "options": asdict(self.dynamics) if dataclasses.is_dataclass(self.dynamics) else {}},
                 "endpoint": getattr(self.renderer, "endpoint", None)}

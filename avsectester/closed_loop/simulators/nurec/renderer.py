@@ -7,13 +7,12 @@ import dataclasses
 import math
 from abc import ABC, abstractmethod
 from copy import deepcopy
-from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar, TYPE_CHECKING
 
 from avsectester.geometry.poses import validated_transform
-from avsectester.validation import require_nonnegative_number, require_positive_integer, require_positive_number
+from avsectester.validation import require_nonnegative_number, require_positive_number
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -165,6 +164,9 @@ class NuRecRenderer(Renderer):
     scene. ``service`` exposes the native RPC client after loading. ``render_at`` supports exact
     recorded poses for initial-sequence inspection without advancing a driving policy.
 
+    Cameras render at their native resolution; a different image size returned by NRE raises
+    ``ValueError``.
+
     ``render_scene_visibility`` inserts probe copies of objects into the loaded scene. It writes
     their Gaussian PLY files to ``probe_directory``, which the NRE server must read at
     ``server_probe_directory`` (the same path by default). ``track_padding_m`` is the server's
@@ -175,7 +177,6 @@ class NuRecRenderer(Renderer):
     scene_id: str | None = None
     cameras: list[str] = field(default_factory=lambda: ["camera_front_wide_120fov"])
     image_quality: float = 95.0
-    resolution_hw: Mapping[str, tuple[int, int]] = field(default_factory=dict)
     probe_directory: str | Path | None = None
     server_probe_directory: str | None = None
     track_padding_m: tuple[float, float, float] = (1.0, 1.0, 0.25)
@@ -185,19 +186,6 @@ class NuRecRenderer(Renderer):
         return dataclasses.replace(self)
 
     def __post_init__(self) -> None:
-        if not isinstance(self.resolution_hw, Mapping):
-            raise TypeError("resolution_hw must map camera names to (height, width)")
-        resolutions = {}
-        for camera, dimensions in self.resolution_hw.items():
-            if camera not in self.cameras:
-                raise ValueError(f"resolution_hw names an unconfigured camera {camera!r}")
-            if not isinstance(dimensions, (tuple, list)) or len(dimensions) != 2:
-                raise ValueError(f"resolution_hw[{camera!r}] must contain height and width")
-            height, width = dimensions
-            require_positive_integer(height, f"resolution_hw[{camera!r}] height")
-            require_positive_integer(width, f"resolution_hw[{camera!r}] width")
-            resolutions[camera] = (height, width)
-        self.resolution_hw = resolutions
         padding = tuple(float(value) for value in self.track_padding_m)
         if len(padding) != 3 or not all(math.isfinite(value) and value >= 0 for value in padding):
             raise ValueError("track_padding_m must contain three finite nonnegative values")
@@ -280,20 +268,8 @@ class NuRecRenderer(Renderer):
         self._t0 = (
             poses[0].timestamp_us if self.origin_timestamp_us is None else self.origin_timestamp_us
         )
-        world_from_rig = self.origin_transform
-        if world_from_rig is None:
-            world_from_rig = pose_from_proto(self._start_pose)
         for camera in self.cameras:
-            image = self.render_at(world_from_rig, self._t0, camera)
-            height, width = image.shape[:2]
-            native = ftheta_camera_from_spec(self._camera_specs[camera])
-            scale = height / native.height
-            self._camera_models[camera] = dataclasses.replace(
-                native, width=width, height=height, cx=native.cx * scale, cy=native.cy * scale,
-                angle_to_pixeldist=tuple(value * scale for value in native.angle_to_pixeldist),
-                pixeldist_to_angle=tuple(value * scale ** -power
-                                         for power, value in enumerate(native.pixeldist_to_angle)),
-            )
+            self._camera_models[camera] = ftheta_camera_from_spec(self._camera_specs[camera])
 
     @property
     def calibration(self) -> dict[str, CameraCalibration]:
@@ -320,7 +296,7 @@ class NuRecRenderer(Renderer):
         self._stub = None
 
     def camera_model(self, camera: str | None = None) -> Camera:
-        """The lens scaled to the image dimensions actually returned by NRE during load_scene."""
+        """The native lens read from the loaded scene's camera specification."""
         if self._stub is None:
             raise RuntimeError("Call load_scene before requesting a NuRec camera model")
         name = self.cameras[0] if camera is None else camera
@@ -518,11 +494,10 @@ class NuRecRenderer(Renderer):
             objects.append(sensorsim_pb2.DynamicObject(track_id=track_id,
                 pose_pair=sensorsim_pb2.PosePair(start_pose=actor_pose, end_pose=actor_pose)))
         frame_us = int(timestamp_us)
-        height, width = self.resolution_hw.get(camera, (spec.resolution_h, spec.resolution_w))
         req = sensorsim_pb2.RGBRenderRequest(
             scene_id=self._loaded_scene_id,
-            resolution_h=height,
-            resolution_w=width,
+            resolution_h=spec.resolution_h,
+            resolution_w=spec.resolution_w,
             camera_intrinsics=spec,
             frame_start_us=frame_us,
             frame_end_us=frame_us + 1,  # render at an instant: a non-empty [t, t+1) interval
@@ -536,10 +511,10 @@ class NuRecRenderer(Renderer):
         img = cv2.imdecode(np.frombuffer(ret.image_bytes, np.uint8), cv2.IMREAD_COLOR)
         if img is None:
             raise ValueError(f"NRE returned an undecodable image for camera {camera!r}")
-        model = self._camera_models.get(camera)
-        if model is not None and img.shape[:2] != (model.height, model.width):
+        model = self._camera_models[camera]
+        if img.shape[:2] != (model.height, model.width):
             raise ValueError(
-                f"NRE image dimensions for camera {camera!r} changed: "
+                f"NRE returned image dimensions that are not native for camera {camera!r}: "
                 f"expected {(model.height, model.width)}, got {img.shape[:2]}"
             )
         return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)  # HWC uint8 RGB for the AVStack

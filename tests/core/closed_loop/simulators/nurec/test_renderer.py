@@ -22,13 +22,13 @@ def test_reset_origin(nurec_dataset):
 def test_calibration(monkeypatch):
     assert NuRecImageBoundary(CAMERA).calibration == {}
     boundary = NuRecRpcBoundary().install(monkeypatch)
-    renderer = NuRecRenderer(cameras=["front"], resolution_hw={"front": (6, 7)})
+    renderer = NuRecRenderer(cameras=["front"])
     assert renderer.calibration == {}
     try:
         renderer.load_scene("scene")
         calibration = renderer.calibration["front"]
         assert isinstance(calibration, CameraCalibration)
-        assert (calibration.camera.height, calibration.camera.width) == (6, 8)
+        assert (calibration.camera.height, calibration.camera.width) == (12, 16)
         np.testing.assert_allclose(calibration.rig_from_camera, proto_world_pose(boundary.mount))
         np.testing.assert_allclose(
             calibration.rig_from_camera @ renderer.cam_from_world(np.eye(4), "front"), np.eye(4),
@@ -41,22 +41,13 @@ def test_calibration(monkeypatch):
 
 def test_camera_model(monkeypatch):
     NuRecRpcBoundary().install(monkeypatch)
-    renderer = NuRecRenderer(cameras=["front"], resolution_hw={"front": (6, 7)})
+    renderer = NuRecRenderer(cameras=["front"])
     try:
         renderer.load_scene("scene")
         camera = renderer.camera_model("front")
-        native = FThetaCamera(8.5, 6.5, (0., 8.), 16, 12, (0., .125), 1.5)
-        points = np.array([[0., 0., 1.], [1., 2., 3.], [-2., 1., 4.]])
-        np.testing.assert_allclose(camera.project(points), native.project(points) * .5)
-        np.testing.assert_allclose(camera.unproject(native.project(points) * .5),
-                                   native.unproject(native.project(points)), atol=1e-12)
-        assert (camera.height, camera.width) == (6, 8)
+        assert camera == FThetaCamera(8.5, 6.5, (0., 8.), 16, 12, (0., .125), 1.5)
     finally:
         renderer.close()
-    with pytest.raises(ValueError, match="resolution_hw names an unconfigured camera"):
-        NuRecRenderer(cameras=["front"], resolution_hw={"side": (6, 8)})
-    with pytest.raises(ValueError, match="height must be a positive integer"):
-        NuRecRenderer(cameras=["front"], resolution_hw={"front": (0, 8)})
 
 
 def test_windshield_spec(monkeypatch):

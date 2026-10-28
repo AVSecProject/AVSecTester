@@ -45,12 +45,12 @@
 | L2 | [`avsectester.closed_loop.avstacks.implemented.alpamayo`](#avsectesterclosed_loopavstacksimplementedalpamayo) |
 | L2 | [`avsectester.closed_loop.avstacks.implemented.camera_forward_collision`](#avsectesterclosed_loopavstacksimplementedcamera_forward_collision) |
 | L2 | [`avsectester.closed_loop.avstacks.implemented.modular`](#avsectesterclosed_loopavstacksimplementedmodular) |
-| L2 | [`avsectester.closed_loop.avstacks.implemented.rule_based`](#avsectesterclosed_loopavstacksimplementedrule_based) |
-| L2 | [`avsectester.closed_loop.avstacks.implemented.rule_based.detector`](#avsectesterclosed_loopavstacksimplementedrule_baseddetector) |
-| L2 | [`avsectester.closed_loop.avstacks.implemented.rule_based.planner`](#avsectesterclosed_loopavstacksimplementedrule_basedplanner) |
-| L2 | [`avsectester.closed_loop.avstacks.implemented.rule_based.ranging`](#avsectesterclosed_loopavstacksimplementedrule_basedranging) |
-| L2 | [`avsectester.closed_loop.avstacks.implemented.rule_based.stack`](#avsectesterclosed_loopavstacksimplementedrule_basedstack) |
-| L2 | [`avsectester.closed_loop.avstacks.implemented.rule_based.tracker`](#avsectesterclosed_loopavstacksimplementedrule_basedtracker) |
+| L2 | [`avsectester.closed_loop.avstacks.implemented.modules`](#avsectesterclosed_loopavstacksimplementedmodules) |
+| L2 | [`avsectester.closed_loop.avstacks.implemented.modules.detector`](#avsectesterclosed_loopavstacksimplementedmodulesdetector) |
+| L2 | [`avsectester.closed_loop.avstacks.implemented.modules.planner`](#avsectesterclosed_loopavstacksimplementedmodulesplanner) |
+| L2 | [`avsectester.closed_loop.avstacks.implemented.modules.ranging`](#avsectesterclosed_loopavstacksimplementedmodulesranging) |
+| L2 | [`avsectester.closed_loop.avstacks.implemented.modules.stack`](#avsectesterclosed_loopavstacksimplementedmodulesstack) |
+| L2 | [`avsectester.closed_loop.avstacks.implemented.modules.tracker`](#avsectesterclosed_loopavstacksimplementedmodulestracker) |
 | L2 | [`avsectester.closed_loop.avstacks.implemented.scorers`](#avsectesterclosed_loopavstacksimplementedscorers) |
 | L2 | [`avsectester.closed_loop.environment`](#avsectesterclosed_loopenvironment) |
 | L2 | [`avsectester.closed_loop.hooks`](#avsectesterclosed_loophooks) |
@@ -1123,60 +1123,61 @@ tuple.
 
 [Driving systems](../guides/driving-systems.md).
 
-### avsectester.closed_loop.avstacks.implemented.rule_based
+### avsectester.closed_loop.avstacks.implemented.modules
 
-<!-- api:begin module=avsectester.closed_loop.avstacks.implemented.rule_based -->
+<!-- api:begin module=avsectester.closed_loop.avstacks.implemented.modules -->
 Detect and range signs, track bearings with an EKF, then cruise and brake to stops.
 
 | Name and signature | Meaning |
 |---|---|
-| `RuleBasedAVStack` | [RuleBasedAVStack](#avsectesterclosed_loopavstacksimplementedrule_basedstack) |
-| `CocoStopSignDetector` | [CocoStopSignDetector](#avsectesterclosed_loopavstacksimplementedrule_baseddetector) |
-| `StopSignPlanner` | [StopSignPlanner](#avsectesterclosed_loopavstacksimplementedrule_basedplanner) |
-| `StopSignTracker` | [StopSignTracker](#avsectesterclosed_loopavstacksimplementedrule_basedtracker) |
-| `SignTrack` | [SignTrack](#avsectesterclosed_loopavstacksimplementedrule_basedtracker) |
-| `rule_based_driving_adapter` | [rule_based_driving_adapter](#avsectesterclosed_loopavstacksimplementedrule_basedstack) |
+| `RuleBasedAVStack` | [RuleBasedAVStack](#avsectesterclosed_loopavstacksimplementedmodulesstack) |
+| `YOLOXDetector` | [YOLOXDetector](#avsectesterclosed_loopavstacksimplementedmodulesdetector) |
+| `StopSignPlanner` | [StopSignPlanner](#avsectesterclosed_loopavstacksimplementedmodulesplanner) |
+| `StopSignTracker` | [StopSignTracker](#avsectesterclosed_loopavstacksimplementedmodulestracker) |
+| `SignTrack` | [SignTrack](#avsectesterclosed_loopavstacksimplementedmodulestracker) |
+| `rule_based_driving_adapter` | [rule_based_driving_adapter](#avsectesterclosed_loopavstacksimplementedmodulesstack) |
 <!-- api:end -->
 
 #### See also
 
 [Driving systems](../guides/driving-systems.md).
 
-### avsectester.closed_loop.avstacks.implemented.rule_based.detector
+### avsectester.closed_loop.avstacks.implemented.modules.detector
 
-<!-- api:begin module=avsectester.closed_loop.avstacks.implemented.rule_based.detector -->
-Local COCO stop-sign detection shared by rule driving and detector scorers.
+<!-- api:begin module=avsectester.closed_loop.avstacks.implemented.modules.detector -->
+General COCO object detection and differentiable confidence scoring with YOLOX.
 
 | Name and signature | Meaning |
 |---|---|
-| `CocoStopSignDetector(weights_path: str \| Path, device: str = "cuda:0", score_threshold: float = .5, model: Any = None)` | Detect only COCO category 13 in uint8 RGB images using a local checkpoint. |
-| `CocoStopSignDetector.detect(rgb: np.ndarray) -> list[tuple[np.ndarray, float]]` | Return original-image xyxy boxes and scores at or above score_threshold. |
-| `CocoStopSignDetector.target_score(image: torch.Tensor, target: TargetSpec) -> torch.Tensor` | Return a scalar confidence for a float RGB `(3, H, W)` image in [0, 1]. |
-| `CocoStopSignDetector.close() -> None` | Release the model; a closed detector cannot detect or score again. |
+| `YOLOXDetector(weights_path: str \| Path, model_name: str = "yolox-m", input_size: int = 1280, score_threshold: float = .5, nms_iou: float = .45, device: str = "cuda:0", model: Any = None)` | Detect COCO objects and score labeled target boxes using a local YOLOX checkpoint. |
+| `YOLOXDetector.detect(rgb: np.ndarray) -> list[tuple[np.ndarray, float, str]]` | Return original-image xyxy boxes, confidences and COCO labels after classwise NMS. |
+| `YOLOXDetector.target_score(image: torch.Tensor, target: TargetSpec) -> torch.Tensor` | Return a differentiable pre-NMS confidence for a labeled original-image target box. |
+| `YOLOXDetector.close() -> None` | Release the model; a closed detector cannot detect or score again. |
 <!-- api:end -->
 
 #### Constraints and errors
 
-`CocoStopSignDetector` raises `ValueError` for a `score_threshold` outside [0, 1]. Loading
-raises `FileNotFoundError` for missing weights, and an injected model that is not a
-`torch.nn.Module` with `roi_heads.score_thresh` raises `TypeError`. `detect` raises `ValueError`
-unless the image is nonempty uint8 RGB (H, W, 3). `target_score` raises `ValueError` for an image
-that is not finite floating RGB (3, H, W) in [0, 1], a target that is not a stop sign, or a box
-without finite coordinates and positive size. Calling `detect` or `target_score` after `close`
-raises `RuntimeError`.
+`YOLOXDetector` raises `ValueError` for a nonpositive `input_size`, a `score_threshold`
+outside [0, 1], or `nms_iou` outside (0, 1]. Loading raises `FileNotFoundError` for missing
+weights; an injected model that is not a `torch.nn.Module` raises `TypeError`.
+`detect` requires nonempty uint8 RGB (H, W, 3). `target_score` requires finite floating RGB
+(3, H, W) in [0, 1], a COCO class name as `target.label`, and a finite nonempty xyxy target box;
+invalid inputs raise `ValueError`. Model outputs other than (1, N, 85) raise `ValueError`.
+Calling either method after `close` raises `RuntimeError`.
 
-`target_score` selects the highest confidence among class-13 boxes with IoU at least 0.3 with
-the target. Box and NMS selection is discrete; gradients flow through the selected confidence.
-No match returns an input-connected zero.
-
+Images are reduced to at most `input_size` on the longest side, without upscaling, then
+converted to BGR × 255 and padded on the right and bottom with 114 to multiples of 32.
+Deployment uses class-wise NMS. Differentiable scores use the target class before NMS, selecting
+the largest objectness × class probability among anchors with IoU at least 0.3; no match returns
+an input-connected zero.
 
 #### See also
 
 [Driving systems](../guides/driving-systems.md).
 
-### avsectester.closed_loop.avstacks.implemented.rule_based.planner
+### avsectester.closed_loop.avstacks.implemented.modules.planner
 
-<!-- api:begin module=avsectester.closed_loop.avstacks.implemented.rule_based.planner -->
+<!-- api:begin module=avsectester.closed_loop.avstacks.implemented.modules.planner -->
 Route-following cruise and constant-deceleration stops at tracked signs.
 
 | Name and signature | Meaning |
@@ -1218,9 +1219,9 @@ reset raises `RuntimeError`.
 
 [Driving systems](../guides/driving-systems.md).
 
-### avsectester.closed_loop.avstacks.implemented.rule_based.ranging
+### avsectester.closed_loop.avstacks.implemented.modules.ranging
 
-<!-- api:begin module=avsectester.closed_loop.avstacks.implemented.rule_based.ranging -->
+<!-- api:begin module=avsectester.closed_loop.avstacks.implemented.modules.ranging -->
 Monocular stop-sign position from calibrated angular height.
 
 | Name and signature | Meaning |
@@ -1240,21 +1241,21 @@ transform.
 
 [Driving systems](../guides/driving-systems.md).
 
-### avsectester.closed_loop.avstacks.implemented.rule_based.stack
+### avsectester.closed_loop.avstacks.implemented.modules.stack
 
-<!-- api:begin module=avsectester.closed_loop.avstacks.implemented.rule_based.stack -->
+<!-- api:begin module=avsectester.closed_loop.avstacks.implemented.modules.stack -->
 Detect signs, range by known size, track bearings and plan route-following stops.
 
 | Name and signature | Meaning |
 |---|---|
-| `RuleBasedAVStack(detector: CocoStopSignDetector, tracker: StopSignTracker \| None = None, planner: StopSignPlanner \| None = None, camera_id: str = DEFAULT_CAMERA_ID, sign_height_m: float = .762)` | Subclass of `AVStack`. Follow the route and stop for signs using calibrated camera observations. |
+| `RuleBasedAVStack(detector: YOLOXDetector, tracker: StopSignTracker \| None = None, planner: StopSignPlanner \| None = None, camera_id: str = DEFAULT_CAMERA_ID, sign_height_m: float = .762)` | Subclass of `AVStack`. Follow the route and stop for signs using calibrated camera observations. |
 | `RuleBasedAVStack.command_modes = frozenset({"trajectory"})` | Possible output command representations, or None for an undeclared driving system. |
 | `RuleBasedAVStack.provides_detections = False` | Whether decisions expose detections compatible with detection metrics. |
 | `RuleBasedAVStack.reset(observation: Observation, past: Sequence[Observation] = ()) -> None` | Clear tracks and the stop state machine for a fresh run. |
 | `RuleBasedAVStack.__call__(observation: Observation) -> Control` | Detect, range and track stop signs, then return the planner's rig-frame trajectory. |
 | `RuleBasedAVStack.component_log() -> Mapping[str, Any] \| None` | Return detections, ranges, world tracks and current planner outputs. |
 | `RuleBasedAVStack.close() -> None` | Release the detection model and clear recorded decision outputs. |
-| `rule_based_driving_adapter(factory: Callable[[int], AVStack]) -> DrivingAdapter` | Bind the configured rule driver's differentiable stop-sign confidence scorer. |
+| `rule_based_driving_adapter(factory: Callable[[int], AVStack]) -> DrivingAdapter` | Bind the configured rule driver's differentiable detection-confidence scorer. |
 <!-- api:end -->
 
 #### Constraints and errors
@@ -1263,15 +1264,15 @@ Invalid detector, tracker or planner types raise `TypeError`; omitted tracker an
 construct their defaults. An empty `camera_id` or nonpositive `sign_height_m` raises
 `ValueError`. Decisions raise `ValueError` when the selected camera has no `CameraCalibration`
 or RGB image, and `RuntimeError` after `close`. `rule_based_driving_adapter` raises `ValueError`
-when the factory has no `avstack_options` with a `CocoStopSignDetector` detector.
+when the factory has no `avstack_options` with a `YOLOXDetector` detector.
 
 #### See also
 
 [Driving systems](../guides/driving-systems.md).
 
-### avsectester.closed_loop.avstacks.implemented.rule_based.tracker
+### avsectester.closed_loop.avstacks.implemented.modules.tracker
 
-<!-- api:begin module=avsectester.closed_loop.avstacks.implemented.rule_based.tracker -->
+<!-- api:begin module=avsectester.closed_loop.avstacks.implemented.modules.tracker -->
 Static stop-sign tracking from known-size ranges and bearing EKF updates.
 
 | Name and signature | Meaning |
@@ -1794,13 +1795,13 @@ NuRec RGB rendering and native camera/pose conversion at the RPC boundary.
 | `Renderer.camera_model(camera: str \| None = None) -> Camera \| None` | Optical camera model, or None when this renderer supplies no geometry. |
 | `Renderer.cam_from_world(world_from_rig: np.ndarray, camera: str \| None = None) -> np.ndarray` | World-to-optical-camera transform for the rendered pose. |
 | `Renderer.close() -> None` | Release renderer resources; the default implementation has no effect. |
-| `NuRecRenderer(endpoint: str = "127.0.0.1:50051", scene_id: str \| None = None, cameras: list[str] = ["camera_front_wide_120fov"], image_quality: float = 95.0, resolution_hw: Mapping[str, tuple[int, int]] = dict(), probe_directory: str \| Path \| None = None, server_probe_directory: str \| None = None, track_padding_m: tuple[float, float, float] = (1.0, 1.0, 0.25))` | Subclass of `Renderer`. Real NuRec renderer: one stateless `SensorsimService.render_rgb` per frame to an nre server. |
+| `NuRecRenderer(endpoint: str = "127.0.0.1:50051", scene_id: str \| None = None, cameras: list[str] = ["camera_front_wide_120fov"], image_quality: float = 95.0, probe_directory: str \| Path \| None = None, server_probe_directory: str \| None = None, track_padding_m: tuple[float, float, float] = (1.0, 1.0, 0.25))` | Subclass of `Renderer`. Real NuRec renderer: one stateless `SensorsimService.render_rgb` per frame to an nre server. |
 | `NuRecRenderer.copy() -> NuRecRenderer` | The same configuration without a connection, loaded scene or run origin. |
 | `NuRecRenderer.served_scenes(timeout_s: float = 2.0) -> tuple[str, ...] \| None` | Query supported scene IDs without changing this renderer's loaded scene. |
 | `NuRecRenderer.load_scene(scene: Any) -> None` | Connect to the nre-ga renderer and read the scene id, camera spec, and start pose/time. |
 | `NuRecRenderer.calibration: dict[str, CameraCalibration]` | Loaded camera lenses and optical-camera-to-rig poses; empty before loading. |
 | `NuRecRenderer.service: Any` | Native SensorsimService client, including metadata APIs this renderer does not normalize. |
-| `NuRecRenderer.camera_model(camera: str \| None = None) -> Camera` | The lens scaled to the image dimensions actually returned by NRE during load_scene. |
+| `NuRecRenderer.camera_model(camera: str \| None = None) -> Camera` | The native lens read from the loaded scene's camera specification. |
 | `NuRecRenderer.cam_from_world(world_from_rig: np.ndarray, camera: str \| None = None) -> np.ndarray` | World-to-optical-camera transform at the explicit three-dimensional rig pose. |
 | `NuRecRenderer.render(world_from_rig: np.ndarray, timestamp_us: int, camera: str, dynamic_objects=())` | Render one RGB frame at an explicit three-dimensional rig pose and scene timestamp. |
 | `NuRecRenderer.render_at(world_from_rig, timestamp_us: int, camera: str, dynamic_objects=())` | Render an absolute rig pose/time and all present track-ID/world-pose pairs. |

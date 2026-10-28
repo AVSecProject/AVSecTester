@@ -6,7 +6,7 @@ import pytest
 from avsectester.closed_loop.avstacks.implemented.alpamayo import AlpamayoAVStack
 from avsectester.closed_loop.avstacks.implemented.camera_forward_collision import CameraForwardCollisionAVStack
 from avsectester.closed_loop.avstacks.implemented.modular import ModularAVStack
-from avsectester.closed_loop.avstacks.implemented.rule_based import RuleBasedAVStack
+from avsectester.closed_loop.avstacks.implemented.modules import RuleBasedAVStack
 from avsectester.data_types import Control, Detection
 from avsectester.closed_loop.avstacks.driving_adapter import DrivingAdapter
 

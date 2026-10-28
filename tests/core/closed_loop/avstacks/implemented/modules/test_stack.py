@@ -6,8 +6,8 @@ from types import MappingProxyType
 import numpy as np
 import pytest
 
-from avsectester.closed_loop.avstacks.implemented.rule_based import (
-    CocoStopSignDetector, RuleBasedAVStack, StopSignPlanner, StopSignTracker,
+from avsectester.closed_loop.avstacks.implemented.modules import (
+    RuleBasedAVStack, StopSignPlanner, StopSignTracker, YOLOXDetector,
     rule_based_driving_adapter,
 )
 from avsectester.closed_loop.simulators.ego_dynamics import PlanarEgoState
@@ -72,7 +72,7 @@ def test_rule_based_avstack(rule_based_observation, rule_based_detector):
 
 def test_rule_based_driving_adapter(tmp_path):
     # A missing checkpoint proves binding discovery does not construct the driver or load weights.
-    detector = CocoStopSignDetector(tmp_path / "not-loaded.pth", device="cpu", score_threshold=.7)
+    detector = YOLOXDetector(tmp_path / "not-loaded.pth", device="cpu", score_threshold=.7)
 
     def factory(seed):
         raise RuntimeError("Binding discovery must not construct an AVStack")
@@ -84,7 +84,7 @@ def test_rule_based_driving_adapter(tmp_path):
         rule_based_driving_adapter(factory)
     factory.avstack_options = MappingProxyType({"detector": detector})
     adapter = rule_based_driving_adapter(factory)
-    descriptor, score = adapter.scorer_bindings["rule_based.stop_sign_confidence"]
+    descriptor, score = adapter.scorer_bindings["rule_based.detection_confidence"]
     assert descriptor.inputs == {"image": "CHW float tensor [0,1]"}
     assert descriptor.outputs == {"score": "scalar confidence"}
     assert descriptor.codecs == {"score": "tensor"}

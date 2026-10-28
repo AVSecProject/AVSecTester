@@ -51,7 +51,7 @@ tests/
     closed_loop/
       avstacks/
         implemented/
-          rule_based/
+          modules/
             test_detector.py
             test_planner.py
             test_ranging.py
@@ -152,6 +152,7 @@ tests/
     test_carla_integration.py
     test_nurec_dataset.py
     test_nuscenes_dataset.py
+    test_yolox_detector_gpu.py
   __init__.py
   conftest.py
   fakes.py
@@ -289,6 +290,19 @@ docker compose run --rm --no-deps --entrypoint python \
   -e NVIDIA_VISIBLE_DEVICES=void \
   -e AVSECTESTER_NUSCENES_ROOT="$PWD/data/nuscenes" \
   carla-experiment -m pytest tests/live/test_nuscenes_dataset.py -q
+```
+
+### YOLOX GPU inference
+
+The test requires CUDA, YOLOX and a local checkpoint. `AVSECTESTER_YOLOX_WEIGHTS` selects the
+checkpoint and defaults to `models/yolox_m.pth`. Missing prerequisites skip the test with a reason.
+The nurec image provides YOLOX; see
+[YOLOX weights](../docs/getting-started/installation.md#yolox-detector-weights).
+
+```bash
+docker compose run --rm --no-deps --entrypoint python \
+  -e AVSECTESTER_YOLOX_WEIGHTS="$PWD/models/yolox_m.pth" \
+  nurec-experiment -m pytest tests/live/test_yolox_detector_gpu.py -q
 ```
 
 ### Camera-policy GPU inference

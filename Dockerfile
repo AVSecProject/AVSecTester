@@ -61,6 +61,12 @@ RUN python -c 'import re, tomllib, numpy; from pathlib import Path; project = to
  && python -c "import typer, yaml, matplotlib, PIL, pyarrow.parquet, alpasim_grpc; from embreex.rtcore_scene import EmbreeScene; from embreex.mesh_construction import TriangleMesh; from alpasim_driver.models.alpamayo1_5_model import Alpamayo15Model" \
  && rm /tmp/avsectester-pyproject.toml /tmp/avsectester-requirements.txt /tmp/alpasim-numpy.txt
 
+# YOLOX for the modules COCO object detector. Build its C++ op against the installed torch and keep
+# torch, NumPy and OpenCV as installed rather than taking YOLOX's unpinned requirements.
+RUN uv pip install --no-config --python /opt/alpasim/.venv/bin/python --no-build-isolation --no-deps \
+      yolox==0.3.0 loguru tabulate thop \
+ && python -c "from yolox.models import YOLOX, YOLOPAFPN, YOLOXHead"
+
 WORKDIR /app
 ENV PYTHONPATH=/app
 CMD ["bash"]

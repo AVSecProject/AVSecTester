@@ -3,8 +3,8 @@
 import numpy as np
 import pytest
 
-from avsectester.closed_loop.avstacks.implemented.rule_based.planner import StopSignPlanner
-from avsectester.closed_loop.avstacks.implemented.rule_based.tracker import SignTrack
+from avsectester.closed_loop.avstacks.implemented.modules.planner import StopSignPlanner
+from avsectester.closed_loop.avstacks.implemented.modules.tracker import SignTrack
 from avsectester.closed_loop.simulators.ego_dynamics import AlpaSimController, PlanarEgoState
 from avsectester.data_types import Observation
 

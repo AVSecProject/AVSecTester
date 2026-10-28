@@ -14,13 +14,14 @@ from avsectester.geometry import CameraCalibration
 from avsectester.geometry.poses import validated_transform
 from avsectester.validation import require_positive_number
 
-from .detector import CocoStopSignDetector
+from .detector import YOLOXDetector
 from .planner import StopSignPlanner
 from .ranging import estimate_stop_sign_position
 from .tracker import StopSignTracker
 
 
 DEFAULT_CAMERA_ID = "camera_front_wide_120fov"
+SIGN_LABEL = "stop sign"
 
 
 class RuleBasedAVStack(AVStack):
@@ -37,12 +38,12 @@ class RuleBasedAVStack(AVStack):
     provides_detections = False
 
     def __init__(
-        self, detector: CocoStopSignDetector, tracker: StopSignTracker | None = None,
+        self, detector: YOLOXDetector, tracker: StopSignTracker | None = None,
         planner: StopSignPlanner | None = None,
         camera_id: str = DEFAULT_CAMERA_ID, sign_height_m: float = .762,
     ) -> None:
-        if not isinstance(detector, CocoStopSignDetector):
-            raise TypeError("detector must be a CocoStopSignDetector")
+        if not isinstance(detector, YOLOXDetector):
+            raise TypeError("detector must be a YOLOXDetector")
         if tracker is not None and not isinstance(tracker, StopSignTracker):
             raise TypeError("tracker must be a StopSignTracker or None")
         if planner is not None and not isinstance(planner, StopSignPlanner):
@@ -83,7 +84,8 @@ class RuleBasedAVStack(AVStack):
         captured = read_camera_rgb(observation, self.camera_id)
         if captured is None:
             raise ValueError(f"Camera {self.camera_id!r} has no RGB image")
-        detections = self.detector.detect(captured[1])
+        detections = [(box, score) for box, score, label in self.detector.detect(captured[1])
+                      if label == SIGN_LABEL]
         estimates = [
             estimate_stop_sign_position(box, calibration, self.sign_height_m)
             for box, _score in detections
@@ -119,7 +121,7 @@ class RuleBasedAVStack(AVStack):
 
 
 def rule_based_driving_adapter(factory: Callable[[int], AVStack]) -> DrivingAdapter:
-    """Bind the configured rule driver's differentiable stop-sign confidence scorer.
+    """Bind the configured rule driver's differentiable detection-confidence scorer.
 
     The factory must declare ``avstack_options`` with its constructed detector. Reading
     these options describes the scorer without constructing a driver or loading weights.
@@ -128,10 +130,10 @@ def rule_based_driving_adapter(factory: Callable[[int], AVStack]) -> DrivingAdap
     if not isinstance(options, Mapping):
         raise ValueError("rule_based_driving_adapter requires factory.avstack_options")
     detector = options.get("detector")
-    if not isinstance(detector, CocoStopSignDetector):
-        raise ValueError("factory.avstack_options must include a CocoStopSignDetector detector")
+    if not isinstance(detector, YOLOXDetector):
+        raise ValueError("factory.avstack_options must include a YOLOXDetector detector")
     descriptor = ScorerDescriptor(
-        "rule_based.stop_sign_confidence", {"image": "CHW float tensor [0,1]"},
+        "rule_based.detection_confidence", {"image": "CHW float tensor [0,1]"},
         {"score": "scalar confidence"}, {"score": "tensor"}, ("image",),
         direction="minimize", sensor_id=options.get("camera_id", DEFAULT_CAMERA_ID),
         decision_threshold=detector.score_threshold,

@@ -30,8 +30,8 @@ Workflow and resume behavior are described in [Experiments](../guides/experiment
 
 ## Run a NuRec comparison
 
-Place NuRec 26.01 scenes under `data/nurec/26.01_release` and prepare the COCO weights listed in
-[Installation](installation.md#coco-stop-sign-detector-weights).
+Place NuRec 26.01 scenes under `data/nurec/26.01_release` and prepare the YOLOX weights listed in
+[Installation](installation.md#yolox-detector-weights).
 The supplied `split.train_segments: 5` requires at least six selected approaches.
 Copy the configuration within `configs/`:
 

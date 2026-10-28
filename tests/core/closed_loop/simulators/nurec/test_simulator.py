@@ -181,14 +181,14 @@ def test_resolution(nurec_dataset, monkeypatch, make_nurec_simulator):
         returned_resolution_hw=lambda time_us: None if time_us == 0 else (7, 9)
     ).install(monkeypatch)
     start = nurec_dataset.scenario_start("scene", nurec_dataset.frames("scene")[0])
-    renderer = NuRecRenderer(cameras=["front"], resolution_hw={"front": (6, 7)})
+    renderer = NuRecRenderer(cameras=["front"])
     with make_nurec_simulator(renderer, route_generator="none",
                                physics_update_mode="none").create_runtime() as runtime:
         runtime.reset(start)
         view = runtime.sensor_view("front")
-        assert view.data.shape == (6, 8, 3) and view.depth.shape == (6, 8)
+        assert view.data.shape == (12, 16, 3) and view.depth.shape == (12, 16)
         assert runtime.sensor_geometry("front").camera == view.camera
-        with pytest.raises(ValueError, match="NRE image dimensions"):
+        with pytest.raises(ValueError, match="NRE returned image dimensions that are not native"):
             runtime.step(Control())
 
 

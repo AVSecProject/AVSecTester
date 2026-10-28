@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from avsectester.closed_loop.avstacks.implemented.rule_based.ranging import estimate_stop_sign_position
+from avsectester.closed_loop.avstacks.implemented.modules.ranging import estimate_stop_sign_position
 from avsectester.geometry import CameraCalibration, FThetaCamera, PinholeCamera
 from avsectester.geometry.cameras import BODY_FROM_OPTICAL
 

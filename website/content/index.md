@@ -240,8 +240,7 @@ permission.
 Media on this page are rendered from the NVIDIA PhysicalAI Autonomous Vehicles NuRec dataset
 (NVIDIA Corporation, NVIDIA Autonomous Vehicle Dataset License Agreement). The Alpamayo examples
 use NVIDIA Alpamayo 1.5 for research under the NVIDIA License (non-commercial use). The
-rule-based driving system detects stop signs with the torchvision Faster R-CNN model trained on
-COCO. The replica
+rule-based driving system detects stop signs with YOLOX-m trained on COCO. The replica
 face and the inserted sign use the MUTCD R1-1 stop sign, a public-domain traffic control device.
 
 </div>

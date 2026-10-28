@@ -119,9 +119,9 @@ and training input rules.
 
 ## Prepare the white-box attack
 
-The white-box attack uses the driving system's own detector through `avstack.bindings`;
-algorithm used: `PGD`. `rule_based_driving_adapter` declares the scorer, camera and decision
-threshold. A `SessionScorer` reuses that binding for calibration, updates and diagnostics.
+The white-box attack uses the driving system's YOLOX detector through `avstack.bindings`;
+algorithm used: `PGD`. `rule_based_driving_adapter` declares `rule_based.detection_confidence`,
+the camera and decision threshold. A `SessionScorer` reuses it for calibration and optimization.
 The [driving-system guide](../guides/driving-systems.md) describes the binding behavior.
 
 The driving system stops once the detector fires, so the patch must suppress every detection

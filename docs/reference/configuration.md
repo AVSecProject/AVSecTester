@@ -98,7 +98,7 @@ hooks, metrics and sensor corruptions, including nested constructors and deferre
 construction. Directly supplied Python objects are unchanged. The injected options have the same
 preparation identity as explicitly written options.
 
-Components with this parameter include `AlpamayoAVStack`, `CocoStopSignDetector`,
+Components with this parameter include `AlpamayoAVStack`, `YOLOXDetector`,
 `DetectorPatchOptimization`, `PatchOptimization` and `PCTNetHarmonizer`. Container GPU selection
 is separate; see [automatic local services](cli.md#automatic-local-services).
 
@@ -221,15 +221,14 @@ simulator:
       options:
         endpoint: 127.0.0.1:50051
         cameras: [camera_front_wide_120fov]
-        resolution_hw: {camera_front_wide_120fov: [1080, 1900]}
         probe_directory: ../results/nre-probes
         server_probe_directory: /mnt/nre-probes
     dynamics:
       type: avsectester.closed_loop.simulators.ego_dynamics:AlpaSimController
 ```
 
-`resolution_hw` uses native camera IDs and `[height, width]`. Projection uses the actual
-returned dimensions. `probe_directory` is a client-side path resolved relative to the YAML file;
+NuRec cameras render at their native resolution.
+`probe_directory` is a client-side path resolved relative to the YAML file;
 `server_probe_directory` is an unchanged string in the server's filesystem namespace. The server
 must be able to read the probe files. See
 [automatic local services](cli.md#automatic-local-services) for startup and mounts.

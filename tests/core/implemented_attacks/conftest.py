@@ -5,8 +5,8 @@ import pytest
 
 from avsectester.attack import AttackSegment
 from avsectester.closed_loop.avstacks.driving_adapter import DrivingAdapter
-from avsectester.closed_loop.avstacks.implemented.rule_based import (
-    CocoStopSignDetector, RuleBasedAVStack, rule_based_driving_adapter,
+from avsectester.closed_loop.avstacks.implemented.modules import (
+    RuleBasedAVStack, YOLOXDetector, rule_based_driving_adapter,
 )
 from avsectester.closed_loop.simulators.ego_dynamics import TrajectoryFollower
 from avsectester.closed_loop.simulators.nurec import NuRecSimulator
@@ -110,12 +110,12 @@ def nurec_detector_services_and_segment(nurec_patch_services_and_segment, replic
     services, make_segment = nurec_patch_services_and_segment
 
     def factory(seed):
-        return RuleBasedAVStack(CocoStopSignDetector(
+        return RuleBasedAVStack(YOLOXDetector(
             "unused.pth", device="cpu", score_threshold=0., model=replica_detector_model,
         ), camera_id="front")
 
     factory.avstack_options = {
-        "camera_id": "front", "detector": CocoStopSignDetector("unused.pth", device="cpu", score_threshold=0.),
+        "camera_id": "front", "detector": YOLOXDetector("unused.pth", device="cpu", score_threshold=0.),
     }
     adapter = rule_based_driving_adapter(factory)
     with ClosedLoopServices(services.dataset, services.simulator, adapter) as scope:

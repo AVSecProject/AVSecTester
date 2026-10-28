@@ -111,9 +111,16 @@ def policy_observation(alpamayo_observations):
 
 @pytest.fixture
 def rule_based_detector_model():
-    from tests.fakes import coco_detection_model
+    from tests.fakes import yolox_detection_model
 
-    return coco_detection_model(boxes=((48., 38., 52., 42.),))
+    stop = [0.] * 80
+    stop[11] = 1.
+    car = [0.] * 80
+    car[2] = 1.
+    return yolox_detection_model([
+        [50., 40., 4., 4., .9, *stop],
+        [10., 20., 4., 4., .95, *car],
+    ])
 
 
 @pytest.fixture
@@ -134,6 +141,6 @@ def rule_based_observation():
 
 @pytest.fixture
 def rule_based_detector(rule_based_detector_model):
-    from avsectester.closed_loop.avstacks.implemented.rule_based import CocoStopSignDetector
+    from avsectester.closed_loop.avstacks.implemented.modules import YOLOXDetector
 
-    return CocoStopSignDetector("synthetic-local-weights", device="cpu", model=rule_based_detector_model)
+    return YOLOXDetector("synthetic-local-weights", device="cpu", model=rule_based_detector_model)

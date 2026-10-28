@@ -20,7 +20,7 @@ def resolve_type(value: Any) -> Callable[..., Any]:
 
 
 _BUILTINS = {
-    "RuleBasedAVStack": "avsectester.closed_loop.avstacks.implemented.rule_based:RuleBasedAVStack",
+    "RuleBasedAVStack": "avsectester.closed_loop.avstacks.implemented.modules:RuleBasedAVStack",
     "CameraForwardCollisionAVStack": "avsectester.closed_loop.avstacks.implemented.camera_forward_collision:CameraForwardCollisionAVStack",
     "DrivingMetrics": "avsectester.evaluation.metric:DrivingMetrics",
     "DetectionMetrics": "avsectester.evaluation.metric:DetectionMetrics",

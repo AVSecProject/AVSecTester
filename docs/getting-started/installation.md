@@ -151,15 +151,15 @@ docker compose run --rm -e AVSECTESTER_ALPAMAYO_CHECKPOINT nurec-experiment run 
 The path must exist inside the experiment container.
 [Driving systems](../guides/driving-systems.md) describes model loading.
 
-### COCO stop-sign detector weights
+### YOLOX detector weights
 
-The rule-based driving system uses torchvision's `COCO_V1` Faster R-CNN checkpoint:
+The nurec image includes YOLOX. The rule-based driving system uses the COCO YOLOX-m checkpoint:
 
 ```bash
 mkdir -p models
 curl --fail --location \
-  https://download.pytorch.org/models/fasterrcnn_resnet50_fpn_coco-258fb6c6.pth \
-  --output models/fasterrcnn_resnet50_fpn_coco-258fb6c6.pth
+  https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_m.pth \
+  --output models/yolox_m.pth
 ```
 
 This is the local `weights_path` in the supplied modular stop-sign configurations. The framework

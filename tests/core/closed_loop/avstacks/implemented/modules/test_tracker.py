@@ -5,7 +5,7 @@ import math
 import numpy as np
 import pytest
 
-from avsectester.closed_loop.avstacks.implemented.rule_based.tracker import StopSignTracker
+from avsectester.closed_loop.avstacks.implemented.modules.tracker import StopSignTracker
 from avsectester.closed_loop.simulators.ego_dynamics import PlanarEgoState
 
 

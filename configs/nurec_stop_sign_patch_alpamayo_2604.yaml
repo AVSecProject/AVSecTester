@@ -25,10 +25,6 @@ simulator:
         endpoint: 127.0.0.1:50051
         cameras:
         - camera_front_wide_120fov
-        resolution_hw:
-          camera_front_wide_120fov:
-          - 1080
-          - 1900
         probe_directory: ../results/nre-probes
         server_probe_directory: /mnt/nre-probes
     dynamics:

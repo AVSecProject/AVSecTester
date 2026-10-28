@@ -262,7 +262,7 @@ def test_white_box_offline_phase(nurec_detector_services_and_segment):
             ys, xs = np.nonzero(view.composition.plan.visible_mask)
             replica_bounds = (xs.min(), ys.min(), xs.max() + 1, ys.max() + 1)
             assert not np.allclose(expected, replica_bounds)
-    options = replace(attack.optimization, scorer_id="rule_based.stop_sign_confidence")
+    options = replace(attack.optimization, scorer_id="rule_based.detection_confidence")
     assert StopSignPatchAttack(optimization=options).run_offline(
         replace(context, metadata=(segment,), report=OfflineReport(None))).dtype == np.uint8
     descriptor = ScorerDescriptor("image-score", {"image": "CHW float tensor [0,1]"},
