@@ -51,7 +51,7 @@ sequenceDiagram
         R->>R: command actions, hooks and validation
         R->>S: queued world actions and step(executed command)
         S-->>R: post-state and next capture
-        R->>R: record_end subscriptions at step.end
+        R->>R: keep the post-step context for AttackRuntime.stop
         R->>R: after_step feedback
         R->>L: record_step with actions and receipts
     end
