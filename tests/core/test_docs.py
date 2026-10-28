@@ -51,8 +51,10 @@ def documentation_paths():
                     or ("/" not in pattern and fnmatch.fnmatch(name, pattern))
                     for pattern in patterns)]
             paths.extend(Path(directory) / name for name in files if name.endswith(".md"))
+    # The homepage in website/ links to site paths; mkdocs build --strict checks those links.
     return sorted(path for path in paths if path.is_file()
-                  and not excluded.intersection(path.relative_to(ROOT).parts))
+                  and not excluded.intersection(path.relative_to(ROOT).parts)
+                  and path.relative_to(ROOT).parts[0] != "website")
 
 
 DOCS = documentation_paths()

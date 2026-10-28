@@ -1,0 +1,55 @@
+{% extends "main.html" %}
+
+{#- Homepage layout: a full-width introduction above the page content from index.md. -#}
+
+{% block tabs %}
+  {{ super() }}
+  <section class="avs-hero" aria-labelledby="avs-hero-title">
+    <div class="md-grid avs-hero__inner">
+      <h1 id="avs-hero-title" class="avs-hero__title">AVSecTester</h1>
+      <p class="avs-hero__tagline">{{ config.site_description }}</p>
+      {%- if config.extra.authors %}
+      <p class="avs-hero__authors">{{ config.extra.authors | join(", ") }}</p>
+      {%- endif %}
+      <p class="avs-hero__text">
+        AVSecTester selects attack segments, prepares artifacts in an offline phase and runs clean
+        and attacked treatments of the same segment in closed loop.
+        Every run is saved, so evaluation works from the recorded logs after the simulator has closed.
+      </p>
+      <div class="avs-hero__actions">
+        <a class="avs-button avs-button--primary" href="{{ 'docs/getting-started/quickstart/' | url }}">Get started</a>
+        <a class="avs-button" href="{{ 'docs/' | url }}">Documentation</a>
+        <a class="avs-button" href="{{ config.repo_url }}">GitHub</a>
+      </div>
+      <ul class="avs-badges" aria-label="Release information">
+        <li class="avs-badge"><span class="avs-badge__key">version</span><span class="avs-badge__value">{{ config.extra.version }}</span></li>
+        <li class="avs-badge"><span class="avs-badge__key">license</span><span class="avs-badge__value">MIT</span></li>
+        <li class="avs-badge"><span class="avs-badge__key">Python</span><span class="avs-badge__value">3.11</span></li>
+      </ul>
+    </div>
+  </section>
+{% endblock %}
+
+{% block styles %}
+  {{ super() }}
+  <link rel="stylesheet" href="{{ 'stylesheets/home.css' | url }}">
+{% endblock %}
+
+{% block content %}
+  {{ page.content }}
+{% endblock %}
+
+{% block scripts %}
+  {{ super() }}
+  <script>
+    // Respect reduced motion: stop autoplay and offer controls instead.
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      document.querySelectorAll("video.avs-video").forEach(function (video) {
+        video.removeAttribute("autoplay");
+        video.autoplay = false;
+        video.pause();
+        video.controls = true;
+      });
+    }
+  </script>
+{% endblock %}

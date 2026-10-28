@@ -1,0 +1,257 @@
+/* Homepage layout. Colors come from the active Material scheme, so light and dark both work. */
+
+.avs-hero {
+  background: linear-gradient(160deg, var(--md-primary-fg-color) 0%, var(--md-primary-fg-color--dark) 100%);
+  color: var(--md-primary-bg-color);
+}
+
+.avs-hero__inner {
+  padding: 3.2rem 0.8rem 2.6rem;
+}
+
+.avs-hero__title {
+  margin: 0 0 0.4rem;
+  font-size: 2.6rem;
+  font-weight: 700;
+  line-height: 1.15;
+  color: inherit;
+}
+
+.avs-hero__tagline {
+  margin: 0 0 1rem;
+  font-size: 1.15rem;
+  font-weight: 500;
+}
+
+.avs-hero__authors {
+  margin: -0.4rem 0 1rem;
+  font-size: 0.8rem;
+  opacity: 0.92;
+}
+
+.avs-hero__text {
+  max-width: 42rem;
+  margin: 0 0 1.4rem;
+  font-size: 0.85rem;
+  line-height: 1.6;
+  opacity: 0.92;
+}
+
+.avs-hero__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.avs-button {
+  display: inline-block;
+  padding: 0.5em 1.2em;
+  border: 0.1rem solid var(--md-primary-bg-color);
+  border-radius: 0.2rem;
+  color: var(--md-primary-bg-color);
+  font-size: 0.8rem;
+  font-weight: 700;
+  transition: color 125ms, background-color 125ms, border-color 125ms;
+}
+
+.avs-button:visited {
+  color: var(--md-primary-bg-color);
+}
+
+.avs-button--primary,
+.avs-button--primary:visited {
+  background-color: var(--md-primary-bg-color);
+  color: var(--md-primary-fg-color--dark);
+}
+
+.avs-button:hover,
+.avs-button:focus {
+  background-color: var(--md-accent-fg-color);
+  border-color: var(--md-accent-fg-color);
+  color: var(--md-accent-bg-color);
+}
+
+.avs-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 1.2rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.avs-badge {
+  display: inline-flex;
+  margin: 0;
+  overflow: hidden;
+  border-radius: 0.2rem;
+  font-size: 0.65rem;
+  line-height: 1.6;
+}
+
+.avs-badge__key,
+.avs-badge__value {
+  padding: 0 0.45rem;
+}
+
+.avs-badge__key {
+  background-color: rgba(0, 0, 0, 0.35);
+}
+
+.avs-badge__value {
+  background-color: rgba(255, 255, 255, 0.22);
+}
+
+/* Media figures */
+
+.md-typeset figure.avs-figure {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  margin: 1.2rem 0 1.6rem;
+}
+
+.avs-figure video,
+.avs-figure img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 0.2rem;
+  background-color: var(--md-default-fg-color--lightest);
+}
+
+.avs-figure figcaption {
+  max-width: none;
+  margin-top: 0.5rem;
+  font-size: 0.7rem;
+  color: var(--md-default-fg-color--light);
+}
+
+.avs-video {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 0.2rem;
+  background-color: var(--md-default-fg-color--lightest);
+}
+
+/* Card grids */
+
+.avs-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: 0.8rem;
+  margin: 1rem 0 1.6rem;
+}
+
+.avs-grid--wide {
+  grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+}
+
+.avs-card {
+  display: flex;
+  flex-direction: column;
+  padding: 0.8rem 0.9rem;
+  border: 0.05rem solid var(--md-default-fg-color--lightest);
+  border-radius: 0.2rem;
+  background-color: var(--md-default-bg-color);
+}
+
+.avs-card > :first-child {
+  margin-top: 0;
+}
+
+.avs-card > :last-child {
+  margin-bottom: 0;
+}
+
+.avs-card h3 {
+  margin: 0 0 0.4rem;
+  font-size: 0.85rem;
+}
+
+.avs-card p {
+  margin: 0 0 0.6rem;
+  font-size: 0.75rem;
+}
+
+.avs-card img,
+.avs-card video {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin: 0 0 0.6rem;
+  border-radius: 0.15rem;
+}
+
+.avs-card .avs-card__link {
+  margin-top: auto;
+}
+
+/* Labelled image pairs inside a card */
+
+.avs-pair {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: 0.5rem;
+  margin: 0 0 0.6rem;
+}
+
+.md-typeset .avs-pair figure {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  margin: 0;
+}
+
+.avs-card .avs-pair p,
+.avs-card .avs-pair img {
+  margin: 0;
+}
+
+.md-typeset .avs-pair figcaption {
+  max-width: none;
+  margin: 0.2rem 0 0;
+  font-size: 0.65rem;
+  font-style: normal;
+  color: var(--md-default-fg-color--light);
+}
+
+/* Supported components line */
+
+.avs-components {
+  margin: 0.6rem 0 1.6rem;
+  font-size: 0.75rem;
+}
+
+.avs-components p {
+  margin: 0;
+}
+
+/* Page footer attributions */
+
+.avs-attribution {
+  margin-top: 2rem;
+  padding-top: 1rem;
+  border-top: 0.05rem solid var(--md-default-fg-color--lightest);
+  font-size: 0.65rem;
+  color: var(--md-default-fg-color--light);
+}
+
+.avs-attribution ul {
+  margin-left: 1rem;
+}
+
+@media screen and (max-width: 44.9375em) {
+  .avs-hero__inner {
+    padding: 2.2rem 0.8rem 1.8rem;
+  }
+
+  .avs-hero__title {
+    font-size: 2rem;
+  }
+
+  .avs-hero__tagline {
+    font-size: 1rem;
+  }
+}

@@ -84,3 +84,12 @@ See [experiment interpretation](../examples/README.md#attack-impact).
 ## External benchmark integrations
 
 - [ ] Supply reference evaluation workflows and published benchmark adapters.
+
+## Versioned documentation
+
+- [ ] Publish the site documentation for each release beside the latest `main`, with a version
+  selector.
+
+## Project authors and citation
+
+- [ ] Fill the homepage author list in `website/mkdocs.yml` and add citation information.

@@ -1,0 +1,120 @@
+site_name: AVSecTester
+site_description: Adversarial security testing for autonomous driving.
+site_url: https://avsecproject.github.io/AVSecTester/
+repo_url: https://github.com/AVSecProject/AVSecTester
+repo_name: AVSecProject/AVSecTester
+edit_uri: edit/main/
+copyright: AVSecTester is released under the MIT License.
+
+# Build from the repository root with: mkdocs build --strict -f website/mkdocs.yml
+# website/content holds the homepage. scripts/website/hooks.py adds every file below docs/ under
+# the docs/ prefix, so docs/README.md is served at /docs/ and remains the GitHub documentation source.
+docs_dir: content
+watch:
+  - ../docs
+  - ../scripts/website
+hooks:
+  - ../scripts/website/hooks.py
+
+nav:
+  - Home: index.md
+  - Get started:
+      - Overview: docs/README.md
+      - Installation: docs/getting-started/installation.md
+      - Quickstart: docs/getting-started/quickstart.md
+  - Concepts:
+      - Architecture: docs/concepts/architecture.md
+  - Guides:
+      - Datasets: docs/guides/datasets.md
+      - Experiments: docs/guides/experiments.md
+      - Attacks: docs/guides/attacks.md
+      - Optimization: docs/guides/optimization.md
+      - Environments: docs/guides/environments.md
+      - Simulators: docs/guides/simulators.md
+      - Driving systems: docs/guides/driving-systems.md
+      - Evaluation: docs/guides/evaluation.md
+      - Defenses: docs/guides/defenses.md
+  - Examples:
+      - docs/examples/README.md
+      - Stop-sign patch: docs/examples/stop-sign-patch.md
+      - Physical patch: docs/examples/physical-patch.md
+      - Image insertion: docs/examples/image-insertion.md
+      - Phantom injection: docs/examples/phantom-injection.md
+      - Speed feedback: docs/examples/speed-feedback-attack.md
+  - Reference:
+      - Configuration: docs/reference/configuration.md
+      - CLI: docs/reference/cli.md
+      - Runtime: docs/reference/runtime.md
+      - Python API: docs/reference/python-api.md
+  - Development:
+      - Contributing: docs/development/contributing.md
+
+theme:
+  name: material
+  custom_dir: overrides
+  font: false
+  icon:
+    repo: fontawesome/brands/github
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - navigation.footer
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.tooltips
+    - content.action.edit
+  palette:
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/brightness-auto
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to system preference
+
+extra:
+  generator: false
+  # Homepage author line; it is rendered only when this list is nonempty.
+  authors: []
+  # version is read from avsectester/__init__.py by scripts/website/hooks.py.
+
+markdown_extensions:
+  - tables
+  - toc:
+      permalink: true
+      toc_depth: 3
+  - attr_list
+  - md_in_html
+  - pymdownx.highlight
+  # GitHub renders mermaid fences in docs/; the site renders them too.
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+validation:
+  nav:
+    omitted_files: warn
+    not_found: warn
+    absolute_links: warn
+  links:
+    not_found: warn
+    anchors: warn
+    absolute_links: warn
+    unrecognized_links: warn

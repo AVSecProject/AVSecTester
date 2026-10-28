@@ -14,15 +14,17 @@ preparation, per-run state and recorded evidence in their owning components. The
 
 ## Repository layout
 
-| Directory | Content |
+| Path | Content |
 |---|---|
 | `configs/` | Supplied experiment configurations |
 | `scripts/` | Preparation, validation and visualization commands |
+| `scripts/website/` | Site build hooks, built-site checks and homepage media tools |
 | `tests/` | Core, native and opt-in external checks |
 | `docs/` | Guides, examples and references |
 | `models/` | Model weight locations; weights are downloaded, not tracked |
 | `benchmarks/` | Repository benchmarks |
 | `third_party/` | External implementation checkouts |
+| `website/` | Site configuration, pinned build dependencies, homepage source and media |
 
 The framework package layout and import direction are defined in
 [dependency layers](../concepts/architecture.md#dependency-layers).
@@ -69,6 +71,9 @@ document; elsewhere use one sentence and a link.
 | Unfinished work and Not yet implemented targets | [TODO](TODO.md) |
 | Defense status | [Defenses](../guides/defenses.md) |
 | Test commands, prerequisites and CI | [Tests](../../tests/README.md) |
+| Site navigation | [website/mkdocs.yml](../../website/mkdocs.yml) |
+| Homepage text and media | [website/content/](../../website/content/) |
+| Homepage media sources | [Website media](../../scripts/README.md#website-media) |
 
 Check API names, signatures, YAML keys, defaults and paths against source. Use `Simulator` for
 configuration, `SimulatorRuntime` for a live world, `AVStack` for driving, `DrivingAdapter` for
@@ -97,6 +102,15 @@ signatures. Internal modules are implementation details.
 
 After changing a public docstring, follow the generator command in
 [Repository tools](../../scripts/README.md#api-reference-generation).
+
+The project site publishes docs/ unchanged under /docs/, except the TODO page, which stays on
+GitHub; site links to it open it there. Every page must render correctly both on GitHub and on the
+site, so use only standard Markdown and GitHub tables; do not use Material for MkDocs syntax such
+as admonitions or content tabs. Add every new docs page to `nav` in
+[website/mkdocs.yml](../../website/mkdocs.yml); the strict site build fails on omitted pages. To
+preview the site, create a separate virtual environment, run
+`pip install -r website/requirements.txt` and then `mkdocs serve -f website/mkdocs.yml`. This is a
+documentation tool and runs outside the Compose experiment services.
 
 ## Roadmap
 
