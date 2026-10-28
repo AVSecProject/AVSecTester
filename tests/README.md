@@ -187,7 +187,8 @@ repository. Commit only tests that follow the layers above:
 
 CPU builds of `torch` and `torchvision` satisfy the offline test prerequisites; CI installs
 both from the CPU index. Use the test and nurec extras for the core suite, including Embree for
-synthetic mesh depth. The supplied images provide their corresponding native dependencies.
+synthetic mesh depth and protobuf for rendered-probe requests. The supplied images provide their
+corresponding native dependencies.
 
 nuScenes tests require nuscenes-devkit and skip when it is absent; avsectester:carla includes
 it. Native `AVStack` tests require the avstack checkouts and CARLA Python client. Detector

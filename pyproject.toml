@@ -32,10 +32,12 @@ rendering = [
     "opencv-python-headless>=4.9,<4.12",
     "Pillow>=10",
 ]
-# Static-mesh depth for NuRec; shared by the Python 3.11 and 3.12 interpreters.
+# NuRec static-mesh depth and NRE asset-editing messages for rendered-probe occlusion;
+# shared by the Python 3.11 and 3.12 interpreters.
 nurec = [
     "trimesh==5.1.1",
     "embreex==4.4.0.post1",
+    "protobuf>=4.22",
 ]
 # Native avstack libraries. Installed as editable path deps from the git submodules.
 # NOTE: install order and the heavy torch/mmcv/mmdet wheels are documented in docs/getting-started/installation.md.
