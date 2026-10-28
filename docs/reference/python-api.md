@@ -801,12 +801,12 @@ unchanged.
 
 For differentiable composition, declare `differentiable=True` and implement
 `harmonize_tensor(composite, mask, background, nominal_composite)`. The image tensors are CHW
-floating RGB in [0, 1] with matching shape, dtype and device; the HW mask is boolean.
-Preserve gradients to candidate colors and mask-exterior pixels. Every harmonizer in a plan
-receives the same unadjusted composite and original background. The nominal composite shows
-each surface's `nominal_texture` when set and the candidate colors elsewhere, so exposure
-estimation can use the unpatched face as reference. The base method raises
-`NotImplementedError`.
+floating RGB in [0, 1] with matching shape, dtype and device; the HW mask is boolean. Return
+values in [0, 1]; `CompositePlan.composite` clamps its result to that range. Preserve gradients
+to candidate colors and mask-exterior pixels. Every harmonizer in a plan receives the same
+unadjusted composite and original background. The nominal composite shows each surface's
+`nominal_texture` when set and the candidate colors elsewhere, so exposure estimation can use
+the unpatched face as reference. The base method raises `NotImplementedError`.
 
 #### See also
 

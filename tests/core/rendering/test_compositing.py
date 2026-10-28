@@ -7,9 +7,8 @@ import pytest
 from avsectester.data_types import ActorState
 from avsectester.geometry.boxes import box_ray_distances
 from avsectester.rendering import (
-    ClassicHarmonizer, ExposureHarmonizer, ObjectAsset, ObjectVisibility, PlacedObject, PlaneSurface,
-    blend_rgba, composite_objects, plan_composite,
-    render_surfaces,
+    ClassicHarmonizer, ExposureHarmonizer, Harmonizer, ObjectAsset, ObjectVisibility, PlacedObject,
+    PlaneSurface, blend_rgba, composite_objects, plan_composite, render_surfaces,
 )
 
 
@@ -194,8 +193,9 @@ def test_plan_composite_harmonizers(camera, optical_from_world):
     background = (torch.as_tensor(image, dtype=torch.float32).permute(2, 0, 1) / 255).requires_grad_()
     colors = (torch.as_tensor(texture[..., :3], dtype=torch.float32).permute(2, 0, 1) / 255).requires_grad_()
     output = plan.composite(background, {("near", 0): colors, ("far", 0): colors})
+    assert output.min() >= 0 and output.max() <= 1
     deployed = plan.apply(image)
-    rounded = (output.detach().clamp(0, 1) * 255).round().to(torch.uint8).permute(1, 2, 0).numpy()
+    rounded = (output.detach() * 255).round().to(torch.uint8).permute(1, 2, 0).numpy()
     np.testing.assert_array_equal(deployed.image, rounded)
     np.testing.assert_array_equal(deployed.image[~plan.visible_mask], image[~plan.visible_mask])
     output.sum().backward()
@@ -208,7 +208,7 @@ def test_plan_composite_harmonizers(camera, optical_from_world):
     reversed_plan = plan_composite(camera, optical_from_world, (far, near))
     np.testing.assert_array_equal(deployed.image, reversed_plan.apply(image).image)
     np.testing.assert_array_equal(
-        rounded, (reversed_plan.composite(background).detach().clamp(0, 1) * 255)
+        rounded, (reversed_plan.composite(background).detach() * 255)
         .round().to(torch.uint8).permute(1, 2, 0).numpy())
 
     classic = replace(far, harmonizer=ClassicHarmonizer(color_transfer=False, poisson=False))
@@ -218,6 +218,23 @@ def test_plan_composite_harmonizers(camera, optical_from_world):
     near_only = plan_composite(camera, optical_from_world, (near,))
     np.testing.assert_array_equal(
         mixed.apply(image).image[near_only.visible_mask], deployed.image[near_only.visible_mask])
+
+    class Overexposed(Harmonizer):
+        """A user harmonizer whose output leaves [0, 1]."""
+        differentiable = True
+
+        def harmonize_tensor(self, composite, mask, background, nominal_composite):
+            return composite * 4 - 1
+
+        def __call__(self, composite_rgb, mask, background_rgb):
+            return composite_rgb
+
+    overexposed = plan_composite(camera, optical_from_world, (replace(near, harmonizer=Overexposed()),))
+    clamped = overexposed.composite(background.detach(), {("near", 0): colors.detach()})
+    assert clamped.min() == 0 and clamped.max() == 1
+    np.testing.assert_array_equal(
+        overexposed.apply(image).image,
+        (clamped * 255).round().to(torch.uint8).permute(1, 2, 0).numpy())
 
     # A nominal texture fixes the harmonizer's statistics, so editing part of the texture leaves
     # the rest of the object unchanged; without one, the edit changes the whole object's gain.
@@ -239,7 +256,7 @@ def test_plan_composite_harmonizers(camera, optical_from_world):
                           for value in (colors, edited_colors)] for name, plan in plans.items()}
         torch.testing.assert_close(*outputs["nominal"], atol=0, rtol=0)
         assert not torch.allclose(*outputs["plain"])
-        rounded = (plans["nominal"].composite(background).clamp(0, 1) * 255).round().to(torch.uint8)
+        rounded = (plans["nominal"].composite(background) * 255).round().to(torch.uint8)
     np.testing.assert_array_equal(plans["nominal"].apply(image).image, rounded.permute(1, 2, 0).numpy())
 
 

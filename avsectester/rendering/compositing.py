@@ -133,8 +133,8 @@ class CompositePlan:
         surface texture's size. Asset alpha preserves its shape; omitted surfaces keep their
         asset colors. Gradients reach the image and replacement colors, not planned geometry.
         Each harmonizer receives the same unadjusted blend, its visible mask, the original
-        background and the nominal blend. Non-differentiable harmonizers make this operation
-        unavailable.
+        background and the nominal blend. The result is clamped to [0, 1], as ``apply`` clips
+        before rounding. Non-differentiable harmonizers make this operation unavailable.
         """
         for placed in self.objects:
             harmonizer = placed.harmonizer
@@ -143,7 +143,7 @@ class CompositePlan:
                     f"Harmonizers are not differentiable: object {placed.object_id!r} uses "
                     f"{type(harmonizer).__name__}")
         textures = dict(textures or {})
-        return self._harmonize_tensor(self._blend(image, textures), image, textures)
+        return self._harmonize_tensor(self._blend(image, textures), image, textures).clamp(0, 1)
 
     def _harmonize_tensor(self, blended: torch.Tensor, background: torch.Tensor,
                           textures: dict[tuple[str, int], torch.Tensor]) -> torch.Tensor:

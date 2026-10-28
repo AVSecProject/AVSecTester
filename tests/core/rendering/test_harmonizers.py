@@ -49,6 +49,17 @@ def test_feathering():
     assert torch.isfinite(harmonizer.harmonize_tensor(
         composite[:, :1, :1], tiny, background[:, :1, :1], composite[:, :1, :1])).all()
 
+    # This blur rounds some interior weights above one. Zero adjusted channels over a white
+    # background then fall below zero unless the feathered blend stays convex.
+    mask = torch.zeros(40, 40, dtype=torch.bool)
+    mask[1:-1, 1:-1] = True
+    composite = torch.zeros(3, 40, 40)
+    composite[0] = 1.
+    background = torch.ones(3, 40, 40)
+    feathered = replace(harmonizer, gain_range=(1., 1.), feather_sigma=4.4).harmonize_tensor(
+        composite, mask, background, composite)
+    assert feathered.min() >= 0 and feathered.max() <= 1
+
 
 def test_numpy_and_tensor_interfaces_match():
     composite = np.full((7, 8, 3), (224, 127, 0), dtype=np.uint8)

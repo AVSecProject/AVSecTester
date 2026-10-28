@@ -183,7 +183,8 @@ class ExposureHarmonizer(Harmonizer):
             return composite
         adjusted = _srgb_rgb(_linear_rgb(composite) * gain).clamp(0, 1)
         if self.feather_sigma > 0:
-            alpha = _feather_mask(mask, self.feather_sigma, composite.dtype)[None]
+            # Rounding in the blur can leave weights just outside [0, 1]; the blend must stay convex.
+            alpha = _feather_mask(mask, self.feather_sigma, composite.dtype).clamp(0, 1)[None]
             adjusted = alpha * adjusted + (1 - alpha) * background
         return torch.where(mask[None], adjusted, composite)
 
