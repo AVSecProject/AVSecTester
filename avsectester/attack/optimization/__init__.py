@@ -1,7 +1,7 @@
 """Public contracts, algorithms, parameterizations and session scoring for user attacks."""
 from .interface import (
-    AdversarialSample, DataSource, GradientOptimizer, HideObject, OptimizationObjective,
-    OptimizationResult, Perturbation, Scorer, SpoofObject,
+    AdversarialSample, DataSource, GradientOptimizer, HideBelowThreshold, HideObject,
+    OptimizationObjective, OptimizationResult, Perturbation, Scorer, SpoofObject,
 )
 from .blackbox import NES
 from .scorers import SessionScorer
@@ -23,6 +23,7 @@ __all__ = [
     'DataSource',
     'GradientOptimizer',
     'HideObject',
+    'HideBelowThreshold',
     'OptimizationObjective',
     'OptimizationResult',
     'Perturbation',

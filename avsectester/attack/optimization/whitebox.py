@@ -7,6 +7,7 @@ gradient-free black-box algorithms (NES) live in ``blackbox.py`` (numpy, no torc
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import torch
@@ -23,19 +24,14 @@ from .interface import (
 )
 
 
-def _tv(delta: torch.Tensor) -> torch.Tensor:
-    """Total variation — a smoothness regularizer for physical realizability."""
-    dh = (delta[:, 1:, :] - delta[:, :-1, :]).abs().mean()
-    dw = (delta[:, :, 1:] - delta[:, :, :-1]).abs().mean()
-    return dh + dw
-
-
 @dataclass
 class PGD(GradientOptimizer):
     """Projected Gradient Descent (sign-gradient descent on the loss, minimizing it).
 
     Hyper-parameters are the algorithm's only; the perturbation budget lives in the ``Perturbation``.
-    ``verbose`` prints the objective every ``log_every`` steps.
+    ``tv_weight`` adds that weight times ``perturbation.smoothness(delta)`` to the loss, favoring
+    smooth artifacts that survive printing and camera sampling. ``verbose`` prints the objective
+    every ``log_every`` steps.
     """
 
     steps: int = 200
@@ -63,12 +59,16 @@ class PGD(GradientOptimizer):
         perturbation: Perturbation,
         scorer: Scorer,
         objective: OptimizationObjective,
+        *,
+        monitor: Callable[[int, torch.Tensor], None] | None = None,
     ) -> OptimizationResult:
         if not scorer.differentiable:
             raise ValueError("PGD needs a differentiable (white-box) scorer; use NES for black-box")
         torch.manual_seed(self.seed)
         delta = perturbation.init()
         history: list[float] = []
+        if monitor is not None:
+            monitor(0, delta.detach())
         for step in range(self.steps):
             samples = data.sample(self.batch)
             loss = torch.zeros((), device=delta.device)
@@ -76,15 +76,17 @@ class PGD(GradientOptimizer):
                 score = scorer.target_score(perturbation.apply(s, delta), s.target)
                 loss = loss + objective.loss(score)
             loss = loss / max(len(samples), 1)
+            history.append(float(loss))
             if self.tv_weight:
-                loss = loss + self.tv_weight * _tv(delta)
+                loss = loss + self.tv_weight * perturbation.smoothness(delta)
             (grad,) = torch.autograd.grad(loss, delta)
             with torch.no_grad():
                 delta = perturbation.project(delta - self.step_size * grad.sign())
             delta.requires_grad_(True)
-            history.append(float(loss))
+            if monitor is not None:
+                monitor(step + 1, delta.detach())
             if self.verbose and (step % self.log_every == 0 or step == self.steps - 1):
-                print(f"  step {step:4d}  loss {history[-1]:.4f}")
+                print(f"  step {step:4d}  objective {history[-1]:.4f}")
 
         with torch.no_grad():  # final target confidence, averaged over a fresh batch
             samples = data.sample(self.batch)

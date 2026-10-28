@@ -10,7 +10,8 @@ from avsectester.attack import Attack, AttackRuntime, AttackSegment, OfflineCont
 from avsectester.execution.services import ScenarioView
 from avsectester.rendering import Harmonizer, ObjectAsset
 from avsectester.validation import (
-    require_nonnegative_integer, require_nonnegative_number, require_positive_number,
+    require_nonnegative_integer, require_nonnegative_number, require_positive_integer,
+    require_positive_number,
 )
 
 from .assets import (
@@ -37,13 +38,14 @@ class StopSignPatchAttack(Attack):
         self, initial_patch: str = "white",
         optimization: DetectorPatchOptimization | RolloutPatchOptimization | None = None,
         mask_path: str | Path = DEFAULT_MASK_PATH, noise_std: float = .25, noise_seed: int = 0,
+        noise_cell_texels: int = 32,
         approach_m: float = 50., hold_steps: int = 20, offset_m: float = .10,
         width_scale: float = 1.1, harmonizer: Harmonizer | None = None,
         face_orientation: str = "upright", face_size: str = "mutcd_standard",
         min_approach_m: float = 20.,
     ) -> None:
         if initial_patch not in INITIAL_PATCHES:
-            raise ValueError("initial_patch must be none, white, black or gaussian_noise")
+            raise ValueError("initial_patch must be none, white, black or low_frequency_noise")
         if initial_patch == "none" and optimization is not None:
             raise ValueError("initial_patch none deploys the unpatched replica and cannot be optimized")
         if optimization is not None and not isinstance(
@@ -56,6 +58,7 @@ class StopSignPatchAttack(Attack):
             raise ValueError("face_size must be mutcd_standard or map_width")
         require_nonnegative_number(noise_std, "noise_std")
         require_nonnegative_integer(noise_seed, "noise_seed")
+        require_positive_integer(noise_cell_texels, "noise_cell_texels")
         require_positive_number(approach_m, "approach_m")
         require_nonnegative_number(min_approach_m, "min_approach_m")
         if min_approach_m > approach_m:
@@ -73,6 +76,7 @@ class StopSignPatchAttack(Attack):
         self.mask_path = mask_path
         self.noise_std = noise_std
         self.noise_seed = noise_seed
+        self.noise_cell_texels = noise_cell_texels
         self.approach_m = approach_m
         self.min_approach_m = min_approach_m
         self.hold_steps = hold_steps

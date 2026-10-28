@@ -5,6 +5,7 @@ Each query calls the perturbation and scorer; the algorithm has no rendering ass
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
@@ -52,6 +53,8 @@ class NES(GradientOptimizer):
         perturbation: Perturbation,
         scorer: Scorer,
         objective: OptimizationObjective,
+        *,
+        monitor: Callable[[int, np.ndarray], None] | None = None,
     ) -> OptimizationResult:
         rng = np.random.default_rng(self.seed)
         sample = data.sample(1)[0]
@@ -61,6 +64,8 @@ class NES(GradientOptimizer):
 
         delta = perturbation.init()
         history = [loss_at(delta)]
+        if monitor is not None:
+            monitor(0, delta.copy())
         pairs = max(1, self.population_size // 2)
         for step in range(self.steps):
             grad = np.zeros_like(delta)
@@ -72,6 +77,8 @@ class NES(GradientOptimizer):
             grad /= 2 * self.sigma * pairs
             delta = perturbation.project(delta - self.learning_rate * grad)  # minimize the loss
             history.append(loss_at(delta))
+            if monitor is not None:
+                monitor(step + 1, delta.copy())
             if self.verbose and (step % self.log_every == 0 or step == self.steps - 1):
                 print(f"  step {step:3d}  score {history[-1]:.4f}")
         return OptimizationResult(

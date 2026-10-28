@@ -64,20 +64,25 @@ def test_replica_deployment(approach_view, tmp_path):
     segment, = attack.build_metadata(scenario)
     context = OfflineContext(scenario.services, (segment,), seed=0)
     textures = {kind: StopSignPatchAttack(initial_patch=kind).run_offline(context)
-                for kind in ("none", "white", "black", "gaussian_noise")}
+                for kind in ("none", "white", "black", "low_frequency_noise")}
     canonical = attack.replica_placement(context.metadata[0], textures["none"])[0].surfaces[0].nominal_texture
     np.testing.assert_array_equal(textures["none"], canonical)
+    # The default bars cover only the red background, never the white border or letters.
+    assert len(np.unique(canonical[attack.mask], axis=0)) == 1
     for texture in textures.values():
         np.testing.assert_array_equal(texture[..., 3], canonical[..., 3])
         np.testing.assert_array_equal(texture[~attack.mask], canonical[~attack.mask])
-    noise = textures["gaussian_noise"][..., :3][attack.mask] / 255.
-    assert abs(noise.mean() - .5) < .02 and .23 < noise.std() < .25
+    noise = textures["low_frequency_noise"][..., :3] / 255.
+    assert abs(noise[attack.mask].mean() - .5) < .02 and .22 < noise[attack.mask].std() < .25
+    # Adjacent texels share low-frequency colors; independent per-texel noise differs by about .27.
+    neighbors = attack.mask[:, 1:] & attack.mask[:, :-1]
+    assert np.abs(np.diff(noise, axis=1))[neighbors].mean() < .03
     np.testing.assert_array_equal(textures["white"][..., :3][attack.mask], 255)
     np.testing.assert_array_equal(textures["black"][..., :3][attack.mask], 0)
-    np.testing.assert_array_equal(textures["gaussian_noise"], StopSignPatchAttack(
-        initial_patch="gaussian_noise", noise_seed=0).run_offline(context))
-    assert not np.array_equal(textures["gaussian_noise"], StopSignPatchAttack(
-        initial_patch="gaussian_noise", noise_seed=1).run_offline(context))
+    np.testing.assert_array_equal(textures["low_frequency_noise"], StopSignPatchAttack(
+        initial_patch="low_frequency_noise", noise_seed=0).run_offline(context))
+    assert not np.array_equal(textures["low_frequency_noise"], StopSignPatchAttack(
+        initial_patch="low_frequency_noise", noise_seed=1).run_offline(context))
     texture = textures["white"]
     mask = np.zeros(canonical.shape[:2], bool)
     mask[200:260, 100:400] = True
@@ -186,43 +191,62 @@ def test_white_box_offline_phase(nurec_detector_services_and_segment):
     np.testing.assert_array_equal(texture[..., 3], face[..., 3])
     np.testing.assert_array_equal(texture[..., :3][~attack.mask], face[..., :3][~attack.mask])
     report = context.report
-    assert set(report.tables) == {"calibration", "calibration_probes", "sample_manifest", "heldout_scores",
-                                  "heldout_summary", "detection_rate_vs_distance"}
+    assert set(report.tables) == {"calibration", "calibration_probes", "sample_manifest", "frame_scores",
+                                  "texture_summary", "detection_rate_vs_distance", "training_progress"}
     assert set(report.images) == {"initial_texture", "optimized_texture"}
-    assert set(report.series) == {"pgd_confidence"}
-    assert set(report.values) == {"train_frames", "heldout_frames", "training_segments",
-                                  "mask_pixels", "final_confidence"}
+    progress = report.tables["training_progress"].rows
+    bins = sorted(name for name in progress[0] if name.startswith("detection_rate_"))
+    assert bins and set(report.series) == {"pgd_objective", "training_hinge_loss", "training_detection_rate",
+                                           *(f"training_{name}" for name in bins)}
+    assert set(report.values) == {"train_frames", "training_segments", "mask_pixels", "patch_smoothness",
+                                  "detected_frame_fraction", "max_confidence"}
     calibration = report.tables["calibration"].rows
     assert calibration[0]["d_min_m"] == pytest.approx(5.)
     with pytest.raises(ValueError, match="training segment"):
         attack.run_offline(replace(context, metadata=()))
     with pytest.raises(ValueError, match="max_training_segments"):
         replace(attack.optimization, max_training_segments=0)
+    for samples in (3, "some", True):
+        with pytest.raises(ValueError, match="samples_per_scene"):
+            replace(attack.optimization, samples_per_scene=samples)
     samples = report.tables["sample_manifest"].rows
-    train = {(row["scene"], row["frame"]) for row in samples if row["split"] == "train"}
-    heldout = {(row["scene"], row["frame"]) for row in samples if row["split"] == "heldout"}
-    assert train and heldout and not train.intersection(heldout)
-    rows = report.tables["heldout_scores"].rows
+    rows = report.tables["frame_scores"].rows
+    # Every captured frame trains; the diagnostics score the same frames.
+    assert [(row["scene"], row["frame"]) for row in rows] == [(row["scene"], row["frame"]) for row in samples]
     assert {key for row in rows for key in row} == {
-        "scene", "frame", "distance_m", "confidence_clean", "confidence_replica", "confidence_initial", "confidence_optimized"}
+        "scene", "frame", "line_distance_m", "confidence_clean", "confidence_replica", "confidence_initial",
+        "confidence_optimized"}
     for row in rows:
         assert row["confidence_optimized"] < row["confidence_initial"]
-    summary = report.tables["heldout_summary"].rows
+    # The first PGD objective is the hinge of one sampled frame's initial-patch confidence; the
+    # fixture's decision threshold is zero, so the hinge target is minus the margin.
+    margin = attack.optimization.confidence_margin
+    first = report.series["pgd_objective"].y[0]
+    assert any(first == pytest.approx(row["confidence_initial"] + margin) for row in rows)
+    # Training-set scores are recorded before the first update and after the last one.
+    assert [row["step"] for row in progress] == [0, 3]
+    assert progress[0]["hinge_loss"] == pytest.approx(np.mean([row["confidence_initial"] + margin for row in rows]))
+    assert progress[-1]["detection_rate"] == report.values["detected_frame_fraction"].value
+    assert progress[-1]["max_confidence"] == pytest.approx(report.values["max_confidence"].value)
+    summary = report.tables["texture_summary"].rows
     assert {row["texture"] for row in summary} == {"clean", "replica", "initial", "optimized"}
-    assert set(summary[0]) == {"texture", "frames", "mean_confidence", "detection_rate"}
-    assert all(row["frames"] == len(rows) == report.values["heldout_frames"].value for row in summary)
+    assert set(summary[0]) == {"texture", "frames", "mean_confidence", "max_confidence", "detection_rate"}
+    assert all(row["frames"] == len(rows) == report.values["train_frames"].value for row in summary)
+    optimized = next(row for row in summary if row["texture"] == "optimized")
+    assert report.values["max_confidence"].value == optimized["max_confidence"]
+    assert report.values["detected_frame_fraction"].value == optimized["detection_rate"]
     assert set(calibration[0]) == {
         "scene", "selected_start", "approach_speed_mps", "d_min_m", "d_max_m",
         "search_first_frame", "search_last_frame", "status", "error"}
     probes = report.tables["calibration_probes"].rows
     assert set(probes[0]) == {
-        "scene", "frame", "timestamp_s", "distance_m", "stage", "visible_pixels", "status", "reason",
-        "occlusion_source", "target_box_left_px", "target_box_top_px", "target_box_right_px",
-        "target_box_bottom_px", "replica_score"}
+        "scene", "frame", "timestamp_s", "distance_m", "line_distance_m", "stage", "visible_pixels",
+        "status", "reason", "occlusion_source", "target_box_left_px", "target_box_top_px",
+        "target_box_right_px", "target_box_bottom_px", "replica_score"}
     initial = report.images["initial_texture"].pixels
     assert report.images["initial_texture"].description
-    assert report.values["final_confidence"].unit == "ratio (0–1)"
-    assert report.series["pgd_confidence"].y_unit == "ratio (0–1)"
+    assert report.values["detected_frame_fraction"].unit == "ratio (0–1)"
+    assert report.series["pgd_objective"].y_unit == "ratio (0–1)"
     for table in report.tables.values():
         assert table.description
         assert set(table.columns) == {key for row in table.rows for key in row}
@@ -256,6 +280,49 @@ def test_white_box_offline_phase(nurec_detector_services_and_segment):
             invalid = StopSignPatchAttack(optimization=replace(options, scorer_id=None))
             with pytest.raises(ValueError, match=message):
                 invalid.run_offline(OfflineContext(scope, ()))
+
+
+def test_white_box_training_range(nurec_detector_services_and_segment):
+    services, make_segment = nurec_detector_services_and_segment
+    # The line lies 3 m before the sign, so line and sign distances select different frames.
+    context = OfflineContext(services, (make_segment(line_x=25.),), seed=0)
+    attack = StopSignPatchAttack(initial_patch="white", optimization=DetectorPatchOptimization(
+        optimizer=PGD(steps=1, batch=1, seed=0), min_visible_pixels=5, braking_deceleration_mps2=10.))
+    attack.run_offline(context)
+    calibration, = context.report.tables["calibration"].rows
+    rows = sorted(context.report.tables["sample_manifest"].rows, key=lambda row: row["frame"])
+    frames = [row["frame"] for row in rows]
+    lines = [row["line_distance_m"] for row in rows]
+    # Every eligible frame trains, from d_max down to the last frame where braking_deceleration_mps2
+    # can still stop before the line.
+    assert frames == list(range(frames[0], frames[-1] + 1))
+    assert context.report.values["train_frames"].value == len(rows)
+    assert calibration["d_min_m"] <= min(lines) and max(lines) <= calibration["d_max_m"]
+    assert min(lines) - calibration["d_min_m"] <= max(np.abs(np.diff(lines))) + 1e-9
+    assert len(rows) > 8
+
+
+def test_white_box_smoothness(nurec_detector_services_and_segment):
+    services, make_segment = nurec_detector_services_and_segment
+    context = OfflineContext(services, (make_segment(),), seed=0)
+
+    def optimize(initial_patch, **pgd):
+        attack = StopSignPatchAttack(initial_patch=initial_patch, optimization=DetectorPatchOptimization(
+            optimizer=PGD(steps=3, batch=1, seed=0, **pgd), min_visible_pixels=5,
+            braking_deceleration_mps2=10., samples_per_scene=4))
+        texture = attack.run_offline(context)
+        return texture, context.report.values["patch_smoothness"].value
+
+    mask = StopSignPatchAttack().mask
+    texture, smoothness = optimize("low_frequency_noise", step_size=0.)
+    colors = texture[..., :3] / 255.
+    squared = np.concatenate([(np.diff(colors, axis=0) ** 2).sum(-1)[mask[1:] & mask[:-1]],
+                              (np.diff(colors, axis=1) ** 2).sum(-1)[mask[:, 1:] & mask[:, :-1]]])
+    assert smoothness == pytest.approx((np.sqrt(squared + 1e-6) - 1e-3).mean(), rel=1e-4)
+    # A uniform patch is perfectly smooth: its edge against the red face is the sticker outline.
+    assert optimize("white", step_size=0.)[1] == pytest.approx(0., abs=1e-6)
+    assert not np.array_equal(optimize("low_frequency_noise")[0],
+                              optimize("low_frequency_noise", tv_weight=100.)[0])
 
 
 @pytest.mark.parametrize("maximum,driver_type,expected_unchanged", [

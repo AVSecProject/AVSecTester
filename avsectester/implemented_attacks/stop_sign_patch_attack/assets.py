@@ -14,12 +14,13 @@ from PIL import Image
 from avsectester.maps import TrafficControl
 from avsectester.rendering import STOP_SIGN_FACE, ObjectAsset, load_rgba_image
 from avsectester.validation import (
-    require_nonnegative_integer, require_nonnegative_number, require_positive_number,
+    require_nonnegative_integer, require_nonnegative_number, require_positive_integer,
+    require_positive_number,
 )
 
 
 DEFAULT_MASK_PATH = Path(__file__).with_name("masks") / "rp2_bars.png"
-INITIAL_PATCHES = ("none", "white", "black", "gaussian_noise")
+INITIAL_PATCHES = ("none", "white", "black", "low_frequency_noise")
 MUTCD_STOP_SIGN_SIZES_M = (0.762, 0.914, 1.219)
 
 
@@ -44,17 +45,22 @@ def read_patch_mask(path: str | Path) -> np.ndarray:
 
 
 def initial_patch_texture(
-    kind: str, mask: np.ndarray, *, noise_std: float, noise_seed: int,
+    kind: str, mask: np.ndarray, *, noise_std: float, noise_seed: int, noise_cell_texels: int = 32,
 ) -> np.ndarray:
-    """Return the replica face with its masked pixels white, black or Gaussian noise.
+    """Return the replica face with its masked pixels white, black or low-frequency color noise.
 
-    ``none`` returns the unpatched replica face. Noise samples independent RGB values from
-    ``clip(0.5 + noise_std * N(0, 1), 0, 1)``. Alpha and unmasked pixels are always the face's.
+    ``none`` returns the unpatched replica face. Low-frequency noise draws independent N(0, 1)
+    values per RGB channel on a grid with one value per ``noise_cell_texels`` face texels,
+    upsamples them bicubically to the face, standardizes each channel over the masked texels and
+    stores ``clip(0.5 + noise_std * value, 0, 1)``. Its color patches stay visible at the small
+    image sizes where per-texel noise averages to gray. Alpha and unmasked pixels are always the
+    face's.
     """
     if kind not in INITIAL_PATCHES:
-        raise ValueError("initial_patch must be none, white, black or gaussian_noise")
+        raise ValueError("initial_patch must be none, white, black or low_frequency_noise")
     require_nonnegative_number(noise_std, "noise_std")
     require_nonnegative_integer(noise_seed, "noise_seed")
+    require_positive_integer(noise_cell_texels, "noise_cell_texels")
     texture = replica_face()
     mask = np.asarray(mask)
     if mask.dtype != bool or mask.shape != texture.shape[:2] or not mask.any():
@@ -63,11 +69,18 @@ def initial_patch_texture(
         texture[..., :3][mask] = 255
     elif kind == "black":
         texture[..., :3][mask] = 0
-    elif kind == "gaussian_noise":
+    elif kind == "low_frequency_noise":
+        height, width = mask.shape
+        grid = (max(1, -(-height // noise_cell_texels)), max(1, -(-width // noise_cell_texels)))
         rng = np.random.default_rng(noise_seed)
-        colors = np.rint(np.clip(.5 + noise_std * rng.standard_normal((*mask.shape, 3)),
-                                0., 1.) * 255).astype(np.uint8)
-        texture[..., :3][mask] = colors[mask]
+        channels = []
+        for values in rng.standard_normal((3, *grid)).astype(np.float32):
+            field = np.asarray(Image.fromarray(values, mode="F").resize((width, height), Image.BICUBIC))
+            field = field - field[mask].mean()
+            spread = field[mask].std()
+            channels.append(field / spread if spread > 0 else field)
+        colors = np.clip(.5 + noise_std * np.stack(channels, axis=-1), 0., 1.)
+        texture[..., :3][mask] = np.rint(colors[mask] * 255).astype(np.uint8)
     return texture
 
 

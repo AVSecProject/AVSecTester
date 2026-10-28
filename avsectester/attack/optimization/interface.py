@@ -29,6 +29,7 @@ torch is lazy in the implementations, so this contract imports/tests without tor
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -81,6 +82,16 @@ class Perturbation(ABC):
         """Physical realization of δ, if any — a patch returns ``(Hp,Wp,4)`` uint8; default None."""
         return None
 
+    def smoothness(self, delta: Tensor) -> Tensor:
+        """Differentiable total variation of δ, weighted by an optimizer's smoothness term.
+
+        The default is the mean absolute difference between vertically and horizontally adjacent
+        values of the CHW variable. A threat model that realizes only part of δ overrides it.
+        """
+        vertical = (delta[:, 1:, :] - delta[:, :-1, :]).abs().mean()
+        horizontal = (delta[:, :, 1:] - delta[:, :, :-1]).abs().mean()
+        return vertical + horizontal
+
 
 class Scorer(ABC):
     """Access to the perception under attack: image -> target detection confidence in [0, 1].
@@ -110,6 +121,30 @@ class HideObject(OptimizationObjective):
 
     def loss(self, score: Tensor) -> Tensor:
         return score
+
+
+class HideBelowThreshold(OptimizationObjective):
+    """Suppress a detection until its score is ``margin`` below the decision ``threshold``.
+
+    ``loss = max(0, score - (threshold - margin))``. A detector reports the target when its
+    score reaches ``threshold``; samples already below ``threshold - margin`` contribute no loss or
+    gradient, so updates concentrate on samples that would still be detected. The margin absorbs
+    differences between optimization samples and deployment.
+    """
+
+    def __init__(self, threshold: float, margin: float = .1) -> None:
+        if not (isinstance(threshold, (int, float)) and not isinstance(threshold, bool)
+                and 0. <= threshold <= 1.):
+            raise ValueError("threshold must be a number in [0, 1]")
+        if not (isinstance(margin, (int, float)) and not isinstance(margin, bool)
+                and 0. <= margin <= 1.):
+            raise ValueError("margin must be a number in [0, 1]")
+        self.threshold = float(threshold)
+        self.margin = float(margin)
+
+    def loss(self, score: Tensor) -> Tensor:
+        excess = score - (self.threshold - self.margin)
+        return (excess + abs(excess)) / 2  # max(0, excess) for tensors, arrays and numbers
 
 
 class SpoofObject(OptimizationObjective):
@@ -143,8 +178,15 @@ class GradientOptimizer(ABC):
         perturbation: Perturbation,
         scorer: Scorer,
         objective: OptimizationObjective,
+        *,
+        monitor: Callable[[int, Tensor], None] | None = None,
     ) -> OptimizationResult:
-        """Optimize δ with exact input gradients in PGD or sampled gradient estimates in NES."""
+        """Optimize δ with exact input gradients in PGD or sampled gradient estimates in NES.
+
+        ``monitor(step, delta)``, when given, receives the number of completed updates and the
+        current projected δ before the first update and after every update. It observes only and
+        must not modify δ.
+        """
 
 
 __all__ = [
@@ -154,6 +196,7 @@ __all__ = [
     'Scorer',
     'OptimizationObjective',
     'HideObject',
+    'HideBelowThreshold',
     'SpoofObject',
     'OptimizationResult',
     'GradientOptimizer',

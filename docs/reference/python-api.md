@@ -2220,6 +2220,7 @@ Public contracts, algorithms, parameterizations and session scoring for user att
 | `DataSource` | [DataSource](#avsectesterattackoptimizationinterface) |
 | `GradientOptimizer` | [GradientOptimizer](#avsectesterattackoptimizationinterface) |
 | `HideObject` | [HideObject](#avsectesterattackoptimizationinterface) |
+| `HideBelowThreshold` | [HideBelowThreshold](#avsectesterattackoptimizationinterface) |
 | `OptimizationObjective` | [OptimizationObjective](#avsectesterattackoptimizationinterface) |
 | `OptimizationResult` | [OptimizationResult](#avsectesterattackoptimizationinterface) |
 | `Perturbation` | [Perturbation](#avsectesterattackoptimizationinterface) |
@@ -2271,17 +2272,24 @@ Contracts for gradient-based and sampling-based optimization over perturbation m
 | `Perturbation.apply(sample: AdversarialSample, delta: Tensor) -> Tensor` | Abstract. Form the adversarial input from a clean `sample` and δ (differentiable in δ). |
 | `Perturbation.project(delta: Tensor) -> Tensor` | Abstract. Project δ back onto the feasible set (in place or returned). |
 | `Perturbation.export(delta: Tensor) -> np.ndarray \| None` | Physical realization of δ, if any — a patch returns `(Hp,Wp,4)` uint8; default None. |
+| `Perturbation.smoothness(delta: Tensor) -> Tensor` | Differentiable total variation of δ, weighted by an optimizer's smoothness term. |
 | `Scorer()` | Access to the perception under attack: image -> target detection confidence in [0, 1]. |
 | `Scorer.differentiable: bool = True` | Whether input-image gradients are supported by this component. |
 | `Scorer.target_score(image: Tensor, target: data_types.TargetSpec) -> Tensor` | Abstract. Return a scalar tensor in [0, 1] for detecting `target` in `image`. |
 | `OptimizationObjective()` | Shape the target confidence into a scalar loss to MINIMIZE (lower == attack succeeds). |
 | `OptimizationObjective.loss(score: Tensor) -> Tensor` | Abstract. Map a target confidence in [0, 1] to the scalar loss to minimize. |
 | `HideObject()` | Subclass of `OptimizationObjective`. Suppress the target's detection by minimizing `loss = score` toward zero. |
+| `HideBelowThreshold(threshold: float, margin: float = .1)` | Subclass of `OptimizationObjective`. Suppress a detection until its score is `margin` below the decision `threshold`. |
 | `SpoofObject()` | Subclass of `OptimizationObjective`. Fabricate / keep a detection where the target box is: `loss = 1 - score`. |
 | `OptimizationResult(delta: Tensor, export: np.ndarray \| None, history: list[float], final_score: float)` | Output of an optimization run. |
 | `GradientOptimizer()` | Optimization algorithm over a data source, perturbation, scorer and objective. |
-| `GradientOptimizer.run(data: DataSource, perturbation: Perturbation, scorer: Scorer, objective: OptimizationObjective) -> OptimizationResult` | Abstract. Optimize δ with exact input gradients in PGD or sampled gradient estimates in NES. |
+| `GradientOptimizer.run(data: DataSource, perturbation: Perturbation, scorer: Scorer, objective: OptimizationObjective, *, monitor: Callable[[int, Tensor], None] \| None = None) -> OptimizationResult` | Abstract. Optimize δ with exact input gradients in PGD or sampled gradient estimates in NES. |
 <!-- api:end -->
+
+#### Constraints and errors
+
+`HideBelowThreshold` raises `ValueError` for a `threshold` or `margin` outside [0, 1]. Its loss is
+zero, with zero gradient, for scores below `threshold - margin`.
 
 #### See also
 
@@ -2946,7 +2954,7 @@ Connect stop-approach selection, optional patch optimization and replica deploym
 
 | Name and signature | Meaning |
 |---|---|
-| `StopSignPatchAttack(initial_patch: str = "white", optimization: DetectorPatchOptimization \| RolloutPatchOptimization \| None = None, mask_path: str \| Path = DEFAULT_MASK_PATH, noise_std: float = .25, noise_seed: int = 0, approach_m: float = 50., hold_steps: int = 20, offset_m: float = .10, width_scale: float = 1.1, harmonizer: Harmonizer \| None = None, face_orientation: str = "upright", face_size: str = "mutcd_standard", min_approach_m: float = 20.)` | Subclass of `Attack`. Cover a recorded stop sign with a replica face whose masked pixels form a patch. |
+| `StopSignPatchAttack(initial_patch: str = "white", optimization: DetectorPatchOptimization \| RolloutPatchOptimization \| None = None, mask_path: str \| Path = DEFAULT_MASK_PATH, noise_std: float = .25, noise_seed: int = 0, noise_cell_texels: int = 32, approach_m: float = 50., hold_steps: int = 20, offset_m: float = .10, width_scale: float = 1.1, harmonizer: Harmonizer \| None = None, face_orientation: str = "upright", face_size: str = "mutcd_standard", min_approach_m: float = 20.)` | Subclass of `Attack`. Cover a recorded stop sign with a replica face whose masked pixels form a patch. |
 | `StopSignPatchAttack.validate_segment(segment: AttackSegment) -> None` | Validate the sign geometry and recorded-route inputs used by both optimizers. |
 | `StopSignPatchAttack.replica_placement(segment: AttackSegment, texture: np.ndarray) -> tuple[ObjectAsset, np.ndarray]` | Share the selected MUTCD/map width and upright/map orientation across all phases. |
 | `StopSignPatchAttack.replica_texture(artifacts: object) -> np.ndarray` | Return the replica face with the supplied patch in its editable region. |
@@ -2954,7 +2962,9 @@ Connect stop-approach selection, optional patch optimization and replica deploym
 
 #### Constraints and errors
 
-The inserted replica always has object ID `stop_sign_replica`.
+The inserted replica always has object ID `stop_sign_replica`. `StopSignPatchAttack` raises
+`ValueError` for an unknown `initial_patch`, a negative `noise_std` or `noise_seed`, or a
+nonpositive `noise_cell_texels`.
 
 #### See also
 
@@ -2986,17 +2996,19 @@ Validated detector/rollout optimization options and offline dispatch.
 
 | Name and signature | Meaning |
 |---|---|
-| `DetectorPatchOptimization(optimizer: GradientOptimizer, scorer_id: str \| None = None, device: str = "cpu", max_training_segments: int \| None = None, samples_per_scene: int = 8, min_visible_pixels: int = 100, braking_deceleration_mps2: float = 3.4)` | White-box attack settings (algorithm used: PGD). |
+| `DetectorPatchOptimization(optimizer: GradientOptimizer, scorer_id: str \| None = None, device: str = "cpu", max_training_segments: int \| None = None, samples_per_scene: int \| Literal["all"] = "all", min_visible_pixels: int = 100, braking_deceleration_mps2: float = 6., confidence_margin: float = .1, progress_interval: int = 20)` | White-box attack settings (algorithm used: PGD). |
 | `RolloutPatchOptimization(optimizer: GradientOptimizer, start_distances_m: tuple[float, ...] = (40., 30., 20.), horizon_s: float = 3., max_training_segments: int \| None = None)` | Black-box attack settings (algorithm used: NES). |
 <!-- api:end -->
 
 #### Constraints and errors
 
 `DetectorPatchOptimization` raises `TypeError` for an optimizer other than `PGD` and
-`ValueError` for an empty `scorer_id` or device, fewer than four `samples_per_scene`, or a
-nonpositive count or deceleration. During the offline phase, `scorer_id=None` with zero or
+`ValueError` for an empty `scorer_id` or device, a `samples_per_scene` other than `"all"` or an
+integer of at least four, a
+nonpositive count, deceleration or `progress_interval`, or a `confidence_margin` outside [0, 1]. During the offline phase, `scorer_id=None` with zero or
 several differentiable scorers, or a scorer without `sensor_id` or `decision_threshold`, raises
-`ValueError`. The sampling bound is `d_min = v² / (2a)`, where `a` is
+`ValueError`, and so does a training segment with fewer than four eligible frames. The closest
+trained route distance to the stop line is `d_min = v² / (2a)`, where `a` is
 `braking_deceleration_mps2`.
 
 `RolloutPatchOptimization` raises `TypeError` for an optimizer other than `NES` and

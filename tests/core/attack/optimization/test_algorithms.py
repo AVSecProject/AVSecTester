@@ -4,7 +4,9 @@ import numpy as np
 import pytest
 import torch
 
-from avsectester.attack.optimization import AdversarialSample, DataSource, HideObject, NES, PGD, Perturbation, Scorer, SpoofObject
+from avsectester.attack.optimization import (
+    AdversarialSample, DataSource, HideBelowThreshold, HideObject, NES, PGD, Perturbation, Scorer, SpoofObject,
+)
 from avsectester.data_types import TargetSpec
 
 
@@ -54,8 +56,49 @@ class BrightnessScore(Scorer):
 ])
 @pytest.mark.parametrize("objective", [HideObject(), SpoofObject()], ids=["hide", "spoof"])
 def test_optimize(optimizer, perturbation, objective):
-    result = optimizer.run(ImageSource(), perturbation, BrightnessScore(), objective)
+    observed = []
+    result = optimizer.run(ImageSource(), perturbation, BrightnessScore(), objective,
+                           monitor=lambda step, delta: observed.append((step, delta.shape)))
     assert result.history[-1] < result.history[0]
+    assert observed == [(step, (3, 4, 4)) for step in range(optimizer.steps + 1)]
     assert result.export.shape == (4, 4, 3) and result.export.dtype == np.uint8
     with pytest.raises(ValueError, match="positive integer"):
         type(optimizer)(steps=0)
+
+
+class CheckerImage(TensorImage):
+    def init(self):
+        image = torch.zeros(3, 4, 4)
+        image[:, ::2, ::2] = image[:, 1::2, 1::2] = 1.
+        return image.requires_grad_(True)
+
+
+class ConstantScore(Scorer):
+    def target_score(self, image, target):
+        return image.sum() * 0 + .5
+
+
+def test_pgd_smoothness():
+    checker = CheckerImage()
+    assert checker.smoothness(checker.init()).item() == pytest.approx(2.)
+    plain = PGD(steps=4, step_size=.1, batch=1).run(ImageSource(), checker, ConstantScore(), HideObject())
+    smooth = PGD(steps=4, step_size=.1, batch=1, tv_weight=1.).run(
+        ImageSource(), checker, ConstantScore(), HideObject())
+    torch.testing.assert_close(plain.delta, checker.init().detach())
+    assert checker.smoothness(smooth.delta) < checker.smoothness(plain.delta)
+    # The history records the attack objective only, not the weighted smoothness term.
+    assert smooth.history == plain.history == [.5] * 4
+
+
+def test_hide_below_threshold():
+    objective = HideBelowThreshold(.5, margin=.1)
+    scores = torch.tensor([.2, .35, .45, .9], requires_grad=True)
+    losses = objective.loss(scores)
+    torch.testing.assert_close(losses, torch.tensor([0., 0., .05, .5]))
+    losses.sum().backward()
+    # Scores already below threshold - margin receive no gradient, so updates go to detected samples.
+    torch.testing.assert_close(scores.grad, torch.tensor([0., 0., 1., 1.]))
+    assert objective.loss(np.float64(.7)) == pytest.approx(.3)
+    for threshold, margin in ((1.5, .1), (.5, -.1), (True, .1)):
+        with pytest.raises(ValueError, match="threshold|margin"):
+            HideBelowThreshold(threshold, margin)

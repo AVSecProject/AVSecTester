@@ -61,7 +61,7 @@ attacks:
   noise:
     type: StopSignPatchAttack
     options:
-      initial_patch: gaussian_noise
+      initial_patch: low_frequency_noise
       harmonizer: *exposure_harmonizer
   white_rollout_nes:
     type: StopSignPatchAttack
@@ -108,7 +108,7 @@ attacks:
   noise_rollout_nes:
     type: StopSignPatchAttack
     options:
-      initial_patch: gaussian_noise
+      initial_patch: low_frequency_noise
       harmonizer: *exposure_harmonizer
       optimization:
         type: avsectester.implemented_attacks.stop_sign_patch_attack.offline:RolloutPatchOptimization

@@ -14,13 +14,19 @@ scenes, hosts or placement rules.
 | Interface | Responsibility |
 |---|---|
 | `DataSource` | Select `AdversarialSample` records |
-| `Perturbation` | Initialize, apply, project and export a candidate |
+| `Perturbation` | Initialize, apply, project, export and measure the smoothness of a candidate |
 | `Scorer` | Measure a target score |
 | `OptimizationObjective` | Convert scores into losses |
 | `GradientOptimizer` | Run the algorithm and return `OptimizationResult` |
 
-`HideObject` minimizes a score; `SpoofObject` maximizes it. `PGD` requires a differentiable
-score, while `NES` uses score queries. A `SessionScorer` connects either path to a
+`HideObject` minimizes a score; `SpoofObject` maximizes it. `HideBelowThreshold` minimizes only
+the part of a score above a decision threshold minus a margin, for targets where one detection
+decides the outcome. An optional `monitor(step, delta)` passed to `run` observes the current
+variable before the first update and after every update, for example to score it on a full
+training set. `PGD` requires a differentiable
+score, while `NES` uses score queries. `PGD`'s `tv_weight` adds `Perturbation.smoothness`; the
+default is total variation of the whole variable, and a perturbation that realizes only part of it
+overrides the method. A `SessionScorer` connects either path to a
 declared `DrivingAdapter` binding. [Driving-system bindings](driving-systems.md) describes
 model integration; the [Python API](../reference/python-api.md) lists signatures and
 optimizer constraints.

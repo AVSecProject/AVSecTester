@@ -63,7 +63,7 @@ attacks:
   noise:
     type: StopSignPatchAttack
     options:
-      initial_patch: gaussian_noise
+      initial_patch: low_frequency_noise
       harmonizer: *exposure_harmonizer
   white_detector_pgd:
     type: StopSignPatchAttack
@@ -80,7 +80,7 @@ attacks:
               step_size: 0.01568627450980392
               batch: 4
               seed: 0
-          samples_per_scene: 8
+          samples_per_scene: all
   black_detector_pgd:
     type: StopSignPatchAttack
     options:
@@ -96,11 +96,11 @@ attacks:
               step_size: 0.01568627450980392
               batch: 4
               seed: 0
-          samples_per_scene: 8
+          samples_per_scene: all
   noise_detector_pgd:
     type: StopSignPatchAttack
     options:
-      initial_patch: gaussian_noise
+      initial_patch: low_frequency_noise
       harmonizer: *exposure_harmonizer
       optimization:
         type: avsectester.implemented_attacks.stop_sign_patch_attack.offline:DetectorPatchOptimization
@@ -112,7 +112,7 @@ attacks:
               step_size: 0.01568627450980392
               batch: 4
               seed: 0
-          samples_per_scene: 8
+          samples_per_scene: all
 evaluation:
   metrics:
   - type: StopLineMetrics

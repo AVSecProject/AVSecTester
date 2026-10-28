@@ -45,19 +45,23 @@ configurations contain the rollout-optimized treatments. Both include the same c
 | `clean` | Unpatched replica | No | Baseline |
 | `white` | White | No | Fixed patch |
 | `black` | Black | No | Fixed patch |
-| `noise` | Gaussian noise | No | Fixed patch |
+| `noise` | Low-frequency noise | No | Fixed patch |
 | `white_detector_pgd` | White | Yes | white-box attack |
 | `black_detector_pgd` | Black | Yes | white-box attack |
-| `noise_detector_pgd` | Gaussian noise | Yes | white-box attack |
+| `noise_detector_pgd` | Low-frequency noise | Yes | white-box attack |
 | `white_rollout_nes` | White | Yes | black-box attack |
 | `black_rollout_nes` | Black | Yes | black-box attack |
-| `noise_rollout_nes` | Gaussian noise | Yes | black-box attack |
+| `noise_rollout_nes` | Low-frequency noise | Yes | black-box attack |
 
 Each attack has an offline phase and an online phase. With no optimization, the offline phase
 returns the initial texture. The online phase inserts that texture through the same placement
 path used during optimization. The `clean` treatment runs the `no_patch` attack, which uses
 `initial_patch: none` and cannot be optimized, so every treatment shows the same inserted
 replica and differs only in its patch.
+
+`low_frequency_noise` draws independent color values on a grid of one value per
+`noise_cell_texels` face texels, default 32, and upsamples them bicubically. Its color patches stay
+visible at the small image sizes of an approaching camera, where per-texel noise averages to gray.
 
 ## Selection and placement
 
@@ -117,23 +121,44 @@ and training input rules.
 
 The white-box attack uses the driving system's own detector through `avstack.bindings`;
 algorithm used: `PGD`. `rule_based_driving_adapter` declares the scorer, camera and decision
-threshold. A `SessionScorer` reuses that binding for calibration, updates and held-out scoring.
+threshold. A `SessionScorer` reuses that binding for calibration, updates and diagnostics.
 The [driving-system guide](../guides/driving-systems.md) describes the binding behavior.
 
-The sample interval starts at `v² / (2 × braking_deceleration_mps2)` and ends at the farthest
-eligible frame where the unpatched replica reaches the driving detector's decision threshold.
-The braking assumption defaults to 3.4 m/s² and only controls sampling. The sign-face projection
-defines the target box. Frames below `min_visible_pixels` are skipped; its default is 100
-visible replica pixels.
+The driving system stops once the detector fires, so the patch must suppress every detection
+until the vehicle can no longer stop before the line. Training therefore covers recorded frames by
+route distance to the stop line, from the farthest frame where the unpatched replica reaches the
+decision threshold down to `v² / (2 × braking_deceleration_mps2)`. `v` is the recorded speed at the
+segment start. `braking_deceleration_mps2` is the driving system's strongest braking and defaults
+to 6 m/s², the `RuleBasedAVStack` planner limit. The sign-face projection defines the target box.
+Frames below `min_visible_pixels` are skipped; its default is 100 visible replica pixels.
 
-The configurations use all five training segments, eight samples per segment, 200 updates, batch
-4 and step size 4/255. Time-uniform samples alternate between update frames and held-out frames
-within each training segment. These held-out frames are a detector diagnostic, separate from the
-framework's validation split.
+The configurations use all five training segments, every eligible frame (`samples_per_scene: all`),
+200 updates, batch 4 and step size 4/255. An integer `samples_per_scene` of at least four instead
+selects that many time-uniform frames per segment. Every selected frame is a training sample;
+validation, when needed, uses separate segments from the
+[data split](../reference/configuration.md#data-split).
 
-The offline report contains calibration, sample and held-out tables, the `pgd_confidence`
-series, and initial/optimized replica textures. Held-out diagnostics compare clean
-reconstruction, unpatched replica, initial patch and optimized patch.
+The objective is `HideBelowThreshold`: `max(0, s − (τ − m))` for detector confidence `s`, the
+driving system's decision threshold `τ` and `confidence_margin` `m`, default 0.1. One detection is
+enough for the driving system to stop, so frames already below `τ − m` stop contributing and the
+updates concentrate on frames that would still be detected. The margin absorbs differences
+between recorded training views and closed-loop views.
+
+`PGD`'s `tv_weight` adds a smoothness term to the detector loss, so the patch keeps structure that
+survives printing and camera sampling. The term is the mean Charbonnier RGB distance,
+`sqrt(||c_p - c_q||² + ε²) - ε` with ε = 0.001, over vertically and horizontally adjacent texels
+that are both inside the mask. Pairs across the patch outline are excluded, so a uniform patch
+has zero smoothness cost against the red face.
+
+The offline report contains calibration and sample tables, the `pgd_objective` series, the final
+`patch_smoothness`, and initial/optimized replica textures. `pgd_objective` records the hinge
+objective only. After optimization every training frame is scored for the clean reconstruction,
+unpatched replica, initial patch and optimized patch; `detected_frame_fraction` and
+`max_confidence` summarize the optimized patch, and detection rates are binned by route distance
+to the stop line. Every `progress_interval` PGD steps, default 20, and after the last step, the
+current patch is scored on every training frame; the `training_progress` table and its series
+record the full-set hinge loss, the detected fraction and the detected fraction per 10 m bin. The
+batch `pgd_objective` varies with the sampled frames, so these full-set curves show convergence.
 [Optimization tools](../guides/optimization.md) explains report usage.
 
 ## Prepare the black-box attack
