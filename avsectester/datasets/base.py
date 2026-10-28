@@ -33,7 +33,7 @@ class FrameReference:
 
 @dataclass(frozen=True)
 class ScenarioDescriptor:
-    """A scenario's ``id``, dataset class name in ``kind``, and adapter-specific ``payload``."""
+    """A scenario's ``id``, dataset class name in ``kind``, and dataset-specific ``payload``."""
     id: str
     kind: str
     payload: Mapping[str, Any] = field(default_factory=dict)
@@ -41,7 +41,7 @@ class ScenarioDescriptor:
 
 @dataclass(frozen=True)
 class SensorDataReference:
-    """Location of one recorded sensor payload; adapters decide how it is decoded."""
+    """Location of one recorded sensor payload; the component that reads it decodes it."""
 
     uri: str
     sensor: str

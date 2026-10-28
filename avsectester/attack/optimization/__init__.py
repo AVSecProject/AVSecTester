@@ -7,7 +7,6 @@ from .blackbox import NES
 from .scorers import SessionScorer
 
 
-
 def __getattr__(name: str):
     """Load tensor-based algorithms only when requested by the user."""
     if name == "PGD":

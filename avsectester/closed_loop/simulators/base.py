@@ -18,7 +18,7 @@ from dataclasses import dataclass, field, replace
 from threading import Lock
 from typing import Any, TYPE_CHECKING
 
-from avsectester.closed_loop.hooks import _StageAdapter
+from avsectester.closed_loop.hooks import _HookBindingMixin
 from avsectester.closed_loop.simulators.object_composition import compose_capture
 from avsectester.data_types import ActorState
 from avsectester.datasets.base import FrameData, FrameReference, ScenarioStart
@@ -317,7 +317,7 @@ class Simulator(ABC):
                              f"{self.decision_time_step}")
 
 
-class SimulatorRuntime(_StageAdapter, ABC):
+class SimulatorRuntime(_HookBindingMixin, ABC):
     """One live world of a ``Simulator``: world state, clock, actors, sensors and sensor views.
 
     A runtime is created by ``Simulator.create_runtime`` and closed by its creator, also as a
@@ -404,7 +404,7 @@ class SimulatorRuntime(_StageAdapter, ABC):
 
     @property
     def command_modes(self) -> frozenset[str] | None:
-        """Control command modes accepted or produced by this component."""
+        """Control command modes this simulator runtime accepts; None when undeclared."""
         return self.simulator.command_modes
 
     @property
@@ -492,7 +492,7 @@ class SimulatorRuntime(_StageAdapter, ABC):
 
     @property
     def clock(self) -> ClockSnapshot:
-        """Return the current ``ClockSnapshot`` containing time and decision frame."""
+        """Return the current ``ClockSnapshot`` containing simulator time and native frame."""
         state = self.state()
         return ClockSnapshot(t=state.t, frame=state.frame)
 

@@ -29,8 +29,7 @@ docker compose run --rm nurec-experiment run configs/nurec_stop_sign_patch_alpam
 
 Service management follows the
 [CLI service lifecycle](../reference/cli.md#automatic-local-services).
-The complete supplied configuration list belongs
-to [Examples](README.md#configurations).
+See [Examples](README.md#configurations) for the complete supplied configuration list.
 
 The `modular` configurations use `RuleBasedAVStack`. The suffixes `_2601` and `_2604` refer to
 NuRec 26.01 and 26.04, stored under `data/nurec/26.01_release` and `data/nurec/26.04_release`.
@@ -69,7 +68,7 @@ before it.
 `approach_m` defaults to 50 m before the line. The selector waits for required recorded history
 and includes `hold_steps` hold decisions, with a default of 20.
 A start closer than `min_approach_m`,
-default 20 m, is rejected. Start requirements belong to the
+default 20 m, is rejected. Constructor defaults are in the
 [stop-sign attack API](../reference/python-api.md#avsectesterimplemented_attacksstop_sign_patch_attackattack).
 
 The runtime inserts a post-free canonical MUTCD R1-1 replica face over the reconstructed sign.
@@ -118,7 +117,7 @@ and training input rules.
 The white-box attack uses the driving system's own detector through `avstack.bindings`;
 algorithm used: `PGD`. `rule_based_driving_adapter` declares the scorer, camera and decision
 threshold. A `SessionScorer` reuses that binding for calibration, updates and held-out scoring.
-The [driving-system guide](../guides/driving-systems.md) owns the binding behavior.
+The [driving-system guide](../guides/driving-systems.md) describes the binding behavior.
 
 The sample interval starts at `v² / (2 × braking_deceleration_mps2)` and ends at the farthest
 eligible frame where the unpatched replica reaches the driving detector's decision threshold.
@@ -174,9 +173,11 @@ docker compose run --rm nurec-experiment run configs/nurec_stop_sign_patch_modul
 Completed attack offline phases and matching completed runs are reused; unfinished work follows
 [the experiment resume workflow](../guides/experiments.md).
 
-For a Python workflow, execute a user module inside the experiment container and open
-`local_services` before preparation, or start NRE with `nre serve` first. A user module
-can define `my_module.py` in the repository root:
+## Run from Python
+
+To run the workflow from Python, open `local_services` around preparation and execution, or
+start NRE with `nre serve` first. Save this module as `my_module.py` in the repository root,
+which is the container's working directory:
 
 ```python
 from avsectester.closed_loop.simulators.nurec.server import local_services
@@ -241,8 +242,8 @@ evaluation:
 ```
 
 For a user metric, implement the same public methods in your own package and use its
-`package.module:Class` path. The [metric authoring guide](../guides/evaluation.md) owns that
-interface; see the
+`package.module:Class` path. See the [metric authoring guide](../guides/evaluation.md) for that
+interface, and the
 [supplied implementation](../../avsectester/implemented_attacks/stop_sign_patch_attack/metrics.py)
 for a concrete example.
 

@@ -58,13 +58,13 @@ def test_validate(tmp_path):
     Experiment.prepare(saved_config)
     without_start_validation = replace(saved_config, simulator=MemorySimulator(start_error="start must not be revalidated"))
     assert Experiment.validate(without_start_validation, resume=True) is None
+    (output / "prepared.json").unlink()
     invalid_environment = replace(
         without_start_validation, runs=replace(
             without_start_validation.runs,
             treatments=(TreatmentConfiguration("invalid", environment={"world": {"unsupported": 1}}),)))
-    with pytest.raises(ValueError, match="unsupported|world"):
+    with pytest.raises(ValueError, match="does not support world settings"):
         Experiment.validate(invalid_environment, resume=True)
-    (output / "prepared.json").unlink()
     assert Experiment.validate(without_start_validation, resume=True) is None
 
 
@@ -481,7 +481,6 @@ def test_offline_reports(tmp_path):
 
 
 def test_metadata(tmp_path):
-
     path = tmp_path / "metadata.json"
     original = configuration(MinimalAttack(), output=tmp_path / "selected")
     original = replace(original, metadata=MetadataConfiguration(save=path))

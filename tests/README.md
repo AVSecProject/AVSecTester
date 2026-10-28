@@ -103,7 +103,6 @@ tests/
       test_services.py
     experiment/
       test_configuration.py
-      test_configuration_summary.py
       test_experiment.py
       test_html_report.py
       test_metadata_file.py
@@ -158,7 +157,6 @@ tests/
   fakes.py
 ```
 
-
 `tests/fakes.py` supplies shared memory components and external SDK, model, RPC and Docker
 boundaries. The root `tests/conftest.py` provides native `AVStack` fixtures and live-test opt-in
 settings. `tests/core/conftest.py` contains shared core records, camera fixtures and synthetic
@@ -170,32 +168,32 @@ Write as many tests as you need while developing to check that a change is corre
 error paths, coverage probes or temporary mutations. Keep these verification tests outside the
 repository. Commit only tests that follow the layers above:
 
--  A framework-core test covers one public method or feature. Its normal behavior and a few
+- A framework-core test covers one public method or feature. Its normal behavior and a few
   representative errors stay in that test, not in separate tests or per-parameter tables.
--  A new component joins its family's template as one more case. Separate tests cover only
+- A new component joins its family's template as one more case. Separate tests cover only
   behavior unique to that component.
--  A behavior is tested once, in the layer that owns it. Higher layers do not repeat it.
--  A parameterized test has one body for every case and never branches on its parameter. Two
+- A behavior is tested once, in the layer that owns it. Higher layers do not repeat it.
+- A parameterized test has one body for every case and never branches on its parameter. Two
   code paths are two tests.
--  Tests use public APIs. They do not inspect private state, count implementation calls, guard
+- Tests use public APIs. They do not inspect private state, count implementation calls, guard
   removed names, test the shared fakes or mock framework objects.
--  Only external boundaries are replaced: CARLA/avcarla, NuRec RPC, learned model weights,
+- Only external boundaries are replaced: Docker, CARLA/avcarla, NuRec RPC, learned model weights,
   AlpaSim model dependencies and GPU execution. Shared alternative `Dataset`, `Simulator` and
   `AVStack` implementations live in `fakes.py` rather than being copied into individual
   test files.
--  Coverage, test counts and line counts are not targets.
+- Coverage, test counts and line counts are not targets.
 
 ## Prerequisites
 
-A CPU build of PyTorch satisfies the offline test prerequisite; CI installs CPU torch
-explicitly. Use the test and nurec extras for the core suite, including Embree for synthetic
-mesh depth. The supplied images provide their corresponding native dependencies.
+CPU builds of `torch` and `torchvision` satisfy the offline test prerequisites; CI installs
+both from the CPU index. Use the test and nurec extras for the core suite, including Embree for
+synthetic mesh depth. The supplied images provide their corresponding native dependencies.
 
 nuScenes tests require nuscenes-devkit and skip when it is absent; avsectester:carla includes
 it. Native `AVStack` tests require the avstack checkouts and CARLA Python client. Detector
 configuration tests construct models without checkpoint weights and skip configurations whose
-optional checkout or model package is absent. AlpaSim-dependent controller and policy tests run
-in avsectester:nurec and skip when those dependencies are unavailable.
+optional checkout or model package is absent. `avsectester:nurec` provides AlpaSim for the
+AlpaSim-dependent tests.
 
 Offline tests do not start simulator services or require model weights or a GPU.
 
@@ -241,9 +239,14 @@ The [CI workflow](../.github/workflows/ci.yml) separates four jobs:
 Coverage reports are informational. Recording-only tests keep heavy framework and native imports
 out of collection so the Python 3.12 job needs no driving models or simulator packages.
 
-No CI job installs `alpasim_grpc`; traffic-protocol tests therefore skip in CI.
-Running AlpaSim-dependent tests in CI is **Not yet implemented.** See
-[AlpaSim test coverage](../docs/development/TODO.md#alpasim-dependent-tests-in-ci).
+CI skips these tests because their optional components are not installed:
+
+- AlpaSim: traffic, controller and Alpamayo policy.
+- nuScenes: dataset, recorded playback and nuScenes insertion.
+- OpenMMLab: detector configuration, scorer and camera forward-collision.
+
+**Not yet implemented.** See
+[optional-component CI coverage](../docs/development/TODO.md#optional-component-tests-in-ci).
 
 ## Optional external checks
 
@@ -322,7 +325,7 @@ docker compose run --rm --no-deps --entrypoint python carla-experiment \
   --carla-config configs/carla_phantom.yaml -q
 ```
 
-Server setup belongs to [Installation](../docs/getting-started/installation.md); the live test
+Server setup is described in [Installation](../docs/getting-started/installation.md); the live test
 executes the public preparation, execution and evaluation workflow.
 
 ## Next steps

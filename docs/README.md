@@ -26,7 +26,7 @@ before extending the framework.
 | [Attacks](guides/attacks.md) | Selection, offline and online phases |
 | [Optimization](guides/optimization.md) | Scorers, perturbations and offline reports |
 | [Environments](guides/environments.md) | World and sensor environments |
-| [Simulators](guides/simulators.md) | `Simulator` behavior and adapters |
+| [Simulators](guides/simulators.md) | `Simulator` behavior and custom simulators |
 | [Driving systems](guides/driving-systems.md) | Supplied stacks and custom stacks |
 | [Evaluation](guides/evaluation.md) | Metrics, groups, reports and plots |
 | [Defenses](guides/defenses.md) | Defense integration scope |

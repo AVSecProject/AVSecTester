@@ -45,7 +45,6 @@ class Fog(Corruption):
     """Atmospheric haze: blend toward a bright airlight and flatten contrast (uniform, depth-free)."""
 
     category = "weather"
-    'Environment corruption category used to group related sensor effects.'
 
     def apply(self, rgb: np.ndarray, rng: np.random.Generator) -> np.ndarray:
         t = 1.0 - 0.82 * self.severity          # transmission (1 = clear)
@@ -60,7 +59,6 @@ class Rain(Corruption):
     """Darken, then add motion-blurred bright streaks (procedural)."""
 
     category = "weather"
-    'Environment corruption category used to group related sensor effects.'
 
     def apply(self, rgb: np.ndarray, rng: np.random.Generator) -> np.ndarray:
         import cv2
@@ -85,7 +83,6 @@ class Snow(Corruption):
     """Bright speckles plus a slight brighten and blur (procedural)."""
 
     category = "weather"
-    'Environment corruption category used to group related sensor effects.'
 
     def apply(self, rgb: np.ndarray, rng: np.random.Generator) -> np.ndarray:
         import cv2
@@ -106,7 +103,6 @@ class Brightness(Corruption):
     """Multiplicative brightening (over-exposure / bright sun)."""
 
     category = "lighting"
-    'Environment corruption category used to group related sensor effects.'
 
     def apply(self, rgb: np.ndarray, rng: np.random.Generator) -> np.ndarray:
         return _u8(_f(rgb) * (1.0 + 0.8 * self.severity))
@@ -116,7 +112,6 @@ class LowLight(Corruption):
     """Night / underexposure: darken and add read noise (a dark sensor is a noisy sensor)."""
 
     category = "lighting"
-    'Environment corruption category used to group related sensor effects.'
 
     def apply(self, rgb: np.ndarray, rng: np.random.Generator) -> np.ndarray:
         out = _f(rgb) * (1.0 - 0.75 * self.severity)
@@ -128,7 +123,6 @@ class Contrast(Corruption):
     """Reduce contrast toward the frame mean (flat, washed-out light)."""
 
     category = "lighting"
-    'Environment corruption category used to group related sensor effects.'
 
     def apply(self, rgb: np.ndarray, rng: np.random.Generator) -> np.ndarray:
         mean = _f(rgb).mean(axis=(0, 1), keepdims=True)
@@ -139,7 +133,6 @@ class Gamma(Corruption):
     """Non-linear tone shift (darker mid-tones), as from a different exposure curve."""
 
     category = "lighting"
-    'Environment corruption category used to group related sensor effects.'
 
     def apply(self, rgb: np.ndarray, rng: np.random.Generator) -> np.ndarray:
         g = 1.0 + 1.6 * self.severity
@@ -150,7 +143,6 @@ class ColorTemp(Corruption):
     """Color-cast shift — warm (default, sodium street-lights / sunset) or cool."""
 
     category = "lighting"
-    'Environment corruption category used to group related sensor effects.'
 
     def __init__(self, severity: float = 0.5, warm: bool = True) -> None:
         super().__init__(severity)

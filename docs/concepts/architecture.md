@@ -11,7 +11,7 @@
 ## Components
 
 AVSecTester combines recorded data or scenario recipes, a simulator, a driving system and
-attacks. Each adapter retains the implementation of its native simulator or model.
+attacks. Each simulator and driving-system integration retains its native implementation.
 
 | Component | Responsibility |
 |---|---|
@@ -64,25 +64,25 @@ Paths are relative to `avsectester/`.
 
 | Directory | Responsibility |
 |---|---|
-| ./ | Shared records, validation, serialization, type paths and CLI entry points |
-| geometry/ | Camera models, poses, projection and ray/mesh geometry |
-| datasets/ | Stateless recordings and recipes |
-| maps/ | Semantic records and map readers |
-| rendering/ | Assets, surfaces, textures, harmonizers and composition |
+| `./` | Shared records, validation, serialization, type paths and CLI entry points |
+| `geometry/` | Camera models, poses, projection and ray/mesh geometry |
+| `datasets/` | Stateless recordings and recipes |
+| `maps/` | Semantic records and map readers |
+| `rendering/` | Assets, surfaces, textures, harmonizers and composition |
 | `closed_loop/` | Hooks, environments and sensor corruptions |
 | `closed_loop/simulators/` | Contracts, recorded playback, dynamics, navigation, ground contact and object composition |
 | `closed_loop/simulators/carla/` | CARLA world and sensor integration |
 | `closed_loop/simulators/nurec/` | NuRec rendering; `traffic.py` sessions and `server.py` local services |
 | `closed_loop/avstacks/` | Driving interfaces and `DrivingAdapter` |
 | `closed_loop/avstacks/implemented/` | Supplied driving systems, including `rule_based/` |
-| attack/ | `Attack` contracts and structured `offline_report` outputs |
-| attack/insertion/ | Assets, placement, visibility and insertion actions |
-| attack/optimization/ | Optimization interfaces, algorithms and scorer bindings |
-| runlog/ | Recording and reading steps, events and payloads |
-| execution/ | Runner, services and frame-data caching |
-| evaluation/ | Metrics, comparison groups, reports and plots |
+| `attack/` | `Attack` contracts and structured `offline_report` outputs |
+| `attack/insertion/` | Assets, placement, visibility and insertion actions |
+| `attack/optimization/` | Optimization interfaces, algorithms and scorer bindings |
+| `runlog/` | Recording and reading steps, events and payloads |
+| `execution/` | Runner, services and frame-data caching |
+| `evaluation/` | Metrics, comparison groups, reports and plots |
 | `implemented_attacks/` | One concrete attack per `snake_case` class directory |
-| experiment/ | Configuration, preparation, execution and saved outputs |
+| `experiment/` | Configuration, preparation, execution and saved outputs |
 
 `Simulator` and `AVStack` package initializers expose interfaces. Import implementations from
 their own modules. User implementations live in their own packages; see
@@ -128,8 +128,10 @@ The supplied [configuration list](../examples/README.md) contains these combinat
 
 **Not yet implemented.** Using `ModularAVStack` with NuRec, or `AlpamayoAVStack` and
 `RuleBasedAVStack` with CARLA; see
-[Cross-simulator configurations](../development/TODO.md#cross-simulator-driving-configurations). Reactive
-NuRec traffic is optional; see [simulator behavior](../guides/simulators.md#reactive-traffic).
+[Cross-simulator configurations](../development/TODO.md#cross-simulator-driving-configurations).
+
+Reactive NuRec traffic is optional; see
+[simulator behavior](../guides/simulators.md#reactive-traffic).
 
 ## World ownership
 
@@ -146,6 +148,5 @@ separate processes. See the
 Isolation means a run has its own runtime state and recorded snapshots.
 Comparison groups are defined in [Terms](#terms).
 
-See [experiment workflows](../guides/experiments.md#treatments-and-common-origins)
-for resource scopes and
-[evaluation](../guides/evaluation.md) for grouping and measurements.
+See [experiment workflows](../guides/experiments.md#treatments-and-common-origins) for resource
+scopes and [evaluation](../guides/evaluation.md) for grouping and measurements.

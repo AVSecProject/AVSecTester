@@ -153,7 +153,7 @@ class WorldSnapshot:
 
 @dataclass
 class StateEstimate:
-    """Model-visible ego state and speed produced by a localization adapter."""
+    """Model-visible ego state and speed produced by the driving system's localizer."""
 
     vehicle_state: Any = None
     ego_speed: float = 0.0

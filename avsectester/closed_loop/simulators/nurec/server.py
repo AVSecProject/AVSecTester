@@ -21,7 +21,6 @@ from .renderer import NuRecRenderer
 from .traffic import AlpaSimTraffic
 
 
-
 DEFAULT_NRE_IMAGE = "nvcr.io/nvidia/nre/nre-ga:26.04"
 DEFAULT_TRAFFIC_IMAGE = "avsectester:trafficsim"
 # Host GPU index of the experiment container, set by the nurec-experiment Compose service.

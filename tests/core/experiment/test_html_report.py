@@ -48,7 +48,7 @@ def without_time(text):
 
 
 def test_write_offline_html(tmp_path):
-    saved_preparation(tmp_path, load=True)
+    saved_preparation(tmp_path)
     offline = OfflineReport(None)
     offline.status = "failed"
     offline.set_value("confidence", .12345678, unit="ratio (0–1)", description="Mean confidence.")
@@ -66,7 +66,7 @@ def test_write_offline_html(tmp_path):
     EvaluationReport().save(tmp_path / "evaluation")
     write_evaluation_html(tmp_path)
     path = write_offline_html(tmp_path)
-    assert path == tmp_path / "offline_report.html"
+    assert path == tmp_path.resolve() / "offline_report.html"
     text = path.read_text()
     assert "Offline report —" in text and "no offline output" in text
     assert "The offline phase failed; values below are partial." in text
@@ -89,7 +89,7 @@ def test_write_offline_html(tmp_path):
 
 
 def test_write_evaluation_html(tmp_path):
-    saved_preparation(tmp_path, load=True)
+    saved_preparation(tmp_path)
     label = "example.metrics:ExampleMetric"
     speed, stopped = f"{label}.speed", f"{label}.stopped"
     missing = f"{label}.missing"
@@ -101,7 +101,7 @@ def test_write_evaluation_html(tmp_path):
         "treatments": {
             "clean": {"status": "completed", "error": None,
                       "metrics": {speed: 3.123456, stopped: False,
-                                  integer: 7, zero: -0.}, "reasons": {}},
+                                  integer: 7, zero: -1e-6}, "reasons": {}},
             "attack": {"status": "completed", "error": None,
                        "metrics": {speed: .901234, stopped: True, missing: None},
                        "metric_types": {missing: "number"},
@@ -142,7 +142,7 @@ def test_write_evaluation_html(tmp_path):
     Image.fromarray(np.zeros((3, 4, 3), np.uint8)).save(plots / "segment-00003-seed-2.png")
 
     path = write_evaluation_html(tmp_path)
-    assert path == tmp_path / "evaluation_report.html"
+    assert path == tmp_path.resolve() / "evaluation_report.html"
     text = path.read_text()
     assert "Evaluation report —" in text and "Part: test" in text and label in text
     results = re.search(r'<section id="results">(.*?)</section>', text, re.S).group(1)
@@ -184,6 +184,15 @@ def test_write_evaluation_html(tmp_path):
     path.unlink()
     assert without_time(write_evaluation_html(tmp_path).read_text()) == without_time(text)
 
-    assert f"Metadata loaded from {tmp_path}/selected&lt;signs&gt;.json (4 segments); no selection was run." in text
     selection = re.search(r'<section id="selection">(.*?)</section>', text, re.S).group(1)
-    assert "<table>" not in selection
+    assert "<th>attack</th>" in selection and "<th>status</th>" in selection
+    assert "<tr><td>attack</td><td>1</td><td>0</td><td>0</td></tr>" in selection
+    assert "<td>selected</td>" in selection
+    assert "&lt;sign&gt;" in selection and "<sign>" not in selection
+
+    loaded = tmp_path / "loaded"
+    saved_preparation(loaded, load=True)
+    EvaluationReport().save(loaded / "evaluation")
+    loaded_text = write_evaluation_html(loaded).read_text()
+    assert (f"Metadata loaded from {loaded.resolve()}/selected&lt;signs&gt;.json "
+            "(4 segments); no selection was run.") in loaded_text

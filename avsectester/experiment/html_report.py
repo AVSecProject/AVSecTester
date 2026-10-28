@@ -179,6 +179,7 @@ def _offline_table(name: str, table: Mapping[str, Any], attack: str, *, folded: 
         columns, [[row.get(column) for column in columns] for row in rows]) + "</div>"
     return result + ("</details>" if folded else "")
 
+
 def write_offline_html(output_root: str | Path) -> Path:
     """Rebuild the offline page and series curves solely from saved entries."""
     root = Path(output_root)
@@ -264,6 +265,7 @@ def write_offline_html(output_root: str | Path) -> Path:
         body.append("</section>")
     return _document(f"Offline report — {root.name}", body, root / "offline_report.html")
 
+
 def _metric_specs(report: Mapping[str, Any]) -> list[dict[str, Any]]:
     specifications = [dict(spec) for spec in report.get("metrics", [])]
     for specification in specifications:
@@ -319,6 +321,7 @@ def _field_link(specification: Mapping[str, Any], name: str) -> _Html:
     description = _field_description(specification, name).get("description") or "No description provided"
     return _Html(f'<a href="#{escape(_definition_id(specification, name), quote=True)}" '
                  f'title="{escape(description, quote=True)}">{escape(_field_name(specification, name))}</a>')
+
 
 def _field_type(report: Mapping[str, Any], name: str) -> str:
     for group in report.get("groups", []):
@@ -415,6 +418,7 @@ def _definitions(report: Mapping[str, Any]) -> list[str]:
         result.append(_table(["field", "meaning", "unit", "type"], rows))
     return result
 
+
 def _results(report: Mapping[str, Any]) -> list[str]:
     summaries = report.get("treatment_summaries", [])
     result = []
@@ -427,6 +431,7 @@ def _results(report: Mapping[str, Any]) -> list[str]:
                 [[_field_link(specification, name), _field_description(specification, name).get("unit"),
                   *[_statistic((row.get("metrics") or {}).get(name, {})) for row in rows]] for name in fields]))
     return result
+
 
 def _pairs(report: Mapping[str, Any]) -> list[str]:
     pairs = report.get("pair_summaries", [])
@@ -475,6 +480,7 @@ def _pairs(report: Mapping[str, Any]) -> list[str]:
             result.append("</details>")
     return result
 
+
 def _group_details(root: Path, report: Mapping[str, Any], manifest: Mapping[str, Any]) -> list[str]:
     units = {unit["index"]: unit for unit in manifest.get("units", [])}
     result = []
@@ -521,6 +527,7 @@ def _group_details(root: Path, report: Mapping[str, Any], manifest: Mapping[str,
         result.append("</details>")
     return result
 
+
 def _selection(report: Mapping[str, Any], manifest: Mapping[str, Any]) -> list[str]:
     source = manifest.get("metadata_source")
     if source and source.get("load"):
@@ -545,6 +552,7 @@ def _selection(report: Mapping[str, Any], manifest: Mapping[str, Any]) -> list[s
               "; ".join([*row.get("reasons", []), *([row["error"]] if row.get("error") else [])]) or None]
              for row in rows if row.get("attack_name", "Unspecified attack") == attack]) + "</details>")
     return result
+
 
 def write_evaluation_html(output_root: str | Path) -> Path:
     """Rebuild root evaluation_report.html from saved evaluation and preparation files."""

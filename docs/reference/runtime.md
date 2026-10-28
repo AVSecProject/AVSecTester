@@ -15,9 +15,8 @@ observation. Simulator-specific origin and capture behavior is described
 in [Simulators](../guides/simulators.md).
 
 `AttackRuntime.setup` receives its subscribed state and returns zero or more `WorldAttackAction`
-values. Its `setup_ticks` must not exceed `Attack.deployment_ticks(segment)`. Actions
-register cleanup on the supplied `ExitStack`. Budget declarations belong to
-[Writing attacks](../guides/attacks.md).
+values. Actions register cleanup on the supplied `ExitStack`. See budget rules in
+[Writing attacks](../guides/attacks.md#online-phase).
 
 Driving-history acquisition follows
 [Past observations](../guides/simulators.md#recorded-past-observations). The initialization
@@ -74,7 +73,7 @@ from native actors in `WorldSnapshot.objects`.
 |---|---|
 | `WorldAttackAction` | Simulated-world changes |
 | `SensorAttackAction` | Sensor capture changes, including camera, LiDAR, GNSS and IMU |
-| `AVStackAttackAction` | Driving-system values from `localization.pre` through command |
+| `AVStackAttackAction` | Driving-system values from `localization.pre` through `command` |
 
 Sensor actions chain in issue order on independent data, preserving the original capture. Native
 wrappers retain calibration and acquisition metadata; camera buffers remain RGB uint8.
@@ -87,7 +86,7 @@ when each run starts.
 
 `SensorView.camera` and `cam_from_world` describe optical geometry when available. Optical axes
 are x right, y down, z forward. `sensor_from_world` describes the sensor body axes: x forward, y
-left, z up; it is None when the sensor pose is unavailable. The two transforms are distinct for
+left, z up; it is `None` when the sensor pose is unavailable. The two transforms are distinct for
 cameras. `SimulatorRuntime.sensors` lists all views; `camera_sensors` lists its camera subset.
 `SensorView.objects` contains the inserted objects associated with the capture.
 
@@ -97,8 +96,8 @@ A CARLA LiDAR view contains an owned `SensorCapture`. `raw_data` holds packed fl
 y, z, intensity: four values, or 16 bytes, per point. These bytes use CARLA sensor axes: x
 forward, y right, z up. `sensor_from_world` uses the canonical body axes whose y points left.
 
-Replacing the capture retains the native `LidarData` wrapper and its flipy setting. With
-flipy=True, the native exporter negates y. Supply replacement points in the original CARLA axes
+Replacing the capture retains the native `LidarData` wrapper and its `flipy` setting. With
+`flipy=True`, the native exporter negates y. Supply replacement points in the original CARLA axes
 and preserve the capture's frame, timestamp and metadata.
 
 This action shifts the points one meter forward:
@@ -126,7 +125,7 @@ class ShiftLidarPointsAction(SensorAttackAction):
 
 Return it from `AttackRuntime.step`. The runner supplies its current capture and `SensorView`.
 
-## `Hook` stages
+## Hook stages
 
 `Hook(stage, handler)` accepts a callable or an object with `transform(value, context)`,
 where `context` is a `StageContext`.
@@ -135,24 +134,24 @@ their supported stages; unsupported stages fail before reset.
 
 | Stage | Value |
 |---|---|
-| `simulator.setup` | None; native world setup |
-| `simulator.step.pre` / `simulator.step.post` | None; before/after physical advancement |
+| `simulator.setup` | `None`; native world setup |
+| `simulator.step.pre` and `simulator.step.post` | `None`; before/after physical advancement |
 | `sensors.post` | `Observation` |
 | `localization.pre` | `Observation`; present only with a configured localizer |
 | `localization.post` | `StateEstimate` |
 | `observation` | `Observation` after localization |
-| `perception.pre` / `perception.post` | `CallInputs` / component output, when declared |
-| `tracking.pre` / `tracking.post` | `CallInputs` / component output, when declared |
-| `planning.pre` / `planning.post` | `CallInputs` / component output, when declared |
-| `control.pre` / `control.post` | `CallInputs` / component output, when declared |
-| `policy.pre` / `policy.post` | Policy inputs / output, when declared |
+| `perception.pre` and `perception.post` | `CallInputs` or component output, when declared |
+| `tracking.pre` and `tracking.post` | `CallInputs` or component output, when declared |
+| `planning.pre` and `planning.post` | `CallInputs` or component output, when declared |
+| `control.pre` and `control.post` | `CallInputs` or component output, when declared |
+| `policy.pre` and `policy.post` | Policy inputs or output, when declared |
 | `command` | `Control` before execution |
-| `render.pre` / `render.post` | `CameraPoseRequest` / rendered sensor, when declared |
+| `render.pre` and `render.post` | `CameraPoseRequest` or rendered sensor, when declared |
 
-NuRec `render.pre` uses a 4×4 `world_from_rig` pose in `CameraPoseRequest`. `Simulator` setup
-and step handlers return `None`. A component pre-hook returns `CallInputs(args, kwargs)`; a
-post-hook returns the replacement output. `NativeHook` adapts an explicitly registered
-avstack-library hook.
+NuRec `render.pre` uses a 4×4 `world_from_rig` pose in `CameraPoseRequest`. The `simulator.setup`
+and `simulator.step.*` handlers return `None`. A component pre-hook returns
+`CallInputs(args, kwargs)`; a post-hook returns the replacement output. `NativeHook` adapts an
+explicitly registered avstack-library hook.
 
 ## Contexts and lifecycle
 
@@ -161,9 +160,9 @@ avstack-library hook.
 It carries no native runtime or time-advancing service.
 Bound `AVStackAttackAction` methods also receive the actual stage value.
 
-`StageContext` exposes step, stage, sensor, `physical_state`, observation, control, run
-resources, rng and `record_output`. `simulator_runtime` and avstack expose borrowed native
-resources. Using native SDK objects ties a handler to that adapter.
+`StageContext` exposes `step`, `stage`, `sensor`, `physical_state`, `observation`, `control`, run
+resources, `rng` and `record_output`. `simulator_runtime` and `avstack` expose borrowed native
+resources. Using native SDK objects ties a handler to that simulator or driving system.
 
 `Plugin.transform` is required. `reset(context)`, `after_step(context)` and `close()`
 are optional. `after_step` receives the next raw capture and the post-step clock. `HookSet`
@@ -182,25 +181,25 @@ localization. Physical snapshots remain separate from these values.
 
 | Record | Fields and coordinates |
 |---|---|
-| `Observation` | t, frame, `sensor_data`, calibration, `vehicle_state`, `ego_speed`, route; model-visible |
-| `Control` | throttle, steer, brake, optional trajectory |
-| `WorldSnapshot` | t, frame, `vehicle_state`, `ego_speed`, ego, actors, `traffic_lights`, objects; physical |
-| `ActorState` | world-from-actor pose, velocity, category, optional extent, local `box_center` and `box_rotation` |
-| `Detection` | ego-frame box center, full extent, yaw, category, score |
-| `RecordedOutput` | name, copied value, decision step, stage, physical frame/time, sensor |
+| `Observation` | `t`, `frame`, `sensor_data`, `calibration`, `vehicle_state`, `ego_speed`, `route`; model-visible |
+| `Control` | `throttle`, `steer`, `brake`, optional `trajectory` |
+| `WorldSnapshot` | `t`, `frame`, `vehicle_state`, `ego_speed`, `ego`, `actors`, `traffic_lights`, `objects`; physical |
+| `ActorState` | world-from-actor `pose`, `velocity`, `category`, optional `extent`, local `box_center` and `box_rotation` |
+| `Detection` | ego-frame `position`, full `extent`, `yaw`, `category`, `score` |
+| `RecordedOutput` | `name`, copied `value`, decision `step`, `stage`, physical `frame` and `t`, `sensor` |
 
-`ActorState.extent` is full length, width and height in meters; None means unavailable.
+`ActorState.extent` is full length, width and height in meters; `None` means unavailable.
 `box_center` is the actor-local box center; `box_rotation` is local roll/pitch/yaw in degrees.
 `box_transform()` combines these with the actor pose to return the world-from-box transform.
-Operations requiring dimensions report missing evidence when extent is None.
+Operations requiring dimensions report missing evidence when `extent` is `None`.
 
 `Detection` uses the true capture-time ego frame, independently of driving localization: x
-forward, y left, z up, and yaw in radians. None detections means unsupported; an empty sequence
-means supported with no detections. `WorldSnapshot.traffic_lights` maps map control IDs to red,
-yellow, green, off or unknown. `Simulator` support is described
+forward, y left, z up, and yaw in radians. `None` detections means unsupported; an empty sequence
+means supported with no detections. `WorldSnapshot.traffic_lights` maps map control IDs to `red`,
+`yellow`, `green`, `off` or `unknown`. Simulator support is described
 in [Simulators](../guides/simulators.md).
 
-## `RunLog`
+## RunLog
 
 Registered dataclasses use JSON objects with `_avsectester_type: "dataclass"`,
 `type: "module:Class"` and an encoded `fields` mapping. Mapping-key order is encoded separately;
@@ -208,24 +207,24 @@ user mappings containing reserved serialization keys are escaped and round-trip 
 Payload retention defaults are defined in [Configuration reference](configuration.md#recording).
 
 `StepRecord` separates `raw_observation` from `model_observation`, `physical_pre` from
-`physical_post`, and `produced_command` from `executed_command`. It also stores components,
-detections, actions, outputs, `sensor_geometry`, `object_visibility` and telemetry. Physical
+`physical_post`, and `produced_command` from `executed_command`. It also stores `components`,
+`detections`, `actions`, `outputs`, `sensor_geometry`, `object_visibility` and `telemetry`. Physical
 records retain framework object state.
 
 Action requests and receipts distinguish requested changes from applied changes. A receipt's
-outcome is applied or `not_applied`, describing the action rather than its driving impact. Every
-receipt has a details mapping, empty when there is no detail. `InsertionAttackAction` adds
-rendered, reason, `occlusion_source` and `ignored_occluders`. `InsertObject` records `object_id`,
-`asset_category` and `world_from_object`.
+outcome is `applied` or `not_applied`, describing the action rather than its driving impact. Every
+receipt has a `details` mapping, empty when there is no detail. `InsertionAttackAction` adds
+`rendered`, `reason`, `occlusion_source` and `ignored_occluders`. `InsertObject` records
+`object_id`, `asset_category` and `world_from_object`.
 
 `StepRecord.object_visibility`, the initialization event and `RenderResult.object_visibility`
 use object ID → camera name → `ObjectVisibility`. `ObjectVisibility` contains `occlusion_source`,
-`ignored_occluders` and `visible_pixels`. `Visibility` and composition behavior is described
+`ignored_occluders` and `visible_pixels`. Visibility and composition behavior is described
 under [Object visibility](../guides/simulators.md#inserted-world-objects).
 
 `EventRecord` captures initialization, termination and failure/cleanup information outside a
 decision. NuRec termination includes `ground_contact_failures`, counts by rejected ground-fit
-reason. `RunLog.status` distinguishes completed, failed, cancelled and incomplete runs.
+reason. `RunLog.status` distinguishes `completed`, `failed`, `cancelled` and `incomplete` runs.
 
 Parquet stores typed scalar and nested values. Large arrays occupy payload shards. Payloads
 publish before referring record parts; completion metadata publishes last. A crash leaves

@@ -104,7 +104,6 @@ class CocoStopSignDetector:
                 for box, score, label in zip(boxes, scores, labels)
                 if int(label) == STOP_SIGN_LABEL and float(score) >= self.score_threshold]
 
-
     def target_score(self, image: torch.Tensor, target: TargetSpec) -> torch.Tensor:
         """Return a scalar confidence for a float RGB ``(3, H, W)`` image in [0, 1].
 

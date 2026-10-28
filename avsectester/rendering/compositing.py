@@ -79,7 +79,7 @@ def blend_rgba(
 
 
 @dataclass(frozen=True)
-class SurfaceFootprint:
+class _Footprint:
     """One surface's sampling over its clipped image region and the visible pixels it owns."""
 
     object_index: int
@@ -91,7 +91,7 @@ class SurfaceFootprint:
 
 
 def _object_mask(
-    footprints: Sequence[SurfaceFootprint], index: int, shape: tuple[int, ...],
+    footprints: Sequence[_Footprint], index: int, shape: tuple[int, ...],
 ) -> np.ndarray:
     """The visible pixels owned by one planned object's surfaces."""
     mask = np.zeros(shape, dtype=bool)
@@ -114,6 +114,7 @@ class CompositePlan:
     Differentiable harmonizers also see the nominal composite, in which surfaces with a
     nominal texture show it instead of their texture or replacement colors.
     Depth combines scene and surface evidence; scene_visibility keeps only visible surfaces.
+    Create plans with ``plan_composite``; a plan constructed directly has no surface samples.
     """
 
     objects: tuple[PlacedObject, ...]
@@ -122,7 +123,7 @@ class CompositePlan:
     occlusion_source: str
     ignored_occluders: tuple[str, ...]
     object_visibility: Mapping[str, ObjectVisibility]
-    footprints: tuple[SurfaceFootprint, ...] = field(repr=False)
+    _footprints: tuple[_Footprint, ...] = field(default=(), repr=False)
 
     def composite(self, image: torch.Tensor,
                   textures: Mapping[tuple[str, int], torch.Tensor] | None = None) -> torch.Tensor:
@@ -164,7 +165,7 @@ class CompositePlan:
         output = blended
         for index, _, harmonizer in harmonized:
             active = torch.as_tensor(
-                _object_mask(self.footprints, index, self.depth.shape), device=blended.device)
+                _object_mask(self._footprints, index, self.depth.shape), device=blended.device)
             if active.any():
                 adjusted = harmonizer.harmonize_tensor(
                     blended.clone(), active, background.clone(), nominal.clone())
@@ -198,7 +199,7 @@ class CompositePlan:
             unharmonized = image.copy()
             unharmonized[visible] = np.rint(np.clip(unadjusted[visible], 0, 1) * 255).astype(np.uint8)
             for index, placed in numpy_harmonized:
-                active = _object_mask(self.footprints, index, self.depth.shape)
+                active = _object_mask(self._footprints, index, self.depth.shape)
                 _harmonize_visible(output, active, image, placed.harmonizer, unharmonized)
         return CompositeResult(output, self.depth, visible, self.occlusion_source,
                                self.ignored_occluders, self.object_visibility)
@@ -217,7 +218,7 @@ class CompositePlan:
             if not isinstance(colors, torch.Tensor) or tuple(colors.shape) != (3, *texture.shape[:2]):
                 raise ValueError(f"Colours for {key!r} must be a (3, {texture.shape[0]}, {texture.shape[1]}) tensor")
         layer = image.new_zeros((4, *image.shape[1:]))
-        for footprint in self.footprints:
+        for footprint in self._footprints:
             colors = textures.get((self.objects[footprint.object_index].object_id, footprint.surface_index))
             if colors is None:
                 sampled = torch.as_tensor(footprint.premultiplied, dtype=image.dtype, device=image.device)
@@ -332,7 +333,7 @@ def plan_composite(
         x0, y0, x1, y1 = sampling.bounds
         owned = visible[y0:y1, x0:x1] & (owners[y0:y1, x0:x1] == index)
         if owned.any():
-            footprints.append(SurfaceFootprint(
+            footprints.append(_Footprint(
                 object_index, surface_index, sampling, alpha, premultiplied, owned))
     ignored = tuple(ignored_occluders)
     visibility = {placed.object_id: ObjectVisibility(
@@ -362,7 +363,6 @@ def composite_objects(
 
 
 __all__ = [
-    'SurfaceFootprint',
     'ObjectVisibility',
     'CompositeResult',
     'blend_rgba',

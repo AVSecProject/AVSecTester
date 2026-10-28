@@ -294,6 +294,7 @@ def modular_driving_adapter(factory, *, components=(), scorers=()):
         if name not in {"mmdet.inference", "mmdet.rpn_objectness"}:
             raise ValueError(f"Unknown built-in scorer {name!r}")
         differentiable = name == "mmdet.rpn_objectness"
+
         def score(avstack, inputs, target, differentiable=differentiable):
             from avsectester.closed_loop.avstacks.implemented.scorers import MMDetInferenceScorer, MMDetRPNObjectnessScorer
 
@@ -374,7 +375,6 @@ class ModularAVStack(AVStack):
     """
 
     provides_detections = True
-    'Whether decisions expose detections compatible with detection metrics.'
 
     def __init__(self, pipeline_cfg: dict) -> None:
         _register_avstack_modules()

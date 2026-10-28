@@ -40,10 +40,12 @@ class Harmonizer(ABC):
     def __call__(
         self, composite_rgb: np.ndarray, mask: np.ndarray, background_rgb: np.ndarray
     ) -> np.ndarray:
-        """Return H×W×3 uint8 RGB adjusted only inside the H×W boolean visible mask.
+        """Adjust ``composite_rgb`` against ``background_rgb`` inside the H×W ``mask``.
 
-        Inputs are aligned RGB uint8 images. Preserve pixels outside the mask and the
-        foreground texture's spatial structure; do not modify the input images in place.
+        Both images are aligned H×W×3 uint8 RGB. Nonzero mask pixels are visible; the
+        framework supplies a uint8 mask containing 0 or 255. Return H×W×3 uint8 RGB,
+        preserving pixels outside the mask and the foreground texture's spatial structure.
+        Do not modify the input images in place.
         """
         ...
 
@@ -123,7 +125,6 @@ class ExposureHarmonizer(Harmonizer):
     gain_range: tuple[float, float] = (.05, 1.2)
     feather_sigma: float = 1.2
     differentiable: ClassVar[bool] = True
-    'Whether input-image gradients are supported by this component.'
 
     def __post_init__(self) -> None:
         if self.reference not in {"ring", "under"}:

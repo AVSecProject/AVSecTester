@@ -288,7 +288,8 @@ def _load_metadata(configuration: ExperimentConfiguration, directory: str | Path
     scenarios = None if validate_dataset else saved["dataset"]["scenarios"]
     expected = configuration.describe_configuration(scenarios=scenarios, metadata_sha256=sha256)
     _require_parameters(expected)
-    mismatches = [key for key in expected if saved.get(key) != expected[key]]
+    mismatches = [key for key in expected
+                  if _canonical_text(saved.get(key)) != _canonical_text(expected[key])]
     mismatches.extend(key for key in saved if key not in expected)
     if mismatches:
         raise ConfigurationMismatchError("Saved preparation configuration differs from the supplied configuration: "

@@ -64,16 +64,17 @@ def test_format_summary(report):
     text = report.format_summary()
     assert "1.2346 ± 0.1000" in text and "n = 3" in text
     assert "0.6667" in text and "2 of 3 groups" in text
-    metric_values["DrivingMetrics.final_speed"] = {"mean": -0., "std": 0., "count": 1}
+    metric_values["DrivingMetrics.final_speed"] = {"mean": -1e-6, "std": 0., "count": 1}
     assert "-0.0000" not in report.format_summary()
     assert "0.0000" in report.format_summary()
     nonfinite = deepcopy(report)
     nonfinite.treatment_summaries[0]["metrics"] = {
         "UserMetric.infinite": {"mean": float("inf"), "std": 0., "count": 1},
+        "UserMetric.nan": {"mean": float("nan"), "std": 0., "count": 1},
     }
     formatted = nonfinite.format_summary()
     assert "infinite" in formatted
-    assert re.search(r"clean\s+1/1\s+0\s+—\n", formatted)
+    assert re.search(r"clean\s+1/1\s+0\s+—\s+—\n", formatted)
     for summary in report.treatment_summaries:
         summary["part"] = "train"
     validation = deepcopy(report.treatment_summaries[0])

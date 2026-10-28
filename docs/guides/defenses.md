@@ -11,7 +11,7 @@ output metrics. See [TODO](../development/TODO.md#defenses).
 
 A treatment currently enables at most one `Attack` and supplies environment overrides. Hooks are
 available for explicit stage processing, but configuring a hook does not define a reusable
-defense protocol or a clean/attack/attack-plus-defense comparison.
+defense protocol or an unattacked/attack/attack-plus-defense comparison.
 
 ## Next steps
 

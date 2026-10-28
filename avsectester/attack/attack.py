@@ -79,7 +79,8 @@ class OfflineContext:
 class Attack(ABC):
     """One attack with its own parameters and optional offline preparation."""
     environment: Mapping[str, Any] = MappingProxyType({})
-    'Environment settings merged with experiment settings during selection and the offline phase.'
+    """Environment overrides merged after ``runs.environment`` for the offline phase and attacked
+    treatments; selection does not apply them."""
 
     def build_metadata(self, scenario: ScenarioView) -> Sequence[AttackSegment]:
         """Select segments, or leave selection to a shared metadata.load file."""

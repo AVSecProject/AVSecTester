@@ -14,8 +14,9 @@ affect loading. `load_configuration` accepts a YAML path, a mapping or an
 
 Every constructor specification uses `type` and optional `options`. A built-in short name
 selects a framework component; `package.module:Class` or `package.module:function` selects user
-code. `Dataset`, simulator, `AVStack` and attack specifications can also reference YAML files.
-Nested constructors use the same type/options form.
+code. `dataset`, `simulator`, `avstack`, `attacks.<name>`, `evaluation.metrics` entries and
+`observation_pipeline` can also reference YAML files. Nested constructors use the same
+type/options form.
 Type paths and hook imports execute Python code; use only trusted sources.
 
 ### Component short names
@@ -39,12 +40,12 @@ through as native data.
 |---|---|---|
 | `device` | omitted | Default for constructors with an explicit device parameter |
 | `dataset` | required | Scenario source |
-| `metadata` | save/load both null | Export or load one shared segment file |
-| `split` | null | Training, validation and test segment allocation |
+| `metadata` | `save`/`load` both `null` | Export or load one shared segment file |
+| `split` | `null` | Training, validation and test segment allocation |
 | `simulator` | required | World and sensor provider |
 | `avstack` | required | Driving system and optional bindings |
 | `attacks` | required, nonempty | Names mapped to `Attack` specifications |
-| `hooks` | null | Stage handlers shared by all treatments |
+| `hooks` | `null` | Stage handlers shared by all treatments |
 | `evaluation` | automatic metric set | `Metric` specifications |
 | `runs` | defaults below | Treatments, seeds, environment, recording and output |
 
@@ -101,7 +102,7 @@ Components with this parameter include `AlpamayoAVStack`, `CocoStopSignDetector`
 `DetectorPatchOptimization`, `PatchOptimization` and `PCTNetHarmonizer`. Container GPU selection
 is separate; see [automatic local services](cli.md#automatic-local-services).
 
-## `Dataset`
+## Dataset
 
 `dataset` selects the scenario source. `NuRecDataset` accepts either `dataroot`, searched
 recursively for USDZ archives, or an explicit `usdz_paths` sequence. The two options are
@@ -112,10 +113,10 @@ in [Datasets](../guides/datasets.md).
 
 The JSON file contains `format: "avsectester.metadata"`, `version: 1`,
 `dataset_type: "module:Class"` and `segments` encoded by `DEFAULT_REGISTRY`. The dataset type
-must match. [Experiments](../guides/experiments.md#save-and-reuse-selected-metadata) owns when
-the file is saved, loaded and validated.
+must match. See [Experiments](../guides/experiments.md#save-and-reuse-selected-metadata) for
+save, load and validation timing.
 
-`metadata.save` and `metadata.load` both default to null and are mutually exclusive. Paths
+`metadata.save` and `metadata.load` both default to `null` and are mutually exclusive. Paths
 resolve relative to the containing YAML file. Python configurations use `MetadataConfiguration`.
 
 ```yaml
@@ -130,14 +131,12 @@ metadata:
 
 Duplicate complete segments are rejected on save and load. There are no per-attack or
 per-treatment overrides.
-[Metadata workflows](../guides/experiments.md#save-and-reuse-selected-metadata) defines
-selection, validation and save timing.
-
 The preparation records the source path and raw-byte SHA256. Compatibility depends only on that
 hash, so moving an unchanged file is allowed. Changing any bytes, including whitespace, changes
-its identity. Reusing preparation for execution checks the current file's hash; it does not
-repeat segment validation. Reevaluation uses the saved hash and segments without reading this
-file. Adding or removing `metadata.load` relative to the saved configuration is incompatible.
+its identity. Reusing preparation for execution checks the current file's hash and rechecks
+saved segment frames; other checks follow [Input validation](../guides/experiments.md#input-validation).
+Reevaluation uses the saved hash and segments without reading this file. Adding or removing
+`metadata.load` relative to the saved configuration is incompatible.
 
 The [Python API](python-api.md) provides `save_metadata` and `load_metadata` for user-generated
 segments. The [experiment workflow](../guides/experiments.md) describes preparation reuse.
@@ -160,7 +159,7 @@ split:
 | `train_segments` | required | Positive number of training units |
 | `validation_segments` | 0 | Nonnegative number of validation units |
 | `seed` | 0 | Nonnegative permutation seed |
-| `execute` | [test] | Unique subset of train, validation and test; an empty list executes no units |
+| `execute` | `[test]` | Unique subset of `train`, `validation` and `test`; an empty list executes no units |
 
 Unknown keys are rejected. Executing validation requires a positive validation count. Training
 plus validation must be smaller than the number of units, leaving at least one test unit.
@@ -176,7 +175,7 @@ validation segments, each in selection order. `PreparedExperiment.metadata` keep
 and `units` records the part and selecting attacks. `split.execute` affects execution, not
 preparation compatibility.
 
-## `Simulator`
+## Simulator
 
 CARLA scene and prescribed motion settings belong to `CarlaRecipe`; `CarlaSimulator` receives
 the runtime client settings. For recorded sources, choose a simulator compatible with the
@@ -193,15 +192,15 @@ from `NuRecDataset`. Reset requires `ScenarioStart`. Constructor defaults are:
 
 | Option | Default | Accepted values or role |
 |---|---|---|
-| `dynamics` | `KinematicBicycle`() | Ego-dynamics implementation |
+| `dynamics` | `KinematicBicycle()` | Ego-dynamics implementation |
 | `camera_aliases` | empty | Native camera ID to observation/sensor-view name; output names must be unique |
-| `depth` | mesh | mesh, none |
-| `route_generator` | map | map, recorded, none |
-| `physics_update_mode` | `ego_only` | `ego_only`, none |
-| `ground_mesh` | mesh | mesh, `mesh_ground` |
-| `object_occlusion` | `rendered_probes` | `rendered_probes`, geometry |
+| `depth` | `mesh` | `mesh`, `none` |
+| `route_generator` | `map` | `map`, `recorded`, `none` |
+| `physics_update_mode` | `ego_only` | `ego_only`, `none` |
+| `ground_mesh` | `mesh` | `mesh`, `mesh_ground` |
+| `object_occlusion` | `rendered_probes` | `rendered_probes`, `geometry` |
 | `occlusion_tolerance_m` | 0.15 | Nonnegative scene occlusion tolerance in meters |
-| `traffic` | null | Optional `AlpaSimTraffic` |
+| `traffic` | `null` | Optional `AlpaSimTraffic` |
 | `min_track_duration_s` | 3.0 | Nonnegative moving-track duration threshold; 0 disables filtering |
 
 `nurec_patch.yaml`, `nurec_speed_feedback.yaml` and `nurec_object_insertion.yaml` use
@@ -229,7 +228,7 @@ simulator:
       type: avsectester.closed_loop.simulators.ego_dynamics:AlpaSimController
 ```
 
-`Renderer` resolutions use native camera IDs and `[height, width]`. Projection uses the actual
+`resolution_hw` uses native camera IDs and `[height, width]`. Projection uses the actual
 returned dimensions. `probe_directory` is a client-side path resolved relative to the YAML file;
 `server_probe_directory` is an unchanged string in the server's filesystem namespace. The server
 must be able to read the probe files. See
@@ -248,7 +247,7 @@ traffic:
     rpc_timeout_s: 300.0
 ```
 
-Traffic defaults to null. Enabling it requires 0.1 s decisions and `history_steps - 1` preceding
+Traffic defaults to `null`. Enabling it requires 0.1 s decisions and `history_steps - 1` preceding
 recorded decisions. Traffic configuration affects preparation identity; `metadata.load` can
 share segments between modes. Services are managed by [run](cli.md#automatic-local-services).
 
@@ -268,9 +267,9 @@ option is an error. The top-level device follows the [device rule](#device).
 
 `AVStack.decision_time_step` optionally declares a fixed cadence. `DrivingAdapter` reads it from
 `factory.avstack_type`, or uses its explicit fallback without constructing the stack.
-`ClosedLoopServices` rejects an adapter/simulator mismatch. `AlpamayoAVStack` requires 0.1 s
-decisions. Its supplied configurations use `frame_subsample: 1` to select camera frames from
-history without changing decision timing. See
+`ClosedLoopServices` rejects a driving-system step that differs from the simulator step.
+`AlpamayoAVStack` requires 0.1 s decisions. Its supplied configurations use
+`frame_subsample: 1` to select camera frames from history without changing decision timing. See
 [Past observations](../guides/simulators.md#recorded-past-observations).
 
 A binding has signature `function(avstack_factory, **options) -> DrivingAdapter`. The factory
@@ -278,13 +277,12 @@ exposes `avstack_type` and an independent read-only `avstack_options` mapping. B
 components and scorers without constructing the stack;
 [Driving systems](../guides/driving-systems.md) describes the supplied bindings.
 
-## `Attack` specification
+## Attack specification
 
 `attacks` is a nonempty mapping of names to `Attack` specifications or YAML paths. Each entry
 has `type`, optional `options` and optional `environment`. Each attack selects its own segments
-unless `metadata.load` supplies them. Every attack has an offline phase and an online phase;
-either may be a no-op. Implementer responsibilities are in
-[Writing attacks](../guides/attacks.md).
+unless `metadata.load` supplies them. See [Writing attacks](../guides/attacks.md) for lifecycle
+phases and implementer responsibilities.
 Attacks that do not override `build_metadata` require `metadata.load`.
 
 ```yaml
@@ -296,9 +294,8 @@ attacks:
       world: {weather: SoftRainNoon}
 ```
 
-A short type name resolves a built-in component or a discovered attack package. User code can
-use an explicit path such as `my_project.attacks:MyAttack`. The
-[configuration list](../examples/README.md) contains the supplied attacks.
+See the [configuration list](../examples/README.md) for supplied attacks and
+[component construction](#experiment-configuration) for user type paths.
 
 ## Hooks
 
@@ -327,8 +324,7 @@ provides canonical detections. An explicit empty list selects no metrics. Repeat
 are rejected. `DetectionMetrics` is rejected during loading when the configured stack declares
 no detections.
 
-Built-in names are `DrivingMetrics`, `DetectionMetrics`, `TrajectoryDeviation`, `StopImpact`,
-`StopLineMetrics` and `ReasoningPhraseRate`. Custom metrics use `package.module:Class`.
+Custom metrics use `package.module:Class`; see [Experiment configuration](#experiment-configuration).
 
 ```yaml
 evaluation:
@@ -338,7 +334,7 @@ evaluation:
     - {type: DrivingMetrics}
 ```
 
-`Metric` fields and comparison semantics belong to [Evaluation](../guides/evaluation.md).
+`Metric` fields and comparison semantics are described in [Evaluation](../guides/evaluation.md).
 
 ## Run settings
 
@@ -346,13 +342,13 @@ Run controls belong under `runs`, represented in Python by frozen `RunsConfigura
 
 | Key | Default | Meaning |
 |---|---|---|
-| `treatments` | clean plus one treatment per attack | Named runs with optional `attack_name` and environment |
+| `treatments` | `clean` plus one treatment per attack | Named runs with optional `attack_name` and environment |
 | `seeds` | [0] | Nonempty unique nonnegative integers |
-| `decision_steps` | null | Optional positive upper bound per selected segment |
+| `decision_steps` | `null` | Optional positive upper bound per selected segment |
 | `environment` | empty | Shared world and sensor settings |
 | `recording` | defaults below | Sensor payload retention |
-| `output` | null | Output directory; required by the CLI |
-| `strict` | false | Stop on the first execution or selection error |
+| `output` | `null` | Output directory; required by the CLI |
+| `strict` | `false` | Stop on the first execution or selection error |
 
 Attack and treatment names must be nonempty, contain no path separators and differ from
 `.` and `..`. Treatment names
@@ -367,7 +363,7 @@ CARLA world settings accept `weather` as a preset name or parameter mapping, `li
 world setting.
 
 Environment YAML has `world` and `sensors` keys. The base is `runs.environment`, with optional
-attack and treatment overrides; [Environments](../guides/environments.md) owns merge and
+attack and treatment overrides; [Environments](../guides/environments.md) describes merge and
 validation behavior. Sensor entries use `type`, `options` and an optional `camera`; omitting
 camera applies the corruption only to the first `sensor_data` entry, which must be a readable
 RGB image.
@@ -380,10 +376,9 @@ runs:
       - {type: GaussianNoise, options: {severity: 0.2}, camera: front}
 ```
 
-Sensor corruption short names are the exported `Corruption` class names, such as `GaussianNoise`
-and `Fog`. Custom corruptions use
-`package.module:Class`. Severity is in [0, 1] and defaults to 0.5. `ColorTemp` also accepts
-`warm`, which defaults to true. `AlbumentationsCorruption` requires `transform`. The
+Custom corruptions use `package.module:Class`; see [Experiment configuration](#experiment-configuration).
+Severity is in [0, 1] and defaults to 0.5. `ColorTemp` also accepts
+`warm`, which defaults to `true`. `AlbumentationsCorruption` requires `transform`. The
 [Python API](python-api.md) lists the available corruption classes.
 
 ### Recording
@@ -391,7 +386,7 @@ and `Fog`. Custom corruptions use
 | Key under recording | Default | Meaning |
 |---|---|---|
 | `sensor_ids` | [] | Unique sensor names whose payloads are retained |
-| `representations` | [`model_input`] | Subset of raw and `model_input` |
+| `representations` | [`model_input`] | Subset of `raw` and `model_input` |
 | `every_n_steps` | 1 | Positive decision interval for retained sensor payloads |
 
 Empty `sensor_ids` retains no image payloads. State, commands, actions, outputs, available
@@ -431,13 +426,14 @@ A current metadata file must have the saved raw-byte hash, but its path may diff
 raises `ConfigurationMismatchError`. Saved preparations require an offline report for every
 completed attack, including attacks whose offline phase is a no-op.
 
-Additional seeds, treatments, recording, output, strict, decision limits, `split.execute` and
-evaluation settings may change. The first seed, partition and offline environments must match.
-Copying preparation preserves its saved configuration summary.
-Lists and tuples with identical contents
-compare equally; booleans and integers remain distinct. `AVStack` and hook configurations are
-not part of saved-preparation compatibility. `Attack` constructor options are compared as
-written, including an explicitly written default versus an omitted option.
+Additional `seeds`, `treatments`, `recording`, `output`, `strict`, decision limits, `split.execute`
+and evaluation settings may change. The first seed, partition and offline environments must match.
+`run --prepared` writes the loaded preparation record, units, deployment budget and metadata
+source unchanged into the new output. `AVStack` and hook configurations are not part of
+saved-preparation compatibility. `Attack` constructor options are compared as written,
+including an explicitly written default versus an omitted option. Lists and tuples with
+identical contents compare equally; booleans, integers and floating-point numbers remain
+distinct, so `true`, `1` and `1.0` are incompatible.
 The current hooks' setup ticks plus the attack's deployment requirement must not exceed the
 saved deployment tick budget; execution fails otherwise.
 

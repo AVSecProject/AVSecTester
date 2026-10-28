@@ -39,19 +39,21 @@ def test_describe_configuration():
     configuration = ExperimentConfiguration(
         MemoryDataset(), MemorySimulator(), DrivingAdapter(lambda seed: ConstantAVStack()),
         {"probe": MinimalAttack(assets=parameters)})
-    saved = configuration.describe_configuration()["attacks"]["probe"]["parameters"]["assets"]
+    summary = configuration.describe_configuration()
+    assert summary["dataset"] == {"type": "tests.fakes:MemoryDataset", "scenarios": ["scene"]}
+    saved = summary["attacks"]["probe"]["parameters"]["assets"]
     assert saved == {
         "path": "assets/face.png", "integer": 3, "tuple": [1, 2],
         "array": {"array_dtype": "<f4", "array_shape": [2, 3],
                   "sha256": "e2c0a71510b5394df7773b63fb5f54372b84c3564e67811bde7d665be227976d"},
-        "option": {"type": "test_configuration:SummaryOption",
+        "option": {"type": f"{SummaryOption.__module__}:SummaryOption",
                    "parameters": {"size": 2}},
     }
     assert type(saved["integer"]) is int
     invalid = replace(configuration, attacks={"probe": MinimalAttack(assets=float("nan"))})
-    with pytest.warns(RuntimeWarning, match="unverified"):
-        description = invalid.describe_configuration()
-    assert description["attacks"]["probe"]["parameters"] is None
+    with pytest.warns(RuntimeWarning, match="parameter compatibility is unverified"):
+        description = invalid.describe_configuration()["attacks"]["probe"]
+    assert description["parameters"] is None and description["parameters_verified"] is False
 
 
 class NestedPathOptions:

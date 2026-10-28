@@ -25,21 +25,21 @@ if TYPE_CHECKING:
 
 
 class StageEmitter(Protocol):
-    """What an adapter is bound to during a run: normally the run's hook dispatcher."""
+    """The emitter a simulator runtime or driving system is bound to, normally the dispatcher."""
 
     def emit(self, stage: str, value: Any, sensor: str | None = None) -> Any:
         """Run registered callbacks for a supported stage and return the resulting value."""
         ...
 
 
-class _StageAdapter:
-    """Shared stage binding for simulator and AVStack adapters."""
+class _HookBindingMixin:
+    """Shared stage binding for simulator runtimes and driving systems."""
 
     _dispatcher: StageEmitter | None = None
 
     @property
     def supported_stages(self) -> frozenset[str]:
-        """Return the hook stages supported by this adapter."""
+        """Return the hook stages supported by this simulator runtime or driving system."""
         return frozenset()
 
     @property
@@ -51,7 +51,7 @@ class _StageAdapter:
     def bind_hooks(self, dispatcher: StageEmitter) -> Iterator[None]:
         """Bind one dispatcher for the scope; reject an already active binding."""
         if getattr(self, "_dispatcher", None) is not None:
-            raise RuntimeError("Adapter is already bound to an active run")
+            raise RuntimeError(f"{type(self).__name__} is already bound to an active run")
         self._dispatcher = dispatcher
         try:
             yield
@@ -64,7 +64,7 @@ class _StageAdapter:
 
 
 class UnsupportedStageError(ValueError):
-    """A requested hook stage is absent from the selected adapters."""
+    """A requested hook stage is supported by neither the simulator runtime nor driving system."""
 
 
 @dataclass
@@ -104,7 +104,7 @@ class RunContext:
 
     @property
     def native(self) -> Mapping[str, Mapping[str, Any]]:
-        """Access a simulator- or driving-system-native run resource by name."""
+        """Access a native run resource of the simulator runtime or driving system by name."""
         return {"simulator_runtime": self.simulator_runtime.native, "avstack": self.avstack.native}
 
 
@@ -166,7 +166,7 @@ class StageContext:
 
 
 class Plugin(ABC):
-    """Optional lifecycle base for a stateful attack, defense or localization adapter."""
+    """Optional lifecycle base for a stateful attack, defense or driving-system localizer."""
 
     def reset(self, context: RunContext) -> None:
         """Clear per-run history. Actors may not exist until ``simulator.setup``."""
@@ -184,7 +184,7 @@ class Plugin(ABC):
 
 @dataclass(frozen=True)
 class Hook:
-    """Bind a function or a lifecycle plugin to an adapter-supported execution stage."""
+    """Bind a function or a lifecycle plugin to an execution stage."""
 
     stage: str
     handler: Any
@@ -236,7 +236,7 @@ class HookSet:
         return result
 
     def validate_stages(self, simulator_runtime: SimulatorRuntime, avstack: AVStack) -> frozenset[str]:
-        """Check adapter capabilities without binding a dispatcher or invoking handlers."""
+        """Check stage support without binding a dispatcher or invoking handlers."""
         from avsectester.closed_loop.avstacks.base import validate_command_compatibility
 
         validate_command_compatibility(simulator_runtime, avstack, self)
@@ -265,9 +265,9 @@ class HookSet:
 
 
 class HookDispatcher:
-    """One bound run. Custom adapters publish supported stages through ``emit``."""
+    """One bound run. Simulator runtimes and driving systems publish their stages through ``emit``."""
     CORE_STAGES = frozenset({"sensors.post", "localization.post", "observation", "command"})
-    """Framework stages available independently of native adapter stages."""
+    """Framework stages available independently of native simulator and driving-system stages."""
 
     def __init__(self, hook_set: HookSet, simulator_runtime: SimulatorRuntime, avstack: AVStack) -> None:
         self.hook_set = hook_set
@@ -290,7 +290,7 @@ class HookDispatcher:
 
     @contextmanager
     def activate(self) -> Iterator[HookDispatcher]:
-        """Bind both adapters and reset participants, closing them when the scope exits."""
+        """Bind the simulator runtime and driving system; reset participants and close them on exit."""
         if self._active:
             raise RuntimeError("Hook dispatcher is already active")
         resources = ExitStack()
@@ -351,7 +351,7 @@ class HookDispatcher:
     def emit(self, stage: str, value: Any, sensor: str | None = None) -> Any:
         """Transform a value through the supported stage's ordered callbacks."""
         if stage not in self.available:
-            raise ValueError(f"Adapter emitted an unsupported stage: {stage!r}")
+            raise ValueError(f"Emitted an unsupported stage: {stage!r}")
         # Context describes the current input, including replacements by earlier handlers.
         if isinstance(value, Observation):
             self.observation = value

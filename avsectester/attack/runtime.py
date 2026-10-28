@@ -102,6 +102,7 @@ class SensorAttackAction(AttackAction, ABC):
     def apply(self, data: Any, view: SensorView) -> Any:
         """Return the changed sensor data."""
 
+
 @dataclass(frozen=True)
 class AVStackAttackAction(AttackAction):
     """Change the value at a driving-system stage in the current decision.

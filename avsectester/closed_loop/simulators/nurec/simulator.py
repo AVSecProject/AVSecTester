@@ -69,13 +69,9 @@ class NuRecSimulator(Simulator):
     """
 
     dataset_kinds = ("NuRecDataset",)
-    'Dataset kinds supported by this simulator.'
     can_render = True
-    'Whether arbitrary-view rendering is supported.'
     can_observe_past = True
-    'Whether observations before a selected start can be reconstructed.'
     can_insert_objects = True
-    'Whether world objects can be inserted into sensor rendering.'
 
     def __init__(
         self,

@@ -117,4 +117,3 @@ def assert_camera_views_equal():
         np.testing.assert_allclose(first.ego.box_transform(), second.ego.box_transform())
         assert first.ego.extent == second.ego.extent
     return compare
-

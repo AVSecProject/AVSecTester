@@ -3,13 +3,13 @@ import ast
 import importlib.util
 from pathlib import Path
 
-from scripts.development.write_api_reference import architecture_rules
+from scripts.development import write_api_reference as api_reference
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
 def _layer_rules():
-    prefixes, exceptions = architecture_rules()
+    prefixes, exceptions = api_reference.architecture_rules()
     assert prefixes, "Architecture must declare dependency layers"
     for module, _ in prefixes:
         path = ROOT / module.replace(".", "/")

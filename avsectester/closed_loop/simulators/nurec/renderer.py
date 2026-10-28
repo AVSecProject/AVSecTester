@@ -105,18 +105,18 @@ class Renderer(ABC):
             start.payload["first_timestamp"], start.payload["terminal_timestamp"])
 
     @property
-    def origin_transform(self):
+    def origin_transform(self) -> np.ndarray | None:
         """World transform locating the loaded scene origin."""
         return deepcopy(getattr(self, "_origin_transform", None))
 
     @property
-    def origin_timestamp_us(self):
+    def origin_timestamp_us(self) -> int | None:
         """Recorded timestamp in microseconds at the scene origin."""
         return getattr(self, "_origin_timestamp_us", None)
 
     @property
-    def origin_bounds(self):
-        """Spatial bounds of the loaded scene origin."""
+    def origin_bounds(self) -> tuple[float, float] | None:
+        """First and terminal recorded timestamps, in seconds, of the loaded scene."""
         return getattr(self, "_origin_bounds", None)
 
     def load_scene(self, scene: Any) -> None:
@@ -307,8 +307,8 @@ class NuRecRenderer(Renderer):
                 for name in self.cameras}
 
     @property
-    def service(self):
-        """Native SensorsimService client, including metadata APIs not normalized by this adapter."""
+    def service(self) -> Any:
+        """Native SensorsimService client, including metadata APIs this renderer does not normalize."""
         if self._stub is None:
             raise RuntimeError("Call load_scene before accessing the NuRec service")
         return self._stub

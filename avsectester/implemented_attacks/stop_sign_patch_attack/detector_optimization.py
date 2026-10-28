@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from .attack import StopSignPatchAttack
     from .offline import DetectorPatchOptimization
 
+
 class TextureDataSource(DataSource):
     """Sample already calibrated training captures; held-out captures are never passed here."""
 

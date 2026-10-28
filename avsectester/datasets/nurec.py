@@ -26,9 +26,6 @@ from avsectester.maps.clipgt import read_clipgt
 if TYPE_CHECKING:
     from avsectester.maps.scenario_map import ScenarioMap
 
-# Classification controls target selection, never which cuboids can occlude an insertion.
-_VEHICLE_LABELS = ("automobile", "car", "truck", "bus", "trailer", "van", "vehicle")
-
 
 @dataclass
 class _CameraCalibration:
@@ -134,7 +131,9 @@ class NuRecDataset(Dataset):
     trajectory and actor tracks within recorded support. ``camera_id`` is NuRec's camera ID
     (for example ``camera_front_wide_120fov``). Sensor names remain native here; simulators
     configure any observation aliases. Native annotations are available per scenario through
-    ``raw_metadata``; ``open_archive`` provides read-only archive access.
+    ``raw_metadata``; ``open_archive`` provides read-only archive access. A track whose lowercase
+    label contains any ``vehicle_labels`` entry has category ``vehicle``; other tracks keep their
+    native label as category. Categories never decide which cuboids occlude an insertion.
 
     Give either ``dataroot``, a directory whose ``.usdz`` archives (searched recursively and
     ordered by path) are all scenarios, or an explicit list of ``usdz_paths``. The directory is
@@ -145,7 +144,8 @@ class NuRecDataset(Dataset):
         self,
         usdz_paths: list[str | Path] | None = None,
         camera_id: str = "camera_front_wide_120fov",
-        vehicle_labels: tuple[str, ...] = _VEHICLE_LABELS,
+        vehicle_labels: tuple[str, ...] = (
+            "automobile", "car", "truck", "bus", "trailer", "van", "vehicle"),
         time_step: float = 0.1,
         *,
         dataroot: str | Path | None = None,

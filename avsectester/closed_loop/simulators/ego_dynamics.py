@@ -57,7 +57,7 @@ class KinematicBicycle:
     max_brake: float = 8.0  # m/s^2 at full brake
     max_steer: float = 0.6  # rad at full steer
     command_modes: ClassVar[frozenset[str]] = frozenset({"actuator"})
-    'Control command modes accepted or produced by this component.'
+    'Control command modes this ego-motion model accepts.'
 
     def reset(self, state: PlanarEgoState) -> None:
         """No warmup is needed: this integrator carries all state in its argument."""
@@ -93,7 +93,7 @@ class TrajectoryFollower:
 
     decel: float = 4.0  # m/s^2 when coasting with no plan
     command_modes: ClassVar[frozenset[str]] = frozenset({"trajectory"})
-    'Control command modes accepted or produced by this component.'
+    'Control command modes this ego-motion model accepts.'
 
     def reset(self, state: PlanarEgoState) -> None:
         """No warmup is needed: the provided state anchors each planned trajectory."""
@@ -156,7 +156,7 @@ class AlpaSimController:
     dt_mpc: float = .1
     gains: Mapping[str, float | int] | None = None
     command_modes: ClassVar[frozenset[str]] = frozenset({"trajectory"})
-    'Control command modes accepted or produced by this component.'
+    'Control command modes this ego-motion model accepts.'
     EPOCH_US: ClassVar[int] = 10_000_000
     'Timestamp offset in microseconds used by the trajectory interface.'
 

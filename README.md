@@ -2,8 +2,8 @@
 
 Adversarial security testing for autonomous driving.
 
-AVSecTester selects segments, prepares artifacts, executes clean and attacked treatments, and
-evaluates saved logs. It connects simulator and driving-system adapters through a reusable
+AVSecTester selects segments, prepares artifacts, executes unattacked and attacked treatments, and
+evaluates saved logs. It connects simulators and driving systems through a reusable
 experiment workflow.
 
 ![Framework architecture](docs/assets/architecture.png)
@@ -49,7 +49,7 @@ The [documentation index](docs/README.md) lists the full reading paths.
 
 ## Status
 
-The framework supplies CARLA closed-loop adapters, NuRec closed-loop reconstruction with
+The framework supplies CARLA closed-loop simulation, NuRec closed-loop reconstruction with
 optional reactive traffic, and recorded nuScenes playback. Driving systems include
 `ModularAVStack`, `CameraForwardCollisionAVStack`, `AlpamayoAVStack` and `RuleBasedAVStack`. See
 the [supported combinations](docs/concepts/architecture.md#supported-configurations).

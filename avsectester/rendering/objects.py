@@ -106,7 +106,6 @@ class ObjectAsset:
                   np.max(corners[:, 2]))
         return cls(surfaces, extent, category)
 
-
     @classmethod
     def from_panel(
         cls, texture: np.ndarray | str | Path | Texture, *, category: str, width_m: float,

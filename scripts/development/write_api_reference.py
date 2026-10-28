@@ -4,9 +4,11 @@ import ast
 import importlib
 import importlib.util
 import inspect
+import io
 import re
 import sys
 import textwrap
+import tokenize
 from dataclasses import fields, is_dataclass
 from functools import cache
 from pathlib import Path
@@ -96,8 +98,33 @@ def source_node(obj):
 
 
 def fragment(source, node):
-    """Preserve source expressions while making a single Markdown table cell."""
-    return " ".join(ast.get_source_segment(source, node).split())
+    """Preserve source expressions while making a single Markdown table cell.
+
+    Line breaks collapse without bracket padding. Trailing commas before a closing bracket are
+    dropped, except where a parenthesized single item would stop being a tuple.
+    """
+    segment = ast.get_source_segment(source, node)
+    lines = segment.splitlines(keepends=True)
+    offsets = [0]
+    for line in lines:
+        offsets.append(offsets[-1] + len(line))
+    trailing, stack, previous = [], [], None
+    for token in tokenize.generate_tokens(io.StringIO(segment).readline):
+        if token.type in {tokenize.NL, tokenize.NEWLINE, tokenize.COMMENT}:
+            continue
+        if token.string in {"(", "[", "{"}:
+            stack.append([token.string, 0])
+        elif token.string in {")", "]", "}"}:
+            opener, commas = stack.pop()
+            if previous is not None and previous.string == "," and (opener != "(" or commas > 1):
+                trailing.append(offsets[previous.start[0] - 1] + previous.start[1])
+        elif token.string == "," and stack:
+            stack[-1][1] += 1
+        previous = token
+    for offset in reversed(trailing):
+        segment = segment[:offset] + segment[offset + 1:]
+    text = " ".join(segment.split())
+    return re.sub(r" ([)\]}])", r"\1", re.sub(r"([(\[{]) ", r"\1", text))
 
 
 def function_signature(obj, source, node, *, constructor=False, method=False):
@@ -114,6 +141,7 @@ def function_signature(obj, source, node, *, constructor=False, method=False):
     actual = list(inspect.signature(obj).parameters)
     if actual != names:
         raise ValueError(f"AST/runtime parameter mismatch: {obj}: {names} != {actual}")
+
     def arg(p, default=None):
         text = p.arg
         if p.annotation is not None:
@@ -121,6 +149,11 @@ def function_signature(obj, source, node, *, constructor=False, method=False):
         if default is not None:
             text += (" = " if p.annotation is not None else "=") + fragment(source, default)
         return text
+    hidden_required = [p.arg for p, default in [*zip(positional, defaults),
+                                                *zip(a.kwonlyargs, a.kw_defaults)]
+                       if constructor and p.arg.startswith("_") and default is None]
+    if hidden_required:
+        raise ValueError(f"Hidden required constructor parameters: {obj}: {hidden_required}")
     result = []
     for i, (p, default) in enumerate(zip(positional, defaults)):
         hidden = constructor and p.arg.startswith("_")
@@ -148,7 +181,7 @@ def class_signature(cls, source, node):
     if getattr(cls, "_is_protocol", False):
         return ""
     if issubclass(cls, BaseException):
-        return "(" + ", ".join(fragment(source, b) for b in node.bases) + ")"
+        return ""
     init = next((n for n in node.body
                  if isinstance(n, ast.FunctionDef) and n.name == "__init__"), None)
     if init is not None:
@@ -172,6 +205,8 @@ def class_signature(cls, source, node):
         keyword = False
         for name, parameter in params.items():
             if name.startswith("_"):
+                if parameter.default is inspect.Parameter.empty:
+                    raise ValueError(f"Hidden required dataclass field: {cls}: {name}")
                 continue
             if parameter.kind == inspect.Parameter.KEYWORD_ONLY and not keyword:
                 result.append("*")
@@ -235,9 +270,9 @@ def public_bases(cls):
     """Render bases that are public extension interfaces or external types."""
     bases = [
         base.__name__ for base in cls.__bases__
-        if base is not object and (is_public_class(base) or not base.__name__.startswith("_"))
+        if base.__name__ not in {"object", "ABC", "Protocol"} and not base.__name__.startswith("_")
     ]
-    return "(" + ", ".join(bases) + ")" if bases else ""
+    return "Subclass of " + ", ".join(f"`{base}`" for base in bases) + ". " if bases else ""
 
 
 def callable_meaning(value, node, label):
@@ -262,6 +297,11 @@ def attribute_description(cls, name):
             continue
         _, node = source_node(base)
         description = assignment_docs(node.body).get(name)
+        if not description:
+            member = next((item for item in node.body
+                           if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                           and item.name == name), None)
+            description = ast.get_docstring(member) if member is not None else None
         if description:
             return description
     return None
@@ -276,6 +316,11 @@ def member_rows(cls, name, module):
         if base.__module__ == "builtins" or base is not cls and is_public_class(base):
             continue
         if not base.__module__.startswith("avsectester"):
+            continue
+        if base is not cls and any(
+            is_public_class(parent) and base in parent.__mro__
+            for parent in cls.__mro__[1:]
+        ):
             continue
         source, node = source_node(base)
         for member in node.body:
@@ -298,7 +343,8 @@ def member_rows(cls, name, module):
                         and key != "__call__" and not abstract):
                     parent = next(parent for parent in cls.__mro__[1:]
                                   if key in parent.__dict__)
-                    if is_public_class(parent):
+                    if any(is_public_class(base) and parent in base.__mro__
+                           for base in cls.__mro__[1:]):
                         continue
                     _, parent_node = source_node(parent)
                     meaning_node = next(n for n in parent_node.body
@@ -312,8 +358,9 @@ def member_rows(cls, name, module):
                     function = value
                 meaning = callable_meaning(function, meaning_node, label)
                 if isinstance(value, property):
-                    signature = (": " + fragment(source, member.returns)
-                                 if member.returns is not None else "")
+                    if member.returns is None:
+                        raise ValueError(f"Missing property return annotation: {label}")
+                    signature = ": " + fragment(source, member.returns)
                 else:
                     signature = function_signature(
                         function, source, member, method=not isinstance(value, staticmethod))
@@ -327,7 +374,7 @@ def member_rows(cls, name, module):
                     key = target.id
                     seen.add(key)
                     description = paragraph(
-                        attribute_description(cls, key), module + "." + name + key)
+                        attribute_description(cls, key), module + "." + name + "." + key)
                     annotation = (": " + fragment(source, member.annotation)
                                   if isinstance(member, ast.AnnAssign) else "")
                     default = " = " + fragment(source, member.value) if member.value else ""
@@ -353,7 +400,14 @@ def imported_names(module, path, tree):
 def rows_for(module, data):
     """Combine explicit definitions, constants and linked re-exports."""
     path, tree, exports = data
+    aliases = {
+        target.id: node.value
+        for node in tree.body if isinstance(node, (ast.Assign, ast.AnnAssign))
+        for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
+        if isinstance(target, ast.Name)
+    }
     loaded = importlib.import_module(module)
+    source_text = path.read_text()
     imported = imported_names(module, path, tree)
     assignments = assignment_docs(tree.body)
     definitions = {node.name for node in tree.body
@@ -361,22 +415,29 @@ def rows_for(module, data):
     rows = []
     for name in exports:
         obj = getattr(loaded, name)
-        owner = imported.get(name, module)
+        owner = imported.get(name)
+        if owner is None and name not in definitions and name not in aliases:
+            owner = getattr(obj, "__module__", None)
+        owner = owner or module
         if name not in definitions and owner != module and owner in public_modules():
             rows.append((name, f"[{name}](#" + owner.replace(".", "") + ")"))
         elif inspect.isclass(obj):
             source, node = source_node(obj)
-            bases = "" if issubclass(obj, BaseException) else public_bases(obj)
             signature = class_signature(obj, source, node)
-            rows.append((name + bases + signature,
-                         paragraph(ast.get_docstring(node), module + "." + name)))
+            meaning = public_bases(obj) + paragraph(ast.get_docstring(node), module + "." + name)
+            if "__enter__" in obj.__dict__:
+                meaning = "Context manager. " + meaning
+            rows.append((name + signature, meaning))
             rows.extend(member_rows(obj, name, module))
         elif inspect.isfunction(obj):
             source, node = source_node(obj)
             rows.append((name + function_signature(obj, source, node),
                          callable_meaning(obj, node, module + "." + name)))
         else:
-            rows.append((name, paragraph(assignments.get(name), module + "." + name)))
+            expression = aliases.get(name)
+            signature = (name + " = " + fragment(source_text, expression)
+                         if expression is not None else name)
+            rows.append((signature, paragraph(assignments.get(name), module + "." + name)))
     return rows
 
 
@@ -405,15 +466,29 @@ def render(text):
     modules = public_modules()
     ordered = sorted(modules, key=lambda m: (layer(m), m))
     sections = {}
-    matches = list(re.finditer(r"^### (avsectester[\w.]*)\s*$", text, re.M))
+    matches = list(re.finditer(r"^### (.+)$", text, re.M))
+    first = matches[0].start() if matches else len(text)
+    before = text[:first]
+    structure = re.fullmatch(
+        r"(?P<prefix># Python API reference\n(?:\n|>[^\n]*\n)*)"
+        r"## Modules\s*<!-- api:begin module=module-map -->.*?<!-- api:end -->"
+        r"\s*## Public modules\s*", before, re.S)
+    if structure is None:
+        raise ValueError("Unrecognized handwritten content before the first module")
+    prefix = structure["prefix"].rstrip()
     for i, match in enumerate(matches):
         end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
         section = text[match.end():end]
         manual = re.sub(r"<!-- api:begin.*?<!-- api:end -->", "", section, flags=re.S).strip()
         allowed = {"Constraints and errors", "Extension contract", "See also"}
-        headings = list(re.finditer(r"^#### (.+)$", manual, re.M))
+        headings = list(re.finditer(r"^(#{1,6}) (.+)$", manual, re.M))
+        if match[1] not in modules:
+            raise ValueError(f"Non-public module section: {match[1]}")
+        if match[1] in sections:
+            raise ValueError(f"Duplicate module section: {match[1]}")
         if manual and (not headings or manual[:headings[0].start()].strip()
-                       or any(heading[1] not in allowed for heading in headings)):
+                       or any(heading[1] != "####" or heading[2] not in allowed
+                              for heading in headings)):
             raise ValueError(f"Unrecognized handwritten content in {match[1]}")
         sections[match[1]] = manual
     diagram = ["<!-- api:begin module=module-map -->", "| Layer | Public module |", "|---|---|"]
@@ -422,9 +497,6 @@ def render(text):
         label = str(int(rank)) + ("′" if rank % 1 else "")
         diagram.append(f"| L{label} | [`{module}`](#{module.replace('.', '')}) |")
     diagram += ["<!-- api:end -->"]
-    prefix = text.split("## Module", 1)[0].split("### avsectester", 1)[0].rstrip()
-    if '<!-- api:begin' in prefix:
-        prefix = prefix.split('<!-- api:begin',1)[0].rstrip()
     output = [prefix, "## Modules", "\n".join(diagram), "## Public modules"]
     for module in ordered:
         output += ["### " + module, module_block(module, modules[module])]

@@ -41,7 +41,7 @@ fixed in world coordinates. Asset origins, sizes and placement constraints are d
 ## Offline phase
 
 The attack selects eligible camera views without changing their inputs. Its offline phase
-retains the configured asset. `Attack` authoring responsibilities are in
+retains the configured asset. Attack authoring responsibilities are in
 [Writing attacks](../guides/attacks.md).
 
 ## Online phase
@@ -86,13 +86,15 @@ docker compose run --rm --entrypoint python nurec-experiment \
 ```
 
 The script lists its dataset and segmentation-model inputs. Asset preparation is separate from
-experiment execution; [Installation](../getting-started/installation.md) owns prerequisites.
+experiment execution; see [Installation](../getting-started/installation.md) for
+prerequisites.
 
 ## Evidence
 
 The NuRec configuration records the front-wide camera's `model_input` representation.
-Its default metrics are `DrivingMetrics` and `TrajectoryDeviation`.
-The CARLA configuration defaults to `DrivingMetrics` and `StopImpact`.
+The NuRec and nuScenes configurations use the default metrics, `DrivingMetrics` and
+`TrajectoryDeviation`. The CARLA configuration sets `evaluation.metrics` to `DrivingMetrics`
+and `StopImpact`.
 Inspect their evidence with [Evaluation](../guides/evaluation.md).
 
 ## Next steps

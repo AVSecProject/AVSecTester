@@ -16,6 +16,7 @@ from avsectester.closed_loop.simulators.carla.conversions import rotation_to_car
 
 DEFAULT_PROP = "static.prop.ironplank"
 
+
 def to_carla_texture(rgba: np.ndarray) -> Any:
     """Convert an ``(H, W, 4)`` uint8 RGBA array into a ``carla.TextureColor`` (standard RGBA)."""
     import carla

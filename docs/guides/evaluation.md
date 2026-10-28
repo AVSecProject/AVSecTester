@@ -46,13 +46,16 @@ measurements do not receive another difference operation.
 | `ReasoningPhraseRate` | Case-insensitive phrase mentions in recorded reasoning text |
 
 The [metric API](../reference/python-api.md#avsectesterevaluationmetric) defines constructor
-parameters and unavailable conditions. The default set and YAML validation belong to
+parameters and unavailable conditions. The default set and YAML validation are described in
 [evaluation configuration](../reference/configuration.md#evaluation).
 
 `DrivingMetrics` uses executed actuator commands for `brake_steps`; trajectory commands do not
 provide that evidence. Collision is bird's-eye oriented-box overlap, not a native
 collision-sensor event. `TrajectoryDeviation` compares true ego positions at equal decision
 indices, without time or route alignment.
+
+**Not yet implemented.** Matched-window driving-impact measures with prior-motion and duration
+requirements; see [Driving-impact metrics](../development/TODO.md#driving-impact-metrics).
 
 `DetectionMetrics` matches detections to true actors in the capture-time ego frame, using sensor
 mounting geometry independently of model localization. Its range filtering is horizontal.
@@ -84,7 +87,7 @@ decisions as the denominator and is unavailable if any decision lacks text.
 
 ## Reports and statistics
 
-Boolean values display as `yes` / `no`, floats with four decimal places, and unavailable or
+Boolean values display as `yes` or `no`, floats with four decimal places, and unavailable or
 nonfinite values as an em dash (—). Numeric summaries use `mean ± std` and `n = k`, omitting the
 standard deviation for one observation. Boolean summaries show the true fraction and
 `x of K groups`. HTML pages contain inline styling without scripts or external resources; saved
@@ -97,7 +100,7 @@ a separate available-group count for each field. Boolean summaries use the true 
 
 Paired differences are computed inside each group before aggregation. `PairMetric` measurements
 are summarized separately. Statistics do not infer an attack-success label; see the
-[example interpretation rule](../examples/README.md).
+[example interpretation rule](../examples/README.md#attack-impact).
 
 The HTML report presents experiment setup, metric definitions, run status, per-part results,
 paired differences and group details. Group details retain unavailable reasons and saved plots.
@@ -105,13 +108,12 @@ The command line shows per-part metric tables, notes and errors; paired tables a
 and structured report. `format_summary` returns a string, so Python callers print it explicitly.
 
 Output locations follow the [CLI reference](../reference/cli.md#output-layout).
-Offline phase results are separate;
-[Optimization](optimization.md) describes their report interface.
+Offline phase results are separate; [Optimization](optimization.md) describes their report
+interface.
+
+Saved metric specifications include `type`, `options`, `label`, `kind`, `summary` and `fields`.
 
 ## Custom metrics
-
-The default `Metric.describe` uses the first paragraph of the class docstring as its summary and
-supplies no field descriptions.
 
 `Metric.evaluate` returns a mapping from treatment names to scalar field mappings. Scalars can
 be numbers, booleans or `UnavailableMetricValue` with a reason and a number/boolean type.
@@ -120,6 +122,9 @@ scalar or unavailable value; `FieldMeasurements` maps field names to those value
 `TreatmentMeasurements` maps treatment names to field mappings. Return missing evidence
 explicitly rather than keeping mutable per-run state; see the
 [metric types](../reference/python-api.md#avsectesterevaluationmetric).
+
+The default `Metric.describe` uses the first paragraph of the class docstring as its summary and
+supplies no field descriptions.
 
 Describe each field's meaning, unit and unavailable conditions through `Metric.describe`.
 Reports retain the complete metric label, so dotted field names remain attached to the correct
@@ -196,10 +201,6 @@ assert len(report.groups) == 1
 assert report.notes == ["Existing in-memory log"]
 print(report.format_summary())
 ```
-
-Saved metric specifications include `type`, `options`, `label`, `kind`, `summary` and `fields`.
-**Not yet implemented.** Matched-window driving-impact measures with prior-motion and duration
-requirements; see [Driving-impact metrics](../development/TODO.md#driving-impact-metrics).
 
 ## Next steps
 

@@ -29,8 +29,8 @@ The pipeline owns the localizer lifecycle and does not process output commands.
 ### Recorded input history
 
 History acquisition and processing follow
-[Past observations](simulators.md#recorded-past-observations). The adapter declares how much
-history its stack requires without constructing the model.
+[Past observations](simulators.md#recorded-past-observations). `AVStack.past_steps` declares the
+required history and is read without constructing the model.
 
 ## avstack modular pipeline (`ModularAVStack`)
 
@@ -50,10 +50,10 @@ declared perception stage directly. See [Hooks](../reference/configuration.md#ho
 
 ## Camera forward-collision policy
 
-`CameraForwardCollisionAVStack` exposes its scorer through `modular_driving_adapter`.
-
 `CameraForwardCollisionAVStack` uses a 2D image detector and image-box area to choose braking or
 throttle. Its learned model loads lazily and can be shared with bound scorers.
+
+`CameraForwardCollisionAVStack` exposes its scorer through `modular_driving_adapter`.
 
 This policy exposes 2D component diagnostics, not canonical 3D detections. `DetectionMetrics`
 requires a driving system that provides 3D detections; see [Evaluation](evaluation.md).
@@ -91,7 +91,7 @@ available and can produce a stop beyond the target.
 
 After the speed and position criteria are met, the planner holds its stop for the configured
 duration, marks that track served, and resumes cruise. Reset clears tracking and planning state.
-Defaults, parameter meanings and errors belong to the [Python API](../reference/python-api.md).
+The [Python API](../reference/python-api.md) lists defaults, parameter meanings and errors.
 
 The component log records boxes, estimated positions, tracks with covariance summaries, target
 distance, state and braking. `acceleration_mps2` and `planned_speed_mps` describe the first
@@ -114,7 +114,7 @@ Component logs contain `policy`, `command`, `route_waypoints`, `navigation_comma
 navigation command falls back to `STRAIGHT`.
 
 Camera images and pose history must match the declared decision timeline. History validation
-rejects missing or inconsistent observations. The adapter transforms policy outputs into the
+rejects missing or inconsistent observations. The stack transforms policy outputs into the
 common trajectory command format. Native policy output, including optional reasoning, remains
 available through component logging.
 
@@ -122,28 +122,28 @@ available through component logging.
 
 Local checkpoint loading happens lazily. Injecting a model allows the caller to supply an
 already-constructed policy. Closing releases a model loaded by the stack; an injected model is
-borrowed and is not closed. Closing the adapter is terminal and idempotent. Checkpoint locations
-and installation are specified
-in [Installation](../getting-started/installation.md#alpamayo-weights).
+borrowed and is not closed. Closing the stack is terminal and idempotent. Checkpoint locations
+and installation are specified in
+[Installation](../getting-started/installation.md#alpamayo-weights).
 
 ## Component logging interface
 
 `component_log` returns optional component outputs for the most recent decision; the runner
 snapshots them independently. `detections` returns canonical 3D detections or `None` when
-unsupported. The [Runtime reference](../reference/runtime.md) owns field layout
+unsupported. The [Runtime reference](../reference/runtime.md) describes field layout
 and serialization.
 
 ## Components and scorers for offline work
-
-`rule_based_driving_adapter` exposes `rule_based.stop_sign_confidence`. Its `sensor_id` comes
-from the configured `camera_id` or the stack default, and `decision_threshold` comes from
-`detector.score_threshold`. Missing detector configuration or a detector other than
-`CocoStopSignDetector` raises `ValueError`.
 
 A `DrivingAdapter` binds reusable component/scorer declarations to a factory that creates fresh
 driving systems. Discovery reads static declarations and configured options without constructing
 a stack or loading model weights. Constructor injection belongs
 to [Configuration](../reference/configuration.md#driving-specification).
+
+`rule_based_driving_adapter` exposes `rule_based.stop_sign_confidence`. Its `sensor_id` comes
+from the configured `camera_id` or the stack default, and `decision_threshold` comes from
+`detector.score_threshold`. Missing detector configuration or a detector other than
+`CocoStopSignDetector` raises `ValueError`.
 
 | Binding | Purpose |
 |---|---|
@@ -191,14 +191,14 @@ stack.close()
 
 | Model | Role |
 |---|---|
-| CARLA `PointPillars` | Modular 3D perception |
-| CARLA/nuScenes image detector | `Camera` forward-collision policy and bound scorers |
-| COCO Faster R-CNN `ResNet`-50 FPN | Rule-based stop-sign detection and its bound scorer |
-| Alpamayo-1.5-10B | `Camera`/history/navigation policy |
+| CARLA PointPillars | Modular 3D perception |
+| CARLA/nuScenes image detector | Camera forward-collision policy and bound scorers |
+| COCO Faster R-CNN ResNet-50 FPN | Rule-based stop-sign detection and its bound scorer |
+| Alpamayo-1.5-10B | Camera/history/navigation policy |
 | PCTNet | Optional image harmonization |
 | SAM | Extraction of insertion assets |
 
-[Installation](../getting-started/installation.md) owns sources and weight setup.
+[Installation](../getting-started/installation.md) describes sources and weight setup.
 
 ## Next steps
 

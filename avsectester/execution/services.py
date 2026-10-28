@@ -398,13 +398,13 @@ class ClosedLoopSession:
                                adapter.past_steps if adapter is not None else 0)
         return deployment_allowed and position >= required_history
 
-    def frame_data(self, scenario: str, frame: FrameReference,
+    def frame_data(self, scenario_id: str, frame: FrameReference,
                   environment: Mapping[str, Any] | None = None) -> FrameData:
         """Return recorded frame data through the shared cache."""
         self._check()
-        record = self.services.dataset.frame_data(scenario, frame)
+        record = self.services.dataset.frame_data(scenario_id, frame)
         if isinstance(record, Unavailable):
-            return self._sequence(scenario, environment or {}).at(frame)
+            return self._sequence(scenario_id, environment or {}).at(frame)
         if any(normalize_environment(environment).values()):
             raise ValueError("Recorded frame data describes the recorded environment")
         return record

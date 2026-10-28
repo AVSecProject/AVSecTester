@@ -40,32 +40,30 @@ with TemporaryDirectory() as directory:
     print(report.format_summary())
 ```
 
-The CLI manages NuRec services automatically. Python callers start any required services
-themselves, for example with
-`avsectester.closed_loop.simulators.nurec.server.local_services`; see
-[automatic services](../reference/cli.md#automatic-local-services).
+See [automatic local services](../reference/cli.md#automatic-local-services) for CLI and Python use.
 
 ## Preparation
-
-After `build_metadata` and during the global budget recheck, the framework discards segments
-that fail `can_start_at` or raise `UnsupportedStartError`, recording the rejection reason.
 
 Preparation selects every attack before running any offline phase. It checks selected
 boundaries, applies the common deployment tick budget and builds shared segment units. A
 supplied metadata file replaces selection. `Attack.validate_segment` checks selected and
 loaded segments.
 
+After `build_metadata` returns, preparation drops segments that fail `can_start_at` or whose
+`validate_start` raises `UnsupportedStartError`. The experiment-wide budget recheck drops
+segments that then fail `can_start_at`. Each drop records its reason; see
+[deployment tick budgets](attacks.md#online-phase).
+
 Preparation uses the first configured run seed and reuses its metadata for all execution seeds.
 Its environment rules are defined in [Environments](environments.md): an offline phase receives
 the merged experiment and attack environment, while selection requests an
 environment explicitly.
 
-`PreparedExperiment` retains all units, including those excluded from execution.
-The split schema and deterministic allocation are defined in
+`PreparedExperiment` retains all units, including those excluded from execution. Unit identity,
+the split schema and deterministic allocation are defined in
 [Data split](../reference/configuration.md#data-split).
 
-Unit identity follows [Data split](../reference/configuration.md#data-split).
-Sharing unattacked runs across units with different `user_data` is **Not yet implemented.** See
+**Not yet implemented.** Sharing unattacked runs across units with different `user_data`; see
 [shared runs across different user data](../development/TODO.md#shared-runs-across-different-user-data).
 
 ## Input validation
@@ -90,11 +88,17 @@ The [architecture](../concepts/architecture.md#terms) defines units and comparis
 Each enabled treatment starts from the group's common origin; membership follows
 [Evaluation](evaluation.md#comparison-groups). The same configured hooks apply to every treatment.
 
-Execution uses the experiment-wide deployment tick budget established during preparation. Unattacked
-runs use that budget without creating an `AttackRuntime`. Each run creates fresh simulator and
-`AVStack` state, with cleanup on success, failure or interruption. The
+Execution follows the [deployment tick budget](attacks.md#online-phase).
+Unattacked runs do not create an `AttackRuntime`. Each run creates fresh simulator and `AVStack`
+state, with cleanup on success, failure or interruption. The
 [treatment schema](../reference/configuration.md#run-settings) defines how to enable attacks and
 environment overrides.
+
+## Results and failures
+
+`ExperimentResult.runs` holds every treatment result; `failures` lists failed or incomplete
+runs; `selection_errors` lists selection errors; the `runs.strict` setting raises the first error.
+See [Run settings](../reference/configuration.md#run-settings).
 
 ## Save and reuse selected metadata
 
@@ -182,12 +186,6 @@ class SelectionOnlyAttack(Attack):
 ```
 
 See [Environments](environments.md) for merge rules and supported conditions.
-
-## Results and failures
-
-Completed runs appear in `runs`; run failures appear in `failures` and selection errors in
-`selection_errors`. `runs.strict` propagates errors immediately. See
-[Run settings](../reference/configuration.md#run-settings).
 
 ## Next steps
 

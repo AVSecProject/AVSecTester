@@ -98,7 +98,7 @@ docker compose exec carla-experiment python -m scripts.preparation.export_carla_
   --host 127.0.0.1 --port 2000 --town Town03 --output data/carla_maps
 ```
 
-The files are written into the mounted checkout. `Dataset` use and unavailable-map behavior are
+The files are written into the mounted checkout. Map use and unavailable-map behavior are
 described in [Datasets](../guides/datasets.md).
 
 ## NuRec environment
@@ -114,7 +114,7 @@ docker compose run --rm nurec-experiment version
 
 `nurec-experiment` uses the nurec profile, so ordinary docker compose up does not start it. An
 explicit docker compose run enables it. The image provides the Python 3.12 AlpaSim workspace and
-imports this checkout without installing its Python 3.11 CARLA package.
+imports this checkout without installing the `avsectester` package, which requires Python 3.11.
 
 Obtain access to the
 [NuRec dataset](https://huggingface.co/datasets/nvidia/PhysicalAI-Autonomous-Vehicles-NuRec) and
@@ -148,8 +148,8 @@ export AVSECTESTER_ALPAMAYO_CHECKPOINT=/srv/models/Alpamayo-1.5-10B
 docker compose run --rm -e AVSECTESTER_ALPAMAYO_CHECKPOINT nurec-experiment run CONFIG.yaml
 ```
 
-The path must exist inside the experiment container. Model-loading behavior belongs to
-[Driving systems](../guides/driving-systems.md).
+The path must exist inside the experiment container.
+[Driving systems](../guides/driving-systems.md) describes model loading.
 
 ### COCO stop-sign detector weights
 
@@ -246,7 +246,7 @@ Existing cutouts can be deployed without SAM.
 ## Verify the installation
 
 Use the corresponding Compose service's version command, then follow the offline checks in
-[Tests](../../tests/README.md). `Simulator`, renderer and model prerequisites are listed there.
+[Tests](../../tests/README.md). Simulator, renderer and model prerequisites are listed there.
 
 ## Next steps
 

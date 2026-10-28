@@ -41,17 +41,11 @@ class CarlaSimulator(Simulator):
     """
 
     dataset_kinds = ("CarlaDataset",)
-    'Dataset kinds supported by this simulator.'
     capture_ticks = 1  # CARLA renders on ticks; the first capture follows simulator.setup
-    'Simulator ticks consumed by a sensor capture.'
     can_render = True
-    'Whether arbitrary-view rendering is supported.'
     can_replay = True
-    'Whether recorded-tick replay is supported.'
     can_insert_objects = True
-    'Whether world objects can be inserted into sensor rendering.'
     supported_world_settings = CARLA_WORLD_SETTINGS
-    'World-setting keys accepted by the simulator.'
 
     def __init__(
         self, client: dict, settle_iters: int = 100, *, simulator_version="0.9.16",
@@ -436,7 +430,6 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
             "trajectory_setup_ticks": self._trajectory_setup_ticks,
             "start_sensor_setup_ticks": 1,
         }, ego=_actor_state(self.ego.actor, self.ego.actor.type_id))
-
 
     def _replayed_scenario(self):
         return deepcopy(self.replay_scenario)

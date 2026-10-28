@@ -175,5 +175,3 @@ def texture_from_colors(original_rgba: np.ndarray, mask: np.ndarray,
     pixels = np.rint(np.clip(np.moveaxis(colors, 0, -1), 0., 1.) * 255).astype(np.uint8)
     result[..., :3][mask] = pixels[mask]
     return result
-
-

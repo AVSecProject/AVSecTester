@@ -7,8 +7,8 @@
 > **Prerequisites:** [Installation](../getting-started/installation.md) and
 > [Quickstart](../getting-started/quickstart.md).
 
-Every attack has an offline phase and an online phase; either may be a no-op. Run the
-configurations through Compose after preparing data, weights and the local Compose environment.
+Run configurations through Compose after preparing data, weights and the local Compose
+environment; see [Writing attacks](../guides/attacks.md) for lifecycle phases.
 
 ## Configurations
 
@@ -38,8 +38,8 @@ docker compose exec carla-experiment avsectester run configs/carla_phantom.yaml
 docker compose run --rm nurec-experiment run configs/nurec_patch.yaml
 ```
 
-The [Quickstart](../getting-started/quickstart.md) owns first-run startup and shutdown steps.
-[Configuration](../reference/configuration.md) owns path resolution and configurable defaults.
+See [Quickstart](../getting-started/quickstart.md) for first-run startup and shutdown steps.
+[Experiment configuration](../reference/configuration.md) describes path resolution and defaults.
 
 ## Attack impact
 

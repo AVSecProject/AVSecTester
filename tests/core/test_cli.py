@@ -299,7 +299,6 @@ def test_trafficsim_stop(tmp_path, monkeypatch):
 
 @pytest.fixture
 def managed_nurec_cli(tmp_path, monkeypatch, nurec_usdz_path):
-
     state, calls = docker_process_boundary(tmp_path, monkeypatch)
     state = state / "owned-nre"
     boundary = NuRecRpcBoundary(service_container=state).install(monkeypatch)

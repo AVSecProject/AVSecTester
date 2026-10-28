@@ -2,7 +2,7 @@
 
 > **Audience:** Experiment authors and simulator implementers.
 >
-> **Outcome:** Choose simulator behavior and implement a simulator adapter.
+> **Outcome:** Choose simulator behavior and implement a custom simulator.
 >
 > **Prerequisites:** [Architecture](../concepts/architecture.md).
 
@@ -66,7 +66,7 @@ calculation where all harmonizers support it; see [Optimization](optimization.md
 
 Occlusion tolerance keeps scene surfaces within the configured tolerance in front of an object
 from hiding it. The same rule applies to geometry and reconstruction probes. Option defaults
-belong to the [configuration reference](../reference/configuration.md#simulator).
+are listed in the [configuration reference](../reference/configuration.md#simulator).
 
 `object_visibility` describes the latest capture. A projected but fully hidden object has a
 camera entry with zero visible pixels; an object outside a camera projection has no entry.
@@ -81,18 +81,19 @@ See [TODO](../development/TODO.md#inserted-objects-in-non-camera-sensors).
 
 ## CARLA
 
-Traffic-light states are recorded under OpenDRIVE control IDs.
-
 A `CarlaDataset` supplies recipes describing map, spawns, sensors and prescribed motion.
 `CarlaSimulator` supplies the connection and synchronous timing settings. Each reset requires a
 recipe-bearing `ScenarioStart` and uses a dedicated server.
+
+Traffic-light states are recorded under OpenDRIVE control IDs.
 
 ### Selected-origin initialization
 
 The runtime creates actors and sensors, replays prescribed motion to the deployment window,
 applies setup actions and runs the deployment tick budget before capturing the selected
-boundary. At position zero, actors are held during setup ticks. Every treatment uses the same
-budget. Before decision zero, ego is released from recipe motion for driving-system control.
+boundary. At position zero, actors are held during setup ticks. Before decision zero, ego is
+released from recipe motion for driving-system control. See the
+[deployment tick budget](attacks.md#online-phase).
 
 A positive selected boundary needs materialized frame data. Recorded initialization evidence
 preserves the selected actor identities and sensor timing. See [Experiments](experiments.md) for
@@ -111,18 +112,17 @@ and calibration.
 
 **Not yet implemented.** NuRec and recorded-playback traffic-light state recording; see
 [Traffic-light states](../development/TODO.md#traffic-light-state-recording).
+
 Constructing mesh-depth or ground-contact support requires the `nurec` extra.
 Reset checks required archive meshes before connecting to NRE; missing resources fail preflight.
 A manually started NRE must enable `--enable-editing-actors`.
 
-The decision step comes from `dataset.time_step` through configuration loading. Driving adapters
+The decision step comes from `dataset.time_step` through configuration loading. A driving system
 can require a specific step. See [Configuration](../reference/configuration.md#simulator) for
 the injection and consistency rules.
 
-NRE is required for camera rendering. The `run` command manages local rendering and traffic
-services automatically; see [Automatic services](../reference/cli.md#automatic-local-services).
-Python callers use `avsectester.closed_loop.simulators.nurec.server.local_services` or start the
-required services explicitly.
+NRE is required for camera rendering; see
+[automatic local services](../reference/cli.md#automatic-local-services) for CLI and Python use.
 
 Construction does not connect to NRE:
 
@@ -153,8 +153,8 @@ current captures. Objects installed during reset or setup are composed using tho
 camera poses. Later insertions and actor overrides are excluded. Past captures bypass stage
 hooks and sensor attack actions. The runner applies sensor corruptions at each absolute dataset
 position, then passes history directly to `AVStack.reset`; it bypasses localization and the
-observation pipeline. `Initialization` records timing and vehicle state without the historical
-image payloads. See [Environment randomness](environments.md#randomness).
+observation pipeline. See [initialization records](../reference/runtime.md#initialization) and
+[environment randomness](environments.md#randomness).
 
 ### Navigation
 
@@ -185,7 +185,9 @@ The renderer probes each configured camera when loading a scene and scales its l
 dimensions actually returned by NRE. NRE preserves aspect ratio, so returned width can differ
 from the request. Subsequent captures must retain those dimensions.
 
-Captures render a single instant. **Not yet implemented.** Rolling-shutter exposure;
+Captures render a single instant.
+
+**Not yet implemented.** Rolling-shutter exposure;
 see [TODO](../development/TODO.md#rolling-shutter-rendering).
 
 The lens includes its f-theta model and recorded windshield distortion. Camera projection,
@@ -194,13 +196,13 @@ and models are specified in the [Python API](../reference/python-api.md).
 
 ### Move recorded actors
 
-Filtered controllable tracks are absent from world snapshots, sensor actors, depth and metrics;
-all captures and probes hide their recorded render instances below the scene. Parked tracks are
-never duration-filtered.
-
 Only controllable tracks can be moved by NRE. Parked tracks stay at recorded poses and
 `set_actor_state` rejects them. Short controllable tracks are filtered by `min_track_duration_s`;
 zero disables filtering.
+
+Filtered controllable tracks are absent from world snapshots, sensor actors, depth and metrics;
+all captures and probes hide their recorded render instances below the scene. Parked tracks are
+never duration-filtered.
 
 An accepted override changes world state immediately and camera state at the next capture. Its
 explicit world velocity advances the actor at fixed orientation until reset or another override.
@@ -209,11 +211,7 @@ overrides; restoring a checkpoint creates a new capture of the restored state.
 
 ### Reactive traffic
 
-Enable `AlpaSimTraffic` through `simulator.options.traffic`; `run` manages services as described
-in [CLI reference](../reference/cli.md#automatic-local-services). Python callers can use
-`avsectester.closed_loop.simulators.nurec.server.local_services`
-([API](../reference/python-api.md#avsectesterclosed_loopsimulatorsnurecserver)).
-The YAML, decision step and required history follow
+Enable `AlpaSimTraffic` through `simulator.options.traffic`; YAML, timing and history follow
 [Reactive traffic configuration](../reference/configuration.md#reactive-traffic).
 
 World actors begin with unfiltered recorded states, then use returned controllable-session
@@ -222,13 +220,12 @@ Sessions include duration-qualified tracks with nonempty clipped history. A firs
 backfills constant-velocity history and subsequent requests resend its complete history.
 
 Trajectories are not smoothed. Offline candidate rollouts also require the service.
+
 **Not yet implemented.** Fitting traffic actors to the selected ground mesh, checkpointing
 traffic sessions and controlling CATK sampling through the caller seed; see
 [Traffic actor ground contact](../development/TODO.md#traffic-actor-ground-contact).
 
 ### Ego dynamics
-
-`AlpaSimController` uses AlpaSim Ford Fusion vehicle parameters.
 
 | Dynamics | Commands | Behavior |
 |---|---|---|
@@ -240,12 +237,14 @@ NuRec initializes longitudinal/lateral speed, yaw rate and acceleration from the
 trajectory before resetting dynamics. The three-dimensional ego geometry still comes from
 the dataset.
 
+`AlpaSimController` uses AlpaSim Ford Fusion vehicle parameters.
+
 Trajectory commands use rig-frame poses and increasing timestamps, beginning at the current
 origin. The controller tracks the full forecast; it need not execute its first planned
 acceleration exactly. There is no automatic command conversion.
 
 A custom dynamics component supplies `step` and may supply `reset` and `command_modes`. Each
-runtime receives its own copy. Constructor defaults and trajectory constraints belong to the
+runtime receives its own copy. Constructor defaults and trajectory constraints are listed in the
 [dynamics API](../reference/python-api.md).
 
 ### Mesh depth
@@ -280,10 +279,11 @@ their recorded motion. Commands do not change that trajectory. It supports camer
 shared world-object composition. Environment support follows
 [Configuration](../reference/configuration.md#environment).
 
-## Write a custom simulator adapter
+## Write a custom simulator
 
-Implement the [native lifecycle extension contract](../reference/python-api.md#extension-contract).
-[Architecture](../concepts/architecture.md#world-ownership) owns the world-claim and
+See the [simulator base module](../reference/python-api.md#avsectesterclosed_loopsimulatorsbase)
+for its Extension contract.
+[Architecture](../concepts/architecture.md#world-ownership) describes the world-claim and
 operation-isolation rules.
 
 Subclass `Simulator` for configuration and `SimulatorRuntime` for native world operations.

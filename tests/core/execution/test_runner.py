@@ -97,8 +97,7 @@ def test_run_with_past(tmp_path):
     assert avstack.initial_observation.ego_speed == 6.
     raw = log.steps[0].raw_observation.sensor_data["front"]
     assert np.all(raw == 23)
-    assert np.any(log.steps[0].model_observation.sensor_data["front"] !=
-                  log.steps[0].raw_observation.sensor_data["front"])
+    assert np.any(log.steps[0].model_observation.sensor_data["front"] != raw)
     with ClosedLoopServices(dataset, simulator) as services, services.session(7) as session:
         for historical, frame in zip(past, frames[1:3]):
             original = session.read_sensors(SensorRequest("scene", frame, ("front",)))

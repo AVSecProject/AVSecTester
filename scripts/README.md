@@ -24,7 +24,7 @@ depth-edge overlays.
 
 ```bash
 docker compose run --rm --entrypoint python nurec-experiment -m scripts.validation.validate_nurec_depth \
-  --usdz data/nurec/scene.usdz --output results/nurec-depth-validation
+  --usdz data/nurec/023b7fcc-671c-40e3-9bd2-c66b0b073fbc/023b7fcc-671c-40e3-9bd2-c66b0b073fbc.usdz --output results/nurec-depth-validation
 ```
 
 The `--nuscenes DATAROOT` mode of `visualize_scene_labels` and Albumentations run in

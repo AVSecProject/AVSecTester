@@ -17,7 +17,8 @@ cp configs/carla_phantom.yaml configs/my_carla.yaml
 
 Edit `configs/my_carla.yaml`: `simulator.options.client.connect_ip` and
 `simulator.options.client.connect_port` select the endpoint;
-`avstack.options.pipeline_cfg.perception.gpu` selects the perception GPU.
+`avstack.options.pipeline_cfg.perception.gpu` selects the perception GPU. Set
+`runs.output` to `../results/my_carla`.
 
 ```bash
 docker compose up -d carla-server carla-experiment
@@ -32,12 +33,17 @@ Workflow and resume behavior are described in [Experiments](../guides/experiment
 Place NuRec 26.01 scenes under `data/nurec/26.01_release` and prepare the COCO weights listed in
 [Installation](installation.md#coco-stop-sign-detector-weights).
 The supplied `split.train_segments: 5` requires at least six selected approaches.
-Copy the configuration within `configs/`, then edit the copy before running it. Set
+Copy the configuration within `configs/`:
+
+```bash
+cp configs/nurec_stop_sign_patch_modular_2601.yaml configs/my_stop_sign.yaml
+```
+
+Edit `configs/my_stop_sign.yaml` and set `runs.output` to `../results/my_stop_sign`. Set
 `NUREC_GPU` in `.env`; `simulator.options.renderer.options.endpoint` selects NRE, and the
 top-level `device` selects the detector device inside the experiment container.
 
 ```bash
-cp configs/nurec_stop_sign_patch_modular_2601.yaml configs/my_stop_sign.yaml
 docker compose run --rm nurec-experiment run configs/my_stop_sign.yaml
 ```
 
@@ -65,7 +71,7 @@ Reuse preparation with the edited copy:
 
 ```bash
 docker compose exec carla-experiment avsectester run \
-  configs/carla_phantom_reuse.yaml --prepared results/carla_phantom
+  configs/carla_phantom_reuse.yaml --prepared results/my_carla
 ```
 
 For NuRec, use the same command through `nurec-experiment`:

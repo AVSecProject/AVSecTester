@@ -179,7 +179,6 @@ class FThetaCamera:
     linear_cde: tuple = (1.0, 0.0, 0.0)
     windshield: WindshieldDistortion | None = None
 
-
     @staticmethod
     def _poly(coeffs: tuple, x: np.ndarray) -> np.ndarray:
         return np.polynomial.polynomial.polyval(x, np.asarray(coeffs, dtype=np.float64))

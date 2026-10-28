@@ -65,6 +65,11 @@ def test_prepared_experiment_save_and_load(tmp_path):
     reordered = PreparedExperiment.load(load_configuration(specification), ordered)
     reordered.save(tmp_path / "reordered")
     assert (tmp_path / "reordered/prepared.json").read_bytes() == (ordered / "prepared.json").read_bytes()
+    for max_segments in (True, 1.0):
+        specification["attacks"]["probe"]["options"]["max_segments"] = max_segments
+        with pytest.raises(ConfigurationMismatchError, match="configuration differs"):
+            PreparedExperiment.load(load_configuration(specification), ordered)
+
     invalid = replace(prepared, metadata={"probe": (
         replace(prepared.metadata["probe"][0], user_data={"path": tmp_path}),
     )})

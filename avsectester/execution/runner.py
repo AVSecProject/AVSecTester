@@ -105,6 +105,7 @@ class ClosedLoopRunner:
             validate_environment(request.environment, simulator_runtime.simulator)
             hooks = request.hooks or HookSet()
             sensor_environment = SensorEnvironment(request.environment, seed=hooks.seed or 0)
+
             def record_attack_output(context: OnlineContext, name: str, value: Any) -> None:
                 # Attack outputs join the hook outputs, so both are logged with their decision.
                 session.outputs.append(RecordedOutput(

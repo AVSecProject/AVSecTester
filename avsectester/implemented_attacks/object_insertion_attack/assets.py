@@ -76,15 +76,18 @@ def poster_rgba(person: np.ndarray, aspect: float = 1.5, fill: float = 0.86,
     poster[:, :b, :3] = poster[:, -b:, :3] = border
     return poster
 
+
 def standee(person: np.ndarray, height_m: float = 1.75) -> SignAsset:
     """A local life-size cut-out standing on the ground, without posts."""
     return SignAsset(face=person, width_m=height_m * person.shape[1] / person.shape[0],
                      mount_height_m=0.0, post_count=0)
 
+
 def billboard(person: np.ndarray, width_m: float = 1.4, mount_height_m: float = 0.6) -> SignAsset:
     """A printed poster on two legs. Placement is supplied separately by ``Insertion``."""
     return SignAsset(face=poster_rgba(person), width_m=width_m, mount_height_m=mount_height_m,
                      post_width_m=0.09, post_count=2)
+
 
 _HOUSING = (28, 28, 30)
 
@@ -92,11 +95,13 @@ _OFF = (45, 45, 48)
 
 _LENS = {"red": (220, 40, 40), "yellow": (240, 200, 40), "green": (40, 200, 90)}
 
+
 def _disc(img: np.ndarray, cx: int, cy: int, r: int, color) -> None:
     ys, xs = np.ogrid[:img.shape[0], :img.shape[1]]
     m = (xs - cx) ** 2 + (ys - cy) ** 2 <= r * r
     img[m, :3] = color
     img[m, 3] = 255
+
 
 def signal_head_rgba(lit: str = "red", texture_height_pixels: int = 300) -> np.ndarray:
     """One vertical 3-lens signal head (red/yellow/green top-to-bottom) with ``lit`` lens on; RGBA."""
@@ -117,6 +122,7 @@ def signal_head_rgba(lit: str = "red", texture_height_pixels: int = 300) -> np.n
         if name == lit:  # a brighter core so it reads as emitting
             _disc(img, w // 2, cy, max(1, r - r // 3), tuple(min(255, int(c * 1.25)) for c in base))
     return img
+
 
 def traffic_lights_rgba(head_count: int = 3, lit: str = "red", texture_height_pixels: int = 300, gap_fraction: float = 0.25,
                         board: tuple | None = (35, 37, 40)) -> np.ndarray:
@@ -146,9 +152,11 @@ def traffic_lights_rgba(head_count: int = 3, lit: str = "red", texture_height_pi
         out[marg:marg + hh, x0:x0 + hw, 3] = np.maximum(out[marg:marg + hh, x0:x0 + hw, 3], head[..., 3])
     return out
 
+
 def roadside_rig(face: np.ndarray | str | Path, width_m: float = 2.4, mount_height_m: float = 2.2) -> SignAsset:
     """Local traffic-light board and post, with its bottom edge at ``mount_height_m``."""
     return SignAsset(face=face, width_m=width_m, mount_height_m=mount_height_m, post_width_m=0.12)
+
 
 @dataclass
 class PersonAsset:

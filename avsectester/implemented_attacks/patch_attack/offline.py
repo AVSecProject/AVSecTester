@@ -119,6 +119,7 @@ def optimize_patch(attack, context, options: PatchOptimization):
     import cv2
     alpha = cv2.resize(load_rgba_image(attack.assets)[..., 3],
                        (options.size[1], options.size[0]), interpolation=cv2.INTER_NEAREST)
+
     def export_texture(delta):
         rgba = to_rgba_uint8(delta)
         rgba[..., 3] = alpha

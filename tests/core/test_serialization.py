@@ -3,8 +3,8 @@
 from collections import OrderedDict, defaultdict, namedtuple
 from dataclasses import dataclass, fields, is_dataclass
 from pathlib import Path
-
 import sys
+
 import numpy as np
 import pytest
 import torch

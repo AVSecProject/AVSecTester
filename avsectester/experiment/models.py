@@ -202,7 +202,6 @@ class PreparedExperiment:
 
         return save_prepared(self, directory)
 
-
     @classmethod
     def load(
         cls, config: ExperimentConfiguration | Mapping[str, Any] | str | Path,

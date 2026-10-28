@@ -20,11 +20,8 @@ class CameraForwardCollisionAVStack(AVStack):
     """
 
     provides_detections = False
-    'Whether decisions expose detections compatible with detection metrics.'
     command_modes = frozenset({"actuator"})
-    'Control command modes accepted or produced by this component.'
     supported_stages = frozenset({"perception.pre", "perception.post"})
-    'Hook stages supported by the component.'
 
     def __init__(self, gpu: int = 0, camera: str = "front", area_brake: float = .03,
                  throttle: float = .55, detector_dataset: str = "carla-vehicle",

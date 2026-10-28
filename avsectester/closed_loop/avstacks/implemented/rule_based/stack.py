@@ -34,9 +34,7 @@ class RuleBasedAVStack(AVStack):
     """
 
     command_modes = frozenset({"trajectory"})
-    'Control command modes accepted or produced by this component.'
     provides_detections = False
-    'Whether decisions expose detections compatible with detection metrics.'
 
     def __init__(
         self, detector: CocoStopSignDetector, tracker: StopSignTracker | None = None,

@@ -253,4 +253,5 @@ third_party/lib-avstack-api
 /models/**/*.safetensors
 
 # Local Compose mounts and machine-specific overrides
+/models/Alpamayo-1.5-10B
 docker-compose.override.yml

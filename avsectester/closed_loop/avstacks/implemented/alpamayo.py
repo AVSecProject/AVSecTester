@@ -105,11 +105,8 @@ class AlpamayoAVStack(AVStack):
     """
 
     provides_detections = False
-    'Whether decisions expose detections compatible with detection metrics.'
     past_steps: ClassVar[int] = 15
-    'Recorded decision steps required before the selected start.'
     decision_time_step: ClassVar[float | None] = 0.1
-    'Decision interval in seconds; None leaves the interval unrestricted.'
 
     def __init__(
         self,
@@ -226,10 +223,10 @@ class AlpamayoAVStack(AVStack):
         self._ready = True
 
     def close(self) -> None:
-        """Release this adapter's references and any model it loaded itself.
+        """Release this driving system's references and any model it loaded itself.
 
         Closing is terminal and idempotent. An injected model is borrowed: another
-        adapter may share it, so its close method and CUDA allocator are untouched.
+        driving system may share it, so its close method and CUDA allocator are untouched.
         """
         if self._closed:
             return

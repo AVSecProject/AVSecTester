@@ -52,7 +52,7 @@ HookConfiguration: TypeAlias = HookSet | Callable[[int], HookSet] | None
 
 @dataclass(frozen=True)
 class TreatmentConfiguration:
-    """One attack, or a clean run, with explicit environment overrides."""
+    """One attack, or an unattacked run, with explicit environment overrides."""
 
     name: str
     attack_name: str | None = None
@@ -387,7 +387,6 @@ def _require_attacks(attacks: Mapping[str, Any]) -> None:
         raise ValueError("An experiment requires at least one attack; attack metadata selects its segments")
 
 
-
 def _validate_metadata_configuration(configuration: ExperimentConfiguration) -> None:
     if configuration.metadata.load is not None:
         return
@@ -585,6 +584,7 @@ def _hooks(value: Any, directory: Path, device: str | None = None) -> HookConfig
             if phase not in {"pre", "post"}:
                 raise ValueError("Native hooks require a .pre or .post stage")
             native_spec = deepcopy(entry["native_hook"])
+
             def native_hook(
                 stage: str = stage, spec: Mapping[str, Any] = native_spec, phase: str = phase,
             ) -> Hook:
@@ -593,6 +593,7 @@ def _hooks(value: Any, directory: Path, device: str | None = None) -> HookConfig
             constructors.append(native_hook)
         else:
             constructor, options = _constructor(entry, directory, device)
+
             def user_hook(
                 stage: str = stage, constructor: Callable[..., Any] = constructor,
                 options: dict[str, Any] = options,

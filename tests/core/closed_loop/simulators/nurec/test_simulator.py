@@ -431,7 +431,6 @@ def test_occlusion_tolerance(nurec_dataset, monkeypatch, make_object_in_front, t
 
 
 def test_validate_start(nurec_dataset, make_nurec_simulator):
-
     start = nurec_dataset.scenario_start("scene", nurec_dataset.frames("scene")[0])
     # A recording that turns back on itself has no valid navigation route.
     last = start.recorded_ego[-1]
@@ -502,7 +501,9 @@ def test_observe_past(nurec_dataset, monkeypatch, make_object_in_front, make_nur
             assert runtime.can_observe_past
             assert [observation.frame for observation in past] == [-3, -2, -1]
             np.testing.assert_allclose([observation.t for observation in past], [-.3, -.2, -.1])
-            rendered = [item for item in boundary.requests if hasattr(item, "frame_start_us")][-3:]
+            rendered = [item for item in boundary.requests if hasattr(item, "frame_start_us")]
+            assert len(rendered) >= 3
+            rendered = rendered[-3:]
             for observation, native, frame in zip(past, rendered, frames[:3]):
                 recorded = nurec_dataset.frame_data("scene", frame)
                 assert native.frame_start_us == round(frame.timestamp * 1e6)
@@ -540,7 +541,6 @@ def test_observe_past(nurec_dataset, monkeypatch, make_object_in_front, make_nur
 
 @pytest.fixture
 def traffic_world(traffic_recording):
-
     pytest.importorskip("alpasim_grpc")
     from alpasim_grpc.v0 import common_pb2 as common, traffic_pb2 as traffic
 
@@ -564,7 +564,6 @@ def traffic_world(traffic_recording):
 
 
 def test_reset_traffic(traffic_world):
-
     world = traffic_world
     with pytest.raises(UnsupportedStartError, match="15 past decision steps"):
         world.simulator.validate_start(world.dataset.scenario_start("scene", world.frames[14]))

@@ -15,7 +15,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from avsectester.data_types import Control, Detection, Observation, StateEstimate
-from avsectester.closed_loop.hooks import _StageAdapter
+from avsectester.closed_loop.hooks import _HookBindingMixin
 
 if TYPE_CHECKING:
     from avsectester.closed_loop.hooks import HookDispatcher, HookSet
@@ -65,7 +65,7 @@ class ObservationPipeline:
         return seen
 
 
-class AVStack(_StageAdapter, ABC):
+class AVStack(_HookBindingMixin, ABC):
     """The driving system: an Observation in, a Control out.
 
     The interface knows nothing about the implementation: a modular perception->tracking->planning
@@ -103,12 +103,12 @@ class AVStack(_StageAdapter, ABC):
 
     @property
     def command_modes(self) -> frozenset[str] | None:
-        """Possible output command representations, or None for an undeclared adapter."""
+        """Possible output command representations, or None for an undeclared driving system."""
         return None
 
     @property
     def models(self) -> Mapping[str, Any]:
-        """Loaded native models available to user handlers. Adapters expose their own names."""
+        """Loaded native models available to user handlers, named by the driving system."""
         return {}
 
     def component_log(self) -> Mapping[str, Any] | None:

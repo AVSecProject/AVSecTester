@@ -39,8 +39,7 @@ attacks:
 A supplied attack uses the
 [implemented-attacks layout](../../avsectester/implemented_attacks/README.md). Keep explicit
 constructor parameters as attributes with the same names, or override
-`configuration_parameters()` to describe the configured inputs.
-Filesystem options follow
+`configuration_parameters()` to describe the configured inputs. Filesystem options follow
 [Path resolution](../reference/configuration.md#constructor-filesystem-parameters).
 
 This example defines a selection rule and an online phase that changes model-visible speed:
@@ -91,8 +90,8 @@ from `user_data`.
 is `[start, stop)`, with `stop` as its terminal state. Store custom actor IDs, positions, ranks
 and other attack data in `user_data`, using JSON-like values and NumPy arrays for persisted
 metadata. Check these values in `validate_segment()` so user-supplied metadata follows the same
-attack rules. The [metadata configuration](../reference/configuration.md#metadata) controls saving and
-loading segments.
+attack rules. The [metadata configuration](../reference/configuration.md#metadata) controls
+saving and loading segments.
 
 `split_segments` groups adjacent eligible decisions. The following self-contained example
 includes an eligible tail:
@@ -173,7 +172,8 @@ request records and capability checks are defined in the
 The deployment tick budget is the maximum of
 `hooks.setup_ticks + attack.deployment_ticks(segment)` across all configured attacks, segments,
 seeds and treatments. Every treatment uses that budget. Larger budgets can make early starts
-fail `can_start_at`.
+fail `can_start_at`. A runtime must satisfy
+`runtime.setup_ticks <= attack.deployment_ticks(segment)`.
 
 A runtime's `setup` returns world actions; `step` returns the actions for a decision; `stop`
 releases its own resources. Declare snapshot reads with `ResultSubscription`. The context
@@ -181,7 +181,7 @@ supplies snapshots and a clock, rather than a service that advances the world.
 
 Choose `WorldAttackAction` for physical-world changes, `SensorAttackAction` for sensor-data
 replacement, and `AVStackAttackAction` for a driving-system stage value. The
-[Runtime reference](../reference/runtime.md) owns their application order and stage semantics.
+[Runtime reference](../reference/runtime.md) describes their application order and stage semantics.
 For insertion, `InsertObject` is a `WorldAttackAction`; `InsertionAttackAction` is a
 `SensorAttackAction`. Object coordinates use +X forward, +Y left and +Z up.
 
@@ -189,8 +189,6 @@ Placement tools belong to `attack.insertion`, not the dataset. A `SensorView` su
 geometry, actor poses and available depth for sensor composition. See
 [Image insertion](../examples/image-insertion.md) and
 [Physical patch](../examples/physical-patch.md) for the supplied deployment paths.
-
-A runtime must satisfy `runtime.setup_ticks <= attack.deployment_ticks(segment)`.
 
 ## Insert a world object
 

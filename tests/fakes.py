@@ -496,6 +496,17 @@ class NuRecRpcError(Exception):
         return self._details
 
 
+def container_running(state_path):
+    """Whether a Docker fake container state is absent (no container check) or running."""
+    if state_path is None:
+        return True
+    try:
+        state = json.loads(state_path.read_text())
+    except FileNotFoundError:
+        return False
+    return state.get("running", False) if isinstance(state, dict) else state is True
+
+
 class NuRecRpcBoundary:
     """A SensorsimService boundary; NuRecRenderer itself remains real.
 
@@ -503,6 +514,10 @@ class NuRecRpcBoundary:
     measured NRE convention does, except at pixels in ``hidden``, where the scene covers them.
     ``asset_directories`` maps server asset paths to local ones. With ``scene_tracks`` set, a
     render naming any other track that was not inserted fails as NRE does.
+    ``returned_resolution_hw`` is None for the requested resolution, an (H, W) tuple, or a
+    callable mapping the integer frame-start timestamp in microseconds to an (H, W) tuple. With
+    ``service_container`` set, scene queries answer UNAVAILABLE unless that Docker fake state
+    reports a running container.
     """
 
     TRACK_FROM_PLY = np.array([[1., 0., 0.], [0., 0., -1.], [0., 1., 0.]])
@@ -532,7 +547,7 @@ class NuRecRpcBoundary:
     def get_available_scenes(self, request, timeout=None):
         self.requests.append(request)
         self.scene_query_timeouts.append(timeout)
-        if self.service_container is not None and not self.service_container.exists():
+        if not container_running(self.service_container):
             raise self.rpc_error("UNAVAILABLE", "renderer is not running")
         if self.scene_query_error is not None:
             raise self.rpc_error(*self.scene_query_error)
@@ -1152,7 +1167,9 @@ class TrafficServiceBoundary:
 
     Session, simulate and close requests are copied into sessions, requests and
     closed. Tests may set simulate_response(request), rpc_errors[method] =
-    (grpc.StatusCode, details), or delays[method] to replace this native boundary.
+    (grpc.StatusCode, details), or delays[method] to replace this native boundary. With
+    ``service_container`` set, scene queries answer UNAVAILABLE unless that Docker fake state
+    reports a running container.
     """
 
     def __init__(self, scene_ids=("scene",), minimum_history_length_us=1_600_000,
@@ -1221,7 +1238,7 @@ class TrafficServiceBoundary:
 
             def get_available_scenes(self, request, context):
                 before("get_available_scenes", context)
-                if owner.service_container is not None and not owner.service_container.exists():
+                if not container_running(owner.service_container):
                     context.abort(grpc.StatusCode.UNAVAILABLE, "traffic is not running")
                 return common_pb2.AvailableScenesReturn(scene_ids=owner.scene_ids)
 
@@ -1303,6 +1320,8 @@ def docker_process_boundary(tmp_path, monkeypatch):
 
     DOCKER_MODE selects ready, race, run-fail, exit, timeout, interrupt or stop-fail.
     Container state and every command argument are stored under tmp_path.
+    Interrupt mode assumes the Docker subprocess's parent is the test process.
+    A DOCKER_STATE marker ensures that only its first log request sends SIGINT.
     """
     import os
     import sys
@@ -1350,8 +1369,10 @@ if args[0] == "inspect":
     elif ".State.Running" in fmt:print(str(data["running"]).lower())
     else:print(json.dumps(data))
 elif args[0] == "logs":
-    if mode == "interrupt":
+    marker = root / ".interrupted"
+    if mode == "interrupt" and not marker.exists():
         import signal
+        marker.touch()
         os.kill(os.getppid(), signal.SIGINT)
     print("Serving on\nStarting CATK traffic gRPC server on" if mode == "ready" else "startup diagnostic")
 elif args[0] == "stop":

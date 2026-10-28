@@ -310,28 +310,32 @@ def test_black_box_offline_errors(nurec_patch_services_and_segment, tmp_path):
         initial_patch="white", optimization=options, min_approach_m=8.)
     context = OfflineContext(
         services, (make_segment(),), report=OfflineReport(tmp_path / "files"))
-    with services:
-        in_memory = replace(context, report=OfflineReport(None))
-        exported = attack.run_offline(in_memory)
-        np.testing.assert_array_equal(exported, in_memory.report.images["optimized_texture"].pixels)
-        assert all(row["run_log"] is None for row in in_memory.report.tables["rollouts"].rows)
-        with pytest.raises(ValueError, match="training segment"):
-            attack.run_offline(replace(context, metadata=()))
-        failed = replace(context, report=OfflineReport(tmp_path / "failed/files"))
-        invalid_horizon = StopSignPatchAttack(
-            optimization=replace(options, horizon_s=6.), min_approach_m=8.)
-        with pytest.raises(ValueError, match="does not cover the requested horizon"):
-            invalid_horizon.run_offline(failed)
-        rows = failed.report.tables["rollouts"].rows
-        assert rows[0]["status"] == "failed"
-        assert rows[0]["forward_m"] is None
-        assert "does not cover the requested horizon" in rows[0]["error"]
-        assert RunLog.read(failed.report.directory / rows[0]["run_log"]).steps
-        assert "optimized_texture" not in failed.report.images
+    in_memory = replace(context, report=OfflineReport(None))
+    exported = attack.run_offline(in_memory)
+    np.testing.assert_array_equal(exported, in_memory.report.images["optimized_texture"].pixels)
+    assert all(row["run_log"] is None for row in in_memory.report.tables["rollouts"].rows)
+    with pytest.raises(ValueError, match="training segment"):
+        attack.run_offline(replace(context, metadata=()))
+    failed = replace(context, report=OfflineReport(tmp_path / "failed/files"))
+    invalid_horizon = StopSignPatchAttack(
+        optimization=replace(options, horizon_s=6.), min_approach_m=8.)
+    with pytest.raises(ValueError, match="does not cover the requested horizon"):
+        invalid_horizon.run_offline(failed)
+    rows = failed.report.tables["rollouts"].rows
+    assert len(rows) == 1
+    assert rows[0]["status"] == "failed"
+    assert rows[0]["forward_m"] is None
+    assert "does not cover the requested horizon" in rows[0]["error"]
+    log = RunLog.read(failed.report.directory / rows[0]["run_log"])
+    assert log.steps and log.status == "completed"
+    assert "optimized_texture" not in failed.report.images
     with pytest.raises(ValueError, match="max_training_segments"):
         replace(options, max_training_segments=0)
     with pytest.raises(ValueError, match="cannot be optimized"):
         StopSignPatchAttack(initial_patch="none", optimization=options, min_approach_m=8.)
-    with pytest.raises(ValueError, match="start_distances_m"):
+    with pytest.raises(ValueError, match=r"start_distances_m must be within \[8.0, 50.0\] m"):
         StopSignPatchAttack(
             optimization=replace(options, start_distances_m=(7.,)), min_approach_m=8.)
+    with pytest.raises(ValueError, match=r"start_distances_m must be within \[8.0, 50.0\] m"):
+        StopSignPatchAttack(
+            optimization=replace(options, start_distances_m=(51.,)), min_approach_m=8.)

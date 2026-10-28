@@ -1,5 +1,7 @@
 """Service commands and lifecycle use real configurations and a shared Docker boundary."""
 import json
+import re
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -8,6 +10,19 @@ from avsectester.closed_loop.simulators.nurec import AlpaSimTraffic, NuRecRender
 from avsectester.closed_loop.simulators.nurec.server import local_services
 from avsectester.datasets.nurec import NuRecDataset
 from tests.fakes import NuRecRpcBoundary, TrafficServiceBoundary, docker_process_boundary
+
+
+def scene_copy(archive, destination, scene_id):
+    """Copy a NuRec archive under a new path and scene ID."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(archive) as source, zipfile.ZipFile(destination, "w") as copy:
+        for name in source.namelist():
+            content = source.read(name)
+            if name in {"rig_trajectories.json", "sequence_tracks.json"}:
+                content = content.decode().replace('"scene"', f'"{scene_id}"')
+                content = content.replace("@scene", f"@{scene_id}").encode()
+            copy.writestr(name, content)
+    return destination
 
 
 @pytest.fixture
@@ -27,22 +42,33 @@ def service_configuration(nurec_usdz_path, docker_boundary, monkeypatch, tmp_pat
     return NuRecDataset([nurec_usdz_path]), simulator, boundary
 
 
-def test_local_services(service_configuration, docker_boundary, monkeypatch):
+def test_local_services(service_configuration, docker_boundary, monkeypatch, tmp_path):
     dataset, simulator, boundary = service_configuration
     state, calls = docker_boundary
+    archive = Path(dataset.usdz_paths[0])
+    second = scene_copy(archive, tmp_path / "scenes" / "second-scene.usdz", "second-scene")
+    dataset = NuRecDataset([archive, second])
+    boundary.available_scenes = ("scene", "second-scene")
     messages = []
     with local_services(dataset, simulator, nre_name="nre", log=messages.append):
         assert (state / "nre").exists()
     assert not (state / "nre").exists()
     launch = next(json.loads(row) for row in calls.read_text().splitlines()
                   if json.loads(row)[0] == "run")
-    assert "device=3" in launch
-    archive = Path(dataset.usdz_paths[0])
-    assert f"{archive}:/mnt/nre-data/{archive.name}:ro" in launch
-    assert f"{simulator.renderer.probe_directory}:/server/assets:ro" in launch
-    assert "--enable-editing-actors" in launch
-    assert "--artifact-glob=/mnt/nre-data/*.usdz" in launch
-    assert "--port=50051" in launch
+    label_index = launch.index("--label") + 1
+    assert re.fullmatch(r"avsectester\.service-owner=[0-9a-f]{32}", launch[label_index])
+    launch[label_index] = "avsectester.service-owner=<uuid>"
+    assert launch == [
+        "run", "--label", "avsectester.service-owner=<uuid>", "-d", "--name", "nre",
+        "--network", "host", "--gpus", "device=3", "-e", "HOME=/tmp",
+        "-v", f"{archive.resolve()}:/mnt/nre-data/{archive.name}:ro",
+        "-v", f"{second.resolve()}:/mnt/nre-data/{second.name}:ro",
+        "-v", f"{simulator.renderer.probe_directory.resolve()}:/server/assets:ro",
+        "--entrypoint", "/app/internal/scripts/pycena/runtime/pycena_nrm_full",
+        "nvcr.io/nvidia/nre/nre-ga:26.04", "serve-grpc", "--host=0.0.0.0",
+        "--port=50051", "--artifact-glob=/mnt/nre-data/*.usdz", "--cache-size=2",
+        "--enable-editing-actors",
+    ]
     assert any("Starting NRE" in text for text in messages)
     assert any("Stopped and removed NRE" in text for text in messages)
 
@@ -57,14 +83,14 @@ def test_local_services(service_configuration, docker_boundary, monkeypatch):
             pass
     assert (state / "nre").exists()
     (state / "nre").unlink()
-    boundary.available_scenes = ("scene",)
+    boundary.available_scenes = ("scene", "second-scene")
     monkeypatch.setenv("AVSECTESTER_HOST_GPU", "all")
     with pytest.raises(ValueError, match="service GPU explicitly"):
         with local_services(dataset, simulator, nre_name="nre", log=messages.append):
             pass
 
 
-def test_local_services_configuration_errors(service_configuration, docker_boundary, monkeypatch):
+def test_local_services_configuration_errors(service_configuration, docker_boundary, tmp_path):
     dataset, simulator, _boundary = service_configuration
     state, _calls = docker_boundary
     for endpoint, message in (
@@ -78,16 +104,13 @@ def test_local_services_configuration_errors(service_configuration, docker_bound
             with local_services(dataset, invalid, nre_name="nre"):
                 pytest.fail("invalid service configuration started")
 
-    class DuplicateArchiveDataset(NuRecDataset):
-        def scenarios(self):
-            return tuple(dataset.scenarios())
-
-    duplicate = DuplicateArchiveDataset([dataset.usdz_paths[0], dataset.usdz_paths[0]])
+    archive = Path(dataset.usdz_paths[0])
+    second = scene_copy(archive, tmp_path / "another" / archive.name, "second-scene")
+    duplicate = NuRecDataset([archive, second])
     with pytest.raises(ValueError, match="filenames must be unique"):
         with local_services(duplicate, simulator, nre_name="nre"):
             pytest.fail("duplicate archive names accepted")
     (state / "nre").write_text("false")
-    monkeypatch.setattr(simulator.renderer, "served_scenes", lambda timeout_s=2.: None)
     with pytest.raises(RuntimeError, match="already exists"):
         with local_services(dataset, simulator, nre_name="nre"):
             pytest.fail("existing container replaced")
@@ -105,14 +128,13 @@ def test_local_services_failure_and_cleanup(service_configuration, docker_bounda
             with local_services(dataset, simulator, nre_name="nre", timeout_s=.001, log=lambda text: None):
                 pass
         assert not (state / "nre").exists()
-    monkeypatch.setenv("DOCKER_MODE", "ready")
     monkeypatch.setenv("DOCKER_MODE", "interrupt")
     with pytest.raises(KeyboardInterrupt):
         with local_services(dataset, simulator, nre_name="nre", log=lambda text: None):
             pytest.fail("startup interruption ignored")
     assert not (state / "nre").exists()
     monkeypatch.setenv("DOCKER_MODE", "race")
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="No container owned by this invocation"):
         with local_services(dataset, simulator, nre_name="nre", log=lambda text: None):
             pytest.fail("ownership race ignored")
     assert json.loads((state / "nre").read_text())["owner"] == "someone-else"
@@ -184,10 +206,19 @@ def test_local_services_with_traffic(nurec_usdz_path, docker_boundary, tmp_path,
         launch = next(json.loads(row) for row in calls.read_text().splitlines()
                       if json.loads(row)[0] == "run" and "catk_trafficsim_server" in row)
         archive = Path(dataset.usdz_paths[0])
-        assert f"{archive}:/mnt/nre-data/{archive.name}:ro" in launch
-        assert f"{models}:/mnt/trafficsim-models:ro" in launch
-        assert "catk.loader.prediction_steps=15" in launch
-        assert f"server.port={service.endpoint.rsplit(':', 1)[1]}" in launch
+        label_index = launch.index("--label") + 1
+        launch[label_index] = "avsectester.service-owner=<uuid>"
+        assert launch == [
+            "run", "--label", "avsectester.service-owner=<uuid>", "-d", "--name", "traffic",
+            "--network", "host", "--gpus", "device=1", "-e", "HOME=/tmp",
+            "-v", f"{archive.resolve()}:/mnt/nre-data/{archive.name}:ro",
+            "-v", f"{models.resolve()}:/mnt/trafficsim-models:ro",
+            "-e", "OMP_NUM_THREADS=1", "-e", "MKL_NUM_THREADS=1",
+            "--entrypoint", "catk_trafficsim_server", "avsectester:trafficsim",
+            f"server.port={service.endpoint.rsplit(':', 1)[1]}",
+            "catk.loader.usdz_folder=/mnt/nre-data", "catk.loader.prediction_steps=15",
+            "hydra.run.dir=/tmp/trafficsim-hydra",
+        ]
 
         (state / "nre").write_text("true")
         with local_services(dataset, simulator, nre_name="nre", trafficsim_name="traffic",

@@ -133,5 +133,5 @@ RUN python -m pip install --no-cache-dir -e ".[dev,augment,nurec]" "setuptools==
  && python -c "import pyarrow.parquet; from embreex.rtcore_scene import EmbreeScene; from embreex.mesh_construction import TriangleMesh"
 
 # Default carla-experiment to a shell; run experiments explicitly with docker compose exec.
-# See docs/getting-started/installation.md#docker and docker-compose.yml.
+# See docs/getting-started/installation.md#carla-environment and docker-compose.yml.
 CMD ["bash"]

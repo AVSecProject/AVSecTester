@@ -23,6 +23,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from scripts.development import write_api_reference as api_reference
+
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -130,6 +132,14 @@ def test_links_and_anchors_resolve(path):
             broken.append(f"{target}: missing file")
         elif anchor and resolved.suffix == ".md" and anchor not in _anchors(resolved):
             broken.append(f"{target}: missing anchor")
+        elif anchor and resolved.suffix == ".md":
+            headings = [
+                _slug(match[1])
+                for line in _prose(resolved.read_text(), inline_code=True).splitlines()
+                if (match := re.match(r"^#{1,6}\s+(.*?)\s*#*\s*$", line))
+            ]
+            if headings.count(anchor) > 1:
+                broken.append(f"{target}: ambiguous repeated heading")
     assert not broken, "\n".join(broken)
 
 
@@ -229,16 +239,8 @@ def test_python_imports_resolve(module_name, name):
         assert name in module.__all__, f"{module_name}.{name} is not exported"
 
 
-def _api_generator():
-    path = ROOT / "scripts/development/write_api_reference.py"
-    spec = importlib.util.spec_from_file_location("api_reference_generator", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def test_public_api_reference():
-    generator = _api_generator()
+    generator = api_reference
     text = (ROOT / "docs/reference/python-api.md").read_text()
     expected = generator.render(text)
     blocks = re.compile(r"<!-- api:begin module=(.*?) -->(.*?)<!-- api:end -->", re.S)
@@ -247,6 +249,7 @@ def test_public_api_reference():
         assert actual_sections.get(module) == block, f"Regenerate API module {module}"
     sections = re.findall(r"^### (avsectester[\w.]*)$", text, re.M)
     assert len(sections) == len(set(sections))
+    assert text == expected, "API reference structure or handwritten section order differs"
     assert set(sections) == set(generator.public_modules())
     for module, block in re.findall(r"<!-- api:begin module=(.*?) -->(.*?)<!-- api:end -->", text, re.S):
         if module == "module-map":
@@ -268,19 +271,32 @@ def test_documentation_format(path):
     errors = []
     lines = prose.splitlines()
     for number, line in enumerate(lines, 1):
-        if re.search(r"`[^`]+`\s+(?:\.\w|\(|'s\b|=|-\w)", line):
+        if re.search(r"`[^`]+`[ \t]+(?:\.\w|'s\b|=|-\w|[:),]|/(?! )|\((?![A-Za-z`\d][^)]*\)))", line):
             errors.append(f"{number}: separated code fragment: {line}")
-        if any(re.search(r"&(?:#\d+|#x[\da-f]+|\w+);", code)
+        if any(re.search(r"&(?:#\d+|#x[\da-f]+|\w+);", code, re.I)
                for code in re.findall(r"`([^`]+)`", line)):
             errors.append(f"{number}: HTML entity in code: {line}")
+        if re.search(r"\b[A-Za-z]{2,}- (?!(?:and|or|to)\b)[A-Za-z]{2,}\b", line):
+            errors.append(f"{number}: split word: {line}")
         if line.lstrip().startswith("> >"):
             errors.append(f"{number}: nested task header")
-        if re.match(r"^\s*\d+\.\s", line) and re.search(r"\s\d+\.\s", line):
+        header_fields = re.findall(r"\*\*(?:Audience|Outcome|Prerequisites):\*\*",
+                            re.sub(r"`[^`]*`", "", line))
+        if len(header_fields) > 1:
+            errors.append(f"{number}: multiple task-header fields")
+        if header_fields and not line.startswith(">"):
+            errors.append(f"{number}: task header must be quoted")
+        if re.search(r"(?:^|:\s+)\d+\.\s+\S.*\s+\d+\.\s+\S", line.strip()):
             errors.append(f"{number}: multiple ordered-list items")
         if (re.fullmatch(r"[A-Za-z][A-Za-z-]*[.,;:]?", line.strip())
                 and number < len(lines) and lines[number].strip()
-                and not lines[number].startswith(("#", "|", ">"))):
+                and not line.rstrip().endswith(":")
+                and not lines[number].startswith(("#", "|", ">", "-", "*"))
+                and not re.match(r"^\s*\d+\.\s", lines[number])):
             errors.append(f"{number}: isolated word: {line}")
+    header = re.search(r"^>.*\*\*Audience:\*\*.*?(?=\n\n|\Z)", prose, re.M | re.S)
+    if header and any(not line.startswith(">") for line in header[0].splitlines()):
+        errors.append("Every task-header line must start with >")
     for first, second in zip(lines, lines[1:]):
         if re.match(r"^> \*\*(?:Audience|Outcome):", first) and re.match(
                 r"^> \*\*(?:Outcome|Prerequisites):", second):

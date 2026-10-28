@@ -95,7 +95,7 @@ class ResolvedInsertion:
         object.__setattr__(self, "pose", poses.validated_transform(self.pose))
 
     def planes(self) -> tuple[PlaneSurface, ...]:
-        """Resolve the asset into textured planes in its local coordinate frame."""
+        """Return textured world-coordinate planes transformed by the insertion pose."""
         rotation, translation = self.pose[:3, :3], self.pose[:3, 3]
         return tuple(
             replace(surface, corners=surface.corners @ rotation.T + translation)

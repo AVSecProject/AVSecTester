@@ -41,7 +41,7 @@ jobs:
       - name: Install CPU test dependencies
         run: |
           python -m pip install 'pip>=25,<26'
-          python -m pip install torch==2.1.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install torch==2.1.0 torchvision==0.16.0 --index-url https://download.pytorch.org/whl/cpu
           python -m pip install -e '.[test,nurec]' -c constraints.txt
       - name: Test core functionality
         run: >-
@@ -86,7 +86,7 @@ jobs:
       - name: Install offline avstack dependencies
         run: |
           python -m pip install 'pip>=25,<26'
-          python -m pip install torch==2.1.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install torch==2.1.0 torchvision==0.16.0 --index-url https://download.pytorch.org/whl/cpu
           python -m pip install -e '.[test,nurec]' -e third_party/avstack-core \
             carla==0.9.16 pygame ipywidgets 'opencv-python<4.12' -c constraints.txt
           # Install only the adapters: their full dataset/Open3D extras and stale sibling-path

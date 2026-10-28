@@ -21,7 +21,7 @@ scenes, hosts or placement rules.
 
 `HideObject` minimizes a score; `SpoofObject` maximizes it. `PGD` requires a differentiable
 score, while `NES` uses score queries. A `SessionScorer` connects either path to a
-declared `DrivingAdapter` binding. [Driving-system bindings](driving-systems.md) owns the
+declared `DrivingAdapter` binding. [Driving-system bindings](driving-systems.md) describes
 model integration; the [Python API](../reference/python-api.md) lists signatures and
 optimizer constraints.
 
@@ -65,12 +65,13 @@ from avsectester.attack.optimization import HideObject, PGD, SessionScorer
 
 # Requires OfflineContext context, a user DataSource and a Perturbation.
 with context.services.session(context.seed) as session:
-    scorer = SessionScorer(session, "detector", require_grad=True,
+    scorer = SessionScorer(session, "rule_based.stop_sign_confidence", require_grad=True,
                            input_format="CHW float tensor [0,1]", device="cpu")
     result = PGD(steps=10).run(source, perturbation, scorer, HideObject())
 ```
 
-Scorer declarations follow [Driving-system bindings](driving-systems.md#components-and-scorers-for-offline-work).
+Scorer declarations follow
+[Driving-system bindings](driving-systems.md#components-and-scorers-for-offline-work).
 Use [candidate rollouts](attacks.md#offline-phase) when the score depends on a planned trajectory or
 physical response.
 
@@ -120,19 +121,19 @@ assert colors.grad.abs().sum() > 0
 
 Keep the asset's alpha when exporting colors. A surface's `nominal_texture` provides an
 unchanged appearance reference when scene statistics should not depend on the optimized texture.
-`Harmonizer` formulas, parameters and non-differentiable restrictions belong to the
-[rendering API](../reference/python-api.md#avsectesterrenderingharmonizers).
+`Harmonizer` formulas, parameters and non-differentiable restrictions are described in
+the [rendering API](../reference/python-api.md#avsectesterrenderingharmonizers).
 
 ## Offline reports
-
-The offline HTML page expands tables with at most 20 rows and eight columns; larger tables
-are collapsible.
 
 `report.json` contains `status`, `values`, `series`, `tables` and `images`. Values retain their
 unit and description; series retain coordinates, axis labels, units and description. Tables
 retain rows, column descriptions and CSV filenames; images retain descriptions and PNG
 filenames. CSV column order is the union of row keys in first-appearance order. Auxiliary files
 live below `files/`.
+
+The offline HTML page expands tables with at most 20 rows and eight columns; larger tables
+are collapsible.
 
 `context.report` collects measurements independently of returned artifacts. Each setter replaces
 an item with the same name and kind. Include units, descriptions and table-column explanations
@@ -161,8 +162,7 @@ supported values and name validation.
 
 The framework persists partial reports on failure and restores completed reports during resume;
 [Experiments](experiments.md) defines checkpoint behavior. The
-[CLI reference](../reference/cli.md) owns output locations, HTML reports and rebuilding them
-from saved files.
+[CLI reference](../reference/cli.md) describes output locations and the `evaluate` rebuild.
 
 ## Supplied optimization paths
 

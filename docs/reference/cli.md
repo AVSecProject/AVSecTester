@@ -31,13 +31,13 @@ first-run examples.
 
 `run CONFIG.yaml` loads configuration, prepares artifacts, executes treatments and evaluates
 saved evidence. It requires a nonempty attack mapping and `runs.output`. The
-[configuration reference](configuration.md) owns YAML keys, defaults and
+[configuration reference](configuration.md) describes YAML keys, defaults and
 preparation compatibility.
 
 | Option | Default | Meaning |
 |---|---|---|
 | `--prepared DIRECTORY` | omitted | Load a complete preparation into a fresh output directory |
-| `--resume` | false | Continue preparation and execution in `runs.output` |
+| `--resume` | `false` | Continue preparation and execution in `runs.output` |
 | `--nre-gpu N` | `AVSECTESTER_HOST_GPU` | GPU for an automatically started NRE |
 | `--nre-name NAME` | avsectester-nre-PORT | Name of an automatically started NRE container |
 | `--trafficsim-gpu N` | `AVSECTESTER_HOST_GPU` | GPU for automatically started traffic |
@@ -72,6 +72,9 @@ or `AVSECTESTER_HOST_GPU`, which the NuRec Compose service sets from `NUREC_GPU`
 be one nonnegative host GPU index. This selects the physical device independently of the model's
 YAML `device` option.
 
+Python callers start required services themselves, for example with
+[`local_services`](python-api.md#avsectesterclosed_loopsimulatorsnurecserver).
+
 Managed services cover preparation, execution and evaluation. Startup, reuse and shutdown each
 print a progress line. On completion, exceptions or Ctrl-C, only containers started by this
 command are stopped and removed, in reverse startup order. Cleanup errors are attached to an
@@ -79,9 +82,9 @@ active exception; after a completed experiment they are reported without replaci
 
 NRE startup creates its client probe directory. Docker mounts each archive read-only at
 `/mnt/nre-data/<filename>` and mounts the probe directory at `server_probe_directory`, or at the
-same absolute client path when that option is null. Archive filenames must be unique. The
-Compose host-path and Docker access setup is owned
-by [Installation](../getting-started/installation.md).
+same absolute client path when that option is `null`. Archive filenames must be unique. The
+Compose host-path and Docker access setup is described
+in [Installation](../getting-started/installation.md).
 
 The optional manual service commands below support reuse across multiple experiments.
 
@@ -98,9 +101,8 @@ logs are recorded as failures while other runs remain available. Saved directori
 or unexpected treatments are reported and skipped.
 
 Both `run` and `evaluate` print `offline_report.html` and `evaluation_report.html` paths.
-Evaluate rebuilds both pages from saved files. Terminal summaries show every metric field,
-grouped by part and metric class, followed by notes and errors. Summary statistics and
-unavailable values are defined in [Evaluation](../guides/evaluation.md).
+Evaluate rebuilds both pages from saved files. See [Evaluation](../guides/evaluation.md) for
+terminal summaries, statistics and unavailable values.
 
 ## NRE
 
@@ -114,7 +116,7 @@ loads the configuration, starts Docker and waits for `Serving on`.
 | `--image IMAGE` | `nvcr.io/nvidia/nre/nre-ga:26.04` |
 | `--cache-size K` | 2 |
 | `--timeout SECONDS` | 600 |
-| `--dry-run` | false |
+| `--dry-run` | `false` |
 
 The configuration must contain `NuRecDataset` and `NuRecRenderer` with a local endpoint. This
 command does not validate experiment environments. Archive and probe mounts follow the
@@ -148,9 +150,9 @@ requires `NuRecDataset` and a configured `AlpaSimTraffic` with a local endpoint.
 | `--gpu N` | required host GPU index |
 | `--models DIR` | required model directory |
 | `--name NAME` | avsectester-trafficsim-PORT |
-| `--image IMAGE` | avsectester:trafficsim |
+| `--image IMAGE` | `avsectester:trafficsim` |
 | `--timeout SECONDS` | 600 |
-| `--dry-run` | false |
+| `--dry-run` | `false` |
 
 ```bash
 docker compose run --rm nurec-experiment trafficsim serve CONFIG.yaml --gpu N --models models/alpasim-trafficsim
@@ -163,7 +165,7 @@ requires the CATK startup log followed by a successful metadata RPC. Startup err
 existing container handling follow the [NRE rules](#nre).
 
 `trafficsim stop CONFIG [--name NAME]` derives the name without enumerating datasets, then stops
-and removes that container. Use the same explicit name for serve and stop. `Simulator` traffic
+and removes that container. Use the same explicit name for serve and stop. Reactive traffic
 behavior is described in [Simulators](../guides/simulators.md#reactive-traffic).
 
 ## Interruptions
@@ -208,7 +210,7 @@ in [Evaluation](../guides/evaluation.md).
 | Code | Meaning |
 |---|---|
 | 0 | Command completed without failed runs, selection errors or metric errors; this does not establish attack effectiveness |
-| 1 | Preparation load/validation error, selection, execution, result reading, metric evaluation or service startup/stop failed |
+| 1 | Configuration load error, preparation load/validation error, selection, execution, result reading, metric evaluation or service startup/stop failed |
 | 2 | Invalid configuration or metadata contents, output conflict or incompatible saved preparation |
 | 130 | Keyboard interruption; available partial output is retained |
 
@@ -216,9 +218,10 @@ Service scene mismatch, a missing service at a nonlocal endpoint, absent `--traf
 and invalid GPU selection are configuration errors (exit 2). Container launch, readiness and
 explicit stop failures exit 1. Unsupported hook stages or incompatible commands fail the
 affected run at its start (exit 1). `evaluate` requires `prepared.json` and exits 1 if it is
-missing. With `--prepared`, hooks requiring more than the saved deployment tick budget cause
-execution to fail with exit 1. Saved-result and file-reading failures remain distinguishable
-from configuration incompatibility.
+missing. With `--prepared` or `--resume`, the current hook `simulator.setup` ticks plus
+`Attack.deployment_ticks(segment)` must fit the saved deployment tick budget; exceeding it
+fails execution with exit 1. See
+[saved-preparation compatibility](configuration.md#saved-preparation-compatibility).
 
 ## Supplied configurations
 

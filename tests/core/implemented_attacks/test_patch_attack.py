@@ -16,6 +16,7 @@ from avsectester.closed_loop.avstacks.driving_adapter import DrivingAdapter, Sco
 from avsectester.execution.services import ClosedLoopServices, RenderRequest
 from avsectester.closed_loop.simulators.carla import CarlaSimulator
 from avsectester.datasets.carla import CarlaDataset, CarlaRecipe, PrescribedMotion
+from avsectester.geometry.projection import project_box
 from tests.fakes import CarlaNativeBoundary, ConstantAVStack, MemoryDataset, MemorySimulator, actor_state
 
 
@@ -89,7 +90,7 @@ def test_run_offline(algorithm):
         return value
 
     driver = DrivingAdapter(lambda seed: ConstantAVStack(), scorers=[(descriptor, score)])
-    attack = PatchAttack(decision_steps=2, max_windows=1,
+    attack = PatchAttack(decision_steps=1, max_windows=1,
                         compositor=PatchCompositor(),
                         optimization=PatchOptimization(algorithm, scorer_id="brightness",
                             device="cpu", size=(4, 4), brightness=(1., 1.), contrast=(1., 1.)))
@@ -106,13 +107,18 @@ def test_run_offline(algorithm):
                 rendered = session.render(RenderRequest(
                     segment.scenario_id, segment.start, "front", actions=actions))
             exported_score = np.asarray(rendered.observation.sensor_data["front"]).mean() / 255
+            view = rendered.view
+            host = view.actors[segment.user_data["host"]]
+            expected_box = project_box(
+                view.camera, view.cam_from_world, host.box_transform(), host.extent)
         finally:
             runtime.stop(replace(online, stage="stop"))
     assert artifacts.shape == (4, 4, 4) and artifacts.dtype == np.uint8
     assert received and any(np.ptp(image) > 0 for image in received)
-    assert exported_score < scores[0]
+    assert exported_score == pytest.approx(scores[-1], abs=2e-5)
+    assert scores[-1] < scores[0]
     assert all(target.box is not None for target in targets)
-    assert all(target.box == targets[0].box for target in targets)
+    assert all(target.box == expected_box for target in targets)
     np.testing.assert_array_equal(artifacts[..., 3], np.full((4, 4), 255, np.uint8))
 
 
