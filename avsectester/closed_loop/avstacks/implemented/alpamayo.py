@@ -90,6 +90,13 @@ def alpamayo_driving_adapter(factory):
         decision_time_step=AlpamayoAVStack.decision_time_step)
 
 
+ALPASIM_CAMERA_IDS = (
+    "camera_front_wide_120fov", "camera_front_tele_30fov",
+    "camera_cross_left_120fov", "camera_cross_right_120fov",
+)
+'Cameras of AlpaSim\'s Alpamayo 1.5 driver configuration.'
+
+
 class AlpamayoAVStack(AVStack):
     """A policy using real 10 Hz observations, image context and model-visible navigation.
 
@@ -97,6 +104,8 @@ class AlpamayoAVStack(AVStack):
     ``alpamayo_base.py`` NUM_HISTORY_STEPS=16 and HISTORY_TIME_STEP=0.1. Images require
     ``(context_length - 1) * frame_subsample`` past decisions, which must fit that history.
     ``reset`` receives the recorded past; neither missing images nor poses are fabricated.
+    ``camera_ids`` defaults to AlpaSim's Alpamayo 1.5 cameras: front wide, front tele and both
+    cross cameras.
     ``seed`` is the run seed, which configuration loading supplies. Like AlpaSim's driver, a
     seeded stack loads the model with ``force_determinism`` and seeds each decision from the
     run seed and the decision count since reset. Unlike AlpaSim's ``seed + count``, the
@@ -123,7 +132,7 @@ class AlpamayoAVStack(AVStack):
             checkpoint_path if checkpoint_path is not None
             else os.environ.get("AVSECTESTER_ALPAMAYO_CHECKPOINT")
         )
-        self.camera_ids = camera_ids or ["camera_front_wide_120fov"]
+        self.camera_ids = camera_ids or list(ALPASIM_CAMERA_IDS)
         self.device = device
         require_positive_integer(context_length, "context_length")
         require_positive_integer(frame_subsample, "frame_subsample")

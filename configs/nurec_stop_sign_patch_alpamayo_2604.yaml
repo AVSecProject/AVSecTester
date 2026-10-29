@@ -25,6 +25,9 @@ simulator:
         endpoint: 127.0.0.1:50051
         cameras:
         - camera_front_wide_120fov
+        - camera_front_tele_30fov
+        - camera_cross_left_120fov
+        - camera_cross_right_120fov
         probe_directory: ../results/nre-probes
         server_probe_directory: /mnt/nre-probes
     dynamics:
@@ -35,6 +38,9 @@ avstack:
     checkpoint_path: ../models/Alpamayo-1.5-10B
     camera_ids:
     - camera_front_wide_120fov
+    - camera_front_tele_30fov
+    - camera_cross_left_120fov
+    - camera_cross_right_120fov
     frame_subsample: 1
 attacks:
   no_patch:

@@ -214,6 +214,10 @@ def test_seed(alpamayo_model_boundary, alpamayo_observations):
         avstack.close()
     with pytest.raises(ValueError, match="seed"):
         AlpamayoAVStack(camera_ids=["front"], seed=-1)
+    # The default matches AlpaSim's Alpamayo 1.5 driver cameras.
+    assert set(AlpamayoAVStack(device="cpu").camera_ids) == {
+        "camera_front_wide_120fov", "camera_front_tele_30fov",
+        "camera_cross_left_120fov", "camera_cross_right_120fov"}
 
 
 def test_native_records(alpamayo_model_boundary, alpamayo_observations, tmp_path):

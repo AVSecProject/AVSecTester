@@ -108,7 +108,9 @@ vehicles can also overlap its path. `DrivingMetrics.collision` records those phy
 `AlpamayoAVStack` uses AlpaSim's policy interface to turn camera input, ego pose history, speed,
 acceleration and navigation into a rig-frame trajectory. Navigation comes from
 `Observation.route`, which the simulator generates as route intent. It is independent of the
-executed future path; see [Navigation](simulators.md#navigation).
+executed future path; see [Navigation](simulators.md#navigation). By default it uses the four
+cameras of AlpaSim's Alpamayo 1.5 driver: front wide, front tele and both cross cameras; the
+renderer must provide every listed camera.
 
 Component logs contain `policy`, `command`, `route_waypoints`, `navigation_command`,
 `navigation_note`, `history_pose_count` and `selected_image_times`. Without a route, the
