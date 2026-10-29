@@ -369,7 +369,7 @@ def stop_line(arguments: argparse.Namespace) -> None:
         distances, _ = signed_stop_line_distances(np.stack([state.ego.pose[:3, 3] for state in states]),
                                                   line.points)
         axis.plot(distances, [state.ego_speed for state in states], label=name, color=color, linewidth=2)
-    axis.axvline(0.0, color="#333333", linestyle=":", linewidth=1.5, label="stop line")
+    axis.axvline(0.0, color="#333333", linestyle=":", linewidth=1.5, label="Stop line")
     axis.invert_xaxis()
     axis.set_xlabel("distance before the stop line (m)")
     axis.set_ylabel("speed (m/s)")

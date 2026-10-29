@@ -23,10 +23,18 @@
   font-weight: 500;
 }
 
-.avs-hero__authors {
+.avs-hero__authors,
+.avs-hero__affiliations {
   margin: -0.4rem 0 1rem;
   font-size: 0.8rem;
   opacity: 0.92;
+}
+
+.avs-hero__lead {
+  max-width: 42rem;
+  margin: 0 0 0.6rem;
+  font-size: 1rem;
+  font-weight: 600;
 }
 
 .avs-hero__text {
@@ -186,6 +194,43 @@
 
 .avs-card .avs-card__link {
   margin-top: auto;
+}
+
+/* Numbered workflow steps */
+
+.md-typeset .avs-steps ol {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: 0.8rem;
+  margin: 1rem 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: avs-step;
+}
+
+.md-typeset .avs-steps li {
+  margin: 0;
+  padding: 0.8rem 0.9rem 0.8rem 2.6rem;
+  position: relative;
+  border: 0.05rem solid var(--md-default-fg-color--lightest);
+  border-radius: 0.2rem;
+  font-size: 0.75rem;
+  counter-increment: avs-step;
+}
+
+.md-typeset .avs-steps li::before {
+  content: counter(avs-step);
+  position: absolute;
+  left: 0.8rem;
+  top: 0.75rem;
+  width: 1.3rem;
+  height: 1.3rem;
+  border-radius: 50%;
+  background-color: var(--md-primary-fg-color);
+  color: var(--md-primary-bg-color);
+  font-weight: 700;
+  line-height: 1.3rem;
+  text-align: center;
 }
 
 /* Labelled image pairs inside a card */

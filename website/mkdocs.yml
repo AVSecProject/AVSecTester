@@ -94,8 +94,11 @@ extra_css:
 
 extra:
   generator: false
-  # Homepage author line; it is rendered only when this list is nonempty.
+  # Homepage author and affiliation lines; each is rendered only when its list is nonempty.
   authors: []
+  affiliations:
+    - University of Arizona
+    - University of Southern California
   # version is read from avsectester/__init__.py by scripts/website/hooks.py.
 
 markdown_extensions:

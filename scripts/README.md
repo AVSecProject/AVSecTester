@@ -77,23 +77,25 @@ comes from a supplied configuration with the changes listed below; the derived Y
 not tracked.
 
 All runs record the front camera's raw and model-input images at every decision and use a
-separate renderer port. Videos play at 8 frames per second, slower than the 10 Hz decisions.
+separate NRE renderer port or CARLA server port. Videos play at 8 frames per second, slower than
+the decisions.
 
 | Media | Source configuration and changes | Run (segment, seed, treatments) | Command (`python -m scripts.website.make_media ...`) |
 |---|---|---|---|
-| `stop-sign-white-box` | `nurec_stop_sign_patch_modular_2601.yaml`; treatments `clean` (attack `no_patch`) and `white_detector_pgd` only; `metadata.load` of the first seven selected units in dataset order, of which the split keeps five for training | 0 (scene `clipgt-07981e6a-22dd-4796-ad2f-1252037ecd28`), 0, `clean` and `white_detector_pgd` | `compare OUTPUT --segment 0 --attacked white_detector_pgd --clean-label "clean (unpatched replica)" --attacked-label "white-box attack (algorithm used: PGD)" --fps 8 --poster-step 28 --name stop-sign-white-box` |
-| `stop-sign-black-box` | `nurec_stop_sign_patch_alpamayo_2601.yaml`; treatments `clean` and `white_rollout_nes` only; first seven units that AlpamayoAVStack can start; NES `steps: 3`, `population_size: 4`, `start_distances_m: [30]`, `max_training_segments: 1` (reduced budget for illustration) | 0 (same scene as `stop-sign-white-box`), 0, `white_rollout_nes` | `overlay OUTPUT --segment 0 --treatment white_rollout_nes --label "black-box attack (algorithm used: NES)" --fps 8 --poster-step 40 --name stop-sign-black-box` |
-| `image-insertion` | `nurec_object_insertion.yaml` | 0, 0, `object` | `frame OUTPUT --segment 0 --treatment object --step 19 --crop 990 560 1630 920 --width 640 --name image-insertion` |
-| `image-insertion-harmonized` | `nurec_object_insertion.yaml`; adds `compositor: PatchCompositor(ExposureHarmonizer(), soften: 0.6)` | 0, 0, `object` | `frame OUTPUT --segment 0 --treatment object --step 19 --crop 990 560 1630 920 --width 640 --name image-insertion-harmonized` |
+| `stop-sign-white-box` | `nurec_stop_sign_patch_modular_2601.yaml`; treatments `clean` (attack `no_patch`) and `noise_detector_pgd` only | 15 (scene `clipgt-d2fcf4b2-2a4b-47e3-a2ec-a9e3372c3a8a`), 0, `clean` and `noise_detector_pgd` | `compare OUTPUT --segment 15 --attacked noise_detector_pgd --clean-label "Clean" --attacked-label "White-box attack (PGD)" --fps 8 --poster-step 22 --name stop-sign-white-box` |
+| `stop-sign-alpamayo` | `nurec_stop_sign_patch_alpamayo_2601.yaml`; treatments `white` and `black` only; `usdz_paths` of six scenes, `split: {train_segments: 1, execute: [train, test]}` | 1 (scene `clipgt-ada590cf-e6eb-4d6b-bed7-ecbc1f5ad9cd`), 0, `white` | `overlay OUTPUT --segment 1 --treatment white --label "White patch" --fps 8 --name stop-sign-alpamayo` |
+| `image-insertion` | `carla_object_insertion.yaml`; sign at `position_m: [12.0, -4.0, 0.0]`; `settle_iters: 1000` | 0, 0, `object` | `frame OUTPUT --segment 0 --treatment object --camera camera-0-0 --step 19 --crop 360 164 760 389 --width 640 --name image-insertion` |
+| `image-insertion-harmonized` | The same run; attack `object_harmonized` adds `compositor: PatchCompositor(ExposureHarmonizer(), soften: 0.6)` | 0, 0, `object_harmonized` | `frame OUTPUT --segment 0 --treatment object_harmonized --camera camera-0-0 --step 19 --crop 360 164 760 389 --width 640 --name image-insertion-harmonized` |
 | `physical-patch` | `nurec_patch.yaml` | 0, 0, `patch` | `frame OUTPUT --segment 0 --treatment patch --step 19 --crop 360 610 1000 970 --width 640 --name physical-patch` |
 | `physical-patch-harmonized` | `nurec_patch.yaml`; adds `compositor: PatchCompositor(ExposureHarmonizer(), soften: 0.6)` | 0, 0, `patch` | `frame OUTPUT --segment 0 --treatment patch --step 19 --crop 360 610 1000 970 --width 640 --name physical-patch-harmonized` |
-| `stop-line-approach` | Runs of `stop-sign-white-box` | Same segment, seed and treatments | `stop-line CONFIG --segment 0 --attacked white_detector_pgd --clean-label "clean (unpatched replica)" --attacked-label "white-box attack (algorithm used: PGD)" --name stop-line-approach` |
+| `stop-line-approach` | Runs of `stop-sign-white-box` | Same segment, seed and treatments | `stop-line CONFIG --segment 15 --attacked noise_detector_pgd --clean-label "Clean" --attacked-label "White-box attack (PGD)" --name stop-line-approach` |
 | `evaluation-report` | `evaluation_report.html` of the `stop-sign-white-box` run | Report header and experiment setup | Browser screenshot at 1440 px width, top 1380 px without the scrollbar, then `still SCREENSHOT --name evaluation-report` |
 
-Stop-sign selections run on the local NuRec 26.01 release before the first seven units are saved
-with `save_metadata`. `stop-sign-white-box` shows the test unit whose clean and attacked runs
-differ most clearly; `stop-sign-black-box` shows the same scene. The insertion and patch frames
-show the last decision of their single run.
+The stop-sign runs use the local NuRec 26.01 release. `stop-sign-white-box` shows a test unit whose
+clean run stops before the line without a collision and whose attacked run crosses it.
+`stop-sign-alpamayo` was chosen from six scenes, each run with a white and a black patch. The
+insertion and patch frames show the last decision of their runs; the CARLA sign is placed closer
+than in the supplied configuration so that it is legible in the 800x600 camera.
 
 ## Next steps
 

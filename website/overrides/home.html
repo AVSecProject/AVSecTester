@@ -11,10 +11,14 @@
       {%- if config.extra.authors %}
       <p class="avs-hero__authors">{{ config.extra.authors | join(", ") }}</p>
       {%- endif %}
+      {%- if config.extra.affiliations %}
+      <p class="avs-hero__affiliations">{{ config.extra.affiliations | join(" · ") }}</p>
+      {%- endif %}
+      <p class="avs-hero__lead">Find out whether an attack actually changes how an autonomous vehicle drives.</p>
       <p class="avs-hero__text">
-        AVSecTester selects attack segments, prepares artifacts in an offline phase and runs clean
-        and attacked treatments of the same segment in closed loop.
-        Every run is saved, so evaluation works from the recorded logs after the simulator has closed.
+        AVSecTester is an open-source testbed for autonomous-vehicle security. Run attacks against a
+        driving system in closed loop, on real-world drives reconstructed with NVIDIA NuRec or in
+        CARLA, and compare what the vehicle does with and without the attack.
       </p>
       <div class="avs-hero__actions">
         <a class="avs-button avs-button--primary" href="{{ 'docs/getting-started/quickstart/' | url }}">Get started</a>
@@ -24,7 +28,6 @@
       <ul class="avs-badges" aria-label="Release information">
         <li class="avs-badge"><span class="avs-badge__key">version</span><span class="avs-badge__value">{{ config.extra.version }}</span></li>
         <li class="avs-badge"><span class="avs-badge__key">license</span><span class="avs-badge__value">MIT</span></li>
-        <li class="avs-badge"><span class="avs-badge__key">Python</span><span class="avs-badge__value">3.11</span></li>
       </ul>
     </div>
   </section>
