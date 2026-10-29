@@ -40,7 +40,7 @@ def native_sampling_grid(black, white):
 
 
 class SessionDataSource(DataSource):
-    """Read one capture per image sample and cache required native-prop probe captures.
+    """Index eligible captures with fresh brightness/contrast draws and cached physical probes.
 
     Physical probes are cached within this data source only; its attack, session seed,
     environment, alpha, placement and prop mesh remain fixed for that optimization.
@@ -59,6 +59,22 @@ class SessionDataSource(DataSource):
         self.environment = deepcopy({} if environment is None else environment)
         self._rng = random.Random(seed)
         self._native_samples = {}
+        self._candidates = []
+        for segment in self.metadata:
+            frames = self.session.services.dataset.frames(segment.scenario_id)
+            physical = segment.user_data.get("deployment") == "world"
+            if self.at_segment_start:
+                if physical and not self.session.can_start_at(segment.start.position):
+                    raise ValueError("Selected patch start cannot preserve the deployment window")
+                candidates = (segment.start,)
+            else:
+                candidates = frames[segment.start.position:segment.stop.position]
+                if physical:
+                    candidates = tuple(frame for frame in candidates
+                                       if self.session.can_start_at(frame.position))
+                if not candidates:
+                    raise ValueError("Patch segment has no frame that preserves the deployment window")
+            self._candidates.extend((segment, frame) for frame in candidates)
 
     def _physical_capture(self, segment, frame):
         from .offline import render_candidate
@@ -95,83 +111,77 @@ class SessionDataSource(DataSource):
             self._native_samples[key] = captures[-1], grid, mask
         return self._native_samples[key]
 
-    def sample(self, batch):
+    def __len__(self) -> int:
+        """Return the number of eligible segment/frame candidates."""
+        return len(self._candidates)
+
+    def __getitem__(self, index: int) -> AdversarialSample:
+        """Capture a candidate with fresh photometric augmentation.
+
+        Indices outside the candidate range raise ``IndexError``.
+        """
         import torch
         from avsectester.attack.insertion.action import InsertionAttackAction
 
-        result = []
-        for _ in range(batch):
-            segment = self._rng.choice(self.metadata)
-            frames = self.session.services.dataset.frames(segment.scenario_id)
-            physical = segment.user_data.get("deployment") == "world"
-            candidates = frames[segment.start.position:segment.stop.position]
-            if physical:
-                candidates = tuple(frame for frame in candidates
-                                   if self.session.can_start_at(frame.position))
-            if self.at_segment_start:
-                frame = segment.start
-                if physical and not self.session.can_start_at(frame.position):
-                    raise ValueError("Selected patch start cannot preserve the deployment window")
-            elif candidates:
-                frame = self._rng.choice(candidates)
-            else:
-                raise ValueError("Patch segment has no frame that preserves the deployment window")
-            sampling = None
-            if physical and self.require_patch_grid:
-                capture, grid, mask = self._physical_capture(segment, frame)
-            else:
-                capture = self.session.render(RenderRequest(segment.scenario_id, frame,
-                                            self.attack.sensor, environment=self.environment))
-                grid, mask = None, None
-                if self.require_patch_grid:
-                    view = capture.view
-                    insertion = self.attack.insertion(self.attack.assets,
-                        placement=self.attack.selected_placement(segment))
-                    action = InsertionAttackAction(self.attack.sensor, insertion)
-                    resolved = action.resolve(view)
-                    surfaces = resolved.planes()
-                    if len(surfaces) != 1:
-                        raise ValueError("Patch optimization requires exactly one planar surface")
-                    if view.camera is None or view.cam_from_world is None:
-                        raise ValueError("Optimization requires a calibrated camera view")
-                    if view.data.shape[:2] != (view.camera.height, view.camera.width):
-                        raise ValueError("Optimization camera calibration and image dimensions differ")
-                    sampler = prepare_surface(surfaces[0], view.camera, view.cam_from_world)
-                    bounds = sampler.image_bounds(view.camera)
-                    if bounds is None:
-                        raise ValueError("Patch projects outside the optimization camera image")
-                    sampling = plane_sampling(sampler, view.camera, bounds)
-                    evidence = action.evidence(view, resolved)
-                    if evidence.visibility is None:
-                        raise ValueError(f"Patch optimization visibility is unavailable: {evidence.reason}")
-                    mask = np.asarray(evidence.visible_mask, dtype=np.float32)[None]
-            view = capture.view
-            captured = read_camera_rgb(capture.observation, view.sensor)
-            if captured is None or captured[0] != view.sensor:
-                raise ValueError("Optimization requires the selected RGB camera")
-            if mask is not None and not mask.any():
-                raise ValueError("Patch has no visible pixels in the optimization camera")
-            box = self.target_box
-            if box is None:
-                host = segment.user_data.get("host")
-                if not isinstance(host, str) or not host:
-                    raise ValueError("Default patch objective requires one selected host")
-                if host not in view.actors:
-                    raise ValueError(f"Optimization host {host!r} is missing from the selected view")
-                actor = view.actors[host]
-                if actor.extent is None:
-                    raise ValueError(f"Optimization host {host!r} bounding-box extent is unavailable")
+        if not 0 <= index < len(self):
+            raise IndexError(index)
+        segment, frame = self._candidates[index]
+        physical = segment.user_data.get("deployment") == "world"
+        sampling = None
+        if physical and self.require_patch_grid:
+            capture, grid, mask = self._physical_capture(segment, frame)
+        else:
+            capture = self.session.render(RenderRequest(segment.scenario_id, frame,
+                                        self.attack.sensor, environment=self.environment))
+            grid, mask = None, None
+            if self.require_patch_grid:
+                view = capture.view
+                insertion = self.attack.insertion(self.attack.assets,
+                    placement=self.attack.selected_placement(segment))
+                action = InsertionAttackAction(self.attack.sensor, insertion)
+                resolved = action.resolve(view)
+                surfaces = resolved.planes()
+                if len(surfaces) != 1:
+                    raise ValueError("Patch optimization requires exactly one planar surface")
                 if view.camera is None or view.cam_from_world is None:
                     raise ValueError("Optimization requires a calibrated camera view")
-                box = projection.project_box(view.camera, view.cam_from_world, actor.box_transform(), actor.extent)
-                if box is None:
-                    raise ValueError("Optimization host box is behind or outside the camera image")
-            result.append(AdversarialSample(
-                x=torch.as_tensor(captured[1].copy(), device=self.device).permute(2, 0, 1).float() / 255,
-                target=TargetSpec(tuple(float(v) for v in box)),
-                context={"plane_sampling": sampling, "sampling_grid": grid, "mask": mask, "frame": frame, "segment": segment,
-                         "observation": capture.observation,
-                         "brightness": self._rng.uniform(*self.brightness),
-                         "contrast": self._rng.uniform(*self.contrast)},
-            ))
-        return result
+                if view.data.shape[:2] != (view.camera.height, view.camera.width):
+                    raise ValueError("Optimization camera calibration and image dimensions differ")
+                sampler = prepare_surface(surfaces[0], view.camera, view.cam_from_world)
+                bounds = sampler.image_bounds(view.camera)
+                if bounds is None:
+                    raise ValueError("Patch projects outside the optimization camera image")
+                sampling = plane_sampling(sampler, view.camera, bounds)
+                evidence = action.evidence(view, resolved)
+                if evidence.visibility is None:
+                    raise ValueError(f"Patch optimization visibility is unavailable: {evidence.reason}")
+                mask = np.asarray(evidence.visible_mask, dtype=np.float32)[None]
+        view = capture.view
+        captured = read_camera_rgb(capture.observation, view.sensor)
+        if captured is None or captured[0] != view.sensor:
+            raise ValueError("Optimization requires the selected RGB camera")
+        if mask is not None and not mask.any():
+            raise ValueError("Patch has no visible pixels in the optimization camera")
+        box = self.target_box
+        if box is None:
+            host = segment.user_data.get("host")
+            if not isinstance(host, str) or not host:
+                raise ValueError("Default patch objective requires one selected host")
+            if host not in view.actors:
+                raise ValueError(f"Optimization host {host!r} is missing from the selected view")
+            actor = view.actors[host]
+            if actor.extent is None:
+                raise ValueError(f"Optimization host {host!r} bounding-box extent is unavailable")
+            if view.camera is None or view.cam_from_world is None:
+                raise ValueError("Optimization requires a calibrated camera view")
+            box = projection.project_box(view.camera, view.cam_from_world, actor.box_transform(), actor.extent)
+            if box is None:
+                raise ValueError("Optimization host box is behind or outside the camera image")
+        return AdversarialSample(
+            x=torch.as_tensor(captured[1].copy(), device=self.device).permute(2, 0, 1).float() / 255,
+            target=TargetSpec(tuple(float(v) for v in box)),
+            context={"plane_sampling": sampling, "sampling_grid": grid, "mask": mask, "frame": frame, "segment": segment,
+                     "observation": capture.observation,
+                     "brightness": self._rng.uniform(*self.brightness),
+                     "contrast": self._rng.uniform(*self.contrast)},
+        )

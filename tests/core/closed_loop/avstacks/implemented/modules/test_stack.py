@@ -85,10 +85,10 @@ def test_rule_based_driving_adapter(tmp_path):
     factory.avstack_options = MappingProxyType({"detector": detector})
     adapter = rule_based_driving_adapter(factory)
     descriptor, score = adapter.scorer_bindings["rule_based.detection_confidence"]
-    assert descriptor.inputs == {"image": "CHW float tensor [0,1]"}
-    assert descriptor.outputs == {"score": "scalar confidence"}
-    assert descriptor.codecs == {"score": "tensor"}
-    assert descriptor.differentiable_inputs == ("image",)
+    assert descriptor.inputs == {"images": "BCHW float tensor [0,1]"}
+    assert descriptor.outputs == {"scores": "scalar confidence"}
+    assert descriptor.codecs == {"scores": "tensor"}
+    assert descriptor.differentiable_inputs == ("images",)
     assert descriptor.direction == "minimize" and descriptor.output_shape == ()
     assert descriptor.sensor_id == RuleBasedAVStack(detector).camera_id
     assert descriptor.decision_threshold == .7

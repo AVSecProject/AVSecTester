@@ -136,7 +136,7 @@ def optimize_patch(attack, context, options: PatchOptimization):
                                  at_segment_start=not white_box, environment=context.environment,
                                  require_patch_grid=white_box)
         scorer = SessionScorer(session, scorer_id, require_grad=white_box,
-                               input_format=descriptors[scorer_id].inputs.get("image"),
+                               input_format=descriptors[scorer_id].inputs.get("images"),
                                device=options.device)
         if white_box:
             perturbation = PatchPerturbation(size=options.size, device=options.device, seed=seed,

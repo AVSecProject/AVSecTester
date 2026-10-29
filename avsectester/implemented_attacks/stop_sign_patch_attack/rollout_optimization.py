@@ -16,7 +16,7 @@ from avsectester.data_types import TargetSpec
 from avsectester.datasets.base import FrameReference
 from avsectester.execution.runner import RecordingPolicy
 from avsectester.execution.services import CandidateRequest, ClosedLoopSession
-from avsectester.validation import require_positive_integer, require_positive_number
+from avsectester.validation import require_positive_number
 
 from .assets import texture_from_colors
 
@@ -119,12 +119,10 @@ class MaximizeScore(OptimizationObjective):
 
 
 class SingleTextureSource(DataSource):
-    """Supply the sample required by NES's generic interface.
+    """A map-style data source containing one physical texture sample.
 
-    The framework interface currently requires an AdversarialSample and target box even
-    for rollout scoring; removing that restriction belongs in the framework. The box
-    spans the texture and is unused by rollouts. The perturbation exports physical RGBA
-    textures without performing object detection.
+    The framework requires an ``AdversarialSample`` and target box even though rollout scoring
+    does not use the box. It spans the texture; the perturbation exports physical RGBA textures.
     """
 
     def __init__(self, original: np.ndarray) -> None:
@@ -132,16 +130,22 @@ class SingleTextureSource(DataSource):
         height, width = self.original.shape[:2]
         self.target = TargetSpec((0, 0, width, height), "stop sign")
 
-    def sample(self, batch: int) -> list[AdversarialSample]:
-        require_positive_integer(batch, "batch")
-        return [AdversarialSample(self.original, self.target) for _ in range(batch)]
+    def __len__(self) -> int:
+        """Return the single texture sample used by NES."""
+        return 1
+
+    def __getitem__(self, index: int) -> AdversarialSample:
+        """Return the texture sample; other indices raise ``IndexError``."""
+        if index != 0:
+            raise IndexError(index)
+        return AdversarialSample(self.original, self.target)
 
 
 class RolloutForwardScorer(Scorer):
     """Mean planned forward meters across fixed one-decision starts.
 
-    ``image`` in the generic Scorer interface is a physical RGBA texture here; ``target``
-    is unused. Records remain in memory. The caller owns report persistence, while the
+    Each input in ``images`` is a physical RGBA texture; ``targets`` is unused except
+    for batch-length validation. Records remain in memory. The caller owns report persistence, while the
     configured optimizer determines the number of evaluations and rollout queries.
     """
 
@@ -165,7 +169,13 @@ class RolloutForwardScorer(Scorer):
         self.records: list[dict[str, Any]] = []
         self.evaluations = 0
 
-    def target_score(self, image: np.ndarray, target: TargetSpec) -> float:
+    def target_scores(self, images: Sequence[np.ndarray], targets: Sequence[TargetSpec]) -> np.ndarray:
+        """Return one mean forward distance per texture, recording queries in input order."""
+        if len(images) != len(targets):
+            raise ValueError("images and targets must have the same batch length")
+        return np.asarray([self._score_texture(image) for image in images], dtype=float)
+
+    def _score_texture(self, image: np.ndarray) -> float:
         evaluation = self.evaluations
         self.evaluations += 1
         forwards = []
@@ -269,7 +279,7 @@ def optimize_patch_by_rollouts(
         "optimized_texture", optimized, description="Replica face with the optimized patch.",
     )
     context.report.set_value(
-        "final_planned_forward_m", -float(result.final_score), unit="m",
+        "final_planned_forward_m", float(result.final_score), unit="m",
         description="Mean planned forward distance within horizon_s across starts for the final texture. "
         "Higher is better for the attack (the car keeps driving).",
     )

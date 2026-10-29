@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
@@ -99,31 +100,31 @@ class YOLOXDetector:
             self._loaded_model = model
         return self._loaded_model
 
-    def _network_input(self, image: torch.Tensor) -> tuple[torch.Tensor, float]:
+    def _network_input(self, images: torch.Tensor) -> tuple[torch.Tensor, float]:
         import torch.nn.functional as functional
 
-        height, width = image.shape[-2:]
+        height, width = images.shape[-2:]
         scale = min(self.input_size / max(height, width), 1.)
         resized = functional.interpolate(
-            image.unsqueeze(0), size=(max(1, round(height * scale)), max(1, round(width * scale))),
+            images, size=(max(1, round(height * scale)), max(1, round(width * scale))),
             mode="bilinear", align_corners=False,
         )
         bgr = resized[:, [2, 1, 0]] * 255
         pad_h, pad_w = (-bgr.shape[-2]) % 32, (-bgr.shape[-1]) % 32
         return functional.pad(bgr, (0, pad_w, 0, pad_h), value=114), scale
 
-    def _prediction(self, image: torch.Tensor) -> torch.Tensor:
+    def _prediction(self, images: torch.Tensor) -> torch.Tensor:
         import torch
 
-        network_input, scale = self._network_input(image)
+        network_input, scale = self._network_input(images)
         prediction = self._model_for_detection()(network_input)
         if (not isinstance(prediction, torch.Tensor) or prediction.ndim != 3
-                or prediction.shape[0] != 1 or prediction.shape[2] != 5 + len(COCO_CLASSES)):
-            raise ValueError("YOLOX model must return decoded predictions with shape (1, N, 85)")
-        prediction = prediction[0]
-        center, size = prediction[:, :2], prediction[:, 2:4]
-        boxes = torch.cat((center - size / 2, center + size / 2), dim=1) / scale
-        return torch.cat((boxes, prediction[:, 4:]), dim=1)
+                or prediction.shape[0] != images.shape[0]
+                or prediction.shape[2] != 5 + len(COCO_CLASSES)):
+            raise ValueError("YOLOX model must return decoded predictions with shape (B, N, 85)")
+        center, size = prediction[..., :2], prediction[..., 2:4]
+        boxes = torch.cat((center - size / 2, center + size / 2), dim=-1) / scale
+        return torch.cat((boxes, prediction[..., 4:]), dim=-1)
 
     def detect(self, rgb: np.ndarray) -> list[tuple[np.ndarray, float, str]]:
         """Return original-image xyxy boxes, confidences and COCO labels after classwise NMS."""
@@ -139,7 +140,7 @@ class YOLOXDetector:
         image = image.to(device=self.device, dtype=torch.float32) / 255
         self._model_for_detection()
         with torch.inference_mode():
-            prediction = self._prediction(image)
+            prediction = self._prediction(image.unsqueeze(0))[0]
             probabilities, labels = prediction[:, 5:].max(dim=1)
             scores = prediction[:, 4] * probabilities
             selected = scores >= self.score_threshold
@@ -150,43 +151,54 @@ class YOLOXDetector:
             for box, score, label in zip(boxes[kept], scores[kept], labels[kept])
         ]
 
-    def target_score(self, image: torch.Tensor, target: TargetSpec) -> torch.Tensor:
-        """Return a differentiable pre-NMS confidence for a labeled original-image target box.
+    def target_scores(
+        self, images: torch.Tensor, targets: Sequence[TargetSpec],
+    ) -> torch.Tensor:
+        """Return one differentiable pre-NMS confidence per BCHW image and target.
 
-        The image is finite float RGB (3, H, W) in [0, 1], and the label must name a COCO
-        class. Among anchors with target IoU at least 0.3, the score is the largest objectness
-        times that class probability. It is no smaller than the deployed same-class detection
-        score at the target location. No matching anchor returns image.sum() * 0.
+        Images are finite float RGB (B, 3, H, W) in [0, 1]. Each target names a COCO class and
+        an original-image box. Among anchors with target IoU at least 0.3, each score is the
+        largest objectness times that class probability. It is no smaller than the deployed
+        same-class detection score at that target. No match returns an input-connected zero.
         """
         import torch
 
         if self._closed:
             raise RuntimeError("YOLOXDetector has been closed")
-        if (not isinstance(image, torch.Tensor) or image.ndim != 3 or image.shape[0] != 3
-                or 0 in image.shape or not image.is_floating_point()
-                or not bool(torch.isfinite(image).all())
-                or bool((image < 0).any()) or bool((image > 1).any())):
-            raise ValueError("image must be finite float RGB (3, H, W) values in [0, 1]")
-        if not isinstance(target, TargetSpec) or target.label not in COCO_CLASSES:
-            raise ValueError("target.label must be a COCO class name")
-        image = image.to(device=self.device, dtype=torch.float32)
-        box = torch.as_tensor(target.box, dtype=image.dtype, device=image.device)
-        if (box.shape != (4,) or not bool(torch.isfinite(box).all())
-                or bool((box[2:] <= box[:2]).any())):
-            raise ValueError("target.box must be finite xyxy coordinates with positive width and height")
-        prediction = self._prediction(image)
-        boxes = prediction[:, :4]
-        intersection_size = (torch.minimum(boxes[:, 2:], box[2:])
-                             - torch.maximum(boxes[:, :2], box[:2])).clamp(min=0)
-        intersection = intersection_size.prod(dim=1)
-        areas = (boxes[:, 2:] - boxes[:, :2]).clamp(min=0).prod(dim=1)
-        union = areas + (box[2:] - box[:2]).prod() - intersection
-        overlaps = intersection / union.clamp(min=torch.finfo(image.dtype).eps)
-        matching = overlaps >= .3
-        if not bool(matching.any()):
-            return image.sum() * 0
-        scores = prediction[:, 4] * prediction[:, 5 + COCO_CLASSES.index(target.label)]
-        return scores[matching].max()
+        if (not isinstance(images, torch.Tensor) or images.ndim != 4 or images.shape[1] != 3
+                or 0 in images.shape or not images.is_floating_point()
+                or not bool(torch.isfinite(images).all())
+                or bool((images < 0).any()) or bool((images > 1).any())):
+            raise ValueError("images must be finite float RGB (B, 3, H, W) values in [0, 1]")
+        if not isinstance(targets, Sequence) or len(targets) != images.shape[0]:
+            raise ValueError("targets length must equal the image batch size")
+        images = images.to(device=self.device, dtype=torch.float32)
+        target_boxes = []
+        for target in targets:
+            if not isinstance(target, TargetSpec) or target.label not in COCO_CLASSES:
+                raise ValueError("target.label must be a COCO class name")
+            box = torch.as_tensor(target.box, dtype=images.dtype, device=images.device)
+            if (box.shape != (4,) or not bool(torch.isfinite(box).all())
+                    or bool((box[2:] <= box[:2]).any())):
+                raise ValueError("target.box must be finite xyxy coordinates with positive width and height")
+            target_boxes.append(box)
+        predictions = self._prediction(images)
+        result = []
+        for index, (prediction, target, box) in enumerate(zip(predictions, targets, target_boxes)):
+            boxes = prediction[:, :4]
+            intersection_size = (torch.minimum(boxes[:, 2:], box[2:])
+                                 - torch.maximum(boxes[:, :2], box[:2])).clamp(min=0)
+            intersection = intersection_size.prod(dim=1)
+            areas = (boxes[:, 2:] - boxes[:, :2]).clamp(min=0).prod(dim=1)
+            union = areas + (box[2:] - box[:2]).prod() - intersection
+            overlaps = intersection / union.clamp(min=torch.finfo(images.dtype).eps)
+            matching = overlaps >= .3
+            if not bool(matching.any()):
+                result.append(images[index].sum() * 0)
+            else:
+                scores = prediction[:, 4] * prediction[:, 5 + COCO_CLASSES.index(target.label)]
+                result.append(scores[matching].max())
+        return torch.stack(result)
 
     def close(self) -> None:
         """Release the model; a closed detector cannot detect or score again."""

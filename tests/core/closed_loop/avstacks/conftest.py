@@ -63,6 +63,7 @@ def camera_detector_boundary(monkeypatch):
             self.boxes = [[8., 8., 16., 16.]]
             self.labels = [0]
             self.last_image = None
+            self.last_images = []
 
         def extract_feat(self, images):
             values = torch.nn.functional.avg_pool2d(images.mean(dim=1, keepdim=True), 4)
@@ -78,11 +79,17 @@ def camera_detector_boundary(monkeypatch):
                 scores=torch.full((len(self.boxes),), .9), labels=torch.tensor(self.labels),
             ))
 
+    def predict(detector, images):
+        if isinstance(images, list):
+            detector.last_images = [image.copy() for image in images]
+            return [detector.predict(image) for image in images]
+        return detector.predict(images)
+
     model = ImageModel()
     # Only the learned detector is replaced; preprocessing, scorer and driving adapter stay real.
     monkeypatch.setitem(MODELS.module_dict, "MMDetObjectDetector2D",
                         lambda **options: SimpleNamespace(model=model))
-    monkeypatch.setattr(api, "inference_detector", lambda detector, image: detector.predict(image))
+    monkeypatch.setattr(api, "inference_detector", lambda detector, images: predict(detector, images))
     return model
 
 

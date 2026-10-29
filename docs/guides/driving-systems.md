@@ -155,9 +155,15 @@ from the configured `camera_id` or the stack default, and `decision_threshold` c
 The Alpamayo binding declares 15 preceding decisions when a factory has no `AVStack`
 type metadata.
 
-Scorers declare supported input formats, differentiable inputs, objective direction, camera and
-decision threshold where applicable. A white-box attack can use the same detector as the driving
-system through its scorer binding; see [Optimization](optimization.md).
+Scorer callbacks have signature `(avstack, images, targets)` and return one score per input.
+Built-in descriptors name the input `images` and output `scores`; `output_shape=()` describes
+one input's scalar score. Differentiable scorers declare `"BCHW float tensor [0,1]"` and
+`differentiable_inputs=("images",)`. Inference scorers declare `"list of HWC RGB uint8"`.
+Image and target batch lengths must agree.
+
+Scorers also declare objective direction, camera and decision threshold where applicable. A
+white-box attack can use the same detector as the driving system through its scorer binding;
+see [Optimization](optimization.md).
 
 ## Use a custom driving system
 

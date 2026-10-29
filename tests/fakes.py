@@ -1158,8 +1158,8 @@ def yolox_detection_model(predictions=None, *, image_weight=0.):
 
         def forward(self, images):
             self.last_input = images.detach().clone()
-            rows = images.new_tensor(predictions).reshape(1, -1, 85)
-            objectness = rows[..., 4:5] + images.mean() / 255 * self.weight
+            rows = images.new_tensor(predictions).reshape(1, -1, 85).expand(len(images), -1, -1)
+            objectness = rows[..., 4:5] + images.mean(dim=(1, 2, 3))[:, None, None] / 255 * self.weight
             return torch.cat((rows[..., :4], objectness, rows[..., 5:]), dim=-1)
 
     return DetectionModel()
@@ -1297,25 +1297,28 @@ def replica_detector():
         """Model boundary whose confidence differentiates the patch's red channel."""
 
         def forward(self, images):
-            image = images[0]
-            padding = (image - 114).abs().amax(dim=0) < 1e-6
-            rows = torch.nonzero(~padding.all(dim=1), as_tuple=True)[0]
-            columns = torch.nonzero(~padding.all(dim=0), as_tuple=True)[0]
-            if not len(rows) or not len(columns):
-                return image.new_empty((1, 0, 85))
-            height, width = int(rows[-1]) + 1, int(columns[-1]) + 1
-            image = image[:, :height, :width]
-            changed = (image - 30).abs().amax(dim=0) > 1e-6
-            ys, xs = torch.nonzero(changed, as_tuple=True)
-            if not len(xs):
-                return image.new_empty((1, 0, 85))
-            x0, x1 = int(xs.min()), int(xs.max()) + 1
-            y0, y1 = int(ys.min()), int(ys.max()) + 1
-            score = .5 + .4 * image[2, y0:y1, x0:x1].mean() / 255
-            box = image.new_tensor([[(x0 + x1) / 2, (y0 + y1) / 2, x1 - x0, y1 - y0]])
-            classes = image.new_zeros((1, 80))
-            classes[0, 11] = 1.
-            return torch.cat((box, score.reshape(1, 1), classes), dim=-1)[None]
+            predictions = []
+            for image in images:
+                padding = (image - 114).abs().amax(dim=0) < 1e-6
+                rows = torch.nonzero(~padding.all(dim=1), as_tuple=True)[0]
+                columns = torch.nonzero(~padding.all(dim=0), as_tuple=True)[0]
+                box = image.new_zeros((1, 4))
+                score = image.sum() * 0
+                if len(rows) and len(columns):
+                    height, width = int(rows[-1]) + 1, int(columns[-1]) + 1
+                    content = image[:, :height, :width]
+                    changed = (content - 30).abs().amax(dim=0) > 1e-6
+                    ys, xs = torch.nonzero(changed, as_tuple=True)
+                    if len(xs):
+                        x0, x1 = int(xs.min()), int(xs.max()) + 1
+                        y0, y1 = int(ys.min()), int(ys.max()) + 1
+                        score = .5 + .4 * content[2, y0:y1, x0:x1].mean() / 255
+                        box = image.new_tensor([[(x0 + x1) / 2, (y0 + y1) / 2,
+                                                 x1 - x0, y1 - y0]])
+                classes = image.new_zeros((1, 80))
+                classes[0, 11] = 1.
+                predictions.append(torch.cat((box, score.reshape(1, 1), classes), dim=-1))
+            return torch.stack(predictions)
 
     return ReplicaDetector()
 

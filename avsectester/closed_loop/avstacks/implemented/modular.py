@@ -295,16 +295,23 @@ def modular_driving_adapter(factory, *, components=(), scorers=()):
             raise ValueError(f"Unknown built-in scorer {name!r}")
         differentiable = name == "mmdet.rpn_objectness"
 
-        def score(avstack, inputs, target, differentiable=differentiable):
-            from avsectester.closed_loop.avstacks.implemented.scorers import MMDetInferenceScorer, MMDetRPNObjectnessScorer
+        def bind_score(differentiable):
+            def score(avstack, images, targets):
+                from avsectester.closed_loop.avstacks.implemented.scorers import (
+                    MMDetInferenceScorer, MMDetRPNObjectnessScorer,
+                )
 
-            model = avstack.models["perception"]
-            scorer = MMDetRPNObjectnessScorer(model) if differentiable else MMDetInferenceScorer(model)
-            return scorer.target_score(inputs, target)
+                model = avstack.models["perception"]
+                scorer = (MMDetRPNObjectnessScorer(model) if differentiable
+                          else MMDetInferenceScorer(model))
+                return scorer.target_scores(images, targets)
+            return score
+
+        score = bind_score(differentiable)
         scores.append((driving_adapter.ScorerDescriptor(
-            name, {"image": "CHW float tensor [0,1]" if differentiable else "HWC RGB uint8"},
-            {"score": "scalar confidence"}, {"score": "tensor" if differentiable else "float"},
-            ("image",) if differentiable else (), (), "minimize",
+            name, {"images": "BCHW float tensor [0,1]" if differentiable else "list of HWC RGB uint8"},
+            {"scores": "scalar confidence"}, {"scores": "tensor" if differentiable else "float"},
+            ("images",) if differentiable else (), (), "minimize",
         ), score))
     return driving_adapter.DrivingAdapter(factory, components=bindings, scorers=scores)
 

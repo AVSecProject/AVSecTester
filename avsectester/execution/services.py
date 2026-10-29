@@ -133,7 +133,7 @@ class ComponentResult:
 
 @dataclass(frozen=True)
 class ScoreResult:
-    """Score returned by a named scorer, including its serialized representation."""
+    """One score per input returned by a named batch scorer."""
     value: Any
     descriptor: driving_adapter.ScorerDescriptor
     provenance: Mapping[str, Any]
@@ -551,8 +551,8 @@ class ClosedLoopSession:
             value = call(self._avstack(resources), inputs)
             return ComponentResult(value, deepcopy(descriptor), {"seed": self.seed})
 
-    def score(self, scorer_id: str, inputs: Any, target: Any, require_grad: bool = False) -> ScoreResult:
-        """Evaluate a bound scorer with the requested target and codec."""
+    def score(self, scorer_id: str, inputs: Any, targets: Any, require_grad: bool = False) -> ScoreResult:
+        """Evaluate a batch, passing inputs and targets unchanged to the bound callback."""
         adapter = self.services.driving_adapter
         if adapter is None or scorer_id not in adapter.scorer_bindings:
             raise ValueError(f"Unavailable scorer: {scorer_id!r}")
@@ -560,7 +560,7 @@ class ClosedLoopSession:
         if require_grad and not descriptor.differentiable_inputs:
             raise ValueError(f"Scorer {scorer_id!r} does not support gradients")
         with self._operation():
-            value = call(self._get_scoring_avstack(), inputs, target)
+            value = call(self._get_scoring_avstack(), inputs, targets)
             if require_grad and not getattr(value, "requires_grad", False):
                 raise ValueError(f"Scorer {scorer_id!r} returned a detached/non-differentiable value")
             return ScoreResult(value, deepcopy(descriptor), {"seed": self.seed, "require_grad": require_grad})

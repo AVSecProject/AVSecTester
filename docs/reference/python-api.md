@@ -993,8 +993,8 @@ Driving-system component schemas, scorer capabilities and fresh instance binding
 | Name and signature | Meaning |
 |---|---|
 | `ComponentDescriptor(id: str, inputs: Mapping[str, str], outputs: Mapping[str, str], codecs: Mapping[str, str], differentiable_inputs: tuple[str, ...] = ())` | Description of an evaluable driving-system component and its input/output formats. |
-| `ScorerDescriptor(id: str, inputs: Mapping[str, str], outputs: Mapping[str, str], codecs: Mapping[str, str], differentiable_inputs: tuple[str, ...] = (), output_shape: tuple[int, ...] = (), direction: str = "minimize", sensor_id: str \| None = None, decision_threshold: float \| None = None)` | Subclass of `ComponentDescriptor`. Description of a scoring component, gradient support and optional sensor decision threshold. |
-| `DrivingAdapter(factory: Callable[[int], AVStack], *, components: Sequence[tuple[ComponentDescriptor, Callable[..., Any]]] = (), scorers: Sequence[tuple[ScorerDescriptor, Callable[..., Any]]] = (), past_steps: int = 0, decision_time_step: float \| None = None)` | Bind component callbacks `(avstack, inputs)` and scorer callbacks `(avstack, inputs, target)` to a fresh AVStack factory. |
+| `ScorerDescriptor(id: str, inputs: Mapping[str, str], outputs: Mapping[str, str], codecs: Mapping[str, str], differentiable_inputs: tuple[str, ...] = (), output_shape: tuple[int, ...] = (), direction: str = "minimize", sensor_id: str \| None = None, decision_threshold: float \| None = None)` | Subclass of `ComponentDescriptor`. Describe a batch scorer returning one score per input; output_shape is the per-input shape. |
+| `DrivingAdapter(factory: Callable[[int], AVStack], *, components: Sequence[tuple[ComponentDescriptor, Callable[..., Any]]] = (), scorers: Sequence[tuple[ScorerDescriptor, Callable[..., Any]]] = (), past_steps: int = 0, decision_time_step: float \| None = None)` | Bind component callbacks `(avstack, inputs)` and scorer callbacks `(avstack, images, targets)` to a fresh AVStack factory. |
 | `DrivingAdapter.past_steps: int` | Required recorded history, declared by the AVStack type or this adapter. |
 | `DrivingAdapter.decision_time_step: float \| None` | Required decision interval, read without constructing the driving system. |
 <!-- api:end -->
@@ -1151,7 +1151,7 @@ General COCO object detection and differentiable confidence scoring with YOLOX.
 |---|---|
 | `YOLOXDetector(weights_path: str \| Path, model_name: str = "yolox-m", input_size: int = 1280, score_threshold: float = .5, nms_iou: float = .45, device: str = "cuda:0", model: Any = None)` | Detect COCO objects and score labeled target boxes using a local YOLOX checkpoint. |
 | `YOLOXDetector.detect(rgb: np.ndarray) -> list[tuple[np.ndarray, float, str]]` | Return original-image xyxy boxes, confidences and COCO labels after classwise NMS. |
-| `YOLOXDetector.target_score(image: torch.Tensor, target: TargetSpec) -> torch.Tensor` | Return a differentiable pre-NMS confidence for a labeled original-image target box. |
+| `YOLOXDetector.target_scores(images: torch.Tensor, targets: Sequence[TargetSpec]) -> torch.Tensor` | Return one differentiable pre-NMS confidence per BCHW image and target. |
 | `YOLOXDetector.close() -> None` | Release the model; a closed detector cannot detect or score again. |
 <!-- api:end -->
 
@@ -1160,9 +1160,10 @@ General COCO object detection and differentiable confidence scoring with YOLOX.
 `YOLOXDetector` raises `ValueError` for a nonpositive `input_size`, a `score_threshold`
 outside [0, 1], or `nms_iou` outside (0, 1]. Loading raises `FileNotFoundError` for missing
 weights; an injected model that is not a `torch.nn.Module` raises `TypeError`.
-`detect` requires nonempty uint8 RGB (H, W, 3). `target_score` requires finite floating RGB
-(3, H, W) in [0, 1], a COCO class name as `target.label`, and a finite nonempty xyxy target box;
-invalid inputs raise `ValueError`. Model outputs other than (1, N, 85) raise `ValueError`.
+`detect` requires nonempty uint8 RGB (H, W, 3). `target_scores` requires finite floating RGB
+(B, 3, H, W) in [0, 1] and B targets, each with a COCO class name and finite nonempty xyxy box;
+invalid inputs or mismatched batch lengths raise `ValueError`. Model outputs other than
+(B, N, 85) raise `ValueError`.
 Calling either method after `close` raises `RuntimeError`.
 
 Images are reduced to at most `input_size` on the longest side, without upscaling, then
@@ -1297,10 +1298,10 @@ Differentiable RPN objectness and inference-confidence scorers for mmdet detecto
 |---|---|
 | `MMDetRPNObjectnessScorer(model, strides=FPN_STRIDES)` | RPN-objectness confidence in the target box for an mmdet two-stage detector (white-box). |
 | `MMDetRPNObjectnessScorer.differentiable = True` | Whether input-image gradients are supported by this component. |
-| `MMDetRPNObjectnessScorer.target_score(image: torch.Tensor, target: data_types.TargetSpec) -> torch.Tensor` | Return differentiable RPN objectness within the target region. |
+| `MMDetRPNObjectnessScorer.target_scores(images: torch.Tensor, targets: Sequence[data_types.TargetSpec]) -> torch.Tensor` | Return one differentiable mean RPN objectness per BCHW image and target box. |
 | `MMDetInferenceScorer(model)` | Black-box (non-differentiable) scorer: the detector's actual max confidence in the target box. |
 | `MMDetInferenceScorer.differentiable = False` | Whether input-image gradients are supported by this component. |
-| `MMDetInferenceScorer.target_score(image, target: data_types.TargetSpec) -> float` | Return matched detection confidence without requiring input gradients. |
+| `MMDetInferenceScorer.target_scores(images, targets: Sequence[data_types.TargetSpec]) -> list[float]` | Return one matched detection confidence per RGB image and target box. |
 <!-- api:end -->
 
 #### Constraints and errors
@@ -2241,18 +2242,21 @@ Public contracts, algorithms, parameterizations and session scoring for user att
 ### avsectester.attack.optimization.blackbox
 
 <!-- api:begin module=avsectester.attack.optimization.blackbox -->
-Natural Evolution Strategies over arbitrary user-defined samples and perturbations.
+Natural Evolution Strategies with batched candidate queries and deterministic sampling.
 
 | Name and signature | Meaning |
 |---|---|
-| `NES(steps: int = 40, population_size: int = 20, sigma: float = 0.08, learning_rate: float = 0.03, seed: int = 0, verbose: bool = False, log_every: int = 5)` | Subclass of `GradientOptimizer`. Natural Evolution Strategies — gradient-free; estimates a gradient by Gaussian sampling. |
+| `NES(steps: int = 40, population_size: int = 20, sigma: float = 0.08, learning_rate: float = 0.03, seed: int = 0, verbose: bool = False, log_every: int = 5, batch_size: int = 4)` | Subclass of `GradientOptimizer`. Estimate gradients over one seeded sample, querying candidates in batches per step. |
 <!-- api:end -->
 
 #### Constraints and errors
 
-`NES` raises `ValueError` for a nonpositive `steps` or `log_every`, a `population_size` that is
-not an even integer of at least two, a negative seed, or a nonpositive or non-finite `sigma` or
-`learning_rate`, and `TypeError` for a non-boolean `verbose`.
+`NES` raises `ValueError` for a nonpositive `steps`, `batch_size` or `log_every`, a
+`population_size` that is not an even integer of at least two, a negative seed, or a nonpositive
+or non-finite `sigma` or `learning_rate`, and `TypeError` for a non-boolean `verbose`.
+`run` raises `ValueError` for an empty data source. A seeded dataset sample is fixed for the
+run; candidate query batches preserve their generated order. After the last step, the final
+perturbation is scored once more to set `final_score`; history continues to contain losses.
 
 #### See also
 
@@ -2261,28 +2265,29 @@ not an even integer of at least two, a negative seed, or a nonpositive or non-fi
 ### avsectester.attack.optimization.interface
 
 <!-- api:begin module=avsectester.attack.optimization.interface -->
-Contracts for gradient-based and sampling-based optimization over perturbation models.
+Optimization contracts for map-style datasets, perturbations and batched scoring.
 
 | Name and signature | Meaning |
 |---|---|
 | `AdversarialSample(x: Tensor, target: data_types.TargetSpec, context: dict = dict())` | One clean input to attack. `context` carries threat-model specifics — e.g. a patch's calibrated sampling grid and visibility mask — and is empty for a whole-image perturbation. |
-| `DataSource()` | Yields batches of clean inputs. A single fixed image for an L-inf attack; sampled backgrounds + placements + photometric jitter (Expectation-over-Transformation) for a physical patch. |
-| `DataSource.sample(batch: int) -> list[AdversarialSample]` | Abstract. Return `batch` samples (with any per-sample randomness freshly drawn). |
+| `DataSource()` | A map-style dataset whose random augmentations are redrawn on each index access. |
+| `DataSource.__len__() -> int` | Abstract. Return the number of samples in one epoch. |
+| `DataSource.__getitem__(index: int) -> AdversarialSample` | Abstract. Return one sample; an out-of-range index raises `IndexError`. |
 | `Perturbation()` | A threat model: the adversarial variable δ, how it enters the input, and its feasible set. |
 | `Perturbation.init() -> Tensor` | Abstract. Return an initial δ (zeros / random) of this threat model's shape. |
 | `Perturbation.apply(sample: AdversarialSample, delta: Tensor) -> Tensor` | Abstract. Form the adversarial input from a clean `sample` and δ (differentiable in δ). |
 | `Perturbation.project(delta: Tensor) -> Tensor` | Abstract. Project δ back onto the feasible set (in place or returned). |
 | `Perturbation.export(delta: Tensor) -> np.ndarray \| None` | Physical realization of δ, if any — a patch returns `(Hp,Wp,4)` uint8; default None. |
 | `Perturbation.smoothness(delta: Tensor) -> Tensor` | Differentiable total variation of δ, weighted by an optimizer's smoothness term. |
-| `Scorer()` | Access to the perception under attack: image -> target detection confidence in [0, 1]. |
+| `Scorer()` | Score a batch with one score per input; descriptors or objectives define the direction. |
 | `Scorer.differentiable: bool = True` | Whether input-image gradients are supported by this component. |
-| `Scorer.target_score(image: Tensor, target: data_types.TargetSpec) -> Tensor` | Abstract. Return a scalar tensor in [0, 1] for detecting `target` in `image`. |
-| `OptimizationObjective()` | Shape the target confidence into a scalar loss to MINIMIZE (lower == attack succeeds). |
-| `OptimizationObjective.loss(score: Tensor) -> Tensor` | Abstract. Map a target confidence in [0, 1] to the scalar loss to minimize. |
+| `Scorer.target_scores(images: Tensor, targets: Sequence[data_types.TargetSpec]) -> Tensor` | Abstract. Return one score per input; mismatched input and target lengths raise `ValueError`. |
+| `OptimizationObjective()` | Transform scores elementwise into losses to minimize. |
+| `OptimizationObjective.loss(score: Tensor) -> Tensor` | Abstract. Map (B,) scores to (B,) losses with elementwise operations. |
 | `HideObject()` | Subclass of `OptimizationObjective`. Suppress the target's detection by minimizing `loss = score` toward zero. |
 | `HideBelowThreshold(threshold: float, margin: float = .1)` | Subclass of `OptimizationObjective`. Suppress a detection until its score is `margin` below the decision `threshold`. |
 | `SpoofObject()` | Subclass of `OptimizationObjective`. Fabricate / keep a detection where the target box is: `loss = 1 - score`. |
-| `OptimizationResult(delta: Tensor, export: np.ndarray \| None, history: list[float], final_score: float)` | Output of an optimization run. |
+| `OptimizationResult(delta: Tensor, export: np.ndarray \| None, history: list[float], final_score: float)` | Output of optimization: PGD history is mean sample loss per epoch; NES history is loss per step. |
 | `GradientOptimizer()` | Optimization algorithm over a data source, perturbation, scorer and objective. |
 | `GradientOptimizer.run(data: DataSource, perturbation: Perturbation, scorer: Scorer, objective: OptimizationObjective, *, monitor: Callable[[int, Tensor], None] \| None = None) -> OptimizationResult` | Abstract. Optimize δ with exact input gradients in PGD or sampled gradient estimates in NES. |
 <!-- api:end -->
@@ -2291,6 +2296,8 @@ Contracts for gradient-based and sampling-based optimization over perturbation m
 
 `HideBelowThreshold` raises `ValueError` for a `threshold` or `margin` outside [0, 1]. Its loss is
 zero, with zero gradient, for scores below `threshold - margin`.
+`OptimizationResult.final_score` is the final scorer output, averaged over all samples for PGD
+and evaluated on the fixed sample for NES.
 
 #### See also
 
@@ -2326,21 +2333,23 @@ mask is not (1, H, W), plane-sampling bounds leave the image, or the grid is not
 ### avsectester.attack.optimization.scorers
 
 <!-- api:begin module=avsectester.attack.optimization.scorers -->
-Score arbitrary images using a closed-loop session's driving-system binding.
+Adapt batches to a closed-loop session's declared scorer input format.
 
 | Name and signature | Meaning |
 |---|---|
-| `SessionScorer(session, scorer_id, *, require_grad, input_format=None, device="cpu")` | Subclass of `Scorer`. Use a session scorer for user-generated images, preserving requested gradients. |
+| `SessionScorer(session, scorer_id, *, require_grad, input_format=None, device="cpu")` | Subclass of `Scorer`. Call the bound batch scorer, preserving requested gradients when gradients are enabled. |
+| `SessionScorer.target_scores(images, targets)` | Return one bound score per image; target and image batch lengths must agree. |
 <!-- api:end -->
 
 #### Constraints and errors
 
-`SessionScorer.target_score` requests gradients only when `require_grad` is true and gradient
+`SessionScorer.target_scores` requests gradients only when `require_grad` is true and gradient
 recording is enabled, so the same scorer evaluates under `torch.no_grad()`. With
-`input_format="CHW float tensor [0,1]"`, HWC uint8 arrays are converted and other non-CHW inputs
-raise `ValueError`. With `"HWC RGB uint8"`, tensors are converted, and a tensor that requires
-gradients or a result that is not HWC uint8 RGB raises `ValueError`. Other formats pass through
-unchanged. Session scoring errors propagate.
+`input_format="BCHW float tensor [0,1]"`, lists of HWC uint8 RGB arrays are converted and stacked;
+invalid image formats or unequal dimensions within a batch raise `ValueError`. With
+`"list of HWC RGB uint8"`, BCHW tensors are converted to image lists; tensors requiring
+gradients raise `ValueError`. Input and target batch lengths must agree, otherwise
+`ValueError` is raised. Other formats pass through unchanged. Session scoring errors propagate.
 
 #### See also
 
@@ -2349,18 +2358,21 @@ unchanged. Session scoring errors propagate.
 ### avsectester.attack.optimization.whitebox
 
 <!-- api:begin module=avsectester.attack.optimization.whitebox -->
-Gradient-based optimization algorithms (torch).
+Epoch-based projected gradient descent over map-style perturbation samples.
 
 | Name and signature | Meaning |
 |---|---|
-| `PGD(steps: int = 200, step_size: float = 4.0 / 255.0, batch: int = 4, tv_weight: float = 0.0, seed: int = 0, verbose: bool = False, log_every: int = 25)` | Subclass of `GradientOptimizer`. Projected Gradient Descent (sign-gradient descent on the loss, minimizing it). |
+| `PGD(epochs: int = 10, batch_size: int = 4, step_size: float = 4.0 / 255.0, tv_weight: float = 0.0, seed: int = 0, verbose: bool = False, log_every: int = 1)` | Subclass of `GradientOptimizer`. Projected sign-gradient descent with one batched forward, backward and update per batch. |
 <!-- api:end -->
 
 #### Constraints and errors
 
-`PGD` raises `ValueError` for a nonpositive `steps`, `batch` or `log_every`, a negative seed,
-or a negative or non-finite `step_size` or `tv_weight`, and `TypeError` for a non-boolean
-`verbose`. `run` raises `ValueError` when `scorer.differentiable` is false.
+`PGD` raises `ValueError` for a nonpositive `epochs`, `batch_size` or `log_every`, a negative
+seed, or a negative or non-finite `step_size` or `tv_weight`, and `TypeError` for a non-boolean
+`verbose`. `run` raises `ValueError` for an empty dataset, a non-differentiable scorer, unequal
+image dimensions within a batch, or scores or losses that do not have shape (B,). The final
+smaller batch is retained. History contains the mean sample objective of each epoch, excluding
+the smoothness term.
 
 #### See also
 
@@ -2523,7 +2535,7 @@ The metabuilder and the offline phase share one isolated closed-loop service bou
 | `SensorSample(frame: FrameReference, observation: Observation, provenance: Mapping[str, Any], views: Mapping[str, SensorView] = dict())` | An environment-processed observation and optional detached raw sensor views. |
 | `RenderResult(frame: FrameReference, observation: Observation, view: SensorView, provenance: Mapping[str, Any], object_visibility: Mapping[str, Mapping[str, ObjectVisibility]] = dict())` | The changed capture and the requested sensor's view before its sensor actions. |
 | `ComponentResult(value: Any, descriptor: driving_adapter.ComponentDescriptor, provenance: Mapping[str, Any])` | Outputs returned by an explicitly evaluated driving-system component. |
-| `ScoreResult(value: Any, descriptor: driving_adapter.ScorerDescriptor, provenance: Mapping[str, Any])` | Score returned by a named scorer, including its serialized representation. |
+| `ScoreResult(value: Any, descriptor: driving_adapter.ScorerDescriptor, provenance: Mapping[str, Any])` | One score per input returned by a named batch scorer. |
 | `ClosedLoopCapabilities(dataset_kinds: tuple[str, ...], sensor_data: bool, render: bool, insert_objects: bool, rollout: bool, components: tuple[driving_adapter.ComponentDescriptor, ...], scorers: tuple[driving_adapter.ScorerDescriptor, ...])` | Capabilities exposed by the dataset, simulator and driving adapter combination. |
 | `ClosedLoopServices(dataset: Dataset, simulator: Simulator, driving_adapter: driving_adapter.DrivingAdapter \| None = None, frame_data_cache: FrameDataCache \| None = None, *, deployment: DeploymentPlan = DeploymentPlan())` | Context manager. Factory for isolated scenario and closed-loop sessions using shared frame-data caching. |
 | `ClosedLoopServices.close() -> None` | Close all sessions, including sessions a metabuilder left open on error. |
@@ -2540,7 +2552,7 @@ The metabuilder and the offline phase share one isolated closed-loop service bou
 | `ClosedLoopSession.components() -> Sequence[driving_adapter.ComponentDescriptor]` | Return the available driving-system component descriptors. |
 | `ClosedLoopSession.scorers() -> Sequence[driving_adapter.ScorerDescriptor]` | Return the available driving-system scorer descriptors. |
 | `ClosedLoopSession.evaluate(component_id: str, inputs: Any) -> ComponentResult` | Evaluate an explicitly bound driving-system component. |
-| `ClosedLoopSession.score(scorer_id: str, inputs: Any, target: Any, require_grad: bool = False) -> ScoreResult` | Evaluate a bound scorer with the requested target and codec. |
+| `ClosedLoopSession.score(scorer_id: str, inputs: Any, targets: Any, require_grad: bool = False) -> ScoreResult` | Evaluate a batch, passing inputs and targets unchanged to the bound callback. |
 | `ClosedLoopSession.rollout(request: CandidateRequest) -> RunLog` | Execute one candidate rollout from its recorded start. |
 | `ScenarioView(scenario_id: str, services: ClosedLoopServices, seed: int)` | Recorded scenario and selection services, with candidate-rejection reasons. |
 | `ScenarioView.record_reason(text: str) -> None` | Attach a user-supplied selection explanation to this scenario's preparation record. |
@@ -2997,7 +3009,7 @@ Validated detector/rollout optimization options and offline dispatch.
 
 | Name and signature | Meaning |
 |---|---|
-| `DetectorPatchOptimization(optimizer: GradientOptimizer, scorer_id: str \| None = None, device: str = "cpu", max_training_segments: int \| None = None, samples_per_scene: int \| Literal["all"] = "all", min_visible_pixels: int = 100, braking_deceleration_mps2: float = 6., confidence_margin: float = .1, progress_interval: int = 20)` | White-box attack settings (algorithm used: PGD). |
+| `DetectorPatchOptimization(optimizer: GradientOptimizer, scorer_id: str \| None = None, device: str = "cpu", max_training_segments: int \| None = None, samples_per_scene: int \| Literal["all"] = "all", min_visible_pixels: int = 100, braking_deceleration_mps2: float = 6., confidence_margin: float = .1, progress_interval: int = 1)` | White-box attack settings (algorithm used: PGD). |
 | `RolloutPatchOptimization(optimizer: GradientOptimizer, start_distances_m: tuple[float, ...] = (40., 30., 20.), horizon_s: float = 3., max_training_segments: int \| None = None)` | Black-box attack settings (algorithm used: NES). |
 <!-- api:end -->
 

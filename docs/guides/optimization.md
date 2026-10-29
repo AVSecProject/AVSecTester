@@ -13,20 +13,20 @@ scenes, hosts or placement rules.
 
 | Interface | Responsibility |
 |---|---|
-| `DataSource` | Select `AdversarialSample` records |
+| `DataSource` | Map-style dataset: `__len__` and `__getitem__` provide `AdversarialSample` records |
 | `Perturbation` | Initialize, apply, project, export and measure the smoothness of a candidate |
-| `Scorer` | Measure a target score |
+| `Scorer` | `target_scores(images, targets)` returns one score per input |
 | `OptimizationObjective` | Convert scores into losses |
 | `GradientOptimizer` | Run the algorithm and return `OptimizationResult` |
 
 `HideObject` minimizes a score; `SpoofObject` maximizes it. `HideBelowThreshold` minimizes only
 the part of a score above a decision threshold minus a margin, for targets where one detection
-decides the outcome. An optional `monitor(step, delta)` passed to `run` observes the current
-variable before the first update and after every update, for example to score it on a full
-training set. `PGD` requires a differentiable
-score, while `NES` uses score queries. `PGD`'s `tv_weight` adds `Perturbation.smoothness`; the
-default is total variation of the whole variable, and a perturbation that realizes only part of it
-overrides the method. A `SessionScorer` connects either path to a
+decides the outcome. Objectives operate elementwise on score batches; scores can be detector
+confidence or a physical quantity such as distance. An optional `monitor(index, delta)` observes
+the initial variable at index 0, then each completed PGD epoch or NES step. `PGD` requires a
+differentiable score, while `NES` uses score queries. `PGD`'s `tv_weight` weights
+`Perturbation.smoothness`, which defaults to total variation of the whole variable. A perturbation
+that realizes only part of it overrides the method. A `SessionScorer` connects either path to a
 declared `DrivingAdapter` binding. [Driving-system bindings](driving-systems.md) describes
 model integration; the [Python API](../reference/python-api.md) lists signatures and
 optimizer constraints.
@@ -42,16 +42,22 @@ from avsectester.attack.optimization import (
 from avsectester.data_types import TargetSpec
 
 class FixedImageSource(DataSource):
-    def sample(self, batch):
-        return [AdversarialSample(torch.full((3, 8, 8), 0.5), TargetSpec((0, 0, 8, 8)))
-                for _ in range(batch)]
+    def __len__(self):
+        return 1
+
+    def __getitem__(self, index):
+        if index != 0:
+            raise IndexError(index)
+        return AdversarialSample(torch.full((3, 8, 8), 0.5), TargetSpec((0, 0, 8, 8)))
 
 class MeanIntensityScorer(Scorer):
-    def target_score(self, image, target):
-        return image.mean()
+    def target_scores(self, images, targets):
+        if len(images) != len(targets):
+            raise ValueError("Image and target batch lengths must match")
+        return images.mean(dim=(1, 2, 3))
 
 perturbation = LinfImage(epsilon=0.1, image_hw=(8, 8), device="cpu")
-result = PGD(steps=2, batch=1, step_size=0.01).run(
+result = PGD(epochs=2, batch_size=1, step_size=0.01).run(
     FixedImageSource(), perturbation, MeanIntensityScorer(), HideObject())
 assert result.delta.shape == (3, 8, 8)
 assert torch.max(torch.abs(result.delta)).item() <= 0.1
@@ -60,6 +66,13 @@ assert torch.max(torch.abs(result.delta)).item() <= 0.1
 `LinfImage` applies a bounded additive image change. `PatchPerturbation` renders texture colors
 using the geometry supplied in each sample. The sample's target region belongs to the objective;
 it is independent of the placement rule.
+
+`PGD` shuffles samples using `seed` and retains the final smaller batch. Images in one batch
+must have equal dimensions. Random augmentations are redrawn in `DataSource.__getitem__`.
+`OptimizationResult.history` records each epoch's mean sample objective, excluding TV.
+
+`NES` uses `steps` because it optimizes one seeded dataset sample rather than traversing the
+dataset. It scores candidate perturbations in groups of at most `batch_size` per query.
 
 ## Use a driving-system scorer
 
@@ -72,8 +85,8 @@ from avsectester.attack.optimization import HideObject, PGD, SessionScorer
 # Requires OfflineContext context, a user DataSource and a Perturbation.
 with context.services.session(context.seed) as session:
     scorer = SessionScorer(session, "rule_based.detection_confidence", require_grad=True,
-                           input_format="CHW float tensor [0,1]", device="cpu")
-    result = PGD(steps=10).run(source, perturbation, scorer, HideObject())
+                           input_format="BCHW float tensor [0,1]", device="cpu")
+    result = PGD(epochs=10, batch_size=4).run(source, perturbation, scorer, HideObject())
 ```
 
 Scorer declarations follow

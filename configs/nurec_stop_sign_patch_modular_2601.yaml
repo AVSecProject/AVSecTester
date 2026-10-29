@@ -72,11 +72,13 @@ attacks:
           optimizer:
             type: avsectester.attack.optimization:PGD
             options:
-              steps: 200
+              epochs: 100
               step_size: 0.01568627450980392
-              batch: 4
+              batch_size: 16
+              tv_weight: 0.3
               seed: 0
           samples_per_scene: all
+          progress_interval: 10
   black_detector_pgd:
     type: StopSignPatchAttack
     options:
@@ -88,11 +90,13 @@ attacks:
           optimizer:
             type: avsectester.attack.optimization:PGD
             options:
-              steps: 200
+              epochs: 100
               step_size: 0.01568627450980392
-              batch: 4
+              batch_size: 16
+              tv_weight: 0.3
               seed: 0
           samples_per_scene: all
+          progress_interval: 10
   noise_detector_pgd:
     type: StopSignPatchAttack
     options:
@@ -104,11 +108,13 @@ attacks:
           optimizer:
             type: avsectester.attack.optimization:PGD
             options:
-              steps: 200
+              epochs: 100
               step_size: 0.01568627450980392
-              batch: 4
+              batch_size: 16
+              tv_weight: 0.3
               seed: 0
           samples_per_scene: all
+          progress_interval: 10
 evaluation:
   metrics:
   - type: StopLineMetrics

@@ -72,22 +72,22 @@ def test_create_runtime(monkeypatch):
 
 
 @pytest.mark.parametrize("algorithm", [
-    pytest.param(PGD(steps=2, batch=1), id="PGD"),
+    pytest.param(PGD(epochs=2, batch_size=1), id="PGD"),
     pytest.param(NES(steps=2, population_size=4, learning_rate=2000., seed=0), id="NES"),
 ])
 def test_run_offline(algorithm):
     dataset, simulator = MemoryDataset(), MemorySimulator()
-    descriptor = ScorerDescriptor("brightness", {"image": "CHW float tensor [0,1]"},
-                                   {"score": "scalar"}, {"score": "float"}, ("image",))
+    descriptor = ScorerDescriptor("brightness", {"images": "BCHW float tensor [0,1]"},
+                                   {"scores": "scalar"}, {"scores": "tensor"}, ("images",))
     received = []
     scores, targets = [], []
 
-    def score(avstack, image, target):
-        received.append(image.detach().cpu().numpy().copy())
-        value = image.mean()
-        scores.append(float(value.detach()))
-        targets.append(target)
-        return value
+    def score(avstack, images, batch_targets):
+        received.extend(images.detach().cpu().numpy().copy())
+        values = images.mean(dim=(1, 2, 3))
+        scores.extend(values.detach().cpu().tolist())
+        targets.extend(batch_targets)
+        return values
 
     driver = DrivingAdapter(lambda seed: ConstantAVStack(), scorers=[(descriptor, score)])
     attack = PatchAttack(decision_steps=1, max_windows=1,
@@ -138,3 +138,32 @@ def test_candidate_hosts_order():
     assert [item.user_data["host"] for item in right_first] == ["right", "left"]
     assert [item.user_data["host"] for item in left_first] == ["left", "right"]
     assert [item.user_data["rank"] for item in right_first] == [0, 1]
+
+
+class CandidateInspectingPGD(PGD):
+    """Record the public map-style candidate dataset supplied by the attack."""
+
+    def run(self, data, perturbation, scorer, objective, **kwargs):
+        self.candidate_count = len(data)
+        self.candidate_positions = [data[index].context["frame"].position for index in range(len(data))]
+        with pytest.raises(IndexError):
+            data[len(data)]
+        return super().run(data, perturbation, scorer, objective, **kwargs)
+
+
+def test_offline_candidate_frames():
+    algorithm = CandidateInspectingPGD(epochs=1, batch_size=2)
+    descriptor = ScorerDescriptor("brightness", {"images": "BCHW float tensor [0,1]"},
+                                 {"scores": "scalar"}, {"scores": "tensor"}, ("images",))
+    adapter = DrivingAdapter(lambda seed: ConstantAVStack(), scorers=[(
+        descriptor, lambda avstack, images, targets: images.mean(dim=(1, 2, 3)))])
+    attack = PatchAttack(decision_steps=3, max_windows=1, compositor=PatchCompositor(),
+                        optimization=PatchOptimization(algorithm, scorer_id="brightness",
+                            device="cpu", size=(4, 4), brightness=(1., 1.), contrast=(1., 1.)))
+    with ClosedLoopServices(MemoryDataset(), MemorySimulator(), adapter) as services:
+        metadata = attack.build_metadata(services.scenario("scene", seed=0))
+        attack.run_offline(OfflineContext(services, tuple(metadata)))
+    expected = [position for segment in metadata
+                for position in range(segment.start.position, segment.stop.position)]
+    assert algorithm.candidate_count == len(expected)
+    assert algorithm.candidate_positions == expected

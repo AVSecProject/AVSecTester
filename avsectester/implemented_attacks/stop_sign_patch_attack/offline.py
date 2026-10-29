@@ -26,7 +26,7 @@ class DetectorPatchOptimization:
     trained distance to the stop line. ``samples_per_scene="all"`` trains on every eligible frame;
     an integer of at least four selects that many time-uniform frames per training segment.
     ``confidence_margin`` sets the hinge target: PGD lowers each frame's confidence to the driving
-    system's decision threshold minus this margin. Every ``progress_interval`` PGD steps, and after
+    system's decision threshold minus this margin. Every ``progress_interval`` PGD epochs, and after
     the last, the current patch is scored on every training frame for the offline report.
     """
 
@@ -38,7 +38,7 @@ class DetectorPatchOptimization:
     min_visible_pixels: int = 100
     braking_deceleration_mps2: float = 6.
     confidence_margin: float = .1
-    progress_interval: int = 20
+    progress_interval: int = 1
 
     def __post_init__(self) -> None:
         from avsectester.attack.optimization import PGD

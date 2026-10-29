@@ -22,7 +22,7 @@ class ComponentDescriptor:
 
 @dataclass(frozen=True)
 class ScorerDescriptor(ComponentDescriptor):
-    """Description of a scoring component, gradient support and optional sensor decision threshold."""
+    """Describe a batch scorer returning one score per input; output_shape is the per-input shape."""
     output_shape: tuple[int, ...] = ()
     direction: str = "minimize"
     sensor_id: str | None = None
@@ -41,7 +41,7 @@ class ScorerDescriptor(ComponentDescriptor):
 
 class DrivingAdapter:
     """Bind component callbacks ``(avstack, inputs)`` and scorer callbacks
-    ``(avstack, inputs, target)`` to a fresh AVStack factory.
+    ``(avstack, images, targets)`` to a fresh AVStack factory.
 
     Input schemas describe native argument conventions; adapters own conversion and warmup.
     Component evaluations and rollouts use fresh AVStack instances. Scoring reuses one

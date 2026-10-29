@@ -45,7 +45,7 @@ def test_yolox_detector_gpu():
         assert matching and max(matching) >= .5
         image = torch.from_numpy(rgb).permute(2, 0, 1).to("cuda:0", torch.float32) / 255
         image.requires_grad_(True)
-        score = detector.target_score(image, target)
+        score = detector.target_scores(image.unsqueeze(0), [target])[0]
         assert score.item() == pytest.approx(max(matching), abs=1e-6)
         gradient, = torch.autograd.grad(score, image)
         assert torch.isfinite(gradient).all()

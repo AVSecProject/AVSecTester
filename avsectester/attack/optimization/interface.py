@@ -1,35 +1,23 @@
-"""Contracts for gradient-based and sampling-based optimization over perturbation models.
+"""Optimization contracts for map-style datasets, perturbations and batched scoring.
 
-The optimization algorithm, the threat model, the model access, and the goal are **four orthogonal
-axes**, so PGD (or FGSM/MI-FGSM) is *not* patch-specific — a physical patch is just one
-``Perturbation``:
+Four orthogonal axes separate the algorithm (``GradientOptimizer``), threat model
+(``Perturbation``), scoring model (``Scorer``) and goal (``OptimizationObjective``). Algorithms
+own iteration and updates; perturbations own projection and physical realization. Lower objective
+loss means a more successful attack.
 
-    DataSource.sample(batch)          -> [AdversarialSample(x, target, context)]   (EoT falls out here)
-    Perturbation.apply(sample, delta) -> x_adv                             (differentiable)
-    Perturbation.project(delta)       -> delta                             (feasible set: Lp / box / mask)
-    Scorer.target_score(x_adv, tgt)   -> confidence in [0,1]               (grad iff white-box)
-    OptimizationObjective.loss(confidence)  -> scalar to MINIMIZE                (lower == attack succeeds)
-    GradientOptimizer.run(...)           -> OptimizationResult
+``DataSource[index]`` yields one ``AdversarialSample``. ``Perturbation.apply`` forms one adversarial
+input; ``Scorer.target_scores`` evaluates a batch and ``OptimizationObjective.loss`` preserves its
+shape. Differentiable image batches are BCHW float RGB tensors in [0, 1]. Other scorers declare
+their representation and return one score per input, including physical quantities such as meters.
 
-Axes:
-  * **Algorithm** (``GradientOptimizer``): PGD, FGSM, ... — iterate; call only ``apply``/``project`` +
-    scorer/objective, so they work for every threat model unchanged.
-  * **Threat model** (``Perturbation``): owns the variable δ, how it enters the input, and the
-    projection (the Lp ball / [0,1] box / patch mask live HERE, not in the algorithm). ``LinfImage``
-    (additive ε-perturbation) and ``PatchPerturbation`` (EoT warp+composite) are two instances.
-  * **Model** (``Scorer``) and **goal** (``OptimizationObjective``): unchanged across algorithms/threat models.
-
-Fixed conventions: images and δ are RGB float in [0,1], channels-first ``(C, H, W)`` torch tensors on
-the scorer's device; **lower objective loss == more successful attack**; a threat model that has a
-physical realization exports it via ``Perturbation.export`` (a patch -> ``(Hp,Wp,4)`` uint8 for
-``PatchAttack``; ``LinfImage`` exports ``None``). Only numpy/stdlib import here (``Tensor = Any``);
-torch is lazy in the implementations, so this contract imports/tests without torch or CARLA.
+This interface depends only on NumPy, the standard library and framework data records. Torch is
+loaded lazily through implementation modules; importing the contracts does not import torch.
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -51,12 +39,19 @@ class AdversarialSample:
 
 
 class DataSource(ABC):
-    """Yields batches of clean inputs. A single fixed image for an L-inf attack; sampled backgrounds
-    + placements + photometric jitter (Expectation-over-Transformation) for a physical patch."""
+    """A map-style dataset whose random augmentations are redrawn on each index access.
+
+    EOT belongs in ``__getitem__``, like ordinary dataset augmentation. Algorithms own traversal
+    and batching.
+    """
 
     @abstractmethod
-    def sample(self, batch: int) -> list[AdversarialSample]:
-        """Return ``batch`` samples (with any per-sample randomness freshly drawn)."""
+    def __len__(self) -> int:
+        """Return the number of samples in one epoch."""
+
+    @abstractmethod
+    def __getitem__(self, index: int) -> AdversarialSample:
+        """Return one sample; an out-of-range index raises ``IndexError``."""
 
 
 class Perturbation(ABC):
@@ -94,26 +89,28 @@ class Perturbation(ABC):
 
 
 class Scorer(ABC):
-    """Access to the perception under attack: image -> target detection confidence in [0, 1].
+    """Score a batch with one score per input; descriptors or objectives define the direction.
 
-    White-box scorers return a **differentiable** score; black-box scorers a detached scalar.
-    ``differentiable`` tells the algorithm which regime it is in (PGD needs True).
+    Differentiable inputs are finite BCHW float RGB tensors in [0, 1], returning a (B,) tensor
+    differentiable with respect to the images. Other formats use sequences of B inputs and
+    return B scores. Detector scores are confidences in [0, 1]; other scorers may return physical
+    quantities such as distances.
     """
 
     differentiable: bool = True
     'Whether input-image gradients are supported by this component.'
 
     @abstractmethod
-    def target_score(self, image: Tensor, target: data_types.TargetSpec) -> Tensor:
-        """Return a scalar tensor in [0, 1] for detecting ``target`` in ``image``."""
+    def target_scores(self, images: Tensor, targets: Sequence[data_types.TargetSpec]) -> Tensor:
+        """Return one score per input; mismatched input and target lengths raise ``ValueError``."""
 
 
 class OptimizationObjective(ABC):
-    """Shape the target confidence into a scalar loss to MINIMIZE (lower == attack succeeds)."""
+    """Transform scores elementwise into losses to minimize."""
 
     @abstractmethod
     def loss(self, score: Tensor) -> Tensor:
-        """Map a target confidence in [0, 1] to the scalar loss to minimize."""
+        """Map (B,) scores to (B,) losses with elementwise operations."""
 
 
 class HideObject(OptimizationObjective):
@@ -156,12 +153,12 @@ class SpoofObject(OptimizationObjective):
 
 @dataclass
 class OptimizationResult:
-    """Output of an optimization run."""
+    """Output of optimization: PGD history is mean sample loss per epoch; NES history is loss per step."""
 
     delta: Tensor  # the optimized adversarial variable
     export: np.ndarray | None  # physical realization (patch -> (Hp,Wp,4) uint8), else None
-    history: list[float]  # objective value per step
-    final_score: float  # mean target confidence at the end (lower == better hide)
+    history: list[float]  # PGD epoch mean (entry i = epoch i+1); NES per-step loss
+    final_score: float  # final scorer output: PGD mean over all samples; NES on its fixed sample
 
 
 class GradientOptimizer(ABC):
@@ -183,9 +180,8 @@ class GradientOptimizer(ABC):
     ) -> OptimizationResult:
         """Optimize δ with exact input gradients in PGD or sampled gradient estimates in NES.
 
-        ``monitor(step, delta)``, when given, receives the number of completed updates and the
-        current projected δ before the first update and after every update. It observes only and
-        must not modify δ.
+        ``monitor(index, delta)`` observes the initial projected variable at index 0, then completed
+        epochs for PGD or completed steps for NES. It must not modify δ.
         """
 
 

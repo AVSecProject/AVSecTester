@@ -190,18 +190,24 @@ def test_session():
 def component_services():
     component = ComponentDescriptor("driver", {"observation": "Observation"},
                                     {"control": "Control"}, {"control": "Control"})
-    scorer = ScorerDescriptor("mean", {"image": "numpy"}, {"score": "float"}, {"score": "float"})
+    scorer = ScorerDescriptor("mean", {"images": "numpy"}, {"scores": "float"}, {"scores": "float"})
+    received = []
+
+    def scores(avstack, images, targets):
+        received.append((images, targets))
+        return np.mean(images, axis=(1, 2)) - targets
+
     adapter = DrivingAdapter(
         lambda seed: ConstantAVStack(Control(throttle=.4)),
         components=((component, lambda avstack, observation: avstack(observation)),),
-        scorers=((scorer, lambda avstack, image, target: float(np.mean(image) - target)),),
+        scorers=((scorer, scores),),
     )
     with ClosedLoopServices(MemoryDataset(), MemorySimulator(), adapter) as services:
-        yield services, component, scorer
+        yield services, component, scorer, received
 
 
 def test_evaluate_component(component_services):
-    services, component, _ = component_services
+    services, component, _, _ = component_services
     assert services.capabilities.rollout
     assert services.capabilities.insert_objects
     with services.session(0) as session:
@@ -213,12 +219,15 @@ def test_evaluate_component(component_services):
 
 
 def test_score(component_services):
-    services, _, scorer = component_services
+    services, _, scorer, received = component_services
     with services.session(0) as session:
         assert session.scorers() == (scorer,)
-        assert session.score("mean", np.full((2, 2), 5.), target=2.).value == 3.
+        images = np.stack([np.full((2, 2), 5.), np.full((2, 2), 8.)])
+        targets = [2., 3.]
+        np.testing.assert_array_equal(session.score("mean", images, targets).value, [3., 5.])
+        assert received[0][0] is images and received[0][1] is targets
         with pytest.raises(ValueError, match="does not support gradients"):
-            session.score("mean", np.ones((2, 2)), target=0., require_grad=True)
+            session.score("mean", np.ones((1, 2, 2)), targets=[0.], require_grad=True)
 
 
 def test_decision_time_step():

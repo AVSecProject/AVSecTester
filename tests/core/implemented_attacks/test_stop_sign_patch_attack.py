@@ -7,7 +7,7 @@ from PIL import Image
 
 from avsectester.attack import OfflineContext, OfflineReport, OnlineContext
 from avsectester.attack.insertion import InsertObject
-from avsectester.attack.optimization import NES, PGD
+from avsectester.attack.optimization import HideBelowThreshold, NES, PGD
 from avsectester.execution.services import ClosedLoopServices, RenderRequest
 from avsectester.closed_loop.avstacks import DrivingAdapter, ScorerDescriptor
 from tests.fakes import ConstantAVStack, MemoryDataset, MemorySimulator, DeceleratingAVStack, ImageForwardAVStack
@@ -175,7 +175,7 @@ def test_white_box_offline_phase(nurec_detector_services_and_segment):
         attack = StopSignPatchAttack(
             initial_patch="white", harmonizer=ExposureHarmonizer(reference="under"),
             optimization=DetectorPatchOptimization(
-                optimizer=PGD(steps=3, batch=1, seed=0), min_visible_pixels=5,
+                optimizer=PGD(epochs=3, batch_size=3, seed=0), min_visible_pixels=5,
                 braking_deceleration_mps2=10., max_training_segments=max_training_segments,
                 samples_per_scene=4,
             ),
@@ -218,13 +218,12 @@ def test_white_box_offline_phase(nurec_detector_services_and_segment):
         "confidence_optimized"}
     for row in rows:
         assert row["confidence_optimized"] < row["confidence_initial"]
-    # The first PGD objective is the hinge of one sampled frame's initial-patch confidence; the
-    # fixture's decision threshold is zero, so the hinge target is minus the margin.
+    assert len(rows) == 4 and len(rows) % attack.optimization.optimizer.batch_size != 0
     margin = attack.optimization.confidence_margin
-    first = report.series["pgd_objective"].y[0]
-    assert any(first == pytest.approx(row["confidence_initial"] + margin) for row in rows)
-    # Training-set scores are recorded before the first update and after the last one.
-    assert [row["step"] for row in progress] == [0, 3]
+    assert report.series["pgd_objective"].x == [1, 2, 3]
+    assert len(report.series["pgd_objective"].y) == 3
+    # Training-set scores are recorded at epoch zero and after every epoch.
+    assert [row["epoch"] for row in progress] == [0, 1, 2, 3]
     assert progress[0]["hinge_loss"] == pytest.approx(np.mean([row["confidence_initial"] + margin for row in rows]))
     assert progress[-1]["detection_rate"] == report.values["detected_frame_fraction"].value
     assert progress[-1]["max_confidence"] == pytest.approx(report.values["max_confidence"].value)
@@ -265,8 +264,8 @@ def test_white_box_offline_phase(nurec_detector_services_and_segment):
     options = replace(attack.optimization, scorer_id="rule_based.detection_confidence")
     assert StopSignPatchAttack(optimization=options).run_offline(
         replace(context, metadata=(segment,), report=OfflineReport(None))).dtype == np.uint8
-    descriptor = ScorerDescriptor("image-score", {"image": "CHW float tensor [0,1]"},
-                                  {"score": "scalar confidence"}, {"score": "tensor"}, ("image",),
+    descriptor = ScorerDescriptor("image-score", {"images": "BCHW float tensor [0,1]"},
+                                  {"scores": "scalar confidence"}, {"scores": "tensor"}, ("images",),
                                   sensor_id="front", decision_threshold=0.)
     rejected = [
         ([], "exactly one"),
@@ -274,7 +273,7 @@ def test_white_box_offline_phase(nurec_detector_services_and_segment):
     ]
     for descriptors, message in rejected:
         adapter = DrivingAdapter(lambda seed: ConstantAVStack(),
-                                 scorers=[(item, lambda avstack, image, target: image.sum())
+                                 scorers=[(item, lambda avstack, images, targets: images.mean(dim=(1, 2, 3)))
                                           for item in descriptors])
         with ClosedLoopServices(MemoryDataset(), MemorySimulator(), adapter) as scope:
             invalid = StopSignPatchAttack(optimization=replace(options, scorer_id=None))
@@ -287,7 +286,7 @@ def test_white_box_training_range(nurec_detector_services_and_segment):
     # The line lies 3 m before the sign, so line and sign distances select different frames.
     context = OfflineContext(services, (make_segment(line_x=25.),), seed=0)
     attack = StopSignPatchAttack(initial_patch="white", optimization=DetectorPatchOptimization(
-        optimizer=PGD(steps=1, batch=1, seed=0), min_visible_pixels=5, braking_deceleration_mps2=10.))
+        optimizer=PGD(epochs=1, batch_size=4, seed=0), min_visible_pixels=5, braking_deceleration_mps2=10.))
     attack.run_offline(context)
     calibration, = context.report.tables["calibration"].rows
     rows = sorted(context.report.tables["sample_manifest"].rows, key=lambda row: row["frame"])
@@ -308,9 +307,17 @@ def test_white_box_smoothness(nurec_detector_services_and_segment):
 
     def optimize(initial_patch, **pgd):
         attack = StopSignPatchAttack(initial_patch=initial_patch, optimization=DetectorPatchOptimization(
-            optimizer=PGD(steps=3, batch=1, seed=0, **pgd), min_visible_pixels=5,
+            optimizer=PGD(epochs=3, batch_size=3, seed=0, **pgd), min_visible_pixels=5,
             braking_deceleration_mps2=10., samples_per_scene=4))
         texture = attack.run_offline(context)
+        if pgd.get("step_size") == 0.:
+            descriptor, = services.capabilities.scorers
+            objective = HideBelowThreshold(
+                descriptor.decision_threshold, attack.optimization.confidence_margin)
+            initial = np.array([row["confidence_initial"]
+                                for row in context.report.tables["frame_scores"].rows])
+            expected = float(objective.loss(initial).mean())
+            assert context.report.series["pgd_objective"].y == pytest.approx([expected] * 3)
         return texture, context.report.values["patch_smoothness"].value
 
     mask = StopSignPatchAttack().mask
@@ -344,6 +351,8 @@ def test_black_box_offline_phase(nurec_patch_services_and_segment, tmp_path, max
         rows = report.tables["rollouts"].rows
         expected_segments = maximum or len(training)
         assert len(rows) == 4 * expected_segments
+        assert [row["evaluation"] for row in rows] == [
+            evaluation for evaluation in range(4) for _ in range(expected_segments)]
         assert report.values["training_segments"].value == expected_segments
         assert report.values["rollout_count"].value == len(rows)
         assert len(report.tables["starts"].rows) == expected_segments
@@ -362,6 +371,8 @@ def test_black_box_offline_phase(nurec_patch_services_and_segment, tmp_path, max
         assert all(row["run_log"].startswith("rollouts/") for row in rows)
         assert set(report.tables["rollouts"].columns) == set(rows[0])
         assert len(report.series["planned_forward_m"].y) == 2
+        assert report.values["final_planned_forward_m"].value == pytest.approx(
+            report.series["planned_forward_m"].y[-1])
         np.testing.assert_array_equal(texture, report.images["optimized_texture"].pixels)
         assert report.series["planned_forward_m"].y[-1] >= report.series["planned_forward_m"].y[0]
         # The policy-dependent case selects a changed texture; the constant policy keeps its initial candidate.

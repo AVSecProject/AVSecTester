@@ -16,7 +16,6 @@ from avsectester.attack.optimization import (
 from avsectester.data_types import TargetSpec
 from avsectester.execution.services import ClosedLoopSession, RenderRequest
 from avsectester.geometry.projection import project_box
-from avsectester.validation import require_nonnegative_integer, require_positive_integer
 
 from .assets import replica_face, texture_from_colors
 from .metabuilder import control_from_user_data, route_progress
@@ -28,18 +27,22 @@ if TYPE_CHECKING:
 
 
 class TextureDataSource(DataSource):
-    """Sample already calibrated training captures uniformly at random."""
+    """Index the calibrated captures used in each training epoch."""
 
-    def __init__(self, samples: Sequence[AdversarialSample], *, seed: int = 0) -> None:
-        require_nonnegative_integer(seed, "seed")
+    def __init__(self, samples: Sequence[AdversarialSample]) -> None:
         if not samples or any(not isinstance(sample, AdversarialSample) for sample in samples):
             raise ValueError("TextureDataSource requires nonempty AdversarialSample inputs")
         self.samples = tuple(samples)
-        self.rng = np.random.default_rng(seed)
 
-    def sample(self, batch: int) -> list[AdversarialSample]:
-        require_positive_integer(batch, "batch")
-        return [self.samples[index] for index in self.rng.integers(len(self.samples), size=batch)]
+    def __len__(self) -> int:
+        """Return the number of calibrated training captures."""
+        return len(self.samples)
+
+    def __getitem__(self, index: int) -> AdversarialSample:
+        """Return the indexed capture; out-of-range indices raise ``IndexError``."""
+        if not 0 <= index < len(self):
+            raise IndexError(index)
+        return self.samples[index]
 
 
 def _masked_total_variation(colors: torch.Tensor, mask: torch.Tensor, eps: float = 1e-3) -> torch.Tensor:
@@ -162,15 +165,15 @@ def _distance_bin(sample: AdversarialSample) -> int:
 
 def _report_progress(report: Any, progress: list[dict[str, Any]], lowers: list[int],
                      decision_threshold: float, interval: int) -> None:
-    """Write the training-set scores recorded during PGD as a table and step series."""
-    steps = [row["step"] for row in progress]
+    """Write the training-set scores recorded during PGD as a table and epoch series."""
+    epochs = [row["epoch"] for row in progress]
     bins = {f"detection_rate_{lower}_{lower + 10}m": f"[{lower},{lower + 10}) m" for lower in lowers}
     report.set_table(
         "training_progress", progress,
-        description=f"The current patch scored on every training frame every {interval} PGD steps and "
-        f"after the last step. Detection means confidence ≥ decision_threshold ({decision_threshold}).",
+        description=f"The current patch scored on every training frame every {interval} PGD epochs and "
+        f"after the last epoch. Detection means confidence ≥ decision_threshold ({decision_threshold}).",
         columns={
-            "step": "Completed PGD updates (steps).",
+            "epoch": "Completed PGD epochs (0 is the initial patch).",
             "hinge_loss": "Mean hinge objective over all training frames (ratio, 0–1).",
             "detection_rate": "Fraction of training frames detected (ratio, 0–1).",
             "max_confidence": "Highest stop-sign confidence over the training frames (ratio, 0–1).",
@@ -179,18 +182,18 @@ def _report_progress(report: Any, progress: list[dict[str, Any]], lowers: list[i
         },
     )
     report.set_series(
-        "training_hinge_loss", [row["hinge_loss"] for row in progress], x=steps, x_label="PGD iteration",
+        "training_hinge_loss", [row["hinge_loss"] for row in progress], x=epochs, x_label="PGD epoch",
         y_label="Mean hinge loss", y_unit="ratio (0–1)",
         description="Hinge objective averaged over every training frame, not one batch.",
     )
     report.set_series(
-        "training_detection_rate", [row["detection_rate"] for row in progress], x=steps,
-        x_label="PGD iteration", y_label="Detected fraction", y_unit="ratio (0–1)",
+        "training_detection_rate", [row["detection_rate"] for row in progress], x=epochs,
+        x_label="PGD epoch", y_label="Detected fraction", y_unit="ratio (0–1)",
         description="Fraction of all training frames still detected by the driving system's detector.",
     )
     for name, interval_m in bins.items():
         report.set_series(
-            f"training_{name}", [row[name] for row in progress], x=steps, x_label="PGD iteration",
+            f"training_{name}", [row[name] for row in progress], x=epochs, x_label="PGD epoch",
             y_label="Detected fraction", y_unit="ratio (0–1)",
             description=f"Fraction of training frames {interval_m} from the stop line still detected.",
         )
@@ -315,7 +318,7 @@ def collect_samples(
                     with torch.no_grad():
                         replica_image = sample.context["plan"].composite(
                             sample.x, {(REPLICA_OBJECT_ID, 0): replica_colors})
-                        score = float(scorer.target_score(replica_image, sample.target))
+                        score = float(scorer.target_scores(replica_image.unsqueeze(0), [sample.target])[0])
                     sample.context["record"]["replica_score"] = score
                     if score >= decision_threshold:
                         record["d_max_m"] = float(line_distances[index])
@@ -370,7 +373,7 @@ def optimize_patch(
     with context.services.session(context.seed) as session:
         descriptions = tuple(session.scorers())
         if options.scorer_id is None:
-            candidates = [item for item in descriptions if "image" in item.differentiable_inputs]
+            candidates = [item for item in descriptions if "images" in item.differentiable_inputs]
             if len(candidates) != 1:
                 raise ValueError("Detector patch optimization requires exactly one differentiable image scorer; "
                                  "set scorer_id explicitly when multiple scorers are available")
@@ -379,14 +382,14 @@ def optimize_patch(
             descriptor = next((item for item in descriptions if item.id == options.scorer_id), None)
             if descriptor is None:
                 raise ValueError(f"Unavailable detector scorer: {options.scorer_id!r}")
-        if "image" not in descriptor.differentiable_inputs:
+        if "images" not in descriptor.differentiable_inputs:
             raise ValueError(f"Scorer {descriptor.id!r} must support image gradients")
         if descriptor.sensor_id is None or descriptor.decision_threshold is None:
             raise ValueError(f"Scorer {descriptor.id!r} must declare sensor_id and decision_threshold")
         sensor_id = descriptor.sensor_id
         decision_threshold = descriptor.decision_threshold
         scorer = SessionScorer(session, descriptor.id, require_grad=True,
-                               input_format=descriptor.inputs.get("image"), device=options.device)
+                               input_format=descriptor.inputs.get("images"), device=options.device)
         mask = attack.mask
         train = collect_samples(
             attack, context, original, session=session, scorer=scorer,
@@ -410,15 +413,24 @@ def optimize_patch(
         lowers = sorted({_distance_bin(sample) for sample in train})
         progress: list[dict[str, Any]] = []
 
-        def monitor(step: int, delta: torch.Tensor) -> None:
-            if step % options.progress_interval and step != options.optimizer.steps:
+        def score_training(image_for: Any) -> list[float]:
+            """Score all training captures in the configured model batch size."""
+            scores = []
+            for start in range(0, len(train), options.optimizer.batch_size):
+                samples = train[start:start + options.optimizer.batch_size]
+                images = torch.stack([image_for(sample) for sample in samples])
+                values = scorer.target_scores(images, [sample.target for sample in samples])
+                scores.extend(values.detach().cpu().tolist())
+            return scores
+
+        def monitor(epoch: int, delta: torch.Tensor) -> None:
+            if epoch % options.progress_interval and epoch != options.optimizer.epochs:
                 return
             with torch.no_grad():
-                scores = [float(scorer.target_score(perturbation.apply(sample, delta), sample.target))
-                          for sample in train]
+                scores = score_training(lambda sample: perturbation.apply(sample, delta))
             row: dict[str, Any] = {
-                "step": step,
-                "hinge_loss": float(np.mean([float(objective.loss(score)) for score in scores])),
+                "epoch": epoch,
+                "hinge_loss": float(np.mean(objective.loss(np.asarray(scores)))),
                 "detection_rate": sum(score >= decision_threshold for score in scores) / len(scores),
                 "max_confidence": max(scores),
             }
@@ -429,7 +441,7 @@ def optimize_patch(
             progress.append(row)
             _report_progress(context.report, progress, lowers, decision_threshold, options.progress_interval)
 
-        result = options.optimizer.run(TextureDataSource(train, seed=context.seed), perturbation,
+        result = options.optimizer.run(TextureDataSource(train), perturbation,
                                       scorer, objective, monitor=monitor)
         optimized = attack.replica_texture(result.export)
         context.report.set_image(
@@ -441,25 +453,26 @@ def optimize_patch(
             "weights this term. Lower is smoother.",
         )
         context.report.set_series(
-            "pgd_objective", result.history, x_label="PGD iteration",
+            "pgd_objective", result.history, x=list(range(1, len(result.history) + 1)),
+            x_label="PGD epoch",
             y_label="Mean hinge loss", y_unit="ratio (0–1)",
-            description=f"Batch mean of max(0, confidence − (decision_threshold − confidence_margin)) "
-            f"before each update; decision_threshold {decision_threshold}, confidence_margin "
-            f"{options.confidence_margin}. Zero means every batch frame is below the target.",
+            description=f"Mean training hinge loss per epoch, excluding TV; decision_threshold "
+            f"{decision_threshold}, confidence_margin {options.confidence_margin}. "
+            "Each sample contributes its loss before its batch update.",
         )
-        measured = []
+        measured = [
+            {"scene": sample.context["scene"], "frame": sample.context["record"]["frame"],
+             "line_distance_m": sample.context["record"]["line_distance_m"]}
+            for sample in train
+        ]
         with torch.no_grad():
-            for sample in train:
-                entry = sample.context["record"]
-                row = {"scene": sample.context["scene"], "frame": entry["frame"],
-                       "line_distance_m": entry["line_distance_m"]}
-                for name, candidate in [("clean", None), ("replica", replica_face()), ("initial", initial),
-                                        ("optimized", optimized)]:
-                    image = sample.x
-                    if candidate is not None:
-                        image = sample.context["plan"].composite(sample.x, {(REPLICA_OBJECT_ID, 0): _colors(candidate)})
-                    row[f"confidence_{name}"] = float(scorer.target_score(image, sample.target))
-                measured.append(row)
+            for name, candidate in [("clean", None), ("replica", replica_face()), ("initial", initial),
+                                    ("optimized", optimized)]:
+                colors = None if candidate is None else _colors(candidate)
+                scores = score_training(lambda sample: sample.x if colors is None else
+                    sample.context["plan"].composite(sample.x, {(REPLICA_OBJECT_ID, 0): colors}))
+                for row, score in zip(measured, scores):
+                    row[f"confidence_{name}"] = score
         detected = sum(row["confidence_optimized"] >= decision_threshold for row in measured)
         context.report.set_value(
             "detected_frame_fraction", detected / len(measured), unit="ratio (0–1)",

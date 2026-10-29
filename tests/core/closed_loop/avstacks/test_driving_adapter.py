@@ -26,11 +26,14 @@ def test_past_steps():
 
 def test_scorer_descriptor():
     descriptor = ScorerDescriptor(
-        "detector.confidence", {"image": "CHW float tensor [0,1]"},
-        {"score": "scalar confidence"}, {"score": "tensor"}, ("image",),
+        "detector.confidence", {"images": "BCHW float tensor [0,1]"},
+        {"scores": "scalar confidence"}, {"scores": "tensor"}, ("images",),
         sensor_id="front", decision_threshold=.5,
     )
     assert descriptor.sensor_id == "front" and descriptor.decision_threshold == .5
+    assert descriptor.inputs == {"images": "BCHW float tensor [0,1]"}
+    assert descriptor.outputs == {"scores": "scalar confidence"}
+    assert descriptor.differentiable_inputs == ("images",) and descriptor.output_shape == ()
     assert descriptor.direction == "minimize"
     assert replace(descriptor, direction="maximize").direction == "maximize"
     with pytest.raises(ValueError, match="direction"):

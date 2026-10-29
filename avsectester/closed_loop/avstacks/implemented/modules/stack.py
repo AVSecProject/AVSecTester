@@ -133,14 +133,14 @@ def rule_based_driving_adapter(factory: Callable[[int], AVStack]) -> DrivingAdap
     if not isinstance(detector, YOLOXDetector):
         raise ValueError("factory.avstack_options must include a YOLOXDetector detector")
     descriptor = ScorerDescriptor(
-        "rule_based.detection_confidence", {"image": "CHW float tensor [0,1]"},
-        {"score": "scalar confidence"}, {"score": "tensor"}, ("image",),
+        "rule_based.detection_confidence", {"images": "BCHW float tensor [0,1]"},
+        {"scores": "scalar confidence"}, {"scores": "tensor"}, ("images",),
         direction="minimize", sensor_id=options.get("camera_id", DEFAULT_CAMERA_ID),
         decision_threshold=detector.score_threshold,
     )
 
-    def score(avstack: RuleBasedAVStack, inputs: Any, target: Any) -> Any:
-        return avstack.detector.target_score(inputs, target)
+    def score(avstack: RuleBasedAVStack, images: Any, targets: Any) -> Any:
+        return avstack.detector.target_scores(images, targets)
 
     return DrivingAdapter(factory, scorers=((descriptor, score),))
 

@@ -133,8 +133,9 @@ to 6 m/s², the `RuleBasedAVStack` planner limit. The sign-face projection defin
 Frames below `min_visible_pixels` are skipped; its default is 100 visible replica pixels.
 
 The configurations use all five training segments, every eligible frame (`samples_per_scene: all`),
-200 updates, batch 4 and step size 4/255. An integer `samples_per_scene` of at least four instead
-selects that many time-uniform frames per segment. Every selected frame is a training sample;
+`epochs: 100`, `batch_size: 16`, `tv_weight: 0.3` and step size 4/255.
+An integer `samples_per_scene` of at least four instead selects that many time-uniform frames
+per segment. Every selected frame is a training sample;
 validation, when needed, uses separate segments from the
 [data split](../reference/configuration.md#data-split).
 
@@ -151,14 +152,15 @@ that are both inside the mask. Pairs across the patch outline are excluded, so a
 has zero smoothness cost against the red face.
 
 The offline report contains calibration and sample tables, the `pgd_objective` series, the final
-`patch_smoothness`, and initial/optimized replica textures. `pgd_objective` records the hinge
-objective only. After optimization every training frame is scored for the clean reconstruction,
+`patch_smoothness`, and initial/optimized replica textures. `pgd_objective` records the mean
+training hinge objective per epoch, excluding the smoothness term, at epochs 1 through
+`epochs`. After optimization every training frame is scored for the clean reconstruction,
 unpatched replica, initial patch and optimized patch; `detected_frame_fraction` and
 `max_confidence` summarize the optimized patch, and detection rates are binned by route distance
-to the stop line. Every `progress_interval` PGD steps, default 20, and after the last step, the
-current patch is scored on every training frame; the `training_progress` table and its series
-record the full-set hinge loss, the detected fraction and the detected fraction per 10 m bin. The
-batch `pgd_objective` varies with the sampled frames, so these full-set curves show convergence.
+to the stop line. The configurations set `progress_interval: 10` to score the current patch on
+every training frame every 10 epochs and after the last epoch; the option defaults to 1.
+The `training_progress` table and its series record the full-set hinge loss, detected fraction
+and detected fraction per 10 m bin; epoch 0 is the initial patch.
 [Optimization tools](../guides/optimization.md) explains report usage.
 
 ## Prepare the black-box attack
