@@ -46,7 +46,7 @@ class RecordedReplaySimulator(Simulator):
         return {**super().identity, "camera_aliases": dict(self.camera_aliases)}
 
     def create_runtime(self, seed: int | None = None) -> RecordedReplaySimulatorRuntime:
-        """A new replay; recorded frames are fixed, so ``seed`` is unused."""
+        """A new replay. Recorded frames are fixed, so ``seed`` is unused."""
         return RecordedReplaySimulatorRuntime(self)
 
 

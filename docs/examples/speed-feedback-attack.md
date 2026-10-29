@@ -28,14 +28,14 @@ Parameter defaults and constraints are in the [Python API](../reference/python-a
 
 ## Offline phase
 
-The attack selects decision windows. Its offline phase returns no artifact; see
+The attack selects decision windows. Its offline phase returns no artifact. See
 [Writing attacks](../guides/attacks.md) for the common lifecycle.
 
 ## Online phase
 
 A fresh runtime maintains a bounded nonnegative speed bias from physical-state feedback and
 modifies `Observation.ego_speed` at the observation stage. It records `speed_bias` in each
-decision's outputs; the physical state remains separate in
+decision's outputs. The physical state remains separate in
 the [RunLog](../reference/runtime.md#runlog).
 
 Alpamayo derives its speed inputs from pose history, so this observation-field change does not

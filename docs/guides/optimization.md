@@ -19,16 +19,16 @@ scenes, hosts or placement rules.
 | `OptimizationObjective` | Convert scores into losses |
 | `GradientOptimizer` | Run the algorithm and return `OptimizationResult` |
 
-`HideObject` minimizes a score; `SpoofObject` maximizes it. `HideBelowThreshold` minimizes only
+`HideObject` minimizes a score. `SpoofObject` maximizes it. `HideBelowThreshold` minimizes only
 the part of a score above a decision threshold minus a margin, for targets where one detection
-decides the outcome. Objectives operate elementwise on score batches; scores can be detector
+decides the outcome. Objectives operate elementwise on score batches. Scores can be detector
 confidence or a physical quantity such as distance. An optional `monitor(index, delta)` observes
 the initial variable at index 0, then each completed PGD epoch or NES step. `PGD` requires a
 differentiable score, while `NES` uses score queries. `PGD`'s `tv_weight` weights
 `Perturbation.smoothness`, which defaults to total variation of the whole variable. A perturbation
 that realizes only part of it overrides the method. A `SessionScorer` connects either path to a
 declared `DrivingAdapter` binding. [Driving-system bindings](driving-systems.md) describes
-model integration; the [Python API](../reference/python-api.md) lists signatures and
+model integration. The [Python API](../reference/python-api.md) lists signatures and
 optimizer constraints.
 
 This self-contained example uses a local scorer and needs no model weights:
@@ -64,8 +64,8 @@ assert torch.max(torch.abs(result.delta)).item() <= 0.1
 ```
 
 `LinfImage` applies a bounded additive image change. `PatchPerturbation` renders texture colors
-using the geometry supplied in each sample. The sample's target region belongs to the objective;
-it is independent of the placement rule.
+using the geometry supplied in each sample. The sample's target region belongs to the objective.
+It is independent of the placement rule.
 
 `PGD` shuffles samples using `seed` and retains the final smaller batch. Images in one batch
 must have equal dimensions. Random augmentations are redrawn in `DataSource.__getitem__`.
@@ -98,7 +98,7 @@ physical response.
 
 A captured `SensorView.composition` retains the background and the composition plan used for
 that capture. Reuse its plan when optimizing colors. In geometry occlusion mode, a clean view
-can also build a plan through `composite_plan`; the [Simulator guide](simulators.md) describes
+can also build a plan through `composite_plan`. The [Simulator guide](simulators.md) describes
 that capability.
 
 Differentiable harmonizers use the same floating-point computation during optimization and
@@ -146,12 +146,12 @@ the [rendering API](../reference/python-api.md#avsectesterrenderingharmonizers).
 ## Offline reports
 
 `report.json` contains `status`, `values`, `series`, `tables` and `images`. Values retain their
-unit and description; series retain coordinates, axis labels, units and description. Tables
-retain rows, column descriptions and CSV filenames; images retain descriptions and PNG
+unit and description. Series retain coordinates, axis labels, units and description. Tables
+retain rows, column descriptions and CSV filenames. Images retain descriptions and PNG
 filenames. CSV column order is the union of row keys in first-appearance order. Auxiliary files
 live below `files/`.
 
-The offline HTML page expands tables with at most 20 rows and eight columns; larger tables
+The offline HTML page expands tables with at most 20 rows and eight columns. Larger tables
 are collapsible.
 
 `context.report` collects measurements independently of returned artifacts. Each setter replaces
@@ -174,12 +174,12 @@ report.set_image("initial_texture", initial_texture, description="Initial textur
 ```
 
 Read structured entries through `report.values[name].value`, `report.tables[name].rows` and
-`report.images[name].pixels`. `report.directory` is the workspace for additional files; it is
+`report.images[name].pixels`. `report.directory` is the workspace for additional files. It is
 `None` for in-memory output. The
 [`OfflineReport` API](../reference/python-api.md#avsectesterattackoffline_report) defines
 supported values and name validation.
 
-The framework persists partial reports on failure and restores completed reports during resume;
+The framework persists partial reports on failure and restores completed reports during resume.
 [Experiments](experiments.md) defines checkpoint behavior. The
 [CLI reference](../reference/cli.md) describes output locations and the `evaluate` rebuild.
 

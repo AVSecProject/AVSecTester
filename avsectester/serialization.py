@@ -168,7 +168,7 @@ class SerializationRegistry:
         )
 
     def decode(self, data: Any, *, decode_child: Callable[[Any], Any] | None = None) -> Any:
-        """Reconstruct registered dataclasses; encoded native values remain ordinary data."""
+        """Reconstruct registered dataclasses. Encoded native values remain ordinary data."""
         child = decode_child or self.decode
         if isinstance(data, list):
             return [child(item) for item in data]

@@ -41,7 +41,7 @@ class ScenarioDescriptor:
 
 @dataclass(frozen=True)
 class SensorDataReference:
-    """Location of one recorded sensor payload; the component that reads it decodes it."""
+    """Location of one recorded sensor payload. The component that reads it decodes it."""
 
     uri: str
     sensor: str
@@ -66,7 +66,7 @@ class FrameData:
 
 @dataclass(frozen=True)
 class ScenarioStart:
-    """What a simulator needs to start a scenario at a frame; no attack or selection metadata.
+    """What a simulator needs to start a scenario at a frame, without attack or selection metadata.
 
     ``kind`` is the dataset class name (``NuRecDataset``, ``NuScenesDataset`` or ``CarlaDataset``);
     ``payload`` is that dataset's start data and is copied on construction.
@@ -135,7 +135,7 @@ class Dataset(ABC):
     def decision_window(
         self, scenario_id: str, start: FrameReference, decision_steps: int,
     ) -> tuple[FrameReference, ...]:
-        """Require N+1 actual frames (the last is the terminal state); never pad or truncate."""
+        """Require N+1 actual frames (the last is the terminal state). Never pad or truncate."""
         require_nonnegative_integer(decision_steps, "decision_steps")
         self.checked_frame(scenario_id, start)
         frames = self.frames(scenario_id)

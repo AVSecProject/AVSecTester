@@ -1,4 +1,4 @@
-"""Simulator interfaces; import concrete implementations from their own modules."""
+"""Simulator interfaces, whose concrete implementations are imported from their own modules."""
 
 from .base import (
     ClockSnapshot, DeploymentPlan, FrameDataSequence, Initialization, SensorGeometry,

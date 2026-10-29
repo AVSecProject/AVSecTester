@@ -78,7 +78,7 @@ class AVStack(_HookBindingMixin, ABC):
     past_steps: ClassVar[int] = 0
     'Recorded decision steps required before the selected start.'
     decision_time_step: ClassVar[float | None] = None
-    'Decision interval in seconds; None leaves the interval unrestricted.'
+    'Decision interval in seconds. None leaves the interval unrestricted.'
 
     @property
     def observation_pipeline(self) -> ObservationPipeline:
@@ -120,7 +120,7 @@ class AVStack(_HookBindingMixin, ABC):
         return None
 
     def detections(self) -> Sequence[Detection] | None:
-        """Current decision's ego-frame detections; None means no detection output.
+        """Current decision's ego-frame detections. None means no detection output.
 
         An empty sequence means a detector ran and found no objects. Calling this method
         must not run inference or modify the driving system's state.

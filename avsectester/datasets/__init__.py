@@ -1,4 +1,4 @@
-"""Stateless recorded-data and recipe providers; no simulator ownership.
+"""Stateless recorded-data and recipe providers, without simulator ownership.
 """
 
 from .base import (

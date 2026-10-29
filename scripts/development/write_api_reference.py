@@ -451,7 +451,7 @@ def module_block(module, data):
         purpose_lines[-2:] = [previous, word + " " + purpose_lines[-1]]
     lines = [f"<!-- api:begin module={module} -->", "\n".join(purpose_lines), ""]
     if not data[2]:
-        lines += ["No exports; import from submodules."]
+        lines += ["No exports. Import from submodules."]
     else:
         lines += ["| Name and signature | Meaning |", "|---|---|"]
         for name, meaning in rows_for(module, data):

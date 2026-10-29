@@ -85,7 +85,7 @@ class Renderer(ABC):
     'Camera names rendered by this renderer.'
     @property
     def calibration(self) -> dict[str, CameraCalibration]:
-        """Camera calibrations supplied by a loaded renderer; empty by default."""
+        """Camera calibrations supplied by a loaded renderer, empty by default."""
         return {}
 
     def copy(self) -> Renderer:
@@ -97,7 +97,7 @@ class Renderer(ABC):
         return copy.copy(self)
 
     def reset_origin(self, start=None):
-        """Set the run origin from the dataset start; configured renderers have no origin."""
+        """Set the run origin from the dataset start. Configured renderers have no origin."""
         self._origin_transform = None if start is None else deepcopy(start.payload["ego"].pose)
         self._origin_timestamp_us = None if start is None else round(start.frame.timestamp * 1e6)
         self._origin_bounds = None if start is None else (
@@ -119,7 +119,7 @@ class Renderer(ABC):
         return getattr(self, "_origin_bounds", None)
 
     def load_scene(self, scene: Any) -> None:
-        """Load a reconstruction once; renderers without a service may leave this empty."""
+        """Load a reconstruction once. Renderers without a service may leave this empty."""
 
     @abstractmethod
     def render(
@@ -150,7 +150,7 @@ class Renderer(ABC):
         raise NotImplementedError("This renderer does not provide camera geometry")
 
     def close(self) -> None:
-        """Release renderer resources; the default implementation has no effect."""
+        """Release renderer resources. The default implementation has no effect."""
         pass
 
 
@@ -273,7 +273,7 @@ class NuRecRenderer(Renderer):
 
     @property
     def calibration(self) -> dict[str, CameraCalibration]:
-        """Loaded camera lenses and optical-camera-to-rig poses; empty before loading."""
+        """Loaded camera lenses and optical-camera-to-rig poses, empty before loading."""
         from avsectester.geometry.cameras import CameraCalibration
 
         if self._stub is None:

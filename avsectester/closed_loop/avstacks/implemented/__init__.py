@@ -1,4 +1,4 @@
-"""Driving systems provided with the framework; import each from its own module."""
+"""Driving systems provided with the framework, each imported from its own module."""
 
 
 __all__ = [

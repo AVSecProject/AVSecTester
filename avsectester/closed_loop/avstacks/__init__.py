@@ -1,4 +1,4 @@
-"""Driving-system interfaces; import implementations from their own modules."""
+"""Driving-system interfaces, whose implementations are imported from their own modules."""
 
 from .base import (
     AVStack, CommandCompatibilityError, ObservationPipeline, validate_command_compatibility,

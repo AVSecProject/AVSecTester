@@ -64,4 +64,4 @@ implemented.** See
 
 ## License
 
-MIT; see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).

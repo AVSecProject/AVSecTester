@@ -51,7 +51,7 @@ class DataSource(ABC):
 
     @abstractmethod
     def __getitem__(self, index: int) -> AdversarialSample:
-        """Return one sample; an out-of-range index raises ``IndexError``."""
+        """Return one sample. An out-of-range index raises ``IndexError``."""
 
 
 class Perturbation(ABC):
@@ -74,7 +74,7 @@ class Perturbation(ABC):
         """Project δ back onto the feasible set (in place or returned)."""
 
     def export(self, delta: Tensor) -> np.ndarray | None:
-        """Physical realization of δ, if any — a patch returns ``(Hp,Wp,4)`` uint8; default None."""
+        """Physical realization of δ, if any — a patch returns ``(Hp,Wp,4)`` uint8. Default None."""
         return None
 
     def smoothness(self, delta: Tensor) -> Tensor:
@@ -89,7 +89,7 @@ class Perturbation(ABC):
 
 
 class Scorer(ABC):
-    """Score a batch with one score per input; descriptors or objectives define the direction.
+    """Score a batch with one score per input. Descriptors or objectives define the direction.
 
     Differentiable inputs are finite BCHW float RGB tensors in [0, 1], returning a (B,) tensor
     differentiable with respect to the images. Other formats use sequences of B inputs and
@@ -102,7 +102,7 @@ class Scorer(ABC):
 
     @abstractmethod
     def target_scores(self, images: Tensor, targets: Sequence[data_types.TargetSpec]) -> Tensor:
-        """Return one score per input; mismatched input and target lengths raise ``ValueError``."""
+        """Return one score per input. Mismatched input and target lengths raise ``ValueError``."""
 
 
 class OptimizationObjective(ABC):
@@ -153,7 +153,7 @@ class SpoofObject(OptimizationObjective):
 
 @dataclass
 class OptimizationResult:
-    """Output of optimization: PGD history is mean sample loss per epoch; NES history is loss per step."""
+    """Output of optimization: PGD history is mean sample loss per epoch, and NES history is loss per step."""
 
     delta: Tensor  # the optimized adversarial variable
     export: np.ndarray | None  # physical realization (patch -> (Hp,Wp,4) uint8), else None

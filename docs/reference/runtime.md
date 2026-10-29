@@ -58,12 +58,12 @@ sequenceDiagram
 ```
 
 `ObservationPipeline` processes a decision's input once. Decision zero uses that same processed
-observation for `AVStack.reset` and the first driving call; the localizer is not reset between
+observation for `AVStack.reset` and the first driving call. The localizer is not reset between
 them. World actions returned during a decision affect the next capture. Sensor and `AVStack`
 actions affect the current decision.
 
 `InsertObject` is a `WorldAttackAction` with `setup_ticks=0`. A setup insertion appears in the
-first capture; a step insertion appears in the next capture. Camera composition precedes
+first capture. A step insertion appears in the next capture. Camera composition precedes
 sensor actions, sensor environment and `ObservationPipeline`. Framework objects remain separate
 from native actors in `WorldSnapshot.objects`.
 
@@ -76,7 +76,7 @@ from native actors in `WorldSnapshot.objects`.
 | `AVStackAttackAction` | Driving-system values from `localization.pre` through `command` |
 
 Sensor actions chain in issue order on independent data, preserving the original capture. Native
-wrappers retain calibration and acquisition metadata; camera buffers remain RGB uint8.
+wrappers retain calibration and acquisition metadata. Camera buffers remain RGB uint8.
 `AVStackAttackAction` rejects `sensors.post`, which remains a normal hook stage. A requested
 `AVStack` stage not reached in that decision makes the decision fail.
 Action stages are checked when actions are issued. Hook stages and command modes are checked
@@ -86,8 +86,8 @@ when each run starts.
 
 `SensorView.camera` and `cam_from_world` describe optical geometry when available. Optical axes
 are x right, y down, z forward. `sensor_from_world` describes the sensor body axes: x forward, y
-left, z up; it is `None` when the sensor pose is unavailable. The two transforms are distinct for
-cameras. `SimulatorRuntime.sensors` lists all views; `camera_sensors` lists its camera subset.
+left, z up. It is `None` when the sensor pose is unavailable. The two transforms are distinct for
+cameras. `SimulatorRuntime.sensors` lists all views. `camera_sensors` lists its camera subset.
 `SensorView.objects` contains the inserted objects associated with the capture.
 
 ### CARLA LiDAR data
@@ -130,14 +130,14 @@ Return it from `AttackRuntime.step`. The runner supplies its current capture and
 `Hook(stage, handler)` accepts a callable or an object with `transform(value, context)`,
 where `context` is a `StageContext`.
 Handlers execute in registration order and consume preceding replacements. Adapters declare
-their supported stages; unsupported stages fail before reset.
+their supported stages. Unsupported stages fail before reset.
 
 | Stage | Value |
 |---|---|
-| `simulator.setup` | `None`; native world setup |
-| `simulator.step.pre` and `simulator.step.post` | `None`; before/after physical advancement |
+| `simulator.setup` | `None`, native world setup |
+| `simulator.step.pre` and `simulator.step.post` | `None`, before/after physical advancement |
 | `sensors.post` | `Observation` |
-| `localization.pre` | `Observation`; present only with a configured localizer |
+| `localization.pre` | `Observation`, present only with a configured localizer |
 | `localization.post` | `StateEstimate` |
 | `observation` | `Observation` after localization |
 | `perception.pre` and `perception.post` | `CallInputs` or component output, when declared |
@@ -150,7 +150,7 @@ their supported stages; unsupported stages fail before reset.
 
 NuRec `render.pre` uses a 4×4 `world_from_rig` pose in `CameraPoseRequest`. The `simulator.setup`
 and `simulator.step.*` handlers return `None`. A component pre-hook returns
-`CallInputs(args, kwargs)`; a post-hook returns the replacement output. `NativeHook` adapts an
+`CallInputs(args, kwargs)`. A post-hook returns the replacement output. `NativeHook` adapts an
 explicitly registered avstack-library hook.
 
 ## Contexts and lifecycle
@@ -181,20 +181,20 @@ localization. Physical snapshots remain separate from these values.
 
 | Record | Fields and coordinates |
 |---|---|
-| `Observation` | `t`, `frame`, `sensor_data`, `calibration`, `vehicle_state`, `ego_speed`, `route`; model-visible |
+| `Observation` | `t`, `frame`, `sensor_data`, `calibration`, `vehicle_state`, `ego_speed`, `route`. Model-visible |
 | `Control` | `throttle`, `steer`, `brake`, optional `trajectory` |
-| `WorldSnapshot` | `t`, `frame`, `vehicle_state`, `ego_speed`, `ego`, `actors`, `traffic_lights`, `objects`; physical |
+| `WorldSnapshot` | `t`, `frame`, `vehicle_state`, `ego_speed`, `ego`, `actors`, `traffic_lights`, `objects`. Physical |
 | `ActorState` | world-from-actor `pose`, `velocity`, `category`, optional `extent`, local `box_center` and `box_rotation` |
 | `Detection` | ego-frame `position`, full `extent`, `yaw`, `category`, `score` |
 | `RecordedOutput` | `name`, copied `value`, decision `step`, `stage`, physical `frame` and `t`, `sensor` |
 
-`ActorState.extent` is full length, width and height in meters; `None` means unavailable.
-`box_center` is the actor-local box center; `box_rotation` is local roll/pitch/yaw in degrees.
+`ActorState.extent` is full length, width and height in meters. `None` means unavailable.
+`box_center` is the actor-local box center. `box_rotation` is local roll/pitch/yaw in degrees.
 `box_transform()` combines these with the actor pose to return the world-from-box transform.
 Operations requiring dimensions report missing evidence when `extent` is `None`.
 
 `Detection` uses the true capture-time ego frame, independently of driving localization: x
-forward, y left, z up, and yaw in radians. `None` detections means unsupported; an empty sequence
+forward, y left, z up, and yaw in radians. `None` detections means unsupported. An empty sequence
 means supported with no detections. `WorldSnapshot.traffic_lights` maps map control IDs to `red`,
 `yellow`, `green`, `off` or `unknown`. Simulator support is described
 in [Simulators](../guides/simulators.md).
@@ -202,8 +202,8 @@ in [Simulators](../guides/simulators.md).
 ## RunLog
 
 Registered dataclasses use JSON objects with `_avsectester_type: "dataclass"`,
-`type: "module:Class"` and an encoded `fields` mapping. Mapping-key order is encoded separately;
-user mappings containing reserved serialization keys are escaped and round-trip unchanged.
+`type: "module:Class"` and an encoded `fields` mapping. Mapping-key order is encoded separately.
+User mappings containing reserved serialization keys are escaped and round-trip unchanged.
 Payload retention defaults are defined in [Configuration reference](configuration.md#recording).
 
 `StepRecord` separates `raw_observation` from `model_observation`, `physical_pre` from
@@ -227,11 +227,11 @@ decision. NuRec termination includes `ground_contact_failures`, counts by reject
 reason. `RunLog.status` distinguishes `completed`, `failed`, `cancelled` and `incomplete` runs.
 
 Parquet stores typed scalar and nested values. Large arrays occupy payload shards. Payloads
-publish before referring record parts; completion metadata publishes last. A crash leaves
+publish before referring record parts. Completion metadata publishes last. A crash leaves
 published parts readable and may lose an open part. Readers ignore `*.open` files.
 
 `SerializationRegistry` handles JSON-compatible encoding and independent in-memory snapshots.
-Registered dataclasses reconstruct on read; native values decode to ordinary data. Import and
+Registered dataclasses reconstruct on read. Native values decode to ordinary data. Import and
 register user dataclasses before reading them. Missing registrations raise an error identifying
 the required registration. Framework registrations use type paths without eagerly
 importing SDKs.
@@ -271,5 +271,5 @@ recorder signatures are in the [Python API](python-api.md).
 Unsupported environments are rejected during validation. Unsupported hook stages and command
 modes fail each run at its start, producing exit 1. A failing decision stops
 attack runtimes, records unapplied actions and cleans run resources. A requested action without
-an applied receipt is not evidence of an applied change; an incomplete log is not a
+an applied receipt is not evidence of an applied change. An incomplete log is not a
 completed run.

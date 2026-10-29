@@ -25,7 +25,7 @@ DEFAULT_STOP_SPEED_MPS = 0.5
 
 @dataclass(frozen=True)
 class UnavailableMetricValue:
-    """A missing scalar and its reason; value_type preserves unavailable boolean fields."""
+    """A missing scalar and its reason. The value_type preserves unavailable boolean fields."""
 
     reason: str
     value_type: Literal["number", "boolean"] = "number"
@@ -63,7 +63,7 @@ class ComparisonGroup:
 
 @dataclass(frozen=True)
 class TreatmentPair:
-    """A completed pair in configuration order; differences are defined as B minus A."""
+    """A completed pair in configuration order. Differences are defined as B minus A."""
 
     treatment_a: str
     treatment_b: str
@@ -88,7 +88,7 @@ class MetricDescription:
 
 
 class Metric(ABC):
-    """Evaluate recorded data; return scalars or UnavailableMetricValue values carrying their reasons.
+    """Evaluate recorded data. Return scalars or UnavailableMetricValue values carrying their reasons.
 
     Run metrics accept ComparisonGroup and return a field mapping for each treatment.
     PairMetric implementations accept TreatmentPair and return one field mapping per pair.
@@ -96,7 +96,7 @@ class Metric(ABC):
     """
 
     def describe(self) -> MetricDescription:
-        """Describe this instance; custom metrics may provide field explanations and units."""
+        """Describe this instance. Custom metrics may provide field explanations and units."""
         paragraph = (type(self).__doc__ or "").strip().split("\n\n", 1)[0]
         return MetricDescription(" ".join(paragraph.split()), {})
 

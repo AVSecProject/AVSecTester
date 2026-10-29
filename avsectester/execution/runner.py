@@ -76,7 +76,7 @@ class RunRequest:
 
 
 class ClosedLoopRunner:
-    """Schedule one driving loop; never close caller-owned simulator/driving objects."""
+    """Schedule one driving loop. Never close caller-owned simulator/driving objects."""
 
     def run(
         self,

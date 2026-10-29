@@ -13,7 +13,7 @@ from avsectester.serialization import DEFAULT_REGISTRY
 
 @dataclass(frozen=True)
 class SensorCapture:
-    """Owned bytes from a CARLA sensor capture; contains no simulator handle.
+    """Owned bytes from a CARLA sensor capture. It contains no simulator handle.
 
     ``raw_data`` retains the memoryview interface used by AVStack's LiDAR
     exporter. Coordinates remain in their original convention; the surrounding

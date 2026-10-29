@@ -30,14 +30,14 @@ Constructor parameters and coordinate conventions are in the
 
 ## Offline phase
 
-The attack selects decision windows. Its offline phase returns no artifact; selection and
+The attack selects decision windows. Its offline phase returns no artifact. Selection and
 deployment budgets follow [Writing attacks](../guides/attacks.md).
 
 ## Online phase
 
 Each runtime inserts a synthetic perception detection at `perception.post`. The physical world
-contains no corresponding actor. The same decision then continues through the driving system;
-stage order is defined in [Runtime](../reference/runtime.md).
+contains no corresponding actor. The same decision then continues through the driving system.
+Stage order is defined in [Runtime](../reference/runtime.md).
 
 ## Evidence
 

@@ -47,11 +47,11 @@ retains the configured asset. Attack authoring responsibilities are in
 ## Online phase
 
 Each runtime composites the asset into the selected captured image. This does not create a
-collidable actor; [Simulators](../guides/simulators.md) describes insertion and occlusion
+collidable actor. [Simulators](../guides/simulators.md) describes insertion and occlusion
 behavior. nuScenes uses recorded playback rather than a reactive driving world.
 
 This attack modifies only the selected camera image.
-**Not yet implemented.** Insertion into LiDAR or other non-camera sensors; see
+**Not yet implemented.** Insertion into LiDAR or other non-camera sensors. See
 [Non-camera insertion](../development/TODO.md#inserted-objects-in-non-camera-sensors).
 
 ## Harmonization and custom assets
@@ -86,7 +86,7 @@ docker compose run --rm --entrypoint python nurec-experiment \
 ```
 
 The script lists its dataset and segmentation-model inputs. Asset preparation is separate from
-experiment execution; see [Installation](../getting-started/installation.md) for
+experiment execution. See [Installation](../getting-started/installation.md) for
 prerequisites.
 
 ## Evidence

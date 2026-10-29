@@ -96,7 +96,7 @@ def _traffic_window(trajectory: Sequence[tuple[int, np.ndarray]], first_us: int,
 
 
 class AlpaSimTraffic:
-    """Configure stateless RPC and open owned CATK sessions; seed is only logged."""
+    """Configure stateless RPC and open owned CATK sessions. Seed is only logged."""
 
     def __init__(
         self, endpoint: str = "127.0.0.1:6200",
@@ -126,7 +126,7 @@ class AlpaSimTraffic:
         return tuple(result.scene_ids)
 
     def served_scenes(self, timeout_s: float = 2.0) -> tuple[str, ...] | None:
-        """Query scene support; unavailable endpoints and deadline expiry return None."""
+        """Query scene support. Unavailable endpoints and deadline expiry return None."""
         require_positive_number(timeout_s, "timeout_s")
         grpc, *_ = _grpc_modules()
         try:
@@ -227,7 +227,7 @@ class TrafficSession:
 
     def simulate(self, time_query_us: int, ego_world_from_box: np.ndarray,
                  override_world_from_box: Mapping[str, np.ndarray]) -> dict[str, np.ndarray]:
-        """Send current EGO and full override histories; return current movable poses.
+        """Send current EGO and full override histories. Return current movable poses.
 
         Static, unknown and overridden tracks are ignored. Any error closes the session;
         a returned movable track must contain the exact requested timestamp.

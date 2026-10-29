@@ -42,8 +42,8 @@ The [Python API](../reference/python-api.md) lists public modules and contracts.
 | Unit | A distinct segment, including its complete `user_data` |
 | Treatment | A named attack/environment setting |
 | Comparison group | A unit and seed with the applicable treatments |
-| Offline phase | Preparation of artifacts before execution; it may be a no-op |
-| Online phase | An `AttackRuntime`'s setup, step and stop lifecycle; it may be a no-op |
+| Offline phase | Preparation of artifacts before execution. It may be a no-op |
+| Online phase | An `AttackRuntime`'s setup, step and stop lifecycle. It may be a no-op |
 | Attack action | A modification requested by an attacker |
 | Command | A driving-system output or the command executed by the simulator |
 | Attack impact | A measured consequence for driving |
@@ -72,7 +72,7 @@ Paths are relative to `avsectester/`.
 | `closed_loop/` | Hooks, environments and sensor corruptions |
 | `closed_loop/simulators/` | Contracts, recorded playback, dynamics, navigation, ground contact and object composition |
 | `closed_loop/simulators/carla/` | CARLA world and sensor integration |
-| `closed_loop/simulators/nurec/` | NuRec rendering; `traffic.py` sessions and `server.py` local services |
+| `closed_loop/simulators/nurec/` | NuRec rendering, `traffic.py` sessions and `server.py` local services |
 | `closed_loop/avstacks/` | Driving interfaces and `DrivingAdapter` |
 | `closed_loop/avstacks/implemented/` | Supplied driving systems, including `modules/` |
 | `attack/` | `Attack` contracts and structured `offline_report` outputs |
@@ -85,7 +85,7 @@ Paths are relative to `avsectester/`.
 | `experiment/` | Configuration, preparation, execution and saved outputs |
 
 `Simulator` and `AVStack` package initializers expose interfaces. Import implementations from
-their own modules. User implementations live in their own packages; see
+their own modules. User implementations live in their own packages. See
 [driving systems](../guides/driving-systems.md) and [attacks](../guides/attacks.md).
 
 ### Dependency layers
@@ -127,10 +127,10 @@ The supplied [configuration list](../examples/README.md) contains these combinat
 | `NuScenesDataset` | `RecordedReplaySimulator` | `CameraForwardCollisionAVStack` |
 
 **Not yet implemented.** Using `ModularAVStack` with NuRec, or `AlpamayoAVStack` and
-`RuleBasedAVStack` with CARLA; see
+`RuleBasedAVStack` with CARLA. See
 [Cross-simulator configurations](../development/TODO.md#cross-simulator-driving-configurations).
 
-Reactive NuRec traffic is optional; see
+Reactive NuRec traffic is optional. See
 [simulator behavior](../guides/simulators.md#reactive-traffic).
 
 ## World ownership

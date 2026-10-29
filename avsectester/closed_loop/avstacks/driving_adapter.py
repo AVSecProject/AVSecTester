@@ -22,7 +22,7 @@ class ComponentDescriptor:
 
 @dataclass(frozen=True)
 class ScorerDescriptor(ComponentDescriptor):
-    """Describe a batch scorer returning one score per input; output_shape is the per-input shape."""
+    """Describe a batch scorer returning one score per input. The output_shape is the per-input shape."""
     output_shape: tuple[int, ...] = ()
     direction: str = "minimize"
     sensor_id: str | None = None

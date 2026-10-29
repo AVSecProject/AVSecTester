@@ -160,7 +160,7 @@ class RunsConfiguration:
 
 @dataclass(frozen=True)
 class ExperimentConfiguration:
-    """Reusable components and run settings; every run owns fresh driving and simulator state."""
+    """Reusable components and run settings. Every run owns fresh driving and simulator state."""
 
     dataset: Dataset
     simulator: Simulator
@@ -270,7 +270,7 @@ class ExperimentConfiguration:
 def load_configuration(
     config: ExperimentConfiguration | Mapping[str, Any] | str | Path,
 ) -> ExperimentConfiguration:
-    """Load one experiment; file references are relative to their containing YAML file.
+    """Load one experiment. File references are relative to their containing YAML file.
 
     Python mappings may supply Dataset, Simulator, DrivingAdapter, Attack and HookSet
     objects directly. User types are imported Python code and must be trusted.

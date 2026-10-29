@@ -57,7 +57,7 @@ class CarlaPatchPanel:
         tick: Callable[[], Any] | None = None,
         on_spawn: Callable[[Any], None] | None = None,
     ) -> list:
-        """Spawn the panel on ``target_actor`` in ``world`` and paint it; return spawned actors."""
+        """Spawn the panel on ``target_actor`` in ``world`` and paint it. Return spawned actors."""
         import carla
 
         bl = world.get_blueprint_library()

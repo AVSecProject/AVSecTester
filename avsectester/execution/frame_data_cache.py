@@ -59,7 +59,7 @@ class FrameDataCache:
         return deepcopy(self._sequences[key])
 
     def get(self, key: str) -> FrameDataSequence:
-        """Return a copy of the cached sequence; raise ``KeyError`` when the key is absent."""
+        """Return a copy of the cached sequence. Raise ``KeyError`` when the key is absent."""
         return deepcopy(self._sequences[key])
 
 

@@ -52,11 +52,11 @@ attack = PatchAttack(decision_steps=5, assets=SolidTexture())
 
 Selection ranks candidate hosts within each eligible window. Without optimization, the input
 texture becomes the artifact. An optimization option prepares a texture using the selected
-training segments and configured scorer; see [Optimization](../guides/optimization.md).
+training segments and configured scorer. See [Optimization](../guides/optimization.md).
 
 ## Online phase
 
-The runtime receives the explicit texture artifact. CARLA uses a native physical prop; NuRec
+The runtime receives the explicit texture artifact. CARLA uses a native physical prop. NuRec
 composites into the selected camera capture. Their geometry and occlusion behavior are described
 in [Simulators](../guides/simulators.md).
 

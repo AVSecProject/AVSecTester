@@ -89,7 +89,7 @@ class CarlaSimulator(Simulator):
         validate_carla_world_settings(world)
 
     def create_runtime(self, seed: int | None = None) -> CarlaSimulatorRuntime:
-        """A new live world; an explicit run seed overrides the configured client seed."""
+        """A new live world. An explicit run seed overrides the configured client seed."""
         return CarlaSimulatorRuntime(self, seed)
 
     @property

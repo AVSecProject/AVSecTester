@@ -39,9 +39,9 @@ supplied. Choose available host GPUs in `.env`: `CARLA_SERVER_GPU`, `CARLA_EXPER
 | `carla-experiment` | avsectester:carla | CARLA driving-system environment |
 | `nurec-experiment` | avsectester:nurec | NuRec, AlpaSim controller and Alpamayo environment |
 
-The checkout is bind-mounted at its host absolute path. Experiments run as the configured user;
-files written below the checkout are available on the host. Rebuild images after changing
-dependencies; checkout code is read through `PYTHONPATH`.
+The checkout is bind-mounted at its host absolute path. Experiments run as the configured user.
+Files written below the checkout are available on the host. Rebuild images after changing
+dependencies. Checkout code is read through `PYTHONPATH`.
 
 ### External data and models
 
@@ -85,7 +85,7 @@ The image provides the native avstack and detector dependencies. Model files liv
 Dockerfile creates the corresponding links inside the image.
 
 CARLA uses host networking with RPC port 2000 and traffic-manager port 8000. Select the server
-and experiment host GPUs through `.env`; model device indexes address GPUs visible in the
+and experiment host GPUs through `.env`. Model device indexes address GPUs visible in the
 experiment container. Stop the services with docker compose down.
 
 ### CARLA semantic maps
@@ -124,9 +124,9 @@ Stop-sign configurations use `data/nurec/26.01_release` or `data/nurec/26.04_rel
 Place the nuScenes v1.0-trainval release under `data/nuscenes`, containing `samples/`,
 `sweeps/`, `maps/` and `v1.0-trainval/`. The
 [configuration data column](../examples/README.md#configurations) lists data and weights for
-each workflow; `dataroot` or `usdz_paths` can select other locations.
+each workflow. `dataroot` or `usdz_paths` can select other locations.
 
-The run command manages compatible NRE and trafficsim services automatically; see
+The run command manages compatible NRE and trafficsim services automatically. See
 [Service lifecycle](../reference/cli.md#automatic-local-services). For manual service reuse, see
 [NRE commands](../reference/cli.md#nre).
 
@@ -229,7 +229,7 @@ git -c url.https://github.com/.insteadOf=git@github.com: submodule update --init
 
 Provide local `PCTNet.pth` weights from
 [Libcom pretrained models](https://huggingface.co/BCMIZB/Libcom_pretrained_models) when
-possible; without a local checkpoint, the harmonizer downloads weights on first use. See the
+possible. Without a local checkpoint, the harmonizer downloads weights on first use. See the
 [harmonizer API](../reference/python-api.md#avsectesterrenderingharmonizers) for
 loading options.
 

@@ -653,7 +653,7 @@ class ScenarioView:
 
     @property
     def reasons(self) -> tuple[str, ...]:
-        """Bounded, insertion-ordered reason counts; repeated candidates add no entries."""
+        """Bounded, insertion-ordered reason counts. Repeated candidates add no entries."""
         return tuple(f"{reason} (count={count})" for reason, count in self._reasons.items())
 
     @property

@@ -154,7 +154,7 @@ class NuRecSimulator(Simulator):
             raise UnsupportedStartError(f"Navigation route cannot be built: {failure}")
 
     def create_runtime(self, seed: int | None = None) -> NuRecSimulatorRuntime:
-        """A new world; the optional traffic session receives seed for its log."""
+        """A new world. The optional traffic session receives seed for its log."""
         return NuRecSimulatorRuntime(self, seed)
 
     @property
@@ -744,7 +744,7 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
     # In-process world checkpoints retain frozen assets and loaded harmonizer references.
 
     def checkpoint(self) -> dict:
-        """Capture a replay checkpoint; active reactive-traffic sessions cannot be checkpointed."""
+        """Capture a replay checkpoint. Active reactive-traffic sessions cannot be checkpointed."""
         if self.simulator.traffic is not None:
             raise RuntimeError("AlpaSim traffic sessions cannot be checkpointed")
         return {"pose": asdict(self.pose), "frame": self.frame,

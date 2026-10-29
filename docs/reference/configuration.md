@@ -13,11 +13,11 @@ affect loading. `load_configuration` accepts a YAML path, a mapping or an
 `ExperimentConfiguration` object.
 
 Every constructor specification uses `type` and optional `options`. A built-in short name
-selects a framework component; `package.module:Class` or `package.module:function` selects user
+selects a framework component. `package.module:Class` or `package.module:function` selects user
 code. `dataset`, `simulator`, `avstack`, `attacks.<name>`, `evaluation.metrics` entries and
 `observation_pipeline` can also reference YAML files. Nested constructors use the same
 type/options form.
-Type paths and hook imports execute Python code; use only trusted sources.
+Type paths and hook imports execute Python code. Use only trusted sources.
 
 ### Component short names
 
@@ -50,7 +50,7 @@ through as native data.
 | `runs` | defaults below | Treatments, seeds, environment, recording and output |
 
 This complete example uses the checkout's memory components and needs no simulator service or
-model weights. Supplied simulator configurations use the same structure; see the
+model weights. Supplied simulator configurations use the same structure. See the
 [configuration list](../examples/README.md).
 
 <!-- runnable -->
@@ -100,7 +100,7 @@ preparation identity as explicitly written options.
 
 Components with this parameter include `AlpamayoAVStack`, `YOLOXDetector`,
 `DetectorPatchOptimization`, `PatchOptimization` and `PCTNetHarmonizer`. Container GPU selection
-is separate; see [automatic local services](cli.md#automatic-local-services).
+is separate. See [automatic local services](cli.md#automatic-local-services).
 
 ## Dataset
 
@@ -134,7 +134,7 @@ per-treatment overrides.
 The preparation records the source path and raw-byte SHA256. Compatibility depends only on that
 hash, so moving an unchanged file is allowed. Changing any bytes, including whitespace, changes
 its identity. Reusing preparation for execution checks the current file's hash and rechecks
-saved segment frames; other checks follow [Input validation](../guides/experiments.md#input-validation).
+saved segment frames. Other checks follow [Input validation](../guides/experiments.md#input-validation).
 Reevaluation uses the saved hash and segments without reading this file. Adding or removing
 `metadata.load` relative to the saved configuration is incompatible.
 
@@ -159,7 +159,7 @@ split:
 | `train_segments` | required | Positive number of training units |
 | `validation_segments` | 0 | Nonnegative number of validation units |
 | `seed` | 0 | Nonnegative permutation seed |
-| `execute` | `[test]` | Unique subset of `train`, `validation` and `test`; an empty list executes no units |
+| `execute` | `[test]` | Unique subset of `train`, `validation` and `test`. An empty list executes no units |
 
 Unknown keys are rejected. Executing validation requires a positive validation count. Training
 plus validation must be smaller than the number of units, leaving at least one test unit.
@@ -167,8 +167,8 @@ plus validation must be smaller than the number of units, leaving at least one t
 A unit matches on scenario, start, stop and all `user_data`, encoded as canonical JSON. Units
 follow dataset scenario order, then start, stop and configured attack order. A seeded NumPy
 permutation assigns training units first, validation units next and test units last. Identical
-selections share a part. The same window with different `user_data` forms separate units;
-training and test may therefore contain the same captured scene.
+selections share a part. The same window with different `user_data` forms separate units.
+Training and test may therefore contain the same captured scene.
 
 `OfflineContext.metadata` contains training segments and `validation_metadata` contains
 validation segments, each in selection order. `PreparedExperiment.metadata` keeps all selections
@@ -177,9 +177,9 @@ preparation compatibility.
 
 ## Simulator
 
-CARLA scene and prescribed motion settings belong to `CarlaRecipe`; `CarlaSimulator` receives
+CARLA scene and prescribed motion settings belong to `CarlaRecipe`. `CarlaSimulator` receives
 the runtime client settings. For recorded sources, choose a simulator compatible with the
-dataset; [Simulators](../guides/simulators.md) describes their behavior.
+dataset. [Simulators](../guides/simulators.md) describes their behavior.
 
 A simulator's top-level `time_step` parameter inherits `dataset.time_step` when omitted and when
 the dataset provides it. This injection does not recurse into nested constructors. Explicit
@@ -187,13 +187,13 @@ values are retained, but `ExperimentConfiguration` rejects a dataset/simulator m
 
 ### NuRec closed-loop settings
 
-`NuRecSimulator` requires a renderer and a non-null `time_step`; the loader supplies the latter
+`NuRecSimulator` requires a renderer and a non-null `time_step`. The loader supplies the latter
 from `NuRecDataset`. Reset requires `ScenarioStart`. Constructor defaults are:
 
 | Option | Default | Accepted values or role |
 |---|---|---|
 | `dynamics` | `KinematicBicycle()` | Ego-dynamics implementation |
-| `camera_aliases` | empty | Native camera ID to observation/sensor-view name; output names must be unique |
+| `camera_aliases` | empty | Native camera ID to observation/sensor-view name. Output names must be unique |
 | `depth` | `mesh` | `mesh`, `none` |
 | `route_generator` | `map` | `map`, `recorded`, `none` |
 | `physics_update_mode` | `ego_only` | `ego_only`, `none` |
@@ -201,7 +201,7 @@ from `NuRecDataset`. Reset requires `ScenarioStart`. Constructor defaults are:
 | `object_occlusion` | `rendered_probes` | `rendered_probes`, `geometry` |
 | `occlusion_tolerance_m` | 0.15 | Nonnegative scene occlusion tolerance in meters |
 | `traffic` | `null` | Optional `AlpaSimTraffic` |
-| `min_track_duration_s` | 3.0 | Nonnegative moving-track duration threshold; 0 disables filtering |
+| `min_track_duration_s` | 3.0 | Nonnegative moving-track duration threshold. A value of 0 disables filtering |
 
 `nurec_patch.yaml`, `nurec_speed_feedback.yaml` and `nurec_object_insertion.yaml` use
 `ground_mesh: mesh` and the default mesh depth. The four stop-sign configurations use
@@ -228,7 +228,7 @@ simulator:
 ```
 
 NuRec cameras render at their native resolution.
-`probe_directory` is a client-side path resolved relative to the YAML file;
+`probe_directory` is a client-side path resolved relative to the YAML file.
 `server_probe_directory` is an unchanged string in the server's filesystem namespace. The server
 must be able to read the probe files. See
 [automatic local services](cli.md#automatic-local-services) for startup and mounts.
@@ -247,19 +247,19 @@ traffic:
 ```
 
 Traffic defaults to `null`. Enabling it requires 0.1 s decisions and `history_steps - 1` preceding
-recorded decisions. Traffic configuration affects preparation identity; `metadata.load` can
+recorded decisions. Traffic configuration affects preparation identity. `metadata.load` can
 share segments between modes. Services are managed by [run](cli.md#automatic-local-services).
 
 ## Driving specification
 
 `avstack.type` selects an `AVStack` class or factory. Its options are passed to each fresh
-instance. A constructor declaring `seed` receives the run seed; explicitly writing that reserved
+instance. A constructor declaring `seed` receives the run seed. Explicitly writing that reserved
 option is an error. The top-level device follows the [device rule](#device).
 
 | Key under avstack | Meaning |
 |---|---|
 | `type` | Required `AVStack` class or callable |
-| `options` | Constructor arguments; default empty |
+| `options` | Constructor arguments, empty by default |
 | `observation_pipeline` | Optional `ObservationPipeline` type/options specification |
 | `command_modes` | Optional assertion matching the stack's declared modes |
 | `bindings` | Optional binding factory, with type/options |
@@ -273,7 +273,7 @@ option is an error. The top-level device follows the [device rule](#device).
 
 A binding has signature `function(avstack_factory, **options) -> DrivingAdapter`. The factory
 exposes `avstack_type` and an independent read-only `avstack_options` mapping. Bindings declare
-components and scorers without constructing the stack;
+components and scorers without constructing the stack.
 [Driving systems](../guides/driving-systems.md) describes the supplied bindings.
 
 ## Attack specification
@@ -323,7 +323,7 @@ provides canonical detections. An explicit empty list selects no metrics. Repeat
 are rejected. `DetectionMetrics` is rejected during loading when the configured stack declares
 no detections.
 
-Custom metrics use `package.module:Class`; see [Experiment configuration](#experiment-configuration).
+Custom metrics use `package.module:Class`. See [Experiment configuration](#experiment-configuration).
 
 ```yaml
 evaluation:
@@ -346,12 +346,12 @@ Run controls belong under `runs`, represented in Python by frozen `RunsConfigura
 | `decision_steps` | `null` | Optional positive upper bound per selected segment |
 | `environment` | empty | Shared world and sensor settings |
 | `recording` | defaults below | Sensor payload retention |
-| `output` | `null` | Output directory; required by the CLI |
+| `output` | `null` | Output directory, required by the CLI |
 | `strict` | `false` | Stop on the first execution or selection error |
 
 Attack and treatment names must be nonempty, contain no path separators and differ from
 `.` and `..`. Treatment names
-must be unique. A treatment without `attack_name` has no enabled attack; otherwise that field
+must be unique. A treatment without `attack_name` has no enabled attack. Otherwise that field
 must reference a configured attack. Group membership is defined
 in [Evaluation](../guides/evaluation.md#comparison-groups).
 
@@ -362,8 +362,8 @@ CARLA world settings accept `weather` as a preset name or parameter mapping, `li
 world setting.
 
 Environment YAML has `world` and `sensors` keys. The base is `runs.environment`, with optional
-attack and treatment overrides; [Environments](../guides/environments.md) describes merge and
-validation behavior. Sensor entries use `type`, `options` and an optional `camera`; omitting
+attack and treatment overrides. [Environments](../guides/environments.md) describes merge and
+validation behavior. Sensor entries use `type`, `options` and an optional `camera`. Omitting
 camera applies the corruption only to the first `sensor_data` entry, which must be a readable
 RGB image.
 
@@ -375,7 +375,7 @@ runs:
       - {type: GaussianNoise, options: {severity: 0.2}, camera: front}
 ```
 
-Custom corruptions use `package.module:Class`; see [Experiment configuration](#experiment-configuration).
+Custom corruptions use `package.module:Class`. See [Experiment configuration](#experiment-configuration).
 Severity is in [0, 1] and defaults to 0.5. `ColorTemp` also accepts
 `warm`, which defaults to `true`. `AlbumentationsCorruption` requires `transform`. The
 [Python API](python-api.md) lists the available corruption classes.
@@ -407,9 +407,9 @@ hook, metric and nested constructors. `Path` or `os.PathLike` annotations mark p
 unions and sequence elements such as `str | Path` or `list[Path]`.
 
 Relative values become absolute strings resolved beside the YAML file that contains them. A
-leading `~` is expanded; absolute paths preserve their location; URI strings containing `://`
+leading `~` is expanded. Absolute paths preserve their location. URI strings containing `://`
 are unchanged. Plain `str`, unannotated parameters, `Any`, `**kwargs` and untyped mappings do
-not trigger path resolution. Unresolvable annotations mentioning Path are errors; make their
+not trigger path resolution. Unresolvable annotations mentioning Path are errors. Make their
 names available at runtime. Other unresolved annotations are ignored.
 
 Component YAML references and `runs.output` also resolve relative to their containing YAML file.
@@ -431,15 +431,15 @@ and evaluation settings may change. The first seed, partition and offline enviro
 source unchanged into the new output. `AVStack` and hook configurations are not part of
 saved-preparation compatibility. `Attack` constructor options are compared as written,
 including an explicitly written default versus an omitted option. Lists and tuples with
-identical contents compare equally; booleans, integers and floating-point numbers remain
+identical contents compare equally. Booleans, integers and floating-point numbers remain
 distinct, so `true`, `1` and `1.0` are incompatible.
 The current hooks' setup ticks plus the attack's deployment requirement must not exceed the
-saved deployment tick budget; execution fails otherwise.
+saved deployment tick budget. Execution fails otherwise.
 
 YAML declarations retain their constructor options. Direct Python attacks describe their inputs
 through `configuration_parameters()`. An undescribable value produces a warning and marks
-parameters unverified; loading or evaluating that preparation is then rejected.
+parameters unverified. Loading or evaluating that preparation is then rejected.
 
 Reevaluation checks the saved identity and uses saved metadata and maps without accessing the
 external metadata file or the dataset. Workflow details are in
-[Experiments](../guides/experiments.md); commands and exit codes are in [CLI](cli.md).
+[Experiments](../guides/experiments.md). Commands and exit codes are in [CLI](cli.md).

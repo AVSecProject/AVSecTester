@@ -10,7 +10,7 @@
 
 An environment separates world settings, applied by the simulator at reset, from sensor
 corruptions, applied to captured model inputs. The merge order is `runs.environment`, the
-enabled `Attack.environment` and the treatment environment. World mappings merge recursively; an
+enabled `Attack.environment` and the treatment environment. World mappings merge recursively. An
 explicitly provided sensor list replaces the preceding list.
 
 ```yaml
@@ -33,10 +33,10 @@ The YAML keys and defaults are defined in
 
 Metabuilders do not inherit the experiment environment. Selection requests must supply any
 desired environment explicitly. `OfflineContext.environment` merges `runs.environment` with the
-attack's environment; pass it to sensor reads, renders or candidate rollouts when those
+attack's environment. Pass it to sensor reads, renders or candidate rollouts when those
 conditions are required.
 
-Changing an environment does not reselect segments. The attack owns eligibility decisions; see
+Changing an environment does not reselect segments. The attack owns eligibility decisions. See
 [selection and metadata](attacks.md).
 
 ## Sensor processing
@@ -48,7 +48,7 @@ actions and the observation pipeline.
 Camera selection follows [Environment configuration](../reference/configuration.md#environment).
 
 Camera transport preserves RGB uint8. Non-camera writes preserve the payload representation
-and dtype; neither path infers sensor type from array shape. See
+and dtype. Neither path infers sensor type from array shape. See
 [data transport](../reference/python-api.md#avsectesterdata_types).
 
 ## Supplied corruptions
@@ -78,7 +78,7 @@ runs:
 ```
 
 `AlbumentationsCorruption` selects an Albumentations transform through its transform option and
-requires the augment extra. It uses the same sensor-environment mechanism; see
+requires the augment extra. It uses the same sensor-environment mechanism. See
 [constructor options](../reference/configuration.md#environment).
 
 ## Custom sensor corruptions
@@ -113,7 +113,7 @@ than as static environment settings. Native simulator behavior is described
 in [Simulators](simulators.md).
 
 **Not yet implemented.** Reference evaluations that train and test artifacts under different
-conditions; see [Environment transfer](../development/TODO.md#environment-transfer).
+conditions. See [Environment transfer](../development/TODO.md#environment-transfer).
 
 ## Randomness
 
@@ -121,7 +121,7 @@ Sensor corruptions use a fresh NumPy generator keyed by
 `(run_seed, absolute_dataset_position, corruption_index)`. Past and current captures at the same
 dataset position therefore use the same corruption randomness. Hooks share a run-scoped NumPy
 generator initialized from the hook seed. Registration and execution order determine its
-consumption; shared callback handlers retain their declared lifecycle.
+consumption. Shared callback handlers retain their declared lifecycle.
 
 ## Next steps
 

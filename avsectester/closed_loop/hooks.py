@@ -49,7 +49,7 @@ class _HookBindingMixin:
 
     @contextmanager
     def bind_hooks(self, dispatcher: StageEmitter) -> Iterator[None]:
-        """Bind one dispatcher for the scope; reject an already active binding."""
+        """Bind one dispatcher for the scope. Reject an already active binding."""
         if getattr(self, "_dispatcher", None) is not None:
             raise RuntimeError(f"{type(self).__name__} is already bound to an active run")
         self._dispatcher = dispatcher
@@ -290,7 +290,7 @@ class HookDispatcher:
 
     @contextmanager
     def activate(self) -> Iterator[HookDispatcher]:
-        """Bind the simulator runtime and driving system; reset participants and close them on exit."""
+        """Bind the simulator runtime and driving system. Reset participants and close them on exit."""
         if self._active:
             raise RuntimeError("Hook dispatcher is already active")
         resources = ExitStack()
@@ -330,7 +330,7 @@ class HookDispatcher:
         )
 
     def record_output(self, context: StageContext, name: str, value: Any) -> None:
-        """Snapshot a named output; reject recording outside an active dispatcher scope."""
+        """Snapshot a named output. Reject recording outside an active dispatcher scope."""
         if not self._active:
             raise RuntimeError("Outputs can only be recorded from an active hook callback")
         self.outputs.append(RecordedOutput(

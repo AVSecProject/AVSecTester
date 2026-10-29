@@ -10,11 +10,11 @@
 
 `AVStack` receives an `Observation` and returns a `Control`. It declares supported command
 modes, stages and optional recorded-input requirements. The simulator and driving system must
-agree on commands and decision timing;
-see [Configuration](../reference/configuration.md#driving-specification).
+agree on commands and decision timing.
+See [Configuration](../reference/configuration.md#driving-specification).
 
 Interfaces live in `avsectester.closed_loop.avstacks`. Supplied implementations live below
-`avstacks.implemented`; user implementations belong in the user's package.
+`avstacks.implemented`. User implementations belong in the user's package.
 
 `ObservationPipeline` processes current input in this order:
 
@@ -40,7 +40,7 @@ The `*_modular_*` stop-sign configurations use `RuleBasedAVStack`, described bel
 gets fresh component histories. Native models and component outputs remain avstack objects.
 
 `instrument` captures selected component outputs. `detections` converts supported perception
-boxes to the true capture-time ego frame without another inference call; model-visible
+boxes to the true capture-time ego frame without another inference call. Model-visible
 localization does not change that coordinate conversion. Unsupported perception output returns
 `None`, while an empty sequence means supported perception with no detections.
 
@@ -56,13 +56,13 @@ throttle. Its learned model loads lazily and can be shared with bound scorers.
 `CameraForwardCollisionAVStack` exposes its scorer through `modular_driving_adapter`.
 
 This policy exposes 2D component diagnostics, not canonical 3D detections. `DetectionMetrics`
-requires a driving system that provides 3D detections; see [Evaluation](evaluation.md).
+requires a driving system that provides 3D detections. See [Evaluation](evaluation.md).
 
 ## NuRec rule-based driving system
 
 `RuleBasedAVStack` composes a `YOLOXDetector`, `StopSignTracker` and `StopSignPlanner`.
 Its processing chain is detection, known-size ranging, bearing EKF tracking and trajectory
-planning. `YOLOXDetector` is a general COCO detector; the stack uses its `stop sign` detections.
+planning. `YOLOXDetector` is a general COCO detector. The stack uses its `stop sign` detections.
 It requires the selected camera's `CameraCalibration` and a planar ego state.
 
 The cruise reference `v0` is `cruise_speed_mps`, or the speed at reset bounded below by
@@ -76,7 +76,7 @@ box and the assumed sign height, then transforms the point from optical-camera c
 rig coordinates. Distance error scales with error in the assumed physical sign size.
 
 The tracker stores stationary signs in world coordinates. Range and bearing uncertainty
-determine association; bearing-only EKF updates refine associated tracks. The planner identifies
+determine association. Bearing-only EKF updates refine associated tracks. The planner identifies
 a target and served signs by track ID.
 
 The planner projects tracks onto the navigation route, filters signs outside its forward/lateral
@@ -85,7 +85,7 @@ route. Cruise acceleration is the IDM free-road term, `a_max * (1 - (v / v0) ** 
 `a_max` is `max_acceleration_mps2` and `delta` is `acceleration_exponent`.
 
 For a stop target at remaining route distance `d`, the required deceleration is `v² / (2d)`.
-Reaching `comfortable_deceleration_mps2` latches braking; the planner then follows that required
+Reaching `comfortable_deceleration_mps2` latches braking. The planner then follows that required
 deceleration and does not return to cruise for the same target. Acceleration is limited by the
 configured acceleration/deceleration bounds. Late detection can require more braking than
 available and can produce a stop beyond the target.
@@ -100,7 +100,7 @@ planned trajectory step. A controller tracks the whole forecast and can slow the
 that planned first-step acceleration is positive.
 
 This system handles stop signs only. It follows the navigation centerline without perceiving
-other vehicles or obstacles. Recorded non-reactive traffic can hit ego from behind; intruding
+other vehicles or obstacles. Recorded non-reactive traffic can hit ego from behind. Intruding
 vehicles can also overlap its path. `DrivingMetrics.collision` records those physical overlaps.
 
 ## Alpamayo
@@ -108,8 +108,8 @@ vehicles can also overlap its path. `DrivingMetrics.collision` records those phy
 `AlpamayoAVStack` uses AlpaSim's policy interface to turn camera input, ego pose history, speed,
 acceleration and navigation into a rig-frame trajectory. Navigation comes from
 `Observation.route`, which the simulator generates as route intent. It is independent of the
-executed future path; see [Navigation](simulators.md#navigation). By default it uses the four
-cameras of AlpaSim's Alpamayo 1.5 driver: front wide, front tele and both cross cameras; the
+executed future path. See [Navigation](simulators.md#navigation). By default it uses the four
+cameras of AlpaSim's Alpamayo 1.5 driver: front wide, front tele and both cross cameras. The
 renderer must provide every listed camera.
 
 Component logs contain `policy`, `command`, `route_waypoints`, `navigation_command`,
@@ -124,14 +124,14 @@ available through component logging.
 ### Loading and sharing the model
 
 Local checkpoint loading happens lazily. Injecting a model allows the caller to supply an
-already-constructed policy. Closing releases a model loaded by the stack; an injected model is
+already-constructed policy. Closing releases a model loaded by the stack. An injected model is
 borrowed and is not closed. Closing the stack is terminal and idempotent. Checkpoint locations
 and installation are specified in
 [Installation](../getting-started/installation.md#alpamayo-weights).
 
 ## Component logging interface
 
-`component_log` returns optional component outputs for the most recent decision; the runner
+`component_log` returns optional component outputs for the most recent decision. The runner
 snapshots them independently. `detections` returns canonical 3D detections or `None` when
 unsupported. The [Runtime reference](../reference/runtime.md) describes field layout
 and serialization.
@@ -158,14 +158,14 @@ The Alpamayo binding declares 15 preceding decisions when a factory has no `AVSt
 type metadata.
 
 Scorer callbacks have signature `(avstack, images, targets)` and return one score per input.
-Built-in descriptors name the input `images` and output `scores`; `output_shape=()` describes
+Built-in descriptors name the input `images` and output `scores`. `output_shape=()` describes
 one input's scalar score. Differentiable scorers declare `"BCHW float tensor [0,1]"` and
 `differentiable_inputs=("images",)`. Inference scorers declare `"list of HWC RGB uint8"`.
 Image and target batch lengths must agree.
 
 Scorers also declare objective direction, camera and decision threshold where applicable. A
-white-box attack can use the same detector as the driving system through its scorer binding;
-see [Optimization](optimization.md).
+white-box attack can use the same detector as the driving system through its scorer binding.
+See [Optimization](optimization.md).
 
 ## Use a custom driving system
 
@@ -202,7 +202,7 @@ stack.close()
 |---|---|
 | CARLA PointPillars | Modular 3D perception |
 | CARLA/nuScenes image detector | Camera forward-collision policy and bound scorers |
-| COCO YOLOX-m | General COCO detection and its bound scorer; the rule-based stack selects stop signs |
+| COCO YOLOX-m | General COCO detection and its bound scorer. The rule-based stack selects stop signs |
 | Alpamayo-1.5-10B | Camera/history/navigation policy |
 | PCTNet | Optional image harmonization |
 | SAM | Extraction of insertion assets |

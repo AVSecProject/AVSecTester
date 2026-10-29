@@ -16,7 +16,7 @@ cp configs/carla_phantom.yaml configs/my_carla.yaml
 ```
 
 Edit `configs/my_carla.yaml`: `simulator.options.client.connect_ip` and
-`simulator.options.client.connect_port` select the endpoint;
+`simulator.options.client.connect_port` select the endpoint, and
 `avstack.options.pipeline_cfg.perception.gpu` selects the perception GPU. Set
 `runs.output` to `../results/my_carla`.
 
@@ -40,7 +40,7 @@ cp configs/nurec_stop_sign_patch_modular_2601.yaml configs/my_stop_sign.yaml
 ```
 
 Edit `configs/my_stop_sign.yaml` and set `runs.output` to `../results/my_stop_sign`. Set
-`NUREC_GPU` in `.env`; `simulator.options.renderer.options.endpoint` selects NRE, and the
+`NUREC_GPU` in `.env`. `simulator.options.renderer.options.endpoint` selects NRE, and the
 top-level `device` selects the detector device inside the experiment container.
 
 ```bash

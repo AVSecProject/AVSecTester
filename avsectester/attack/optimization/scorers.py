@@ -47,7 +47,7 @@ class SessionScorer(Scorer):
         return images
 
     def target_scores(self, images, targets):
-        """Return one bound score per image; target and image batch lengths must agree."""
+        """Return one bound score per image. Target and image batch lengths must agree."""
         import torch
         inputs = self._inputs(images)
         if len(inputs) != len(targets):

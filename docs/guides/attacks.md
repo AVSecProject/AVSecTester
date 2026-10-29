@@ -8,15 +8,15 @@
 
 ## What a user implements
 
-Every attack has an offline phase and an online phase; either phase can be a no-op. Keep
+Every attack has an offline phase and an online phase. Either phase can be a no-op. Keep
 reusable parameters on `Attack` and mutable per-run state on a fresh `AttackRuntime`.
 
 | Entry point | Responsibility |
 |---|---|
-| `build_metadata(scenario)` | The metabuilder selects `AttackSegment` records; optional with `metadata.load` |
+| `build_metadata(scenario)` | The metabuilder selects `AttackSegment` records (optional with `metadata.load`) |
 | `validate_segment(segment)` | Reject metadata that lacks the data or geometry the attack requires |
 | `deployment_ticks(segment)` | Declare the deployment tick budget needed before the first capture |
-| `run_offline(context)` | Prepare and return artifacts; the default returns `None` |
+| `run_offline(context)` | Prepare and return artifacts. The default returns `None` |
 | `create_runtime(segment, artifacts)` | Create a fresh runtime for the online phase |
 
 Use [Experiment workflows](experiments.md) for preparation, execution and resume semantics.
@@ -74,7 +74,7 @@ class SpeedSpoofAttackRuntime(AttackRuntime):
         return replace(observation, ego_speed=self.reported_speed)
 ```
 
-The modified observation reaches the driving system while physical states remain unchanged; the
+The modified observation reaches the driving system while physical states remain unchanged. The
 [Runtime reference](../reference/runtime.md) defines the recorded inputs, commands and
 action receipts.
 
@@ -83,7 +83,7 @@ action receipts.
 `ScenarioView` provides the decision timeline, frame data, semantic map and preparation
 services. Use `record_reason()` to explain rejected candidates, and
 `session.can_start_at(position)` to check start requirements before returning a segment.
-Placement and visibility criteria belong to the attack; the framework does not infer them
+Placement and visibility criteria belong to the attack. The framework does not infer them
 from `user_data`.
 
 `AttackSegment` contains `scenario_id`, `start`, `stop` and `user_data`. The decision interval
@@ -163,7 +163,7 @@ assert np.any(samples[0].observation.sensor_data["front"] != optimization_sample
 ```
 
 Use `session.render` to evaluate deployed world or sensor actions. Use `session.rollout` when
-the objective depends on a driving response; each candidate has its own run state. Service
+the objective depends on a driving response. Each candidate has its own run state. Service
 request records and capability checks are defined in the
 [Python API](../reference/python-api.md).
 
@@ -175,14 +175,14 @@ seeds and treatments. Every treatment uses that budget. Larger budgets can make 
 fail `can_start_at`. A runtime must satisfy
 `runtime.setup_ticks <= attack.deployment_ticks(segment)`.
 
-A runtime's `setup` returns world actions; `step` returns the actions for a decision; `stop`
+A runtime's `setup` returns world actions. `step` returns the actions for a decision. `stop`
 releases its own resources. Declare snapshot reads with `ResultSubscription`. The context
 supplies snapshots and a clock, rather than a service that advances the world.
 
 Choose `WorldAttackAction` for physical-world changes, `SensorAttackAction` for sensor-data
 replacement, and `AVStackAttackAction` for a driving-system stage value. The
 [Runtime reference](../reference/runtime.md) describes their application order and stage semantics.
-For insertion, `InsertObject` is a `WorldAttackAction`; `InsertionAttackAction` is a
+For insertion, `InsertObject` is a `WorldAttackAction`. `InsertionAttackAction` is a
 `SensorAttackAction`. Object coordinates use +X forward, +Y left and +Z up.
 
 Placement tools belong to `attack.insertion`, not the dataset. A `SensorView` supplies camera
@@ -225,7 +225,7 @@ assert log.status == "completed"
 ```
 
 `ObjectAsset` uses a bottom-center local origin. Convert a map feature's reference point before
-placing the asset; geometry records and asset constraints are in the
+placing the asset. Geometry records and asset constraints are in the
 [Python API](../reference/python-api.md). This example derives a sign placement from a
 semantic map:
 
@@ -306,11 +306,11 @@ assert log.status == "completed"
 
 World insertion, visibility, depth, occlusion and non-camera limitations are defined by the
 [Simulator guide](simulators.md). Pass a harmonizer through the placed object or insertion
-action; [Optimization tools](optimization.md) explains the differentiable composition path.
+action. [Optimization tools](optimization.md) explains the differentiable composition path.
 
 ## Persist artifacts
 
-Return artifacts explicitly from `run_offline`; pass them to each runtime. Override
+Return artifacts explicitly from `run_offline`. Pass them to each runtime. Override
 `save_artifacts` and `load_artifacts` together when a custom storage format is needed.
 Persistence must not change the attack's configured inputs. See the
 [Attack API](../reference/python-api.md#avsectesterattackattack) for the storage contract.

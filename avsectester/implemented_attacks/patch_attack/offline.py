@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class PatchOptimization:
-    """Typed patch optimization settings; the algorithm owns its optimization seed.
+    """Typed patch optimization settings. The algorithm owns its optimization seed.
 
     The closed-loop seed and environment come from ``OfflineContext``. ``init_texture`` is
     an explicit NES warm start. ``target_box`` overrides the default projected host box.

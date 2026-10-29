@@ -80,7 +80,7 @@ class Attack(ABC):
     """One attack with its own parameters and optional offline preparation."""
     environment: Mapping[str, Any] = MappingProxyType({})
     """Environment overrides merged after ``runs.environment`` for the offline phase and attacked
-    treatments; selection does not apply them."""
+    treatments. Selection does not apply them."""
 
     def build_metadata(self, scenario: ScenarioView) -> Sequence[AttackSegment]:
         """Select segments, or leave selection to a shared metadata.load file."""
@@ -96,7 +96,7 @@ class Attack(ABC):
         return None
 
     def deployment_ticks(self, segment: AttackSegment) -> int:
-        """Declare native setup ticks before preparing artifacts; default has no world deployment."""
+        """Declare native setup ticks before preparing artifacts. Default has no world deployment."""
         return 0
 
     def create_runtime(self, segment: AttackSegment, artifacts: Any) -> AttackRuntime:

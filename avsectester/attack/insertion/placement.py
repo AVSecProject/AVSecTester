@@ -108,7 +108,7 @@ def placement_from_spec(value: Any) -> AttachedPlacement | WorldPlacement:
 
 
 def orientation_from_spec(value: Any) -> Orientation:
-    """Read an explicit orientation; default image insertions face the ego."""
+    """Read an explicit orientation. Default image insertions face the ego."""
     if value is None:
         return Orientation("face_ego")
     if isinstance(value, Mapping):

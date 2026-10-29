@@ -152,7 +152,7 @@ class Recorder:
             self._writer.write_manifest(self.log)
 
     def snapshot(self, value: Any) -> Any:
-        """Copy mutable data now; tensors are detached without importing torch."""
+        """Copy mutable data now. Tensors are detached without importing torch."""
         return self.registry.snapshot(value)
 
     def record_step(self, record: StepRecord) -> StepRecord:

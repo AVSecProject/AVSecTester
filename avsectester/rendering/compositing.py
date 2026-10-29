@@ -350,7 +350,7 @@ def composite_objects(
     occluders: Mapping[str, ActorState] | None = None,
     occlusion_tolerance_m: float = 0.1,
 ) -> CompositeResult:
-    """Plan and apply a composite; see ``plan_composite`` and ``CompositePlan.apply``.
+    """Plan and apply a composite. See ``plan_composite`` and ``CompositePlan.apply``.
 
     Each object's harmonizer sees the same unharmonized composite and changes only that object's
     visible pixels.

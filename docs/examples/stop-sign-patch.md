@@ -37,7 +37,7 @@ See [Installation](../getting-started/installation.md) for weights.
 
 ## Treatments
 
-The modular configurations contain the detector-optimized treatments; the Alpamayo
+The modular configurations contain the detector-optimized treatments. The Alpamayo
 configurations contain the rollout-optimized treatments. Both include the same controls.
 
 | Treatment | Initial patch | Optimized | Attack type |
@@ -78,10 +78,10 @@ default 20 m, is rejected. Constructor defaults are in the
 
 The runtime inserts a post-free canonical MUTCD R1-1 replica face over the reconstructed sign.
 The `mask_path` binary mask selects which face-texture colors form the patch. The default
-`rp2_bars.png` places bars above and below STOP; `face_interior.png` is the packaged
+`rp2_bars.png` places bars above and below STOP. `face_interior.png` is the packaged
 alternative. Artifacts keep the face alpha and all colors outside the mask.
 
-The default placement is upright with a standard-size face; map modes are alternatives:
+The default placement is upright with a standard-size face. Map modes are alternatives:
 
 | Option | Behavior |
 |---|---|
@@ -89,13 +89,13 @@ The default placement is upright with a standard-size face; map modes are altern
 | `face_orientation="map"` | Preserve the annotated rotation, including tilt |
 | `face_size="mutcd_standard"` | Select the width closest to annotated height from 0.762, 0.914 and 1.219 m |
 | `face_size="map_width"` | Use the annotated width |
-| `width_scale=1.1` | Multiply the selected face width; height follows the texture aspect ratio |
+| `width_scale=1.1` | Multiply the selected face width. Height follows the texture aspect ratio |
 | `offset_m=0.10` | Move the replica face center along the selected forward normal |
 
 The annotation supplies the center and yaw. Position or yaw errors can expose the reconstructed
-sign around the replica's edges at close range; the attack does not correct those annotations.
-The simulator's `occlusion_tolerance_m` handles occlusion;
-see [Simulators](../guides/simulators.md).
+sign around the replica's edges at close range. The attack does not correct those annotations.
+The simulator's `occlusion_tolerance_m` handles occlusion.
+See [Simulators](../guides/simulators.md).
 
 The configurations use `ExposureHarmonizer(reference="under")`. Its gain is estimated from the
 reconstructed sign and the unpatched nominal replica, then applied to each patch. The same
@@ -119,8 +119,8 @@ and training input rules.
 
 ## Prepare the white-box attack
 
-The white-box attack uses the driving system's YOLOX detector through `avstack.bindings`;
-algorithm used: `PGD`. `rule_based_driving_adapter` declares `rule_based.detection_confidence`,
+The white-box attack uses the driving system's YOLOX detector through `avstack.bindings`.
+Algorithm used: `PGD`. `rule_based_driving_adapter` declares `rule_based.detection_confidence`,
 the camera and decision threshold. A `SessionScorer` reuses it for calibration and optimization.
 The [driving-system guide](../guides/driving-systems.md) describes the binding behavior.
 
@@ -130,13 +130,13 @@ route distance to the stop line, from the farthest frame where the unpatched rep
 decision threshold down to `v² / (2 × braking_deceleration_mps2)`. `v` is the recorded speed at the
 segment start. `braking_deceleration_mps2` is the driving system's strongest braking and defaults
 to 6 m/s², the `RuleBasedAVStack` planner limit. The sign-face projection defines the target box.
-Frames below `min_visible_pixels` are skipped; its default is 100 visible replica pixels.
+Frames below `min_visible_pixels` are skipped. Its default is 100 visible replica pixels.
 
 The configurations use all five training segments, every eligible frame (`samples_per_scene: all`),
 `epochs: 100`, `batch_size: 16`, `tv_weight: 0.3` and step size 4/255.
 An integer `samples_per_scene` of at least four instead selects that many time-uniform frames
-per segment. Every selected frame is a training sample;
-validation, when needed, uses separate segments from the
+per segment. Every selected frame is a training sample.
+Validation, when needed, uses separate segments from the
 [data split](../reference/configuration.md#data-split).
 
 The objective is `HideBelowThreshold`: `max(0, s − (τ − m))` for detector confidence `s`, the
@@ -155,18 +155,18 @@ The offline report contains calibration and sample tables, the `pgd_objective` s
 `patch_smoothness`, and initial/optimized replica textures. `pgd_objective` records the mean
 training hinge objective per epoch, excluding the smoothness term, at epochs 1 through
 `epochs`. After optimization every training frame is scored for the clean reconstruction,
-unpatched replica, initial patch and optimized patch; `detected_frame_fraction` and
+unpatched replica, initial patch and optimized patch. `detected_frame_fraction` and
 `max_confidence` summarize the optimized patch, and detection rates are binned by route distance
 to the stop line. The configurations set `progress_interval: 10` to score the current patch on
-every training frame every 10 epochs and after the last epoch; the option defaults to 1.
+every training frame every 10 epochs and after the last epoch. The option defaults to 1.
 The `training_progress` table and its series record the full-set hinge loss, detected fraction
-and detected fraction per 10 m bin; epoch 0 is the initial patch.
+and detected fraction per 10 m bin. Epoch 0 is the initial patch.
 [Optimization tools](../guides/optimization.md) explains report usage.
 
 ## Prepare the black-box attack
 
-The black-box attack scores the mean planned forward distance from the driving command;
-algorithm used: `NES`. Every candidate runs one decision at each configured start. The
+The black-box attack scores the mean planned forward distance from the driving command.
+Algorithm used: `NES`. Every candidate runs one decision at each configured start. The
 `horizon_s` objective uses the command's timestamped trajectory, without extrapolating
 beyond it.
 
@@ -198,7 +198,7 @@ Resume interrupted work with:
 docker compose run --rm nurec-experiment run configs/nurec_stop_sign_patch_modular_2601.yaml --resume
 ```
 
-Completed attack offline phases and matching completed runs are reused; unfinished work follows
+Completed attack offline phases and matching completed runs are reused. Unfinished work follows
 [the experiment resume workflow](../guides/experiments.md).
 
 ## Run from Python
@@ -236,7 +236,7 @@ docker compose run --rm --entrypoint python nurec-experiment -m my_module
 Add `simulator.options.traffic` with type
 `avsectester.closed_loop.simulators.nurec:AlpaSimTraffic` and pass
 `--trafficsim-models models/alpasim-trafficsim` to `run`. It manages the local traffic service
-alongside NRE; the [Simulator guide](../guides/simulators.md) defines behavior and restrictions.
+alongside NRE. The [Simulator guide](../guides/simulators.md) defines behavior and restrictions.
 Prepare the traffic image and weights following
 [Installation](../getting-started/installation.md#reactive-traffic-weights-and-image).
 
@@ -256,10 +256,10 @@ The [CLI reference](../reference/cli.md) defines the HTML and structured-output 
 ### Custom metric example
 
 `ReplicaVisibility` demonstrates an importable `Metric` outside the built-in metric registry.
-Its `evaluate` reads saved capture evidence and returns `visible_steps`; `describe` supplies the
+Its `evaluate` reads saved capture evidence and returns `visible_steps`. `describe` supplies the
 field's meaning and unit. A treatment without a replica has an unavailable value. A decision
-counts as visible when the replica reaches `min_visible_pixels` in at least one selected camera;
-by default `camera_ids` selects every camera that recorded the replica.
+counts as visible when the replica reaches `min_visible_pixels` in at least one selected camera.
+By default `camera_ids` selects every camera that recorded the replica.
 
 Reference the class by its full path, as in the supplied YAML:
 

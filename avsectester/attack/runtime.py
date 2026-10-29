@@ -72,7 +72,7 @@ class AttackAction:
 
 
 class WorldAttackAction(AttackAction, ABC):
-    """Change the simulated world. The simulator applies it; it is visible from the next capture.
+    """Change the simulated world. The simulator applies it. It is visible from the next capture.
 
     ``setup_ticks`` is the number of ``simulator.setup_tick()`` calls that ``apply`` makes when
     the action is returned by ``AttackRuntime.setup``. Ticks are unavailable after setup.
@@ -122,7 +122,7 @@ class AVStackAttackAction(AttackAction):
 
 
 class AttackRuntime:
-    """One online-phase instance per run; every callback shares this object's state.
+    """One online-phase instance per run. Every callback shares this object's state.
 
     ``setup`` runs after the simulator reset and before the first capture, and returns only
     world attack actions. ``step`` runs once per decision before ObservationPipeline. ``stop`` runs
@@ -144,7 +144,7 @@ class AttackRuntime:
         return ()
 
     def stop(self, context: OnlineContext) -> None:
-        """Release online-phase resources; the default implementation has no effect."""
+        """Release online-phase resources. The default implementation has no effect."""
         pass
 
 

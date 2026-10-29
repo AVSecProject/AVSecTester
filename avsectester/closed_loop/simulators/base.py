@@ -255,7 +255,7 @@ class Simulator(ABC):
 
     @abstractmethod
     def create_runtime(self, seed: int | None = None) -> SimulatorRuntime:
-        """Create a new live world with this configuration; ``seed`` seeds its random choices."""
+        """Create a new live world with this configuration. ``seed`` seeds its random choices."""
 
     @property
     def past_steps(self) -> int:
@@ -264,7 +264,7 @@ class Simulator(ABC):
 
     @property
     def decision_time_step(self) -> float | None:
-        """Decision interval in seconds; None leaves the interval unrestricted."""
+        """Decision interval in seconds. None leaves the interval unrestricted."""
         return None
 
     @property
@@ -399,12 +399,12 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
 
     @property
     def decision_time_step(self) -> float | None:
-        """Decision interval in seconds; None leaves the interval unrestricted."""
+        """Decision interval in seconds. None leaves the interval unrestricted."""
         return self.simulator.decision_time_step
 
     @property
     def command_modes(self) -> frozenset[str] | None:
-        """Control command modes this simulator runtime accepts; None when undeclared."""
+        """Control command modes this simulator runtime accepts, or None when undeclared."""
         return self.simulator.command_modes
 
     @property
@@ -522,7 +522,7 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
         return frozenset()
 
     def sensor_geometry(self, sensor: str) -> SensorGeometry:
-        """Read optical-camera geometry; override for a lightweight, image-free path.
+        """Read optical-camera geometry. Override for a lightweight, image-free path.
 
         The default uses the native sensor view. Native simulators override it so
         projection screening does not copy pixels or compute optional scene depth.
@@ -533,7 +533,7 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
         return SensorGeometry(view.sensor, view.camera, deepcopy(view.cam_from_world))
 
     def sensor_view(self, sensor: str) -> SensorView:
-        """Return the view of the current capture of ``sensor``; it never advances time."""
+        """Return the view of the current capture of ``sensor``. It never advances time."""
         if not self._world_initialized or self._capture is None:
             raise RuntimeError("Reset the simulator before requesting sensor views")
         self._compose_capture()
@@ -571,7 +571,7 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
         self._objects[object_id] = placed
 
     def remove_object(self, object_id: str) -> None:
-        """Remove a world object; the previous capture remains unchanged."""
+        """Remove a world object. The previous capture remains unchanged."""
         if not self.can_insert_objects:
             raise NotImplementedError(f"{type(self.simulator).__name__} cannot insert objects")
         if object_id not in self._objects:
@@ -630,7 +630,7 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
         raise NotImplementedError(f"{type(self).__name__} cannot control actors")
 
     def set_actor_state(self, actor_id: str, state: ActorState) -> None:
-        """Move another actor to a canonical world state; visible from the next capture.
+        """Move another actor to a canonical world state. It is visible from the next capture.
 
         The actor stops following its prescribed or traffic-manager motion for the rest of the
         run. Call it from a ``WorldAttackAction``. The ego belongs to the driving system.
@@ -712,7 +712,7 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
         self._setup_ticks_used += 1
 
     def step(self, control: Control) -> None:
-        """Apply ``control``, advance the world one decision and capture; read it with ``observe``."""
+        """Apply ``control``, advance the world one decision and capture. Read it with ``observe``."""
         self.validate_command(control)
         if not self._world_initialized:
             raise RuntimeError("Reset the simulator before stepping")
@@ -729,7 +729,7 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
         self._world_initialized = True
 
     def observe(self) -> Observation:
-        """Return an independent copy of the current capture; never advance or recapture."""
+        """Return an independent copy of the current capture. Never advance or recapture."""
         if not self._world_initialized or self._capture is None:
             raise RuntimeError("Reset the simulator before observing")
         self._compose_capture()

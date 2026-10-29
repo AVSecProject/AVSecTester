@@ -10,7 +10,7 @@
 
 `Experiment` accepts a typed configuration, mapping or YAML path. `prepare` selects or loads
 segments and runs each configured attack's offline phase. `execute` runs the selected treatment
-groups; `evaluate` measures their recorded evidence. `PreparedExperiment` contains metadata,
+groups. `evaluate` measures their recorded evidence. `PreparedExperiment` contains metadata,
 units, artifacts and offline reports, without live simulator or `AVStack` history.
 
 This complete example uses the repository's memory components and a temporary output directory.
@@ -51,7 +51,7 @@ loaded segments.
 
 After `build_metadata` returns, preparation drops segments that fail `can_start_at` or whose
 `validate_start` raises `UnsupportedStartError`. The experiment-wide budget recheck drops
-segments that then fail `can_start_at`. Each drop records its reason; see
+segments that then fail `can_start_at`. Each drop records its reason. See
 [deployment tick budgets](attacks.md#online-phase).
 
 Preparation uses the first configured run seed and reuses its metadata for all execution seeds.
@@ -63,7 +63,7 @@ environment explicitly.
 the split schema and deterministic allocation are defined in
 [Data split](../reference/configuration.md#data-split).
 
-**Not yet implemented.** Sharing unattacked runs across units with different `user_data`; see
+**Not yet implemented.** Sharing unattacked runs across units with different `user_data`. See
 [shared runs across different user data](../development/TODO.md#shared-runs-across-different-user-data).
 
 ## Input validation
@@ -85,7 +85,7 @@ execution failures.
 ## Treatments and common origins
 
 The [architecture](../concepts/architecture.md#terms) defines units and comparison groups.
-Each enabled treatment starts from the group's common origin; membership follows
+Each enabled treatment starts from the group's common origin. Membership follows
 [Evaluation](evaluation.md#comparison-groups). The same configured hooks apply to every treatment.
 
 Execution follows the [deployment tick budget](attacks.md#online-phase).
@@ -96,8 +96,8 @@ environment overrides.
 
 ## Results and failures
 
-`ExperimentResult.runs` holds every treatment result; `failures` lists failed or incomplete
-runs; `selection_errors` lists selection errors; the `runs.strict` setting raises the first error.
+`ExperimentResult.runs` holds every treatment result. `failures` lists failed or incomplete
+runs. `selection_errors` lists selection errors. The `runs.strict` setting raises the first error.
 See [Run settings](../reference/configuration.md#run-settings).
 
 ## Save and reuse selected metadata
@@ -108,11 +108,11 @@ invalid segment fails with its index and reason.
 
 Metadata files contain segments, independently of offline artifacts or run results. Use
 `metadata.save` to export all units after selection and deployment checks, before the offline
-phases. Existing identical content is accepted; different content is an error.
+phases. Existing identical content is accepted. Different content is an error.
 
 Use `metadata.load` to reuse those segments with other attack settings or driving systems. Every
 attack receives the same supplied segments, selection is skipped and split still applies. The
-offline phases run for the configured attacks; loading segments does not reuse their artifacts.
+offline phases run for the configured attacks. Loading segments does not reuse their artifacts.
 
 Python callers can generate segments with their own criteria using `save_metadata` and
 `load_metadata`. The file schema, duplicate checks, path rules and content-hash compatibility
@@ -127,7 +127,7 @@ manifest is written after every configured attack has finished.
 
 `PreparedExperiment.save` and load persist and restore artifacts together with metadata and
 reports. Loading requires an explicit compatible configuration, does not repeat selection and
-does not run the offline phases. Only load trusted preparation files; artifact encoding is
+does not run the offline phases. Only load trusted preparation files. Artifact encoding is
 controlled by the attack. See
 [compatibility rules](../reference/configuration.md#saved-preparation-compatibility) and
 [the preparation API](../reference/python-api.md#avsectesterexperimentmodels).
@@ -135,7 +135,7 @@ controlled by the attack. See
 ## Resume interrupted work
 
 Prepare with `resume=True` to reuse saved selection and completed offline phases. Execute with
-`resume=True` to retain completed runs whose expected metadata matches; missing, failed or
+`resume=True` to retain completed runs whose expected metadata matches. Missing, failed or
 mismatched runs are retried individually. An already complete group needs no new initialization.
 
 Execution resume compares `attack_name`, `segment_index`, `part`, the complete `segment`,
@@ -145,24 +145,24 @@ and `deployment_ticks`.
 An interrupted offline phase leaves progress and a partial failed report. Resuming archives that
 attack's report directory before restarting its offline phase. The
 [CLI resume workflow](../reference/cli.md#preparation-reuse) defines command options and output
-handling; [Offline reports](optimization.md) explains phase output.
+handling. [Offline reports](optimization.md) explains phase output.
 
 ## Saved maps
 
 Execution reads each selected scene's semantic map once and retains it in
 `ExperimentResult.scenario_maps`, including `Unavailable` with its reason. Persistent results
 save those maps with the run evidence. `ExperimentResult.load` restores them for
-`ComparisonGroup.scenario_map`; evaluation does not call a dataset to fill in missing maps.
+`ComparisonGroup.scenario_map`. Evaluation does not call a dataset to fill in missing maps.
 
 A saved result can therefore be evaluated without its dataset or metadata file. Configuration
-compatibility still applies; see
+compatibility still applies. See
 [saved preparation compatibility](../reference/configuration.md#saved-preparation-compatibility).
 The [CLI output layout](../reference/cli.md#output-layout) defines saved file locations.
 
 ## Reproducibility
 
 Keep the configuration, selected metadata, artifacts and `RunLog` manifests together. Fresh
-runtime and hook state isolate treatments; a common seed does not guarantee bitwise-identical
+runtime and hook state isolate treatments. A common seed does not guarantee bitwise-identical
 native simulator or model kernels. Sensor noise uses the
 [environment seed rules](environments.md#randomness).
 

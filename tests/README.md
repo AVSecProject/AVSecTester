@@ -6,13 +6,13 @@
 >
 > **Prerequisites:** [Installation](../docs/getting-started/installation.md).
 
-Tests follow three layers. Each behavior belongs to its responsible layer; higher layers check
+Tests follow three layers. Each behavior belongs to its responsible layer. Higher layers check
 the public workflow rather than repeating lower-level numerical assertions.
 
 | Layer | Organization | Inputs |
 |---|---|---|
 | Framework core | One public method or feature per test | Real framework objects and shared memory components |
-| Components | One contract template per family; 1–3 unique behaviors per component | Real components and synthetic observations |
+| Components | One contract template per family and 1–3 unique behaviors per component | Real components and synthetic observations |
 | Numerical records and geometry | Public numerical functions and transport contracts | Tiny arrays, poses, rays and logs |
 
 ## Layout
@@ -186,12 +186,12 @@ repository. Commit only tests that follow the layers above:
 
 ## Prerequisites
 
-CPU builds of `torch` and `torchvision` satisfy the offline test prerequisites; CI installs
+CPU builds of `torch` and `torchvision` satisfy the offline test prerequisites. CI installs
 both from the CPU index. Use the test and nurec extras for the core suite, including Embree for
 synthetic mesh depth and protobuf for rendered-probe requests. The supplied images provide their
 corresponding native dependencies.
 
-nuScenes tests require nuscenes-devkit and skip when it is absent; avsectester:carla includes
+nuScenes tests require nuscenes-devkit and skip when it is absent, and avsectester:carla includes
 it. Native `AVStack` tests require the avstack checkouts and CARLA Python client. Detector
 configuration tests construct models without checkpoint weights and skip configurations whose
 optional checkout or model package is absent. `avsectester:nurec` provides AlpaSim for the
@@ -259,7 +259,7 @@ python -m pytest tests/live -q
 ```
 
 Tests skip when their stated prerequisites are absent. Dataset-only checks require no
-simulator server. Environment paths must be visible inside the container; see
+simulator server. Environment paths must be visible inside the container. See
 [external data mounts](../docs/getting-started/installation.md).
 
 ### Real NuRec dataset
@@ -296,7 +296,7 @@ docker compose run --rm --no-deps --entrypoint python \
 
 The test requires CUDA, YOLOX and a local checkpoint. `AVSECTESTER_YOLOX_WEIGHTS` selects the
 checkpoint and defaults to `models/yolox_m.pth`. Missing prerequisites skip the test with a reason.
-The nurec image provides YOLOX; see
+The nurec image provides YOLOX. See
 [YOLOX weights](../docs/getting-started/installation.md#yolox-detector-weights).
 
 ```bash
@@ -326,12 +326,12 @@ docker compose run --rm --no-deps --entrypoint python \
 ```
 
 The [model setup](../docs/getting-started/installation.md) defines weight acquisition and
-mounts; this test does not download weights.
+mounts. This test does not download weights.
 
 ### Live CARLA integration
 
 The live integration test needs a running CARLA server, installed native models and a matching
-configuration. It is disabled unless `--run-carla` is supplied; `--carla-config` selects the
+configuration. It is disabled unless `--run-carla` is supplied. `--carla-config` selects the
 configuration and defaults to `configs/carla_phantom.yaml`:
 
 ```bash
@@ -340,7 +340,7 @@ docker compose run --rm --no-deps --entrypoint python carla-experiment \
   --carla-config configs/carla_phantom.yaml -q
 ```
 
-Server setup is described in [Installation](../docs/getting-started/installation.md); the live test
+Server setup is described in [Installation](../docs/getting-started/installation.md). The live test
 executes the public preparation, execution and evaluation workflow.
 
 ## Next steps

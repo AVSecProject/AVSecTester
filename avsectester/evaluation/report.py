@@ -19,7 +19,7 @@ from .metric import Metric, UnavailableMetricValue
 
 @dataclass(frozen=True)
 class EvaluationConfiguration:
-    """Metrics for the whole experiment; None chooses one data-aware default metric set."""
+    """Metrics for the whole experiment. None chooses one data-aware default metric set."""
 
     metrics: tuple[Metric, ...] | None = None
 
@@ -132,7 +132,7 @@ class EvaluationReport:
         return "\n".join(lines) if lines else "No treatment runs were recorded."
 
     def save(self, directory: str | Path) -> Path:
-        """Write report.json and runs.csv; metric names prefix columns to protect identities."""
+        """Write report.json and runs.csv. Metric names prefix columns to protect identities."""
         destination = Path(directory)
         destination.mkdir(parents=True, exist_ok=True)
         (destination / "report.json").write_text(

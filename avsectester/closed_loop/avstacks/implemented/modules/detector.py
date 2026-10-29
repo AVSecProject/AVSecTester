@@ -201,7 +201,7 @@ class YOLOXDetector:
         return torch.stack(result)
 
     def close(self) -> None:
-        """Release the model; a closed detector cannot detect or score again."""
+        """Release the model. A closed detector cannot detect or score again."""
         self._closed = True
         self._loaded_model = None
         self.model = None

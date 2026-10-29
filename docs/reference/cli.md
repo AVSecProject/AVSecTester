@@ -50,7 +50,7 @@ mutually exclusive.
 
 ### Preparation reuse
 
-`--prepared` maps to loading a complete preparation; `--resume` continues saved preparation and
+`--prepared` maps to loading a complete preparation. `--resume` continues saved preparation and
 execution. See [Experiments](../guides/experiments.md#resume-interrupted-work) for validation,
 resume and persistence semantics.
 
@@ -64,7 +64,7 @@ docker compose run --rm nurec-experiment run CONFIG.yaml --trafficsim-models mod
 
 `run` checks the configured NuRec renderer and traffic endpoints after configuration, output and
 preparation checks. A running service must contain every configured dataset scene. A compatible
-service is reused and left running; a scene mismatch is an error.
+service is reused and left running. A scene mismatch is an error.
 
 Missing services can start only on local endpoints: `127.0.0.1`, `localhost`, `0.0.0.0` or `::1`.
 Starting traffic requires `--trafficsim-models`. GPU selection uses the explicit service option
@@ -78,7 +78,7 @@ Python callers start required services themselves, for example with
 Managed services cover preparation, execution and evaluation. Startup, reuse and shutdown each
 print a progress line. On completion, exceptions or Ctrl-C, only containers started by this
 command are stopped and removed, in reverse startup order. Cleanup errors are attached to an
-active exception; after a completed experiment they are reported without replacing its result.
+active exception. After a completed experiment they are reported without replacing its result.
 
 NRE startup creates its client probe directory. Docker mounts each archive read-only at
 `/mnt/nre-data/<filename>` and mounts the probe directory at `server_probe_directory`, or at the
@@ -92,7 +92,7 @@ The optional manual service commands below support reuse across multiple experim
 
 `evaluate CONFIG.yaml` reads `runs.output`, recomputes metrics and replaces evaluation outputs.
 It leaves run logs and preparation unchanged. It uses saved segments, maps and the metadata
-hash; the dataset, external metadata file, model inference and simulator services are
+hash. The dataset, external metadata file, model inference and simulator services are
 not needed.
 
 `Metric` configuration may change before reevaluation, subject to the saved
@@ -171,7 +171,7 @@ behavior is described in [Simulators](../guides/simulators.md#reactive-traffic).
 ## Interruptions
 
 Ctrl-C exits 130, cleans up owned containers and prints the output directory when available.
-Partial reports may remain; `evaluate` regenerates them without simulation.
+Partial reports may remain. `evaluate` regenerates them without simulation.
 Checkpoint and retry behavior follow
 [Resume interrupted work](../guides/experiments.md#resume-interrupted-work).
 
@@ -198,7 +198,7 @@ Checkpoint and retry behavior follow
   evaluation_report.html
 ```
 
-Artifact filenames above describe the default trusted-pickle format; attacks may override
+Artifact filenames above describe the default trusted-pickle format. Attacks may override
 artifact persistence. Segment numbers are global unit indexes. Each run directory contains
 `manifest.json`, published Parquet step/event parts and payload shards belonging to its
 [RunLog](runtime.md#runlog). Offline report content is described in
@@ -209,17 +209,17 @@ in [Evaluation](../guides/evaluation.md).
 
 | Code | Meaning |
 |---|---|
-| 0 | Command completed without failed runs, selection errors or metric errors; this does not establish attack effectiveness |
+| 0 | Command completed without failed runs, selection errors or metric errors. This does not establish attack effectiveness |
 | 1 | Configuration load error, preparation load/validation error, selection, execution, result reading, metric evaluation or service startup/stop failed |
 | 2 | Invalid configuration or metadata contents, output conflict or incompatible saved preparation |
-| 130 | Keyboard interruption; available partial output is retained |
+| 130 | Keyboard interruption. Available partial output is retained |
 
 Service scene mismatch, a missing service at a nonlocal endpoint, absent `--trafficsim-models`
 and invalid GPU selection are configuration errors (exit 2). Container launch, readiness and
 explicit stop failures exit 1. Unsupported hook stages or incompatible commands fail the
 affected run at its start (exit 1). `evaluate` requires `prepared.json` and exits 1 if it is
 missing. With `--prepared` or `--resume`, the current hook `simulator.setup` ticks plus
-`Attack.deployment_ticks(segment)` must fit the saved deployment tick budget; exceeding it
+`Attack.deployment_ticks(segment)` must fit the saved deployment tick budget. Exceeding it
 fails execution with exit 1. See
 [saved-preparation compatibility](configuration.md#saved-preparation-compatibility).
 

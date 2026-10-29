@@ -21,7 +21,7 @@ preparation, per-run state and recorded evidence in their owning components. The
 | `scripts/website/` | Site build hooks, built-site checks and homepage media tools |
 | `tests/` | Core, native and opt-in external checks |
 | `docs/` | Guides, examples and references |
-| `models/` | Model weight locations; weights are downloaded, not tracked |
+| `models/` | Model weight locations. Weights are downloaded, not tracked |
 | `benchmarks/` | Repository benchmarks |
 | `third_party/` | External implementation checkouts |
 | `website/` | Site configuration, pinned build dependencies, homepage source and media |
@@ -44,7 +44,7 @@ CI job descriptions.
 ## Documentation rules
 
 Consult this table before adding information. Keep the complete explanation in its owner
-document; elsewhere use one sentence and a link.
+document. Elsewhere use one sentence and a link.
 
 | Information | Owner document |
 |---|---|
@@ -93,7 +93,7 @@ of the documentation. Mark missing capabilities with **Not yet implemented.** an
 specific heading in [TODO](TODO.md).
 
 Self-contained examples place `<!-- runnable -->` immediately before their code fence. Python
-and py blocks execute offline; runnable YAML blocks load as complete experiment configurations.
+and py blocks execute offline. Runnable YAML blocks load as complete experiment configurations.
 External-service examples state their prerequisites. Other Python blocks must parse and use
 resolvable framework imports.
 
@@ -104,10 +104,10 @@ After changing a public docstring, follow the generator command in
 [Repository tools](../../scripts/README.md#api-reference-generation).
 
 The project site publishes docs/ unchanged under /docs/, except the TODO page, which stays on
-GitHub; site links to it open it there. Every page must render correctly both on GitHub and on the
-site, so use only standard Markdown and GitHub tables; do not use Material for MkDocs syntax such
+GitHub. Site links to it open it there. Every page must render correctly both on GitHub and on the
+site, so use only standard Markdown and GitHub tables. Do not use Material for MkDocs syntax such
 as admonitions or content tabs. Add every new docs page to `nav` in
-[website/mkdocs.yml](../../website/mkdocs.yml); the strict site build fails on omitted pages. To
+[website/mkdocs.yml](../../website/mkdocs.yml). The strict site build fails on omitted pages. To
 preview the site, create a separate virtual environment, run
 `pip install -r website/requirements.txt` and then `mkdocs serve -f website/mkdocs.yml`. This is a
 documentation tool and runs outside the Compose experiment services.

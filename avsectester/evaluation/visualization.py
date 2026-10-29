@@ -243,7 +243,7 @@ def labels_view(record: StepRecord, camera: str | None = None, *, target: str | 
 
 
 def detections_view(record: StepRecord, camera: str | None = None, *, threshold: float = 0.3) -> np.ndarray | None:
-    """Overlay StepRecord.detections; this never runs a detector or reads components."""
+    """Overlay StepRecord.detections. This never runs a detector or reads components."""
     image, view = camera_view(record, camera), sensor_view(record, camera)
     if image is None or view is None or record.detections is None:
         return image
@@ -321,7 +321,7 @@ def save_gif(source: RunLog | Sequence[Any], path: str | Path, fps: int = 5,
 
 def save_sequence(log: RunLog, out_dir: str | Path, name: str = "sequence", cols: int = 4,
                   fps: int = 4, *, visualize: View = camera_view) -> tuple[str, str] | None:
-    """Export a contact sheet and GIF from one recorded run; no frames yields None."""
+    """Export a contact sheet and GIF from one recorded run. No frames yields None."""
     frames = _images(log, visualize)
     if not frames:
         return None
@@ -332,7 +332,7 @@ def save_sequence(log: RunLog, out_dir: str | Path, name: str = "sequence", cols
 
 
 def plot_group(runs: Mapping[str, Any], path: str | Path, *, title: str | None = None) -> Path:
-    """Plot physical speeds; add an actuator-brake panel only when some run records that evidence."""
+    """Plot physical speeds. Add an actuator-brake panel only when some run records that evidence."""
     from matplotlib.backends.backend_agg import FigureCanvasAgg
     from matplotlib.figure import Figure
 
