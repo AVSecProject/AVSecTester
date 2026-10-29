@@ -2,6 +2,9 @@
 
 Adversarial security testing for autonomous driving.
 
+**Website:** [avsecproject.github.io](https://avsecproject.github.io/) ·
+**Documentation:** [avsecproject.github.io/docs](https://avsecproject.github.io/docs/)
+
 AVSecTester selects segments, prepares artifacts, executes unattacked and attacked treatments, and
 evaluates saved logs. It connects simulators and driving systems through a reusable
 experiment workflow.
