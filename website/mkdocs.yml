@@ -97,7 +97,7 @@ extra:
   # Homepage author and affiliation lines; each is rendered only when its list is nonempty.
   authors: []
   affiliations:
-    - University of Arizona
+    - The University of Arizona
     - University of Southern California
   # version is read from avsectester/__init__.py by scripts/website/hooks.py.
 

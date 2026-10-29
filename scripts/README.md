@@ -83,7 +83,8 @@ the decisions.
 | Media | Source configuration and changes | Run (segment, seed, treatments) | Command (`python -m scripts.website.make_media ...`) |
 |---|---|---|---|
 | `stop-sign-white-box` | `nurec_stop_sign_patch_modular_2601.yaml`, treatments `clean` (attack `no_patch`) and `noise_detector_pgd` only | 15 (scene `clipgt-d2fcf4b2-2a4b-47e3-a2ec-a9e3372c3a8a`), 0, `clean` and `noise_detector_pgd` | `compare OUTPUT --segment 15 --attacked noise_detector_pgd --clean-label "Clean" --attacked-label "White-box attack (PGD)" --fps 8 --poster-step 22 --name stop-sign-white-box` |
-| `stop-sign-alpamayo` | `nurec_stop_sign_patch_alpamayo_2601.yaml`, treatments `white` and `black` only, `usdz_paths` of six scenes, `split: {train_segments: 1, execute: [train, test]}` | 1 (scene `clipgt-ada590cf-e6eb-4d6b-bed7-ecbc1f5ad9cd`), 0, `white` | `overlay OUTPUT --segment 1 --treatment white --label "White patch" --fps 8 --name stop-sign-alpamayo` |
+| `stop-sign-patch` | `nurec_stop_sign_patch_alpamayo_2601.yaml`, one scene in `usdz_paths`, no `split`, treatments `white` and `white_unharmonized` (the `white` attack without its harmonizer) | 0 (scene `clipgt-7b186d92-d6f5-4e27-a324-d705d1fad7e1`), 0, `white_unharmonized` | `frame OUTPUT --segment 0 --treatment white_unharmonized --step 60 --crop 800 360 1760 900 --width 640 --name stop-sign-patch` |
+| `stop-sign-patch-harmonized` | The same run | 0, 0, `white` | `frame OUTPUT --segment 0 --treatment white --step 60 --crop 800 360 1760 900 --width 640 --name stop-sign-patch-harmonized` |
 | `image-insertion` | `carla_object_insertion.yaml`, sign at `position_m: [12.0, -4.0, 0.0]`, `settle_iters: 1000` | 0, 0, `object` | `frame OUTPUT --segment 0 --treatment object --camera camera-0-0 --step 19 --crop 360 164 760 389 --width 640 --name image-insertion` |
 | `image-insertion-harmonized` | The same run. Attack `object_harmonized` adds `compositor: PatchCompositor(ExposureHarmonizer(), soften: 0.6)` | 0, 0, `object_harmonized` | `frame OUTPUT --segment 0 --treatment object_harmonized --camera camera-0-0 --step 19 --crop 360 164 760 389 --width 640 --name image-insertion-harmonized` |
 | `physical-patch` | `nurec_patch.yaml` | 0, 0, `patch` | `frame OUTPUT --segment 0 --treatment patch --step 19 --crop 360 610 1000 970 --width 640 --name physical-patch` |
@@ -93,9 +94,10 @@ the decisions.
 
 The stop-sign runs use the local NuRec 26.01 release. `stop-sign-white-box` shows a test unit whose
 clean run stops before the line without a collision and whose attacked run crosses it.
-`stop-sign-alpamayo` was chosen from six scenes, each run with a white and a black patch. The
-insertion and patch frames show the last decision of their runs. The CARLA sign is placed closer
-than in the supplied configuration so that it is legible in the 800x600 camera.
+The stop-sign patch frames show a decision where the replica sign is visible beside a real stop
+sign of the scene. The object insertion and physical patch frames show the last decision of their
+runs. The CARLA sign is placed closer than in the supplied configuration so that it is legible in
+the 800x600 camera.
 
 ## Next steps
 

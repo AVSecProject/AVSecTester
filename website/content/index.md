@@ -11,23 +11,26 @@ hide: [navigation, toc]
          aria-label="Side-by-side video of a clean run and a white-box attack run of the same stop-sign approach in a NuRec scene, with the rule-based driving system's stop-sign detections and a speed plot">
     <source src="assets/media/stop-sign-white-box.mp4" type="video/mp4">
   </video>
-  <figcaption>In this example run, the rule-based driving system detects the replica stop sign from far
-  away in the clean run (left) and stops before the line. With a patch from a white-box attack
-  (algorithm used: PGD) on its detector (right), it first detects the sign too close to stop and
-  crosses the stop line.</figcaption>
+  <figcaption>Left: the driving system sees the stop sign early and stops before the line. Right: with a
+  patch from a white-box attack (PGD) <a href="#references">[1]</a> on its detector
+  <a href="#references">[2]</a>, it sees the sign too late and runs the stop line.</figcaption>
 </figure>
 
-## Why closed loop
+## Why AVSecTester
 
-A patch can hide a stop sign in most camera frames and the vehicle can still stop: one detection
-at the right distance can be enough. Per-frame detection scores would call that attack a success.
-The driving outcome shows that it failed. AVSecTester keeps the driving system in the loop. Its
-commands move the simulated vehicle, the next camera frame follows from that motion, and the
-attack acts again at every decision.
+AVSecTester tests attacks the way they would play out on the road: in a vehicle that keeps
+driving.
 
-- Measure driving outcomes such as stopping, braking, stop-line distance and collisions.
-- Compare clean and attacked drives of the same segment, started from the same state and seed.
-- Keep the vehicle's physical state separate from what the driving system received.
+- **Closed-loop rollouts.** Open-loop evaluation can rate a driving system highly even when it
+  ignores what is in front of it [[3]](#references). AVSecTester rolls the driving system out in
+  closed loop. Its commands move the vehicle, the next camera frame follows from that motion, and
+  the attack acts at every step. You see whether the vehicle actually stops, brakes or crashes.
+- **Comparable, reproducible experiments.** Every attack runs through the same workflow and one
+  YAML file configures the whole experiment. Clean and attacked runs start from the same state, and
+  every run is logged, so results can be re-evaluated, compared across attacks and resumed after an
+  interruption.
+- **Bring your own code.** Add attacks, driving systems or metrics in your own package and
+  reference them from the YAML, without changing the framework.
 
 ## What you can do with it
 
@@ -64,9 +67,9 @@ paired reports of stopping, braking, stop-line and collision outcomes.
 
 ### Optimize an attack
 
-How strong can an attack become with gradients, or with queries only? Optimize artifacts with a
-white-box attack (algorithm used: PGD) through the system's own detector, or a black-box attack
-(algorithm used: NES) through driving rollouts, then test them on held-out segments.
+How strong can an attack get? Optimize a patch with gradients through the driving system's own
+model (white-box, PGD [[1]](#references)) or with queries only (black-box, NES
+[[4]](#references)), then test it on new scenes.
 
 [Optimization](docs/guides/optimization.md){ .avs-card__link }
 
@@ -135,7 +138,8 @@ docker compose run --rm nurec-experiment run configs/nurec_stop_sign_patch_modul
 
 <div class="avs-components" markdown>
 
-**Closed-loop simulators:** NuRec (reconstructed real-world drives) · CARLA<br>
+**Closed-loop simulators:** NuRec [[5]](#references)[[6]](#references) with AlpaSim
+[[7]](#references) · CARLA [[8]](#references)<br>
 **Driving systems:** modular · end-to-end<br>
 [Supported configurations](docs/concepts/architecture.md#supported-configurations)
 
@@ -160,10 +164,9 @@ docker compose run --rm nurec-experiment run configs/nurec_stop_sign_patch_modul
 </figure>
 </div>
 
-In these example runs, a replica stop sign with a white patch is placed over the reconstructed
-sign in a NuRec drive while Alpamayo drives. The two images show the same decision of runs that
-differ only in compositing: without harmonization, and with exposure matching by
-`ExposureHarmonizer`. The sign on the left of each image is a real stop sign in the scene.
+A patch is added to a stop sign [[9]](#references) in a NuRec drive while Alpamayo
+[[10]](#references)[[11]](#references) drives. Harmonization matches the sign to the lighting of
+the scene. Compare it with the real stop sign on the left.
 
 [Stop-sign patch attack](docs/examples/stop-sign-patch.md){ .avs-card__link }
 
@@ -184,11 +187,9 @@ differ only in compositing: without harmonization, and with exposure matching by
 </figure>
 </div>
 
-In this example in CARLA, a stop sign is inserted into the front-camera image while a
-camera-based forward-collision system drives. Only the camera image changes. The simulated world
-contains no sign. The two images show the same decision of treatments that differ only in
-compositing: without harmonization, and with exposure matching by `ExposureHarmonizer` and slight
-edge softening.
+A stop sign is added to the camera image in CARLA [[8]](#references) while a driving system built
+on AVstack [[12]](#references) drives. The world itself has no sign. Harmonization matches the sign
+to the lighting of the scene.
 
 [Object insertion attack](docs/examples/image-insertion.md){ .avs-card__link }
 
@@ -209,10 +210,8 @@ edge softening.
 </figure>
 </div>
 
-In these example runs, a checkerboard patch is composited onto the rear of a recorded vehicle in
-the NuRec front-camera image while Alpamayo drives. The two images show the same decision of runs
-that differ only in compositing: without harmonization, and with exposure matching by
-`ExposureHarmonizer` and slight edge softening.
+A patch is added to the back of a car in a NuRec drive while Alpamayo drives. Harmonization
+matches the patch to the lighting of the car.
 
 [Physical patch attack](docs/examples/physical-patch.md){ .avs-card__link }
 
@@ -266,6 +265,35 @@ driving systems. Its attacks run in simulation and on recorded or reconstructed 
   it.
 - Results in simulation do not establish that a real vehicle is safe or unsafe. The software is
   provided under the MIT License, without warranty.
+
+## References
+
+1. A. Madry, A. Makelov, L. Schmidt, D. Tsipras and A. Vladu. Towards Deep Learning Models
+   Resistant to Adversarial Attacks. ICLR, 2018. [arXiv:1706.06083](https://arxiv.org/abs/1706.06083)
+2. Z. Ge, S. Liu, F. Wang, Z. Li and J. Sun. YOLOX: Exceeding YOLO Series in 2021. 2021.
+   [arXiv:2107.08430](https://arxiv.org/abs/2107.08430)
+3. C. Löwens, T. Funke and A. P. Condurache. Driving on Memory. NeurIPS, 2026.
+   [arXiv:2608.31029](https://arxiv.org/abs/2608.31029)
+4. A. Ilyas, L. Engstrom, A. Athalye and J. Lin. Black-box Adversarial Attacks with Limited Queries
+   and Information. ICML, 2018. [arXiv:1804.08598](https://arxiv.org/abs/1804.08598)
+5. NVIDIA. PhysicalAI-Autonomous-Vehicles-NuRec. Hugging Face dataset.
+   [huggingface.co/datasets/nvidia/PhysicalAI-Autonomous-Vehicles-NuRec](https://huggingface.co/datasets/nvidia/PhysicalAI-Autonomous-Vehicles-NuRec)
+6. Q. Wu, J. Martinez Esturo, A. Mirzaei, N. Moenne-Loccoz and Z. Gojcic. 3DGUT: Enabling
+   Distorted Cameras and Secondary Rays in Gaussian Splatting. CVPR, 2025.
+7. NVIDIA, Y. Cao, R. de Lutio, S. Fidler et al. AlpaSim: A Modular, Lightweight, and Data-Driven
+   Research Simulator for Autonomous Driving. 2025.
+   [github.com/NVlabs/alpasim](https://github.com/NVlabs/alpasim)
+8. A. Dosovitskiy, G. Ros, F. Codevilla, A. Lopez and V. Koltun. CARLA: An Open Urban Driving
+   Simulator. CoRL, 2017. [arXiv:1711.03938](https://arxiv.org/abs/1711.03938)
+9. K. Eykholt, I. Evtimov, E. Fernandes, B. Li, A. Rahmati, C. Xiao, A. Prakash, T. Kohno and
+   D. Song. Robust Physical-World Attacks on Deep Learning Models. CVPR, 2018.
+   [arXiv:1707.08945](https://arxiv.org/abs/1707.08945)
+10. NVIDIA. Alpamayo 1.5. 2026. [huggingface.co/nvidia/Alpamayo-1.5-10B](https://huggingface.co/nvidia/Alpamayo-1.5-10B)
+11. NVIDIA, Y. Wang, W. Luo, J. Bai et al. Alpamayo-R1: Bridging Reasoning and Action Prediction for
+    Generalizable Autonomous Driving in the Long Tail. 2025.
+    [arXiv:2511.00088](https://arxiv.org/abs/2511.00088)
+12. R. S. Hallyburton, S. Zhang and M. Pajic. AVstack: An Open-Source, Reconfigurable Platform for
+    Autonomous Vehicle Development. 2022. [arXiv:2212.13857](https://arxiv.org/abs/2212.13857)
 
 <div class="avs-attribution" markdown>
 
