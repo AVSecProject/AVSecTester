@@ -2990,7 +2990,7 @@ Replica-specific visibility measurements from saved decision captures.
 
 | Name and signature | Meaning |
 |---|---|
-| `ReplicaVisibility(camera_id: str \| None = None, min_visible_pixels: int = 100)` | Subclass of `Metric`. Count decisions where the inserted replica reaches a camera's pixel threshold. |
+| `ReplicaVisibility(camera_ids: Sequence[str] \| None = None, min_visible_pixels: int = 100)` | Subclass of `Metric`. Count decisions where the inserted replica reaches the pixel threshold in a selected camera. |
 <!-- api:end -->
 
 #### Constraints and errors

@@ -257,9 +257,9 @@ The [CLI reference](../reference/cli.md) defines the HTML and structured-output 
 
 `ReplicaVisibility` demonstrates an importable `Metric` outside the built-in metric registry.
 Its `evaluate` reads saved capture evidence and returns `visible_steps`; `describe` supplies the
-field's meaning and unit. A treatment without a replica has an unavailable value. The default
-camera is inferred from unique recorded replica evidence; set `camera_id` when multiple cameras
-record it.
+field's meaning and unit. A treatment without a replica has an unavailable value. A decision
+counts as visible when the replica reaches `min_visible_pixels` in at least one selected camera;
+by default `camera_ids` selects every camera that recorded the replica.
 
 Reference the class by its full path, as in the supplied YAML:
 

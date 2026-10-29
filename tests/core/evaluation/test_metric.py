@@ -125,7 +125,7 @@ CASES = [
         lambda data: data["group"]({"attacked": data["log"]([2., 2.])}), itemgetter("attacked"),
         {"phrase_rate": .5}, id="reasoning-phrase"),
     pytest.param(
-        ReplicaVisibility, {"camera_id": "front", "min_visible_pixels": 5},
+        ReplicaVisibility, {"camera_ids": ["front"], "min_visible_pixels": 5},
         lambda data: data["group"]({"attacked": with_replica_visibility(data["log"]([2., 2.]))}),
         lambda data: data["group"]({"attacked": data["log"]([2., 2.])}), itemgetter("attacked"),
         {"visible_steps": 1}, id="replica-visibility"),
