@@ -156,6 +156,23 @@
   grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
 }
 
+/* Four cards: one row on wide screens, two by two on medium screens, one column on phones. */
+.avs-grid--four {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+@media screen and (max-width: 76.1875em) {
+  .avs-grid--four {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media screen and (max-width: 44.9375em) {
+  .avs-grid--four {
+    grid-template-columns: 1fr;
+  }
+}
+
 .avs-card {
   display: flex;
   flex-direction: column;
@@ -178,6 +195,11 @@
   font-size: 0.85rem;
 }
 
+/* Card titles are not section anchors; a hidden permalink would wrap and leave a blank line. */
+.avs-card h3 .headerlink {
+  display: none;
+}
+
 .avs-card p {
   margin: 0 0 0.6rem;
   font-size: 0.75rem;
@@ -198,9 +220,10 @@
 
 /* Numbered workflow steps */
 
-.md-typeset .avs-steps ol {
+.md-typeset .avs-steps ol,
+[dir=ltr] .md-typeset .avs-steps ol {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.8rem;
   margin: 1rem 0;
   padding: 0;
@@ -208,7 +231,8 @@
   counter-reset: avs-step;
 }
 
-.md-typeset .avs-steps li {
+.md-typeset .avs-steps li,
+[dir=ltr] .md-typeset .avs-steps li {
   margin: 0;
   padding: 0.8rem 0.9rem 0.8rem 2.6rem;
   position: relative;
@@ -231,6 +255,13 @@
   font-weight: 700;
   line-height: 1.3rem;
   text-align: center;
+}
+
+@media screen and (max-width: 76.1875em) {
+  .md-typeset .avs-steps ol,
+  [dir=ltr] .md-typeset .avs-steps ol {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* Labelled image pairs inside a card */

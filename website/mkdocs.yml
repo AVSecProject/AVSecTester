@@ -18,8 +18,8 @@ hooks:
 
 nav:
   - Home: index.md
+  - Documentation: docs/README.md
   - Get started:
-      - Overview: docs/README.md
       - Installation: docs/getting-started/installation.md
       - Quickstart: docs/getting-started/quickstart.md
   - Concepts:
@@ -36,11 +36,11 @@ nav:
       - Defenses: docs/guides/defenses.md
   - Examples:
       - docs/examples/README.md
-      - Stop-sign patch: docs/examples/stop-sign-patch.md
-      - Physical patch: docs/examples/physical-patch.md
-      - Image insertion: docs/examples/image-insertion.md
-      - Phantom injection: docs/examples/phantom-injection.md
-      - Speed feedback: docs/examples/speed-feedback-attack.md
+      - Stop-sign patch attack: docs/examples/stop-sign-patch.md
+      - Physical patch attack: docs/examples/physical-patch.md
+      - Object insertion attack: docs/examples/image-insertion.md
+      - Phantom injection attack: docs/examples/phantom-injection.md
+      - Speed-feedback attack: docs/examples/speed-feedback-attack.md
   - Reference:
       - Configuration: docs/reference/configuration.md
       - CLI: docs/reference/cli.md

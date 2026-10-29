@@ -20,8 +20,8 @@ hide: [navigation, toc]
 ## Why closed loop
 
 A patch can hide a stop sign in most camera frames and the vehicle can still stop: one detection
-at the right distance can be enough. Per-frame detection scores would call that attack a success;
-the driving outcome shows that it failed. AVSecTester keeps the driving system in the loop. Its
+at the right distance can be enough. Per-frame detection scores would call that attack a success.
+The driving outcome shows that it failed. AVSecTester keeps the driving system in the loop. Its
 commands move the simulated vehicle, the next camera frame follows from that motion, and the
 attack acts again at every decision.
 
@@ -34,17 +34,17 @@ attack acts again at every decision.
 AVSecTester is built for people who develop and evaluate autonomous-vehicle security: researchers
 who design attacks and defenses, and engineers who test driving systems against them.
 
-<div class="avs-grid" markdown>
+<div class="avs-grid avs-grid--four" markdown>
 
 <div class="avs-card" markdown>
 
-### Test a new attack in closed loop
+### Test a new attack
 
 Does your attack change how the vehicle drives, not just a detection score? Write it in Python or
 start from a supplied attack: choose where it applies, optimize it offline and act at every
 decision. Each test segment runs clean and attacked from the same start.
 
-[Write an attack](docs/guides/attacks.md){ .avs-card__link }
+[Attacks](docs/guides/attacks.md){ .avs-card__link }
 
 </div>
 
@@ -52,50 +52,41 @@ decision. Each test segment runs clean and attacked from the same start.
 
 ### Stress-test a driving system
 
-How does your driving system behave under known attacks? Wrap it as an `AVStack`; a
+How does your driving system behave under known attacks? Wrap it as an `AVStack`. A
 `DrivingAdapter` exposes its components to attacks. Run supplied attacks over many drives and get
 paired reports of stopping, braking, stop-line and collision outcomes.
 
-[Connect a driving system](docs/guides/driving-systems.md){ .avs-card__link }
+[Driving systems](docs/guides/driving-systems.md){ .avs-card__link }
 
 </div>
 
 <div class="avs-card" markdown>
 
-### Optimize attacks against a system
+### Optimize an attack
 
 How strong can an attack become with gradients, or with queries only? Optimize artifacts with a
 white-box attack (algorithm used: PGD) through the system's own detector, or a black-box attack
 (algorithm used: NES) through driving rollouts, then test them on held-out segments.
 
-[Optimize artifacts](docs/guides/optimization.md){ .avs-card__link }
+[Optimization](docs/guides/optimization.md){ .avs-card__link }
 
 </div>
 
 <div class="avs-card" markdown>
 
-### Record what the system saw and did
+### Record and replay runs
 
 Every run saves the camera input the driving system received, its outputs and the vehicle's
 physical state. Measure, compare, replay and export frames later without running the simulator
 again.
 
-[Evaluate saved runs](docs/guides/evaluation.md){ .avs-card__link }
-
-</div>
-
-<div class="avs-card" markdown>
-
-### Evaluate defenses (planned)
-
-Defense treatments, reference defenses and defense metrics are planned. Hooks already let you
-insert your own processing at driving-system stages, without a defense comparison protocol.
-
-[Defense status](docs/guides/defenses.md){ .avs-card__link }
+[Evaluation](docs/guides/evaluation.md){ .avs-card__link }
 
 </div>
 
 </div>
+
+Defense evaluation is planned. See [Defenses](docs/guides/defenses.md).
 
 ## How it works
 
@@ -115,7 +106,7 @@ insert your own processing at driving-system stages, without a defense compariso
 dataset:
   type: NuRecDataset            # reconstructed real-world drives
 simulator:
-  type: NuRecSimulator          # commands move the vehicle; the next frame follows
+  type: NuRecSimulator          # commands move the vehicle and the next frame follows
 avstack:
   type: RuleBasedAVStack        # or AlpamayoAVStack, or your own AVStack
 attacks:
@@ -138,8 +129,6 @@ docker compose run --rm nurec-experiment run configs/nurec_stop_sign_patch_modul
 
 <figure class="avs-figure" markdown>
 [![Framework diagram. User configuration feeds a dataset, an attack and the closed loop. Inside the attack, the metabuilder produces metadata, the offline phase produces artifacts and the online phase acts on the closed loop, where a simulator sends observations to an AV stack and receives commands. Run logs go to evaluation.](docs/assets/architecture.png)](docs/assets/architecture.png)
-<figcaption>The metabuilder, the offline phase and the online phase all use the closed loop of a
-simulator and a driving system; every run is logged for evaluation.</figcaption>
 </figure>
 
 ## Supported components
@@ -147,8 +136,7 @@ simulator and a driving system; every run is logged for evaluation.</figcaption>
 <div class="avs-components" markdown>
 
 **Closed-loop simulators:** NuRec (reconstructed real-world drives) · CARLA<br>
-**Driving systems:** `RuleBasedAVStack` · `AlpamayoAVStack` (end-to-end) · `ModularAVStack` ·
-`CameraForwardCollisionAVStack`<br>
+**Driving systems:** modular · end-to-end<br>
 [Supported configurations](docs/concepts/architecture.md#supported-configurations)
 
 </div>
@@ -161,17 +149,23 @@ simulator and a driving system; every run is logged for evaluation.</figcaption>
 
 ### Stop-sign patch attack
 
-<video class="avs-video" muted loop playsinline autoplay preload="metadata"
-       poster="assets/media/stop-sign-alpamayo.webp"
-       aria-label="Video of Alpamayo driving a NuRec scene toward a replica stop sign carrying a white patch, overlaid with its planned trajectory and recorded reasoning text">
-  <source src="assets/media/stop-sign-alpamayo.mp4" type="video/mp4">
-</video>
+<div class="avs-pair" markdown>
+<figure markdown>
+![Replica stop sign with a white patch at a NuRec intersection, brighter and more saturated than a real stop sign nearby](assets/media/stop-sign-patch.webp)
+<figcaption>Without harmonization</figcaption>
+</figure>
+<figure markdown>
+![The same replica stop sign, matched to the exposure of the scene and of the real stop sign nearby](assets/media/stop-sign-patch-harmonized.webp)
+<figcaption>With harmonization</figcaption>
+</figure>
+</div>
 
-In this example run, a replica stop sign carrying a white patch is placed over the reconstructed sign in
-a NuRec drive, and Alpamayo, an end-to-end driving model with four cameras, drives the
-closed-loop rollout. The overlay shows its planned trajectory and recorded reasoning.
+In these example runs, a replica stop sign with a white patch is placed over the reconstructed
+sign in a NuRec drive while Alpamayo drives. The two images show the same decision of runs that
+differ only in compositing: without harmonization, and with exposure matching by
+`ExposureHarmonizer`. The sign on the left of each image is a real stop sign in the scene.
 
-[Stop-sign patch example](docs/examples/stop-sign-patch.md){ .avs-card__link }
+[Stop-sign patch attack](docs/examples/stop-sign-patch.md){ .avs-card__link }
 
 </div>
 
@@ -186,17 +180,17 @@ closed-loop rollout. The overlay shows its planned trajectory and recorded reaso
 </figure>
 <figure markdown>
 ![The same inserted stop sign, matched to the exposure of the surrounding CARLA scene](assets/media/image-insertion-harmonized.webp)
-<figcaption>With ExposureHarmonizer</figcaption>
+<figcaption>With harmonization</figcaption>
 </figure>
 </div>
 
 In this example in CARLA, a stop sign is inserted into the front-camera image while a
-camera-based forward-collision system drives. Only the camera image changes; the simulated world
+camera-based forward-collision system drives. Only the camera image changes. The simulated world
 contains no sign. The two images show the same decision of treatments that differ only in
 compositing: without harmonization, and with exposure matching by `ExposureHarmonizer` and slight
 edge softening.
 
-[Object insertion example](docs/examples/image-insertion.md){ .avs-card__link }
+[Object insertion attack](docs/examples/image-insertion.md){ .avs-card__link }
 
 </div>
 
@@ -211,7 +205,7 @@ edge softening.
 </figure>
 <figure markdown>
 ![The same checkerboard patch, darkened to the exposure of the car it is placed on](assets/media/physical-patch-harmonized.webp)
-<figcaption>With ExposureHarmonizer</figcaption>
+<figcaption>With harmonization</figcaption>
 </figure>
 </div>
 
@@ -220,7 +214,7 @@ the NuRec front-camera image while Alpamayo drives. The two images show the same
 that differ only in compositing: without harmonization, and with exposure matching by
 `ExposureHarmonizer` and slight edge softening.
 
-[Physical patch example](docs/examples/physical-patch.md){ .avs-card__link }
+[Physical patch attack](docs/examples/physical-patch.md){ .avs-card__link }
 
 </div>
 
@@ -247,18 +241,17 @@ top of this page.</figcaption>
 
 </div>
 
-[Evaluation guide](docs/guides/evaluation.md)
+[Evaluation](docs/guides/evaluation.md)
 
 ## Before you try
 
 - **Requirements.** Linux with NVIDIA GPUs, Docker Compose and the NVIDIA Container Toolkit.
   Experiments run in the supplied Docker images. NuRec scenes, NRE images and model weights are
-  downloaded separately and need NGC and Hugging Face access; see
+  downloaded separately and need NGC and Hugging Face access. See
   [Installation](docs/getting-started/installation.md).
 - **Status.** AVSecTester is an early research release. The supported simulator and
   driving-system combinations are listed in
-  [Supported configurations](docs/concepts/architecture.md#supported-configurations); defenses are
-  planned.
+  [Supported configurations](docs/concepts/architecture.md#supported-configurations).
 
 ## Responsible use
 
