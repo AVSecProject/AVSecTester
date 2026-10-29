@@ -1,6 +1,6 @@
 site_name: AVSecTester
 site_description: Adversarial security testing for autonomous driving.
-site_url: https://avsecproject.github.io/AVSecTester/
+site_url: https://avsecproject.github.io/
 repo_url: https://github.com/AVSecProject/AVSecTester
 repo_name: AVSecProject/AVSecTester
 edit_uri: edit/main/

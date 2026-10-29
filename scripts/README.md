@@ -58,7 +58,9 @@ docker compose run --rm --entrypoint python nurec-experiment -m scripts.developm
 `website/content/`. It rewrites links that leave docs/ to GitHub at the built commit and removes the
 table-cell pipe escapes that only GitHub needs. The [TODO](../docs/development/TODO.md) stays on
 GitHub only; site links to it go to GitHub. [check_site.py](website/check_site.py) checks a
-built site. Build and check it in a separate virtual environment:
+built site. The [avsecproject.github.io](https://github.com/AVSecProject/avsecproject.github.io)
+repository rebuilds the site from main every hour, or on a manual run, and serves it at
+https://avsecproject.github.io/. Build and check it in a separate virtual environment:
 
 ```bash
 python -m pip install -r website/requirements.txt

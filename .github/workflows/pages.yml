@@ -11,9 +11,10 @@ permissions:
 
 concurrency:
   group: pages-${{ github.ref }}
-  # Never interrupt a deployment from main; superseded pull-request builds may be cancelled.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# The avsecproject.github.io repository publishes the site from main; this workflow only checks
+# that main and pull requests still build.
 jobs:
   build:
     name: Build site
@@ -33,23 +34,3 @@ jobs:
 
       - name: Check built site
         run: python -m scripts.website.check_site website/site
-
-      - uses: actions/upload-pages-artifact@v5
-        with:
-          path: website/site
-
-  deploy:
-    name: Deploy site
-    needs: build
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-22.04
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v5
