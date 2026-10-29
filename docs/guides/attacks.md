@@ -123,6 +123,9 @@ request = CandidateRequest(
     attack=self, artifacts=artifacts)
 ```
 
+Set `terminate_when` to a predicate on each recorded `StepRecord` to finish a candidate early
+while retaining its recorded steps and normal attack cleanup.
+
 The metabuilder is not run again after the offline phase. Use
 [data split settings](../reference/configuration.md#data-split) to control training, validation
 and execution membership.

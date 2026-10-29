@@ -46,6 +46,8 @@ attacks:
   no_patch:
     type: StopSignPatchAttack
     options:
+      approach_m: 100
+      min_approach_m: 60
       initial_patch: none
       harmonizer: &exposure_harmonizer
         type: avsectester.rendering.harmonizers:ExposureHarmonizer
@@ -53,21 +55,29 @@ attacks:
   white:
     type: StopSignPatchAttack
     options:
+      approach_m: 100
+      min_approach_m: 60
       initial_patch: white
       harmonizer: *exposure_harmonizer
   black:
     type: StopSignPatchAttack
     options:
+      approach_m: 100
+      min_approach_m: 60
       initial_patch: black
       harmonizer: *exposure_harmonizer
   noise:
     type: StopSignPatchAttack
     options:
+      approach_m: 100
+      min_approach_m: 60
       initial_patch: low_frequency_noise
       harmonizer: *exposure_harmonizer
   white_rollout_nes:
     type: StopSignPatchAttack
     options:
+      approach_m: 100
+      min_approach_m: 60
       initial_patch: white
       harmonizer: *exposure_harmonizer
       optimization:
@@ -76,19 +86,20 @@ attacks:
           optimizer:
             type: avsectester.attack.optimization:NES
             options:
-              steps: 40
-              population_size: 20
-              sigma: 0.08
-              learning_rate: 0.03
+              steps: 10
+              population_size: 8
+              sigma: 0.15
+              learning_rate: 0.1
+              batch_size: 1
               seed: 0
-          start_distances_m:
-          - 40
-          - 30
-          - 20
-          horizon_s: 3
+          max_training_segments: 2
+          stop_speed_mps: 0.5
+          min_stop_command_step: 5
   black_rollout_nes:
     type: StopSignPatchAttack
     options:
+      approach_m: 100
+      min_approach_m: 60
       initial_patch: black
       harmonizer: *exposure_harmonizer
       optimization:
@@ -97,19 +108,20 @@ attacks:
           optimizer:
             type: avsectester.attack.optimization:NES
             options:
-              steps: 40
-              population_size: 20
-              sigma: 0.08
-              learning_rate: 0.03
+              steps: 10
+              population_size: 8
+              sigma: 0.15
+              learning_rate: 0.1
+              batch_size: 1
               seed: 0
-          start_distances_m:
-          - 40
-          - 30
-          - 20
-          horizon_s: 3
+          max_training_segments: 2
+          stop_speed_mps: 0.5
+          min_stop_command_step: 5
   noise_rollout_nes:
     type: StopSignPatchAttack
     options:
+      approach_m: 100
+      min_approach_m: 60
       initial_patch: low_frequency_noise
       harmonizer: *exposure_harmonizer
       optimization:
@@ -118,16 +130,15 @@ attacks:
           optimizer:
             type: avsectester.attack.optimization:NES
             options:
-              steps: 40
-              population_size: 20
-              sigma: 0.08
-              learning_rate: 0.03
+              steps: 10
+              population_size: 8
+              sigma: 0.15
+              learning_rate: 0.1
+              batch_size: 1
               seed: 0
-          start_distances_m:
-          - 40
-          - 30
-          - 20
-          horizon_s: 3
+          max_training_segments: 2
+          stop_speed_mps: 0.5
+          min_stop_command_step: 5
 evaluation:
   metrics:
   - type: StopLineMetrics

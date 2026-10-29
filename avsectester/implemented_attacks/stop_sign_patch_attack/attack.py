@@ -63,11 +63,6 @@ class StopSignPatchAttack(Attack):
         require_nonnegative_number(min_approach_m, "min_approach_m")
         if min_approach_m > approach_m:
             raise ValueError("min_approach_m must not exceed approach_m")
-        if isinstance(optimization, RolloutPatchOptimization):
-            if any(not min_approach_m <= value <= approach_m for value in optimization.start_distances_m):
-                raise ValueError(
-                    f"start_distances_m must be within [{min_approach_m}, {approach_m}] m"
-                )
         require_nonnegative_integer(hold_steps, "hold_steps")
         require_nonnegative_number(offset_m, "offset_m")
         require_positive_number(width_scale, "width_scale")

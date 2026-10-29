@@ -70,10 +70,10 @@ chooses at most one approach per scene, from the entering side and facing the si
 must pass within 3 m of the line and contain a recorded speed below 0.5 m/s within 15 m
 before it.
 
-`approach_m` defaults to 50 m before the line. The selector waits for required recorded history
-and includes `hold_steps` hold decisions, with a default of 20.
-A start closer than `min_approach_m`,
-default 20 m, is rejected. Constructor defaults are in the
+The Alpamayo configurations set `approach_m: 100` and `min_approach_m: 60`. The modular
+configurations use the defaults of 50 m and 20 m. The selector waits for required recorded
+history and includes `hold_steps` hold decisions, with a default of 20. A start closer than
+`min_approach_m` is rejected. Constructor defaults are in the
 [stop-sign attack API](../reference/python-api.md#avsectesterimplemented_attacksstop_sign_patch_attackattack).
 
 The runtime inserts a post-free canonical MUTCD R1-1 replica face over the reconstructed sign.
@@ -165,25 +165,49 @@ and detected fraction per 10 m bin. Epoch 0 is the initial patch.
 
 ## Prepare the black-box attack
 
-The black-box attack scores the mean planned forward distance from the driving command.
-Algorithm used: `NES`. Every candidate runs one decision at each configured start. The
-`horizon_s` objective uses the command's timestamped trajectory, without extrapolating
-beyond it.
+The black-box attack minimizes the mean stop-command distance over retained training segments.
+Algorithm used: `NES`.
 
-The supplied settings use all five training segments, starts 40, 30 and 20 m before the stop
-line, a 3 s horizon, 40 updates, population size 20, sigma 0.08 and learning rate 0.03. Query
-budget is:
+A stop command is a decision whose timestamped planned trajectory has an adjacent-waypoint
+horizontal speed below `stop_speed_mps`, default 0.5 m/s. Stop-command distance is the horizontal
+distance from the ego origin to the sign-face center at the first such decision, before passing
+the sign. Only decisions with `(ego_position − sign_center) · sign_x > 0` count, where `sign_x`
+is the first column of `sign_pose`. A rollout that passes the sign without a stop command
+scores 0. A rollout whose decisions run out before either event scores its remaining distance to
+the sign after the last decision, so ending early is not rewarded. The `outcome` column records
+which case applies.
+
+Calibration evaluates the unpatched replica once per training segment, in metadata order. A
+segment is retained only if it issues a stop command at step `min_stop_command_step` or later,
+default 5, before passing the sign. Segments with an earlier command, no command before passing
+or decisions that run out first are excluded with a reason. Calibration stops after
+`max_training_segments` retained segments, or uses every eligible training segment when this
+limit is `None`. Calibration raises `ValueError` if no segment is retained.
+
+Each candidate starts at each retained segment's recorded origin and runs for at most
+`segment.decision_steps` decisions. It ends when the first stop command is issued or the ego
+passes the sign. The scalar score is the mean stop-command distance across those segments.
+
+The search variables are RGB offsets on a grid with one cell per `noise_cell_texels` face
+texels, default 32. Bicubic upsampling maps these offsets to the texture. Only masked RGB
+changes, and alpha and colors outside the mask stay fixed. No smoothness term is added.
+
+The supplied configurations retain at most two training segments, set `stop_speed_mps: 0.5`
+and `min_stop_command_step: 5`, and use `steps: 10`, `population_size: 8`, `sigma: 0.15`,
+`learning_rate: 0.1`, `batch_size: 1` and `seed: 0`. The candidate query budget is:
 
 ```text
-starts × training segments × (1 + steps × (population_size + 1))
-= 3 × 5 × (1 + 40 × 21)
-= 12,615 single-decision candidate rollouts per optimized attack
+retained training segments × (1 + steps × (population_size + 1))
 ```
 
-The offline report records starts, candidate runs, planned-distance history and
-initial/optimized textures. Use the
+Calibration adds one rollout per examined segment.
+
+The offline report contains a `calibration` table with selection reasons, a `rollouts` table
+with per-query distances and run details, the `stop_command_distance_m` series, and initial and
+optimized textures. `final_stop_command_distance_m` is the final texture's evaluated mean
+distance. No additional rollout is used for that value. The
 [attack API](../reference/python-api.md#avsectesterimplemented_attacksstop_sign_patch_attackoffline)
-for the cost-limiting `max_training_segments` option.
+describes the optimization options.
 
 ## Reuse segments and resume
 

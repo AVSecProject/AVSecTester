@@ -44,6 +44,13 @@ def read_patch_mask(path: str | Path) -> np.ndarray:
     return mask
 
 
+def upsample_cells(cells: np.ndarray, shape: tuple[int, int]) -> np.ndarray:
+    """Upsample a single-channel grid with PIL F-mode bicubic interpolation."""
+    height, width = shape
+    values = np.asarray(cells, dtype=np.float32)
+    return np.asarray(Image.fromarray(values, mode="F").resize((width, height), Image.BICUBIC))
+
+
 def initial_patch_texture(
     kind: str, mask: np.ndarray, *, noise_std: float, noise_seed: int, noise_cell_texels: int = 32,
 ) -> np.ndarray:
@@ -75,7 +82,7 @@ def initial_patch_texture(
         rng = np.random.default_rng(noise_seed)
         channels = []
         for values in rng.standard_normal((3, *grid)).astype(np.float32):
-            field = np.asarray(Image.fromarray(values, mode="F").resize((width, height), Image.BICUBIC))
+            field = upsample_cells(values, (height, width))
             field = field - field[mask].mean()
             spread = field[mask].std()
             channels.append(field / spread if spread > 0 else field)

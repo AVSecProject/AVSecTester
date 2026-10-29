@@ -52,6 +52,45 @@ def test_run():
             ClosedLoopRunner().run(runtime, HistoryAVStack(), RunRequest(1))
 
 
+def test_run_termination(tmp_path):
+    stopped = []
+    received = []
+    resource = (tmp_path / "owned-resource.txt").open("w")
+    recorder = Recorder(path=tmp_path / "terminated")
+
+    class ActiveAttack(AttackRuntime):
+        def stop(self, context):
+            stopped.append(context.stage)
+
+    def terminate(record):
+        assert recorder.log.steps[-1] is record
+        received.append(record.step)
+        return record.step == 2
+
+    request = RunRequest(5, attacks=(ActiveAttack(),), terminate_when=terminate)
+    with MemorySimulator().create_runtime() as runtime:
+        log = ClosedLoopRunner().run(
+            runtime, ConstantAVStack(), request, recorder=recorder,
+            release_owned_resources=resource.close,
+        )
+        assert resource.closed
+        assert stopped == ["stop"]
+        assert received == [0, 1, 2]
+        assert log.status == "completed"
+        assert [step.step for step in log.steps] == [0, 1, 2]
+        saved = RunLog.read(tmp_path / "terminated")
+        assert len(saved.steps) == 3
+        termination = next(event for event in saved.events if event.kind == "termination")
+        assert termination.data["status"] == "completed"
+        assert termination.data["terminated_by_condition"] is True
+        full = ClosedLoopRunner().run(
+            runtime, ConstantAVStack(), replace(request, terminate_when=None, attacks=()),
+        )
+        assert full.status == "completed"
+        assert len(full.steps) == 5
+        assert all("terminated_by_condition" not in event.data for event in full.events)
+
+
 def test_run_with_hooks():
     hooks = HookSet([
         Hook("sensors.post", lambda value, context: replace(value, ego_speed=value.ego_speed + 1.)),

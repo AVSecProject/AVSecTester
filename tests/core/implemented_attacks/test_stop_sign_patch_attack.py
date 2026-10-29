@@ -1,5 +1,6 @@
 """Stop-sign selection, patched replica placement and real offline optimization."""
 from dataclasses import replace
+from hashlib import sha256
 
 import numpy as np
 import pytest
@@ -10,7 +11,7 @@ from avsectester.attack.insertion import InsertObject
 from avsectester.attack.optimization import HideBelowThreshold, NES, PGD
 from avsectester.execution.services import ClosedLoopServices, RenderRequest
 from avsectester.closed_loop.avstacks import DrivingAdapter, ScorerDescriptor
-from tests.fakes import ConstantAVStack, MemoryDataset, MemorySimulator, DeceleratingAVStack, ImageForwardAVStack
+from tests.fakes import ConstantAVStack, MemoryDataset, MemorySimulator, StopCommandAVStack
 from avsectester.geometry.projection import project_box
 from avsectester.implemented_attacks.stop_sign_patch_attack import StopSignPatchAttack
 from avsectester.implemented_attacks.stop_sign_patch_attack.offline import (
@@ -67,6 +68,8 @@ def test_replica_deployment(approach_view, tmp_path):
                 for kind in ("none", "white", "black", "low_frequency_noise")}
     canonical = attack.replica_placement(context.metadata[0], textures["none"])[0].surfaces[0].nominal_texture
     np.testing.assert_array_equal(textures["none"], canonical)
+    assert sha256(textures["low_frequency_noise"].tobytes()).hexdigest() == (
+        "9f44947df22b16eb5964c741c2711c3ebac127ef8a651f58e5de0ac95f9d8376")
     # The default bars cover only the red background, never the white border or letters.
     assert len(np.unique(canonical[attack.mask], axis=0)) == 1
     for texture in textures.values():
@@ -332,88 +335,144 @@ def test_white_box_smoothness(nurec_detector_services_and_segment):
                               optimize("low_frequency_noise", tv_weight=100.)[0])
 
 
-@pytest.mark.parametrize("maximum,driver_type,expected_unchanged", [
-    pytest.param(None, DeceleratingAVStack, True, id="all-training"),
-    pytest.param(1, ImageForwardAVStack, False, id="capped-image-dependent"),
+@pytest.mark.parametrize("maximum,image_dependent,expected_unchanged", [
+    pytest.param(None, False, True, id="all-training"),
+    pytest.param(1, True, False, id="capped-image-dependent"),
 ])
-def test_black_box_offline_phase(nurec_patch_services_and_segment, tmp_path, maximum, driver_type, expected_unchanged):
+def test_black_box_offline_phase(
+    nurec_patch_services_and_segment, tmp_path, maximum, image_dependent, expected_unchanged,
+):
     original_services, make_segment = nurec_patch_services_and_segment
     training = (make_segment(), make_segment(start=16))
-    options = RolloutPatchOptimization(NES(steps=1, population_size=2, learning_rate=2000., seed=0),
-                                      start_distances_m=(8.,), max_training_segments=maximum)
-    attack = StopSignPatchAttack(initial_patch="white", optimization=options, min_approach_m=8.)
-    adapter = DrivingAdapter(lambda seed: driver_type(), past_steps=15)
+    options = RolloutPatchOptimization(
+        NES(steps=1, population_size=2, learning_rate=2000., seed=0, batch_size=2),
+        max_training_segments=maximum, min_stop_command_step=2,
+    )
+    attack = StopSignPatchAttack(initial_patch="white", optimization=options)
+    adapter = DrivingAdapter(lambda seed: StopCommandAVStack(image_dependent=image_dependent),
+                             past_steps=15)
     with ClosedLoopServices(original_services.dataset, original_services.simulator, adapter) as services:
-        context = OfflineContext(services, training, seed=0, validation_metadata=(make_segment(start=23),),
-                                 report=OfflineReport(tmp_path / "files"))
+        context = OfflineContext(
+            services, training, seed=0, validation_metadata=(make_segment(start=23),),
+            report=OfflineReport(tmp_path / "files"),
+        )
         texture = attack.run_offline(context)
         report = context.report
         rows = report.tables["rollouts"].rows
+        calibration = report.tables["calibration"].rows
         expected_segments = maximum or len(training)
-        assert len(rows) == 4 * expected_segments
+        assert len(calibration) == expected_segments
+        assert all(row["retained"] for row in calibration)
+        assert len(rows) == expected_segments * (1 + options.optimizer.steps
+                                                 * (options.optimizer.population_size + 1))
         assert [row["evaluation"] for row in rows] == [
             evaluation for evaluation in range(4) for _ in range(expected_segments)]
         assert report.values["training_segments"].value == expected_segments
         assert report.values["rollout_count"].value == len(rows)
-        assert len(report.tables["starts"].rows) == expected_segments
         assert {row["status"] for row in rows} == {"completed"}
-        for row in rows:
+        for row in [*calibration, *rows]:
             log = RunLog.read(report.directory / row["run_log"])
-            assert log.status == "completed" and len(log.steps) == 1
-            trajectory = log.steps[0].produced_command.trajectory
-            stamps = np.array([point[2] for point in trajectory])
-            x = np.array([point[0][0] for point in trajectory])
-            independent = np.interp(stamps[0] + options.horizon_s * 1e6, stamps, x) - x[0]
-            assert row["forward_m"] == pytest.approx(independent)
-        assert report.values["final_planned_forward_m"].unit == "m"
-        assert report.values["final_planned_forward_m"].value == pytest.approx(
-            np.mean([row["forward_m"] for row in rows[-expected_segments:]]))
+            assert log.status == "completed"
+            assert row["outcome"] == "stop_command"
+            assert len(log.steps) == row["decision_steps"] == row["stop_command_step"] + 1
+            assert len(log.steps) < training[row["segment_index"]].decision_steps
+            minima = []
+            for step in log.steps:
+                trajectory = step.produced_command.trajectory
+                times = np.asarray([point[2] for point in trajectory]) / 1e6
+                positions = np.asarray([point[0][:2] for point in trajectory])
+                minima.append(np.min(np.linalg.norm(np.diff(positions, axis=0), axis=1)
+                                     / np.diff(times)))
+            assert all(value >= options.stop_speed_mps for value in minima[:-1])
+            assert minima[-1] < options.stop_speed_mps
+            sign = training[row["segment_index"]].user_data["sign_pose"]
+            position = log.steps[-1].physical_pre.ego.pose[:3, 3]
+            assert (position - sign[:3, 3]) @ sign[:3, 0] > 0
+            assert row["stop_command_distance_m"] == pytest.approx(
+                np.linalg.norm(position[:2] - sign[:2, 3]))
+            assert row["elapsed_s"] > 0
+        assert report.values["final_stop_command_distance_m"].unit == "m"
+        assert report.values["final_stop_command_distance_m"].value == pytest.approx(
+            np.mean([row["stop_command_distance_m"] for row in rows[-expected_segments:]]))
         assert all(row["run_log"].startswith("rollouts/") for row in rows)
         assert set(report.tables["rollouts"].columns) == set(rows[0])
-        assert len(report.series["planned_forward_m"].y) == 2
-        assert report.values["final_planned_forward_m"].value == pytest.approx(
-            report.series["planned_forward_m"].y[-1])
+        assert len(report.series["stop_command_distance_m"].y) == 2
+        assert report.values["final_stop_command_distance_m"].value == pytest.approx(
+            report.series["stop_command_distance_m"].y[-1])
         np.testing.assert_array_equal(texture, report.images["optimized_texture"].pixels)
-        assert report.series["planned_forward_m"].y[-1] >= report.series["planned_forward_m"].y[0]
-        # The policy-dependent case selects a changed texture; the constant policy keeps its initial candidate.
+        np.testing.assert_array_equal(texture[..., 3], report.images["initial_texture"].pixels[..., 3])
+        np.testing.assert_array_equal(texture[~attack.mask],
+                                      report.images["initial_texture"].pixels[~attack.mask])
         assert np.array_equal(texture, report.images["initial_texture"].pixels) == expected_unchanged
 
 
-def test_black_box_offline_errors(nurec_patch_services_and_segment, tmp_path):
-    services, make_segment = nurec_patch_services_and_segment
+def test_black_box_calibration_and_errors(nurec_patch_services_and_segment, tmp_path):
+    original_services, make_segment = nurec_patch_services_and_segment
     options = RolloutPatchOptimization(
-        NES(steps=1, population_size=2, seed=0),
-        start_distances_m=(8.,), max_training_segments=1)
-    attack = StopSignPatchAttack(
-        initial_patch="white", optimization=options, min_approach_m=8.)
-    context = OfflineContext(
-        services, (make_segment(),), report=OfflineReport(tmp_path / "files"))
-    in_memory = replace(context, report=OfflineReport(None))
-    exported = attack.run_offline(in_memory)
-    np.testing.assert_array_equal(exported, in_memory.report.images["optimized_texture"].pixels)
-    assert all(row["run_log"] is None for row in in_memory.report.tables["rollouts"].rows)
-    with pytest.raises(ValueError, match="training segment"):
-        attack.run_offline(replace(context, metadata=()))
-    failed = replace(context, report=OfflineReport(tmp_path / "failed/files"))
-    invalid_horizon = StopSignPatchAttack(
-        optimization=replace(options, horizon_s=6.), min_approach_m=8.)
-    with pytest.raises(ValueError, match="does not cover the requested horizon"):
-        invalid_horizon.run_offline(failed)
-    rows = failed.report.tables["rollouts"].rows
-    assert len(rows) == 1
-    assert rows[0]["status"] == "failed"
-    assert rows[0]["forward_m"] is None
-    assert "does not cover the requested horizon" in rows[0]["error"]
-    log = RunLog.read(failed.report.directory / rows[0]["run_log"])
-    assert log.steps and log.status == "completed"
-    assert "optimized_texture" not in failed.report.images
+        NES(steps=1, population_size=2, seed=0), max_training_segments=1,
+        min_stop_command_step=2,
+    )
+    attack = StopSignPatchAttack(initial_patch="white", optimization=options)
+    adapter = DrivingAdapter(
+        lambda seed: StopCommandAVStack(stop_by_start={15: None, 16: 0}), past_steps=15)
+    with ClosedLoopServices(original_services.dataset, original_services.simulator, adapter) as services:
+        # Starting at 15 never stops: the full segment passes the sign, the short one ends first.
+        context = OfflineContext(
+            services, (make_segment(), make_segment(stop=20), make_segment(start=16),
+                       make_segment(start=17)),
+            report=OfflineReport(tmp_path / "files"),
+        )
+        texture = attack.run_offline(context)
+        rows = context.report.tables["calibration"].rows
+        assert [row["retained"] for row in rows] == [False, False, False, True]
+        assert [row["outcome"] for row in rows] == [
+            "passed_sign", "segment_ended", "stop_command", "stop_command"]
+        assert [row["stop_command_step"] for row in rows] == [None, None, 0, 3]
+        sign = context.metadata[0].user_data["sign_pose"]
+        passed = RunLog.read(context.report.directory / rows[0]["run_log"])
+        assert (passed.steps[-1].physical_post.ego.pose[:3, 3] - sign[:3, 3]) @ sign[:3, 0] <= 0
+        assert rows[0]["stop_command_distance_m"] == 0
+        assert rows[0]["decision_steps"] < context.metadata[0].decision_steps
+        ended = RunLog.read(context.report.directory / rows[1]["run_log"])
+        final = ended.steps[-1].physical_post.ego.pose[:3, 3]
+        assert (final - sign[:3, 3]) @ sign[:3, 0] > 0
+        assert rows[1]["decision_steps"] == context.metadata[1].decision_steps
+        assert rows[1]["stop_command_distance_m"] == pytest.approx(np.hypot(28. - 20., 1.))
+        assert "No stop command before passing" in rows[0]["reason"]
+        assert "Segment ends before" in rows[1]["reason"]
+        assert "before min_stop_command_step" in rows[2]["reason"]
+        assert context.report.values["training_segments"].value == 1
+        assert len(context.report.tables["rollouts"].rows) == 4
+        np.testing.assert_array_equal(texture, context.report.images["optimized_texture"].pixels)
+        in_memory = replace(context, report=OfflineReport(None))
+        attack.run_offline(in_memory)
+        assert all(row["run_log"] is None for row in in_memory.report.tables["rollouts"].rows)
+        with pytest.raises(ValueError, match="training segment"):
+            attack.run_offline(replace(context, metadata=()))
+        rejected = replace(context, metadata=context.metadata[:3], report=OfflineReport(None))
+        with pytest.raises(ValueError, match="No training segments have an eligible stop command"):
+            attack.run_offline(rejected)
+        assert all(not row["retained"] for row in rejected.report.tables["calibration"].rows)
+    invalid_adapter = DrivingAdapter(
+        lambda seed: StopCommandAVStack(invalid_timestamps=True), past_steps=15)
+    with ClosedLoopServices(original_services.dataset, original_services.simulator, invalid_adapter) as services:
+        failed = OfflineContext(
+            services, (make_segment(),), report=OfflineReport(tmp_path / "failed/files"))
+        with pytest.raises(ValueError, match="timestamps must increase strictly"):
+            attack.run_offline(failed)
+        row, = failed.report.tables["calibration"].rows
+        assert row["status"] == "failed"
+        assert row["stop_command_distance_m"] is None
+        assert "timestamps must increase strictly" in row["error"]
+        log = RunLog.read(failed.report.directory / row["run_log"])
+        assert log.status == "failed"
+        assert row["decision_steps"] == len(log.steps) == 1
+        assert "optimized_texture" not in failed.report.images
     with pytest.raises(ValueError, match="max_training_segments"):
         replace(options, max_training_segments=0)
+    with pytest.raises(ValueError, match="stop_speed_mps"):
+        replace(options, stop_speed_mps=0.)
+    with pytest.raises(ValueError, match="min_stop_command_step"):
+        replace(options, min_stop_command_step=-1)
     with pytest.raises(ValueError, match="cannot be optimized"):
-        StopSignPatchAttack(initial_patch="none", optimization=options, min_approach_m=8.)
-    with pytest.raises(ValueError, match=r"start_distances_m must be within \[8.0, 50.0\] m"):
-        StopSignPatchAttack(
-            optimization=replace(options, start_distances_m=(7.,)), min_approach_m=8.)
-    with pytest.raises(ValueError, match=r"start_distances_m must be within \[8.0, 50.0\] m"):
-        StopSignPatchAttack(
-            optimization=replace(options, start_distances_m=(51.,)), min_approach_m=8.)
+        StopSignPatchAttack(initial_patch="none", optimization=options)

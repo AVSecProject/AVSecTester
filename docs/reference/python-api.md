@@ -2513,7 +2513,7 @@ One closed-loop scheduler with independent RunLog captures.
 |---|---|
 | `RecordingPolicy(sensor_ids: tuple[str, ...] = (), representations: tuple[str, ...] = ("model_input",), every_n_steps: int = 1)` | Choose sensor payloads without sampling commands or physical state. |
 | `RecordingPolicy.observation(value: Observation, step: int, representation: str) -> Observation` | Apply the sensor recording policy while preserving observation metadata. |
-| `RunRequest(decision_steps: int, hooks: HookSet \| None = None, attacks: Sequence[Any] = (), recording: RecordingPolicy = RecordingPolicy(), output_path: str \| Path \| None = None, retain_steps: bool = True, metadata: Mapping[str, Any] = dict(), start: Any = None, initialization: Any = None, deployment: Any = None, environment: Mapping[str, Any] = dict())` | One caller-owned simulator/driving-system run, independent of experiment orchestration. |
+| `RunRequest(decision_steps: int, hooks: HookSet \| None = None, attacks: Sequence[Any] = (), recording: RecordingPolicy = RecordingPolicy(), output_path: str \| Path \| None = None, retain_steps: bool = True, metadata: Mapping[str, Any] = dict(), start: Any = None, initialization: Any = None, deployment: Any = None, environment: Mapping[str, Any] = dict(), terminate_when: Callable[[StepRecord], bool] \| None = None)` | One caller-owned simulator/driving-system run, independent of experiment orchestration. |
 | `ClosedLoopRunner()` | Schedule one driving loop. Never close caller-owned simulator/driving objects. |
 | `ClosedLoopRunner.run(simulator_runtime: SimulatorRuntime, avstack: AVStack, request: RunRequest, *, recorder: Recorder \| None = None, release_owned_resources: Callable[[], None] \| None = None) -> RunLog` | Execute the requested treatment, record its decisions and close all run resources. |
 <!-- api:end -->
@@ -2529,7 +2529,7 @@ The metabuilder and the offline phase share one isolated closed-loop service bou
 
 | Name and signature | Meaning |
 |---|---|
-| `CandidateRequest(segment: AttackSegment, seed: int, decision_steps: int, environment: Mapping[str, Any], recording: RecordingPolicy, attack: Any = None, artifacts: Any = None, output_path: str \| Path \| None = None)` | One candidate rollout. `attack` creates the deployed runtime with its create_runtime. |
+| `CandidateRequest(segment: AttackSegment, seed: int, decision_steps: int, environment: Mapping[str, Any], recording: RecordingPolicy, attack: Any = None, artifacts: Any = None, output_path: str \| Path \| None = None, terminate_when: Callable[[StepRecord], bool] \| None = None)` | One candidate rollout. `attack` creates the deployed runtime with its create_runtime. |
 | `SensorRequest(scenario_id: str, frame: FrameReference, sensor_ids: tuple[str, ...], environment: Mapping[str, Any] = dict(), views: bool = False)` | Recorded sensor request with an optional camera selection. |
 | `RenderRequest(scenario_id: str, frame: FrameReference, sensor_id: str, actions: Sequence[AttackAction] = (), environment: Mapping[str, Any] = dict())` | Capture `sensor_id` at `frame` with attack actions applied. |
 | `SensorSample(frame: FrameReference, observation: Observation, provenance: Mapping[str, Any], views: Mapping[str, SensorView] = dict())` | An environment-processed observation and optional detached raw sensor views. |
@@ -3010,7 +3010,7 @@ Validated detector/rollout optimization options and offline dispatch.
 | Name and signature | Meaning |
 |---|---|
 | `DetectorPatchOptimization(optimizer: GradientOptimizer, scorer_id: str \| None = None, device: str = "cpu", max_training_segments: int \| None = None, samples_per_scene: int \| Literal["all"] = "all", min_visible_pixels: int = 100, braking_deceleration_mps2: float = 6., confidence_margin: float = .1, progress_interval: int = 1)` | White-box attack settings (algorithm used: PGD). |
-| `RolloutPatchOptimization(optimizer: GradientOptimizer, start_distances_m: tuple[float, ...] = (40., 30., 20.), horizon_s: float = 3., max_training_segments: int \| None = None)` | Black-box attack settings (algorithm used: NES). |
+| `RolloutPatchOptimization(optimizer: GradientOptimizer, stop_speed_mps: float = .5, min_stop_command_step: int = 5, max_training_segments: int \| None = None)` | Black-box attack settings (algorithm used: NES). |
 <!-- api:end -->
 
 #### Constraints and errors
@@ -3025,10 +3025,11 @@ trained route distance to the stop line is `d_min = v² / (2a)`, where `a` is
 `braking_deceleration_mps2`.
 
 `RolloutPatchOptimization` raises `TypeError` for an optimizer other than `NES` and
-`ValueError` for empty or nonpositive `start_distances_m`, a nonpositive `horizon_s` or
-`max_training_segments`. Each training segment contributes one rollout start per start
-distance. NES uses `1 + steps × (population_size + 1)` rollouts per start. Neither path uses
-`validation_metadata`.
+`ValueError` for a nonpositive `stop_speed_mps` or `max_training_segments`, or a
+`min_stop_command_step` that is not a nonnegative integer. The offline phase raises
+`ValueError` when no training segment passes unpatched-replica calibration. See the
+[black-box workflow](../examples/stop-sign-patch.md#prepare-the-black-box-attack) for the
+calibration rules and query budget. Neither path uses `validation_metadata`.
 
 #### See also
 

@@ -9,7 +9,7 @@ import numpy as np
 from avsectester.attack import OfflineContext
 from avsectester.attack.optimization import GradientOptimizer, NES
 from avsectester.validation import (
-    require_nonnegative_number, require_positive_integer, require_positive_number,
+    require_nonnegative_integer, require_nonnegative_number, require_positive_integer, require_positive_number,
 )
 
 from .assets import initial_patch_texture
@@ -68,20 +68,15 @@ class RolloutPatchOptimization:
     """Black-box attack settings (algorithm used: NES)."""
 
     optimizer: GradientOptimizer
-    start_distances_m: tuple[float, ...] = (40., 30., 20.)
-    horizon_s: float = 3.
+    stop_speed_mps: float = .5
+    min_stop_command_step: int = 5
     max_training_segments: int | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.optimizer, NES):
             raise TypeError("optimizer must be NES for rollout patch optimization")
-        distances = tuple(self.start_distances_m)
-        if not distances:
-            raise ValueError("start_distances_m must not be empty")
-        for value in distances:
-            require_positive_number(value, "start_distances_m")
-        object.__setattr__(self, "start_distances_m", distances)
-        require_positive_number(self.horizon_s, "horizon_s")
+        require_positive_number(self.stop_speed_mps, "stop_speed_mps")
+        require_nonnegative_integer(self.min_stop_command_step, "min_stop_command_step")
         if self.max_training_segments is not None:
             require_positive_integer(self.max_training_segments, "max_training_segments")
 

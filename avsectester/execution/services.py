@@ -6,7 +6,7 @@ driving loop, scoring objective or selector.
 """
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field, replace
@@ -27,7 +27,7 @@ from avsectester.closed_loop.environment import SensorEnvironment, normalize_env
 from avsectester.data_types import Observation
 from avsectester.execution.frame_data_cache import FrameDataCache
 from avsectester.closed_loop.simulators.base import Initialization, FrameDataSequence
-from avsectester.runlog import Recorder, RunLog
+from avsectester.runlog import Recorder, RunLog, StepRecord
 from avsectester.closed_loop.hooks import HookSet
 from avsectester.closed_loop.simulators.base import DeploymentPlan, SensorView, Simulator, SimulatorRuntime
 
@@ -38,7 +38,10 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class CandidateRequest:
-    """One candidate rollout. ``attack`` creates the deployed runtime with its create_runtime."""
+    """One candidate rollout. ``attack`` creates the deployed runtime with its create_runtime.
+
+    ``terminate_when`` receives each recorded decision and may end the rollout successfully.
+    """
 
     segment: AttackSegment
     seed: int
@@ -48,6 +51,7 @@ class CandidateRequest:
     attack: Any = None
     artifacts: Any = None
     output_path: str | Path | None = None
+    terminate_when: Callable[[StepRecord], bool] | None = None
 
     def __post_init__(self) -> None:
         require_nonnegative_integer(self.seed, "seed")
@@ -620,6 +624,7 @@ class ClosedLoopSession:
                     attacks=attacks, recording=request.recording,
                     output_path=request.output_path, start=start, initialization=initialization,
                     environment=request.environment, deployment=deployment,
+                    terminate_when=request.terminate_when,
                     metadata={**self._provenance(start, request.environment, simulator_runtime), "candidate": asdict(segment)},
                 )
                 runner_owns_attacks = True

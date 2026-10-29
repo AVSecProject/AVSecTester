@@ -396,14 +396,37 @@ class DeceleratingAVStack(AVStack):
         return decelerating_command(observation.ego_speed, observation.t)
 
 
-class ImageForwardAVStack(DeceleratingAVStack):
-    """Plan farther when the captured image is darker, for black-box transport tests."""
+class StopCommandAVStack(DeceleratingAVStack):
+    """Emit a delayed stop command, optionally selecting its delay from captured pixels."""
+
+    def __init__(self, stop_after=3, image_dependent=False, stop_by_start=None,
+                 invalid_timestamps=False):
+        self.stop_after = stop_after
+        self.image_dependent = image_dependent
+        self.stop_by_start = dict(stop_by_start or {})
+        self.invalid_timestamps = invalid_timestamps
+        self.decision = 0
+        self.delay = stop_after
+
+    def reset(self, observation, *, past=()):
+        self.decision = 0
+        self.delay = self.stop_after
 
     def __call__(self, observation):
-        image = np.asarray(next(iter(observation.sensor_data.values())), dtype=float)
-        forward = 5. + 20. * (1. - image.mean() / 255.)
-        return Control(trajectory=[((0., 0., 0.), (1., 0., 0., 0.), round(observation.t * 1e6)),
-                                   ((forward, 0., 0.), (1., 0., 0., 0.), round((observation.t + 5.) * 1e6))])
+        if self.decision == 0:
+            self.delay = self.stop_by_start.get(round(observation.vehicle_state.x), self.stop_after)
+            if self.image_dependent:
+                image = np.asarray(next(iter(observation.sensor_data.values())))
+                self.delay = 2 + int(image.astype(np.uint64).sum()) % 4
+        tail_speed = .25 if self.delay is not None and self.decision >= self.delay else 10.
+        self.decision += 1
+        stamp = round(observation.t * 1e6)
+        end = stamp + 100000 if self.invalid_timestamps else stamp + 1100000
+        return Control(trajectory=[
+            ((0., 0., 0.), (1., 0., 0., 0.), stamp),
+            ((1., 0., 0.), (1., 0., 0., 0.), stamp + 100000),
+            ((1. + tail_speed, 0., 0.), (1., 0., 0., 0.), end),
+        ])
 
 
 class MetadataOnlyAttack(Attack):

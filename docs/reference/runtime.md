@@ -224,7 +224,8 @@ under [Object visibility](../guides/simulators.md#inserted-world-objects).
 
 `EventRecord` captures initialization, termination and failure/cleanup information outside a
 decision. NuRec termination includes `ground_contact_failures`, counts by rejected ground-fit
-reason. `RunLog.status` distinguishes `completed`, `failed`, `cancelled` and `incomplete` runs.
+reason. A run ended by its `terminate_when` predicate records `terminated_by_condition: true`.
+`RunLog.status` distinguishes `completed`, `failed`, `cancelled` and `incomplete` runs.
 
 Parquet stores typed scalar and nested values. Large arrays occupy payload shards. Payloads
 publish before referring record parts. Completion metadata publishes last. A crash leaves

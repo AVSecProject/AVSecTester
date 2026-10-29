@@ -54,7 +54,10 @@ class RecordingPolicy:
 
 @dataclass(frozen=True)
 class RunRequest:
-    """One caller-owned simulator/driving-system run, independent of experiment orchestration."""
+    """One caller-owned simulator/driving-system run, independent of experiment orchestration.
+
+    ``terminate_when`` receives each recorded decision and ends a successful run when true.
+    """
 
     decision_steps: int
     hooks: HookSet | None = None
@@ -67,6 +70,7 @@ class RunRequest:
     initialization: Any = None
     deployment: Any = None
     environment: Mapping[str, Any] = field(default_factory=dict)
+    terminate_when: Callable[[StepRecord], bool] | None = None
 
     def __post_init__(self) -> None:
         require_nonnegative_integer(self.decision_steps, "decision_steps")
@@ -164,6 +168,7 @@ class ClosedLoopRunner:
         current_step = -1
         last_observation: Observation | None = None
         resources_released = False
+        terminated_by_condition = False
 
         def release() -> None:
             nonlocal resources_released
@@ -301,7 +306,7 @@ class ClosedLoopRunner:
                         except BaseException as error:
                             feedback_error = error
                         try:
-                            recorder.record_step(StepRecord(
+                            record = recorder.record_step(StepRecord(
                                 step=current_step, raw_observation=raw_record,
                                 model_observation=model_record, physical_pre=pre, physical_post=post,
                                 produced_command=produced_record, executed_command=executed_record,
@@ -318,6 +323,9 @@ class ClosedLoopRunner:
                         drain()
                         if feedback_error is not None:
                             raise feedback_error
+                        if request.terminate_when is not None and request.terminate_when(record):
+                            terminated_by_condition = True
+                            break
                 except BaseException as error:
                     if attack_dispatch.started:
                         try:
@@ -329,7 +337,10 @@ class ClosedLoopRunner:
                     if attack_dispatch.started:
                         cleanup_attacks()
             release()
-            return recorder.finish(status="completed", **sim.termination_details)
+            termination_details = dict(sim.termination_details)
+            if terminated_by_condition:
+                termination_details["terminated_by_condition"] = True
+            return recorder.finish(status="completed", **termination_details)
         except BaseException as error:
             try:
                 release()

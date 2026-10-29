@@ -134,6 +134,17 @@ def test_rollout():
             assert [record.outputs[0].value["decision"] for record in log.steps] == [0, 1]
         np.testing.assert_allclose(first.steps[-1].physical_post.ego.pose,
                                    second.steps[-1].physical_post.ego.pose)
+        received = []
+
+        def terminate(record):
+            received.append(record)
+            return True
+
+        limited = session.rollout(replace(request, terminate_when=terminate))
+        assert limited.status == "completed"
+        assert len(limited.steps) == 1
+        assert received == limited.steps
+        assert limited.steps[0].physical_post.frame == 2
         with pytest.raises(ValueError, match="seed must match"):
             session.rollout(replace(request, seed=8))
 
