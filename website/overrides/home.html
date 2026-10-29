@@ -14,11 +14,11 @@
       {%- if config.extra.affiliations %}
       <p class="avs-hero__affiliations">{{ config.extra.affiliations | join(" · ") }}</p>
       {%- endif %}
-      <p class="avs-hero__lead">Find out whether an attack actually changes how an autonomous vehicle drives.</p>
+      <p class="avs-hero__lead">Measure how attacks and defenses change the way an autonomous vehicle drives.</p>
       <p class="avs-hero__text">
-        AVSecTester is an open-source testbed for autonomous-vehicle security. Run attacks against a
-        driving system in closed loop, on real-world drives reconstructed with NVIDIA NuRec or in
-        CARLA, and compare what the vehicle does with and without the attack.
+        AVSecTester is an open-source testbed for autonomous-vehicle security. Run a driving system
+        in closed loop, in CARLA or in real-world drives reconstructed with NVIDIA NuRec, then attack
+        it, add defenses and compare what the vehicle does.
       </p>
       <div class="avs-hero__actions">
         <a class="avs-button avs-button--primary" href="{{ 'docs/getting-started/installation/' | url }}">Get started</a>

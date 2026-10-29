@@ -18,8 +18,8 @@ hide: [navigation, toc]
 
 ## Why AVSecTester
 
-AVSecTester tests attacks the way they would play out on the road: in a vehicle that keeps
-driving.
+AVSecTester tests attacks and defenses the way they would play out on the road: in a vehicle that
+keeps driving.
 
 - **Closed-loop rollouts.** Open-loop evaluation can rate a driving system highly even when it
   ignores what is in front of it [[3]](#references). AVSecTester rolls the driving system out in
@@ -270,30 +270,32 @@ driving systems. Its attacks run in simulation and on recorded or reconstructed 
 
 1. A. Madry, A. Makelov, L. Schmidt, D. Tsipras and A. Vladu. Towards Deep Learning Models
    Resistant to Adversarial Attacks. ICLR, 2018. [arXiv:1706.06083](https://arxiv.org/abs/1706.06083)
-2. Z. Ge, S. Liu, F. Wang, Z. Li and J. Sun. YOLOX: Exceeding YOLO Series in 2021. 2021.
-   [arXiv:2107.08430](https://arxiv.org/abs/2107.08430)
+2. Z. Ge, S. Liu, F. Wang, Z. Li and J. Sun. YOLOX: Exceeding YOLO Series in 2021. arXiv preprint,
+   2021. [arXiv:2107.08430](https://arxiv.org/abs/2107.08430)
 3. C. Löwens, T. Funke and A. P. Condurache. Driving on Memory. NeurIPS, 2026.
    [arXiv:2608.31029](https://arxiv.org/abs/2608.31029)
 4. A. Ilyas, L. Engstrom, A. Athalye and J. Lin. Black-box Adversarial Attacks with Limited Queries
    and Information. ICML, 2018. [arXiv:1804.08598](https://arxiv.org/abs/1804.08598)
-5. NVIDIA. PhysicalAI-Autonomous-Vehicles-NuRec. Hugging Face dataset.
+5. NVIDIA. PhysicalAI-Autonomous-Vehicles-NuRec. Hugging Face dataset, 2025.
    [huggingface.co/datasets/nvidia/PhysicalAI-Autonomous-Vehicles-NuRec](https://huggingface.co/datasets/nvidia/PhysicalAI-Autonomous-Vehicles-NuRec)
 6. Q. Wu, J. Martinez Esturo, A. Mirzaei, N. Moenne-Loccoz and Z. Gojcic. 3DGUT: Enabling
    Distorted Cameras and Secondary Rays in Gaussian Splatting. CVPR, 2025.
+   [arXiv:2412.12507](https://arxiv.org/abs/2412.12507)
 7. NVIDIA, Y. Cao, R. de Lutio, S. Fidler et al. AlpaSim: A Modular, Lightweight, and Data-Driven
-   Research Simulator for Autonomous Driving. 2025.
+   Research Simulator for Autonomous Driving. Software, 2025.
    [github.com/NVlabs/alpasim](https://github.com/NVlabs/alpasim)
 8. A. Dosovitskiy, G. Ros, F. Codevilla, A. Lopez and V. Koltun. CARLA: An Open Urban Driving
    Simulator. CoRL, 2017. [arXiv:1711.03938](https://arxiv.org/abs/1711.03938)
 9. K. Eykholt, I. Evtimov, E. Fernandes, B. Li, A. Rahmati, C. Xiao, A. Prakash, T. Kohno and
-   D. Song. Robust Physical-World Attacks on Deep Learning Models. CVPR, 2018.
+   D. Song. Robust Physical-World Attacks on Deep Learning Visual Classification. CVPR, 2018.
    [arXiv:1707.08945](https://arxiv.org/abs/1707.08945)
-10. NVIDIA. Alpamayo 1.5. 2026. [huggingface.co/nvidia/Alpamayo-1.5-10B](https://huggingface.co/nvidia/Alpamayo-1.5-10B)
+10. NVIDIA. Alpamayo 1.5. Hugging Face model, 2026.
+    [huggingface.co/nvidia/Alpamayo-1.5-10B](https://huggingface.co/nvidia/Alpamayo-1.5-10B)
 11. NVIDIA, Y. Wang, W. Luo, J. Bai et al. Alpamayo-R1: Bridging Reasoning and Action Prediction for
-    Generalizable Autonomous Driving in the Long Tail. 2025.
+    Generalizable Autonomous Driving in the Long Tail. arXiv preprint, 2025.
     [arXiv:2511.00088](https://arxiv.org/abs/2511.00088)
 12. R. S. Hallyburton, S. Zhang and M. Pajic. AVstack: An Open-Source, Reconfigurable Platform for
-    Autonomous Vehicle Development. 2022. [arXiv:2212.13857](https://arxiv.org/abs/2212.13857)
+    Autonomous Vehicle Development. arXiv preprint, 2022. [arXiv:2212.13857](https://arxiv.org/abs/2212.13857)
 
 <div class="avs-attribution" markdown>
 
