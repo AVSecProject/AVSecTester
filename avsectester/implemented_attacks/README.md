@@ -16,7 +16,7 @@ separate. An offline phase or an online phase may be a no-op.
 
 The [attack guide](../../docs/guides/attacks.md) describes phase contracts and deployment tick
 budgets. The [architecture](../../docs/concepts/architecture.md#dependency-layers) describes
-dependency rules; concrete attacks do not import one another.
+dependency rules. Concrete attacks do not import one another.
 
 Public modules declare `__all__`. Internal modules and helpers are not public imports. See
 [tests](../../tests/README.md#writing-tests) for component contract tests.
