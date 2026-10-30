@@ -2703,7 +2703,7 @@ Offline report records, formatting and statistics for recorded measurements.
 | `EvaluationReport.record_error(source: str, error: Exception, **context: Any) -> None` | Record an evaluation failure and its group or pair context without losing results. |
 | `EvaluationReport.as_dict() -> dict[str, Any]` | Return JSON-compatible report data, independent of live experiment objects. |
 | `EvaluationReport.format_summary() -> str` | Format every metric class by part and treatment, followed by report explanations. |
-| `EvaluationReport.save(directory: str \| Path) -> Path` | Write report.json and runs.csv. Metric names prefix columns to protect identities. |
+| `EvaluationReport.save(directory: str \| Path) -> Path` | Write report.json, runs.csv, treatment_summary.csv and pair_summary.csv. |
 <!-- api:end -->
 
 #### Constraints and errors
@@ -2971,6 +2971,8 @@ Connect stop-approach selection, optional patch optimization and replica deploym
 | `StopSignPatchAttack.validate_segment(segment: AttackSegment) -> None` | Validate the sign geometry and recorded-route inputs used by both optimizers. |
 | `StopSignPatchAttack.replica_placement(segment: AttackSegment, texture: np.ndarray) -> tuple[ObjectAsset, np.ndarray]` | Share the selected MUTCD/map width and upright/map orientation across all phases. |
 | `StopSignPatchAttack.replica_texture(artifacts: object) -> np.ndarray` | Return the replica face with the supplied patch in its editable region. |
+| `StopSignPatchAttack.save_artifacts(artifacts: object, directory: str \| Path) -> None` | Save the deployed texture as a lossless RGBA PNG. |
+| `StopSignPatchAttack.load_artifacts(directory: str \| Path) -> np.ndarray` | Load the deployed texture and validate its alpha and the pixels outside the patch mask. |
 <!-- api:end -->
 
 #### Constraints and errors
@@ -2986,11 +2988,12 @@ nonpositive `noise_cell_texels`.
 ### avsectester.implemented_attacks.stop_sign_patch_attack.metrics
 
 <!-- api:begin module=avsectester.implemented_attacks.stop_sign_patch_attack.metrics -->
-Replica-specific visibility measurements from saved decision captures.
+Replica visibility and sign-detection measurements from saved decision captures.
 
 | Name and signature | Meaning |
 |---|---|
 | `ReplicaVisibility(camera_ids: Sequence[str] \| None = None, min_visible_pixels: int = 100)` | Subclass of `Metric`. Count decisions where the inserted replica reaches the pixel threshold in a selected camera. |
+| `SignDetection(camera_id: str, min_visible_pixels: int = 100, endpoint_tolerance_m: float = 3.)` | Subclass of `Metric`. Count decisions where the driving system logged a sign detection. |
 <!-- api:end -->
 
 #### Constraints and errors
@@ -3027,9 +3030,9 @@ trained route distance to the stop line is `d_min = v² / (2a)`, where `a` is
 `RolloutPatchOptimization` raises `TypeError` for an optimizer other than `NES` and
 `ValueError` for a nonpositive `stop_speed_mps` or `max_training_segments`, or a
 `min_stop_command_step` that is not a nonnegative integer. The offline phase raises
-`ValueError` when no training segment passes unpatched-replica calibration. See the
+`ValueError` when no training segment is eligible with the clean texture. See the
 [black-box workflow](../examples/stop-sign-patch.md#prepare-the-black-box-attack) for the
-calibration rules and query budget. Neither path uses `validation_metadata`.
+eligibility rules and query budget. Neither path uses `validation_metadata`.
 
 #### See also
 

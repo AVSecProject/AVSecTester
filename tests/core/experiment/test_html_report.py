@@ -62,14 +62,14 @@ def test_write_offline_html(tmp_path):
                       columns={"frame": "Recorded frame index.", "score": "Detector confidence (ratio)."})
     offline.set_table("wide", [{f"column_{i}": i for i in range(9)}])
     offline.set_table("large", [{"row": index, "marker": "not-inlined"} for index in range(51)])
-    offline.save(tmp_path / "offline" / "attack")
+    offline.save(tmp_path / "attacks" / "attack" / "offline_report")
     EvaluationReport().save(tmp_path / "evaluation")
     write_evaluation_html(tmp_path)
     path = write_offline_html(tmp_path)
     assert path == tmp_path.resolve() / "offline_report.html"
     text = path.read_text()
     assert "Offline report —" in text and "no offline output" in text
-    assert "The offline phase failed; values below are partial." in text
+    assert "The offline phase failed. Values below are partial." in text
     assert "Mean confidence." in text and "ratio (0–1)" in text
     assert "Captured samples." in text and "Detector confidence (ratio)." in text
     assert "Replica face with the initial patch." in text
@@ -195,4 +195,4 @@ def test_write_evaluation_html(tmp_path):
     EvaluationReport().save(loaded / "evaluation")
     loaded_text = write_evaluation_html(loaded).read_text()
     assert (f"Metadata loaded from {loaded.resolve()}/selected&lt;signs&gt;.json "
-            "(4 segments); no selection was run.") in loaded_text
+            "(4 segments). No selection was run.") in loaded_text

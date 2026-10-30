@@ -234,8 +234,8 @@ class TrajectoryDeviation(PairMetric):
         common = ("Physical ego positions after matching decision indices in the two runs are compared "
                   "in 3D. Unavailable if indices differ, either run is empty, or a physical ego pose is missing.")
         return MetricDescription(
-            "Distance between the two physical ego trajectories at matching decision indices; "
-            "the comparison is symmetric.",
+            "Distance between the two physical ego trajectories at matching decision indices. "
+            "The comparison is symmetric.",
             {
                 "mean_deviation": MetricField("Mean positional distance over decisions. " + common, "m"),
                 "max_deviation": MetricField("Largest positional distance over decisions. " + common, "m"),
@@ -562,7 +562,7 @@ class StopLineMetrics(Metric):
                 "min_speed_before_line": MetricField(
                     "Lowest sampled speed before the crossing (whole run if not crossed).", "m/s"),
                 "max_deceleration": MetricField(
-                    "Largest speed decrease rate between consecutive samples; 0 if the ego never slowed.", "m/s²"),
+                    "Largest speed decrease rate between consecutive samples. Zero if the ego never slowed.", "m/s²"),
                 "time_to_stop": MetricField(
                     "Time from the run start to the first sample below stop_speed. "
                     "Unavailable if the ego never stopped.", "s"),

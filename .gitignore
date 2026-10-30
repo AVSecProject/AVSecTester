@@ -238,8 +238,13 @@ third_party/lib-avstack-api
 # fetched CARLA 2D-camera work_dirs (mmdet) — all artifacts
 /models/work_dirs_2d/
 
-# recorded run outputs (images + data)
-/results/
+# Raw run logs, incomplete offline reports, offline attachments and saved maps
+/results/**/runs/
+/results/**/incomplete_offline_reports/
+/results/**/offline_report/files/
+/results/**/maps/
+/results/nre-probes/
+/results/*.log
 
 # downloaded datasets (e.g. nuCarla HuggingFace zips) — keep large data out of git
 /data/

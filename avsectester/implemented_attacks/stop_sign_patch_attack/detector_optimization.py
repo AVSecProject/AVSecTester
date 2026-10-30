@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 
 
 class TextureDataSource(DataSource):
-    """Index the calibrated captures used in each training epoch."""
+    """Index the rendered frames used in each training epoch."""
 
     def __init__(self, samples: Sequence[AdversarialSample]) -> None:
         if not samples or any(not isinstance(sample, AdversarialSample) for sample in samples):
@@ -35,11 +35,11 @@ class TextureDataSource(DataSource):
         self.samples = tuple(samples)
 
     def __len__(self) -> int:
-        """Return the number of calibrated training captures."""
+        """Return the number of rendered training frames."""
         return len(self.samples)
 
     def __getitem__(self, index: int) -> AdversarialSample:
-        """Return the indexed capture; out-of-range indices raise ``IndexError``."""
+        """Return the indexed rendered frame. Out-of-range indices raise ``IndexError``."""
         if not 0 <= index < len(self):
             raise IndexError(index)
         return self.samples[index]
@@ -54,14 +54,15 @@ def _masked_total_variation(colors: torch.Tensor, mask: torch.Tensor, eps: float
         (colors[:, :, 1:] - colors[:, :, :-1]).square().sum(0)[horizontal],
     ]
     squared = torch.cat(distances)
-    return (squared + eps ** 2).sqrt().mean() - eps
+    # sqrt(d² + ε²) − ε written without the cancellation that makes a uniform patch slightly negative.
+    return (squared / ((squared + eps ** 2).sqrt() + eps)).mean()
 
 
 class MaskedPatchPerturbation(Perturbation):
-    """Optimize RGB only in the mask and compose it through each capture's frozen visibility.
+    """Optimize RGB only in the mask and compose it through each rendered frame's frozen visibility.
 
     The variable is a CHW texture. The original alpha, object geometry and pixels outside the
-    mask are fixed. ``apply`` returns a camera image; the NumPy perturbation in rollout_optimization.py
+    mask are fixed. ``apply`` returns a camera image. The NumPy perturbation in rollout_optimization.py
     instead returns a physical texture to its rollout scorer.
     """
 
@@ -106,45 +107,46 @@ def _colors(texture: np.ndarray) -> torch.Tensor:
     return torch.as_tensor(texture[..., :3].copy(), dtype=torch.float32).permute(2, 0, 1) / 255
 
 
-_CALIBRATION_COLUMNS = {
+_SEGMENT_RANGE_COLUMNS = {
     "scene": "Dataset scenario identifier.",
     "selected_start": "Selected training-segment start position (frames, zero-based).",
     "approach_speed_mps": "Recorded ego speed at the selected segment start (m/s).",
     "d_min_m": "Route distance to the stop line inside which braking_deceleration_mps2 can no longer "
                "stop the approach speed before the line: speed squared over twice the deceleration (m).",
-    "d_max_m": "Farthest eligible route distance to the stop line where the unpatched replica reaches "
+    "d_max_m": "Farthest eligible route distance to the stop line where the clean texture reaches "
                "the detection threshold (m).",
     "search_first_frame": "First recording frame considered for range calibration (frames, zero-based).",
     "search_last_frame": "Last recording frame considered, at the recorded stop (frames, zero-based).",
     "status": "Training-segment calibration status: calibrating, calibrated or failed.",
-    "error": "Exception type and message when calibration failed; otherwise unavailable.",
+    "error": "Exception type and message when calibration failed. Otherwise unavailable.",
 }
-_PROBE_COLUMNS = {
+_RENDERED_FRAME_COLUMNS = {
     "scene": "Dataset scenario identifier.",
-    "frame": "Recorded capture frame position (frames, zero-based).",
-    "timestamp_s": "Recorded capture timestamp (s).",
+    "frame": "Recorded frame position (frames, zero-based).",
+    "timestamp_s": "Recorded frame timestamp (s).",
     "distance_m": "Recorded ego-to-sign face-centre distance in 3D (m).",
-    "line_distance_m": "Recorded ego route distance to the stop line; negative past the line (m).",
-    "stage": "Capture purpose: d_max_search or sample.",
+    "line_distance_m": "Recorded ego route distance to the stop line, negative past the line (m).",
+    "stage": "Render purpose: d_max_search or sample.",
     "visible_pixels": "Visible replica face pixels in the selected camera (pixels).",
-    "status": "Capture status: captured or skipped; unavailable while the capture is in progress.",
-    "reason": "Reason the capture was skipped; otherwise unavailable.",
+    "status": "Render status: used after visibility and projection checks, then scored in d_max_search or used "
+              "as a training sample in sample. Otherwise skipped. Unavailable while rendering.",
+    "reason": "Reason the render was skipped. Otherwise unavailable.",
     "occlusion_source": "Simulator visibility source used for the replica face.",
     "target_box_left_px": "Projected map sign-face target-box left coordinate (pixels).",
     "target_box_top_px": "Projected map sign-face target-box top coordinate (pixels).",
     "target_box_right_px": "Projected map sign-face target-box right coordinate (pixels).",
     "target_box_bottom_px": "Projected map sign-face target-box bottom coordinate (pixels).",
-    "replica_score": "Unpatched-replica stop-sign confidence during d_max search (ratio, 0–1).",
+    "clean_score": "Clean (unpatched replica) stop-sign confidence during d_max search (ratio, 0–1).",
 }
-_TEXTURES = ("clean", "replica", "initial", "optimized")
+_TEXTURES = ("clean", "initial", "optimized")
 _TEXTURE_MEANINGS = (
-    "clean = reconstructed sign without a replica; replica = unpatched replica; "
-    "initial = replica with the initial patch; optimized = replica with the optimized patch."
+    "clean is the unpatched replica. initial is the replica with the initial patch. "
+    "optimized is the replica with the optimized patch."
 )
 
 
-def _capture_row(scene: str, note: Mapping[str, Any]) -> dict[str, Any]:
-    """Write named capture columns explicitly, including absent projection evidence."""
+def _rendered_frame_row(scene: str, note: Mapping[str, Any]) -> dict[str, Any]:
+    """Write named rendered-frame columns explicitly, including absent projection evidence."""
     box = note.get("target_box") or [None] * 4
     return {
         "scene": scene, "frame": note.get("frame"), "timestamp_s": note.get("timestamp_s"),
@@ -154,12 +156,12 @@ def _capture_row(scene: str, note: Mapping[str, Any]) -> dict[str, Any]:
         "reason": note.get("reason"), "occlusion_source": note.get("occlusion_source"),
         "target_box_left_px": box[0], "target_box_top_px": box[1],
         "target_box_right_px": box[2], "target_box_bottom_px": box[3],
-        "replica_score": note.get("replica_score"),
+        "clean_score": note.get("clean_score"),
     }
 
 
 def _distance_bin(sample: AdversarialSample) -> int:
-    """Lower bound of the 10 m route-distance-to-line bin of a training capture."""
+    """Lower bound of the 10 m route-distance-to-line bin of a rendered training frame."""
     return int(sample.context["record"]["line_distance_m"] // 10) * 10
 
 
@@ -174,51 +176,48 @@ def _report_progress(report: Any, progress: list[dict[str, Any]], lowers: list[i
         f"after the last epoch. Detection means confidence ≥ decision_threshold ({decision_threshold}).",
         columns={
             "epoch": "Completed PGD epochs (0 is the initial patch).",
-            "hinge_loss": "Mean hinge objective over all training frames (ratio, 0–1).",
+            "total_loss": "Detection loss plus weighted smoothness loss.",
+            "detection_loss": "Mean HideBelowThreshold loss over all training frames.",
+            "smoothness_loss": "PGD tv_weight multiplied by patch smoothness.",
             "detection_rate": "Fraction of training frames detected (ratio, 0–1).",
             "max_confidence": "Highest stop-sign confidence over the training frames (ratio, 0–1).",
             **{name: f"Fraction detected among training frames {interval_m} from the stop line (ratio, 0–1)."
                for name, interval_m in bins.items()},
         },
     )
+    for name, label in (("total_loss", "Total loss"), ("detection_loss", "Detection loss"),
+                        ("smoothness_loss", "Weighted smoothness loss")):
+        report.set_series(
+            name, [row[name] for row in progress], x=epochs, x_label="PGD epoch", y_label=label,
+            description=f"{label} evaluated over every training frame at the current patch.",
+        )
     report.set_series(
-        "training_hinge_loss", [row["hinge_loss"] for row in progress], x=epochs, x_label="PGD epoch",
-        y_label="Mean hinge loss", y_unit="ratio (0–1)",
-        description="Hinge objective averaged over every training frame, not one batch.",
-    )
-    report.set_series(
-        "training_detection_rate", [row["detection_rate"] for row in progress], x=epochs,
+        "detection_rate", [row["detection_rate"] for row in progress], x=epochs,
         x_label="PGD epoch", y_label="Detected fraction", y_unit="ratio (0–1)",
         description="Fraction of all training frames still detected by the driving system's detector.",
     )
-    for name, interval_m in bins.items():
-        report.set_series(
-            f"training_{name}", [row[name] for row in progress], x=epochs, x_label="PGD epoch",
-            y_label="Detected fraction", y_unit="ratio (0–1)",
-            description=f"Fraction of training frames {interval_m} from the stop line still detected.",
-        )
 
 
 def collect_samples(
     attack: StopSignPatchAttack, context: OfflineContext, original: np.ndarray, *,
     session: ClosedLoopSession, scorer: SessionScorer, sensor_id: str, decision_threshold: float,
 ) -> list[AdversarialSample]:
-    """Calibrate the detectable range that decides a stop and sample captures inside it.
+    """Calibrate the detectable range that decides a stop and sample rendered frames inside it.
 
     Distances are route distances from ego to the stop line. The attack must suppress every
     detection until the driving system can no longer stop before the line: d_min is the recorded
     speed at the segment start squared over twice ``braking_deceleration_mps2``, the driving
     system's strongest braking. Frames closer than d_min need no suppression. The d_max search
     covers recording start through the recorded stop, on the entering route and facing the sign,
-    in descending line distance; the first frame whose unpatched replica meets the scorer's
+    in descending line distance. The first frame whose clean texture meets the scorer's
     decision threshold is therefore the farthest detectable one, without a monotonicity
     assumption. The configured visibility minimum excludes ineligible frames explicitly.
-    ``samples_per_scene="all"`` uses every eligible frame; an integer selects that many time-uniform
+    ``samples_per_scene="all"`` uses every eligible frame. An integer selects that many time-uniform
     frames.
-    Every selected frame is a PGD training sample.
+    Every selected rendered frame is a PGD training sample.
 
-    Captures use the framework-provided context.services directly. Native
-    geometry or service errors stop collection with a saved reproduction; they are never scores.
+    Renders use the framework-provided context.services directly. Native
+    geometry or service errors stop collection with a saved reproduction. They are never scores.
     """
     options = cast("DetectorPatchOptimization", attack.optimization)
     if not context.metadata:
@@ -227,32 +226,26 @@ def collect_samples(
         raise ValueError("White-box composition samples require an environment without sensor corruptions")
     dataset = context.services.dataset
     cohort = context.metadata[:options.max_training_segments]
-    replica_colors = _colors(replica_face())
-    calibration: list[dict[str, Any]] = []
-    manifest: list[dict[str, Any]] = []
+    clean_colors = _colors(replica_face())
+    segment_ranges: list[dict[str, Any]] = []
     train: list[AdversarialSample] = []
 
     def update_report() -> None:
-        rows = [{column: record.get(column) for column in _CALIBRATION_COLUMNS}
-                for record in calibration]
+        rows = [{column: record.get(column) for column in _SEGMENT_RANGE_COLUMNS}
+                for record in segment_ranges]
         context.report.set_table(
-            "calibration", rows,
-            description=f"Detectable-range calibration, with one row per training segment. Camera: {sensor_id}; "
+            "training_segment_ranges", rows,
+            description=f"Detectable-range calibration, with one row per training segment. Camera: {sensor_id}. "
             f"decision_threshold: {decision_threshold}.",
-            columns=_CALIBRATION_COLUMNS if rows else {},
+            columns=_SEGMENT_RANGE_COLUMNS if rows else {},
         )
-        probes = [_capture_row(record["scene"], probe)
-                  for record in calibration for probe in record["probes"]]
+        rendered_frames = [_rendered_frame_row(record["scene"], frame)
+                           for record in segment_ranges for frame in record["rendered_frames"]]
         context.report.set_table(
-            "calibration_probes", probes,
-            description=f"One row per attempted capture from camera {sensor_id} during range calibration and sampling.",
-            columns=_PROBE_COLUMNS if probes else {},
-        )
-        samples = [_capture_row(row["scene"], row) for row in manifest]
-        context.report.set_table(
-            "sample_manifest", samples,
-            description="Recorded captures used for PGD updates, from every training segment.",
-            columns=_PROBE_COLUMNS if samples else {},
+            "rendered_frames", rendered_frames,
+            description=f"One row per frame rendered from camera {sensor_id} in each stage of range calibration "
+            "and sampling. The frame that sets d_max is rendered once and listed again as a sample.",
+            columns=_RENDERED_FRAME_COLUMNS if rendered_frames else {},
         )
 
     for segment in cohort:
@@ -270,14 +263,18 @@ def collect_samples(
         d_min = speed ** 2 / (2 * options.braking_deceleration_mps2)
         record: dict[str, Any] = {"scene": scene, "selected_start": segment.start.position,
                                   "approach_speed_mps": speed, "d_min_m": d_min, "d_max_m": None,
-                                  "search_first_frame": 0, "search_last_frame": stop, "status": "calibrating", "error": None, "probes": []}
-        calibration.append(record)
+                                  "search_first_frame": 0, "search_last_frame": stop, "status": "calibrating", "error": None, "rendered_frames": []}
+        segment_ranges.append(record)
         update_report()
         cache: dict[int, AdversarialSample] = {}
 
-        def capture(session: ClosedLoopSession, index: int, stage: str) -> AdversarialSample | None:
+        def render_frame(session: ClosedLoopSession, index: int, stage: str) -> AdversarialSample | None:
             if index in cache:
-                return cache[index]
+                cached = cache[index]
+                note = {**cached.context["record"], "stage": stage}
+                record["rendered_frames"].append(note)
+                update_report()
+                return AdversarialSample(cached.x, cached.target, {**cached.context, "record": note})
             observation = session.render(RenderRequest(scene, frames[index], sensor_id,
                 actions=[InsertObject(REPLICA_OBJECT_ID, asset, pose, harmonizer=attack.harmonizer)],
                 environment=context.environment))
@@ -286,7 +283,7 @@ def collect_samples(
             note = {"frame": index, "timestamp_s": frames[index].timestamp,
                     "distance_m": float(distances[index]), "line_distance_m": float(line_distances[index]),
                     "stage": stage, "visible_pixels": visible_pixels}
-            record["probes"].append(note)
+            record["rendered_frames"].append(note)
             update_report()
             if visible_pixels < options.min_visible_pixels:
                 note.update(status="skipped", reason=f"fewer than {options.min_visible_pixels} visible pixels",
@@ -304,7 +301,7 @@ def collect_samples(
                 update_report()
                 return None
             background = torch.as_tensor(composition.background.copy(), dtype=torch.float32).permute(2, 0, 1) / 255
-            note.update(status="captured", target_box=list(box), occlusion_source=evidence.occlusion_source)
+            note.update(status="used", target_box=list(box), occlusion_source=evidence.occlusion_source)
             update_report()
             return AdversarialSample(background, TargetSpec(box, "stop sign"),
                                      {"plan": composition.plan, "record": note, "scene": scene})
@@ -313,13 +310,13 @@ def collect_samples(
             domain = [index for index in range(stop + 1) if line_distances[index] >= 0
                       and dataset.frame_data(scene, frames[index]).ego.pose[:3, 0] @ control.pose[:3, 0] < -.5]
             for index in sorted(domain, key=lambda value: (-line_distances[value], value)):
-                sample = capture(session, index, "d_max_search")
+                sample = render_frame(session, index, "d_max_search")
                 if sample is not None:
                     with torch.no_grad():
-                        replica_image = sample.context["plan"].composite(
-                            sample.x, {(REPLICA_OBJECT_ID, 0): replica_colors})
-                        score = float(scorer.target_scores(replica_image.unsqueeze(0), [sample.target])[0])
-                    sample.context["record"]["replica_score"] = score
+                        clean_image = sample.context["plan"].composite(
+                            sample.x, {(REPLICA_OBJECT_ID, 0): clean_colors})
+                        score = float(scorer.target_scores(clean_image.unsqueeze(0), [sample.target])[0])
+                    sample.context["record"]["clean_score"] = score
                     if score >= decision_threshold:
                         record["d_max_m"] = float(line_distances[index])
                         cache[index] = sample
@@ -340,12 +337,9 @@ def collect_samples(
                 chosen = np.unique([int(np.abs(timestamps - value).argmin()) for value in sample_times])
             scene_samples = []
             for position in chosen:
-                sample = capture(session, eligible[int(position)], "sample")
+                sample = render_frame(session, eligible[int(position)], "sample")
                 if sample is None:
                     continue
-                entry = {"scene": scene, **sample.context["record"]}
-                manifest.append(entry)
-                sample.context["record"] = entry
                 scene_samples.append(sample)
             if not scene_samples:
                 raise ValueError(f"Visibility leaves no training sample for {scene}")
@@ -365,9 +359,8 @@ def optimize_patch(
     """Run framework PGD with HideBelowThreshold and score every training frame per texture.
 
     The driving system stops after one detection, so the loss counts only scores above the
-    decision threshold minus ``confidence_margin``. ``clean`` is the reconstructed sign without
-    insertion, ``replica`` the unpatched replica, ``initial`` the initial patch and ``optimized``
-    the PGD result.
+    decision threshold minus ``confidence_margin``. ``clean`` is the unpatched replica,
+    ``initial`` the initial patch and ``optimized`` the PGD result.
     """
     options = cast("DetectorPatchOptimization", attack.optimization)
     with context.services.session(context.seed) as session:
@@ -400,7 +393,7 @@ def optimize_patch(
         objective = HideBelowThreshold(decision_threshold, options.confidence_margin)
         context.report.set_value(
             "train_frames", len(train), unit="frames",
-            description="Captured frames used for PGD updates.",
+            description="Rendered frames used for PGD updates.",
         )
         context.report.set_value(
             "training_segments", len(context.metadata[:options.max_training_segments]), unit="segments",
@@ -414,7 +407,7 @@ def optimize_patch(
         progress: list[dict[str, Any]] = []
 
         def score_training(image_for: Any) -> list[float]:
-            """Score all training captures in the configured model batch size."""
+            """Score all rendered training frames in the configured model batch size."""
             scores = []
             for start in range(0, len(train), options.optimizer.batch_size):
                 samples = train[start:start + options.optimizer.batch_size]
@@ -428,9 +421,13 @@ def optimize_patch(
                 return
             with torch.no_grad():
                 scores = score_training(lambda sample: perturbation.apply(sample, delta))
+                detection_loss = float(np.mean(objective.loss(np.asarray(scores))))
+                smoothness_loss = options.optimizer.tv_weight * float(perturbation.smoothness(delta))
             row: dict[str, Any] = {
                 "epoch": epoch,
-                "hinge_loss": float(np.mean(objective.loss(np.asarray(scores)))),
+                "total_loss": detection_loss + smoothness_loss,
+                "detection_loss": detection_loss,
+                "smoothness_loss": smoothness_loss,
                 "detection_rate": sum(score >= decision_threshold for score in scores) / len(scores),
                 "max_confidence": max(scores),
             }
@@ -449,16 +446,8 @@ def optimize_patch(
         )
         context.report.set_value(
             "patch_smoothness", float(perturbation.smoothness(result.delta)), unit="RGB distance (0–1)",
-            description="Mean Charbonnier color distance between adjacent patch texels; PGD tv_weight "
+            description="Mean Charbonnier color distance between adjacent patch texels. PGD tv_weight "
             "weights this term. Lower is smoother.",
-        )
-        context.report.set_series(
-            "pgd_objective", result.history, x=list(range(1, len(result.history) + 1)),
-            x_label="PGD epoch",
-            y_label="Mean hinge loss", y_unit="ratio (0–1)",
-            description=f"Mean training hinge loss per epoch, excluding TV; decision_threshold "
-            f"{decision_threshold}, confidence_margin {options.confidence_margin}. "
-            "Each sample contributes its loss before its batch update.",
         )
         measured = [
             {"scene": sample.context["scene"], "frame": sample.context["record"]["frame"],
@@ -466,10 +455,10 @@ def optimize_patch(
             for sample in train
         ]
         with torch.no_grad():
-            for name, candidate in [("clean", None), ("replica", replica_face()), ("initial", initial),
+            for name, candidate in [("clean", replica_face()), ("initial", initial),
                                     ("optimized", optimized)]:
-                colors = None if candidate is None else _colors(candidate)
-                scores = score_training(lambda sample: sample.x if colors is None else
+                colors = _colors(candidate)
+                scores = score_training(lambda sample:
                     sample.context["plan"].composite(sample.x, {(REPLICA_OBJECT_ID, 0): colors}))
                 for row, score in zip(measured, scores):
                     row[f"confidence_{name}"] = score
@@ -485,7 +474,7 @@ def optimize_patch(
             description="Highest optimized-patch confidence over the training frames.",
         )
         context.report.set_table(
-            "texture_summary", [
+            "texture_detection_summary", [
                 {"texture": name, "frames": len(measured),
                  "mean_confidence": float(np.mean([row[f"confidence_{name}"] for row in measured])),
                  "max_confidence": max(row[f"confidence_{name}"] for row in measured),
@@ -495,7 +484,7 @@ def optimize_patch(
             ],
             description="Detector confidence and detection rate across the training frames. " + _TEXTURE_MEANINGS,
             columns={
-                "texture": "Texture variant: clean, replica, initial or optimized, as defined above.",
+                "texture": "Texture variant: clean, initial or optimized, as defined above.",
                 "frames": "Training frames scored for this texture (frames).",
                 "mean_confidence": "Mean stop-sign confidence across training frames (ratio, 0–1).",
                 "max_confidence": "Highest stop-sign confidence across training frames (ratio, 0–1).",
@@ -503,12 +492,12 @@ def optimize_patch(
             },
         )
         context.report.set_table(
-            "frame_scores", measured,
-            description="One row per training frame, comparing detector confidence for all four texture variants. " +
+            "frame_detection_scores", measured,
+            description="One row per training frame, comparing detector confidence for all three texture variants. " +
             _TEXTURE_MEANINGS,
             columns={
                 "scene": "Dataset scenario identifier.",
-                "frame": "Recorded capture frame position (frames, zero-based).",
+                "frame": "Recorded frame position (frames, zero-based).",
                 "line_distance_m": "Recorded ego route distance to the stop line (m).",
                 **{f"confidence_{name}": f"Detector stop-sign confidence for {name} (ratio, 0–1)."
                    for name in _TEXTURES},

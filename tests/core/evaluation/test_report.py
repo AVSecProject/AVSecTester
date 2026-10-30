@@ -40,7 +40,11 @@ def report():
         }],
         pair_summaries=[{
             "part": None, "treatment_a": "clean", "treatment_b": "attacked",
-            "deltas": {"DrivingMetrics.final_speed": {"mean": None}},
+            "groups": 0, "total_groups": 1,
+            "deltas": {"DrivingMetrics.final_speed": {
+                "kind": "number", "mean": None, "std": None, "count": 0,
+            }},
+            "metrics": {},
         }],
         metrics=[
             {"label": "DrivingMetrics", "fields": {
@@ -98,6 +102,47 @@ def test_save(report, tmp_path):
         "part", "segment_index", "scenario_id", "seed", "treatment", "attack_name", "status", "error",
     ]
     assert rows[0]["attack_name"] == "" and rows[1]["attack_name"] == "attack"
+
+    with (tmp_path / "treatment_summary.csv").open() as stream:
+        reader = csv.DictReader(stream)
+        assert reader.fieldnames == [
+            "part", "treatment", "groups", "total_groups", "failed_runs", "field", "kind",
+            "count", "mean", "std", "true_fraction",
+        ]
+        treatments = list(reader)
+    assert len(treatments) == sum(len(row["metrics"]) for row in data["treatment_summaries"])
+    assert [row["field"] for row in treatments] == [
+        field for row in data["treatment_summaries"] for field in row["metrics"]
+    ]
+    number, proportion = treatments[:2]
+    statistics = data["treatment_summaries"][0]["metrics"]
+    assert number == {
+        "part": "", "treatment": "clean", "groups": "1", "total_groups": "1",
+        "failed_runs": "0", "field": "DrivingMetrics.final_speed", "kind": "number",
+        "count": "1", "mean": str(statistics["DrivingMetrics.final_speed"]["mean"]),
+        "std": str(statistics["DrivingMetrics.final_speed"]["std"]), "true_fraction": "",
+    }
+    assert proportion["kind"] == "proportion"
+    assert proportion["count"] == str(statistics["DrivingMetrics.stopped"]["count"])
+    assert proportion["true_fraction"] == str(statistics["DrivingMetrics.stopped"]["true_fraction"])
+    assert proportion["mean"] == proportion["std"] == ""
+
+    with (tmp_path / "pair_summary.csv").open() as stream:
+        reader = csv.DictReader(stream)
+        assert reader.fieldnames == [
+            "part", "treatment_a", "treatment_b", "groups", "total_groups", "measurement",
+            "field", "kind", "count", "mean", "std", "true_fraction",
+        ]
+        pairs = list(reader)
+    assert len(pairs) == sum(
+        len(row[key]) for row in data["pair_summaries"] for key in ("deltas", "metrics")
+    )
+    assert pairs == [{
+        "part": "", "treatment_a": "clean", "treatment_b": "attacked", "groups": "0",
+        "total_groups": "1", "measurement": "paired_difference",
+        "field": "DrivingMetrics.final_speed", "kind": "number", "count": "0",
+        "mean": "", "std": "", "true_fraction": "",
+    }]
 
 
 def test_summarize():

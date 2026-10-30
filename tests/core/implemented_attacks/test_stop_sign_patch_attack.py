@@ -86,6 +86,14 @@ def test_replica_deployment(approach_view, tmp_path):
         initial_patch="low_frequency_noise", noise_seed=0).run_offline(context))
     assert not np.array_equal(textures["low_frequency_noise"], StopSignPatchAttack(
         initial_patch="low_frequency_noise", noise_seed=1).run_offline(context))
+    # Artifacts persist as a lossless RGBA PNG, and loading validates the replica face.
+    saved = tmp_path / "artifacts"
+    attack.save_artifacts(textures["low_frequency_noise"], saved)
+    assert [path.name for path in saved.iterdir()] == ["deployed_texture.png"]
+    np.testing.assert_array_equal(attack.load_artifacts(saved), textures["low_frequency_noise"])
+    Image.fromarray(textures["white"][..., :3]).save(saved / "deployed_texture.png")
+    with pytest.raises(ValueError, match="RGBA"):
+        attack.load_artifacts(saved)
     texture = textures["white"]
     mask = np.zeros(canonical.shape[:2], bool)
     mask[200:260, 100:400] = True
@@ -186,25 +194,24 @@ def test_white_box_offline_phase(nurec_detector_services_and_segment):
         context = OfflineContext(services, training, seed=0,
                                  validation_metadata=(make_segment(start=23),))
         texture = attack.run_offline(context)
-        calibration = context.report.tables["calibration"].rows
-        assert list(dict.fromkeys(row["selected_start"] for row in calibration)) == expected_starts
+        ranges = context.report.tables["training_segment_ranges"].rows
+        assert list(dict.fromkeys(row["selected_start"] for row in ranges)) == expected_starts
         assert context.report.values["training_segments"].value == len(expected_starts)
     face = StopSignPatchAttack(initial_patch="none").run_offline(
         OfflineContext(services, (segment,), seed=0))
     np.testing.assert_array_equal(texture[..., 3], face[..., 3])
     np.testing.assert_array_equal(texture[..., :3][~attack.mask], face[..., :3][~attack.mask])
     report = context.report
-    assert set(report.tables) == {"calibration", "calibration_probes", "sample_manifest", "frame_scores",
-                                  "texture_summary", "detection_rate_vs_distance", "training_progress"}
+    assert set(report.tables) == {"training_segment_ranges", "rendered_frames", "frame_detection_scores",
+                                  "texture_detection_summary", "detection_rate_vs_distance", "training_progress"}
     assert set(report.images) == {"initial_texture", "optimized_texture"}
     progress = report.tables["training_progress"].rows
     bins = sorted(name for name in progress[0] if name.startswith("detection_rate_"))
-    assert bins and set(report.series) == {"pgd_objective", "training_hinge_loss", "training_detection_rate",
-                                           *(f"training_{name}" for name in bins)}
+    assert bins and set(report.series) == {"total_loss", "detection_loss", "smoothness_loss", "detection_rate"}
     assert set(report.values) == {"train_frames", "training_segments", "mask_pixels", "patch_smoothness",
                                   "detected_frame_fraction", "max_confidence"}
-    calibration = report.tables["calibration"].rows
-    assert calibration[0]["d_min_m"] == pytest.approx(5.)
+    ranges = report.tables["training_segment_ranges"].rows
+    assert ranges[0]["d_min_m"] == pytest.approx(5.)
     with pytest.raises(ValueError, match="training segment"):
         attack.run_offline(replace(context, metadata=()))
     with pytest.raises(ValueError, match="max_training_segments"):
@@ -212,43 +219,50 @@ def test_white_box_offline_phase(nurec_detector_services_and_segment):
     for samples in (3, "some", True):
         with pytest.raises(ValueError, match="samples_per_scene"):
             replace(attack.optimization, samples_per_scene=samples)
-    samples = report.tables["sample_manifest"].rows
-    rows = report.tables["frame_scores"].rows
-    # Every captured frame trains; the diagnostics score the same frames.
+    samples = [row for row in report.tables["rendered_frames"].rows
+               if row["stage"] == "sample" and row["status"] == "used"]
+    rows = report.tables["frame_detection_scores"].rows
+    # Every used sample render trains. The diagnostics score the same frames.
     assert [(row["scene"], row["frame"]) for row in rows] == [(row["scene"], row["frame"]) for row in samples]
     assert {key for row in rows for key in row} == {
-        "scene", "frame", "line_distance_m", "confidence_clean", "confidence_replica", "confidence_initial",
+        "scene", "frame", "line_distance_m", "confidence_clean", "confidence_initial",
         "confidence_optimized"}
     for row in rows:
         assert row["confidence_optimized"] < row["confidence_initial"]
     assert len(rows) == 4 and len(rows) % attack.optimization.optimizer.batch_size != 0
     margin = attack.optimization.confidence_margin
-    assert report.series["pgd_objective"].x == [1, 2, 3]
-    assert len(report.series["pgd_objective"].y) == 3
     # Training-set scores are recorded at epoch zero and after every epoch.
     assert [row["epoch"] for row in progress] == [0, 1, 2, 3]
-    assert progress[0]["hinge_loss"] == pytest.approx(np.mean([row["confidence_initial"] + margin for row in rows]))
+    for row in progress:
+        assert row["total_loss"] == row["detection_loss"] + row["smoothness_loss"]
+    assert list(progress[0])[:6] == ["epoch", "total_loss", "detection_loss", "smoothness_loss",
+                                  "detection_rate", "max_confidence"]
+    assert progress[0]["detection_loss"] == pytest.approx(np.mean([row["confidence_initial"] + margin for row in rows]))
     assert progress[-1]["detection_rate"] == report.values["detected_frame_fraction"].value
     assert progress[-1]["max_confidence"] == pytest.approx(report.values["max_confidence"].value)
-    summary = report.tables["texture_summary"].rows
-    assert {row["texture"] for row in summary} == {"clean", "replica", "initial", "optimized"}
+    summary = report.tables["texture_detection_summary"].rows
+    assert {row["texture"] for row in summary} == {"clean", "initial", "optimized"}
     assert set(summary[0]) == {"texture", "frames", "mean_confidence", "max_confidence", "detection_rate"}
     assert all(row["frames"] == len(rows) == report.values["train_frames"].value for row in summary)
     optimized = next(row for row in summary if row["texture"] == "optimized")
     assert report.values["max_confidence"].value == optimized["max_confidence"]
     assert report.values["detected_frame_fraction"].value == optimized["detection_rate"]
-    assert set(calibration[0]) == {
+    assert set(ranges[0]) == {
         "scene", "selected_start", "approach_speed_mps", "d_min_m", "d_max_m",
         "search_first_frame", "search_last_frame", "status", "error"}
-    probes = report.tables["calibration_probes"].rows
-    assert set(probes[0]) == {
+    rendered = report.tables["rendered_frames"].rows
+    assert set(rendered[0]) == {
         "scene", "frame", "timestamp_s", "distance_m", "line_distance_m", "stage", "visible_pixels",
         "status", "reason", "occlusion_source", "target_box_left_px", "target_box_top_px",
-        "target_box_right_px", "target_box_bottom_px", "replica_score"}
+        "target_box_right_px", "target_box_bottom_px", "clean_score"}
+    assert {row["status"] for row in rendered} <= {"used", "skipped"}
     initial = report.images["initial_texture"].pixels
     assert report.images["initial_texture"].description
     assert report.values["detected_frame_fraction"].unit == "ratio (0–1)"
-    assert report.series["pgd_objective"].y_unit == "ratio (0–1)"
+    assert report.series["detection_rate"].y_unit == "ratio (0–1)"
+    for name in ("total_loss", "detection_loss", "smoothness_loss"):
+        assert report.series[name].y_unit is None
+        assert report.series[name].x == [0, 1, 2, 3]
     for table in report.tables.values():
         assert table.description
         assert set(table.columns) == {key for row in table.rows for key in row}
@@ -291,16 +305,17 @@ def test_white_box_training_range(nurec_detector_services_and_segment):
     attack = StopSignPatchAttack(initial_patch="white", optimization=DetectorPatchOptimization(
         optimizer=PGD(epochs=1, batch_size=4, seed=0), min_visible_pixels=5, braking_deceleration_mps2=10.))
     attack.run_offline(context)
-    calibration, = context.report.tables["calibration"].rows
-    rows = sorted(context.report.tables["sample_manifest"].rows, key=lambda row: row["frame"])
+    segment_range, = context.report.tables["training_segment_ranges"].rows
+    rows = sorted((row for row in context.report.tables["rendered_frames"].rows
+                   if row["stage"] == "sample" and row["status"] == "used"), key=lambda row: row["frame"])
     frames = [row["frame"] for row in rows]
     lines = [row["line_distance_m"] for row in rows]
     # Every eligible frame trains, from d_max down to the last frame where braking_deceleration_mps2
     # can still stop before the line.
     assert frames == list(range(frames[0], frames[-1] + 1))
     assert context.report.values["train_frames"].value == len(rows)
-    assert calibration["d_min_m"] <= min(lines) and max(lines) <= calibration["d_max_m"]
-    assert min(lines) - calibration["d_min_m"] <= max(np.abs(np.diff(lines))) + 1e-9
+    assert segment_range["d_min_m"] <= min(lines) and max(lines) <= segment_range["d_max_m"]
+    assert min(lines) - segment_range["d_min_m"] <= max(np.abs(np.diff(lines))) + 1e-9
     assert len(rows) > 8
 
 
@@ -318,10 +333,14 @@ def test_white_box_smoothness(nurec_detector_services_and_segment):
             objective = HideBelowThreshold(
                 descriptor.decision_threshold, attack.optimization.confidence_margin)
             initial = np.array([row["confidence_initial"]
-                                for row in context.report.tables["frame_scores"].rows])
+                                for row in context.report.tables["frame_detection_scores"].rows])
             expected = float(objective.loss(initial).mean())
-            assert context.report.series["pgd_objective"].y == pytest.approx([expected] * 3)
-        return texture, context.report.values["patch_smoothness"].value
+            assert [row["detection_loss"] for row in context.report.tables["training_progress"].rows] == (
+                pytest.approx([expected] * 4))
+        smoothness = context.report.values["patch_smoothness"].value
+        assert context.report.tables["training_progress"].rows[-1]["smoothness_loss"] == pytest.approx(
+            attack.optimization.optimizer.tv_weight * smoothness)
+        return texture, smoothness
 
     mask = StopSignPatchAttack().mask
     texture, smoothness = optimize("low_frequency_noise", step_size=0.)
@@ -358,19 +377,20 @@ def test_black_box_offline_phase(
         )
         texture = attack.run_offline(context)
         report = context.report
-        rows = report.tables["rollouts"].rows
-        calibration = report.tables["calibration"].rows
+        rows = report.tables["optimization_rollouts"].rows
+        eligibility = report.tables["training_segment_eligibility"].rows
         expected_segments = maximum or len(training)
-        assert len(calibration) == expected_segments
-        assert all(row["retained"] for row in calibration)
+        assert len(eligibility) == expected_segments
+        assert all(row["retained"] for row in eligibility)
+        assert all(row["run_log"].startswith("eligibility_rollouts/") for row in eligibility)
         assert len(rows) == expected_segments * (1 + options.optimizer.steps
                                                  * (options.optimizer.population_size + 1))
-        assert [row["evaluation"] for row in rows] == [
-            evaluation for evaluation in range(4) for _ in range(expected_segments)]
+        assert [row["query_index"] for row in rows] == [
+            query for query in range(4) for _ in range(expected_segments)]
         assert report.values["training_segments"].value == expected_segments
-        assert report.values["rollout_count"].value == len(rows)
+        assert report.values["optimization_rollout_count"].value == len(rows)
         assert {row["status"] for row in rows} == {"completed"}
-        for row in [*calibration, *rows]:
+        for row in [*eligibility, *rows]:
             log = RunLog.read(report.directory / row["run_log"])
             assert log.status == "completed"
             assert row["outcome"] == "stop_command"
@@ -394,8 +414,8 @@ def test_black_box_offline_phase(
         assert report.values["final_stop_command_distance_m"].unit == "m"
         assert report.values["final_stop_command_distance_m"].value == pytest.approx(
             np.mean([row["stop_command_distance_m"] for row in rows[-expected_segments:]]))
-        assert all(row["run_log"].startswith("rollouts/") for row in rows)
-        assert set(report.tables["rollouts"].columns) == set(rows[0])
+        assert all(row["run_log"].startswith("optimization_rollouts/") for row in rows)
+        assert set(report.tables["optimization_rollouts"].columns) == set(rows[0])
         assert len(report.series["stop_command_distance_m"].y) == 2
         assert report.values["final_stop_command_distance_m"].value == pytest.approx(
             report.series["stop_command_distance_m"].y[-1])
@@ -406,7 +426,7 @@ def test_black_box_offline_phase(
         assert np.array_equal(texture, report.images["initial_texture"].pixels) == expected_unchanged
 
 
-def test_black_box_calibration_and_errors(nurec_patch_services_and_segment, tmp_path):
+def test_black_box_eligibility_and_errors(nurec_patch_services_and_segment, tmp_path):
     original_services, make_segment = nurec_patch_services_and_segment
     options = RolloutPatchOptimization(
         NES(steps=1, population_size=2, seed=0), max_training_segments=1,
@@ -423,7 +443,7 @@ def test_black_box_calibration_and_errors(nurec_patch_services_and_segment, tmp_
             report=OfflineReport(tmp_path / "files"),
         )
         texture = attack.run_offline(context)
-        rows = context.report.tables["calibration"].rows
+        rows = context.report.tables["training_segment_eligibility"].rows
         assert [row["retained"] for row in rows] == [False, False, False, True]
         assert [row["outcome"] for row in rows] == [
             "passed_sign", "segment_ended", "stop_command", "stop_command"]
@@ -442,17 +462,17 @@ def test_black_box_calibration_and_errors(nurec_patch_services_and_segment, tmp_
         assert "Segment ends before" in rows[1]["reason"]
         assert "before min_stop_command_step" in rows[2]["reason"]
         assert context.report.values["training_segments"].value == 1
-        assert len(context.report.tables["rollouts"].rows) == 4
+        assert len(context.report.tables["optimization_rollouts"].rows) == 4
         np.testing.assert_array_equal(texture, context.report.images["optimized_texture"].pixels)
         in_memory = replace(context, report=OfflineReport(None))
         attack.run_offline(in_memory)
-        assert all(row["run_log"] is None for row in in_memory.report.tables["rollouts"].rows)
+        assert all(row["run_log"] is None for row in in_memory.report.tables["optimization_rollouts"].rows)
         with pytest.raises(ValueError, match="training segment"):
             attack.run_offline(replace(context, metadata=()))
         rejected = replace(context, metadata=context.metadata[:3], report=OfflineReport(None))
         with pytest.raises(ValueError, match="No training segments have an eligible stop command"):
             attack.run_offline(rejected)
-        assert all(not row["retained"] for row in rejected.report.tables["calibration"].rows)
+        assert all(not row["retained"] for row in rejected.report.tables["training_segment_eligibility"].rows)
     invalid_adapter = DrivingAdapter(
         lambda seed: StopCommandAVStack(invalid_timestamps=True), past_steps=15)
     with ClosedLoopServices(original_services.dataset, original_services.simulator, invalid_adapter) as services:
@@ -460,7 +480,7 @@ def test_black_box_calibration_and_errors(nurec_patch_services_and_segment, tmp_
             services, (make_segment(),), report=OfflineReport(tmp_path / "failed/files"))
         with pytest.raises(ValueError, match="timestamps must increase strictly"):
             attack.run_offline(failed)
-        row, = failed.report.tables["calibration"].rows
+        row, = failed.report.tables["training_segment_eligibility"].rows
         assert row["status"] == "failed"
         assert row["stop_command_distance_m"] is None
         assert "timestamps must increase strictly" in row["error"]

@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import numpy as np
+from PIL import Image
 
 from avsectester.attack import Attack, AttackRuntime, AttackSegment, OfflineContext
 from avsectester.execution.services import ScenarioView
@@ -21,6 +22,8 @@ from .assets import (
 from .metabuilder import control_from_user_data, route_progress, select_stop_approach
 from .offline import DetectorPatchOptimization, RolloutPatchOptimization, run_offline
 from .online import StopSignPatchAttackRuntime
+
+_ARTIFACT_FILENAME = "deployed_texture.png"
 
 
 class StopSignPatchAttack(Attack):
@@ -155,6 +158,20 @@ class StopSignPatchAttack(Attack):
     def replica_texture(self, artifacts: object) -> np.ndarray:
         """Return the replica face with the supplied patch in its editable region."""
         return validate_replica_texture(artifacts, self.mask)
+
+    def save_artifacts(self, artifacts: object, directory: str | Path) -> None:
+        """Save the deployed texture as a lossless RGBA PNG."""
+        destination = Path(directory)
+        destination.mkdir(parents=True, exist_ok=True)
+        Image.fromarray(self.replica_texture(artifacts)).save(destination / _ARTIFACT_FILENAME)
+
+    def load_artifacts(self, directory: str | Path) -> np.ndarray:
+        """Load the deployed texture and validate its alpha and the pixels outside the patch mask."""
+        with Image.open(Path(directory) / _ARTIFACT_FILENAME) as image:
+            if image.mode != "RGBA":
+                raise ValueError(f"{_ARTIFACT_FILENAME} must be an RGBA image")
+            texture = np.asarray(image)
+        return self.replica_texture(texture)
 
     def create_runtime(self, segment: AttackSegment, artifacts: object) -> AttackRuntime:
         texture = self.replica_texture(artifacts)

@@ -126,7 +126,7 @@ The [driving-system guide](../guides/driving-systems.md) describes the binding b
 
 The driving system stops once the detector fires, so the patch must suppress every detection
 until the vehicle can no longer stop before the line. Training therefore covers recorded frames by
-route distance to the stop line, from the farthest frame where the unpatched replica reaches the
+route distance to the stop line, from the farthest frame where the clean texture reaches the
 decision threshold down to `v² / (2 × braking_deceleration_mps2)`. `v` is the recorded speed at the
 segment start. `braking_deceleration_mps2` is the driving system's strongest braking and defaults
 to 6 m/s², the `RuleBasedAVStack` planner limit. The sign-face projection defines the target box.
@@ -151,16 +151,28 @@ survives printing and camera sampling. The term is the mean Charbonnier RGB dist
 that are both inside the mask. Pairs across the patch outline are excluded, so a uniform patch
 has zero smoothness cost against the red face.
 
-The offline report contains calibration and sample tables, the `pgd_objective` series, the final
-`patch_smoothness`, and initial/optimized replica textures. `pgd_objective` records the mean
-training hinge objective per epoch, excluding the smoothness term, at epochs 1 through
-`epochs`. After optimization every training frame is scored for the clean reconstruction,
-unpatched replica, initial patch and optimized patch. `detected_frame_fraction` and
-`max_confidence` summarize the optimized patch, and detection rates are binned by route distance
-to the stop line. The configurations set `progress_interval: 10` to score the current patch on
-every training frame every 10 epochs and after the last epoch. The option defaults to 1.
-The `training_progress` table and its series record the full-set hinge loss, detected fraction
-and detected fraction per 10 m bin. Epoch 0 is the initial patch.
+The report compares three textures. `clean` is the unpatched replica. `initial` is the replica
+with the initial patch. `optimized` is the replica with the optimized patch.
+
+Each table is saved as a CSV with the same name:
+
+| Table | Contents |
+|---|---|
+| `training_segment_ranges` | Training-segment speed, distance bounds, search frames and status |
+| `rendered_frames` | Render stages, distances, visibility, target boxes and `clean_score` |
+| `training_progress` | Epoch, losses, detection rate, maximum confidence and rates per distance bin |
+| `texture_detection_summary` | Confidence and detection statistics for the three textures |
+| `frame_detection_scores` | Clean, initial and optimized confidence for each training frame |
+| `detection_rate_vs_distance` | Detection rates for the three textures in 10 m distance bins |
+
+`detection_loss` is the mean `HideBelowThreshold` loss over all training frames.
+`smoothness_loss` is `tv_weight` times patch smoothness. `total_loss` is their sum.
+The four curves are `total_loss`, `detection_loss`, `smoothness_loss` and `detection_rate`,
+with epoch on the horizontal axis. Initial and optimized texture images are also saved.
+`detected_frame_fraction` and `max_confidence` summarize the optimized patch.
+
+The configurations set `progress_interval: 5` to evaluate every training frame every five epochs.
+The option defaults to 1. Epoch 0 and the final epoch are always recorded.
 [Optimization tools](../guides/optimization.md) explains report usage.
 
 ## Prepare the black-box attack
@@ -177,12 +189,13 @@ scores 0. A rollout whose decisions run out before either event scores its remai
 the sign after the last decision, so ending early is not rewarded. The `outcome` column records
 which case applies.
 
-Calibration evaluates the unpatched replica once per training segment, in metadata order. A
-segment is retained only if it issues a stop command at step `min_stop_command_step` or later,
-default 5, before passing the sign. Segments with an earlier command, no command before passing
-or decisions that run out first are excluded with a reason. Calibration stops after
-`max_training_segments` retained segments, or uses every eligible training segment when this
-limit is `None`. Calibration raises `ValueError` if no segment is retained.
+Training-segment eligibility is checked with the clean texture once per segment, in metadata
+order. The clean texture is the replica without a patch. A segment is retained only if it issues
+a stop command at step `min_stop_command_step` or later, default 5, before passing the sign.
+Segments with an earlier command, no command before passing or decisions that run out first are
+excluded with a reason. Eligibility checks stop after `max_training_segments` retained segments,
+or use every eligible training segment when this limit is `None`. No eligible segment raises
+`ValueError`.
 
 Each candidate starts at each retained segment's recorded origin and runs for at most
 `segment.decision_steps` decisions. It ends when the first stop command is issued or the ego
@@ -200,12 +213,17 @@ and `min_stop_command_step: 5`, and use `steps: 10`, `population_size: 8`, `sigm
 retained training segments × (1 + steps × (population_size + 1))
 ```
 
-Calibration adds one rollout per examined segment.
+Eligibility checks add one rollout per examined segment.
 
-The offline report contains a `calibration` table with selection reasons, a `rollouts` table
-with per-query distances and run details, the `stop_command_distance_m` series, and initial and
-optimized textures. `final_stop_command_distance_m` is the final texture's evaluated mean
-distance. No additional rollout is used for that value. The
+The offline report contains `training_segment_eligibility` with eligibility reasons and
+`optimization_rollouts` with query distances and run details. `query_index` numbers queried
+textures in order, starting at 0 for the initial texture. `optimization_rollout_count` counts
+optimization closed loops and excludes eligibility checks. Their RunLogs are saved under
+`files/eligibility_rollouts/` and `files/optimization_rollouts/`.
+
+The report also contains the `stop_command_distance_m` curve and initial and optimized textures.
+`final_stop_command_distance_m` is the final texture's evaluated mean distance.
+No additional rollout is used for that value. The
 [attack API](../reference/python-api.md#avsectesterimplemented_attacksstop_sign_patch_attackoffline)
 describes the optimization options.
 
@@ -224,6 +242,10 @@ docker compose run --rm nurec-experiment run configs/nurec_stop_sign_patch_modul
 
 Completed attack offline phases and matching completed runs are reused. Unfinished work follows
 [the experiment resume workflow](../guides/experiments.md).
+
+Each attack saves its artifact, the texture deployed on the inserted sign, as the lossless RGBA
+image `attacks/<attack>/artifacts/deployed_texture.png`. Loading checks that the alpha channel and
+the pixels outside the patch mask match the canonical sign.
 
 ## Run from Python
 
@@ -285,12 +307,21 @@ field's meaning and unit. A treatment without a replica has an unavailable value
 counts as visible when the replica reaches `min_visible_pixels` in at least one selected camera.
 By default `camera_ids` selects every camera that recorded the replica.
 
-Reference the class by its full path, as in the supplied YAML:
+`SignDetection` measures closed-loop detections from the `detections` entry that
+`RuleBasedAVStack` writes to its component log. The modular configurations enable it, and the
+Alpamayo configurations omit it because Alpamayo logs no detections. `detected_steps` counts
+decisions with a sign detection. `detection_rate` is the fraction of decisions with a detection
+among those where the replica is visible in `camera_id`, the camera the detector reads.
+`first_detection_line_distance_m` is the signed distance to the stop line at the first detection.
+
+Reference the classes by their full paths, as in the supplied YAML:
 
 ```yaml
 evaluation:
   metrics:
     - type: avsectester.implemented_attacks.stop_sign_patch_attack.metrics:ReplicaVisibility
+    - type: avsectester.implemented_attacks.stop_sign_patch_attack.metrics:SignDetection
+      options: {camera_id: camera_front_wide_120fov}
 ```
 
 For a user metric, implement the same public methods in your own package and use its

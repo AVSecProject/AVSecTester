@@ -327,7 +327,7 @@ def test_prepare_resume(tmp_path):
         Experiment.prepare(retained_config)
     assert retained_report.read_text() == "previous report"
     retained_report.unlink()
-    (retained_output / "offline-incomplete").mkdir()
+    (retained_output / "attacks").mkdir()
     with pytest.raises(ValueError, match="already exists"):
         Experiment.prepare(retained_config)
 
@@ -445,14 +445,14 @@ def test_offline_reports(tmp_path):
     config = configuration(ReportingAttack(ready), output=output)
     with pytest.raises(KeyboardInterrupt, match="offline interrupted"):
         Experiment.prepare(config)
-    failed = output / "offline" / "probe"
+    failed = output / "attacks" / "probe" / "offline_report"
     assert json.loads((failed / "report.json").read_text())["status"] == "failed"
     assert (failed / "files" / "evidence.txt").read_text() == "partial"
     assert (output / "offline_report.html").is_file()
     ready.touch()
     prepared = Experiment.prepare(config, resume=True)
     assert prepared.offline_reports["probe"].status == "completed"
-    archives = tuple((output / "offline-incomplete").glob("probe-*"))
+    archives = tuple((output / "attacks" / "probe" / "incomplete_offline_reports").iterdir())
     assert len(archives) == 1
     assert json.loads((archives[0] / "report.json").read_text())["status"] == "failed"
     assert (archives[0] / "files" / "evidence.txt").read_text() == "partial"
@@ -464,7 +464,7 @@ def test_offline_reports(tmp_path):
     loaded.save(copied)
     restored = PreparedExperiment.load(config, copied)
     assert restored.offline_reports["probe"].values == loaded.offline_reports["probe"].values
-    assert (copied / "offline" / "probe" / "files" / "evidence.txt").read_text() == "completed"
+    assert (copied / "attacks" / "probe" / "offline_report" / "files" / "evidence.txt").read_text() == "completed"
     assert (copied / "offline_report.html").is_file()
 
     class UnpersistableAttack(MinimalAttack):

@@ -17,7 +17,7 @@ from avsectester.evaluation import (
 from avsectester.runlog import EventRecord, RunLog
 from avsectester.maps import ScenarioMap, StopLine
 from avsectester.rendering import ObjectVisibility
-from avsectester.implemented_attacks.stop_sign_patch_attack.metrics import ReplicaVisibility
+from avsectester.implemented_attacks.stop_sign_patch_attack.metrics import ReplicaVisibility, SignDetection
 
 
 @pytest.fixture
@@ -53,9 +53,16 @@ def without_capture(log):
 
 
 @pytest.fixture
-def metric_inputs(make_actor, make_log, make_group, make_pair, stop_line_group):
+def sign_group(segment):
+    """A stop-sign attack segment that stores its stop line points in user_data."""
+    points = np.array([[1.25, -1., 0.], [1.25, 1., 0.]])
+    return lambda runs: ComparisonGroup(replace(segment, user_data={"stop_line_points": points}), 0, runs)
+
+
+@pytest.fixture
+def metric_inputs(make_actor, make_log, make_group, make_pair, stop_line_group, sign_group):
     return {"actor": make_actor, "log": make_log, "group": make_group, "pair": make_pair,
-            "stop_line_group": stop_line_group}
+            "stop_line_group": stop_line_group, "sign_group": sign_group}
 
 
 def with_reasoning(log):
@@ -69,6 +76,15 @@ def with_replica_visibility(log):
         "front": ObjectVisibility("scene_visibility", (), 12)}}
     log.steps[1].object_visibility = {"stop_sign_replica": {
         "front": ObjectVisibility("scene_visibility", (), 2)}}
+    return log
+
+
+def with_sign_detections(log):
+    # Visible, hidden and visible decisions. The last two log a detection.
+    for step, pixels, detections in zip(log.steps, (12, 2, 12), ([], [{"score": .9}], [{"score": .8}])):
+        step.object_visibility = {"stop_sign_replica": {
+            "front": ObjectVisibility("scene_visibility", (), pixels)}}
+        step.components["detections"] = detections
     return log
 
 
@@ -129,6 +145,12 @@ CASES = [
         lambda data: data["group"]({"attacked": with_replica_visibility(data["log"]([2., 2.]))}),
         lambda data: data["group"]({"attacked": data["log"]([2., 2.])}), itemgetter("attacked"),
         {"visible_steps": 1}, id="replica-visibility"),
+    pytest.param(
+        SignDetection, {"camera_id": "front", "min_visible_pixels": 5},
+        lambda data: data["sign_group"]({"attacked": with_sign_detections(data["log"]([2., 2., 2.]))}),
+        lambda data: data["group"]({"attacked": data["log"]([2., 2.])}), itemgetter("attacked"),
+        {"detected_steps": 2, "detection_rate": .5, "first_detection_line_distance_m": .25},
+        id="sign-detection"),
 
 ]
 

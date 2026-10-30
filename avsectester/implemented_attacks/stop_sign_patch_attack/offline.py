@@ -22,9 +22,9 @@ if TYPE_CHECKING:
 class DetectorPatchOptimization:
     """White-box attack settings (algorithm used: PGD).
 
-    ``braking_deceleration_mps2`` is the driving system's strongest braking; it sets the closest
-    trained distance to the stop line. ``samples_per_scene="all"`` trains on every eligible frame;
-    an integer of at least four selects that many time-uniform frames per training segment.
+    ``braking_deceleration_mps2`` is the driving system's strongest braking. It sets the closest
+    trained distance to the stop line. ``samples_per_scene="all"`` trains on every eligible frame.
+    An integer of at least four selects that many time-uniform frames per training segment.
     ``confidence_margin`` sets the hinge target: PGD lowers each frame's confidence to the driving
     system's decision threshold minus this margin. Every ``progress_interval`` PGD epochs, and after
     the last, the current patch is scored on every training frame for the offline report.

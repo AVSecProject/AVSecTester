@@ -90,6 +90,26 @@ def _validate_user_data(value: Any) -> None:
     raise TypeError("Saved user_data must contain only JSON-like data or NumPy arrays")
 
 
+def attack_directory(root: Path, name: str) -> Path:
+    """Return the directory that holds one attack's metadata, artifacts and offline reports."""
+    return root / "attacks" / name
+
+
+def artifact_directory(root: Path, name: str) -> Path:
+    """Return the attack-controlled artifact directory, separate from framework files."""
+    return attack_directory(root, name) / "artifacts"
+
+
+def offline_report_directory(root: Path, name: str) -> Path:
+    """Return the directory of one attack's offline report."""
+    return attack_directory(root, name) / "offline_report"
+
+
+def incomplete_offline_report_directory(root: Path, name: str) -> Path:
+    """Return the archive of offline reports left by failed or interrupted offline phases."""
+    return attack_directory(root, name) / "incomplete_offline_reports"
+
+
 def _write_json(path: Path, value: Any) -> None:
     temporary = path.with_name(path.name + ".tmp")
     temporary.write_text(json.dumps(value, indent=2, allow_nan=False, sort_keys=True) + "\n")
@@ -99,7 +119,7 @@ def _write_json(path: Path, value: Any) -> None:
 def _save_metadata(prepared: PreparedExperiment, root: Path) -> None:
     root.mkdir(parents=True, exist_ok=True)
     for name, segments in prepared.metadata.items():
-        destination = root / "attacks" / name
+        destination = attack_directory(root, name)
         destination.mkdir(parents=True, exist_ok=True)
         for segment in segments:
             _validate_user_data(segment.user_data)
@@ -137,8 +157,8 @@ def save_completed_artifact(prepared: PreparedExperiment, name: str, directory: 
                             completed_attacks: Sequence[str]) -> Path:
     """Publish one completed offline artifact before advancing the preparation checkpoint."""
     root = Path(directory)
-    prepared.configuration.attacks[name].save_artifacts(prepared.artifacts[name], root / "attacks" / name)
-    prepared.offline_reports.get(name, OfflineReport(None)).save(root / "offline" / name)
+    prepared.configuration.attacks[name].save_artifacts(prepared.artifacts[name], artifact_directory(root, name))
+    prepared.offline_reports.get(name, OfflineReport(None)).save(offline_report_directory(root, name))
     save_preparation_progress(prepared, root, completed_attacks)
     from .html_report import write_offline_html
 
@@ -151,8 +171,8 @@ def save_prepared(prepared: PreparedExperiment, directory: str | Path) -> Path:
     root = Path(directory)
     _save_metadata(prepared, root)
     for name, attack in prepared.configuration.attacks.items():
-        attack.save_artifacts(prepared.artifacts[name], root / "attacks" / name)
-        prepared.offline_reports.get(name, OfflineReport(None)).save(root / "offline" / name)
+        attack.save_artifacts(prepared.artifacts[name], artifact_directory(root, name))
+        prepared.offline_reports.get(name, OfflineReport(None)).save(offline_report_directory(root, name))
     _write_json(root / "prepared.json", _preparation_manifest(prepared))
     from .html_report import write_offline_html
 
@@ -296,7 +316,7 @@ def _load_metadata(configuration: ExperimentConfiguration, directory: str | Path
                          + ", ".join(mismatches))
     metadata = {}
     for name in configuration.attacks:
-        record = json.loads((root / "attacks" / name / "metadata.json").read_text())
+        record = json.loads((attack_directory(root, name) / "metadata.json").read_text())
         segments = DEFAULT_REGISTRY.decode(record["segments"])
         if not isinstance(segments, tuple) or any(not isinstance(s, AttackSegment) for s in segments):
             raise ValueError("Saved metadata must contain AttackSegment records")
@@ -329,7 +349,7 @@ def load_prepared_metadata(configuration: ExperimentConfiguration,
 
 def _load_offline_reports(names: Sequence[str], root: Path) -> dict[str, OfflineReport]:
     """Restore every attack report from its required offline output."""
-    return {name: OfflineReport.load(root / "offline" / name) for name in names}
+    return {name: OfflineReport.load(offline_report_directory(root, name)) for name in names}
 
 
 def load_prepared(configuration: ExperimentConfiguration,
@@ -338,7 +358,7 @@ def load_prepared(configuration: ExperimentConfiguration,
     saved = _load_metadata(configuration, directory, validate_dataset=True)
     assert saved.preparation is not None  # execution loading requires the record
     root = Path(directory)
-    artifacts = {name: attack.load_artifacts(root / "attacks" / name)
+    artifacts = {name: attack.load_artifacts(artifact_directory(root, name))
                  for name, attack in configuration.attacks.items()}
     return PreparedExperiment(configuration, saved.metadata, artifacts, saved.selections,
                               preparation=saved.preparation, units=saved.units, deployment=saved.deployment,
@@ -356,7 +376,7 @@ def load_preparation_progress(configuration: ExperimentConfiguration,
     completed = tuple(manifest["completed_attacks"])
     if len(set(completed)) != len(completed) or any(name not in configuration.attacks for name in completed):
         raise ValueError("Preparation progress has invalid completed attack names")
-    artifacts = {name: configuration.attacks[name].load_artifacts(root / "attacks" / name)
+    artifacts = {name: configuration.attacks[name].load_artifacts(artifact_directory(root, name))
                  for name in completed}
     return (PreparedExperiment(configuration, saved.metadata, artifacts, saved.selections,
                                preparation=saved.preparation, units=saved.units, deployment=saved.deployment,

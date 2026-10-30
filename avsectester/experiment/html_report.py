@@ -13,6 +13,8 @@ from typing import Any
 from avsectester import __version__
 from avsectester.evaluation.report import format_number, format_statistic
 
+from .output_directory import offline_report_directory
+
 
 _STYLE = """
 :root{color-scheme:light}
@@ -145,6 +147,11 @@ def _label_with_unit(label: str, unit: str | None) -> str:
     return f"{label} ({unit})" if unit else label
 
 
+def _report_path(attack: str) -> str:
+    """Return an attack's offline report directory relative to the output root."""
+    return offline_report_directory(Path(), attack).as_posix()
+
+
 def _offline_series(directory: Path, name: str, series: Mapping[str, Any]) -> None:
     from matplotlib.backends.backend_agg import FigureCanvasAgg
     from matplotlib.figure import Figure
@@ -173,7 +180,7 @@ def _offline_table(name: str, table: Mapping[str, Any], attack: str, *, folded: 
     result += f"<p>{escape(table.get('description') or 'No description provided')}</p>"
     result += _table(["column", "meaning (including units)"], [
         [column, descriptions.get(column, "No description provided")] for column in columns])
-    result += "<p>" + _link(f"offline/{attack}/{table['file']}", "CSV") + "</p>"
+    result += "<p>" + _link(f"{_report_path(attack)}/{table['file']}", "CSV") + "</p>"
     data_class = "offline-data wide-data" if folded else "offline-data"
     result += f'<div class="{data_class}">' + _table(
         columns, [[row.get(column) for column in columns] for row in rows]) + "</div>"
@@ -184,22 +191,21 @@ def write_offline_html(output_root: str | Path) -> Path:
     """Rebuild the offline page and series curves solely from saved entries."""
     root = Path(output_root)
     manifest = _manifest(root)
-    offline = root / "offline"
     names = list(dict.fromkeys([
         *manifest.get("attacks", []),
-        *[path.parent.name for path in sorted(offline.glob("*/report.json"))],
+        *[path.parent.parent.name for path in sorted((root / "attacks").glob("*/offline_report/report.json"))],
     ]))
-    reports = {name: _load(offline / name / "report.json") for name in names}
+    reports = {name: _load(offline_report_directory(root, name) / "report.json") for name in names}
     specifications = manifest.get("configuration", {}).get("attacks", {})
     body = [_header([("evaluation_report.html", "Evaluation report")])]
     body.append('<section id="about"><h2>About this page</h2>'
                 "<p>The offline phase prepares each attack's artifact before execution, using "
-                "its training segments. For example, an attack may optimize a patch; an attack "
+                "its training segments. For example, an attack may optimize a patch. An attack "
                 "without optimization records only its initial texture.</p>"
                 "<p>Training segments are available to offline preparation. Validation segments "
                 "are held aside for optional validation, rather than training updates. When no "
                 "split is configured, all selected segments count as training segments here.</p>"
-                "<p>Decimal values are shown with four decimal places; whole-number counts are "
+                "<p>Decimal values are shown with four decimal places. Whole-number counts are "
                 "shown as integers. JSON and CSV keep full precision.</p></section>")
     body.append('<section id="overview"><h2>Overview</h2>')
     body.append(_table(
@@ -209,14 +215,14 @@ def write_offline_html(output_root: str | Path) -> Path:
           _link(f"#attack-{index}", "View")] for index, name in enumerate(names)]))
     body.append("</section>")
     for index, name in enumerate(names):
-        directory, report = offline / name, reports[name]
+        directory, report, path = offline_report_directory(root, name), reports[name], _report_path(name)
         specification = specifications.get(name, {})
         body.append(f'<section id="attack-{index}"><h2>{escape(name)}</h2>')
         body.append(f'<p>Status: <strong>{escape(report.get("status", "pending"))}</strong></p>')
         if report.get("status") == "failed":
-            body.append('<p class="notice">The offline phase failed; values below are partial.</p>')
+            body.append('<p class="notice">The offline phase failed. Values below are partial.</p>')
         if (directory / "report.json").is_file():
-            body.append("<p>" + _link(f"offline/{name}/report.json", "Report JSON") + "</p>")
+            body.append("<p>" + _link(f"{path}/report.json", "Report JSON") + "</p>")
         if not any(report.get(key) for key in ("values", "series", "tables", "images")):
             body.append("<p>no offline output</p>")
         body.append("<h3>Values</h3>")
@@ -237,7 +243,7 @@ def write_offline_html(output_root: str | Path) -> Path:
         if images:
             body.append('<div class="image-grid">')
             for key, image in images.items():
-                body.append(_image(f"offline/{name}/{image['file']}", image.get("description") or key))
+                body.append(_image(f"{path}/{image['file']}", image.get("description") or key))
             body.append("</div>")
         else:
             body.append('<p class="none">None</p>')
@@ -248,19 +254,19 @@ def write_offline_html(output_root: str | Path) -> Path:
         for key, item in series.items():
             _offline_series(directory, key, item)
             body.append('<div class="series-image">' +
-                        _image(f"offline/{name}/{key}.png", item.get("description") or key) + "</div>")
+                        _image(f"{path}/{key}.png", item.get("description") or key) + "</div>")
         body.append("<h3>Detail tables</h3>")
         body.extend(_offline_table(key, table, name, folded=True) for key, table in large)
         if not large:
             body.append('<p class="none">None</p>')
         body.append("<details><summary>Configuration</summary>"
-                    "<p>Only options written in the configuration are listed; other parameters "
+                    "<p>Only options written in the configuration are listed. Other parameters "
                     "use their defaults.</p>" +
                     _table(["parameter", "value"], _configuration_rows(specification.get("parameters", {}))) +
                     "</details>")
         body.append("<h3>Files</h3>")
         files = directory / "files"
-        body.append("<p>" + _link(f"offline/{name}/files/", "Additional offline files") + "</p>"
+        body.append("<p>" + _link(f"{path}/files/", "Additional offline files") + "</p>"
                     if files.is_dir() and any(files.iterdir()) else '<p class="none">None</p>')
         body.append("</section>")
     return _document(f"Offline report — {root.name}", body, root / "offline_report.html")
@@ -533,7 +539,7 @@ def _selection(report: Mapping[str, Any], manifest: Mapping[str, Any]) -> list[s
     if source and source.get("load"):
         filename = escape(str(source["load"]))
         count = len(manifest.get("units", []))
-        return [f"<p>Metadata loaded from {filename} ({count} segments); no selection was run.</p>"]
+        return [f"<p>Metadata loaded from {filename} ({count} segments). No selection was run.</p>"]
     rows = report.get("selections", [])
     if not rows:
         return []
@@ -562,6 +568,8 @@ def write_evaluation_html(output_root: str | Path) -> Path:
     body = [_header([
         ("offline_report.html", "Offline report"), ("evaluation/report.json", "Evaluation JSON"),
         ("evaluation/runs.csv", "Runs CSV"),
+        ("evaluation/treatment_summary.csv", "Treatment summary CSV"),
+        ("evaluation/pair_summary.csv", "Pair summary CSV"),
     ])]
     sections = [
         ("how-to-read", "How to read this report"), ("experiment-setup", "Experiment setup"),
@@ -574,20 +582,20 @@ def write_evaluation_html(output_root: str | Path) -> Path:
                 "".join(f"<li>{_link('#' + identifier, title)}</li>" for identifier, title in sections) +
                 "</ul></nav>")
     how = [
-        "<p>A treatment is one configured execution condition; clean means no attack. A comparison "
+        "<p>A treatment is one configured execution condition. Clean means no attack. A comparison "
         "group contains the same segment and seed: all treatments start from the same initial state. "
         "A part is a dataset split: train, validation or test.</p>",
         "<p>Run status is completed when execution finishes successfully. Failed means an execution "
-        "error; cancelled means execution was interrupted; incomplete means execution has not "
+        "error. Cancelled means execution was interrupted. Incomplete means execution has not "
         "finished. Only completed runs contribute measurements to summaries.</p>",
-        "<p>Numerical summaries show mean ± population standard deviation (ddof = 0); n is the "
+        "<p>Numerical summaries show mean ± population standard deviation (ddof = 0). n is the "
         "number of groups with an available value. Standard deviation is omitted when n &lt; 2. "
         "Boolean summaries show the fraction that are "
         "true, followed by the true count and total group count.</p>",
         "<p>A paired difference is B − A, calculated within each group before summarizing. Booleans "
         "are subtracted as 1 and 0, so their mean difference is a difference in proportions.</p>",
-        "<p>— means unavailable; the reasons are listed in Group details. Decimal values are shown "
-        "with four decimal places; whole-number counts are shown as integers. JSON and CSV keep full precision.</p>",
+        "<p>— means unavailable. The reasons are listed in Group details. Decimal values are shown "
+        "with four decimal places. Whole-number counts are shown as integers. JSON and CSV keep full precision.</p>",
     ]
     body.append(_section("how-to-read", "How to read this report", how))
     body.append(_section("experiment-setup", "Experiment setup", _experiment_setup(report, manifest)))

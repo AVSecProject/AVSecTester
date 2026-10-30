@@ -36,7 +36,7 @@ from .models import (
 )
 from .output_directory import (
     run_directory, load_preparation_progress, save_preparation_progress, save_completed_artifact,
-    recorded_data_equal,
+    recorded_data_equal, offline_report_directory, incomplete_offline_report_directory,
 )
 
 
@@ -238,8 +238,8 @@ def _validate(configuration: ExperimentConfiguration, resume: bool) -> _Validati
             return _Validation(progress=(prepared, completed))
         elif not resume and any(
             (output / name).exists() for name in
-            ("prepared.json", "preparation-progress.json", "attacks", "runs", "offline",
-             "offline_report.html", "evaluation_report.html", "offline-incomplete")
+            ("prepared.json", "preparation-progress.json", "attacks", "runs",
+             "offline_report.html", "evaluation_report.html")
         ):
             raise ValueError(f"Preparation output already exists: {output}")
     if configuration.metadata.load is not None:
@@ -322,15 +322,15 @@ class Experiment:
                 training = tuple(x for x in prepared.metadata[name] if segment_key(x) in training_keys)
                 validation = tuple(x for x in prepared.metadata[name] if segment_key(x) in validation_keys)
             environment = merge_environments(configuration.runs.environment, attack.environment)
-            report_root = None if output is None else output / "offline" / name
+            report_root = None if output is None else offline_report_directory(output, name)
             if output is not None and report_root is not None and report_root.exists():
-                archive_root = output / "offline-incomplete"
+                archive_root = incomplete_offline_report_directory(output, name)
                 archive_root.mkdir(parents=True, exist_ok=True)
                 stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-                archive = archive_root / f"{name}-{stamp}"
+                archive = archive_root / stamp
                 suffix = 1
                 while archive.exists():
-                    archive = archive_root / f"{name}-{stamp}-{suffix}"
+                    archive = archive_root / f"{stamp}-{suffix}"
                     suffix += 1
                 report_root.rename(archive)
             report = OfflineReport(None if report_root is None else report_root / "files")

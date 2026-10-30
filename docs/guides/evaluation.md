@@ -95,6 +95,13 @@ treatment pair. Numeric summaries use the mean and population standard deviation
 a separate available-group count for each field. Boolean summaries use the true fraction.
 `Unavailable` values are excluded from that field's denominator.
 
+`treatment_summary.csv` is a long table with one row per part, treatment and measurement field.
+`pair_summary.csv` has one row per part, treatment pair, measurement type and field.
+Its `measurement` column is `paired_difference` for treatment B minus treatment A, with booleans
+represented as 0 and 1, or `pair_metric` for a `PairMetric` result. Numeric fields retain mean and
+standard deviation. Boolean fields retain the true fraction. Unused statistical cells are empty.
+Both CSVs contain the summaries from `report.json` and preserve full numeric precision.
+
 Paired differences are computed inside each group before aggregation. `PairMetric` measurements
 are summarized separately. Statistics do not infer an attack-success label. See the
 [example interpretation rule](../examples/README.md#attack-impact).
@@ -102,7 +109,8 @@ are summarized separately. Statistics do not infer an attack-success label. See 
 The HTML report presents experiment setup, metric definitions, run status, per-part results,
 paired differences and group details. Group details retain unavailable reasons and saved plots.
 The command line shows per-part metric tables, notes and errors. Paired tables are in the HTML
-and structured report. `format_summary` returns a string, so Python callers print it explicitly.
+and structured report and in `pair_summary.csv`. `format_summary` returns a string, so Python
+callers print it explicitly.
 
 Output locations follow the [CLI reference](../reference/cli.md#output-layout).
 Offline phase results are separate. [Optimization](optimization.md) describes their report

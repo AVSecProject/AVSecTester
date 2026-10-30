@@ -84,7 +84,7 @@ class EvaluationReport:
             "metrics": self.metrics, "notes": self.notes, "metric_errors": self.metric_errors,
             "experiment": self.experiment,
             "statistics": {"std_ddof": 0, "groups": "completed runs or completed treatment pairs",
-                           "deltas": "treatment B minus treatment A; booleans use 0 and 1"},
+                           "deltas": "treatment B minus treatment A. Booleans use 0 and 1."},
         })
 
     def format_summary(self) -> str:
@@ -132,7 +132,10 @@ class EvaluationReport:
         return "\n".join(lines) if lines else "No treatment runs were recorded."
 
     def save(self, directory: str | Path) -> Path:
-        """Write report.json and runs.csv. Metric names prefix columns to protect identities."""
+        """Write report.json, runs.csv, treatment_summary.csv and pair_summary.csv.
+
+        Metric names prefix fields to protect identities. CSV values retain full precision.
+        """
         destination = Path(directory)
         destination.mkdir(parents=True, exist_ok=True)
         (destination / "report.json").write_text(
@@ -151,8 +154,50 @@ class EvaluationReport:
                     )} | {"treatment": name, "attack_name": group["treatment_attacks"].get(name),
                          "status": row["status"], "error": row["error"] or ""}
                                     | _json_data(row["metrics"]))
+        statistic_columns = [
+            "field", "kind", "count", "mean", "std", "true_fraction",
+        ]
+        treatment_columns = [
+            "part", "treatment", "groups", "total_groups", "failed_runs",
+        ]
+        with (destination / "treatment_summary.csv").open(
+            "w", newline="", encoding="utf-8",
+        ) as stream:
+            writer = csv.DictWriter(stream, fieldnames=treatment_columns + statistic_columns)
+            writer.writeheader()
+            for summary in self.treatment_summaries:
+                identity = {name: summary[name] for name in treatment_columns}
+                for name, statistic in summary["metrics"].items():
+                    writer.writerow(identity | {"field": name} | _csv_statistic(statistic))
+        pair_columns = [
+            "part", "treatment_a", "treatment_b", "groups", "total_groups",
+        ]
+        with (destination / "pair_summary.csv").open(
+            "w", newline="", encoding="utf-8",
+        ) as stream:
+            writer = csv.DictWriter(
+                stream, fieldnames=pair_columns + ["measurement"] + statistic_columns,
+            )
+            writer.writeheader()
+            for summary in self.pair_summaries:
+                identity = {name: summary[name] for name in pair_columns}
+                for key, measurement in (("deltas", "paired_difference"),
+                                         ("metrics", "pair_metric")):
+                    for name, statistic in summary[key].items():
+                        writer.writerow(identity | {"measurement": measurement, "field": name}
+                                        | _csv_statistic(statistic))
         self.path = destination
         return destination
+
+
+def _csv_statistic(statistic: Mapping[str, Any]) -> dict[str, Any]:
+    proportion = statistic["kind"] == "proportion"
+    return _json_data({
+        "kind": statistic["kind"], "count": statistic["count"],
+        "mean": None if proportion else statistic.get("mean"),
+        "std": None if proportion else statistic.get("std"),
+        "true_fraction": statistic.get("true_fraction") if proportion else None,
+    })
 
 
 def _table(rows: Sequence[Sequence[str]]) -> list[str]:

@@ -206,7 +206,7 @@ class StopCommandScorer(Scorer):
         self.seed, self.environment, self.stop_speed_mps = seed, dict(environment), stop_speed_mps
         self.rollout_directory = None if rollout_directory is None else Path(rollout_directory)
         self.records: list[dict[str, Any]] = []
-        self.evaluations = 0
+        self.queries = 0
 
     def target_scores(self, images: Sequence[np.ndarray], targets: Sequence[TargetSpec]) -> np.ndarray:
         """Record one closed loop per training segment for each input texture in batch order."""
@@ -214,13 +214,13 @@ class StopCommandScorer(Scorer):
             raise ValueError("images and targets must have the same batch length")
         scores = []
         for image in images:
-            evaluation = self.evaluations
-            self.evaluations += 1
+            query_index = self.queries
+            self.queries += 1
             distances = []
             for index, segment in enumerate(self.segments):
                 output = (None if self.rollout_directory is None else
                           self.rollout_directory / f"{len(self.records):04d}")
-                row = {"evaluation": evaluation, "segment_index": index}
+                row = {"query_index": query_index, "segment_index": index}
                 self.records.append(row)
                 distances.append(_run_candidate(
                     self.session, self.attack, segment, image, seed=self.seed,
@@ -244,7 +244,8 @@ _QUERY_COLUMNS = {
     "decision_steps": "Actual number of logged decisions.",
     "status": "Closed-loop query status.",
     "error": "Exception type and message on failure, empty on success.",
-    "run_log": "RunLog directory relative to offline/<attack>/files, unavailable for in-memory reports.",
+    "run_log": ("RunLog directory under eligibility_rollouts/ or optimization_rollouts/, relative to "
+                "attacks/<attack>/offline_report/files. Unavailable for in-memory reports."),
     "elapsed_s": "Wall-clock duration of the closed-loop query (s).",
 }
 
@@ -252,17 +253,19 @@ _QUERY_COLUMNS = {
 def optimize_patch_by_rollouts(
     attack: StopSignPatchAttack, context: OfflineContext, original: np.ndarray,
 ) -> np.ndarray:
-    """Calibrate eligible approaches, then minimize their mean first stop-command distance."""
+    """Check training-segment eligibility with the clean texture, then minimize the retained
+    segments' mean first stop-command distance.
+    """
     options = cast("RolloutPatchOptimization", attack.optimization)
     if not context.metadata:
         raise ValueError("Rollout patch optimization requires at least one training segment")
     directory = context.report.directory
-    calibration: list[dict[str, Any]] = []
+    eligibility: list[dict[str, Any]] = []
     selected = []
     scorer = None
     try:
         with context.services.session(context.seed) as session:
-            nominal = initial_patch_texture(
+            clean = initial_patch_texture(
                 "none", attack.mask, noise_std=attack.noise_std, noise_seed=attack.noise_seed,
                 noise_cell_texels=attack.noise_cell_texels,
             )
@@ -274,11 +277,12 @@ def optimize_patch_by_rollouts(
                     "start_distance_m": float(np.linalg.norm(start[:2] - sign[:2, 3])),
                     "retained": False, "reason": "",
                 }
-                calibration.append(row)
+                eligibility.append(row)
                 _run_candidate(
-                    session, attack, segment, nominal, seed=context.seed,
+                    session, attack, segment, clean, seed=context.seed,
                     environment=context.environment, stop_speed_mps=options.stop_speed_mps,
-                    output=None if directory is None else directory / "calibration" / f"{index:04d}",
+                    output=(None if directory is None else
+                            directory / "eligibility_rollouts" / f"{index:04d}"),
                     report_root=directory, row=row,
                 )
                 if row["outcome"] == "passed_sign":
@@ -297,22 +301,22 @@ def optimize_patch_by_rollouts(
                 raise ValueError("No training segments have an eligible stop command")
             context.report.set_value(
                 "training_segments", len(selected), unit="segments",
-                description="Calibrated training segments retained for optimization.",
+                description="Eligible training segments retained for optimization.",
             )
             perturbation = LowFrequencyTexturePerturbation(
                 original, attack.mask, attack.noise_cell_texels)
             scorer = StopCommandScorer(
                 session, selected, attack, seed=context.seed, environment=context.environment,
                 stop_speed_mps=options.stop_speed_mps,
-                rollout_directory=None if directory is None else directory / "rollouts",
+                rollout_directory=None if directory is None else directory / "optimization_rollouts",
             )
             result = options.optimizer.run(
                 SingleTextureSource(original), perturbation, scorer, MinimizeScore())
     finally:
         context.report.set_table(
-            "calibration", calibration,
-            description="Unpatched-replica stop commands and training-segment eligibility.",
-            columns={} if not calibration else {
+            "training_segment_eligibility", eligibility,
+            description="Clean-texture stop commands and training-segment eligibility.",
+            columns={} if not eligibility else {
                 "segment_index": "Segment index in the supplied training metadata (zero-based).",
                 "start_distance_m": "Horizontal recorded ego-origin distance to the sign at the start (m).",
                 "retained": "Whether the segment is retained for optimization.",
@@ -322,17 +326,18 @@ def optimize_patch_by_rollouts(
         )
         records = [] if scorer is None else scorer.records
         context.report.set_table(
-            "rollouts", records,
-            description="Texture queries in execution order, including failed closed loops.",
+            "optimization_rollouts", records,
+            description="Texture queries in query order, including failed closed loops.",
             columns={} if not records else {
-                "evaluation": "Texture evaluation index (zero-based).",
+                "query_index": ("Texture query index in query order (zero-based). "
+                                "Zero is the initial texture."),
                 "segment_index": "Retained training segment index (zero-based).",
                 **_QUERY_COLUMNS,
             },
         )
         context.report.set_value(
-            "rollout_count", len(records), unit="rollouts",
-            description="Optimization closed loops, excluding calibration.",
+            "optimization_rollout_count", len(records), unit="rollouts",
+            description="Optimization closed loops, excluding training-segment eligibility rollouts.",
         )
     optimized = attack.replica_texture(result.export)
     context.report.set_image(

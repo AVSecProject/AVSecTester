@@ -22,7 +22,7 @@ simulator:
     renderer:
       type: avsectester.closed_loop.simulators.nurec:NuRecRenderer
       options:
-        endpoint: 127.0.0.1:50051
+        endpoint: 127.0.0.1:50052
         cameras:
         - camera_front_wide_120fov
         - camera_front_tele_30fov

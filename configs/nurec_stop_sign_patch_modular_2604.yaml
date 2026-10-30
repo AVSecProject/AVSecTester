@@ -22,7 +22,7 @@ simulator:
     renderer:
       type: avsectester.closed_loop.simulators.nurec:NuRecRenderer
       options:
-        endpoint: 127.0.0.1:50051
+        endpoint: 127.0.0.1:50052
         cameras:
         - camera_front_wide_120fov
         probe_directory: ../results/nre-probes
@@ -78,7 +78,7 @@ attacks:
               tv_weight: 0.3
               seed: 0
           samples_per_scene: all
-          progress_interval: 10
+          progress_interval: 5
   black_detector_pgd:
     type: StopSignPatchAttack
     options:
@@ -96,7 +96,7 @@ attacks:
               tv_weight: 0.3
               seed: 0
           samples_per_scene: all
-          progress_interval: 10
+          progress_interval: 5
   noise_detector_pgd:
     type: StopSignPatchAttack
     options:
@@ -114,12 +114,15 @@ attacks:
               tv_weight: 0.3
               seed: 0
           samples_per_scene: all
-          progress_interval: 10
+          progress_interval: 5
 evaluation:
   metrics:
   - type: StopLineMetrics
   - type: DrivingMetrics
   - type: avsectester.implemented_attacks.stop_sign_patch_attack.metrics:ReplicaVisibility
+  - type: avsectester.implemented_attacks.stop_sign_patch_attack.metrics:SignDetection
+    options:
+      camera_id: camera_front_wide_120fov
 runs:
   treatments:
   - name: clean

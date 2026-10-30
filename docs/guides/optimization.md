@@ -145,6 +145,10 @@ the [rendering API](../reference/python-api.md#avsectesterrenderingharmonizers).
 
 ## Offline reports
 
+The framework does not record optimization outputs automatically. `PGD` and `NES` return
+`history` and `final_score` in `OptimizationResult`. The attack decides which values, curves,
+tables and images to record through `context.report` during its offline phase.
+
 `report.json` contains `status`, `values`, `series`, `tables` and `images`. Values retain their
 unit and description. Series retain coordinates, axis labels, units and description. Tables
 retain rows, column descriptions and CSV filenames. Images retain descriptions and PNG

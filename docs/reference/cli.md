@@ -185,24 +185,29 @@ Checkpoint and retry behavior follow
   preparation-progress.json
   prepared.json
   attacks/<attack>/metadata.json
-  attacks/<attack>/artifacts.pkl
-  attacks/<attack>/manifest.json
-  offline/<attack>/report.json
-  offline/<attack>/<table>.csv
-  offline/<attack>/<image-or-series>.png
-  offline/<attack>/files/
-  offline-incomplete/<attack>-<UTC timestamp>/
+  attacks/<attack>/artifacts/artifacts.pkl
+  attacks/<attack>/artifacts/manifest.json
+  attacks/<attack>/offline_report/report.json
+  attacks/<attack>/offline_report/<table>.csv
+  attacks/<attack>/offline_report/<image-or-series>.png
+  attacks/<attack>/offline_report/files/
+  attacks/<attack>/incomplete_offline_reports/<UTC timestamp>/
   offline_report.html
   maps/<scenario>.json
   runs/segment-<NNNNN>/seed-<S>/<treatment>/
   evaluation/report.json
   evaluation/runs.csv
+  evaluation/treatment_summary.csv
+  evaluation/pair_summary.csv
   evaluation/plots/
   evaluation_report.html
 ```
 
-Artifact filenames above describe the default trusted-pickle format. Attacks may override
-artifact persistence. Segment numbers are global unit indexes. Each run directory contains
+Each attack directory holds the selected segments in `metadata.json`, its artifacts in
+`artifacts/` and its offline report in `offline_report/`. A failed or interrupted offline phase
+moves its partial report to `incomplete_offline_reports/` before the phase runs again. Artifact
+filenames above describe the default trusted-pickle format. Attacks may override artifact
+persistence, and their files stay inside `artifacts/`. Segment numbers are global unit indexes. Each run directory contains
 `manifest.json`, published Parquet step/event parts and payload shards belonging to its
 [RunLog](runtime.md#runlog). Offline report content is described in
 [Optimization](../guides/optimization.md), and evaluation content
