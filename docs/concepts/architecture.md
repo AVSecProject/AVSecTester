@@ -126,10 +126,6 @@ The supplied [configuration list](../examples/README.md) contains these combinat
 | `NuRecDataset` | `NuRecSimulator` | `RuleBasedAVStack` |
 | `NuScenesDataset` | `RecordedReplaySimulator` | `CameraForwardCollisionAVStack` |
 
-**Not yet implemented.** Using `ModularAVStack` with NuRec, or `AlpamayoAVStack` and
-`RuleBasedAVStack` with CARLA. See
-[Cross-simulator configurations](../development/TODO.md#cross-simulator-driving-configurations).
-
 Reactive NuRec traffic is optional. See
 [simulator behavior](../guides/simulators.md#reactive-traffic).
 

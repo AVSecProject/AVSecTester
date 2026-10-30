@@ -58,11 +58,6 @@ See [reactive traffic](../guides/simulators.md#reactive-traffic) for supported b
 
 See [experiment interpretation](../examples/README.md#attack-impact).
 
-## Cross-simulator driving configurations
-
-- [ ] Provide `ModularAVStack` on NuRec and `AlpamayoAVStack` or `RuleBasedAVStack` on CARLA
-  with compatible sensors and commands.
-
 ## Shared runs across different user data
 
 - [ ] Reuse treatments without attacks for units sharing a scenario and window but differing
