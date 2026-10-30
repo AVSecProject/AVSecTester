@@ -35,6 +35,16 @@ See [reactive traffic](../guides/simulators.md#reactive-traffic) for supported b
 - [ ] Validate CARLA's texture sampling on the prop against the differentiable optimization
   model.
 
+## Sim-to-real fidelity
+
+- [ ] Composite photographs of printed stop-sign patches into NuRec scenes and compare detection
+  and driving results with digitally composited patches.
+
+## Other neural reconstruction engines
+
+- [ ] Support reconstruction engines other than NRE, so that recorded datasets such as nuScenes
+  can run closed-loop rollouts instead of recorded playback.
+
 ## External benchmark integrations
 
 - [ ] Supply reference evaluation workflows and published benchmark adapters.
