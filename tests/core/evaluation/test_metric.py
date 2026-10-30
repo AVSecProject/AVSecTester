@@ -17,7 +17,9 @@ from avsectester.evaluation import (
 from avsectester.runlog import EventRecord, RunLog
 from avsectester.maps import ScenarioMap, StopLine
 from avsectester.rendering import ObjectVisibility
-from avsectester.implemented_attacks.stop_sign_patch_attack.metrics import ReplicaVisibility, SignDetection
+from avsectester.implemented_attacks.stop_sign_patch_attack.metrics import (
+    AttackSuccess, ReplicaVisibility, SignDetection,
+)
 
 
 @pytest.fixture
@@ -151,6 +153,12 @@ CASES = [
         lambda data: data["group"]({"attacked": data["log"]([2., 2.])}), itemgetter("attacked"),
         {"detected_steps": 2, "detection_rate": .5, "first_detection_line_distance_m": .25},
         id="sign-detection"),
+    pytest.param(
+        AttackSuccess, {},
+        lambda data: data["stop_line_group"](
+            {"clean": data["log"]([4., 2., 0.]), "attacked": data["log"]([4.] * 6)}, line_x=5.),
+        lambda data: data["group"]({"clean": data["log"]([4., 2., 0.]), "attacked": data["log"]([4.] * 6)}),
+        itemgetter("attacked"), {"success": True}, id="attack-success"),
 
 ]
 

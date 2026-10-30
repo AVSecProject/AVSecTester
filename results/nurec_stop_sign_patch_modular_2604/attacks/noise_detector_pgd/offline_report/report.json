@@ -11168,7 +11168,7 @@
   "images": {
     "initial_texture": {
       "file": "initial_texture.png",
-      "description": "Replica face with the initial patch, before any optimization."
+      "description": "Initial texture, before any optimization."
     },
     "optimized_texture": {
       "file": "optimized_texture.png",

@@ -12,6 +12,7 @@ test,clean,9,9,0,StopLineMetrics.distance_to_line_at_brake_onset,number,9,22.401
 test,clean,9,9,0,StopLineMetrics.initial_distance_to_line,number,9,47.42064512176187,4.973934064002858,
 test,clean,9,9,0,StopLineMetrics.final_distance_to_line,number,9,5.331538459208802,4.23250211683625,
 test,clean,9,9,0,StopLineMetrics.min_vehicle_distance_after_line,number,1,1.0655774211960902,0.0,
+test,clean,9,9,0,AttackSuccess.success,number,0,,,
 test,clean,9,9,0,DrivingMetrics.final_speed,number,9,0.6100957216694951,0.9620594970715601,
 test,clean,9,9,0,DrivingMetrics.peak_speed,number,9,8.146176603105333,2.4800291608902403,
 test,clean,9,9,0,DrivingMetrics.mean_speed,number,9,4.244634872987957,1.0475774763751993,
@@ -36,6 +37,7 @@ test,white,9,9,0,StopLineMetrics.distance_to_line_at_brake_onset,number,9,22.655
 test,white,9,9,0,StopLineMetrics.initial_distance_to_line,number,9,47.42064512176187,4.973934064002858,
 test,white,9,9,0,StopLineMetrics.final_distance_to_line,number,9,5.331176386834032,4.089040808651827,
 test,white,9,9,0,StopLineMetrics.min_vehicle_distance_after_line,number,1,1.0537551638751073,0.0,
+test,white,9,9,0,AttackSuccess.success,proportion,9,,,0.0
 test,white,9,9,0,DrivingMetrics.final_speed,number,9,0.597357067382998,0.9584023183110062,
 test,white,9,9,0,DrivingMetrics.peak_speed,number,9,8.15259043375651,2.4904119628626313,
 test,white,9,9,0,DrivingMetrics.mean_speed,number,9,4.2424334771997065,1.0323586199380135,
@@ -60,6 +62,7 @@ test,black,9,9,0,StopLineMetrics.distance_to_line_at_brake_onset,number,9,22.825
 test,black,9,9,0,StopLineMetrics.initial_distance_to_line,number,9,47.42064512176187,4.973934064002858,
 test,black,9,9,0,StopLineMetrics.final_distance_to_line,number,9,5.288768300502802,4.062741311611692,
 test,black,9,9,0,StopLineMetrics.min_vehicle_distance_after_line,number,1,1.0556561497524803,0.0,
+test,black,9,9,0,AttackSuccess.success,proportion,9,,,0.0
 test,black,9,9,0,DrivingMetrics.final_speed,number,9,0.5898064797640674,0.9482211998361896,
 test,black,9,9,0,DrivingMetrics.peak_speed,number,9,8.142197608947754,2.474732080548264,
 test,black,9,9,0,DrivingMetrics.mean_speed,number,9,4.248811651939551,1.0412017205380741,
@@ -84,6 +87,7 @@ test,noise,9,9,0,StopLineMetrics.distance_to_line_at_brake_onset,number,9,22.720
 test,noise,9,9,0,StopLineMetrics.initial_distance_to_line,number,9,47.42064512176187,4.973934064002858,
 test,noise,9,9,0,StopLineMetrics.final_distance_to_line,number,9,5.2625487418716865,4.105925800089043,
 test,noise,9,9,0,StopLineMetrics.min_vehicle_distance_after_line,number,1,1.0455585864906696,0.0,
+test,noise,9,9,0,AttackSuccess.success,proportion,9,,,0.0
 test,noise,9,9,0,DrivingMetrics.final_speed,number,9,0.588568235333595,0.9631188248801397,
 test,noise,9,9,0,DrivingMetrics.peak_speed,number,9,8.144304699367947,2.476210986207873,
 test,noise,9,9,0,DrivingMetrics.mean_speed,number,9,4.250367548361806,1.0395444527917865,
@@ -108,6 +112,7 @@ test,white_detector_pgd,9,9,0,StopLineMetrics.distance_to_line_at_brake_onset,nu
 test,white_detector_pgd,9,9,0,StopLineMetrics.initial_distance_to_line,number,9,47.42064512176187,4.973934064002858,
 test,white_detector_pgd,9,9,0,StopLineMetrics.final_distance_to_line,number,9,5.399700615254618,4.223182828356863,
 test,white_detector_pgd,9,9,0,StopLineMetrics.min_vehicle_distance_after_line,number,1,1.1066167534583555,0.0,
+test,white_detector_pgd,9,9,0,AttackSuccess.success,proportion,9,,,0.0
 test,white_detector_pgd,9,9,0,DrivingMetrics.final_speed,number,9,0.6166715197161667,0.9024954512102622,
 test,white_detector_pgd,9,9,0,DrivingMetrics.peak_speed,number,9,8.130106661054823,2.5234741715767957,
 test,white_detector_pgd,9,9,0,DrivingMetrics.mean_speed,number,9,4.24245328378049,1.0681814124113753,
@@ -132,6 +137,7 @@ test,black_detector_pgd,9,9,0,StopLineMetrics.distance_to_line_at_brake_onset,nu
 test,black_detector_pgd,9,9,0,StopLineMetrics.initial_distance_to_line,number,9,47.42064512176187,4.973934064002858,
 test,black_detector_pgd,9,9,0,StopLineMetrics.final_distance_to_line,number,9,2.6096851649397954,8.548967138142768,
 test,black_detector_pgd,9,9,0,StopLineMetrics.min_vehicle_distance_after_line,number,2,3.61926452792006,2.5252131204821064,
+test,black_detector_pgd,9,9,0,AttackSuccess.success,proportion,9,,,0.1111111111111111
 test,black_detector_pgd,9,9,0,DrivingMetrics.final_speed,number,9,1.3926300763980382,2.3104318107124704,
 test,black_detector_pgd,9,9,0,DrivingMetrics.peak_speed,number,9,8.14752329720391,2.499227354275633,
 test,black_detector_pgd,9,9,0,DrivingMetrics.mean_speed,number,9,4.657089781889017,1.6776062036284791,
@@ -156,6 +162,7 @@ test,noise_detector_pgd,9,9,0,StopLineMetrics.distance_to_line_at_brake_onset,nu
 test,noise_detector_pgd,9,9,0,StopLineMetrics.initial_distance_to_line,number,9,47.42064512176187,4.973934064002858,
 test,noise_detector_pgd,9,9,0,StopLineMetrics.final_distance_to_line,number,9,5.586006908889268,4.477079683224268,
 test,noise_detector_pgd,9,9,0,StopLineMetrics.min_vehicle_distance_after_line,number,1,1.133780348836406,0.0,
+test,noise_detector_pgd,9,9,0,AttackSuccess.success,proportion,9,,,0.0
 test,noise_detector_pgd,9,9,0,DrivingMetrics.final_speed,number,9,0.6446945751085877,0.8916369994687674,
 test,noise_detector_pgd,9,9,0,DrivingMetrics.peak_speed,number,9,8.129133701324463,2.5239375559294808,
 test,noise_detector_pgd,9,9,0,DrivingMetrics.mean_speed,number,9,4.2193700650253625,1.0710645851028833,

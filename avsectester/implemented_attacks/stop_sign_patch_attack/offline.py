@@ -88,7 +88,7 @@ def run_offline(attack: StopSignPatchAttack, context: OfflineContext) -> np.ndar
                                    noise_cell_texels=attack.noise_cell_texels)
     context.report.set_image(
         "initial_texture", attack.replica_texture(initial),
-        description="Replica face with the initial patch, before any optimization.",
+        description="Initial texture, before any optimization.",
     )
     if attack.optimization is None:
         return initial

@@ -2988,10 +2988,11 @@ nonpositive `noise_cell_texels`.
 ### avsectester.implemented_attacks.stop_sign_patch_attack.metrics
 
 <!-- api:begin module=avsectester.implemented_attacks.stop_sign_patch_attack.metrics -->
-Replica visibility and sign-detection measurements from saved decision captures.
+Attack success, replica visibility and sign-detection measurements from saved decision captures.
 
 | Name and signature | Meaning |
 |---|---|
+| `AttackSuccess(reference_treatment: str = "clean")` | Subclass of `Metric`. Decide per comparison group whether each attacked treatment ran the stop line. |
 | `ReplicaVisibility(camera_ids: Sequence[str] \| None = None, min_visible_pixels: int = 100)` | Subclass of `Metric`. Count decisions where the inserted replica reaches the pixel threshold in a selected camera. |
 | `SignDetection(camera_id: str, min_visible_pixels: int = 100, endpoint_tolerance_m: float = 3.)` | Subclass of `Metric`. Count decisions where the driving system logged a sign detection. |
 <!-- api:end -->

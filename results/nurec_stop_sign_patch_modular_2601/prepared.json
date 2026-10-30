@@ -1,6 +1,6 @@
 {
   "attacks": [
-    "no_patch",
+    "clean",
     "white",
     "black",
     "noise",
@@ -54,7 +54,7 @@
         },
         "type": "avsectester.implemented_attacks.stop_sign_patch_attack.attack:StopSignPatchAttack"
       },
-      "no_patch": {
+      "clean": {
         "environment": {},
         "parameters": {
           "harmonizer": {
@@ -222,7 +222,7 @@
         "sensors": [],
         "world": {}
       },
-      "no_patch": {
+      "clean": {
         "sensors": [],
         "world": {}
       },
@@ -252,7 +252,7 @@
   },
   "selections": [
     {
-      "attack_name": "no_patch",
+      "attack_name": "clean",
       "error": null,
       "reasons": [
         "No stop-sign stop lines in the map (count=1)"
@@ -261,7 +261,7 @@
       "status": "not_selected"
     },
     {
-      "attack_name": "no_patch",
+      "attack_name": "clean",
       "error": null,
       "reasons": [
         "Stop line does not intersect the recorded route within 3 m (count=4)"
@@ -270,7 +270,7 @@
       "status": "not_selected"
     },
     {
-      "attack_name": "no_patch",
+      "attack_name": "clean",
       "error": null,
       "reasons": [
         "Stop line does not intersect the recorded route within 3 m (count=24)",
@@ -280,7 +280,7 @@
       "status": "selected"
     },
     {
-      "attack_name": "no_patch",
+      "attack_name": "clean",
       "error": null,
       "reasons": [
         "Stop line does not intersect the recorded route within 3 m (count=43)"
@@ -289,7 +289,7 @@
       "status": "selected"
     },
     {
-      "attack_name": "no_patch",
+      "attack_name": "clean",
       "error": null,
       "reasons": [
         "Stop line does not intersect the recorded route within 3 m (count=10)",
@@ -299,7 +299,7 @@
       "status": "selected"
     },
     {
-      "attack_name": "no_patch",
+      "attack_name": "clean",
       "error": null,
       "reasons": [
         "Stop line does not intersect the recorded route within 3 m (count=10)"
@@ -308,7 +308,7 @@
       "status": "selected"
     },
     {
-      "attack_name": "no_patch",
+      "attack_name": "clean",
       "error": null,
       "reasons": [
         "Stop line does not intersect the recorded route within 3 m (count=24)",
@@ -318,7 +318,7 @@
       "status": "selected"
     },
     {
-      "attack_name": "no_patch",
+      "attack_name": "clean",
       "error": null,
       "reasons": [
         "Stop line does not intersect the recorded route within 3 m (count=13)",
@@ -328,7 +328,7 @@
       "status": "selected"
     },
     {
-      "attack_name": "no_patch",
+      "attack_name": "clean",
       "error": null,
       "reasons": [
         "Stop line does not intersect the recorded route within 3 m (count=20)",
@@ -338,7 +338,7 @@
       "status": "selected"
     },
     {
-      "attack_name": "no_patch",
+      "attack_name": "clean",
       "error": null,
       "reasons": [
         "Stop line does not intersect the recorded route within 3 m (count=17)",
@@ -348,7 +348,7 @@
       "status": "selected"
     },
     {
-      "attack_name": "no_patch",
+      "attack_name": "clean",
       "error": null,
       "reasons": [
         "Stop line does not intersect the recorded route within 3 m (count=19)"
@@ -357,7 +357,7 @@
       "status": "not_selected"
     },
     {
-      "attack_name": "no_patch",
+      "attack_name": "clean",
       "error": null,
       "reasons": [
         "Stop line does not intersect the recorded route within 3 m (count=22)"
@@ -366,7 +366,7 @@
       "status": "selected"
     },
     {
-      "attack_name": "no_patch",
+      "attack_name": "clean",
       "error": null,
       "reasons": [
         "Stop line does not intersect the recorded route within 3 m (count=29)"
@@ -375,7 +375,7 @@
       "status": "selected"
     },
     {
-      "attack_name": "no_patch",
+      "attack_name": "clean",
       "error": null,
       "reasons": [
         "Stop line does not intersect the recorded route within 3 m (count=10)",
@@ -385,7 +385,7 @@
       "status": "selected"
     },
     {
-      "attack_name": "no_patch",
+      "attack_name": "clean",
       "error": null,
       "reasons": [
         "Stop line does not intersect the recorded route within 3 m (count=18)",
@@ -395,7 +395,7 @@
       "status": "selected"
     },
     {
-      "attack_name": "no_patch",
+      "attack_name": "clean",
       "error": null,
       "reasons": [
         "Stop line does not intersect the recorded route within 3 m (count=13)",
@@ -405,7 +405,7 @@
       "status": "selected"
     },
     {
-      "attack_name": "no_patch",
+      "attack_name": "clean",
       "error": null,
       "reasons": [
         "Stop line does not intersect the recorded route within 3 m (count=5)"
@@ -414,7 +414,7 @@
       "status": "not_selected"
     },
     {
-      "attack_name": "no_patch",
+      "attack_name": "clean",
       "error": null,
       "reasons": [
         "Stop line does not intersect the recorded route within 3 m (count=14)",
@@ -424,7 +424,7 @@
       "status": "selected"
     },
     {
-      "attack_name": "no_patch",
+      "attack_name": "clean",
       "error": null,
       "reasons": [
         "Stop line does not intersect the recorded route within 3 m (count=10)"
@@ -433,7 +433,7 @@
       "status": "selected"
     },
     {
-      "attack_name": "no_patch",
+      "attack_name": "clean",
       "error": null,
       "reasons": [
         "Stop line does not intersect the recorded route within 3 m (count=10)",
@@ -443,7 +443,7 @@
       "status": "selected"
     },
     {
-      "attack_name": "no_patch",
+      "attack_name": "clean",
       "error": null,
       "reasons": [
         "Stop line does not intersect the recorded route within 3 m (count=4)"
@@ -452,7 +452,7 @@
       "status": "selected"
     },
     {
-      "attack_name": "no_patch",
+      "attack_name": "clean",
       "error": null,
       "reasons": [
         "Stop line does not intersect the recorded route within 3 m (count=12)",
@@ -462,7 +462,7 @@
       "status": "selected"
     },
     {
-      "attack_name": "no_patch",
+      "attack_name": "clean",
       "error": null,
       "reasons": [
         "Stop line does not intersect the recorded route within 3 m (count=22)"
@@ -1788,7 +1788,7 @@
   "units": [
     {
       "attack_names": [
-        "no_patch",
+        "clean",
         "white",
         "black",
         "noise",
@@ -1804,7 +1804,7 @@
     },
     {
       "attack_names": [
-        "no_patch",
+        "clean",
         "white",
         "black",
         "noise",
@@ -1820,7 +1820,7 @@
     },
     {
       "attack_names": [
-        "no_patch",
+        "clean",
         "white",
         "black",
         "noise",
@@ -1836,7 +1836,7 @@
     },
     {
       "attack_names": [
-        "no_patch",
+        "clean",
         "white",
         "black",
         "noise",
@@ -1852,7 +1852,7 @@
     },
     {
       "attack_names": [
-        "no_patch",
+        "clean",
         "white",
         "black",
         "noise",
@@ -1868,7 +1868,7 @@
     },
     {
       "attack_names": [
-        "no_patch",
+        "clean",
         "white",
         "black",
         "noise",
@@ -1884,7 +1884,7 @@
     },
     {
       "attack_names": [
-        "no_patch",
+        "clean",
         "white",
         "black",
         "noise",
@@ -1900,7 +1900,7 @@
     },
     {
       "attack_names": [
-        "no_patch",
+        "clean",
         "white",
         "black",
         "noise",
@@ -1916,7 +1916,7 @@
     },
     {
       "attack_names": [
-        "no_patch",
+        "clean",
         "white",
         "black",
         "noise",
@@ -1932,7 +1932,7 @@
     },
     {
       "attack_names": [
-        "no_patch",
+        "clean",
         "white",
         "black",
         "noise",
@@ -1948,7 +1948,7 @@
     },
     {
       "attack_names": [
-        "no_patch",
+        "clean",
         "white",
         "black",
         "noise",
@@ -1964,7 +1964,7 @@
     },
     {
       "attack_names": [
-        "no_patch",
+        "clean",
         "white",
         "black",
         "noise",
@@ -1980,7 +1980,7 @@
     },
     {
       "attack_names": [
-        "no_patch",
+        "clean",
         "white",
         "black",
         "noise",
@@ -1996,7 +1996,7 @@
     },
     {
       "attack_names": [
-        "no_patch",
+        "clean",
         "white",
         "black",
         "noise",
@@ -2012,7 +2012,7 @@
     },
     {
       "attack_names": [
-        "no_patch",
+        "clean",
         "white",
         "black",
         "noise",
@@ -2028,7 +2028,7 @@
     },
     {
       "attack_names": [
-        "no_patch",
+        "clean",
         "white",
         "black",
         "noise",
@@ -2044,7 +2044,7 @@
     },
     {
       "attack_names": [
-        "no_patch",
+        "clean",
         "white",
         "black",
         "noise",
@@ -2060,7 +2060,7 @@
     },
     {
       "attack_names": [
-        "no_patch",
+        "clean",
         "white",
         "black",
         "noise",
@@ -2076,7 +2076,7 @@
     },
     {
       "attack_names": [
-        "no_patch",
+        "clean",
         "white",
         "black",
         "noise",

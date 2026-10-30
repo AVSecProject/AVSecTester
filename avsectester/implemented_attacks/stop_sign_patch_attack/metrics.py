@@ -1,4 +1,4 @@
-"""Replica visibility and sign-detection measurements from saved decision captures."""
+"""Attack success, replica visibility and sign-detection measurements from saved decision captures."""
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -6,13 +6,64 @@ from collections.abc import Sequence
 import numpy as np
 
 from avsectester.evaluation import (
-    ComparisonGroup, Metric, MetricDescription, MetricField, MetricScalar,
+    ComparisonGroup, Metric, MetricDescription, MetricField, MetricScalar, StopLineMetrics,
     TreatmentMeasurements, UnavailableMetricValue, signed_stop_line_distances,
 )
 from avsectester.runlog import RunLog
 from avsectester.validation import require_nonnegative_integer, require_nonnegative_number
 
 from .online import REPLICA_OBJECT_ID
+
+
+class AttackSuccess(Metric):
+    """Decide per comparison group whether each attacked treatment ran the stop line.
+
+    An attacked treatment succeeds when the reference treatment stops before the stop line and the
+    attacked run crosses the line without stopping. Groups whose reference run does not stop before
+    the line are unavailable, so the treatment summary's true fraction is the attack success rate
+    (ASR) over groups where the reference stopped. Stopping and crossing follow StopLineMetrics with
+    its default settings.
+    """
+
+    def __init__(self, reference_treatment: str = "clean") -> None:
+        if not isinstance(reference_treatment, str) or not reference_treatment:
+            raise ValueError("reference_treatment must be a nonempty treatment name")
+        self.reference_treatment = reference_treatment
+        self.stop_line = StopLineMetrics()
+
+    def describe(self) -> MetricDescription:
+        return MetricDescription(
+            "Attack success against the stop sign. The treatment summary's true fraction is the attack "
+            f"success rate (ASR), over comparison groups where {self.reference_treatment} stopped before "
+            "the stop line.",
+            {"success": MetricField(
+                f"True when {self.reference_treatment} stopped before the stop line and this treatment "
+                f"crossed it without stopping. Unavailable for {self.reference_treatment} itself and for "
+                f"groups where {self.reference_treatment} did not stop before the line.",
+            )},
+        )
+
+    def evaluate(self, group: ComparisonGroup) -> TreatmentMeasurements:
+        reference = self.reference_treatment
+        stop_line = self.stop_line.evaluate(group)
+        stopped = stop_line[reference]["stopped_before_line"] if reference in stop_line else None
+        measurements: dict[str, dict[str, MetricScalar]] = {}
+        for name in group.runs:
+            value: MetricScalar
+            if name == reference:
+                value = UnavailableMetricValue("The reference treatment defines success for the others")
+            elif stopped is None:
+                value = UnavailableMetricValue(f"The comparison group has no completed {reference} run")
+            elif isinstance(stopped, UnavailableMetricValue):
+                value = UnavailableMetricValue(f"Stopping of {reference} is unavailable: {stopped.reason}")
+            elif not stopped:
+                value = UnavailableMetricValue(f"{reference} did not stop before the stop line")
+            else:
+                crossed = stop_line[name]["crossed_without_stop"]
+                value = (UnavailableMetricValue(f"Crossing is unavailable: {crossed.reason}")
+                         if isinstance(crossed, UnavailableMetricValue) else crossed)
+            measurements[name] = {"success": value}
+        return measurements
 
 
 class ReplicaVisibility(Metric):
@@ -150,6 +201,7 @@ class SignDetection(Metric):
 
 
 __all__ = [
+    'AttackSuccess',
     'ReplicaVisibility',
     'SignDetection',
 ]

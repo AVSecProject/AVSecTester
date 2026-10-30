@@ -55,7 +55,7 @@ configurations contain the rollout-optimized treatments. Both include the same c
 
 Each attack has an offline phase and an online phase. With no optimization, the offline phase
 returns the initial texture. The online phase inserts that texture through the same placement
-path used during optimization. The `clean` treatment runs the `no_patch` attack, which uses
+path used during optimization. The `clean` treatment runs the `clean` attack, which uses
 `initial_patch: none` and cannot be optimized, so every treatment shows the same inserted
 replica and differs only in its patch.
 
@@ -297,6 +297,7 @@ docker compose run --rm --entrypoint python nurec-experiment -m scripts.visualiz
 
 The [CLI reference](../reference/cli.md) defines the HTML and structured-output locations.
 [Evaluation](../guides/evaluation.md) defines the stop-line, driving and reasoning metrics.
+`RuleBasedAVStack` has no reasoning text, so its configuration omits `ReasoningPhraseRate`.
 
 The repository includes the white-box results of both modular configurations in
 [results/nurec_stop_sign_patch_modular_2601](../../results/nurec_stop_sign_patch_modular_2601/)
@@ -304,7 +305,15 @@ and [results/nurec_stop_sign_patch_modular_2604](../../results/nurec_stop_sign_p
 They contain the reports and deployed textures. Run logs and saved maps are not included, so
 `evaluate` cannot recompute these results. To rerun the closed loop with these textures, copy a
 configuration, set `runs.output` to a new directory and run it with `--prepared`.
-`RuleBasedAVStack` has no reasoning text, so its configuration omits `ReasoningPhraseRate`.
+
+### Attack success rate
+
+`AttackSuccess` defines the attack success rate (ASR) of this example. In each comparison group,
+an attacked treatment succeeds when `clean` stops before the stop line and the attacked run
+crosses the line without stopping. Groups where `clean` does not stop before the line are
+excluded, because the attack has no stop to suppress there. The ASR of a treatment is the true
+fraction of `AttackSuccess.success` in its treatment summary. Stopping and crossing follow
+`StopLineMetrics` with its default settings. All four stop-sign configurations enable it.
 
 ### Custom metric example
 
@@ -326,6 +335,7 @@ Reference the classes by their full paths, as in the supplied YAML:
 ```yaml
 evaluation:
   metrics:
+    - type: avsectester.implemented_attacks.stop_sign_patch_attack.metrics:AttackSuccess
     - type: avsectester.implemented_attacks.stop_sign_patch_attack.metrics:ReplicaVisibility
     - type: avsectester.implemented_attacks.stop_sign_patch_attack.metrics:SignDetection
       options: {camera_id: camera_front_wide_120fov}

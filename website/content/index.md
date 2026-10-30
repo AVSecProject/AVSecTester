@@ -120,7 +120,7 @@ attacks:
       optimization: ...         # white-box attack (algorithm used: PGD)
 runs:
   treatments:
-    - {name: clean, attack_name: no_patch}
+    - {name: clean, attack_name: clean}
     - {name: noise_detector_pgd, attack_name: noise_detector_pgd}
 ```
 

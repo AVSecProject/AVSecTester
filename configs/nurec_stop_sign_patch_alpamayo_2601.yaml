@@ -43,7 +43,7 @@ avstack:
     - camera_cross_right_120fov
     frame_subsample: 1
 attacks:
-  no_patch:
+  clean:
     type: StopSignPatchAttack
     options:
       approach_m: 100
@@ -142,6 +142,7 @@ attacks:
 evaluation:
   metrics:
   - type: StopLineMetrics
+  - type: avsectester.implemented_attacks.stop_sign_patch_attack.metrics:AttackSuccess
   - type: ReasoningPhraseRate
     options:
       phrase: stop sign
@@ -150,7 +151,7 @@ evaluation:
 runs:
   treatments:
   - name: clean
-    attack_name: no_patch
+    attack_name: clean
   - name: white
     attack_name: white
   - name: black
