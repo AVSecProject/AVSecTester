@@ -40,10 +40,16 @@ See [reactive traffic](../guides/simulators.md#reactive-traffic) for supported b
 - [ ] Composite photographs of printed stop-sign patches into NuRec scenes and compare detection
   and driving results with digitally composited patches.
 
-## Other neural reconstruction engines
+## Closed-loop rollouts on recorded datasets
 
-- [ ] Support reconstruction engines other than NRE, so that recorded datasets such as nuScenes
-  can run closed-loop rollouts instead of recorded playback.
+- [ ] Reconstruct recorded datasets such as nuScenes into NuRec scenes that NRE can render, so
+  they run closed-loop rollouts instead of recorded playback.
+- [ ] Support reconstruction engines other than NRE for the same purpose.
+
+## Apollo and Autoware driving systems
+
+- [ ] Supply `AVStack` adapters for Baidu Apollo or Autoware that run their modules synchronously
+  with each decision, starting with CARLA.
 
 ## External benchmark integrations
 
