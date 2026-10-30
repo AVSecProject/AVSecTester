@@ -297,6 +297,13 @@ docker compose run --rm --entrypoint python nurec-experiment -m scripts.visualiz
 
 The [CLI reference](../reference/cli.md) defines the HTML and structured-output locations.
 [Evaluation](../guides/evaluation.md) defines the stop-line, driving and reasoning metrics.
+
+The repository includes the white-box results of both modular configurations in
+[results/nurec_stop_sign_patch_modular_2601](../../results/nurec_stop_sign_patch_modular_2601/)
+and [results/nurec_stop_sign_patch_modular_2604](../../results/nurec_stop_sign_patch_modular_2604/).
+They contain the reports and deployed textures. Run logs and saved maps are not included, so
+`evaluate` cannot recompute these results. To rerun the closed loop with these textures, copy a
+configuration, set `runs.output` to a new directory and run it with `--prepared`.
 `RuleBasedAVStack` has no reasoning text, so its configuration omits `ReasoningPhraseRate`.
 
 ### Custom metric example

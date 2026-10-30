@@ -1,0 +1,1675 @@
+{
+  "attacks": [
+    "no_patch",
+    "white",
+    "black",
+    "noise",
+    "white_detector_pgd",
+    "black_detector_pgd",
+    "noise_detector_pgd"
+  ],
+  "completed_attacks": [
+    "no_patch",
+    "white",
+    "black",
+    "noise",
+    "white_detector_pgd",
+    "black_detector_pgd",
+    "noise_detector_pgd"
+  ],
+  "configuration": {
+    "attacks": {
+      "black": {
+        "environment": {},
+        "parameters": {
+          "harmonizer": {
+            "options": {
+              "reference": "under"
+            },
+            "type": "avsectester.rendering.harmonizers:ExposureHarmonizer"
+          },
+          "initial_patch": "black"
+        },
+        "type": "avsectester.implemented_attacks.stop_sign_patch_attack.attack:StopSignPatchAttack"
+      },
+      "black_detector_pgd": {
+        "environment": {},
+        "parameters": {
+          "harmonizer": {
+            "options": {
+              "reference": "under"
+            },
+            "type": "avsectester.rendering.harmonizers:ExposureHarmonizer"
+          },
+          "initial_patch": "black",
+          "optimization": {
+            "options": {
+              "device": "cuda:0",
+              "optimizer": {
+                "options": {
+                  "batch_size": 16,
+                  "epochs": 100,
+                  "seed": 0,
+                  "step_size": 0.01568627450980392,
+                  "tv_weight": 0.3
+                },
+                "type": "avsectester.attack.optimization:PGD"
+              },
+              "progress_interval": 5,
+              "samples_per_scene": "all"
+            },
+            "type": "avsectester.implemented_attacks.stop_sign_patch_attack.offline:DetectorPatchOptimization"
+          }
+        },
+        "type": "avsectester.implemented_attacks.stop_sign_patch_attack.attack:StopSignPatchAttack"
+      },
+      "no_patch": {
+        "environment": {},
+        "parameters": {
+          "harmonizer": {
+            "options": {
+              "reference": "under"
+            },
+            "type": "avsectester.rendering.harmonizers:ExposureHarmonizer"
+          },
+          "initial_patch": "none"
+        },
+        "type": "avsectester.implemented_attacks.stop_sign_patch_attack.attack:StopSignPatchAttack"
+      },
+      "noise": {
+        "environment": {},
+        "parameters": {
+          "harmonizer": {
+            "options": {
+              "reference": "under"
+            },
+            "type": "avsectester.rendering.harmonizers:ExposureHarmonizer"
+          },
+          "initial_patch": "low_frequency_noise"
+        },
+        "type": "avsectester.implemented_attacks.stop_sign_patch_attack.attack:StopSignPatchAttack"
+      },
+      "noise_detector_pgd": {
+        "environment": {},
+        "parameters": {
+          "harmonizer": {
+            "options": {
+              "reference": "under"
+            },
+            "type": "avsectester.rendering.harmonizers:ExposureHarmonizer"
+          },
+          "initial_patch": "low_frequency_noise",
+          "optimization": {
+            "options": {
+              "device": "cuda:0",
+              "optimizer": {
+                "options": {
+                  "batch_size": 16,
+                  "epochs": 100,
+                  "seed": 0,
+                  "step_size": 0.01568627450980392,
+                  "tv_weight": 0.3
+                },
+                "type": "avsectester.attack.optimization:PGD"
+              },
+              "progress_interval": 5,
+              "samples_per_scene": "all"
+            },
+            "type": "avsectester.implemented_attacks.stop_sign_patch_attack.offline:DetectorPatchOptimization"
+          }
+        },
+        "type": "avsectester.implemented_attacks.stop_sign_patch_attack.attack:StopSignPatchAttack"
+      },
+      "white": {
+        "environment": {},
+        "parameters": {
+          "harmonizer": {
+            "options": {
+              "reference": "under"
+            },
+            "type": "avsectester.rendering.harmonizers:ExposureHarmonizer"
+          },
+          "initial_patch": "white"
+        },
+        "type": "avsectester.implemented_attacks.stop_sign_patch_attack.attack:StopSignPatchAttack"
+      },
+      "white_detector_pgd": {
+        "environment": {},
+        "parameters": {
+          "harmonizer": {
+            "options": {
+              "reference": "under"
+            },
+            "type": "avsectester.rendering.harmonizers:ExposureHarmonizer"
+          },
+          "initial_patch": "white",
+          "optimization": {
+            "options": {
+              "device": "cuda:0",
+              "optimizer": {
+                "options": {
+                  "batch_size": 16,
+                  "epochs": 100,
+                  "seed": 0,
+                  "step_size": 0.01568627450980392,
+                  "tv_weight": 0.3
+                },
+                "type": "avsectester.attack.optimization:PGD"
+              },
+              "progress_interval": 5,
+              "samples_per_scene": "all"
+            },
+            "type": "avsectester.implemented_attacks.stop_sign_patch_attack.offline:DetectorPatchOptimization"
+          }
+        },
+        "type": "avsectester.implemented_attacks.stop_sign_patch_attack.attack:StopSignPatchAttack"
+      }
+    },
+    "dataset": {
+      "scenarios": [
+        "clipgt-07981e6a-22dd-4796-ad2f-1252037ecd28",
+        "clipgt-0bd5202f-5f7c-4748-b78d-20d1f921b4db",
+        "clipgt-1e5435de-0e4f-4f9c-943b-c44275544715",
+        "clipgt-22ab49c5-2c92-463b-b890-0b2208c436b1",
+        "clipgt-325a6911-8ee8-4a04-8b84-55dbfcada98f",
+        "clipgt-3e265bc2-2a8b-4c5c-8e6b-1de009b6672d",
+        "clipgt-3e9966a3-c42d-4fd1-b588-6f5cc02b7c25",
+        "clipgt-56263647-352f-45b7-95c5-1d077a512b66",
+        "clipgt-6d986fb9-6694-4570-910b-d8bf4ffa8550",
+        "clipgt-7d257301-a9d1-433b-8f08-85023a4d0fac",
+        "clipgt-7fd4d554-b155-45c6-a46a-646486029d85",
+        "clipgt-85a26192-7b37-43a2-bd5d-96cd858cb86b",
+        "clipgt-904af7cf-d4ad-4ebc-867a-c77044eac8bb",
+        "clipgt-adb72a39-1e21-46ef-80f2-9c86a8e9504a",
+        "clipgt-b40f4729-29c4-4846-a04b-72c78832a062",
+        "clipgt-cda8a096-0982-4a91-b721-624dac7c83b8",
+        "clipgt-f3fd4dbd-5c4e-4774-8b41-ebb9b515e9cb",
+        "clipgt-f922e4bc-7bf3-4c4d-a254-63fadb4fd2fe"
+      ],
+      "type": "avsectester.datasets.nurec:NuRecDataset"
+    },
+    "simulator": {
+      "camera_aliases": {},
+      "capture_ticks": 0,
+      "depth": "none",
+      "dynamics": {
+        "options": {
+          "dt_mpc": 0.1,
+          "gains": null,
+          "mpc_implementation": "linear",
+          "n_horizon": 20
+        },
+        "type": "avsectester.closed_loop.simulators.ego_dynamics:AlpaSimController"
+      },
+      "endpoint": "127.0.0.1:50052",
+      "ground_mesh": "mesh_ground",
+      "min_track_duration_s": 3.0,
+      "object_occlusion": "rendered_probes",
+      "occlusion_tolerance_m": 0.15,
+      "physics_update_mode": "ego_only",
+      "renderer": "NuRecRenderer",
+      "route_generator": "map",
+      "simulator": "NuRecSimulator",
+      "time_step": 0.1,
+      "version": "1"
+    }
+  },
+  "deployment_ticks": 0,
+  "metadata_source": null,
+  "preparation": {
+    "offline_environments": {
+      "black": {
+        "sensors": [],
+        "world": {}
+      },
+      "black_detector_pgd": {
+        "sensors": [],
+        "world": {}
+      },
+      "no_patch": {
+        "sensors": [],
+        "world": {}
+      },
+      "noise": {
+        "sensors": [],
+        "world": {}
+      },
+      "noise_detector_pgd": {
+        "sensors": [],
+        "world": {}
+      },
+      "white": {
+        "sensors": [],
+        "world": {}
+      },
+      "white_detector_pgd": {
+        "sensors": [],
+        "world": {}
+      }
+    },
+    "seed": 0,
+    "split": {
+      "seed": 0,
+      "train_segments": 5,
+      "validation_segments": 0
+    }
+  },
+  "selections": [
+    {
+      "attack_name": "no_patch",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=10)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=3)"
+      ],
+      "scenario_id": "clipgt-07981e6a-22dd-4796-ad2f-1252037ecd28",
+      "status": "selected"
+    },
+    {
+      "attack_name": "no_patch",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=6)"
+      ],
+      "scenario_id": "clipgt-0bd5202f-5f7c-4748-b78d-20d1f921b4db",
+      "status": "selected"
+    },
+    {
+      "attack_name": "no_patch",
+      "error": null,
+      "reasons": [
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)",
+        "Stop line does not intersect the recorded route within 3 m (count=4)"
+      ],
+      "scenario_id": "clipgt-1e5435de-0e4f-4f9c-943b-c44275544715",
+      "status": "selected"
+    },
+    {
+      "attack_name": "no_patch",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=12)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)"
+      ],
+      "scenario_id": "clipgt-22ab49c5-2c92-463b-b890-0b2208c436b1",
+      "status": "selected"
+    },
+    {
+      "attack_name": "no_patch",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=9)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)"
+      ],
+      "scenario_id": "clipgt-325a6911-8ee8-4a04-8b84-55dbfcada98f",
+      "status": "selected"
+    },
+    {
+      "attack_name": "no_patch",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=8)"
+      ],
+      "scenario_id": "clipgt-3e265bc2-2a8b-4c5c-8e6b-1de009b6672d",
+      "status": "selected"
+    },
+    {
+      "attack_name": "no_patch",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=9)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)"
+      ],
+      "scenario_id": "clipgt-3e9966a3-c42d-4fd1-b588-6f5cc02b7c25",
+      "status": "selected"
+    },
+    {
+      "attack_name": "no_patch",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=15)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)"
+      ],
+      "scenario_id": "clipgt-56263647-352f-45b7-95c5-1d077a512b66",
+      "status": "selected"
+    },
+    {
+      "attack_name": "no_patch",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=9)"
+      ],
+      "scenario_id": "clipgt-6d986fb9-6694-4570-910b-d8bf4ffa8550",
+      "status": "selected"
+    },
+    {
+      "attack_name": "no_patch",
+      "error": null,
+      "reasons": [],
+      "scenario_id": "clipgt-7d257301-a9d1-433b-8f08-85023a4d0fac",
+      "status": "selected"
+    },
+    {
+      "attack_name": "no_patch",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=7)"
+      ],
+      "scenario_id": "clipgt-7fd4d554-b155-45c6-a46a-646486029d85",
+      "status": "selected"
+    },
+    {
+      "attack_name": "no_patch",
+      "error": null,
+      "reasons": [
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=2)",
+        "Approach starts closer to the line than min_approach_m (count=1)",
+        "Stop line does not intersect the recorded route within 3 m (count=1)",
+        "Segment at position 93 cannot start: Navigation route cannot be built: Navigation route folds back on itself by more than 150 degrees (count=1)"
+      ],
+      "scenario_id": "clipgt-85a26192-7b37-43a2-bd5d-96cd858cb86b",
+      "status": "not_selected"
+    },
+    {
+      "attack_name": "no_patch",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=10)"
+      ],
+      "scenario_id": "clipgt-904af7cf-d4ad-4ebc-867a-c77044eac8bb",
+      "status": "not_selected"
+    },
+    {
+      "attack_name": "no_patch",
+      "error": null,
+      "reasons": [],
+      "scenario_id": "clipgt-adb72a39-1e21-46ef-80f2-9c86a8e9504a",
+      "status": "selected"
+    },
+    {
+      "attack_name": "no_patch",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=11)",
+        "Approach starts closer to the line than min_approach_m (count=1)"
+      ],
+      "scenario_id": "clipgt-b40f4729-29c4-4846-a04b-72c78832a062",
+      "status": "selected"
+    },
+    {
+      "attack_name": "no_patch",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=4)"
+      ],
+      "scenario_id": "clipgt-cda8a096-0982-4a91-b721-624dac7c83b8",
+      "status": "not_selected"
+    },
+    {
+      "attack_name": "no_patch",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=3)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)"
+      ],
+      "scenario_id": "clipgt-f3fd4dbd-5c4e-4774-8b41-ebb9b515e9cb",
+      "status": "selected"
+    },
+    {
+      "attack_name": "no_patch",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=13)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)"
+      ],
+      "scenario_id": "clipgt-f922e4bc-7bf3-4c4d-a254-63fadb4fd2fe",
+      "status": "not_selected"
+    },
+    {
+      "attack_name": "white",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=10)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=3)"
+      ],
+      "scenario_id": "clipgt-07981e6a-22dd-4796-ad2f-1252037ecd28",
+      "status": "selected"
+    },
+    {
+      "attack_name": "white",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=6)"
+      ],
+      "scenario_id": "clipgt-0bd5202f-5f7c-4748-b78d-20d1f921b4db",
+      "status": "selected"
+    },
+    {
+      "attack_name": "white",
+      "error": null,
+      "reasons": [
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)",
+        "Stop line does not intersect the recorded route within 3 m (count=4)"
+      ],
+      "scenario_id": "clipgt-1e5435de-0e4f-4f9c-943b-c44275544715",
+      "status": "selected"
+    },
+    {
+      "attack_name": "white",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=12)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)"
+      ],
+      "scenario_id": "clipgt-22ab49c5-2c92-463b-b890-0b2208c436b1",
+      "status": "selected"
+    },
+    {
+      "attack_name": "white",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=9)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)"
+      ],
+      "scenario_id": "clipgt-325a6911-8ee8-4a04-8b84-55dbfcada98f",
+      "status": "selected"
+    },
+    {
+      "attack_name": "white",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=8)"
+      ],
+      "scenario_id": "clipgt-3e265bc2-2a8b-4c5c-8e6b-1de009b6672d",
+      "status": "selected"
+    },
+    {
+      "attack_name": "white",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=9)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)"
+      ],
+      "scenario_id": "clipgt-3e9966a3-c42d-4fd1-b588-6f5cc02b7c25",
+      "status": "selected"
+    },
+    {
+      "attack_name": "white",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=15)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)"
+      ],
+      "scenario_id": "clipgt-56263647-352f-45b7-95c5-1d077a512b66",
+      "status": "selected"
+    },
+    {
+      "attack_name": "white",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=9)"
+      ],
+      "scenario_id": "clipgt-6d986fb9-6694-4570-910b-d8bf4ffa8550",
+      "status": "selected"
+    },
+    {
+      "attack_name": "white",
+      "error": null,
+      "reasons": [],
+      "scenario_id": "clipgt-7d257301-a9d1-433b-8f08-85023a4d0fac",
+      "status": "selected"
+    },
+    {
+      "attack_name": "white",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=7)"
+      ],
+      "scenario_id": "clipgt-7fd4d554-b155-45c6-a46a-646486029d85",
+      "status": "selected"
+    },
+    {
+      "attack_name": "white",
+      "error": null,
+      "reasons": [
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=2)",
+        "Approach starts closer to the line than min_approach_m (count=1)",
+        "Stop line does not intersect the recorded route within 3 m (count=1)",
+        "Segment at position 93 cannot start: Navigation route cannot be built: Navigation route folds back on itself by more than 150 degrees (count=1)"
+      ],
+      "scenario_id": "clipgt-85a26192-7b37-43a2-bd5d-96cd858cb86b",
+      "status": "not_selected"
+    },
+    {
+      "attack_name": "white",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=10)"
+      ],
+      "scenario_id": "clipgt-904af7cf-d4ad-4ebc-867a-c77044eac8bb",
+      "status": "not_selected"
+    },
+    {
+      "attack_name": "white",
+      "error": null,
+      "reasons": [],
+      "scenario_id": "clipgt-adb72a39-1e21-46ef-80f2-9c86a8e9504a",
+      "status": "selected"
+    },
+    {
+      "attack_name": "white",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=11)",
+        "Approach starts closer to the line than min_approach_m (count=1)"
+      ],
+      "scenario_id": "clipgt-b40f4729-29c4-4846-a04b-72c78832a062",
+      "status": "selected"
+    },
+    {
+      "attack_name": "white",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=4)"
+      ],
+      "scenario_id": "clipgt-cda8a096-0982-4a91-b721-624dac7c83b8",
+      "status": "not_selected"
+    },
+    {
+      "attack_name": "white",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=3)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)"
+      ],
+      "scenario_id": "clipgt-f3fd4dbd-5c4e-4774-8b41-ebb9b515e9cb",
+      "status": "selected"
+    },
+    {
+      "attack_name": "white",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=13)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)"
+      ],
+      "scenario_id": "clipgt-f922e4bc-7bf3-4c4d-a254-63fadb4fd2fe",
+      "status": "not_selected"
+    },
+    {
+      "attack_name": "black",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=10)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=3)"
+      ],
+      "scenario_id": "clipgt-07981e6a-22dd-4796-ad2f-1252037ecd28",
+      "status": "selected"
+    },
+    {
+      "attack_name": "black",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=6)"
+      ],
+      "scenario_id": "clipgt-0bd5202f-5f7c-4748-b78d-20d1f921b4db",
+      "status": "selected"
+    },
+    {
+      "attack_name": "black",
+      "error": null,
+      "reasons": [
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)",
+        "Stop line does not intersect the recorded route within 3 m (count=4)"
+      ],
+      "scenario_id": "clipgt-1e5435de-0e4f-4f9c-943b-c44275544715",
+      "status": "selected"
+    },
+    {
+      "attack_name": "black",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=12)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)"
+      ],
+      "scenario_id": "clipgt-22ab49c5-2c92-463b-b890-0b2208c436b1",
+      "status": "selected"
+    },
+    {
+      "attack_name": "black",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=9)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)"
+      ],
+      "scenario_id": "clipgt-325a6911-8ee8-4a04-8b84-55dbfcada98f",
+      "status": "selected"
+    },
+    {
+      "attack_name": "black",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=8)"
+      ],
+      "scenario_id": "clipgt-3e265bc2-2a8b-4c5c-8e6b-1de009b6672d",
+      "status": "selected"
+    },
+    {
+      "attack_name": "black",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=9)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)"
+      ],
+      "scenario_id": "clipgt-3e9966a3-c42d-4fd1-b588-6f5cc02b7c25",
+      "status": "selected"
+    },
+    {
+      "attack_name": "black",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=15)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)"
+      ],
+      "scenario_id": "clipgt-56263647-352f-45b7-95c5-1d077a512b66",
+      "status": "selected"
+    },
+    {
+      "attack_name": "black",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=9)"
+      ],
+      "scenario_id": "clipgt-6d986fb9-6694-4570-910b-d8bf4ffa8550",
+      "status": "selected"
+    },
+    {
+      "attack_name": "black",
+      "error": null,
+      "reasons": [],
+      "scenario_id": "clipgt-7d257301-a9d1-433b-8f08-85023a4d0fac",
+      "status": "selected"
+    },
+    {
+      "attack_name": "black",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=7)"
+      ],
+      "scenario_id": "clipgt-7fd4d554-b155-45c6-a46a-646486029d85",
+      "status": "selected"
+    },
+    {
+      "attack_name": "black",
+      "error": null,
+      "reasons": [
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=2)",
+        "Approach starts closer to the line than min_approach_m (count=1)",
+        "Stop line does not intersect the recorded route within 3 m (count=1)",
+        "Segment at position 93 cannot start: Navigation route cannot be built: Navigation route folds back on itself by more than 150 degrees (count=1)"
+      ],
+      "scenario_id": "clipgt-85a26192-7b37-43a2-bd5d-96cd858cb86b",
+      "status": "not_selected"
+    },
+    {
+      "attack_name": "black",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=10)"
+      ],
+      "scenario_id": "clipgt-904af7cf-d4ad-4ebc-867a-c77044eac8bb",
+      "status": "not_selected"
+    },
+    {
+      "attack_name": "black",
+      "error": null,
+      "reasons": [],
+      "scenario_id": "clipgt-adb72a39-1e21-46ef-80f2-9c86a8e9504a",
+      "status": "selected"
+    },
+    {
+      "attack_name": "black",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=11)",
+        "Approach starts closer to the line than min_approach_m (count=1)"
+      ],
+      "scenario_id": "clipgt-b40f4729-29c4-4846-a04b-72c78832a062",
+      "status": "selected"
+    },
+    {
+      "attack_name": "black",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=4)"
+      ],
+      "scenario_id": "clipgt-cda8a096-0982-4a91-b721-624dac7c83b8",
+      "status": "not_selected"
+    },
+    {
+      "attack_name": "black",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=3)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)"
+      ],
+      "scenario_id": "clipgt-f3fd4dbd-5c4e-4774-8b41-ebb9b515e9cb",
+      "status": "selected"
+    },
+    {
+      "attack_name": "black",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=13)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)"
+      ],
+      "scenario_id": "clipgt-f922e4bc-7bf3-4c4d-a254-63fadb4fd2fe",
+      "status": "not_selected"
+    },
+    {
+      "attack_name": "noise",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=10)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=3)"
+      ],
+      "scenario_id": "clipgt-07981e6a-22dd-4796-ad2f-1252037ecd28",
+      "status": "selected"
+    },
+    {
+      "attack_name": "noise",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=6)"
+      ],
+      "scenario_id": "clipgt-0bd5202f-5f7c-4748-b78d-20d1f921b4db",
+      "status": "selected"
+    },
+    {
+      "attack_name": "noise",
+      "error": null,
+      "reasons": [
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)",
+        "Stop line does not intersect the recorded route within 3 m (count=4)"
+      ],
+      "scenario_id": "clipgt-1e5435de-0e4f-4f9c-943b-c44275544715",
+      "status": "selected"
+    },
+    {
+      "attack_name": "noise",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=12)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)"
+      ],
+      "scenario_id": "clipgt-22ab49c5-2c92-463b-b890-0b2208c436b1",
+      "status": "selected"
+    },
+    {
+      "attack_name": "noise",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=9)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)"
+      ],
+      "scenario_id": "clipgt-325a6911-8ee8-4a04-8b84-55dbfcada98f",
+      "status": "selected"
+    },
+    {
+      "attack_name": "noise",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=8)"
+      ],
+      "scenario_id": "clipgt-3e265bc2-2a8b-4c5c-8e6b-1de009b6672d",
+      "status": "selected"
+    },
+    {
+      "attack_name": "noise",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=9)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)"
+      ],
+      "scenario_id": "clipgt-3e9966a3-c42d-4fd1-b588-6f5cc02b7c25",
+      "status": "selected"
+    },
+    {
+      "attack_name": "noise",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=15)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)"
+      ],
+      "scenario_id": "clipgt-56263647-352f-45b7-95c5-1d077a512b66",
+      "status": "selected"
+    },
+    {
+      "attack_name": "noise",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=9)"
+      ],
+      "scenario_id": "clipgt-6d986fb9-6694-4570-910b-d8bf4ffa8550",
+      "status": "selected"
+    },
+    {
+      "attack_name": "noise",
+      "error": null,
+      "reasons": [],
+      "scenario_id": "clipgt-7d257301-a9d1-433b-8f08-85023a4d0fac",
+      "status": "selected"
+    },
+    {
+      "attack_name": "noise",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=7)"
+      ],
+      "scenario_id": "clipgt-7fd4d554-b155-45c6-a46a-646486029d85",
+      "status": "selected"
+    },
+    {
+      "attack_name": "noise",
+      "error": null,
+      "reasons": [
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=2)",
+        "Approach starts closer to the line than min_approach_m (count=1)",
+        "Stop line does not intersect the recorded route within 3 m (count=1)",
+        "Segment at position 93 cannot start: Navigation route cannot be built: Navigation route folds back on itself by more than 150 degrees (count=1)"
+      ],
+      "scenario_id": "clipgt-85a26192-7b37-43a2-bd5d-96cd858cb86b",
+      "status": "not_selected"
+    },
+    {
+      "attack_name": "noise",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=10)"
+      ],
+      "scenario_id": "clipgt-904af7cf-d4ad-4ebc-867a-c77044eac8bb",
+      "status": "not_selected"
+    },
+    {
+      "attack_name": "noise",
+      "error": null,
+      "reasons": [],
+      "scenario_id": "clipgt-adb72a39-1e21-46ef-80f2-9c86a8e9504a",
+      "status": "selected"
+    },
+    {
+      "attack_name": "noise",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=11)",
+        "Approach starts closer to the line than min_approach_m (count=1)"
+      ],
+      "scenario_id": "clipgt-b40f4729-29c4-4846-a04b-72c78832a062",
+      "status": "selected"
+    },
+    {
+      "attack_name": "noise",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=4)"
+      ],
+      "scenario_id": "clipgt-cda8a096-0982-4a91-b721-624dac7c83b8",
+      "status": "not_selected"
+    },
+    {
+      "attack_name": "noise",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=3)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)"
+      ],
+      "scenario_id": "clipgt-f3fd4dbd-5c4e-4774-8b41-ebb9b515e9cb",
+      "status": "selected"
+    },
+    {
+      "attack_name": "noise",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=13)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)"
+      ],
+      "scenario_id": "clipgt-f922e4bc-7bf3-4c4d-a254-63fadb4fd2fe",
+      "status": "not_selected"
+    },
+    {
+      "attack_name": "white_detector_pgd",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=10)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=3)"
+      ],
+      "scenario_id": "clipgt-07981e6a-22dd-4796-ad2f-1252037ecd28",
+      "status": "selected"
+    },
+    {
+      "attack_name": "white_detector_pgd",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=6)"
+      ],
+      "scenario_id": "clipgt-0bd5202f-5f7c-4748-b78d-20d1f921b4db",
+      "status": "selected"
+    },
+    {
+      "attack_name": "white_detector_pgd",
+      "error": null,
+      "reasons": [
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)",
+        "Stop line does not intersect the recorded route within 3 m (count=4)"
+      ],
+      "scenario_id": "clipgt-1e5435de-0e4f-4f9c-943b-c44275544715",
+      "status": "selected"
+    },
+    {
+      "attack_name": "white_detector_pgd",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=12)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)"
+      ],
+      "scenario_id": "clipgt-22ab49c5-2c92-463b-b890-0b2208c436b1",
+      "status": "selected"
+    },
+    {
+      "attack_name": "white_detector_pgd",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=9)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)"
+      ],
+      "scenario_id": "clipgt-325a6911-8ee8-4a04-8b84-55dbfcada98f",
+      "status": "selected"
+    },
+    {
+      "attack_name": "white_detector_pgd",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=8)"
+      ],
+      "scenario_id": "clipgt-3e265bc2-2a8b-4c5c-8e6b-1de009b6672d",
+      "status": "selected"
+    },
+    {
+      "attack_name": "white_detector_pgd",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=9)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)"
+      ],
+      "scenario_id": "clipgt-3e9966a3-c42d-4fd1-b588-6f5cc02b7c25",
+      "status": "selected"
+    },
+    {
+      "attack_name": "white_detector_pgd",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=15)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)"
+      ],
+      "scenario_id": "clipgt-56263647-352f-45b7-95c5-1d077a512b66",
+      "status": "selected"
+    },
+    {
+      "attack_name": "white_detector_pgd",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=9)"
+      ],
+      "scenario_id": "clipgt-6d986fb9-6694-4570-910b-d8bf4ffa8550",
+      "status": "selected"
+    },
+    {
+      "attack_name": "white_detector_pgd",
+      "error": null,
+      "reasons": [],
+      "scenario_id": "clipgt-7d257301-a9d1-433b-8f08-85023a4d0fac",
+      "status": "selected"
+    },
+    {
+      "attack_name": "white_detector_pgd",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=7)"
+      ],
+      "scenario_id": "clipgt-7fd4d554-b155-45c6-a46a-646486029d85",
+      "status": "selected"
+    },
+    {
+      "attack_name": "white_detector_pgd",
+      "error": null,
+      "reasons": [
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=2)",
+        "Approach starts closer to the line than min_approach_m (count=1)",
+        "Stop line does not intersect the recorded route within 3 m (count=1)",
+        "Segment at position 93 cannot start: Navigation route cannot be built: Navigation route folds back on itself by more than 150 degrees (count=1)"
+      ],
+      "scenario_id": "clipgt-85a26192-7b37-43a2-bd5d-96cd858cb86b",
+      "status": "not_selected"
+    },
+    {
+      "attack_name": "white_detector_pgd",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=10)"
+      ],
+      "scenario_id": "clipgt-904af7cf-d4ad-4ebc-867a-c77044eac8bb",
+      "status": "not_selected"
+    },
+    {
+      "attack_name": "white_detector_pgd",
+      "error": null,
+      "reasons": [],
+      "scenario_id": "clipgt-adb72a39-1e21-46ef-80f2-9c86a8e9504a",
+      "status": "selected"
+    },
+    {
+      "attack_name": "white_detector_pgd",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=11)",
+        "Approach starts closer to the line than min_approach_m (count=1)"
+      ],
+      "scenario_id": "clipgt-b40f4729-29c4-4846-a04b-72c78832a062",
+      "status": "selected"
+    },
+    {
+      "attack_name": "white_detector_pgd",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=4)"
+      ],
+      "scenario_id": "clipgt-cda8a096-0982-4a91-b721-624dac7c83b8",
+      "status": "not_selected"
+    },
+    {
+      "attack_name": "white_detector_pgd",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=3)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)"
+      ],
+      "scenario_id": "clipgt-f3fd4dbd-5c4e-4774-8b41-ebb9b515e9cb",
+      "status": "selected"
+    },
+    {
+      "attack_name": "white_detector_pgd",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=13)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)"
+      ],
+      "scenario_id": "clipgt-f922e4bc-7bf3-4c4d-a254-63fadb4fd2fe",
+      "status": "not_selected"
+    },
+    {
+      "attack_name": "black_detector_pgd",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=10)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=3)"
+      ],
+      "scenario_id": "clipgt-07981e6a-22dd-4796-ad2f-1252037ecd28",
+      "status": "selected"
+    },
+    {
+      "attack_name": "black_detector_pgd",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=6)"
+      ],
+      "scenario_id": "clipgt-0bd5202f-5f7c-4748-b78d-20d1f921b4db",
+      "status": "selected"
+    },
+    {
+      "attack_name": "black_detector_pgd",
+      "error": null,
+      "reasons": [
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)",
+        "Stop line does not intersect the recorded route within 3 m (count=4)"
+      ],
+      "scenario_id": "clipgt-1e5435de-0e4f-4f9c-943b-c44275544715",
+      "status": "selected"
+    },
+    {
+      "attack_name": "black_detector_pgd",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=12)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)"
+      ],
+      "scenario_id": "clipgt-22ab49c5-2c92-463b-b890-0b2208c436b1",
+      "status": "selected"
+    },
+    {
+      "attack_name": "black_detector_pgd",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=9)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)"
+      ],
+      "scenario_id": "clipgt-325a6911-8ee8-4a04-8b84-55dbfcada98f",
+      "status": "selected"
+    },
+    {
+      "attack_name": "black_detector_pgd",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=8)"
+      ],
+      "scenario_id": "clipgt-3e265bc2-2a8b-4c5c-8e6b-1de009b6672d",
+      "status": "selected"
+    },
+    {
+      "attack_name": "black_detector_pgd",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=9)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)"
+      ],
+      "scenario_id": "clipgt-3e9966a3-c42d-4fd1-b588-6f5cc02b7c25",
+      "status": "selected"
+    },
+    {
+      "attack_name": "black_detector_pgd",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=15)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)"
+      ],
+      "scenario_id": "clipgt-56263647-352f-45b7-95c5-1d077a512b66",
+      "status": "selected"
+    },
+    {
+      "attack_name": "black_detector_pgd",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=9)"
+      ],
+      "scenario_id": "clipgt-6d986fb9-6694-4570-910b-d8bf4ffa8550",
+      "status": "selected"
+    },
+    {
+      "attack_name": "black_detector_pgd",
+      "error": null,
+      "reasons": [],
+      "scenario_id": "clipgt-7d257301-a9d1-433b-8f08-85023a4d0fac",
+      "status": "selected"
+    },
+    {
+      "attack_name": "black_detector_pgd",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=7)"
+      ],
+      "scenario_id": "clipgt-7fd4d554-b155-45c6-a46a-646486029d85",
+      "status": "selected"
+    },
+    {
+      "attack_name": "black_detector_pgd",
+      "error": null,
+      "reasons": [
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=2)",
+        "Approach starts closer to the line than min_approach_m (count=1)",
+        "Stop line does not intersect the recorded route within 3 m (count=1)",
+        "Segment at position 93 cannot start: Navigation route cannot be built: Navigation route folds back on itself by more than 150 degrees (count=1)"
+      ],
+      "scenario_id": "clipgt-85a26192-7b37-43a2-bd5d-96cd858cb86b",
+      "status": "not_selected"
+    },
+    {
+      "attack_name": "black_detector_pgd",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=10)"
+      ],
+      "scenario_id": "clipgt-904af7cf-d4ad-4ebc-867a-c77044eac8bb",
+      "status": "not_selected"
+    },
+    {
+      "attack_name": "black_detector_pgd",
+      "error": null,
+      "reasons": [],
+      "scenario_id": "clipgt-adb72a39-1e21-46ef-80f2-9c86a8e9504a",
+      "status": "selected"
+    },
+    {
+      "attack_name": "black_detector_pgd",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=11)",
+        "Approach starts closer to the line than min_approach_m (count=1)"
+      ],
+      "scenario_id": "clipgt-b40f4729-29c4-4846-a04b-72c78832a062",
+      "status": "selected"
+    },
+    {
+      "attack_name": "black_detector_pgd",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=4)"
+      ],
+      "scenario_id": "clipgt-cda8a096-0982-4a91-b721-624dac7c83b8",
+      "status": "not_selected"
+    },
+    {
+      "attack_name": "black_detector_pgd",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=3)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)"
+      ],
+      "scenario_id": "clipgt-f3fd4dbd-5c4e-4774-8b41-ebb9b515e9cb",
+      "status": "selected"
+    },
+    {
+      "attack_name": "black_detector_pgd",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=13)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)"
+      ],
+      "scenario_id": "clipgt-f922e4bc-7bf3-4c4d-a254-63fadb4fd2fe",
+      "status": "not_selected"
+    },
+    {
+      "attack_name": "noise_detector_pgd",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=10)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=3)"
+      ],
+      "scenario_id": "clipgt-07981e6a-22dd-4796-ad2f-1252037ecd28",
+      "status": "selected"
+    },
+    {
+      "attack_name": "noise_detector_pgd",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=6)"
+      ],
+      "scenario_id": "clipgt-0bd5202f-5f7c-4748-b78d-20d1f921b4db",
+      "status": "selected"
+    },
+    {
+      "attack_name": "noise_detector_pgd",
+      "error": null,
+      "reasons": [
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)",
+        "Stop line does not intersect the recorded route within 3 m (count=4)"
+      ],
+      "scenario_id": "clipgt-1e5435de-0e4f-4f9c-943b-c44275544715",
+      "status": "selected"
+    },
+    {
+      "attack_name": "noise_detector_pgd",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=12)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)"
+      ],
+      "scenario_id": "clipgt-22ab49c5-2c92-463b-b890-0b2208c436b1",
+      "status": "selected"
+    },
+    {
+      "attack_name": "noise_detector_pgd",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=9)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)"
+      ],
+      "scenario_id": "clipgt-325a6911-8ee8-4a04-8b84-55dbfcada98f",
+      "status": "selected"
+    },
+    {
+      "attack_name": "noise_detector_pgd",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=8)"
+      ],
+      "scenario_id": "clipgt-3e265bc2-2a8b-4c5c-8e6b-1de009b6672d",
+      "status": "selected"
+    },
+    {
+      "attack_name": "noise_detector_pgd",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=9)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)"
+      ],
+      "scenario_id": "clipgt-3e9966a3-c42d-4fd1-b588-6f5cc02b7c25",
+      "status": "selected"
+    },
+    {
+      "attack_name": "noise_detector_pgd",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=15)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)"
+      ],
+      "scenario_id": "clipgt-56263647-352f-45b7-95c5-1d077a512b66",
+      "status": "selected"
+    },
+    {
+      "attack_name": "noise_detector_pgd",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=9)"
+      ],
+      "scenario_id": "clipgt-6d986fb9-6694-4570-910b-d8bf4ffa8550",
+      "status": "selected"
+    },
+    {
+      "attack_name": "noise_detector_pgd",
+      "error": null,
+      "reasons": [],
+      "scenario_id": "clipgt-7d257301-a9d1-433b-8f08-85023a4d0fac",
+      "status": "selected"
+    },
+    {
+      "attack_name": "noise_detector_pgd",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=7)"
+      ],
+      "scenario_id": "clipgt-7fd4d554-b155-45c6-a46a-646486029d85",
+      "status": "selected"
+    },
+    {
+      "attack_name": "noise_detector_pgd",
+      "error": null,
+      "reasons": [
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=2)",
+        "Approach starts closer to the line than min_approach_m (count=1)",
+        "Stop line does not intersect the recorded route within 3 m (count=1)",
+        "Segment at position 93 cannot start: Navigation route cannot be built: Navigation route folds back on itself by more than 150 degrees (count=1)"
+      ],
+      "scenario_id": "clipgt-85a26192-7b37-43a2-bd5d-96cd858cb86b",
+      "status": "not_selected"
+    },
+    {
+      "attack_name": "noise_detector_pgd",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=10)"
+      ],
+      "scenario_id": "clipgt-904af7cf-d4ad-4ebc-867a-c77044eac8bb",
+      "status": "not_selected"
+    },
+    {
+      "attack_name": "noise_detector_pgd",
+      "error": null,
+      "reasons": [],
+      "scenario_id": "clipgt-adb72a39-1e21-46ef-80f2-9c86a8e9504a",
+      "status": "selected"
+    },
+    {
+      "attack_name": "noise_detector_pgd",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=11)",
+        "Approach starts closer to the line than min_approach_m (count=1)"
+      ],
+      "scenario_id": "clipgt-b40f4729-29c4-4846-a04b-72c78832a062",
+      "status": "selected"
+    },
+    {
+      "attack_name": "noise_detector_pgd",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=4)"
+      ],
+      "scenario_id": "clipgt-cda8a096-0982-4a91-b721-624dac7c83b8",
+      "status": "not_selected"
+    },
+    {
+      "attack_name": "noise_detector_pgd",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=3)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)"
+      ],
+      "scenario_id": "clipgt-f3fd4dbd-5c4e-4774-8b41-ebb9b515e9cb",
+      "status": "selected"
+    },
+    {
+      "attack_name": "noise_detector_pgd",
+      "error": null,
+      "reasons": [
+        "Stop line does not intersect the recorded route within 3 m (count=13)",
+        "Recording has no stop below 0.5 m/s within 15 m before the line (count=1)"
+      ],
+      "scenario_id": "clipgt-f922e4bc-7bf3-4c4d-a254-63fadb4fd2fe",
+      "status": "not_selected"
+    }
+  ],
+  "units": [
+    {
+      "attack_names": [
+        "no_patch",
+        "white",
+        "black",
+        "noise",
+        "white_detector_pgd",
+        "black_detector_pgd",
+        "noise_detector_pgd"
+      ],
+      "index": 0,
+      "part": "train",
+      "scenario_id": "clipgt-07981e6a-22dd-4796-ad2f-1252037ecd28",
+      "start": 51,
+      "stop": 129
+    },
+    {
+      "attack_names": [
+        "no_patch",
+        "white",
+        "black",
+        "noise",
+        "white_detector_pgd",
+        "black_detector_pgd",
+        "noise_detector_pgd"
+      ],
+      "index": 1,
+      "part": "test",
+      "scenario_id": "clipgt-0bd5202f-5f7c-4748-b78d-20d1f921b4db",
+      "start": 27,
+      "stop": 199
+    },
+    {
+      "attack_names": [
+        "no_patch",
+        "white",
+        "black",
+        "noise",
+        "white_detector_pgd",
+        "black_detector_pgd",
+        "noise_detector_pgd"
+      ],
+      "index": 2,
+      "part": "train",
+      "scenario_id": "clipgt-1e5435de-0e4f-4f9c-943b-c44275544715",
+      "start": 36,
+      "stop": 119
+    },
+    {
+      "attack_names": [
+        "no_patch",
+        "white",
+        "black",
+        "noise",
+        "white_detector_pgd",
+        "black_detector_pgd",
+        "noise_detector_pgd"
+      ],
+      "index": 3,
+      "part": "train",
+      "scenario_id": "clipgt-22ab49c5-2c92-463b-b890-0b2208c436b1",
+      "start": 42,
+      "stop": 150
+    },
+    {
+      "attack_names": [
+        "no_patch",
+        "white",
+        "black",
+        "noise",
+        "white_detector_pgd",
+        "black_detector_pgd",
+        "noise_detector_pgd"
+      ],
+      "index": 4,
+      "part": "train",
+      "scenario_id": "clipgt-325a6911-8ee8-4a04-8b84-55dbfcada98f",
+      "start": 0,
+      "stop": 103
+    },
+    {
+      "attack_names": [
+        "no_patch",
+        "white",
+        "black",
+        "noise",
+        "white_detector_pgd",
+        "black_detector_pgd",
+        "noise_detector_pgd"
+      ],
+      "index": 5,
+      "part": "train",
+      "scenario_id": "clipgt-3e265bc2-2a8b-4c5c-8e6b-1de009b6672d",
+      "start": 30,
+      "stop": 121
+    },
+    {
+      "attack_names": [
+        "no_patch",
+        "white",
+        "black",
+        "noise",
+        "white_detector_pgd",
+        "black_detector_pgd",
+        "noise_detector_pgd"
+      ],
+      "index": 6,
+      "part": "test",
+      "scenario_id": "clipgt-3e9966a3-c42d-4fd1-b588-6f5cc02b7c25",
+      "start": 84,
+      "stop": 170
+    },
+    {
+      "attack_names": [
+        "no_patch",
+        "white",
+        "black",
+        "noise",
+        "white_detector_pgd",
+        "black_detector_pgd",
+        "noise_detector_pgd"
+      ],
+      "index": 7,
+      "part": "test",
+      "scenario_id": "clipgt-56263647-352f-45b7-95c5-1d077a512b66",
+      "start": 39,
+      "stop": 123
+    },
+    {
+      "attack_names": [
+        "no_patch",
+        "white",
+        "black",
+        "noise",
+        "white_detector_pgd",
+        "black_detector_pgd",
+        "noise_detector_pgd"
+      ],
+      "index": 8,
+      "part": "test",
+      "scenario_id": "clipgt-6d986fb9-6694-4570-910b-d8bf4ffa8550",
+      "start": 113,
+      "stop": 199
+    },
+    {
+      "attack_names": [
+        "no_patch",
+        "white",
+        "black",
+        "noise",
+        "white_detector_pgd",
+        "black_detector_pgd",
+        "noise_detector_pgd"
+      ],
+      "index": 9,
+      "part": "test",
+      "scenario_id": "clipgt-7d257301-a9d1-433b-8f08-85023a4d0fac",
+      "start": 54,
+      "stop": 143
+    },
+    {
+      "attack_names": [
+        "no_patch",
+        "white",
+        "black",
+        "noise",
+        "white_detector_pgd",
+        "black_detector_pgd",
+        "noise_detector_pgd"
+      ],
+      "index": 10,
+      "part": "test",
+      "scenario_id": "clipgt-7fd4d554-b155-45c6-a46a-646486029d85",
+      "start": 47,
+      "stop": 162
+    },
+    {
+      "attack_names": [
+        "no_patch",
+        "white",
+        "black",
+        "noise",
+        "white_detector_pgd",
+        "black_detector_pgd",
+        "noise_detector_pgd"
+      ],
+      "index": 11,
+      "part": "test",
+      "scenario_id": "clipgt-adb72a39-1e21-46ef-80f2-9c86a8e9504a",
+      "start": 0,
+      "stop": 177
+    },
+    {
+      "attack_names": [
+        "no_patch",
+        "white",
+        "black",
+        "noise",
+        "white_detector_pgd",
+        "black_detector_pgd",
+        "noise_detector_pgd"
+      ],
+      "index": 12,
+      "part": "test",
+      "scenario_id": "clipgt-b40f4729-29c4-4846-a04b-72c78832a062",
+      "start": 117,
+      "stop": 199
+    },
+    {
+      "attack_names": [
+        "no_patch",
+        "white",
+        "black",
+        "noise",
+        "white_detector_pgd",
+        "black_detector_pgd",
+        "noise_detector_pgd"
+      ],
+      "index": 13,
+      "part": "test",
+      "scenario_id": "clipgt-f3fd4dbd-5c4e-4774-8b41-ebb9b515e9cb",
+      "start": 106,
+      "stop": 199
+    }
+  ]
+}

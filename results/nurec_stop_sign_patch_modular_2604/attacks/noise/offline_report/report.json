@@ -1,0 +1,12 @@
+{
+  "status": "completed",
+  "values": {},
+  "series": {},
+  "tables": {},
+  "images": {
+    "initial_texture": {
+      "file": "initial_texture.png",
+      "description": "Replica face with the initial patch, before any optimization."
+    }
+  }
+}
