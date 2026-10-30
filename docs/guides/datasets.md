@@ -97,7 +97,7 @@ whether it can use that scenario.
 |---|---|
 | NuRec | Aligned clipgt geometry from the scene archive |
 | CARLA | Exported OpenDRIVE through the optional CARLA client package |
-| nuScenes | **Not yet implemented.** See [nuScenes semantic maps](../development/TODO.md#nuscenes-semantic-maps). |
+| nuScenes | None |
 
 Maps contain lanes, drivable polygons, road boundaries, crosswalks, intersections, controls and
 stop lines. Inspect `unavailable_layers` for missing layer evidence. An empty known layer and an

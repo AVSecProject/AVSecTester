@@ -61,7 +61,7 @@ composites into the selected camera capture. Their geometry and occlusion behavi
 in [Simulators](../guides/simulators.md).
 
 Scaling a CARLA prop mesh to arbitrary requested panel dimensions is **Not yet implemented.**
-See [Physical patch geometry](../development/TODO.md#physical-patch-geometry).
+See [CARLA physical patches](../development/TODO.md#carla-physical-patches).
 
 ## Evidence
 

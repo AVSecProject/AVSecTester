@@ -46,6 +46,3 @@ See [Quickstart](../getting-started/quickstart.md) for first-run startup and shu
 Attack impacts and driving results must be measured in the target environment. Workflow tests
 establish preparation, execution and evaluation behavior. Report scientific impact separately
 using the [evaluation workflow](../guides/evaluation.md).
-
-**Not yet implemented.** Published effectiveness claims for supplied attacks. See
-[Attack impact](../development/TODO.md#attack-impact).

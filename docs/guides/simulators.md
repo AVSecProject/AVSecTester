@@ -57,7 +57,7 @@ native and object depth. A view without native depth keeps `depth=None`.
 |---|---|
 | CARLA | Aligned scene depth for `depth_camera`, actor cuboids for other cameras |
 | NuRec | Reconstruction visibility from rendered probes, or mesh/actor geometry |
-| Recorded playback | Actor cuboids. **Not yet implemented.** Static-scene occlusion. See [Recorded static occlusion](../development/TODO.md#recorded-static-occlusion). |
+| Recorded playback | Actor cuboids only |
 
 `SensorView.composition` records the unmodified background and its `CompositePlan`.
 `plan.apply(background)` reproduces the capture. Differentiable composition follows the same
@@ -110,8 +110,7 @@ timeline and actors, then advances ego with the selected dynamics. Camera names 
 unless `camera_aliases` maps them to observation names. Aliases also apply to views
 and calibration.
 
-**Not yet implemented.** NuRec and recorded-playback traffic-light state recording. See
-[Traffic-light states](../development/TODO.md#traffic-light-state-recording).
+NuRec provides no traffic-light states.
 
 Constructing mesh-depth or ground-contact support requires the `nurec` extra.
 Reset checks required archive meshes before connecting to NRE. Missing resources fail preflight.
@@ -187,9 +186,6 @@ from the request. Subsequent captures must retain those dimensions.
 
 Captures render a single instant.
 
-**Not yet implemented.** Rolling-shutter exposure.
-See [TODO](../development/TODO.md#rolling-shutter-rendering).
-
 The lens includes its f-theta model and recorded windshield distortion. Camera projection,
 mesh depth and object placement share the resulting geometry. Camera coordinate conventions
 and models are specified in the [Python API](../reference/python-api.md).
@@ -222,8 +218,8 @@ backfills constant-velocity history and subsequent requests resend its complete 
 Trajectories are not smoothed. Offline candidate rollouts also require the service.
 
 **Not yet implemented.** Fitting traffic actors to the selected ground mesh, checkpointing
-traffic sessions and controlling CATK sampling through the caller seed. See
-[Traffic actor ground contact](../development/TODO.md#traffic-actor-ground-contact).
+traffic sessions and controlling CATK sampling through the run seed. See
+[Reactive traffic](../development/TODO.md#reactive-traffic).
 
 ### Ego dynamics
 
@@ -264,9 +260,6 @@ sufficiently opaque asset pixels contribute probes. The renderer requires a clie
 directory visible inside the NRE service. Path and mount rules are
 in [Configuration](../reference/configuration.md#nurec-closed-loop-settings).
 
-**Not yet implemented.** Published asset conventions for all probe axes, scaling and padding.
-See [NuRec rendered-probe conventions](../development/TODO.md#nurec-rendered-probe-conventions).
-
 A captured `composition.plan` already contains this measured visibility. An arbitrary
 replacement object list needs a fresh render request. `SensorView.composite_plan` cannot obtain
 new reconstruction probes from a detached view. Geometry mode can build plans from its supplied
@@ -276,8 +269,8 @@ depth and actors.
 
 `RecordedReplaySimulator` captures supported dataset frames while ego and other actors follow
 their recorded motion. Commands do not change that trajectory. It supports camera aliases and
-shared world-object composition. Environment support follows
-[Configuration](../reference/configuration.md#environment).
+shared world-object composition. It provides no traffic-light states.
+Environment support follows [Configuration](../reference/configuration.md#environment).
 
 ## Write a custom simulator
 

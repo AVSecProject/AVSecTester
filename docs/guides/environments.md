@@ -112,9 +112,6 @@ Conditions changed by a world attack action during execution are recorded as act
 than as static environment settings. Native simulator behavior is described
 in [Simulators](simulators.md).
 
-**Not yet implemented.** Reference evaluations that train and test artifacts under different
-conditions. See [Environment transfer](../development/TODO.md#environment-transfer).
-
 ## Randomness
 
 Sensor corruptions use a fresh NumPy generator keyed by

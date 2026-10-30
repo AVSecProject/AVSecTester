@@ -247,9 +247,6 @@ CI skips these tests because their optional components are not installed:
 - nuScenes: dataset, recorded playback and nuScenes insertion.
 - OpenMMLab: detector configuration, scorer and camera forward-collision.
 
-**Not yet implemented.** See
-[optional-component CI coverage](../docs/development/TODO.md#optional-component-tests-in-ci).
-
 ## Optional external checks
 
 The live suite is selected explicitly:

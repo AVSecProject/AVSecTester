@@ -58,9 +58,7 @@ optional reactive traffic, and recorded nuScenes playback. Driving systems inclu
 the [supported combinations](docs/concepts/architecture.md#supported-configurations).
 
 Defense treatments are **Not yet implemented.** See
-[defenses](docs/development/TODO.md#defenses). Rolling-shutter rendering is **Not yet
-implemented.** See
-[rolling-shutter rendering](docs/development/TODO.md#rolling-shutter-rendering).
+[defenses](docs/development/TODO.md#defenses).
 
 ## License
 

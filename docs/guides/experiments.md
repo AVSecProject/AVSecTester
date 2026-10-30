@@ -63,9 +63,6 @@ environment explicitly.
 the split schema and deterministic allocation are defined in
 [Data split](../reference/configuration.md#data-split).
 
-**Not yet implemented.** Sharing unattacked runs across units with different `user_data`. See
-[shared runs across different user data](../development/TODO.md#shared-runs-across-different-user-data).
-
 ## Input validation
 
 `validate` and `prepare` reject existing preparation output without `resume=True`. Environment

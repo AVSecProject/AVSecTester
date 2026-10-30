@@ -54,9 +54,6 @@ provide that evidence. Collision is bird's-eye oriented-box overlap, not a nativ
 collision-sensor event. `TrajectoryDeviation` compares true ego positions at equal decision
 indices, without time or route alignment.
 
-**Not yet implemented.** Matched-window driving-impact measures with prior-motion and duration
-requirements. See [Driving-impact metrics](../development/TODO.md#driving-impact-metrics).
-
 `DetectionMetrics` matches detections to true actors in the capture-time ego frame, using sensor
 mounting geometry independently of model localization. Its range filtering is horizontal.
 Category matching follows `category_map` when configured. The thresholded detections do not
