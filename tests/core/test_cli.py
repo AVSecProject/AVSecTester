@@ -1,6 +1,7 @@
 """The CLI runs and evaluates actual in-memory experiments through YAML configuration."""
 
 import json
+import os
 import shlex
 
 import pytest
@@ -197,6 +198,16 @@ def test_nre_serve(tmp_path, monkeypatch):
     assert served.exit_code == 0, served.output
     assert "endpoint=127.0.0.1:50152" in served.output and "scenes=1" in served.output
     assert "Stop it with:" in served.output and state.exists() and (tmp_path / "probes").is_dir()
+    runner.invoke(cli.app, ["nre", "stop", str(path)])
+    labels = {"avsectester.service-owner": "0" * 32, "avsectester.service-user": str(os.getuid())}
+    previous = {"id": "id-previous", "labels": labels, "running": True}
+    state.write_text(json.dumps(previous))
+    running = runner.invoke(cli.app, ["nre", "serve", str(path), "--gpu", "2"])
+    assert running.exit_code == 1 and "already exists" in running.output
+    state.write_text(json.dumps({**previous, "running": False}))
+    replaced = runner.invoke(cli.app, ["nre", "serve", str(path), "--gpu", "2"])
+    assert replaced.exit_code == 0, replaced.output
+    assert "Removed exited NRE container: avsectester-nre-50152" in replaced.output
     runner.invoke(cli.app, ["nre", "stop", str(path)])
     monkeypatch.setenv("DOCKER_MODE", "exit")
     failed = runner.invoke(cli.app, ["nre", "serve", str(path), "--gpu", "2"])

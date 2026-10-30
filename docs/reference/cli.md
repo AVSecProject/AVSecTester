@@ -79,6 +79,8 @@ Managed services cover preparation, execution and evaluation. Startup, reuse and
 print a progress line. On completion, exceptions or Ctrl-C, only containers started by this
 command are stopped and removed, in reverse startup order. Cleanup errors are attached to an
 active exception. After a completed experiment they are reported without replacing its result.
+A killed command can leave its exited container behind. The next start removes it, following the
+[NRE rules](#nre) for existing containers.
 
 NRE startup creates its client probe directory. Docker mounts each archive read-only at
 `/mnt/nre-data/<filename>` and mounts the probe directory at `server_probe_directory`, or at the
@@ -129,9 +131,10 @@ docker compose run --rm nurec-experiment nre stop configs/nurec_stop_sign_patch_
 ```
 
 `--dry-run` prints a shell-quoted Docker command without creating directories or containers and
-does not require Docker on PATH. A normal launch requires Docker. A container with the chosen
-name is left untouched and reported as an error. Successful startup prints endpoint, GPU, scene
-count, container name and the corresponding stop command.
+does not require Docker on PATH. A normal launch requires Docker. An exited container with the
+chosen name that an earlier AVSecTester start by the same user created is removed first. Any
+other container with that name is left untouched and reported as an error. Successful startup
+prints endpoint, GPU, scene count, container name and the corresponding stop command.
 
 Startup failure or timeout includes the last 50 log lines and removes the newly created
 container. The container is created without Docker's `--rm` so startup diagnostics

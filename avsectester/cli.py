@@ -12,7 +12,8 @@ import yaml  # type: ignore[import-untyped]
 
 from avsectester import __version__
 from avsectester.closed_loop.simulators.nurec.server import (
-    DEFAULT_NRE_IMAGE, DEFAULT_TRAFFIC_IMAGE, local_services, start_container, stop_container,
+    DEFAULT_NRE_IMAGE, DEFAULT_TRAFFIC_IMAGE, local_services, remove_exited_container,
+    start_container, stop_container,
 )
 from avsectester.experiment import (
     ConfigurationMismatchError, Experiment, ExperimentConfiguration, ExperimentResult,
@@ -284,6 +285,8 @@ def _start_service(command: list[str], *, name: str, service: str, timeout: floa
         typer.echo(shlex.join(command))
         return
     try:
+        if remove_exited_container(name):
+            typer.echo(f"Removed exited {service} container: {name}")
         start_container(command, name=name, ready_log=ready_log, timeout_s=timeout,
                         readiness=readiness, prepare=prepare, log=typer.echo)
     except KeyboardInterrupt:

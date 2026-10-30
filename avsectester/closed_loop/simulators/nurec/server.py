@@ -142,6 +142,7 @@ def stop_container(name: str) -> None:
 
 
 _OWNER_LABEL = "avsectester.service-owner"
+_USER_LABEL = "avsectester.service-user"
 
 
 def _owned_container(name: str, owner: str) -> str | None:
@@ -150,6 +151,31 @@ def _owned_container(name: str, owner: str) -> str | None:
                         '{{.Id}} {{ index .Config.Labels "avsectester.service-owner" }}', name])
     identity = response.stdout.strip().split(maxsplit=1)
     return identity[0] if response.returncode == 0 and len(identity) == 2 and identity[1] == owner else None
+
+
+def remove_exited_container(name: str) -> bool:
+    """Remove a stopped container that this user's earlier AVSecTester start left under ``name``.
+
+    Running containers and containers without both AVSecTester labels for this user stay
+    untouched. Return whether a container was removed.
+    """
+    _require_docker()
+    state = _docker(["inspect", "--format", "{{.State.Running}}", name])
+    if state.returncode or state.stdout.strip() != "false":
+        return False
+    response = _docker(["inspect", "--format",
+                        '{{.Id}} {{ index .Config.Labels "avsectester.service-owner" }} '
+                        '{{ index .Config.Labels "avsectester.service-user" }}', name])
+    identity = response.stdout.strip().split()
+    if (response.returncode or len(identity) != 3 or not re.fullmatch(r"[0-9a-f]{32}", identity[1])
+            or identity[2] != str(os.getuid())):
+        return False
+    # Removal by identity without force refuses a container that started again meanwhile.
+    removed = _docker(["rm", identity[0]])
+    if removed.returncode:
+        raise RuntimeError(removed.stderr.strip() or removed.stdout.strip()
+                           or f"docker rm failed for container {name}")
+    return True
 
 
 def start_container(
@@ -176,7 +202,8 @@ def start_container(
             prepare()
         log(f"Starting container: {name}")
         created = True
-        labeled_command = [*command[:2], "--label", f"{_OWNER_LABEL}={owner}", *command[2:]]
+        labeled_command = [*command[:2], "--label", f"{_OWNER_LABEL}={owner}",
+                           "--label", f"{_USER_LABEL}={os.getuid()}", *command[2:]]
         launched = subprocess.run(labeled_command, capture_output=True, text=True, check=False)
         if launched.returncode:
             raise RuntimeError(launched.stderr.strip() or launched.stdout.strip() or "docker run failed")
@@ -287,6 +314,8 @@ def local_services(
                     if renderer.probe_directory is not None:
                         Path(renderer.probe_directory).mkdir(parents=True, exist_ok=True)
 
+                if remove_exited_container(name):
+                    log(f"Removed exited NRE container: {name}")
                 identity = start_container(command, name=name, ready_log="Serving on", timeout_s=timeout_s,
                                 prepare=prepare,
                                 log=lambda message: log(f"Starting NRE: endpoint={renderer.endpoint}, GPU={gpu}, container={name}"))
@@ -308,6 +337,8 @@ def local_services(
                 gpu = _service_gpu(trafficsim_gpu)
                 command = traffic_command(dataset, traffic, gpu=gpu, name=name,
                                           image=DEFAULT_TRAFFIC_IMAGE, models=models)
+                if remove_exited_container(name):
+                    log(f"Removed exited trafficsim container: {name}")
                 identity = start_container(command, name=name, ready_log="Starting CATK traffic gRPC server on",
                                 timeout_s=timeout_s,
                                 readiness=lambda remaining: traffic.get_metadata(timeout_s=min(1., remaining)),

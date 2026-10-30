@@ -1,5 +1,6 @@
 """Service commands and lifecycle use real configurations and a shared Docker boundary."""
 import json
+import os
 import re
 import zipfile
 from pathlib import Path
@@ -59,7 +60,8 @@ def test_local_services(service_configuration, docker_boundary, monkeypatch, tmp
     assert re.fullmatch(r"avsectester\.service-owner=[0-9a-f]{32}", launch[label_index])
     launch[label_index] = "avsectester.service-owner=<uuid>"
     assert launch == [
-        "run", "--label", "avsectester.service-owner=<uuid>", "-d", "--name", "nre",
+        "run", "--label", "avsectester.service-owner=<uuid>",
+        "--label", f"avsectester.service-user={os.getuid()}", "-d", "--name", "nre",
         "--network", "host", "--gpus", "device=3", "-e", "HOME=/tmp",
         "-v", f"{archive.resolve()}:/mnt/nre-data/{archive.name}:ro",
         "-v", f"{second.resolve()}:/mnt/nre-data/{second.name}:ro",
@@ -84,6 +86,19 @@ def test_local_services(service_configuration, docker_boundary, monkeypatch, tmp
     assert (state / "nre").exists()
     (state / "nre").unlink()
     boundary.available_scenes = ("scene", "second-scene")
+    # Only an exited container left by this user's earlier AVSecTester start is replaced.
+    owned = {"avsectester.service-owner": "0" * 32, "avsectester.service-user": str(os.getuid())}
+    other = {**owned, "avsectester.service-user": str(os.getuid() + 1)}
+    (state / "nre").write_text(json.dumps({"id": "id-other", "labels": other, "running": False}))
+    with pytest.raises(RuntimeError, match="already exists"):
+        with local_services(dataset, simulator, nre_name="nre", log=messages.append):
+            pytest.fail("another user's container replaced")
+    (state / "nre").write_text(json.dumps({"id": "id-previous", "labels": owned, "running": False}))
+    messages.clear()
+    with local_services(dataset, simulator, nre_name="nre", log=messages.append):
+        assert json.loads((state / "nre").read_text())["id"] != "id-previous"
+    assert messages[0] == "Removed exited NRE container: nre"
+    assert not (state / "nre").exists()
     monkeypatch.setenv("AVSECTESTER_HOST_GPU", "all")
     with pytest.raises(ValueError, match="service GPU explicitly"):
         with local_services(dataset, simulator, nre_name="nre", log=messages.append):
@@ -209,7 +224,8 @@ def test_local_services_with_traffic(nurec_usdz_path, docker_boundary, tmp_path,
         label_index = launch.index("--label") + 1
         launch[label_index] = "avsectester.service-owner=<uuid>"
         assert launch == [
-            "run", "--label", "avsectester.service-owner=<uuid>", "-d", "--name", "traffic",
+            "run", "--label", "avsectester.service-owner=<uuid>",
+            "--label", f"avsectester.service-user={os.getuid()}", "-d", "--name", "traffic",
             "--network", "host", "--gpus", "device=1", "-e", "HOME=/tmp",
             "-v", f"{archive.resolve()}:/mnt/nre-data/{archive.name}:ro",
             "-v", f"{models.resolve()}:/mnt/trafficsim-models:ro",

@@ -1386,9 +1386,11 @@ if args[0] == "run":
         print("injected docker run failure", file=sys.stderr)
         raise SystemExit(1)
     name=args[args.index("--name")+1]
-    label=args[args.index("--label")+1].split("=",1)[1] if "--label" in args else ""
+    labels=dict(args[i+1].split("=",1) for i,a in enumerate(args) if a=="--label")
+    if mode=="race":labels["avsectester.service-owner"]="someone-else"
     identity="id-"+uuid.uuid4().hex
-    (root/name).write_text(json.dumps({"id":identity,"owner":"someone-else" if mode=="race" else label,"running":mode!="exit"}))
+    (root/name).write_text(json.dumps({"id":identity,"owner":labels.get("avsectester.service-owner",""),
+                                       "labels":labels,"running":mode!="exit"}))
     print(identity)
     raise SystemExit(1 if mode == "race" else 0)
 p=locate(args[-1]);data=read(p)
@@ -1396,7 +1398,11 @@ if isinstance(data,bool):data={"id":"seed-"+p.name,"owner":"","running":data}
 if args[0] == "inspect":
     if data is None:raise SystemExit(1)
     fmt=args[args.index("--format")+1] if "--format" in args else ""
-    if ".Config.Labels" in fmt:print(data["id"]+" "+data["owner"])
+    if ".Config.Labels" in fmt:
+        import re
+        labels=data.get("labels") or {"avsectester.service-owner":data.get("owner","")}
+        keys=re.findall(r'index \.Config\.Labels "([^"]+)"',fmt)
+        print(" ".join([data["id"],*(labels.get(key) or "<no value>" for key in keys)]))
     elif ".State.Running" in fmt:print(str(data["running"]).lower())
     else:print(json.dumps(data))
 elif args[0] == "logs":
