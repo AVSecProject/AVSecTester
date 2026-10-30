@@ -173,7 +173,7 @@ def test_write_evaluation_html(tmp_path):
     assert all(heading in text for heading in (
         "Experiment setup", "Run status", "Metric definitions", "Selection", "Errors and notes"))
     assert all(f'id="{identifier}"' in text for identifier in (
-        "how-to-read", "experiment-setup", "run-status", "metric-definitions", "results",
+        "experiment-setup", "run-status", "metric-definitions", "results",
         "paired-differences", "group-details", "selection", "errors-and-notes"))
     visible = unescape(re.sub(r"<[^>]*>", "", text))
     assert "example:Dataset" not in visible and label not in visible

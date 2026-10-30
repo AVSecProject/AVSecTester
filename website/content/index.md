@@ -234,7 +234,7 @@ top of this page.</figcaption>
 </figure>
 
 <figure class="avs-figure" markdown>
-![Top of the HTML evaluation report with its contents, reading guide and experiment setup](assets/media/evaluation-report.webp)
+![Top of the HTML evaluation report with its links, contents and experiment setup](assets/media/evaluation-report.webp)
 <figcaption>The HTML evaluation report written for the same experiment.</figcaption>
 </figure>
 

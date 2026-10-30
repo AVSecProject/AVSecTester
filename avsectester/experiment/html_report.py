@@ -198,15 +198,6 @@ def write_offline_html(output_root: str | Path) -> Path:
     reports = {name: _load(offline_report_directory(root, name) / "report.json") for name in names}
     specifications = manifest.get("configuration", {}).get("attacks", {})
     body = [_header([("evaluation_report.html", "Evaluation report")])]
-    body.append('<section id="about"><h2>About this page</h2>'
-                "<p>The offline phase prepares each attack's artifact before execution, using "
-                "its training segments. For example, an attack may optimize a patch. An attack "
-                "without optimization records only its initial texture.</p>"
-                "<p>Training segments are available to offline preparation. Validation segments "
-                "are held aside for optional validation, rather than training updates. When no "
-                "split is configured, all selected segments count as training segments here.</p>"
-                "<p>Decimal values are shown with four decimal places. Whole-number counts are "
-                "shown as integers. JSON and CSV keep full precision.</p></section>")
     body.append('<section id="overview"><h2>Overview</h2>')
     body.append(_table(
         ["attack", "type", "status", "train segments", "validation segments", "details"],
@@ -259,9 +250,7 @@ def write_offline_html(output_root: str | Path) -> Path:
         body.extend(_offline_table(key, table, name, folded=True) for key, table in large)
         if not large:
             body.append('<p class="none">None</p>')
-        body.append("<details><summary>Configuration</summary>"
-                    "<p>Only options written in the configuration are listed. Other parameters "
-                    "use their defaults.</p>" +
+        body.append("<details><summary>Configuration</summary>" +
                     _table(["parameter", "value"], _configuration_rows(specification.get("parameters", {}))) +
                     "</details>")
         body.append("<h3>Files</h3>")
@@ -441,10 +430,9 @@ def _results(report: Mapping[str, Any]) -> list[str]:
 
 def _pairs(report: Mapping[str, Any]) -> list[str]:
     pairs = report.get("pair_summaries", [])
-    result = ["<p>Each paired difference is treatment B − treatment A, computed within a "
-              "comparison group before averaging across groups.</p>"]
     if not pairs:
-        return result + ['<p class="none">None</p>']
+        return ['<p class="none">None</p>']
+    result: list[str] = []
     for part in dict.fromkeys(row.get("part") for row in pairs):
         rows = [row for row in pairs if row.get("part") == part]
         treatments = list(dict.fromkeys(
@@ -548,9 +536,6 @@ def _selection(report: Mapping[str, Any], manifest: Mapping[str, Any]) -> list[s
     result = [_table(["attack", *statuses], [
         [attack, *[sum(row.get("attack_name", "Unspecified attack") == attack and row["status"] == status
                        for row in rows) for status in statuses]] for attack in attacks])]
-    result.append("<p>For selected scenarios, notes list other candidates rejected within the same "
-                  "scenario (reason × count). For not_selected scenarios, notes explain why no "
-                  "candidate passed.</p>")
     for attack in attacks:
         result.append(f"<details><summary>{escape(attack)}</summary>" + _table(
             ["scenario", "status", "notes"],
@@ -572,7 +557,7 @@ def write_evaluation_html(output_root: str | Path) -> Path:
         ("evaluation/pair_summary.csv", "Pair summary CSV"),
     ])]
     sections = [
-        ("how-to-read", "How to read this report"), ("experiment-setup", "Experiment setup"),
+        ("experiment-setup", "Experiment setup"),
         ("run-status", "Run status"), ("metric-definitions", "Metric definitions"),
         ("results", "Results"), ("paired-differences", "Paired differences"),
         ("group-details", "Group details"), ("selection", "Selection"),
@@ -581,23 +566,6 @@ def write_evaluation_html(output_root: str | Path) -> Path:
     body.append('<nav aria-label="Contents"><h2>Contents</h2><ul>' +
                 "".join(f"<li>{_link('#' + identifier, title)}</li>" for identifier, title in sections) +
                 "</ul></nav>")
-    how = [
-        "<p>A treatment is one configured execution condition. Clean means no attack. A comparison "
-        "group contains the same segment and seed: all treatments start from the same initial state. "
-        "A part is a dataset split: train, validation or test.</p>",
-        "<p>Run status is completed when execution finishes successfully. Failed means an execution "
-        "error. Cancelled means execution was interrupted. Incomplete means execution has not "
-        "finished. Only completed runs contribute measurements to summaries.</p>",
-        "<p>Numerical summaries show mean ± population standard deviation (ddof = 0). n is the "
-        "number of groups with an available value. Standard deviation is omitted when n &lt; 2. "
-        "Boolean summaries show the fraction that are "
-        "true, followed by the true count and total group count.</p>",
-        "<p>A paired difference is B − A, calculated within each group before summarizing. Booleans "
-        "are subtracted as 1 and 0, so their mean difference is a difference in proportions.</p>",
-        "<p>— means unavailable. The reasons are listed in Group details. Decimal values are shown "
-        "with four decimal places. Whole-number counts are shown as integers. JSON and CSV keep full precision.</p>",
-    ]
-    body.append(_section("how-to-read", "How to read this report", how))
     body.append(_section("experiment-setup", "Experiment setup", _experiment_setup(report, manifest)))
     body.append(_section("run-status", "Run status", _run_status(report)))
     body.append(_section("metric-definitions", "Metric definitions", _definitions(report)))
