@@ -270,8 +270,8 @@ driving systems. Its attacks run in simulation and on recorded or reconstructed 
 
 1. A. Madry, A. Makelov, L. Schmidt, D. Tsipras and A. Vladu. Towards Deep Learning Models
    Resistant to Adversarial Attacks. ICLR, 2018. [arXiv:1706.06083](https://arxiv.org/abs/1706.06083)
-2. Z. Ge, S. Liu, F. Wang, Z. Li and J. Sun. YOLOX: Exceeding YOLO Series in 2021. arXiv preprint,
-   2021. [arXiv:2107.08430](https://arxiv.org/abs/2107.08430)
+2. Z. Ge, S. Liu, F. Wang, Z. Li and J. Sun. YOLOX: Exceeding YOLO Series in 2021. arXiv
+   preprint, 2021. [arXiv:2107.08430](https://arxiv.org/abs/2107.08430)
 3. C. Löwens, T. Funke and A. P. Condurache. Driving on Memory. NeurIPS, 2026.
    [arXiv:2608.31029](https://arxiv.org/abs/2608.31029)
 4. A. Ilyas, L. Engstrom, A. Athalye and J. Lin. Black-box Adversarial Attacks with Limited Queries
