@@ -221,6 +221,7 @@ simulator:
       options:
         endpoint: 127.0.0.1:50051
         cameras: [camera_front_wide_120fov]
+        lidar: lidar_gt_top_p128
         probe_directory: ../results/nre-probes
         server_probe_directory: /mnt/nre-probes
     dynamics:
@@ -228,6 +229,9 @@ simulator:
 ```
 
 NuRec cameras render at their native resolution.
+`NuRecRenderer.lidar` defaults to `null`. Set it to the scene's logical LiDAR sensor name to
+collect scans. See [NuRec LiDAR](../guides/simulators.md#lidar) for timing and sensor constraints.
+
 `probe_directory` is a client-side path resolved relative to the YAML file.
 `server_probe_directory` is an unchanged string in the server's filesystem namespace. The server
 must be able to read the probe files. See

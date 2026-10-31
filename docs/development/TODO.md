@@ -28,6 +28,27 @@ See [reactive traffic](../guides/simulators.md#reactive-traffic) for supported b
 
 - [ ] Include inserted `ObjectAsset` geometry in LiDAR and other non-camera captures.
 
+## Unified CARLA sensor records
+
+- [ ] Define framework camera records and unify CARLA camera and LiDAR payloads.
+- [ ] Define how `ModularAVStack` obtains physical sensor reference frames and native capture
+  metadata through `Observation`, without a runtime-to-driving-system bypass or opaque native
+  fields in framework records.
+
+## Localization attack reference frames
+
+- [ ] Establish the scope of localization attacks when CARLA/avstack perception uses physical
+  sensor reference chains while tracking and planning use model-visible `vehicle_state`.
+
+See [physical and model-visible records](../reference/runtime.md#physical-and-model-visible-records).
+
+## NuRec LiDAR simulation
+
+- [ ] Simulate LiDAR intensity for scenes that do not provide it.
+- [ ] Support no-return-ray simulation and its filtering controls.
+
+See [NuRec LiDAR](../guides/simulators.md#lidar) for supported capture behavior.
+
 ## CARLA physical patches
 
 - [ ] Scale the CARLA patch prop to the declared `width_m` and `height_m`, or reject dimensions

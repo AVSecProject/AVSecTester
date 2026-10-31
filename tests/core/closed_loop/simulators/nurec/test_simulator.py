@@ -16,8 +16,9 @@ from avsectester.closed_loop.simulators.ego_dynamics import TrajectoryFollower
 from avsectester.closed_loop.simulators.nurec import AlpaSimTraffic, NuRecRenderer, NuRecSimulator
 from avsectester.datasets.nurec import NuRecDataset
 from avsectester.geometry.cameras import FThetaCamera, PinholeCamera
+from avsectester.geometry.lidars import LidarCalibration
 from avsectester.geometry.poses import rotation_matrix
-from avsectester.data_types import Control, Unavailable
+from avsectester.data_types import Control, PointCloud, Unavailable
 from avsectester.execution.runner import RecordingPolicy
 from avsectester.execution.services import CandidateRequest, ClosedLoopServices
 from avsectester.closed_loop.hooks import Hook, HookSet
@@ -432,6 +433,10 @@ def test_occlusion_tolerance(nurec_dataset, monkeypatch, make_object_in_front, t
 
 def test_validate_start(nurec_dataset, make_nurec_simulator):
     start = nurec_dataset.scenario_start("scene", nurec_dataset.frames("scene")[0])
+    camera_only = make_nurec_simulator(NuRecRenderer(cameras=["front"]))
+    assert camera_only.observation_lead_steps == 0
+    assert camera_only.past_steps == 0
+    camera_only.validate_start(start)
     # A recording that turns back on itself has no valid navigation route.
     last = start.recorded_ego[-1]
     reversed_pose = last.pose.copy()
@@ -776,3 +781,115 @@ def test_render_hooks(nurec_dataset, monkeypatch, make_nurec_simulator):
                                    expected @ proto_world_pose(boundary.mount))
         np.testing.assert_array_equal(runtime.observe().sensor_data["front"],
                                       np.full((12, 16, 3), 37, np.uint8))
+
+
+def test_lidar(nurec_longitudinal_dataset, monkeypatch, make_nurec_simulator, tmp_path):
+    dataset = nurec_longitudinal_dataset
+    with zipfile.ZipFile(dataset.usdz_path("scene")) as source:
+        entries = {name: source.read(name) for name in source.namelist()}
+    metadata = json.loads(entries["rig_trajectories.json"])
+    rig = metadata["rig_trajectories"][0]
+    # A 0.5% scan-period difference is accepted without shifting decision endpoints.
+    rig["lidars_frame_timestamps_us"] = {"lidar_gt_top_p128@scene": [[0, 100500]]}
+    path = tmp_path / "scan-period.usdz"
+    with zipfile.ZipFile(path, "w") as archive:
+        for name, payload in entries.items():
+            archive.writestr(name, json.dumps(metadata) if name == "rig_trajectories.json" else payload)
+    dataset = NuRecDataset([path], time_step=.1)
+    frames = dataset.frames("scene")
+    start = dataset.scenario_start("scene", frames[3])
+    lidar = "lidar_gt_top_p128"
+    boundary = NuRecRpcBoundary().install(monkeypatch)
+    simulator = make_nurec_simulator(NuRecRenderer(cameras=["front"], lidar=lidar),
+                                     depth="none", physics_update_mode="none", route_generator="none")
+    assert simulator.past_steps == 0
+    assert simulator.observation_lead_steps == 1
+    with pytest.raises(UnsupportedStartError,
+                       match="NuRec LiDAR requires 1 recorded decision step before the start"):
+        simulator.validate_start(dataset.scenario_start("scene", frames[0]))
+    simulator.validate_start(dataset.scenario_start("scene", frames[1]))
+    stages = []
+
+    def rendering(value, context):
+        stages.append((context.stage, context.sensor))
+        if context.stage == "render.post" and context.sensor == lidar:
+            return PointCloud(value.points + np.array([0., .5, 0.], np.float32), value.intensity)
+        return value
+
+    hooks = HookSet([Hook("render.pre", rendering), Hook("render.post", rendering)])
+    with simulator.create_runtime() as runtime, hooks.session(runtime, ConstantAVStack()).activate():
+        runtime.reset(start)
+        observation = runtime.observe()
+        assert list(observation.sensor_data) == ["front", lidar]
+        assert runtime.sensors == {"front", lidar} and runtime.camera_sensors == {"front"}
+        cloud = observation.sensor_data[lidar]
+        assert isinstance(cloud, PointCloud) and cloud.intensity is None
+        np.testing.assert_allclose(cloud.points, [[4., 1.5, -1.95], [8., -1.5, -1.]])
+        calibration = observation.calibration[lidar]
+        assert isinstance(calibration, LidarCalibration) and calibration.spin_period_s == .1005
+        expected_mount = np.eye(4)
+        expected_mount[:3, 3] = [1.17, 0., 1.95]
+        np.testing.assert_array_equal(calibration.rig_from_lidar, expected_mount)
+        request = boundary.lidar_requests[-1]
+        assert (request.frame_start_us, request.frame_end_us) == (200000, 300000)
+        np.testing.assert_allclose(proto_world_pose(request.sensor_pose.start_pose),
+                                  dataset.ego_state("scene", 200000).pose @ expected_mount)
+        np.testing.assert_allclose(proto_world_pose(request.sensor_pose.end_pose),
+                                  runtime.state().ego.pose @ expected_mount)
+        actors_start = dataset.actor_states("scene", 200000)
+        actors_end = dataset.actor_states("scene", 300000)
+        assert {item.track_id for item in request.dynamic_objects} == actors_start.keys() & actors_end.keys()
+        for item in request.dynamic_objects:
+            np.testing.assert_allclose(proto_world_pose(item.pose_pair.start_pose), actors_start[item.track_id].pose)
+            np.testing.assert_allclose(proto_world_pose(item.pose_pair.end_pose), actors_end[item.track_id].pose)
+        view = runtime.sensor_view(lidar)
+        assert view.camera is None and view.cam_from_world is None
+        assert view.native["timestamp_us"] == 300000
+        assert {identity for identity, _ in view.native["dynamic_objects"]} == actors_end.keys()
+        np.testing.assert_array_equal(view.data.points, cloud.points)
+        np.testing.assert_allclose(view.sensor_from_world,
+                                  np.linalg.inv(runtime.state().ego.pose @ expected_mount))
+        with pytest.raises(ValueError, match="has no camera geometry"):
+            runtime.sensor_geometry(lidar)
+        previous = runtime.state().ego.pose
+        runtime.step(Control(throttle=.2))
+        request = boundary.lidar_requests[-1]
+        assert (request.frame_start_us, request.frame_end_us) == (300000, 400000)
+        np.testing.assert_allclose(proto_world_pose(request.sensor_pose.start_pose), previous @ expected_mount)
+        np.testing.assert_allclose(proto_world_pose(request.sensor_pose.end_pose),
+                                  runtime.state().ego.pose @ expected_mount)
+        assert stages == [("render.pre", "front"), ("render.post", "front"),
+                          ("render.post", lidar)] * 2
+        past, = runtime.observe_past(1)
+        assert isinstance(past.sensor_data[lidar], PointCloud)
+        np.testing.assert_allclose(past.sensor_data[lidar].points[:, 1], [1., -2.])
+        request = boundary.lidar_requests[-1]
+        assert (request.frame_start_us, request.frame_end_us) == (100000, 200000)
+        np.testing.assert_allclose(proto_world_pose(request.sensor_pose.start_pose),
+                                  dataset.ego_state("scene", 100000).pose @ expected_mount)
+        np.testing.assert_allclose(proto_world_pose(request.sensor_pose.end_pose),
+                                  dataset.ego_state("scene", 200000).pose @ expected_mount)
+        assert stages == [("render.pre", "front"), ("render.post", "front"),
+                          ("render.post", lidar)] * 2
+        with pytest.raises(ValueError, match="Rig timestamp exceeds recorded support"):
+            runtime.observe_past(3)
+    adapter = DrivingAdapter(lambda seed: ConstantAVStack(), past_steps=0)
+    with ClosedLoopServices(dataset, simulator, adapter) as services, services.session(0) as session:
+        log = session.rollout(CandidateRequest(AttackSegment("scene", frames[3], frames[4]),
+            0, 1, {}, RecordingPolicy(sensor_ids=(lidar,)), output_path=tmp_path / "lidar-run"))
+    assert log.status == "completed"
+    stored = RunLog.read(tmp_path / "lidar-run").steps[0].model_observation
+    assert set(stored.sensor_data) == {lidar}
+    assert isinstance(stored.sensor_data[lidar], PointCloud)
+    assert isinstance(stored.calibration[lidar], LidarCalibration)
+    invalid = NuRecRpcBoundary().install(monkeypatch)
+    rig["lidars_frame_timestamps_us"] = {"lidar_gt_top_p128@scene": [[0, 102000]]}
+    with zipfile.ZipFile(path, "w") as archive:
+        for name, payload in entries.items():
+            archive.writestr(name, json.dumps(metadata) if name == "rig_trajectories.json" else payload)
+    with make_nurec_simulator(NuRecRenderer(cameras=["front"], lidar=lidar), time_step=.1,
+                             depth="none", physics_update_mode="none",
+                             route_generator="none").create_runtime() as runtime:
+        with pytest.raises(ValueError, match="time_step must match the LiDAR scan period within 1%"):
+            runtime.reset(start)
+    assert invalid.last_request is None and not invalid.lidar_requests

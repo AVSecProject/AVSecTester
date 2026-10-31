@@ -8,7 +8,7 @@ from typing import Any
 
 import numpy as np
 
-from avsectester.data_types import Observation
+from avsectester.data_types import Observation, PointCloud
 from avsectester.closed_loop.simulators.base import SensorView
 from avsectester.geometry.cameras import BODY_FROM_OPTICAL, FThetaCamera, PinholeCamera, WindshieldDistortion
 from avsectester.geometry.poses import transform
@@ -69,7 +69,12 @@ def camera_view(record: StepRecord | Observation, camera: str | None = None) -> 
 
 
 def lidar_bev(record: StepRecord | Observation, size: int = 800, meters: float = 60.0) -> np.ndarray | None:
-    """Read a saved lidar cloud and draw x-forward up, y-left left. Non-lidar payloads skip."""
+    """Draw a ``PointCloud`` or native LiDAR capture with x forward up and y left left.
+
+    Native CARLA byte captures use y right and are mirrored when ``flipy`` is true,
+    which is the default for raw captures. Native array payloads already use y left.
+    Non-LiDAR payloads are skipped.
+    """
     if size <= 0 or meters <= 0:
         raise ValueError("LiDAR view size and range must be positive")
     observation = _observation(record)
@@ -77,13 +82,18 @@ def lidar_bev(record: StepRecord | Observation, size: int = 800, meters: float =
         return None
     points = None
     for payload in observation.sensor_data.values():
+        if isinstance(payload, PointCloud):
+            points = payload.points
+            break
         data = payload if isinstance(payload, np.ndarray) else _get(payload, "data", payload)
         if isinstance(data, np.ndarray) and data.ndim == 2 and data.shape[1] >= 3:
             points = data[:, :3]
             break
         raw = _get(data, "raw_data", _get(data, "raw_bytes"))
         if raw is not None and "lidar" in str(_get(data, "native_type", type(data).__name__)).lower():
-            points = np.frombuffer(bytes(raw), dtype=np.float32).reshape(-1, 4)[:, :3]
+            points = np.frombuffer(bytes(raw), dtype=np.float32).reshape(-1, 4)[:, :3].copy()
+            if _get(payload, "flipy", True):
+                points[:, 1] *= -1
             break
     if points is None:
         return None

@@ -147,8 +147,10 @@ class MemorySimulator(Simulator):
 
     def __init__(self, time_step=.1, capture_ticks=0, world_key=None,
                  extra_sensors=None, camera_geometries=None, sensor_depths=None, actors=None, runtime_error=None, start_error=None,
-                 can_replay=True, can_observe_past=True, can_insert_objects=True, can_render=True):
+                 can_replay=True, can_observe_past=True, can_insert_objects=True, can_render=True,
+                 observation_lead_steps=0):
         self.time_step, self.capture_ticks = time_step, capture_ticks
+        self._observation_lead_steps = observation_lead_steps
         self.world_key = world_key
         self.runtime_error = runtime_error
         self.start_error = start_error
@@ -162,6 +164,10 @@ class MemorySimulator(Simulator):
         })
         self.sensor_depths = deepcopy(sensor_depths or {})
         self.initial_actors = deepcopy(actors if actors is not None else {"lead": actor_state()})
+
+    @property
+    def observation_lead_steps(self):
+        return self._observation_lead_steps
 
     @property
     def decision_time_step(self):
@@ -540,7 +546,8 @@ class NuRecRpcBoundary:
     ``returned_resolution_hw`` is None for the native resolution, an (H, W) tuple, or a
     callable mapping the integer frame-start timestamp in microseconds to an (H, W) tuple. With
     ``service_container`` set, scene queries answer UNAVAILABLE unless that Docker fake state
-    reports a running container.
+    reports a running container. LiDAR returns ``lidar_response`` and retains scan requests
+    in ``lidar_requests``.
     """
 
     TRACK_FROM_PLY = np.array([[1., 0., 0.], [0., 0., -1.], [0., 1., 0.]])
@@ -551,6 +558,10 @@ class NuRecRpcBoundary:
         self.service_container = service_container
         self.last_request = None
         self.requests = []
+        self.lidar_requests = []
+        self.lidar_response = SimpleNamespace(
+            point_xyzs_buffer=np.array([[4., 1., -1.95], [8., -2., -1.]], np.float32).tobytes(),
+            point_intensities_buffer=b"", point_xyzs=[], point_intensities=[], num_points=2)
         self.available_scenes = ("scene",)
         self.scene_query_error = None
         self.rpc_error = NuRecRpcError
@@ -625,6 +636,12 @@ class NuRecRpcBoundary:
         Image.fromarray(image).save(stream, format="PNG")
         return SimpleNamespace(image_bytes=stream.getvalue())
 
+    def render_lidar(self, request):
+        """Return fixed native scan data and retain the endpoint request."""
+        self.requests.append(request)
+        self.lidar_requests.append(request)
+        return self.lidar_response
+
     def edit_assets(self, request):
         self.requests.append(request)
         for track in request.insert:
@@ -668,12 +685,14 @@ class NuRecRpcBoundary:
 
         common = native_common or SimpleNamespace(Pose=SimpleNamespace, Quat=SimpleNamespace,
                                                   Vec3=SimpleNamespace, Empty=SimpleNamespace)
-        sensor = SimpleNamespace(AvailableCamerasRequest=SimpleNamespace,
+        sensor = SimpleNamespace(LidarRenderRequest=SimpleNamespace,
+            LidarSpec=SimpleNamespace, PANDAR128=0,
+            AvailableCamerasRequest=SimpleNamespace,
             AvailableTrajectoriesRequest=SimpleNamespace, RGBRenderRequest=SimpleNamespace,
             PosePair=SimpleNamespace, DynamicObject=SimpleNamespace,
             ImageFormat=SimpleNamespace(JPEG=1))
         modules = {
-            "grpc": {"insecure_channel": lambda endpoint: Channel(),
+            "grpc": {"insecure_channel": lambda endpoint, **kwargs: Channel(),
                      "RpcError": NuRecRpcError,
                      "StatusCode": SimpleNamespace(INVALID_ARGUMENT="INVALID_ARGUMENT",
                          UNAVAILABLE="UNAVAILABLE", DEADLINE_EXCEEDED="DEADLINE_EXCEEDED",
@@ -685,8 +704,8 @@ class NuRecRpcBoundary:
         if native_grpc is not None:
             grpc_values = dict(vars(native_grpc))
             grpc_values.update(
-                insecure_channel=lambda endpoint: (
-                    native_channel(endpoint) if endpoint in passthrough_endpoints else Channel()),
+                insecure_channel=lambda endpoint, **kwargs: (
+                    native_channel(endpoint, **kwargs) if endpoint in passthrough_endpoints else Channel()),
             )
             modules = {"grpc": grpc_values}
             import alpasim_grpc.v0 as protocol

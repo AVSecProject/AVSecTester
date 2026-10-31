@@ -90,7 +90,47 @@ left, z up. It is `None` when the sensor pose is unavailable. The two transforms
 cameras. `SimulatorRuntime.sensors` lists all views. `camera_sensors` lists its camera subset.
 `SensorView.objects` contains the inserted objects associated with the capture.
 
+### LiDAR data
+
+`PointCloud` stores a scan in the sensor coordinate frame at scan end. Its axes are x forward,
+y left and z up, with distances in meters. `Observation.sensor_data` stores the cloud and
+`Observation.calibration` stores its `LidarCalibration` under the same sensor name.
+
+| Record | Field | Meaning |
+|---|---|---|
+| `PointCloud` | `points` | Finite float32 array of shape `(N, 3)` in scan-end sensor coordinates |
+| `PointCloud` | `intensity` | Float32 array of shape `(N,)` in `[0, 1]`, or `None` when unavailable |
+| `LidarCalibration` | `rig_from_lidar` | A 4×4 rigid transform from sensor coordinates to rig coordinates |
+| `LidarCalibration` | `spin_period_s` | Duration of one complete scan in seconds |
+
+Both records can be saved in `RunLog`. Point and intensity arrays use payload shards.
+`sensor_from_world` in a LiDAR view uses the scan-end sensor pose.
+
+This action shifts a framework point cloud one meter forward without changing its intensity:
+
+<!-- runnable -->
+```python
+from avsectester.attack.runtime import SensorAttackAction
+from avsectester.data_types import PointCloud
+
+
+class ShiftPointCloudAction(SensorAttackAction):
+    sensor = "lidar_gt_top_p128"
+
+    def apply(self, data, view):
+        points = data.points.copy()
+        points[:, 0] += 1.0
+        intensity = None if data.intensity is None else data.intensity.copy()
+        return PointCloud(points, intensity)
+```
+
+Return it from `AttackRuntime.step`. The runner replaces the whole `PointCloud` payload.
+
 ### CARLA LiDAR data
+
+CARLA LiDAR remains in avstack's native format. Unified CARLA camera and LiDAR records are
+**Not yet implemented.** See
+[TODO](../development/TODO.md#unified-carla-sensor-records).
 
 A CARLA LiDAR view contains an owned `SensorCapture`. `raw_data` holds packed float32 records x,
 y, z, intensity: four values, or 16 bytes, per point. These bytes use CARLA sensor axes: x

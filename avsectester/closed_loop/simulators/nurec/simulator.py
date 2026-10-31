@@ -20,6 +20,7 @@ from avsectester.closed_loop.simulators.base import (
 from avsectester.closed_loop.simulators.navigation import RouteGenerator
 from avsectester.maps import ScenarioMap
 from avsectester.geometry.cameras import BODY_FROM_OPTICAL
+from avsectester.geometry.lidars import LidarCalibration
 from avsectester.geometry.poses import validated_transform, validated_vector
 from avsectester.validation import require_nonnegative_number, require_positive_number
 from avsectester.data_types import ActorState, Observation, WorldSnapshot
@@ -135,7 +136,11 @@ class NuRecSimulator(Simulator):
             raise ValueError("NuRec requires a ScenarioStart for the recorded clock, ego pose and scene")
         super().validate_start(start)
         if start.frame.position < self.past_steps:
-            raise UnsupportedStartError(f"AlpaSim traffic requires {self.past_steps} past decision steps")
+            raise UnsupportedStartError(
+                f"AlpaSim traffic requires {self.past_steps} past decision steps")
+        if start.frame.position < self.observation_lead_steps:
+            raise UnsupportedStartError(
+                "NuRec LiDAR requires 1 recorded decision step before the start")
         if self.route_generator == "none":
             return
         # The route depends only on the complete recording and the map, not on the start frame.
@@ -161,6 +166,11 @@ class NuRecSimulator(Simulator):
     def past_steps(self) -> int:
         """Recorded decision history needed by the optional traffic model."""
         return 0 if self.traffic is None else self.traffic.history_steps - 1
+
+    @property
+    def observation_lead_steps(self) -> int:
+        """One recorded step supplies the start pose for a LiDAR scan, or zero without LiDAR."""
+        return 1 if self.renderer.lidar is not None else 0
 
     @property
     def supported_stages(self) -> frozenset[str]:
@@ -191,6 +201,8 @@ class NuRecSimulator(Simulator):
                 "dynamics": {"type": f"{type(self.dynamics).__module__}:{type(self.dynamics).__qualname__}",
                              "options": asdict(self.dynamics) if dataclasses.is_dataclass(self.dynamics) else {}},
                 "endpoint": getattr(self.renderer, "endpoint", None)}
+        if self.renderer.lidar is not None:
+            identity["lidar"] = self.renderer.lidar
         if self.traffic is not None:
             identity["traffic"] = {
                 "type": f"{type(self.traffic).__module__}:{type(self.traffic).__qualname__}",
@@ -200,7 +212,12 @@ class NuRecSimulator(Simulator):
 
 
 class NuRecSimulatorRuntime(SimulatorRuntime):
-    """One live NuRec world: the ego pose and dynamics loop, and its own renderer connection."""
+    """One live NuRec world: the ego pose and dynamics loop, and its own renderer connection.
+
+    Segment selection reserves recorded lead steps through ``observation_lead_steps``.
+    Runtime recording-coverage checks are a final safeguard for the complete LiDAR scan
+    before each queried timestamp.
+    """
 
     def __init__(self, simulator: NuRecSimulator, seed: int | None = None) -> None:
         super().__init__(simulator)
@@ -231,6 +248,8 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
         self._world_from_ego: Any = None
         self._ground_contact = None
         self._ground_contact_failures: Counter[str] = Counter()
+        self._lidar_start_pose: Any = None
+        self._lidar_start_actors: dict[str, ActorState] = {}
 
     @property
     def native(self) -> dict[str, Any]:
@@ -486,7 +505,24 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
         reset_dynamics = getattr(self.dynamics, "reset", None)
         if callable(reset_dynamics):
             reset_dynamics(deepcopy(self.pose))
-        self.renderer.load_scene(scene_id)
+        lidar = self.renderer.lidar
+        scene = (scene_id if lidar is None
+                 else {"scene_id": scene_id, "usdz_path": start.payload["usdz_path"]})
+        self.renderer.load_scene(scene)
+        if lidar is not None:
+            calibration = self.renderer.calibration[lidar]
+            if not isinstance(calibration, LidarCalibration):
+                raise TypeError("NuRec LiDAR requires LidarCalibration")
+            validated_transform(calibration.rig_from_lidar)
+            require_positive_number(calibration.spin_period_s, "LiDAR spin period")
+            if not math.isclose(self.dt, calibration.spin_period_s, rel_tol=0., abs_tol=self.dt * .01):
+                raise ValueError("NuRec time_step must match the LiDAR scan period within 1%")
+            camera_names = {self.simulator.camera_aliases.get(camera, camera)
+                            for camera in self.renderer.cameras}
+            if lidar in camera_names:
+                raise ValueError("NuRec LiDAR name must differ from camera output names")
+        self._lidar_start_pose = None
+        self._lidar_start_actors.clear()
         self.frame = 0
         # Short tracks are measured over the whole recording: movable ones leave the world,
         # and no short track joins a traffic session.
@@ -502,6 +538,9 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
             self._filtered_tracks = {identity for identity in short_tracks
                                      if self._recorded_tracks[identity]["controllable"]}
             self.initialization_report["filtered_tracks"] = sorted(self._filtered_tracks)
+        if lidar is not None:
+            self._lidar_start_pose, _, self._lidar_start_actors = self._recorded_lidar_start(
+                self._timestamp_us(self.pose))
         if self.simulator.traffic is not None:
             self._open_traffic_session(short_tracks)
 
@@ -511,6 +550,9 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
         self._render_requests.clear()
         uses_traffic = self.simulator.traffic is not None
         previous_actors = self._actors_at(self._timestamp_us(self.pose)) if uses_traffic else {}
+        if self.renderer.lidar is not None:
+            self._lidar_start_pose = self._world_from_ego.copy()
+            self._lidar_start_actors = deepcopy(self._actors_at(self._timestamp_us(self.pose)))
         previous_yaw = self.pose.yaw
         self.pose = self.dynamics.step(self.pose, control, self.dt)
         world_from_ego = planar_rig_pose(self.pose.x, self.pose.y, self.pose.yaw,
@@ -536,7 +578,8 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
 
     @property
     def sensors(self) -> frozenset[str]:
-        return self.camera_sensors
+        lidar = self.renderer.lidar
+        return self.camera_sensors | ({lidar} if lidar is not None else set())
 
     @property
     def camera_sensors(self) -> frozenset[str]:
@@ -547,6 +590,8 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
     def sensor_geometry(self, sensor: str) -> SensorGeometry:
         if not self._world_initialized:
             raise RuntimeError("Reset the NuRec simulator before requesting camera geometry")
+        if sensor == self.renderer.lidar:
+            raise ValueError(f"NuRec sensor {sensor!r} has no camera geometry")
         aliases = self.simulator.camera_aliases
         native_camera = next((key for key, alias in aliases.items() if alias == sensor), sensor)
         if native_camera not in self.renderer.cameras:
@@ -564,6 +609,18 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
             raise ValueError("NuRec sensor views require a scenario start with recorded actors")
         from avsectester.data_types import read_camera_rgb
 
+        lidar = self.renderer.lidar
+        if sensor == lidar:
+            import numpy as np
+
+            truth = self.state()
+            calibration = self.renderer.calibration[lidar]
+            return SensorView(
+                lidar, self._capture.sensor_data[lidar], None, None,
+                self._capture_actor_states[lidar], truth.ego, truth.t, truth.frame,
+                sensor_from_world=np.linalg.inv(self._world_from_ego @ calibration.rig_from_lidar),
+                native={"timestamp_us": self._timestamp_us(self.pose),
+                        "dynamic_objects": deepcopy(self._capture_dynamic_objects[lidar])})
         aliases = self.simulator.camera_aliases
         native_camera = next((key for key, alias in aliases.items() if alias == sensor), sensor)
         output_key = aliases.get(native_camera, native_camera)
@@ -615,7 +672,19 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
         actors = {key: state for key, state in actors.items() if key not in self._filtered_tracks}
         return pose, timestamp_us, actors
 
+    def _recorded_lidar_start(self, timestamp_us: int) -> tuple[np.ndarray, int, dict[str, ActorState]]:
+        """Recorded scan start pose and actors without model-visible state or live overrides."""
+        start_us = timestamp_us - round(self.dt * 1e6)
+        dataset = self._tracks()
+        pose = dataset.ego_state(self._start.payload["scene_id"], start_us).pose
+        actors = dataset.actor_states(self._start.payload["scene_id"], start_us)
+        actors = {identity: state for identity, state in actors.items()
+                  if identity not in self._filtered_tracks}
+        return pose, start_us, actors
+
     def _recorded_sensor_geometry(self, position: int, sensor: str) -> SensorGeometry:
+        if sensor == self.renderer.lidar:
+            raise ValueError(f"NuRec sensor {sensor!r} has no camera geometry")
         aliases = self.simulator.camera_aliases
         native_camera = next((key for key, alias in aliases.items() if alias == sensor), sensor)
         if native_camera not in self.renderer.cameras:
@@ -632,8 +701,19 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
         from avsectester.closed_loop.hooks import CameraPoseRequest
         from avsectester.data_types import read_camera_rgb
 
-        geometry = self._recorded_sensor_geometry(position, sensor)
         pose, timestamp_us, actors = self._recorded_capture(position)
+        lidar = self.renderer.lidar
+        if sensor == lidar:
+            import numpy as np
+
+            calibration = self.renderer.calibration[lidar]
+            return SensorView(
+                lidar, observation.sensor_data[lidar], None, None, actors,
+                self._start.recorded_ego[position], observation.t, observation.frame,
+                sensor_from_world=np.linalg.inv(pose @ calibration.rig_from_lidar),
+                native={"timestamp_us": timestamp_us,
+                        "dynamic_objects": self._dynamic_objects(timestamp_us, actors)})
+        geometry = self._recorded_sensor_geometry(position, sensor)
         aliases = self.simulator.camera_aliases
         native_camera = next((key for key, alias in aliases.items() if alias == sensor), sensor)
         captured = read_camera_rgb(observation, geometry.sensor)
@@ -682,13 +762,20 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
                 dynamic_objects=self._dynamic_objects(timestamp_us, actors))
             for camera in self.renderer.cameras
         }
+        lidar = self.renderer.lidar
+        if lidar is not None:
+            start_pose, start_us, start_actors = self._recorded_lidar_start(timestamp_us)
+            sensor_data[lidar] = self.renderer.render_lidar(
+                start_pose, pose, start_us, timestamp_us,
+                self._dynamic_objects(start_us, start_actors),
+                self._dynamic_objects(timestamp_us, actors))
         vehicle_state = self._recorded_planar_state(position)
         # Route generation may extend its stored polyline. A past query must not change the
         # live runtime's navigation state or any later model-visible route.
         route = deepcopy(self._route).route(pose)
         return Observation(
             t=relative_time, frame=relative_frame, sensor_data=sensor_data,
-            calibration={aliases.get(key, key): deepcopy(value)
+            calibration={(aliases.get(key, key) if key in self.renderer.cameras else key): deepcopy(value)
                          for key, value in self.renderer.calibration.items()},
             vehicle_state=vehicle_state, ego_speed=vehicle_state.speed, route=route,
         )
@@ -700,7 +787,8 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
         sensor_data = {}
         self._capture_actor_states.clear()
         self._capture_depth.clear()
-        calibration = {aliases.get(key, key): value for key, value in self.renderer.calibration.items()}
+        calibration = {(aliases.get(key, key) if key in self.renderer.cameras else key): value
+                       for key, value in self.renderer.calibration.items()}
         for camera in self.renderer.cameras:
             # A render request may use a false viewpoint without moving the physical ego.
             request = self._emit(
@@ -721,6 +809,18 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
             sensor_data[aliases.get(camera, camera)] = self._emit(
                 "render.post", image, sensor=camera,
             )
+        lidar = self.renderer.lidar
+        if lidar is not None:
+            timestamp_us = self._timestamp_us(self.pose)
+            start_us = timestamp_us - round(self.dt * 1e6)
+            actors = self._actors_at(timestamp_us)
+            dynamic_objects = self._dynamic_objects(timestamp_us, actors)
+            cloud = self.renderer.render_lidar(
+                self._lidar_start_pose, self._world_from_ego, start_us, timestamp_us,
+                self._dynamic_objects(start_us, self._lidar_start_actors), dynamic_objects)
+            self._capture_actor_states[lidar] = deepcopy(actors)
+            self._capture_dynamic_objects[lidar] = deepcopy(dynamic_objects)
+            sensor_data[lidar] = self._emit("render.post", cloud, sensor=lidar)
         return self.copy_observation(Observation(
             t=self.pose.t,
             frame=self.frame,
@@ -749,6 +849,8 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
             raise RuntimeError("AlpaSim traffic sessions cannot be checkpointed")
         return {"pose": asdict(self.pose), "frame": self.frame,
                 "world_from_ego": self._world_from_ego.copy(),
+                "lidar_start_pose": deepcopy(self._lidar_start_pose),
+                "lidar_start_actors": deepcopy(self._lidar_start_actors),
                 "ground_contact_failures": dict(self._ground_contact_failures),
                 "actor_overrides": deepcopy(self._actor_overrides),
                 "objects": dict(self._objects)}
@@ -763,6 +865,8 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
             reset_dynamics(deepcopy(self.pose))
         self.frame = ckpt["frame"]
         self._world_from_ego = ckpt["world_from_ego"].copy()
+        self._lidar_start_pose = deepcopy(ckpt["lidar_start_pose"])
+        self._lidar_start_actors = deepcopy(ckpt["lidar_start_actors"])
         self._ground_contact_failures = Counter(ckpt["ground_contact_failures"])
         self._actor_overrides = deepcopy(ckpt["actor_overrides"])
         # Frozen placed assets and harmonizer configurations are shared; copying a

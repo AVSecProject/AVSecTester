@@ -15,6 +15,7 @@
 | L0 | [`avsectester.geometry`](#avsectestergeometry) |
 | L0 | [`avsectester.geometry.boxes`](#avsectestergeometryboxes) |
 | L0 | [`avsectester.geometry.cameras`](#avsectestergeometrycameras) |
+| L0 | [`avsectester.geometry.lidars`](#avsectestergeometrylidars) |
 | L0 | [`avsectester.geometry.mesh`](#avsectestergeometrymesh) |
 | L0 | [`avsectester.geometry.poses`](#avsectestergeometryposes) |
 | L0 | [`avsectester.geometry.projection`](#avsectestergeometryprojection) |
@@ -218,6 +219,16 @@ a triangular number `(order + 1)(order + 2) / 2`.
 that inverse polynomial directly rather than solving the forward polynomial. A singular screen
 correction (`c - d * e == 0`) is not rejected and yields non-finite rays.
 
+### avsectester.geometry.lidars
+
+<!-- api:begin module=avsectester.geometry.lidars -->
+LiDAR calibration in canonical sensor and vehicle coordinates.
+
+| Name and signature | Meaning |
+|---|---|
+| `LidarCalibration(rig_from_lidar: np.ndarray, spin_period_s: float)` | A LiDAR-to-rig rigid transform and one full scan period in seconds. |
+<!-- api:end -->
+
 ### avsectester.geometry.mesh
 
 <!-- api:begin module=avsectester.geometry.mesh -->
@@ -358,6 +369,7 @@ Data types exchanged between framework components.
 
 | Name and signature | Meaning |
 |---|---|
+| `PointCloud(points: np.ndarray, intensity: np.ndarray \| None = None)` | One LiDAR scan in the sensor frame at the end of the scan. |
 | `ActorState(pose: Any, velocity: tuple[float, float, float] \| None = None, category: str \| None = None, extent: tuple[float, float, float] \| None = None, box_center: tuple[float, float, float] = (0.0, 0.0, 0.0), box_rotation: tuple[float, float, float] = (0.0, 0.0, 0.0))` | An actor's world-from-origin pose, world velocity and optional bounding-box geometry. |
 | `ActorState.box_transform() -> np.ndarray` | World-from-box-center transform, including local roll/pitch/yaw degree rotation. |
 | `Unavailable(reason: str)` | A dataset cannot supply the requested evidence, with an explicit reason. |
@@ -1515,6 +1527,7 @@ The simulator: a configuration (`Simulator`) and its live worlds (`SimulatorRunt
 | `Simulator.occlusion_tolerance_m: float = 0.1` | Depth tolerance in meters for deciding whether an inserted object is occluded. |
 | `Simulator.create_runtime(seed: int \| None = None) -> SimulatorRuntime` | Abstract. Create a new live world with this configuration. `seed` seeds its random choices. |
 | `Simulator.past_steps: int` | Recorded decision steps required before a selected start. |
+| `Simulator.observation_lead_steps: int` | Recorded decision steps needed before the earliest observation this simulator renders. |
 | `Simulator.decision_time_step: float \| None` | Decision interval in seconds. None leaves the interval unrestricted. |
 | `Simulator.command_modes: frozenset[str] \| None` | Command representations consumed by this simulator, or None if undeclared. |
 | `Simulator.supported_stages: frozenset[str]` | Hook stages supported by the component. |
@@ -1778,13 +1791,14 @@ NuRec simulator configuration, live runtime and RPC renderer.
 ### avsectester.closed_loop.simulators.nurec.renderer
 
 <!-- api:begin module=avsectester.closed_loop.simulators.nurec.renderer -->
-NuRec RGB rendering and native camera/pose conversion at the RPC boundary.
+NuRec camera and LiDAR rendering at the native RPC boundary.
 
 | Name and signature | Meaning |
 |---|---|
 | `Renderer()` | Renders sensor observations from the reconstructed scene at a given ego pose. |
 | `Renderer.cameras: ClassVar[list[str]] = ["camera_front"]` | Camera names rendered by this renderer. |
-| `Renderer.calibration: dict[str, CameraCalibration]` | Camera calibrations supplied by a loaded renderer, empty by default. |
+| `Renderer.lidar: ClassVar[str \| None] = None` | LiDAR sensor name rendered by this renderer, or None without LiDAR. |
+| `Renderer.calibration: dict[str, CameraCalibration \| LidarCalibration]` | Sensor calibrations supplied by a loaded renderer, empty by default. |
 | `Renderer.copy() -> Renderer` | A renderer with this configuration and no connection, loaded scene or run origin. |
 | `Renderer.reset_origin(start=None)` | Set the run origin from the dataset start. Configured renderers have no origin. |
 | `Renderer.origin_transform: np.ndarray \| None` | World transform locating the loaded scene origin. |
@@ -1792,20 +1806,22 @@ NuRec RGB rendering and native camera/pose conversion at the RPC boundary.
 | `Renderer.origin_bounds: tuple[float, float] \| None` | First and terminal recorded timestamps, in seconds, of the loaded scene. |
 | `Renderer.load_scene(scene: Any) -> None` | Load a reconstruction once. Renderers without a service may leave this empty. |
 | `Renderer.render(world_from_rig: np.ndarray, timestamp_us: int, camera: str, dynamic_objects=()) -> Any` | Abstract. Render one camera at the explicit three-dimensional rig pose and scene timestamp. |
+| `Renderer.render_lidar(world_from_rig_start: np.ndarray, world_from_rig_end: np.ndarray, start_us: int, end_us: int, dynamic_objects_start: Sequence[tuple[str, np.ndarray]] = (), dynamic_objects_end: Sequence[tuple[str, np.ndarray]] = ()) -> PointCloud` | Render one scan of `lidar` in the sensor frame at its ending pose and timestamp. |
 | `Renderer.render_scene_visibility(world_from_rig: np.ndarray, timestamp_us: int, camera: str, objects: Sequence[PlacedObject], dynamic_objects=(), *, occlusion_tolerance_m: float = 0.) -> np.ndarray` | Pixels where the reconstructed scene does not hide `objects` in this capture. |
 | `Renderer.camera_model(camera: str \| None = None) -> Camera \| None` | Optical camera model, or None when this renderer supplies no geometry. |
 | `Renderer.cam_from_world(world_from_rig: np.ndarray, camera: str \| None = None) -> np.ndarray` | World-to-optical-camera transform for the rendered pose. |
 | `Renderer.close() -> None` | Release renderer resources. The default implementation has no effect. |
-| `NuRecRenderer(endpoint: str = "127.0.0.1:50051", scene_id: str \| None = None, cameras: list[str] = ["camera_front_wide_120fov"], image_quality: float = 95.0, probe_directory: str \| Path \| None = None, server_probe_directory: str \| None = None, track_padding_m: tuple[float, float, float] = (1.0, 1.0, 0.25))` | Subclass of `Renderer`. Real NuRec renderer: one stateless `SensorsimService.render_rgb` per frame to an nre server. |
+| `NuRecRenderer(endpoint: str = "127.0.0.1:50051", scene_id: str \| None = None, cameras: list[str] = ["camera_front_wide_120fov"], lidar: str \| None = None, image_quality: float = 95.0, probe_directory: str \| Path \| None = None, server_probe_directory: str \| None = None, track_padding_m: tuple[float, float, float] = (1.0, 1.0, 0.25))` | Subclass of `Renderer`. Real NuRec renderer: one stateless `SensorsimService` render call per capture to an nre server. |
 | `NuRecRenderer.copy() -> NuRecRenderer` | The same configuration without a connection, loaded scene or run origin. |
 | `NuRecRenderer.served_scenes(timeout_s: float = 2.0) -> tuple[str, ...] \| None` | Query supported scene IDs without changing this renderer's loaded scene. |
-| `NuRecRenderer.load_scene(scene: Any) -> None` | Connect to the nre-ga renderer and read the scene id, camera spec, and start pose/time. |
-| `NuRecRenderer.calibration: dict[str, CameraCalibration]` | Loaded camera lenses and optical-camera-to-rig poses, empty before loading. |
+| `NuRecRenderer.load_scene(scene: Any) -> None` | Load sensor calibration and connect to a reconstructed scene. |
+| `NuRecRenderer.calibration: dict[str, CameraCalibration \| LidarCalibration]` | Loaded camera and LiDAR calibration, empty before loading. |
 | `NuRecRenderer.service: Any` | Native SensorsimService client, including metadata APIs this renderer does not normalize. |
 | `NuRecRenderer.camera_model(camera: str \| None = None) -> Camera` | The native lens read from the loaded scene's camera specification. |
 | `NuRecRenderer.cam_from_world(world_from_rig: np.ndarray, camera: str \| None = None) -> np.ndarray` | World-to-optical-camera transform at the explicit three-dimensional rig pose. |
 | `NuRecRenderer.render(world_from_rig: np.ndarray, timestamp_us: int, camera: str, dynamic_objects=())` | Render one RGB frame at an explicit three-dimensional rig pose and scene timestamp. |
 | `NuRecRenderer.render_at(world_from_rig, timestamp_us: int, camera: str, dynamic_objects=())` | Render an absolute rig pose/time and all present track-ID/world-pose pairs. |
+| `NuRecRenderer.render_lidar(world_from_rig_start: np.ndarray, world_from_rig_end: np.ndarray, start_us: int, end_us: int, dynamic_objects_start: Sequence[tuple[str, np.ndarray]] = (), dynamic_objects_end: Sequence[tuple[str, np.ndarray]] = ()) -> PointCloud` | Render a scan in the LiDAR frame at its ending pose and timestamp. |
 | `NuRecRenderer.render_scene_visibility(world_from_rig: np.ndarray, timestamp_us: int, camera: str, objects: Sequence[PlacedObject], dynamic_objects=(), *, occlusion_tolerance_m: float = 0.) -> np.ndarray` | Pixels where the reconstructed scene does not hide `objects` in an NRE render. |
 <!-- api:end -->
 
@@ -1858,6 +1874,7 @@ NuRec live worlds with independent renderer, actor state and ego dynamics.
 | `NuRecSimulator.can_insert_objects = True` | Whether world objects can be inserted into sensor rendering. |
 | `NuRecSimulator.create_runtime(seed: int \| None = None) -> NuRecSimulatorRuntime` | A new world. The optional traffic session receives seed for its log. |
 | `NuRecSimulator.past_steps: int` | Recorded decision history needed by the optional traffic model. |
+| `NuRecSimulator.observation_lead_steps: int` | One recorded step supplies the start pose for a LiDAR scan, or zero without LiDAR. |
 | `NuRecSimulator.command_modes: frozenset[str] \| None` | Delegate command capabilities to the selected ego dynamics implementation. |
 | `NuRecSimulatorRuntime(simulator: NuRecSimulator, seed: int \| None = None)` | Subclass of `SimulatorRuntime`. One live NuRec world: the ego pose and dynamics loop, and its own renderer connection. |
 | `NuRecSimulatorRuntime.native: dict[str, Any]` | Native resources for explicit world changes or custom renderer operations. |
@@ -2725,7 +2742,7 @@ Images, overlays and animations exported from RunLogs after simulators have clos
 | `View = Callable[[StepRecord], Any]` | A callable that renders one recorded step into an image-compatible value. |
 | `as_rgb(frame: Any) -> np.ndarray \| None` | Read canonical pixels or a logged native camera payload without importing its SDK. |
 | `camera_view(record: StepRecord \| Observation, camera: str \| None = None) -> np.ndarray \| None` | Read a recorded model-visible camera image (or an explicit Observation). |
-| `lidar_bev(record: StepRecord \| Observation, size: int = 800, meters: float = 60.0) -> np.ndarray \| None` | Read a saved lidar cloud and draw x-forward up, y-left left. Non-lidar payloads skip. |
+| `lidar_bev(record: StepRecord \| Observation, size: int = 800, meters: float = 60.0) -> np.ndarray \| None` | Draw a `PointCloud` or native LiDAR capture with x forward up and y left left. |
 | `annotate(image: Any, detections: Sequence[Any], threshold: float = 0.3) -> np.ndarray` | Draw explicit 2-D labels `(xyxy, score, text[, color])` on saved image pixels. |
 | `box3d_corners(center: Any, extent: Any, yaw: float) -> np.ndarray` | Eight cuboid corners from full x/y/z extents and right-handed yaw, in radians. |
 | `draw_boxes3d(image: Any, view: SensorView, *, actors: Mapping[str, Any] \| None = None, target: str \| None = None, subdiv: int = 8, max_distance: float \| None = None, color: tuple[int, int, int] = (40, 200, 40), target_color: tuple[int, int, int] = (235, 64, 52)) -> np.ndarray` | Project ActorState cuboids through a SensorView, without SceneGT. |

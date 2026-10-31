@@ -1,14 +1,17 @@
-"""NuRec RGB rendering and native camera/pose conversion at the RPC boundary."""
+"""NuRec camera and LiDAR rendering at the native RPC boundary."""
 
 from __future__ import annotations
 
 import copy
 import dataclasses
+import json
 import math
+import zipfile
 from abc import ABC, abstractmethod
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Any, ClassVar, TYPE_CHECKING
 
 from avsectester.geometry.poses import validated_transform
@@ -18,12 +21,45 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from avsectester.geometry.cameras import Camera, CameraCalibration, FThetaCamera
+    from avsectester.geometry.lidars import LidarCalibration
+    from avsectester.data_types import PointCloud
     from avsectester.rendering import PlacedObject
     from .probe_assets import ProbeAsset
     import numpy as np
 
 
 _PROBE_COLOURS = (("white", (1., 1., 1.)), ("black", (0., 0., 0.)))
+
+
+def _recorded_lidar_period(metadata: Mapping[str, Any], calibration: Mapping[str, Any]) -> float:
+    """Median recorded scan duration in seconds, read under the sensor's ``name@sequence`` key."""
+    import numpy as np
+
+    lidar = calibration["logical_sensor_name"]
+    sensor = f"{lidar}@{calibration['sequence_id']}"
+    scans = [scan for rig in metadata.get("rig_trajectories", ())
+             for scan in rig.get("lidars_frame_timestamps_us", {}).get(sensor, ())]
+    error = f"LiDAR {lidar!r} has no recorded LiDAR scans"
+    try:
+        intervals = np.asarray(scans, dtype=np.float64)
+    except (TypeError, ValueError) as failure:
+        raise ValueError(error) from failure
+    if (intervals.ndim != 2 or intervals.shape[1] != 2 or not len(intervals)
+            or not np.isfinite(intervals).all() or not (intervals[:, 1] > intervals[:, 0]).all()):
+        raise ValueError(error)
+    return float(np.median(intervals[:, 1] - intervals[:, 0])) / 1e6
+
+
+def _protobuf_pose(world_from_object: np.ndarray) -> Any:
+    from alpasim_grpc.v0 import common_pb2
+    from scipy.spatial.transform import Rotation
+
+    transform = validated_transform(world_from_object)
+    qx, qy, qz, qw = Rotation.from_matrix(transform[:3, :3]).as_quat()
+    return common_pb2.Pose(
+        vec=common_pb2.Vec3(x=transform[0, 3], y=transform[1, 3], z=transform[2, 3]),
+        quat=common_pb2.Quat(w=qw, x=qx, y=qy, z=qz),
+    )
 
 
 def ftheta_camera_from_spec(spec: Any) -> FThetaCamera:
@@ -83,9 +119,11 @@ class Renderer(ABC):
 
     cameras: ClassVar[list[str]] = ["camera_front"]
     'Camera names rendered by this renderer.'
+    lidar: ClassVar[str | None] = None
+    'LiDAR sensor name rendered by this renderer, or None without LiDAR.'
     @property
-    def calibration(self) -> dict[str, CameraCalibration]:
-        """Camera calibrations supplied by a loaded renderer, empty by default."""
+    def calibration(self) -> dict[str, CameraCalibration | LidarCalibration]:
+        """Sensor calibrations supplied by a loaded renderer, empty by default."""
         return {}
 
     def copy(self) -> Renderer:
@@ -127,6 +165,15 @@ class Renderer(ABC):
     ) -> Any:
         """Render one camera at the explicit three-dimensional rig pose and scene timestamp."""
 
+    def render_lidar(
+        self, world_from_rig_start: np.ndarray, world_from_rig_end: np.ndarray,
+        start_us: int, end_us: int,
+        dynamic_objects_start: Sequence[tuple[str, np.ndarray]] = (),
+        dynamic_objects_end: Sequence[tuple[str, np.ndarray]] = (),
+    ) -> PointCloud:
+        """Render one scan of ``lidar`` in the sensor frame at its ending pose and timestamp."""
+        raise NotImplementedError(f"{type(self).__name__} cannot render LiDAR")
+
     def render_scene_visibility(
         self, world_from_rig: np.ndarray, timestamp_us: int, camera: str,
         objects: Sequence[PlacedObject], dynamic_objects=(), *, occlusion_tolerance_m: float = 0.,
@@ -156,7 +203,7 @@ class Renderer(ABC):
 
 @dataclass
 class NuRecRenderer(Renderer):
-    """Real NuRec renderer: one stateless ``SensorsimService.render_rgb`` per frame to an nre server.
+    """Real NuRec renderer: one stateless ``SensorsimService`` render call per capture to an nre server.
 
     The heavy neural rendering lives in the ``nre-ga`` server (like the CARLA server), so this stays a
     thin, stateless client — no runtime, no controller/physics/traffic microservices, no callback
@@ -164,8 +211,9 @@ class NuRecRenderer(Renderer):
     scene. ``service`` exposes the native RPC client after loading. ``render_at`` supports exact
     recorded poses for initial-sequence inspection without advancing a driving policy.
 
-    Cameras render at their native resolution; a different image size returned by NRE raises
-    ``ValueError``.
+    Cameras render at their native resolution. A different image size returned by NRE raises
+    ``ValueError``. Set ``lidar`` to a scene logical sensor name to render LiDAR scans.
+    Points use the sensor frame at the end of each scan.
 
     ``render_scene_visibility`` inserts probe copies of objects into the loaded scene. It writes
     their Gaussian PLY files to ``probe_directory``, which the NRE server must read at
@@ -176,6 +224,7 @@ class NuRecRenderer(Renderer):
     endpoint: str = "127.0.0.1:50051"
     scene_id: str | None = None
     cameras: list[str] = field(default_factory=lambda: ["camera_front_wide_120fov"])
+    lidar: str | None = None
     image_quality: float = 95.0
     probe_directory: str | Path | None = None
     server_probe_directory: str | None = None
@@ -186,6 +235,9 @@ class NuRecRenderer(Renderer):
         return dataclasses.replace(self)
 
     def __post_init__(self) -> None:
+        if self.lidar is not None and (not isinstance(self.lidar, str) or not self.lidar):
+            raise ValueError("lidar must be a nonempty logical sensor name or None")
+        self._lidar_calibration: LidarCalibration | None = None
         padding = tuple(float(value) for value in self.track_padding_m)
         if len(padding) != 3 or not all(math.isfinite(value) and value >= 0 for value in padding):
             raise ValueError("track_padding_m must contain three finite nonnegative values")
@@ -225,16 +277,23 @@ class NuRecRenderer(Renderer):
             raise RuntimeError(f"NuRec renderer RPC {error.code()}: {error.details()}") from error
 
     def load_scene(self, scene: Any) -> None:
-        """Connect to the nre-ga renderer and read the scene id, camera spec, and start pose/time."""
+        """Load sensor calibration and connect to a reconstructed scene.
+
+        LiDAR requires a mapping with ``scene_id`` and ``usdz_path`` pointing to its archive.
+        Camera-only scenes also accept a scene ID string.
+        """
         import grpc
         from alpasim_grpc.v0 import common_pb2, sensorsim_pb2, sensorsim_pb2_grpc
 
         self.close()
         self._camera_models = {}
-        self._channel = grpc.insecure_channel(self.endpoint)
+        self._lidar_calibration = None
+        self._channel = grpc.insecure_channel(
+            self.endpoint, options=[("grpc.max_receive_message_length", 64 * 1024 * 1024)])
         self._stub = sensorsim_pb2_grpc.SensorsimServiceStub(self._channel)
         available = list(self._stub.get_available_scenes(common_pb2.Empty()).scene_ids)
-        want = scene or self.scene_id
+        source = scene if isinstance(scene, Mapping) else {"scene_id": scene or self.scene_id}
+        want = source.get("scene_id", self.scene_id)
         matches = [s for s in available if want and want in s]
         if want in available:
             self._loaded_scene_id = want
@@ -270,17 +329,42 @@ class NuRecRenderer(Renderer):
         )
         for camera in self.cameras:
             self._camera_models[camera] = ftheta_camera_from_spec(self._camera_specs[camera])
+        if self.lidar is not None:
+            from avsectester.geometry.lidars import LidarCalibration
+
+            if not source.get("usdz_path"):
+                raise ValueError("NuRec LiDAR requires the scene archive usdz_path")
+            with zipfile.ZipFile(source["usdz_path"]) as archive:
+                metadata = json.loads(archive.read("rig_trajectories.json"))
+            calibrations = list(metadata.get("lidar_calibrations", {}).values())
+            if len(calibrations) > 1:
+                raise ValueError("NRE supports scenes with only one LiDAR")
+            matches = [entry for entry in calibrations
+                       if entry.get("logical_sensor_name") == self.lidar]
+            if len(matches) != 1:
+                raise ValueError(f"LiDAR {self.lidar!r} is not available in the scene archive")
+            calibration = matches[0]
+            model = calibration.get("lidar_model", {})
+            if model.get("type") != "row-offset-spinning":
+                raise ValueError("NuRec LiDAR requires a row-offset-spinning model")
+            # Use recorded durations because some releases have invalid spin frequencies.
+            period = _recorded_lidar_period(metadata, calibration)
+            self._lidar_calibration = LidarCalibration(
+                validated_transform(calibration["T_sensor_rig"]), period)
 
     @property
-    def calibration(self) -> dict[str, CameraCalibration]:
-        """Loaded camera lenses and optical-camera-to-rig poses, empty before loading."""
+    def calibration(self) -> dict[str, CameraCalibration | LidarCalibration]:
+        """Loaded camera and LiDAR calibration, empty before loading."""
         from avsectester.geometry.cameras import CameraCalibration
 
         if self._stub is None:
             return {}
-        return {name: CameraCalibration(
+        calibrations: dict[str, CameraCalibration | LidarCalibration] = {name: CameraCalibration(
                     self.camera_model(name), validated_transform(pose_from_proto(self._camera_poses[name])))
                 for name in self.cameras}
+        if self.lidar is not None and self._lidar_calibration is not None:
+            calibrations[self.lidar] = self._lidar_calibration
+        return calibrations
 
     @property
     def service(self) -> Any:
@@ -294,6 +378,7 @@ class NuRecRenderer(Renderer):
             self._channel.close()
         self._channel = None
         self._stub = None
+        self._lidar_calibration = None
 
     def camera_model(self, camera: str | None = None) -> Camera:
         """The native lens read from the loaded scene's camera specification."""
@@ -326,6 +411,60 @@ class NuRecRenderer(Renderer):
         offset is applied. Each pose pair repeats the pose to describe an instantaneous capture.
         """
         return self._render_image(world_from_rig, timestamp_us, camera, dynamic_objects, self.image_quality)
+
+    def render_lidar(
+        self, world_from_rig_start: np.ndarray, world_from_rig_end: np.ndarray,
+        start_us: int, end_us: int,
+        dynamic_objects_start: Sequence[tuple[str, np.ndarray]] = (),
+        dynamic_objects_end: Sequence[tuple[str, np.ndarray]] = (),
+    ) -> PointCloud:
+        """Render a scan in the LiDAR frame at its ending pose and timestamp.
+
+        Rig and actor poses describe the scan endpoints. Only actors present at both
+        endpoints are included. Missing intensity is represented by None.
+        """
+        import numpy as np
+        from alpasim_grpc.v0 import sensorsim_pb2
+        from avsectester.data_types import PointCloud
+
+        if self._stub is None or self._lidar_calibration is None:
+            raise RuntimeError("Load a scene with LiDAR configured before rendering LiDAR")
+        if end_us <= start_us:
+            raise ValueError("LiDAR scan end must follow its start")
+        calibration = self._lidar_calibration
+        rig_from_lidar = validated_transform(calibration.rig_from_lidar)
+        ends = dict(dynamic_objects_end)
+        objects = [sensorsim_pb2.DynamicObject(
+            track_id=track_id, pose_pair=sensorsim_pb2.PosePair(
+                start_pose=_protobuf_pose(start_pose), end_pose=_protobuf_pose(ends[track_id])))
+            for track_id, start_pose in dynamic_objects_start if track_id in ends]
+        request = sensorsim_pb2.LidarRenderRequest(
+            scene_id=self._loaded_scene_id,
+            lidar_config=sensorsim_pb2.LidarSpec(lidar_type=sensorsim_pb2.PANDAR128),
+            frame_start_us=int(start_us), frame_end_us=int(end_us),
+            sensor_pose=sensorsim_pb2.PosePair(
+                start_pose=_protobuf_pose(validated_transform(world_from_rig_start) @ rig_from_lidar),
+                end_pose=_protobuf_pose(validated_transform(world_from_rig_end) @ rig_from_lidar)),
+            dynamic_objects=objects,
+        )
+        response = self._stub.render_lidar(request)
+        xyz = (np.frombuffer(response.point_xyzs_buffer, dtype=np.float32).copy()
+               if response.point_xyzs_buffer else np.asarray(response.point_xyzs, dtype=np.float32))
+        if xyz.ndim != 1 or xyz.size % 3:
+            raise ValueError("NRE LiDAR coordinates must have shape (N, 3)")
+        points = xyz.reshape(-1, 3)
+        if len(points) != response.num_points:
+            raise ValueError("NRE LiDAR point count does not match num_points")
+        if not np.isfinite(points).all():
+            raise ValueError("NRE LiDAR points must be finite float32 coordinates")
+        intensity = (np.frombuffer(response.point_intensities_buffer, dtype=np.float32).copy()
+                     if response.point_intensities_buffer
+                     else np.asarray(response.point_intensities, dtype=np.float32))
+        if intensity.ndim != 1 or intensity.size not in {0, len(points)}:
+            raise ValueError("NRE LiDAR intensity must contain one value per point")
+        if not np.isfinite(intensity).all() or ((intensity < 0) | (intensity > 1)).any():
+            raise ValueError("NRE LiDAR intensity must be finite and in [0, 1]")
+        return PointCloud(points, None if intensity.size == 0 else intensity)
 
     def render_scene_visibility(
         self, world_from_rig: np.ndarray, timestamp_us: int, camera: str,
@@ -468,29 +607,19 @@ class NuRecRenderer(Renderer):
         import numpy as np
         from alpasim_grpc.v0 import common_pb2, sensorsim_pb2
 
-        from scipy.spatial.transform import Rotation
-
         if self._stub is None:
             raise RuntimeError("Call load_scene before rendering")
         if camera not in self._camera_specs:
             raise ValueError(f"Camera {camera!r} was not loaded")
         spec = self._camera_specs[camera]
 
-        def protobuf_pose(world_from_object):
-            transform = np.array(world_from_object, dtype=float, copy=True)
-            qx, qy, qz, qw = Rotation.from_matrix(transform[:3, :3]).as_quat()
-            return common_pb2.Pose(
-                vec=common_pb2.Vec3(x=transform[0, 3], y=transform[1, 3], z=transform[2, 3]),
-                quat=common_pb2.Quat(w=qw, x=qx, y=qy, z=qz),
-            )
-
-        rig = protobuf_pose(world_from_rig)
+        rig = _protobuf_pose(world_from_rig)
         from .simulator import _compose_pose
 
         cam = _compose_pose(rig, self._camera_poses[camera], common_pb2)
         objects = []
         for track_id, world_from_actor in dynamic_objects:
-            actor_pose = protobuf_pose(validated_transform(world_from_actor))
+            actor_pose = _protobuf_pose(world_from_actor)
             objects.append(sensorsim_pb2.DynamicObject(track_id=track_id,
                 pose_pair=sensorsim_pb2.PosePair(start_pose=actor_pose, end_pose=actor_pose)))
         frame_us = int(timestamp_us)

@@ -20,6 +20,21 @@ from avsectester.geometry.poses import rotation_matrix, validated_vector
 
 
 @dataclass(frozen=True)
+class PointCloud:
+    """One LiDAR scan in the sensor frame at the end of the scan.
+
+    ``points`` is an (N, 3) float32 array in meters, with x forward, y left and z up.
+    ``intensity`` is an (N,) float32 array in [0, 1], or None when the source has no
+    intensity. Array fields are not validated at construction so recording can restore
+    payload references without loading arrays. Producers validate shapes, dtypes, finite
+    values and matching lengths before constructing a cloud.
+    """
+
+    points: np.ndarray
+    intensity: np.ndarray | None = None
+
+
+@dataclass(frozen=True)
 class ActorState:
     """An actor's world-from-origin pose, world velocity and optional bounding-box geometry.
 
@@ -272,6 +287,8 @@ def write_sensor_data(observation: Observation, sensor: str, data: Any) -> Obser
     Arrays retain their representation and dtype regardless of shape. Native sensor wrappers
     are shallow-copied with only ``data`` replaced, preserving their calibration, timestamps
     and native options. Camera-specific writes use ``write_camera_rgb`` instead.
+    ``PointCloud`` has no ``data`` attribute and is replaced as a whole, for example
+    ``write_sensor_data(observation, "lidar", PointCloud(points, intensity))``.
     """
     payload = observation.sensor_data[sensor]
     if isinstance(payload, np.ndarray) or not hasattr(payload, "data"):
@@ -285,6 +302,7 @@ def write_sensor_data(observation: Observation, sensor: str, data: Any) -> Obser
 
 
 __all__ = [
+    'PointCloud',
     'ActorState',
     'Unavailable',
     'TargetSpec',

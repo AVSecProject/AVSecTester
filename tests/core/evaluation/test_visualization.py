@@ -1,6 +1,7 @@
 """Recorded visualization features use small images and physical camera geometry."""
 
 from pathlib import Path
+from types import SimpleNamespace
 from dataclasses import replace
 
 from PIL import Image
@@ -8,7 +9,7 @@ from PIL import Image
 import numpy as np
 import pytest
 
-from avsectester.data_types import Detection, Observation
+from avsectester.data_types import Detection, Observation, PointCloud
 from avsectester.closed_loop.simulators.base import SensorGeometry
 from avsectester.evaluation.visualization import (
     annotate, as_rgb, box3d_corners, camera_view, detections_view, draw_boxes3d, filmstrip,
@@ -127,12 +128,32 @@ def test_as_rgb():
     assert as_rgb(np.zeros((2, 3))) is None
 
 
-def test_lidar_bev():
-    cloud = np.array([[4., 2., 0.], [50., 50., 0.], [np.nan, 0., 0.]], np.float32)
-    observation = Observation(0., 0, {"lidar": cloud})
+@pytest.mark.parametrize("payload", [
+    pytest.param(PointCloud(np.array([
+        [4., 2., 0.], [4., -4., 0.], [50., 50., 0.], [np.nan, 0., 0.],
+    ], np.float32)), id="point-cloud"),
+    pytest.param(SimpleNamespace(
+        data=SimpleNamespace(native_type="carla.LidarMeasurement", raw_data=np.array([
+            [4., -2., 0., .5], [4., 4., 0., .7],
+            [50., -50., 0., .3], [np.nan, 0., 0., .1],
+        ], np.float32).tobytes()), flipy=True), id="native-carla"),
+    pytest.param({"data": {
+        "native_type": "carla.LidarMeasurement",
+        "raw_bytes": np.array([[4., -2., 0., .5], [4., 4., 0., .7],
+                               [50., -50., 0., .3], [np.nan, 0., 0., .1]],
+                              np.float32).tobytes(),
+    }, "flipy": True}, id="recorded-carla"),
+    pytest.param(SimpleNamespace(data=np.array([
+        [4., 2., 0., .5], [4., -4., 0., .7],
+        [50., 50., 0., .3], [np.nan, 0., 0., .1],
+    ], np.float32), flipy=True), id="native-array"),
+])
+def test_lidar_bev(payload):
+    observation = Observation(0., 0, {"lidar": payload})
     image = lidar_bev(observation, size=20, meters=10.)
     assert image.shape == (20, 20, 3) and image.dtype == np.uint8
     np.testing.assert_array_equal(image[6, 8], [0, 255, 0])
+    np.testing.assert_array_equal(image[6, 14], [0, 255, 0])
     np.testing.assert_array_equal(image[10, 10], [255, 80, 80])
     assert lidar_bev(Observation(0., 0)) is None
     with pytest.raises(ValueError, match="positive"):

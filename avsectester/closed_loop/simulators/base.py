@@ -263,6 +263,15 @@ class Simulator(ABC):
         return 0
 
     @property
+    def observation_lead_steps(self) -> int:
+        """Recorded decision steps needed before the earliest observation this simulator renders.
+
+        They add to the driving system's history. ``past_steps`` remains the simulator's own
+        history before a selected start.
+        """
+        return 0
+
+    @property
     def decision_time_step(self) -> float | None:
         """Decision interval in seconds. None leaves the interval unrestricted."""
         return None

@@ -392,14 +392,21 @@ class ClosedLoopSession:
         return self.services.frame_data_cache.get_or_generate(key, generate)
 
     def can_start_at(self, position: int) -> bool:
-        """Check deployment and recorded-history requirements without starting a runtime."""
+        """Check deployment and recorded-history requirements without starting a runtime.
+
+        Required history is the larger of the simulator's own history and the driving
+        system's history plus the simulator's observation lead steps.
+        """
         from avsectester.closed_loop.simulators.base import can_deploy_at
 
         deployment_allowed = can_deploy_at(position, self.services.deployment,
                                             self.services.simulator.capture_ticks)
+        simulator = self.services.simulator
         adapter = self.services.driving_adapter
-        required_history = max(self.services.simulator.past_steps,
-                               adapter.past_steps if adapter is not None else 0)
+        history = adapter.past_steps if adapter is not None else 0
+        lead_steps = simulator.observation_lead_steps
+        require_nonnegative_integer(lead_steps, "observation_lead_steps")
+        required_history = max(simulator.past_steps, history + lead_steps)
         return deployment_allowed and position >= required_history
 
     def frame_data(self, scenario_id: str, frame: FrameReference,

@@ -9,10 +9,11 @@ import numpy as np
 import pytest
 import torch
 
-from avsectester.data_types import Control, Detection, TargetSpec, Unavailable, WorldSnapshot
+from avsectester.data_types import Control, Detection, PointCloud, TargetSpec, Unavailable, WorldSnapshot
 from avsectester.datasets import FrameReference
 from avsectester.closed_loop.simulators.ego_dynamics import PlanarEgoState
 from avsectester.geometry import FThetaCamera, PinholeCamera, WindshieldDistortion
+from avsectester.geometry.lidars import LidarCalibration
 from avsectester.rendering import ObjectVisibility
 from avsectester.serialization import DEFAULT_REGISTRY, SerializationRegistry
 
@@ -45,6 +46,13 @@ class ClassifiedSensorResult(SensorResult):
 Point = namedtuple("Point", "x y")
 VALUES = [
     pytest.param(None, None, id="none"),
+    pytest.param(PointCloud(np.array([[1., 2., 3.]], np.float32), np.array([.5], np.float32)),
+                 PointCloud(np.array([[1., 2., 3.]], np.float32), np.array([.5], np.float32)),
+                 id="point-cloud"),
+    pytest.param(PointCloud(np.array([[4., 5., 6.]], np.float32)),
+                 PointCloud(np.array([[4., 5., 6.]], np.float32)), id="point-cloud-no-intensity"),
+    pytest.param(LidarCalibration(np.eye(4), .1), LidarCalibration(np.eye(4), .1),
+                 id="lidar-calibration"),
     pytest.param({"_avsectester_type": "user", "_avsectester_keys": ["x"]},
                  {"_avsectester_type": "user", "_avsectester_keys": ["x"]}, id="reserved-keys"),
     pytest.param(torch.tensor([[1., 2.]], requires_grad=True),
@@ -104,7 +112,8 @@ def assert_value(actual, expected):
 @pytest.mark.parametrize("value,expected", VALUES)
 def test_encode_and_decode(value, expected):
     registry = SerializationRegistry()
-    for record in (WorldSnapshot, ObjectVisibility, PinholeCamera, FThetaCamera, WindshieldDistortion):
+    for record in (WorldSnapshot, ObjectVisibility, PinholeCamera, FThetaCamera,
+                   WindshieldDistortion, PointCloud, LidarCalibration):
         registry.register_dataclass(record)
     assert_value(registry.decode(registry.encode(value)), expected)
 
@@ -112,7 +121,9 @@ def test_encode_and_decode(value, expected):
 def test_default_registry():
     records = (Control(throttle=.2), Unavailable("absent"), TargetSpec((0., 0., 2., 2.), label="car"),
                Detection((1., 0., 0.), (4., 2., 1.), 0., "car", .9),
-               FrameReference("scene", 1, "frame-1", .1), PlanarEgoState())
+               FrameReference("scene", 1, "frame-1", .1), PlanarEgoState(),
+               PointCloud(np.array([[1., 2., 3.]], np.float32), np.array([.7], np.float32)),
+               LidarCalibration(np.eye(4), .1))
     for record in records:
         assert_value(DEFAULT_REGISTRY.decode(DEFAULT_REGISTRY.encode(record)), record)
 

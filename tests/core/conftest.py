@@ -147,6 +147,14 @@ def nurec_usdz_path(tmp_path):
         pose[:3, 3] = [position * .5, 0., .3]
         transforms.append([pose.tolist(), pose.tolist()])
     rig = {
+        "lidar_calibrations": {"lidar_gt_top_p128@scene": {
+            "logical_sensor_name": "lidar_gt_top_p128",
+            "unique_sensor_idx": 0, "sequence_id": "scene",
+            "T_sensor_rig": [[1., 0., 0., 1.17], [0., 1., 0., 0.],
+                             [0., 0., 1., 1.95], [0., 0., 0., 1.]],
+            "lidar_model": {"type": "row-offset-spinning",
+                            "parameters": {"spinning_frequency_hz": 10.}},
+        }},
         "camera_calibrations": {camera: {
             "camera_model": {"parameters": {"resolution": [16, 12],
                 "principal_point": [8, 6], "angle_to_pixeldist_poly": [0, 8],
@@ -155,6 +163,8 @@ def nurec_usdz_path(tmp_path):
         }},
         "rig_trajectories": [{"sequence_id": "scene", "rig_bbox": {
             "dim": [4., 2., 1.5], "centroid": [.2, 0., .7]},
+            "lidars_frame_timestamps_us": {"lidar_gt_top_p128@scene":
+                                           [[0, 100000], [100000, 200000], [200000, 300000]]},
             "cameras_frame_timestamps_us": {camera: [[0, 1], [250000, 250001], [500000, 500001]]},
             "cameras_frame_T_rig_worlds": {camera: transforms}}],
     }

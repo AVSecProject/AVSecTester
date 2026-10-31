@@ -175,6 +175,19 @@ def test_can_start_at():
         assert session.can_start_at(0)
         assert not session.can_start_at(1)
         assert session.can_start_at(4)
+    # No deployment ticks or capture ticks constrain this history boundary.
+    with ClosedLoopServices(MemoryDataset(), MemorySimulator(observation_lead_steps=1),
+                            adapter) as services, services.session(0) as session:
+        assert not session.can_start_at(adapter.past_steps)
+        assert session.can_start_at(adapter.past_steps + 1)
+    with ClosedLoopServices(MemoryDataset(), MemorySimulator(observation_lead_steps=1)) as services:
+        with services.session(0) as session:
+            assert not session.can_start_at(0)
+            assert session.can_start_at(1)
+    with ClosedLoopServices(MemoryDataset(), MemorySimulator(observation_lead_steps=-1)) as services:
+        with services.session(0) as session:
+            with pytest.raises(ValueError, match="observation_lead_steps must be a nonnegative integer"):
+                session.can_start_at(1)
 
 
 def test_session():

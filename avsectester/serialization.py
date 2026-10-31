@@ -299,13 +299,14 @@ DEFAULT_REGISTRY = SerializationRegistry()
 for _module, _names in (
     ("avsectester.data_types", (
         "ActorState", "Unavailable", "TargetSpec", "Control", "Observation", "WorldSnapshot",
-        "StateEstimate", "RecordedOutput", "Detection",
+        "StateEstimate", "RecordedOutput", "Detection", "PointCloud",
     )),
     ("avsectester.datasets.base", ("FrameReference",)),
     ("avsectester.closed_loop.simulators.base", ("ClockSnapshot", "SensorGeometry")),
     ("avsectester.closed_loop.simulators.ego_dynamics", ("PlanarEgoState",)),
     ("avsectester.rendering.compositing", ("ObjectVisibility",)),
     ("avsectester.geometry.cameras", ("CameraCalibration", "PinholeCamera", "FThetaCamera", "WindshieldDistortion")),
+    ("avsectester.geometry.lidars", ("LidarCalibration",)),
     ("avsectester.attack.attack", ("AttackSegment",)),
     ("avsectester.maps.scenario_map", ("ScenarioMap", "Lane", "TrafficControl", "StopLine")),
 ):

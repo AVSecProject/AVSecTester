@@ -140,12 +140,48 @@ simulator = NuRecSimulator(
 assert simulator.command_modes == frozenset({"trajectory"})
 ```
 
+### LiDAR
+
+Set `NuRecRenderer.lidar` to a scene's logical sensor name, such as `lidar_gt_top_p128`, to
+collect LiDAR alongside the cameras. The default `None` disables LiDAR. The selected scene must
+contain exactly one LiDAR with a `row-offset-spinning` model. The sensor-to-rig transform comes
+from calibration. The scan period is the median duration of recorded LiDAR frames. See
+[LiDAR records](../reference/runtime.md#lidar-data) for the payload format.
+
+The decision interval must match the scan period within 1% of the decision interval. This is
+checked after scene loading and before the first render. Each scan covers the previous decision
+timestamp through the current decision timestamp. Its start pose is the previous decision pose.
+For decision zero, that pose comes from the recorded trajectory at the scan's start time.
+Recorded past observations also include LiDAR, using recorded ego and actor poses at both scan
+endpoints.
+
+With LiDAR enabled, one additional recorded step is needed before the earliest observation.
+Segment selection therefore reserves at least one more step than the driving-system history
+alone requires. A past-observation request whose scans begin before the recording raises
+`ValueError`.
+
+Cameras precede LiDAR in `Observation.sensor_data`. Current LiDAR captures pass through
+`render.post` with the LiDAR sensor name. They do not pass through `render.pre`, whose
+`CameraPoseRequest` is specific to cameras. A LiDAR `SensorView` has no camera geometry and uses
+the scan-end sensor transform. Supplied driving systems continue to read their configured
+cameras.
+
+Reconstructed-scene defects may produce a small number of below-ground points in a scan.
+
+Supplied scenes provide no intensity. Intensity and no-return-ray simulation are
+**Not yet implemented.** See
+[NuRec LiDAR simulation](../development/TODO.md#nurec-lidar-simulation).
+Inserted framework objects do not appear in LiDAR captures.
+**Not yet implemented.** See
+[Inserted objects in non-camera sensors](../development/TODO.md#inserted-objects-in-non-camera-sensors).
+
 ### Recorded past observations
 
 After reset, `observe_past(count)` returns actual recorded observations before the selected
 start, oldest first, with negative run-relative timestamps and frames. It rejects insufficient
 history and preserves the current world, clock and capture. Start eligibility uses the larger
-history requirement of the simulator and `DrivingAdapter`.
+of the simulator's own history and the `DrivingAdapter` history plus the simulator's observation
+lead steps.
 
 Past captures use recorded ego poses and actors, including the same short-track filtering as
 current captures. Objects installed during reset or setup are composed using those recorded
@@ -180,9 +216,8 @@ a penetration solver. It does not correct traffic actors.
 
 ### Camera resolution
 
-The renderer probes each configured camera when loading a scene and scales its lens to the image
-dimensions actually returned by NRE. NRE preserves aspect ratio, so returned width can differ
-from the request. Subsequent captures must retain those dimensions.
+Cameras render at their native resolution. A returned image whose dimensions differ from the
+camera's native model raises `ValueError`.
 
 Captures render a single instant.
 
@@ -282,6 +317,10 @@ operation-isolation rules.
 Subclass `Simulator` for configuration and `SimulatorRuntime` for native world operations.
 Declare dataset kinds, timing, command modes, stages, world settings, capture capabilities and
 identity.
+
+Declare the simulator's own recorded-history requirement in `past_steps`. If a sensor needs
+recorded data before the earliest observation, declare it in `observation_lead_steps`, which
+adds to the driving system's history.
 
 Declare every view-capable sensor in `sensors` and cameras in `camera_sensors`. Native views
 supply capture data and sensor geometry. The shared runtime owns camera composition. A

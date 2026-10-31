@@ -6,12 +6,14 @@ from collections import OrderedDict, namedtuple
 import numpy as np
 import pytest
 
-from avsectester.data_types import ActorState, Control, Detection, Observation, RecordedOutput, WorldSnapshot
+from avsectester.data_types import ActorState, Control, Detection, Observation, PointCloud, RecordedOutput, WorldSnapshot
 from avsectester.closed_loop.simulators.base import ClockSnapshot
 from avsectester.geometry import CameraCalibration, FThetaCamera, PinholeCamera, WindshieldDistortion
 from avsectester.geometry.cameras import BODY_FROM_OPTICAL
+from avsectester.geometry.lidars import LidarCalibration
 from avsectester.rendering import ObjectVisibility
 from avsectester.runlog import Recorder, RunLog, StepRecord, read_table
+from avsectester.serialization import DEFAULT_REGISTRY
 
 
 def test_record_and_read(tmp_path):
@@ -68,22 +70,31 @@ def test_record_and_read(tmp_path):
     assert step.detections == [detection] and step.outputs == outputs
 
 
-def test_observation_calibration(tmp_path):
-    lens = FThetaCamera(16., 12., (0., 20.), 32, 24, (0., .05), max_angle=1.4,
-                        windshield=WindshieldDistortion(
-                            (0., 1., 0., 0., 0., 0.), (0., 0., 0., 1., 0., 0.),
-                            (0., 1., 0., 0., 0., 0.), (0., 0., 0., 1., 0., 0.)))
-    observation = Observation(.1, 1, calibration={"front": CameraCalibration(lens, BODY_FROM_OPTICAL)})
+@pytest.mark.parametrize("sensor,payload,calibration", [
+    pytest.param("front", np.full((2, 3, 3), 40, np.uint8),
+                 CameraCalibration(FThetaCamera(
+                     16., 12., (0., 20.), 32, 24, (0., .05), max_angle=1.4,
+                     windshield=WindshieldDistortion(
+                         (0., 1., 0., 0., 0., 0.), (0., 0., 0., 1., 0., 0.),
+                         (0., 1., 0., 0., 0., 0.), (0., 0., 0., 1., 0., 0.))),
+                     BODY_FROM_OPTICAL), id="camera"),
+    pytest.param("lidar", PointCloud(np.array([[1., 2., 3.], [4., 5., 6.]], np.float32),
+                                    np.array([.2, .8], np.float32)),
+                 LidarCalibration(np.array([[1., 0., 0., 1.17], [0., 1., 0., 0.],
+                                            [0., 0., 1., 1.95], [0., 0., 0., 1.]]), .1),
+                 id="lidar"),
+    pytest.param("lidar", PointCloud(np.array([[7., 8., 9.]], np.float32)),
+                 LidarCalibration(np.eye(4), .1), id="lidar-no-intensity"),
+])
+def test_observation_calibration(tmp_path, sensor, payload, calibration):
+    observation = Observation(.1, 1, {sensor: payload}, calibration={sensor: calibration})
     with Recorder(tmp_path / "calibrated") as recorder:
         recorder.record_step(StepRecord(0, model_observation=observation))
     decoded = RunLog.read(tmp_path / "calibrated").steps[0].model_observation
-    calibration = decoded.calibration["front"]
-    assert isinstance(calibration, CameraCalibration) and isinstance(calibration.camera, FThetaCamera)
-    assert calibration.camera.windshield == lens.windshield
-    np.testing.assert_array_equal(calibration.rig_from_camera, BODY_FROM_OPTICAL)
+    assert DEFAULT_REGISTRY.encode(decoded) == DEFAULT_REGISTRY.encode(observation)
     references = RunLog.read(tmp_path / "calibrated", load_payloads=False)
-    calibration = references.steps[0].model_observation.calibration["front"]
-    assert isinstance(calibration, CameraCalibration) and isinstance(calibration.camera, FThetaCamera)
+    restored = references.steps[0].model_observation
+    assert type(restored.calibration[sensor]) is type(calibration)
 
 
 def test_read_selected_columns(tmp_path):

@@ -65,7 +65,7 @@ Paths are relative to `avsectester/`.
 | Directory | Responsibility |
 |---|---|
 | `./` | Shared records, validation, serialization, type paths and CLI entry points |
-| `geometry/` | Camera models, poses, projection and ray/mesh geometry |
+| `geometry/` | Camera models, LiDAR calibration, poses, projection and ray/mesh geometry |
 | `datasets/` | Stateless recordings and recipes |
 | `maps/` | Semantic records and map readers |
 | `rendering/` | Assets, surfaces, textures, harmonizers and composition |
@@ -125,6 +125,9 @@ The supplied [configuration list](../examples/README.md) contains these combinat
 | `NuRecDataset` | `NuRecSimulator` | `AlpamayoAVStack` |
 | `NuRecDataset` | `NuRecSimulator` | `RuleBasedAVStack` |
 | `NuScenesDataset` | `RecordedReplaySimulator` | `CameraForwardCollisionAVStack` |
+
+NuRec can collect LiDAR alongside cameras without changing the selected driving system. See
+[NuRec LiDAR](../guides/simulators.md#lidar).
 
 Reactive NuRec traffic is optional. See
 [simulator behavior](../guides/simulators.md#reactive-traffic).
