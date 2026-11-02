@@ -128,9 +128,7 @@ Return it from `AttackRuntime.step`. The runner replaces the whole `PointCloud` 
 
 ### CARLA LiDAR data
 
-CARLA LiDAR remains in avstack's native format. Unified CARLA camera and LiDAR records are
-**Not yet implemented.** See
-[TODO](../development/TODO.md#unified-carla-sensor-records).
+CARLA LiDAR keeps avstack's native format, which `ModularAVStack` passes to avstack unchanged.
 
 A CARLA LiDAR view contains an owned `SensorCapture`. `raw_data` holds packed float32 records x,
 y, z, intensity: four values, or 16 bytes, per point. These bytes use CARLA sensor axes: x
