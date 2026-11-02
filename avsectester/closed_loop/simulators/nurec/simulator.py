@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import copy
 import dataclasses
-import hashlib
 import math
 from copy import deepcopy
 from dataclasses import asdict, replace
@@ -18,7 +17,6 @@ from avsectester.closed_loop.simulators.base import (
     SensorGeometry, SensorView, Simulator, SimulatorRuntime, UnsupportedStartError, validated_camera_aliases,
 )
 from avsectester.closed_loop.simulators.navigation import RouteGenerator
-from avsectester.maps import ScenarioMap
 from avsectester.geometry.cameras import BODY_FROM_OPTICAL
 from avsectester.geometry.lidars import LidarCalibration
 from avsectester.geometry.poses import validated_transform, validated_vector
@@ -162,11 +160,9 @@ class NuRecSimulator(Simulator):
             raise ValueError(f"AlpaSim traffic requires a NuRec decision time step of {TRAFFIC_STEP_US / 1e6} s")
         self.traffic = traffic
         self.min_track_duration_s = min_track_duration_s
-        self._route_failures: dict[tuple[str, str, str, bool], str | None] = {}
+        self._route_failures: dict[str, str | None] = {}
 
     def validate_start(self, start: ScenarioStart | None) -> None:
-        import numpy as np
-
         if start is None:
             raise ValueError("NuRec requires a ScenarioStart for the recorded clock, ego pose and scene")
         super().validate_start(start)
@@ -180,16 +176,13 @@ class NuRecSimulator(Simulator):
             return
         # The route depends only on the complete recording and the map, not on the start frame.
         # Within one configured simulator a scenario's recording and map are fixed.
-        positions = np.asarray([state.pose[:3, 3] for state in start.recorded_ego], dtype=float)
-        key = (start.scenario_id, self.route_generator, hashlib.sha256(positions.tobytes()).hexdigest(),
-               isinstance(start.scenario_map, ScenarioMap))
-        if key not in self._route_failures:
+        if start.scenario_id not in self._route_failures:
             try:
                 _route_generator(self.route_generator, start)
-                self._route_failures[key] = None
+                self._route_failures[start.scenario_id] = None
             except ValueError as error:
-                self._route_failures[key] = str(error)
-        failure = self._route_failures[key]
+                self._route_failures[start.scenario_id] = str(error)
+        failure = self._route_failures[start.scenario_id]
         if failure is not None:
             raise UnsupportedStartError(f"Navigation route cannot be built: {failure}")
 

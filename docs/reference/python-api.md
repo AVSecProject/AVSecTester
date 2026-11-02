@@ -2030,7 +2030,7 @@ The user's attack: the metabuilder, the offline phase and the online phase.
 | `Attack.deployment_ticks(segment: AttackSegment) -> int` | Declare native setup ticks before preparing artifacts. Default has no world deployment. |
 | `Attack.create_runtime(segment: AttackSegment, artifacts: Any) -> AttackRuntime` | Create the runtime for one run. By default, a runtime without attack actions. |
 | `Attack.configuration_parameters() -> Mapping[str, Any]` | Describe the constructor parameters used to validate saved preparations. |
-| `Attack.save_artifacts(artifacts: Any, directory: str \| Path) -> None` | Save the explicit `artifacts` value as pickle plus its content hash. |
+| `Attack.save_artifacts(artifacts: Any, directory: str \| Path) -> None` | Save the explicit `artifacts` value as pickle. |
 | `Attack.load_artifacts(directory: str \| Path) -> Any` | Return saved artifacts without changing this attack's configuration or state. |
 <!-- api:end -->
 

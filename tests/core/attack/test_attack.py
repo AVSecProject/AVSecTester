@@ -16,9 +16,6 @@ def test_save_and_load_artifacts(tmp_path):
     attack.save_artifacts(artifacts, tmp_path)
     restored = attack.load_artifacts(tmp_path)
     np.testing.assert_array_equal(restored["image"], artifacts["image"])
-    (tmp_path / "artifacts.pkl").write_bytes(b"incomplete artifact")
-    with pytest.raises(ValueError, match="hash"):
-        attack.load_artifacts(tmp_path)
 
 
 def test_default_phases():

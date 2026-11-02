@@ -446,10 +446,12 @@ def test_validate_start(nurec_dataset, make_nurec_simulator):
     reversed_pose[0, 3] -= 1.
     folded = replace(start, recorded_ego=(*start.recorded_ego, replace(last, pose=reversed_pose)))
     for kind in ("map", "recorded"):
+        make_nurec_simulator(NuRecRenderer(cameras=["front"]), route_generator=kind).validate_start(start)
+        # A scenario has one recording per simulator, so the folded recording needs its own.
         simulator = make_nurec_simulator(NuRecRenderer(cameras=["front"]), route_generator=kind)
-        simulator.validate_start(start)
-        with pytest.raises(UnsupportedStartError, match="folds back"):
-            simulator.validate_start(folded)
+        for _ in range(2):
+            with pytest.raises(UnsupportedStartError, match="folds back"):
+                simulator.validate_start(folded)
     make_nurec_simulator(NuRecRenderer(cameras=["front"]), route_generator="none").validate_start(folded)
 
     missing = replace(start, scenario_map=Unavailable("No map"))

@@ -17,7 +17,6 @@ from abc import ABC
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
-import hashlib
 import json
 from inspect import Parameter, signature
 from pathlib import Path
@@ -124,18 +123,17 @@ class Attack(ABC):
         return parameters
 
     def save_artifacts(self, artifacts: Any, directory: str | Path) -> None:
-        """Save the explicit ``artifacts`` value as pickle plus its content hash.
+        """Save the explicit ``artifacts`` value as pickle.
 
         Override together with ``load_artifacts`` for another storage format. The default
         format is intended for artifacts produced by trusted attack implementations.
         """
         destination = Path(directory)
         destination.mkdir(parents=True, exist_ok=True)
-        payload = pickle.dumps(artifacts, protocol=pickle.HIGHEST_PROTOCOL)
-        (destination / "artifacts.pkl").write_bytes(payload)
-        (destination / "manifest.json").write_text(json.dumps({
-            "format": "pickle", "sha256": hashlib.sha256(payload).hexdigest(),
-        }) + "\n", encoding="utf-8")
+        (destination / "artifacts.pkl").write_bytes(
+            pickle.dumps(artifacts, protocol=pickle.HIGHEST_PROTOCOL))
+        (destination / "manifest.json").write_text(
+            json.dumps({"format": "pickle"}) + "\n", encoding="utf-8")
 
     def load_artifacts(self, directory: str | Path) -> Any:
         """Return saved artifacts without changing this attack's configuration or state."""
@@ -143,10 +141,7 @@ class Attack(ABC):
         manifest = json.loads((source / "manifest.json").read_text(encoding="utf-8"))
         if manifest.get("format") != "pickle":
             raise ValueError("Unsupported artifact format")
-        payload = (source / "artifacts.pkl").read_bytes()
-        if hashlib.sha256(payload).hexdigest() != manifest.get("sha256"):
-            raise ValueError("Artifact content hash does not match the saved manifest")
-        return pickle.loads(payload)
+        return pickle.loads((source / "artifacts.pkl").read_bytes())
 
 
 __all__ = [

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import random
 from copy import deepcopy
-import hashlib
 
 import numpy as np
 
@@ -42,7 +41,7 @@ def native_sampling_grid(black, white):
 class SessionDataSource(DataSource):
     """Index eligible captures with fresh brightness/contrast draws and cached physical probes.
 
-    Physical probes are cached within this data source only; its attack, session seed,
+    Physical probes are cached per candidate within this data source. Its attack, session seed,
     environment, alpha, placement and prop mesh remain fixed for that optimization.
     """
 
@@ -76,24 +75,18 @@ class SessionDataSource(DataSource):
                     raise ValueError("Patch segment has no frame that preserves the deployment window")
             self._candidates.extend((segment, frame) for frame in candidates)
 
-    def _physical_capture(self, segment, frame):
+    def _physical_capture(self, index):
         from .offline import render_candidate
         from avsectester.rendering.textures import load_rgba_image
 
         if not self.attack.emissive:
             raise ValueError("Native patch optimization requires self-emissive deployment")
-        # This instance owns immutable attack/environment settings, so no cache crosses attacks.
-        dimensions = tuple(getattr(self.attack, name, None) for name in
-                           ("prop", "width_m", "height_m", "emissive", "sensor", "orientation"))
-        alpha_source = load_rgba_image(self.attack.assets)[..., 3]
-        identity = repr((segment.scenario_id, frame.position, segment.user_data,
-                         getattr(self.session, "seed", None), self.environment, dimensions, self.size))
-        key = (identity, hashlib.sha256(alpha_source.tobytes()).digest())
-        if key not in self._native_samples:
+        if index not in self._native_samples:
+            segment, frame = self._candidates[index]
             height, width = self.size
-            alpha = alpha_source
             import cv2
-            alpha = cv2.resize(alpha, (width, height), interpolation=cv2.INTER_NEAREST)
+            alpha = cv2.resize(load_rgba_image(self.attack.assets)[..., 3], (width, height),
+                               interpolation=cv2.INTER_NEAREST)
             black = np.zeros((height, width, 4), np.uint8)
             black[..., 3] = alpha
             white = black.copy()
@@ -108,8 +101,8 @@ class SessionDataSource(DataSource):
                     raise ValueError("Native patch probe has no selected RGB capture")
                 rgbs.append(item[1].copy())
             grid, mask = native_sampling_grid(rgbs[0], rgbs[1])
-            self._native_samples[key] = captures[-1], grid, mask
-        return self._native_samples[key]
+            self._native_samples[index] = captures[-1], grid, mask
+        return self._native_samples[index]
 
     def __len__(self) -> int:
         """Return the number of eligible segment/frame candidates."""
@@ -129,7 +122,7 @@ class SessionDataSource(DataSource):
         physical = segment.user_data.get("deployment") == "world"
         sampling = None
         if physical and self.require_patch_grid:
-            capture, grid, mask = self._physical_capture(segment, frame)
+            capture, grid, mask = self._physical_capture(index)
         else:
             capture = self.session.render(RenderRequest(segment.scenario_id, frame,
                                         self.attack.sensor, environment=self.environment))
