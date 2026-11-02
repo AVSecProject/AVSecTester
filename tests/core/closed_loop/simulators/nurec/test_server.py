@@ -36,8 +36,7 @@ def service_configuration(nurec_usdz_path, docker_boundary, monkeypatch, tmp_pat
     state, _calls = docker_boundary
     boundary = NuRecRpcBoundary(service_container=state / "nre").install(monkeypatch)
     simulator = NuRecSimulator(NuRecRenderer(
-        cameras=["front"], probe_directory=tmp_path / "probes",
-        server_probe_directory="/server/assets"), time_step=.1, depth="none",
+        cameras=["front"], asset_directory=tmp_path / "assets"), time_step=.1, depth="none",
                                physics_update_mode="none", route_generator="none")
     monkeypatch.setenv("AVSECTESTER_HOST_GPU", "3")
     return NuRecDataset([nurec_usdz_path]), simulator, boundary
@@ -65,7 +64,7 @@ def test_local_services(service_configuration, docker_boundary, monkeypatch, tmp
         "--network", "host", "--gpus", "device=3", "-e", "HOME=/tmp",
         "-v", f"{archive.resolve()}:/mnt/nre-data/{archive.name}:ro",
         "-v", f"{second.resolve()}:/mnt/nre-data/{second.name}:ro",
-        "-v", f"{simulator.renderer.probe_directory.resolve()}:/server/assets:ro",
+        "-v", f"{simulator.renderer.asset_directory.resolve()}:{simulator.renderer.asset_directory.resolve()}:ro",
         "--entrypoint", "/app/internal/scripts/pycena/runtime/pycena_nrm_full",
         "nvcr.io/nvidia/nre/nre-ga:26.04", "serve-grpc", "--host=0.0.0.0",
         "--port=50051", "--artifact-glob=/mnt/nre-data/*.usdz", "--cache-size=2",
@@ -73,6 +72,17 @@ def test_local_services(service_configuration, docker_boundary, monkeypatch, tmp
     ]
     assert any("Starting NRE" in text for text in messages)
     assert any("Stopped and removed NRE" in text for text in messages)
+
+    external_mount = NuRecSimulator(NuRecRenderer(
+        cameras=["front"], asset_directory=tmp_path / "assets",
+        server_asset_directory="/server/assets"), time_step=.1, depth="none",
+        physics_update_mode="none", route_generator="none")
+    with local_services(dataset, external_mount, nre_name="nre", log=messages.append):
+        assert (state / "nre").exists()
+    launches = [json.loads(row) for row in calls.read_text().splitlines()
+                if json.loads(row)[0] == "run"]
+    assert f"{(tmp_path / 'assets').resolve()}:/server/assets:ro" in launches[-1]
+    assert not (state / "nre").exists()
 
     (state / "nre").write_text("true")
     messages.clear()

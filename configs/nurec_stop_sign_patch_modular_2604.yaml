@@ -25,8 +25,7 @@ simulator:
         endpoint: 127.0.0.1:50052
         cameras:
         - camera_front_wide_120fov
-        probe_directory: ../results/nre-probes
-        server_probe_directory: /mnt/nre-probes
+        asset_directory: ../results/nre-assets
     dynamics:
       type: avsectester.closed_loop.simulators.ego_dynamics:AlpaSimController
 avstack:

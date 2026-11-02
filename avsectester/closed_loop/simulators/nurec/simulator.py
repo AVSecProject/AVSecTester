@@ -7,7 +7,7 @@ import dataclasses
 import hashlib
 import math
 from copy import deepcopy
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from typing import Any, TYPE_CHECKING
 import zipfile
 from collections import Counter
@@ -35,8 +35,32 @@ if TYPE_CHECKING:
     from avsectester.closed_loop.hooks import CameraPoseRequest
     from avsectester.geometry.cameras import Camera
     from avsectester.datasets.base import ScenarioStart
-    from avsectester.rendering import CompositePlan, PlacedObject
+    from avsectester.rendering import (
+        CompositePlan, CompositeResult, ObjectAsset, ObjectComposition, PlacedObject,
+    )
     import numpy as np
+
+
+# Include soft edges below 0.5 coverage, matching composite harmonizers' full owned pixels.
+_HARMONIZER_COVERAGE_THRESHOLD = 8 / 255
+
+
+@dataclasses.dataclass(frozen=True)
+class _RenderTracks:
+    """Actor and inserted-object entries used for one sensor request."""
+
+    actor_tracks: tuple[tuple[str, np.ndarray], ...]
+    object_tracks: Mapping[str, tuple[str, np.ndarray]]
+
+    @property
+    def dynamic_objects(self) -> tuple[tuple[str, np.ndarray], ...]:
+        """Actor and inserted-object entries in render-request order."""
+        return self.actor_tracks + tuple(self.object_tracks.values())
+
+    def native(self) -> dict[str, Any]:
+        """Detached request entries for a sensor view."""
+        return deepcopy({"dynamic_objects": self.dynamic_objects, "actor_tracks": self.actor_tracks,
+                         "object_tracks": dict(self.object_tracks)})
 
 
 def _route_generator(kind: str, start: ScenarioStart | None) -> RouteGenerator:
@@ -56,7 +80,12 @@ class NuRecSimulator(Simulator):
     origin. ``dynamics`` is also a template: every runtime integrates with its own copy, so a
     handler that changes it, for example ``max_brake``, changes only that runtime.
 
-    ``object_occlusion`` chooses how inserted world objects are hidden behind the scene. The
+    ``object_insertion="composite"`` blends inserted objects into camera captures. With
+    ``"scene"``, NRE renders objects together with the reconstruction in every NRE sensor.
+    Scene insertion requires the renderer's asset directory. ``object_occlusion`` and
+    ``occlusion_tolerance_m`` apply only to composite insertion.
+
+    ``object_occlusion`` chooses how composited world objects are hidden behind the scene. The
     default ``"rendered_probes"`` renders opaque probe copies of the objects inside the
     reconstruction (``Renderer.render_scene_visibility``), so the reconstruction that produces
     the images also hides the objects; it needs no mesh. ``"geometry"`` estimates occlusion from
@@ -86,6 +115,7 @@ class NuRecSimulator(Simulator):
         physics_update_mode: str = "ego_only",
         ground_mesh: str = "mesh",
         object_occlusion: str = "rendered_probes",
+        object_insertion: str = "composite",
         occlusion_tolerance_m: float = 0.15,
         traffic: AlpaSimTraffic | None = None,
         min_track_duration_s: float = 3.,
@@ -104,6 +134,11 @@ class NuRecSimulator(Simulator):
             raise ValueError("ground_mesh must be 'mesh' or 'mesh_ground'")
         if object_occlusion not in {"rendered_probes", "geometry"}:
             raise ValueError("object_occlusion must be 'rendered_probes' or 'geometry'")
+        if not isinstance(object_insertion, str) or object_insertion not in {"composite", "scene"}:
+            raise ValueError("object_insertion must be 'composite' or 'scene'")
+        if object_insertion == "scene" and not getattr(renderer, "asset_directory", None):
+            raise ValueError("Scene object insertion requires renderer.asset_directory")
+        self.object_insertion = object_insertion
         require_nonnegative_number(occlusion_tolerance_m, "occlusion_tolerance_m")
         require_nonnegative_number(min_track_duration_s, "min_track_duration_s")
         if depth == "mesh" or physics_update_mode == "ego_only":
@@ -203,6 +238,8 @@ class NuRecSimulator(Simulator):
                 "endpoint": getattr(self.renderer, "endpoint", None)}
         if self.renderer.lidar is not None:
             identity["lidar"] = self.renderer.lidar
+        if self.object_insertion != "composite":
+            identity["object_insertion"] = self.object_insertion
         if self.traffic is not None:
             identity["traffic"] = {
                 "type": f"{type(self.traffic).__module__}:{type(self.traffic).__qualname__}",
@@ -227,7 +264,8 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
         self._filtered_tracks: set[str] = set()
         self._traffic_states: dict[str, ActorState] = {}
         self._traffic_timestamp_us: int | None = None
-        self._capture_dynamic_objects: dict[str, tuple] = {}
+        self._capture_requests: dict[str, _RenderTracks] = {}
+        self._nominal_assets: dict[int, tuple[ObjectAsset, ObjectAsset]] = {}
         # Duck-typed renderers without ``copy`` are copied shallowly, like Renderer.copy.
         copy_renderer = getattr(simulator.renderer, "copy", None)
         self.renderer = copy_renderer() if callable(copy_renderer) else copy.copy(simulator.renderer)
@@ -427,13 +465,43 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
 
     def _dynamic_objects(self, timestamp_us: int, actors: dict[str, ActorState]) -> tuple:
         """The exact actor edits for ordinary captures and inserted-object probes."""
-        objects = [(identity, state.pose) for identity, state in actors.items()]
+        edits = [(identity, state.pose) for identity, state in actors.items()]
         for identity, state in self._recorded_actors(timestamp_us).items():
             if identity in self._filtered_tracks:
                 pose = state.pose.copy()
                 pose[2, 3] -= 100.
-                objects.append((identity, pose))
-        return tuple(objects)
+                edits.append((identity, pose))
+        return tuple(edits)
+
+    def _object_tracks(self, objects: Sequence[PlacedObject]) -> dict[str, tuple[str, np.ndarray]]:
+        """Map inserted-object IDs to the explicit scene tracks used for rendering."""
+        if self.simulator.object_insertion == "composite":
+            return {}
+        return dict(zip(
+            (placed.object_id for placed in objects),
+            self.renderer.scene_object_tracks(objects), strict=True))
+
+    def _nominal_asset(self, asset: ObjectAsset) -> ObjectAsset:
+        """The asset showing its nominal textures, built once so renderer caches can reuse it."""
+        if all(surface.nominal_texture is None for surface in asset.surfaces):
+            return asset
+        if id(asset) not in self._nominal_assets:
+            surfaces = tuple(
+                replace(surface, texture=surface.nominal_texture)
+                if surface.nominal_texture is not None else surface
+                for surface in asset.surfaces)
+            # The cached source keeps its id from being reused while the entry exists.
+            self._nominal_assets[id(asset)] = (asset, replace(asset, surfaces=surfaces))
+        return self._nominal_assets[id(asset)][1]
+
+    def _view_occlusion(self) -> dict[str, Any]:
+        """Occlusion source and tolerance shared by current and recorded views."""
+        if self.simulator.object_insertion == "scene":
+            return {"object_occlusion": "scene_render", "occlusion_tolerance_m": 0.}
+        return {
+            "object_occlusion": self.simulator.object_occlusion,
+            "occlusion_tolerance_m": self.simulator.occlusion_tolerance_m,
+        }
 
     def _simulate_traffic(self, previous: dict[str, ActorState]) -> None:
         timestamp_us = self._timestamp_us(self.pose)
@@ -459,7 +527,7 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
         self._filtered_tracks.clear()
         self._traffic_states.clear()
         self._traffic_timestamp_us = None
-        self._capture_dynamic_objects.clear()
+        self._capture_requests.clear()
         if initialization is not None:
             raise ValueError("CARLA replay initialization does not apply to NuRec")
         if environment:
@@ -620,7 +688,8 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
                 self._capture_actor_states[lidar], truth.ego, truth.t, truth.frame,
                 sensor_from_world=np.linalg.inv(self._world_from_ego @ calibration.rig_from_lidar),
                 native={"timestamp_us": self._timestamp_us(self.pose),
-                        "dynamic_objects": deepcopy(self._capture_dynamic_objects[lidar])})
+                        **self._capture_requests[lidar].native()},
+                **self._view_occlusion())
         aliases = self.simulator.camera_aliases
         native_camera = next((key for key, alias in aliases.items() if alias == sensor), sensor)
         output_key = aliases.get(native_camera, native_camera)
@@ -640,9 +709,8 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
             sensor_from_world=BODY_FROM_OPTICAL @ cam_from_world,
             depth=self._camera_depth(native_camera, camera, cam_from_world),
             native={"render_request": request, "timestamp_us": timestamp,
-                    "dynamic_objects": deepcopy(self._capture_dynamic_objects[native_camera])},
-            object_occlusion=self.simulator.object_occlusion,
-            occlusion_tolerance_m=self.simulator.occlusion_tolerance_m,
+                    **self._capture_requests[native_camera].native()},
+            **self._view_occlusion(),
         )
 
     def _camera_depth(self, camera_name: str, camera: Camera,
@@ -702,6 +770,9 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
         from avsectester.data_types import read_camera_rgb
 
         pose, timestamp_us, actors = self._recorded_capture(position)
+        tracks = _RenderTracks(
+            self._dynamic_objects(timestamp_us, actors),
+            self._object_tracks(tuple(self._start_objects.values())))
         lidar = self.renderer.lidar
         if sensor == lidar:
             import numpy as np
@@ -712,7 +783,8 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
                 self._start.recorded_ego[position], observation.t, observation.frame,
                 sensor_from_world=np.linalg.inv(pose @ calibration.rig_from_lidar),
                 native={"timestamp_us": timestamp_us,
-                        "dynamic_objects": self._dynamic_objects(timestamp_us, actors)})
+                        **tracks.native()},
+                **self._view_occlusion())
         geometry = self._recorded_sensor_geometry(position, sensor)
         aliases = self.simulator.camera_aliases
         native_camera = next((key for key, alias in aliases.items() if alias == sensor), sensor)
@@ -730,9 +802,8 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
             self._start.recorded_ego[position], observation.t, observation.frame,
             sensor_from_world=BODY_FROM_OPTICAL @ geometry.cam_from_world, depth=depth,
             native={"render_request": CameraPoseRequest(pose, native_camera), "timestamp_us": timestamp_us,
-                    "dynamic_objects": self._dynamic_objects(timestamp_us, actors)},
-            object_occlusion=self.simulator.object_occlusion,
-            occlusion_tolerance_m=self.simulator.occlusion_tolerance_m,
+                    **tracks.native()},
+            **self._view_occlusion(),
         )
 
     def _composite_plan(self, view: SensorView, objects: Sequence[PlacedObject]) -> CompositePlan:
@@ -749,6 +820,78 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
             occlusion_tolerance_m=self.simulator.occlusion_tolerance_m)
         return plan_composite(view.camera, view.cam_from_world, objects, scene_visibility=visibility)
 
+    def _compose_objects(
+        self, view: SensorView, objects: Sequence[PlacedObject],
+    ) -> tuple[CompositeResult, ObjectComposition | None]:
+        """Compose camera overlays or describe objects already rendered by NRE."""
+        if self.simulator.object_insertion == "composite":
+            return super()._compose_objects(view, objects)
+        import numpy as np
+
+        from avsectester.rendering import CompositeResult, ObjectVisibility, plan_composite
+
+        assert view.camera is not None and view.cam_from_world is not None
+        request = view.native["render_request"]
+        timestamp_us = view.native["timestamp_us"]
+        actor_tracks = view.native["actor_tracks"]
+        tracks = view.native["object_tracks"]
+        coverage = {}
+        for placed in objects:
+            others = tuple(track for identity, track in tracks.items()
+                           if identity != placed.object_id)
+            coverage[placed.object_id] = self.renderer.render_object_coverage(
+                request.pose, timestamp_us, request.camera, placed,
+                dynamic_objects=(*actor_tracks, *others))
+        masks = {identity: values >= .5 for identity, values in coverage.items()}
+        visible = np.zeros(view.data.shape[:2], dtype=bool)
+        for mask in masks.values():
+            visible |= mask
+        image = np.array(view.data, copy=True)
+        harmonized_objects = [placed for placed in objects if placed.harmonizer is not None]
+        if harmonized_objects:
+            background = self.renderer.render(
+                request.pose, timestamp_us, request.camera, dynamic_objects=actor_tracks)
+            # As in CompositePlan, only objects with differentiable harmonizers show nominal textures.
+            nominal_objects = [replace(placed, asset=self._nominal_asset(placed.asset))
+                               if getattr(placed.harmonizer, "differentiable", False) else placed
+                               for placed in objects]
+            nominal = view.data
+            if any(nominal_placed.asset is not placed.asset
+                   for nominal_placed, placed in zip(nominal_objects, objects, strict=True)):
+                candidates = {placed.object_id for placed in objects}
+                others = tuple(track for identity, track in tracks.items() if identity not in candidates)
+                nominal_tracks = self._object_tracks(nominal_objects).values()
+                nominal = self.renderer.render(
+                    request.pose, timestamp_us, request.camera,
+                    dynamic_objects=(*actor_tracks, *others, *nominal_tracks))
+            for placed in harmonized_objects:
+                active = coverage[placed.object_id] > _HARMONIZER_COVERAGE_THRESHOLD
+                if not active.any():
+                    continue
+                harmonizer = placed.harmonizer
+                if getattr(harmonizer, "differentiable", False):
+                    import torch
+
+                    def tensor(rgb: np.ndarray) -> torch.Tensor:
+                        return torch.as_tensor(rgb.copy(), dtype=torch.float32).permute(2, 0, 1) / 255
+
+                    with torch.no_grad():
+                        adjusted = harmonizer.harmonize_tensor(
+                            tensor(view.data), torch.as_tensor(active),
+                            tensor(background), tensor(nominal))
+                        adjusted_rgb = adjusted.permute(1, 2, 0).cpu().numpy()
+                    image[active] = np.rint(np.clip(adjusted_rgb[active], 0, 1) * 255).astype(np.uint8)
+                else:
+                    adjusted = harmonizer(
+                        view.data.copy(), active.astype(np.uint8) * 255, background.copy())
+                    image[active] = adjusted[active]
+        plan = plan_composite(view.camera, view.cam_from_world, objects, scene_visibility=visible)
+        return CompositeResult(
+            image=image, depth=plan.depth, visible_mask=visible, occlusion_source="scene_render",
+            object_visibility={identity: ObjectVisibility("scene_render", (), int(mask.sum()))
+                               for identity, mask in masks.items()},
+            object_masks=masks), None
+
     def _observe_recorded(self, position: int) -> Observation:
         pose, timestamp_us, actors = self._recorded_capture(position)
         start = self._start
@@ -756,19 +899,21 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
         relative_frame = position - start.frame.position
         relative_time = relative_frame * self.dt
         aliases = self.simulator.camera_aliases
+        object_tracks = self._object_tracks(tuple(self._start_objects.values()))
+        tracks = _RenderTracks(self._dynamic_objects(timestamp_us, actors), object_tracks)
         sensor_data = {
             aliases.get(camera, camera): self.renderer.render(
                 pose, timestamp_us, camera,
-                dynamic_objects=self._dynamic_objects(timestamp_us, actors))
+                dynamic_objects=tracks.dynamic_objects)
             for camera in self.renderer.cameras
         }
         lidar = self.renderer.lidar
         if lidar is not None:
             start_pose, start_us, start_actors = self._recorded_lidar_start(timestamp_us)
+            start_tracks = _RenderTracks(self._dynamic_objects(start_us, start_actors), object_tracks)
             sensor_data[lidar] = self.renderer.render_lidar(
                 start_pose, pose, start_us, timestamp_us,
-                self._dynamic_objects(start_us, start_actors),
-                self._dynamic_objects(timestamp_us, actors))
+                start_tracks.dynamic_objects, tracks.dynamic_objects)
         vehicle_state = self._recorded_planar_state(position)
         # Route generation may extend its stored polyline. A past query must not change the
         # live runtime's navigation state or any later model-visible route.
@@ -785,6 +930,7 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
 
         aliases = self.simulator.camera_aliases
         sensor_data = {}
+        object_tracks = self._object_tracks(tuple(self._capture_objects.values()))
         self._capture_actor_states.clear()
         self._capture_depth.clear()
         calibration = {(aliases.get(key, key) if key in self.renderer.cameras else key): value
@@ -801,10 +947,11 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
                 if request.camera in self.renderer.calibration:
                     calibration[output_key] = self.renderer.calibration[request.camera]
             actors = self._actors_at(self._timestamp_us(self.pose))
-            dynamic_objects = self._dynamic_objects(self._timestamp_us(self.pose), actors)
+            tracks = _RenderTracks(
+                self._dynamic_objects(self._timestamp_us(self.pose), actors), object_tracks)
             image = self.renderer.render(request.pose, self._timestamp_us(self.pose), request.camera,
-                                         dynamic_objects=dynamic_objects)
-            self._capture_dynamic_objects[camera] = deepcopy(dynamic_objects)
+                                         dynamic_objects=tracks.dynamic_objects)
+            self._capture_requests[camera] = deepcopy(tracks)
             self._capture_actor_states[camera] = deepcopy(actors)
             sensor_data[aliases.get(camera, camera)] = self._emit(
                 "render.post", image, sensor=camera,
@@ -814,12 +961,14 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
             timestamp_us = self._timestamp_us(self.pose)
             start_us = timestamp_us - round(self.dt * 1e6)
             actors = self._actors_at(timestamp_us)
-            dynamic_objects = self._dynamic_objects(timestamp_us, actors)
+            tracks = _RenderTracks(self._dynamic_objects(timestamp_us, actors), object_tracks)
+            start_tracks = _RenderTracks(
+                self._dynamic_objects(start_us, self._lidar_start_actors), object_tracks)
             cloud = self.renderer.render_lidar(
                 self._lidar_start_pose, self._world_from_ego, start_us, timestamp_us,
-                self._dynamic_objects(start_us, self._lidar_start_actors), dynamic_objects)
+                start_tracks.dynamic_objects, tracks.dynamic_objects)
             self._capture_actor_states[lidar] = deepcopy(actors)
-            self._capture_dynamic_objects[lidar] = deepcopy(dynamic_objects)
+            self._capture_requests[lidar] = deepcopy(tracks)
             sensor_data[lidar] = self._emit("render.post", cloud, sensor=lidar)
         return self.copy_observation(Observation(
             t=self.pose.t,

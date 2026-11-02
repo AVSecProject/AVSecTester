@@ -96,10 +96,12 @@ physical response.
 
 ## Optimize a world object's texture
 
-A captured `SensorView.composition` retains the background and the composition plan used for
-that capture. Reuse its plan when optimizing colors. In geometry occlusion mode, a clean view
-can also build a plan through `composite_plan`. The [Simulator guide](simulators.md) describes
-that capability.
+Capture a view with the object inserted and pass its camera, `cam_from_world` and
+`object_masks[object_id]` as `scene_visibility` to `plan_composite`. Composite candidate colors
+over a clean render of the same frame. This works for composite and scene insertion. With
+composite insertion, `SensorView.composition` also retains the background and plan of the
+capture. In geometry occlusion mode, a clean view can build a plan through `composite_plan`.
+The [Simulator guide](simulators.md#inserted-world-objects) describes these views.
 
 Differentiable harmonizers use the same floating-point computation during optimization and
 deployment, followed by uint8 rounding for deployment. This example checks that equivalence and

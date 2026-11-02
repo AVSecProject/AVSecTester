@@ -82,10 +82,10 @@ active exception. After a completed experiment they are reported without replaci
 A killed command can leave its exited container behind. The next start removes it, following the
 [NRE rules](#nre) for existing containers.
 
-NRE startup creates its client probe directory. Docker mounts each archive read-only at
-`/mnt/nre-data/<filename>` and mounts the probe directory at `server_probe_directory`, or at the
-same absolute client path when that option is `null`. Archive filenames must be unique. The
-Compose host-path and Docker access setup is described
+NRE startup creates its client asset directory. Docker mounts each archive read-only at
+`/mnt/nre-data/<filename>` and mounts the asset directory read-only at the same absolute client
+and server path by default. An explicit `server_asset_directory` sets a different mount path.
+Archive filenames must be unique. The Compose host-path and Docker access setup is described
 in [Installation](../getting-started/installation.md).
 
 The optional manual service commands below support reuse across multiple experiments.
@@ -121,7 +121,7 @@ loads the configuration, starts Docker and waits for `Serving on`.
 | `--dry-run` | `false` |
 
 The configuration must contain `NuRecDataset` and `NuRecRenderer` with a local endpoint. This
-command does not validate experiment environments. Archive and probe mounts follow the
+command does not validate experiment environments. Archive and asset mounts follow the
 [automatic service rules](#automatic-local-services).
 
 ```bash

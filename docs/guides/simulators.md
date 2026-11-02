@@ -49,34 +49,48 @@ motion at each requested frame.
 change at the next capture. Inserted objects stay separate from native actors, have zero
 velocity and do not participate in native physics or collisions.
 
-Shared camera composition projects the asset, resolves nearest surfaces and applies visibility.
-The returned camera view contains composed RGB. Existing depth becomes the pixelwise minimum of
-native and object depth. A view without native depth keeps `depth=None`.
+Composite insertion projects each asset into captured camera images, resolves nearest surfaces
+and applies visibility. NuRec also supports scene insertion, where NRE renders assets with the
+reconstruction into camera images and LiDAR. Set `object_insertion` to `composite` (the default)
+or `scene` on `NuRecSimulator`. The insertion actions and `harmonizer` interface are the same.
 
-| `Simulator` | Occlusion |
-|---|---|
-| CARLA | Aligned scene depth for `depth_camera`, actor cuboids for other cameras |
-| NuRec | Reconstruction visibility from rendered probes, or mesh/actor geometry |
-| Recorded playback | Actor cuboids only |
+| Simulator | Insertion | Composite occlusion |
+|---|---|---|
+| CARLA | Composite | Aligned scene depth for `depth_camera`, actor cuboids for other cameras |
+| NuRec | Composite or scene | Reconstruction visibility from rendered probes, or mesh/actor geometry |
+| Recorded playback | Composite | Actor cuboids only |
 
-`SensorView.composition` records the unmodified background and its `CompositePlan`.
-`plan.apply(background)` reproduces the capture. Differentiable composition follows the same
-calculation where all harmonizers support it. See [Optimization](optimization.md) and the
-[compositing API](../reference/python-api.md).
+Both modes describe each object's visible pixels in the captured image.
+`SensorView.object_masks` maps the same IDs as `SensorView.objects` to boolean H×W masks.
+Composite insertion uses the pixels that the composition actually assigns to each object.
+Scene insertion measures coverage with white and black asset copies and keeps coverage of at
+least 0.5. Each `ObjectVisibility.visible_pixels` equals the corresponding mask's pixel count.
+A projected but fully hidden object has an empty mask and a camera entry with zero visible
+pixels. An object outside a camera projection has no entry. Captures retain their own object
+membership until the next capture.
 
-Occlusion tolerance keeps scene surfaces within the configured tolerance in front of an object
-from hiding it. The same rule applies to geometry and reconstruction probes. Option defaults
-are listed in the [configuration reference](../reference/configuration.md#simulator).
+`SensorView.composition` exists only for composite insertion. It records the unmodified
+background and its `CompositePlan`, whose `plan.apply(background).image` reproduces the capture.
+Scene insertion has `composition=None`. An attack can build its own differentiable plan using
+the captured camera geometry and `object_masks`. See [Optimization](optimization.md) and the
+[compositing API](../reference/python-api.md#avsectesterrenderingcompositing).
 
-`object_visibility` describes the latest capture. A projected but fully hidden object has a
-camera entry with zero visible pixels. An object outside a camera projection has no entry.
-`SensorView.objects` holds the corresponding immutable placed objects. Captures retain their own
-object membership until the next capture.
+Composite insertion combines native depth with object surface depth. Rendered visibility and
+scene insertion replace depth only at visible object pixels and preserve the rest. A view
+without native depth keeps `depth=None`.
+
+Occlusion tolerance applies only to composite insertion. It keeps scene surfaces within the
+configured tolerance in front of an object from hiding it, for both geometry and reconstruction
+probes. See [Configuration](../reference/configuration.md#simulator) for defaults.
+
+A single-sided asset can show its front texture from behind. Add a rear face when the object
+must have a distinct back. Sensor insertion through `InsertionAttackAction` remains independent
+of world insertion.
 
 See [Writing attacks](attacks.md#insert-a-world-object) for insertion actions and
 [Runtime records](../reference/runtime.md#runlog) for saved evidence.
 
-**Not yet implemented.** Inserted objects in non-camera sensors.
+**Not yet implemented.** CARLA scene insertion and non-camera insertion in composite mode.
 See [TODO](../development/TODO.md#inserted-objects-in-non-camera-sensors).
 
 ## CARLA
@@ -140,6 +154,39 @@ simulator = NuRecSimulator(
 assert simulator.command_modes == frozenset({"trajectory"})
 ```
 
+### Scene insertion
+
+Scene insertion requires `NuRecRenderer.asset_directory`. The renderer writes generated asset
+files there for NRE to read. See
+[Configuration](../reference/configuration.md#nurec-closed-loop-settings) for directory and mount
+settings.
+
+Assets use 5 mm grid spacing, capped at one Gaussian per texture pixel. Grid centers with alpha
+below 128 are omitted. Colors are alpha-weighted area averages. Gaussian
+lateral size equals grid spacing, thickness is 1 mm and opacity logit is 8, with zeroth-order
+spherical harmonics only.
+
+NRE registers one track for each object and texture. Moving an object reuses its track. Tracks
+remain until the NRE process restarts.
+
+For each projected object, visibility requires two additional camera renders with white and
+black copies. A harmonizer also needs a background render. A differentiable harmonizer also
+needs a nominal-texture render when its object has nominal textures. These extra
+renders use the capture's request pose and bypass hooks. They add rendering work in proportion
+to the projected objects and cameras. A harmonizer also adjusts partially covered pixels at
+object edges, outside `object_masks`. With scene insertion, `render.post` receives images and
+point clouds that already contain the inserted objects. With composite insertion, the hook
+receives the native capture before camera composition.
+
+Reconstructed objects remain in the scene and can hide an inserted object placed very close
+to them.
+
+**Not yet implemented.** Removing real objects from reconstructed scenes. See
+[TODO](../development/TODO.md#remove-real-objects-from-reconstructed-scenes).
+
+Scene-inserted assets appear in LiDAR for 26.04 scenes. In 26.01 scenes, LiDAR can pass through
+inserted assets. This is a limitation of that scene release.
+
 ### LiDAR
 
 Set `NuRecRenderer.lidar` to a scene's logical sensor name, such as `lidar_gt_top_p128`, to
@@ -171,9 +218,11 @@ Reconstructed-scene defects may produce a small number of below-ground points in
 Supplied scenes provide no intensity. Intensity and no-return-ray simulation are
 **Not yet implemented.** See
 [NuRec LiDAR simulation](../development/TODO.md#nurec-lidar-simulation).
-Inserted framework objects do not appear in LiDAR captures.
-**Not yet implemented.** See
-[Inserted objects in non-camera sensors](../development/TODO.md#inserted-objects-in-non-camera-sensors).
+Inserted objects appear in LiDAR with [scene insertion](#scene-insertion). Composite insertion
+changes camera images only.
+
+**Not yet implemented.** Offline renders of a dataset's first frame while LiDAR is enabled. See
+[TODO](../development/TODO.md#nurec-offline-lidar-sampling).
 
 ### Recorded past observations
 
@@ -184,11 +233,12 @@ of the simulator's own history and the `DrivingAdapter` history plus the simulat
 lead steps.
 
 Past captures use recorded ego poses and actors, including the same short-track filtering as
-current captures. Objects installed during reset or setup are composed using those recorded
-camera poses. Later insertions and actor overrides are excluded. Past captures bypass stage
-hooks and sensor attack actions. The runner applies sensor corruptions at each absolute dataset
-position, then passes history directly to `AVStack.reset`. It bypasses localization and the
-observation pipeline. See [initialization records](../reference/runtime.md#initialization) and
+current captures. Objects installed during reset or setup use those recorded poses with the
+configured insertion mode. Later insertions and actor overrides are excluded. Past captures
+bypass stage hooks and sensor attack actions. The runner applies sensor corruptions at each
+absolute dataset position, then passes history directly to `AVStack.reset`. It bypasses
+localization and the observation pipeline. See
+[initialization records](../reference/runtime.md#initialization) and
 [environment randomness](environments.md#randomness).
 
 ### Navigation
@@ -239,6 +289,9 @@ An accepted override changes world state immediately and camera state at the nex
 explicit world velocity advances the actor at fixed orientation until reset or another override.
 `control_actor` is unsupported. Without traffic simulation, checkpoints preserve actor
 overrides. Restoring a checkpoint creates a new capture of the restored state.
+
+**Not yet implemented.** Checkpoint restoration with active render hooks. See
+[TODO](../development/TODO.md#nurec-checkpoint-restoration-with-active-render-hooks).
 
 ### Reactive traffic
 
@@ -291,8 +344,8 @@ vehicles. Rendered probes instead measure the reconstruction's visibility direct
 ### Rendered-probe occlusion
 
 Opaque white and black probe copies measure whether scene content hides inserted surfaces. Only
-sufficiently opaque asset pixels contribute probes. The renderer requires a client probe
-directory visible inside the NRE service. Path and mount rules are
+sufficiently opaque asset pixels contribute probes. The renderer requires `asset_directory`
+to be visible inside the NRE service. Path and mount rules are
 in [Configuration](../reference/configuration.md#nurec-closed-loop-settings).
 
 A captured `composition.plan` already contains this measured visibility. An arbitrary
@@ -323,7 +376,7 @@ recorded data before the earliest observation, declare it in `observation_lead_s
 adds to the driving system's history.
 
 Declare every view-capable sensor in `sensors` and cameras in `camera_sensors`. Native views
-supply capture data and sensor geometry. The shared runtime owns camera composition. A
+supply capture data and sensor geometry. The shared runtime owns object-capture integration. A
 lightweight `sensor_geometry` implementation avoids image/depth work for projection-only
 requests. Past-capable implementations supply recorded observations and recorded camera views
 for start-object composition.

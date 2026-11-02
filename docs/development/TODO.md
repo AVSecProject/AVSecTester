@@ -26,7 +26,14 @@ See [reactive traffic](../guides/simulators.md#reactive-traffic) for supported b
 
 ## Inserted objects in non-camera sensors
 
-- [ ] Include inserted `ObjectAsset` geometry in LiDAR and other non-camera captures.
+- [ ] Support scene insertion in CARLA.
+- [ ] Include inserted `ObjectAsset` geometry in non-camera captures with composite insertion.
+
+NuRec scene insertion includes LiDAR. See [Simulators](../guides/simulators.md#scene-insertion).
+
+## Remove real objects from reconstructed scenes
+
+- [ ] Remove or replace real objects in reconstructed scenes, instead of only inserting assets.
 
 ## Localization attack reference frames
 
@@ -41,6 +48,19 @@ See [physical and model-visible records](../reference/runtime.md#physical-and-mo
 - [ ] Support no-return-ray simulation and its filtering controls.
 
 See [NuRec LiDAR](../guides/simulators.md#lidar) for supported capture behavior.
+
+## NuRec offline LiDAR sampling
+
+- [ ] Offline `session.render` at dataset frame 0 fails when NuRec collects LiDAR because the
+  scan needs a preceding recorded decision step. The stop-sign demo's `d_max` search includes
+  that frame, so configurations with LiDAR cannot complete its offline optimization.
+
+## NuRec checkpoint restoration with active render hooks
+
+- [ ] With an activated `HookSet` session containing a `render.post` handler, restoring a NuRec
+  checkpoint after reset, checkpoint creation and a simulator step raises
+  `RuntimeError('Reset the simulator before requesting its state')`. This prevents
+  checkpoint-based reruns while those render hooks are active.
 
 ## CARLA physical patches
 

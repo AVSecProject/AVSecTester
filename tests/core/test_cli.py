@@ -173,8 +173,7 @@ def nre_configuration(directory):
     specification["simulator"] = {"type": "NuRecSimulator", "options": {
         "depth": "none", "physics_update_mode": "none", "route_generator": "none",
         "renderer": {"type": "avsectester.closed_loop.simulators.nurec:NuRecRenderer", "options": {
-            "endpoint": "127.0.0.1:50152", "probe_directory": str(directory / "probes"),
-            "server_probe_directory": "/mnt/probes",
+            "endpoint": "127.0.0.1:50152", "asset_directory": str(directory / "assets"),
         }},
     }}
     path.write_text(yaml.safe_dump(specification))
@@ -193,11 +192,11 @@ def test_nre_serve(tmp_path, monkeypatch):
     command = shlex.split(dry.output.strip())
     assert command[:4] == ["docker", "run", "-d", "--name"]
     assert command[4] == "avsectester-nre-50152" and "device=2" in command
-    assert not calls.exists() and not (tmp_path / "probes").exists()
+    assert not calls.exists() and not (tmp_path / "assets").exists()
     served = runner.invoke(cli.app, ["nre", "serve", str(path), "--gpu", "2"])
     assert served.exit_code == 0, served.output
     assert "endpoint=127.0.0.1:50152" in served.output and "scenes=1" in served.output
-    assert "Stop it with:" in served.output and state.exists() and (tmp_path / "probes").is_dir()
+    assert "Stop it with:" in served.output and state.exists() and (tmp_path / "assets").is_dir()
     runner.invoke(cli.app, ["nre", "stop", str(path)])
     labels = {"avsectester.service-owner": "0" * 32, "avsectester.service-user": str(os.getuid())}
     previous = {"id": "id-previous", "labels": labels, "running": True}

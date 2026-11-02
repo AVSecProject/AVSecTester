@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 from avsectester.attack import AttackSegment
+from avsectester.attack.insertion import InsertObject
 from avsectester.closed_loop.avstacks.driving_adapter import DrivingAdapter
 from avsectester.closed_loop.simulators import UnsupportedStartError
 from avsectester.closed_loop.simulators.ego_dynamics import TrajectoryFollower
@@ -20,9 +21,10 @@ from avsectester.geometry.lidars import LidarCalibration
 from avsectester.geometry.poses import rotation_matrix
 from avsectester.data_types import Control, PointCloud, Unavailable
 from avsectester.execution.runner import RecordingPolicy
-from avsectester.execution.services import CandidateRequest, ClosedLoopServices
+from avsectester.execution.services import CandidateRequest, ClosedLoopServices, RenderRequest
 from avsectester.closed_loop.hooks import Hook, HookSet
 from avsectester.rendering import ObjectAsset, PlacedObject, plan_composite
+from avsectester.rendering.harmonizers import ClassicHarmonizer, ExposureHarmonizer
 from avsectester.runlog import RunLog
 from tests.fakes import (
     ConstantAVStack, NuRecImageBoundary, NuRecRpcBoundary, NuRecTrafficImageBoundary,
@@ -334,8 +336,8 @@ def test_rendered_probe_occlusion(nurec_dataset, tmp_path, monkeypatch, make_obj
     boundary.hidden = np.zeros((12, 16), bool)
     boundary.hidden[:, :8] = True  # The reconstruction covers the left half of the image.
     start = nurec_dataset.scenario_start("scene", nurec_dataset.frames("scene")[2])
-    renderer = NuRecRenderer(cameras=["front"], probe_directory=str(tmp_path),
-                             server_probe_directory="/server/assets")
+    renderer = NuRecRenderer(cameras=["front"], asset_directory=str(tmp_path),
+                             server_asset_directory="/server/assets")
     # Rendered probes are the default object occlusion.
     simulator = make_nurec_simulator(renderer, physics_update_mode="none", depth="none")
     with simulator.create_runtime() as runtime:
@@ -365,9 +367,10 @@ def test_rendered_probe_occlusion(nurec_dataset, tmp_path, monkeypatch, make_obj
         # Probe assets are present and can be used again after the service loses its edits.
         edits = [request for request in boundary.requests if hasattr(request, "insert")]
         assert edits and edits[-1].insert
+        assets = {f"/server/assets/{path.name}": path for path in tmp_path.glob("avsectester_asset_*.ply")}
         for track in edits[-1].insert:
-            assert track.asset_id == f"/server/assets/{track.id}.ply"
-            assert (tmp_path / f"{track.id}.ply").read_bytes().startswith(b"ply\n")
+            assert track.asset_id in assets
+            assert assets[track.asset_id].read_bytes().startswith(b"ply\n")
         uploads = len(edits)
         runtime.step(Control())
         assert len([request for request in boundary.requests if hasattr(request, "insert")]) == uploads
@@ -389,8 +392,8 @@ def test_occlusion_tolerance(nurec_dataset, monkeypatch, make_object_in_front, t
     boundary = NuRecRpcBoundary().install(monkeypatch)
     start = nurec_dataset.scenario_start("scene", nurec_dataset.frames("scene")[2])
     boundary.asset_directories = {"/server/assets": str(tmp_path)}
-    renderer = NuRecRenderer(cameras=["front"], probe_directory=str(tmp_path),
-                             server_probe_directory="/server/assets")
+    renderer = NuRecRenderer(cameras=["front"], asset_directory=str(tmp_path),
+                             server_asset_directory="/server/assets")
     with make_nurec_simulator(renderer, physics_update_mode="none", depth="none",
                         min_track_duration_s=0, time_step=.1).create_runtime() as runtime:
         runtime.reset(start)
@@ -425,7 +428,7 @@ def test_occlusion_tolerance(nurec_dataset, monkeypatch, make_object_in_front, t
         runtime.reset(start)
         runtime.insert_object("sign", asset, world_from_object)
         runtime.step(Control())
-        with pytest.raises(ValueError, match="probe_directory"):
+        with pytest.raises(ValueError, match="asset_directory"):
             runtime.sensor_view("front")
     with pytest.raises(ValueError, match="object_occlusion must be"):
         make_nurec_simulator(renderer, object_occlusion="unsupported")
@@ -893,3 +896,347 @@ def test_lidar(nurec_longitudinal_dataset, monkeypatch, make_nurec_simulator, tm
         with pytest.raises(ValueError, match="time_step must match the LiDAR scan period within 1%"):
             runtime.reset(start)
     assert invalid.last_request is None and not invalid.lidar_requests
+
+
+def test_composite_shared_asset(nurec_longitudinal_dataset, monkeypatch,
+                               make_nurec_simulator, tmp_path):
+    dataset = nurec_longitudinal_dataset
+    start = dataset.scenario_start("scene", dataset.frames("scene")[3])
+    start = replace(start, payload={**start.payload,
+                    "ego": replace(start.payload["ego"], velocity=(0., 0., 0.))})
+    boundary = NuRecRpcBoundary().install(monkeypatch)
+    boundary.scene_tracks = set(dataset.track_trajectories("scene"))
+    renderer = NuRecRenderer(cameras=["front"], asset_directory=tmp_path)
+    simulator = make_nurec_simulator(renderer, object_insertion="composite",
+                                     depth="none", physics_update_mode="none",
+                                     route_generator="none")
+    with simulator.create_runtime() as runtime:
+        runtime.reset(start)
+        clean = runtime.sensor_view("front")
+        asset = ObjectAsset.from_panel(
+            np.full((256, 256, 4), [230, 10, 90, 255], np.uint8),
+            category="sign", width_m=2., mount_height_m=0., post_count=0)
+        objects = []
+        for object_id, horizontal in (("left", -1.5), ("right", 1.5)):
+            optical_from_object = np.array([
+                [0., 1., 0., horizontal], [0., 0., -1., 1.],
+                [-1., 0., 0., 4.], [0., 0., 0., 1.]])
+            pose = np.linalg.inv(clean.cam_from_world) @ optical_from_object
+            objects.append(PlacedObject(object_id, asset, pose))
+        expected = plan_composite(clean.camera, clean.cam_from_world, objects).apply(clean.data)
+        assert all(expected.object_masks[placed.object_id].any() for placed in objects)
+        assert not np.any(expected.object_masks["left"] & expected.object_masks["right"])
+        first, second = objects
+        runtime.insert_object(first.object_id, first.asset, first.world_from_object)
+        runtime.step(Control())
+        first_mask = runtime.sensor_view("front").object_masks[first.object_id].copy()
+        np.testing.assert_array_equal(first_mask, expected.object_masks[first.object_id])
+        assert len(boundary.insertion_counts) == 2
+        assert set(boundary.insertion_counts.values()) == {1}
+        runtime.insert_object(second.object_id, second.asset, second.world_from_object)
+        runtime.step(Control())
+        view = runtime.sensor_view("front")
+        np.testing.assert_array_equal(view.object_masks[first.object_id], first_mask)
+        for placed in objects:
+            mask = expected.object_masks[placed.object_id]
+            np.testing.assert_array_equal(view.object_masks[placed.object_id], mask)
+            assert runtime.object_visibility(
+                placed.object_id)["front"].visible_pixels == int(mask.sum())
+        np.testing.assert_array_equal(view.data, expected.image)
+        assert len(boundary.insertion_counts) == 4
+        assert set(boundary.insertion_counts.values()) == {1}
+        edits = [request for request in boundary.requests if hasattr(request, "insert")]
+        assert len({track.asset_id for request in edits for track in request.insert}) == 2
+        assert all(len(request.insert) == 1 for request in edits)
+
+
+def test_scene_track_deduplication(nurec_longitudinal_dataset, monkeypatch,
+                                   make_nurec_simulator, tmp_path):
+    dataset = nurec_longitudinal_dataset
+    start = dataset.scenario_start("scene", dataset.frames("scene")[3])
+    start = replace(start, payload={**start.payload,
+                    "ego": replace(start.payload["ego"], velocity=(0., 0., 0.))})
+    boundary = NuRecRpcBoundary().install(monkeypatch)
+    boundary.scene_tracks = set(dataset.track_trajectories("scene"))
+    simulator = make_nurec_simulator(
+        NuRecRenderer(cameras=["front"], asset_directory=tmp_path),
+        object_insertion="scene", depth="none", physics_update_mode="none",
+        route_generator="none")
+    harmonizer = ExposureHarmonizer(reference="under", feather_sigma=0)
+    with simulator.create_runtime() as runtime:
+        runtime.reset(start)
+        clean = runtime.sensor_view("front")
+        texture = np.full((256, 256, 4), [230, 10, 90, 255], np.uint8)
+        asset = ObjectAsset.from_panel(
+            texture, category="sign", width_m=2., mount_height_m=0., post_count=0)
+        surface = asset.surfaces[0]
+        asset = replace(asset, surfaces=(replace(
+            surface, nominal_texture=np.full_like(texture, [180, 180, 180, 255])),))
+        objects = []
+        for object_id, horizontal in (("left", -1.5), ("right", 1.5)):
+            optical_from_object = np.array([
+                [0., 1., 0., horizontal], [0., 0., -1., 1.],
+                [-1., 0., 0., 4.], [0., 0., 0., 1.]])
+            pose = np.linalg.inv(clean.cam_from_world) @ optical_from_object
+            placed = PlacedObject(object_id, asset, pose, harmonizer)
+            objects.append(placed)
+            runtime.insert_object(object_id, asset, pose, harmonizer=harmonizer)
+        expected = plan_composite(clean.camera, clean.cam_from_world, objects).apply(clean.data)
+        runtime.step(Control())
+        initial = runtime.sensor_view("front")
+        for placed in objects:
+            mask = expected.object_masks[placed.object_id]
+            assert mask.any()
+            np.testing.assert_array_equal(initial.object_masks[placed.object_id], mask)
+            assert runtime.object_visibility(
+                placed.object_id)["front"].visible_pixels == int(mask.sum())
+        left_mask = initial.object_masks["left"].copy()
+        left_pixels = initial.data[left_mask].copy()
+        assert len(boundary.insertion_counts) == 6
+        assert set(boundary.insertion_counts.values()) == {1}
+        changed = replace(asset, surfaces=(replace(
+            asset.surfaces[0], texture=np.full_like(texture, [10, 230, 90, 255])),))
+        runtime.remove_object("right")
+        runtime.insert_object("right", changed, objects[1].world_from_object, harmonizer=harmonizer)
+        before = len(boundary.requests)
+        runtime.step(Control())
+        updated = runtime.sensor_view("front")
+        np.testing.assert_array_equal(updated.object_masks["left"], left_mask)
+        np.testing.assert_array_equal(updated.data[left_mask], left_pixels)
+        assert np.any(updated.data[updated.object_masks["right"]]
+                      != initial.data[initial.object_masks["right"]])
+        assert len(boundary.insertion_counts) == 7
+        assert set(boundary.insertion_counts.values()) == {1}
+        active = {
+            item.track_id for request in boundary.requests[before:]
+            if hasattr(request, "dynamic_objects") for item in request.dynamic_objects
+            if item.track_id.startswith("avsectester_")}
+        assert len(active) == 6
+        boundary.tracks.clear()
+        boundary.inserted_tracks.clear()
+        boundary.stored_trajectories.clear()
+        runtime.step(Control())
+        restarted = runtime.sensor_view("front")
+        np.testing.assert_array_equal(restarted.data, updated.data)
+        for placed in objects:
+            np.testing.assert_array_equal(
+                restarted.object_masks[placed.object_id], updated.object_masks[placed.object_id])
+        assert boundary.insertion_counts == {
+            key: 1 + int(key in active) for key in boundary.insertion_counts}
+        edits = [request for request in boundary.requests if hasattr(request, "insert")]
+        assert all(len(request.insert) == 1 for request in edits)
+
+
+def test_scene_insertion(nurec_longitudinal_dataset, monkeypatch, make_nurec_simulator, tmp_path):
+    boundary = NuRecRpcBoundary().install(monkeypatch)
+    boundary.hidden = np.zeros((12, 16), bool)
+    boundary.hidden[:, :8] = True
+    dataset = nurec_longitudinal_dataset
+    start = dataset.scenario_start("scene", dataset.frames("scene")[3])
+    start = replace(start, payload={**start.payload,
+                    "ego": replace(start.payload["ego"], velocity=(0., 0., 0.))})
+    renderer = NuRecRenderer(cameras=["front"], lidar="lidar_gt_top_p128",
+                             asset_directory=str(tmp_path))
+    simulator = make_nurec_simulator(renderer, object_insertion="scene", depth="none",
+                                     physics_update_mode="none", route_generator="none")
+    assert simulator.identity["object_insertion"] == "scene"
+    assert "object_insertion" not in make_nurec_simulator(renderer).identity
+    with pytest.raises(ValueError, match="object_insertion must be 'composite' or 'scene'"):
+        make_nurec_simulator(renderer, object_insertion="invalid")
+    with pytest.raises(ValueError, match="requires renderer.asset_directory"):
+        make_nurec_simulator(NuRecRenderer(cameras=["front"]), object_insertion="scene")
+    post = []
+
+    def rendered(value, context):
+        post.append((context.sensor, value))
+        return value
+
+    with simulator.create_runtime() as runtime:
+        runtime.reset(start)
+        view = runtime.sensor_view("front")
+        # This face covers the complete miniature camera, so its silhouette is explicit.
+        asset = ObjectAsset.from_panel(np.full((256, 256, 4), [230, 10, 90, 255], np.uint8),
+                                       category="sign", width_m=16.)
+        optical_from_object = np.array([[0., 1., 0., 0.], [0., 0., -1., 8.],
+                                         [-1., 0., 0., 2.], [0., 0., 0., 1.]])
+        pose = np.linalg.inv(view.cam_from_world) @ optical_from_object
+        hooks = HookSet([
+            Hook("simulator.setup", lambda value, context:
+                 context.simulator_runtime.insert_object("sign", asset, pose)),
+            Hook("render.post", rendered),
+        ])
+        with hooks.session(runtime, ConstantAVStack()).activate():
+            runtime.reset(start)
+            view = runtime.sensor_view("front")
+            mask = view.object_masks["sign"]
+            np.testing.assert_array_equal(mask, ~boundary.hidden)
+            assert view.composition is None and view.object_occlusion == "scene_render"
+            assert view.occlusion_tolerance_m == 0.
+            assert runtime.object_visibility("sign")["front"].visible_pixels == int(mask.sum())
+            assert runtime.object_visibility("sign")["front"].occlusion_source == "scene_render"
+            np.testing.assert_array_equal(view.data[~mask], 30)
+            assert np.any(view.data[mask] != 30)
+            np.testing.assert_array_equal(post[-2][1], view.data)
+            assert isinstance(post[-1][1], PointCloud) and len(post[-1][1].points) > 2
+            track, track_pose = view.native["object_tracks"]["sign"]
+            assert track.startswith("avsectester_scene_")
+            assert all(not identity.startswith("avsectester_scene_")
+                       for identity, _ in view.native["actor_tracks"])
+            request = boundary.lidar_requests[-1]
+            scene_objects = [item for item in request.dynamic_objects if item.track_id == track]
+            assert len(scene_objects) == 1
+            np.testing.assert_allclose(proto_world_pose(scene_objects[0].pose_pair.start_pose), track_pose)
+            np.testing.assert_allclose(proto_world_pose(scene_objects[0].pose_pair.end_pose), track_pose)
+            with pytest.raises(ValueError, match="object_masks"):
+                view.composite_plan((PlacedObject("sign", asset, pose),))
+            past = runtime.observe_past(1)
+            assert len(past) == 1 and np.any(past[0].sensor_data["front"][:, 8:] != 30)
+            assert track in {item.track_id for item in boundary.lidar_requests[-1].dynamic_objects}
+        checkpoint = runtime.checkpoint()
+        initial_image = view.data.copy()
+        runtime.remove_object("sign")
+        runtime.step(Control())
+        assert "sign" not in runtime.state().objects
+        assert track not in {item.track_id for item in boundary.last_request.dynamic_objects}
+        np.testing.assert_array_equal(runtime.observe().sensor_data["front"], 30)
+        runtime.restore(checkpoint)
+        restored = runtime.sensor_view("front")
+        np.testing.assert_array_equal(restored.data, initial_image)
+        np.testing.assert_array_equal(restored.object_masks["sign"], mask)
+        runtime.remove_object("sign")
+        surface = asset.surfaces[0]
+        changed = replace(asset, surfaces=(replace(surface,
+                          texture=np.full_like(surface.texture, [10, 230, 90, 255])),))
+        runtime.insert_object("sign", changed, pose)
+        runtime.step(Control())
+        changed_view = runtime.sensor_view("front")
+        assert changed_view.native["object_tracks"]["sign"][0] != track
+        assert np.any(changed_view.data[mask] != initial_image[mask])
+        # Later edits do not replace objects belonging to the recorded start.
+        runtime.observe_past(1)
+        assert track in {item.track_id for item in boundary.lidar_requests[-1].dynamic_objects}
+        boundary.hidden = None
+        runtime.step(Control())
+        np.testing.assert_array_equal(runtime.sensor_view("front").object_masks["sign"], True)
+
+
+@pytest.mark.parametrize("harmonizer", [
+    ExposureHarmonizer(reference="under", feather_sigma=0),
+    ClassicHarmonizer(poisson=False),
+], ids=["tensor", "numpy"])
+def test_scene_harmonizer(harmonizer, nurec_longitudinal_dataset, monkeypatch,
+                          make_nurec_simulator, make_object_in_front, tmp_path):
+    boundary = NuRecRpcBoundary().install(monkeypatch)
+    dataset = nurec_longitudinal_dataset
+    start = dataset.scenario_start("scene", dataset.frames("scene")[3])
+    start = replace(start, payload={**start.payload,
+                    "ego": replace(start.payload["ego"], velocity=(0., 0., 0.))})
+    renderer = NuRecRenderer(cameras=["front"], asset_directory=str(tmp_path))
+    simulator = make_nurec_simulator(renderer, object_insertion="scene", depth="none",
+                                     physics_update_mode="none", route_generator="none")
+    with simulator.create_runtime() as runtime:
+        runtime.reset(start)
+        asset, pose = make_object_in_front(runtime.sensor_view("front"))
+        surface = asset.surfaces[0]
+        texture = np.full((256, 256, 4), [230, 10, 90, 255], np.uint8)
+        asset = replace(asset, surfaces=(replace(surface, texture=texture,
+                         nominal_texture=np.full_like(texture, [180, 180, 180, 255])),))
+        runtime.insert_object("sign", asset, pose)
+        before = len(boundary.requests)
+        runtime.step(Control())
+        raw = runtime.sensor_view("front")
+        assert raw.object_masks["sign"].any()
+        # Without a harmonizer, every camera request contains an object or its coverage copy.
+        requests = [item for item in boundary.requests[before:]
+                    if hasattr(item, "image_quality")]
+        assert requests
+        assert all(any(item.track_id.startswith(("avsectester_scene_", "avsectester_coverage_"))
+                       for item in request.dynamic_objects) for request in requests)
+        runtime.remove_object("sign")
+        runtime.insert_object("sign", asset, pose, harmonizer=harmonizer)
+        before = len(boundary.requests)
+        runtime.step(Control())
+        adjusted = runtime.sensor_view("front")
+        # Only differentiable harmonizers render the object with its nominal texture.
+        track = adjusted.native["object_tracks"]["sign"][0]
+        nominal = {item.track_id for request in boundary.requests[before:]
+                   if hasattr(request, "image_quality") for item in request.dynamic_objects
+                   if item.track_id.startswith("avsectester_scene_") and item.track_id != track}
+        assert bool(nominal) == getattr(harmonizer, "differentiable", False)
+        mask = adjusted.object_masks["sign"]
+        np.testing.assert_array_equal(adjusted.data[~mask], raw.data[~mask])
+        assert np.any(adjusted.data[mask] != raw.data[mask])
+        assert adjusted.composition is None
+
+
+def test_scene_harmonizer_asset_reuse(nurec_longitudinal_dataset, monkeypatch,
+                                      make_nurec_simulator, make_object_in_front, tmp_path):
+    NuRecRpcBoundary().install(monkeypatch)
+    built = []
+    validate = ObjectAsset.__post_init__
+    monkeypatch.setattr(ObjectAsset, "__post_init__",
+                        lambda asset: built.append(asset) or validate(asset))
+    dataset = nurec_longitudinal_dataset
+    start = dataset.scenario_start("scene", dataset.frames("scene")[3])
+    start = replace(start, payload={**start.payload,
+                    "ego": replace(start.payload["ego"], velocity=(0., 0., 0.))})
+    renderer = NuRecRenderer(cameras=["front"], asset_directory=str(tmp_path))
+    simulator = make_nurec_simulator(renderer, object_insertion="scene", depth="none",
+                                     physics_update_mode="none", route_generator="none")
+    with simulator.create_runtime() as runtime:
+        runtime.reset(start)
+        asset, pose = make_object_in_front(runtime.sensor_view("front"))
+        surface = asset.surfaces[0]
+        texture = np.full((256, 256, 4), [230, 10, 90, 255], np.uint8)
+        asset = replace(asset, surfaces=(replace(surface, texture=texture,
+                         nominal_texture=np.full_like(texture, [180, 180, 180, 255])),))
+        runtime.insert_object("sign", asset, pose, harmonizer=ExposureHarmonizer())
+        runtime.step(Control())
+        assert runtime.sensor_view("front").object_masks["sign"].any()
+        count = len(built)
+        # Later captures reuse the nominal asset, so NuRec can reuse its Gaussian assets.
+        for _ in range(3):
+            runtime.step(Control())
+            assert runtime.sensor_view("front").object_masks["sign"].any()
+        assert len(built) == count
+
+
+def test_scene_render_without_actors(nurec_longitudinal_dataset, monkeypatch,
+                                     make_nurec_simulator, make_object_in_front, tmp_path):
+    boundary = NuRecRpcBoundary().install(monkeypatch)
+    path = tmp_path / "without-actors.usdz"
+    with zipfile.ZipFile(nurec_longitudinal_dataset.usdz_paths[0]) as source:
+        tracks = json.loads(source.read("sequence_tracks.json"))
+        tracks["scene"]["tracks_data"] = {name: [] for name in tracks["scene"]["tracks_data"]}
+        tracks["scene"]["cuboidtracks_data"]["cuboids_dims"] = []
+        with zipfile.ZipFile(path, "w") as target:
+            for name in source.namelist():
+                target.writestr(name, json.dumps(tracks) if name == "sequence_tracks.json"
+                                else source.read(name))
+    dataset = NuRecDataset([path], time_step=.1)
+    frame = dataset.frames("scene")[3]
+    renderer = NuRecRenderer(cameras=["front"], lidar="lidar_gt_top_p128",
+                             asset_directory=str(tmp_path / "assets"))
+    simulator = make_nurec_simulator(renderer, object_insertion="scene", depth="none",
+                                     physics_update_mode="none", route_generator="none")
+    with ClosedLoopServices(dataset, simulator) as services, services.session(0) as session:
+        plain = session.render(RenderRequest("scene", frame, "front"))
+        assert not boundary.last_request.dynamic_objects
+        assert not boundary.lidar_requests[-1].dynamic_objects
+        asset, pose = make_object_in_front(plain.view)
+        surface = asset.surfaces[0]
+        asset = replace(asset, surfaces=(replace(
+            surface, texture=np.full((256, 256, 4), [230, 10, 90, 255], np.uint8)),))
+        inserted = session.render(RenderRequest("scene", frame, "front", actions=(
+            InsertObject("sign", asset, pose),
+        )))
+        assert np.any(inserted.view.data != plain.view.data)
+        assert len(inserted.observation.sensor_data["lidar_gt_top_p128"].points) > 2
+        # A fresh render has no actors or objects even though NRE retains prior scene tracks.
+        clean = session.render(RenderRequest("scene", frame, "front"))
+        np.testing.assert_array_equal(clean.view.data, plain.view.data)
+        np.testing.assert_array_equal(clean.observation.sensor_data["lidar_gt_top_p128"].points,
+                                      plain.observation.sensor_data["lidar_gt_top_p128"].points)
+        assert clean.object_visibility == {}
+        assert not boundary.last_request.dynamic_objects
+        assert not boundary.lidar_requests[-1].dynamic_objects

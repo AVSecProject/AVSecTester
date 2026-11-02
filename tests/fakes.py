@@ -537,17 +537,22 @@ def container_running(state_path):
 
 
 class NuRecRpcBoundary:
-    """A SensorsimService boundary; NuRecRenderer itself remains real.
+    """A SensorsimService boundary with a real NuRecRenderer.
 
     Inserted Gaussian assets are drawn at their listed poses, mapped into track frames as the
     measured NRE convention does, except at pixels in ``hidden``, where the scene covers them.
-    ``asset_directories`` maps server asset paths to local ones. With ``scene_tracks`` set, a
-    render naming any other track that was not inserted fails as NRE does.
+    ``asset_directories`` maps server asset paths to local ones. A render naming a scene or
+    coverage track that was not inserted fails as NRE does. With ``scene_tracks`` set, the same
+    applies to any other track outside it.
     ``returned_resolution_hw`` is None for the native resolution, an (H, W) tuple, or a
     callable mapping the integer frame-start timestamp in microseconds to an (H, W) tuple. With
     ``service_container`` set, scene queries answer UNAVAILABLE unless that Docker fake state
     reports a running container. LiDAR returns ``lidar_response`` and retains scan requests
-    in ``lidar_requests``.
+    in ``lidar_requests``. An empty dynamic-object list renders every inserted track at its
+    stored trajectory. Nonempty lists render only their named tracks. Repeated track IDs
+    use the first listed pose. Repeated insertions append copies and increment
+    ``insertion_counts``. The miniature rasterizer widens the fringe of duplicate copies
+    so duplicate insertion changes the image.
     """
 
     TRACK_FROM_PLY = np.array([[1., 0., 0.], [0., 0., -1.], [0., 1., 0.]])
@@ -567,6 +572,9 @@ class NuRecRpcBoundary:
         self.rpc_error = NuRecRpcError
         self.scene_query_timeouts = []
         self.tracks = {}
+        self.insertion_counts = {}
+        self.inserted_tracks = {}
+        self.stored_trajectories = {}
         self.scene_tracks = None
         self.hidden = None
         self.asset_directories = {}
@@ -599,6 +607,24 @@ class NuRecRpcBoundary:
         return SimpleNamespace(available_trajectories=[SimpleNamespace(trajectory=SimpleNamespace(
             poses=[SimpleNamespace(timestamp_us=0, pose=pose)]))])
 
+    def _listed_tracks(self, request):
+        listed = list(request.dynamic_objects)
+        first = {}
+        for item in listed:
+            first.setdefault(item.track_id, item)
+        listed = list(first.values())
+        if not listed:
+            listed = [SimpleNamespace(track_id=key, pose_pair=SimpleNamespace(
+                start_pose=track.trajectory.poses[0].pose,
+                end_pose=track.trajectory.poses[-1].pose))
+                for key, track in self.inserted_tracks.items()]
+        unknown = [item.track_id for item in listed if item.track_id not in self.tracks
+                   and (item.track_id.startswith(("avsectester_scene_", "avsectester_coverage_"))
+                        or self.scene_tracks is not None and item.track_id not in self.scene_tracks)]
+        if unknown:
+            raise self.rpc_error("INVALID_ARGUMENT", f"{unknown[0]!r} is not in list")
+        return listed
+
     def render_rgb(self, request):
         from io import BytesIO
         from PIL import Image
@@ -612,39 +638,60 @@ class NuRecRpcBoundary:
             request.resolution_h,
             round(request.resolution_h * self.spec.resolution_w / self.spec.resolution_h),
         )
-        listed = [item.track_id for item in request.dynamic_objects]
-        unknown = [track for track in listed if track not in self.tracks
-                   and self.scene_tracks is not None and track not in self.scene_tracks]
-        if unknown:
-            raise self.rpc_error("INVALID_ARGUMENT", f"{unknown[0]!r} is not in list")
+        listed = self._listed_tracks(request)
         image = np.full((height, width, 3), 30, np.uint8)
         camera = FThetaCamera(8.5, 6.5, (0., 8.), 16, 12, (0., .125), 1.5)
         cam_from_world = np.linalg.inv(proto_world_pose(request.sensor_pose.start_pose))
-        for item in request.dynamic_objects:
+        for item in listed:
             if item.track_id not in self.tracks:
                 continue
-            points, colours = self.tracks[item.track_id]
             cam_from_track = cam_from_world @ proto_world_pose(item.pose_pair.start_pose)
-            optical = points @ cam_from_track[:3, :3].T + cam_from_track[:3, 3]
-            front = optical[:, 2] > 0
-            pixels = np.floor(camera.project(optical[front])).astype(int)
-            inside = (pixels >= 0).all(axis=1) & (pixels < [width, height]).all(axis=1)
-            for (x, y), colour in zip(pixels[inside], colours[front][inside]):
-                if self.hidden is None or not self.hidden[y, x]:
-                    image[y, x] = colour
+            for copy_index, (points, colours) in enumerate(self.tracks[item.track_id]):
+                optical = points @ cam_from_track[:3, :3].T + cam_from_track[:3, 3]
+                front = optical[:, 2] > 0
+                pixels = np.floor(camera.project(optical[front])).astype(int)
+                offsets = ((0, 0),) if copy_index == 0 else (
+                    (0, 0), (-1, 0), (1, 0), (0, -1), (0, 1))
+                for offset in offsets:
+                    shifted = pixels + offset
+                    inside = (shifted >= 0).all(axis=1) & (shifted < [width, height]).all(axis=1)
+                    for (x, y), colour in zip(shifted[inside], colours[front][inside]):
+                        if self.hidden is None or not self.hidden[y, x]:
+                            image[y, x] = colour
         stream = BytesIO()
         Image.fromarray(image).save(stream, format="PNG")
         return SimpleNamespace(image_bytes=stream.getvalue())
 
     def render_lidar(self, request):
-        """Return fixed native scan data and retain the endpoint request."""
+        """Return native scan data plus listed scene assets in the ending sensor frame."""
         self.requests.append(request)
         self.lidar_requests.append(request)
-        return self.lidar_response
+        listed = self._listed_tracks(request)
+        clouds = []
+        sensor_from_world = np.linalg.inv(proto_world_pose(request.sensor_pose.end_pose))
+        for item in listed:
+            if item.track_id not in self.tracks:
+                continue
+            sensor_from_track = sensor_from_world @ proto_world_pose(item.pose_pair.end_pose)
+            for points, _ in self.tracks[item.track_id]:
+                points = points @ sensor_from_track[:3, :3].T + sensor_from_track[:3, 3]
+                clouds.append(points[np.linalg.norm(points, axis=1) < 200.])
+        if not any(len(points) for points in clouds):
+            return self.lidar_response
+        native = self.lidar_response
+        base = (np.frombuffer(native.point_xyzs_buffer, np.float32).reshape(-1, 3)
+                if native.point_xyzs_buffer else np.asarray(native.point_xyzs).reshape(-1, 3))
+        points = np.concatenate([base, *clouds]).astype(np.float32)
+        return SimpleNamespace(point_xyzs_buffer=points.tobytes(), point_xyzs=[],
+                               point_intensities_buffer=b"", point_intensities=[],
+                               num_points=len(points))
 
     def edit_assets(self, request):
         self.requests.append(request)
         for track in request.insert:
+            self.inserted_tracks[track.id] = track
+            self.stored_trajectories[track.id] = tuple(
+                (pose.timestamp_us, proto_world_pose(pose.pose)) for pose in track.trajectory.poses)
             directory, name = track.asset_id.rsplit("/", 1)
             data = (Path(self.asset_directories.get(directory, directory)) / name).read_bytes()
             header, body = data.split(b"end_header\n", 1)
@@ -652,7 +699,9 @@ class NuRecRpcBoundary:
             size = np.array([track.object_size.size_x, track.object_size.size_y, track.object_size.size_z])
             scale = (size - self.TRACK_PADDING_M).max()
             colours = np.clip((rows[:, 3:6] * .28209479177387814 + .5) * 255, 0, 255).round().astype(np.uint8)
-            self.tracks[track.id] = (rows[:, :3] @ self.TRACK_FROM_PLY.T * scale, colours)
+            self.tracks.setdefault(track.id, []).append(
+                (rows[:, :3] @ self.TRACK_FROM_PLY.T * scale, colours))
+            self.insertion_counts[track.id] = self.insertion_counts.get(track.id, 0) + 1
         return SimpleNamespace(success=True, message="Success")
 
     def _unary_unary(self, method, request_serializer, response_deserializer):

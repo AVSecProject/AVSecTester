@@ -244,6 +244,7 @@ third_party/lib-avstack-api
 /results/**/offline_report/files/
 /results/**/maps/
 /results/nre-probes/
+/results/nre-assets/
 /results/*.log
 
 # downloaded datasets (e.g. nuCarla HuggingFace zips) — keep large data out of git

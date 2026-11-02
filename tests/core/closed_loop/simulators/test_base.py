@@ -199,6 +199,7 @@ def test_insert_object(make_object_in_front):
         runtime.reset()
         clean = runtime.sensor_view("front")
         assert clean.composition is None
+        assert clean.object_masks == {}
         asset, pose = make_object_in_front(clean)
         runtime.insert_object("sign", asset, pose)
         world_object = runtime.state().objects["sign"]
@@ -223,6 +224,9 @@ def test_insert_object(make_object_in_front):
             (PlacedObject("sign", asset, pose),), occluders=capture.actors,
             occlusion_tolerance_m=runtime.simulator.occlusion_tolerance_m)
         np.testing.assert_array_equal(composed.data, expected.image)
+        assert composed.composition is not None
+        np.testing.assert_array_equal(composed.composition.plan.apply(
+            composed.composition.background).image, composed.data)
         np.testing.assert_array_equal(runtime.observe().sensor_data["front"], expected.image)
         with pytest.raises(ValueError, match="already"):
             composed.composite_plan(composed.objects.values())
@@ -312,6 +316,10 @@ def test_object_visibility(sensor_depths, occlusion_source, ignored_occluders, m
             assert visibility[sensor].visible_pixels > 0
             view = simulator_runtime.sensor_view(sensor)
             assert view.objects.keys() == {"sign"}
+            assert view.object_masks.keys() == view.objects.keys()
+            assert view.object_masks["sign"].dtype == bool
+            assert view.object_masks["sign"].shape == view.data.shape[:2]
+            assert visibility[sensor].visible_pixels == np.count_nonzero(view.object_masks["sign"])
             assert view.objects["sign"].object_id == "sign"
             assert view.objects["sign"].asset.category == "stop_sign"
             np.testing.assert_array_equal(view.objects["sign"].world_from_object, world_from_object)
@@ -337,6 +345,7 @@ def test_object_visibility(sensor_depths, occlusion_source, ignored_occluders, m
         visibility = simulator_runtime.object_visibility("sign")
         assert visibility.keys() == {"front"} and visibility["front"].visible_pixels == 0
         assert simulator_runtime.sensor_view("front").objects.keys() == {"sign"}
+        assert not simulator_runtime.sensor_view("front").object_masks["sign"].any()
 
 
 def test_observe_past():

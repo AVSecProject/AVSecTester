@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 
     from avsectester.geometry.cameras import Camera
     from avsectester.rendering import (
-        CompositePlan, Harmonizer, ObjectAsset, ObjectComposition, ObjectVisibility, PlacedObject,
+        CompositePlan, CompositeResult, Harmonizer, ObjectAsset, ObjectComposition, ObjectVisibility, PlacedObject,
     )
 
 
@@ -120,7 +120,7 @@ class SensorGeometry:
 
 @dataclass(frozen=True)
 class SensorView:
-    """One sensor capture, including world objects composed by the framework.
+    """One sensor capture, including inserted world objects.
 
     ``data`` is the sensor's captured data; a camera supplies RGB uint8 (H, W, 3).
     ``camera`` projects optical
@@ -136,12 +136,17 @@ class SensorView:
     object composition. Existing measured depth includes composed objects. ``objects`` contains
     the placed world objects whose projection lies in this camera's current image, keyed by
     object ID, including fully occluded ones. They are immutable and shared, not copied.
-    ``composition`` holds the image beneath them and the plan that composed them into ``data``.
+    ``object_masks`` has the same keys and maps each object to its visible boolean HxW image
+    mask. Its pixel count equals that object's ``ObjectVisibility.visible_pixels``.
+    ``composition`` exists only for composite insertion. It holds the image beneath the objects
+    and the plan that composed them into ``data``. ``plan.apply(background).image`` reproduces
+    that capture. Otherwise ``composition`` is None.
     ``object_occlusion`` states how the simulator hides composed objects behind its scene:
     ``"geometry"`` uses this view's depth or actor cuboids, which ``composite_plan`` reproduces;
-    ``"rendered_probes"`` renders opaque probe copies of the objects inside the simulator's scene.
-    ``occlusion_tolerance_m`` is the simulator's occlusion tolerance: scene content hides a
-    composed object only when it lies more than about this distance in front of the object.
+    ``"rendered_probes"`` measures scene occlusion with opaque probe copies, and ``"scene_render"``
+    renders objects together with the scene. ``occlusion_tolerance_m`` applies only to composite
+    insertion. Scene content hides a composed object only when it lies more than about this
+    distance in front of the object.
     ``native`` gives
     simulator-specific access and gives up portability. World units are meters, with x forward,
     y left, z up.
@@ -162,6 +167,7 @@ class SensorView:
     composition: ObjectComposition | None = None
     object_occlusion: str = "geometry"
     occlusion_tolerance_m: float = 0.1
+    object_masks: Mapping[str, np.ndarray] = field(default_factory=dict)
 
     def composite_plan(self, objects: Sequence[PlacedObject]) -> CompositePlan:
         """Plan composing ``objects`` into this camera view exactly as simulator captures do.
@@ -170,8 +176,9 @@ class SensorView:
         cuboids, and its occlusion tolerance. ``plan.composite`` therefore reproduces
         the deployed capture differentiably in surface colors. Plan on a view captured
         without these objects, for example a clean ``ClosedLoopSession.render`` result. Only
-        ``"geometry"`` object occlusion can be planned here; ``"rendered_probes"`` needs the objects
-        in the scene: capture the view with them inserted and use its ``composition`` instead.
+        ``"geometry"`` object occlusion can be planned here. Otherwise capture a view with the
+        objects inserted, then call ``plan_composite`` using its camera, ``cam_from_world``
+        and ``object_masks`` as scene visibility.
         """
         from avsectester.rendering import plan_composite
 
@@ -179,7 +186,8 @@ class SensorView:
             raise ValueError(f"Sensor {self.sensor!r} has no optical camera geometry")
         if self.object_occlusion != "geometry":
             raise ValueError(f"Sensor {self.sensor!r} hides objects with {self.object_occlusion!r} occlusion; "
-                             "capture the view with the objects inserted and use view.composition")
+                             "capture the view with the objects inserted and call plan_composite "
+                             "with its object_masks")
         objects = tuple(objects)
         present = sorted({placed.object_id for placed in objects} & self.objects.keys())
         if present:
@@ -624,7 +632,7 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
             (self._composited_capture, self._composited_views,
              self._object_visibility) = compose_capture(
                 self._capture, self._capture_objects, self.camera_sensors,
-                self.sensor_geometry, self._sensor_view, self._composite_plan,
+                self.sensor_geometry, self._sensor_view, self._compose_objects,
             )
         except BaseException as error:
             self._composition_error = error
@@ -780,7 +788,7 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
 
                 observation, _, _ = compose_capture(
                     observation, self._start_objects, self.camera_sensors, geometry, view,
-                    self._composite_plan)
+                    self._compose_objects)
             past.append(self.copy_observation(observation))
         return tuple(past)
 
@@ -795,6 +803,18 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
     def _recorded_sensor_view(self, position: int, sensor: str, observation: Observation) -> SensorView:
         """Camera view of a recorded past capture whose data comes from ``observation``."""
         raise NotImplementedError("This simulator cannot compose world objects into recorded captures")
+
+    def _compose_objects(
+        self, view: SensorView, objects: Sequence[PlacedObject],
+    ) -> tuple[CompositeResult, ObjectComposition | None]:
+        """Compose objects into a camera capture and describe the composite when applicable."""
+        import numpy as np
+
+        from avsectester.rendering import ObjectComposition
+
+        plan = self._composite_plan(view, objects)
+        background = np.asarray(view.data)
+        return plan.apply(background), ObjectComposition(np.array(background, copy=True), plan)
 
     def _composite_plan(self, view: SensorView, objects: Sequence[PlacedObject]) -> CompositePlan:
         """Plan composing ``objects`` into a native capture view; measured occlusion overrides this."""

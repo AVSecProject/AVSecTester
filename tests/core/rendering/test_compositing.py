@@ -281,3 +281,33 @@ def test_plan_composite_with_scene_visibility(camera, optical_from_world):
                        scene_depth=np.ones((80, 100)))
     with pytest.raises(ValueError, match="boolean image"):
         plan_composite(camera, optical_from_world, (placed,), scene_visibility=scene_visibility[:, :10])
+
+
+def test_object_masks(camera, optical_from_world):
+    texture = np.full((16, 16, 4), [20, 60, 80, 255], np.uint8)
+    surface = PlaneSurface(np.array([[0., -2., 2.], [0., 2., 2.],
+                                    [0., 2., 0.], [0., -2., 0.]]), texture)
+    asset = ObjectAsset.from_surfaces((surface,), "sign")
+    near_pose = np.eye(4)
+    near_pose[:3, 3] = [6., 0., -1.]
+    far_pose = near_pose.copy()
+    far_pose[:3, 3] = [9., 1.5, -1.]
+    hidden_pose = near_pose.copy()
+    hidden_pose[0, 3] = 12.
+    objects = (PlacedObject("near", asset, near_pose), PlacedObject("far", asset, far_pose),
+               PlacedObject("hidden", asset, hidden_pose))
+    image = np.full((camera.height, camera.width, 3), [20, 60, 80], np.uint8)
+    result = plan_composite(camera, optical_from_world, objects).apply(image)
+    assert result.object_masks.keys() == {"near", "far", "hidden"}
+    for identity, mask in result.object_masks.items():
+        assert mask.dtype == bool and mask.shape == image.shape[:2]
+        assert result.object_visibility[identity].visible_pixels == np.count_nonzero(mask)
+    assert result.object_masks["near"].any() and result.object_masks["far"].any()
+    assert not result.object_masks["hidden"].any()
+    assert not (result.object_masks["near"] & result.object_masks["far"]).any()
+    np.testing.assert_array_equal(
+        np.logical_or.reduce(tuple(result.object_masks.values())), result.visible_mask)
+    # Visibility describes surface coverage even when the object has the background's color.
+    np.testing.assert_array_equal(result.image, image)
+    empty = plan_composite(camera, optical_from_world, ()).apply(image)
+    assert empty.object_masks == {}

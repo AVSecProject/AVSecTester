@@ -38,7 +38,7 @@ sequenceDiagram
     R->>L: initialization event
     loop each decision
         R->>S: observe and state without advancement
-        S-->>R: capture with composed world objects
+        S-->>R: capture with inserted world objects
         R->>A: step subscribed snapshots
         A-->>R: world, sensor and AVStack actions
         R->>R: sensor actions, then sensor environment
@@ -63,7 +63,7 @@ them. World actions returned during a decision affect the next capture. Sensor a
 actions affect the current decision.
 
 `InsertObject` is a `WorldAttackAction` with `setup_ticks=0`. A setup insertion appears in the
-first capture. A step insertion appears in the next capture. Camera composition precedes
+first capture. A step insertion appears in the next capture. World-object capture precedes
 sensor actions, sensor environment and `ObservationPipeline`. Framework objects remain separate
 from native actors in `WorldSnapshot.objects`.
 
@@ -89,6 +89,14 @@ are x right, y down, z forward. `sensor_from_world` describes the sensor body ax
 left, z up. It is `None` when the sensor pose is unavailable. The two transforms are distinct for
 cameras. `SimulatorRuntime.sensors` lists all views. `camera_sensors` lists its camera subset.
 `SensorView.objects` contains the inserted objects associated with the capture.
+
+`object_masks` maps those same object IDs to boolean H×W masks of visible pixels in `data`.
+Each mask's pixel count equals the corresponding `ObjectVisibility.visible_pixels`.
+`composition` exists only for composite insertion. It describes how the framework composed
+objects into `data`, and `composition.plan.apply(composition.background).image` reproduces it.
+Other captures have `composition=None`. `object_occlusion` is `geometry`, `rendered_probes` or
+`scene_render`. Scene insertion uses `occlusion_tolerance_m=0.0`. See
+[Simulators](../guides/simulators.md#inserted-world-objects) for insertion and visibility behavior.
 
 ### LiDAR data
 
@@ -257,8 +265,16 @@ receipt has a `details` mapping, empty when there is no detail. `InsertionAttack
 
 `StepRecord.object_visibility`, the initialization event and `RenderResult.object_visibility`
 use object ID → camera name → `ObjectVisibility`. `ObjectVisibility` contains `occlusion_source`,
-`ignored_occluders` and `visible_pixels`. Visibility and composition behavior is described
-under [Object visibility](../guides/simulators.md#inserted-world-objects).
+`ignored_occluders` and `visible_pixels`.
+
+| `occlusion_source` | Visibility evidence |
+|---|---|
+| `depth` | Aligned scene depth |
+| `actor_cuboids` | Actor box geometry |
+| `scene_visibility` | Rendered probes used during composite insertion |
+| `scene_render` | Objects rendered together with the scene |
+
+See [Simulators](../guides/simulators.md#inserted-world-objects) for visibility and composition.
 
 `EventRecord` captures initialization, termination and failure/cleanup information outside a
 decision. NuRec termination includes `ground_contact_failures`, counts by rejected ground-fit

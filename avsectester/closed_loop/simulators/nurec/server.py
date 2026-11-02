@@ -70,9 +70,9 @@ def renderer_command(dataset: NuRecDataset, renderer: NuRecRenderer, *, gpu: str
     require_positive_integer(cache_size, "cache_size")
     port = _local_port(renderer.endpoint, "NRE")
     command = _docker_run(gpu, name) + _archive_mounts(dataset)
-    if renderer.probe_directory is not None:
-        client_path = Path(renderer.probe_directory).resolve()
-        server_path = renderer.server_probe_directory or str(client_path)
+    if renderer.asset_directory is not None:
+        client_path = Path(renderer.asset_directory).resolve()
+        server_path = renderer.server_asset_directory or str(client_path)
         command.extend(["-v", f"{client_path}:{server_path}:ro"])
     command.extend([
         "--entrypoint", "/app/internal/scripts/pycena/runtime/pycena_nrm_full", image,
@@ -311,8 +311,8 @@ def local_services(
                                            image=DEFAULT_NRE_IMAGE, cache_size=2)
 
                 def prepare() -> None:
-                    if renderer.probe_directory is not None:
-                        Path(renderer.probe_directory).mkdir(parents=True, exist_ok=True)
+                    if renderer.asset_directory is not None:
+                        Path(renderer.asset_directory).mkdir(parents=True, exist_ok=True)
 
                 if remove_exited_container(name):
                     log(f"Removed exited NRE container: {name}")

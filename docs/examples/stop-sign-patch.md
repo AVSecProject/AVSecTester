@@ -81,6 +81,9 @@ The `mask_path` binary mask selects which face-texture colors form the patch. Th
 `rp2_bars.png` places bars above and below STOP. `face_interior.png` is the packaged
 alternative. Artifacts keep the face alpha and all colors outside the mask.
 
+The replica always includes a gray backboard 3 mm behind the sign face. Viewed from behind,
+it shows the gray back instead of the front design.
+
 The default placement is upright with a standard-size face. Map modes are alternatives:
 
 | Option | Behavior |
@@ -94,8 +97,11 @@ The default placement is upright with a standard-size face. Map modes are altern
 
 The annotation supplies the center and yaw. Position or yaw errors can expose the reconstructed
 sign around the replica's edges at close range. The attack does not correct those annotations.
-The simulator's `occlusion_tolerance_m` handles occlusion.
-See [Simulators](../guides/simulators.md).
+
+For `object_insertion: scene`, use `offset_m: 0.20` because reconstructed sign geometry can
+extend ahead of its annotation and cover a closer replica. The default remains 0.10 m.
+See [Simulators](../guides/simulators.md#inserted-world-objects) for insertion behavior and
+occlusion.
 
 The configurations use `ExposureHarmonizer(reference="under")`. Its gain is estimated from the
 reconstructed sign and the unpatched nominal replica, then applied to each patch. The same
@@ -123,6 +129,12 @@ The white-box attack uses the driving system's YOLOX detector through `avstack.b
 Algorithm used: `PGD`. `rule_based_driving_adapter` declares `rule_based.detection_confidence`,
 the camera and decision threshold. A `SessionScorer` reuses it for calibration and optimization.
 The [driving-system guide](../guides/driving-systems.md) describes the binding behavior.
+
+An inserted-replica render supplies camera geometry and visible pixels through
+`SensorView.object_masks`. A separate render without insertion supplies the clean background.
+The attack builds its own `plan_composite` from the camera geometry, asset, placement and mask,
+then applies candidate textures to that background. This differentiable surrogate is built the
+same way for composite and scene insertion.
 
 The driving system stops once the detector fires, so the patch must suppress every detection
 until the vehicle can no longer stop before the line. Training therefore covers recorded frames by

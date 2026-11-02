@@ -12,7 +12,7 @@ import numpy as np
 from PIL import Image
 
 from avsectester.maps import TrafficControl
-from avsectester.rendering import STOP_SIGN_FACE, ObjectAsset, load_rgba_image
+from avsectester.rendering import STOP_SIGN_FACE, ObjectAsset, PlaneSurface, load_rgba_image
 from avsectester.validation import (
     require_nonnegative_integer, require_nonnegative_number, require_positive_integer,
     require_positive_number,
@@ -117,9 +117,9 @@ def _check_control(control: TrafficControl) -> None:
 def replica_asset(
     control: TrafficControl, texture: np.ndarray, width_scale: float, face_size: str,
 ) -> ObjectAsset:
-    """Build a post-free face panel with a selected width and the texture aspect ratio.
+    """Build a post-free sign panel with a gray backboard 3 mm behind the face.
 
-    ``mutcd_standard`` selects the MUTCD R1-1 size closest to the mapped sign height;
+    ``mutcd_standard`` selects the MUTCD R1-1 size closest to the mapped sign height.
     ``map_width`` keeps the mapped width. Both multiply that width by ``width_scale``.
 
     The canonical face is the panel's nominal texture, so a harmonizer estimates scene
@@ -138,6 +138,14 @@ def replica_asset(
         texture, category="stop_sign", width_m=width_m,
         mount_height_m=0., post_count=0, nominal_texture=replica_face(),
     )
+    face = asset.surfaces[0]
+    back_corners = face.corners[[1, 0, 3, 2]].copy()
+    back_corners[:, 0] = -.003
+    back_texture = np.empty_like(face.texture)
+    back_texture[..., :3] = 160
+    back_texture[..., 3] = face.texture[:, ::-1, 3]
+    back = PlaneSurface(back_corners, back_texture)
+    asset = ObjectAsset.from_surfaces((face, back), "stop_sign")
     if face_size == "map_width" and not np.isclose(
         asset.extent[2], control.extent[2], rtol=1e-6, atol=1e-6,
     ):

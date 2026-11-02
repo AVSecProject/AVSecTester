@@ -4,6 +4,7 @@ from hashlib import sha256
 
 import numpy as np
 import pytest
+import torch
 from PIL import Image
 
 from avsectester.attack import OfflineContext, OfflineReport, OnlineContext
@@ -11,13 +12,14 @@ from avsectester.attack.insertion import InsertObject
 from avsectester.attack.optimization import HideBelowThreshold, NES, PGD
 from avsectester.execution.services import ClosedLoopServices, RenderRequest
 from avsectester.closed_loop.avstacks import DrivingAdapter, ScorerDescriptor
+from avsectester.data_types import read_camera_rgb
 from tests.fakes import ConstantAVStack, MemoryDataset, MemorySimulator, StopCommandAVStack
 from avsectester.geometry.projection import project_box
 from avsectester.implemented_attacks.stop_sign_patch_attack import StopSignPatchAttack
 from avsectester.implemented_attacks.stop_sign_patch_attack.offline import (
     DetectorPatchOptimization, RolloutPatchOptimization,
 )
-from avsectester.rendering import ExposureHarmonizer
+from avsectester.rendering import ExposureHarmonizer, PlacedObject, plan_composite
 from avsectester.runlog import RunLog
 
 
@@ -126,6 +128,14 @@ def test_replica_deployment(approach_view, tmp_path):
     np.testing.assert_array_equal(action.asset.surfaces[0].texture, candidate)
     face = canonical
     np.testing.assert_array_equal(action.asset.surfaces[0].nominal_texture, face)
+    assert len(action.asset.surfaces) == 2
+    front, back = action.asset.surfaces
+    expected_back = front.corners[[1, 0, 3, 2]].copy()
+    expected_back[:, 0] = -.003
+    np.testing.assert_array_equal(back.corners, expected_back)
+    np.testing.assert_array_equal(back.texture[..., :3], 160)
+    np.testing.assert_array_equal(back.texture[..., 3], front.texture[:, ::-1, 3])
+    assert back.nominal_texture is None
     control = scenario.scenario_map().traffic_controls["sign"]
     face_center = action.asset.surfaces[0].corners.mean(axis=0)
     np.testing.assert_allclose((action.world_from_object @ np.r_[face_center, 1.])[:3],
@@ -278,6 +288,22 @@ def test_white_box_offline_phase(nurec_detector_services_and_segment):
             ys, xs = np.nonzero(view.composition.plan.visible_mask)
             replica_bounds = (xs.min(), ys.min(), xs.max() + 1, ys.max() + 1)
             assert not np.allclose(expected, replica_bounds)
+            clean = session.render(RenderRequest(segment.scenario_id, frames[int(row["frame"])],
+                                                 "front"))
+            _, background = read_camera_rgb(clean.observation, "front")
+            np.testing.assert_array_equal(background, view.composition.background)
+            surrogate = plan_composite(view.camera, view.cam_from_world,
+                [PlacedObject("stop_sign_replica", asset, pose, attack.harmonizer)],
+                scene_visibility=view.object_masks["stop_sign_replica"])
+            pixels = torch.as_tensor(background.copy(), dtype=torch.float32).permute(2, 0, 1) / 255
+            original = torch.as_tensor(initial[..., :3].copy(),
+                                       dtype=torch.float32).permute(2, 0, 1) / 255
+            candidate = torch.linspace(0., 1., original.numel()).reshape(original.shape)
+            for colors in (original, candidate):
+                old_image = view.composition.plan.composite(
+                    pixels, {("stop_sign_replica", 0): colors})
+                new_image = surrogate.composite(pixels, {("stop_sign_replica", 0): colors})
+                torch.testing.assert_close(new_image, old_image, rtol=0., atol=0.)
     options = replace(attack.optimization, scorer_id="rule_based.detection_confidence")
     assert StopSignPatchAttack(optimization=options).run_offline(
         replace(context, metadata=(segment,), report=OfflineReport(None))).dtype == np.uint8

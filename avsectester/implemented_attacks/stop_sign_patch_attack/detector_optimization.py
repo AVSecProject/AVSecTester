@@ -13,9 +13,10 @@ from avsectester.attack.insertion import InsertObject
 from avsectester.attack.optimization import (
     AdversarialSample, DataSource, HideBelowThreshold, Perturbation, SessionScorer,
 )
-from avsectester.data_types import TargetSpec
+from avsectester.data_types import TargetSpec, read_camera_rgb
 from avsectester.execution.services import ClosedLoopSession, RenderRequest
 from avsectester.geometry.projection import project_box
+from avsectester.rendering import PlacedObject, plan_composite
 
 from .assets import replica_face, texture_from_colors
 from .metabuilder import control_from_user_data, route_progress
@@ -290,9 +291,6 @@ def collect_samples(
                             occlusion_source=None if evidence is None else evidence.occlusion_source)
                 update_report()
                 return None
-            composition = observation.view.composition
-            if composition is None:
-                raise ValueError("Visible inserted patch has no composition")
             box = project_box(observation.view.camera, observation.view.cam_from_world,
                               control.pose, control.extent)
             if box is None:
@@ -300,11 +298,21 @@ def collect_samples(
                             occlusion_source=evidence.occlusion_source)
                 update_report()
                 return None
-            background = torch.as_tensor(composition.background.copy(), dtype=torch.float32).permute(2, 0, 1) / 255
+            clean = session.render(RenderRequest(scene, frames[index], sensor_id,
+                                                environment=context.environment))
+            pixels = read_camera_rgb(clean.observation, sensor_id)
+            if pixels is None:
+                raise ValueError("Patch training requires a readable RGB background")
+            plan = plan_composite(
+                observation.view.camera, observation.view.cam_from_world,
+                [PlacedObject(REPLICA_OBJECT_ID, asset, pose, attack.harmonizer)],
+                scene_visibility=observation.view.object_masks[REPLICA_OBJECT_ID],
+            )
+            background = torch.as_tensor(pixels[1].copy(), dtype=torch.float32).permute(2, 0, 1) / 255
             note.update(status="used", target_box=list(box), occlusion_source=evidence.occlusion_source)
             update_report()
             return AdversarialSample(background, TargetSpec(box, "stop sign"),
-                                     {"plan": composition.plan, "record": note, "scene": scene})
+                                     {"plan": plan, "record": note, "scene": scene})
 
         try:
             domain = [index for index in range(stop + 1) if line_distances[index] >= 0

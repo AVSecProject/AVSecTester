@@ -326,8 +326,8 @@ def nre_serve(
     assert renderer is not None  # Checked by _nre_launch_spec.
 
     def prepare() -> None:
-        if renderer.probe_directory is not None:
-            Path(renderer.probe_directory).mkdir(parents=True, exist_ok=True)
+        if renderer.asset_directory is not None:
+            Path(renderer.asset_directory).mkdir(parents=True, exist_ok=True)
 
     _start_service(command, name=chosen_name, service="NRE", timeout=timeout, dry_run=dry_run,
                      ready_log="Serving on", prepare=prepare)

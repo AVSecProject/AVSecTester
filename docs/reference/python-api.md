@@ -726,7 +726,7 @@ visible-region blending.
 | Name and signature | Meaning |
 |---|---|
 | `ObjectVisibility(occlusion_source: str, ignored_occluders: tuple[str, ...], visible_pixels: int)` | One world object's camera visibility and the evidence used to measure it. |
-| `CompositeResult(image: np.ndarray, depth: np.ndarray, visible_mask: np.ndarray, occlusion_source: str, ignored_occluders: tuple[str, ...] = (), object_visibility: Mapping[str, ObjectVisibility] = dict())` | Composite pixels, optical z-depth, visibility, occlusion source and ignored_occluders. |
+| `CompositeResult(image: np.ndarray, depth: np.ndarray, visible_mask: np.ndarray, occlusion_source: str, ignored_occluders: tuple[str, ...] = (), object_visibility: Mapping[str, ObjectVisibility] = dict(), object_masks: Mapping[str, np.ndarray] = dict())` | Composite pixels, optical z-depth, visibility, occlusion source and ignored_occluders. |
 | `blend_rgba(image: np.ndarray, rgba: np.ndarray, visible_mask: np.ndarray, *, harmonizer: Harmonizer \| None = None, soften: float = 0.0) -> np.ndarray` | Blend sampled RGBA only at visible pixels, optionally softening and harmonizing there. |
 | `CompositePlan(objects: tuple[PlacedObject, ...], depth: np.ndarray, visible_mask: np.ndarray, occlusion_source: str, ignored_occluders: tuple[str, ...], object_visibility: Mapping[str, ObjectVisibility])` | Texture-independent geometry and composition for one camera image. |
 | `CompositePlan.composite(image: torch.Tensor, textures: Mapping[tuple[str, int], torch.Tensor] \| None = None) -> torch.Tensor` | Blend surfaces and differentiable harmonizers over a (3, H, W) image in [0, 1]. |
@@ -1509,7 +1509,7 @@ The simulator: a configuration (`Simulator`) and its live worlds (`SimulatorRunt
 | `DeploymentPlan(ticks: int = 0)` | Shared tick budget for all treatments, including frame data generation. |
 | `ClockSnapshot(t: float, frame: int)` | Physical simulator time and frame, never a model-visible timestamp. |
 | `SensorGeometry(sensor: str, camera: Camera, cam_from_world: np.ndarray)` | Physical optical-camera geometry at one capture, without image or SDK handles. |
-| `SensorView(sensor: str, data: Any, camera: Camera \| None, cam_from_world: np.ndarray \| None, actors: Mapping[str, ActorState], ego: ActorState, time: float, frame: int, sensor_from_world: np.ndarray \| None = None, depth: np.ndarray \| None = None, native: Mapping[str, Any] = dict(), objects: Mapping[str, PlacedObject] = dict(), composition: ObjectComposition \| None = None, object_occlusion: str = "geometry", occlusion_tolerance_m: float = 0.1)` | One sensor capture, including world objects composed by the framework. |
+| `SensorView(sensor: str, data: Any, camera: Camera \| None, cam_from_world: np.ndarray \| None, actors: Mapping[str, ActorState], ego: ActorState, time: float, frame: int, sensor_from_world: np.ndarray \| None = None, depth: np.ndarray \| None = None, native: Mapping[str, Any] = dict(), objects: Mapping[str, PlacedObject] = dict(), composition: ObjectComposition \| None = None, object_occlusion: str = "geometry", occlusion_tolerance_m: float = 0.1, object_masks: Mapping[str, np.ndarray] = dict())` | One sensor capture, including inserted world objects. |
 | `SensorView.composite_plan(objects: Sequence[PlacedObject]) -> CompositePlan` | Plan composing `objects` into this camera view exactly as simulator captures do. |
 | `Initialization(expected: FrameData, resolved_scenario: Mapping[str, Any] = dict(), provenance: Mapping[str, Any] = dict())` | Source replay inputs only. No attack origin, score or placement enters the simulator. |
 | `FrameDataSequence(frames: tuple[FrameData, ...], resolved_scenario: Mapping[str, Any], provenance: Mapping[str, Any])` | Detached generated frames and the resolved scenario and provenance that produced them. |
@@ -1594,7 +1594,11 @@ Runtime subclasses implement `_initialize_world(start, initialization, environme
 `_sensor_view`, `_replay_tick`, `_observe_recorded`, `_recorded_sensor_geometry`,
 `_recorded_sensor_view`, `_capture_frame_data`, `_hold_tick`, `_replay_position`,
 `_check_initialization`, `_before_selected_capture`, `_replayed_scenario`,
-`_frame_data_provenance` and `_composite_plan`. The default `_hold_tick` raises `ValueError`, so
+`_frame_data_provenance`, `_composite_plan` and `_compose_objects`.
+`_compose_objects(view, objects)` returns the rendered `CompositeResult` and an
+`ObjectComposition` only for composite insertion. The default implementation applies
+`_composite_plan` to the capture and records its background.
+The default `_hold_tick` raises `ValueError`, so
 a runtime without it cannot hold an origin for deployment ticks. Defining `reset`, `step`,
 `sensor_view`, `start_replay`, `advance_replay` or `observe_past` in a subclass raises
 `TypeError`.
@@ -1808,10 +1812,12 @@ NuRec camera and LiDAR rendering at the native RPC boundary.
 | `Renderer.render(world_from_rig: np.ndarray, timestamp_us: int, camera: str, dynamic_objects=()) -> Any` | Abstract. Render one camera at the explicit three-dimensional rig pose and scene timestamp. |
 | `Renderer.render_lidar(world_from_rig_start: np.ndarray, world_from_rig_end: np.ndarray, start_us: int, end_us: int, dynamic_objects_start: Sequence[tuple[str, np.ndarray]] = (), dynamic_objects_end: Sequence[tuple[str, np.ndarray]] = ()) -> PointCloud` | Render one scan of `lidar` in the sensor frame at its ending pose and timestamp. |
 | `Renderer.render_scene_visibility(world_from_rig: np.ndarray, timestamp_us: int, camera: str, objects: Sequence[PlacedObject], dynamic_objects=(), *, occlusion_tolerance_m: float = 0.) -> np.ndarray` | Pixels where the reconstructed scene does not hide `objects` in this capture. |
+| `Renderer.scene_object_tracks(objects: Sequence[PlacedObject]) -> tuple[tuple[str, np.ndarray], ...]` | Register scene-rendered assets and return their track IDs and world poses. |
+| `Renderer.render_object_coverage(world_from_rig: np.ndarray, timestamp_us: int, camera: str, placed: PlacedObject, dynamic_objects=()) -> np.ndarray` | Visible image coverage of one object, with values between zero and one. |
 | `Renderer.camera_model(camera: str \| None = None) -> Camera \| None` | Optical camera model, or None when this renderer supplies no geometry. |
 | `Renderer.cam_from_world(world_from_rig: np.ndarray, camera: str \| None = None) -> np.ndarray` | World-to-optical-camera transform for the rendered pose. |
 | `Renderer.close() -> None` | Release renderer resources. The default implementation has no effect. |
-| `NuRecRenderer(endpoint: str = "127.0.0.1:50051", scene_id: str \| None = None, cameras: list[str] = ["camera_front_wide_120fov"], lidar: str \| None = None, image_quality: float = 95.0, probe_directory: str \| Path \| None = None, server_probe_directory: str \| None = None, track_padding_m: tuple[float, float, float] = (1.0, 1.0, 0.25))` | Subclass of `Renderer`. Real NuRec renderer: one stateless `SensorsimService` render call per capture to an nre server. |
+| `NuRecRenderer(endpoint: str = "127.0.0.1:50051", scene_id: str \| None = None, cameras: list[str] = ["camera_front_wide_120fov"], lidar: str \| None = None, image_quality: float = 95.0, asset_directory: str \| Path \| None = None, server_asset_directory: str \| None = None, track_padding_m: tuple[float, float, float] = (1.0, 1.0, 0.25))` | Subclass of `Renderer`. Real NuRec renderer: one stateless `SensorsimService` render call per capture to an nre server. |
 | `NuRecRenderer.copy() -> NuRecRenderer` | The same configuration without a connection, loaded scene or run origin. |
 | `NuRecRenderer.served_scenes(timeout_s: float = 2.0) -> tuple[str, ...] \| None` | Query supported scene IDs without changing this renderer's loaded scene. |
 | `NuRecRenderer.load_scene(scene: Any) -> None` | Load sensor calibration and connect to a reconstructed scene. |
@@ -1823,6 +1829,8 @@ NuRec camera and LiDAR rendering at the native RPC boundary.
 | `NuRecRenderer.render_at(world_from_rig, timestamp_us: int, camera: str, dynamic_objects=())` | Render an absolute rig pose/time and all present track-ID/world-pose pairs. |
 | `NuRecRenderer.render_lidar(world_from_rig_start: np.ndarray, world_from_rig_end: np.ndarray, start_us: int, end_us: int, dynamic_objects_start: Sequence[tuple[str, np.ndarray]] = (), dynamic_objects_end: Sequence[tuple[str, np.ndarray]] = ()) -> PointCloud` | Render a scan in the LiDAR frame at its ending pose and timestamp. |
 | `NuRecRenderer.render_scene_visibility(world_from_rig: np.ndarray, timestamp_us: int, camera: str, objects: Sequence[PlacedObject], dynamic_objects=(), *, occlusion_tolerance_m: float = 0.) -> np.ndarray` | Pixels where the reconstructed scene does not hide `objects` in an NRE render. |
+| `NuRecRenderer.scene_object_tracks(objects: Sequence[PlacedObject]) -> tuple[tuple[str, np.ndarray], ...]` | Register textured scene assets and return their requested world-pose track entries. |
+| `NuRecRenderer.render_object_coverage(world_from_rig: np.ndarray, timestamp_us: int, camera: str, placed: PlacedObject, dynamic_objects=()) -> np.ndarray` | Return visible object coverage from pure-white and pure-black scene copies. |
 <!-- api:end -->
 
 #### Constraints and errors
@@ -1831,6 +1839,14 @@ NuRec camera and LiDAR rendering at the native RPC boundary.
 or a configured camera is unavailable in it. Its calibration uses the same native extrinsics as
 `cam_from_world`. `served_scenes` returns `None` only for `UNAVAILABLE` or `DEADLINE_EXCEEDED`.
 Other RPC errors raise `RuntimeError` with the RPC status and details.
+
+`Renderer.scene_object_tracks` and `render_object_coverage` raise `NotImplementedError` by
+default. Their NuRec implementations raise `ValueError` without `asset_directory`.
+Registering scene objects before `load_scene` raises `RuntimeError`.
+When NRE reports a missing known track, rendering inserts only that track and retries.
+Existing tracks are not inserted again. A second report of the same missing track in one
+request raises `RuntimeError`. An unparseable missing-track detail or an unknown track
+propagates the original RPC error.
 
 #### See also
 
@@ -1867,7 +1883,7 @@ NuRec live worlds with independent renderer, actor state and ego dynamics.
 
 | Name and signature | Meaning |
 |---|---|
-| `NuRecSimulator(renderer: Renderer, dynamics: EgoDynamics \| None = None, *, time_step: float \| None = None, camera_aliases: Mapping[str, str] \| None = None, depth: str = "mesh", route_generator: str = "map", physics_update_mode: str = "ego_only", ground_mesh: str = "mesh", object_occlusion: str = "rendered_probes", occlusion_tolerance_m: float = 0.15, traffic: AlpaSimTraffic \| None = None, min_track_duration_s: float = 3.)` | Subclass of `Simulator`. A NuRec neural reconstruction with in-process ego dynamics and a pluggable renderer. |
+| `NuRecSimulator(renderer: Renderer, dynamics: EgoDynamics \| None = None, *, time_step: float \| None = None, camera_aliases: Mapping[str, str] \| None = None, depth: str = "mesh", route_generator: str = "map", physics_update_mode: str = "ego_only", ground_mesh: str = "mesh", object_occlusion: str = "rendered_probes", object_insertion: str = "composite", occlusion_tolerance_m: float = 0.15, traffic: AlpaSimTraffic \| None = None, min_track_duration_s: float = 3.)` | Subclass of `Simulator`. A NuRec neural reconstruction with in-process ego dynamics and a pluggable renderer. |
 | `NuRecSimulator.dataset_kinds = ("NuRecDataset",)` | Dataset kinds supported by this simulator. |
 | `NuRecSimulator.can_render = True` | Whether arbitrary-view rendering is supported. |
 | `NuRecSimulator.can_observe_past = True` | Whether observations before a selected start can be reconstructed. |
@@ -1887,8 +1903,9 @@ NuRec live worlds with independent renderer, actor state and ego dynamics.
 #### Constraints and errors
 
 Construction raises `ValueError` without `time_step`, for an unsupported `depth`,
-`physics_update_mode`, `ground_mesh`, `object_occlusion` or `route_generator`, or for traffic with
-a decision step other than 0.1 s. It raises `TypeError` without a renderer or for traffic that is
+`physics_update_mode`, `ground_mesh`, `object_occlusion`, `object_insertion` or
+`route_generator`, for scene insertion without `asset_directory`, or for traffic with a
+decision step other than 0.1 s. It raises `TypeError` without a renderer or for traffic that is
 not `AlpaSimTraffic`. `validate_start` raises `ValueError` without `ScenarioStart` and
 `UnsupportedStartError` when traffic lacks past decisions or the navigation route cannot be
 built.
@@ -1897,8 +1914,9 @@ Reset raises `ValueError` for environment overrides or replay initialization, wh
 `depth="mesh"` and the archive lacks `mesh.ply` or `mesh_ground.ply`, or when
 `physics_update_mode="ego_only"` and the ego extent or the configured `ground_mesh` is missing.
 Overriding ego, a filtered track or a non-controllable track raises `ValueError`. In
-`rendered_probes` mode, `SensorView.composite_plan` raises `ValueError`. Capture with inserted
-objects and use `view.composition.plan`.
+`rendered_probes` or `scene_render` views, `SensorView.composite_plan` raises `ValueError`.
+Capture with inserted objects, then use `plan_composite` with the captured `object_masks`
+as `scene_visibility`.
 
 #### See also
 

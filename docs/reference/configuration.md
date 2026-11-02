@@ -198,8 +198,9 @@ from `NuRecDataset`. Reset requires `ScenarioStart`. Constructor defaults are:
 | `route_generator` | `map` | `map`, `recorded`, `none` |
 | `physics_update_mode` | `ego_only` | `ego_only`, `none` |
 | `ground_mesh` | `mesh` | `mesh`, `mesh_ground` |
-| `object_occlusion` | `rendered_probes` | `rendered_probes`, `geometry` |
-| `occlusion_tolerance_m` | 0.15 | Nonnegative scene occlusion tolerance in meters |
+| `object_insertion` | `composite` | `composite`, `scene`. Scene insertion requires `renderer.asset_directory` |
+| `object_occlusion` | `rendered_probes` | `rendered_probes`, `geometry`. Applies only to composite insertion |
+| `occlusion_tolerance_m` | 0.15 | Nonnegative scene occlusion tolerance in meters. Applies only to composite insertion |
 | `traffic` | `null` | Optional `AlpaSimTraffic` |
 | `min_track_duration_s` | 3.0 | Nonnegative moving-track duration threshold. A value of 0 disables filtering |
 
@@ -222,8 +223,7 @@ simulator:
         endpoint: 127.0.0.1:50051
         cameras: [camera_front_wide_120fov]
         lidar: lidar_gt_top_p128
-        probe_directory: ../results/nre-probes
-        server_probe_directory: /mnt/nre-probes
+        asset_directory: ../results/nre-assets
     dynamics:
       type: avsectester.closed_loop.simulators.ego_dynamics:AlpaSimController
 ```
@@ -232,10 +232,14 @@ NuRec cameras render at their native resolution.
 `NuRecRenderer.lidar` defaults to `null`. Set it to the scene's logical LiDAR sensor name to
 collect scans. See [NuRec LiDAR](../guides/simulators.md#lidar) for timing and sensor constraints.
 
-`probe_directory` is a client-side path resolved relative to the YAML file.
-`server_probe_directory` is an unchanged string in the server's filesystem namespace. The server
-must be able to read the probe files. See
+`NuRecRenderer.asset_directory` defaults to `null`. It is the client-side directory for generated
+NRE assets, including occlusion probes and scene objects. Its path resolves relative to the YAML
+file. `server_asset_directory` also defaults to `null`, using the same absolute path as the
+client. Set this unchanged server-side string only when connecting to an externally managed NRE
+whose asset mount has a different path. See
 [automatic local services](cli.md#automatic-local-services) for startup and mounts.
+
+For insertion behavior, see [Inserted world objects](../guides/simulators.md#inserted-world-objects).
 
 ### Reactive traffic
 

@@ -241,12 +241,12 @@ def test_constructor_paths(tmp_path):
     nurec = specification()
     nurec["simulator"] = {"type": "NuRecSimulator", "options": {"time_step": .1, "renderer": {
         "type": "avsectester.closed_loop.simulators.nurec:NuRecRenderer", "options": {
-            "probe_directory": "../probes", "server_probe_directory": "../server-probes"}}}}
+            "asset_directory": "../assets", "server_asset_directory": "../server-assets"}}}}
     yaml_path = tmp_path / "probe.yaml"
     yaml_path.write_text(yaml.safe_dump(nurec))
     renderer = load_configuration(yaml_path).simulator.renderer
-    assert Path(renderer.probe_directory) == (tmp_path / "../probes").resolve()
-    assert renderer.server_probe_directory == "../server-probes"
+    assert Path(renderer.asset_directory) == (tmp_path / "../assets").resolve()
+    assert renderer.server_asset_directory == "../server-assets"
 
     absolute = str(tmp_path / "keep" / ".." / "weights.bin")
     uri = "https://example.test/weights.bin"

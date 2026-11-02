@@ -28,8 +28,7 @@ simulator:
         - camera_front_tele_30fov
         - camera_cross_left_120fov
         - camera_cross_right_120fov
-        probe_directory: ../results/nre-probes
-        server_probe_directory: /mnt/nre-probes
+        asset_directory: ../results/nre-assets
     dynamics:
       type: avsectester.closed_loop.simulators.ego_dynamics:AlpaSimController
 avstack:

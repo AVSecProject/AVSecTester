@@ -33,6 +33,7 @@ class CompositeResult:
 
     Cuboid depth is evaluated only inside candidate projection regions, padded by two pixels.
     Outside those regions it is infinity. Missing actor extents are reported in input order.
+    ``object_masks`` maps every placed object ID to its visible boolean image mask.
     """
 
     image: np.ndarray
@@ -41,6 +42,7 @@ class CompositeResult:
     occlusion_source: str
     ignored_occluders: tuple[str, ...] = ()
     object_visibility: Mapping[str, ObjectVisibility] = field(default_factory=dict)
+    object_masks: Mapping[str, np.ndarray] = field(default_factory=dict)
 
 
 def _harmonize_visible(output, active, background, harmonizer, source=None):
@@ -201,8 +203,10 @@ class CompositePlan:
             for index, placed in numpy_harmonized:
                 active = _object_mask(self._footprints, index, self.depth.shape)
                 _harmonize_visible(output, active, image, placed.harmonizer, unharmonized)
+        masks = {placed.object_id: _object_mask(self._footprints, index, self.depth.shape)
+                 for index, placed in enumerate(self.objects)}
         return CompositeResult(output, self.depth, visible, self.occlusion_source,
-                               self.ignored_occluders, self.object_visibility)
+                               self.ignored_occluders, self.object_visibility, masks)
 
     def _blend(self, image: torch.Tensor, textures: dict[tuple[str, int], torch.Tensor]) -> torch.Tensor:
         import torch
@@ -238,6 +242,7 @@ class ObjectComposition:
 
     ``plan.apply(background).image`` is the composed capture, and ``plan.composite`` over
     ``background`` reproduces it differentiably in surface colors.
+    This record exists only for composite insertion, not scene-rendered objects.
     """
 
     background: np.ndarray
