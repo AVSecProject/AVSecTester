@@ -10,7 +10,10 @@ writes ``real_car_painted.ply`` next to it with the same body geometry and these
 * Simple shading is baked into the colors, with upward faces brighter and low parts darker.
 * A small side gap is closed. The bottom opening stays open because sensors above the body
   never see it.
-* Four tires with rims are added under the wheel arches, touching z = 0.
+* The body is scaled per axis to 4.2 m long, 1.9 m wide and 1.6 m high, measured from the
+  ground, and centered horizontally on the origin.
+* Four tires with rims are added under the scaled wheel arches, touching z = 0. Their radius
+  follows the height scale so that they stay round.
 
 Window panes, wheel positions and light regions are specific to ``real_car.ply``. The output
 stores one color per face and loads with ``load_mesh_asset(..., origin="file")``.
@@ -36,8 +39,9 @@ GRILLE = np.array([24, 24, 26])
 TIRE = np.array([22, 22, 22])
 RIM = np.array([125, 127, 132])
 WHEEL_CENTERS_X = (-1.2, 1.22)
-WHEEL_RADIUS_M, WHEEL_WIDTH_M, WHEEL_Y_M = .34, .22, .91
+WHEEL_RADIUS_M, WHEEL_WIDTH_M, WHEEL_Y_M, RIM_RADIUS_M = .34, .22, .91, .21
 MAX_EDGE_M = .05
+TARGET_SIZE_M = np.array([4.2, 1.9, 1.6])
 
 
 def boundary_loops(mesh):
@@ -95,20 +99,25 @@ def body_colors(centroid, normal, glass):
     return shaded(colors, normal, z)
 
 
-def wheels():
-    """Tires with rim discs on their outer faces, as meshes with face colors."""
+def wheels(center, scale):
+    """Tires with rim discs on their outer faces, as meshes with face colors.
+
+    Wheel positions move with the body transform. Radii use the height scale.
+    """
     import trimesh
 
     rotation = trimesh.transformations.rotation_matrix(np.pi / 2, [1, 0, 0])
+    radius, width = WHEEL_RADIUS_M * scale[2], WHEEL_WIDTH_M * scale[1]
     result = []
     for center_x in WHEEL_CENTERS_X:
         for side in (-1, 1):
-            tire = trimesh.creation.cylinder(WHEEL_RADIUS_M, WHEEL_WIDTH_M, sections=40,
-                                             transform=rotation)
-            rim = trimesh.creation.cylinder(.21, .01, sections=40, transform=rotation)
-            rim.apply_translation([0, side * (WHEEL_WIDTH_M / 2 + .005), 0])
+            tire = trimesh.creation.cylinder(radius, width, sections=40, transform=rotation)
+            rim = trimesh.creation.cylinder(RIM_RADIUS_M * scale[2], .01, sections=40,
+                                            transform=rotation)
+            rim.apply_translation([0, side * (width / 2 + .005), 0])
+            x, y, _ = (np.array([center_x, side * WHEEL_Y_M, 0.]) - center) * scale
             for mesh, color in ((tire, TIRE), (rim, RIM)):
-                mesh.apply_translation([center_x, side * WHEEL_Y_M, WHEEL_RADIUS_M])
+                mesh.apply_translation([x, y, radius])
                 colors = np.tile(color, (len(mesh.faces), 1)).astype(float)
                 result.append((mesh.vertices, mesh.faces,
                                shaded(colors, mesh.face_normals, mesh.triangles_center[:, 2])))
@@ -134,8 +143,13 @@ def paint(source: Path, output: Path) -> None:
     vertices, faces, index = trimesh.remesh.subdivide_to_size(
         mesh.vertices, mesh.faces, max_edge=MAX_EDGE_M, return_index=True)
     body = trimesh.Trimesh(vertices, faces, process=False)
-    pieces = [(vertices, faces, body_colors(body.triangles_center, body.face_normals, glass[index]))]
-    pieces.extend(wheels())
+    body_rgb = body_colors(body.triangles_center, body.face_normals, glass[index])
+    # Regions are painted in source coordinates. Sizes are measured from the ground at z = 0.
+    lower, upper = body.bounds
+    center = np.array([(lower[0] + upper[0]) / 2, (lower[1] + upper[1]) / 2, 0.])
+    scale = TARGET_SIZE_M / np.array([upper[0] - lower[0], upper[1] - lower[1], upper[2]])
+    pieces = [((vertices - center) * scale, faces, body_rgb)]
+    pieces.extend(wheels(center, scale))
     offset, all_vertices, all_faces, all_colors = 0, [], [], []
     for piece_vertices, piece_faces, piece_colors in pieces:
         all_vertices.append(piece_vertices)

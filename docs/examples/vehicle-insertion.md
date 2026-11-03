@@ -50,8 +50,8 @@ origin, with the wheels resting on z = 0. The file already contains face colors,
 [Mesh assets](../reference/configuration.md#mesh-assets).
 
 The supplied `real_car.ply` is a white low-polygon body without wheels.
-`real_car_painted.ply` adds body paint, dark window panes, lights, a plate and four wheels, with
-simple shading baked into its colors.
+`real_car_painted.ply` scales it to 4.2 m × 1.9 m × 1.6 m and adds body paint, dark window
+panes, lights, a plate and four wheels, with simple shading baked into its colors.
 [paint_demo_vehicle.py](../../scripts/preparation/paint_demo_vehicle.py) regenerates it from
 `real_car.ply`. Both are illustrative assets. Replace the asset specification to use another
 model. The attack has no default model.
