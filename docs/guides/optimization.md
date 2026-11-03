@@ -103,6 +103,10 @@ composite insertion, `SensorView.composition` also retains the background and pl
 capture. In geometry occlusion mode, a clean view can build a plan through `composite_plan`.
 The [Simulator guide](simulators.md#inserted-world-objects) describes these views.
 
+Plans fix object geometry, so gradients reach surface colors only. **Not yet implemented.**
+Shape optimization. See
+[TODO](../development/TODO.md#shape-optimization-of-inserted-objects).
+
 Differentiable harmonizers use the same floating-point computation during optimization and
 deployment, followed by uint8 rounding for deployment. This example checks that equivalence and
 backpropagates through `ExposureHarmonizer`:

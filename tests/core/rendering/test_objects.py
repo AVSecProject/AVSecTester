@@ -2,7 +2,7 @@
 import numpy as np
 import pytest
 
-from avsectester.rendering import ObjectAsset, PlacedObject, PlaneSurface
+from avsectester.rendering import MeshAsset, MeshPart, ObjectAsset, PlacedObject, PlaneSurface
 
 
 def test_plane_surface():
@@ -62,6 +62,9 @@ def test_placed_object():
         PlacedObject("sign", asset, invalid)
     with pytest.raises(TypeError, match="harmonizer must be callable"):
         PlacedObject("sign", asset, np.eye(4), harmonizer="classic")
+    part = MeshPart(surface.corners[:3], np.array([[0, 1, 2]]), color=np.full(4, 255, np.uint8))
+    with pytest.raises(TypeError, match="MeshAsset has no planar world_surfaces"):
+        PlacedObject("mesh", MeshAsset((part,), (0., 2., 2.), "vehicle"), pose).world_surfaces()
 
 
 def test_from_panel():
@@ -92,3 +95,29 @@ def test_from_panel():
     np.testing.assert_allclose(face_only.extent, [0., 1.2, 2.4])
     with pytest.raises(ValueError, match="nonnegative integer"):
         ObjectAsset.from_panel(face, category="poster", width_m=1., post_count=-1)
+
+
+def test_world_mesh():
+    vertices = np.array([[0., -1., 0.], [0., 1., 0.], [0., 0., 2.]])
+    first = MeshPart(vertices, np.array([[0, 1, 2]]), color=np.full(4, 255, np.uint8))
+    second = MeshPart(vertices + [1., 0., 0.], np.array([[2, 1, 0]]),
+                      color=np.full(4, 255, np.uint8))
+    asset = MeshAsset((first, second), (2., 2., 2.), "vehicle")
+    pose = np.array([[0., -1., 0., 5.], [1., 0., 0., 2.],
+                     [0., 0., 1., 1.], [0., 0., 0., 1.]])
+    placed = PlacedObject("mesh", asset, pose)
+    world_vertices, world_faces = placed.world_mesh()
+    np.testing.assert_array_equal(world_vertices, [
+        [6., 2., 1.], [4., 2., 1.], [5., 2., 3.],
+        [6., 3., 1.], [4., 3., 1.], [5., 3., 3.],
+    ])
+    np.testing.assert_array_equal(world_faces, [[0, 1, 2], [5, 4, 3]])
+    world_vertices[:] = 0.
+    world_faces[:] = 0
+    np.testing.assert_array_equal(first.vertices, vertices)
+    np.testing.assert_array_equal(second.faces, [[2, 1, 0]])
+    assert placed.world_mesh()[0][0, 0] == 6.
+    panel = ObjectAsset.from_panel(np.full((2, 2, 4), 255, np.uint8),
+                                   category="panel", width_m=1.)
+    with pytest.raises(TypeError, match="ObjectAsset has no triangle world_mesh"):
+        PlacedObject("panel", panel, np.eye(4)).world_mesh()

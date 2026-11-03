@@ -15,35 +15,48 @@ from avsectester.attack.insertion.placement import WorldPlacement
 from avsectester.execution.runner import ClosedLoopRunner, RecordingPolicy, RunRequest
 from avsectester.execution.services import ClosedLoopServices
 from avsectester.experiment import load_configuration
-from tests.fakes import MemorySimulator
+from avsectester.rendering import MeshAsset, MeshPart
 
 
 ATTACKS = [
     pytest.param("PatchAttack", {
         "decision_steps": 2, "assets": CheckerboardTexture(size=8), "max_windows": 1,
         "compositor": PatchCompositor(),
-    }, {"hosts_per_window": 0}, "default_driving_options", "memory_dataset", id="patch"),
+    }, {"hosts_per_window": 0}, "default_driving_options", "memory_dataset", "memory_simulator",
+        id="patch"),
     pytest.param("ObjectInsertionAttack", {
         "decision_steps": 2, "max_segments": 1,
         "assets": PlaneAsset(np.full((8, 8, 4), [240, 20, 20, 255], np.uint8), 1., 1.),
         "placement": WorldPlacement((7., 0., 1.)), "compositor": PatchCompositor(),
-    }, {"min_visible_fraction": 2.}, "default_driving_options", "memory_dataset", id="object-insertion"),
+    }, {"min_visible_fraction": 2.}, "default_driving_options", "memory_dataset",
+        "memory_simulator", id="object-insertion"),
     pytest.param("PhantomInjectionAttack", {"decision_steps": 2, "max_segments": 1},
-                 {"score": 2.}, "native_driving_options", "memory_dataset", id="phantom-injection"),
+                 {"score": 2.}, "native_driving_options", "memory_dataset", "memory_simulator",
+                 id="phantom-injection"),
     pytest.param("SpeedFeedbackAttack", {
         "decision_steps": 2, "target_speed": 4., "initial_bias": .5, "max_segments": 1,
-    }, {"max_bias": -1.}, "default_driving_options", "memory_dataset", id="speed-feedback"),
+    }, {"max_bias": -1.}, "default_driving_options", "memory_dataset", "memory_simulator",
+        id="speed-feedback"),
     pytest.param("StopSignPatchAttack", {"approach_m": 3., "min_approach_m": 0., "hold_steps": 1},
                  {"initial_patch": "red"}, "default_driving_options",
-                 "stop_approach_dataset", id="stop-sign-patch"),
+                 "stop_approach_dataset", "memory_simulator", id="stop-sign-patch"),
+    pytest.param("VehicleInsertionAttack", {
+        "asset": MeshAsset((MeshPart(
+            np.array([[0., -1., 0.], [0., 1., 0.], [0., 0., 2.]]), np.array([[0, 1, 2]]),
+            color=np.array([240, 20, 20, 255], np.uint8)),), (0., 2., 2.), "vehicle"),
+        "distance_m": 3., "decision_steps": 2, "max_segments": 1,
+    }, {"distance_m": 0.}, "default_driving_options", "nurec_longitudinal_dataset",
+        "nurec_scene_simulator", id="vehicle-insertion"),
 ]
 
 
-@pytest.mark.parametrize("attack_type,options,invalid,driving_options_fixture,dataset_fixture", ATTACKS)
+@pytest.mark.parametrize(
+    "attack_type,options,invalid,driving_options_fixture,dataset_fixture,simulator_fixture", ATTACKS)
 def test_implemented_attack(attack_type, options, invalid, driving_options_fixture, dataset_fixture,
-                            request, tmp_path):
+                            simulator_fixture, request, tmp_path):
     configuration = {
-        "dataset": request.getfixturevalue(dataset_fixture), "simulator": MemorySimulator(),
+        "dataset": request.getfixturevalue(dataset_fixture),
+        "simulator": request.getfixturevalue(simulator_fixture),
         "avstack": {"type": "tests.fakes:ConstantAVStack", "options":
                     request.getfixturevalue(driving_options_fixture)},
         "attacks": {"attack": {"type": attack_type, "options": options}},

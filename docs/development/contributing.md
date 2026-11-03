@@ -66,7 +66,7 @@ document. Elsewhere use one sentence and a link.
 | Environments, metabuilder environments and sensor/hook randomness | [Experiment environments](../guides/environments.md) |
 | Datasets, semantic maps and `ScenarioStart` contents | [Datasets and semantic maps](../guides/datasets.md) |
 | Supplied configuration list and the impact-must-be-measured statement | [Supplied examples](../examples/README.md) |
-| Supplied attack workflows and treatment names | [Stop-sign patch attack](../examples/stop-sign-patch.md), [Physical patch](../examples/physical-patch.md), [Image object insertion](../examples/image-insertion.md), [Phantom injection](../examples/phantom-injection.md), [Speed-feedback attack](../examples/speed-feedback-attack.md) |
+| Supplied attack workflows and treatment names | [Stop-sign patch attack](../examples/stop-sign-patch.md), [Physical patch](../examples/physical-patch.md), [Image object insertion](../examples/image-insertion.md), [Vehicle insertion](../examples/vehicle-insertion.md), [Phantom injection](../examples/phantom-injection.md), [Speed-feedback attack](../examples/speed-feedback-attack.md) |
 | Implemented-attack directory rules | [Attack implementations](../../avsectester/implemented_attacks/README.md) |
 | Unfinished work and Not yet implemented targets | [TODO](TODO.md) |
 | Defense status | [Defenses](../guides/defenses.md) |

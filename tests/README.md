@@ -74,6 +74,8 @@ tests/
           test_simulator.py
         nurec/
           __init__.py
+          test_mesh_assets.py
+          test_mesh_insertion.py
           test_renderer.py
           test_server.py
           test_simulator.py
@@ -118,18 +120,22 @@ tests/
       test_projection.py
     implemented_attacks/
       conftest.py
+      test_attack_success.py
       test_implemented_attacks.py
       test_object_insertion_attack.py
       test_patch_attack.py
       test_replica_visibility.py
+      test_sign_detection.py
       test_speed_feedback_attack.py
       test_stop_sign_patch_attack.py
+      test_vehicle_insertion_attack.py
     maps/
       test_clipgt.py
       test_scenario_map.py
     rendering/
       test_compositing.py
       test_harmonizers.py
+      test_meshes.py
       test_objects.py
       test_surfaces.py
       test_textures.py

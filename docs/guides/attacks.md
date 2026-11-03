@@ -228,7 +228,9 @@ assert log.status == "completed"
 ```
 
 `ObjectAsset` uses a bottom-center local origin. Convert a map feature's reference point before
-placing the asset. Geometry records and asset constraints are in the
+placing the asset. `InsertObject` also accepts a `MeshAsset` for NuRec scene insertion.
+See [inserted world objects](simulators.md#inserted-world-objects) for supported insertion modes.
+Geometry records and asset constraints are in the
 [Python API](../reference/python-api.md). This example derives a sign placement from a
 semantic map:
 

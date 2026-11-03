@@ -44,10 +44,22 @@ motion at each requested frame.
 
 ## Inserted world objects
 
-`insert_object` registers an `ObjectAsset` under a unique ID and rigid world pose.
+`insert_object` registers an `ObjectAsset` or `MeshAsset` under a unique ID and rigid world pose.
 `remove_object` removes it. The physical `state().objects` changes immediately, while images
 change at the next capture. Inserted objects stay separate from native actors, have zero
 velocity and do not participate in native physics or collisions.
+
+`ObjectAsset` contains textured planes. `MeshAsset` contains colored triangle meshes and requires
+NuRec scene insertion. Both use forward-left-up axes and a bottom-center bounding box.
+Only base colors are rendered, without material, reflection or lighting simulation.
+Alpha values of at least 128 are opaque. Mesh triangles used to occlude sensor-inserted content
+are treated as opaque regardless of their color alpha.
+
+**Not yet implemented.** Mesh composite insertion, including white-box texture optimization.
+See [TODO](../development/TODO.md#mesh-composite-insertion).
+
+**Not yet implemented.** CARLA mesh insertion. See
+[TODO](../development/TODO.md#carla-mesh-insertion).
 
 Composite insertion projects each asset into captured camera images, resolves nearest surfaces
 and applies visibility. NuRec also supports scene insertion, where NRE renders assets with the
@@ -83,7 +95,7 @@ Occlusion tolerance applies only to composite insertion. It keeps scene surfaces
 configured tolerance in front of an object from hiding it, for both geometry and reconstruction
 probes. See [Configuration](../reference/configuration.md#simulator) for defaults.
 
-A single-sided asset can show its front texture from behind. Add a rear face when the object
+A single-sided plane or mesh shows its front colors from behind. Add a rear face when the object
 must have a distinct back. Sensor insertion through `InsertionAttackAction` remains independent
 of world insertion.
 
@@ -161,10 +173,16 @@ files there for NRE to read. See
 [Configuration](../reference/configuration.md#nurec-closed-loop-settings) for directory and mount
 settings.
 
-Assets use 5 mm grid spacing, capped at one Gaussian per texture pixel. Grid centers with alpha
-below 128 are omitted. Colors are alpha-weighted area averages. Gaussian
+Plane assets use 5 mm grid spacing, capped at one Gaussian per texture pixel. Grid centers
+with alpha below 128 are omitted. Colors are alpha-weighted area averages. Gaussian
 lateral size equals grid spacing, thickness is 1 mm and opacity logit is 8, with zeroth-order
 spherical harmonics only.
+
+Mesh triangles use the same grid spacing, and every nonzero-area triangle has at least one
+sample. Samples with alpha below 128 are omitted. The others become Gaussians that lie flat on
+their triangles and take their base colors. Textured colors are alpha-weighted averages over
+each Gaussian's texture footprint. Mesh assets have no nominal textures. See
+[mesh loading settings](../reference/configuration.md#mesh-assets) for file formats and axes.
 
 NRE registers one track for each object and texture. Moving an object reuses its track. Tracks
 remain until the NRE process restarts.
@@ -186,6 +204,12 @@ to them.
 
 Scene-inserted assets appear in LiDAR for 26.04 scenes. In 26.01 scenes, LiDAR can pass through
 inserted assets. This is a limitation of that scene release.
+
+LiDAR returns from scene-inserted assets can lie in front of or behind the asset surface for
+some positions and viewing directions. This applies to plane and mesh assets.
+
+**Not yet implemented.** LiDAR returns on the surfaces of scene-inserted assets. See
+[TODO](../development/TODO.md#nurec-lidar-simulation).
 
 ### LiDAR
 

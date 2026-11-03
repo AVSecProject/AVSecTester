@@ -34,7 +34,7 @@ if TYPE_CHECKING:
     from avsectester.geometry.cameras import Camera
     from avsectester.datasets.base import ScenarioStart
     from avsectester.rendering import (
-        CompositePlan, CompositeResult, ObjectAsset, ObjectComposition, PlacedObject,
+        CompositePlan, CompositeResult, MeshAsset, ObjectAsset, ObjectComposition, PlacedObject,
     )
     import numpy as np
 
@@ -259,6 +259,7 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
         self._traffic_timestamp_us: int | None = None
         self._capture_requests: dict[str, _RenderTracks] = {}
         self._nominal_assets: dict[int, tuple[ObjectAsset, ObjectAsset]] = {}
+        self._mesh_raycasters: dict[str, tuple[MeshAsset, np.ndarray, Any]] = {}
         # Duck-typed renderers without ``copy`` are copied shallowly, like Renderer.copy.
         copy_renderer = getattr(simulator.renderer, "copy", None)
         self.renderer = copy_renderer() if callable(copy_renderer) else copy.copy(simulator.renderer)
@@ -474,8 +475,19 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
             (placed.object_id for placed in objects),
             self.renderer.scene_object_tracks(objects), strict=True))
 
-    def _nominal_asset(self, asset: ObjectAsset) -> ObjectAsset:
+    def _supports_asset(self, asset: ObjectAsset | MeshAsset) -> bool:
+        """Accept mesh world objects only when NRE renders scene insertion."""
+        from avsectester.rendering import MeshAsset, ObjectAsset
+
+        return isinstance(asset, ObjectAsset) or (
+            self.simulator.object_insertion == "scene" and isinstance(asset, MeshAsset))
+
+    def _nominal_asset(self, asset: ObjectAsset | MeshAsset) -> ObjectAsset | MeshAsset:
         """The asset showing its nominal textures, built once so renderer caches can reuse it."""
+        from avsectester.rendering import MeshAsset
+
+        if isinstance(asset, MeshAsset):
+            return asset
         if all(surface.nominal_texture is None for surface in asset.surfaces):
             return asset
         if id(asset) not in self._nominal_assets:
@@ -821,7 +833,7 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
             return super()._compose_objects(view, objects)
         import numpy as np
 
-        from avsectester.rendering import CompositeResult, ObjectVisibility, plan_composite
+        from avsectester.rendering import CompositeResult, ObjectVisibility
 
         assert view.camera is not None and view.cam_from_world is not None
         request = view.native["render_request"]
@@ -878,12 +890,37 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
                     adjusted = harmonizer(
                         view.data.copy(), active.astype(np.uint8) * 255, background.copy())
                     image[active] = adjusted[active]
-        plan = plan_composite(view.camera, view.cam_from_world, objects, scene_visibility=visible)
+        depth = np.full(view.data.shape[:2], np.inf, dtype=np.float32)
+        if view.depth is not None:
+            for placed in objects:
+                mask = masks[placed.object_id]
+                candidate = self._object_depth(view, placed, mask)
+                depth[mask] = np.minimum(depth[mask], candidate[mask])
         return CompositeResult(
-            image=image, depth=plan.depth, visible_mask=visible, occlusion_source="scene_render",
+            image=image, depth=depth, visible_mask=visible, occlusion_source="scene_render",
             object_visibility={identity: ObjectVisibility("scene_render", (), int(mask.sum()))
                                for identity, mask in masks.items()},
             object_masks=masks), None
+
+    def _object_depth(self, view: SensorView, placed: PlacedObject, mask: np.ndarray) -> np.ndarray:
+        """Camera z depth of one world asset, computed only for captures with scene depth."""
+        import numpy as np
+
+        from avsectester.geometry.mesh import MeshRaycaster, camera_depth
+        from avsectester.rendering import MeshAsset, plan_composite
+
+        assert view.camera is not None and view.cam_from_world is not None
+        if not isinstance(placed.asset, MeshAsset):
+            return plan_composite(
+                view.camera, view.cam_from_world, (placed,), scene_visibility=mask).depth
+        cached = self._mesh_raycasters.get(placed.object_id)
+        if (cached is None or cached[0] is not placed.asset
+                or not np.array_equal(cached[1], placed.world_from_object)):
+            vertices, faces = placed.world_mesh()
+            raycaster = MeshRaycaster(vertices, faces)
+            cached = (placed.asset, placed.world_from_object.copy(), raycaster)
+            self._mesh_raycasters[placed.object_id] = cached
+        return camera_depth(view.camera, view.cam_from_world, (cached[2],))
 
     def _observe_recorded(self, position: int) -> Observation:
         pose, timestamp_us, actors = self._recorded_capture(position)

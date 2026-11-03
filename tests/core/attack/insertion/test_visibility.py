@@ -113,3 +113,37 @@ def test_depth_evidence(camera, optical_from_world):
             panel(), camera, optical_from_world, camera_name="front",
             scene_depth=np.full((80, 100), invalid), depth_convention="z")
         assert result.visibility is None and "Invalid depth" in result.reason
+
+
+def test_mesh_world_occlusion(camera, optical_from_world):
+    pytest.importorskip("embreex")
+    from avsectester.rendering import MeshAsset, MeshPart
+
+    vertices = np.array([[0., -3., 0.], [0., 3., 0.], [0., 3., 4.], [0., -3., 4.]])
+    part = MeshPart(vertices, np.array([[0, 1, 2], [0, 2, 3]]),
+                    color=np.array([255, 0, 0, 0], np.uint8))
+    asset = MeshAsset((part,), (0., 6., 4.), "vehicle")
+    pose = np.eye(4)
+    pose[:3, 3] = (5., 0., -2.)
+    placed = PlacedObject("mesh", asset, pose)
+    estimator = CuboidVisibilityEstimator()
+    blocked = estimator.estimate(panel(), camera, optical_from_world, camera_name="front",
+                                 occluders={}, world_objects=(placed,))
+    assert blocked.visibility.fraction == 0.
+    assert not blocked.visible_mask.any()
+    pose[0, 3] = 10.01
+    behind = estimator.estimate(
+        panel(), camera, optical_from_world, camera_name="front", occluders={},
+        world_objects=(PlacedObject("mesh", asset, pose),))
+    assert behind.visibility.fraction == 1.
+    pose[:3, 3] = (5., 3., -2.)
+    partial = estimator.estimate(
+        panel(), camera, optical_from_world, camera_name="front", occluders={},
+        world_objects=(PlacedObject("mesh", asset, pose),))
+    planar = PlacedObject("plane", ObjectAsset.from_surfaces((
+        PlaneSurface(vertices, np.full((8, 8, 4), 255, np.uint8)),), "vehicle"), pose)
+    reference = estimator.estimate(
+        panel(), camera, optical_from_world, camera_name="front", occluders={},
+        world_objects=(planar,))
+    assert 0. < partial.visibility.fraction < 1.
+    np.testing.assert_array_equal(partial.visible_mask, reference.visible_mask)

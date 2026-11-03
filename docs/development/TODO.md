@@ -31,9 +31,35 @@ See [reactive traffic](../guides/simulators.md#reactive-traffic) for supported b
 
 NuRec scene insertion includes LiDAR. See [Simulators](../guides/simulators.md#scene-insertion).
 
+## Inserted objects in driving metrics
+
+- [ ] Include inserted world objects in `DrivingMetrics` distance and collision.
+
 ## Remove real objects from reconstructed scenes
 
 - [ ] Remove or replace real objects in reconstructed scenes, instead of only inserting assets.
+
+## Mesh composite insertion
+
+- [ ] Composite mesh assets into camera images and support white-box texture optimization.
+
+## CARLA mesh insertion
+
+- [ ] Insert user-supplied mesh assets in CARLA.
+
+## FBX and USD assets
+
+- [ ] Load FBX and USD mesh files.
+
+## Gaussian assets
+
+- [ ] Load 3DGS Gaussian PLY assets without interpreting them as triangle meshes.
+
+## Shape optimization of inserted objects
+
+- [ ] Optimize the geometry of inserted objects in white-box attacks. Differentiable composition
+  covers surface colors only, and NRE returns no gradients. Camera attacks need an attack-side
+  differentiable renderer, and LiDAR attacks need a differentiable LiDAR surrogate.
 
 ## Localization attack reference frames
 
@@ -46,6 +72,8 @@ See [physical and model-visible records](../reference/runtime.md#physical-and-mo
 
 - [ ] Simulate LiDAR intensity for scenes that do not provide it.
 - [ ] Support no-return-ray simulation and its filtering controls.
+- [ ] Place LiDAR returns from scene-inserted assets on the asset surface. Some returns lie in
+  front of or behind it, depending on position and viewing direction.
 
 See [NuRec LiDAR](../guides/simulators.md#lidar) for supported capture behavior.
 

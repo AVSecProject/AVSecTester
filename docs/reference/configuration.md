@@ -258,6 +258,52 @@ Traffic defaults to `null`. Enabling it requires 0.1 s decisions and `history_st
 recorded decisions. Traffic configuration affects preparation identity. `metadata.load` can
 share segments between modes. Services are managed by [run](cli.md#automatic-local-services).
 
+## Mesh assets
+
+An attack option can construct a `MeshAsset` with `load_mesh_asset`. This example assumes a
+user-provided attack with an `asset` option:
+
+```yaml
+attacks:
+  vehicle:
+    type: my_attacks:MeshInsertionAttack
+    options:
+      asset:
+        type: avsectester.rendering:load_mesh_asset
+        options:
+          path: ../models/vehicle.glb
+          category: vehicle
+          scale: 1.0
+          forward_axis: "+z"
+          up_axis: "+y"
+          origin: bottom_center
+```
+
+`path` is relative to the YAML file. Supported suffixes are OBJ, glTF/GLB, mesh PLY and STL,
+case-insensitively. OBJ materials and textures, and glTF buffers and textures, are resolved
+relative to the model file.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `category` | required | Nonempty category recorded for the object |
+| `scale` | 1.0 | Positive finite conversion from file units to meters |
+| `forward_axis` | `"+x"` | File axis mapped to forward |
+| `up_axis` | `"+z"` | Orthogonal file axis mapped to up |
+| `origin` | `bottom_center` | Recenter the bounding box horizontally and place its bottom at zero |
+| `color` | `null` | RGB or RGBA fallback required only when the file has no colors |
+
+Axis names are `±x`, `±y` or `±z`, with right-handed file coordinates.
+For glTF files with +Y up and +Z forward, use `up_axis: "+y"` and `forward_axis: "+z"`.
+The loader does not infer axes. With `origin: file`, the transformed file origin is retained,
+including a model's ground clearance, and vertices below z = 0 are rejected.
+Supplying `color` for an already colored file is an error.
+
+**Not yet implemented.** FBX and USD loading. See
+[TODO](../development/TODO.md#fbx-and-usd-assets).
+
+**Not yet implemented.** 3DGS Gaussian PLY assets. See
+[TODO](../development/TODO.md#gaussian-assets).
+
 ## Driving specification
 
 `avstack.type` selects an `AVStack` class or factory. Its options are passed to each fresh

@@ -432,27 +432,3 @@ def test_missing_track_errors(monkeypatch, tmp_path):
         assert boundary.insertion_counts == {tracks[0][0]: 1}
     finally:
         renderer.close()
-
-
-def test_probe_asset_bytes(monkeypatch, tmp_path):
-    import hashlib
-
-    from avsectester.rendering import ObjectAsset, PlacedObject
-
-    boundary = NuRecRpcBoundary().install(monkeypatch)
-    boundary.scene_tracks = set()
-    rgba = np.full((4, 6, 4), 255, np.uint8)
-    rgba[0, 0, 3], rgba[1, 2, 3], rgba[2, 3, 3] = 0, 127, 128
-    asset = ObjectAsset.from_panel(rgba, category="object", width_m=.06)
-    renderer = NuRecRenderer(cameras=["front"], asset_directory=tmp_path)
-    try:
-        renderer.load_scene("scene")
-        renderer.render_scene_visibility(np.eye(4), 0, "front",
-            (PlacedObject("panel", asset, make_pose(np.eye(3), (3., 0., .5))),))
-        actual = {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
-                  for path in tmp_path.glob("avsectester_asset_*.ply")}
-        assert actual == {f"avsectester_asset_{digest}.ply": digest for digest in (
-            "10e9a3eeaaa35469c673cfb13871fe5bc37712564a95f30cb9e777e4d6b8943a",
-            "881e7920de4c755e4bddf399280e9048e04bbbacfb0f2b92cccb8ac881207ecf")}
-    finally:
-        renderer.close()

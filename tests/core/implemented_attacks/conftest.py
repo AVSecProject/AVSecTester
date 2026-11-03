@@ -9,12 +9,12 @@ from avsectester.closed_loop.avstacks.implemented.modules import (
     RuleBasedAVStack, YOLOXDetector, rule_based_driving_adapter,
 )
 from avsectester.closed_loop.simulators.ego_dynamics import TrajectoryFollower
-from avsectester.closed_loop.simulators.nurec import NuRecSimulator
+from avsectester.closed_loop.simulators.nurec import NuRecRenderer, NuRecSimulator
 from avsectester.execution.services import ClosedLoopServices, ScenarioView
 from avsectester.implemented_attacks.stop_sign_patch_attack import StopSignPatchAttack
 from tests.fakes import (
     CAMERA, ConstantAVStack, DeceleratingAVStack, MemoryDataset, MemorySimulator,
-    NuRecImageBoundary, StopApproachDataset, stop_approach_map,
+    NuRecImageBoundary, NuRecRpcBoundary, StopApproachDataset, stop_approach_map,
 )
 
 
@@ -26,6 +26,21 @@ def memory_dataset():
 @pytest.fixture
 def stop_approach_dataset():
     return StopApproachDataset(stop_approach_map())
+
+
+@pytest.fixture
+def memory_simulator():
+    return MemorySimulator()
+
+
+@pytest.fixture
+def nurec_scene_simulator(monkeypatch, tmp_path):
+    """NuRec scene insertion behind the RPC boundary, for attacks that insert mesh assets."""
+    NuRecRpcBoundary().install(monkeypatch)
+    return NuRecSimulator(
+        NuRecRenderer(cameras=["front"], asset_directory=tmp_path / "assets"),
+        object_insertion="scene", depth="none", route_generator="none",
+        physics_update_mode="none", min_track_duration_s=0, time_step=.1)
 
 
 @pytest.fixture

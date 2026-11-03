@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 
     from avsectester.geometry.cameras import Camera
     from avsectester.rendering import (
-        CompositePlan, CompositeResult, Harmonizer, ObjectAsset, ObjectComposition, ObjectVisibility, PlacedObject,
+        CompositePlan, CompositeResult, Harmonizer, MeshAsset, ObjectAsset, ObjectComposition, ObjectVisibility, PlacedObject,
     )
 
 
@@ -569,17 +569,24 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
         """Native capture and geometry, before framework object composition."""
         raise NotImplementedError(f"{type(self).__name__} does not provide sensor views")
 
-    def insert_object(self, object_id: str, asset: ObjectAsset, world_from_object: np.ndarray, *,
+    def _supports_asset(self, asset: ObjectAsset | MeshAsset) -> bool:
+        """Whether this runtime can render the supplied world-object asset."""
+        from avsectester.rendering import ObjectAsset
+
+        return isinstance(asset, ObjectAsset)
+
+    def insert_object(self, object_id: str, asset: ObjectAsset | MeshAsset, world_from_object: np.ndarray, *,
                       harmonizer: Harmonizer | None = None) -> None:
         """Register a physical world object, visible from the next sensor capture."""
-        from avsectester.rendering import ObjectAsset, PlacedObject
+        from avsectester.rendering import PlacedObject
 
         if not self.can_insert_objects:
             raise NotImplementedError(f"{type(self.simulator).__name__} cannot insert objects")
         if not (self._world_initialized or self._resetting or self._stepping):
             raise RuntimeError("Reset the simulator before inserting objects")
-        if not isinstance(asset, ObjectAsset):
-            raise TypeError("An inserted object requires an ObjectAsset")
+        if not self._supports_asset(asset):
+            raise TypeError(
+                f"{type(self.simulator).__name__} does not support asset type {type(asset).__name__}")
         if harmonizer is not None and not callable(harmonizer):
             raise TypeError("An object harmonizer must be callable or None")
         placed = PlacedObject(object_id, asset, world_from_object, harmonizer)

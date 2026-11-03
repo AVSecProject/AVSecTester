@@ -11,6 +11,7 @@ from avsectester.geometry.cameras import Camera, camera_ray_mask
 from avsectester.data_types import ActorState
 from avsectester.geometry.boxes import box_ray_distances
 from .harmonizers import Harmonizer
+from .meshes import MeshAsset
 from .objects import PlacedObject
 from .surfaces import PlaneSampling, _render_region, prepare_surface, sample_texture
 
@@ -80,6 +81,13 @@ def blend_rgba(
     return _harmonize_visible(output, active, image, harmonizer)
 
 
+def _reject_meshes(objects: Sequence[PlacedObject]) -> None:
+    if any(isinstance(placed.asset, MeshAsset) for placed in objects):
+        raise TypeError(
+            "Mesh composite insertion is not yet implemented. "
+            "See docs/development/TODO.md#mesh-composite-insertion")
+
+
 @dataclass(frozen=True)
 class _Footprint:
     """One surface's sampling over its clipped image region and the visible pixels it owns."""
@@ -126,6 +134,9 @@ class CompositePlan:
     ignored_occluders: tuple[str, ...]
     object_visibility: Mapping[str, ObjectVisibility]
     _footprints: tuple[_Footprint, ...] = field(default=(), repr=False)
+
+    def __post_init__(self) -> None:
+        _reject_meshes(self.objects)
 
     def composite(self, image: torch.Tensor,
                   textures: Mapping[tuple[str, int], torch.Tensor] | None = None) -> torch.Tensor:
@@ -277,6 +288,7 @@ def plan_composite(
     objects = tuple(objects)
     if any(not isinstance(item, PlacedObject) for item in objects):
         raise TypeError("objects must contain PlacedObject values")
+    _reject_meshes(objects)
     if len({item.object_id for item in objects}) != len(objects):
         raise ValueError("Placed object IDs must be unique")
     nearest = np.full(shape, np.inf)

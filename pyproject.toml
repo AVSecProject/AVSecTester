@@ -27,13 +27,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Shared planar sampling and image composition, without a simulator or driving model.
+# Shared planar sampling, mesh loading and image composition, without a simulator or driving model.
 rendering = [
     "opencv-python-headless>=4.9,<4.12",
     "Pillow>=10",
+    "trimesh==5.1.1",
 ]
-# NuRec static-mesh depth and NRE asset-editing messages for rendered-probe occlusion;
-# shared by the Python 3.11 and 3.12 interpreters.
+# NuRec mesh loading and depth, and NRE asset-editing messages for rendered probes and scene
+# insertion. Shared by the Python 3.11 and 3.12 interpreters.
 nurec = [
     "trimesh==5.1.1",
     "embreex==4.4.0.post1",

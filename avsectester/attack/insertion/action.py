@@ -16,7 +16,7 @@ from .visibility import CuboidVisibilityEstimator, DepthVisibilityEstimator
 if TYPE_CHECKING:
     import numpy as np
     from avsectester.closed_loop.simulators.base import SimulatorRuntime
-    from avsectester.rendering import Harmonizer, ObjectAsset
+    from avsectester.rendering import Harmonizer, MeshAsset, ObjectAsset
 
 
 log = logging.getLogger(__name__)
@@ -24,15 +24,15 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class InsertObject(WorldAttackAction):
-    """Insert arbitrary textured geometry into all cameras through the simulator.
+    """Insert a world-object asset through the simulator's supported sensors.
 
-    The object's origin is its bottom center; ``world_from_object`` maps that
+    The object's origin is its bottom center. ``world_from_object`` maps that
     right-handed object frame (+X front, +Y left, +Z up) into the world.
-    Setup insertion is visible in the first capture; step insertion in the next.
+    Setup insertion is visible in the first capture. Step insertion is visible in the next.
     """
 
     object_id: str
-    asset: ObjectAsset
+    asset: ObjectAsset | MeshAsset
     world_from_object: np.ndarray
     harmonizer: Harmonizer | None = None
 

@@ -11,6 +11,7 @@ import numpy as np
 from avsectester.validation import require_nonnegative_integer
 from avsectester.geometry.poses import validated_transform
 from .harmonizers import Harmonizer
+from .meshes import MeshAsset
 from .textures import Texture, load_rgba_image
 
 
@@ -150,24 +151,46 @@ class PlacedObject:
     """One asset at a rigid world-from-object transform with its own optional harmonizer."""
 
     object_id: str
-    asset: ObjectAsset
+    asset: ObjectAsset | MeshAsset
     world_from_object: np.ndarray
     harmonizer: Harmonizer | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.object_id, str) or not self.object_id:
             raise ValueError("PlacedObject.object_id must be a nonempty string")
-        if not isinstance(self.asset, ObjectAsset):
-            raise TypeError("PlacedObject.asset must be ObjectAsset")
+        if not isinstance(self.asset, (ObjectAsset, MeshAsset)):
+            raise TypeError("PlacedObject.asset must be ObjectAsset or MeshAsset")
         if self.harmonizer is not None and not callable(self.harmonizer):
             raise TypeError("PlacedObject.harmonizer must be callable or None")
         object.__setattr__(self, "world_from_object", validated_transform(self.world_from_object))
 
     def world_surfaces(self) -> tuple[PlaneSurface, ...]:
-        """The asset's surfaces with corners in world coordinates."""
+        """Return planar asset surfaces with world coordinates.
+
+        Mesh assets raise TypeError because their triangles are not ``PlaneSurface`` values.
+        """
+        if isinstance(self.asset, MeshAsset):
+            raise TypeError("MeshAsset has no planar world_surfaces")
         rotation, translation = self.world_from_object[:3, :3], self.world_from_object[:3, 3]
         return tuple(replace(surface, corners=surface.corners @ rotation.T + translation)
                      for surface in self.asset.surfaces)
+
+    def world_mesh(self) -> tuple[np.ndarray, np.ndarray]:
+        """Return mesh vertices in world coordinates and concatenated triangle indices.
+
+        Parts retain their vertex and face order, with face indices offset into the combined
+        vertex array. Both arrays are independent copies. Planar assets raise TypeError.
+        """
+        if not isinstance(self.asset, MeshAsset):
+            raise TypeError("ObjectAsset has no triangle world_mesh")
+        rotation, translation = self.world_from_object[:3, :3], self.world_from_object[:3, 3]
+        vertices, faces = [], []
+        offset = 0
+        for part in self.asset.parts:
+            vertices.append(part.vertices @ rotation.T + translation)
+            faces.append(part.faces + offset)
+            offset += len(part.vertices)
+        return np.concatenate(vertices), np.concatenate(faces)
 
 
 __all__ = [

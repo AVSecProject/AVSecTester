@@ -582,13 +582,22 @@ class NuRecRenderer(Renderer):
         """A probe or scene Gaussian copy of ``asset`` in one color, built once per asset."""
         import hashlib
 
-        from .gaussian_assets import gaussian_asset, probe_asset
+        from avsectester.rendering.meshes import MeshAsset
+
+        from .gaussian_assets import gaussian_asset, mesh_gaussian_asset, probe_asset
 
         key = (id(asset), kind, color)
         if key not in self._assets:
             if kind == "probe":
+                if isinstance(asset, MeshAsset):
+                    raise TypeError("Mesh assets do not support composite probes. Use NuRec scene insertion")
                 gaussian = probe_asset(asset, _UNIFORM_COLORS[color],
                                        track_padding_m=self.track_padding_m)
+            elif isinstance(asset, MeshAsset):
+                source = "texture" if color == "texture" else _UNIFORM_COLORS[color]
+                gaussian = mesh_gaussian_asset(
+                    asset, source, spacing_m=.005, lateral_scale=1.,
+                    track_padding_m=self.track_padding_m)
             else:
                 sources = (tuple(surface.texture for surface in asset.surfaces) if color == "texture"
                            else (_UNIFORM_COLORS[color],) * len(asset.surfaces))

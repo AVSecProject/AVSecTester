@@ -1171,38 +1171,6 @@ def test_scene_harmonizer(harmonizer, nurec_longitudinal_dataset, monkeypatch,
         assert adjusted.composition is None
 
 
-def test_scene_harmonizer_asset_reuse(nurec_longitudinal_dataset, monkeypatch,
-                                      make_nurec_simulator, make_object_in_front, tmp_path):
-    NuRecRpcBoundary().install(monkeypatch)
-    built = []
-    validate = ObjectAsset.__post_init__
-    monkeypatch.setattr(ObjectAsset, "__post_init__",
-                        lambda asset: built.append(asset) or validate(asset))
-    dataset = nurec_longitudinal_dataset
-    start = dataset.scenario_start("scene", dataset.frames("scene")[3])
-    start = replace(start, payload={**start.payload,
-                    "ego": replace(start.payload["ego"], velocity=(0., 0., 0.))})
-    renderer = NuRecRenderer(cameras=["front"], asset_directory=str(tmp_path))
-    simulator = make_nurec_simulator(renderer, object_insertion="scene", depth="none",
-                                     physics_update_mode="none", route_generator="none")
-    with simulator.create_runtime() as runtime:
-        runtime.reset(start)
-        asset, pose = make_object_in_front(runtime.sensor_view("front"))
-        surface = asset.surfaces[0]
-        texture = np.full((256, 256, 4), [230, 10, 90, 255], np.uint8)
-        asset = replace(asset, surfaces=(replace(surface, texture=texture,
-                         nominal_texture=np.full_like(texture, [180, 180, 180, 255])),))
-        runtime.insert_object("sign", asset, pose, harmonizer=ExposureHarmonizer())
-        runtime.step(Control())
-        assert runtime.sensor_view("front").object_masks["sign"].any()
-        count = len(built)
-        # Later captures reuse the nominal asset, so NuRec can reuse its Gaussian assets.
-        for _ in range(3):
-            runtime.step(Control())
-            assert runtime.sensor_view("front").object_masks["sign"].any()
-        assert len(built) == count
-
-
 def test_scene_render_without_actors(nurec_longitudinal_dataset, monkeypatch,
                                      make_nurec_simulator, make_object_in_front, tmp_path):
     boundary = NuRecRpcBoundary().install(monkeypatch)

@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from avsectester.data_types import Control
-from avsectester.rendering import PlacedObject, composite_objects
+from avsectester.rendering import MeshAsset, MeshPart, PlacedObject, composite_objects
 from avsectester.closed_loop.hooks import Hook, HookSet
 from avsectester.closed_loop.simulators.base import DeploymentPlan, SensorGeometry
 from avsectester.closed_loop.simulators.nurec import NuRecRenderer, NuRecSimulator
@@ -212,6 +212,11 @@ def test_insert_object(make_object_in_front):
             runtime.object_visibility("sign")
         with pytest.raises(ValueError, match="already inserted"):
             runtime.insert_object("sign", asset, pose)
+        part = MeshPart(np.array([[0., -1., 0.], [0., 1., 0.], [0., 0., 2.]]),
+                        np.array([[0, 1, 2]]), color=np.full(4, 255, np.uint8))
+        with pytest.raises(TypeError, match="MemorySimulator does not support asset type MeshAsset"):
+            runtime.insert_object("mesh", MeshAsset((part,), (0., 2., 2.), "vehicle"), pose)
+        assert "mesh" not in runtime.state().objects
         runtime.step(Control())
         composed = runtime.sensor_view("front")
         assert composed.occlusion_tolerance_m == runtime.simulator.occlusion_tolerance_m

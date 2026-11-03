@@ -35,6 +35,7 @@
 | L1 | [`avsectester.rendering`](#avsectesterrendering) |
 | L1 | [`avsectester.rendering.compositing`](#avsectesterrenderingcompositing) |
 | L1 | [`avsectester.rendering.harmonizers`](#avsectesterrenderingharmonizers) |
+| L1 | [`avsectester.rendering.meshes`](#avsectesterrenderingmeshes) |
 | L1 | [`avsectester.rendering.objects`](#avsectesterrenderingobjects) |
 | L1 | [`avsectester.rendering.surfaces`](#avsectesterrenderingsurfaces) |
 | L1 | [`avsectester.rendering.textures`](#avsectesterrenderingtextures) |
@@ -116,6 +117,8 @@
 | L6 | [`avsectester.implemented_attacks.stop_sign_patch_attack.attack`](#avsectesterimplemented_attacksstop_sign_patch_attackattack) |
 | L6 | [`avsectester.implemented_attacks.stop_sign_patch_attack.metrics`](#avsectesterimplemented_attacksstop_sign_patch_attackmetrics) |
 | L6 | [`avsectester.implemented_attacks.stop_sign_patch_attack.offline`](#avsectesterimplemented_attacksstop_sign_patch_attackoffline) |
+| L6 | [`avsectester.implemented_attacks.vehicle_insertion_attack`](#avsectesterimplemented_attacksvehicle_insertion_attack) |
+| L6 | [`avsectester.implemented_attacks.vehicle_insertion_attack.attack`](#avsectesterimplemented_attacksvehicle_insertion_attackattack) |
 | L7 | [`avsectester.experiment`](#avsectesterexperiment) |
 | L7 | [`avsectester.experiment.config`](#avsectesterexperimentconfig) |
 | L7 | [`avsectester.experiment.engine`](#avsectesterexperimentengine) |
@@ -692,6 +695,9 @@ Simulator-independent world objects, planar rendering and appearance compositing
 
 | Name and signature | Meaning |
 |---|---|
+| `MeshPart` | [MeshPart](#avsectesterrenderingmeshes) |
+| `MeshAsset` | [MeshAsset](#avsectesterrenderingmeshes) |
+| `load_mesh_asset` | [load_mesh_asset](#avsectesterrenderingmeshes) |
 | `ObjectAsset` | [ObjectAsset](#avsectesterrenderingobjects) |
 | `PlacedObject` | [PlacedObject](#avsectesterrenderingobjects) |
 | `PlaneSurface` | [PlaneSurface](#avsectesterrenderingobjects) |
@@ -824,6 +830,18 @@ the unpatched face as reference. The base method raises `NotImplementedError`.
 
 [Simulators](../guides/simulators.md).
 
+### avsectester.rendering.meshes
+
+<!-- api:begin module=avsectester.rendering.meshes -->
+Triangle mesh assets with explicit file coordinates, scale and basic colors.
+
+| Name and signature | Meaning |
+|---|---|
+| `MeshPart(vertices: np.ndarray, faces: np.ndarray, uv: np.ndarray \| None = None, texture: np.ndarray \| None = None, vertex_colors: np.ndarray \| None = None, color: np.ndarray \| None = None)` | One triangle mesh with UV texture, vertex RGBA or a uniform RGBA color. |
+| `MeshAsset(parts: tuple[MeshPart, ...], extent: tuple[float, float, float], category: str)` | Colored mesh parts in x-forward, y-left, z-up coordinates with a bottom-center origin. |
+| `load_mesh_asset(path: str \| Path, *, category: str, scale: float = 1., forward_axis: str = "+x", up_axis: str = "+z", origin: str = "bottom_center", color: Sequence[int] \| None = None) -> MeshAsset` | Load OBJ, glTF/GLB, mesh PLY or STL as colored parts in framework object coordinates. |
+<!-- api:end -->
+
 ### avsectester.rendering.objects
 
 <!-- api:begin module=avsectester.rendering.objects -->
@@ -835,8 +853,9 @@ Textured world-object descriptions, independent of simulators and attacks.
 | `ObjectAsset(surfaces: tuple[PlaneSurface, ...], extent: tuple[float, float, float], category: str)` | Local rectangular faces in x-forward, y-left, z-up axes, with bottom-center origin. |
 | `ObjectAsset.from_surfaces(surfaces: Sequence[PlaneSurface], category: str) -> ObjectAsset` | Infer full extent from local corners without moving the bottom-center origin. |
 | `ObjectAsset.from_panel(texture: np.ndarray \| str \| Path \| Texture, *, category: str, width_m: float, mount_height_m: float = 0.0, post_count: int = 0, post_width_m: float = 0.07, nominal_texture: np.ndarray \| str \| Path \| Texture \| None = None) -> ObjectAsset` | Build a +X-facing panel and optional support posts above a ground-level origin. |
-| `PlacedObject(object_id: str, asset: ObjectAsset, world_from_object: np.ndarray, harmonizer: Harmonizer \| None = None)` | One asset at a rigid world-from-object transform with its own optional harmonizer. |
-| `PlacedObject.world_surfaces() -> tuple[PlaneSurface, ...]` | The asset's surfaces with corners in world coordinates. |
+| `PlacedObject(object_id: str, asset: ObjectAsset \| MeshAsset, world_from_object: np.ndarray, harmonizer: Harmonizer \| None = None)` | One asset at a rigid world-from-object transform with its own optional harmonizer. |
+| `PlacedObject.world_surfaces() -> tuple[PlaneSurface, ...]` | Return planar asset surfaces with world coordinates. |
+| `PlacedObject.world_mesh() -> tuple[np.ndarray, np.ndarray]` | Return mesh vertices in world coordinates and concatenated triangle indices. |
 <!-- api:end -->
 
 #### Constraints and errors
@@ -1560,7 +1579,7 @@ The simulator: a configuration (`Simulator`) and its live worlds (`SimulatorRunt
 | `SimulatorRuntime.camera_sensors: frozenset[str]` | Explicit camera IDs whose current physical geometry can be recorded. |
 | `SimulatorRuntime.sensor_geometry(sensor: str) -> SensorGeometry` | Read optical-camera geometry. Override for a lightweight, image-free path. |
 | `SimulatorRuntime.sensor_view(sensor: str) -> SensorView` | Return the view of the current capture of `sensor`. It never advances time. |
-| `SimulatorRuntime.insert_object(object_id: str, asset: ObjectAsset, world_from_object: np.ndarray, *, harmonizer: Harmonizer \| None = None) -> None` | Register a physical world object, visible from the next sensor capture. |
+| `SimulatorRuntime.insert_object(object_id: str, asset: ObjectAsset \| MeshAsset, world_from_object: np.ndarray, *, harmonizer: Harmonizer \| None = None) -> None` | Register a physical world object, visible from the next sensor capture. |
 | `SimulatorRuntime.remove_object(object_id: str) -> None` | Remove a world object. The previous capture remains unchanged. |
 | `SimulatorRuntime.object_visibility(object_id: str) -> Mapping[str, ObjectVisibility]` | Visibility of an object in the latest capture, for every camera whose image contains it. |
 | `SimulatorRuntime.control_actor(actor_id: str, control: Control) -> None` | Drive another actor with an actuator command from the next world step. |
@@ -1594,7 +1613,9 @@ Runtime subclasses implement `_initialize_world(start, initialization, environme
 `_sensor_view`, `_replay_tick`, `_observe_recorded`, `_recorded_sensor_geometry`,
 `_recorded_sensor_view`, `_capture_frame_data`, `_hold_tick`, `_replay_position`,
 `_check_initialization`, `_before_selected_capture`, `_replayed_scenario`,
-`_frame_data_provenance`, `_composite_plan` and `_compose_objects`.
+`_frame_data_provenance`, `_composite_plan`, `_compose_objects` and `_supports_asset`.
+`_supports_asset(asset)` accepts `ObjectAsset` by default. Override it to declare additional
+world-asset types supported by the runtime. Unsupported assets raise `TypeError` when inserted.
 `_compose_objects(view, objects)` returns the rendered `CompositeResult` and an
 `ObjectComposition` only for composite insertion. The default implementation applies
 `_composite_plan` to the capture and records its background.
@@ -2080,7 +2101,7 @@ World-object and captured-image insertion actions for user attacks.
 
 | Name and signature | Meaning |
 |---|---|
-| `InsertObject(object_id: str, asset: ObjectAsset, world_from_object: np.ndarray, harmonizer: Harmonizer \| None = None)` | Subclass of `WorldAttackAction`. Insert arbitrary textured geometry into all cameras through the simulator. |
+| `InsertObject(object_id: str, asset: ObjectAsset \| MeshAsset, world_from_object: np.ndarray, harmonizer: Harmonizer \| None = None)` | Subclass of `WorldAttackAction`. Insert a world-object asset through the simulator's supported sensors. |
 | `InsertionAttackAction(sensor: str, insertion: Insertion, compositor: PatchCompositor \| None = None)` | Subclass of `SensorAttackAction`. Render explicit planes with aligned depth when present, otherwise actor cuboids. |
 | `InsertionAttackAction.resolve(view)` | Resolve the insertion asset, pose and placement for the current sensor geometry. |
 | `InsertionAttackAction.evidence(view, resolved=None)` | Return insertion placement and visibility evidence for the action record. |
@@ -3073,6 +3094,27 @@ eligibility rules and query budget. Neither path uses `validation_metadata`.
 #### See also
 
 [Stop-sign patch attack](../examples/stop-sign-patch.md).
+
+### avsectester.implemented_attacks.vehicle_insertion_attack
+
+<!-- api:begin module=avsectester.implemented_attacks.vehicle_insertion_attack -->
+Insert a user-supplied vehicle mesh along the recorded ego trajectory.
+
+| Name and signature | Meaning |
+|---|---|
+| `VehicleInsertionAttack` | [VehicleInsertionAttack](#avsectesterimplemented_attacksvehicle_insertion_attackattack) |
+<!-- api:end -->
+
+### avsectester.implemented_attacks.vehicle_insertion_attack.attack
+
+<!-- api:begin module=avsectester.implemented_attacks.vehicle_insertion_attack.attack -->
+Configure recorded-trajectory placement and world insertion of a vehicle mesh.
+
+| Name and signature | Meaning |
+|---|---|
+| `VehicleInsertionAttack(asset: MeshAsset, *, distance_m: float = 25.0, lateral_offset_m: float = 0.0, decision_steps: int = 20, max_segments: int \| None = None, harmonizer: Harmonizer \| None = None)` | Subclass of `Attack`. Place a vehicle mesh ahead on the recorded ego path and keep it fixed in the world. |
+| `VehicleInsertionAttack.validate_segment(segment: AttackSegment) -> None` | Require a rigid world-from-object pose in selected or loaded segment data. |
+<!-- api:end -->
 
 ### avsectester.experiment
 

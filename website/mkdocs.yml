@@ -39,6 +39,7 @@ nav:
       - Stop-sign patch attack: docs/examples/stop-sign-patch.md
       - Physical patch attack: docs/examples/physical-patch.md
       - Object insertion attack: docs/examples/image-insertion.md
+      - Vehicle insertion attack: docs/examples/vehicle-insertion.md
       - Phantom injection attack: docs/examples/phantom-injection.md
       - Speed-feedback attack: docs/examples/speed-feedback-attack.md
   - Reference:

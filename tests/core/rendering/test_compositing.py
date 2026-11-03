@@ -7,8 +7,9 @@ import pytest
 from avsectester.data_types import ActorState
 from avsectester.geometry.boxes import box_ray_distances
 from avsectester.rendering import (
-    ClassicHarmonizer, ExposureHarmonizer, Harmonizer, ObjectAsset, ObjectVisibility, PlacedObject,
-    PlaneSurface, blend_rgba, composite_objects, plan_composite, render_surfaces,
+    ClassicHarmonizer, ExposureHarmonizer, Harmonizer, MeshAsset, MeshPart, ObjectAsset,
+    ObjectVisibility, PlacedObject, PlaneSurface, blend_rgba, composite_objects, plan_composite,
+    render_surfaces,
 )
 
 
@@ -128,6 +129,10 @@ def test_composite_objects(camera, optical_from_world):
         np.all(ordered.image == [255, 255, 0], axis=2))
     with pytest.raises(ValueError, match="uint8 RGB"):
         composite_objects(image.astype(float), camera, optical_from_world, (placed,))
+    part = MeshPart(surface.corners[:3], np.array([[0, 1, 2]]), color=np.full(4, 255, np.uint8))
+    mesh = PlacedObject("mesh", MeshAsset((part,), (0., 4., 2.), "vehicle"), pose)
+    with pytest.raises(TypeError, match="Mesh composite insertion.*TODO.md#mesh-composite-insertion"):
+        composite_objects(image, camera, optical_from_world, (mesh,))
 
 
 def test_plan_composite_matches_deployment(camera, optical_from_world):

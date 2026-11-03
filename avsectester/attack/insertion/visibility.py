@@ -13,7 +13,7 @@ from .assets import ResolvedInsertion
 from avsectester.geometry.cameras import Camera, camera_ray_mask
 from avsectester.geometry.boxes import box_ray_distances
 from avsectester.rendering.surfaces import prepare_surface, rasterize
-from avsectester.rendering import PlacedObject
+from avsectester.rendering import MeshAsset, PlacedObject
 from .types import Visibility, VisibilityEvidence
 
 
@@ -88,10 +88,23 @@ def _surface_occlusion_distances(
 ):
     proposed = (surface for other in other_insertions if other.id != subject_id
                 for surface in other.planes())
-    inserted = (surface for placed in world_objects for surface in placed.world_surfaces())
+    inserted = (surface for placed in world_objects if not isinstance(placed.asset, MeshAsset)
+                for surface in placed.world_surfaces())
     distance = np.full(len(rays), np.inf)
     for surface in chain(proposed, inserted):
         distance = np.minimum(distance, prepare_surface(surface, camera, cam_from_world).sample(rays)[0])
+    for placed in world_objects:
+        if not isinstance(placed.asset, MeshAsset):
+            continue
+        from avsectester.geometry.mesh import MeshRaycaster
+
+        vertices, faces = placed.world_mesh()
+        world_from_cam = np.linalg.inv(cam_from_world)
+        origins = np.broadcast_to(world_from_cam[:3, 3], rays.shape)
+        directions = rays @ world_from_cam[:3, :3].T
+        distances = MeshRaycaster(vertices, faces).distances(origins, directions)
+        # Plane intersections use p = t * ray, whereas mesh queries normalize the ray.
+        distance = np.minimum(distance, distances / np.linalg.norm(rays, axis=1))
     return distance
 
 
@@ -101,6 +114,7 @@ class CuboidVisibilityEstimator(_VisibilityEstimator):
     Keep the host in ``occluders`` so that body panels can obscure their mounted objects. Missing
     buildings, vegetation and other unlabeled geometry are not inferred. Result source is always
     ``actor_cuboids``. Proposed insertions and world-object surfaces use their alpha masks.
+    Mesh world objects use opaque triangles regardless of texture alpha.
     Actor IDs without known extents are skipped and recorded in the evidence.
     """
 

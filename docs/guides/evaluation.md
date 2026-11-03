@@ -45,6 +45,12 @@ measurements do not receive another difference operation.
 | `StopLineMetrics` | Physical stopping, crossing and signed distance relative to the selected map stop line |
 | `ReasoningPhraseRate` | Case-insensitive phrase mentions in recorded reasoning text |
 
+`DrivingMetrics` measures distance and collision against recorded actors. Inserted world objects
+are not included.
+
+**Not yet implemented.** Inserted world objects in driving metrics. See
+[TODO](../development/TODO.md#inserted-objects-in-driving-metrics).
+
 The [metric API](../reference/python-api.md#avsectesterevaluationmetric) defines constructor
 parameters and unavailable conditions. The default set and YAML validation are described in
 [evaluation configuration](../reference/configuration.md#evaluation).

@@ -15,6 +15,8 @@
   [CARLA semantic maps](../docs/getting-started/installation.md#carla-semantic-maps).
 -  [extract_person_cutouts.py](preparation/extract_person_cutouts.py) prepares RGBA person
   assets. Follow [Optional assets](../docs/getting-started/installation.md#optional-assets).
+-  [paint_demo_vehicle.py](preparation/paint_demo_vehicle.py) regenerates the painted car of the
+  [vehicle insertion demo](../docs/examples/vehicle-insertion.md) from its white source mesh.
 
 ## Validation and visualization
 
