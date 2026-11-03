@@ -72,8 +72,6 @@ See [physical and model-visible records](../reference/runtime.md#physical-and-mo
 
 - [ ] Simulate LiDAR intensity for scenes that do not provide it.
 - [ ] Support no-return-ray simulation and its filtering controls.
-- [ ] Place LiDAR returns from scene-inserted assets on the asset surface. Some returns lie in
-  front of or behind it, depending on position and viewing direction.
 
 See [NuRec LiDAR](../guides/simulators.md#lidar) for supported capture behavior.
 

@@ -205,11 +205,11 @@ to them.
 Scene-inserted assets appear in LiDAR for 26.04 scenes. In 26.01 scenes, LiDAR can pass through
 inserted assets. This is a limitation of that scene release.
 
-LiDAR returns from scene-inserted assets can lie in front of or behind the asset surface for
-some positions and viewing directions. This applies to plane and mesh assets.
-
-**Not yet implemented.** LiDAR returns on the surfaces of scene-inserted assets. See
-[TODO](../development/TODO.md#nurec-lidar-simulation).
+LiDAR returns from scene-inserted assets can lie behind the asset surface. The offset is larger
+for surfaces near the ground and varies with the asset's position. NRE blends the Gaussians
+along each LiDAR ray in an approximate order, so large road Gaussians can add range from the
+road behind the asset. This is a limitation of NRE's LiDAR rendering and applies to plane and
+mesh assets.
 
 ### LiDAR
 
