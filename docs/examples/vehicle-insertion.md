@@ -89,8 +89,8 @@ described in [Driving systems](../guides/driving-systems.md#nurec-rule-based-dri
 
 The configuration records camera and point-cloud payloads as both `raw` and `model_input` at
 each decision. Use those captures, insertion receipts and object-visibility evidence to inspect
-deployment. Driving and trajectory metrics compare the treatments. Their actor distance and
-collision exclude the inserted vehicle, as described in
+deployment. Driving and trajectory metrics compare the treatments. `DrivingMetrics` includes
+the inserted vehicle in its bounding-box distance and collision measurements, as described in
 [Built-in metrics](../guides/evaluation.md#built-in-metrics). Read
 [Evaluation](../guides/evaluation.md) for saved records and reports.
 

@@ -170,20 +170,22 @@ Camera models and geometric operations in canonical world coordinates.
 ### avsectester.geometry.boxes
 
 <!-- api:begin module=avsectester.geometry.boxes -->
-Ray intersections and top-down overlap for box-centered rigid transforms.
+Ray intersections, top-down overlap and separation for box-centered rigid transforms.
 
 | Name and signature | Meaning |
 |---|---|
 | `box_ray_distances(world_from_box: ArrayLike, extent: ArrayLike, rays: np.ndarray, world_from_cam: ArrayLike) -> np.ndarray` | Ray/slab intersection distances in meters along camera-frame unit rays. |
 | `oriented_boxes_overlap(world_from_box_a: ArrayLike, extent_a: ArrayLike, world_from_box_b: ArrayLike, extent_b: ArrayLike) -> bool` | Whether full-extent boxes overlap in the horizontal plane, including touching. |
+| `oriented_boxes_distance(world_from_box_a: ArrayLike, extent_a: ArrayLike, world_from_box_b: ArrayLike, extent_b: ArrayLike) -> float` | Minimum horizontal distance between full-extent boxes, in meters. |
 <!-- api:end -->
 
 #### Constraints and errors
 
-Both functions raise `ValueError` for an extent that is not three finite nonnegative values or
-a pose that is not a finite right-handed rigid transform. `box_ray_distances` also raises
-`ValueError` unless `rays` are finite with shape (N, 3). Misses and boxes with a zero dimension
-return infinity.
+All three functions raise `ValueError` for an extent that is not three finite nonnegative
+values or a pose that is not a finite right-handed rigid transform. `box_ray_distances` also
+raises `ValueError` unless `rays` are finite with shape (N, 3). Misses and boxes with a zero
+dimension return infinity. `oriented_boxes_distance` returns zero exactly when
+`oriented_boxes_overlap` reports overlap or touching.
 
 ### avsectester.geometry.cameras
 
@@ -2713,9 +2715,9 @@ Metrics computed from recorded logs, without live simulators or driving models.
 | `Metric.evaluate(data: Any) -> Mapping[str, Any]` | Abstract. Return treatment-to-field mappings for the completed runs in a comparison group. |
 | `PairMetric()` | Subclass of `Metric`. A metric evaluated once for each completed pair, rather than for individual runs. |
 | `PairMetric.evaluate(pair: TreatmentPair) -> FieldMeasurements` | Abstract. Return scalar fields comparing the two completed runs in `pair`. |
-| `DrivingMetrics(stop_speed: float = DEFAULT_STOP_SPEED_MPS)` | Subclass of `Metric`. Physical speed, actuator braking, actor distances and top-down box collisions. |
+| `DrivingMetrics(stop_speed: float = DEFAULT_STOP_SPEED_MPS)` | Subclass of `Metric`. Physical speed, actuator braking, and top-down box distance and collision with other objects. |
 | `TrajectoryDeviation()` | Subclass of `PairMetric`. Symmetric distance between true ego positions at matching decision indices (meters). |
-| `DetectionMetrics(match_distance: float = 2.0, max_range: float \| None = 50.0, category_map: Mapping[str, str] \| None = None)` | Subclass of `Metric`. Greedy nearest-center BEV matching in the true ego frame at capture time. |
+| `DetectionMetrics(match_distance: float = 2.0, max_range: float \| None = 50.0, category_map: Mapping[str, str] \| None = None)` | Subclass of `Metric`. Detection matching to recorded actors and inserted world objects in the true ego frame. |
 | `StopImpact(stop_speed: float = DEFAULT_STOP_SPEED_MPS, reference_speed: float = 1.0, min_overdrive_steps: int = 3)` | Subclass of `PairMetric`. Directional stopping/braking comparisons, evaluated in both A→B and B→A directions. |
 | `signed_stop_line_distances(positions: np.ndarray, line_points: np.ndarray, *, endpoint_tolerance_m: float = 3.) -> tuple[np.ndarray, tuple[int, float] \| None]` | Horizontal distances to an endpoint-extended stop polyline and first crossing. |
 | `StopLineMetrics(stop_speed: float = DEFAULT_STOP_SPEED_MPS, endpoint_tolerance_m: float = 3., brake_deceleration_mps2: float = 1.)` | Subclass of `Metric`. Physical stopping and crossing relative to the selected saved map stop line. |

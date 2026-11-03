@@ -31,10 +31,6 @@ See [reactive traffic](../guides/simulators.md#reactive-traffic) for supported b
 
 NuRec scene insertion includes LiDAR. See [Simulators](../guides/simulators.md#scene-insertion).
 
-## Inserted objects in driving metrics
-
-- [ ] Include inserted world objects in `DrivingMetrics` distance and collision.
-
 ## Remove real objects from reconstructed scenes
 
 - [ ] Remove or replace real objects in reconstructed scenes, instead of only inserting assets.

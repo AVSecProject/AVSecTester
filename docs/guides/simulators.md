@@ -47,7 +47,8 @@ motion at each requested frame.
 `insert_object` registers an `ObjectAsset` or `MeshAsset` under a unique ID and rigid world pose.
 `remove_object` removes it. The physical `state().objects` changes immediately, while images
 change at the next capture. Inserted objects stay separate from native actors, have zero
-velocity and do not participate in native physics or collisions.
+velocity and do not participate in native physics or collisions. Built-in metrics still count
+overlap with them as a collision. See [Built-in metrics](evaluation.md#built-in-metrics).
 
 `ObjectAsset` contains textured planes. `MeshAsset` contains colored triangle meshes and requires
 NuRec scene insertion. Both use forward-left-up axes and a bottom-center bounding box.

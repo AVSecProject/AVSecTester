@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 import math
 from typing import Any, Literal, TypeAlias, TypeGuard
@@ -11,10 +11,10 @@ from typing import Any, Literal, TypeAlias, TypeGuard
 import numpy as np
 
 from avsectester.attack import AttackSegment
-from avsectester.data_types import Unavailable
+from avsectester.data_types import ActorState, Unavailable, WorldSnapshot
 from avsectester.maps import ScenarioMap
 from avsectester.runlog import RunLog
-from avsectester.geometry.boxes import oriented_boxes_overlap
+from avsectester.geometry.boxes import oriented_boxes_distance
 from avsectester.validation import (
     require_nonnegative_number, require_positive_integer, require_positive_number,
 )
@@ -49,7 +49,7 @@ TreatmentMeasurements: TypeAlias = Mapping[str, FieldMeasurements]
 class ComparisonGroup:
     """Completed treatments sharing one segment unit and seed, plus its saved scenario map.
 
-    ``scenario_map`` comes from the experiment result; metric evaluation never queries datasets.
+    ``scenario_map`` comes from the experiment result. Metric evaluation never queries datasets.
     """
 
     segment: AttackSegment
@@ -132,7 +132,7 @@ def speeds(log: RunLog) -> list[float] | None:
 
 
 def executed_brakes(log: RunLog) -> list[float] | None:
-    """Executed actuator brake commands; trajectory commands do not provide this evidence."""
+    """Executed actuator brake commands. Trajectory commands do not provide this evidence."""
     if not log.steps or any(step.executed_command is None for step in log.steps):
         return None
     if any(step.executed_command.trajectory is not None for step in log.steps):
@@ -155,8 +155,17 @@ def _recorded_pose_is_available(actor: Any) -> TypeGuard[Any]:
     return pose.shape == (4, 4) and bool(np.isfinite(pose).all())
 
 
+def _actors_and_inserted_objects(snapshot: WorldSnapshot) -> Iterator[tuple[str, ActorState]]:
+    """Yield both collections in order, retaining separate entries when identities coincide."""
+    yield from snapshot.actors.items()
+    yield from snapshot.objects.items()
+
+
 class DrivingMetrics(Metric):
-    """Physical speed, actuator braking, actor distances and top-down box collisions."""
+    """Physical speed, actuator braking, and top-down box distance and collision with other objects.
+
+    Other objects are recorded actors and inserted world objects.
+    """
 
     def __init__(self, stop_speed: float = DEFAULT_STOP_SPEED_MPS) -> None:
         require_nonnegative_number(stop_speed, "stop_speed")
@@ -164,7 +173,8 @@ class DrivingMetrics(Metric):
 
     def describe(self) -> MetricDescription:
         return MetricDescription(
-            "Ego speed after each decision, actuator braking, and distance and collision with other recorded actors.",
+            "Ego speed after each decision, actuator braking, and top-down bounding-box distance "
+            "and collision with recorded actors and inserted world objects.",
             {
                 "final_speed": MetricField("Speed after the last decision.", "m/s"),
                 "peak_speed": MetricField("Highest speed after any decision.", "m/s"),
@@ -174,9 +184,14 @@ class DrivingMetrics(Metric):
                     "Decisions whose executed command has brake > 0 and throttle = 0. "
                     "Unavailable for trajectory commands (e.g. Alpamayo).", "decision steps"),
                 "min_distance": MetricField(
-                    "Smallest ego-to-actor box-centre distance over all recorded states.", "m"),
+                    "Smallest top-down distance between the ego bounding box and the bounding box "
+                    "of any recorded actor or inserted world object over all recorded states. "
+                    "Zero when they overlap or touch. Unavailable if a participating pose or extent is "
+                    "missing and no overlap was recorded.", "m"),
                 "collision": MetricField(
-                    "The ego and an actor bounding box overlapped in top-down view at some recorded state."),
+                    "The ego bounding box overlapped or touched a recorded actor or inserted world object "
+                    "in top-down view at some recorded state. True exactly when min_distance is zero. "
+                    "Unavailable if a participating pose or extent is missing and no overlap was recorded."),
             },
         )
 
@@ -196,33 +211,31 @@ class DrivingMetrics(Metric):
             values["brake_steps"] = count if count is not None else UnavailableMetricValue(
                 "Executed actuator commands are unavailable")
             distances = []
-            missing_positions, missing_extents, collision = False, False, False
+            missing_geometry, collision = False, False
             states = [state for step in log.steps for state in (step.physical_pre, step.physical_post)]
             if not states:
-                missing_positions = True
+                missing_geometry = True
             for state in states:
                 ego = state.ego if state is not None else None
                 if not _recorded_pose_is_available(ego):
-                    missing_positions = True
+                    missing_geometry = True
                     continue
-                for actor in state.actors.values():
-                    if not _recorded_pose_is_available(actor):
-                        missing_positions = True
+                for _, actor in _actors_and_inserted_objects(state):
+                    if (not _recorded_pose_is_available(actor)
+                            or ego.extent is None or actor.extent is None):
+                        missing_geometry = True
                         continue
                     ego_box, actor_box = ego.box_transform(), actor.box_transform()
-                    assert ego_box is not None and actor_box is not None
-                    origin, target = ego_box[:3, 3], actor_box[:3, 3]
-                    distance = float(np.linalg.norm(target - origin))
+                    distance = oriented_boxes_distance(ego_box, ego.extent, actor_box, actor.extent)
                     distances.append(distance)
-                    overlaps = (None if ego.extent is None or actor.extent is None else
-                                oriented_boxes_overlap(ego_box, ego.extent, actor_box, actor.extent))
-                    missing_extents |= overlaps is None
-                    collision |= overlaps is True
-            values["min_distance"] = min(distances) if distances and not missing_positions else UnavailableMetricValue(
-                "Ego/actor poses are missing or no other actor was recorded")
-            values["collision"] = True if collision else (
-                UnavailableMetricValue("Ego/actor poses or bounding-box extents are missing", "boolean")
-                if missing_positions or missing_extents else False)
+                    collision |= distance == 0.
+            # A recorded overlap fixes both fields even when other geometry is missing.
+            known = collision or not missing_geometry
+            reason = "Ego, recorded actor or inserted world object poses or bounding-box extents are missing"
+            values["min_distance"] = (min(distances) if distances and known
+                else UnavailableMetricValue(reason if missing_geometry
+                    else "No other recorded actor or inserted world object was recorded"))
+            values["collision"] = collision if known else UnavailableMetricValue(reason, "boolean")
             result[name] = values
         return result
 
@@ -259,9 +272,10 @@ class TrajectoryDeviation(PairMetric):
 
 
 class DetectionMetrics(Metric):
-    """Greedy nearest-center BEV matching in the true ego frame at capture time.
+    """Detection matching to recorded actors and inserted world objects in the true ego frame.
 
-    Truths and predictions use the same BEV max_range; None disables the range limit.
+    Greedy matching uses the nearest horizontal box centers at capture time.
+    Truths and predictions use the same BEV max_range. None disables the range limit.
     A nonempty category_map enables class-aware matching. Unlabelled detections then match
     no category. There is no countable true-negative population.
     """
@@ -275,15 +289,17 @@ class DetectionMetrics(Metric):
         self.category_map = dict(category_map or {})
 
     def describe(self) -> MetricDescription:
-        common = ("Counts accumulate over captured frames after range filtering and greedy nearest-centre "
-                  "matching in the ego horizontal plane. Unavailable if physical ground-truth poses are missing.")
+        common = ("Ground truth includes recorded actors and inserted world objects. Counts accumulate "
+                  "over captured frames after range filtering and greedy nearest-centre matching in the ego "
+                  "horizontal plane. Unavailable if physical ground-truth poses are missing.")
         return MetricDescription(
-            "Detection quality against recorded actors, using greedy nearest-centre matching within "
+            "Detection quality against recorded actors and inserted world objects, using greedy "
+            "nearest-centre matching within "
             f"match_distance ({self.match_distance} m). A category map enables class-aware matching.",
             {
                 "tp": MetricField("Matched detections. " + common, "detections"),
                 "fp": MetricField("Unmatched detections. " + common, "detections"),
-                "fn": MetricField("Unmatched ground-truth actors. " + common, "actors"),
+                "fn": MetricField("Unmatched ground-truth boxes. " + common, "ground-truth boxes"),
                 "precision": MetricField(
                     "tp / (tp + fp). Unavailable when no predictions define the denominator, or "
                     "physical ground-truth poses are missing.", "ratio (0–1)"),
@@ -313,7 +329,7 @@ class DetectionMetrics(Metric):
                     break
                 pose = np.asarray(ego.pose, dtype=float)
                 truths = []
-                for identity, actor in world.actors.items():
+                for identity, actor in _actors_and_inserted_objects(world):
                     if not _recorded_pose_is_available(actor):
                         unavailable = True
                         break
@@ -352,7 +368,7 @@ class DetectionMetrics(Metric):
             fields = ["tp", "fp", "fn", "precision", "recall", "f1"]
             if unavailable:
                 result[name] = dict.fromkeys(fields, UnavailableMetricValue(
-                    "Physical ego/actor ground-truth poses are unavailable"))
+                    "Physical ego, recorded actor or inserted world object ground-truth poses are unavailable"))
                 continue
             values: dict[str, MetricScalar] = {"tp": tp, "fp": fp, "fn": fn}
             for field_name, numerator, denominator in (("precision", tp, tp + fp), ("recall", tp, tp + fn),
@@ -438,7 +454,7 @@ def signed_stop_line_distances(
     """Horizontal distances to an endpoint-extended stop polyline and first crossing.
 
     The first and last segments extend outwards by endpoint_tolerance_m. Samples
-    through the crossing segment's start are positive; later samples are negative.
+    through the crossing segment's start are positive. Later samples are negative.
     With no crossing all distances are positive. Heights are ignored.
     """
     require_nonnegative_number(endpoint_tolerance_m, "endpoint_tolerance_m")
@@ -526,12 +542,12 @@ def _unavailable_stop_line_measurements(reason: str) -> dict[str, MetricScalar]:
 class StopLineMetrics(Metric):
     """Physical stopping and crossing relative to the selected saved map stop line.
 
-    The segment must store its line ID in user_data["stop_line_id"]; geometry comes
+    The segment must store its line ID in user_data["stop_line_id"]. Geometry comes
     from ComparisonGroup.scenario_map.stop_lines. The initial position is assumed
-    to be before the stop line. Distances use the horizontal polyline with endpoint
-    extensions, rather than recorded route arc positions. Distances are positive before
+    to be before the stop line. Line distances use the horizontal polyline with endpoint
+    extensions, rather than recorded route arc positions. They are positive before
     crossing and negative after it. distance_to_line_at_stop uses the first sampled
-    speed below stop_speed, like time_to_stop; distance_to_line_at_min_speed uses the
+    speed below stop_speed, like time_to_stop. distance_to_line_at_min_speed uses the
     first minimum-speed sample before crossing. distance_to_line_at_brake_onset uses
     the start of the first physical deceleration interval meeting brake_deceleration_mps2,
     not an actuator brake command. Unobserved stops or qualifying brake intervals are unavailable.
@@ -549,7 +565,7 @@ class StopLineMetrics(Metric):
     def describe(self) -> MetricDescription:
         return MetricDescription(
             "Driving behaviour relative to the map stop line of the selected stop sign, from the physical ego trace "
-            "(the initial state and the state after every decision). Distances are signed horizontal distances to "
+            "(the initial state and the state after every decision). Line distances are signed horizontal distances to "
             "the stop line: positive before the line, negative after crossing it.",
             {
                 "stopped_before_line": MetricField(
@@ -576,7 +592,9 @@ class StopLineMetrics(Metric):
                 "initial_distance_to_line": MetricField("Signed distance at the run start.", "m"),
                 "final_distance_to_line": MetricField("Signed distance after the last decision.", "m"),
                 "min_vehicle_distance_after_line": MetricField(
-                    "Smallest centre-to-centre distance between the ego and any recorded vehicle after the crossing.", "m"),
+                    "Smallest top-down bounding-box distance between the ego and any recorded actor or "
+                    "inserted world object with category vehicle after crossing. Zero when boxes overlap "
+                    "or touch. Unavailable if a participating pose or extent is missing, or no vehicle is recorded.", "m"),
             },
         )
 
@@ -645,18 +663,20 @@ class StopLineMetrics(Metric):
         try:
             nearest = []
             for state in snapshots[crossing[0] + 1:] if crossing is not None else []:
-                origin = state.ego.box_transform()[:3, 3]
-                for actor in state.actors.values():
+                ego = state.ego
+                if not _recorded_pose_is_available(ego) or ego.extent is None:
+                    raise ValueError("Ego pose and bounding-box extent are required after crossing")
+                for _, actor in _actors_and_inserted_objects(state):
                     if actor.category == "vehicle":
-                        center = actor.box_transform()[:3, 3]
-                        if not np.isfinite(origin).all() or not np.isfinite(center).all():
-                            raise ValueError("Vehicle box centres must be finite")
-                        nearest.append(float(np.linalg.norm(center - origin)))
+                        if not _recorded_pose_is_available(actor) or actor.extent is None:
+                            raise ValueError("Recorded and inserted vehicle poses and bounding-box extents are required")
+                        nearest.append(oriented_boxes_distance(
+                            ego.box_transform(), ego.extent, actor.box_transform(), actor.extent))
             measurements["min_vehicle_distance_after_line"] = (min(nearest) if nearest
-                else UnavailableMetricValue("No post-line vehicle centre evidence is available"))
+                else UnavailableMetricValue("No post-line recorded or inserted vehicle bounding-box evidence is available"))
         except (TypeError, ValueError, AttributeError) as error:
             measurements["min_vehicle_distance_after_line"] = UnavailableMetricValue(
-                f"Vehicle centre evidence is unavailable: {type(error).__name__}: {error}")
+                f"Recorded or inserted vehicle bounding-box evidence is unavailable: {type(error).__name__}: {error}")
         return measurements
 
 

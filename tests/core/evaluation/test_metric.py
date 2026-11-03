@@ -48,9 +48,10 @@ def unchanged(value):
     return value
 
 
-def without_capture(log):
+def with_inserted_objects(log, objects):
     for step in log.steps:
-        step.physical_pre = None
+        step.physical_pre = replace(step.physical_pre, objects=objects)
+        step.physical_post = replace(step.physical_post, objects=objects)
     return log
 
 
@@ -93,11 +94,13 @@ def with_sign_detections(log):
 CASES = [
     pytest.param(
         DrivingMetrics, {},
-        lambda data: data["group"]({"attacked": data["log"](
-            [2., 0.], [0., 1.], actors={"lead": data["actor"](10.)})}),
+        lambda data: data["group"]({"attacked": with_inserted_objects(data["log"](
+            [2., 0.], [0., 1.], actors={"lead": data["actor"](10.)}),
+            {"lead": data["actor"](8.)})}),
         lambda data: data["group"]({"attacked": RunLog()}), itemgetter("attacked"), {
             "final_speed": 0., "peak_speed": 2., "mean_speed": 1., "stopped": True,
-            "brake_steps": 1, "min_distance": 8., "collision": False,
+            # At the final ego x=2, the two 4 m boxes have gap 8 - 2 - 2 - 2 = 2 m.
+            "brake_steps": 1, "min_distance": 2., "collision": False,
         }, id="driving"),
     pytest.param(
         TrajectoryDeviation, {},
@@ -106,14 +109,18 @@ CASES = [
         {"mean_deviation": 3., "max_deviation": 3., "final_deviation": 3.}, id="trajectory"),
     pytest.param(
         DetectionMetrics, {"category_map": {"Car": "vehicle"}},
-        lambda data: data["group"]({"attacked": data["log"](
+        lambda data: data["group"]({"attacked": with_inserted_objects(data["log"](
             [2.], actors={"lead": data["actor"](10., category="vehicle")}, detections=[
                 Detection((10., 0., 80.), (4., 2., 2.), 0., "Car"),
+                Detection((25., 0., 0.), (4., 2., 2.), 0., "Car"),
                 Detection((20., 0., 0.), (1., 1., 1.), 0.),
-                Detection((100., 0., 0.), (1., 1., 1.), 0., "Car")])}),
-        lambda data: data["group"]({"attacked": without_capture(data["log"]([2.]))}),
+                Detection((100., 0., 0.), (1., 1., 1.), 0., "Car")]),
+            {"lead": replace(data["actor"](22., category="vehicle"), box_center=(3., 0., 0.)),
+             "outside": data["actor"](100., category="vehicle")})}),
+        lambda data: data["group"]({"attacked": with_inserted_objects(data["log"]([2.]),
+            {"lead": replace(data["actor"](25., category="vehicle"), pose=None)})}),
         itemgetter("attacked"), {
-            "tp": 1, "fp": 1, "fn": 0, "precision": .5, "recall": 1., "f1": 2 / 3,
+            "tp": 2, "fp": 1, "fn": 0, "precision": 2 / 3, "recall": 1., "f1": .8,
         }, id="detection"),
     pytest.param(
         StopImpact, {},
@@ -127,12 +134,14 @@ CASES = [
         }, id="stop-impact"),
     pytest.param(
         StopLineMetrics, {},
-        lambda data: data["stop_line_group"]({"attacked": data["log"](
-            [4., 0.], actors={"lead": data["actor"](10., category="vehicle")})}),
+        lambda data: data["stop_line_group"]({"attacked": with_inserted_objects(data["log"](
+            [4., 0.], actors={"lead": data["actor"](10., category="vehicle")}),
+            {"lead": data["actor"](8., category="vehicle"),
+             "sign": data["actor"](3., category="stop_sign", extent=None)})}),
         lambda data: data["group"]({"attacked": data["log"]([4., 0.])}), itemgetter("attacked"), {
             "stopped_before_line": False, "crossed_without_stop": True, "line_crossed": True,
             "speed_at_line": 3., "min_speed_before_line": 4., "max_deceleration": 40.,
-            "time_to_stop": .2, "min_vehicle_distance_after_line": 8.,
+            "time_to_stop": .2, "min_vehicle_distance_after_line": 2.,
             "initial_distance_to_line": 1.25, "final_distance_to_line": -.75,
             "distance_to_line_at_stop": -.75, "distance_to_line_at_min_speed": 1.25,
             "distance_to_line_at_brake_onset": .25,
@@ -176,6 +185,17 @@ def test_metric_contract(metric_type, options, build_input, build_missing, selec
                for name in expected)
 
 
+def test_driving_metrics(make_log, make_actor, make_group):
+    # A recorded overlap fixes both fields even when another object's extent is missing.
+    unknown = {"lead": make_actor(10., extent=None)}
+    runs = {"overlap": with_inserted_objects(make_log([2., 0.], actors=unknown), {"lead": make_actor(3.)}),
+            "apart": with_inserted_objects(make_log([2., 0.], actors=unknown), {"lead": make_actor(10.)})}
+    values = DrivingMetrics().evaluate(make_group(runs))
+    assert values["overlap"]["min_distance"] == 0. and values["overlap"]["collision"] is True
+    assert all(isinstance(values["apart"][name], UnavailableMetricValue)
+               for name in ("min_distance", "collision"))
+
+
 def test_stop_line_metrics(make_log, make_actor, stop_line_group):
     with pytest.raises(ValueError, match="nonnegative"):
         StopLineMetrics(brake_deceleration_mps2=-1.)
@@ -215,6 +235,12 @@ def test_stop_line_metrics(make_log, make_actor, stop_line_group):
     assert initial["line_crossed"] is False
     assert isinstance(initial["max_deceleration"], UnavailableMetricValue)
     assert isinstance(initial["distance_to_line_at_brake_onset"], UnavailableMetricValue)
+    for inserted in (make_actor(8., category="vehicle", extent=None),
+                     replace(make_actor(8., category="vehicle"), pose=None)):
+        missing_box = with_inserted_objects(make_log([8., 4.]), {"vehicle": inserted})
+        missing = StopLineMetrics().evaluate(stop_line_group({"attacked": missing_box}))["attacked"]
+        assert missing["line_crossed"] is True
+        assert isinstance(missing["min_vehicle_distance_after_line"], UnavailableMetricValue)
 
 
 def test_reasoning_phrase_rate(make_log, make_group):

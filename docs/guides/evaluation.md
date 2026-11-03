@@ -38,18 +38,23 @@ measurements do not receive another difference operation.
 
 | `Metric` | Measurements |
 |---|---|
-| `DrivingMetrics` | Physical speed, executed actuator braking, stopping, actor distance and geometric collision |
+| `DrivingMetrics` | Physical speed, executed actuator braking, stopping, bounding-box distance and geometric collision with actors and inserted objects |
 | `TrajectoryDeviation` | Ego-position deviation at matched decision indices |
 | `DetectionMetrics` | Thresholded detection matching, precision, recall and F1 |
 | `StopImpact` | Stopping and braking comparisons in both directions |
 | `StopLineMetrics` | Physical stopping, crossing and signed distance relative to the selected map stop line |
 | `ReasoningPhraseRate` | Case-insensitive phrase mentions in recorded reasoning text |
 
-`DrivingMetrics` measures distance and collision against recorded actors. Inserted world objects
-are not included.
+Built-in metrics treat recorded actors and inserted world objects alike. A treatment that
+inserts objects includes them in its measurements, so paired differences include their effect.
+To distinguish the two kinds, write a custom `Metric` that reads `WorldSnapshot.actors` and
+`WorldSnapshot.objects` separately.
 
-**Not yet implemented.** Inserted world objects in driving metrics. See
-[TODO](../development/TODO.md#inserted-objects-in-driving-metrics).
+Ego-to-object distances are the minimum separation between the two top-down bounding boxes,
+using yaw and horizontal dimensions. Overlapping or touching boxes have zero distance and
+count as a geometric collision.
+`DrivingMetrics` marks distance and collision unavailable if ego or any other participating
+object lacks a pose or bounding-box extent, unless an overlap was recorded.
 
 The [metric API](../reference/python-api.md#avsectesterevaluationmetric) defines constructor
 parameters and unavailable conditions. The default set and YAML validation are described in
@@ -60,16 +65,18 @@ provide that evidence. Collision is bird's-eye oriented-box overlap, not a nativ
 collision-sensor event. `TrajectoryDeviation` compares true ego positions at equal decision
 indices, without time or route alignment.
 
-`DetectionMetrics` matches detections to true actors in the capture-time ego frame, using sensor
-mounting geometry independently of model localization. Its range filtering is horizontal.
-Category matching follows `category_map` when configured. The thresholded detections do not
-define TN or AP/mAP.
+`DetectionMetrics` matches detection positions to ground-truth box centres in the capture-time
+ego frame, using sensor mounting geometry independently of model localization. It greedily
+pairs detections with the nearest centres within `match_distance`. Its range filtering is
+horizontal. Category matching follows `category_map` when configured. The thresholded detections
+do not define TN or AP/mAP.
 
 `StopLineMetrics` uses `segment.user_data["stop_line_id"]` to identify a stop line in the
 saved map and assumes the run starts before it. It uses the initial physical state and each
-decision's physical result. Distances are horizontal and positive before the first crossing,
-then negative. Crossing speed is interpolated between adjacent samples. Three distances
-distinguish stopping and physical braking:
+decision's physical result. Distances to the line are horizontal and positive before the first
+crossing, then negative. Crossing speed is interpolated between adjacent samples. The post-line
+`min_vehicle_distance_after_line` considers only objects with `category == "vehicle"`.
+Three distances distinguish stopping and physical braking:
 
 -  `distance_to_line_at_stop` uses the first sample below `stop_speed`, also used by
   `time_to_stop`. It is unavailable if the ego never stops.
