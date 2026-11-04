@@ -57,6 +57,8 @@ class RunRequest:
     """One caller-owned simulator/driving-system run, independent of experiment orchestration.
 
     ``terminate_when`` receives each recorded decision and ends a successful run when true.
+    ``retain_steps`` and ``retain_sensor_data`` choose what the returned log keeps in memory,
+    as in ``Recorder``. Setting either to False requires ``output_path``.
     """
 
     decision_steps: int
@@ -65,6 +67,7 @@ class RunRequest:
     recording: RecordingPolicy = field(default_factory=RecordingPolicy)
     output_path: str | Path | None = None
     retain_steps: bool = True
+    retain_sensor_data: bool = True
     metadata: Mapping[str, Any] = field(default_factory=dict)
     start: Any = None
     initialization: Any = None
@@ -77,6 +80,8 @@ class RunRequest:
         object.__setattr__(self, "environment", normalize_environment(self.environment))
         if not self.retain_steps and self.output_path is None:
             raise ValueError("retain_steps=False requires an output_path")
+        if not self.retain_sensor_data and self.output_path is None:
+            raise ValueError("retain_sensor_data=False requires an output_path")
 
 
 class ClosedLoopRunner:
@@ -131,7 +136,8 @@ class ClosedLoopRunner:
             if deployment.ticks < hooks.setup_ticks:
                 raise ValueError("Deployment plan is shorter than the participants require")
             recorder = recorder or Recorder(path=request.output_path,
-                                            retain_steps=request.retain_steps, metadata={
+                                            retain_steps=request.retain_steps,
+                                            retain_sensor_data=request.retain_sensor_data, metadata={
                 **dict(request.metadata),
                 "avstack_type": type(avstack).__name__,
                 "environment": deepcopy(dict(request.environment)),

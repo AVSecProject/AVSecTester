@@ -1,4 +1,4 @@
-"""Configure recorded-trajectory placement and world insertion of a vehicle mesh."""
+"""Configure navigation-route placement and world insertion of a vehicle mesh."""
 from __future__ import annotations
 
 import math
@@ -9,7 +9,7 @@ from typing import Any, TYPE_CHECKING
 from avsectester.attack import Attack, AttackRuntime, AttackSegment
 from avsectester.geometry.poses import validated_transform
 from avsectester.rendering import Harmonizer, MeshAsset
-from avsectester.validation import require_positive_integer, require_positive_number
+from avsectester.validation import require_nonnegative_number, require_positive_integer, require_positive_number
 
 from .metabuilder import build_metadata
 from .online import VehicleInsertionAttackRuntime
@@ -19,22 +19,27 @@ if TYPE_CHECKING:
 
 
 class VehicleInsertionAttack(Attack):
-    """Place a vehicle mesh ahead on the recorded ego path and keep it fixed in the world.
+    """Place a vehicle mesh ahead on ego's navigation route and keep it fixed in the world.
 
-    Each segment uses the first recorded pose at least ``distance_m`` along the path from its
-    start. The full pose preserves the recorded slope and heading. ``lateral_offset_m`` shifts
-    the vehicle along that pose's left axis. The asset supplies its own origin and dimensions.
-    No offline optimization is performed.
+    The simulator must provide a ``route_generator`` setting, such as NuRecSimulator.
+    Placement uses its map or recorded route, or a straight line when navigation
+    is disabled. The route distance is max(distance_m, initial horizontal speed * time_ahead_s).
+    distance_m is a positive minimum distance, and time_ahead_s is nonnegative.
+    Height and slope come from the nearest horizontal recorded ego position. Heading follows
+    the route tangent, and lateral_offset_m shifts along its horizontal left normal.
+    The asset supplies its own origin and dimensions. No offline optimization is performed.
     """
 
     def __init__(
-        self, asset: MeshAsset, *, distance_m: float = 25.0, lateral_offset_m: float = 0.0,
+        self, asset: MeshAsset, *, distance_m: float = 25.0, time_ahead_s: float = 4.0,
+        lateral_offset_m: float = 0.0,
         decision_steps: int = 20, max_segments: int | None = None,
         harmonizer: Harmonizer | None = None,
     ) -> None:
         if not isinstance(asset, MeshAsset):
             raise TypeError("asset must be a MeshAsset")
         require_positive_number(distance_m, "distance_m")
+        require_nonnegative_number(time_ahead_s, "time_ahead_s")
         if (isinstance(lateral_offset_m, bool) or not isinstance(lateral_offset_m, Real)
                 or not math.isfinite(lateral_offset_m)):
             raise ValueError("lateral_offset_m must be a finite number")
@@ -45,6 +50,7 @@ class VehicleInsertionAttack(Attack):
             raise TypeError("harmonizer must be callable or None")
         self.asset: MeshAsset = asset
         self.distance_m: float = float(distance_m)
+        self.time_ahead_s: float = float(time_ahead_s)
         self.lateral_offset_m: float = float(lateral_offset_m)
         self.decision_steps: int = decision_steps
         self.max_segments: int | None = max_segments

@@ -97,6 +97,25 @@ def test_observation_calibration(tmp_path, sensor, payload, calibration):
     assert type(restored.calibration[sensor]) is type(calibration)
 
 
+def test_sensor_data_on_disk_only(tmp_path):
+    calibration = {"lidar": LidarCalibration(np.eye(4), .1)}
+    observation = Observation(.1, 1, {"front": np.full((2, 3, 3), 40, np.uint8)}, calibration=calibration)
+    recorder = Recorder(tmp_path / "run", retain_sensor_data=False)
+    returned = recorder.record_step(StepRecord(0, raw_observation=observation, model_observation=observation,
+                                               components={"score": 1.}))
+    np.testing.assert_array_equal(returned.raw_observation.sensor_data["front"], 40)
+    memory = recorder.finish()
+    for log in (memory, RunLog.read(tmp_path / "run", load_sensor_data=False)):
+        step, = log.steps
+        assert step.raw_observation.sensor_data == step.model_observation.sensor_data == {}
+        assert type(step.model_observation.calibration["lidar"]) is LidarCalibration
+        assert step.components == {"score": 1.}
+    saved, = RunLog.read(tmp_path / "run").steps
+    np.testing.assert_array_equal(saved.model_observation.sensor_data["front"], 40)
+    with pytest.raises(ValueError, match="persistent output path"):
+        Recorder(retain_sensor_data=False)
+
+
 def test_read_selected_columns(tmp_path):
     with Recorder(tmp_path / "run") as recorder:
         recorder.record_step(StepRecord(0, components={"image": np.zeros((3, 4), np.uint8)},

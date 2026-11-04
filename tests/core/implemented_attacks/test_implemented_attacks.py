@@ -44,8 +44,8 @@ ATTACKS = [
         "asset": MeshAsset((MeshPart(
             np.array([[0., -1., 0.], [0., 1., 0.], [0., 0., 2.]]), np.array([[0, 1, 2]]),
             color=np.array([240, 20, 20, 255], np.uint8)),), (0., 2., 2.), "vehicle"),
-        "distance_m": 3., "decision_steps": 2, "max_segments": 1,
-    }, {"distance_m": 0.}, "default_driving_options", "nurec_longitudinal_dataset",
+        "distance_m": 3., "time_ahead_s": .25, "decision_steps": 2, "max_segments": 1,
+    }, {"time_ahead_s": -1.}, "default_driving_options", "nurec_longitudinal_dataset",
         "nurec_scene_simulator", id="vehicle-insertion"),
 ]
 

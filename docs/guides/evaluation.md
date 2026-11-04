@@ -167,6 +167,8 @@ class DecisionCount(Metric):
 
 Configure the class with a path such as `my_project.metrics:DecisionCount`. A metric reads
 recorded evidence and does not require simulator startup, dataset access or model inference.
+Saved runs reach metrics without sensor payloads, as described in
+[recording configuration](../reference/configuration.md#recording).
 
 ## Visualize saved observations
 

@@ -8,7 +8,7 @@ native types before persistence. Unknown objects are never pickled or stringifie
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, is_dataclass, replace
 import json
 import os
 from pathlib import Path
@@ -23,6 +23,23 @@ if TYPE_CHECKING:
     from avsectester.rendering.compositing import ObjectVisibility
 
 _TAG = "_avsectester_type"
+_OBSERVATION_FIELDS = ("raw_observation", "model_observation")
+
+
+def _without_sensor_data(value: Any) -> Any:
+    """Return an observation dataclass copy with empty sensor data. Other values are unchanged."""
+    if is_dataclass(value) and not isinstance(value, type) and any(
+            item.name == "sensor_data" for item in fields(value)):
+        return replace(value, sensor_data={})
+    return value
+
+
+def _without_encoded_sensor_data(value: Any) -> Any:
+    """Return an encoded observation dataclass whose sensor data decodes to an empty mapping."""
+    if (isinstance(value, dict) and value.get(_TAG) == "dataclass"
+            and isinstance(value.get("fields"), dict) and "sensor_data" in value["fields"]):
+        return {**value, "fields": {**value["fields"], "sensor_data": {}}}
+    return value
 
 
 @dataclass
@@ -87,12 +104,15 @@ class RunLog:
         *,
         registry: SerializationRegistry = DEFAULT_REGISTRY,
         load_payloads: bool = True,
+        load_sensor_data: bool = True,
     ) -> RunLog:
         """Read completed parts, including those left by an interrupted writer.
 
         Only ``part-*.parquet`` files with a written footer are published. Pending
         ``*.open`` files are ignored. Native values decode to ordinary data, allowing
         analysis without simulator dependencies. User record types must be registered first.
+        ``load_sensor_data=False`` reads raw and model observations with empty
+        ``sensor_data`` and leaves their recorded payloads on disk.
         """
         root = Path(path)
         manifest = _read_manifest(root)
@@ -103,6 +123,9 @@ class RunLog:
             path=root,
         )
         for row in read_table(root).to_pylist():
+            if not load_sensor_data:
+                row = {key: _without_encoded_sensor_data(value)
+                       if key in _OBSERVATION_FIELDS else value for key, value in row.items()}
             log.steps.append(StepRecord(**{key: decoder.decode(value) for key, value in row.items()}))
         for row in read_table(root, stream="events").to_pylist():
             log.events.append(EventRecord(**{key: decoder.decode(value) for key, value in row.items()}))
@@ -116,6 +139,8 @@ class Recorder:
     Call ``snapshot`` earlier when a subsequent hook might mutate a value before
     a complete step is available. ``retain_steps=False`` bounds disk-recorder
     memory by the open chunk instead of retaining the full run.
+    ``retain_sensor_data=False`` retains steps whose raw and model observations have
+    empty ``sensor_data``. The written records keep their sensor data.
 
     A directory must be empty. ``finish`` publishes the last chunks before the
     final manifest. ``abort`` leaves completed chunks readable and discards the
@@ -132,16 +157,20 @@ class Recorder:
         chunk_bytes: int = 8 * 1024 * 1024,
         payload_shard_bytes: int = 64 * 1024 * 1024,
         retain_steps: bool = True,
+        retain_sensor_data: bool = True,
     ) -> None:
         if chunk_steps <= 0 or chunk_bytes <= 0 or payload_shard_bytes <= 0:
             raise ValueError("Chunk limits must be positive")
         if not retain_steps and path is None:
             raise ValueError("retain_steps=False requires a persistent output path")
+        if not retain_sensor_data and path is None:
+            raise ValueError("retain_sensor_data=False requires a persistent output path")
         self.registry = registry
         self.log = RunLog(
             metadata=self.snapshot(metadata or {}), path=Path(path) if path is not None else None
         )
         self.retain_steps = retain_steps
+        self.retain_sensor_data = retain_sensor_data
         self._finished = False
         self._last_step = -1
         self._writer = (
@@ -167,7 +196,9 @@ class Recorder:
         if self._writer is not None:
             self._writer.append("steps", {f.name: getattr(snapshot, f.name) for f in fields(snapshot)})
         if self.retain_steps:
-            self.log.steps.append(snapshot)
+            self.log.steps.append(snapshot if self.retain_sensor_data else replace(snapshot, **{
+                name: _without_sensor_data(getattr(snapshot, name)) for name in _OBSERVATION_FIELDS
+            }))
         self._last_step = record.step
         return snapshot
 

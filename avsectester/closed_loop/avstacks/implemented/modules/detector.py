@@ -126,8 +126,14 @@ class YOLOXDetector:
         boxes = torch.cat((center - size / 2, center + size / 2), dim=-1) / scale
         return torch.cat((boxes, prediction[..., 4:]), dim=-1)
 
-    def detect(self, rgb: np.ndarray) -> list[tuple[np.ndarray, float, str]]:
-        """Return original-image xyxy boxes, confidences and COCO labels after classwise NMS."""
+    def detect(
+        self, rgb: np.ndarray, score_threshold: float | None = None,
+    ) -> list[tuple[np.ndarray, float, str]]:
+        """Return original-image xyxy boxes, confidences and COCO labels after classwise NMS.
+
+        An optional threshold in [0, 1] overrides filtering for this call only.
+        None uses the detector's configured score_threshold.
+        """
         import torch
         from torchvision.ops import batched_nms
 
@@ -136,6 +142,10 @@ class YOLOXDetector:
         if (not isinstance(rgb, np.ndarray) or rgb.dtype != np.uint8 or rgb.ndim != 3
                 or rgb.shape[2] != 3 or 0 in rgb.shape):
             raise ValueError("rgb must be a nonempty uint8 RGB (H, W, 3) image")
+        threshold = self.score_threshold if score_threshold is None else score_threshold
+        require_nonnegative_number(threshold, "score_threshold")
+        if threshold > 1:
+            raise ValueError("score_threshold must be at most 1")
         image = torch.from_numpy(np.array(rgb, copy=True)).permute(2, 0, 1)
         image = image.to(device=self.device, dtype=torch.float32) / 255
         self._model_for_detection()
@@ -143,7 +153,7 @@ class YOLOXDetector:
             prediction = self._prediction(image.unsqueeze(0))[0]
             probabilities, labels = prediction[:, 5:].max(dim=1)
             scores = prediction[:, 4] * probabilities
-            selected = scores >= self.score_threshold
+            selected = scores >= threshold
             boxes, scores, labels = prediction[selected, :4], scores[selected], labels[selected]
             kept = batched_nms(boxes, scores, labels, self.nms_iou)
         return [

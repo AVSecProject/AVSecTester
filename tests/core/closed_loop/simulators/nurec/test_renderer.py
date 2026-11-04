@@ -253,7 +253,7 @@ def test_scene_object_tracks(monkeypatch, tmp_path):
         assert len(rows) == 88
         scale = .06
         np.testing.assert_allclose(np.exp(rows[:, 7:10]) * scale,
-                                   np.tile([.001, .005, .005], (88, 1)), rtol=1e-6)
+                                   np.tile([.001, .01, .01], (88, 1)), rtol=1e-6)
         np.testing.assert_array_equal(rows[:, 6], np.full(88, 8.))
         alpha = rgba[:10, 10:20, 3].astype(float)
         expected = (rgba[:10, 10:20, :3] * alpha[..., None]).sum(axis=(0, 1)) / alpha.sum()

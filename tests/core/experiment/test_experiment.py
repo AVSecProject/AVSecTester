@@ -277,9 +277,10 @@ def test_shared_deployment_budget():
 
 def test_prepare_resume(tmp_path):
     class CheckpointAttack(MinimalAttack):
-        def __init__(self, marker_path, ready_path=None):
+        def __init__(self, marker_path, ready_path=None, artifact_value="prepared"):
             super().__init__(max_segments=1)
             self.marker_path, self.ready_path = marker_path, ready_path
+            self.artifact_value = artifact_value
 
         def build_metadata(self, scenario):
             with self.marker_path.with_suffix(".selection").open("x") as stream:
@@ -291,12 +292,14 @@ def test_prepare_resume(tmp_path):
                 raise RuntimeError("offline dependency unavailable")
             with self.marker_path.open("x") as stream:
                 stream.write("prepared")
-            return self.marker_path.read_text()
+            return self.artifact_value
 
-    first_marker, second_marker, ready = (tmp_path / name for name in ("first", "second", "ready"))
+    empty_marker, first_marker, second_marker, ready = (
+        tmp_path / name for name in ("empty", "first", "second", "ready"))
     config = ExperimentConfiguration(
         MemoryDataset(), MemorySimulator(), DrivingAdapter(lambda seed: ConstantAVStack()),
-        {"first": CheckpointAttack(first_marker), "second": CheckpointAttack(second_marker, ready)},
+        {"empty": CheckpointAttack(empty_marker, artifact_value=None),
+         "first": CheckpointAttack(first_marker), "second": CheckpointAttack(second_marker, ready)},
         runs=RunsConfiguration(output=tmp_path / "prepare", strict=True),
     )
     with pytest.raises(RuntimeError, match="offline dependency unavailable"):
@@ -304,15 +307,30 @@ def test_prepare_resume(tmp_path):
     output = tmp_path / "prepare"
     assert not (output / "prepared.json").exists()
     assert (output / "preparation-progress.json").is_file()
+    progress_path = output / "preparation-progress.json"
+    progress = json.loads(progress_path.read_text())
+    assert progress["completed_attacks"] == ["empty", "first"]
+    assert progress["attacks_with_artifacts"] == ["first"]
+    assert not (output / "attacks/empty/artifacts").exists()
     assert all((output / "attacks" / name / "metadata.json").is_file() for name in config.attacks)
     first_saved = first_marker.read_bytes()
     with pytest.raises(ConfigurationMismatchError, match="seed"):
         Experiment.prepare(replace(config, runs=replace(config.runs, seeds=(1,))), resume=True)
+    with pytest.raises(RuntimeError, match="offline dependency unavailable"):
+        Experiment.prepare(config, resume=True)
+    assert not (output / "attacks/empty/artifacts").exists()
+    # Legacy progress still restores a completed phase whose stored artifact is None.
+    config.attacks["empty"].save_artifacts(None, output / "attacks/empty/artifacts")
+    del progress["attacks_with_artifacts"]
+    progress_path.write_text(json.dumps(progress))
     ready.touch()
     prepared = Experiment.prepare(config, resume=True)
     assert first_marker.read_bytes() == first_saved
-    assert prepared.artifacts == {"first": "prepared", "second": "prepared"}
+    assert prepared.artifacts == {"empty": None, "first": "prepared", "second": "prepared"}
     assert (output / "prepared.json").is_file()
+    assert json.loads((output / "prepared.json").read_text())["attacks_with_artifacts"] == [
+        "first", "second",
+    ]
     # A complete checkpoint also loads directly without repeating either offline phase.
     assert Experiment.prepare(config, resume=True).artifacts == prepared.artifacts
     with pytest.raises(ValueError, match="exist"):

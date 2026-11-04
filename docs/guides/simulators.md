@@ -176,14 +176,22 @@ settings.
 
 Plane assets use 5 mm grid spacing, capped at one Gaussian per texture pixel. Grid centers
 with alpha below 128 are omitted. Colors are alpha-weighted area averages. Gaussian
-lateral size equals grid spacing, thickness is 1 mm and opacity logit is 8, with zeroth-order
-spherical harmonics only.
+lateral sizes are twice the grid-cell dimensions. The textured asset and its white and black
+coverage copies share their Gaussian geometry. Thickness is one millimeter and opacity logit
+is eight, with zeroth-order spherical harmonics only.
 
 Mesh triangles use the same grid spacing, and every nonzero-area triangle has at least one
 sample. Samples with alpha below 128 are omitted. The others become Gaussians that lie flat on
-their triangles and take their base colors. Textured colors are alpha-weighted averages over
-each Gaussian's texture footprint. Mesh assets have no nominal textures. See
+their triangles and take their base colors. Their lateral sizes are twice the requested grid
+spacing. Textured colors are alpha-weighted averages over each Gaussian's texture footprint.
+Mesh assets have no nominal textures. See
 [mesh loading settings](../reference/configuration.md#mesh-assets) for file formats and axes.
+
+Composite visibility probes use a one-centimeter nearest-count grid, capped at one Gaussian
+per texture pixel. Their lateral sizes are nine tenths of the grid-cell dimensions. White and
+black probes share their Gaussian geometry. Because scene-asset Gaussians are wider than their
+grid cells, image edges are slightly soft and coverage extends slightly beyond the exact asset
+silhouette.
 
 NRE registers one track for each object and texture. Moving an object reuses its track. Tracks
 remain until the NRE process restarts.

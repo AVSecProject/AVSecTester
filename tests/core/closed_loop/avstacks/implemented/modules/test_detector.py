@@ -35,6 +35,17 @@ def test_detect(tmp_path):
     assert [label for _, _, label in detections] == ["car", "person"]
     assert [score for _, score, _ in detections] == pytest.approx([.81, .765])
     np.testing.assert_allclose([box for box, _, _ in detections], [[4, 6, 20, 30]] * 2)
+    lower = detector.detect(rgb, score_threshold=.4)
+    assert [label for _, _, label in lower] == ["car", "person", "person"]
+    assert [score for _, score, _ in lower] == pytest.approx([.81, .765, .49])
+    higher = detector.detect(rgb, score_threshold=.8)
+    assert [label for _, _, label in higher] == ["car"]
+    assert detector.detect(rgb, score_threshold=1.) == []
+    assert detector.score_threshold == .5
+    assert [score for _, score, _ in detector.detect(rgb)] == pytest.approx([.81, .765])
+    for invalid in (-.1, 1.1, np.nan):
+        with pytest.raises(ValueError, match="score_threshold"):
+            detector.detect(rgb, score_threshold=invalid)
     assert model.last_input.shape == (1, 3, 32, 32)
     torch.testing.assert_close(model.last_input[0, :, :20],
                                torch.tensor([30., 20., 10.])[:, None, None].expand(3, 20, 32))

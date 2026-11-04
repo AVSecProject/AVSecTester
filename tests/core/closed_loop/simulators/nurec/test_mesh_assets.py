@@ -54,7 +54,7 @@ def test_mesh_scene_asset(monkeypatch, tmp_path):
         assert np.all((points[:, 2] >= -1e-8) & (points[:, 2] <= .06 + 1e-8))
         assert .9 <= len(rows) / (.75 * .06 * .06 / .005**2) <= 1.2
         np.testing.assert_allclose(np.exp(rows[:, 7:10]) * .06,
-                                   np.tile([.001, .005, .005], (len(rows), 1)), rtol=1e-6)
+                                   np.tile([.001, .01, .01], (len(rows), 1)), rtol=1e-6)
         rotations = Rotation.from_quat(rows[:, [11, 12, 13, 10]]).as_matrix()
         np.testing.assert_allclose(rotations[:, :, 0] @ TRACK_FROM_PLY.T,
                                    np.tile([1., 0., 0.], (len(rows), 1)), atol=1e-6)

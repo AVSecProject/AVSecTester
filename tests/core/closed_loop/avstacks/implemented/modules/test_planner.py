@@ -3,8 +3,8 @@
 import numpy as np
 import pytest
 
-from avsectester.closed_loop.avstacks.implemented.modules.planner import StopSignPlanner
-from avsectester.closed_loop.avstacks.implemented.modules.tracker import SignTrack
+from avsectester.closed_loop.avstacks.implemented.modules.planner import RuleBasedPlanner
+from avsectester.closed_loop.avstacks.implemented.modules.tracker import SignTrack, VehicleTrack
 from avsectester.closed_loop.simulators.ego_dynamics import AlpaSimController, PlanarEgoState
 from avsectester.data_types import Observation
 
@@ -15,8 +15,8 @@ def observation(state, route=None):
 
 
 @pytest.mark.parametrize("stop_before_sign_m", [5.5, 10.])
-def test_stop_sign_planner(stop_before_sign_m):
-    planner = StopSignPlanner(stop_before_sign_m=stop_before_sign_m, stop_duration_s=2.)
+def test_rule_based_planner(stop_before_sign_m):
+    planner = RuleBasedPlanner(stop_before_sign_m=stop_before_sign_m, stop_duration_s=2.)
     state = PlanarEgoState(speed=13.)
     planner.reset(observation(state))
     records = []
@@ -52,7 +52,7 @@ def test_stop_sign_planner(stop_before_sign_m):
 
 
 def test_braking_latch():
-    planner = StopSignPlanner()
+    planner = RuleBasedPlanner()
     initial = PlanarEgoState(speed=13.)
     planner.reset(observation(initial))
     command = planner.step(observation(initial), [SignTrack(0, np.array([50., 0.]), np.eye(2))])
@@ -81,7 +81,7 @@ def test_braking_latch():
 
 
 def test_late_detection():
-    planner = StopSignPlanner()
+    planner = RuleBasedPlanner()
     state = PlanarEgoState(speed=13.)
     planner.reset(observation(state))
     stopped = None
@@ -105,7 +105,7 @@ def test_late_detection():
 
 
 def test_cruise():
-    planner = StopSignPlanner()
+    planner = RuleBasedPlanner()
     state = PlanarEgoState(speed=13., t=2.)
     planner.reset(observation(state))
     command = planner.step(observation(state), [SignTrack(0, np.array([-5., 0.]), np.eye(2)),
@@ -122,23 +122,23 @@ def test_cruise():
     command = planner.step(observation(state, route), ())
     assert command.trajectory[-1][0] == pytest.approx((30., 35., 0.))
     assert command.trajectory[-1][1] == pytest.approx((np.sqrt(.5), 0., 0., np.sqrt(.5)))
-    changed = StopSignPlanner(trajectory_step_s=.2, trajectory_horizon_s=1.)
+    changed = RuleBasedPlanner(trajectory_step_s=.2, trajectory_horizon_s=1.)
     changed.reset(observation(state))
     assert [p[2] for p in changed.step(observation(state), ()).trajectory] == [
         2_000_000, 2_200_000, 2_400_000, 2_600_000, 2_800_000, 3_000_000,
     ]
     with pytest.raises(ValueError, match="trajectory_horizon_s"):
-        StopSignPlanner(trajectory_horizon_s=.1, trajectory_step_s=.2)
+        RuleBasedPlanner(trajectory_horizon_s=.1, trajectory_step_s=.2)
     with pytest.raises(ValueError, match="microseconds"):
-        StopSignPlanner(trajectory_step_s=.0000001)
+        RuleBasedPlanner(trajectory_step_s=.0000001)
     # Sub-microsecond rounding at a partial final step must not duplicate a timestamp.
-    short = StopSignPlanner(trajectory_horizon_s=.10000000001)
+    short = RuleBasedPlanner(trajectory_horizon_s=.10000000001)
     short.reset(observation(state))
     assert [p[2] for p in short.step(observation(state), ()).trajectory] == [2_000_000, 2_100_000]
 
 
 def test_sign_relevance():
-    planner = StopSignPlanner()
+    planner = RuleBasedPlanner()
     state = PlanarEgoState(speed=13.)
     planner.reset(observation(state))
     planner.step(observation(state), [SignTrack(0, np.array([50., 11.]), np.eye(2))])
@@ -151,7 +151,7 @@ def test_sign_relevance():
 def test_alpasim_trajectory():
     pytest.importorskip("alpasim_controller")
     dynamics = AlpaSimController()
-    planner = StopSignPlanner()
+    planner = RuleBasedPlanner()
     state = PlanarEgoState(x=10., y=-2., yaw=.7, speed=13., t=.2)
     planner.reset(observation(state))
     dynamics.reset(state)
@@ -169,3 +169,116 @@ def test_alpasim_trajectory():
     advanced = dynamics.step(stationary, command, .1)
     assert advanced.speed == pytest.approx(0., abs=1e-8)
     assert [advanced.x, advanced.y] == pytest.approx([0., 0.], abs=1e-8)
+
+
+def test_vehicle_following():
+    planner = RuleBasedPlanner()
+    state = PlanarEgoState(speed=8.)
+    planner.reset(observation(state))
+    vehicles = (
+        VehicleTrack(1, np.array([45., 0.]), np.zeros(2), 1.),
+        VehicleTrack(0, np.array([25., 0.]), np.zeros(2), 1.),
+    )
+    gaps, accelerations = [], []
+    for index in range(300):
+        planner.step(observation(state), (), vehicles)
+        log = planner.component_log
+        gap = 25. - state.x - planner.ego_front_offset_m
+        assert log["lead_track_id"] == 0
+        assert log["lead_gap_m"] == pytest.approx(gap)
+        assert log["lead_speed_mps"] == 0.
+        assert log["lead_lateral_interval_m"] == [-1., 1.]
+        gaps.append(gap)
+        accelerations.append(log["acceleration_mps2"])
+        speed = log["planned_speed_mps"]
+        state = PlanarEgoState(x=state.x + (state.speed + speed) * .05,
+                              speed=speed, t=(index + 1) * .1)
+    assert accelerations[0] < 0.
+    assert state.speed < .1
+    assert min(gaps) > 0.
+    assert gaps[-1] == pytest.approx(planner.min_gap_m, abs=.1)
+
+    # A moving leader at the IDM equilibrium gap preserves speed through the horizon.
+    planner = RuleBasedPlanner(cruise_speed_mps=10.)
+    state = PlanarEgoState(speed=5.)
+    gap = (2. + 5. * 1.5) / np.sqrt(1 - (5. / 10.) ** 4)
+    moving = VehicleTrack(2, np.array([gap + 3.7, 0.]), np.array([5., 0.]), 1.)
+    planner.reset(observation(state))
+    command = planner.step(observation(state), (), (moving,))
+    assert planner.component_log["acceleration_mps2"] == pytest.approx(0., abs=1e-12)
+    assert planner.component_log["lead_speed_mps"] == 5.
+    assert command.trajectory[-1][0] == pytest.approx((25., 0., 0.), abs=1e-10)
+
+    # A roadside vehicle's near edge stays outside the ego corridor on both sides.
+    ignored = (
+        VehicleTrack(3, np.array([10., 2.]), np.zeros(2), .5),
+        VehicleTrack(4, np.array([-1., 0.]), np.zeros(2), 1.),
+        VehicleTrack(5, np.array([61., 0.]), np.zeros(2), 1.),
+        VehicleTrack(9, np.array([10., -2.]), np.zeros(2), .5),
+    )
+    planner.reset(observation(state))
+    clean = planner.step(observation(state), ())
+    planner.reset(observation(state))
+    assert planner.step(observation(state), (), ignored).trajectory == clean.trajectory
+    assert planner.component_log["lead_track_id"] is None
+    assert planner.component_log["lead_gap_m"] is None
+    assert planner.component_log["lead_speed_mps"] is None
+    assert planner.component_log["lead_lateral_interval_m"] is None
+
+    # Partial overlap is relevant even when the contact center is outside the corridor.
+    for side in (-1., 1.):
+        overlap = VehicleTrack(10, np.array([10., side * 2.]), np.zeros(2), .8)
+        planner.reset(observation(state))
+        planner.step(observation(state), (), (overlap,))
+        assert planner.component_log["lead_track_id"] == 10
+        assert planner.component_log["lead_lateral_interval_m"] == pytest.approx(
+            [side * 2. - .8, side * 2. + .8])
+
+    # A curved rig-frame route determines relevance and the world-velocity projection.
+    route = np.array([[0., 0., 0.], [10., 0., 0.], [10., 40., 0.]])
+    turned = observation(PlanarEgoState(x=10., y=20., yaw=np.pi / 2, speed=3.), route)
+    around_turn = VehicleTrack(6, np.array([0., 30.]), np.array([-4., 0.]), .9)
+    planner.reset(turned)
+    planner.step(turned, (), (around_turn,))
+    assert planner.component_log["lead_track_id"] == 6
+    assert planner.component_log["lead_gap_m"] == pytest.approx(20. - 3.7)
+    assert planner.component_log["lead_speed_mps"] == pytest.approx(4.)
+    assert planner.component_log["lead_lateral_interval_m"] == pytest.approx([-.9, .9])
+    reverse = VehicleTrack(6, around_turn.position, np.array([4., 0.]), .9)
+    planner.step(turned, (), (reverse,))
+    assert planner.component_log["lead_speed_mps"] == 0.
+
+    # Sign braking and following combine by taking the more conservative acceleration.
+    state = PlanarEgoState(speed=8.)
+    signs = (SignTrack(0, np.array([10., 0.]), np.eye(2)),)
+    sign_only, lead_only, combined = RuleBasedPlanner(), RuleBasedPlanner(), RuleBasedPlanner()
+    for driver in (sign_only, lead_only, combined):
+        driver.reset(observation(state))
+    sign_only.step(observation(state), signs)
+    lead_only.step(observation(state), (), vehicles)
+    combined.step(observation(state), signs, vehicles)
+    assert combined.component_log["acceleration_mps2"] == min(
+        sign_only.component_log["acceleration_mps2"], lead_only.component_log["acceleration_mps2"])
+    too_close = VehicleTrack(7, np.array([2., 0.]), np.zeros(2), 1.)
+    combined.reset(observation(state))
+    combined.step(observation(state), (), (too_close,))
+    assert combined.component_log["acceleration_mps2"] == -combined.max_deceleration_mps2
+
+    stationary = PlanarEgoState()
+    combined.reset(observation(stationary))
+    stopped = combined.step(observation(stationary),
+        (SignTrack(0, np.array([5.5, 0.]), np.eye(2)),), vehicles)
+    assert combined.component_log["state"] == "STOPPED"
+    np.testing.assert_array_equal([point[0] for point in stopped.trajectory], 0.)
+    with pytest.raises(ValueError, match="min_gap_m"):
+        RuleBasedPlanner(min_gap_m=-1.)
+    with pytest.raises(ValueError, match="vehicle_lookahead_m"):
+        RuleBasedPlanner(vehicle_lookahead_m=0.)
+    with pytest.raises(ValueError, match="ego_half_width_m"):
+        RuleBasedPlanner(ego_half_width_m=0.)
+    with pytest.raises(ValueError, match="lateral_margin_m"):
+        RuleBasedPlanner(lateral_margin_m=-.1)
+    with pytest.raises(ValueError, match="position and velocity"):
+        planner.step(turned, (), (VehicleTrack(8, np.zeros(2), np.array([np.nan, 0.]), 1.),))
+    with pytest.raises(ValueError, match="half_width_m"):
+        planner.step(turned, (), (VehicleTrack(8, np.array([5., 0.]), np.zeros(2), -.1),))

@@ -28,6 +28,8 @@ avstack:
   bindings:
     type: avsectester.closed_loop.avstacks.implemented.modules:rule_based_driving_adapter
   options:
+    vehicle_tracker:
+      type: avsectester.closed_loop.avstacks.implemented.modules:VehicleTracker
     detector:
       type: avsectester.closed_loop.avstacks.implemented.modules:YOLOXDetector
       options:
@@ -49,8 +51,9 @@ attacks:
         type: avsectester.rendering.harmonizers:ExposureHarmonizer
         options: {reference: ring}
       distance_m: 25.0
+      time_ahead_s: 4.0
       lateral_offset_m: 0.0
-      decision_steps: 20
+      decision_steps: 160
       max_segments: 1
 evaluation:
   metrics:
@@ -64,6 +67,6 @@ runs:
   seeds: [0]
   recording:
     sensor_ids: [camera_front_wide_120fov, lidar_gt_top_p128]
-    representations: [raw, model_input]
+    representations: [model_input]
     every_n_steps: 1
   output: ../results/nurec_vehicle_insertion_modular_2604

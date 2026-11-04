@@ -39,8 +39,9 @@ attacks:
         type: avsectester.rendering.harmonizers:ExposureHarmonizer
         options: {reference: ring}
       distance_m: 25.0
+      time_ahead_s: 4.0
       lateral_offset_m: 0.0
-      decision_steps: 20
+      decision_steps: 160
       max_segments: 1
 ```
 
@@ -62,11 +63,23 @@ The metabuilder uses the framework's segment helper and checks each start throug
 closed-loop services. Starts without sufficient recorded history or deployment support are
 excluded.
 
-For each segment start, it accumulates distance along the recorded ego trajectory and selects
-the first recorded pose that reaches `distance_m`. The mesh keeps that pose's rotation,
-including road slope. `lateral_offset_m` moves it along the selected pose's left axis, with
-positive values to the left. A start is skipped when its remaining recording cannot reach the
-requested distance. `max_segments` optionally limits the accepted segments in each scenario.
+At each start, the metabuilder constructs the same navigation route as the simulator reset,
+using its `route_generator` setting, complete recorded trajectory and scenario map. Map and
+recorded routes use the generated navigation points. With navigation disabled, placement uses
+the straight line ahead of ego.
+
+The placement distance is `max(distance_m, initial_speed * time_ahead_s)`, where initial speed
+is the recorded horizontal speed. `distance_m` is a positive minimum, and `time_ahead_s` is
+nonnegative. Distance is measured along the horizontal navigation polyline from its first point.
+`lateral_offset_m` then shifts along the route's horizontal left normal, with positive values
+to the left. The vehicle's yaw follows the local route tangent. Height, pitch and roll come
+from the horizontally nearest recorded ego pose.
+
+The recording must cover the complete timeline. Starts without the required history or
+deployment support are excluded. A segment is discarded when navigation cannot be generated
+at its start, or when the requested distance exceeds the available navigation route, including
+repeated endpoints of a short recorded route.
+Selection records the discarded reasons. `max_segments` limits the accepted segments per scene.
 
 The world pose is stored in `AttackSegment.user_data`. The offline phase has no preparation
 work. The online phase returns one `InsertObject` action during setup, making the vehicle
@@ -84,13 +97,18 @@ attack's `harmonizer` option defaults to `null`, which renders the model's color
 Lighting, shadows and reflections are not simulated. Insertion capabilities, visibility and
 physics limits are defined in [Simulators](../guides/simulators.md#inserted-world-objects).
 
-`RuleBasedAVStack` follows its configured stop-sign policy. Its perception and planning scope is
-described in [Driving systems](../guides/driving-systems.md#nurec-rule-based-driving-system).
+The configuration enables `VehicleTracker` in `RuleBasedAVStack`. Camera detections feed
+LiDAR visible-face ranging, vehicle tracking and IDM following, so ego can slow down and
+stop behind the inserted vehicle. The planner also retains its stop-sign policy. Detection,
+ranging and available braking determine the outcome. The desired gap is not a hard clearance
+limit. See [Driving systems](../guides/driving-systems.md#nurec-rule-based-driving-system) for
+parameters and limitations.
 
-The configuration records camera and point-cloud payloads as both `raw` and `model_input` at
-each decision. Use those captures, insertion receipts and object-visibility evidence to inspect
-deployment. Driving and trajectory metrics compare the treatments. `DrivingMetrics` includes
-the inserted vehicle in its bounding-box distance and collision measurements, as described in
+The configuration records camera and point-cloud payloads as `model_input` at each decision.
+NRE renders the inserted vehicle, so `raw` captures would be identical. Use those captures,
+insertion receipts and object-visibility evidence to inspect deployment. Driving and trajectory
+metrics compare the treatments. `DrivingMetrics` includes the inserted vehicle in its
+bounding-box distance and collision measurements, as described in
 [Built-in metrics](../guides/evaluation.md#built-in-metrics). Read
 [Evaluation](../guides/evaluation.md) for saved records and reports.
 

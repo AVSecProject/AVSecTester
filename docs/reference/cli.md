@@ -204,14 +204,21 @@ Checkpoint and retry behavior follow
 ```
 
 Each attack directory holds the selected segments in `metadata.json`, its artifacts in
-`artifacts/` and its offline report in `offline_report/`. A failed or interrupted offline phase
-moves its partial report to `incomplete_offline_reports/` before the phase runs again. Artifact
-filenames above describe the default trusted-pickle format. Attacks may override artifact
-persistence, and their files stay inside `artifacts/`. Segment numbers are global unit indexes. Each run directory contains
+`artifacts/` and its offline report in `offline_report/`. The `artifacts/` directory is created
+only when the offline phase returns a value other than `None`. A failed or interrupted offline
+phase moves its partial report to `incomplete_offline_reports/` before the phase runs again.
+Artifact filenames above describe the default trusted-pickle format. Attacks may override
+artifact persistence, and their files stay inside `artifacts/`. Segment numbers are global unit
+indexes. Each run directory contains
 `manifest.json`, published Parquet step/event parts and payload shards belonging to its
 [RunLog](runtime.md#runlog). Offline report content is described in
 [Optimization](../guides/optimization.md), and evaluation content
 in [Evaluation](../guides/evaluation.md).
+
+Preparation manifests list attacks with saved artifacts in `attacks_with_artifacts`, in
+configuration order. `preparation-progress.json` includes only completed attacks in this list.
+Loading uses the list and ignores unlisted artifact directories. Manifests without this field
+load artifacts for every completed attack.
 
 ## Exit codes
 

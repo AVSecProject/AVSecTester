@@ -16,6 +16,7 @@ from avsectester.experiment import (
 )
 from avsectester.data_types import Unavailable
 from avsectester.maps import Lane, ScenarioMap, StopLine, TrafficControl
+from avsectester.runlog import RunLog
 from tests.fakes import ConstantAVStack, MemoryDataset, MemorySimulator, MinimalAttack
 
 
@@ -37,7 +38,9 @@ def test_prepared_experiment_save_and_load(tmp_path):
     prepared = Experiment.prepare(config)
     destination = prepared.save(tmp_path / "prepared")
     loaded = PreparedExperiment.load(config, destination)
-    saved_preparation = json.loads((destination / "prepared.json").read_text())["preparation"]
+    manifest = json.loads((destination / "prepared.json").read_text())
+    assert manifest["attacks_with_artifacts"] == ["probe"]
+    saved_preparation = manifest["preparation"]
     assert loaded.preparation == saved_preparation == prepared.preparation
     assert loaded.artifacts == prepared.artifacts
     assert loaded.metadata == prepared.metadata
@@ -53,6 +56,33 @@ def test_prepared_experiment_save_and_load(tmp_path):
     assert reused.preparation == saved_preparation
     resaved = reused.save(tmp_path / "resaved")
     assert (resaved / "prepared.json").read_bytes() == (destination / "prepared.json").read_bytes()
+
+    artifact_config = replace(config, attacks={
+        "empty": MinimalAttack(), "zeta": MinimalAttack(assets={"value": 3}),
+        "alpha": MinimalAttack(assets=0),
+    }, runs=replace(config.runs, treatments=()))
+    artifact_prepared = Experiment.prepare(artifact_config)
+    artifact_output = artifact_prepared.save(tmp_path / "artifacts")
+    assert not (artifact_output / "attacks/empty/artifacts").exists()
+    artifact_manifest = artifact_output / "prepared.json"
+    assert json.loads(artifact_manifest.read_text())["attacks_with_artifacts"] == ["zeta", "alpha"]
+    assert PreparedExperiment.load(artifact_config, artifact_output).artifacts == {
+        "empty": None, "zeta": {"value": 3}, "alpha": 0,
+    }
+    # Unlisted files remain untouched and cannot restore a stale artifact.
+    empty = artifact_config.attacks["empty"]
+    empty_directory = artifact_output / "attacks/empty/artifacts"
+    empty.save_artifacts("stale", empty_directory)
+    stale = (empty_directory / "artifacts.pkl").read_bytes()
+    artifact_prepared.save(artifact_output)
+    assert (empty_directory / "artifacts.pkl").read_bytes() == stale
+    assert PreparedExperiment.load(artifact_config, artifact_output).artifacts["empty"] is None
+    # Older manifests require every stored artifact, including a saved None.
+    empty.save_artifacts(None, empty_directory)
+    legacy = json.loads(artifact_manifest.read_text())
+    del legacy["attacks_with_artifacts"]
+    artifact_manifest.write_text(json.dumps(legacy))
+    assert PreparedExperiment.load(artifact_config, artifact_output).artifacts == artifact_prepared.artifacts
 
     specification = {
         "dataset": config.dataset, "simulator": config.simulator, "avstack": config.avstack,
@@ -109,13 +139,17 @@ def test_experiment_result_load(tmp_path):
         stop_lines={"line": StopLine("line", np.array([[2., -1., 0.], [2., 1., 0.]]),
                                      "STOP", "stop_sign", ("lane",), "stop")},
     )
-    config = configuration(output=tmp_path / "experiment", dataset=MemoryDataset(
-        scenario_ids=("scene", "unmapped"), maps={"scene": scenario_map},
-    ))
+    config = configuration(output=tmp_path / "experiment", recording=RecordingPolicy(sensor_ids=("front",)),
+                           dataset=MemoryDataset(scenario_ids=("scene", "unmapped"), maps={"scene": scenario_map}))
     prepared = Experiment.prepare(config)
     original = Experiment.execute(prepared)
     loaded = ExperimentResult.load(config.runs.output, config)
     assert measurements(loaded) == measurements(original)
+    # Saved sensor payloads stay on disk. Results keep every other recorded field.
+    for result in (original, loaded):
+        assert all(step.model_observation.sensor_data == {}
+                   for run in result.runs for step in run.log.steps)
+    assert "front" in RunLog.read(original.runs[0].log.path).steps[0].model_observation.sensor_data
     analysis_config = replace(config, runs=replace(config.runs, environment={"world": {"weather": "rain"}}))
     assert measurements(ExperimentResult.load(config.runs.output, analysis_config)) == measurements(original)
     assert (config.runs.output / "maps/scene.json").is_file()

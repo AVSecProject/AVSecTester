@@ -126,7 +126,8 @@ def _save_metadata(prepared: PreparedExperiment, root: Path) -> None:
         _write_json(destination / "metadata.json", {"segments": DEFAULT_REGISTRY.encode(tuple(segments))})
 
 
-def _preparation_manifest(prepared: PreparedExperiment) -> dict[str, Any]:
+def _preparation_manifest(prepared: PreparedExperiment,
+                          completed_attacks: Sequence[str] | None = None) -> dict[str, Any]:
     sha256 = None
     if prepared.configuration.metadata.load is not None:
         if (prepared.metadata_source is None
@@ -134,6 +135,11 @@ def _preparation_manifest(prepared: PreparedExperiment) -> dict[str, Any]:
             raise ValueError("Loaded metadata preparation requires its recorded source SHA256")
         sha256 = prepared.metadata_source["sha256"]
     return {"attacks": list(prepared.metadata),
+            "attacks_with_artifacts": [
+                name for name in prepared.configuration.attacks
+                if prepared.artifacts.get(name) is not None
+                and (completed_attacks is None or name in completed_attacks)
+            ],
             "configuration": prepared.configuration.describe_configuration(metadata_sha256=sha256),
             "preparation": prepared.preparation,
             "selections": [item.as_dict() for item in prepared.selections],
@@ -147,7 +153,7 @@ def save_preparation_progress(prepared: PreparedExperiment, directory: str | Pat
     """Checkpoint selection/partition data and the already published attack artifacts."""
     root = Path(directory)
     _save_metadata(prepared, root)
-    manifest = _preparation_manifest(prepared)
+    manifest = _preparation_manifest(prepared, completed_attacks)
     manifest["completed_attacks"] = list(completed_attacks)
     _write_json(root / "preparation-progress.json", manifest)
     return root
@@ -155,9 +161,10 @@ def save_preparation_progress(prepared: PreparedExperiment, directory: str | Pat
 
 def save_completed_artifact(prepared: PreparedExperiment, name: str, directory: str | Path,
                             completed_attacks: Sequence[str]) -> Path:
-    """Publish one completed offline artifact before advancing the preparation checkpoint."""
+    """Publish completed offline output before advancing the preparation checkpoint."""
     root = Path(directory)
-    prepared.configuration.attacks[name].save_artifacts(prepared.artifacts[name], artifact_directory(root, name))
+    if prepared.artifacts[name] is not None:
+        prepared.configuration.attacks[name].save_artifacts(prepared.artifacts[name], artifact_directory(root, name))
     prepared.offline_reports.get(name, OfflineReport(None)).save(offline_report_directory(root, name))
     save_preparation_progress(prepared, root, completed_attacks)
     from .html_report import write_offline_html
@@ -171,7 +178,8 @@ def save_prepared(prepared: PreparedExperiment, directory: str | Path) -> Path:
     root = Path(directory)
     _save_metadata(prepared, root)
     for name, attack in prepared.configuration.attacks.items():
-        attack.save_artifacts(prepared.artifacts[name], artifact_directory(root, name))
+        if prepared.artifacts[name] is not None:
+            attack.save_artifacts(prepared.artifacts[name], artifact_directory(root, name))
         prepared.offline_reports.get(name, OfflineReport(None)).save(offline_report_directory(root, name))
     _write_json(root / "prepared.json", _preparation_manifest(prepared))
     from .html_report import write_offline_html
@@ -352,14 +360,22 @@ def _load_offline_reports(names: Sequence[str], root: Path) -> dict[str, Offline
     return {name: OfflineReport.load(offline_report_directory(root, name)) for name in names}
 
 
+def _load_artifacts(configuration: ExperimentConfiguration, manifest: Mapping[str, Any],
+                    root: Path, names: Sequence[str]) -> dict[str, Any]:
+    # Older preparation outputs saved artifacts for every completed attack.
+    with_artifacts = manifest.get("attacks_with_artifacts", names)
+    return {name: configuration.attacks[name].load_artifacts(artifact_directory(root, name))
+            if name in with_artifacts else None for name in names}
+
+
 def load_prepared(configuration: ExperimentConfiguration,
                   directory: str | Path) -> PreparedExperiment:
-    """Validate execution inputs and load all artifacts; never return a partially usable object."""
+    """Validate execution inputs and load saved artifacts before returning a usable preparation."""
     saved = _load_metadata(configuration, directory, validate_dataset=True)
     assert saved.preparation is not None  # execution loading requires the record
     root = Path(directory)
-    artifacts = {name: attack.load_artifacts(artifact_directory(root, name))
-                 for name, attack in configuration.attacks.items()}
+    manifest = json.loads((root / "prepared.json").read_text())
+    artifacts = _load_artifacts(configuration, manifest, root, tuple(configuration.attacks))
     return PreparedExperiment(configuration, saved.metadata, artifacts, saved.selections,
                               preparation=saved.preparation, units=saved.units, deployment=saved.deployment,
                               offline_reports=_load_offline_reports(tuple(configuration.attacks), root),
@@ -376,8 +392,7 @@ def load_preparation_progress(configuration: ExperimentConfiguration,
     completed = tuple(manifest["completed_attacks"])
     if len(set(completed)) != len(completed) or any(name not in configuration.attacks for name in completed):
         raise ValueError("Preparation progress has invalid completed attack names")
-    artifacts = {name: configuration.attacks[name].load_artifacts(artifact_directory(root, name))
-                 for name in completed}
+    artifacts = _load_artifacts(configuration, manifest, root, completed)
     return (PreparedExperiment(configuration, saved.metadata, artifacts, saved.selections,
                                preparation=saved.preparation, units=saved.units, deployment=saved.deployment,
                                offline_reports=_load_offline_reports(completed, root),
@@ -429,7 +444,7 @@ def load_result(directory: str | Path, configuration: ExperimentConfiguration) -
         try:
             if not path.resolve().is_relative_to(destination.resolve()):
                 raise ValueError(f"Run manifest escapes the run output directory: {path}")
-            log = RunLog.read(path)
+            log = RunLog.read(path, load_sensor_data=False)
             data = log.metadata
             if any(type(data.get(key)) is not type(value) or data.get(key) != value
                    for key, value in description.items()):

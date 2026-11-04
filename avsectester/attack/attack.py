@@ -127,6 +127,7 @@ class Attack(ABC):
 
         Override together with ``load_artifacts`` for another storage format. The default
         format is intended for artifacts produced by trusted attack implementations.
+        The framework calls this method only for artifacts that are not None.
         """
         destination = Path(directory)
         destination.mkdir(parents=True, exist_ok=True)
@@ -136,7 +137,10 @@ class Attack(ABC):
             json.dumps({"format": "pickle"}) + "\n", encoding="utf-8")
 
     def load_artifacts(self, directory: str | Path) -> Any:
-        """Return saved artifacts without changing this attack's configuration or state."""
+        """Return saved artifacts without changing this attack's configuration or state.
+
+        The framework calls this method only for attacks whose preparation saved artifacts.
+        """
         source = Path(directory)
         manifest = json.loads((source / "manifest.json").read_text(encoding="utf-8"))
         if manifest.get("format") != "pickle":

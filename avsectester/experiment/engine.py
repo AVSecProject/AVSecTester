@@ -547,7 +547,8 @@ class _Execution:
                 request = RunRequest(
                     group.decision_steps, hooks=treatment.hooks,
                     attacks=(treatment.attack_runtime,) if treatment.attack_runtime is not None else (),
-                    recording=config.runs.recording, output_path=destination, metadata=metadata,
+                    recording=config.runs.recording, output_path=destination,
+                    retain_sensor_data=destination is None, metadata=metadata,
                     start=deepcopy(start), initialization=deepcopy(initialization),
                     deployment=deployment, environment=metadata["environment"],
                 )
@@ -577,7 +578,7 @@ class _Execution:
             if self.resume and destination is not None and (destination.exists() or destination.is_symlink()):
                 retained = None
                 try:
-                    log = RunLog.read(destination)
+                    log = RunLog.read(destination, load_sensor_data=False)
                     expected, _ = self._description(group, specification, self.deployment)
                     if log.status == "completed" and all(
                         key in log.metadata and recorded_data_equal(log.metadata[key], value)

@@ -370,7 +370,12 @@ def test_rendered_probe_occlusion(nurec_dataset, tmp_path, monkeypatch, make_obj
         assets = {f"/server/assets/{path.name}": path for path in tmp_path.glob("avsectester_asset_*.ply")}
         for track in edits[-1].insert:
             assert track.asset_id in assets
-            assert assets[track.asset_id].read_bytes().startswith(b"ply\n")
+            blob = assets[track.asset_id].read_bytes()
+            assert blob.startswith(b"ply\n")
+            rows = np.frombuffer(blob.split(b"end_header\n", 1)[1], "<f4").reshape(-1, 14)
+            assert len(rows) == 40000
+            np.testing.assert_allclose(np.exp(rows[:, 7:10]) * max(asset.extent),
+                                       np.tile([.001, .009, .009], (len(rows), 1)), rtol=1e-6)
         uploads = len(edits)
         runtime.step(Control())
         assert len([request for request in boundary.requests if hasattr(request, "insert")]) == uploads

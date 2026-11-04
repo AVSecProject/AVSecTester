@@ -509,12 +509,12 @@ class NuRecRenderer(Renderer):
 
         Each object has two opaque Gaussian probes, white and black, under track IDs derived from
         their content and object ID, so distinct objects can share an asset without sharing tracks.
+        Probe lateral sizes are nine tenths of their grid-cell dimensions.
         Probes are inserted when the server reports them missing, on first use or after the server
         drops the scene's edits because it reloaded the scene or an edit failed.
-        Both probes are rendered with ``dynamic_objects`` at this capture, as maximum-quality JPEG:
-        server-side PNG encoding is about fifteen times slower, and the resulting visibility
-        differs only in single edge pixels. A pixel is visible when the white render exceeds the
-        black one by at least half the color range.
+        Both probes are rendered with ``dynamic_objects`` at this capture, as maximum-quality JPEG.
+        A pixel is visible when the white render exceeds the black one by at least half the
+        color range.
         Rejects probe pixels outside the objects' projected boxes, which indicate an asset scale
         or axis convention that differs from the measured NRE behavior.
         ``occlusion_tolerance_m`` moves each probe that distance toward the camera, along the ray
@@ -584,7 +584,10 @@ class NuRecRenderer(Renderer):
 
         from avsectester.rendering.meshes import MeshAsset
 
-        from .gaussian_assets import gaussian_asset, mesh_gaussian_asset, probe_asset
+        from .gaussian_assets import (
+            SCENE_GRID_SPACING_M, SCENE_LATERAL_SCALE,
+            gaussian_asset, mesh_gaussian_asset, probe_asset,
+        )
 
         key = (id(asset), kind, color)
         if key not in self._assets:
@@ -596,12 +599,14 @@ class NuRecRenderer(Renderer):
             elif isinstance(asset, MeshAsset):
                 source = "texture" if color == "texture" else _UNIFORM_COLORS[color]
                 gaussian = mesh_gaussian_asset(
-                    asset, source, spacing_m=.005, lateral_scale=1.,
+                    asset, source, spacing_m=SCENE_GRID_SPACING_M,
+                    lateral_scale=SCENE_LATERAL_SCALE,
                     track_padding_m=self.track_padding_m)
             else:
                 sources = (tuple(surface.texture for surface in asset.surfaces) if color == "texture"
                            else (_UNIFORM_COLORS[color],) * len(asset.surfaces))
-                gaussian = gaussian_asset(asset, sources, spacing_m=.005, lateral_scale=1.,
+                gaussian = gaussian_asset(asset, sources, spacing_m=SCENE_GRID_SPACING_M,
+                                          lateral_scale=SCENE_LATERAL_SCALE,
                                           track_padding_m=self.track_padding_m)
             digest = hashlib.sha256(gaussian.ply)
             ply_digest = digest.hexdigest()
@@ -636,7 +641,8 @@ class NuRecRenderer(Renderer):
     ) -> tuple[tuple[str, np.ndarray], ...]:
         """Register textured scene assets and return their requested world-pose track entries.
 
-        Scene assets use a 5 mm grid and lateral Gaussian sizes equal to the grid spacing.
+        Scene assets use a five-millimeter grid. Planar Gaussian lateral sizes are twice the
+        grid-cell dimensions. Mesh Gaussian lateral sizes are twice the requested grid spacing.
         Stored tracks remain underground. Requests place the current objects at their real poses.
         Each object reuses its track when moved. Only texture changes accumulate tracks until
         the NRE process restarts. Edits are retained rather than using

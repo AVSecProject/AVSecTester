@@ -444,7 +444,8 @@ Severity is in [0, 1] and defaults to 0.5. `ColorTemp` also accepts
 
 Empty `sensor_ids` retains no image payloads. State, commands, actions, outputs, available
 components and detections are recorded every decision. Reevaluation cannot recover omitted
-sensor payloads.
+sensor payloads. With an output directory, recorded sensor payloads stay on disk. Logs in
+experiment results then have empty observation `sensor_data`, and `RunLog.read(path)` loads it.
 
 ```yaml
 runs:

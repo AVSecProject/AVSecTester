@@ -317,6 +317,7 @@ action. [Optimization tools](optimization.md) explains the differentiable compos
 
 Return artifacts explicitly from `run_offline`. Pass them to each runtime. Override
 `save_artifacts` and `load_artifacts` together when a custom storage format is needed.
+Returning `None` creates no artifact files, and the runtime receives `None` after loading.
 Persistence must not change the attack's configured inputs. See the
 [Attack API](../reference/python-api.md#avsectesterattackattack) for the storage contract.
 

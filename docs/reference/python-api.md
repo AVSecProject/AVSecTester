@@ -1159,15 +1159,19 @@ tuple.
 ### avsectester.closed_loop.avstacks.implemented.modules
 
 <!-- api:begin module=avsectester.closed_loop.avstacks.implemented.modules -->
-Detect and range signs, track bearings with an EKF, then cruise and brake to stops.
+Camera detection, sign and LiDAR vehicle ranging, tracking and rule-based control.
 
 | Name and signature | Meaning |
 |---|---|
 | `RuleBasedAVStack` | [RuleBasedAVStack](#avsectesterclosed_loopavstacksimplementedmodulesstack) |
 | `YOLOXDetector` | [YOLOXDetector](#avsectesterclosed_loopavstacksimplementedmodulesdetector) |
-| `StopSignPlanner` | [StopSignPlanner](#avsectesterclosed_loopavstacksimplementedmodulesplanner) |
+| `RuleBasedPlanner` | [RuleBasedPlanner](#avsectesterclosed_loopavstacksimplementedmodulesplanner) |
 | `StopSignTracker` | [StopSignTracker](#avsectesterclosed_loopavstacksimplementedmodulestracker) |
 | `SignTrack` | [SignTrack](#avsectesterclosed_loopavstacksimplementedmodulestracker) |
+| `VehicleTrack` | [VehicleTrack](#avsectesterclosed_loopavstacksimplementedmodulestracker) |
+| `VehicleTracker` | [VehicleTracker](#avsectesterclosed_loopavstacksimplementedmodulestracker) |
+| `estimate_vehicle_face_points` | [estimate_vehicle_face_points](#avsectesterclosed_loopavstacksimplementedmodulesranging) |
+| `estimate_stop_sign_position` | [estimate_stop_sign_position](#avsectesterclosed_loopavstacksimplementedmodulesranging) |
 | `rule_based_driving_adapter` | [rule_based_driving_adapter](#avsectesterclosed_loopavstacksimplementedmodulesstack) |
 <!-- api:end -->
 
@@ -1183,7 +1187,7 @@ General COCO object detection and differentiable confidence scoring with YOLOX.
 | Name and signature | Meaning |
 |---|---|
 | `YOLOXDetector(weights_path: str \| Path, model_name: str = "yolox-m", input_size: int = 1280, score_threshold: float = .5, nms_iou: float = .45, device: str = "cuda:0", model: Any = None)` | Detect COCO objects and score labeled target boxes using a local YOLOX checkpoint. |
-| `YOLOXDetector.detect(rgb: np.ndarray) -> list[tuple[np.ndarray, float, str]]` | Return original-image xyxy boxes, confidences and COCO labels after classwise NMS. |
+| `YOLOXDetector.detect(rgb: np.ndarray, score_threshold: float \| None = None) -> list[tuple[np.ndarray, float, str]]` | Return original-image xyxy boxes, confidences and COCO labels after classwise NMS. |
 | `YOLOXDetector.target_scores(images: torch.Tensor, targets: Sequence[TargetSpec]) -> torch.Tensor` | Return one differentiable pre-NMS confidence per BCHW image and target. |
 | `YOLOXDetector.close() -> None` | Release the model. A closed detector cannot detect or score again. |
 <!-- api:end -->
@@ -1199,6 +1203,9 @@ Invalid inputs or mismatched batch lengths raise `ValueError`. Model outputs oth
 (B, N, 85) raise `ValueError`.
 Calling either method after `close` raises `RuntimeError`.
 
+`detect` accepts an optional per-call `score_threshold` in [0, 1]. `None` uses the configured
+threshold. An override leaves the configured threshold and scorer's decision threshold unchanged.
+
 Images are reduced to at most `input_size` on the longest side, without upscaling, then
 converted to BGR × 255 and padded on the right and bottom with 114 to multiples of 32.
 Deployment uses class-wise NMS. Differentiable scores use the target class before NMS, selecting
@@ -1212,25 +1219,28 @@ an input-connected zero.
 ### avsectester.closed_loop.avstacks.implemented.modules.planner
 
 <!-- api:begin module=avsectester.closed_loop.avstacks.implemented.modules.planner -->
-Route-following cruise and constant-deceleration stops at tracked signs.
+Route-following cruise, tracked-sign stops and optional vehicle following.
 
 | Name and signature | Meaning |
 |---|---|
-| `StopSignPlanner(stop_before_sign_m: float = 5.5, stop_duration_s: float = 2., stop_speed_mps: float = .1, stop_position_tolerance_m: float = 2., sign_lookahead_m: float = 60., max_sign_lateral_offset_m: float = 10., cruise_speed_mps: float \| None = None, min_cruise_speed_mps: float = 5., max_acceleration_mps2: float = 1., comfortable_deceleration_mps2: float = 3., max_deceleration_mps2: float = 6., acceleration_exponent: float = 4., trajectory_horizon_s: float = 5., trajectory_step_s: float = .1)` | Plan rig-frame trajectories from bearing-EKF sign tracks. |
-| `StopSignPlanner.component_log: Mapping[str, Any]` | State, target track ID, target distance and acceleration/speed at the first planned step. |
-| `StopSignPlanner.reset(observation: Observation) -> None` | Forget served track IDs and initialize cruise speed from the observation. |
-| `StopSignPlanner.step(observation: Observation, tracks: Sequence[SignTrack]) -> Control` | Use horizontal world tracks to return an absolute-time rig-frame plan. |
+| `RuleBasedPlanner(stop_before_sign_m: float = 5.5, stop_duration_s: float = 2., stop_speed_mps: float = .1, stop_position_tolerance_m: float = 2., sign_lookahead_m: float = 60., max_sign_lateral_offset_m: float = 10., cruise_speed_mps: float \| None = None, min_cruise_speed_mps: float = 5., max_acceleration_mps2: float = 1., comfortable_deceleration_mps2: float = 3., max_deceleration_mps2: float = 6., acceleration_exponent: float = 4., trajectory_horizon_s: float = 5., trajectory_step_s: float = .1, vehicle_lookahead_m: float = 60., ego_half_width_m: float = 1., lateral_margin_m: float = .3, min_gap_m: float = 2., time_headway_s: float = 1.5, ego_front_offset_m: float = 3.7)` | Plan rig-frame trajectories from stop-sign and optional vehicle tracks. |
+| `RuleBasedPlanner.component_log: Mapping[str, Any]` | Sign state, lead vehicle and acceleration/speed at the first planned step. |
+| `RuleBasedPlanner.reset(observation: Observation) -> None` | Forget served track IDs and initialize cruise speed from the observation. |
+| `RuleBasedPlanner.step(observation: Observation, sign_tracks: Sequence[SignTrack], vehicle_tracks: Sequence[VehicleTrack] = ()) -> Control` | Use horizontal world tracks to return an absolute-time rig-frame plan. |
 <!-- api:end -->
 
 #### Constraints and errors
 
-`StopSignPlanner` raises `ValueError` for a negative `stop_before_sign_m`, `stop_duration_s`,
-`stop_speed_mps` or `stop_position_tolerance_m`, any other numeric parameter that is not positive,
+`RuleBasedPlanner` raises `ValueError` for a negative `stop_before_sign_m`, `stop_duration_s`,
+`stop_speed_mps`, `stop_position_tolerance_m`, `min_gap_m`, `time_headway_s` or
+`ego_front_offset_m`, a negative `lateral_margin_m`, any other supplied numeric parameter
+that is not positive,
 `trajectory_horizon_s < trajectory_step_s`, or a step that rounds to zero microseconds. Reset and
-steps raise `ValueError` for a negative ego speed, a non-finite or decreasing time, a
+steps reject a negative ego speed or non-finite time. Steps also reject decreasing time,
 `vehicle_state` without finite x, y and yaw, a route without two finite points and nonzero
-horizontal length, or a track position without two finite world coordinates. Stepping before
-reset raises `RuntimeError`.
+horizontal length, or track positions without two finite world coordinates. Vehicle velocities
+also require two finite world coordinates. Vehicle `half_width_m` must be finite and
+nonnegative. Stepping before reset raises `RuntimeError`.
 
 | Parameter | Meaning |
 |---|---|
@@ -1243,11 +1253,17 @@ reset raises `RuntimeError`.
 | `cruise_speed_mps` | Fixed cruise reference, derived at reset when `None` |
 | `min_cruise_speed_mps` | Lower bound for the cruise reference derived at reset |
 | `max_acceleration_mps2` | Upper acceleration bound and free-road acceleration scale |
-| `comfortable_deceleration_mps2` | Required-deceleration threshold that latches braking |
+| `comfortable_deceleration_mps2` | Sign-braking latch threshold and IDM comfort deceleration |
 | `max_deceleration_mps2` | Maximum braking magnitude, including late detections |
 | `acceleration_exponent` | Exponent of the cruise-speed ratio |
 | `trajectory_horizon_s` | Duration of the forecast trajectory |
 | `trajectory_step_s` | Forecast integration and waypoint interval |
+| `vehicle_lookahead_m` | Farthest vehicle projection considered ahead along the route |
+| `ego_half_width_m` | Half of ego's width in the route corridor |
+| `lateral_margin_m` | Additional corridor width on each side |
+| `min_gap_m` | Desired stationary following gap, without a hard clearance guarantee |
+| `time_headway_s` | Desired following time headway |
+| `ego_front_offset_m` | Distance from the rig origin to ego's front |
 
 #### See also
 
@@ -1256,10 +1272,11 @@ reset raises `RuntimeError`.
 ### avsectester.closed_loop.avstacks.implemented.modules.ranging
 
 <!-- api:begin module=avsectester.closed_loop.avstacks.implemented.modules.ranging -->
-Monocular stop-sign position from calibrated angular height.
+Known-height stop-sign ranging and camera-guided LiDAR vehicle-face ranging.
 
 | Name and signature | Meaning |
 |---|---|
+| `estimate_vehicle_face_points(box_xyxy: tuple[float, float, float, float] \| np.ndarray, calibration: CameraCalibration, rig_points: np.ndarray) -> np.ndarray` | Estimate left, center and right vehicle-face points from box-selected LiDAR returns. |
 | `estimate_stop_sign_position(box_xyxy: tuple[float, float, float, float] \| np.ndarray, calibration: CameraCalibration, sign_height_m: float = .762) -> np.ndarray` | Estimate the sign center in rig meters from its angular image height. |
 <!-- api:end -->
 
@@ -1271,6 +1288,13 @@ box-bottom rays. It raises `TypeError` for a calibration that is not `CameraCali
 unprojected rays, a box angle that is zero or at least π, or an invalid rigid calibration
 transform.
 
+`estimate_vehicle_face_points` accepts finite rig-coordinate LiDAR points with shape `(N, 3)`
+and returns left, center and right visible-face points with shape `(3, 3)` in rig meters.
+All three output z coordinates are zero. It raises `TypeError` for a calibration other than
+`CameraCalibration`, and `ValueError` for invalid points, boxes or rigid transforms, or fewer
+than five points in either the image region or nearest cluster. The sampling and percentile
+rules are described in [Driving systems](../guides/driving-systems.md#optional-vehicle-following).
+
 #### See also
 
 [Driving systems](../guides/driving-systems.md).
@@ -1278,27 +1302,33 @@ transform.
 ### avsectester.closed_loop.avstacks.implemented.modules.stack
 
 <!-- api:begin module=avsectester.closed_loop.avstacks.implemented.modules.stack -->
-Detect signs, range by known size, track bearings and plan route-following stops.
+Detect and track stop signs and optional lead vehicles for route-following control.
 
 | Name and signature | Meaning |
 |---|---|
-| `RuleBasedAVStack(detector: YOLOXDetector, tracker: StopSignTracker \| None = None, planner: StopSignPlanner \| None = None, camera_id: str = DEFAULT_CAMERA_ID, sign_height_m: float = .762)` | Subclass of `AVStack`. Follow the route and stop for signs using calibrated camera observations. |
+| `RuleBasedAVStack(detector: YOLOXDetector, tracker: StopSignTracker \| None = None, planner: RuleBasedPlanner \| None = None, camera_id: str = DEFAULT_CAMERA_ID, sign_height_m: float = .762, *, vehicle_tracker: VehicleTracker \| None = None, vehicle_labels: Sequence[str] = ("car", "truck", "bus"), lidar_id: str = DEFAULT_LIDAR_ID)` | Subclass of `AVStack`. Follow the route, stop for signs and optionally follow camera-detected vehicles. |
 | `RuleBasedAVStack.command_modes = frozenset({"trajectory"})` | Possible output command representations, or None for an undeclared driving system. |
 | `RuleBasedAVStack.provides_detections = False` | Whether decisions expose detections compatible with detection metrics. |
-| `RuleBasedAVStack.reset(observation: Observation, past: Sequence[Observation] = ()) -> None` | Clear tracks and the stop state machine for a fresh run. |
-| `RuleBasedAVStack.__call__(observation: Observation) -> Control` | Detect, range and track stop signs, then return the planner's rig-frame trajectory. |
-| `RuleBasedAVStack.component_log() -> Mapping[str, Any] \| None` | Return detections, ranges, world tracks and current planner outputs. |
+| `RuleBasedAVStack.reset(observation: Observation, past: Sequence[Observation] = ()) -> None` | Clear sign and vehicle tracks and reset planning for a fresh run. |
+| `RuleBasedAVStack.__call__(observation: Observation) -> Control` | Range and track selected detections, then return a rig-frame driving trajectory. |
+| `RuleBasedAVStack.component_log() -> Mapping[str, Any] \| None` | Return sign and vehicle detections, range estimates, tracks and planner outputs. |
 | `RuleBasedAVStack.close() -> None` | Release the detection model and clear recorded decision outputs. |
 | `rule_based_driving_adapter(factory: Callable[[int], AVStack]) -> DrivingAdapter` | Bind the configured rule driver's differentiable detection-confidence scorer. |
 <!-- api:end -->
 
 #### Constraints and errors
 
-Invalid detector, tracker or planner types raise `TypeError`. Omitted tracker and planner
-construct their defaults. An empty `camera_id` or nonpositive `sign_height_m` raises
-`ValueError`. Decisions raise `ValueError` when the selected camera has no `CameraCalibration`
-or RGB image, and `RuntimeError` after `close`. `rule_based_driving_adapter` raises `ValueError`
-when the factory has no `avstack_options` with a `YOLOXDetector` detector.
+Invalid detector, sign tracker, vehicle tracker or planner types raise `TypeError`. Omitted
+sign tracker and planner construct their defaults. `vehicle_tracker=None` disables vehicle
+following. `vehicle_labels` must be a sequence of nonempty class names. Invalid labels, an
+empty `camera_id` or `lidar_id`, or a nonpositive `sign_height_m` raise `ValueError`. Decisions raise
+`ValueError` when the selected camera has no `CameraCalibration` or RGB image, and `RuntimeError`
+after `close`. With vehicle following enabled, both reset and decisions require the selected
+LiDAR's `LidarCalibration`, and decisions require a `PointCloud`. Missing inputs raise
+`ValueError` naming the LiDAR. Invalid LiDAR transforms or point arrays also raise `ValueError`.
+Vehicle detections without enough selected LiDAR points are skipped and counted.
+`rule_based_driving_adapter` raises `ValueError` when the factory has no `avstack_options` with
+a `YOLOXDetector` detector.
 
 #### See also
 
@@ -1307,7 +1337,7 @@ when the factory has no `avstack_options` with a `YOLOXDetector` detector.
 ### avsectester.closed_loop.avstacks.implemented.modules.tracker
 
 <!-- api:begin module=avsectester.closed_loop.avstacks.implemented.modules.tracker -->
-Static stop-sign tracking from known-size ranges and bearing EKF updates.
+Static sign tracks and scored visible-face vehicle tracking in horizontal world coordinates.
 
 | Name and signature | Meaning |
 |---|---|
@@ -1316,7 +1346,29 @@ Static stop-sign tracking from known-size ranges and bearing EKF updates.
 | `StopSignTracker.reset() -> None` | Forget all signs and restart track IDs at zero. |
 | `StopSignTracker.tracks: tuple[SignTrack, ...]` | Return detached snapshots of the horizontal world tracks. |
 | `StopSignTracker.update(vehicle_state: PlanarEgoState, camera_position_rig: np.ndarray, sign_positions_rig: Sequence[np.ndarray]) -> None` | Associate rig-frame measurements and update matched tracks by bearing. |
+| `VehicleTrack(track_id: int, position: np.ndarray, velocity: np.ndarray, half_width_m: float, hits: int = 1)` | A horizontal world vehicle state and the width of its observed visible face. |
+| `VehicleTracker(acceleration_noise_mps2: float = 2., min_measurement_noise_m: float = .3, measurement_noise_fraction: float = .05, initial_velocity_sigma_mps: float = 5., association_gate_chi2: float = 9.21, min_hits: int = 2, max_missed_updates: int = 10, high_score_threshold: float = .5, low_score_threshold: float = .1)` | Track scored visible faces with a constant-velocity Kalman filter in world x/y. |
+| `VehicleTracker.reset() -> None` | Forget all vehicles and timestamps, restarting track IDs at zero. |
+| `VehicleTracker.tracks: tuple[VehicleTrack, ...]` | Detached confirmed snapshots associated in the latest update, excluding lost tracks. |
+| `VehicleTracker.update(vehicle_state: PlanarEgoState, t: float, face_points_rig: Sequence[np.ndarray], scores: Sequence[float]) -> None` | Predict and associate scored left/center/right visible-face points at timestamp t. |
 <!-- api:end -->
+
+#### Constraints and errors
+
+`VehicleTracker` requires positive `acceleration_noise_mps2`, `min_measurement_noise_m`,
+`initial_velocity_sigma_mps` and `association_gate_chi2`, nonnegative
+`measurement_noise_fraction`, positive integer `max_missed_updates` and `min_hits`, and
+`0 <= low_score_threshold <= high_score_threshold <= 1`. Invalid settings raise `ValueError`.
+`update` requires finite, nondecreasing time, finite ego x/y/yaw and finite rig face
+measurements with shape `(3, 3)`. Each measurement needs a finite score in [0, 1], with
+matching array length. Invalid inputs raise `ValueError` without updating tracks. IDs are not
+reused before `reset`, which also clears timestamps.
+
+`VehicleTrack.position` and `velocity` hold world XY arrays with shape `(2,)`. The `tracks`
+property returns detached snapshots, so editing returned arrays does not modify the tracker.
+`half_width_m` is half the latest measured left-to-right horizontal span, and `hits` counts
+associated measurements. The filter model and association are described in
+[Driving systems](../guides/driving-systems.md#optional-vehicle-following).
 
 #### See also
 
@@ -2518,8 +2570,8 @@ Independent run snapshots and incremental Parquet persistence.
 | `StepRecord(step: int, raw_observation: Any = None, model_observation: Any = None, physical_pre: Any = None, physical_post: Any = None, produced_command: Any = None, executed_command: Any = None, components: dict[str, Any] = dict(), detections: Sequence[Detection] \| None = None, sensor_geometry: Mapping[str, SensorGeometry] = dict(), object_visibility: Mapping[str, Mapping[str, ObjectVisibility]] = dict(), actions: list[Any] = list(), outputs: list[Any] = list(), telemetry: dict[str, Any] = dict())` | One decision, with independently captured physical and model-visible data. |
 | `EventRecord(kind: str, step: int \| None = None, data: dict[str, Any] = dict())` | An initialization, termination or other non-step event. |
 | `RunLog(metadata: dict[str, Any] = dict(), steps: list[StepRecord] = list(), events: list[EventRecord] = list(), status: str = "incomplete", path: Path \| None = None)` | Captured records, optionally backed by an incrementally written directory. |
-| `RunLog.read(path: str \| Path, *, registry: SerializationRegistry = DEFAULT_REGISTRY, load_payloads: bool = True) -> RunLog` | Read completed parts, including those left by an interrupted writer. |
-| `Recorder(path: str \| Path \| None = None, *, metadata: dict[str, Any] \| None = None, registry: SerializationRegistry = DEFAULT_REGISTRY, chunk_steps: int = 128, chunk_bytes: int = 8 * 1024 * 1024, payload_shard_bytes: int = 64 * 1024 * 1024, retain_steps: bool = True)` | Context manager. Capture a run in memory and optionally stream it to Parquet. |
+| `RunLog.read(path: str \| Path, *, registry: SerializationRegistry = DEFAULT_REGISTRY, load_payloads: bool = True, load_sensor_data: bool = True) -> RunLog` | Read completed parts, including those left by an interrupted writer. |
+| `Recorder(path: str \| Path \| None = None, *, metadata: dict[str, Any] \| None = None, registry: SerializationRegistry = DEFAULT_REGISTRY, chunk_steps: int = 128, chunk_bytes: int = 8 * 1024 * 1024, payload_shard_bytes: int = 64 * 1024 * 1024, retain_steps: bool = True, retain_sensor_data: bool = True)` | Context manager. Capture a run in memory and optionally stream it to Parquet. |
 | `Recorder.snapshot(value: Any) -> Any` | Copy mutable data now. Tensors are detached without importing torch. |
 | `Recorder.record_step(record: StepRecord) -> StepRecord` | Append a decision record and flush a complete row group when due. |
 | `Recorder.record_event(kind: str, *, step: int \| None = None, **data: Any) -> EventRecord` | Append a timestamped runtime event to the recording. |
@@ -2571,7 +2623,7 @@ One closed-loop scheduler with independent RunLog captures.
 |---|---|
 | `RecordingPolicy(sensor_ids: tuple[str, ...] = (), representations: tuple[str, ...] = ("model_input",), every_n_steps: int = 1)` | Choose sensor payloads without sampling commands or physical state. |
 | `RecordingPolicy.observation(value: Observation, step: int, representation: str) -> Observation` | Apply the sensor recording policy while preserving observation metadata. |
-| `RunRequest(decision_steps: int, hooks: HookSet \| None = None, attacks: Sequence[Any] = (), recording: RecordingPolicy = RecordingPolicy(), output_path: str \| Path \| None = None, retain_steps: bool = True, metadata: Mapping[str, Any] = dict(), start: Any = None, initialization: Any = None, deployment: Any = None, environment: Mapping[str, Any] = dict(), terminate_when: Callable[[StepRecord], bool] \| None = None)` | One caller-owned simulator/driving-system run, independent of experiment orchestration. |
+| `RunRequest(decision_steps: int, hooks: HookSet \| None = None, attacks: Sequence[Any] = (), recording: RecordingPolicy = RecordingPolicy(), output_path: str \| Path \| None = None, retain_steps: bool = True, retain_sensor_data: bool = True, metadata: Mapping[str, Any] = dict(), start: Any = None, initialization: Any = None, deployment: Any = None, environment: Mapping[str, Any] = dict(), terminate_when: Callable[[StepRecord], bool] \| None = None)` | One caller-owned simulator/driving-system run, independent of experiment orchestration. |
 | `ClosedLoopRunner()` | Schedule one driving loop. Never close caller-owned simulator/driving objects. |
 | `ClosedLoopRunner.run(simulator_runtime: SimulatorRuntime, avstack: AVStack, request: RunRequest, *, recorder: Recorder \| None = None, release_owned_resources: Callable[[], None] \| None = None) -> RunLog` | Execute the requested treatment, record its decisions and close all run resources. |
 <!-- api:end -->
@@ -3110,11 +3162,11 @@ Insert a user-supplied vehicle mesh along the recorded ego trajectory.
 ### avsectester.implemented_attacks.vehicle_insertion_attack.attack
 
 <!-- api:begin module=avsectester.implemented_attacks.vehicle_insertion_attack.attack -->
-Configure recorded-trajectory placement and world insertion of a vehicle mesh.
+Configure navigation-route placement and world insertion of a vehicle mesh.
 
 | Name and signature | Meaning |
 |---|---|
-| `VehicleInsertionAttack(asset: MeshAsset, *, distance_m: float = 25.0, lateral_offset_m: float = 0.0, decision_steps: int = 20, max_segments: int \| None = None, harmonizer: Harmonizer \| None = None)` | Subclass of `Attack`. Place a vehicle mesh ahead on the recorded ego path and keep it fixed in the world. |
+| `VehicleInsertionAttack(asset: MeshAsset, *, distance_m: float = 25.0, time_ahead_s: float = 4.0, lateral_offset_m: float = 0.0, decision_steps: int = 20, max_segments: int \| None = None, harmonizer: Harmonizer \| None = None)` | Subclass of `Attack`. Place a vehicle mesh ahead on ego's navigation route and keep it fixed in the world. |
 | `VehicleInsertionAttack.validate_segment(segment: AttackSegment) -> None` | Require a rigid world-from-object pose in selected or loaded segment data. |
 <!-- api:end -->
 

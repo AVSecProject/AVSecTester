@@ -21,6 +21,10 @@ TRACK_FROM_PLY = np.array([[1., 0., 0.], [0., 0., -1.], [0., 1., 0.]])
 _SH_ZERO = 0.28209479177387814
 _OPAQUE_LOGIT = 8.0
 _THICKNESS_M = 0.001
+SCENE_GRID_SPACING_M = 0.005
+SCENE_LATERAL_SCALE = 2.0
+PROBE_GRID_SPACING_M = 0.01
+PROBE_LATERAL_SCALE = 0.9
 _PLY_PROPERTIES = ("x", "y", "z", "f_dc_0", "f_dc_1", "f_dc_2", "opacity",
                    "scale_0", "scale_1", "scale_2", "rot_0", "rot_1", "rot_2", "rot_3")
 
@@ -101,10 +105,12 @@ def gaussian_asset(
 
 
 def probe_asset(asset: ObjectAsset, rgb: tuple[float, float, float], *,
-                track_padding_m: tuple[float, float, float], spacing_m: float = .01) -> GaussianAsset:
-    """Single-color probes on the nearest-count grid at 0.6 times its spacing."""
+                track_padding_m: tuple[float, float, float],
+                spacing_m: float = PROBE_GRID_SPACING_M) -> GaussianAsset:
+    """Single-color probes with lateral sigma equal to nine tenths of the grid-cell size."""
     return gaussian_asset(asset, (rgb,) * len(asset.surfaces), spacing_m=spacing_m,
-                          lateral_scale=.6, track_padding_m=track_padding_m, _probe_grid=True)
+                          lateral_scale=PROBE_LATERAL_SCALE,
+                          track_padding_m=track_padding_m, _probe_grid=True)
 
 
 def _gaussian_rows(points, colors, sigma, axes, extent):
