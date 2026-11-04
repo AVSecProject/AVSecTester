@@ -79,9 +79,8 @@ model (white-box, PGD [[1]](#references)) or with queries only (black-box, NES
 
 ### Record and replay runs
 
-Every run saves the camera input the driving system received, its outputs and the vehicle's
-physical state. Measure, compare, replay and export frames later without running the simulator
-again.
+Every run saves the vehicle's state, the driving system's outputs and the sensor data you choose
+to record. Measure, compare, replay and export frames later without running the simulator again.
 
 [Evaluation](docs/guides/evaluation.md){ .avs-card__link }
 
@@ -140,6 +139,7 @@ docker compose run --rm nurec-experiment run configs/nurec_stop_sign_patch_modul
 
 **Closed-loop simulators:** NuRec [[5]](#references)[[6]](#references) with AlpaSim
 [[7]](#references) · CARLA [[8]](#references)<br>
+**Sensors:** cameras · LiDAR<br>
 **Driving systems:** modular · end-to-end<br>
 [Supported configurations](docs/concepts/architecture.md#supported-configurations)
 
@@ -147,7 +147,7 @@ docker compose run --rm nurec-experiment run configs/nurec_stop_sign_patch_modul
 
 ## Examples
 
-<div class="avs-grid avs-grid--wide" markdown>
+<div class="avs-grid avs-grid--two" markdown>
 
 <div class="avs-card" markdown>
 
@@ -214,6 +214,28 @@ A patch is added to the back of a car in a NuRec drive while Alpamayo drives. Ha
 matches the patch to the lighting of the car.
 
 [Physical patch attack](docs/examples/physical-patch.md){ .avs-card__link }
+
+</div>
+
+<div class="avs-card" markdown>
+
+### Vehicle insertion attack
+
+<div class="avs-pair" markdown>
+<figure markdown>
+![Blue car inserted into the lane ahead on a NuRec road at dusk, seen by the front camera](assets/media/vehicle-insertion-camera.webp)
+<figcaption>Camera</figcaption>
+</figure>
+<figure markdown>
+![The same moment in the LiDAR scan, drawn from the camera's viewpoint, where the inserted car appears as a dense car-shaped cluster of points](assets/media/vehicle-insertion-lidar.webp)
+<figcaption>LiDAR</figcaption>
+</figure>
+</div>
+
+A car is added to a NuRec drive. It appears in both the camera image and the LiDAR scan, so the
+driving system sees the same car with both sensors.
+
+[Vehicle insertion attack](docs/examples/vehicle-insertion.md){ .avs-card__link }
 
 </div>
 

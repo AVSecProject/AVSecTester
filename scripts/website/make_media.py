@@ -16,6 +16,8 @@ Regenerate the media of a run directory, for example:
         --treatment white_rollout_nes --name stop-sign-black-box
     python -m scripts.website.make_media frame OUTPUT --segment 0 --treatment object \\
         --step 19 --crop 990 560 1630 920 --width 640 --name image-insertion
+    python -m scripts.website.make_media lidar OUTPUT --segment 2 --treatment vehicle_insertion \\
+        --step 52 --crop 493 490 1447 1027 --width 640 --name vehicle-insertion-lidar
     python -m scripts.website.make_media stop-line CONFIG --segment 5 \\
         --attacked white_detector_pgd --name stop-line-approach
     python -m scripts.website.make_media still IMAGE --name evaluation-report
@@ -39,6 +41,7 @@ from avsectester.geometry import FThetaCamera, PinholeCamera
 from avsectester.runlog import RunLog, StepRecord
 
 DEFAULT_CAMERA = "camera_front_wide_120fov"
+DEFAULT_LIDAR = "lidar_gt_top_p128"
 DEFAULT_OUTPUT = Path("website/content/assets/media")
 MAX_VIDEO_WIDTH = 1280
 MAX_IMAGE_WIDTH = 1600
@@ -257,6 +260,43 @@ def planned_path_pixels(record: StepRecord, camera: str) -> np.ndarray | None:
     return pixels[np.isfinite(pixels).all(axis=1)]
 
 
+def lidar_view(record: StepRecord, camera: str, lidar: str, *, near: float = 3.0, far: float = 60.0
+               ) -> np.ndarray:
+    """Draw the recorded LiDAR scan from the camera's viewpoint, colored by distance.
+
+    The image has the camera's size, so the same crop selects the same region of both views.
+    Nearer points are drawn last and in warmer colors.
+    """
+    from matplotlib import colormaps
+
+    observation = record.model_observation or record.raw_observation
+    if observation is None or lidar not in observation.sensor_data or camera not in observation.calibration:
+        raise ValueError(f"Step {record.step} has no recorded {lidar!r} scan and {camera!r} calibration")
+    calibration = observation.calibration[camera]
+    lens = _lens(_get(calibration, "camera"))
+    camera_from_lidar = (np.linalg.inv(np.asarray(_get(calibration, "rig_from_camera"), dtype=float))
+                         @ np.asarray(_get(observation.calibration[lidar], "rig_from_lidar"), dtype=float))
+    points = np.asarray(_get(observation.sensor_data[lidar], "points"), dtype=float)
+    optical = points @ camera_from_lidar[:3, :3].T + camera_from_lidar[:3, 3]
+    optical = optical[optical[:, 2] > 0.5]
+    if callable(getattr(lens, "in_view", None)):
+        optical = optical[np.asarray(lens.in_view(optical), dtype=bool)]
+    pixels = np.rint(np.asarray(lens.project(optical), dtype=float))
+    distance = np.linalg.norm(optical, axis=1)
+    order = np.argsort(-distance)
+    pixels, distance = pixels[order], distance[order]
+    colors = colormaps["turbo"](1.0 - np.clip((distance - near) / (far - near), 0.0, 1.0))[:, :3]
+    width, height = int(lens.width), int(lens.height)
+    image = np.empty((height, width, 3), dtype=np.uint8)
+    image[:] = (12, 14, 20)
+    for du in (-1, 0, 1):
+        for dv in (-1, 0, 1):
+            u, v = pixels[:, 0].astype(int) + du, pixels[:, 1].astype(int) + dv
+            keep = (u >= 0) & (u < width) & (v >= 0) & (v < height)
+            image[v[keep], u[keep]] = (colors[keep] * 255).astype(np.uint8)
+    return image
+
+
 def reasoning_of(record: StepRecord) -> str | None:
     policy = _get(record.components, "policy")
     text = _get(policy, "reasoning_text") if policy is not None else None
@@ -345,6 +385,20 @@ def frame(arguments: argparse.Namespace) -> None:
     print(f"{path} (decision {record.step}{crop})")
 
 
+def lidar(arguments: argparse.Namespace) -> None:
+    """One recorded LiDAR scan drawn from the camera's viewpoint, to pair with ``frame``."""
+    log = read_run(arguments.output, arguments.segment, arguments.treatment, arguments.seed)
+    record = next(step for step in log.steps if step.step == arguments.step)
+    image = lidar_view(record, arguments.camera, arguments.lidar)
+    if arguments.crop is not None:
+        left, top, right, bottom = arguments.crop
+        image = image[top:bottom, left:right]
+    path = save_still(resize_width(image, min(arguments.width, image.shape[1])),
+                      Path(arguments.out) / f"{arguments.name}.webp")
+    crop = "" if arguments.crop is None else f", crop {tuple(arguments.crop)}"
+    print(f"{path} (decision {record.step}, LiDAR {arguments.lidar}{crop})")
+
+
 def stop_line(arguments: argparse.Namespace) -> None:
     """Speed against signed distance to the stop line for the clean and attacked runs of one segment."""
     from avsectester.evaluation import signed_stop_line_distances
@@ -430,6 +484,16 @@ def main() -> None:
     command.add_argument("--crop", type=int, nargs=4, metavar=("LEFT", "TOP", "RIGHT", "BOTTOM"),
                          help="Pixel region of the recorded image to keep")
     command.set_defaults(handler=frame)
+
+    command = commands.add_parser("lidar", help=lidar.__doc__)
+    run_arguments(command)
+    command.add_argument("--treatment", required=True)
+    command.add_argument("--step", type=int, required=True)
+    command.add_argument("--lidar", default=DEFAULT_LIDAR)
+    command.add_argument("--width", type=int, default=1280)
+    command.add_argument("--crop", type=int, nargs=4, metavar=("LEFT", "TOP", "RIGHT", "BOTTOM"),
+                         help="Pixel region of the camera-sized view to keep")
+    command.set_defaults(handler=lidar)
 
     command = commands.add_parser("stop-line", help=stop_line.__doc__)
     command.add_argument("configuration", type=Path, help="Experiment configuration of the saved runs")

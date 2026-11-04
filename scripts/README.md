@@ -78,8 +78,8 @@ python -m scripts.website.check_site website/site
 comes from a supplied configuration with the changes listed below. The derived YAML files are
 not tracked.
 
-All runs record the front camera's raw and model-input images at every decision and use a
-separate NRE renderer port or CARLA server port. Videos play at 8 frames per second, slower than
+Unless a row says otherwise, runs record the front camera's raw and model-input images at every
+decision. All runs use a separate NRE renderer port or CARLA server port. Videos play at 8 frames per second, slower than
 the decisions.
 
 | Media | Source configuration and changes | Run (segment, seed, treatments) | Command (`python -m scripts.website.make_media ...`) |
@@ -91,6 +91,8 @@ the decisions.
 | `image-insertion-harmonized` | The same run. Attack `object_harmonized` adds `compositor: PatchCompositor(ExposureHarmonizer(), soften: 0.6)` | 0, 0, `object_harmonized` | `frame OUTPUT --segment 0 --treatment object_harmonized --camera camera-0-0 --step 19 --crop 360 164 760 389 --width 640 --name image-insertion-harmonized` |
 | `physical-patch` | `nurec_patch.yaml` | 0, 0, `patch` | `frame OUTPUT --segment 0 --treatment patch --step 19 --crop 360 610 1000 970 --width 640 --name physical-patch` |
 | `physical-patch-harmonized` | `nurec_patch.yaml`, adds `compositor: PatchCompositor(ExposureHarmonizer(), soften: 0.6)` | 0, 0, `patch` | `frame OUTPUT --segment 0 --treatment patch --step 19 --crop 360 610 1000 970 --width 640 --name physical-patch-harmonized` |
+| `vehicle-insertion-camera` | `nurec_vehicle_insertion_modular_2604.yaml`, 100 decisions, treatment `vehicle_insertion` only, camera and LiDAR model input recorded every 2 decisions | 2 (scene `clipgt-1e5435de-0e4f-4f9c-943b-c44275544715`), 0, `vehicle_insertion` | `frame OUTPUT --segment 2 --treatment vehicle_insertion --step 52 --crop 493 490 1447 1027 --width 640 --name vehicle-insertion-camera` |
+| `vehicle-insertion-lidar` | The same run | 2, 0, `vehicle_insertion` | `lidar OUTPUT --segment 2 --treatment vehicle_insertion --step 52 --crop 493 490 1447 1027 --width 640 --name vehicle-insertion-lidar` |
 | `stop-line-approach` | Runs of `stop-sign-white-box` | Same segment, seed and treatments | `stop-line CONFIG --segment 15 --attacked noise_detector_pgd --clean-label "Clean" --attacked-label "White-box attack (PGD)" --name stop-line-approach` |
 | `evaluation-report` | `evaluation_report.html` of the `stop-sign-white-box` run | Report header and experiment setup | Browser screenshot at 1440 px width, top 1380 px without the scrollbar, then `still SCREENSHOT --name evaluation-report` |
 
@@ -98,7 +100,8 @@ The stop-sign runs use the local NuRec 26.01 release. `stop-sign-white-box` show
 clean run stops before the line without a collision and whose attacked run crosses it.
 The stop-sign patch frames show a decision where the replica sign is visible beside a real stop
 sign of the scene. The object insertion and physical patch frames show the last decision of their
-runs. The CARLA sign is placed closer than in the supplied configuration so that it is legible in
+runs. The vehicle insertion pair shows a decision where the inserted car is about 13 m ahead. Both
+images use the same crop, and the LiDAR image draws the scan from the camera's viewpoint. The CARLA sign is placed closer than in the supplied configuration so that it is legible in
 the 800x600 camera.
 
 ## Next steps

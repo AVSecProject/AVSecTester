@@ -173,6 +173,17 @@
   }
 }
 
+/* Two cards per row, one column on phones. */
+.avs-grid--two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+@media screen and (max-width: 44.9375em) {
+  .avs-grid--two {
+    grid-template-columns: 1fr;
+  }
+}
+
 .avs-card {
   display: flex;
   flex-direction: column;
