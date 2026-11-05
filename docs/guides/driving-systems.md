@@ -24,6 +24,10 @@ Interfaces live in `avsectester.closed_loop.avstacks`. Supplied implementations 
 4. `observation` hooks.
 
 The pipeline owns the localizer lifecycle and does not process output commands.
+When localization changes the planar ego pose, the pipeline re-expresses the route in the
+estimated ego frame and keeps its world positions. Navigation then follows the model-visible
+pose, as a real vehicle locates its route with its own localization. A route requires finite
+planar `x`, `y` and `yaw` before and after localization.
 [Runtime](../reference/runtime.md) defines the complete per-decision order and record formats.
 
 ### Recorded input history

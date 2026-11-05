@@ -12,7 +12,10 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import replace
+import math
 from typing import TYPE_CHECKING, Any, ClassVar
+
+import numpy as np
 
 from avsectester.data_types import Control, Detection, Observation, StateEstimate
 from avsectester.closed_loop.hooks import _HookBindingMixin
@@ -22,11 +25,41 @@ if TYPE_CHECKING:
     from avsectester.closed_loop.simulators.base import SimulatorRuntime
 
 
+def _planar_pose(state: Any) -> np.ndarray | None:
+    try:
+        pose = np.array([state.x, state.y, state.yaw], dtype=float)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return pose if np.isfinite(pose).all() else None
+
+
+def _route_from_estimate(route: np.ndarray | None, source_state: Any, estimated_state: Any) -> np.ndarray | None:
+    """Re-express ego-frame route points from the source pose in the estimated pose's frame."""
+    if route is None or estimated_state is source_state:
+        return route
+    source, estimated = _planar_pose(source_state), _planar_pose(estimated_state)
+    if source is None or estimated is None:
+        raise ValueError("A route requires finite planar x, y and yaw before and after localization")
+    if np.array_equal(source, estimated):
+        return route
+    points = np.array(route, dtype=float)
+
+    def rotation(yaw: float) -> np.ndarray:
+        cosine, sine = math.cos(yaw), math.sin(yaw)
+        return np.array([[cosine, -sine], [sine, cosine]])
+
+    world = points[:, :2] @ rotation(float(source[2])).T + source[:2]
+    points[:, :2] = (world - estimated[:2]) @ rotation(float(estimated[2]))
+    return points
+
+
 class ObservationPipeline:
     """Process driving-system inputs without changing output commands.
 
     Inputs pass through ``sensors.post``, optional ``localization.pre``, the localizer,
     ``localization.post`` and ``observation`` hooks in that order.
+    When localization changes the planar ego pose, the route is re-expressed in the estimated
+    ego frame with unchanged world positions, so model-visible navigation follows the estimate.
 
     The dispatcher manages the localizer's per-run lifecycle together with hook owners,
     so one object used at several stages is reset and closed exactly once. Resetting the
@@ -58,7 +91,8 @@ class ObservationPipeline:
             estimate = StateEstimate(seen.vehicle_state, seen.ego_speed)
         estimate = dispatcher.emit("localization.post", estimate)
         dispatcher._require(estimate, StateEstimate, "localization.post")
-        seen = replace(seen, vehicle_state=estimate.vehicle_state, ego_speed=estimate.ego_speed)
+        seen = replace(seen, vehicle_state=estimate.vehicle_state, ego_speed=estimate.ego_speed,
+                       route=_route_from_estimate(seen.route, seen.vehicle_state, estimate.vehicle_state))
         seen = dispatcher.emit("observation", seen)
         dispatcher._require(seen, Observation, "observation")
         dispatcher.observation = seen
