@@ -12,6 +12,8 @@ from contextlib import contextmanager
 from copy import copy, deepcopy
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
+
 from avsectester.closed_loop.avstacks.base import AVStack
 from avsectester.closed_loop.avstacks import driving_adapter
 from avsectester.closed_loop.hooks import CallInputs, Plugin, RunContext, StageContext
@@ -566,32 +568,65 @@ class ModularAVStack(AVStack):
         self._last_detections = tuple(detections)
         return self._last_detections
 
-    def _remember_capture_reference(self, observation: Observation) -> None:
-        """Detach the physical body parent of a sensor's installation reference.
-
-        Native detection coordinates retain the sensor reference. Localization modifies
-        vehicle_state, which is deliberately not read by this recording-only conversion.
-        """
-        self._detection_reference = None
-        self._last_detections = None
-        self._detections_ready = False
+    @staticmethod
+    def _body_references(observation: Observation) -> list[Any]:
+        """Distinct vehicle body frames that parent the captured sensors' installation frames."""
+        bodies: list[Any] = []
         if not isinstance(observation.sensor_data, Mapping):
-            return
+            return bodies
         for name, payload in observation.sensor_data.items():
             calibration = observation.calibration.get(name, getattr(payload, "calibration", None))
             reference = getattr(calibration, "reference", None)
             if reference is None:
                 reference = getattr(payload, "source_reference", None)
-            if reference is not None:
-                reference = getattr(reference, "reference", None)
-                # Without a vehicle body parent, the detections cannot be expressed in the ego frame.
-                if reference is None or getattr(reference, "is_global_origin", False):
-                    continue
-                self._detection_reference = DEFAULT_REGISTRY.snapshot(reference)
-                break
+            body = getattr(reference, "reference", None)
+            # A sensor attached directly to the world frame has no vehicle body parent.
+            if body is not None and not getattr(body, "is_global_origin", False) \
+                    and all(body is not known for known in bodies):
+                bodies.append(body)
+        return bodies
+
+    @classmethod
+    def _place_bodies_at_vehicle_state(cls, observation: Observation) -> None:
+        """Move world-parented body frames to the model-visible ego pose.
+
+        Sensors are mounted on the vehicle, so perception reaches the world through the pose the
+        driving system believes. Equal poses leave the frames untouched. Only this decision's
+        observation copy changes, and simulator state is unaffected.
+        """
+        state = observation.vehicle_state
+        position, attitude = getattr(state, "position", None), getattr(state, "attitude", None)
+        if position is None or attitude is None or not all(
+                getattr(value.reference, "is_global_origin", False) for value in (position, attitude)):
+            return
+        for body in cls._body_references(observation):
+            if not getattr(body.reference, "is_global_origin", False):
+                continue
+            if not np.array_equal(body.x, position.x):
+                body.x = np.array(position.x, dtype=float)
+            if body.q != attitude.q:
+                body.q = attitude.q
+
+    def _remember_capture_reference(self, observation: Observation) -> None:
+        """Detach the body parent of a sensor's installation reference for ego-frame detections.
+
+        Native detection coordinates retain the sensor reference. The sensor is rigidly mounted
+        on the body, so ego-frame detections do not depend on where the body is placed.
+        """
+        self._detection_reference = None
+        self._last_detections = None
+        self._detections_ready = False
+        bodies = self._body_references(observation)
+        if bodies:
+            self._detection_reference = DEFAULT_REGISTRY.snapshot(bodies[0])
 
     def __call__(self, observation: Observation) -> Control:
-        """Run the native perception-to-control pipeline once using the current capture reference."""
+        """Run the native perception-to-control pipeline once using the current capture reference.
+
+        Sensor body frames first move to ``vehicle_state`` so localization affects perception
+        in the world frame the same way it affects planning.
+        """
+        self._place_bodies_at_vehicle_state(observation)
         self._remember_capture_reference(observation)
         if self._perception_capture is not None:
             hooks = self.pipeline.perception.post_hooks

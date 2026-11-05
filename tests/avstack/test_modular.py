@@ -66,6 +66,24 @@ def test_native_hooks_replace_perception_and_control(pipeline_config, native_obs
     assert ordinary.steer != .2 and len(avstack.detections()) == 1
 
 
+def test_localization_moves_sensor_bodies(pipeline_config, native_observation, make_ego):
+    # An obstacle approaching the sensor triggers braking wherever localization places the ego.
+    target_speeds = {}
+    for name, ego in (("true", None), ("false", lambda frame: make_ego(
+            xyz=(300., -400., 40.), yaw=-np.pi / 2, t=frame * .05))):
+        avstack = ModularAVStack(pipeline_config)
+        avstack.instrument()
+        for frame in range(8):
+            observation = native_observation(frame, [(20. - frame * 1.5, 0., 0.)])
+            if ego is not None:
+                observation = replace(observation, vehicle_state=ego(frame))
+            if frame == 0:
+                avstack.reset(observation)
+            avstack(observation)
+        target_speeds[name] = avstack.component_log()["planning"].top()[1].target_speed
+    assert target_speeds == {"true": 0., "false": 0.}
+
+
 def test_detections(pipeline_config, native_observation, make_ego, make_detections):
     true_ego = make_ego(xyz=(20., 10., 0.), yaw=np.pi / 3)
     observation = native_observation(ego=true_ego, xyzs=[(5., 0., 0.)], mount=(1., 2., 1.))

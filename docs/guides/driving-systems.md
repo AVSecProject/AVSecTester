@@ -42,11 +42,15 @@ The `*_modular_*` stop-sign configurations use `RuleBasedAVStack`, described bel
 
 `ModularAVStack` wraps avstack's perception, tracking, planning and control pipeline. Each run
 gets fresh component histories. Native models and component outputs remain avstack objects.
+Before each decision, the vehicle body frame that carries the sensors moves to the model-visible
+`vehicle_state`. Sensors are mounted on the vehicle, so localization moves perceived objects
+in the world together with the ego and leaves their position relative to the ego unchanged.
+Recorded model inputs keep the captured body pose.
 
 `instrument` captures selected component outputs. `detections` converts supported perception
-boxes to the true capture-time ego frame without another inference call. Model-visible
-localization does not change that coordinate conversion. Unsupported perception output returns
-`None`, while an empty sequence means supported perception with no detections.
+boxes to the capture-time ego frame without another inference call. These ego-frame boxes do
+not depend on localization. Unsupported perception output returns `None`, while an empty
+sequence means supported perception with no detections.
 
 `NativeHook` wraps explicitly registered native hook implementations. Registration modules can
 be listed in the hook configuration. The framework's phantom action can instead modify the
