@@ -2,6 +2,18 @@
 
 This page lists capabilities to implement.
 
+## Recorded camera phase
+
+Initialize camera clocks from each recorded camera's phase rather than ending every first frame
+at the run origin. Preserve AlpaSim's frame intervals and exposure windows.
+
+## Decisions across dataset grid points
+
+Support a decision period spanning several dataset grid intervals with an explicit decision
+stride. The current decision period must equal the dataset time grid. Segment boundaries,
+decision counts, selection tools and frame-data caching retain their current meaning.
+
+
 ## Reactive traffic
 
 - [ ] Fit AlpaSim traffic actors to the selected ground mesh instead of the height returned by
@@ -30,6 +42,12 @@ See [reactive traffic](../guides/simulators.md#reactive-traffic) for supported b
 - [ ] Include inserted `ObjectAsset` geometry in non-camera captures with composite insertion.
 
 NuRec scene insertion includes LiDAR. See [Simulators](../guides/simulators.md#scene-insertion).
+
+## Moving inserted objects
+
+- [ ] Let attacks move an inserted object during a run, for example along a route, and record its
+  velocity. Inserted objects currently keep one world pose and zero velocity.
+- [ ] Use the object's poses at the start and end of each LiDAR scan in NuRec scene insertion.
 
 ## Remove real objects from reconstructed scenes
 
@@ -62,7 +80,7 @@ NuRec scene insertion includes LiDAR. See [Simulators](../guides/simulators.md#s
 - [ ] Establish the scope of localization attacks when CARLA/avstack perception uses physical
   sensor reference chains while tracking and planning use model-visible `vehicle_state`.
 
-See [physical and model-visible records](../reference/runtime.md#physical-and-model-visible-records).
+See [runtime records](../reference/runtime.md#physical-and-model-visible-records).
 
 ## NuRec LiDAR simulation
 

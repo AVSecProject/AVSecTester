@@ -108,7 +108,8 @@ terminal summaries, statistics and unavailable values.
 
 ## NRE
 
-`nre serve CONFIG --gpu N [--name NAME] [--image IMAGE] [--cache-size 2] [--timeout 600] [--dry-run]`
+`nre serve CONFIG --gpu N [--name NAME] [--image IMAGE] [--cache-size 2] [--timeout 600]
+[--dry-run]`
 loads the configuration, starts Docker and waits for `Serving on`.
 
 | Option | Default |
@@ -145,7 +146,8 @@ dataset archives, then stops and removes that container. A missing container is 
 
 ## Trafficsim
 
-`trafficsim serve CONFIG --gpu N --models DIR [--name NAME] [--image IMAGE] [--timeout 600] [--dry-run]`
+`trafficsim serve CONFIG --gpu N --models DIR [--name NAME] [--image IMAGE] [--timeout 600]
+[--dry-run]`
 requires `NuRecDataset` and a configured `AlpaSimTraffic` with a local endpoint.
 
 | Option | Default |
@@ -210,7 +212,7 @@ phase moves its partial report to `incomplete_offline_reports/` before the phase
 Artifact filenames above describe the default trusted-pickle format. Attacks may override
 artifact persistence, and their files stay inside `artifacts/`. Segment numbers are global unit
 indexes. Each run directory contains
-`manifest.json`, published Parquet step/event parts and payload shards belonging to its
+`manifest.json`, published Parquet decision, event and acquisition parts, and payload shards in its
 [RunLog](runtime.md#runlog). Offline report content is described in
 [Optimization](../guides/optimization.md), and evaluation content
 in [Evaluation](../guides/evaluation.md).

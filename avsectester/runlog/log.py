@@ -1,21 +1,22 @@
 """Independent run snapshots and incremental Parquet persistence.
 
 The in-memory API imports neither Arrow nor simulator/model packages. ``Recorder``
-uses one snapshot path for memory and disk; native adapter objects require registered
+uses one snapshot path for memory and disk. Native adapter objects require registered
 native types before persistence. Unknown objects are never pickled or stringified.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field, fields, is_dataclass, replace
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field, fields, replace
 import json
 import os
 from pathlib import Path
 import sys
 from typing import Any, TYPE_CHECKING
+from weakref import ref
 
-from avsectester.data_types import Detection
+from avsectester.data_types import Detection, Observation, without_sensor_payloads
 from avsectester.serialization import DEFAULT_REGISTRY, SerializationRegistry
 
 if TYPE_CHECKING:
@@ -26,12 +27,14 @@ _TAG = "_avsectester_type"
 _OBSERVATION_FIELDS = ("raw_observation", "model_observation")
 
 
-def _without_sensor_data(value: Any) -> Any:
-    """Return an observation dataclass copy with empty sensor data. Other values are unchanged."""
-    if is_dataclass(value) and not isinstance(value, type) and any(
-            item.name == "sensor_data" for item in fields(value)):
-        return replace(value, sensor_data={})
-    return value
+def _record_payloads(value: Any, *, retain_sensor_data: bool = True) -> Any:
+    observations = {}
+    for name in _OBSERVATION_FIELDS:
+        observation = getattr(value, name, None)
+        if isinstance(observation, Observation):
+            observations[name] = without_sensor_payloads(observation,
+                keep_sensor_ids=observation.sensor_data if retain_sensor_data else ())
+    return replace(value, **observations) if observations else value
 
 
 def _without_encoded_sensor_data(value: Any) -> Any:
@@ -49,9 +52,9 @@ class StepRecord:
     ``detections`` holds canonical ego-frame boxes, or None if the driving system
     has no detection output. Recording never runs extra inference to obtain them.
     ``object_visibility`` maps world-object IDs and camera IDs to the visibility
-    evidence for the decision's current capture, before its sensor actions.
-    Times belong to the captured values rather
-    than a single ambiguous timestamp for the entire decision.
+    evidence for each camera's latest physical acquisition, before its sensor actions.
+    Input hooks that remove a camera do not remove this physical evidence.
+    Times belong to the captured values rather than a single timestamp for the entire decision.
     """
 
     step: int
@@ -68,6 +71,15 @@ class StepRecord:
     actions: list[Any] = field(default_factory=list)
     outputs: list[Any] = field(default_factory=list)
     telemetry: dict[str, Any] = field(default_factory=dict)
+    executed_command_issue_time_us: int | None = None
+    delivered_captures: Mapping[str, tuple[int, ...]] = field(default_factory=dict)
+    'Capture IDs delivered to this decision. Driving systems record their own frame selection.'
+    physical_captures: Mapping[str, int] = field(default_factory=dict)
+    'Latest physically captured frame per sensor, independently of model input hooks.'
+    detection_capture_id: int | None = None
+    detection_sensor: str | None = None
+    force_gt: bool = False
+    'Whether this interval follows the configured recorded ground-truth motion.'
 
     def __post_init__(self) -> None:
         # A Parquet list column keeps variable detection counts in one typed schema.
@@ -76,6 +88,27 @@ class StepRecord:
             self.detections = list(self.detections)
             if any(not isinstance(item, Detection) for item in self.detections):
                 raise TypeError("StepRecord.detections must contain Detection values")
+
+
+@dataclass
+class CaptureRecord:
+    """One acquisition timestamp and its due sensors.
+
+    ``model_observation`` holds the final per-frame input delivered to a decision, including
+    localization and observation hooks. Its pose belongs to the frame end. It is None when
+    no finalized decision input received the acquisition, including terminal feedback frames.
+    """
+
+    capture_id: int
+    time_us: int
+    sensor_ids: tuple[str, ...]
+    raw_observation: Any = None
+    model_observation: Any = None
+    physical_state: Any = None
+    sensor_geometry: Mapping[str, Any] = field(default_factory=dict)
+    object_visibility: Mapping[str, Any] = field(default_factory=dict)
+    frame_ranges_us: Mapping[str, tuple[int, int]] = field(default_factory=dict)
+    'Per-sensor half-open exposure or scan intervals. Instantaneous frames have equal endpoints.'
 
 
 @dataclass
@@ -96,6 +129,8 @@ class RunLog:
     events: list[EventRecord] = field(default_factory=list)
     status: str = "incomplete"
     path: Path | None = None
+    captures: list[CaptureRecord] = field(default_factory=list)
+    format_version: int = 2
 
     @classmethod
     def read(
@@ -112,7 +147,8 @@ class RunLog:
         ``*.open`` files are ignored. Native values decode to ordinary data, allowing
         analysis without simulator dependencies. User record types must be registered first.
         ``load_sensor_data=False`` reads raw and model observations with empty
-        ``sensor_data`` and leaves their recorded payloads on disk.
+        ``sensor_data`` and leaves their recorded payloads on disk. Acquisition times,
+        poses and calibration remain available in ``deliveries`` without its payloads.
         """
         root = Path(path)
         manifest = _read_manifest(root)
@@ -121,6 +157,7 @@ class RunLog:
             metadata=decoder.decode(manifest["metadata"]),
             status=manifest["status"],
             path=root,
+            format_version=manifest.get("format_version", 1),
         )
         for row in read_table(root).to_pylist():
             if not load_sensor_data:
@@ -129,18 +166,24 @@ class RunLog:
             log.steps.append(StepRecord(**{key: decoder.decode(value) for key, value in row.items()}))
         for row in read_table(root, stream="events").to_pylist():
             log.events.append(EventRecord(**{key: decoder.decode(value) for key, value in row.items()}))
+        for row in read_table(root, stream="captures").to_pylist():
+            if not load_sensor_data:
+                row = {key: _without_encoded_sensor_data(value)
+                       if key in _OBSERVATION_FIELDS else value for key, value in row.items()}
+            log.captures.append(CaptureRecord(**{key: decoder.decode(value) for key, value in row.items()}))
         return log
 
 
 class Recorder:
     """Capture a run in memory and optionally stream it to Parquet.
 
-    ``record_step`` and ``record_event`` snapshot their inputs immediately.
+    ``record_step``, ``record_capture`` and ``record_event`` snapshot their inputs immediately.
     Call ``snapshot`` earlier when a subsequent hook might mutate a value before
     a complete step is available. ``retain_steps=False`` bounds disk-recorder
     memory by the open chunk instead of retaining the full run.
     ``retain_sensor_data=False`` retains steps whose raw and model observations have
-    empty ``sensor_data``. The written records keep their sensor data.
+    empty ``sensor_data``. The written records keep their sensor data. Step delivery
+    payloads reference their acquisition records rather than repeating their contents.
 
     A directory must be empty. ``finish`` publishes the last chunks before the
     final manifest. ``abort`` leaves completed chunks readable and discards the
@@ -166,6 +209,13 @@ class Recorder:
         if not retain_sensor_data and path is None:
             raise ValueError("retain_sensor_data=False requires a persistent output path")
         self.registry = registry
+        self._array_candidates: dict[tuple[Any, ...], Any] = {}
+        self._owned_arrays: dict[int, Any] = {}
+        self._capture_ids: set[int] = set()
+        self._capture_scope: int | None = None
+        self._source_arrays: dict[int, tuple[Any, Any]] = {}
+        self._byte_candidates: dict[tuple[int, bytes], bytes] = {}
+        self._capture_payloads: dict[int, dict[int, Any]] = {}
         self.log = RunLog(
             metadata=self.snapshot(metadata or {}), path=Path(path) if path is not None else None
         )
@@ -181,8 +231,105 @@ class Recorder:
             self._writer.write_manifest(self.log)
 
     def snapshot(self, value: Any) -> Any:
-        """Copy mutable data now. Tensors are detached without importing torch."""
-        return self.registry.snapshot(value)
+        """Snapshot mutable data, sharing recent equal arrays as read-only recording values.
+
+        Numeric base arrays are independent of live inputs. Identical owned or recent live arrays
+        share read-only storage. The disk writer reuses owned-array identities.
+        Native byte payloads share recent equal contents within the same capture.
+        Other arrays retain their type and deep-copy behavior. Copy an array before editing it.
+        Tensors are detached without importing torch.
+        """
+        return self.registry.recording_snapshot(value, self._payload_snapshot)
+
+    def _payload_snapshot(self, value: Any) -> Any:
+        if not isinstance(value, bytes):
+            result = self._array_snapshot(value)
+        else:
+            sample = (value if len(value) <= 256 else b"".join(
+                value[index * (len(value) - 32) // 7: index * (len(value) - 32) // 7 + 32]
+                for index in range(8)))
+            key = (len(value), sample)
+            previous = self._byte_candidates.get(key)
+            result = previous if previous is value or previous == value else value
+            self._byte_candidates[key] = result
+        if self._capture_scope is not None:
+            self._capture_payloads.setdefault(self._capture_scope, {})[id(result)] = result
+        return result
+
+    def release_captures(self, capture_ids: Iterable[int]) -> None:
+        """Release owned payload leaves after their referencing decisions have been recorded.
+
+        Captures keep arrays and native bytes alive through decision snapshot and persistence,
+        including when in-memory observations omit payloads. Call this after ``record_step`` for
+        captures whose last referencing decision is complete. Releasing an ID twice has no effect.
+        """
+        for capture_id in capture_ids:
+            self._capture_payloads.pop(capture_id, None)
+            if capture_id == self._capture_scope:
+                self._capture_scope = None
+                self._byte_candidates.clear()
+        if self._writer is not None:
+            self._writer.payloads.retain_bytes({identity for values in self._capture_payloads.values()
+                                               for identity in values})
+
+    @staticmethod
+    def _array_reference(array: Any, cache: dict[int, Any]) -> Any:
+        identity = id(array)
+
+        def release(_reference: Any) -> None:
+            cache.pop(identity, None)
+
+        return ref(array, release)
+
+    def begin_capture(self, capture_id: int) -> None:
+        """Start a capture's payload ownership scope before taking its recording snapshots."""
+        self._check_open()
+        if self._capture_scope != capture_id:
+            self._byte_candidates.clear()
+            self._capture_scope = capture_id
+
+    def _array_snapshot(self, array: Any) -> Any:
+        import numpy as np
+
+        owned = self._owned_arrays.get(id(array))
+        if owned is not None and owned() is array and not array.flags.writeable:
+            return array
+        contiguous = np.ascontiguousarray(array)
+        byte_array = contiguous.reshape(-1).view(np.uint8)
+        source = self._source_arrays.get(id(array))
+        if source is not None and source[0]() is array:
+            previous = source[1]()
+            if (previous is not None and array.dtype == previous.dtype and array.shape == previous.shape
+                    and np.array_equal(byte_array, previous.reshape(-1).view(np.uint8))):
+                return previous
+        raw = memoryview(byte_array)
+        # A small sample narrows candidates. Only exact full-byte equality permits sharing.
+        sample = (bytes(raw) if len(raw) <= 256 else b"".join(
+            bytes(raw[offset:offset + 32])
+            for offset in (index * (len(raw) - 32) // 7 for index in range(8))))
+        key = (array.dtype.str, array.shape, len(raw), sample)
+        reference = self._array_candidates.get(key)
+        previous = reference() if reference is not None else None
+        if previous is not None and np.array_equal(byte_array, previous.reshape(-1).view(np.uint8)):
+            self._source_arrays[id(array)] = (
+                self._array_reference(array, self._source_arrays), reference)
+            return previous
+        result = np.array(array, copy=True, order="C")
+        result.flags.writeable = False
+        identity = id(result)
+        owned_cache, candidate_cache = self._owned_arrays, self._array_candidates
+
+        def release(_reference: Any) -> None:
+            owned_cache.pop(identity, None)
+            candidate = candidate_cache.get(key)
+            if candidate is not None and candidate() is None:
+                candidate_cache.pop(key, None)
+
+        reference = ref(result, release)
+        self._owned_arrays[identity] = reference
+        self._array_candidates[key] = reference
+        self._source_arrays[id(array)] = (self._array_reference(array, self._source_arrays), reference)
+        return result
 
     def record_step(self, record: StepRecord) -> StepRecord:
         """Append a decision record and flush a complete row group when due."""
@@ -192,13 +339,15 @@ class Recorder:
         if (not isinstance(record.step, int) or isinstance(record.step, bool)
                 or record.step <= self._last_step or record.step < 0):
             raise ValueError("Decision indices must be nonnegative and strictly increasing")
-        snapshot = self.snapshot(record)
+        capture_scope, self._capture_scope = self._capture_scope, None
+        try:
+            snapshot = self.snapshot(_record_payloads(record))
+        finally:
+            self._capture_scope = capture_scope
         if self._writer is not None:
             self._writer.append("steps", {f.name: getattr(snapshot, f.name) for f in fields(snapshot)})
         if self.retain_steps:
-            self.log.steps.append(snapshot if self.retain_sensor_data else replace(snapshot, **{
-                name: _without_sensor_data(getattr(snapshot, name)) for name in _OBSERVATION_FIELDS
-            }))
+            self.log.steps.append(snapshot if self.retain_sensor_data else _record_payloads(snapshot, retain_sensor_data=False))
         self._last_step = record.step
         return snapshot
 
@@ -211,6 +360,22 @@ class Recorder:
         if self.retain_steps:
             self.log.events.append(event)
         return event
+
+    def record_capture(self, record: CaptureRecord) -> CaptureRecord:
+        """Snapshot an acquisition batch, independently of decision recording."""
+        self._check_open()
+        if not isinstance(record, CaptureRecord):
+            raise TypeError("record_capture requires CaptureRecord")
+        if record.capture_id in self._capture_ids:
+            raise ValueError(f"Duplicate capture_id: {record.capture_id}")
+        self.begin_capture(record.capture_id)
+        self._capture_ids.add(record.capture_id)
+        snapshot = self.snapshot(_record_payloads(record))
+        if self._writer is not None:
+            self._writer.append("captures", {f.name: getattr(snapshot, f.name) for f in fields(snapshot)})
+        if self.retain_steps:
+            self.log.captures.append(snapshot if self.retain_sensor_data else _record_payloads(snapshot, retain_sensor_data=False))
+        return snapshot
 
     def flush(self) -> None:
         """Publish the current chunks without marking the run complete."""
@@ -236,6 +401,7 @@ class Recorder:
                 self.log.status = previous_status
                 raise
         self._finished = True
+        self.release_captures(tuple(self._capture_payloads))
         return self.log
 
     def abort(self) -> None:
@@ -243,6 +409,7 @@ class Recorder:
         if not self._finished and self._writer is not None:
             self._writer.abort()
         self._finished = True
+        self.release_captures(tuple(self._capture_payloads))
 
     def _check_open(self) -> None:
         if self._finished:
@@ -273,16 +440,16 @@ def read_table(
 
     The returned Arrow table retains typed struct/list columns and payload
     references. Use ``RunLog.read`` to reconstruct core values and load payloads.
-    Column schemas can gain fields across chunks; incompatible types raise.
+    Column schemas can gain fields across chunks. Incompatible types raise.
     """
     pa, pq = _arrow()
     root = Path(path)
     _read_manifest(root)
-    if stream not in {"steps", "events"}:
-        raise ValueError("stream must be steps or events")
+    if stream not in {"steps", "events", "captures"}:
+        raise ValueError("stream must be steps, events or captures")
     parts = sorted((root / stream).glob("part-*.parquet"))
     if not parts:
-        record_type = StepRecord if stream == "steps" else EventRecord
+        record_type = {"steps": StepRecord, "events": EventRecord, "captures": CaptureRecord}[stream]
         known = {f.name for f in fields(record_type)}
         wanted = list(columns) if columns is not None else [f.name for f in fields(record_type)]
         unknown = set(wanted) - known
@@ -314,7 +481,7 @@ def read_table(
             except pa.ArrowInvalid:
                 # Arrow 21's nested nullable struct/list cast can produce invalid
                 # child lengths even for valid arrays. Rebuild only this selected
-                # chunk after validating its source; never hide corrupt input.
+                # chunk after validating its source. Never hide corrupt input.
                 table.validate(full=True)
                 table = pa.Table.from_pylist(table.to_pylist(), schema=selected)
         tables.append(table)
@@ -333,6 +500,8 @@ def _arrow() -> tuple[Any, Any]:
 def _read_manifest(root: Path) -> dict[str, Any]:
     with (root / "manifest.json").open(encoding="utf-8") as handle:
         manifest = json.load(handle)
+    if manifest.get("format_version", 1) not in (1, 2):
+        raise ValueError(f"Unsupported RunLog format version: {manifest['format_version']!r}")
     return manifest
 
 
@@ -380,19 +549,19 @@ class _Encoder:
         )
         if (isinstance(encoded, dict) and encoded.get(_TAG) == "dataclass"
                 and encoded["fields"] == {}):
-            # Parquet cannot store an empty struct; null transports a record with no fields.
+            # Parquet cannot store an empty struct. Null transports a record with no fields.
             return {**encoded, "fields": None}
         return encoded
 
     def _payload_value(self, value: Any) -> dict[str, Any]:
         if isinstance(value, bytes):
-            return {_TAG: "bytes", **self.payloads.write(memoryview(value))}
+            return {_TAG: "bytes", **self.payloads.write(memoryview(value), value)}
         import numpy as np
 
         array = np.ascontiguousarray(value)
         return {
             _TAG: "array", "dtype": value.dtype.str, "shape": list(value.shape),
-            **self.payloads.write(memoryview(array.reshape(-1)).cast("B")),
+            **self.payloads.write(memoryview(array.reshape(-1)).cast("B"), value),
         }
 
     def _record_field(self, name: str, value: Any) -> Any:
@@ -467,8 +636,20 @@ class _PayloadWriter:
         self._handle: Any = None
         self._size = 0
         self._open: Path | None = None
+        self._contents: dict[int, tuple[Any, dict[str, Any]]] = {}
+        self._byte_contents: dict[int, tuple[Any, dict[str, Any]]] = {}
 
-    def write(self, data: memoryview) -> dict[str, Any]:
+    def retain_bytes(self, identities: set[int]) -> None:
+        self._byte_contents = {key: value for key, value in self._byte_contents.items()
+                               if key in identities}
+
+    def write(self, data: memoryview, source: Any) -> dict[str, Any]:
+        cache = self._byte_contents if isinstance(source, bytes) else self._contents
+        previous = cache.get(id(source))
+        if previous is not None:
+            owner = previous[0] if isinstance(source, bytes) else previous[0]()
+            if owner is source:
+                return previous[1]
         chunks = []
         offset = 0
         while offset < len(data):
@@ -484,7 +665,11 @@ class _PayloadWriter:
             offset += length
             if self._size == self.limit:
                 self.publish()
-        return {"nbytes": len(data), "chunks": chunks}
+        reference = {"nbytes": len(data), "chunks": chunks}
+        identity = id(source)
+        owner = source if isinstance(source, bytes) else ref(source, lambda _ref: cache.pop(identity, None))
+        cache[identity] = (owner, reference)
+        return reference
 
     def publish(self) -> None:
         if self._handle is None:
@@ -511,15 +696,15 @@ class _Writer:
         root.mkdir(parents=True, exist_ok=True)
         if any(root.iterdir()):
             raise FileExistsError(f"RunLog output directory must be empty: {root}")
-        for name in ("steps", "events", "payloads"):
+        for name in ("steps", "events", "captures", "payloads"):
             (root / name).mkdir()
         self.root = root
         self.rows, self.size = rows, size
         self.payloads = _PayloadWriter(root, shard)
         self.encoder = _Encoder(registry, self.payloads)
-        self.buffers: dict[str, list[dict[str, Any]]] = {"steps": [], "events": []}
-        self.counts = {"steps": 0, "events": 0}
-        self.rows_written = {"steps": 0, "events": 0}
+        self.buffers: dict[str, list[dict[str, Any]]] = {"steps": [], "events": [], "captures": []}
+        self.counts = {"steps": 0, "events": 0, "captures": 0}
+        self.rows_written = {"steps": 0, "events": 0, "captures": 0}
         self.last_durable_step: int | None = None
         self.manifest: dict[str, Any] = {}
         self.schemas: dict[str, Any] = {}
@@ -571,7 +756,7 @@ class _Writer:
         metadata = self.encoder.encode(log.metadata)
         self.payloads.publish()
         previous = self.manifest
-        self.manifest = {"status": log.status, "metadata": metadata}
+        self.manifest = {"status": log.status, "metadata": metadata, "format_version": log.format_version}
         try:
             self._publish_manifest()
         except BaseException:
@@ -584,6 +769,7 @@ class _Writer:
             "step_parts": self.counts["steps"], "event_parts": self.counts["events"],
             "step_rows": self.rows_written["steps"], "event_rows": self.rows_written["events"],
             "last_durable_step": self.last_durable_step,
+            "capture_parts": self.counts["captures"], "capture_rows": self.rows_written["captures"],
         }
         pending = self.root / "manifest.json.open"
         with pending.open("w", encoding="utf-8") as handle:
@@ -595,7 +781,7 @@ class _Writer:
 
     def abort(self) -> None:
         self.payloads.abort()
-        self.buffers = {"steps": [], "events": []}
+        self.buffers = {"steps": [], "events": [], "captures": []}
         self.buffer_size = 0
 
 
@@ -610,6 +796,7 @@ def _memory_size(value: Any) -> int:
 
 __all__ = [
     'StepRecord',
+    'CaptureRecord',
     'EventRecord',
     'RunLog',
     'Recorder',

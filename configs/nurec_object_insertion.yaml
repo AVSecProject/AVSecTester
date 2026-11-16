@@ -69,5 +69,5 @@ runs:
     - camera_front_wide_120fov
     representations:
     - model_input
-    every_n_steps: 1
+    every_n_captures: 1
   output: ../results/nurec_object_insertion

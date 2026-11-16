@@ -18,7 +18,20 @@ def test_camera_braking(camera_detector_boundary):
         assert command.brake == brake
         assert command.throttle == (0. if brake else .55)
         assert bool(avstack.component_log()["perception"]) is bool(brake)
+    camera_detector_boundary.boxes, camera_detector_boundary.labels = [[20., 20., 60., 50.]], [0]
+    last = avstack(observation)
+    camera_detector_boundary.boxes, camera_detector_boundary.labels = [], []
+    empty = Observation(.05, 1, {})
+    cached = avstack(empty)
+    assert cached == last and cached is not last
+    last.brake = .25
+    cached.brake = .5
+    assert avstack(empty).brake == 1.
+    assert empty.sensor_data == {} and empty.deliveries == {}
     with pytest.raises(ValueError, match="absent"):
-        avstack(Observation(0., 0, {}))
+        avstack(Observation(.1, 2, {}, deliveries={"front": ()}))
+    avstack.reset(observation)
+    with pytest.raises(ValueError, match="absent"):
+        avstack(empty)
     with pytest.raises(ValueError, match="area_brake"):
         CameraForwardCollisionAVStack(area_brake=2.)

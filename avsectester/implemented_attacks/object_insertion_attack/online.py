@@ -10,4 +10,5 @@ class ObjectInsertionAttackRuntime(AttackRuntime):
         self.sensor, self.insertion, self.compositor = sensor, insertion, compositor
 
     def step(self, context):
-        return (InsertionAttackAction(self.sensor, self.insertion, compositor=self.compositor),)
+        return (InsertionAttackAction(self.sensor, self.insertion, compositor=self.compositor,
+                                     active_for_us=context.decision_period_us),)

@@ -4,8 +4,12 @@ import pytest
 
 pytest.importorskip("avstack.config")
 
+# Import the adapter that owns native avstack record registrations.
+import avsectester.closed_loop.avstacks.implemented.modular  # noqa: F401
+
 from avsectester.data_types import Observation
 from avsectester.runlog import Recorder, RunLog, StepRecord
+from avsectester.serialization import DEFAULT_REGISTRY
 
 
 def test_native_records(native_sensor_case, tmp_path, make_ego, make_detections):
@@ -20,10 +24,13 @@ def test_native_records(native_sensor_case, tmp_path, make_ego, make_detections)
     observation = Observation(.5, 10, {"sensor": sensor}, vehicle_state=make_ego(xyz=(10., 0., 0.)))
     with Recorder(tmp_path) as recorder:
         captured = recorder.record_step(StepRecord(0, raw_observation=observation,
+                                                   model_observation=DEFAULT_REGISTRY.snapshot(observation),
                                                    components={"perception": detections}))
         detections[0].score = .1
         payload_array(sensor.data)[:] = 0
     assert captured.components["perception"][0].score == .8
+    assert payload_array(captured.raw_observation.sensor_data["sensor"].data) is payload_array(
+        captured.model_observation.sensor_data["sensor"].data)
     saved = RunLog.read(tmp_path).steps[0]
     assert saved.components["perception"]["data"][0]["score"] == .8
     restored = saved.raw_observation.sensor_data["sensor"]["data"]

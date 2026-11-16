@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 # A curated set of built-in ``carla.WeatherParameters`` presets for world-level robustness sweeps
 # (pass one as the scenario ``weather`` key). Validation accepts the full native preset set
-# below; this curated sequence gives robustness sweeps a smaller clear-to-adverse spread.
+# below. This curated sequence gives robustness sweeps a smaller clear-to-adverse spread.
 CARLA_WEATHER_PRESETS = (
     "ClearNoon", "CloudyNoon", "WetNoon", "WetCloudyNoon", "MidRainyNoon", "HardRainNoon",
     "ClearSunset", "CloudySunset", "WetSunset", "HardRainSunset",

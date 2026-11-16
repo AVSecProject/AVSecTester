@@ -3,22 +3,24 @@ from __future__ import annotations
 
 import math
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from contextlib import ExitStack
 from copy import deepcopy
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from typing import Any
 
 import numpy as np
 
 from avsectester.closed_loop.simulators.base import (
-    Initialization, SensorGeometry, SensorView, Simulator, SimulatorRuntime,
+    ClockSnapshot, Initialization, SensorGeometry, SensorView, Simulator, SimulatorRuntime,
 )
 from avsectester.datasets.base import FrameData, SensorDataReference
 from avsectester.datasets.carla import CarlaRecipe, CARLA_WORLD_SETTINGS, validate_carla_world_settings
 from avsectester.geometry.poses import MIRROR_Y, mirror_y_transform
 from avsectester.data_types import Observation, WorldSnapshot
 from avsectester.validation import require_nonnegative_integer, require_nonnegative_number
+from avsectester.validation import timestamp_to_microseconds
+from avsectester.closed_loop.timing import SensorTiming, TimingCapabilities, initial_history_times, seconds_to_microseconds
 
 from .conversions import _actor_state, _traffic_light_state
 from .recipe_replay import RecipeReplay, _place
@@ -34,22 +36,25 @@ from .sensors import (
 class CarlaSimulator(Simulator):
     """CARLA runtime settings, with scene content supplied by a dataset recipe.
 
-    ``create_runtime`` allocates a runtime; reset connects its live world. ``depth_camera`` names an ego RGB camera that
-    gets an aligned depth camera, so sensor views of it carry measured depth; stock RGB cameras
+    ``create_runtime`` allocates a runtime. Reset connects its live world. ``depth_camera`` names
+    an ego RGB camera with an aligned depth camera, so its sensor views carry measured depth.
+    Stock RGB cameras
     are then replaced by undistorted ``PinholeRgbCamera`` sensors matching the pinhole
     projection. Custom RGB classes are kept and must expose zero lens distortion.
     """
 
     dataset_kinds = ("CarlaDataset",)
-    capture_ticks = 1  # CARLA renders on ticks; the first capture follows simulator.setup
+    capture_ticks = 1  # CARLA renders on ticks. The first capture follows simulator.setup.
     can_render = True
     can_replay = True
     can_insert_objects = True
+    can_observe_past = True
     supported_world_settings = CARLA_WORLD_SETTINGS
 
     def __init__(
         self, client: dict, settle_iters: int = 100, *, simulator_version="0.9.16",
         depth_camera: str | None = None, occlusion_tolerance_m: float = 0.1,
+        decision_period_us: int | None = None,
     ) -> None:
         allowed = {"connect_ip", "connect_port", "traffic_manager_port", "rate", "synchronous",
                    "seed", "traffic_manager_seed"}
@@ -78,6 +83,16 @@ class CarlaSimulator(Simulator):
         self.occlusion_tolerance_m = occlusion_tolerance_m
         self.simulator_version = simulator_version
         self.depth_camera = depth_camera
+        try:
+            self._base_tick_us = seconds_to_microseconds(1 / float(self.client_config["rate"]))
+        except ValueError as error:
+            raise ValueError("CARLA client.rate must produce an integer-microsecond base tick") from error
+        self._decision_period_us = self._base_tick_us if decision_period_us is None else decision_period_us
+        if decision_period_us is not None and (isinstance(decision_period_us, bool)
+                or not isinstance(decision_period_us, int) or decision_period_us <= 0):
+            raise ValueError("decision_period_us must be a positive integer")
+        if self._decision_period_us % self.timing_capabilities.base_tick_us:
+            raise ValueError("Decision period must be a whole number of CARLA base ticks")
 
     def validate_world_settings(self, world: Mapping[str, Any]) -> None:
         """Validate keys, native enum names, types and ranges without connecting to CARLA.
@@ -98,7 +113,20 @@ class CarlaSimulator(Simulator):
 
     @property
     def decision_time_step(self):
-        return 1 / float(self.client_config["rate"])
+        return self._decision_period_us / 1e6
+
+    @property
+    def timing_capabilities(self):
+        return TimingCapabilities(captures_between_decisions=True, motion_reports=True,
+                                  recorded_ego_motion=True,
+                                  base_tick_us=self._base_tick_us)
+
+    def _recorded_end_time_us(self, start):
+        recipe = start.payload["recipe"]
+        return timestamp_to_microseconds(recipe.decision_steps * recipe.time_step)
+
+    def deployment_ticks(self, position):
+        return position * self.decision_ticks
 
     @property
     def identity(self):
@@ -114,6 +142,9 @@ class CarlaSimulator(Simulator):
             raise TypeError("CARLA ScenarioStart requires an explicit CarlaRecipe")
         if not math.isclose(recipe.time_step, self.decision_time_step, abs_tol=1e-9):
             raise ValueError("Dataset time_step differs from simulator decision time step")
+        if any(sensor.get("sensor_tick", 0.) != 0. for sensor in recipe.scenario["ego"].get("sensors", ())):
+            raise ValueError("CARLA sensors acquire every physics tick. Set sensor_tick to 0 and "
+                             "configure acquisition with runs.timing.sensors")
         if start.frame.position > recipe.decision_steps:
             raise ValueError("Selected start exceeds recipe support")
 
@@ -121,11 +152,10 @@ class CarlaSimulator(Simulator):
 class CarlaSimulatorRuntime(SimulatorRuntime):
     """One live CARLA world of a `CarlaSimulator`.
 
-    Owns the client, the ego vehicle + its sensors, and the NPC traffic, and applies control through
-    CARLA's shared physics. The ego's own avcarla pipeline is a no-op placeholder: driving is
-    *external* (the `avsectester.closed_loop.avstacks.base.AVStack`), so this runtime only senses (``_observe``)
-    and actuates (``step`` -> ``apply_control``). ``reset`` also captures a strict-spawn
-    ``replay_scenario`` that preparation can reuse for every treatment.
+    Owns the client, ego sensors, NPC traffic and native physics. An external AVStack supplies
+    driving commands. ``advance_interval`` propagates one decision interval and ``capture_at``
+    selects the scheduled native-tick packets. ``reset`` captures a strict-spawn
+    ``replay_scenario`` that preparation can reuse across treatments.
     """
 
     def __init__(self, simulator: CarlaSimulator, seed: int | None = None) -> None:
@@ -147,6 +177,16 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         self._resources = ExitStack()
         self._recipe = None
         self._recipe_replay = None
+        self._recorded_observations = {}
+        self._recorded_states = {}
+        self._recorded_views = {}
+        self._tick_observations = {}
+        self._tick_views = {}
+        self._tick_states = {}
+        self._history_payload_times = {}
+        self._history_pose_times = frozenset()
+        self._origin_tick = 0
+        self._origin_clock_us = None
 
     @property
     def world_key(self) -> tuple[str, str, int]:
@@ -158,7 +198,11 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
 
     @property
     def native(self) -> dict[str, Any]:
-        """Expose live simulator resources for explicit world-level interventions."""
+        """Borrow native world resources, invalidating cached truth before possible edits."""
+        self.invalidate_state()
+        return self._native_resources()
+
+    def _native_resources(self) -> dict[str, Any]:
         actors = {f"npc:{i}": npc.actor for i, npc in enumerate(self.npcs)}
         if self.ego is not None:
             actors["ego"] = self.ego.actor
@@ -173,12 +217,17 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
             "actors": actors,
         }
 
+    def _native_clock(self) -> ClockSnapshot:
+        snapshot = self.client.world.get_snapshot()
+        return ClockSnapshot(snapshot.timestamp.elapsed_seconds, snapshot.frame)
+
     def _state(self) -> WorldSnapshot:
         """Snapshot the latest completed tick, or the known spawn before the first actor tick."""
         if self.client is None or self.ego is None:
             raise RuntimeError("Reset the CARLA simulator before requesting its state")
         snapshot = self.client.world.get_snapshot()
-        self.ego.timestamp = snapshot.timestamp.elapsed_seconds
+        timestamp = snapshot.timestamp.elapsed_seconds
+        self.ego.timestamp = timestamp
         state = self.ego.get_object_state()
         find = getattr(snapshot, "find", None)
         if find is not None and find(self.ego.actor.id) is None:
@@ -200,7 +249,7 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
                 if simulated is not None:
                     actors[name] = _actor_state(simulated, actor.type_id, actor.bounding_box)
         return WorldSnapshot(
-            snapshot.timestamp.elapsed_seconds, snapshot.frame,
+            timestamp, snapshot.frame,
             deepcopy(state), float(state.velocity.norm()), actors,
             ego=_actor_state(self.ego.actor, self.ego.actor.type_id),
             traffic_lights={
@@ -218,15 +267,17 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         actor = self._take_over(actor_id)
         actor.apply_control(carla.VehicleControl(
             throttle=control.throttle, brake=control.brake, steer=control.steer))
+        self.invalidate_state()
 
     def set_actor_state(self, actor_id, state):
         _place(self._take_over(actor_id), state)
+        self.invalidate_state()
 
     def _take_over(self, actor_id):
         """Stop an actor's prescribed or traffic-manager motion so an attack can move it."""
         if actor_id == "ego":
             raise ValueError("The ego is controlled by the driving system")
-        actors = self.native["actors"]
+        actors = self._native_resources()["actors"]
         if actor_id not in actors:
             raise KeyError(f"Unknown CARLA actor {actor_id!r}; available: {sorted(actors)}")
         actor = actors[actor_id]
@@ -243,7 +294,9 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         wrappers, calibration and reference graphs are copied. Capture edits do not move actors.
         """
         memo = {}
-        for payload in observation.sensor_data.values():
+        payloads = [*observation.sensor_data.values(),
+                    *(sample.data for acquisitions in observation.deliveries.values() for sample in acquisitions)]
+        for payload in payloads:
             for candidate in (payload, getattr(payload, "data", None)):
                 if (
                     candidate is not None
@@ -254,7 +307,7 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         return deepcopy(observation, memo)
 
     def _replay_position(self, start):
-        return start.frame.position
+        return self.simulator.deployment_ticks(start.frame.position)
 
     def _resolve_scenario(self, start, initialization, environment):
         if initialization is None and start.frame.position:
@@ -298,10 +351,15 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         self._resources.callback(self.client.close)
         self._apply_map_layers(scenario.get("map_layers"))
         ego_cfg = deepcopy(scenario["ego"])
+        replay_ego_cfg = deepcopy(ego_cfg)
+        for sensor in ego_cfg.get("sensors", ()):
+            # Native sensor_tick can shift its phase by a physics tick. Acquire every tick
+            # and retain only the scheduler's exact source IDs and capture times.
+            sensor["sensor_tick"] = 0.
         ego_cfg["pipeline"] = {"type": "SerialPipeline", "modules": []}
         self.ego = CARLA.build(ego_cfg, default_args={"client": self.client})
         self._resources.callback(self.ego.destroy)
-        replay["ego"] = _spawn_config(scenario["ego"], self.ego, "vehicle")
+        replay["ego"] = _spawn_config(replay_ego_cfg, self.ego, "vehicle")
         for spec in scenario.get("npcs", []):
             npc = CARLA.build(dict(spec), default_args={"client": self.client})
             npc.actor.set_autopilot(False, self.client.traffic_manager_port)
@@ -322,6 +380,21 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
             npc.initialize(snap.timestamp.elapsed_seconds, snap.frame)
         self._initialize_sensors()
         self._recipe_replay = RecipeReplay(self, self._recipe)
+        self._origin_tick = start.frame.position * self.simulator.decision_ticks
+        self._origin_clock_us = None
+        timings = {sensor: self._timing.sensors.get(sensor, SensorTiming()) for sensor in self.sensors}
+        history_plan = initial_history_times(
+            timings, self._history_requirement, self.decision_period_us,
+            pose_reporting_interval_us=self._timing.pose_reporting_interval_us)
+        self._history_payload_times = {sensor: frozenset(times)
+                                       for sensor, times in history_plan.payload_times_us.items()}
+        self._history_pose_times = frozenset(history_plan.pose_times_us)
+        self._recorded_observations = {}
+        self._recorded_states = {}
+        self._recorded_views = {}
+        self._tick_observations = {}
+        self._tick_views = {}
+        self._tick_states = {}
         self._recipe_replay.initialize()
         # Base-world preparation ticks do not emit hooks or count as driving decisions.
         self.client.tick()
@@ -330,6 +403,7 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         self._recipe_replay.finish_holding()
         self._scenario_t0 = self.client.world.get_snapshot().timestamp.elapsed_seconds
         self._base_actor_ids = {actor.id for actor in self.client.world.get_actors()}
+        self._save_recorded_tick()
 
     def _initialize_sensors(self):
         """Create the aligned depth camera, if configured, before the first capture."""
@@ -362,6 +436,86 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         self.ego.apply_control(replay.ego_command())
         self.client.tick()
         replay.after_step()
+        self.invalidate_state()
+        if not self._stepping:
+            self._save_recorded_tick()
+
+    def _due_sensors(self, offset_us):
+        due = []
+        for sensor in sorted(self.sensors):
+            clock = self._timing.sensors.get(sensor, SensorTiming())
+            try:
+                clock.capture_index_at(offset_us, self.decision_period_us)
+            except ValueError:
+                continue
+            due.append(sensor)
+        return tuple(due)
+
+    def _save_recorded_tick(self):
+        replay = self._recipe_replay
+        tick_us = self.timing_capabilities.base_tick_us
+        offset_us = (replay.index - self._origin_tick) * tick_us
+        payload_times, pose_times = self._history_payload_times, self._history_pose_times
+        due = tuple(sorted(sensor for sensor, times in payload_times.items() if offset_us in times))
+        if not due and offset_us not in pose_times:
+            return
+        truth = self.state()
+        self._recorded_states[replay.index] = truth
+        if due:
+            observation = self._observe_sensors(due)
+            previous = self._capture
+            self._capture = observation
+            try:
+                self._recorded_observations[replay.index] = observation
+                self._recorded_views[replay.index] = {
+                    sensor: self._freeze_native_view(sensor, observation, truth) for sensor in due}
+            finally:
+                self._capture = previous
+
+    def _recorded_tick_index(self, time_us):
+        tick = self.timing_capabilities.base_tick_us
+        if time_us % tick:
+            raise ValueError("Recorded CARLA acquisitions must align with its base tick")
+        return self._origin_tick + time_us // tick
+
+    def _observe_recorded(self, time_us):
+        index = self._recorded_tick_index(time_us)
+        if index not in self._recorded_observations:
+            raise ValueError("Selected CARLA start has insufficient replayed sensor history")
+        return self._recorded_observations.pop(index)
+
+    def _recorded_state(self, time_us):
+        index = self._recorded_tick_index(time_us)
+        if index not in self._recorded_states:
+            raise ValueError("Selected CARLA start has insufficient replayed state history")
+        return self._recorded_states[index]
+
+    def _recorded_pose_state(self, time_us):
+        return deepcopy(self._recorded_state(time_us))
+
+    def _recorded_read_complete(self, time_us):
+        index = self._recorded_tick_index(time_us)
+        if index in self._recorded_views:
+            self._recorded_views[index] = {sensor: (geometry, None)
+                for sensor, (geometry, _) in self._recorded_views[index].items()}
+
+
+    def _recorded_sensor_view(self, time_us, sensor, observation):
+        index = self._recorded_tick_index(time_us)
+        try:
+            builder = self._recorded_views[index][sensor][1]
+        except KeyError as error:
+            raise ValueError("Selected CARLA start has insufficient replayed sensor history") from error
+        if builder is None:
+            raise ValueError("Recorded CARLA acquisition has already been handed off")
+        return builder()
+
+    def _recorded_sensor_geometry(self, time_us, sensor):
+        index = self._recorded_tick_index(time_us)
+        try:
+            return self._recorded_views[index][sensor][0]
+        except KeyError as error:
+            raise ValueError("Selected CARLA start has insufficient replayed sensor geometry") from error
 
     def _hold_tick(self):
         self._recipe_replay.hold_origin()
@@ -370,6 +524,8 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
     def _before_selected_capture(self, position):
         if position == 0:
             self._scenario_t0 = self.client.world.get_snapshot().timestamp.elapsed_seconds
+        self._origin_clock_us = timestamp_to_microseconds(
+            self.client.world.get_snapshot().timestamp.elapsed_seconds)
         self._recipe_replay.finish_holding()
 
     def _check_initialization(self, initialization):
@@ -377,7 +533,7 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         if initialization is not None:
             if initialization.provenance.get("deployment_ticks", 0) != self._deployment.ticks:
                 raise ValueError("Reference and run must share the deployment tick plan")
-        base_ids = {actor.id for actor in self.native["actors"].values()}
+        base_ids = {actor.id for actor in self._native_resources()["actors"].values()}
         self.initialization_report.update({
             "start_frame": asdict(self._start.frame), "pre_roll_steps": self._start.frame.position,
             "deployment_ticks": self._deployment.ticks,
@@ -386,15 +542,58 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
             "inserted_actor_ids": [actor.id for actor in self.client.world.get_actors()
                                    if actor.id not in self._base_actor_ids and actor.id not in base_ids],
         })
-        if not self._generating_frame_data:
-            # Frame data generation records the prescribed ego motion; runs drive it.
+        if not self._generating_frame_data and not self._timing.force_gt_duration_us:
+            # Frame data generation records the prescribed ego motion. Runs drive it.
             self._recipe_replay.release_ego()
 
     def _advance_native(self, control):
-        self._recipe_replay.before_step()
-        self.ego.apply_control(control)
-        self.client.tick()
-        self._recipe_replay.after_step()
+        if self._recipe_replay.pre_roll:
+            self._recipe_replay.release_ego()
+        self._advance_ticks(control)
+
+    def _advance_recorded_native(self):
+        self._recipe_replay.pre_roll = True
+        self._advance_ticks(None)
+
+    def _advance_ticks(self, control):
+        tick = self.timing_capabilities.base_tick_us
+        self._tick_observations = {}
+        self._tick_views = {}
+        self._tick_states = {}
+        origin = self._interval_start_us
+        count = self.simulator.decision_ticks
+        for index in range(1, count + 1):
+            if control is None:
+                self._replay_tick()
+            else:
+                self._recipe_replay.before_step()
+                self.ego.apply_control(control)
+                self.client.tick()
+                self._recipe_replay.after_step()
+            timestamp = origin + index * tick
+            self.invalidate_state()
+            self._tick_states[timestamp] = self.state()
+            due = self._due_sensors(timestamp - self._origin_clock_us)
+            if due:
+                observation = self._observe_sensors(due)
+                previous = self._capture
+                self._capture = observation
+                self._tick_observations[timestamp] = observation
+                if index < count:
+                    # Endpoint views read truth after simulator.step.post, like a decision capture.
+                    self._tick_views[timestamp] = {sensor: self._freeze_native_view(
+                        sensor, observation, self._tick_states[timestamp]) for sensor in due}
+                self._capture = previous
+
+    def _completed_state(self):
+        return self._tick_states[self._interval_end_us]
+
+    def _reported_state_at(self, time_us):
+        return deepcopy(self._tick_states[time_us])
+
+    def _activate_reported_state(self, time_us, state):
+        if time_us not in self._tick_states:
+            raise ValueError("CARLA acquisitions must align with its base tick")
 
     def _capture_frame_data(self, frame):
         """Capture actual states and sensor acquisition times, preserving native IDs as evidence."""
@@ -404,7 +603,7 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         scenario_t0 = self._scenario_t0
         actual_time = observation.t - scenario_t0
         actors, aliases = {}, {}
-        for identity, actor in self.native["actors"].items():
+        for identity, actor in self._native_resources()["actors"].items():
             if identity != "ego":
                 actors[identity] = _actor_state(actor, actor.type_id)
             aliases[identity] = actor.id
@@ -439,13 +638,12 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
 
     def _rgb_sensor(self, camera):
         """Resolve a logical RGB sensor name or source ID without selection adapters."""
-        sensors = {name: sensor for name, sensor in self.ego.sensors.items()
-                   if sensor.object.type_id == "sensor.camera.rgb"}
-        matches = [item for name, item in sensors.items()
-                   if camera in (name, item.source_identifier)]
-        if len(matches) == 1:
-            return matches[0]
-        raise ValueError(f"Select a specific RGB camera from {list(sensors)}")
+        name = self.canonical_sensor_id(camera)
+        item = next(sensor for sensor in self.ego.sensors.values()
+                    if sensor.source_identifier == name)
+        if item.object.type_id != "sensor.camera.rgb":
+            raise ValueError(f"Sensor {camera!r} is not an RGB camera")
+        return item
 
     @property
     def sensors(self) -> frozenset[str]:
@@ -460,10 +658,33 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         return frozenset(sensor.source_identifier for sensor in self.ego.sensors.values()
                          if sensor.object.type_id == "sensor.camera.rgb")
 
-    def sensor_geometry(self, sensor: str) -> SensorGeometry:
+    def canonical_sensor_id(self, sensor: str) -> str:
+        """Resolve an ego sensor's logical name or source ID to its observation ID."""
+        if self.ego is None:
+            raise ValueError(f"Unknown CARLA sensor {sensor!r}")
+        matches = [item.source_identifier for name, item in self.ego.sensors.items()
+                   if sensor in (name, item.source_identifier)]
+        if len(matches) != 1:
+            raise ValueError(f"Unknown CARLA sensor {sensor!r}")
+        return matches[0]
+
+    def _frame_range_us(self, sensor: str, end_time_us: int) -> range:
+        """Native CARLA LiDAR spans one physics tick, independently of packet selection."""
+        interval = super()._frame_range_us(sensor, end_time_us)
+        native = next(item for item in self.ego.sensors.values()
+                      if item.source_identifier == sensor)
+        if native.object.type_id.startswith("sensor.lidar."):
+            return range(end_time_us - self.timing_capabilities.base_tick_us, end_time_us)
+        return interval
+
+    def _sensor_geometry(self, sensor: str) -> SensorGeometry:
         from avsectester.geometry.cameras import PinholeCamera
 
-        if not self._world_initialized or self._capture is None:
+        if not self._stepping and not self._resetting:
+            entry = self._tick_views.get(self._clock_time_us, {}).get(sensor)
+            if entry is not None:
+                return entry[0]
+        if not (self._world_initialized or self._resetting or self._stepping) or self._capture is None:
             raise RuntimeError("Reset the CARLA simulator before requesting camera geometry")
         rgb = self._rgb_sensor(sensor)
         optical = np.eye(4)
@@ -474,65 +695,89 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
                               PinholeCamera(np.array(rgb.P[:, :3], copy=True), width, height),
                               optical @ native_inverse @ MIRROR_Y)
 
-    def _sensor_view(self, sensor: str) -> SensorView:
-        """Capture data and physical sensor pose; camera views also provide optical geometry.
+    def _detached_view(self, view):
+        shared = {id(placed): placed for placed in view.objects.values()}
+        shared.update({id(value): value for value in view.native.values()})
+        return deepcopy(view, shared)
 
-        Native SDK measurements are copied into SensorCapture bytes, retaining their original
-        coordinate convention and the native wrapper's options when written back by an action.
-        """
+    def _capture_view_builder(self, sensor, observation, truth):
+        if not self._stepping and not self._resetting:
+            entry = self._tick_views.get(self._clock_time_us, {}).get(sensor)
+            if entry is not None:
+                return entry[1]
+        return self._freeze_native_view(sensor, observation, truth)[1]
+
+    def _freeze_native_view(self, sensor, observation, truth):
+        """Capture immutable view inputs now and defer conversion until a view is requested."""
         from avsectester.data_types import read_camera_rgb
 
-        if not self._world_initialized or self._capture is None:
-            raise RuntimeError("Reset the CARLA simulator before requesting sensor views")
-        matches = [item for name, item in self.ego.sensors.items()
-                   if sensor in (name, item.source_identifier)]
-        if len(matches) != 1:
-            raise ValueError(f"Unknown CARLA sensor {sensor!r}; available: {sorted(self.sensors)}")
-        physical_sensor = matches[0]
+        sensor = self.canonical_sensor_id(sensor)
+        physical_sensor = next(item for item in self.ego.sensors.values()
+                               if item.source_identifier == sensor)
         name = physical_sensor.source_identifier
-        if name not in self._capture.sensor_data:
-            raise ValueError(f"Missing CARLA capture {name!r}")
-        payload = self._capture.sensor_data[name]
-        truth = self.state()
-        if getattr(payload, "frame", truth.frame - physical_sensor.frame0) + physical_sensor.frame0 != truth.frame:
-            raise ValueError("Sensor payload and physical world must use the same frame")
+        payload = observation.sensor_data[name]
         inverse = np.asarray(physical_sensor.object.get_transform().get_inverse_matrix(), dtype=float)
         sensor_from_world = mirror_y_transform(inverse)
-        actors = {name: _actor_state(actor, actor.type_id)
-                  for name, actor in self.native["actors"].items() if name != "ego"}
-        ego = _actor_state(self.ego.actor, self.ego.actor.type_id)
+        native = self._native_resources()
         if physical_sensor.object.type_id != "sensor.camera.rgb":
             data = payload if isinstance(payload, np.ndarray) else getattr(payload, "data", payload)
-            if hasattr(data, "raw_data"):
-                data = SensorCapture(
-                    f"{type(data).__module__}.{type(data).__qualname__}", bytes(data.raw_data),
-                    int(data.frame), float(data.timestamp),
-                    {field: getattr(data, field) for field in
-                     ("channels", "horizontal_angle") if hasattr(data, field)},
-                )
-            else:
-                data = deepcopy(data)
-            return SensorView(name, data, None, None, actors, ego, truth.t, truth.frame,
-                              sensor_from_world=sensor_from_world, native=self.native)
-        geometry = self.sensor_geometry(sensor)
-        rgb = physical_sensor
-        captured = read_camera_rgb(self._capture, name)
+            def build_lidar():
+                converted = data
+                if hasattr(data, "raw_data"):
+                    converted = SensorCapture(
+                        f"{type(data).__module__}.{type(data).__qualname__}", bytes(data.raw_data),
+                        int(data.frame), float(data.timestamp),
+                        {field: getattr(data, field) for field in ("channels", "horizontal_angle")
+                         if hasattr(data, field)})
+                return SensorView(name, converted, None, None, truth.actors, truth.ego,
+                    truth.t, truth.frame, sensor_from_world=sensor_from_world, native=native)
+            return None, build_lidar
+        geometry = self._sensor_geometry(sensor)
+        captured = read_camera_rgb(observation, name)
         if captured is None:
             raise ValueError(f"Missing RGB camera {sensor!r}")
         depth = None
-        depth_rgb = None if self.depth_camera is None else self._rgb_sensor(self.depth_camera)
-        if rgb is depth_rgb:
+        if self.depth_camera is not None and physical_sensor is self._rgb_sensor(self.depth_camera):
             if self.depth_frame != truth.frame:
                 raise RuntimeError("Depth and RGB capture frames differ")
-            depth = np.array(self.depth, copy=True)
-        return SensorView(geometry.sensor, captured[1], geometry.camera, geometry.cam_from_world,
-                          actors, ego, truth.t, truth.frame, sensor_from_world=sensor_from_world,
-                          depth=depth, native=self.native,
-                          occlusion_tolerance_m=self.simulator.occlusion_tolerance_m)
+            depth = self.depth
+        tolerance = self.simulator.occlusion_tolerance_m
+        return geometry, lambda: SensorView(name, captured[1], geometry.camera, geometry.cam_from_world,
+            truth.actors, truth.ego, truth.t, truth.frame, sensor_from_world=sensor_from_world,
+            depth=depth, native=native, occlusion_tolerance_m=tolerance)
+
+    def _preflight_capture(self, time_us, sensor_ids):
+        super()._preflight_capture(time_us, sensor_ids)
+        if not self._world_initialized:
+            return
+        selected = self.sensors if sensor_ids is None else set(sensor_ids)
+        due = self._due_sensors(time_us - self._origin_clock_us)
+        unavailable = selected - set(due)
+        if unavailable:
+            raise ValueError(f"CARLA sensors not due at this tick: {sorted(unavailable)}")
 
     def _observe(self) -> Observation:
-        observation = self._capture_sensors()
-        if self._depth_queue is not None:
+        return self._observe_sensors(tuple(self.sensors))
+
+    def _observe_sensors(self, sensor_ids: Sequence[str]) -> Observation:
+        if not self._stepping and not self._resetting and not self._generating_frame_data:
+            cached = self._tick_observations.get(self.clock.time_us)
+            if self.clock.time_us in self._tick_states and cached is None and sensor_ids:
+                raise ValueError(f"CARLA sensors not due at this tick: {sorted(sensor_ids)}")
+            if cached is None and not sensor_ids and self.clock.time_us in self._tick_states:
+                state = self._tick_states[self.clock.time_us]
+                return Observation(t=state.t, frame=state.frame, sensor_data={}, calibration={},
+                                   vehicle_state=deepcopy(state.vehicle_state), ego_speed=state.ego_speed)
+            if cached is not None:
+                selected = set(sensor_ids)
+                if not selected <= cached.sensor_data.keys():
+                    raise ValueError(f"CARLA sensors not due at this tick: {sorted(selected - cached.sensor_data.keys())}")
+                return self.copy_observation(replace(cached,
+                    sensor_data={key: value for key, value in cached.sensor_data.items() if key in selected},
+                    calibration={key: value for key, value in cached.calibration.items() if key in selected}))
+        observation = self._capture_sensors(sensor_ids)
+        needs_depth = self.depth_camera is not None and self._rgb_sensor(self.depth_camera).source_identifier in sensor_ids
+        if self._depth_queue is not None and needs_depth:
             sample = self._depth_queue.get(timeout=30)
             while sample.frame < observation.frame:
                 sample = self._depth_queue.get(timeout=30)
@@ -542,7 +787,7 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
             self.depth_frame = sample.frame
         return observation
 
-    def _capture_sensors(self) -> Observation:
+    def _capture_sensors(self, sensor_ids=None) -> Observation:
         for _ in range(self.settle_iters):  # await asynchronous sensor delivery for this frame
             if not self.ego.sensor_data_manager.empty():
                 break
@@ -554,7 +799,7 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         snap = self.client.world.get_snapshot()
         t = snap.timestamp.elapsed_seconds
         self.ego.timestamp = t
-        sensor_data = self._aligned_sensor_data(snap.frame)
+        sensor_data = self._aligned_sensor_data(snap.frame, sensor_ids=sensor_ids)
         state = self.ego.get_object_state()
         return self.copy_observation(Observation(
             t=t,
@@ -568,10 +813,11 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
             ego_speed=float(state.velocity.norm()),
         ))
 
-    def _aligned_sensor_data(self, frame, initial=None):
+    def _aligned_sensor_data(self, frame, initial=None, sensor_ids=None):
         """Wait for this tick's configured sensors, draining older queue entries without ticking."""
         manager = self.ego.sensor_data_manager
-        pending = {sensor.source_identifier: sensor for sensor in self.ego.sensors.values()}
+        pending = {sensor.source_identifier: sensor for sensor in self.ego.sensors.values()
+                   if sensor_ids is None or sensor.source_identifier in sensor_ids}
         captured, seen = {}, {}
         for name, payload in (initial or {}).items():
             if name in pending and payload is not None:
@@ -648,7 +894,7 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
                 color = scene["color"]
                 manager.set_color(lights, carla.Color(*color))
         vehicles = settings.get("vehicle_lights", {})
-        actors = {name: actor for name, actor in self.native["actors"].items()
+        actors = {name: actor for name, actor in self._native_resources()["actors"].items()
                   if actor.type_id.startswith("vehicle.")}
         unknown = set(vehicles) - actors.keys() - {"all"}
         if unknown:
@@ -668,7 +914,7 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         if settings is None:
             return
         coefficient = settings["tire_friction"]
-        actors = {name: actor for name, actor in self.native["actors"].items()
+        actors = {name: actor for name, actor in self._native_resources()["actors"].items()
                   if actor.type_id.startswith("vehicle.")}
         selected = settings.get("actors", list(actors))
         if not isinstance(selected, (list, tuple)) or set(selected) - actors.keys():
@@ -684,10 +930,11 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
 
     def _apply_weather(self, weather: Any) -> None:
         """Set the world weather (the CARLA-native, world-level augmentation tier). ``weather`` is a
-        ``carla.WeatherParameters`` preset **name** (e.g. ``"HardRainNoon"``, ``"ClearSunset"``) or a dict
-        of parameters (``cloudiness``, ``precipitation``, ``sun_altitude_angle``, ``fog_density``,
-        ``wetness``, …). Applied to the whole scene — including any world-level patch — so it re-renders
-        under that weather. ``None`` leaves the map's default weather."""
+        ``carla.WeatherParameters`` preset **name** (e.g. ``"HardRainNoon"``, ``"ClearSunset"``) or
+        a mapping of parameters (``cloudiness``, ``precipitation``, ``sun_altitude_angle``,
+        ``fog_density``,
+        ``wetness``, …). Applied to the whole scene — including any world-level patch — so it
+        re-renders under that weather. ``None`` leaves the map's default weather."""
         validate_carla_world_settings({"weather": weather})
         if weather is None:
             return
@@ -741,6 +988,12 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
             self._recipe_replay = None
             self._depth_queue = None
             self.depth = self.depth_frame = None
+            self._history_payload_times.clear()
+            self._history_pose_times = frozenset()
+            self._origin_clock_us = None
+            for cache in (self._recorded_observations, self._recorded_states, self._recorded_views,
+                          self._tick_observations, self._tick_states, self._tick_views):
+                cache.clear()
             super().close()
 
 

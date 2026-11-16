@@ -47,5 +47,5 @@ runs:
     - front
     representations:
     - model_input
-    every_n_steps: 1
+    every_n_captures: 1
   output: ../results/nuscenes_object_insertion

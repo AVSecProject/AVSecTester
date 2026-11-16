@@ -1,7 +1,8 @@
 """Reusable value checks for framework components and user implementations.
 
 Each function raises ``ValueError`` with the supplied parameter name when the value does not
-meet its constraint. Accepted values are left unchanged; these checks perform no conversion.
+meet its constraint. Constraint checks leave accepted values unchanged. Timestamp conversion rounds
+native seconds.
 """
 
 import math
@@ -32,7 +33,15 @@ def require_positive_number(value: float, name: str) -> None:
         raise ValueError(f"{name} must be a positive number")
 
 
+def timestamp_to_microseconds(seconds: float) -> int:
+    """Round a finite native dataset timestamp to the nearest integer microsecond."""
+    if isinstance(seconds, bool) or not isinstance(seconds, Real) or not math.isfinite(seconds):
+        raise ValueError("Timestamp must be finite seconds")
+    return round(float(seconds) * 1_000_000)
+
+
 __all__ = [
+    'timestamp_to_microseconds',
     'require_nonnegative_integer',
     'require_positive_integer',
     'require_nonnegative_number',

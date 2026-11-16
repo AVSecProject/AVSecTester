@@ -1,12 +1,14 @@
 """World/sensor environment merging, normalization and validation through the public API."""
 
 import pytest
+import numpy as np
 
 from avsectester.closed_loop.environment import (
     SensorEnvironment,
     merge_environments, normalize_environment, validate_environment,
 )
 from avsectester.data_types import Observation
+from avsectester.closed_loop.sensor_corruptions import GaussianNoise
 from tests.fakes import MemorySimulator
 
 
@@ -39,3 +41,13 @@ def test_sensor_environment():
     environment = SensorEnvironment({"sensors": [{"type": "Brightness", "camera": "front"}]})
     with pytest.raises(ValueError, match="unavailable camera"):
         environment.apply(Observation(0., 0), position=0)
+    pixels = np.full((4, 5, 3), 100, np.uint8)
+    source = Observation(0., 0, {"front": pixels})
+    seed = 2**40 + 7
+    noisy = SensorEnvironment({"sensors": [{"type": "GaussianNoise", "camera": "front",
+                                             "options": {"severity": .2}}]}, seed)
+    expected = GaussianNoise(severity=.2).apply(pixels.copy(), np.random.default_rng((seed, 3, 0)))
+    np.testing.assert_array_equal(noisy.apply(source, 3).sensor_data["front"], expected)
+    intermediate = noisy.apply(source, 3, interval_capture_index={"front": 1, "rear": 9})
+    expected = GaussianNoise(severity=.2).apply(pixels.copy(), np.random.default_rng((seed, 3, 0, 1)))
+    np.testing.assert_array_equal(intermediate.sensor_data["front"], expected)

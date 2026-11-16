@@ -4,10 +4,39 @@ import numpy as np
 import pytest
 
 from avsectester.closed_loop.simulators.ego_dynamics import (
-    AlpaSimController, KinematicBicycle, PlanarEgoState, TrajectoryFollower,
+    AlpaSimController, EgoMotion, KinematicBicycle, PlanarEgoState, TrajectoryFollower,
 )
 from avsectester.data_types import Control
 from tests.fakes import decelerating_command
+
+
+def test_ego_motion():
+    start = PlanarEgoState(yaw=np.deg2rad(179.))
+    final = PlanarEgoState(x=10., yaw=np.deg2rad(-179.), t=.1)
+    motion = EgoMotion((start, final))
+    middle = motion.at(50000)
+    assert middle.x == 5. and middle.t == .05
+    assert middle.yaw == pytest.approx(np.pi)
+    middle.x = 99.
+    assert motion.at(50000).x == 5.
+    with pytest.raises(ValueError, match="outside"):
+        motion.at(200000)
+    with pytest.raises(ValueError, match="strictly increasing"):
+        EgoMotion((start, start))
+
+
+def test_advance():
+    dynamics = TrajectoryFollower()
+    command = Control(trajectory=[((0., 0., 0.), (1., 0., 0., 0.), 0),
+                                  ((1., 0., 0.), (1., 0., 0., 0.), 100000)])
+    initial = PlanarEgoState()
+    motion = dynamics.advance(initial, command, 100000, (25000, 50000, 75000))
+    assert [round(state.t * 1e6) for state in motion.states] == [0, 25000, 50000, 75000, 100000]
+    assert motion.at(50000).x == pytest.approx(.5)
+    assert motion.at(100000) == dynamics.step(initial, command, .1)
+    assert initial == PlanarEgoState()
+    with pytest.raises(ValueError, match="within the motion"):
+        dynamics.advance(initial, command, 100000, (200000,))
 
 
 @pytest.mark.parametrize("dynamics,command,position,speed,yaw,yaw_rate", [
@@ -36,6 +65,30 @@ def test_step(dynamics, command, position, speed, yaw, yaw_rate):
     assert advanced.yaw_rate == pytest.approx(yaw_rate)
     assert advanced.acceleration == pytest.approx(speed / .1)
     assert initial.x == 10. and initial.speed == 0.
+
+
+def test_trajectory_follower_delayed_reference():
+    dynamics = TrajectoryFollower()
+    initial = PlanarEgoState(x=10.)
+    dynamics.reset(initial)
+    command = Control(trajectory=[
+        ((0., 0., 0.), (1., 0., 0., 0.), 0),
+        ((2., 0., 0.), (1., 0., 0., 0.), 200000)])
+    pose = dynamics.advance(initial, command, 100000).states[-1]
+    assert pose.x == 11.
+    assert dynamics.advance(pose, command, 100000).states[-1].x == 12.
+    expired = dynamics.advance(dynamics.advance(pose, command, 100000).states[-1], command, 100000)
+    assert expired.states[-1].x == 12. and expired.states[-1].speed == 0.
+
+    dynamics.reset(PlanarEgoState())
+    state = PlanarEgoState()
+    for index in range(10):
+        command = Control(trajectory=[
+            ((0., 0., 0.), (1., 0., 0., 0.), index * 100000),
+            ((1., .05, 0.), (1., 0., 0., 0.), (index + 1) * 100000)])
+        state = dynamics.advance(state, command, 100000).states[-1]
+        assert state.t == (index + 1) / 10
+    assert state.speed == 10.012492197250381
 
 
 @pytest.mark.parametrize("acceleration,expected_speed,tolerance", [
@@ -71,9 +124,6 @@ def test_alpasim_controller_reset():
     second = PlanarEgoState(x=40., y=-2., yaw=np.pi / 2, speed=3., t=-.5)
     dynamics.reset(second)
     valid = decelerating_command(second.speed, second.t, 0.)
-    missing_origin = Control(trajectory=valid.trajectory[1:])
-    with pytest.raises(ValueError, match="must start at t0"):
-        dynamics.step(second, missing_origin, .1)
     advanced = dynamics.step(second, valid, .1)
     assert advanced.speed == pytest.approx(3., abs=.05)
     assert advanced.t == pytest.approx(-.4)
@@ -81,3 +131,21 @@ def test_alpasim_controller_reset():
     assert advanced.y == pytest.approx(-1.7, abs=.01)
     with pytest.raises(ValueError, match="latest propagated state"):
         dynamics.step(second, valid, .1)
+
+
+def test_alpasim_controller_advance():
+    pytest.importorskip("alpasim_controller")
+    dynamics = AlpaSimController()
+    initial = PlanarEgoState(x=10., speed=10.)
+    command = decelerating_command(10., 0., 0.)
+    dynamics.reset(initial)
+    motion = dynamics.advance(initial, command, 100000, (33333, 66666, 99999))
+    assert [round(state.t * 1e6) for state in motion.states] == [0, 33333, 66666, 99999, 100000]
+    assert 10. < motion.at(33333).x < motion.at(66666).x < motion.at(100000).x
+    current = motion.at(100000)
+    next_state = dynamics.step(current, command, .1)
+    assert next_state.t == .2 and next_state.x == pytest.approx(12., abs=.01)
+    advanced = dynamics.step(next_state, decelerating_command(10., next_state.t, 0.), .1)
+    assert advanced.x == pytest.approx(13., abs=.01)
+    expired = dynamics.step(advanced, Control(trajectory=command.trajectory[:2]), .1)
+    assert expired.t == .4

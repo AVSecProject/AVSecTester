@@ -11,7 +11,7 @@ pytest.importorskip("carla")
 from avcarla.geometry import CarlaReferenceFrame
 from avstack.geometry import GlobalOrigin3D
 
-from avsectester.data_types import Observation
+from avsectester.data_types import Observation, TimedStateEstimate, interpolate_state_estimate
 from avsectester.closed_loop.simulators.carla import CarlaSimulator
 
 
@@ -43,3 +43,17 @@ def test_copy_observation(native_sensor_case, make_ego):
     assert copied_sensor.calibration is copied.calibration["sensor"] is replacement
     assert copied_sensor.reference is replacement.reference
     assert sensor.calibration is calibration
+
+
+def test_interpolate_state_estimate(make_ego):
+    left = make_ego(xyz=(0, 0, 0), speed=2)
+    right = make_ego(xyz=(10, 0, 0), speed=4)
+    first = TimedStateEstimate(0, 0., left, 2.)
+    last = TimedStateEstimate(100000, .1, right, 4.)
+    assert interpolate_state_estimate((first, last), 0) is first
+    midpoint = interpolate_state_estimate((first, last), 50000)
+    np.testing.assert_allclose(midpoint.vehicle_state.position.x, [5., 0., 0.])
+    np.testing.assert_allclose(midpoint.vehicle_state.velocity.x, [3., 0., 0.])
+    assert midpoint.vehicle_state.attitude.q == left.attitude.q
+    assert midpoint.vehicle_state.t == midpoint.t == .05
+    np.testing.assert_array_equal(left.position.x, [0., 0., 0.])

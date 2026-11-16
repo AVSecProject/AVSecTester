@@ -172,6 +172,15 @@ request records and capability checks are defined in the
 
 ## Online phase
 
+An online attack's `step` receives raw frames ending exactly at the decision timestamp. This
+batch may be empty when `frame_interval_us` is independent of the decision period. A one-shot
+sensor action affects only that batch. When its sensor is not due, it receives `not_applied`
+instead of modifying a cached or later frame. Use `SensorAttackAction.active_for_us` to affect
+later frame ends in its active interval, including between decisions. Frame processing follows the
+sensor clock, while `pose_reporting_interval_us` controls localization timestamps. See
+[Runtime](../reference/runtime.md#attack-actions).
+
+
 The deployment tick budget is the maximum of
 `hooks.setup_ticks + attack.deployment_ticks(segment)` across all configured attacks, segments,
 seeds and treatments. Every treatment uses that budget. Larger budgets can make early starts

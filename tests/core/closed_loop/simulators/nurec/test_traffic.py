@@ -120,15 +120,16 @@ def test_open_session(traffic_service, traffic_inputs, monkeypatch):
     final[0, 3] = 31.
     cropped = TrafficTrack("cropped", ((-100000, pose), (3000000, final)), (4., 2., 1.), "car", False)
     outside = TrafficTrack("outside", ((3000000, pose), (4000000, pose)), (4., 2., 1.), "car", True)
-    args = {**traffic_inputs, "start_us": 1500000, "end_us": 2000000, "tracks": (cropped, outside)}
+    args = {**traffic_inputs, "start_us": 1500000, "end_us": 2500000, "tracks": (cropped, outside),
+            "force_gt_duration_us": 500000, "decision_period_us": 200000}
     session = traffic.open_session(**args)
     try:
         assert session.track_ids == ("cropped",)
-        assert session.handover_time_us == 1600000
+        assert session.handover_time_us == 2200000
         sent = traffic_service.sessions[-1].logged_object_trajectories[1].trajectory.poses
-        assert [point.timestamp_us for point in sent] == [0, 2000000]
+        assert [point.timestamp_us for point in sent] == [0, 2500000]
         np.testing.assert_allclose(proto_world_pose(sent[0].pose)[:3, 3], [1., 0., 0.])
-        np.testing.assert_allclose(proto_world_pose(sent[-1].pose)[:3, 3], [21., 0., 0.])
+        np.testing.assert_allclose(proto_world_pose(sent[-1].pose)[:3, 3], [26., 0., 0.])
     finally:
         session.close()
     with pytest.raises(RuntimeError, match="does not serve"):
@@ -262,3 +263,32 @@ def test_close(traffic_service, traffic_inputs, monkeypatch):
     with pytest.raises(RuntimeError, match="not open"):
         session.simulate(100000, np.eye(4), {})
     assert all(channel.closed for channel in traffic_service.channels)
+
+
+def test_alpasim_handover(traffic_service, traffic_inputs, monkeypatch):
+    """The actual session request follows AlpaSim's traffic handover expression."""
+    import ast
+    import inspect
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    source = Path("/opt/alpasim/src/runtime")
+    if source.exists():
+        monkeypatch.syspath_prepend(str(source))
+    official = pytest.importorskip("alpasim_runtime.services.traffic_service")
+    assignments = (node for node in ast.walk(ast.parse(inspect.getsource(official)))
+                   if isinstance(node, ast.Assign))
+    expression = next(node.value for node in assignments
+                      if any(isinstance(target, ast.Name) and target.id == "handover_time_us"
+                             for target in node.targets))
+    expected = eval(compile(ast.Expression(expression), inspect.getfile(official), "eval"), {
+        "start_timestamp_us": traffic_inputs["start_us"],
+        "cfg": SimpleNamespace(force_gt_duration_us=500000, control_timestep_us=200000),
+    })
+    traffic = AlpaSimTraffic(traffic_service.endpoint)
+    session = traffic.open_session(**traffic_inputs, force_gt_duration_us=500000,
+                                   decision_period_us=200000)
+    try:
+        assert session.handover_time_us == traffic_service.sessions[-1].handover_time_us == expected
+    finally:
+        session.close()

@@ -5,6 +5,7 @@ Record and native conversions share `avsectester.serialization`.
 """
 
 from avsectester.runlog.log import (
+    CaptureRecord,
     EventRecord,
     Recorder,
     RunLog,
@@ -14,6 +15,7 @@ from avsectester.runlog.log import (
 
 
 __all__ = [
+    'CaptureRecord',
     'EventRecord',
     'Recorder',
     'RunLog',

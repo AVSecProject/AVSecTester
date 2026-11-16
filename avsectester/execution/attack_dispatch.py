@@ -1,6 +1,6 @@
 """Apply a run's attack actions at their closed-loop execution stages.
 
-The dispatcher owns execution order and receipts; each AttackRuntime owns its attack state.
+The dispatcher owns execution order and receipts. Each AttackRuntime owns its attack state.
 Sensor actions chain on detached capture data before the driving system's ObservationPipeline.
 """
 from __future__ import annotations
@@ -11,7 +11,7 @@ from copy import deepcopy
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
-from avsectester.validation import require_nonnegative_integer
+from avsectester.validation import require_nonnegative_integer, timestamp_to_microseconds
 from avsectester.attack.runtime import (
     AttackAction, AttackRuntime, AVStackAttackAction, OnlineContext, ResultSubscription,
     SensorAttackAction, WorldAttackAction,
@@ -65,7 +65,7 @@ def chain_sensor_actions(
     """Apply sensor actions in issue order to copies of their captures and write them back.
 
     Each action receives the output of the previous action on the same physical sensor, so
-    actions that address one sensor through different names chain on a single copy; the sensor
+    actions that address one sensor through different names chain on a single copy. The sensor
     view's own data is never modified. ``views`` holds sensor views already read for this
     capture. ``on_applied(action)`` runs after each action.
     """
@@ -96,7 +96,7 @@ class AttackDispatcher:
 
     Validate before reset, then append ``hooks`` to the run's HookSet. ``setup`` runs inside
     the reset through the simulator.setup hook. ``step`` runs
-    once per decision before ``apply_sensor_actions`` and ObservationPipeline; ``stop`` runs in a
+    once per decision before ``apply_sensor_actions`` and ObservationPipeline. ``stop`` runs in a
     finally block. Every action gets a request record and a receipt.
     """
 
@@ -133,6 +133,8 @@ class AttackDispatcher:
         self._step_contexts: dict[int, OnlineContext] = {}
         self._world: list[tuple[int, WorldAttackAction, AttackRuntime]] = []
         self._sensor: list[tuple[int, SensorAttackAction, AttackRuntime]] = []
+        self._persistent: list[tuple[int, SensorAttackAction, AttackRuntime, int, int | None]] = []
+        self._applied_persistent: set[int] = set()
         self._avstack: list[tuple[int, AVStackAttackAction, AttackRuntime]] = []
         self._last_step = -1
         self._has_setup = False
@@ -165,6 +167,8 @@ class AttackDispatcher:
                         "use SensorAttackAction to modify sensor data")
                 if action.stage not in _STAGE_ORDER or action.stage not in self._available:
                     raise UnsupportedStageError(f"Unsupported attack action stage: {action.stage!r}")
+            if isinstance(action, SensorAttackAction) and action.active_for_us is not None:
+                require_nonnegative_integer(action.active_for_us, "SensorAttackAction.active_for_us")
 
     @property
     def hooks(self) -> tuple[Hook, ...]:
@@ -275,7 +279,14 @@ class AttackDispatcher:
                 if isinstance(action, WorldAttackAction):
                     self._world.append((action_id, action, attack))
                 elif isinstance(action, SensorAttackAction):
-                    self._sensor.append((action_id, action, attack))
+                    if action.active_for_us == 0:
+                        self._sensor.append((action_id, action, attack))
+                    else:
+                        start = context.capture_time_us
+                        if start is None:
+                            start = timestamp_to_microseconds(context.sim_time)
+                        end = None if action.active_for_us is None else start + action.active_for_us
+                        self._persistent.append((action_id, action, attack, start, end))
                 elif isinstance(action, AVStackAttackAction):
                     self._avstack.append((action_id, action, attack))
                     self._step_contexts[id(attack)] = attack_context
@@ -284,27 +295,76 @@ class AttackDispatcher:
         """Remember the post-step clock for a later stop context."""
         self._last_context = context
 
+    def discard_missing_sensor_actions(
+        self, observation: Observation, simulator_runtime: SimulatorRuntime,
+    ) -> None:
+        """Resolve sensor targets and reject one-shot actions without an issuing-time frame."""
+        context = self._last_context
+        assert context is not None
+        for _identity, action, _attack, _start, _end in self._persistent:
+            simulator_runtime.canonical_sensor_id(action.sensor)
+        remaining = []
+        for action_id, action, attack in self._sensor:
+            sensor = simulator_runtime.canonical_sensor_id(action.sensor)
+            if sensor in observation.sensor_data:
+                remaining.append((action_id, action, attack))
+            else:
+                self._receipt(action_id, action, context.step, "capture", observation.t,
+                              observation.frame, "not_applied", "sensor_not_acquired_at_issue_time")
+        self._sensor = remaining
+
     def apply_sensor_actions(self, observation: Observation, simulator_runtime: Any) -> Observation:
-        """Apply this decision's sensor actions to the captured observation, in issue order."""
-        if not self._sensor:
+        """Apply one-shot and active duration actions to this timestamp's due sensors."""
+        time_us = simulator_runtime.clock.time_us
+        for identity, action, _attack, _start, end in self._persistent:
+            if end is not None and time_us >= end:
+                if identity not in self._applied_persistent:
+                    context = self._last_context
+                    assert context is not None
+                    self._receipt(identity, action, context.step, "capture", observation.t,
+                                  observation.frame, "not_applied", "no_frame_during_active_interval")
+                self._applied_persistent.discard(identity)
+        self._persistent = [item for item in self._persistent if item[4] is None or time_us < item[4]]
+        pending = list(self._sensor)
+        pending.extend((identity, action, attack) for identity, action, attack, start, end in self._persistent
+                       if start <= time_us and simulator_runtime.canonical_sensor_id(action.sensor)
+                       in observation.sensor_data)
+        pending.sort(key=lambda item: item[0])
+        if not pending:
             return observation
-        pending, self._sensor = self._sensor, []
+        self._sensor = []
         context = self._last_context
         assert context is not None
         action_ids = iter(action_id for action_id, _action, _attack in pending)
 
         def receipt(action: SensorAttackAction) -> None:
-            self._receipt(next(action_ids), action, context.step, "capture", context.sim_time,
-                          context.frame)
+            identity = next(action_ids)
+            if action.active_for_us != 0:
+                self._applied_persistent.add(identity)
+            self._receipt(identity, action, context.step, "capture", observation.t,
+                          observation.frame)
 
         return chain_sensor_actions(observation, simulator_runtime,
                                     [action for _id, action, _attack in pending], on_applied=receipt)
 
-    def finish_decision(self) -> None:
-        """Reject AVStack actions whose stage was skipped in this decision."""
-        if self._avstack:
+    def finish_decision(self, *, skip_driver: bool = False, every_sensor_due: bool = True) -> None:
+        """Reject AVStack actions whose stage was skipped in this decision.
+
+        A driver skipped during force_gt, or a decision where some sensor had no frame due,
+        records them as not applied. Otherwise a skipped stage raises RuntimeError.
+        """
+        if not self._avstack:
+            return
+        if every_sensor_due and not skip_driver:
             raise RuntimeError(
                 f"Attack actions were not applied: {sorted({e.stage for _, e, _ in self._avstack})}")
+        context = self._last_context
+        assert context is not None
+        reason = "driving_system_skipped_during_force_gt" if skip_driver else "stage_not_executed"
+        for identity, action, _attack in self._avstack:
+            self._receipt(identity, action, context.step, action.stage, context.sim_time,
+                          context.frame, "not_applied", reason)
+        self._avstack.clear()
 
     def _at_stage(self, value: Any, context: StageContext) -> Any:
         remaining = []
@@ -343,12 +403,17 @@ class AttackDispatcher:
         context = replace(self._last_context, stage="stop") if self._last_context else None
         # Stop also runs for zero decisions and partial failures. An action whose point of
         # action was never reached was not applied, whether or not the run succeeded.
-        pending = sorted([*self._world, *self._sensor, *self._avstack], key=lambda item: item[0])
+        pending = sorted([*self._world, *self._sensor, *self._avstack,
+                          *((identity, action, attack) for identity, action, attack, _start, _end
+                            in self._persistent if identity not in self._applied_persistent)],
+                         key=lambda item: item[0])
         for action_id, action, _attack in pending:
             assert context is not None
             self._receipt(action_id, action, context.step, context.stage, context.sim_time,
                           context.frame, "not_applied", "run_ended_before_point_of_action")
         self._world, self._sensor, self._avstack = [], [], []
+        self._persistent.clear()
+        self._applied_persistent.clear()
         failure: BaseException | None = None
         for attack in reversed(self._started):
             try:

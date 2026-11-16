@@ -114,6 +114,7 @@ files = [
     "avsectester/experiment/result_evaluation.py",
     "avsectester/data_types.py", "avsectester/validation.py",
     "avsectester/type_paths.py", "avsectester/serialization.py", "avsectester/closed_loop/hooks.py",
+    "avsectester/closed_loop/timing.py",
     "avsectester/closed_loop/avstacks/base.py", "avsectester/closed_loop/avstacks/driving_adapter.py",
     "avsectester/closed_loop/simulators/object_composition.py",
     "avsectester/closed_loop/simulators/ego_dynamics.py",

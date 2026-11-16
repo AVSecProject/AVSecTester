@@ -12,6 +12,7 @@ from avsectester.attack.insertion import InsertObject
 from avsectester.attack.optimization import HideBelowThreshold, NES, PGD
 from avsectester.execution.services import ClosedLoopServices, RenderRequest
 from avsectester.closed_loop.avstacks import DrivingAdapter, ScorerDescriptor
+from avsectester.closed_loop.timing import HistoryRequirement, TimingConfiguration
 from avsectester.data_types import read_camera_rgb
 from tests.fakes import ConstantAVStack, MemoryDataset, MemorySimulator, StopCommandAVStack
 from avsectester.geometry.projection import project_box
@@ -395,7 +396,7 @@ def test_black_box_offline_phase(
     )
     attack = StopSignPatchAttack(initial_patch="white", optimization=options)
     adapter = DrivingAdapter(lambda seed: StopCommandAVStack(image_dependent=image_dependent),
-                             past_steps=15)
+                             history=HistoryRequirement(samples=16))
     with ClosedLoopServices(original_services.dataset, original_services.simulator, adapter) as services:
         context = OfflineContext(
             services, training, seed=0, validation_metadata=(make_segment(start=23),),
@@ -452,6 +453,27 @@ def test_black_box_offline_phase(
         assert np.array_equal(texture, report.images["initial_texture"].pixels) == expected_unchanged
 
 
+def test_black_box_force_gt(nurec_patch_services_and_segment, tmp_path):
+    original, make_segment = nurec_patch_services_and_segment
+    attack = StopSignPatchAttack(optimization=RolloutPatchOptimization(
+        NES(steps=1, population_size=2, learning_rate=1., seed=0), min_stop_command_step=2))
+    adapter = DrivingAdapter(lambda seed: StopCommandAVStack(stop_after=0),
+                             history=HistoryRequirement(samples=16))
+    with ClosedLoopServices(original.dataset, original.simulator, adapter,
+            timing=TimingConfiguration(force_gt_duration_us=200000,
+                                       skip_driver_during_force_gt=True)) as services:
+        report = OfflineReport(tmp_path / "offline")
+        attack.run_offline(OfflineContext(services, (make_segment(),), seed=0, report=report))
+    rows = [*report.tables["training_segment_eligibility"].rows,
+            *report.tables["optimization_rollouts"].rows]
+    assert rows and all(row["stop_command_step"] == 2 for row in rows)
+    for row in rows:
+        log = RunLog.read(report.directory / row["run_log"])
+        assert [step.force_gt for step in log.steps] == [True, True, False]
+        assert all(step.produced_command is None for step in log.steps[:2])
+        assert log.steps[-1].produced_command is not None
+
+
 def test_black_box_eligibility_and_errors(nurec_patch_services_and_segment, tmp_path):
     original_services, make_segment = nurec_patch_services_and_segment
     options = RolloutPatchOptimization(
@@ -460,7 +482,7 @@ def test_black_box_eligibility_and_errors(nurec_patch_services_and_segment, tmp_
     )
     attack = StopSignPatchAttack(initial_patch="white", optimization=options)
     adapter = DrivingAdapter(
-        lambda seed: StopCommandAVStack(stop_by_start={15: None, 16: 0}), past_steps=15)
+        lambda seed: StopCommandAVStack(stop_by_start={15: None, 16: 0}), history=HistoryRequirement(samples=16))
     with ClosedLoopServices(original_services.dataset, original_services.simulator, adapter) as services:
         # Starting at 15 never stops: the full segment passes the sign, the short one ends first.
         context = OfflineContext(
@@ -500,7 +522,7 @@ def test_black_box_eligibility_and_errors(nurec_patch_services_and_segment, tmp_
             attack.run_offline(rejected)
         assert all(not row["retained"] for row in rejected.report.tables["training_segment_eligibility"].rows)
     invalid_adapter = DrivingAdapter(
-        lambda seed: StopCommandAVStack(invalid_timestamps=True), past_steps=15)
+        lambda seed: StopCommandAVStack(invalid_timestamps=True), history=HistoryRequirement(samples=16))
     with ClosedLoopServices(original_services.dataset, original_services.simulator, invalid_adapter) as services:
         failed = OfflineContext(
             services, (make_segment(),), report=OfflineReport(tmp_path / "failed/files"))

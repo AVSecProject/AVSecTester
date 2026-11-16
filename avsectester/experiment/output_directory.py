@@ -19,6 +19,7 @@ from avsectester.serialization import DEFAULT_REGISTRY
 from avsectester.maps import ScenarioMap
 from avsectester.runlog import RunLog
 from avsectester.closed_loop.simulators.base import DeploymentPlan
+from avsectester.closed_loop.timing import TimingConfiguration
 
 from .models import (
     ExperimentResult, PreparedExperiment, SelectionDecision, TreatmentResult,
@@ -238,7 +239,7 @@ def _require_parameters(summary: Any) -> None:
 
 @dataclass(frozen=True)
 class PreparedMetadata:
-    """Saved metadata for offline analysis; deliberately has no executable artifacts."""
+    """Saved metadata for offline analysis. Deliberately has no executable artifacts."""
 
     metadata: Mapping[str, tuple[AttackSegment, ...]]
     selections: tuple[SelectionDecision, ...]
@@ -287,9 +288,17 @@ def _load_metadata(configuration: ExperimentConfiguration, directory: str | Path
     if set(manifest["attacks"]) != set(configuration.attacks):
         raise ConfigurationMismatchError("Saved attack names differ from the supplied configuration")
     preparation = _read_preparation(manifest)
+    # Timing and model history determine selection even when only loading saved metadata.
+    current = preparation_record(configuration)
+    for key in ("timing", "history"):
+        if key in preparation and _canonical_text(preparation[key]) != _canonical_text(current[key]):
+            raise ConfigurationMismatchError(f"Saved preparation.{key} differs from the supplied configuration")
+    legacy_timing = "timing" not in preparation or "history" not in preparation
+    if legacy_timing and configuration.runs.timing != TimingConfiguration():
+        raise ConfigurationMismatchError("Legacy preparation requires default runs.timing")
     if validate_dataset:
         _check_preparation(configuration, preparation)
-    elif _canonical_text(preparation["split"]) != _canonical_text(preparation_record(configuration)["split"]):
+    elif _canonical_text(preparation["split"]) != _canonical_text(current["split"]):
         raise ConfigurationMismatchError("Saved preparation.split differs from the supplied configuration")
     saved = manifest.get("configuration")
     _require_parameters(saved)
@@ -334,7 +343,27 @@ def _load_metadata(configuration: ExperimentConfiguration, directory: str | Path
             for segment in segments:
                 configuration.dataset.checked_frame(segment.scenario_id, segment.start)
                 configuration.dataset.checked_frame(segment.scenario_id, segment.stop)
+                if configuration.runs.timing.force_gt_duration_us:
+                    start = configuration.dataset.scenario_start(segment.scenario_id, segment.start)
+                    configuration.simulator.validate_startup(start, configuration.runs.timing.force_gt_duration_us)
         metadata[name] = segments
+    if legacy_timing and validate_dataset:
+        from avsectester.execution.services import ClosedLoopServices
+
+        ticks = manifest["deployment_ticks"]
+        segments_by_scenario: dict[str, dict[int, AttackSegment]] = {}
+        for segments in metadata.values():
+            for segment in segments:
+                segments_by_scenario.setdefault(segment.scenario_id, {})[segment.start.position] = segment
+        with ClosedLoopServices(configuration.dataset, configuration.simulator, configuration.avstack,
+                deployment=DeploymentPlan(0 if ticks is None else ticks),
+                timing=configuration.runs.timing) as services:
+            with services.session(preparation["seed"]) as session:
+                for segments in segments_by_scenario.values():
+                    for segment in segments.values():
+                        if not session.can_start_at(segment.start.position):
+                            raise ConfigurationMismatchError(
+                                f"Legacy preparation segment {segment.start.position} lacks required history")
     decisions = tuple(SelectionDecision.from_dict(item) for item in manifest["selections"])
     if "units" not in manifest:
         raise ConfigurationMismatchError("Saved preparation uses an unsupported layout without segment units")

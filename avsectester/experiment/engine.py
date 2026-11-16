@@ -82,7 +82,8 @@ def _segments(attack_name: str, attack: Any, view: Any,
     deployment = _deployment_plan(config, attack_name, selected)
     accepted = []
     with ClosedLoopServices(config.dataset, config.simulator, config.avstack,
-                            view.services.frame_data_cache, deployment=deployment) as services:
+                            view.services.frame_data_cache, deployment=deployment,
+                            timing=config.runs.timing) as services:
         with services.session(view.seed) as session:
             for segment in selected:
                 if not session.can_start_at(segment.start.position):
@@ -92,7 +93,8 @@ def _segments(attack_name: str, attack: Any, view: Any,
                     continue
                 start = config.dataset.scenario_start(segment.scenario_id, segment.start)
                 try:
-                    config.simulator.validate_start(start)
+                    config.simulator.validate_start_timing(start, config.runs.timing)
+                    config.simulator.validate_startup(start, config.runs.timing.force_gt_duration_us)
                 except UnsupportedStartError as error:
                     view.record_reason(f"Segment at position {segment.start.position} cannot start: {error}")
                     continue
@@ -121,6 +123,7 @@ def _selected_metadata(configuration: ExperimentConfiguration, cache: FrameDataC
                 with ClosedLoopServices(
                     configuration.dataset, configuration.simulator,
                     configuration.avstack, cache,
+                    timing=configuration.runs.timing,
                 ) as services:
                     view = services.scenario(scenario.id, seed=seed)
                     values = _segments(name, attack, view, configuration)
@@ -147,6 +150,7 @@ def _selected_metadata(configuration: ExperimentConfiguration, cache: FrameDataC
         with ClosedLoopServices(
             configuration.dataset, configuration.simulator, configuration.avstack,
             cache, deployment=deployment,
+            timing=configuration.runs.timing,
         ) as services, services.session(seed) as session:
             for segment in segments:
                 if session.can_start_at(segment.start.position):
@@ -202,14 +206,16 @@ def _validated_metadata(configuration: ExperimentConfiguration,
     with ClosedLoopServices(
         configuration.dataset, configuration.simulator, configuration.avstack,
         deployment=deployment,
+        timing=configuration.runs.timing,
     ) as services, services.session(configuration.runs.seeds[0]) as session:
         for index, segment in enumerate(segments):
             try:
                 if not session.can_start_at(segment.start.position):
                     raise ValueError(f"Cannot start with shared deployment budget {deployment.ticks}: "
                                      "insufficient recorded history or deployment window")
-                configuration.simulator.validate_start(
-                    configuration.dataset.scenario_start(segment.scenario_id, segment.start))
+                start = configuration.dataset.scenario_start(segment.scenario_id, segment.start)
+                configuration.simulator.validate_start_timing(start, configuration.runs.timing)
+                configuration.simulator.validate_startup(start, configuration.runs.timing.force_gt_duration_us)
             except Exception as error:
                 raise ValueError(f"Metadata segment {index} ({segment.scenario_id}, "
                                  f"{segment.start.position}–{segment.stop.position}): {error}") from error
@@ -248,8 +254,9 @@ def _validate(configuration: ExperimentConfiguration, resume: bool) -> _Validati
         build_units(configuration, segments.metadata, scenario_ids=tuple(x.id for x in scenarios))
         return _Validation(segments=segments, scenarios=scenarios)
     else:
-        # Construction checks adapter compatibility; sessions and native resources stay unopened.
-        with ClosedLoopServices(configuration.dataset, configuration.simulator, configuration.avstack):
+        # Construction checks adapter compatibility. Sessions and native resources stay unopened.
+        with ClosedLoopServices(configuration.dataset, configuration.simulator, configuration.avstack,
+                                timing=configuration.runs.timing):
             pass
     return _Validation()
 
@@ -341,6 +348,7 @@ class Experiment:
                 with ClosedLoopServices(
                     configuration.dataset, configuration.simulator, configuration.avstack,
                     cache, deployment=deployment,
+                    timing=configuration.runs.timing,
                 ) as services:
                     artifacts[name] = attack.run_offline(OfflineContext(
                         services, training, seed, environment, deployment, validation, report,
@@ -531,6 +539,7 @@ class _Execution:
             # simulator, seed, base environment and the shared deployment window.
             with ClosedLoopServices(
                 config.dataset, config.simulator, frame_data_cache=self.cache, deployment=deployment,
+                timing=config.runs.timing,
             ) as services, services.session(group.seed) as session:
                 initialization = session.initialization(start, config.runs.environment)
         return start, initialization
@@ -551,6 +560,7 @@ class _Execution:
                     retain_sensor_data=destination is None, metadata=metadata,
                     start=deepcopy(start), initialization=deepcopy(initialization),
                     deployment=deployment, environment=metadata["environment"],
+                    timing=config.runs.timing,
                 )
                 runner_owns_attack = True
                 log = ClosedLoopRunner().run(simulator_runtime, avstack, request,

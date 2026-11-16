@@ -119,5 +119,5 @@ runs:
     - lidar-0-0
     representations:
     - model_input
-    every_n_steps: 1
+    every_n_captures: 1
   output: ../results/carla_phantom

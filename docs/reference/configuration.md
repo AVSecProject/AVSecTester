@@ -82,7 +82,7 @@ runs:
   recording:
     sensor_ids: [front]
     representations: [model_input]
-    every_n_steps: 1
+    every_n_captures: 1
   output: results/memory
 ```
 
@@ -134,7 +134,8 @@ per-treatment overrides.
 The preparation records the source path and raw-byte SHA256. Compatibility depends only on that
 hash, so moving an unchanged file is allowed. Changing any bytes, including whitespace, changes
 its identity. Reusing preparation for execution checks the current file's hash and rechecks
-saved segment frames. Other checks follow [Input validation](../guides/experiments.md#input-validation).
+saved segment frames. Other checks follow
+[Input validation](../guides/experiments.md#input-validation).
 Reevaluation uses the saved hash and segments without reading this file. Adding or removing
 `metadata.load` relative to the saved configuration is incompatible.
 
@@ -175,6 +176,76 @@ validation segments, each in selection order. `PreparedExperiment.metadata` keep
 and `units` records the part and selecting attacks. `split.execute` affects execution, not
 preparation compatibility.
 
+## Scheduling
+
+`runs.timing` uses AlpaSim parameter names and integer microseconds. Its defaults reproduce the
+original single-frame decision loop. AlpaSim's own defaults are enabled only when configured.
+CARLA observation timestamps retain their native floating representation, and recorded replay
+retains dataset timestamps. These do not replace the integer scheduler clock.
+
+Python `TimingConfiguration` values are hashable. Their `sensors` mapping is copied from the caller
+and stored immutably in sorted key order. Read it by key or with `.get()` and `.items()`.
+Build a new configuration to change a value.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `decision_period_us` | Simulator period | Decision interval, equal to the dataset grid |
+| `sensors.<id>.frame_interval_us` | Decision period | Sensor frame interval |
+| `sensors.<id>.shutter_duration_us` | `0` | Camera exposure duration |
+| `pose_reporting_interval_us` | `0` | Intermediate controller pose interval |
+| `planner_delay_us` | `0` | Command-buffer delay |
+| `force_gt_duration_us` | `0` | Initial recorded-motion duration |
+| `skip_driver_during_force_gt` | `false` | Skip driving inference during recorded motion |
+
+The frame interval must be positive. Durations and delays must be nonnegative. Each sensor's
+first frame ends at the run origin. Subsequent frames end at integer multiples of its
+`frame_interval_us`, independently of the decision clock. A camera frame spans
+`[frame_end_us - shutter_duration_us, frame_end_us)`. Zero exposure selects instantaneous
+rendering. LiDAR accepts no exposure setting. NuRec scans over one `frame_interval_us`.
+CARLA retains native packets, each spanning one physical tick, at the selected frame interval.
+
+The decision period still equals the dataset grid. Segment decision counts remain the
+difference between start and stop frame positions. A separate `pose_reporting_interval_us`
+controls intermediate poses, independently of sensor frame intervals. Zero reports only control
+endpoints. Localization follows these pose timestamps. See
+[Runtime](runtime.md#one-decision) for ordering, interpolation, buffering and `force_gt`.
+
+| Simulator | Timing capabilities |
+|---|---|
+| NuRec | Independent frame intervals, exposure and pose reports |
+| CARLA | All intervals and durations must align with physical ticks, exposure is zero |
+| Recorded replay | Only default timing on nominal keyframes |
+
+CARLA's `client.rate` must produce an integer-microsecond physical tick. Unsupported settings
+fail during configuration. `force_gt_duration_us` also requires a recording covering that
+initial interval and must be a whole number of decision periods. When that duration is positive,
+simulators without `trajectory` in their declared `command_modes` reject
+`skip_driver_during_force_gt: true`.
+NuRec LiDAR validates its calibrated spin period against the frame interval
+within one percent. See [Simulators](../guides/simulators.md).
+
+```yaml
+runs:
+  timing:
+    decision_period_us: 100000
+    pose_reporting_interval_us: 10000
+    planner_delay_us: 100000
+    force_gt_duration_us: 500000
+    skip_driver_during_force_gt: false
+    sensors:
+      camera_front_wide_120fov:
+        frame_interval_us: 33000
+        shutter_duration_us: 17000
+      lidar_gt_top_p128:
+        frame_interval_us: 100000
+```
+
+This fragment keeps the decision grid at 100 ms and configures independent camera and LiDAR
+clocks. Keep the supplied dataset, simulator and driving-system configuration. Camera phase
+from the recording is **Not yet implemented.** See
+[Recorded camera phase](../development/TODO.md#recorded-camera-phase).
+
+
 ## Simulator
 
 CARLA scene and prescribed motion settings belong to `CarlaRecipe`. `CarlaSimulator` receives
@@ -184,6 +255,13 @@ dataset. [Simulators](../guides/simulators.md) describes their behavior.
 A simulator's top-level `time_step` parameter inherits `dataset.time_step` when omitted and when
 the dataset provides it. This injection does not recurse into nested constructors. Explicit
 values are retained, but `ExperimentConfiguration` rejects a dataset/simulator mismatch.
+The loader also injects `decision_period_us` from that grid into the simulator's top-level
+constructor when it declares that parameter. Explicit options take precedence. Neither time
+setting is injected into nested constructors.
+`client.rate` sets the native physics base tick, not the driving decision frequency. The decision
+period must be an integer number of base ticks. `runs.timing.sensors` selects acquisition ticks.
+See [CARLA capture timing](../guides/simulators.md#carla) for native sensor settings and LiDAR
+scans.
 
 ### NuRec closed-loop settings
 
@@ -239,7 +317,8 @@ client. Set this unchanged server-side string only when connecting to an externa
 whose asset mount has a different path. See
 [automatic local services](cli.md#automatic-local-services) for startup and mounts.
 
-For insertion behavior, see [Inserted world objects](../guides/simulators.md#inserted-world-objects).
+For insertion behavior, see
+[Inserted world objects](../guides/simulators.md#inserted-world-objects).
 
 ### Reactive traffic
 
@@ -254,8 +333,9 @@ traffic:
     rpc_timeout_s: 300.0
 ```
 
-Traffic defaults to `null`. Enabling it requires 0.1 s decisions and `history_steps - 1` preceding
-recorded decisions. Traffic configuration affects preparation identity. `metadata.load` can
+Traffic defaults to `null`. Its fixed traffic step is 0.1 s. Decision periods must be whole
+multiples of that step. Selection requires `history_steps - 1` preceding recorded decisions.
+Traffic configuration affects preparation identity. `metadata.load` can
 share segments between modes. Services are managed by [run](cli.md#automatic-local-services).
 
 ## Mesh assets
@@ -318,11 +398,11 @@ option is an error. The top-level device follows the [device rule](#device).
 | `command_modes` | Optional assertion matching the stack's declared modes |
 | `bindings` | Optional binding factory, with type/options |
 
-`AVStack.decision_time_step` optionally declares a fixed cadence. `DrivingAdapter` reads it from
-`factory.avstack_type`, or uses its explicit fallback without constructing the stack.
-`ClosedLoopServices` rejects a driving-system step that differs from the simulator step.
-`AlpamayoAVStack` requires 0.1 s decisions. Its supplied configurations use
-`frame_subsample: 1` to select camera frames from history without changing decision timing. See
+History requirements, adapter precedence and instance consistency are defined in
+[Recorded input history](../guides/driving-systems.md#recorded-input-history).
+`ClosedLoopServices` rejects a driving-system period that differs from the simulator period.
+`AlpamayoAVStack` selects timestamped camera history with `frame_subsample`, independently of
+the decision period. Its supplied configurations use `frame_subsample: 1`. See
 [Past observations](../guides/simulators.md#recorded-past-observations).
 
 A binding has signature `function(avstack_factory, **options) -> DrivingAdapter`. The factory
@@ -377,7 +457,8 @@ provides canonical detections. An explicit empty list selects no metrics. Repeat
 are rejected. `DetectionMetrics` is rejected during loading when the configured stack declares
 no detections.
 
-Custom metrics use `package.module:Class`. See [Experiment configuration](#experiment-configuration).
+Custom metrics use `package.module:Class`. See
+[Experiment configuration](#experiment-configuration).
 
 ```yaml
 evaluation:
@@ -402,6 +483,7 @@ Run controls belong under `runs`, represented in Python by frozen `RunsConfigura
 | `recording` | defaults below | Sensor payload retention |
 | `output` | `null` | Output directory, required by the CLI |
 | `strict` | `false` | Stop on the first execution or selection error |
+| `timing` | default clocks | [Scheduling](#scheduling) rates and delays |
 
 Attack and treatment names must be nonempty, contain no path separators and differ from
 `.` and `..`. Treatment names
@@ -429,18 +511,25 @@ runs:
       - {type: GaussianNoise, options: {severity: 0.2}, camera: front}
 ```
 
-Custom corruptions use `package.module:Class`. See [Experiment configuration](#experiment-configuration).
+Custom corruptions use `package.module:Class`. See
+[Experiment configuration](#experiment-configuration).
 Severity is in [0, 1] and defaults to 0.5. `ColorTemp` also accepts
 `warm`, which defaults to `true`. `AlbumentationsCorruption` requires `transform`. The
 [Python API](python-api.md) lists the available corruption classes.
 
 ### Recording
 
+Python `RecordingPolicy` values are hashable. `sensor_every_n_captures` is an immutable copy of the
+supplied mapping, ordered by key. Reading by key, `.get()` and `.items()` is supported.
+
+The removed `every_n_steps` key produces a migration error. Use `every_n_captures`.
+
 | Key under recording | Default | Meaning |
 |---|---|---|
 | `sensor_ids` | [] | Unique sensor names whose payloads are retained |
 | `representations` | [`model_input`] | Subset of `raw` and `model_input` |
-| `every_n_steps` | 1 | Positive decision interval for retained sensor payloads |
+| `every_n_captures` | `1` | Save every Nth acquisition of each selected sensor |
+| `sensor_every_n_captures` | `{}` | Optional sensor ID to positive interval overrides |
 
 Empty `sensor_ids` retains no image payloads. State, commands, actions, outputs, available
 components and detections are recorded every decision. Reevaluation cannot recover omitted
@@ -452,7 +541,7 @@ runs:
   recording:
     sensor_ids: [front]
     representations: [raw, model_input]
-    every_n_steps: 2
+    every_n_captures: 2
 ```
 
 ## Constructor filesystem parameters
@@ -473,7 +562,7 @@ Component YAML references and `runs.output` also resolve relative to their conta
 
 The saved identity includes dataset type/scenario IDs, simulator identity and each attack's
 type, parameters and environment. Its preparation record includes the first run seed, split
-counts/seed and merged offline environments.
+counts/seed, merged offline environments, `runs.timing` and the driving history requirement.
 
 Loading a preparation checks these values and recomputes saved units under the configured split.
 A current metadata file must have the saved raw-byte hash, but its path may differ. A mismatch
@@ -483,8 +572,12 @@ completed attack, including attacks whose offline phase is a no-op.
 Additional `seeds`, `treatments`, `recording`, `output`, `strict`, decision limits, `split.execute`
 and evaluation settings may change. The first seed, partition and offline environments must match.
 `run --prepared` writes the loaded preparation record, units, deployment budget and metadata
-source unchanged into the new output. `AVStack` and hook configurations are not part of
-saved-preparation compatibility. `Attack` constructor options are compared as written,
+source unchanged into the new output. Driving-system options that change its history affect
+compatibility through that declaration. Other `AVStack` and hook settings are not compared.
+Old preparations without timing/history declarations require default timing. Each saved segment
+is rechecked with `can_start_at` under the current driving history before execution or resume.
+Evaluation reads saved results without accessing datasets or simulators. `Attack` constructor
+options are compared as written,
 including an explicitly written default versus an omitted option. Lists and tuples with
 identical contents compare equally. Booleans, integers and floating-point numbers remain
 distinct, so `true`, `1` and `1.0` are incompatible.

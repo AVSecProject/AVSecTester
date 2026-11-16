@@ -20,7 +20,7 @@ def normalize_environment(value: Mapping[str, Any] | None = None) -> dict[str, A
     """Copy and validate the public ``{world, sensors}`` structure.
 
     Each sensor entry has ``type``, optional ``options`` and an optional ``camera``. A ``type``
-    without a colon names a built-in ``Corruption`` class; ``package.module:name`` names a
+    without a colon names a built-in ``Corruption`` class. ``package.module:name`` names a
     custom corruption, constructed with ``options``. Custom corruptions implement
     ``apply(rgb, rng) -> rgb`` or are callables with that signature.
     """
@@ -79,7 +79,9 @@ def normalize_environment(value: Mapping[str, Any] | None = None) -> dict[str, A
 
 
 def merge_environments(*values: Mapping[str, Any]) -> dict[str, Any]:
-    """Merge world mappings recursively. An explicit later sensors list replaces the earlier list."""
+    """
+    Merge world mappings recursively. An explicit later sensors list replaces the earlier list.
+    """
     def overlay(before: dict[str, Any], after: Mapping[str, Any]) -> dict[str, Any]:
         for key, value in after.items():
             before[key] = (overlay(dict(before[key]), value)
@@ -104,12 +106,13 @@ def validate_environment(value: Mapping[str, Any], simulator: Any) -> dict[str, 
 
 
 class SensorEnvironment:
-    """One run's corruption instances, with randomness indexed by seed and absolute dataset frame position."""
+    """One run's corruptions, seeded by sensor stream and integer acquisition time."""
 
     def __init__(self, environment: Mapping[str, Any], seed: int = 0) -> None:
         normalized = normalize_environment(environment)
         self.seed = seed
         self.corruptions = []
+        self._default_camera: str | None = None
         for spec in normalized["sensors"]:
             if ":" in spec["type"]:
                 constructor = import_type_path(spec["type"])
@@ -121,17 +124,41 @@ class SensorEnvironment:
                 raise TypeError("A sensor environment corruption must implement apply(rgb, rng)")
             self.corruptions.append((spec.get("camera"), apply))
 
-    def apply(self, observation: Observation, position: int) -> Observation:
-        """Apply configured corruptions to eligible sensors using the decision random generator."""
+    def bind(self, observation: Observation) -> None:
+        """Resolve omitted camera names from the initial full capture without corrupting it."""
+        capture = read_camera_rgb(observation)
+        if capture is not None:
+            self._default_camera = capture[0]
+
+    def apply(self, observation: Observation, position: int, *,
+              interval_capture_index: Mapping[str, int] | None = None,
+              available_sensors: frozenset[str] | None = None) -> Observation:
+        """Apply corruptions to due sensors with stable sensor and acquisition-time randomness.
+
+        ``position`` is the containing dataset grid position. ``interval_capture_index``
+        gives each due camera's own capture index within that decision interval, starting
+        at zero. Index zero uses the original three-part random seed.
+        ``available_sensors`` distinguishes a sensor not due now from an invalid sensor ID.
+        """
         result = observation
         for index, (camera, apply) in enumerate(self.corruptions):
+            if camera is None:
+                if self._default_camera is None:
+                    initial = read_camera_rgb(result)
+                    if initial is not None:
+                        self._default_camera = initial[0]
+                camera = self._default_camera
             if camera is not None and camera not in result.sensor_data:
+                if available_sensors is not None and camera in available_sensors:
+                    continue
                 raise ValueError(f"Sensor environment requested unavailable camera: {camera!r}")
             capture = read_camera_rgb(result, camera)
             if capture is None:
                 raise ValueError(f"Sensor environment requires a readable RGB camera: {camera!r}")
             sensor_id, rgb = capture
-            rng = np.random.default_rng((self.seed, int(position), index))
+            capture_index = (interval_capture_index or {}).get(sensor_id, 0)
+            key = (self.seed, int(position), index)
+            rng = np.random.default_rng(key if capture_index == 0 else (*key, capture_index))
             corrupted = np.asarray(apply(rgb.copy(), rng))
             if corrupted.shape != rgb.shape or corrupted.dtype != np.uint8:
                 raise ValueError("Sensor environment corruptions must return uint8 RGB with unchanged shape")

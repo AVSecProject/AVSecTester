@@ -17,6 +17,10 @@ def test_preparation_record():
     )
     assert Experiment.prepare(configuration).preparation == {
         "seed": 3,
+        "timing": {"decision_period_us": None, "sensors": {}, "pose_reporting_interval_us": 0,
+                   "planner_delay_us": 0, "force_gt_duration_us": 0,
+                   "skip_driver_during_force_gt": False},
+        "history": {"duration_us": 0, "samples": 1},
         "split": None,
         "offline_environments": {"probe": {
             "world": {"weather": "rain", "lighting": {

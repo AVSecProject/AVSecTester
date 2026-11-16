@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from avsectester.validation import timestamp_to_microseconds
+
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 import math
@@ -159,7 +161,7 @@ class RuleBasedPlanner:
             require_positive_number(value, name)
         if trajectory_horizon_s < trajectory_step_s:
             raise ValueError("trajectory_horizon_s must be at least trajectory_step_s")
-        if round(trajectory_step_s * 1e6) <= 0:
+        if timestamp_to_microseconds(trajectory_step_s) <= 0:
             raise ValueError("trajectory_step_s must round to a positive integer number of microseconds")
         self.stop_before_sign_m = stop_before_sign_m
         self.stop_duration_s = stop_duration_s
@@ -194,11 +196,11 @@ class RuleBasedPlanner:
     def component_log(self) -> Mapping[str, Any]:
         """Sign state, lead vehicle and acceleration/speed at the first planned step.
 
-        lead_gap_m measures along-route clearance from the ego front to the estimated
-        lead visible face. lead_lateral_interval_m gives its left-positive lateral span
+        ``lead_gap_m`` measures along-route clearance from the ego front to the estimated
+        lead visible face. ``lead_lateral_interval_m`` gives its left-positive lateral span
         relative to the route. Lead fields are None when no vehicle is relevant.
         The controller follows the complete trajectory and may brake in advance.
-        acceleration_mps2 can therefore be positive while the physical ego slows.
+        ``acceleration_mps2`` can therefore be positive while the physical ego slows.
         """
         return dict(self._log)
 
@@ -338,13 +340,13 @@ class RuleBasedPlanner:
         # A forecast may reach its braking threshold later in the horizon. Keep
         # that hypothetical latch local, separate from the actual decision state.
         simulated_braking = self._braking
-        origin_us = round(observation.t * 1e6)
+        origin_us = timestamp_to_microseconds(observation.t)
         trajectory = [((0., 0., 0.), (1., 0., 0., 0.), origin_us)]
         speed, progress = float(observation.ego_speed), 0.
         acceleration, first_speed = 0., 0.
         elapsed = 0.
-        horizon_us = round(self.trajectory_horizon_s * 1e6)
-        step_us = round(self.trajectory_step_s * 1e6)
+        horizon_us = timestamp_to_microseconds(self.trajectory_horizon_s)
+        step_us = timestamp_to_microseconds(self.trajectory_step_s)
         offsets = list(range(step_us, horizon_us + 1, step_us))
         if offsets[-1] != horizon_us:
             offsets.append(horizon_us)

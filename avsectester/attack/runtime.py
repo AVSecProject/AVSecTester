@@ -5,7 +5,7 @@ Actions are classified by where they act in the closed loop:
 * ``WorldAttackAction`` changes the simulated world. The simulator applies it at setup or
   before a world step, and it is visible from the next capture.
 * ``SensorAttackAction`` changes one captured sensor's data before ObservationPipeline, using the
-  simulator's sensor view. It applies to the current decision.
+  simulator's acquisition-time view. Its duration is set by ``active_for_us``.
 * ``AVStackAttackAction`` changes a driving-system value from ``localization.pre`` through
   ``command`` in the current decision.
 """
@@ -50,6 +50,10 @@ class OnlineContext:
     frame: int
     observation: Observation | None = None
     physical_state: WorldSnapshot | None = None
+    decision_time_us: int | None = None
+    capture_time_us: int | None = None
+    decision_period_us: int | None = None
+    force_gt: bool = False
     _output_recorder: Callable[[OnlineContext, str, Any], None] | None = field(
         default=None, repr=False, compare=False,
     )
@@ -76,7 +80,7 @@ class WorldAttackAction(AttackAction, ABC):
 
     ``setup_ticks`` is the number of ``simulator.setup_tick()`` calls that ``apply`` makes when
     the action is returned by ``AttackRuntime.setup``. Ticks are unavailable after setup.
-    Register the removal of created world objects on ``resources``; it runs when the run ends.
+    Register the removal of created world objects on ``resources``. It runs when the run ends.
     """
 
     setup_ticks: int = 0
@@ -88,15 +92,18 @@ class WorldAttackAction(AttackAction, ABC):
 
 
 class SensorAttackAction(AttackAction, ABC):
-    """Change one captured sensor's data before ObservationPipeline, in the current decision.
+    """Change captured sensor data before ObservationPipeline for the declared duration.
 
     ``sensor`` names the simulator sensor. ``apply`` receives the current data, which earlier
     actions on the same sensor may have changed, and the capture's view, whose ``data`` is
-    the unchanged capture. It returns the changed data in the same representation.
+    the unchanged capture. It returns the changed data in the same representation. A one-shot
+    action without a frame ending at its issuing decision receives a not_applied receipt.
     """
 
     sensor: str
     'Name of the sensor whose captured data this action modifies.'
+    active_for_us: int | None = 0
+    'Zero applies once. Positive durations cover [issue, issue + duration). None lasts until stop.'
 
     @abstractmethod
     def apply(self, data: Any, view: SensorView) -> Any:

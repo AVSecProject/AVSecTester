@@ -6,7 +6,7 @@ These models describe experiments without owning live run resources.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal, TYPE_CHECKING
 
@@ -61,11 +61,13 @@ def _environment_record(environment: Mapping[str, Any]) -> dict[str, Any]:
 def preparation_record(configuration: ExperimentConfiguration) -> dict[str, Any]:
     """The preparation inputs that saved metadata and artifacts depend on, as canonical data.
 
-    Environment values must be data (as accepted by configuration summaries); anything else
+    Environment values must be data (as accepted by configuration summaries). Anything else
     fails here, before selection or offline work starts.
     """
     return {
         "seed": configuration.runs.seeds[0],
+        "timing": asdict(configuration.runs.timing),
+        "history": asdict(configuration.avstack.history),
         "split": None if configuration.split is None else {
             "train_segments": configuration.split.train_segments,
             "validation_segments": configuration.split.validation_segments,
@@ -83,7 +85,9 @@ def validated_preparation(preparation: Any, attack_names: Any) -> Mapping[str, A
     """Check a preparation record: the first seed and each attack's offline environment."""
     import json
 
-    if not isinstance(preparation, Mapping) or set(preparation) != {"seed", "offline_environments", "split"}:
+    required = {"seed", "offline_environments", "split"}
+    if (not isinstance(preparation, Mapping) or not required <= preparation.keys()
+            or preparation.keys() - required - {"timing", "history"}):
         raise ValueError("A preparation record must contain seed, offline_environments and split")
     seed = preparation["seed"]
     require_nonnegative_integer(seed, "preparation seed")
@@ -240,8 +244,8 @@ class TreatmentResult:
 class ExperimentResult:
     """Treatment runs, selection outcomes and saved maps for scenarios with selected segments.
 
-    ``scenario_maps`` retains both semantic maps and explicit unavailable reasons. Loading and evaluation
-    use this snapshot rather than accessing dataset map services.
+    ``scenario_maps`` retains both semantic maps and explicit unavailable reasons. Loading and
+    evaluation use this snapshot rather than accessing dataset map services.
     """
 
     runs: tuple[TreatmentResult, ...] = ()

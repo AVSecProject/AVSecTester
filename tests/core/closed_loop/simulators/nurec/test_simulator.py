@@ -7,14 +7,17 @@ from functools import partial
 from types import SimpleNamespace
 
 import numpy as np
+from avsectester.validation import timestamp_to_microseconds
+from avsectester.geometry.poses import interpolate_transform
 import pytest
 
 from avsectester.attack import AttackSegment
 from avsectester.attack.insertion import InsertObject
 from avsectester.closed_loop.avstacks.driving_adapter import DrivingAdapter
 from avsectester.closed_loop.simulators import UnsupportedStartError
-from avsectester.closed_loop.simulators.ego_dynamics import TrajectoryFollower
+from avsectester.closed_loop.simulators.ego_dynamics import AlpaSimController, TrajectoryFollower
 from avsectester.closed_loop.simulators.nurec import AlpaSimTraffic, NuRecRenderer, NuRecSimulator
+from avsectester.closed_loop.timing import HistoryRequirement, SensorTiming, TimingConfiguration
 from avsectester.datasets.nurec import NuRecDataset
 from avsectester.geometry.cameras import FThetaCamera, PinholeCamera
 from avsectester.geometry.lidars import LidarCalibration
@@ -27,7 +30,7 @@ from avsectester.rendering import ObjectAsset, PlacedObject, plan_composite
 from avsectester.rendering.harmonizers import ClassicHarmonizer, ExposureHarmonizer
 from avsectester.runlog import RunLog
 from tests.fakes import (
-    ConstantAVStack, NuRecImageBoundary, NuRecRpcBoundary, NuRecTrafficImageBoundary,
+    CAMERA, ConstantAVStack, NuRecImageBoundary, NuRecRpcBoundary, NuRecTrafficImageBoundary,
     ResetRecordingDynamics, TrafficServiceBoundary, proto_world_pose,
 )
 
@@ -36,6 +39,166 @@ from tests.fakes import (
 def make_nurec_simulator():
     """Construct a synthetic NuRec world with a 10 Hz timeline and no track filtering."""
     return partial(NuRecSimulator, min_track_duration_s=0, time_step=.1)
+
+
+def test_motion_reports(nurec_dataset, make_nurec_simulator):
+    start = nurec_dataset.scenario_start("scene", nurec_dataset.frames("scene")[0])
+    simulator = make_nurec_simulator(NuRecImageBoundary(CAMERA), physics_update_mode="none", depth="none")
+    seen = []
+
+    def remember_clock(value, context):
+        seen.append((context.stage, context.simulator_runtime.clock))
+        return value
+
+    hooks = HookSet([Hook("simulator.step.pre", remember_clock),
+                     Hook("simulator.step.post", remember_clock)])
+    with simulator.create_runtime() as runtime, hooks.session(runtime, ConstantAVStack()).activate():
+        with pytest.raises(RuntimeError, match="Reset"):
+            runtime.clock
+        runtime.reset(start)
+        initial = runtime.state()
+        request = runtime.render_request("front")
+        runtime.advance_interval(100000, Control(throttle=.3), report_times_us=(25000, 50000, 75000))
+        reports = {time: runtime.state_at(time) for time in (25000, 50000, 75000, 100000)}
+        np.testing.assert_array_equal(runtime.render_request("front").pose, request.pose)
+        assert list(reports) == [25000, 50000, 75000, 100000]
+        middle = reports[50000]
+        assert middle.t == .05 and middle.vehicle_state.t == .05
+        assert middle.ego_speed == pytest.approx(initial.ego_speed + .9 * .05)
+        assert middle.ego.pose[0, 3] < reports[100000].ego.pose[0, 3]
+        middle.ego.pose[0, 3] = 99.
+        assert runtime.state_at(50000).ego.pose[0, 3] != 99.
+        runtime.capture_at(100000)
+        assert runtime.clock.time_us == 100000
+
+
+
+def test_camera_exposure(nurec_longitudinal_dataset, monkeypatch, make_nurec_simulator):
+    boundary = NuRecRpcBoundary().install(monkeypatch)
+    dataset = nurec_longitudinal_dataset
+    start = dataset.scenario_start("scene", dataset.frames("scene")[3])
+    simulator = make_nurec_simulator(NuRecRenderer(cameras=["front"]),
+                                    physics_update_mode="none", depth="none", route_generator="none")
+    with simulator.create_runtime() as runtime:
+        runtime.configure_timing(TimingConfiguration(sensors={
+            "front": SensorTiming(frame_interval_us=33000, shutter_duration_us=17000)},
+            pose_reporting_interval_us=40000))
+        runtime.reset(start)
+        initial = boundary.last_request
+        assert (initial.frame_start_us, initial.frame_end_us) == (283000, 300000)
+        np.testing.assert_allclose(proto_world_pose(initial.sensor_pose.start_pose),
+            dataset.ego_state("scene", 283000).pose @ proto_world_pose(boundary.mount), atol=1e-12)
+        runtime.advance_interval(100000, Control(throttle=.2), report_times_us=(40000, 80000))
+        beginning, end = runtime.state_at(16000), runtime.state_at(33000)
+        runtime.capture_at(33000, ("front",))
+        request = boundary.last_request
+        assert (request.frame_start_us, request.frame_end_us) == (316000, 333000)
+        np.testing.assert_allclose(proto_world_pose(request.sensor_pose.start_pose),
+            beginning.ego.pose @ proto_world_pose(boundary.mount), atol=1e-12)
+        np.testing.assert_allclose(proto_world_pose(request.sensor_pose.end_pose),
+            end.ego.pose @ proto_world_pose(boundary.mount), atol=1e-12)
+        for actor in request.dynamic_objects:
+            np.testing.assert_allclose(proto_world_pose(actor.pose_pair.start_pose),
+                                      beginning.actors[actor.track_id].pose, atol=1e-12)
+            np.testing.assert_allclose(proto_world_pose(actor.pose_pair.end_pose),
+                                      end.actors[actor.track_id].pose, atol=1e-12)
+        np.testing.assert_allclose(runtime.sensor_geometry("front").cam_from_world,
+            np.linalg.inv(end.ego.pose @ proto_world_pose(boundary.mount)), atol=1e-12)
+        runtime.capture_at(66000, ("front",))
+        runtime.capture_at(99000, ("front",))
+        runtime.capture_at(100000, ())
+        assert runtime.observe().sensor_data == {}
+
+    later_start = dataset.scenario_start("scene", dataset.frames("scene")[6])
+    with simulator.create_runtime() as runtime:
+        runtime.configure_timing(TimingConfiguration(sensors={
+            "front": SensorTiming(frame_interval_us=1000000, shutter_duration_us=500000)}))
+        runtime.reset(later_start)
+        for index in range(1, 11):
+            runtime.advance_interval(index * 100000, Control())
+            runtime.capture_at(index * 100000, ("front",) if index == 10 else ())
+        assert (boundary.last_request.frame_start_us, boundary.last_request.frame_end_us) == (1100000, 1600000)
+
+
+def test_clock(nurec_usdz_path, tmp_path, make_nurec_simulator):
+    path = tmp_path / "long-clock.usdz"
+    with zipfile.ZipFile(nurec_usdz_path) as source:
+        metadata = json.loads(source.read("rig_trajectories.json"))
+        recording = metadata["rig_trajectories"][0]
+        camera = next(iter(metadata["camera_calibrations"]))
+        pose = np.eye(4).tolist()
+        recording["cameras_frame_timestamps_us"][camera] = [
+            [index * 100000, index * 100000 + 1] for index in range(1002)]
+        recording["cameras_frame_T_rig_worlds"][camera] = [[pose, pose] for _ in range(1002)]
+        with zipfile.ZipFile(path, "w") as target:
+            for name in source.namelist():
+                target.writestr(name, json.dumps(metadata) if name == "rig_trajectories.json"
+                                else source.read(name))
+    dataset = NuRecDataset([path], time_step=.1)
+    start = dataset.scenario_start("scene", dataset.frames("scene")[0])
+    simulator = make_nurec_simulator(NuRecImageBoundary(CAMERA), physics_update_mode="none",
+                                    depth="none", route_generator="none")
+    with simulator.create_runtime() as runtime:
+        runtime.reset(start)
+        for index in range(1, 1001):
+            runtime.step(Control())
+            assert runtime.clock.time_us == index * 100000
+            assert runtime.state().t == runtime.observe().vehicle_state.t == index * 100000 / 1e6
+
+
+def test_recorded_startup(nurec_longitudinal_dataset, make_nurec_simulator, tmp_path):
+    pytest.importorskip("alpasim_controller")
+    dataset = nurec_longitudinal_dataset
+    frames = dataset.frames("scene")
+    start = dataset.scenario_start("scene", frames[3])
+    simulator = make_nurec_simulator(NuRecImageBoundary(CAMERA), AlpaSimController(),
+                                    physics_update_mode="none", depth="none", route_generator="none")
+    with simulator.create_runtime() as runtime:
+        runtime.configure_timing(TimingConfiguration(force_gt_duration_us=200000))
+        runtime.reset(start)
+        issued = Control(trajectory=[
+            ((0., 0., 0.), (1., 0., 0., 0.), 0),
+            ((30., 0., 0.), (1., 0., 0., 0.), 3000000),
+        ])
+        runtime.advance_interval(100000, runtime.recorded_reference(0, 100000),
+            report_times_us=(50000,), force_gt=True, coerce_dynamic_state=True)
+        reports = {time: runtime.state_at(time) for time in (50000, 100000)}
+        expected_middle = dataset.ego_state("scene", 350000).pose
+        np.testing.assert_array_equal(reports[50000].ego.pose, expected_middle)
+        runtime.capture_at(100000)
+        np.testing.assert_array_equal(runtime.state().ego.pose, start.recorded_ego[4].pose)
+        runtime.advance_interval(200000, runtime.recorded_reference(100000, 200000),
+                                 force_gt=True, coerce_dynamic_state=True)
+        runtime.capture_at(200000)
+        np.testing.assert_array_equal(runtime.state().ego.pose, start.recorded_ego[5].pose)
+        runtime.advance_interval(300000, issued, coerce_dynamic_state=True)
+        runtime.capture_at(300000)
+        assert runtime.state().ego.pose[0, 3] == pytest.approx(6., abs=.01)
+        assert runtime.state().ego_speed == pytest.approx(10., abs=.05)
+    with zipfile.ZipFile(dataset.usdz_path("scene")) as source:
+        entries = {name: source.read(name) for name in source.namelist()}
+    metadata = json.loads(entries["rig_trajectories.json"])
+    transforms = metadata["rig_trajectories"][0]["cameras_frame_T_rig_worlds"]
+    for camera_poses in transforms.values():
+        for exposure in camera_poses[3]:
+            pose = np.asarray(exposure)
+            pose[:3, :3] = rotation_matrix((10., 20., 0.))
+            pose[2, 3] = 1.
+            exposure[:] = pose.tolist()
+    path = tmp_path / "startup-slope.usdz"
+    with zipfile.ZipFile(path, "w") as target:
+        for name, payload in entries.items():
+            target.writestr(name, json.dumps(metadata) if name == "rig_trajectories.json" else payload)
+    dataset = NuRecDataset([path], time_step=.2)
+    start = dataset.scenario_start("scene", dataset.frames("scene")[1])
+    simulator = NuRecSimulator(NuRecImageBoundary(CAMERA), time_step=.2,
+                               physics_update_mode="none", depth="none", route_generator="none")
+    with simulator.create_runtime() as runtime:
+        runtime.configure_timing(TimingConfiguration(force_gt_duration_us=200000))
+        runtime.reset(start)
+        runtime.advance_interval(200000, None, report_times_us=(100000,), force_gt=True)
+        expected = dataset.ego_state("scene", 300000).pose
+        np.testing.assert_array_equal(runtime.state_at(100000).ego.pose, expected)
 
 
 @pytest.fixture
@@ -177,6 +340,22 @@ def test_camera_aliases(nurec_dataset, monkeypatch, make_nurec_simulator):
         np.testing.assert_array_equal(view.data, runtime.observe().sensor_data["forward"])
         runtime.step(Control())
         assert runtime.sensor_view("forward").sensor == "forward"
+
+
+def test_camera_without_geometry(nurec_dataset, make_nurec_simulator):
+    renderer = NuRecImageBoundary(CAMERA, provide_geometry=False)
+    simulator = make_nurec_simulator(renderer, camera_aliases={"front": "forward"},
+        depth="none", route_generator="none", physics_update_mode="none")
+    start = nurec_dataset.scenario_start("scene", nurec_dataset.frames("scene")[0])
+    with simulator.create_runtime() as runtime:
+        runtime.reset(start)
+        assert runtime.sensors == {"forward"} and runtime.camera_sensors == frozenset()
+        np.testing.assert_array_equal(runtime.observe().sensor_data["forward"], 30)
+        runtime.step(Control())
+        assert runtime.observe().sensor_data["forward"].shape == (CAMERA.height, CAMERA.width, 3)
+        assert runtime.sensor_view("forward").camera is None
+        with pytest.raises(ValueError, match="no camera geometry"):
+            runtime.sensor_geometry("forward")
 
 
 def test_resolution(nurec_dataset, monkeypatch, make_nurec_simulator):
@@ -388,7 +567,7 @@ def test_rendered_probe_occlusion(nurec_dataset, tmp_path, monkeypatch, make_obj
         with setup.session(runtime, ConstantAVStack()).activate():
             runtime.reset(start)
             # Objects present at the start are hidden by the reconstruction in past captures too.
-            for observation in runtime.observe_past(2):
+            for observation in tuple(runtime.observe_recorded_at(-i * 100000) for i in range(2, 0, -1)):
                 image = observation.sensor_data["front"]
                 assert np.all(image[:, :8] == 30) and np.any(image[:, 8:] != 30)
 
@@ -492,7 +671,7 @@ def test_ground_contact_failure(nurec_dataset, monkeypatch, make_nurec_simulator
         assert runtime.termination_details["ground_contact_failures"] == {"insufficient_intersections": 1}
 
 
-def test_observe_past(nurec_dataset, monkeypatch, make_object_in_front, make_nurec_simulator):
+def test_observe_recorded_at(nurec_dataset, monkeypatch, make_object_in_front, make_nurec_simulator):
     boundary = NuRecRpcBoundary().install(monkeypatch)
     frames = nurec_dataset.frames("scene")
     start = nurec_dataset.scenario_start("scene", frames[3])
@@ -512,7 +691,17 @@ def test_observe_past(nurec_dataset, monkeypatch, make_object_in_front, make_nur
             original = runtime.observe()
             physical = runtime.state()
             request = runtime.render_request("front")
-            past = runtime.observe_past(3)
+            request_count = len(boundary.requests)
+            pose_only = runtime.observe_recorded_at(-100000, ())
+            assert pose_only.sensor_data == {} and pose_only.calibration == {}
+            assert pose_only.t == -.1
+            assert len(boundary.requests) == request_count
+            recorded_truth = runtime.recorded_state_at(-100000)
+            recorded_x = recorded_truth.actors["host"].pose[0, 3]
+            recorded_truth.actors["host"].pose[0, 3] = 999.
+            runtime.recorded_state_at(-200000)
+            assert runtime.recorded_state_at(-100000).actors["host"].pose[0, 3] == recorded_x
+            past = tuple(runtime.observe_recorded_at(-i * 100000) for i in range(3, 0, -1))
             assert runtime.can_observe_past
             assert [observation.frame for observation in past] == [-3, -2, -1]
             np.testing.assert_allclose([observation.t for observation in past], [-.3, -.2, -.1])
@@ -542,14 +731,14 @@ def test_observe_past(nurec_dataset, monkeypatch, make_object_in_front, make_nur
             assert runtime.clock.t == physical.t and runtime.clock.frame == physical.frame
             np.testing.assert_array_equal(runtime.render_request("front").pose, request.pose)
             runtime.reset(nurec_dataset.scenario_start("scene", frames[0]))
-            with pytest.raises(ValueError, match="only 0 past decisions; 1 required"):
-                runtime.observe_past(1)
+            with pytest.raises(ValueError, match="precedes available source history"):
+                tuple(runtime.observe_recorded_at(-i * 100000) for i in range(1, 0, -1))
         setup = HookSet([Hook("simulator.setup", lambda value, context: context.simulator_runtime.insert_object(
             "start-sign", asset, world_from_object))])
         with setup.session(runtime, ConstantAVStack()).activate():
             runtime.reset(start)
             # A world object present at the start is composed into the recorded past captures.
-            for observation in runtime.observe_past(3):
+            for observation in tuple(runtime.observe_recorded_at(-i * 100000) for i in range(3, 0, -1)):
                 image = observation.sensor_data["front"]
                 assert np.any(image != 30) and np.all(image[0, 0] == 30)
 
@@ -582,8 +771,8 @@ def test_reset_traffic(traffic_world):
     world = traffic_world
     with pytest.raises(UnsupportedStartError, match="15 past decision steps"):
         world.simulator.validate_start(world.dataset.scenario_start("scene", world.frames[14]))
-    with pytest.raises(ValueError, match="decision time step of 0.1"):
-        NuRecSimulator(world.boundary, traffic=world.simulator.traffic, time_step=.2)
+    with pytest.raises(ValueError, match="whole multiples of the traffic step"):
+        NuRecSimulator(world.boundary, traffic=world.simulator.traffic, time_step=.15)
     with world.simulator.create_runtime(7) as runtime:
         runtime.reset(world.start)
         request = world.service.sessions[-1]
@@ -612,6 +801,72 @@ def test_reset_traffic(traffic_world):
     assert world.service.closed[-1].session_uuid == world.service.sessions[-1].session_uuid
 
 
+def test_intermediate_traffic_snapshot(traffic_world, tmp_path):
+    source_path = traffic_world.dataset.usdz_paths[0]
+    path = tmp_path / "longer.usdz"
+    with zipfile.ZipFile(source_path) as source, zipfile.ZipFile(path, "w") as target:
+        metadata = json.loads(source.read("rig_trajectories.json"))
+        recording = metadata["rig_trajectories"][0]
+        for camera, times in recording["cameras_frame_timestamps_us"].items():
+            times.append([4000000, 4000001])
+            transforms = recording["cameras_frame_T_rig_worlds"][camera]
+            transforms.append(transforms[-1])
+        for name in source.namelist():
+            payload = source.read(name)
+            if name == "rig_trajectories.json":
+                payload = json.dumps(metadata)
+            elif name == "sequence_tracks.json":
+                tracks = json.loads(payload)
+                data = tracks["scene"]["tracks_data"]
+                data["tracks_timestamps_us"][0] = [0, 3050000, 4000000]
+                data["tracks_poses"][0] = [[20, 0, 1, 0, 0, 0, 1],
+                                          [26, 0, 1, 0, 0, 0, 1], [24, 0, 1, 0, 0, 0, 1]]
+                data["tracks_timestamps_us"][1] = [0, 3050000, 4000000]
+                data["tracks_poses"][1] = [[8, 2, 1, 0, 0, 0, 1],
+                                          [9, 2, 1, 0, 0, 0, 1], [8, 2, 1, 0, 0, 0, 1]]
+                payload = json.dumps(tracks)
+            target.writestr(name, payload)
+    dataset = NuRecDataset([path], time_step=.2)
+    start = dataset.scenario_start("scene", dataset.frames("scene")[15])
+    simulator = NuRecSimulator(traffic_world.boundary, traffic=traffic_world.simulator.traffic,
+        time_step=.2, depth="none", route_generator="none", physics_update_mode="none")
+    with simulator.create_runtime() as runtime:
+        runtime.configure_timing(TimingConfiguration(sensors={"front": SensorTiming(frame_interval_us=100000)}))
+        runtime.reset(start)
+        runtime.advance_interval(200000, Control(), report_times_us=(100000,))
+        assert runtime.state_at(100000).actors["host"].pose[0, 3] == 71.
+        runtime.capture_at(100000, ("front",))
+        host = runtime.state().actors["host"]
+        pose = host.pose.copy()
+        pose[0, 3] = 99.
+        runtime.set_actor_state("host", replace(host, pose=pose))
+        assert runtime.sensor_view("front").actors["host"].pose[0, 3] == 71.
+    with simulator.create_runtime() as runtime:
+        runtime.configure_timing(TimingConfiguration(force_gt_duration_us=200000,
+            sensors={"front": SensorTiming(frame_interval_us=50000)}))
+        runtime.reset(start)
+        runtime.advance_interval(200000, Control(), report_times_us=(50000, 100000, 150000),
+                                 force_gt=True)
+        for timestamp in (50000, 100000, 150000):
+            first = dataset.actor_states("scene", 3000000)["host"].pose
+            last = dataset.actor_states("scene", 3200000)["host"].pose
+            expected = interpolate_transform(first, last, timestamp / 200000)
+            np.testing.assert_array_equal(runtime.state_at(timestamp).actors["host"].pose, expected)
+            np.testing.assert_array_equal(runtime.state_at(timestamp).actors["static"].pose,
+                dataset.actor_states("scene", 3000000 + timestamp)["static"].pose)
+    recorded_traffic = NuRecSimulator(traffic_world.boundary, time_step=.2, depth="none",
+        route_generator="none", physics_update_mode="none")
+    with recorded_traffic.create_runtime() as runtime:
+        runtime.configure_timing(TimingConfiguration(force_gt_duration_us=200000))
+        runtime.reset(start)
+        runtime.advance_interval(200000, Control(), force_gt=True)
+        expected = interpolate_transform(dataset.actor_states("scene", 3000000)["host"].pose,
+                                         dataset.actor_states("scene", 3200000)["host"].pose, .25)
+        np.testing.assert_array_equal(runtime.state_at(50000).actors["host"].pose, expected)
+        np.testing.assert_array_equal(runtime.state_at(50000).actors["static"].pose,
+                                     dataset.actor_states("scene", 3050000)["static"].pose)
+
+
 def test_step_traffic(traffic_world, tmp_path):
     world = traffic_world
     panel = ObjectAsset.from_panel(np.full((8, 8, 4), 255, np.uint8),
@@ -624,7 +879,7 @@ def test_step_traffic(traffic_world, tmp_path):
         runtime.reset(world.start)
         runtime.step(Control())
         runtime.sensor_view("front")
-    adapter = DrivingAdapter(lambda seed: ConstantAVStack(), past_steps=0)
+    adapter = DrivingAdapter(lambda seed: ConstantAVStack(), history=HistoryRequirement(samples=1))
     segment = AttackSegment("scene", world.frames[15], world.frames[17])
     with ClosedLoopServices(world.dataset, world.simulator, adapter) as services, services.session(0) as session:
         log = session.rollout(CandidateRequest(segment, 0, 2, {}, RecordingPolicy(), output_path=tmp_path/"rollout"))
@@ -736,7 +991,7 @@ def test_recorded_actor_filtering(traffic_recording, make_nurec_simulator):
         assert "brief" not in runtime.sensor_view("front").actors
         assert boundary.rendered[-1][1]["brief"][2, 3] == -99.
         assert boundary.probes[-1][1]["brief"][2, 3] == -99.
-        runtime.observe_past(1)
+        tuple(runtime.observe_recorded_at(-i * 100000) for i in range(1, 0, -1))
         assert boundary.rendered[-1][0] == 1400000
         assert boundary.rendered[-1][1]["brief"][2, 3] == -99.
         assert boundary.probes[-1][1]["brief"][2, 3] == -99.
@@ -861,16 +1116,16 @@ def test_lidar(nurec_longitudinal_dataset, monkeypatch, make_nurec_simulator, tm
                                   np.linalg.inv(runtime.state().ego.pose @ expected_mount))
         with pytest.raises(ValueError, match="has no camera geometry"):
             runtime.sensor_geometry(lidar)
-        previous = runtime.state().ego.pose
         runtime.step(Control(throttle=.2))
         request = boundary.lidar_requests[-1]
         assert (request.frame_start_us, request.frame_end_us) == (300000, 400000)
-        np.testing.assert_allclose(proto_world_pose(request.sensor_pose.start_pose), previous @ expected_mount)
+        np.testing.assert_allclose(proto_world_pose(request.sensor_pose.start_pose),
+                                  dataset.ego_state("scene", 300000).pose @ expected_mount)
         np.testing.assert_allclose(proto_world_pose(request.sensor_pose.end_pose),
                                   runtime.state().ego.pose @ expected_mount)
         assert stages == [("render.pre", "front"), ("render.post", "front"),
                           ("render.post", lidar)] * 2
-        past, = runtime.observe_past(1)
+        past, = tuple(runtime.observe_recorded_at(-i * 100000) for i in range(1, 0, -1))
         assert isinstance(past.sensor_data[lidar], PointCloud)
         np.testing.assert_allclose(past.sensor_data[lidar].points[:, 1], [1., -2.])
         request = boundary.lidar_requests[-1]
@@ -882,8 +1137,8 @@ def test_lidar(nurec_longitudinal_dataset, monkeypatch, make_nurec_simulator, tm
         assert stages == [("render.pre", "front"), ("render.post", "front"),
                           ("render.post", lidar)] * 2
         with pytest.raises(ValueError, match="Rig timestamp exceeds recorded support"):
-            runtime.observe_past(3)
-    adapter = DrivingAdapter(lambda seed: ConstantAVStack(), past_steps=0)
+            tuple(runtime.observe_recorded_at(-i * 100000) for i in range(3, 0, -1))
+    adapter = DrivingAdapter(lambda seed: ConstantAVStack(), history=HistoryRequirement(samples=1))
     with ClosedLoopServices(dataset, simulator, adapter) as services, services.session(0) as session:
         log = session.rollout(CandidateRequest(AttackSegment("scene", frames[3], frames[4]),
             0, 1, {}, RecordingPolicy(sensor_ids=(lidar,)), output_path=tmp_path / "lidar-run"))
@@ -892,7 +1147,7 @@ def test_lidar(nurec_longitudinal_dataset, monkeypatch, make_nurec_simulator, tm
     assert set(stored.sensor_data) == {lidar}
     assert isinstance(stored.sensor_data[lidar], PointCloud)
     assert isinstance(stored.calibration[lidar], LidarCalibration)
-    invalid = NuRecRpcBoundary().install(monkeypatch)
+    NuRecRpcBoundary().install(monkeypatch)
     rig["lidars_frame_timestamps_us"] = {"lidar_gt_top_p128@scene": [[0, 102000]]}
     with zipfile.ZipFile(path, "w") as archive:
         for name, payload in entries.items():
@@ -900,9 +1155,53 @@ def test_lidar(nurec_longitudinal_dataset, monkeypatch, make_nurec_simulator, tm
     with make_nurec_simulator(NuRecRenderer(cameras=["front"], lidar=lidar), time_step=.1,
                              depth="none", physics_update_mode="none",
                              route_generator="none").create_runtime() as runtime:
-        with pytest.raises(ValueError, match="time_step must match the LiDAR scan period within 1%"):
+        with pytest.raises(ValueError, match="acquisition period within 1%"):
             runtime.reset(start)
-    assert invalid.last_request is None and not invalid.lidar_requests
+    rig["lidars_frame_timestamps_us"] = {"lidar_gt_top_p128@scene": [[0, 33333]]}
+    with zipfile.ZipFile(path, "w") as archive:
+        for name, payload in entries.items():
+            archive.writestr(name, json.dumps(metadata) if name == "rig_trajectories.json" else payload)
+    scheduled = NuRecRpcBoundary().install(monkeypatch)
+    with make_nurec_simulator(NuRecRenderer(cameras=["front"], lidar=lidar),
+                             depth="none", physics_update_mode="none",
+                             route_generator="none").create_runtime() as runtime:
+        runtime.configure_timing(TimingConfiguration(sensors={lidar: SensorTiming(frame_interval_us=33333)}))
+        runtime.reset(start)
+        runtime.advance_interval(100000, Control(), report_times_us=(33333, 66667))
+        runtime.capture_at(33333, (lidar,))
+        runtime.capture_at(66666, (lidar,))
+        runtime.capture_at(99999, (lidar,))
+        assert [(item.frame_start_us, item.frame_end_us) for item in scheduled.lidar_requests] == [
+            (266667, 300000), (300000, 333333), (333333, 366666), (366666, 399999)]
+        runtime.observe_recorded_at(-33333, (lidar,))
+        assert scheduled.lidar_requests[-1].frame_start_us == 233334
+        assert scheduled.lidar_requests[-1].frame_end_us == 266667
+
+
+    with pytest.raises(ValueError, match="does not accept shutter_duration_us"):
+        simulator.validate_timing(TimingConfiguration(sensors={lidar: SensorTiming(100000, 1000)}))
+    slow_timing = TimingConfiguration(sensors={lidar: SensorTiming(200000)})
+    assert simulator.observation_lead_steps_for(slow_timing) == 2
+    rig["lidars_frame_timestamps_us"] = {"lidar_gt_top_p128@scene": [[0, 200000]]}
+    slow_path = tmp_path / "slow-scan.usdz"
+    with zipfile.ZipFile(slow_path, "w") as archive:
+        for name, payload in entries.items():
+            archive.writestr(name, json.dumps(metadata) if name == "rig_trajectories.json" else payload)
+    slow_dataset = NuRecDataset([slow_path], time_step=.1)
+    with ClosedLoopServices(slow_dataset, simulator, timing=slow_timing) as services:
+        with services.session(0) as session:
+            assert not session.can_start_at(1)
+            assert session.can_start_at(2)
+    early = slow_dataset.scenario_start("scene", slow_dataset.frames("scene")[1])
+    with pytest.raises(UnsupportedStartError, match="requires 2 recorded"):
+        simulator.validate_start_timing(early, slow_timing)
+    with simulator.create_runtime() as runtime:
+        runtime.configure_timing(slow_timing)
+        with pytest.raises(UnsupportedStartError, match="requires 2 recorded"):
+            runtime.reset(early)
+        runtime.reset(slow_dataset.scenario_start("scene", slow_dataset.frames("scene")[2]))
+        request = scheduled.lidar_requests[-1]
+        assert request.frame_end_us - request.frame_start_us == 200000
 
 
 def test_composite_shared_asset(nurec_longitudinal_dataset, monkeypatch,
@@ -1096,7 +1395,7 @@ def test_scene_insertion(nurec_longitudinal_dataset, monkeypatch, make_nurec_sim
             np.testing.assert_allclose(proto_world_pose(scene_objects[0].pose_pair.end_pose), track_pose)
             with pytest.raises(ValueError, match="object_masks"):
                 view.composite_plan((PlacedObject("sign", asset, pose),))
-            past = runtime.observe_past(1)
+            past = tuple(runtime.observe_recorded_at(-i * 100000) for i in range(1, 0, -1))
             assert len(past) == 1 and np.any(past[0].sensor_data["front"][:, 8:] != 30)
             assert track in {item.track_id for item in boundary.lidar_requests[-1].dynamic_objects}
         checkpoint = runtime.checkpoint()
@@ -1120,7 +1419,7 @@ def test_scene_insertion(nurec_longitudinal_dataset, monkeypatch, make_nurec_sim
         assert changed_view.native["object_tracks"]["sign"][0] != track
         assert np.any(changed_view.data[mask] != initial_image[mask])
         # Later edits do not replace objects belonging to the recorded start.
-        runtime.observe_past(1)
+        tuple(runtime.observe_recorded_at(-i * 100000) for i in range(1, 0, -1))
         assert track in {item.track_id for item in boundary.lidar_requests[-1].dynamic_objects}
         boundary.hidden = None
         runtime.step(Control())
@@ -1215,3 +1514,111 @@ def test_scene_render_without_actors(nurec_longitudinal_dataset, monkeypatch,
         assert clean.object_visibility == {}
         assert not boundary.last_request.dynamic_objects
         assert not boundary.lidar_requests[-1].dynamic_objects
+
+
+def test_force_gt_physics_trajectory(nurec_longitudinal_dataset, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from pathlib import Path
+
+    for package in ("runtime", "utils"):
+        source = Path("/opt/alpasim/src") / package
+        if source.exists():
+            monkeypatch.syspath_prepend(str(source))
+    geometry = pytest.importorskip("alpasim_utils.geometry")
+    blend = pytest.importorskip("alpasim_runtime.force_gt_blend")
+    from avsectester.closed_loop.simulators.ground_contact import constrain_to_ground
+    from avsectester.geometry.mesh import MeshRaycaster
+    from avsectester.geometry.poses import rotation_to_quaternion, rotation_matrix
+    import io
+    import trimesh
+
+    # The reconstruction boundary stays fake. Its source trajectory and public motion API are real.
+    path = tmp_path / "turn.usdz"
+    with zipfile.ZipFile(nurec_longitudinal_dataset.usdz_paths[0]) as source:
+        entries = {name: source.read(name) for name in source.namelist()}
+    recording = json.loads(entries["rig_trajectories.json"])
+    native = recording["rig_trajectories"][0]
+    for camera, stamps in native["cameras_frame_timestamps_us"].items():
+        poses = []
+        for stamp in stamps:
+            angle = stamp[0] / 1000000
+            pose = np.eye(4)
+            pose[:3, :3] = rotation_matrix((0., 0., np.rad2deg(angle)))
+            pose[:3, 3] = (2 * np.sin(angle), 2 * (1 - np.cos(angle)),
+                             .3 if stamp[0] >= 300000 else 10.)
+            poses.append([pose.tolist(), pose.tolist()])
+        native["cameras_frame_T_rig_worlds"][camera] = poses
+    entries["rig_trajectories.json"] = json.dumps(recording).encode()
+    with zipfile.ZipFile(path, "w") as target:
+        for name, data in entries.items():
+            target.writestr(name, data)
+    dataset = NuRecDataset([path], time_step=.1)
+    start = dataset.scenario_start("scene", dataset.frames("scene")[3])
+    origin = timestamp_to_microseconds(start.frame.timestamp)
+    duration = 300000
+    end = timestamp_to_microseconds(dataset.frames("scene")[-1].timestamp) - origin
+    times = sorted({-17000, 0, duration, end,
+        *(timestamp_to_microseconds(t) - origin for t in dataset.camera_timestamps("scene")
+          if -17000 <= timestamp_to_microseconds(t) - origin <= end), *range(0, end + 1, 100000)})
+    # Official Trajectory uses unsigned timestamps, so shift the local clock to a safe epoch.
+    epoch = 1000000
+    ego = [dataset.ego_state("scene", origin + t) for t in times]
+    raw = geometry.Trajectory(np.array([epoch+t for t in times], dtype=np.uint64),
+        np.array([state.pose[:3, 3] for state in ego]),
+        np.array([np.asarray(rotation_to_quaternion(state.pose[:3, :3]))[[1, 2, 3, 0]] for state in ego]))
+    mesh = trimesh.load(io.BytesIO(entries["mesh_ground.ply"]), file_type="ply", process=False)
+    raycaster = MeshRaycaster(mesh.vertices, mesh.faces)
+    corrected = []
+    for state in ego:
+        box, _status = constrain_to_ground(raycaster, state.box_transform(), state.extent)
+        corrected.append(box @ np.linalg.inv(np.linalg.inv(state.pose) @ state.box_transform()))
+    physical = geometry.Trajectory(raw.timestamps_us,
+        np.array([pose[:3, 3] for pose in corrected]),
+        np.array([np.asarray(rotation_to_quaternion(pose[:3, :3]))[[1, 2, 3, 0]] for pose in corrected]))
+    unbound = SimpleNamespace(render_start_timestamp_us=epoch, force_gt_duration_us=duration)
+    alphas = np.array([blend.force_gt_physics_blend_alpha(unbound, epoch+t) for t in times],
+                      dtype=np.float32)
+    expected = raw.blend(physical, alphas)
+    timing = TimingConfiguration(force_gt_duration_us=duration, pose_reporting_interval_us=50000,
+                                 sensors={"front": SensorTiming(33000, 17000)})
+    from avsectester.closed_loop.simulators.ego_dynamics import TrajectoryFollower
+
+    simulator = NuRecSimulator(NuRecImageBoundary(CAMERA), TrajectoryFollower(), time_step=.1,
+        min_track_duration_s=0., depth="none", route_generator="none",
+        physics_update_mode="ego_only", ground_mesh="mesh_ground")
+    with simulator.create_runtime() as runtime:
+        runtime.configure_timing(timing)
+        runtime.reset(start)
+        assert runtime.termination_details["ground_contact_failures"] == {}
+        reference = runtime.recorded_reference(0, 100000)
+        assert [point[2] for point in reference.trajectory] == [t for t in times if t >= 0]
+        for index in range(3):
+            begin, end = index * 100000, (index + 1) * 100000
+            nodes = (begin, begin+50000, end)
+            poses = expected.interpolate(np.array([epoch+t for t in nodes], dtype=np.uint64))
+            runtime.advance_interval(end, runtime.recorded_reference(begin, end),
+                                     report_times_us=(begin+50000,), force_gt=True)
+            with pytest.raises(RuntimeError, match="pending motion"):
+                runtime.checkpoint()
+            # Rendered frame endpoints interpolate committed reports, not native GT samples.
+            for t in (begin, begin+1000, begin+33000, begin+50000, begin+83000, end):
+                expected_pose = poses.interpolate(np.array([epoch+t], dtype=np.uint64))
+                state = runtime.state_at(t)
+                np.testing.assert_allclose(state.ego.pose[:3, 3], expected_pose.positions[0], atol=2e-6)
+                yaw = np.arctan2(state.ego.pose[1, 0], state.ego.pose[0, 0])
+                assert yaw == pytest.approx(expected_pose.yaws[0], abs=2e-6)
+            runtime.capture_at(begin+33000, ("front",))
+            request = runtime.render_request("front")
+            start_pose = poses.interpolate(np.array([epoch+begin+16000], dtype=np.uint64))
+            end_pose = poses.interpolate(np.array([epoch+begin+33000], dtype=np.uint64))
+            view = runtime.sensor_view("front")
+            np.testing.assert_allclose(view.native["exposure"]["world_from_rig_start"][:3, 3],
+                                       start_pose.positions[0], atol=2e-6)
+            view.native["render_request"].pose[0, 3] = 999.
+            view.native["exposure"]["world_from_rig_start"][0, 3] = 999.
+            acquisition = runtime.sensor_acquisition("front")
+            assert acquisition.view.native["render_request"].pose[0, 3] != 999.
+            acquisition.view.native["render_request"].pose[0, 3] = -999.
+            assert runtime.sensor_view("front").native["render_request"].pose[0, 3] != -999.
+            np.testing.assert_allclose(request.pose[:3, 3], end_pose.positions[0], atol=2e-6)
+            runtime.capture_at(end, ())

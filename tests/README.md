@@ -91,6 +91,7 @@ tests/
       test_environment.py
       test_hooks.py
       test_sensor_corruptions.py
+      test_timing.py
     datasets/
       scenario_map_contract.py
       test_datasets.py

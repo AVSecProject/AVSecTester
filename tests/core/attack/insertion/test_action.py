@@ -26,7 +26,8 @@ def test_insertion_attack_action(camera, optical_from_world):
     view = SensorView("front", image, camera, optical_from_world,
                       {"unbounded": ActorState(np.eye(4))}, ActorState(np.eye(4)), 0., 0,
                       objects={"screen": placed})
-    action = InsertionAttackAction("front", target)
+    action = InsertionAttackAction("front", target, active_for_us=100000)
+    assert action.active_for_us == 100000
     rendered = action.apply(image, view)
     assert np.any(rendered[:, 50:] != image[:, 50:])
     np.testing.assert_array_equal(rendered[:, :50], image[:, :50])

@@ -16,7 +16,7 @@ class SensorCapture:
     """Owned bytes from a CARLA sensor capture. It contains no simulator handle.
 
     ``raw_data`` retains the memoryview interface used by AVStack's LiDAR
-    exporter. Coordinates remain in their original convention; the surrounding
+    exporter. Coordinates remain in their original convention. The surrounding
     LidarData keeps its ``flipy`` setting. No serialization uses SDK pickle.
     """
 
@@ -97,7 +97,7 @@ def register_pinhole_camera():
 
 
 def _use_pinhole_cameras(scenario):
-    """Replace stock RGB cameras with the undistorted subclass; custom classes are kept."""
+    """Replace stock RGB cameras with the undistorted subclass. Custom classes are kept."""
     for sensor in scenario.get("ego", {}).get("sensors", ()):
         if sensor.get("type") == "CarlaRgbCamera":
             sensor["type"] = "PinholeRgbCamera"
@@ -133,7 +133,7 @@ for _module in ("carla", "carla.libcarla"):
     for _name in ("Image", "LidarMeasurement", "SemanticLidarMeasurement", "RadarMeasurement"):
         DEFAULT_REGISTRY.register_native(
             _module, _name, _sdk_capture_data,
-            snapshot=lambda value, capture_child: _sdk_capture(value),
+            snapshot=lambda value, capture_child: capture_child(_sdk_capture(value)),
         )
 
 

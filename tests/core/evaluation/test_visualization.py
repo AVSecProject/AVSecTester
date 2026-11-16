@@ -3,19 +3,20 @@
 from pathlib import Path
 from types import SimpleNamespace
 from dataclasses import replace
+from functools import partial
 
 from PIL import Image
 
 import numpy as np
 import pytest
 
-from avsectester.data_types import Detection, Observation, PointCloud
+from avsectester.data_types import Detection, Observation, PointCloud, DeliveredAcquisition, TimedStateEstimate
 from avsectester.closed_loop.simulators.base import SensorGeometry
 from avsectester.evaluation.visualization import (
     annotate, as_rgb, box3d_corners, camera_view, detections_view, draw_boxes3d, filmstrip,
     labels_view, lidar_bev, plot_group, record_run, save_gif, save_image, save_sequence, sensor_view,
 )
-from avsectester.runlog import RunLog
+from avsectester.runlog import CaptureRecord, RunLog
 
 
 def image_log_with_geometry(make_log, make_actor, camera=None):
@@ -54,6 +55,36 @@ def test_sensor_view(camera_log):
     view = sensor_view(step, "front")
     assert view.sensor == "front"
     np.testing.assert_array_equal(view.cam_from_world, step.sensor_geometry["front"].cam_from_world)
+    observation = step.model_observation
+    observation.deliveries = {"front": (DeliveredAcquisition(
+        -33000,  -.033, 7, observation.sensor_data["front"], None,
+        TimedStateEstimate(-33000, -.033, observation.vehicle_state, observation.ego_speed), capture_id=3),)}
+    captured_truth = replace(step.physical_pre, t=-.033, frame=7, actors={})
+    step.delivered_captures = {"front": (3,)}
+    capture = CaptureRecord(3, -33000, ("front",),
+                            model_observation=observation, physical_state=captured_truth,
+                            sensor_geometry=step.sensor_geometry)
+    camera_log.captures = [capture]
+    captured_view = sensor_view(step, "front", log=camera_log)
+    assert captured_view.time == -.033 and captured_view.frame == 7 and captured_view.actors == {}
+    np.testing.assert_array_equal(sensor_view(capture, "front").data, captured_view.data)
+    assert sensor_view(capture, "front").time == -.033
+    raw_observation = Observation(0., 0, {"front": observation.sensor_data["front"]})
+    raw_transform = step.sensor_geometry["front"].cam_from_world.copy()
+    raw_transform[0, 3] += 1.
+    raw_geometry = replace(step.sensor_geometry["front"], cam_from_world=raw_transform)
+    current_capture = CaptureRecord(4, 0, ("front",),
+        raw_observation=raw_observation, physical_state=step.physical_pre,
+        sensor_geometry={"front": raw_geometry})
+    camera_log.captures.append(current_capture)
+    step.raw_observation, step.model_observation = raw_observation, Observation(0., 0)
+    assert camera_view(step, "front") is None
+    step.model_observation = None
+    raw_view = sensor_view(step, "front", log=camera_log)
+    assert raw_view.time == 0. and raw_view.frame == 0 and "lead" in raw_view.actors
+    np.testing.assert_array_equal(raw_view.cam_from_world, raw_transform)
+    np.testing.assert_array_equal(camera_view(step, "front"), raw_observation.sensor_data["front"])
+    step.model_observation = observation
     step.sensor_geometry = {}
     assert sensor_view(step) is None
 
@@ -84,6 +115,14 @@ def test_record_run(tmp_path, image_log):
     assert [path.name for path in paths] == ["frame_0000.png", "frame_0001.png"]
     assert all(path.read_bytes().startswith(b"\x89PNG") for path in paths)
 
+    def custom_view(record, *, log, camera):
+        assert log is image_log
+        return camera_view(record, camera)
+
+    custom = record_run(image_log, tmp_path / "custom", visualize=partial(custom_view, camera="front"))
+    assert [path.read_bytes() for path in custom] == [path.read_bytes() for path in paths]
+    assert filmstrip(image_log, visualize=partial(custom_view, camera="front")).shape == (108, 274, 3)
+
 
 def test_save_sequence(tmp_path, image_log):
     strip_path, gif_path = save_sequence(image_log, tmp_path / "sequence", cols=2)
@@ -112,6 +151,10 @@ def test_plot_group(tmp_path, make_log):
     with Image.open(path) as two_panels, Image.open(single) as one_panel:
         assert one_panel.width == two_panels.width
         assert one_panel.height < two_panels.height
+    forced = make_log([3., 2.])
+    forced.steps[0].force_gt = True
+    forced.steps[0].produced_command = forced.steps[0].executed_command = None
+    assert plot_group({"forced": forced}, tmp_path / "forced.png").is_file()
     empty = plot_group({}, tmp_path / "empty.png")
     assert empty.is_file()
 

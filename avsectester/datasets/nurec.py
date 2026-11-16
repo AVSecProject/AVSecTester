@@ -6,6 +6,8 @@ archive access remain available without importing scene filters or simulator cod
 
 from __future__ import annotations
 
+from avsectester.validation import timestamp_to_microseconds
+
 import json
 import io
 import math
@@ -129,10 +131,10 @@ class NuRecDataset(Dataset):
     Each USDZ file is one scenario, identified by NuRec's own scene ID (``clipgt-<uuid>``), the
     ID the NuRec renderer loads. Frame data and scenario starts interpolate the recorded rig
     trajectory and actor tracks within recorded support. ``camera_id`` is NuRec's camera ID
-    (for example ``camera_front_wide_120fov``). Sensor names remain native here; simulators
+    (for example ``camera_front_wide_120fov``). Sensor names remain native here. Simulators
     configure any observation aliases. Native annotations are available per scenario through
-    ``raw_metadata``; ``open_archive`` provides read-only archive access. A track whose lowercase
-    label contains any ``vehicle_labels`` entry has category ``vehicle``; other tracks keep their
+    ``raw_metadata``. ``open_archive`` provides read-only archive access. A track whose lowercase
+    label contains any ``vehicle_labels`` entry has category ``vehicle``. Other tracks keep their
     native label as category. Categories never decide which cuboids occlude an insertion.
 
     Give either ``dataroot``, a directory whose ``.usdz`` archives (searched recursively and
@@ -152,7 +154,7 @@ class NuRecDataset(Dataset):
     ) -> None:
         if isinstance(time_step, bool) or not math.isfinite(time_step) or time_step <= 0:
             raise ValueError("time_step must be positive and finite")
-        self._step_us = round(time_step * 1e6)
+        self._step_us = timestamp_to_microseconds(time_step)
         if self._step_us < 1 or abs(time_step * 1e6 - self._step_us) > 1e-6:
             raise ValueError("time_step must be representable in integer microseconds")
         self.time_step = self._step_us / 1e6
@@ -301,8 +303,8 @@ class NuRecDataset(Dataset):
 
         self.checked_frame(scenario_id, frame)
         path = self._path(scenario_id)
-        ego = self.ego_state(scenario_id, round(frame.timestamp * 1e6))
-        actors = self.actor_states(scenario_id, round(frame.timestamp * 1e6))
+        ego = self.ego_state(scenario_id, timestamp_to_microseconds(frame.timestamp))
+        actors = self.actor_states(scenario_id, timestamp_to_microseconds(frame.timestamp))
         return FrameData(
             frame, actors=actors, ego=ego,
             provenance={"kind": "interpolated", "usdz_path": path,
@@ -321,11 +323,11 @@ class NuRecDataset(Dataset):
         timeline = self.frames(scenario_id)
         return ScenarioStart("NuRecDataset", scenario_id, frame, {
             "usdz_path": path, "camera_id": self.camera_id,
-            "scene_id": scenario_id, "ego": self.ego_state(scenario_id, round(frame.timestamp * 1e6)),
+            "scene_id": scenario_id, "ego": self.ego_state(scenario_id, timestamp_to_microseconds(frame.timestamp)),
             "time_step": self.time_step, "interpolation": "linear_translation_slerp_rotation",
             "first_timestamp": timeline[0].timestamp,
             "terminal_timestamp": timeline[-1].timestamp,
-        }, recorded_ego=tuple(self.ego_state(scenario_id, round(item.timestamp * 1e6))
+        }, recorded_ego=tuple(self.ego_state(scenario_id, timestamp_to_microseconds(item.timestamp))
                               for item in timeline), scenario_map=self.scenario_map(scenario_id))
 
     def ego_state(self, scenario_id: str, timestamp_us: int) -> ActorState:
@@ -383,13 +385,13 @@ class NuRecDataset(Dataset):
         """Recorded actors at this timestamp: world pose, velocity and category, by track ID.
 
         Velocity is the position difference over one ``time_step``, backward where the track
-        exists one step earlier, otherwise forward; it is ``None`` for a single-sample track.
+        exists one step earlier, otherwise forward. It is ``None`` for a single-sample track.
         """
         return self._actor_states(self._path(scenario_id), timestamp_us)
 
     def _actor_states(self, path: str, timestamp_us: int) -> dict[str, ActorState]:
         tracks = self._raw_metadata(str(path))["sequence_tracks.json"]
-        step_us = round(self.time_step * 1e6)
+        step_us = timestamp_to_microseconds(self.time_step)
         before = {tid: pose for tid, _, _, pose in self._track_states(tracks, timestamp_us - step_us)}
         after = {tid: pose for tid, _, _, pose in self._track_states(tracks, timestamp_us + step_us)}
         states = {}

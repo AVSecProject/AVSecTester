@@ -19,7 +19,9 @@ import numpy as np
 from avsectester.attack import Attack
 from avsectester.attack.runtime import AttackRuntime
 from avsectester.closed_loop.avstacks.base import AVStack
-from avsectester.data_types import ActorState, Control, Detection, Observation, WorldSnapshot
+from avsectester.closed_loop.timing import HistoryRequirement
+from avsectester.data_types import (ActorState, Control, DeliveredAcquisition, Detection,
+                                    Observation, TimedStateEstimate, WorldSnapshot)
 from avsectester.closed_loop.simulators.base import SensorGeometry, SensorView, Simulator, SimulatorRuntime
 from avsectester.closed_loop.simulators.nurec.renderer import Renderer
 from avsectester.datasets import Dataset, FrameData, FrameReference, ScenarioDescriptor, ScenarioStart
@@ -148,8 +150,9 @@ class MemorySimulator(Simulator):
     def __init__(self, time_step=.1, capture_ticks=0, world_key=None,
                  extra_sensors=None, camera_geometries=None, sensor_depths=None, actors=None, runtime_error=None, start_error=None,
                  can_replay=True, can_observe_past=True, can_insert_objects=True, can_render=True,
-                 observation_lead_steps=0):
+                 observation_lead_steps=0, captures_between_decisions=True):
         self.time_step, self.capture_ticks = time_step, capture_ticks
+        self.captures_between_decisions = captures_between_decisions
         self._observation_lead_steps = observation_lead_steps
         self.world_key = world_key
         self.runtime_error = runtime_error
@@ -172,6 +175,14 @@ class MemorySimulator(Simulator):
     @property
     def decision_time_step(self):
         return self.time_step
+
+    @property
+    def timing_capabilities(self):
+        from avsectester.closed_loop.timing import TimingCapabilities
+
+        return TimingCapabilities(captures_between_decisions=self.captures_between_decisions,
+                                  motion_reports=True, recorded_ego_motion=self.can_replay,
+                                  camera_exposure=True)
 
     @property
     def identity(self):
@@ -223,49 +234,87 @@ class MemorySimulatorRuntime(SimulatorRuntime):
         pass
 
     def _observe(self):
+        return self._observe_sensors(tuple(self.sensors))
+
+    def _observe_sensors(self, sensor_ids):
+        selected = set(sensor_ids)
         color = 20 + self.position
         images = {sensor: np.full((geometry.camera.height, geometry.camera.width, 3), color, np.uint8)
-                  for sensor, geometry in self.simulator.camera_geometries.items()}
-        return Observation(self.position * self.simulator.time_step, self.position,
-                           {**images, **deepcopy(self.simulator.extra_sensors)}, ego_speed=self.speed)
+                  for sensor, geometry in self.simulator.camera_geometries.items() if sensor in selected}
+        return Observation(self.state().t, self.position,
+                           {**images, **{key: deepcopy(value) for key, value in self.simulator.extra_sensors.items()
+                                        if key in selected}}, ego_speed=self.speed)
 
-    def _observe_recorded(self, position):
+    def _recorded_ego(self, position):
+        from avsectester.geometry.poses import interpolate_transform
+
+        left = int(position)
+        actor = self._start.recorded_ego[left]
+        if position == left:
+            return actor
+        after = self._start.recorded_ego[left + 1]
+        fraction = position - left
+        return replace(actor, pose=interpolate_transform(actor.pose, after.pose, fraction),
+                       velocity=tuple((1 - fraction) * np.asarray(actor.velocity)
+                                      + fraction * np.asarray(after.velocity)))
+
+    def _recorded_position(self, time_us):
+        grid, remainder = divmod(time_us, self.decision_period_us)
+        return self._start.frame.position + grid + remainder / self.decision_period_us
+
+    def _recorded_pose_state(self, time_us):
         from avsectester.closed_loop.simulators.ego_dynamics import PlanarEgoState
 
-        start = self._start
-        ego = start.recorded_ego[position]
-        relative_position = position - start.frame.position
+        position = self._recorded_position(time_us)
+        timestamp_us = time_us
+        ego = self._recorded_ego(position)
+        speed = float(np.linalg.norm(ego.velocity))
+        state = PlanarEgoState(x=float(ego.pose[0, 3]), y=float(ego.pose[1, 3]),
+                              yaw=float(np.arctan2(ego.pose[1, 0], ego.pose[0, 0])),
+                              speed=speed, t=timestamp_us / 1e6)
+        return WorldSnapshot(timestamp_us / 1e6, time_us // self.decision_period_us,
+                             state, speed, ego=ego)
+
+    def _recorded_state(self, time_us):
+        return replace(self._recorded_pose_state(time_us), actors=deepcopy(self.simulator.initial_actors))
+
+    def _observe_recorded(self, time_us):
+        from avsectester.closed_loop.simulators.ego_dynamics import PlanarEgoState
+
+        position = self._recorded_position(time_us)
+        timestamp_us = time_us
+        ego = self._recorded_ego(position)
         images = {sensor: np.full((geometry.camera.height, geometry.camera.width, 3),
-                                  20 + position, np.uint8)
+                                  20 + int(position), np.uint8)
                   for sensor, geometry in self.simulator.camera_geometries.items()}
         velocity = np.asarray(ego.velocity, dtype=float)
         return Observation(
-            relative_position * self.simulator.time_step, relative_position,
+            timestamp_us / 1e6, time_us // self.decision_period_us,
             {**images, **deepcopy(self.simulator.extra_sensors)},
             vehicle_state=PlanarEgoState(x=float(ego.pose[0, 3]), y=float(ego.pose[1, 3]),
                                   yaw=float(np.arctan2(ego.pose[1, 0], ego.pose[0, 0])),
                                   speed=float(np.linalg.norm(velocity)),
-                                  t=relative_position * self.simulator.time_step),
+                                  t=timestamp_us / 1e6),
             ego_speed=float(np.linalg.norm(velocity)),
         )
 
-    def _recorded_sensor_geometry(self, position, sensor):
+    def _recorded_sensor_geometry(self, time_us, sensor):
         if sensor not in self.camera_sensors:
             raise ValueError(f"Unknown memory camera: {sensor}")
         geometry = self.simulator.camera_geometries[sensor]
         transform = geometry.cam_from_world.copy()
-        transform[:, 3] -= transform[:, 0] * self._start.recorded_ego[position].pose[0, 3]
+        transform[:, 3] -= transform[:, 0] * self._recorded_ego(self._recorded_position(time_us)).pose[0, 3]
         return SensorGeometry(sensor, geometry.camera, transform)
 
-    def _recorded_sensor_view(self, position, sensor, observation):
-        geometry = self._recorded_sensor_geometry(position, sensor)
+    def _recorded_sensor_view(self, time_us, sensor, observation):
+        geometry = self._recorded_sensor_geometry(time_us, sensor)
         return SensorView(sensor, observation.sensor_data[sensor], geometry.camera, geometry.cam_from_world,
-                          {}, self._start.recorded_ego[position], observation.t, observation.frame,
+                          {}, self._recorded_ego(self._recorded_position(time_us)), observation.t, observation.frame,
                           depth=deepcopy(self.simulator.sensor_depths.get(sensor)),
                           sensor_from_world=BODY_FROM_OPTICAL @ geometry.cam_from_world)
 
     def _state(self):
-        return WorldSnapshot(self.position * self.simulator.time_step, self.position,
+        return WorldSnapshot((self.position * self.decision_period_us) / 1e6, self.position,
                              ego_speed=self.speed, actors=deepcopy(self.actors),
                              ego=actor_state((self.distance, 0., 0.), self.speed))
 
@@ -280,6 +329,30 @@ class MemorySimulatorRuntime(SimulatorRuntime):
         self.distance += self.speed * self.simulator.time_step
         self.position += 1
 
+    def _advance_recorded_native(self):
+        next_position = self.position + 1
+        state = self._start.recorded_ego[next_position]
+        self.position = next_position
+        self.distance = float(state.pose[0, 3])
+        self.speed = float(np.linalg.norm(state.velocity))
+
+    def _reported_state_at(self, time_us):
+        from avsectester.geometry.poses import interpolate_transform
+
+        first, last = self._interval_start_state, self._interval_end_state
+        fraction = (time_us - self._interval_start_us) / (self._interval_end_us - self._interval_start_us)
+        pose = interpolate_transform(first.ego.pose, last.ego.pose, fraction)
+        speed = first.ego_speed + fraction * (last.ego_speed - first.ego_speed)
+        ego = replace(first.ego, pose=pose, velocity=(speed, 0., 0.))
+        return replace(first, t=time_us / 1e6, ego_speed=speed, ego=ego,
+                       actors=deepcopy(last.actors), objects=deepcopy(last.objects))
+
+    def _activate_reported_state(self, time_us, state):
+        self.position = state.frame
+        self.speed = state.ego_speed
+        self.distance = float(state.ego.pose[0, 3])
+        self.actors = deepcopy(state.actors)
+
     @property
     def sensors(self):
         return frozenset({*self.simulator.camera_geometries, *self.simulator.extra_sensors})
@@ -288,7 +361,7 @@ class MemorySimulatorRuntime(SimulatorRuntime):
     def camera_sensors(self):
         return frozenset(self.simulator.camera_geometries)
 
-    def sensor_geometry(self, sensor):
+    def _sensor_geometry(self, sensor):
         if sensor not in self.camera_sensors:
             raise ValueError(f"Unknown memory camera: {sensor}")
         geometry = self.simulator.camera_geometries[sensor]
@@ -305,7 +378,7 @@ class MemorySimulatorRuntime(SimulatorRuntime):
         body_from_world[0, 3] = -self.distance
         camera, cam_from_world = None, None
         if sensor in self.camera_sensors:
-            geometry = self.sensor_geometry(sensor)
+            geometry = self._sensor_geometry(sensor)
             camera, cam_from_world = geometry.camera, geometry.cam_from_world
             body_from_world = BODY_FROM_OPTICAL @ cam_from_world
         elif not isinstance(data, np.ndarray):
@@ -320,10 +393,12 @@ class MemorySimulatorRuntime(SimulatorRuntime):
         if actor_id not in self.actors:
             raise KeyError(actor_id)
         self.actors[actor_id] = deepcopy(state)
+        self.invalidate_state()
 
     def control_actor(self, actor_id, control):
         state = self.actors[actor_id]
         self.actors[actor_id] = replace(state, velocity=(float(control.throttle), 0., 0.))
+        self.invalidate_state()
 
     def _capture_frame_data(self, frame):
         state = self.state()
@@ -347,7 +422,7 @@ class ConstantAVStack(AVStack):
         self.fail_on_position, self.interrupt_on_position = fail_on_position, interrupt_on_position
         self.output = None
 
-    def reset(self, observation, past=()):
+    def reset(self, observation):
         self.output = None
 
     def __call__(self, observation):
@@ -370,16 +445,14 @@ class ConstantAVStack(AVStack):
 class HistoryAVStack(ConstantAVStack):
     """A driver that records its actual warmup inputs in public component telemetry."""
 
-    past_steps = 2
+    history = HistoryRequirement(samples=3)
 
-    def reset(self, observation, past=()):
-        super().reset(observation, past=past)
-        self.past_observations = tuple(deepcopy(item) for item in past)
+    def reset(self, observation):
+        super().reset(observation)
         self.initial_observation = deepcopy(observation)
 
     def component_log(self):
-        return {**super().component_log(), "past_observations": self.past_observations,
-                "initial_observation": self.initial_observation}
+        return {**super().component_log(), "initial_observation": self.initial_observation}
 
 
 def decelerating_command(speed, t, acceleration=-2.):
@@ -396,7 +469,7 @@ class DeceleratingAVStack(AVStack):
     """Replan a -2 m/s² trajectory from the current observed speed every decision."""
 
     command_modes = frozenset({"trajectory"})
-    past_steps = 15
+    history = HistoryRequirement(duration_us=1_500_000)
 
     def __call__(self, observation):
         return decelerating_command(observation.ego_speed, observation.t)
@@ -404,6 +477,8 @@ class DeceleratingAVStack(AVStack):
 
 class StopCommandAVStack(DeceleratingAVStack):
     """Emit a delayed stop command, optionally selecting its delay from captured pixels."""
+
+    history = HistoryRequirement(samples=16)
 
     def __init__(self, stop_after=3, image_dependent=False, stop_by_start=None,
                  invalid_timestamps=False):
@@ -414,7 +489,7 @@ class StopCommandAVStack(DeceleratingAVStack):
         self.decision = 0
         self.delay = stop_after
 
-    def reset(self, observation, *, past=()):
+    def reset(self, observation):
         self.decision = 0
         self.delay = self.stop_after
 
@@ -773,15 +848,16 @@ class NuRecImageBoundary(Renderer):
 
     cameras = ["front"]
 
-    def __init__(self, camera, camera_id="front", rig_from_camera=None):
+    def __init__(self, camera, camera_id="front", rig_from_camera=None, provide_geometry=True):
         self.camera = camera
         self.cameras = [camera_id]
         self.rig_from_camera = rig_from_camera
+        self.provide_geometry = provide_geometry
 
     def camera_model(self, camera=None):
         if camera is not None and camera not in self.cameras:
             raise ValueError(f"Unknown camera {camera!r}")
-        return self.camera
+        return self.camera if self.provide_geometry else None
 
     def cam_from_world(self, world_from_rig, camera=None):
         rig_from_camera = BODY_FROM_OPTICAL.copy()
@@ -790,7 +866,7 @@ class NuRecImageBoundary(Renderer):
             rig_from_camera = self.rig_from_camera
         return np.linalg.inv(world_from_rig @ rig_from_camera)
 
-    def render(self, world_from_rig, timestamp_us, camera, dynamic_objects=()):
+    def render(self, world_from_rig, timestamp_us, camera, dynamic_objects=(), **exposure):
         return np.full((self.camera.height, self.camera.width, 3), 30, np.uint8)
 
 
@@ -803,14 +879,14 @@ class NuRecTrafficImageBoundary(NuRecImageBoundary):
         self.probes = []
         self.fail_render = False
 
-    def render(self, world_from_rig, timestamp_us, camera, dynamic_objects=()):
+    def render(self, world_from_rig, timestamp_us, camera, dynamic_objects=(), **exposure):
         if self.fail_render:
             raise RuntimeError("image service failed")
         self.rendered.append((timestamp_us, {key: pose.copy() for key, pose in dynamic_objects}))
         return super().render(world_from_rig, timestamp_us, camera, dynamic_objects)
 
     def render_scene_visibility(self, world_from_rig, timestamp_us, camera, objects,
-                                dynamic_objects=(), *, occlusion_tolerance_m=0.):
+                                dynamic_objects=(), *, occlusion_tolerance_m=0., **exposure):
         self.probes.append((timestamp_us, {key: pose.copy() for key, pose in dynamic_objects}))
         return np.ones((self.camera.height, self.camera.width), dtype=bool)
 
@@ -993,7 +1069,7 @@ class CarlaMobileActor:
             get_transform=self.actor.get_transform,
             attributes={"image_size_x": "16", "image_size_y": "12", "fov": "90",
                         "lens_k": "0", "lens_kcube": "0", "lens_circle_multiplier": "0"})
-        self.sensors = {"front": SimpleNamespace(source_identifier="front", frame0=0, t0=0.,
+        self.sensors = {"front_camera": SimpleNamespace(source_identifier="front", frame0=0, t0=0.,
             object=native_camera, reference=SimpleNamespace(as_carla_transform=lambda local=True: CarlaTransform()),
             imsize=(12, 16), P=np.array([[8., 0., 8., 0.],
              [0., 8., 6., 0.], [0., 0., 1., 0.]]))}
@@ -1004,7 +1080,7 @@ class CarlaMobileActor:
                     return CarlaTransform(CarlaVector(location.x + 1., location.y + 2., 1.5),
                                           SimpleNamespace(pitch=0., yaw=90., roll=0.))
 
-                self.sensors["lidar"] = SimpleNamespace(source_identifier="lidar", frame0=0, t0=0.,
+                self.sensors["top_lidar"] = SimpleNamespace(source_identifier="lidar", frame0=0, t0=0.,
                     object=SimpleNamespace(type_id="sensor.lidar.ray_cast", get_transform=lidar_transform))
                 self.sensor_data_manager.data["lidar"] = deque()
         client.world.vehicles.append(self)
@@ -1029,14 +1105,14 @@ class CarlaMobileActor:
         # Identical physical scenes have identical pixels even when reset setup ticks
         # give their captures different native clock/frame metadata.
         color = int(round(self.actor.transform.location.x * 1000)) % 255
-        sensor = self.sensors["front"]
+        sensor = self.sensors["front_camera"]
         payload = CarlaImageData(frame=frame - sensor.frame0 + frame_offset,
             timestamp=timestamp - sensor.t0,
             data=np.full((12, 16, 3), color, np.uint8),
             calibration=SimpleNamespace(reference=SimpleNamespace(reference=self.reference)))
         self.sensor_data_manager.data["front"].append(payload)
-        if "lidar" in self.sensors:
-            lidar = self.sensors["lidar"]
+        if "top_lidar" in self.sensors:
+            lidar = self.sensors["top_lidar"]
             payload = SimpleNamespace(frame=frame - lidar.frame0 + frame_offset,
                 timestamp=timestamp - lidar.t0,
                 data=CarlaLidarCapture(frame, timestamp), flipy=True, n_features=4)
@@ -1213,6 +1289,26 @@ class CarlaNativeBoundary:
         return self
 
 
+def fake_carla_recording_registry():
+    """Register fake SDK records through the same child-snapshot contract as native avstack."""
+    from copy import copy
+    from avsectester.serialization import DEFAULT_REGISTRY
+
+    def snapshot(value, capture_child):
+        result = copy(value)
+        for name, child in vars(value).items():
+            vars(result)[name] = capture_child(child)
+        return result
+
+    registry = deepcopy(DEFAULT_REGISTRY)
+    registry.register_native("types", "SimpleNamespace", lambda value: {
+        name: child for name, child in vars(value).items() if not callable(child)
+    }, snapshot=snapshot)
+    registry.register_native("tests.fakes", "CarlaVector", lambda value: vars(value),
+                             snapshot=snapshot)
+    return registry
+
+
 def recorded_policy_observations(count=16, start_time=-1.5, time_step=.1, speed=4.,
                                  acceleration=0., yaw=0., route=None):
     """A small synthetic recording supplied to policy tests as actual observed history."""
@@ -1229,6 +1325,15 @@ def recorded_policy_observations(count=16, start_time=-1.5, time_step=.1, speed=
         observations.append(Observation(
             time, index, {"front": np.full((4, 6, 3), index, np.uint8)},
             vehicle_state=state, ego_speed=state.speed, route=deepcopy(route)))
+    # The first policy decision receives all recorded context in one incremental delivery.
+    origin = min(15, len(observations) - 1)
+    initial = observations[origin]
+    states = tuple(TimedStateEstimate(round(item.t * 1e6), item.t,
+                    item.vehicle_state, item.ego_speed) for item in observations[:origin + 1])
+    samples = tuple(DeliveredAcquisition(state.time_us,  item.t, item.frame,
+                   item.sensor_data["front"], item.calibration.get("front"), state,
+                   item.frame - origin) for item, state in zip(observations[:origin + 1], states))
+    observations[origin] = replace(initial, deliveries={"front": samples}, state_estimates=states)
     return tuple(observations)
 
 

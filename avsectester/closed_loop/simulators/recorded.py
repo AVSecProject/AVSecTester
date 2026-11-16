@@ -20,6 +20,7 @@ from avsectester.datasets.base import ScenarioStart
 from avsectester.data_types import Observation, WorldSnapshot
 from avsectester.geometry.cameras import BODY_FROM_OPTICAL
 from avsectester.validation import require_nonnegative_number
+from avsectester.closed_loop.timing import TimingCapabilities, TimingConfiguration
 
 
 class RecordedReplaySimulator(Simulator):
@@ -33,6 +34,8 @@ class RecordedReplaySimulator(Simulator):
     can_render = True
     can_replay = True
     can_insert_objects = True
+    NOMINAL_PERIOD_US = 500000
+    'nuScenes keyframes use a nominal 500 ms scheduler interval, retaining recorded timestamps.'
 
     def __init__(self, start: ScenarioStart | None = None, *,
                  camera_aliases: Mapping[str, str] = {}, occlusion_tolerance_m: float = 0.1) -> None:
@@ -49,6 +52,23 @@ class RecordedReplaySimulator(Simulator):
         """A new replay. Recorded frames are fixed, so ``seed`` is unused."""
         return RecordedReplaySimulatorRuntime(self)
 
+    @property
+    def timing_capabilities(self) -> TimingCapabilities:
+        return TimingCapabilities(recorded_ego_motion=True)
+
+    def validate_timing(self, timing: TimingConfiguration) -> None:
+        """Require the nominal keyframe decision grid before allocating a replay."""
+        super().validate_timing(timing)
+        if timing.decision_period_us not in (None, self.NOMINAL_PERIOD_US):
+            raise ValueError("Recorded replay decision period must match its nominal keyframe interval")
+        timing.validate_period(self.NOMINAL_PERIOD_US)
+        if (timing.pose_reporting_interval_us or timing.planner_delay_us
+                or timing.force_gt_duration_us or timing.skip_driver_during_force_gt
+                or any(sensor.interval_us(self.NOMINAL_PERIOD_US) != self.NOMINAL_PERIOD_US
+                       or sensor.shutter_duration_us for sensor in timing.sensors.values())):
+            raise ValueError("Recorded replay accepts only default timing settings")
+
+
 
 class RecordedReplaySimulatorRuntime(SimulatorRuntime):
     """One replay of recorded frames."""
@@ -59,6 +79,11 @@ class RecordedReplaySimulatorRuntime(SimulatorRuntime):
         self.camera_aliases = dict(simulator.camera_aliases)
         self._frames = ()
         self._index = 0
+
+    @property
+    def decision_period_us(self) -> int:
+        """Nominal nuScenes keyframe interval, independent of recorded timestamp jitter."""
+        return RecordedReplaySimulator.NOMINAL_PERIOD_US
 
     def _initialize_world(self, start, initialization, environment):
         if environment:
@@ -127,7 +152,7 @@ class RecordedReplaySimulatorRuntime(SimulatorRuntime):
                          for name, reference in self._frames[self._index].sensor_references.items()
                          if "camera" in reference.metadata)
 
-    def sensor_geometry(self, sensor: str) -> SensorGeometry:
+    def _sensor_geometry(self, sensor: str) -> SensorGeometry:
         if not self._world_initialized:
             raise RuntimeError("Initialize recorded replay before requesting camera geometry")
         data = self._frames[self._index]
@@ -147,7 +172,7 @@ class RecordedReplaySimulatorRuntime(SimulatorRuntime):
         """Calibrated recorded RGB frame and cuboids in the recorded world."""
         from avsectester.data_types import read_camera_rgb
 
-        geometry = self.sensor_geometry(sensor)
+        geometry = self._sensor_geometry(sensor)
         data = self._frames[self._index]
         sensor = geometry.sensor
         if self._capture is None or sensor not in self._capture.sensor_data:
@@ -161,11 +186,20 @@ class RecordedReplaySimulatorRuntime(SimulatorRuntime):
                           sensor_from_world=BODY_FROM_OPTICAL @ geometry.cam_from_world,
                           occlusion_tolerance_m=self.simulator.occlusion_tolerance_m)
 
+    def _native_clock(self):
+        from .base import ClockSnapshot
+
+        frame = self._frames[self._index].frame
+        return ClockSnapshot(frame.timestamp, frame.position)
+
     def _advance_native(self, control):
         self._replay_tick()
 
+    def _advance_recorded_native(self):
+        self._replay_tick()
+
     def _replay_tick(self):
-        # Recorded motion is the prescribed motion; commands never change it.
+        # Recorded motion is the prescribed motion. Commands never change it.
         if self._index + 1 >= len(self._frames):
             raise ValueError("Recorded step exceeds terminal recorded support")
         self._index += 1

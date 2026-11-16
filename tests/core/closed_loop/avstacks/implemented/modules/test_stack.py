@@ -11,7 +11,7 @@ from avsectester.closed_loop.avstacks.implemented.modules import (
     VehicleTracker, rule_based_driving_adapter,
 )
 from avsectester.closed_loop.simulators.ego_dynamics import PlanarEgoState
-from avsectester.data_types import PointCloud
+from avsectester.data_types import DeliveredAcquisition, PointCloud, TimedStateEstimate
 from avsectester.geometry import CameraCalibration
 from avsectester.geometry.lidars import LidarCalibration
 from tests.fakes import yolox_detection_model
@@ -69,6 +69,14 @@ def test_rule_based_avstack(rule_based_observation, rule_based_detector):
         assert avstack(observation).trajectory == command.trajectory
         with pytest.raises(ValueError, match="CameraCalibration.*front.*NuRec"):
             avstack.reset(replace(observation, calibration={}))
+        covariance = avstack.tracker.tracks[0].covariance.copy()
+        empty = replace(observation, t=.05, frame=1, sensor_data={}, calibration={})
+        assert avstack(empty).trajectory[0][2] == 50000
+        np.testing.assert_array_equal(avstack.tracker.tracks[0].covariance, covariance)
+        assert empty.sensor_data == {} and empty.deliveries == {}
+        with pytest.raises(ValueError, match="front.*RGB image"):
+            avstack(replace(empty, calibration=observation.calibration, deliveries={"front": ()}))
+        avstack.reset(observation)
         with pytest.raises(ValueError, match="front.*RGB image"):
             avstack(replace(observation, sensor_data={}))
     finally:
@@ -113,9 +121,9 @@ def test_rule_based_avstack(rule_based_observation, rule_based_detector):
             following.reset(observation)
         following.reset(lidar_observation)
         with pytest.raises(ValueError, match=lidar_id):
-            following(replace(lidar_observation, calibration=observation.calibration))
-        with pytest.raises(ValueError, match=lidar_id):
             following(replace(lidar_observation, sensor_data=observation.sensor_data))
+        with pytest.raises(ValueError, match=lidar_id):
+            following(replace(lidar_observation, calibration=observation.calibration))
         following(lidar_observation)
         log = following.component_log()
         assert {row["label"] for row in log["vehicle_detections"]} == {"car", "truck"}
@@ -147,6 +155,25 @@ def test_rule_based_avstack(rule_based_observation, rule_based_detector):
         following.reset(lidar_observation)
         assert vehicle_tracker.tracks == ()
         assert following.component_log() is None
+        predictions[0][4] = .9
+        camera_state = PlanarEgoState(x=1., speed=10., t=.1)
+        delayed = replace(lidar_observation, t=.2, vehicle_state=PlanarEgoState(x=2., speed=10., t=.2),
+            deliveries={
+                "front": (DeliveredAcquisition(100000,  .1, 1,
+                    lidar_observation.sensor_data["front"], lidar_observation.calibration["front"], TimedStateEstimate(100000, .1, camera_state, 10.)),),
+                lidar_id: (DeliveredAcquisition(0,  0., 0,
+                    lidar_observation.sensor_data[lidar_id], lidar_observation.calibration[lidar_id],
+                    TimedStateEstimate(0, 0., lidar_observation.vehicle_state, 10.)),),
+            })
+        following(delayed)
+        no_lidar = replace(delayed, t=.3, frame=3,
+            calibration={"front": delayed.calibration["front"]},
+            sensor_data={"front": delayed.sensor_data["front"]},
+            deliveries={"front": delayed.deliveries["front"]})
+        following(no_lidar)
+        assert no_lidar.sensor_data.keys() == {"front"}
+        np.testing.assert_allclose(following.component_log()["vehicle_estimates"][0]["rig_face_points_m"][1],
+                                   [9., 0., 0.], atol=1e-7)
     finally:
         following.close()
     custom = RuleBasedAVStack(
@@ -191,3 +218,19 @@ def test_rule_based_driving_adapter(tmp_path):
     factory.avstack_options = MappingProxyType({"detector": detector, "camera_id": "front"})
     custom, _ = rule_based_driving_adapter(factory).scorer_bindings[descriptor.id]
     assert custom.sensor_id == "front" and custom.decision_threshold == .7
+
+
+def test_delayed_sign_coordinates(rule_based_observation, rule_based_detector):
+    observation = rule_based_observation()
+    driver = RuleBasedAVStack(rule_based_detector, camera_id="front")
+    driver.reset(observation)
+    driver(observation)
+    expected = driver.tracker.tracks[0].position.copy()
+    captured = DeliveredAcquisition(0,  observation.t, observation.frame,
+        observation.sensor_data["front"], observation.calibration["front"],
+        TimedStateEstimate(0, observation.t, observation.vehicle_state, observation.ego_speed))
+    delayed = replace(observation, t=.1, frame=1,
+        vehicle_state=PlanarEgoState(x=5., speed=10., t=.1), deliveries={"front": (captured,)})
+    driver(delayed)
+    np.testing.assert_allclose(driver.tracker.tracks[0].position, expected, atol=1e-12)
+    driver.close()

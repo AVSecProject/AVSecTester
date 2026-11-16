@@ -9,6 +9,7 @@ import pytest
 from avsectester.attack import AttackSegment
 from avsectester.closed_loop.avstacks.driving_adapter import DrivingAdapter
 from avsectester.closed_loop.simulators import UnsupportedStartError
+from avsectester.closed_loop.timing import HistoryRequirement, TimingConfiguration
 from avsectester.experiment import (
     ConfigurationMismatchError, Experiment, ExperimentConfiguration, ExperimentResult, PreparedExperiment,
     MetadataConfiguration, load_metadata, save_metadata,
@@ -45,7 +46,7 @@ def test_validate(tmp_path):
         Experiment.validate(replace(config, attacks={"probe": MetadataOnlyAttack("allowed")}))
 
     with pytest.raises(ValueError, match="segment 0.*insufficient recorded history"):
-        Experiment.validate(replace(config, avstack=DrivingAdapter(lambda seed: ConstantAVStack(), past_steps=1)))
+        Experiment.validate(replace(config, avstack=DrivingAdapter(lambda seed: ConstantAVStack(), history=HistoryRequirement(samples=2))))
     invalid = AttackSegment("absent", replace(frames[0], scenario_id="absent"),
                             replace(frames[2], scenario_id="absent"))
     bad = tmp_path / "absent.json"
@@ -89,10 +90,18 @@ def test_prepare():
         ("first", "selected"), ("broken", "error"), ("last", "selected"),
     ]
     assert "RuntimeError: synthetic selection failed" == prepared.selections[1].error
-    restricted = replace(config, avstack=DrivingAdapter(lambda seed: ConstantAVStack(), past_steps=1))
+    restricted = replace(config, avstack=DrivingAdapter(lambda seed: ConstantAVStack(), history=HistoryRequirement(samples=2)))
     filtered = Experiment.prepare(restricted)
     assert [segment.start.position for segment in filtered.metadata["probe"]] == [2, 2]
     assert "insufficient recorded history" in filtered.selections[0].reasons[0]
+    delayed = Experiment.prepare(replace(config, runs=replace(
+        config.runs, strict=False, timing=TimingConfiguration(force_gt_duration_us=500000))))
+    assert all(segment.start.position == 0 for segment in delayed.metadata["probe"])
+    assert any("does not cover the force-GT" in reason
+               for selection in delayed.selections for reason in selection.reasons)
+    with pytest.raises(ValueError, match="does not support force_gt_duration_us"):
+        replace(config, simulator=MemorySimulator(can_replay=False),
+                runs=replace(config.runs, timing=TimingConfiguration(force_gt_duration_us=100000)))
     with pytest.raises(RuntimeError, match="selection failed"):
         Experiment.prepare(replace(config, runs=replace(config.runs, strict=True)))
 

@@ -6,13 +6,11 @@ Every constructed object is selected by one key, ``type``, with keyword argument
 ``options``: a value without a colon names a built-in class (``type: NuRecSimulator``), and
 ``package.module:name`` names user code (``type: my_project.driving:MyAVStack``). Known
 filesystem arguments annotated with Path or os.PathLike are resolved relative to the file
-containing them. Other constructor
-arguments remain user-owned.
+containing them. Other constructor arguments remain user-owned.
 
 ``avstack.type`` names an AVStack class or a callable returning an AVStack. It is called with
 ``options`` for every run and service operation, so each run has a fresh driving history.
-Optional ``avstack.bindings`` exposes driving-system components and scorers to closed-loop
-services.
+Optional ``avstack.bindings`` exposes driving-system components and scorers to closed-loop services.
 """
 
 from __future__ import annotations
@@ -40,6 +38,7 @@ from avsectester.execution.runner import RecordingPolicy
 from avsectester.closed_loop.avstacks.driving_adapter import DrivingAdapter
 from avsectester.closed_loop.simulators.base import Simulator
 from avsectester.closed_loop.avstacks.base import ObservationPipeline
+from avsectester.closed_loop.timing import SensorTiming, TimingConfiguration, seconds_to_microseconds
 from avsectester.datasets import Dataset
 from avsectester.evaluation.report import EvaluationConfiguration
 from avsectester.evaluation.metric import Metric
@@ -131,6 +130,7 @@ class RunsConfiguration:
     recording: RecordingPolicy = field(default_factory=RecordingPolicy)
     output: Path | None = None
     strict: bool = False
+    timing: TimingConfiguration = field(default_factory=TimingConfiguration)
 
     def __post_init__(self) -> None:
         from avsectester.closed_loop.environment import normalize_environment
@@ -149,6 +149,8 @@ class RunsConfiguration:
             require_positive_integer(self.decision_steps, "decision_steps")
         if not isinstance(self.recording, RecordingPolicy):
             raise TypeError("recording must be RecordingPolicy")
+        if not isinstance(self.timing, TimingConfiguration):
+            raise TypeError("timing must be TimingConfiguration")
         if not isinstance(self.strict, bool):
             raise TypeError("strict must be boolean")
         object.__setattr__(self, "treatments", treatments)
@@ -185,6 +187,13 @@ class ExperimentConfiguration:
             if not isinstance(getattr(self, name), expected):
                 raise TypeError(f"{name} must be {expected.__name__}")
         dataset_step = getattr(self.dataset, "time_step", None)
+        if (dataset_step is not None and self.runs.timing.decision_period_us is not None
+                and self.runs.timing.decision_period_us != seconds_to_microseconds(dataset_step)):
+            raise ValueError("runs.timing.decision_period_us must equal the dataset time grid. "
+                             "Segment decision counts remain the difference between frame positions")
+        if dataset_step is not None:
+            self.runs.timing.validate_period(seconds_to_microseconds(dataset_step))
+        self.simulator.validate_timing(self.runs.timing)
         if dataset_step is not None and dataset_step != self.simulator.decision_time_step:
             raise ValueError("dataset.time_step does not match simulator.decision_time_step")
         if self.split is not None and not isinstance(self.split, SplitConfiguration):
@@ -215,7 +224,7 @@ class ExperimentConfiguration:
         """Describe compatibility on demand, when saving or loading prepared results.
 
         Constructing or running a configuration neither enumerates scenarios nor asks attacks
-        to describe their parameters. Loader declarations retain their original options;
+        to describe their parameters. Loader declarations retain their original options.
         directly supplied Python attacks describe their configured inputs on demand.
         """
         return self.describe_configuration()
@@ -226,7 +235,7 @@ class ExperimentConfiguration:
 
         Supplied scenario IDs avoid enumerating the dataset. Run settings are intentionally
         excluded from this compatibility summary. Supplied metadata_sha256 reuses a saved
-        read document; metadata compatibility depends on its bytes, never its path.
+        read document. Metadata compatibility depends on its bytes, never its path.
         """
         descriptions = {}
         for name, attack in self.attacks.items():
@@ -359,16 +368,20 @@ def _runs(value: Any, directory: Path, device: str | None = None) -> RunsConfigu
         return value
     if not isinstance(value, Mapping):
         raise TypeError("runs must be a mapping or RunsConfiguration")
-    _keys(value, {"treatments", "seeds", "decision_steps", "environment", "recording", "output", "strict"},
+    _keys(value, {"treatments", "seeds", "decision_steps", "environment", "recording", "output", "strict", "timing"},
           "runs")
     recording = value.get("recording", RecordingPolicy())
     if isinstance(recording, Mapping):
-        _keys(recording, {"sensor_ids", "representations", "every_n_steps"}, "runs.recording")
+        if "every_n_steps" in recording:
+            raise ValueError("runs.recording.every_n_steps was replaced by every_n_captures. "
+                             "Recording intervals now count each sensor's acquisitions")
+        _keys(recording, {"sensor_ids", "representations", "every_n_captures", "sensor_every_n_captures"}, "runs.recording")
         recording = RecordingPolicy(
             sensor_ids=_sequence(recording.get("sensor_ids", ()), "runs.recording.sensor_ids"),
             representations=_sequence(recording.get("representations", ("model_input",)),
                                       "runs.recording.representations"),
-            every_n_steps=recording.get("every_n_steps", 1),
+            every_n_captures=recording.get("every_n_captures", 1),
+            sensor_every_n_captures=recording.get("sensor_every_n_captures", {}),
         )
     output = value.get("output")
     if output is not None:
@@ -379,6 +392,36 @@ def _runs(value: Any, directory: Path, device: str | None = None) -> RunsConfigu
         decision_steps=value.get("decision_steps"),
         environment=_configured_environment(value.get("environment", {}), directory, device),
         recording=recording, output=output, strict=value.get("strict", False),
+        timing=_timing(value.get("timing", {})),
+    )
+
+
+def _timing(value: Any) -> TimingConfiguration:
+    if isinstance(value, TimingConfiguration):
+        return value
+    if not isinstance(value, Mapping):
+        raise TypeError("runs.timing must be a mapping or TimingConfiguration")
+    _keys(value, {"decision_period_us", "sensors", "pose_reporting_interval_us", "planner_delay_us",
+                  "force_gt_duration_us", "skip_driver_during_force_gt"}, "runs.timing")
+    sensors = value.get("sensors", {})
+    if not isinstance(sensors, Mapping):
+        raise TypeError("runs.timing.sensors must map sensor IDs to timing settings")
+    parsed = {}
+    for name, specification in sensors.items():
+        if isinstance(specification, SensorTiming):
+            parsed[name] = specification
+            continue
+        if not isinstance(specification, Mapping):
+            raise TypeError(f"Timing for sensor {name!r} must be a mapping")
+        _keys(specification, {"frame_interval_us", "shutter_duration_us"},
+              f"runs.timing.sensors.{name}")
+        parsed[name] = SensorTiming(**specification)
+    return TimingConfiguration(
+        decision_period_us=value.get("decision_period_us"), sensors=parsed,
+        pose_reporting_interval_us=value.get("pose_reporting_interval_us", 0),
+        planner_delay_us=value.get("planner_delay_us", 0),
+        force_gt_duration_us=value.get("force_gt_duration_us", 0),
+        skip_driver_during_force_gt=value.get("skip_driver_during_force_gt", False),
     )
 
 
@@ -467,6 +510,9 @@ def _construct(value: Any, directory: Path, expected: type, device: str | None =
     spec, directory = _mapping(value, directory, expected.__name__)
     _keys(spec, {"type", "options"}, expected.__name__)
     constructor, options = _constructor(spec, directory, device)
+    if (expected is Simulator and time_step is not None
+            and "decision_period_us" in inspect.signature(constructor).parameters):
+        options.setdefault("decision_period_us", seconds_to_microseconds(time_step))
     if time_step is not None and "time_step" not in options:
         parameter = inspect.signature(constructor).parameters.get("time_step")
         if parameter is not None and parameter.kind not in {
@@ -507,7 +553,7 @@ def _avstack(value: Any, directory: Path, device: str | None = None) -> DrivingA
         if not modes or modes - {"actuator", "trajectory"}:
             raise ValueError("command_modes must contain actuator and/or trajectory")
 
-    # A constructor that declares ``seed`` receives the run seed; configuring it is an error.
+    # A constructor that declares ``seed`` receives the run seed. Configuring it is an error.
     try:
         seeded = "seed" in inspect.signature(constructor).parameters
     except (TypeError, ValueError):

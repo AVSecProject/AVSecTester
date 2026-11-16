@@ -36,6 +36,25 @@ def test_component_log(pipeline_config, native_observation):
     assert all(output is None for output in avstack.component_log().values())
 
 
+def test_independent_sensor_clock(pipeline_config, native_observation, make_ego):
+    avstack = ModularAVStack({**pipeline_config, "perception_input": "lidar"})
+    assert avstack.detection_sensor == "lidar"
+    avstack.instrument()
+    initial = native_observation(0)
+    avstack.reset(initial)
+    assert avstack.detection_sensor == "lidar"
+    avstack(initial)
+    native_time = avstack.component_log()["perception"].timestamp
+    later = replace(native_observation(1, ego=make_ego(speed=8., t=.05)),
+                    sensor_data={}, calibration={})
+    assert avstack(later).brake > 0.
+    assert avstack.component_log()["perception"].timestamp == native_time
+    assert later.sensor_data == {} and later.deliveries == {}
+    assert avstack.detections()
+    avstack(replace(later, deliveries={"lidar": ()}))
+    assert avstack.detections() is None
+
+
 def test_native_hooks_replace_perception_and_control(pipeline_config, native_observation, monkeypatch):
     from avstack.config import HOOKS
     from avstack.datastructs import DataContainer

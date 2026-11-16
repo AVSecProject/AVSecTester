@@ -4,6 +4,7 @@ from collections import OrderedDict, defaultdict, namedtuple
 from dataclasses import dataclass, fields, is_dataclass
 from pathlib import Path
 import sys
+from types import ModuleType
 
 import numpy as np
 import pytest
@@ -161,7 +162,7 @@ def test_register_dataclass_path(tmp_path, monkeypatch):
         SerializationRegistry().decode(registry.encode(source))
 
 
-def test_register_native():
+def test_register_native(monkeypatch):
     registry = SerializationRegistry()
     registry.register_native(__name__, "SensorResult", lambda result: {"values": result.values})
     registry.register_native(__name__, "ClassifiedSensorResult",
@@ -176,6 +177,14 @@ def test_register_native():
         registry.register_native(__name__, "SensorResult", lambda result: result.values)
     with pytest.raises(TypeError, match="register_native"):
         registry.encode(object())
+    alias = SerializationRegistry()
+    alias.register_native("sensor_sdk_alias", "Measurement", lambda result: result.values)
+    with pytest.raises(TypeError, match="register_native"):
+        alias.encode(SensorResult([1]))
+    module = ModuleType("sensor_sdk_alias")
+    module.Measurement = SensorResult
+    monkeypatch.setitem(sys.modules, "sensor_sdk_alias", module)
+    np.testing.assert_array_equal(alias.decode(alias.encode(SensorResult([1, 2]))), [1, 2])
 
 
 def test_snapshot():

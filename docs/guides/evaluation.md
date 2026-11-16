@@ -36,6 +36,20 @@ measurements do not receive another difference operation.
 
 ## Built-in metrics
 
+Physical evidence uses each sensor's latest acquisition up to the decision, regardless of input
+hooks removing its data. This includes visibility, geometry and detection-matching truth.
+`StepRecord.physical_captures` identifies these acquisitions. `ReplicaVisibility` and the visible
+condition of `SignDetection` follow this rule.
+
+Model association uses the latest frame delivered to the driving system. A declared
+`detection_sensor` selects this source, and `StepRecord.detection_capture_id` retains its ID across
+decisions without new delivery. Decisions before its first delivery are excluded. A run where the
+sensor never delivers has unavailable detection evidence. An undeclared source uses decision-time
+truth. `DetectionMetrics` and `SignDetection` exclude decisions where force-GT skipped the driver.
+Driving metrics use physical decision states. `DrivingMetrics.brake_steps`, `StopImpact` and the
+supplied stop-sign black-box stop-command outcome exclude `force_gt` decisions.
+Commands absent because driving was skipped are not stop commands.
+
 | `Metric` | Measurements |
 |---|---|
 | `DrivingMetrics` | Physical speed, executed actuator braking, stopping, bounding-box distance and geometric collision with actors and inserted objects |
@@ -170,6 +184,13 @@ recorded evidence and does not require simulator startup, dataset access or mode
 Saved runs reach metrics without sensor payloads, as described in
 [recording configuration](../reference/configuration.md#recording).
 
+Sensor-dependent metrics use the latest physical acquisition's frame-end truth.
+Independent `frame_interval_us` clocks can leave decision-boundary raw observations empty.
+Use `physical_captures` for physical evidence, and `delivered_captures` or `detection_capture_id`
+for model associations. These IDs resolve to `CaptureRecord` entries.
+`force_gt` distinguishes recorded-motion intervals from driver-controlled intervals.
+See [Runtime](../reference/runtime.md#runlog) for stored payloads and timestamps.
+
 ## Visualize saved observations
 
 Retain the needed sensor payloads before execution using
@@ -221,6 +242,11 @@ assert len(report.groups) == 1
 assert report.notes == ["Existing in-memory log"]
 print(report.format_summary())
 ```
+
+Decision previews prefer recorded model images and otherwise use recorded raw images.
+A decision without an image payload has no image tile. Previews do not reconstruct a driver's cache.
+For frame-by-frame playback, select images from `RunLog.captures` and pass them to `save_gif`.
+`plot_group` shades force-GT intervals and plots executed actuator braking only outside them.
 
 ## Next steps
 

@@ -276,6 +276,19 @@ def test_scene_object_tracks(monkeypatch, tmp_path):
         assert [track[0] for track in moved_tracks] == [track[0] for track in tracks]
         np.testing.assert_array_equal(moved_tracks[0][1][:3, 3] - tracks[0][1][:3, 3], [2., 0., 0.])
         renderer.render(np.eye(4), 0, "front", moved_tracks)
+        for native, (_, pose) in zip(boundary.last_request.dynamic_objects, moved_tracks, strict=True):
+            np.testing.assert_allclose(proto_world_pose(native.pose_pair.start_pose), pose, atol=1e-12)
+            np.testing.assert_allclose(proto_world_pose(native.pose_pair.end_pose), pose, atol=1e-12)
+        earlier_rig = make_pose(np.eye(3), (-.1, 0., 0.))
+        renderer.render(np.eye(4), 33000, "front", moved_tracks,
+                        frame_start_us=16000, world_from_rig_start=earlier_rig,
+                        dynamic_objects_start=tracks)
+        for native, (_, before), (_, after) in zip(boundary.last_request.dynamic_objects,
+                                                    tracks, moved_tracks, strict=True):
+            np.testing.assert_allclose(proto_world_pose(native.pose_pair.start_pose), before, atol=1e-12)
+            np.testing.assert_allclose(proto_world_pose(native.pose_pair.end_pose), after, atol=1e-12)
+        np.testing.assert_allclose(proto_world_pose(boundary.last_request.sensor_pose.start_pose),
+                                   earlier_rig @ proto_world_pose(boundary.mount), atol=1e-12)
         assert [request for request in boundary.requests if hasattr(request, "insert")] == edits
         changed = rgba.copy()
         changed[..., :3] = (0, 200, 30)

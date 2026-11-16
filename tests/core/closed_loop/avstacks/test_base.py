@@ -55,6 +55,31 @@ def test_observation_pipeline_process():
         ObservationPipeline(object())
 
 
+def test_observation_pipeline_frame_and_pose_events():
+    stages = []
+
+    def remember(value, context):
+        stages.append(context.stage)
+        return value
+
+    avstack = ConstantAVStack()
+    pipeline = avstack.observation_pipeline
+    hooks = HookSet([Hook("sensors.post", remember), Hook("localization.post", remember)])
+    with MemorySimulator().create_runtime() as runtime:
+        runtime.reset()
+        observation = runtime.observe()
+        with hooks.session(runtime, avstack).activate() as dispatcher:
+            captured = pipeline.capture(observation, dispatcher)
+            assert stages == ["sensors.post"]
+            pose_only = replace(captured, sensor_data={}, calibration={})
+            localized = pipeline.localize(pose_only, dispatcher)
+            assert stages == ["sensors.post", "localization.post"]
+            assert localized.sensor_data == {}
+            assert localized.vehicle_state == pose_only.vehicle_state
+            with pytest.raises(TypeError, match="StateEstimate"):
+                pipeline.with_estimate(localized, None)
+
+
 def test_observation_pipeline_route_follows_localization():
     def world(points, state):
         cosine, sine = math.cos(state.yaw), math.sin(state.yaw)

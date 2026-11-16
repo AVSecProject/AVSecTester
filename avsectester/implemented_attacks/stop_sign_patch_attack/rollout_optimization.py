@@ -54,7 +54,8 @@ def _sign_distance(state: Any, sign: np.ndarray) -> float:
 
 
 def _issues_stop_command(step: StepRecord, stop_speed_mps: float) -> bool:
-    return planned_min_speed(step.produced_command.trajectory) < stop_speed_mps
+    return (not step.force_gt and step.produced_command is not None
+            and planned_min_speed(step.produced_command.trajectory) < stop_speed_mps)
 
 
 def stop_command_outcome(
@@ -72,13 +73,14 @@ def stop_command_outcome(
         raise ValueError("sign_pose must be a finite 4 by 4 transform")
     if not steps:
         raise ValueError("Stop-command distance requires at least one logged decision")
-    for step in steps:
+    active_steps = [step for step in steps if not step.force_gt]
+    for step in active_steps:
         if not _before_sign(step.physical_pre, sign):
             return "passed_sign", 0., None
         if _issues_stop_command(step, stop_speed_mps):
             return "stop_command", _sign_distance(step.physical_pre, sign), step.step
-    final = steps[-1].physical_post
-    if not _before_sign(final, sign):
+    final = (active_steps or steps)[-1].physical_post
+    if active_steps and not _before_sign(final, sign):
         return "passed_sign", 0., None
     return "segment_ended", _sign_distance(final, sign), None
 
@@ -155,9 +157,9 @@ def _run_candidate(
     sign = np.asarray(segment.user_data["sign_pose"], dtype=float)
 
     def terminate_when(step: StepRecord) -> bool:
-        return (not _before_sign(step.physical_pre, sign)
+        return (not step.force_gt and (not _before_sign(step.physical_pre, sign)
                 or _issues_stop_command(step, stop_speed_mps)
-                or not _before_sign(step.physical_post, sign))
+                or not _before_sign(step.physical_post, sign)))
 
     row.update(
         scenario_id=segment.scenario_id, start_position=segment.start.position,

@@ -1,7 +1,9 @@
-"""Attack success, replica visibility and sign-detection measurements from saved decision captures."""
+"""
+Attack success, replica visibility and sign-detection measurements from saved decision captures.
+"""
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 import numpy as np
 
@@ -9,7 +11,8 @@ from avsectester.evaluation import (
     ComparisonGroup, Metric, MetricDescription, MetricField, MetricScalar, StopLineMetrics,
     TreatmentMeasurements, UnavailableMetricValue, signed_stop_line_distances,
 )
-from avsectester.runlog import RunLog
+from avsectester.runlog import CaptureRecord, RunLog, StepRecord
+from avsectester.rendering import ObjectVisibility
 from avsectester.validation import require_nonnegative_integer, require_nonnegative_number
 
 from .online import REPLICA_OBJECT_ID
@@ -66,11 +69,26 @@ class AttackSuccess(Metric):
         return measurements
 
 
+def _replica_visibility(step: StepRecord,
+                        captures: Mapping[int, CaptureRecord]) -> Mapping[str, ObjectVisibility]:
+    if not step.physical_captures:
+        return step.object_visibility.get(REPLICA_OBJECT_ID, {})
+    visible = {}
+    for camera, identity in step.physical_captures.items():
+        capture = captures.get(identity)
+        if capture is not None:
+            value = capture.object_visibility.get(REPLICA_OBJECT_ID, {}).get(camera)
+            if value is not None:
+                visible[camera] = value
+    return visible
+
+
 class ReplicaVisibility(Metric):
     """Count decisions where the inserted replica reaches the pixel threshold in a selected camera.
 
-    camera_ids=None selects every camera that recorded replica visibility. A decision counts when
-    at least one selected camera meets min_visible_pixels; a missing camera entry is invisible.
+    camera_ids=None selects every camera that recorded replica visibility. The latest physical
+    frame of each camera supplies its capture-time visibility. A decision counts when
+    at least one selected camera meets min_visible_pixels. A missing camera entry is invisible.
     Empty runs or runs that never recorded the replica object have unavailable evidence rather
     than a zero visible-step count.
     """
@@ -102,14 +120,16 @@ class ReplicaVisibility(Metric):
     def evaluate(self, group: ComparisonGroup) -> TreatmentMeasurements:
         measurements: dict[str, dict[str, MetricScalar]] = {}
         for name, log in group.runs.items():
+            captures = {capture.capture_id: capture for capture in log.captures}
             if not log.steps:
                 value: MetricScalar = UnavailableMetricValue("The run has no decision steps")
-            elif not any(REPLICA_OBJECT_ID in step.object_visibility for step in log.steps):
+            elif not any(REPLICA_OBJECT_ID in step.object_visibility for step in log.steps) and not any(
+                    REPLICA_OBJECT_ID in capture.object_visibility for capture in log.captures):
                 value = UnavailableMetricValue("The run has no recorded replica object visibility")
             else:
                 value = 0
                 for step in log.steps:
-                    cameras = step.object_visibility.get(REPLICA_OBJECT_ID, {})
+                    cameras = _replica_visibility(step, captures)
                     selected = cameras if self.camera_ids is None else self.camera_ids
                     if any(cameras[camera].visible_pixels >= self.min_visible_pixels
                            for camera in selected if camera in cameras):
@@ -124,7 +144,8 @@ class SignDetection(Metric):
     Detections are the ``detections`` entry of each decision's component log, as written by
     RuleBasedAVStack. A decision is visible when the inserted replica covers at least
     min_visible_pixels in camera_id, the camera the detector reads. The first-detection distance
-    uses the segment's ``stop_line_points`` and the signed distance of StopLineMetrics.
+    uses the latest physical camera's capture-time pose, the segment's ``stop_line_points`` and
+    the signed distance of StopLineMetrics.
     """
 
     def __init__(self, camera_id: str, min_visible_pixels: int = 100,
@@ -165,16 +186,23 @@ class SignDetection(Metric):
         fields = ("detected_steps", "detection_rate", "first_detection_line_distance_m")
         if not log.steps:
             return {name: UnavailableMetricValue("The run has no decision steps") for name in fields}
-        logged = [step.components or {} for step in log.steps]
+        steps = [step for step in log.steps
+                 if not (step.force_gt and step.produced_command is None)]
+        if not steps:
+            return {name: UnavailableMetricValue("Driving system was skipped during force-GT")
+                    for name in fields}
+        logged = [step.components or {} for step in steps]
         if any("detections" not in item for item in logged):
             return {name: UnavailableMetricValue("The driving system logs no detections")
                     for name in fields}
         detected = [bool(item["detections"]) for item in logged]
-        visible = [
-            (camera := step.object_visibility.get(REPLICA_OBJECT_ID, {}).get(self.camera_id)) is not None
-            and camera.visible_pixels >= self.min_visible_pixels
-            for step in log.steps
-        ]
+        captures = {capture.capture_id: capture for capture in log.captures}
+        visible = []
+        frame_ids = []
+        for step in steps:
+            camera = _replica_visibility(step, captures).get(self.camera_id)
+            visible.append(camera is not None and camera.visible_pixels >= self.min_visible_pixels)
+            frame_ids.append(step.physical_captures.get(self.camera_id))
         rate: MetricScalar
         if not any(visible):
             rate = UnavailableMetricValue(f"The replica is never visible in {self.camera_id}")
@@ -188,7 +216,12 @@ class SignDetection(Metric):
             distance = UnavailableMetricValue("The attack segment has no stop_line_points in user_data")
         else:
             try:
-                positions = np.stack([step.physical_pre.ego.pose[:3, 3] for step in log.steps])
+                positions = []
+                for step, identity in zip(steps, frame_ids):
+                    capture = captures.get(identity)
+                    physical = capture.physical_state if capture is not None else step.physical_pre
+                    positions.append(physical.ego.pose[:3, 3])
+                positions = np.stack(positions)
                 distances, _ = signed_stop_line_distances(
                     positions, np.asarray(points), endpoint_tolerance_m=self.endpoint_tolerance_m)
             except (AttributeError, TypeError, ValueError) as error:

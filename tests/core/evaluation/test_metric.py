@@ -196,6 +196,23 @@ def test_driving_metrics(make_log, make_actor, make_group):
                for name in ("min_distance", "collision"))
 
 
+def test_force_gt_metrics(make_log, make_group, make_pair, sign_group):
+    clean = make_log([0., 2., 2.])
+    attacked = make_log([0., 2., 2.], [1., 0., 0.])
+    clean.steps[0] = replace(clean.steps[0], force_gt=True, executed_command=None)
+    attacked.steps[0].force_gt = True
+    driving = DrivingMetrics().evaluate(make_group({"clean": clean, "attacked": attacked}))
+    assert driving["clean"]["brake_steps"] == driving["attacked"]["brake_steps"] == 0
+    impact = StopImpact().evaluate(make_pair(clean, attacked))
+    assert impact["a_to_b.reference_drove"] is True
+    assert impact["a_to_b.induced_braking"] is False
+    assert impact["a_to_b.induced_stop"] is False
+    sign_log = with_sign_detections(make_log([2., 2., 2.]))
+    sign_log.steps[0] = replace(sign_log.steps[0], force_gt=True, components={})
+    sign = SignDetection("front", min_visible_pixels=5).evaluate(sign_group({"run": sign_log}))["run"]
+    assert sign["detected_steps"] == 2 and sign["detection_rate"] == 1.
+
+
 def test_stop_line_metrics(make_log, make_actor, stop_line_group):
     with pytest.raises(ValueError, match="nonnegative"):
         StopLineMetrics(brake_deceleration_mps2=-1.)
@@ -273,3 +290,40 @@ def test_signed_stop_line_distances():
         signed_stop_line_distances([[0., 0., 0.]], [[1., 0., 0.]])
     with pytest.raises(ValueError, match="nonzero horizontal"):
         signed_stop_line_distances([[0., 0., 0.]], [[1., 0., 0.], [1., 0., 1.]])
+
+
+def test_detection_acquisition_truth(make_log, make_actor, make_group):
+    from avsectester.runlog import CaptureRecord
+
+    log = make_log([2.], actors={"vehicle": make_actor(40.)}, detections=[
+        Detection((10., 0., 0.), (4., 2., 2.), 0., "vehicle")])
+    step = log.steps[0]
+    truth = replace(step.physical_pre, actors={"vehicle": make_actor(10.)})
+    log.captures.append(CaptureRecord(7, -33000, ("lidar",),  physical_state=truth))
+    fallback = DetectionMetrics().evaluate(make_group({"captured": log}))["captured"]
+    assert fallback["tp"] == 0 and fallback["fp"] == fallback["fn"] == 1
+    step.detection_capture_id = 7
+    step.detection_sensor = "lidar"
+    step.physical_captures = {"lidar": 7}
+    values = DetectionMetrics().evaluate(make_group({"captured": log}))["captured"]
+    assert values["tp"] == 1 and values["fp"] == values["fn"] == 0
+    log.steps.append(replace(step, step=1, delivered_captures={}))
+    no_frame = DetectionMetrics().evaluate(make_group({"captured": log}))["captured"]
+    assert no_frame["tp"] == 2 and no_frame["fp"] == no_frame["fn"] == 0
+    earlier = replace(step, step=-1, detection_capture_id=None, detections=None)
+    log.steps.insert(0, earlier)
+    pre_delivery = DetectionMetrics().evaluate(make_group({"captured": log}))["captured"]
+    assert pre_delivery["tp"] == 2
+    # A later physical frame is used even when the model retains the earlier delivered frame.
+    log.captures.append(CaptureRecord(8, 0, ("lidar",), physical_state=step.physical_pre))
+    log.steps[-1].physical_captures = {"lidar": 8}
+    physical = DetectionMetrics().evaluate(make_group({"captured": log}))["captured"]
+    assert physical["tp"] == 1 and physical["fp"] == physical["fn"] == 1
+    step.detection_capture_id = 9
+    unavailable = DetectionMetrics().evaluate(make_group({"captured": log}))["captured"]
+    assert isinstance(unavailable["tp"], UnavailableMetricValue)
+    for record in log.steps:
+        record.detection_capture_id = None
+    never_delivered = DetectionMetrics().evaluate(make_group({"captured": log}))["captured"]
+    assert isinstance(never_delivered["tp"], UnavailableMetricValue)
+    assert "never delivered" in never_delivered["tp"].reason

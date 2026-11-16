@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from avsectester.closed_loop.avstacks.base import AVStack
-from avsectester.validation import require_nonnegative_integer, require_positive_number, require_nonnegative_number
+from avsectester.validation import require_positive_number, require_nonnegative_number
+from avsectester.closed_loop.timing import HistoryRequirement
 
 
 @dataclass(frozen=True)
@@ -43,9 +44,9 @@ class DrivingAdapter:
     """Bind component callbacks ``(avstack, inputs)`` and scorer callbacks
     ``(avstack, images, targets)`` to a fresh AVStack factory.
 
-    Input schemas describe native argument conventions; adapters own conversion and warmup.
+    Input schemas describe native argument conventions. Adapters own conversion and warmup.
     Component evaluations and rollouts use fresh AVStack instances. Scoring reuses one
-    AVStack per session to keep weights loaded; scorer callbacks must isolate each request
+    AVStack per session to keep weights loaded. Scorer callbacks must isolate each request
     from driving history. Separate sessions and rollouts never share that instance.
     """
 
@@ -53,20 +54,21 @@ class DrivingAdapter:
         self, factory: Callable[[int], AVStack], *,
         components: Sequence[tuple[ComponentDescriptor, Callable[..., Any]]] = (),
         scorers: Sequence[tuple[ScorerDescriptor, Callable[..., Any]]] = (),
-        past_steps: int = 0,
+        history: HistoryRequirement | None = None,
         decision_time_step: float | None = None,
     ) -> None:
-        require_nonnegative_integer(past_steps, "past_steps")
+        if history is not None and not isinstance(history, HistoryRequirement):
+            raise TypeError("history must be HistoryRequirement")
         if decision_time_step is not None:
             require_positive_number(decision_time_step, "decision_time_step")
         self._decision_time_step = decision_time_step
         self.factory = factory
-        self._past_steps = past_steps
+        self._history = history
         self.component_bindings = self._bindings(components)
         self.scorer_bindings = self._bindings(scorers)
 
     @property
-    def past_steps(self) -> int:
+    def history(self) -> HistoryRequirement:
         """Required recorded history, declared by the AVStack type or this adapter.
 
         Reading the declaration never constructs a driving system or loads model weights.
@@ -74,10 +76,8 @@ class DrivingAdapter:
         """
         avstack_type = getattr(self.factory, "avstack_type", None)
         if isinstance(avstack_type, type) and issubclass(avstack_type, AVStack):
-            value = avstack_type.past_steps
-            require_nonnegative_integer(value, "past_steps")
-            return value
-        return self._past_steps
+            return avstack_type.required_history(getattr(self.factory, "avstack_options", {}))
+        return self._history if self._history is not None else HistoryRequirement()
 
     @property
     def decision_time_step(self) -> float | None:

@@ -24,7 +24,7 @@ def test_harmonize_tensor(reference, reference_linear):
     expected = 1.055 * (.4 * gain) ** (1 / 2.4) - .055
     torch.testing.assert_close(result[:, mask], torch.full((3, 9), expected))
     torch.testing.assert_close(result[:, ~mask], composite[:, ~mask], atol=0, rtol=0)
-    # The nominal composite alone sets the gain; the composite only receives it.
+    # The nominal composite alone sets the gain. Only the composite receives it.
     nominal = composite.clone()
     nominal[:, mask] = .4845292045  # linear .2
     nominal_gain = reference_linear / (.2 + 1e-6)
@@ -133,8 +133,18 @@ def test_harmonize_tensor_gradient_and_empty_regions():
     full = torch.ones_like(mask)
     assert ring.exposure_gain(composite, full, background) is None
     torch.testing.assert_close(ring.harmonize_tensor(composite, full, background, composite), composite)
+
+    corner = torch.zeros(4, 5, dtype=torch.bool)
+    corner[0, 0] = True
+    background = torch.zeros(3, 4, 5)
+    background[:, 0, 1] = background[:, 1, 0] = 1.
+    composite = background.clone()
+    composite[:, corner] = 1.
+    for radius, reference_luminance in ((1, 2 / 3), (12, 2 / 19)):
+        gain = replace(ring, ring_px=radius).exposure_gain(composite, corner, background)
+        assert gain.item() == pytest.approx(reference_luminance / (1 + 1e-6))
     with pytest.raises(NotImplementedError, match="ClassicHarmonizer.*not differentiable"):
-        ClassicHarmonizer().harmonize_tensor(composite, mask, background, composite)
+        ClassicHarmonizer().harmonize_tensor(composite, corner, background, composite)
 
 
 def test_classic_harmonizer():

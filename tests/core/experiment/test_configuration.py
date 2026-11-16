@@ -13,6 +13,7 @@ import yaml
 from avsectester.attack import Attack
 from avsectester.closed_loop.avstacks import DrivingAdapter
 from avsectester.closed_loop.hooks import HookSet
+from avsectester.closed_loop.timing import SensorTiming, TimingConfiguration
 from avsectester.data_types import Observation
 from avsectester.evaluation import DrivingMetrics
 from avsectester.experiment import (
@@ -308,6 +309,51 @@ def test_bundled_configurations_load():
         Experiment.validate(replace(config, runs=replace(config.runs, output=None)))
 
 
+def test_timing_configuration():
+    spec = specification()
+    assert load_configuration(spec).runs.timing == TimingConfiguration()
+    spec["runs"] = {"timing": {
+        "decision_period_us": 100000, "planner_delay_us": 25000,
+        "pose_reporting_interval_us": 20000, "force_gt_duration_us": 500000,
+        "skip_driver_during_force_gt": False,
+        "sensors": {"front": {"frame_interval_us": 33000, "shutter_duration_us": 17000}},
+    }}
+    config = load_configuration(spec)
+    assert config.runs.timing == TimingConfiguration(
+        100000, {"front": SensorTiming(33000, 17000)}, pose_reporting_interval_us=20000,
+        planner_delay_us=25000, force_gt_duration_us=500000, skip_driver_during_force_gt=False)
+    spec["runs"]["timing"]["unexpected"] = 1
+    with pytest.raises(ValueError, match="Unknown runs.timing keys"):
+        load_configuration(spec)
+    del spec["runs"]["timing"]["unexpected"]
+    spec["runs"]["timing"]["decision_period_us"] = 200000
+    with pytest.raises(ValueError, match="must equal the dataset time grid"):
+        load_configuration(spec)
+
+
+def test_configured_history_without_bindings():
+    from avsectester.execution.services import ClosedLoopServices
+    from avsectester.closed_loop.timing import HistoryRequirement
+
+    supplied = Path(__file__).resolve().parents[3] / "configs/nurec_stop_sign_patch_alpamayo_2604.yaml"
+    driver = yaml.safe_load(supplied.read_text())["avstack"]
+    driver.pop("bindings", None)
+    driver["options"]["frame_subsample"] = 6
+    spec = specification()
+    spec["dataset"] = MemoryDataset(decision_steps=40)
+    spec["avstack"] = driver
+    config = load_configuration(spec)
+    stack = config.avstack.factory(0)
+    try:
+        assert stack.history == config.avstack.history == HistoryRequirement(1500000, 19)
+    finally:
+        stack.close()
+    with ClosedLoopServices(config.dataset, config.simulator, config.avstack) as services:
+        with services.session(0) as session:
+            assert not session.can_start_at(17)
+            assert session.can_start_at(18)
+
+
 def test_split_configuration():
     spec = specification()
     assert load_configuration(spec).split is None
@@ -359,8 +405,9 @@ def test_metadata_configuration(tmp_path):
 
 
 class TimeStepOptions:
-    def __init__(self, time_step=7.):
+    def __init__(self, time_step=7., decision_period_us=7000000):
         self.time_step = time_step
+        self.decision_period_us = decision_period_us
 
 
 def test_dataset_time_step_configures_simulator():
@@ -372,6 +419,7 @@ def test_dataset_time_step_configures_simulator():
     configuration = load_configuration(spec)
     assert configuration.simulator.time_step == .2
     assert configuration.simulator.extra_sensors["nested"].time_step == 7.
+    assert configuration.simulator.extra_sensors["nested"].decision_period_us == 7000000
     spec["simulator"]["options"]["time_step"] = .1
     with pytest.raises(ValueError, match="dataset.time_step"):
         load_configuration(spec)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import math
 from typing import Any, Literal, TypeAlias, TypeGuard
 
@@ -88,7 +88,7 @@ class MetricDescription:
 
 
 class Metric(ABC):
-    """Evaluate recorded data. Return scalars or UnavailableMetricValue values carrying their reasons.
+    """Evaluate recorded data, returning scalars or UnavailableMetricValue values with reasons.
 
     Run metrics accept ComparisonGroup and return a field mapping for each treatment.
     PairMetric implementations accept TreatmentPair and return one field mapping per pair.
@@ -132,12 +132,13 @@ def speeds(log: RunLog) -> list[float] | None:
 
 
 def executed_brakes(log: RunLog) -> list[float] | None:
-    """Executed actuator brake commands. Trajectory commands do not provide this evidence."""
-    if not log.steps or any(step.executed_command is None for step in log.steps):
+    """Actuator brakes outside force-GT. Trajectories do not provide this evidence."""
+    steps = [step for step in log.steps if not step.force_gt]
+    if not steps or any(step.executed_command is None for step in steps):
         return None
-    if any(step.executed_command.trajectory is not None for step in log.steps):
+    if any(step.executed_command.trajectory is not None for step in steps):
         return None
-    return [float(step.executed_command.brake) for step in log.steps]
+    return [float(step.executed_command.brake) for step in steps]
 
 
 def brake_steps(log: RunLog) -> int | None:
@@ -145,7 +146,7 @@ def brake_steps(log: RunLog) -> int | None:
     if values is None:
         return None
     return sum(value > 0 and step.executed_command.throttle == 0
-               for value, step in zip(values, log.steps))
+               for value, step in zip(values, (step for step in log.steps if not step.force_gt)))
 
 
 def _recorded_pose_is_available(actor: Any) -> TypeGuard[Any]:
@@ -275,7 +276,11 @@ class DetectionMetrics(Metric):
     """Detection matching to recorded actors and inserted world objects in the true ego frame.
 
     Greedy matching uses the nearest horizontal box centers at capture time.
-    Truths and predictions use the same BEV max_range. None disables the range limit.
+    A declared detection sensor associates predictions with the latest frame delivered to the
+    model. Decisions before its first delivery are excluded. Matching truth comes from that
+    sensor's latest physical acquisition, independent of input hooks. An undeclared sensor
+    uses decision-time truth. Truths and predictions use the same BEV max_range.
+    None disables the range limit.
     A nonempty category_map enables class-aware matching. Unlabelled detections then match
     no category. There is no countable true-negative population.
     """
@@ -315,14 +320,36 @@ class DetectionMetrics(Metric):
     def evaluate(self, group: ComparisonGroup) -> TreatmentMeasurements:
         result: dict[str, dict[str, MetricScalar]] = {}
         for name, log in group.runs.items():
-            if any(step.detections is None for step in log.steps) or not log.steps:
+            steps = [step for step in log.steps
+                     if not (step.force_gt and step.produced_command is None)]
+            if log.steps and not steps:
+                result[name] = dict.fromkeys(("tp", "fp", "fn", "precision", "recall", "f1"),
+                    UnavailableMetricValue("Driving system was skipped during force-GT"))
+                continue
+            if steps and all(step.detection_sensor is not None
+                             and step.detection_capture_id is None for step in steps):
+                result[name] = dict.fromkeys(("tp", "fp", "fn", "precision", "recall", "f1"),
+                    UnavailableMetricValue("The declared detection sensor never delivered a frame"))
+                continue
+            steps = [step for step in steps if step.detection_sensor is None
+                     or step.detection_capture_id is not None]
+            if any(step.detections is None for step in steps) or not log.steps:
                 avstack_type = log.metadata.get("avstack_type", "unknown AVStack")
                 raise ValueError(f"DetectionMetrics requires detections from driving system {avstack_type!r} "
                                  f"(treatment {name!r})")
             tp, fp, fn = 0, 0, 0
             unavailable = False
-            for step in log.steps:
-                world = step.physical_pre
+            captures = {capture.capture_id: capture for capture in log.captures}
+            for step in steps:
+                identity = (step.physical_captures.get(step.detection_sensor)
+                            if step.detection_sensor is not None else None)
+                capture = captures.get(identity)
+                if (identity is not None and capture is None
+                        or step.detection_sensor is not None
+                        and step.detection_capture_id not in captures and captures):
+                    unavailable = True
+                    break
+                world = capture.physical_state if capture is not None else step.physical_pre
                 ego = world.ego if world is not None else None
                 if not _recorded_pose_is_available(ego):
                     unavailable = True
@@ -423,6 +450,8 @@ class StopImpact(PairMetric):
         return result
 
     def _direction(self, reference_log: RunLog, compared_log: RunLog) -> FieldMeasurements:
+        reference_log = replace(reference_log, steps=[step for step in reference_log.steps if not step.force_gt])
+        compared_log = replace(compared_log, steps=[step for step in compared_log.steps if not step.force_gt])
         booleans = ("reference_drove", "induced_braking", "induced_stop", "suppressed_stop")
         reference_speeds, compared_speeds = speeds(reference_log), speeds(compared_log)
         if reference_speeds is None or compared_speeds is None:
@@ -546,9 +575,9 @@ class StopLineMetrics(Metric):
     from ComparisonGroup.scenario_map.stop_lines. The initial position is assumed
     to be before the stop line. Line distances use the horizontal polyline with endpoint
     extensions, rather than recorded route arc positions. They are positive before
-    crossing and negative after it. distance_to_line_at_stop uses the first sampled
-    speed below stop_speed, like time_to_stop. distance_to_line_at_min_speed uses the
-    first minimum-speed sample before crossing. distance_to_line_at_brake_onset uses
+    crossing and negative after it. ``distance_to_line_at_stop`` uses the first sampled
+    speed below ``stop_speed``, like ``time_to_stop``. ``distance_to_line_at_min_speed`` uses the
+    first minimum-speed sample before crossing. ``distance_to_line_at_brake_onset`` uses
     the start of the first physical deceleration interval meeting brake_deceleration_mps2,
     not an actuator brake command. Unobserved stops or qualifying brake intervals are unavailable.
     """

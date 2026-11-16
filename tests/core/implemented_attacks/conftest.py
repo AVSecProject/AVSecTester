@@ -5,6 +5,7 @@ import pytest
 
 from avsectester.attack import AttackSegment
 from avsectester.closed_loop.avstacks.driving_adapter import DrivingAdapter
+from avsectester.closed_loop.timing import HistoryRequirement
 from avsectester.closed_loop.avstacks.implemented.modules import (
     RuleBasedAVStack, YOLOXDetector, rule_based_driving_adapter,
 )
@@ -54,7 +55,7 @@ def approach_view():
             linked_sign=linked_sign, sign_x=sign_x,
         )
         dataset = StopApproachDataset(scenario_map, stopped=stopped)
-        adapter = DrivingAdapter(lambda seed: ConstantAVStack(), past_steps=past_steps)
+        adapter = DrivingAdapter(lambda seed: ConstantAVStack(), history=HistoryRequirement(samples=past_steps + 1))
         scope = ClosedLoopServices(dataset, MemorySimulator(), adapter)
         scope.__enter__()
         services.append(scope)
@@ -88,7 +89,7 @@ def nurec_patch_services_and_segment(nurec_longitudinal_dataset):
         route_generator="none", physics_update_mode="none", object_occlusion="geometry",
         time_step=.1,
     )
-    adapter = DrivingAdapter(lambda seed: DeceleratingAVStack(), past_steps=15)
+    adapter = DrivingAdapter(lambda seed: DeceleratingAVStack(), history=HistoryRequirement(samples=16))
     frames = tuple(dataset.frames("scene"))
     route = np.asarray([dataset.frame_data("scene", frame).ego.pose[:3, 3] for frame in frames])
 

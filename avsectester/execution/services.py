@@ -29,6 +29,7 @@ from avsectester.execution.frame_data_cache import FrameDataCache
 from avsectester.closed_loop.simulators.base import Initialization, FrameDataSequence
 from avsectester.runlog import Recorder, RunLog, StepRecord
 from avsectester.closed_loop.hooks import HookSet
+from avsectester.closed_loop.timing import HistoryRequirement, SensorTiming, TimingConfiguration, seconds_to_microseconds, initial_history_times
 from avsectester.closed_loop.simulators.base import DeploymentPlan, SensorView, Simulator, SimulatorRuntime
 
 if TYPE_CHECKING:
@@ -170,7 +171,7 @@ class _WorldSetup:
 
 
 def ensure_fresh(resource: Any) -> Any:
-    """Claim a newly constructed resource; reject reused or active mutable instances."""
+    """Claim a newly constructed resource. Reject reused or active mutable instances."""
     if getattr(resource, "_services_used", False) or getattr(resource, "_dispatcher", None) is not None:
         raise RuntimeError("Resource factory returned a reused or active instance")
     resource._services_used = True
@@ -195,12 +196,14 @@ def create_avstack(adapter: driving_adapter.DrivingAdapter, seed: int, resources
         raise TypeError("DrivingAdapter.factory must return an AVStack")
     ensure_fresh(avstack)
     resources.callback(avstack.close)
+    if avstack.history != adapter.history:
+        raise ValueError("AVStack history differs from adapter.history. Declare matching history requirements on the adapter")
     return avstack
 
 
 def stop_unstarted_attacks(runtimes: Sequence[Any], frame: FrameReference,
                            error: BaseException) -> None:
-    """Stop attack runtimes the runner never started; cleanup failures become notes on ``error``."""
+    """Stop attack runtimes the runner never started. Cleanup failures become notes on ``error``."""
     for runtime in reversed([item for item in runtimes if isinstance(item, AttackRuntime)]):
         try:
             runtime.stop(OnlineContext(0, "stop", frame.timestamp, frame.position))
@@ -214,8 +217,9 @@ class ClosedLoopServices:
         self, dataset: Dataset, simulator: Simulator,
         driving_adapter: driving_adapter.DrivingAdapter | None = None, frame_data_cache: FrameDataCache | None = None,
         *, deployment: DeploymentPlan = DeploymentPlan(),
+        timing: TimingConfiguration = TimingConfiguration(),
     ) -> None:
-        """Own session resources; rendering and rollouts always use fresh simulator runtimes."""
+        """Own session resources. Rendering and rollouts always use fresh simulator runtimes."""
         self.dataset = dataset
         if not isinstance(simulator, Simulator):
             raise TypeError("Services require a configured Simulator")
@@ -224,6 +228,10 @@ class ClosedLoopServices:
                 and driving_adapter.decision_time_step != simulator.decision_time_step):
             raise ValueError("AVStack decision_time_step does not match simulator.decision_time_step")
         self.simulator = simulator
+        if not isinstance(timing, TimingConfiguration):
+            raise TypeError("timing must be TimingConfiguration")
+        simulator.validate_timing(timing)
+        self.timing = timing
         self.deployment = deployment
         self.driving_adapter = driving_adapter
         self.frame_data_cache = frame_data_cache if frame_data_cache is not None else FrameDataCache()
@@ -277,7 +285,9 @@ class ClosedLoopServices:
 
 
 class ClosedLoopSession:
-    """Owned simulator and driving-system services for selection, rendering, scoring and rollouts."""
+    """
+    Owned simulator and driving-system services for selection, rendering, scoring and rollouts.
+    """
     def __init__(self, services: ClosedLoopServices, seed: int) -> None:
         self.services, self.seed = services, seed
         self._closed = False
@@ -358,12 +368,15 @@ class ClosedLoopSession:
         if not scanning:
             self._discard_scan()
         # Renders and rollouts always start fresh. Only an action-free frame scan is retained.
-        self.services.simulator.validate_start(start)
+        self.services.simulator.validate_start_timing(start, self.services.timing)
         # Callbacks run in reverse order: close the runtime, then release its reservation, so no
         # other operation can reset this server while its actors are still being destroyed.
         reservation = ExitStack()
         resources.callback(reservation.close)
         simulator_runtime = create_simulator_runtime(self.services.simulator, self.seed, resources)
+        simulator_runtime.configure_timing(self.services.timing, history=(
+            self.services.driving_adapter.history if self.services.driving_adapter is not None
+            else HistoryRequirement()))
         reservation.enter_context(simulator_runtime.claim_world(self))
         return simulator_runtime
 
@@ -396,15 +409,33 @@ class ClosedLoopSession:
 
         Required history is the larger of the simulator's own history and the driving
         system's history plus the simulator's observation lead steps.
+        Before live sensors are known, selection also reserves the default sensor cadence.
+        Recorded context requires a declared dataset time grid.
         """
         from avsectester.closed_loop.simulators.base import can_deploy_at
 
-        deployment_allowed = can_deploy_at(position, self.services.deployment,
+        deployment_allowed = can_deploy_at(self.services.simulator.deployment_ticks(position), self.services.deployment,
                                             self.services.simulator.capture_ticks)
         simulator = self.services.simulator
         adapter = self.services.driving_adapter
-        history = adapter.past_steps if adapter is not None else 0
-        lead_steps = simulator.observation_lead_steps
+        requirement = adapter.history if adapter is not None else HistoryRequirement()
+        # The live sensor set is not available during selection. Reserve the default clock
+        # as well as explicit clocks, including delivery history without a driving adapter.
+        timings = (SensorTiming(), *self.services.timing.sensors.values())
+        period = getattr(self.services.dataset, "time_step", None) or simulator.decision_time_step
+        history = 0
+        if period is None:
+            if (requirement.duration_us or requirement.samples > 1
+                    or any(clock.shutter_duration_us for clock in timings)):
+                raise ValueError("Acquisition history selection requires a declared dataset time grid")
+        else:
+            period_us = seconds_to_microseconds(period)
+            initial_history = initial_history_times({str(index): clock for index, clock in enumerate(timings)},
+                                                   requirement, period_us,
+                                                   pose_reporting_interval_us=self.services.timing.pose_reporting_interval_us)
+            history_us = -initial_history.source_start_us
+            history = (history_us + period_us - 1) // period_us
+        lead_steps = simulator.observation_lead_steps_for(self.services.timing)
         require_nonnegative_integer(lead_steps, "observation_lead_steps")
         required_history = max(simulator.past_steps, history + lead_steps)
         return deployment_allowed and position >= required_history
@@ -632,6 +663,7 @@ class ClosedLoopSession:
                     output_path=request.output_path, start=start, initialization=initialization,
                     environment=request.environment, deployment=deployment,
                     terminate_when=request.terminate_when,
+                    timing=self.services.timing,
                     metadata={**self._provenance(start, request.environment, simulator_runtime), "candidate": asdict(segment)},
                 )
                 runner_owns_attacks = True

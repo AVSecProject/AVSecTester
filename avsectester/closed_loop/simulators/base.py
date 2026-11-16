@@ -1,17 +1,16 @@
 """The simulator: a configuration (``Simulator``) and its live worlds (``SimulatorRuntime``).
 
 ``Simulator`` is what a user configures: settings and declarations, with no world state. Each
-run or service operation creates one ``SimulatorRuntime`` through ``create_runtime``; the
+run or service operation creates one ``SimulatorRuntime`` through ``create_runtime``. The
 runtime owns the world, clock, current capture and native connections until it is closed.
 Concrete runtimes implement native initialization, one native advance and one native capture.
-The runtime base owns the shared order: scenario-start reset, pre-roll, deployment window,
-capture. It also owns the process-local reservation of the simulated world and its read-only
-clock.
+The runtime base owns scenario-start reset, pre-roll, deployment windows and capture ordering.
+It also owns the process-local reservation of the simulated world and its read-only clock.
 """
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Hashable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Hashable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
@@ -19,6 +18,8 @@ from threading import Lock
 from typing import Any, TYPE_CHECKING
 
 from avsectester.closed_loop.hooks import _HookBindingMixin
+from avsectester.validation import timestamp_to_microseconds
+from avsectester.closed_loop.timing import HistoryRequirement, SensorTiming, TimingCapabilities, TimingConfiguration, seconds_to_microseconds
 from avsectester.closed_loop.simulators.object_composition import compose_capture
 from avsectester.data_types import ActorState
 from avsectester.datasets.base import FrameData, FrameReference, ScenarioStart
@@ -55,7 +56,7 @@ def _claim_world(key: Hashable, owner: object) -> Iterator[None]:
     """Nonblocking ownership primitive shared by runtimes and execution operations.
 
     One owner may nest reservations of the same resource. Independent owners fail
-    immediately; the final context exit releases that resource for another owner.
+    immediately. The final context exit releases that resource for another owner.
     This process-local guard cannot reserve a server against other processes.
     """
     with _reservation_lock:
@@ -79,8 +80,8 @@ class DeploymentPlan:
     """Shared tick budget for all treatments, including frame data generation.
 
     Participants are the simulator.setup hooks bound by the runner, including attack runtimes
-    whose setup returns world attack actions. They may consume ticks through setup_tick;
-    the remainder is executed by the simulator. Neither path can exceed this budget.
+    whose setup returns world attack actions. They may consume ticks through setup_tick.
+    The remainder is executed by the simulator. Neither path can exceed this budget.
     Selection metadata never enters the simulator.
     """
 
@@ -93,7 +94,7 @@ class DeploymentPlan:
 def can_deploy_at(position: int, deployment: DeploymentPlan, capture_ticks: int) -> bool:
     """Whether deployment can preserve this selected decision boundary.
 
-    Frame zero permits a held-origin setup; later boundaries need enough preceding ticks
+    Frame zero permits a held-origin setup. Later boundaries need enough preceding ticks
     for the shared deployment budget and the simulator's capture latency.
     """
     require_nonnegative_integer(position, "position")
@@ -107,6 +108,12 @@ class ClockSnapshot:
 
     t: float
     frame: int
+    scheduled_time_us: int | None = None
+
+    @property
+    def time_us(self) -> int:
+        """Integer event time, retaining the native floating timestamp separately."""
+        return timestamp_to_microseconds(self.t) if self.scheduled_time_us is None else self.scheduled_time_us
 
 
 @dataclass(frozen=True)
@@ -122,17 +129,16 @@ class SensorGeometry:
 class SensorView:
     """One sensor capture, including inserted world objects.
 
-    ``data`` is the sensor's captured data; a camera supplies RGB uint8 (H, W, 3).
-    ``camera`` projects optical
-    camera points to pixels and unprojects pixels to rays, hiding pinhole versus f-theta
+    ``data`` is the sensor's captured data. A camera supplies RGB uint8 (H, W, 3).
+    ``camera`` projects optical camera points to pixels and unprojects pixels to rays, hiding pinhole versus f-theta
     differences. ``cam_from_world`` maps world points to optical camera axes (x right, y down,
     z forward). Both are None for non-camera sensors. ``sensor_from_world`` maps world points
-    to sensor body axes (x forward, y left, z up), including for a camera; it is not the optical
+    to sensor body axes (x forward, y left, z up), including for a camera. It is not the optical
     transform. It is None when the sensor pose is unavailable. ``actors`` holds world poses by
     stable actor ID and ``ego`` is the physical ego state. Use ``box_transform()`` for
-    world bounding-box centers; each state's ``pose`` is its actor origin.
-    ``depth`` is optical-axis depth in meters per pixel, when the simulator measures it;
-    without it, occlusion is estimated from actor cuboids and ``depth`` remains None after
+    world bounding-box centers. Each state's ``pose`` is its actor origin.
+    ``depth`` is optical-axis depth in meters per pixel, when the simulator measures it.
+    Without it, occlusion is estimated from actor cuboids and ``depth`` remains None after
     object composition. Existing measured depth includes composed objects. ``objects`` contains
     the placed world objects whose projection lies in this camera's current image, keyed by
     object ID, including fully occluded ones. They are immutable and shared, not copied.
@@ -142,13 +148,12 @@ class SensorView:
     and the plan that composed them into ``data``. ``plan.apply(background).image`` reproduces
     that capture. Otherwise ``composition`` is None.
     ``object_occlusion`` states how the simulator hides composed objects behind its scene:
-    ``"geometry"`` uses this view's depth or actor cuboids, which ``composite_plan`` reproduces;
+    ``"geometry"`` uses this view's depth or actor cuboids, which ``composite_plan`` reproduces.
     ``"rendered_probes"`` measures scene occlusion with opaque probe copies, and ``"scene_render"``
     renders objects together with the scene. ``occlusion_tolerance_m`` applies only to composite
     insertion. Scene content hides a composed object only when it lies more than about this
     distance in front of the object.
-    ``native`` gives
-    simulator-specific access and gives up portability. World units are meters, with x forward,
+    ``native`` gives simulator-specific access and gives up portability. World units are meters, with x forward,
     y left, z up.
     """
 
@@ -226,15 +231,50 @@ class UnsupportedStartError(ValueError):
 
     ``Simulator.validate_start`` raises it for problems of the recorded data, for example a
     recording whose navigation route cannot be built. Experiment selection skips such segments
-    and records the reason; other ``validate_start`` errors indicate a configuration problem.
+    and records the reason. Other ``validate_start`` errors indicate a configuration problem.
     """
+
+
+@dataclass(frozen=True)
+class SensorAcquisition:
+    """One sensor's captured observation, physical truth, view and visibility at its own time.
+
+    The observation contains only this sensor. Values are detached from later captures.
+    Explicit native handles in ``view.native`` retain their native SDK behavior.
+    """
+
+    time_us: int
+    observation: Observation
+    physical_state: WorldSnapshot
+    view: SensorView
+    visibility: Mapping[str, ObjectVisibility] = field(default_factory=dict)
+
+    @property
+    def sensor(self) -> str:
+        """Canonical sensor ID of this acquisition."""
+        return self.view.sensor
+
+
+@dataclass
+class _SensorSlot:
+    time_us: int
+    observation: Observation
+    physical_state: WorldSnapshot
+    build_view: Callable[[], SensorView]
+    geometry: SensorGeometry | None
+    objects: Mapping[str, PlacedObject]
+    render_request: Any = None
+    view: SensorView | None = None
+    composed: bool = False
+    visibility: dict[str, ObjectVisibility] = field(default_factory=dict)
+    error: BaseException | None = None
 
 
 class Simulator(ABC):
     """A configured simulator: settings and declarations, without world state.
 
-    It can be reused. ``create_runtime`` creates one live world per run or service operation;
-    the caller closes it. Declarations describe every runtime of this simulator.
+    It can be reused. ``create_runtime`` creates one live world per run or service operation,
+    and the caller closes it. Declarations describe every runtime of this simulator.
     ``occlusion_tolerance_m`` applies to inserted world objects: scene content hides one only
     when it lies more than about this distance in front of it. Simulators that insert objects
     accept it as a constructor option.
@@ -255,7 +295,7 @@ class Simulator(ABC):
     simulator_version = "1"
     'Version identifier included in simulator compatibility summaries.'
     # Native ticks that make simulator.setup actions visible in the first capture. A simulator
-    # that renders on every tick (CARLA) needs one; one that renders at capture time needs none.
+    # that renders on every tick (CARLA) needs one. One that renders at capture time needs none.
     capture_ticks = 0
     'Simulator ticks consumed by a sensor capture.'
     occlusion_tolerance_m: float = 0.1
@@ -283,6 +323,11 @@ class Simulator(ABC):
     def decision_time_step(self) -> float | None:
         """Decision interval in seconds. None leaves the interval unrestricted."""
         return None
+
+    @property
+    def timing_capabilities(self) -> TimingCapabilities:
+        """Declare native timing limits without opening a world."""
+        return TimingCapabilities()
 
     @property
     def command_modes(self) -> frozenset[str] | None:
@@ -333,6 +378,85 @@ class Simulator(ABC):
             raise ValueError(f"Dataset time_step={dt} differs from simulator decision time step "
                              f"{self.decision_time_step}")
 
+    def validate_start_timing(self, start: ScenarioStart | None, timing: TimingConfiguration) -> None:
+        """Check a recorded start under the selected frame clocks without opening a world."""
+        self.validate_start(start)
+
+    @property
+    def decision_ticks(self) -> int:
+        """Number of native ticks in one decision, or one without a native base tick."""
+        tick = self.timing_capabilities.base_tick_us
+        if tick is None:
+            return 1
+        if self.decision_time_step is None:
+            raise ValueError("A native-tick simulator must declare its decision interval")
+        return seconds_to_microseconds(self.decision_time_step) // tick
+
+    def observation_lead_steps_for(self, timing: TimingConfiguration) -> int:
+        """Recorded decision steps preceding a capture under the selected frame clocks."""
+        return self.observation_lead_steps
+
+    def deployment_ticks(self, position: int) -> int:
+        """Convert a dataset frame position to the number of native deployment ticks."""
+        return position
+
+    def validate_timing(self, timing: TimingConfiguration) -> None:
+        """Reject unsupported clocks or startup motion without opening a simulator world."""
+        if not isinstance(timing, TimingConfiguration):
+            raise TypeError("timing must be TimingConfiguration")
+        capabilities = self.timing_capabilities
+        if (timing.force_gt_duration_us and timing.skip_driver_during_force_gt
+                and "trajectory" not in (self.command_modes or ())):
+            raise ValueError("skip_driver_during_force_gt requires trajectory commands during force_gt")
+        if timing.force_gt_duration_us and not capabilities.recorded_ego_motion:
+            raise ValueError(f"{type(self).__name__} does not support force_gt_duration_us")
+        if timing.pose_reporting_interval_us and not capabilities.motion_reports:
+            raise ValueError(f"{type(self).__name__} does not support intermediate pose reporting")
+        if any(sensor.shutter_duration_us for sensor in timing.sensors.values()) and not capabilities.camera_exposure:
+            raise ValueError(f"{type(self).__name__} supports only instantaneous camera exposure")
+        declared = self.decision_time_step
+        period = timing.decision_period_us
+        if period is not None and declared is not None and period != seconds_to_microseconds(declared):
+            raise ValueError("timing.decision_period_us must equal the dataset and simulator decision period")
+        period = period if period is not None else (seconds_to_microseconds(declared) if declared is not None else None)
+        if period is None:
+            return
+        timing.validate_period(period)
+        if (any(sensor.interval_us(period) != period for sensor in timing.sensors.values())
+                and not capabilities.captures_between_decisions):
+            raise ValueError(f"{type(self).__name__} cannot acquire between decisions")
+        tick = capabilities.base_tick_us
+        if tick is not None:
+            values = [period, timing.pose_reporting_interval_us, timing.planner_delay_us,
+                      timing.force_gt_duration_us,
+                      *(sensor.interval_us(period) for sensor in timing.sensors.values())]
+            if any(value % tick for value in values):
+                raise ValueError("Frame, reporting, planner delay and force-GT periods must align with simulator base ticks")
+
+    def validate_startup(self, start: ScenarioStart | None, duration_us: int) -> None:
+        """Check recorded-motion support and coverage for force_gt_duration_us.
+
+        A zero duration needs no recording. Missing support raises ``ValueError`` and
+        insufficient recorded motion raises ``UnsupportedStartError``.
+        """
+        require_nonnegative_integer(duration_us, "startup duration")
+        if not duration_us:
+            return
+        if not self.timing_capabilities.recorded_ego_motion:
+            raise ValueError(f"{type(self).__name__} does not support recorded ego startup motion")
+        if not isinstance(start, ScenarioStart):
+            raise ValueError("force_gt_duration_us requires a recorded ScenarioStart")
+        required_end_us = timestamp_to_microseconds(start.frame.timestamp) + duration_us
+        if self._recorded_end_time_us(start) < required_end_us:
+            raise UnsupportedStartError("Recorded ego motion does not cover the force-GT interval")
+
+    def _recorded_end_time_us(self, start: ScenarioStart) -> int:
+        period = start.payload.get("time_step", self.decision_time_step)
+        if not start.recorded_ego or period is None:
+            raise UnsupportedStartError("Force-GT interval requires recorded ego motion and its time grid")
+        remaining = len(start.recorded_ego) - 1 - start.frame.position
+        return timestamp_to_microseconds(start.frame.timestamp) + remaining * seconds_to_microseconds(period)
+
 
 class SimulatorRuntime(_HookBindingMixin, ABC):
     """One live world of a ``Simulator``: world state, clock, actors, sensors and sensor views.
@@ -344,23 +468,38 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
-        if {"reset", "step", "sensor_view", "start_replay", "advance_replay", "observe_past"} & cls.__dict__.keys():
+        if {"reset", "step", "advance_interval", "capture_at", "sensor_view", "sensor_geometry", "start_replay", "advance_replay", "observe_recorded_at"} & cls.__dict__.keys():
             raise TypeError("SimulatorRuntime subclasses implement native operations, "
-                            "not reset/step/sensor_view/start_replay/advance_replay/observe_past")
+                            "not reset/step/sensor_view/start_replay/advance_replay/observe_recorded_at")
 
     def __init__(self, simulator: Simulator) -> None:
         self.simulator = simulator
+        self._timing = TimingConfiguration()
+        self._coerce_dynamic_state = False
+        self._history_requirement = HistoryRequirement()
+        self._state_cache: WorldSnapshot | None = None
         self._capture: Observation | None = None
+        self._clock_time_us: int | None = None
+        self._motion_report_times: tuple[int, ...] = ()
+        self._interval_start_state: WorldSnapshot | None = None
+        self._interval_end_state: WorldSnapshot | None = None
+        self._interval_start_us: int | None = None
+        self._interval_end_us: int | None = None
+        self._pending_motion = False
+        self._pending_state: WorldSnapshot | None = None
+        self._sensor_slots: dict[str, _SensorSlot] = {}
         self._objects: dict[str, PlacedObject] = {}
         self._capture_objects: dict[str, PlacedObject] = {}
         self._start_objects: dict[str, PlacedObject] = {}
         self._composited_capture: Observation | None = None
-        self._composited_views: dict[str, SensorView] = {}
         self._object_visibility: dict[str, dict[str, ObjectVisibility]] = {}
         self._composition_error: BaseException | None = None
         self._world_initialized = False
         self._resetting = False
         self._stepping = False
+        self._frame_ranges: dict[str, tuple[int, range]] = {}
+        self._recorded_capture_state: WorldSnapshot | None = None
+        self._recorded_capture_visibility: dict = {}
         self._start: ScenarioStart | None = None
         self._deployment = DeploymentPlan()
         self._in_setup = False
@@ -440,7 +579,7 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
 
     def validate_start(self, start: ScenarioStart | None) -> None:
         """Check dataset and simulator constraints for a recorded scenario start."""
-        self.simulator.validate_start(start)
+        self.simulator.validate_start_timing(start, self._timing)
 
     def validate_command(self, command: Control) -> None:
         """Reject active command fields that this simulator would silently ignore."""
@@ -456,14 +595,24 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
 
     def close(self) -> None:
         """Release the world and native connections. Optional."""
+        self._state_cache = None
         self._objects.clear()
         self._capture_objects.clear()
         self._start_objects.clear()
-        self._composited_views.clear()
         self._object_visibility.clear()
         self._composited_capture = None
         self._composition_error = None
         self._capture = None
+        self._frame_ranges.clear()
+        self._recorded_capture_state = None
+        self._recorded_capture_visibility.clear()
+        self._clock_time_us = None
+        self._pending_motion = False
+        self._pending_state = None
+        self._sensor_slots.clear()
+        self._interval_start_state = self._interval_end_state = None
+        self._interval_start_us = self._interval_end_us = None
+        self._motion_report_times = ()
         self._world_initialized = False
 
     @property
@@ -510,8 +659,31 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
     @property
     def clock(self) -> ClockSnapshot:
         """Return the current ``ClockSnapshot`` containing simulator time and native frame."""
-        state = self.state()
-        return ClockSnapshot(t=state.t, frame=state.frame)
+        if not (self._world_initialized or self._resetting or self._stepping):
+            raise RuntimeError("Reset the simulator before requesting its clock")
+        if self._pending_motion and not (self._stepping or self._resetting) and self._pending_state is not None:
+            native = ClockSnapshot(self._pending_state.t, self._pending_state.frame)
+        else:
+            native = self._native_clock()
+        return replace(native, scheduled_time_us=self._clock_time_us)
+
+    def _native_clock(self) -> ClockSnapshot:
+        """Read native time and frame without copying a full world snapshot when supported."""
+        state = self._cached_state()
+        return ClockSnapshot(state.t, state.frame)
+
+    def invalidate_state(self) -> None:
+        """Discard cached physical truth after explicitly changing the live world.
+
+        Built-in world mutation methods call this automatically. Native extensions that mutate
+        a simulator resource directly must call it before reading the changed physical state.
+        """
+        self._state_cache = None
+
+    def _cached_state(self) -> WorldSnapshot:
+        if self._state_cache is None:
+            self._state_cache = self._state()
+        return self._state_cache
 
     def state(self) -> WorldSnapshot:
         """Read detached physical state without a capture, callback or simulator tick.
@@ -526,7 +698,49 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
                 placed.world_from_object.copy(), (0., 0., 0.), placed.asset.category,
                 placed.asset.extent, (0., 0., placed.asset.extent[2] / 2),
             )
-        return replace(self._state(), objects=objects)
+        state = (deepcopy(self._pending_state)
+                 if self._pending_motion and not (self._stepping or self._resetting) and self._pending_state is not None
+                 else deepcopy(self._cached_state()))
+        return replace(state, objects=objects)
+
+    @property
+    def timing_capabilities(self) -> TimingCapabilities:
+        """Static timing limits declared by this runtime's configured simulator."""
+        return self.simulator.timing_capabilities
+
+    def state_at(self, time_us: int) -> WorldSnapshot:
+        """Read detached truth within the last completed motion interval without advancing."""
+        if isinstance(time_us, bool) or not isinstance(time_us, int):
+            raise ValueError("State time must be integer microseconds")
+        self._validate_native_time(time_us)
+        if time_us == self.clock.time_us:
+            return self.state()
+        first, last = self._interval_start_state, self._interval_end_state
+        if (first is None or last is None or self._interval_start_us is None
+                or self._interval_end_us is None
+                or not self._interval_start_us <= time_us <= self._interval_end_us):
+            raise ValueError("State time lies outside the last advanced interval")
+        if time_us == self._interval_start_us:
+            return deepcopy(first)
+        if time_us == self._interval_end_us:
+            return deepcopy(last)
+        if not self.timing_capabilities.motion_reports:
+            raise ValueError(f"{type(self).__name__} cannot report intermediate motion")
+        return self._reported_state_at(time_us)
+
+    def _validate_native_time(self, time_us: int) -> None:
+        tick = self.timing_capabilities.base_tick_us
+        origin = self._interval_start_us if self._interval_start_us is not None else self.clock.time_us
+        if tick is not None and (time_us - origin) % tick:
+            raise ValueError("Acquisition and state times must align with simulator base ticks")
+
+    def _reported_state_at(self, time_us: int) -> WorldSnapshot:
+        raise NotImplementedError("This simulator does not report intermediate motion")
+
+    def _activate_reported_state(self, time_us: int, state: WorldSnapshot) -> None:
+        """Select a reported pose for acquisition without updating the controller."""
+        if time_us != self._interval_end_us:
+            raise NotImplementedError("This simulator cannot acquire intermediate reports")
 
     @property
     def sensors(self) -> frozenset[str]:
@@ -539,10 +753,19 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
         return frozenset()
 
     def sensor_geometry(self, sensor: str) -> SensorGeometry:
-        """Read optical-camera geometry. Override for a lightweight, image-free path.
+        """Read geometry of the sensor's latest acquisition, or native geometry before capture."""
+        sensor = self.canonical_sensor_id(sensor)
+        slot = self._sensor_slots.get(sensor)
+        if slot is not None:
+            if slot.geometry is None:
+                raise ValueError(f"Sensor {sensor!r} has no camera geometry")
+            return deepcopy(slot.geometry)
+        return self._sensor_geometry(sensor)
 
-        The default uses the native sensor view. Native simulators override it so
-        projection screening does not copy pixels or compute optional scene depth.
+    def _sensor_geometry(self, sensor: str) -> SensorGeometry:
+        """Native optical geometry without image or depth work when supported.
+
+        Implementations override this for projection-only requests before an acquisition.
         """
         view = self._sensor_view(sensor)
         if view.camera is None or view.cam_from_world is None:
@@ -550,20 +773,88 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
         return SensorGeometry(view.sensor, view.camera, deepcopy(view.cam_from_world))
 
     def sensor_view(self, sensor: str) -> SensorView:
-        """Return the view of the current capture of ``sensor``. It never advances time."""
-        if not self._world_initialized or self._capture is None:
+        """Return a detached view of the sensor's latest capture without acquiring again."""
+        slot = self._current_slot(sensor)
+        self._compose_slot(slot)
+        return self._detached_view(self._slot_view(slot))
+
+    def canonical_sensor_id(self, sensor: str) -> str:
+        """Resolve a native sensor name or configured alias to its observation ID."""
+        resolved = sensor if sensor in self.sensors else getattr(
+            self.simulator, "camera_aliases", {}).get(sensor, sensor)
+        if resolved not in self.sensors:
+            raise ValueError(f"Unknown sensor {sensor!r}")
+        return resolved
+
+    def frame_range_us(self, sensor: str, end_time_us: int) -> range:
+        """Read a frame's shutter or native scan interval at its integer end timestamp."""
+        sensor = self.canonical_sensor_id(sensor)
+        if isinstance(end_time_us, bool) or not isinstance(end_time_us, int):
+            raise ValueError("Frame end must be integer microseconds")
+        previous = self._frame_ranges.get(sensor)
+        if previous is None or previous[0] != end_time_us:
+            previous = (end_time_us, self._frame_range_us(sensor, end_time_us))
+            self._frame_ranges[sensor] = previous
+        return previous[1]
+
+    def _frame_range_us(self, sensor: str, end_time_us: int) -> range:
+        timing = self._timing.sensors.get(sensor, SensorTiming())
+        return range(end_time_us - timing.shutter_duration_us, end_time_us)
+
+    def _current_slot(self, sensor: str) -> _SensorSlot:
+        if not self._world_initialized:
             raise RuntimeError("Reset the simulator before requesting sensor views")
-        self._compose_capture()
-        view = self._composited_views.get(sensor)
-        if view is None:
-            native_view = self._sensor_view(sensor)
-            view = self._composited_views.get(native_view.sensor, native_view)
-        # Explicit native handles retain their documented opt-out from portability. Placed
-        # objects, also referenced by the composition plan, are immutable and may hold harmonizer
-        # resources, so the copy shares them.
+        sensor = self.canonical_sensor_id(sensor)
+        slot = self._sensor_slots.get(sensor)
+        if slot is None:
+            if self._capture is None or sensor not in self._capture.sensor_data:
+                raise ValueError(f"Unknown or not yet acquired sensor {sensor!r}")
+            slot = self._make_sensor_slot(sensor)
+        return slot
+
+    def _detached_view(self, view: SensorView) -> SensorView:
+        # Frozen placed objects can own harmonizer resources and remain shared.
         shared = {id(placed): placed for placed in view.objects.values()}
-        detached = deepcopy(replace(view, native={}), shared)
-        return replace(detached, native=view.native)
+        return deepcopy(view, shared)
+
+    def sensor_acquisition(self, sensor: str) -> SensorAcquisition:
+        """Read a detached acquisition, including its observation, truth and native view data."""
+        slot = self._current_slot(sensor)
+        self._compose_slot(slot)
+        return SensorAcquisition(
+            slot.time_us, self.copy_observation(slot.observation), deepcopy(slot.physical_state),
+            self._detached_view(self._slot_view(slot)), deepcopy(slot.visibility),
+        )
+
+    def _make_sensor_slot(self, sensor: str, truth: WorldSnapshot | None = None) -> _SensorSlot:
+        assert self._capture is not None
+        observation = replace(self._capture, sensor_data={sensor: self._capture.sensor_data[sensor]},
+                              calibration={sensor: self._capture.calibration[sensor]}
+                              if sensor in self._capture.calibration else {})
+        truth = self.state() if truth is None else truth
+        geometry = self._sensor_geometry(sensor) if sensor in self.camera_sensors else None
+        time_us = ClockSnapshot(truth.t, truth.frame, self._clock_time_us).time_us
+        slot = _SensorSlot(time_us, observation, truth,
+                           self._capture_view_builder(sensor, observation, truth), geometry,
+                           dict(self._capture_objects), self._capture_render_request(sensor))
+        self._sensor_slots[sensor] = slot
+        return slot
+
+    def _capture_render_request(self, sensor: str) -> Any:
+        """Freeze optional renderer metadata independently of a full sensor view."""
+        return None
+
+    def _capture_view_builder(self, sensor: str, observation: Observation,
+                              truth: WorldSnapshot) -> Callable[[], SensorView]:
+        """Freeze native view inputs now. The returned builder must not read live state."""
+        view = self._sensor_view(sensor)
+        return lambda: view
+
+    @staticmethod
+    def _slot_view(slot: _SensorSlot) -> SensorView:
+        if slot.view is None:
+            slot.view = slot.build_view()
+        return slot.view
 
     def _sensor_view(self, sensor: str) -> SensorView:
         """Native capture and geometry, before framework object composition."""
@@ -593,6 +884,7 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
         if object_id in self._objects:
             raise ValueError(f"Object {object_id!r} is already inserted")
         self._objects[object_id] = placed
+        self.invalidate_state()
 
     def remove_object(self, object_id: str) -> None:
         """Remove a world object. The previous capture remains unchanged."""
@@ -601,6 +893,7 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
         if object_id not in self._objects:
             raise KeyError(f"Unknown inserted object {object_id!r}")
         del self._objects[object_id]
+        self.invalidate_state()
 
     def object_visibility(self, object_id: str) -> Mapping[str, ObjectVisibility]:
         """Visibility of an object in the latest capture, for every camera whose image contains it.
@@ -619,15 +912,48 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
         self._compose_capture()
         return deepcopy(self._object_visibility[object_id])
 
-    def _take_capture(self) -> None:
+    def _take_capture(self, sensor_ids: Sequence[str] | None = None,
+                      truth: WorldSnapshot | None = None) -> None:
         """Acquire native sensor data once and snapshot the objects visible to that capture."""
         self._capture_objects = dict(self._objects)
         self._composited_capture = None
-        self._composited_views.clear()
         self._object_visibility = {identity: {} for identity in self._capture_objects}
         self._composition_error = None
         self._capture = None
-        self._capture = self._observe()
+        self._capture = self._observe() if sensor_ids is None else self._observe_sensors(sensor_ids)
+        truth = self.state() if truth is None else truth
+        for sensor in self._capture.sensor_data.keys() & self.sensors:
+            self._make_sensor_slot(sensor, truth)
+
+    def _compose_slot(self, slot: _SensorSlot) -> None:
+        if slot.composed:
+            return
+        if slot.error is not None:
+            raise slot.error
+        if not slot.objects or slot.geometry is None:
+            slot.composed = True
+            return
+        try:
+            geometry = slot.geometry
+            sensor = geometry.sensor
+            observation, views, visibility = compose_capture(
+                slot.observation, slot.objects, (sensor,), lambda sensor: geometry,
+                lambda sensor: self._slot_view(slot), self._compose_objects)
+            slot.observation = observation
+            slot.view = views.get(sensor, slot.view)
+            slot.visibility = {identity: values[sensor] for identity, values in visibility.items()
+                               if sensor in values}
+            slot.composed = True
+        except BaseException as error:
+            slot.error = error
+            raise
+
+    def _observe_sensors(self, sensor_ids: Sequence[str]) -> Observation:
+        observation = self._observe()
+        selected = set(sensor_ids)
+        return replace(observation,
+                       sensor_data={key: value for key, value in observation.sensor_data.items() if key in selected},
+                       calibration={key: value for key, value in observation.calibration.items() if key in selected})
 
     def _compose_capture(self) -> None:
         if self._composited_capture is not None:
@@ -636,11 +962,15 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
             raise self._composition_error
         assert self._capture is not None
         try:
-            (self._composited_capture, self._composited_views,
-             self._object_visibility) = compose_capture(
-                self._capture, self._capture_objects, self.camera_sensors,
-                self.sensor_geometry, self._sensor_view, self._compose_objects,
-            )
+            observation = self._capture
+            for sensor in sorted(observation.sensor_data.keys() & self.sensors):
+                slot = self._sensor_slots.get(sensor) or self._make_sensor_slot(sensor)
+                self._compose_slot(slot)
+                observation = replace(observation, sensor_data={
+                    **observation.sensor_data, sensor: slot.observation.sensor_data[sensor]})
+                for identity, visibility in slot.visibility.items():
+                    self._object_visibility.setdefault(identity, {})[sensor] = visibility
+            self._composited_capture = observation
         except BaseException as error:
             self._composition_error = error
             raise
@@ -674,7 +1004,7 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
             raise ValueError("An initialization plan requires ScenarioStart")
         self.validate_start(start)
         # The simulator owns only native world settings. Sensor environments belong to
-        # the runner/services after capture; rejecting envelopes avoids silently losing them.
+        # the runner/services after capture. Rejecting envelopes avoids silently losing them.
         world_environment = dict(world or {})
         self.simulator.validate_world_settings(world_environment)
         plan = deployment if deployment is not None else DeploymentPlan()
@@ -684,13 +1014,22 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
         window = plan.ticks + self.capture_ticks
         if not can_deploy_at(position, plan, self.capture_ticks):
             raise ValueError("Selected boundary is earlier than its deployment window")
+        self.invalidate_state()
         self._world_initialized = False
+        self._clock_time_us = None
+        self._pending_motion = False
+        self._pending_state = None
+        self._sensor_slots.clear()
+        self._interval_start_state = self._interval_end_state = None
+        self._interval_start_us = self._interval_end_us = None
         self._capture = None
+        self._frame_ranges.clear()
+        self._recorded_capture_state = None
+        self._recorded_capture_visibility.clear()
         self._objects.clear()
         self._capture_objects.clear()
         self._start_objects.clear()
         self._composited_capture = None
-        self._composited_views.clear()
         self._object_visibility.clear()
         self._composition_error = None
         self.initialization_report = {}
@@ -714,6 +1053,7 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
             for _ in range(self.capture_ticks):
                 self._window_tick(position)
             self._before_selected_capture(position)
+            self.invalidate_state()
             self._take_capture()
             self._start_objects = dict(self._capture_objects)
             self._world_initialized = True
@@ -736,21 +1076,188 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
         self._setup_ticks_used += 1
 
     def step(self, control: Control) -> None:
-        """Apply ``control``, advance the world one decision and capture. Read it with ``observe``."""
-        self.validate_command(control)
+        """Advance one decision and capture through the scheduled simulator operations."""
+        endpoint = self.clock.time_us + self.decision_period_us
+        self.advance_interval(endpoint, control)
+        self._acquire_at(endpoint)
+
+    @property
+    def decision_period_us(self) -> int:
+        """Declared decision interval in integer microseconds."""
+        period = self.simulator.decision_time_step
+        if period is None and self._start is not None:
+            period = self._start.payload.get("time_step")
+        if period is None:
+            raise ValueError("Simulator must declare a decision interval")
+        return seconds_to_microseconds(period)
+
+    def configure_timing(self, timing: TimingConfiguration, *,
+                         history: HistoryRequirement = HistoryRequirement()) -> None:
+        """Set acquisition clocks before resetting a run. Never advance a live world.
+
+        Rates must fit the simulator's native tick. Decision period remains the dataset grid.
+        Sensor IDs and loaded scan windows are checked after reset when they are available.
+        """
+        self.simulator.validate_timing(timing)
+        self._timing = timing
+        self._frame_ranges.clear()
+        self._history_requirement = history
+
+    def advance_interval(self, time_us: int, control: Control | None, *,
+                   report_times_us: Sequence[int] = (), force_gt: bool = False,
+                   coerce_dynamic_state: bool = False) -> None:
+        """Propagate one complete decision interval, retaining reports for on-demand reads.
+
+        The controller runs once. The published clock remains at the last acquisition.
+        ``capture_at`` publishes subsequent report times in order. Simulator step hooks
+        run before propagation and when its endpoint is published, before acquisition.
+        ``control=None`` follows recorded ego motion and executes no driving command.
+        """
+        if isinstance(time_us, bool) or not isinstance(time_us, int):
+            raise ValueError("Advance time must be integer microseconds")
         if not self._world_initialized:
             raise RuntimeError("Reset the simulator before stepping")
+        if self._pending_motion:
+            raise RuntimeError("Publish the previous interval endpoint before propagating again")
+        if control is None or force_gt:
+            if not self.timing_capabilities.recorded_ego_motion:
+                raise ValueError(f"{type(self.simulator).__name__} cannot advance recorded ego motion")
+        if control is not None:
+            self.validate_command(control)
+        if time_us != self.clock.time_us + self.decision_period_us:
+            raise ValueError("advance_interval must end at the next decision time")
+        origin_us = self.clock.time_us
+        for report_time in report_times_us:
+            if (isinstance(report_time, bool) or not isinstance(report_time, int)
+                    or not origin_us <= report_time <= time_us):
+                raise ValueError("Report times must lie within the decision interval")
+            if report_time not in (origin_us, time_us) and not self.timing_capabilities.motion_reports:
+                raise ValueError(f"{type(self).__name__} cannot report intermediate motion")
+            tick = self.timing_capabilities.base_tick_us
+            if tick is not None and (report_time - origin_us) % tick:
+                raise ValueError("Motion report times must align with simulator base ticks")
+        self._coerce_dynamic_state = coerce_dynamic_state
+        self._motion_report_times = tuple(sorted(set(report_times_us)))
+        self._interval_end_state = None
+        self._interval_start_us, self._interval_end_us = origin_us, time_us
         self._capture = None
         self._world_initialized = False
         self._stepping = True
         try:
             self._emit("simulator.step.pre", None)
-            self._advance_native(control)
-            self._emit("simulator.step.post", None)
-            self._take_capture()
+            self._interval_start_state = self.state()
+            if control is None or force_gt:
+                self._advance_force_gt_native(control)
+            else:
+                self._advance_native(control)
+            self.invalidate_state()
+            self._interval_end_state = self._completed_state()
+            self._state_cache = self._interval_end_state
+            self._completed_interval()
         finally:
             self._stepping = False
         self._world_initialized = True
+        self._pending_motion = True
+        self._pending_state = deepcopy(self._interval_start_state)
+
+    def _completed_state(self) -> WorldSnapshot:
+        return self.state()
+
+    def _advance_force_gt_native(self, control: Control | None) -> None:
+        self._advance_recorded_native()
+
+    def recorded_reference(self, time_us: int, end_us: int) -> Control:
+        """Recorded reference in the rig frame at its production time, for force-GT control."""
+        raise NotImplementedError("This simulator has no recorded trajectory command")
+
+    def _advance_recorded_native(self) -> None:
+        raise NotImplementedError("This simulator cannot advance recorded ego motion")
+
+    def capture_at(self, time_us: int, sensor_ids: Sequence[str] | None = None) -> Observation:
+        """Acquire sensors at the current integer time without advancing the world.
+
+        Repeated reads reuse the same acquisition. A sensor selection returns only those
+        payloads and their calibrations. The full acquisition remains available to views.
+        """
+        if sensor_ids is not None:
+            sensor_ids = tuple(self.canonical_sensor_id(sensor) for sensor in sensor_ids)
+            unknown = set(sensor_ids) - self.sensors
+            if unknown:
+                raise ValueError(f"Unknown capture sensors: {sorted(unknown)}")
+        self._preflight_capture(time_us, sensor_ids)
+        self._acquire_at(time_us, sensor_ids)
+        observation = self.observe()
+        if sensor_ids is None:
+            return observation
+        selected = set(sensor_ids)
+        return replace(observation,
+                       sensor_data={key: value for key, value in observation.sensor_data.items() if key in selected},
+                       calibration={key: value for key, value in observation.calibration.items() if key in selected})
+
+    def _preflight_capture(self, time_us: int, sensor_ids: Sequence[str] | None) -> None:
+        """Validate native availability before publishing or replacing an acquisition."""
+        if isinstance(time_us, bool) or not isinstance(time_us, int):
+            raise ValueError("Capture time must be integer microseconds")
+        self._validate_native_time(time_us)
+        if (self._pending_motion and time_us != self._interval_end_us and sensor_ids != ()
+                and not self.timing_capabilities.captures_between_decisions):
+            raise ValueError(f"{type(self).__name__} cannot acquire between decisions")
+
+    def _acquire_at(self, time_us: int, sensor_ids: Sequence[str] | None = None) -> None:
+        if isinstance(time_us, bool) or not isinstance(time_us, int):
+            raise ValueError("Capture time must be integer microseconds")
+        if not self._world_initialized:
+            raise RuntimeError("Reset the simulator before capturing")
+        self._validate_native_time(time_us)
+        if time_us < self.clock.time_us:
+            raise ValueError("Capture time cannot precede the current time")
+        if self._pending_motion and (time_us != self.clock.time_us or self._capture is None):
+            if time_us <= self.clock.time_us or self._interval_end_us is None or time_us > self._interval_end_us:
+                raise ValueError("Capture time must advance within the pending interval")
+            capability = (self.timing_capabilities.motion_reports if sensor_ids == ()
+                          else self.timing_capabilities.captures_between_decisions)
+            if time_us != self._interval_end_us and not capability:
+                raise ValueError(f"{type(self).__name__} cannot acquire between decisions")
+            reported = self.state_at(time_us)
+            self._activate_reported_state(time_us, reported)
+            self._pending_state = reported
+            self._clock_time_us = time_us
+            self._capture = None
+            if time_us == self._interval_end_us:
+                self._pending_motion = False
+                self._pending_state = None
+                try:
+                    self._emit("simulator.step.post", None)
+                except BaseException:
+                    self._world_initialized = False
+                    raise
+                self.invalidate_state()
+                self._interval_end_state = self.state()
+                self._state_cache = self._interval_end_state
+            self._capture = None
+        elif time_us != self.clock.time_us:
+            raise ValueError("This simulator can capture only at its current time")
+        if self._capture is None:
+            try:
+                truth = self._interval_end_state if time_us == self._interval_end_us else self.state()
+                self._take_capture(sensor_ids, truth)
+            except BaseException:
+                self._world_initialized = False
+                raise
+        else:
+            missing = (self.sensors if sensor_ids is None else set(sensor_ids)) - self._capture.sensor_data.keys()
+            if missing:
+                previous = self._capture
+                self._capture_objects = dict(self._objects)
+                self._capture = self._observe_sensors(tuple(sorted(missing)))
+                truth = self.state()
+                for sensor in self._capture.sensor_data.keys() & self.sensors:
+                    self._make_sensor_slot(sensor, truth)
+                self._capture = replace(previous,
+                    sensor_data={**previous.sensor_data, **self._capture.sensor_data},
+                    calibration={**previous.calibration, **self._capture.calibration})
+                self._composited_capture = None
+                self._object_visibility = {identity: {} for identity in self._capture_objects}
 
     def observe(self) -> Observation:
         """Return an independent copy of the current capture. Never advance or recapture."""
@@ -760,54 +1267,104 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
         assert self._composited_capture is not None
         return self.copy_observation(self._composited_capture)
 
-    def observe_past(self, count: int) -> tuple[Observation, ...]:
-        """Read recorded observations before the selected start, from oldest to newest.
+    def _recorded_pose_state(self, time_us: int) -> WorldSnapshot:
+        return self._recorded_state(time_us)
 
-        Requires a completed reset, ``can_observe_past`` and a recording covering the
-        requested decision positions. Times and frames are negative relative to that start.
-        World objects present at the start, i.e. inserted during reset or simulator setup,
-        existed before it: they are composed into every past camera capture exactly as live
-        captures compose them. Objects inserted later, sensor attack actions and stage hooks
-        are absent. The current world state and capture are unchanged.
+    def observe_recorded_at(self, time_us: int, sensor_ids: Sequence[str] | None = None) -> Observation:
+        """Read an acquisition before the origin without advancing the live world.
+
+        Recorded poses and actors are interpolated only by simulators declaring intermediate
+        acquisition support. Start objects are present, but online actions and hooks are absent.
+        Times on the dataset grid preserve the native recorded observation exactly. An empty
+        ``sensor_ids`` sequence reads only the recorded pose without loading or rendering sensors.
         """
-        require_nonnegative_integer(count, "past observation count")
-        if not self._world_initialized or self._capture is None:
-            raise RuntimeError("Reset the simulator before requesting past observations")
-        if not self.can_observe_past:
-            raise NotImplementedError(f"{type(self.simulator).__name__} cannot observe the recorded past")
-        if self._start is None or not self._start.recorded_ego:
-            raise ValueError("Past observations require ScenarioStart.recorded_ego")
-        position = self._start.frame.position
-        if position < count:
-            raise ValueError(f"Start position {position} has only {position} past decisions; {count} required")
-        if position >= len(self._start.recorded_ego):
-            raise ValueError("Recorded ego trajectory does not include the selected start")
-        past = []
-        for previous in range(position - count, position):
-            observation = self._observe_recorded(previous)
-            if self._start_objects:
-                def geometry(sensor: str, previous: int = previous) -> SensorGeometry:
-                    return self._recorded_sensor_geometry(previous, sensor)
+        if isinstance(time_us, bool) or not isinstance(time_us, int) or time_us >= 0:
+            raise ValueError("Recorded acquisition time must be negative integer microseconds")
+        if not self._world_initialized or self._start is None or not self.can_observe_past:
+            raise NotImplementedError(f"{type(self).__name__} cannot supply recorded acquisition history")
+        period = self.decision_period_us
+        if sensor_ids is not None:
+            sensor_ids = tuple(self.canonical_sensor_id(sensor) for sensor in sensor_ids)
+        if time_us % period and not self.timing_capabilities.captures_between_decisions:
+            raise ValueError(f"{type(self).__name__} cannot interpolate recorded acquisitions")
+        if self._start.frame.position * period + time_us < 0:
+            raise ValueError("Recorded acquisition precedes available source history")
+        if sensor_ids is not None and not sensor_ids:
+            state = self._recorded_pose_state(time_us)
+            self._recorded_capture_state = deepcopy(state)
+            self._recorded_capture_visibility = {}
+            return Observation(state.t, state.frame, vehicle_state=deepcopy(state.vehicle_state),
+                               ego_speed=state.ego_speed)
+        observation = self._observe_recorded_sensors(time_us, sensor_ids)
+        visibility: dict[str, dict[str, ObjectVisibility]] = {}
+        if self._start_objects:
+            observation, _, visibility = compose_capture(
+                observation, self._start_objects, self.camera_sensors & observation.sensor_data.keys(),
+                lambda sensor: self._recorded_sensor_geometry(time_us, sensor),
+                lambda sensor: self._recorded_sensor_view(time_us, sensor, observation),
+                self._compose_objects)
+        if sensor_ids is not None:
+            selected = set(sensor_ids)
+            observation = replace(observation,
+                sensor_data={key: value for key, value in observation.sensor_data.items() if key in selected},
+                calibration={key: value for key, value in observation.calibration.items() if key in selected})
+        self._recorded_capture_state = self.recorded_state_at(time_us)
+        self._recorded_capture_visibility = visibility
+        self._recorded_read_complete(time_us)
+        return observation
 
-                def view(sensor: str, previous: int = previous,
-                         observation: Observation = observation) -> SensorView:
-                    return self._recorded_sensor_view(previous, sensor, observation)
+    def _recorded_read_complete(self, time_us: int) -> None:
+        """Release acquisition-only caches after transferring a recorded payload."""
 
-                observation, _, _ = compose_capture(
-                    observation, self._start_objects, self.camera_sensors, geometry, view,
-                    self._compose_objects)
-            past.append(self.copy_observation(observation))
-        return tuple(past)
+    @property
+    def recorded_capture_state(self) -> WorldSnapshot:
+        """Independent truth from the last recorded-history read."""
+        if self._recorded_capture_state is None:
+            raise RuntimeError("No recorded capture has been read")
+        return deepcopy(self._recorded_capture_state)
 
-    def _observe_recorded(self, position: int) -> Observation:
+    @property
+    def recorded_capture_visibility(self) -> Mapping[str, Mapping[str, ObjectVisibility]]:
+        """Inserted-object visibility from the last recorded-history read."""
+        return deepcopy(self._recorded_capture_visibility)
+
+    def recorded_state_at(self, time_us: int) -> WorldSnapshot:
+        """Read physical truth for a recorded pre-origin acquisition without advancing."""
+        if (isinstance(time_us, bool) or not isinstance(time_us, int) or time_us >= 0
+                or self._start is None or not self._world_initialized):
+            raise ValueError("Recorded state requires an initialized start and negative integer time")
+        if self._start.frame.position * self.decision_period_us + time_us < 0:
+            raise ValueError("Recorded state precedes available source history")
+        state = deepcopy(self._recorded_state(time_us))
+        objects = {identity: ActorState(placed.world_from_object.copy(), (0., 0., 0.),
+                   placed.asset.category, placed.asset.extent, (0., 0., placed.asset.extent[2] / 2))
+                   for identity, placed in self._start_objects.items()}
+        return replace(state, objects=objects)
+
+    def recorded_sensor_geometry_at(self, time_us: int, sensor: str) -> SensorGeometry:
+        """Read physical camera geometry of a recorded pre-origin acquisition."""
+        if (isinstance(time_us, bool) or not isinstance(time_us, int) or time_us >= 0
+                or self._start is None or not self._world_initialized):
+            raise ValueError("Recorded geometry requires an initialized start and negative integer time")
+        if self._start.frame.position * self.decision_period_us + time_us < 0:
+            raise ValueError("Recorded geometry precedes available source history")
+        return deepcopy(self._recorded_sensor_geometry(time_us, self.canonical_sensor_id(sensor)))
+
+    def _recorded_state(self, time_us: int) -> WorldSnapshot:
+        raise NotImplementedError("This simulator cannot supply recorded acquisition truth")
+
+    def _observe_recorded(self, time_us: int) -> Observation:
         """Capture one recorded decision position without hooks or changing live state."""
         raise NotImplementedError("This simulator cannot observe the recorded past")
 
-    def _recorded_sensor_geometry(self, position: int, sensor: str) -> SensorGeometry:
-        """Camera geometry of a recorded past capture; required to compose start objects into it."""
+    def _observe_recorded_sensors(self, time_us: int, sensors: Sequence[str] | None) -> Observation:
+        return self._observe_recorded(time_us)
+
+    def _recorded_sensor_geometry(self, time_us: int, sensor: str) -> SensorGeometry:
+        """Camera geometry of a recorded past capture. Required to compose start objects into it."""
         raise NotImplementedError("This simulator cannot compose world objects into recorded captures")
 
-    def _recorded_sensor_view(self, position: int, sensor: str, observation: Observation) -> SensorView:
+    def _recorded_sensor_view(self, time_us: int, sensor: str, observation: Observation) -> SensorView:
         """Camera view of a recorded past capture whose data comes from ``observation``."""
         raise NotImplementedError("This simulator cannot compose world objects into recorded captures")
 
@@ -824,7 +1381,9 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
         return plan.apply(background), ObjectComposition(np.array(background, copy=True), plan)
 
     def _composite_plan(self, view: SensorView, objects: Sequence[PlacedObject]) -> CompositePlan:
-        """Plan composing ``objects`` into a native capture view; measured occlusion overrides this."""
+        """
+        Plan composing ``objects`` into a native capture view. Measured occlusion overrides this.
+        """
         return view.composite_plan(objects)
 
     def start_replay(self, start: ScenarioStart, initialization: Initialization | None = None, *,
@@ -833,7 +1392,7 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
         """Reset for reading prescribed motion, without hooks or a driving system.
 
         Bound hooks are rejected. This initial capture is available even when ``can_replay``
-        is False; only advancing beyond it requires replay support.
+        is False. Only advancing beyond it requires replay support.
         """
         if self._dispatcher is not None:
             raise RuntimeError("Replay requires a runtime without hooks")
@@ -854,11 +1413,15 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
             raise NotImplementedError(f"{type(self.simulator).__name__} cannot advance replay")
         if not self._world_initialized or self._dispatcher is not None:
             raise RuntimeError("Replay requires an initialized runtime without hooks")
+        if self._pending_motion:
+            raise RuntimeError("Publish the pending interval endpoint before advancing replay")
         self._generating_frame_data = True
+        self._clock_time_us = None
         try:
             for _ in range(count):
                 self._capture = None
-                self._replay_tick()
+                self._replay_grid_step()
+                self.invalidate_state()
                 self._take_capture()
         except BaseException:
             self._world_initialized = False
@@ -875,6 +1438,7 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
             self._replay_tick()
         else:
             self._hold_tick()
+        self.invalidate_state()
 
     @abstractmethod
     def _initialize_world(self, start: ScenarioStart | None, initialization: Any,
@@ -882,6 +1446,9 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
 
     @abstractmethod
     def _advance_native(self, control: Control) -> None: ...
+
+    def _completed_interval(self) -> None:
+        """Keep native motion reports needed by later acquisitions."""
 
     @abstractmethod
     def _observe(self) -> Observation: ...
@@ -896,6 +1463,11 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
     def _replay_tick(self) -> None:
         """Advance one frame along the start's prescribed motion, without hooks or a driver."""
         raise NotImplementedError("This simulator does not replay prescribed motion")
+
+    def _replay_grid_step(self) -> None:
+        for _ in range(self.simulator.decision_ticks):
+            self._replay_tick()
+            self.invalidate_state()
 
     def _hold_tick(self) -> None:
         raise ValueError("This simulator does not support physical deployment ticks")
@@ -935,7 +1507,7 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
             self.reset(start, world=world, deployment=deployment)
             records = [self._capture_frame_data(frames[0])]
             for frame in frames[1:]:
-                self._replay_tick()
+                self._replay_grid_step()
                 self._take_capture()
                 records.append(self._capture_frame_data(frame))
         finally:
@@ -965,6 +1537,7 @@ __all__ = [
     'ClockSnapshot',
     'SensorGeometry',
     'SensorView',
+    'SensorAcquisition',
     'Initialization',
     'FrameDataSequence',
     'UnsupportedStartError',

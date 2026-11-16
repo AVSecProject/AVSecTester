@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from inspect import Parameter, signature
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 
@@ -13,7 +14,7 @@ from avsectester.closed_loop.simulators.base import SensorView
 from avsectester.geometry.cameras import BODY_FROM_OPTICAL, FThetaCamera, PinholeCamera, WindshieldDistortion
 from avsectester.geometry.poses import transform
 from avsectester.data_types import ActorState
-from avsectester.runlog import RunLog, StepRecord
+from avsectester.runlog import CaptureRecord, RunLog, StepRecord
 
 from .metric import executed_brakes, speeds
 
@@ -48,14 +49,14 @@ def as_rgb(frame: Any) -> np.ndarray | None:
     return frame[:, :, :3].astype(np.uint8)
 
 
-def _observation(record: StepRecord | Observation) -> Observation | None:
+def _observation(record: StepRecord | CaptureRecord | Observation) -> Observation | None:
     if isinstance(record, Observation):
         return record
     return record.model_observation if record.model_observation is not None else record.raw_observation
 
 
-def camera_view(record: StepRecord | Observation, camera: str | None = None) -> np.ndarray | None:
-    """Read a recorded model-visible camera image (or an explicit Observation)."""
+def camera_view(record: StepRecord | CaptureRecord | Observation, camera: str | None = None) -> np.ndarray | None:
+    """Read a recorded model-visible camera image, or raw input for a record without model input."""
     observation = _observation(record)
     if observation is None or not observation.sensor_data:
         return None
@@ -175,8 +176,8 @@ def draw_boxes3d(image: Any, view: SensorView, *, actors: Mapping[str, Any] | No
                  target_color: tuple[int, int, int] = (235, 64, 52)) -> np.ndarray:
     """Project ActorState cuboids through a SensorView, without SceneGT.
 
-    This also supports dataset inspection: pass FrameData.actors explicitly. Ordinary run
-    overlays use the physical_pre actors stored in each StepRecord.
+    This also supports dataset inspection: pass FrameData.actors explicitly. Run overlays use
+    the physical truth of the selected sensor acquisition.
     """
     boxes = []
     ego_pose = view.ego.box_transform()
@@ -210,59 +211,106 @@ def _camera_model(value: Any, width: int, height: int) -> Any:
     raise ValueError("Recorded camera calibration does not contain a supported lens")
 
 
-def sensor_view(record: StepRecord, camera: str | None = None) -> SensorView | None:
+def _capture_indexes(log: RunLog | None) -> tuple[dict[int, CaptureRecord], dict[tuple[Any, ...], CaptureRecord]]:
+    captures: dict[int, CaptureRecord] = {}
+    raw: dict[tuple[Any, ...], CaptureRecord] = {}
+    for capture in log.captures if log is not None else ():
+        captures[capture.capture_id] = capture
+        if capture.raw_observation is not None:
+            for sensor in capture.sensor_ids:
+                raw[(capture.raw_observation.t, capture.raw_observation.frame, sensor)] = capture
+    return captures, raw
+
+
+def sensor_view(record: StepRecord | CaptureRecord, camera: str | None = None, *,
+                log: RunLog | None = None) -> SensorView | None:
     """Rebuild projection geometry from recorded canonical sensor-view metadata/calibration.
 
     No simulator or native camera class is loaded. Unrecorded geometry returns None rather
     than drawing boxes with an invented extrinsic or an incorrect coordinate system.
+    Supply ``log`` to resolve acquisition-time truth and geometry for frames between decisions
+    or raw-only data.
     """
+    return _sensor_view(record, camera, *_capture_indexes(log))
+
+
+def _sensor_view(record: StepRecord | CaptureRecord, camera: str | None,
+                 captures: Mapping[int, CaptureRecord], raw_index: Mapping[tuple[Any, ...], CaptureRecord]) -> SensorView | None:
     observation = _observation(record)
-    if observation is None or record.physical_pre is None or record.physical_pre.ego is None:
+    if observation is None:
         return None
     sensors = [camera] if camera is not None else list(observation.sensor_data)
     for name in sensors:
+        geometry_record = record
+        if isinstance(record, CaptureRecord):
+            physical = record.physical_state
+        elif observation is record.raw_observation:
+            capture = raw_index.get((observation.t, observation.frame, name))
+            physical = capture.physical_state if capture is not None else record.physical_pre
+            if capture is not None:
+                geometry_record = capture
+            elif (record.delivered_captures.get(name) and record.model_observation is not None
+                    and name in record.model_observation.deliveries
+                    and record.model_observation.delivered(name)[-1].t != observation.t):
+                continue
+        else:
+            ids = record.delivered_captures.get(name, ())
+            capture = captures.get(ids[-1]) if ids else None
+            physical = capture.physical_state if capture is not None else record.physical_pre
+            if capture is not None:
+                geometry_record = capture
+            if (capture is None and ids and physical is not None
+                    and observation.delivered(name)[-1].t != physical.t):
+                continue
+        if physical is None or physical.ego is None:
+            continue
         image = camera_view(record, name)
         if image is None:
             continue
-        geometry = record.sensor_geometry.get(name)
+        geometry = geometry_record.sensor_geometry.get(name)
         canonical = ({"camera": geometry.camera, "cam_from_world": geometry.cam_from_world}
                      if geometry is not None else None)
         calibration = observation.calibration.get(name, {})
         if canonical is None and isinstance(calibration, Mapping) and "camera" in calibration and "ego_from_sensor" in calibration:
             canonical = {"camera": calibration["camera"], "cam_from_world": np.linalg.inv(
-                np.asarray(record.physical_pre.ego.pose) @ np.asarray(calibration["ego_from_sensor"]))}
+                np.asarray(physical.ego.pose) @ np.asarray(calibration["ego_from_sensor"]))}
         if canonical is None:
             continue
         lens = _camera_model(canonical["camera"], image.shape[1], image.shape[0])
         cam_from_world = np.asarray(canonical["cam_from_world"])
+        sample = observation.delivered(name)[-1]
         return SensorView(name, image, lens, cam_from_world,
-                          record.physical_pre.actors, record.physical_pre.ego,
-                          observation.t, observation.frame,
+                          physical.actors, physical.ego,
+                          sample.t, sample.frame,
                           sensor_from_world=BODY_FROM_OPTICAL @ cam_from_world)
     return None
 
 
-def labels_view(record: StepRecord, camera: str | None = None, *, target: str | None = None,
-                max_distance: float | None = None) -> np.ndarray | None:
-    """Overlay the saved physical_pre actors, using its real ego pose and recorded camera."""
+def labels_view(record: StepRecord | CaptureRecord, camera: str | None = None, *, target: str | None = None,
+                max_distance: float | None = None, log: RunLog | None = None) -> np.ndarray | None:
+    """Overlay actors at the selected camera acquisition using its physical pose."""
     image = camera_view(record, camera)
-    view = sensor_view(record, camera)
+    view = sensor_view(record, camera, log=log)
     return image if image is None or view is None else draw_boxes3d(
         image, view, target=target, max_distance=max_distance,
     )
 
 
-def detections_view(record: StepRecord, camera: str | None = None, *, threshold: float = 0.3) -> np.ndarray | None:
+def detections_view(record: StepRecord, camera: str | None = None, *, threshold: float = 0.3,
+                    log: RunLog | None = None) -> np.ndarray | None:
     """Overlay StepRecord.detections. This never runs a detector or reads components."""
-    image, view = camera_view(record, camera), sensor_view(record, camera)
+    captures, raw_index = _capture_indexes(log)
+    image, view = camera_view(record, camera), _sensor_view(record, camera, captures, raw_index)
     if image is None or view is None or record.detections is None:
         return image
+    capture = captures.get(record.detection_capture_id)
+    source = capture.physical_state if capture is not None else record.physical_pre
     boxes = []
     for detection in record.detections:
         if detection.score is not None and detection.score < threshold:
             continue
         local = box3d_corners(detection.position, detection.extent, detection.yaw)
-        corners = transform(record.physical_pre.ego.pose, local)
+        corners = transform(source.ego.pose, local)
         boxes.append((corners, str(detection.category or "detection"), (40, 200, 40)))
     return _draw_projected(image, view, boxes, 8)
 
@@ -278,8 +326,16 @@ def save_image(image: Any, path: str | Path) -> None:
 
 def _images(source: RunLog | Sequence[Any], visualize: View) -> list[np.ndarray]:
     if isinstance(source, RunLog):
-        return [image for step in source.steps if (image := visualize(step)) is not None]
+        return [image for step in source.steps if (image := _render_record(source, step, visualize)) is not None]
     return [np.asarray(image) for image in source]
+
+
+def _render_record(log: RunLog, record: StepRecord, visualize: View) -> Any:
+    parameters = signature(visualize).parameters
+    if ("log" in parameters and parameters["log"].kind != Parameter.POSITIONAL_ONLY
+            or any(item.kind == Parameter.VAR_KEYWORD for item in parameters.values())):
+        return cast(Callable[..., Any], visualize)(record, log=log)
+    return visualize(record)
 
 
 def record_run(log: RunLog, out_dir: str | Path, *, visualize: View = camera_view,
@@ -287,7 +343,7 @@ def record_run(log: RunLog, out_dir: str | Path, *, visualize: View = camera_vie
     """Export a frame per recorded decision. Does not run an experiment or simulator."""
     paths = []
     for record in log.steps:
-        image = visualize(record)
+        image = _render_record(log, record, visualize)
         if image is not None:
             path = Path(out_dir) / f"{prefix}_{record.step:04d}.png"
             save_image(image, path)
@@ -342,7 +398,9 @@ def save_sequence(log: RunLog, out_dir: str | Path, name: str = "sequence", cols
 
 
 def plot_group(runs: Mapping[str, Any], path: str | Path, *, title: str | None = None) -> Path:
-    """Plot physical speeds. Add an actuator-brake panel only when some run records that evidence."""
+    """
+    Plot physical speeds. Add an actuator-brake panel only when some run records that evidence.
+    """
     from matplotlib.backends.backend_agg import FigureCanvasAgg
     from matplotlib.figure import Figure
 
@@ -362,12 +420,17 @@ def plot_group(runs: Mapping[str, Any], path: str | Path, *, title: str | None =
         if physical_speeds is not None:
             speed_axis.plot(positions, physical_speeds, label=name)
         if has_brakes and braking[name] is not None:
-            axes[1].plot(positions, braking[name], label=name)
+            axes[1].plot([step.step for step in log.steps if not step.force_gt],
+                         braking[name], label=name)
     speed_axis.set_ylabel("ego speed (m/s)")
     if has_brakes:
         axes[1].set_ylabel("executed brake")
     axes[-1].set_xlabel("decision step")
+    forced_intervals = {(min(indices), max(indices) + 1) for log in runs.values()
+                        if (indices := [step.step for step in log.steps if step.force_gt])}
     for axis in axes:
+        for begin, end in sorted(forced_intervals):
+            axis.axvspan(begin, end, color="gray", alpha=.12, label="force-GT")
         axis.grid(alpha=0.25)
         if axis.lines:
             axis.legend()

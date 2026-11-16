@@ -74,7 +74,8 @@ The Alpamayo configurations set `approach_m: 100` and `min_approach_m: 60`. The 
 configurations use the defaults of 50 m and 20 m. The selector waits for required recorded
 history and includes `hold_steps` hold decisions, with a default of 20. A start closer than
 `min_approach_m` is rejected. Constructor defaults are in the
-[stop-sign attack API](../reference/python-api.md#avsectesterimplemented_attacksstop_sign_patch_attackattack).
+[stop-sign attack
+API](../reference/python-api.md#avsectesterimplemented_attacksstop_sign_patch_attackattack).
 
 The runtime inserts a post-free canonical MUTCD R1-1 replica face over the reconstructed sign.
 The `mask_path` binary mask selects which face-texture colors form the patch. The default

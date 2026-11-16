@@ -7,6 +7,7 @@ import pytest
 import numpy as np
 
 from avsectester.closed_loop.avstacks.driving_adapter import DrivingAdapter
+from avsectester.closed_loop.timing import HistoryRequirement, TimingConfiguration
 from avsectester.attack import AttackSegment
 from avsectester.execution.runner import RecordingPolicy
 from avsectester.experiment import (
@@ -49,7 +50,7 @@ def test_prepared_experiment_save_and_load(tmp_path):
     assert measurements(Experiment.execute(loaded)) == measurements(Experiment.execute(prepared))
     execution_config = replace(config, runs=replace(
         config.runs, seeds=(0, 5), decision_steps=1, strict=True,
-        recording=RecordingPolicy(every_n_steps=2), output=tmp_path / "execution",
+        recording=RecordingPolicy(every_n_captures=2), output=tmp_path / "execution",
         treatments=(TreatmentConfiguration("rain", "probe", {"world": {"weather": "rain"}}),),
     ))
     reused = PreparedExperiment.load(execution_config, destination)
@@ -112,6 +113,24 @@ def test_prepared_experiment_save_and_load(tmp_path):
     different_seed = replace(config, runs=replace(config.runs, seeds=(3,)))
     with pytest.raises(ConfigurationMismatchError, match=r"preparation.seed: old=0, new=3"):
         PreparedExperiment.load(different_seed, destination)
+    different_timing = replace(config, runs=replace(config.runs,
+        timing=TimingConfiguration(planner_delay_us=100000)))
+    with pytest.raises(ConfigurationMismatchError, match="timing"):
+        PreparedExperiment.load(different_timing, destination)
+    different_history = replace(config, avstack=DrivingAdapter(config.avstack.factory,
+        history=HistoryRequirement(samples=3)))
+    with pytest.raises(ConfigurationMismatchError, match="history"):
+        PreparedExperiment.load(different_history, destination)
+    legacy_manifest = json.loads((destination / "prepared.json").read_text())
+    legacy_manifest["preparation"].pop("timing")
+    legacy_manifest["preparation"].pop("history")
+    legacy_path = prepared.save(tmp_path / "legacy")
+    (legacy_path / "prepared.json").write_text(json.dumps(legacy_manifest))
+    assert PreparedExperiment.load(config, legacy_path).metadata == prepared.metadata
+    with pytest.raises(ConfigurationMismatchError, match="default runs.timing"):
+        PreparedExperiment.load(different_timing, legacy_path)
+    with pytest.raises(ConfigurationMismatchError, match="lacks required history"):
+        PreparedExperiment.load(different_history, legacy_path)
     different_environment = replace(
         config, runs=replace(config.runs, environment={"world": {"weather": "rain"}}),
     )
@@ -157,6 +176,17 @@ def test_experiment_result_load(tmp_path):
     np.testing.assert_array_equal(loaded.scenario_maps["scene"].lanes["lane"].centerline, centerline)
     assert loaded.scenario_maps["scene"].traffic_controls["stop"].stop_line_id == "line"
     assert loaded.scenario_maps["scene"].stop_lines["line"].control_id == "stop"
+    manifest_path = config.runs.output / "prepared.json"
+    saved_manifest = json.loads(manifest_path.read_text())
+    legacy_manifest = json.loads(manifest_path.read_text())
+    legacy_manifest["preparation"].pop("timing")
+    legacy_manifest["preparation"].pop("history")
+    manifest_path.write_text(json.dumps(legacy_manifest))
+    offline_config = replace(config, dataset=MemoryDataset(scenario_ids=(), scenarios_error="offline"),
+        avstack=DrivingAdapter(config.avstack.factory, history=HistoryRequirement(samples=100)))
+    offline = ExperimentResult.load(config.runs.output, offline_config)
+    assert measurements(offline) == measurements(original)
+    manifest_path.write_text(json.dumps(saved_manifest))
     assert isinstance(loaded.scenario_maps["unmapped"], Unavailable)
     assert loaded.scenario_maps["unmapped"].reason == original.scenario_maps["unmapped"].reason
     clean_only = replace(config, runs=replace(

@@ -69,6 +69,7 @@ class InsertionAttackAction(SensorAttackAction):
     sensor: str
     insertion: Insertion
     compositor: PatchCompositor | None = None
+    active_for_us: int | None = 0
     rendered: bool = field(default=False, init=False)
     reason: str = field(default="", init=False)
     occlusion_source: str = field(default="", init=False)

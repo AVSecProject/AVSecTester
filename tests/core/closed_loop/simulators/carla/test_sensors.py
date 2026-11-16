@@ -9,6 +9,8 @@ import pytest
 from avsectester.closed_loop.simulators.carla import CarlaSimulator
 from avsectester.closed_loop.simulators.carla.sensors import SensorCapture, decode_carla_depth
 from avsectester.serialization import DEFAULT_REGISTRY
+from avsectester.data_types import Observation
+from avsectester.runlog import CaptureRecord, Recorder, RunLog
 
 
 def test_decode_carla_depth():
@@ -19,7 +21,7 @@ def test_decode_carla_depth():
         assert decode_carla_depth(image)[0, 0] == pytest.approx(metres, abs=.00003)
 
 
-def test_sensor_capture():
+def test_sensor_capture(tmp_path):
     source = SensorCapture("carla.LidarMeasurement", np.array([[1., 2., 3., .5]], np.float32).tobytes(),
                            7, .7, {"channels": 16})
     captured = DEFAULT_REGISTRY.snapshot(source)
@@ -32,6 +34,16 @@ def test_sensor_capture():
     assert decoded["frame"] == 7 and decoded["timestamp"] == .7
     assert decoded["metadata"] == {"channels": 16}
     assert decoded["raw_bytes"] == source.raw_bytes
+    duplicate = replace(captured, raw_bytes=bytes(bytearray(captured.raw_bytes)))
+    with Recorder(tmp_path) as recorder:
+        record = recorder.record_capture(CaptureRecord(
+            0, 700000, ("lidar",), Observation(.7, 7, {"lidar": captured}),
+            Observation(.7, 7, {"lidar": duplicate})))
+    raw_bytes = record.raw_observation.sensor_data["lidar"].raw_bytes
+    assert raw_bytes is record.model_observation.sensor_data["lidar"].raw_bytes
+    assert sum(part.stat().st_size for part in (tmp_path / "payloads").glob("*.bin")) == len(raw_bytes)
+    saved = RunLog.read(tmp_path).captures[0]
+    assert saved.raw_observation.sensor_data["lidar"]["raw_bytes"] == raw_bytes
 
 
 def test_depth_camera(monkeypatch, carla_dataset):

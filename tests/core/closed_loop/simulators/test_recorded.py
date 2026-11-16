@@ -6,7 +6,10 @@ import numpy as np
 import pytest
 
 from avsectester.closed_loop.simulators.recorded import RecordedReplaySimulator
+from avsectester.closed_loop.timing import TimingConfiguration
 from avsectester.data_types import Control
+from avsectester.execution.runner import ClosedLoopRunner, RunRequest
+from tests.fakes import ConstantAVStack
 
 
 def test_sensor_aliases(nuscenes_dataset):
@@ -66,3 +69,32 @@ def test_terminal_frame(nuscenes_dataset):
         assert runtime.state().ego.extent is None
         with pytest.raises(ValueError, match="terminal recorded support"):
             runtime.step(Control(throttle=1.))
+
+
+def test_epoch_timestamps(nuscenes_dataset):
+    start = nuscenes_dataset.scenario_start("scene", nuscenes_dataset.frames("scene")[0])
+    timestamps = (1500000000.123456, 1500000000.624173, 1500000001.122812)
+    records = tuple(replace(data, frame=replace(data.frame, timestamp=time))
+                    for data, time in zip(start.payload["frame_data"], timestamps))
+    start = replace(start, frame=records[0].frame, payload={"frame_data": records})
+    with RecordedReplaySimulator(start).create_runtime() as runtime:
+        log = ClosedLoopRunner().run(runtime, ConstantAVStack(), RunRequest(2))
+        assert runtime.decision_period_us == 500000
+    assert log.status == "completed"
+    assert [step.raw_observation.t for step in log.steps] == list(timestamps[:2])
+    assert [step.physical_post.t for step in log.steps] == list(timestamps[1:])
+
+
+def test_validate_timing():
+    from avsectester.closed_loop.timing import SensorTiming
+
+    simulator = RecordedReplaySimulator()
+    simulator.validate_timing(TimingConfiguration())
+    simulator.validate_timing(TimingConfiguration(decision_period_us=500000,
+                                                 sensors={"CAM_FRONT": SensorTiming(500000)}))
+    with pytest.raises(ValueError, match="nominal keyframe"):
+        simulator.validate_timing(TimingConfiguration(decision_period_us=100000))
+    with pytest.raises(ValueError, match="default timing"):
+        simulator.validate_timing(TimingConfiguration(planner_delay_us=100000))
+    with pytest.raises(ValueError, match="default timing"):
+        simulator.validate_timing(TimingConfiguration(sensors={"CAM_FRONT": SensorTiming(250000)}))

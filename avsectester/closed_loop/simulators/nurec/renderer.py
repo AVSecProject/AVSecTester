@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from avsectester.validation import timestamp_to_microseconds
+
 import copy
 import dataclasses
 import json
@@ -86,7 +88,7 @@ def ftheta_camera_from_spec(spec: Any) -> FThetaCamera:
     """Build an f-theta lens from a NuRec CameraSpec, including its windshield distortion.
 
     NRE renders pixel ``i`` from the spec's image point ``i``, whereas ``Camera`` addresses pixel
-    centers at ``i + 0.5``; the principal point is shifted by half a pixel accordingly. Probe
+    centers at ``i + 0.5``. The principal point is shifted by half a pixel accordingly. Probe
     objects inserted into NRE scenes land on the projected pixels within 0.05 px.
     """
     from avsectester.geometry.cameras import FThetaCamera, WindshieldDistortion
@@ -157,7 +159,7 @@ class Renderer(ABC):
     def reset_origin(self, start=None):
         """Set the run origin from the dataset start. Configured renderers have no origin."""
         self._origin_transform = None if start is None else deepcopy(start.payload["ego"].pose)
-        self._origin_timestamp_us = None if start is None else round(start.frame.timestamp * 1e6)
+        self._origin_timestamp_us = None if start is None else timestamp_to_microseconds(start.frame.timestamp)
         self._origin_bounds = None if start is None else (
             start.payload["first_timestamp"], start.payload["terminal_timestamp"])
 
@@ -182,8 +184,10 @@ class Renderer(ABC):
     @abstractmethod
     def render(
         self, world_from_rig: np.ndarray, timestamp_us: int, camera: str, dynamic_objects=(),
+        *, frame_start_us: int | None = None, world_from_rig_start: np.ndarray | None = None,
+        dynamic_objects_start=None,
     ) -> Any:
-        """Render one camera at the explicit three-dimensional rig pose and scene timestamp."""
+        """Render a frame ending at ``timestamp_us``, with optional exposure-start poses."""
 
     def render_lidar(
         self, world_from_rig_start: np.ndarray, world_from_rig_end: np.ndarray,
@@ -197,6 +201,7 @@ class Renderer(ABC):
     def render_scene_visibility(
         self, world_from_rig: np.ndarray, timestamp_us: int, camera: str,
         objects: Sequence[PlacedObject], dynamic_objects=(), *, occlusion_tolerance_m: float = 0.,
+        frame_start_us: int | None = None, world_from_rig_start=None, dynamic_objects_start=None,
     ) -> np.ndarray:
         """Pixels where the reconstructed scene does not hide ``objects`` in this capture.
 
@@ -214,7 +219,8 @@ class Renderer(ABC):
 
     def render_object_coverage(
         self, world_from_rig: np.ndarray, timestamp_us: int, camera: str,
-        placed: PlacedObject, dynamic_objects=(),
+        placed: PlacedObject, dynamic_objects=(), *, frame_start_us: int | None = None,
+        world_from_rig_start=None, dynamic_objects_start=None,
     ) -> np.ndarray:
         """Visible image coverage of one object, with values between zero and one."""
         raise NotImplementedError(f"{type(self).__name__} cannot render object coverage")
@@ -236,12 +242,11 @@ class Renderer(ABC):
 
 @dataclass
 class NuRecRenderer(Renderer):
-    """Real NuRec renderer: one stateless ``SensorsimService`` render call per capture to an nre server.
+    """NuRec client for one stateless ``SensorsimService`` render call per acquisition.
 
-    The heavy neural rendering lives in the ``nre-ga`` server (like the CARLA server), so this stays a
-    thin, stateless client — no runtime, no controller/physics/traffic microservices, no callback
-    inversion. Lazily imports the gRPC stubs. Connect it to a running renderer and a loaded NuRec
-    scene. ``service`` exposes the native RPC client after loading. ``render_at`` supports exact
+    Neural rendering runs in the ``nre-ga`` server. This stateless client lazily imports the gRPC
+    stubs. Connect it to a running renderer and a loaded NuRec scene.
+    ``service`` exposes the native RPC client after loading. ``render_at`` supports exact
     recorded poses for initial-sequence inspection without advancing a driving policy.
 
     Cameras render at their native resolution. A different image size returned by NRE raises
@@ -402,7 +407,9 @@ class NuRecRenderer(Renderer):
 
     @property
     def service(self) -> Any:
-        """Native SensorsimService client, including metadata APIs this renderer does not normalize."""
+        """
+        Native SensorsimService client, including metadata APIs this renderer does not normalize.
+        """
         if self._stub is None:
             raise RuntimeError("Call load_scene before accessing the NuRec service")
         return self._stub
@@ -434,15 +441,19 @@ class NuRecRenderer(Renderer):
         return np.linalg.inv(validated_transform(world_from_rig) @ pose_from_proto(extrinsic))
 
     def render(
-        self, world_from_rig: np.ndarray, timestamp_us: int, camera: str, dynamic_objects=(),
+        self, world_from_rig: np.ndarray, timestamp_us: int, camera: str, dynamic_objects=(), *,
+        frame_start_us: int | None = None, world_from_rig_start: np.ndarray | None = None,
+        dynamic_objects_start=None,
     ):
-        """Render one RGB frame at an explicit three-dimensional rig pose and scene timestamp."""
-        return self.render_at(world_from_rig, timestamp_us, camera, dynamic_objects)
+        """Render an instantaneous frame or an explicit shutter interval ending at timestamp_us."""
+        return self._render_image(world_from_rig, timestamp_us, camera, dynamic_objects,
+            self.image_quality, frame_start_us=frame_start_us,
+            world_from_rig_start=world_from_rig_start, dynamic_objects_start=dynamic_objects_start)
 
     def render_at(self, world_from_rig, timestamp_us: int, camera: str, dynamic_objects=()):
         """Render an absolute rig pose/time and all present track-ID/world-pose pairs.
 
-        Actor poses use the same reference point as sequence_tracks.json; no bounding-box
+        Actor poses use the same reference point as sequence_tracks.json. No bounding-box
         offset is applied. Each pose pair repeats the pose to describe an instantaneous capture.
         """
         return self._render_image(world_from_rig, timestamp_us, camera, dynamic_objects, self.image_quality)
@@ -504,6 +515,7 @@ class NuRecRenderer(Renderer):
     def render_scene_visibility(
         self, world_from_rig: np.ndarray, timestamp_us: int, camera: str,
         objects: Sequence[PlacedObject], dynamic_objects=(), *, occlusion_tolerance_m: float = 0.,
+        frame_start_us: int | None = None, world_from_rig_start=None, dynamic_objects_start=None,
     ) -> np.ndarray:
         """Pixels where the reconstructed scene does not hide ``objects`` in an NRE render.
 
@@ -515,7 +527,7 @@ class NuRecRenderer(Renderer):
         Both probes are rendered with ``dynamic_objects`` at this capture, as maximum-quality JPEG.
         A pixel is visible when the white render exceeds the black one by at least half the
         color range.
-        Rejects probe pixels outside the objects' projected boxes, which indicate an asset scale
+        Rejects probe pixels outside the objects' swept projected boxes, indicating an asset scale
         or axis convention that differs from the measured NRE behavior.
         ``occlusion_tolerance_m`` moves each probe that distance toward the camera, along the ray
         to its bounding-box center and at most halfway there, so scene content less than about
@@ -549,16 +561,24 @@ class NuRecRenderer(Renderer):
 
         def render(color: str) -> np.ndarray:
             return self._render_image(world_from_rig, timestamp_us, camera,
-                                      (*dynamic_objects, *tracks[color]), 100.0)
+                (*dynamic_objects, *tracks[color]), 100.0, frame_start_us=frame_start_us,
+                world_from_rig_start=world_from_rig_start,
+                dynamic_objects_start=(None if dynamic_objects_start is None else
+                                       (*dynamic_objects_start, *tracks[color])))
 
         white, black = render("white"), render("black")
         visible = (white.astype(np.int16) - black).mean(axis=2) >= 127.5
         camera_model = self.camera_model(camera)
         expected = np.zeros_like(visible)
+        camera_poses = [cam_from_world]
+        if frame_start_us is not None and frame_start_us != timestamp_us:
+            camera_poses.append(self.cam_from_world(world_from_rig_start, camera))
         for world_from_box, extent in boxes:
-            bounds = project_box(camera_model, cam_from_world, world_from_box, extent)
-            if bounds is not None:
-                x0, y0, x1, y1 = bounds
+            bounds = [box for transform in camera_poses
+                      if (box := project_box(camera_model, transform, world_from_box, extent)) is not None]
+            if bounds:
+                x0, y0 = min(box[0] for box in bounds), min(box[1] for box in bounds)
+                x1, y1 = max(box[2] for box in bounds), max(box[3] for box in bounds)
                 expected[max(0, math.floor(y0) - 3):max(0, math.ceil(y1) + 3),
                          max(0, math.floor(x0) - 3):max(0, math.ceil(x1) + 3)] = True
         stray = int(np.count_nonzero(visible & ~expected))
@@ -663,7 +683,8 @@ class NuRecRenderer(Renderer):
 
     def render_object_coverage(
         self, world_from_rig: np.ndarray, timestamp_us: int, camera: str,
-        placed: PlacedObject, dynamic_objects=(),
+        placed: PlacedObject, dynamic_objects=(), *, frame_start_us: int | None = None,
+        world_from_rig_start=None, dynamic_objects_start=None,
     ) -> np.ndarray:
         """Return visible object coverage from pure-white and pure-black scene copies.
 
@@ -679,7 +700,10 @@ class NuRecRenderer(Renderer):
             gaussian, track_id = self._coverage_copy(placed.asset, color)
             pose = placed.world_from_object @ gaussian.object_from_track
             images.append(self._render_image(world_from_rig, timestamp_us, camera,
-                          (*dynamic_objects, (track_id, pose)), self.image_quality))
+                (*dynamic_objects, (track_id, pose)), self.image_quality, frame_start_us=frame_start_us,
+                world_from_rig_start=world_from_rig_start,
+                dynamic_objects_start=(None if dynamic_objects_start is None else
+                                       (*dynamic_objects_start, (track_id, pose)))))
         return np.clip((images[0].astype(float) - images[1]).mean(axis=2) / 255, 0., 1.)
 
     def _write_asset(self, asset: GaussianAsset, filename: str) -> None:
@@ -748,7 +772,8 @@ class NuRecRenderer(Renderer):
                 self._insert_track(track_id)
 
     def _render_image(self, world_from_rig, timestamp_us: int, camera: str, dynamic_objects,
-                      image_quality: float):
+                      image_quality: float, *, frame_start_us: int | None = None,
+                      world_from_rig_start=None, dynamic_objects_start=None):
         if self.origin_bounds is not None:
             first, last = self.origin_bounds
             if not first - 1e-6 <= timestamp_us / 1e6 <= last + 1e-6:
@@ -768,20 +793,27 @@ class NuRecRenderer(Renderer):
         from .simulator import _compose_pose
 
         cam = _compose_pose(rig, self._camera_poses[camera], common_pb2)
+        starts = dict(dynamic_objects if dynamic_objects_start is None else dynamic_objects_start)
         objects = []
         for track_id, world_from_actor in dynamic_objects:
+            if track_id not in starts:
+                continue
             actor_pose = _protobuf_pose(world_from_actor)
+            start_pose = actor_pose if starts[track_id] is world_from_actor else _protobuf_pose(starts[track_id])
             objects.append(sensorsim_pb2.DynamicObject(track_id=track_id,
-                pose_pair=sensorsim_pb2.PosePair(start_pose=actor_pose, end_pose=actor_pose)))
+                pose_pair=sensorsim_pb2.PosePair(start_pose=start_pose, end_pose=actor_pose)))
         frame_us = int(timestamp_us)
+        instantaneous = frame_start_us is None or frame_start_us == frame_us
+        start_cam = cam if instantaneous else _compose_pose(
+            _protobuf_pose(world_from_rig_start), self._camera_poses[camera], common_pb2)
         req = sensorsim_pb2.RGBRenderRequest(
             scene_id=self._loaded_scene_id,
             resolution_h=spec.resolution_h,
             resolution_w=spec.resolution_w,
             camera_intrinsics=spec,
-            frame_start_us=frame_us,
-            frame_end_us=frame_us + 1,  # render at an instant: a non-empty [t, t+1) interval
-            sensor_pose=sensorsim_pb2.PosePair(start_pose=cam, end_pose=cam),
+            frame_start_us=frame_us if instantaneous else int(frame_start_us),
+            frame_end_us=frame_us + 1 if instantaneous else frame_us,
+            sensor_pose=sensorsim_pb2.PosePair(start_pose=start_cam, end_pose=cam),
             dynamic_objects=objects,
             image_format=sensorsim_pb2.ImageFormat.JPEG,
             image_quality=image_quality,

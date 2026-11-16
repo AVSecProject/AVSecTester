@@ -116,7 +116,7 @@ class ExposureHarmonizer(Harmonizer):
     One clipped luminance gain, estimated from the nominal composite, scales all
     channels of the composite, with optional Gaussian feathering against the
     background. Only visible-mask pixels change. NumPy and differentiable tensor
-    calls share this calculation; NumPy has no nominal composite, estimates the
+    calls share this calculation. NumPy has no nominal composite, estimates the
     gain from the composite itself and rounds to uint8 only at the end.
     """
 
@@ -155,9 +155,14 @@ class ExposureHarmonizer(Harmonizer):
             return None
         reference = mask
         if self.reference == "ring":
+            # A square dilation separates exactly over the two axes of the boolean mask.
+            window = 2 * self.ring_px + 1
             dilated = F.max_pool2d(
-                mask.to(composite.dtype)[None, None], 2 * self.ring_px + 1,
-                stride=1, padding=self.ring_px,
+                mask.to(composite.dtype)[None, None], (1, window),
+                stride=1, padding=(0, self.ring_px),
+            )
+            dilated = F.max_pool2d(
+                dilated, (window, 1), stride=1, padding=(self.ring_px, 0),
             )[0, 0] > 0
             reference = dilated & ~mask
         if not reference.any():
@@ -183,7 +188,8 @@ class ExposureHarmonizer(Harmonizer):
             return composite
         adjusted = _srgb_rgb(_linear_rgb(composite) * gain).clamp(0, 1)
         if self.feather_sigma > 0:
-            # Rounding in the blur can leave weights just outside [0, 1]; the blend must stay convex.
+            # Rounding in the blur can leave weights just outside [0, 1].
+            # The blend must stay convex.
             alpha = _feather_mask(mask, self.feather_sigma, composite.dtype).clamp(0, 1)[None]
             adjusted = alpha * adjusted + (1 - alpha) * background
         return torch.where(mask[None], adjusted, composite)

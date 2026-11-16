@@ -68,5 +68,5 @@ runs:
   recording:
     sensor_ids: [camera_front_wide_120fov, lidar_gt_top_p128]
     representations: [model_input]
-    every_n_steps: 1
+    every_n_captures: 1
   output: ../results/nurec_vehicle_insertion_modular_2604

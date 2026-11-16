@@ -10,7 +10,8 @@ import pytest
 from avsectester.data_types import Control
 from avsectester.rendering import MeshAsset, MeshPart, PlacedObject, composite_objects
 from avsectester.closed_loop.hooks import Hook, HookSet
-from avsectester.closed_loop.simulators.base import DeploymentPlan, SensorGeometry
+from avsectester.closed_loop.simulators.base import DeploymentPlan, SensorGeometry, UnsupportedStartError
+from avsectester.closed_loop.timing import TimingConfiguration
 from avsectester.closed_loop.simulators.nurec import NuRecRenderer, NuRecSimulator
 from avsectester.closed_loop.simulators.recorded import RecordedReplaySimulator
 from tests.fakes import CAMERA, CAM_FROM_WORLD, ConstantAVStack, MemoryDataset, MemorySimulator, actor_state
@@ -28,6 +29,25 @@ def test_validate_start():
         simulator.validate_start(replace(start, kind="unsupported"))
     with pytest.raises(ValueError, match="time_step"):
         simulator.validate_start(replace(start, payload={**start.payload, "time_step": .2}))
+
+
+def test_validate_startup():
+    dataset = MemoryDataset()
+    start = dataset.scenario_start("scene", dataset.frames("scene")[4])
+    simulator = MemorySimulator()
+    simulator.validate_startup(None, 0)
+    simulator.validate_startup(start, 200000)
+    with pytest.raises(UnsupportedStartError, match="does not cover"):
+        simulator.validate_startup(start, 300000)
+    with pytest.raises(UnsupportedStartError, match="requires recorded ego"):
+        simulator.validate_startup(replace(start, recorded_ego=()), 100000)
+    with pytest.raises(ValueError, match="requires a recorded ScenarioStart"):
+        simulator.validate_startup(None, 100000)
+    with pytest.raises(ValueError, match="does not support force_gt_duration_us"):
+        MemorySimulator(can_replay=False).validate_timing(TimingConfiguration(force_gt_duration_us=100000))
+    with pytest.raises(ValueError, match="requires trajectory commands"):
+        simulator.validate_timing(TimingConfiguration(force_gt_duration_us=100000,
+                                                     skip_driver_during_force_gt=True))
 
 
 def test_reset():
@@ -56,6 +76,85 @@ def test_step():
         assert simulator_runtime.observe().frame == simulator_runtime.clock.frame
         with pytest.raises(ValueError, match="Simulator does not support trajectory commands"):
             simulator_runtime.step(Control(trajectory=np.zeros((2, 3))))
+        def reject_step(value, context):
+            raise RuntimeError("step post failed")
+
+        hooks = HookSet([Hook("simulator.step.post", reject_step)])
+        with hooks.session(simulator_runtime, ConstantAVStack()).activate():
+            with pytest.raises(RuntimeError, match="step post failed"):
+                simulator_runtime.step(Control())
+        with pytest.raises(RuntimeError, match="Reset"):
+            simulator_runtime.observe()
+
+
+def test_advance_and_capture():
+    with MemorySimulator().create_runtime() as runtime:
+        runtime.reset()
+        runtime.advance_interval(100000, Control(throttle=.5), report_times_us=(50000,))
+        reports = {time: runtime.state_at(time) for time in (50000, 100000)}
+        assert reports[50000].t == .05 and reports[50000].ego_speed == 1.025
+        assert runtime.state_at(50000).ego.pose[0, 3] == pytest.approx(.0525)
+        assert runtime.clock.time_us == 0
+        assert reports[100000].ego_speed == 1.05
+        with pytest.raises(RuntimeError, match="observing"):
+            runtime.observe()
+        captured = runtime.capture_at(100000, ("front",))
+        assert runtime.clock.time_us == 100000
+        assert captured.frame == runtime.clock.frame == 1
+        assert set(captured.sensor_data) == {"front"}
+        captured.sensor_data["front"][:] = 0
+        assert runtime.capture_at(100000).sensor_data["front"].min() == 21
+        assert runtime.sensor_view("front").time == captured.t
+        with pytest.raises(ValueError, match="next decision"):
+            runtime.advance_interval(250000, Control())
+        with pytest.raises(ValueError, match="current time"):
+            runtime.capture_at(0)
+        with pytest.raises(ValueError, match="Unknown sensor"):
+            runtime.capture_at(100000, ("missing",))
+
+
+def test_pose_only_capture():
+    with MemorySimulator(captures_between_decisions=False).create_runtime() as runtime:
+        runtime.reset()
+        runtime.advance_interval(100000, Control(throttle=.5), report_times_us=(50000,))
+        before = runtime.state_at(50000)
+        observation = runtime.capture_at(50000, ())
+        assert observation.sensor_data == {} and observation.t == before.t == .05
+        assert observation.ego_speed == before.ego_speed
+        with pytest.raises(ValueError, match="cannot acquire between decisions"):
+            runtime.capture_at(50000, ("front",))
+        assert runtime.clock.time_us == 50000
+        runtime.capture_at(100000)
+        assert runtime.observe().sensor_data.keys() == {"front"}
+
+
+def test_sensor_acquisition(make_object_in_front):
+    geometries = {sensor: SensorGeometry(sensor, CAMERA, CAM_FROM_WORLD)
+                  for sensor in ("front", "second")}
+    with MemorySimulator(extra_sensors={"imu": np.zeros(3)},
+                         camera_geometries=geometries).create_runtime() as runtime:
+        runtime.reset()
+        runtime.advance_interval(100000, Control(throttle=.5), report_times_us=(33333, 66667))
+        runtime.capture_at(33333, ("front",))
+        first = runtime.sensor_acquisition("front")
+        assert first.time_us == 33333 and first.observation.t == first.view.time == .033333
+        assert first.physical_state.t == .033333
+        assert runtime.sensor_acquisition("imu").time_us == 0
+        original_pose = first.view.cam_from_world.copy()
+        asset, pose = make_object_in_front(first.view)
+        runtime.insert_object("sign", asset, pose)
+        runtime.capture_at(33333, ("second",))
+        assert "sign" in runtime.sensor_view("second").objects
+        assert "sign" not in first.view.objects
+        runtime.capture_at(66667, ("front",))
+        assert runtime.sensor_acquisition("front").time_us == 66667
+        assert runtime.sensor_view("imu").time == 0.
+        runtime.capture_at(100000)
+        assert runtime.sensor_acquisition("imu").time_us == 100000
+        np.testing.assert_array_equal(first.view.cam_from_world, original_pose)
+        assert first.physical_state.t == .033333
+        with pytest.raises(ValueError, match="Unknown"):
+            runtime.sensor_acquisition("missing")
 
 
 def test_observe_and_state():
@@ -133,6 +232,9 @@ def test_advance_replay():
         simulator_runtime.advance_replay(2)
         assert simulator_runtime.observe().frame == 3
         assert simulator_runtime.clock.t == pytest.approx(frames[3].timestamp)
+        simulator_runtime.advance_interval(simulator_runtime.clock.time_us + 100000, Control())
+        with pytest.raises(RuntimeError, match="pending interval endpoint"):
+            simulator_runtime.advance_replay(1)
         with pytest.raises(ValueError, match="nonnegative integer"):
             simulator_runtime.advance_replay(-1)
     with MemorySimulator(can_replay=False).create_runtime() as simulator_runtime:
@@ -353,68 +455,49 @@ def test_object_visibility(sensor_depths, occlusion_source, ignored_occluders, m
         assert not simulator_runtime.sensor_view("front").object_masks["sign"].any()
 
 
-def test_observe_past():
-    dataset = MemoryDataset()
-    frames = dataset.frames("scene")
-    start = dataset.scenario_start("scene", frames[3])
-    with MemorySimulator().create_runtime() as runtime:
-        with pytest.raises(RuntimeError, match="Reset the simulator"):
-            runtime.observe_past(1)
-        runtime.reset(start)
-        original = runtime.observe()
-        state = runtime.state()
-        past = runtime.observe_past(3)
-        assert [observation.frame for observation in past] == [-3, -2, -1]
-        np.testing.assert_allclose([observation.t for observation in past], [-.3, -.2, -.1])
-        np.testing.assert_allclose([observation.vehicle_state.x for observation in past],
-                                   [value.pose[0, 3] for value in start.recorded_ego[:3]])
-        pristine = past[0].sensor_data["front"].copy()
-        past[0].sensor_data["front"][:] = 255
-        np.testing.assert_array_equal(
-            runtime.observe_past(3)[0].sensor_data["front"], pristine)
-        assert runtime.observe_past(0) == ()
-        np.testing.assert_array_equal(runtime.observe().sensor_data["front"], original.sensor_data["front"])
-        assert runtime.clock.t == state.t and runtime.clock.frame == state.frame
-        np.testing.assert_array_equal(runtime.state().ego.pose, state.ego.pose)
-        with pytest.raises(ValueError, match="only 3 past decisions; 4 required"):
-            runtime.observe_past(4)
-        with pytest.raises(ValueError, match="nonnegative integer"):
-            runtime.observe_past(-1)
-        runtime.reset(replace(start, recorded_ego=()))
-        with pytest.raises(ValueError, match="ScenarioStart.recorded_ego"):
-            runtime.observe_past(1)
-
-    with MemorySimulator(can_observe_past=False).create_runtime() as runtime:
-        runtime.reset(start)
-        assert not runtime.can_observe_past
-        with pytest.raises(NotImplementedError, match="cannot observe the recorded past"):
-            runtime.observe_past(1)
-
-
-def test_observe_past_contains_start_objects(make_object_in_front):
+def test_observe_recorded_at(make_object_in_front):
     dataset = MemoryDataset()
     start = dataset.scenario_start("scene", dataset.frames("scene")[3])
     with MemorySimulator().create_runtime() as runtime:
+        with pytest.raises(NotImplementedError, match="recorded acquisition history"):
+            runtime.observe_recorded_at(-100000)
         runtime.reset(start)
-        clean_past = runtime.observe_past(3)
         asset, world_from_object = make_object_in_front(runtime.sensor_view("front"))
-        later = world_from_object.copy()
-        later[1, 3] += .5
+        with pytest.raises(RuntimeError, match="No recorded capture"):
+            runtime.recorded_capture_state
+        clean = runtime.observe_recorded_at(-100000)
+        pose_only = runtime.observe_recorded_at(-100000, ())
+        assert pose_only.sensor_data == {} and pose_only.calibration == {}
+        assert pose_only.vehicle_state == clean.vehicle_state
         hooks = HookSet([Hook("simulator.setup", lambda value, context: context.simulator_runtime.insert_object(
-            "sign", asset, world_from_object))])
+            "sign", asset, world_from_object)), Hook("sensors.post", lambda value, context: value)])
         with hooks.session(runtime, ConstantAVStack()).activate():
             runtime.reset(start)
-        runtime.insert_object("later", asset, later)
-        runtime.remove_object("sign")
-        past = runtime.observe_past(3)
-        # Objects present at the start are part of the recorded past; later insertions are not.
-        sign = (PlacedObject("sign", asset, world_from_object),)
-        for observation, recorded, clean in zip(past, start.recorded_ego[:3], clean_past):
-            cam_from_world = CAM_FROM_WORLD.copy()
-            cam_from_world[:, 3] -= cam_from_world[:, 0] * recorded.pose[0, 3]
-            expected = composite_objects(clean.sensor_data["front"], CAMERA, cam_from_world, sign)
-            assert expected.visible_mask.any()
-            np.testing.assert_array_equal(observation.sensor_data["front"], expected.image)
+            state, current = runtime.state(), runtime.observe()
+            assert runtime.recorded_capture_visibility == {}
+            with pytest.raises(RuntimeError, match="No recorded capture"):
+                runtime.recorded_capture_state
+            past = tuple(runtime.observe_recorded_at(time) for time in (-300000, -200000, -100000))
+            assert [item.frame for item in past] == [-3, -2, -1]
+            assert [item.t for item in past] == [-.3, -.2, -.1]
+            expected = composite_objects(clean.sensor_data["front"], CAMERA,
+                runtime.recorded_sensor_geometry_at(-100000, "front").cam_from_world,
+                (PlacedObject("sign", asset, world_from_object),))
+            np.testing.assert_array_equal(past[-1].sensor_data["front"], expected.image)
+            pristine = past[-1].sensor_data["front"].copy()
+            past[-1].sensor_data["front"][:] = 255
+            np.testing.assert_array_equal(runtime.observe_recorded_at(-100000).sensor_data["front"], pristine)
+            np.testing.assert_array_equal(runtime.observe().sensor_data["front"], current.sensor_data["front"])
+            np.testing.assert_array_equal(runtime.state().ego.pose, state.ego.pose)
+            assert runtime.clock.t == state.t
+            with pytest.raises(ValueError, match="precedes available source history"):
+                runtime.observe_recorded_at(-400000)
+            with pytest.raises(ValueError, match="negative integer"):
+                runtime.observe_recorded_at(0)
+    with MemorySimulator(can_observe_past=False).create_runtime() as runtime:
+        runtime.reset(start)
+        with pytest.raises(NotImplementedError, match="recorded acquisition history"):
+            runtime.observe_recorded_at(-100000)
 
 
 @pytest.mark.parametrize(("constructor", "options"), [

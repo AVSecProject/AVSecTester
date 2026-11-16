@@ -3,7 +3,7 @@
 ``AVStack`` knows nothing about how the system works: a modular perception->tracking->planning
 ->control pipeline and a single end-to-end model both satisfy it. Implementations live in
 `avsectester.closed_loop.avstacks`. This module imports nothing from avstack, avcarla or
-carla; the implementations carry those dependencies.
+carla. The implementations carry those dependencies.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ import numpy as np
 
 from avsectester.data_types import Control, Detection, Observation, StateEstimate
 from avsectester.closed_loop.hooks import _HookBindingMixin
+from avsectester.closed_loop.timing import HistoryRequirement
 
 if TYPE_CHECKING:
     from avsectester.closed_loop.hooks import HookDispatcher, HookSet
@@ -56,8 +57,9 @@ def _route_from_estimate(route: np.ndarray | None, source_state: Any, estimated_
 class ObservationPipeline:
     """Process driving-system inputs without changing output commands.
 
-    Inputs pass through ``sensors.post``, optional ``localization.pre``, the localizer,
-    ``localization.post`` and ``observation`` hooks in that order.
+    Frame events pass through ``sensors.post``. Pose events pass through optional
+    ``localization.pre``, the localizer and ``localization.post``. Decisions pass through
+    ``observation``. The single-rate convenience path runs these stages in that order.
     When localization changes the planar ego pose, the route is re-expressed in the estimated
     ego frame with unchanged world positions, so model-visible navigation follows the estimate.
 
@@ -71,32 +73,56 @@ class ObservationPipeline:
             raise TypeError("localizer must be callable or provide transform(value, context)")
         self.localizer = localizer
 
-    def process(self, observation: Observation, dispatcher: HookDispatcher) -> Observation:
-        """Apply localization and plugins, emitting their supported hook stages."""
-        from avsectester.closed_loop.hooks import _invoke
+    def capture(self, observation: Observation, dispatcher: HookDispatcher) -> Observation:
+        """Process one frame batch through sensors.post without running localization."""
 
-        dispatcher.control = None
         seen = dispatcher.context.simulator_runtime.copy_observation(observation)
         dispatcher.observation = seen
         seen = dispatcher.emit("sensors.post", seen)
         dispatcher._require(seen, Observation, "sensors.post")
+        return seen
+
+    def localize(self, observation: Observation, dispatcher: HookDispatcher) -> Observation:
+        """Localize one pose timestamp, including timestamps without sensor frames."""
+        from avsectester.closed_loop.hooks import _invoke
+
+        seen = observation
+        dispatcher.observation = seen
         if self.localizer is not None:
             seen = dispatcher.emit("localization.pre", seen)
             dispatcher._require(seen, Observation, "localization.pre")
             estimate = _invoke(self.localizer, seen, dispatcher.stage_context("localization"))
             dispatcher._require(estimate, StateEstimate, "localizer")
-            # The localizer may reuse its own state; downstream handlers receive a copy.
+            # The localizer may reuse its state. Downstream handlers receive a copy.
             estimate = deepcopy(estimate)
         else:
             estimate = StateEstimate(seen.vehicle_state, seen.ego_speed)
         estimate = dispatcher.emit("localization.post", estimate)
         dispatcher._require(estimate, StateEstimate, "localization.post")
-        seen = replace(seen, vehicle_state=estimate.vehicle_state, ego_speed=estimate.ego_speed,
-                       route=_route_from_estimate(seen.route, seen.vehicle_state, estimate.vehicle_state))
-        seen = dispatcher.emit("observation", seen)
+        seen = self.with_estimate(seen, estimate)
+        dispatcher.observation = seen
+        return seen
+
+    @staticmethod
+    def with_estimate(observation: Observation, estimate: StateEstimate) -> Observation:
+        """Replace the model-visible pose and re-express navigation without running hooks."""
+        if not isinstance(estimate, StateEstimate):
+            raise TypeError("estimate must be StateEstimate")
+        return replace(observation, vehicle_state=estimate.vehicle_state, ego_speed=estimate.ego_speed,
+                       route=_route_from_estimate(observation.route, observation.vehicle_state,
+                                                  estimate.vehicle_state))
+
+    def decision(self, observation: Observation, dispatcher: HookDispatcher) -> Observation:
+        """Apply decision input hooks after selecting delivered captures and history."""
+        seen = dispatcher.emit("observation", observation)
         dispatcher._require(seen, Observation, "observation")
         dispatcher.observation = seen
         return seen
+
+    def process(self, observation: Observation, dispatcher: HookDispatcher) -> Observation:
+        """Process a capture followed immediately by one driving decision."""
+        dispatcher.control = None
+        return self.decision(self.localize(self.capture(observation, dispatcher), dispatcher), dispatcher)
 
 
 class AVStack(_HookBindingMixin, ABC):
@@ -109,10 +135,21 @@ class AVStack(_HookBindingMixin, ABC):
 
     provides_detections: bool | None = None
     'Whether decisions expose detections compatible with detection metrics.'
-    past_steps: ClassVar[int] = 0
-    'Recorded decision steps required before the selected start.'
+    history: HistoryRequirement = HistoryRequirement()
+    'Recorded input needed at the first decision, expressed as pose duration and sample count.'
     decision_time_step: ClassVar[float | None] = None
     'Decision interval in seconds. None leaves the interval unrestricted.'
+
+    @classmethod
+    def required_history(cls, options: Mapping[str, Any]) -> HistoryRequirement:
+        """Recorded input needed at the first decision, resolved before model loading."""
+        return cls.history
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        if "past_steps" in cls.__dict__:
+            raise TypeError("AVStack.past_steps was replaced by history=HistoryRequirement. "
+                            "Declare a duration or acquisition count, not a decision count")
 
     @property
     def observation_pipeline(self) -> ObservationPipeline:
@@ -123,17 +160,29 @@ class AVStack(_HookBindingMixin, ABC):
 
     @observation_pipeline.setter
     def observation_pipeline(self, value: ObservationPipeline) -> None:
-        """Optional localization and observation transformation pipeline applied before driving decisions."""
+        """Optional localization and observation pipeline applied before driving decisions."""
         if not isinstance(value, ObservationPipeline):
             raise TypeError("observation_pipeline must be ObservationPipeline")
         self._observation_pipeline = value
 
-    def reset(self, observation: Observation, past: Sequence[Observation] = ()) -> None:
-        """Initialize from the first observation and recorded past, ordered oldest to newest.
+    def reset(self, observation: Observation) -> None:
+        """Initialize from the first decision observation, including its recorded deliveries.
 
-        ``past_steps`` declares the required number of preceding decision observations.
-        The default implementation requires none and performs no warmup.
+        ``history`` declares the recorded pose duration and acquisition count needed at reset.
+        Implementations retain any history they need from subsequent incremental deliveries.
         """
+
+    def ingest(self, observation: Observation) -> None:
+        """Accept incremental input without inference when a force_gt decision skips driving.
+
+        Normal decisions call ``__call__`` instead. Implementations with input caches retain
+        their references here. Do not ingest and call the same observation twice.
+        """
+
+    @property
+    def required_sensors(self) -> frozenset[str] | None:
+        """Required delivered sensor IDs. None accepts the simulator's configured sensors."""
+        return None
 
     @property
     def command_modes(self) -> frozenset[str] | None:
@@ -161,6 +210,16 @@ class AVStack(_HookBindingMixin, ABC):
         """
         return None
 
+    @property
+    def detection_sensor(self) -> str | None:
+        """Sensor whose latest delivered frame is associated with the model's detections.
+
+        Matching uses its latest physical acquisition's truth. None uses decision-time truth.
+        Decisions before a named sensor's first delivery are excluded. A run where it never
+        delivers has unavailable detection evidence.
+        """
+        return None
+
     def close(self) -> None:
         """Release driving-system resources. The default implementation owns none."""
 
@@ -169,8 +228,8 @@ class AVStack(_HookBindingMixin, ABC):
         """Advance driving inference once and return a command in ``command_modes``.
 
         Call after ``reset`` with the current model-visible observation. Keep per-run history
-        in this instance; do not modify or advance the simulator. Trajectories use the current
-        rig frame and integer-microsecond timestamps.
+        in this instance. Do not modify or advance the simulator. Trajectories retain the
+        generation-time rig frame and integer-microsecond timestamps for the controller.
         """
 
 

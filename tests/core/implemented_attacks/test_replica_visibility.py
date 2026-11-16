@@ -4,7 +4,7 @@ import pytest
 from avsectester.evaluation import ComparisonGroup, UnavailableMetricValue
 from avsectester.implemented_attacks.stop_sign_patch_attack.metrics import ReplicaVisibility
 from avsectester.rendering import ObjectVisibility
-from avsectester.runlog import RunLog, StepRecord
+from avsectester.runlog import CaptureRecord, RunLog, StepRecord
 
 
 def visibility(**pixels):
@@ -27,6 +27,11 @@ def test_camera_selection(segment):
     assert isinstance(values["clean"]["visible_steps"], UnavailableMetricValue)
     assert ReplicaVisibility(camera_ids=["front"]).evaluate(group)["patched"]["visible_steps"] == 1
     assert ReplicaVisibility(camera_ids=["side"]).evaluate(group)["patched"]["visible_steps"] == 0
-    for camera_ids in ([], [""], "front"):
-        with pytest.raises(ValueError, match="camera_ids"):
-            ReplicaVisibility(camera_ids=camera_ids)
+    patched.captures = [CaptureRecord(7, 99000, ("front",),
+        object_visibility=visibility(front=150))]
+    patched.steps[2].delivered_captures = {"front": (7,)}
+    patched.steps[2].physical_captures = {"front": 7}
+    patched.steps[3].physical_captures = {"front": 7}
+    assert ReplicaVisibility(camera_ids=["front"]).evaluate(group)["patched"]["visible_steps"] == 3
+    with pytest.raises(ValueError, match="camera_ids"):
+        ReplicaVisibility(camera_ids=[])

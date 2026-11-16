@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from dataclasses import replace
 from typing import Any
 
 from avsectester.closed_loop.avstacks.base import AVStack
 from avsectester.data_types import Control, Observation, read_camera_rgb
 from avsectester.closed_loop.hooks import CallInputs
+
+from ._sensor_cache import SensorCache
 
 
 class CameraForwardCollisionAVStack(AVStack):
@@ -36,6 +38,13 @@ class CameraForwardCollisionAVStack(AVStack):
         self.area_max, self.max_height_frac = area_max, max_height_frac
         self._detector: Any = None
         self._last: Any = None
+        self._latest_inputs = SensorCache()
+        self._last_command: Control | None = None
+
+    @property
+    def required_sensors(self) -> frozenset[str]:
+        """Selected camera, using its latest delivered capture."""
+        return frozenset((self.camera,))
 
     def _load(self) -> None:
         import avstack.modules.perception.object2dfv  # noqa: F401 - native registry
@@ -55,7 +64,7 @@ class CameraForwardCollisionAVStack(AVStack):
     def detect(self, rgb: Any) -> list:
         """Return current image detections as ``(xyxy, score, vehicle)`` tuples.
 
-        This also serves offline detector probes; it loads the configured model on demand.
+        This also serves offline detector probes and loads the configured model on demand.
         """
         from mmdet.apis import inference_detector
 
@@ -71,11 +80,22 @@ class CameraForwardCollisionAVStack(AVStack):
                 for box, score, label in zip(boxes, scores, labels)
                 if score >= self.threshold and (vehicle_labels is None or int(label) in vehicle_labels)]
 
-    def reset(self, observation: Observation, past: Sequence[Observation] = ()) -> None:
+    def reset(self, observation: Observation) -> None:
         self._last = None
+        self._last_command = None
+        self._latest_inputs.clear()
+
+    def ingest(self, observation: Observation) -> None:
+        """Retain delivered camera data without running the detector."""
+        self._latest_inputs.update(observation)
 
     def __call__(self, observation: Observation) -> Control:
         """Detect the selected RGB image and choose braking from the largest image-box area."""
+        due = self.camera in observation.sensor_data or self.camera in observation.deliveries
+        self.ingest(observation)
+        if not due and self._last_command is not None:
+            return replace(self._last_command)
+        observation = self._latest_inputs.resolve(observation)
         if self.camera not in observation.sensor_data:
             raise ValueError(f"Camera {self.camera!r} is absent from observation")
         captured = read_camera_rgb(observation, self.camera)
@@ -93,7 +113,8 @@ class CameraForwardCollisionAVStack(AVStack):
         self._last = {"perception": plausible}
         close = any((box[2] - box[0]) * (box[3] - box[1]) >= self.area_brake * width * height
                     for box, _, _ in plausible)
-        return Control(brake=1.) if close else Control(throttle=self.throttle)
+        self._last_command = Control(brake=1.) if close else Control(throttle=self.throttle)
+        return replace(self._last_command)
 
     def component_log(self) -> dict[str, Any] | None:
         return self._last
@@ -101,6 +122,8 @@ class CameraForwardCollisionAVStack(AVStack):
     def close(self) -> None:
         self._detector = None
         self._last = None
+        self._last_command = None
+        self._latest_inputs.clear()
 
 
 __all__ = [

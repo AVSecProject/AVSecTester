@@ -147,5 +147,5 @@ runs:
     - camera_front_wide_120fov
     representations:
     - model_input
-    every_n_steps: 10
+    every_n_captures: 10
   output: ../results/nurec_stop_sign_patch_modular_2601

@@ -20,6 +20,8 @@ from avsectester.closed_loop.hooks import CallInputs, Plugin, RunContext, StageC
 from avsectester.data_types import Control, Detection, Observation
 from avsectester.serialization import DEFAULT_REGISTRY
 
+from ._sensor_cache import SensorCache
+
 if TYPE_CHECKING:
     from avsectester.closed_loop.hooks import StageEmitter
 
@@ -52,7 +54,7 @@ def _snapshot_native(value: Any, capture_child: Callable[[Any], Any]) -> Any:
 
 
 def _snapshot_reference(value: Any, capture_child: Callable[[Any], Any]) -> Any:
-    """Copy only an ancestor chain; descendants and integrated caches are not pose data."""
+    """Copy only an ancestor chain. Descendants and integrated caches are not pose data."""
     result = copy(value)
     state = vars(result)
     for name, child in vars(value).items():
@@ -350,8 +352,9 @@ class _StagePostHook:
 class _StageCapture:
     """A generic avstack post-hook that keeps a pipeline stage's most recent output (pass-through).
 
-    One capture mechanism for detections and component analysis: it snapshots the stage output before
-    downstream modules can mutate it, and returns the original so the pipeline is unaffected."""
+    It snapshots stage outputs for detections and component analysis before downstream mutation.
+    The original output passes through to the pipeline unchanged.
+    """
 
     def __init__(self) -> None:
         self.last: Any = None
@@ -371,9 +374,11 @@ def _register_avstack_modules() -> None:
 
 
 class ModularAVStack(AVStack):
-    """An `avsectester.closed_loop.avstacks.base.AVStack` backed by an avstack ``ModularDrivingPipeline``.
+    """An `avsectester.closed_loop.avstacks.base.AVStack` backed by an avstack
+    ``ModularDrivingPipeline``.
 
-    Observation -> the pipeline (perception -> tracking -> planning -> control) -> a Control command.
+    The pipeline maps each observation through perception, tracking, planning and control to a
+    Control command.
     CARLA-trained MMDetection3D checkpoint configurations register their dataset metadata
     automatically before the pipeline is built.
     Runtime transforms replace each available stage's inputs and outputs. Use NativeHook
@@ -400,6 +405,7 @@ class ModularAVStack(AVStack):
             register_carla_dataset()
         self.pipeline = PIPELINE.build(deepcopy(pipeline_cfg))
         self._captures: dict[str, _StageCapture] = {}
+        self._latest_inputs = SensorCache()
         self._perception_capture: _StageCapture | None = None
         self._last_detections: tuple[Detection, ...] | None = None
         self._detection_reference: Any = None
@@ -409,7 +415,7 @@ class ModularAVStack(AVStack):
             self._perception_capture = _StageCapture()
             perception_module.register_post_hook(self._perception_capture)
 
-    def reset(self, observation: Observation, past: Sequence[Observation] = ()) -> None:
+    def reset(self, observation: Observation) -> None:
         """Clear telemetry. Use a fresh AVStack for independent pipeline histories.
 
         avstack modules do not share a complete reset contract for neural model,
@@ -417,13 +423,23 @@ class ModularAVStack(AVStack):
         when its modules provide one. Constructing a fresh ModularAVStack is the
         default way to begin an independent experiment.
         """
+        self._latest_inputs.clear()
         for capture in self._captures.values():
             capture.last = None
         if self._perception_capture is not None:
             self._perception_capture.last = None
         self._last_detections = None
         self._detection_reference = None
+        self._detection_sensor = None
         self._detections_ready = False
+
+    def ingest(self, observation: Observation) -> None:
+        """Retain native sensor deliveries without running the pipeline."""
+        self._latest_inputs.update(observation)
+
+    def close(self) -> None:
+        """Release retained input references for this pipeline instance."""
+        self._latest_inputs.clear()
 
     def _stage_modules(self) -> dict[str, Any]:
         """Stages whose effective call actually dispatches avstack hooks."""
@@ -520,15 +536,15 @@ class ModularAVStack(AVStack):
     def component_log(self) -> dict[str, Any] | None:
         """Return the most recent per-stage outputs after ``instrument``, or None otherwise.
 
-        Outputs are snapshots of native values;
-        canonical evaluation boxes are separately available from `detections`."""
+        Outputs are snapshots of native values.
+        Canonical evaluation boxes are separately available from `detections`."""
         return {stage: cap.last for stage, cap in self._captures.items()} if self._captures else None
 
     def detections(self) -> Sequence[Detection] | None:
         """Boxes from the current decision in observation-time ego coordinates.
 
         Results are detached before advancing the world. A detector with no boxes returns
-        an empty tuple; an unavailable perception stage returns None.
+        an empty tuple. An unavailable perception stage returns None.
         """
         if self._detections_ready:
             return self._last_detections
@@ -568,6 +584,11 @@ class ModularAVStack(AVStack):
         self._last_detections = tuple(detections)
         return self._last_detections
 
+    @property
+    def detection_sensor(self) -> str | None:
+        """Declared perception sensor, or the source inferred from the latest single-sensor input."""
+        return getattr(self.pipeline, "perception_input", None) or getattr(self, "_detection_sensor", None)
+
     @staticmethod
     def _body_references(observation: Observation) -> list[Any]:
         """Distinct vehicle body frames that parent the captured sensors' installation frames."""
@@ -594,18 +615,22 @@ class ModularAVStack(AVStack):
         driving system believes. Equal poses leave the frames untouched. Only this decision's
         observation copy changes, and simulator state is unaffected.
         """
-        state = observation.vehicle_state
-        position, attitude = getattr(state, "position", None), getattr(state, "attitude", None)
-        if position is None or attitude is None or not all(
-                getattr(value.reference, "is_global_origin", False) for value in (position, attitude)):
-            return
-        for body in cls._body_references(observation):
-            if not getattr(body.reference, "is_global_origin", False):
+        for sensor in observation.sensor_data:
+            sample = observation.delivered(sensor)[-1]
+            state = sample.state.vehicle_state
+            position, attitude = getattr(state, "position", None), getattr(state, "attitude", None)
+            if position is None or attitude is None or not all(
+                    getattr(value.reference, "is_global_origin", False) for value in (position, attitude)):
                 continue
-            if not np.array_equal(body.x, position.x):
-                body.x = np.array(position.x, dtype=float)
-            if body.q != attitude.q:
-                body.q = attitude.q
+            single = Observation(sample.t, sample.frame, {sensor: observation.sensor_data[sensor]},
+                                 {sensor: observation.calibration[sensor]} if sensor in observation.calibration else {})
+            for body in cls._body_references(single):
+                if not getattr(body.reference, "is_global_origin", False):
+                    continue
+                if not np.array_equal(body.x, position.x):
+                    body.x = np.array(position.x, dtype=float)
+                if body.q != attitude.q:
+                    body.q = attitude.q
 
     def _remember_capture_reference(self, observation: Observation) -> None:
         """Detach the body parent of a sensor's installation reference for ego-frame detections.
@@ -616,7 +641,15 @@ class ModularAVStack(AVStack):
         self._detection_reference = None
         self._last_detections = None
         self._detections_ready = False
-        bodies = self._body_references(observation)
+        self._detection_sensor = getattr(self.pipeline, "perception_input", None)
+        if self._detection_sensor is None and len(observation.sensor_data) == 1:
+            self._detection_sensor = next(iter(observation.sensor_data))
+        sensor = self._detection_sensor
+        selected = (Observation(observation.t, observation.frame,
+                    {sensor: observation.sensor_data[sensor]},
+                    {sensor: observation.calibration[sensor]} if sensor in observation.calibration else {})
+                    if sensor in observation.sensor_data else observation)
+        bodies = self._body_references(selected)
         if bodies:
             self._detection_reference = DEFAULT_REGISTRY.snapshot(bodies[0])
 
@@ -626,6 +659,8 @@ class ModularAVStack(AVStack):
         Sensor body frames first move to ``vehicle_state`` so localization affects perception
         in the world frame the same way it affects planning.
         """
+        self.ingest(observation)
+        observation = self._latest_inputs.resolve(observation)
         self._place_bodies_at_vehicle_state(observation)
         self._remember_capture_reference(observation)
         if self._perception_capture is not None:

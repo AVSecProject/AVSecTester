@@ -14,7 +14,7 @@ from avsectester.closed_loop.avstacks.driving_adapter import DrivingAdapter
 CASES = [
     pytest.param(SimpleNamespace(
         constructor=ModularAVStack, options={}, fixtures={"pipeline_cfg": "pipeline_config"},
-        observation="native_observation", past=lambda request: (),
+        observation="native_observation",
         prepare=lambda request: pytest.importorskip("avstack.config"),
         component_keys=set(), no_components=True, nullable=set(), categories=("Car",),
         no_detections=False, command_modes=frozenset({"actuator"}),
@@ -22,16 +22,15 @@ CASES = [
     pytest.param(SimpleNamespace(
         constructor=AlpamayoAVStack, options={"checkpoint_path": "synthetic-checkpoint",
             "camera_ids": ["front"], "device": "cpu"}, fixtures={}, observation="policy_observation",
-        past=lambda request: request.getfixturevalue("policy_past"),
         prepare=lambda request: request.getfixturevalue("alpamayo_model_boundary"),
         component_keys={"policy", "command", "route_waypoints", "navigation_command",
-            "history_pose_count", "selected_image_times", "navigation_note"},
+            "history_pose_count", "selected_image_times", "selected_capture_ids", "navigation_note"},
         no_components=False, nullable={"route_waypoints"}, categories=(), no_detections=True,
         command_modes=frozenset({"trajectory"}),
     ), id="alpamayo"),
     pytest.param(SimpleNamespace(
         constructor=CameraForwardCollisionAVStack, options={}, fixtures={},
-        observation="camera_observation", past=lambda request: (),
+        observation="camera_observation",
         prepare=lambda request: request.getfixturevalue("camera_detector_boundary"),
         component_keys={"perception"}, no_components=False, nullable=set(), categories=(),
         no_detections=True, command_modes=frozenset({"actuator"}),
@@ -39,7 +38,7 @@ CASES = [
     pytest.param(SimpleNamespace(
         constructor=RuleBasedAVStack, options={"camera_id": "front"},
         fixtures={"detector": "rule_based_detector"}, observation="rule_based_observation",
-        past=lambda request: (), prepare=lambda request: request.getfixturevalue("rule_based_detector_model"),
+        prepare=lambda request: request.getfixturevalue("rule_based_detector_model"),
         component_keys={"detections", "sign_estimates", "state", "target_track_id",
             "distance_to_stop_m", "acceleration_mps2", "planned_speed_mps", "braking", "tracks",
             "vehicle_detections", "vehicle_estimates", "vehicle_tracks", "skipped_vehicle_detections",
@@ -61,7 +60,7 @@ def test_avstack_contract(case, request):
     adapter = DrivingAdapter(lambda seed: case.constructor(**options))
     avstack = adapter.factory(0)
     try:
-        avstack.reset(observation, past=case.past(request))
+        avstack.reset(observation)
         assert isinstance(avstack(observation), Control)
         assert avstack.command_modes == case.command_modes
         components = avstack.component_log()

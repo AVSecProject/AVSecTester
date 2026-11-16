@@ -5,7 +5,7 @@ from dataclasses import replace
 
 import numpy as np
 
-from avsectester.geometry.poses import mirror_y_points, mirror_y_transform
+from avsectester.geometry.poses import interpolate_transform, mirror_y_points, mirror_y_transform
 from avsectester.data_types import ActorState, Control
 
 from .conversions import rotation_to_carla
@@ -44,11 +44,13 @@ def _trajectory_tick(actor, state, dt):
 
 
 class RecipeReplay:
-    """Prescribe background motion; release ego to driving commands after pre-roll."""
+    """Prescribe background motion. Release ego to driving commands after pre-roll."""
 
     def __init__(self, simulator_runtime, recipe):
         self.simulator_runtime, self.recipe = simulator_runtime, recipe
         self.index = 0
+        self.tick_s = simulator_runtime.timing_capabilities.base_tick_us / 1e6
+        self.ticks_per_decision = simulator_runtime.simulator.decision_ticks
         self.pre_roll = True
         self.released: set[str] = set()  # actors an attack now controls
 
@@ -68,7 +70,7 @@ class RecipeReplay:
         trajectories = {name: spec for name, spec in self.recipe.motion.items() if spec.trajectory}
         if trajectories:
             for name, spec in trajectories.items():
-                _trajectory_tick(self.simulator_runtime.native["actors"][name], spec.trajectory[0], self.recipe.time_step)
+                _trajectory_tick(self.simulator_runtime.native["actors"][name], spec.trajectory[0], self.tick_s)
             self.simulator_runtime.client.tick()
         self.origins = {}
         for name, actor in self.simulator_runtime.native["actors"].items():
@@ -80,7 +82,7 @@ class RecipeReplay:
     def hold_origin(self):
         for name, state in self.origins.items():
             if name not in self.released:
-                _trajectory_tick(self.simulator_runtime.native["actors"][name], state, self.recipe.time_step)
+                _trajectory_tick(self.simulator_runtime.native["actors"][name], state, self.tick_s)
 
     def finish_holding(self):
         for name, spec in self.recipe.motion.items():
@@ -88,7 +90,7 @@ class RecipeReplay:
                 self.simulator_runtime.native["actors"][name].set_enable_gravity(True)
 
     def before_step(self):
-        if self.index >= self.recipe.decision_steps:
+        if self.index >= self.recipe.decision_steps * self.ticks_per_decision:
             raise ValueError("CARLA step exceeds terminal recipe support")
         import carla
 
@@ -97,9 +99,18 @@ class RecipeReplay:
                 continue
             actor = self.simulator_runtime.native["actors"][identity]
             if motion.trajectory:
-                _trajectory_tick(actor, motion.trajectory[self.index + 1], self.recipe.time_step)
+                position, remainder = divmod(self.index + 1, self.ticks_per_decision)
+                state = motion.trajectory[position]
+                if remainder:
+                    after = motion.trajectory[position + 1]
+                    fraction = remainder / self.ticks_per_decision
+                    state = replace(state,
+                        pose=interpolate_transform(state.pose, after.pose, fraction),
+                        velocity=tuple((1 - fraction) * np.asarray(state.velocity)
+                                       + fraction * np.asarray(after.velocity)))
+                _trajectory_tick(actor, state, self.tick_s)
             elif identity != "ego":
-                control = motion.controls[self.index]
+                control = motion.controls[self.index // self.ticks_per_decision]
                 actor.apply_control(carla.VehicleControl(
                     throttle=control.throttle, brake=control.brake, steer=control.steer,
                 ))
@@ -109,10 +120,10 @@ class RecipeReplay:
 
     def ego_command(self):
         motion = self.recipe.motion["ego"]
-        return motion.controls[self.index] if motion.controls else Control()
+        return motion.controls[self.index // self.ticks_per_decision] if motion.controls else Control()
 
     def release(self, identity):
-        """Stop prescribing an actor's motion; physics and gravity act on it again."""
+        """Stop prescribing an actor's motion. Physics and gravity act on it again."""
         self.released.add(identity)
         motion = self.recipe.motion.get(identity)
         if motion is not None and motion.trajectory:

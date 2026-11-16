@@ -93,7 +93,7 @@ class CarlaPatchPanel:
                     )
                 painted.append(name)
             except RuntimeError:
-                pass  # not every new name is the prop mesh; paint the one(s) that take it
+                pass  # not every new name is the prop mesh. Paint the one(s) that take it
         if not painted:
             prop.destroy()
             raise RuntimeError(f"could not paint the patch onto any of {new_names}")
@@ -113,7 +113,8 @@ class PatchAttackRuntime(AttackRuntime):
 
     def step(self, context):
         return (() if self.physical else (InsertionAttackAction(
-            self.attack.sensor, self.insertion, compositor=self.attack.compositor),))
+            self.attack.sensor, self.insertion, compositor=self.attack.compositor,
+            active_for_us=context.decision_period_us),))
 
 
 @dataclass
@@ -138,7 +139,7 @@ class PatchWorldAttackAction(WorldAttackAction):
         if self.insertion.orientation.mode != "follow_host":
             raise ValueError("CARLA physical patches require follow_host orientation")
         # Compose entirely in actor-local coordinates. The actor origin is not the box
-        # centre; selecting and optimizing the plane use this same local box offset.
+        # centre. Selecting and optimizing the plane use this same local box offset.
         box_rotation = rotation_matrix(host.box_rotation)
         position = np.asarray(host.box_center) + box_rotation @ placement.local_position(host.extent)
         rotation = box_rotation @ rotation_matrix(self.insertion.orientation.rotation_deg)

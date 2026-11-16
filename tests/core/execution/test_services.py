@@ -17,6 +17,7 @@ from avsectester.execution.services import (
 )
 from avsectester.closed_loop.simulators.carla import CarlaSimulator
 from avsectester.closed_loop.simulators.base import DeploymentPlan
+from avsectester.closed_loop.timing import HistoryRequirement, SensorTiming, TimingConfiguration
 from avsectester.rendering import ObjectVisibility
 from avsectester.maps import ScenarioMap
 from tests.fakes import (
@@ -148,19 +149,25 @@ def test_rollout():
         with pytest.raises(ValueError, match="seed must match"):
             session.rollout(replace(request, seed=8))
 
-    history_segment = AttackSegment("scene", frames[2], frames[4])
+    history_segment = AttackSegment("scene", frames[3], frames[5])
     history_request = CandidateRequest(history_segment, 7, 2, {}, RecordingPolicy(("front",)))
-    history_adapter = DrivingAdapter(lambda seed: HistoryAVStack(), past_steps=2)
+    history_adapter = DrivingAdapter(lambda seed: HistoryAVStack(), history=HistoryAVStack.history)
     with ClosedLoopServices(data, MemorySimulator(), history_adapter) as services:
         with services.session(7) as session:
             history_log = session.rollout(history_request)
-    assert len(history_log.steps[0].components["past_observations"]) == 2
+    assert len(history_log.steps[0].components["initial_observation"].delivered("front")) == 3
+    assert len(history_log.steps[0].model_observation.delivered("front")) == 3
     initialization = next(event for event in history_log.events if event.kind == "initialization")
-    assert initialization.data["past_steps"] == 2
+    assert initialization.data["past_captures"] == 2
+    mismatched = DrivingAdapter(lambda seed: HistoryAVStack(), history=HistoryRequirement(samples=4))
+    with ClosedLoopServices(data, MemorySimulator(), mismatched) as services:
+        with services.session(7) as session:
+            with pytest.raises(ValueError, match="history differs from adapter.history"):
+                session.rollout(history_request)
 
 
 def test_can_start_at():
-    adapter = DrivingAdapter(lambda seed: HistoryAVStack(), past_steps=2)
+    adapter = DrivingAdapter(lambda seed: HistoryAVStack(), history=HistoryRequirement(samples=3))
     with ClosedLoopServices(MemoryDataset(), MemorySimulator(capture_ticks=1), adapter,
                             deployment=DeploymentPlan(2)) as services:
         with services.session(7) as session:
@@ -178,8 +185,8 @@ def test_can_start_at():
     # No deployment ticks or capture ticks constrain this history boundary.
     with ClosedLoopServices(MemoryDataset(), MemorySimulator(observation_lead_steps=1),
                             adapter) as services, services.session(0) as session:
-        assert not session.can_start_at(adapter.past_steps)
-        assert session.can_start_at(adapter.past_steps + 1)
+        assert not session.can_start_at((adapter.history.samples - 1))
+        assert session.can_start_at(adapter.history.samples)
     with ClosedLoopServices(MemoryDataset(), MemorySimulator(observation_lead_steps=1)) as services:
         with services.session(0) as session:
             assert not session.can_start_at(0)
@@ -188,6 +195,10 @@ def test_can_start_at():
         with services.session(0) as session:
             with pytest.raises(ValueError, match="observation_lead_steps must be a nonnegative integer"):
                 session.can_start_at(1)
+    with ClosedLoopServices(MemoryDataset(), MemorySimulator(), timing=TimingConfiguration(
+            sensors={"front": SensorTiming(33000, 117000)})) as services, services.session(0) as session:
+        assert not session.can_start_at(1)
+        assert session.can_start_at(2)
 
 
 def test_session():

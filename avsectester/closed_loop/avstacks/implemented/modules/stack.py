@@ -12,8 +12,10 @@ from avsectester.closed_loop.avstacks.driving_adapter import DrivingAdapter, Sco
 from avsectester.data_types import Control, Observation, PointCloud, read_camera_rgb
 from avsectester.geometry import CameraCalibration
 from avsectester.geometry.lidars import LidarCalibration
-from avsectester.geometry.poses import validated_transform
+from avsectester.geometry.poses import make_pose, rotation_matrix, validated_transform
 from avsectester.validation import require_positive_number
+
+from .._sensor_cache import SensorCache
 
 from .detector import YOLOXDetector
 from .planner import RuleBasedPlanner
@@ -78,6 +80,13 @@ class RuleBasedAVStack(AVStack):
         self.vehicle_labels = tuple(vehicle_labels)
         self._closed = False
         self._last: dict[str, Any] | None = None
+        self._latest_inputs = SensorCache()
+
+    @property
+    def required_sensors(self) -> frozenset[str]:
+        """Camera and, when following vehicles, the configured LiDAR."""
+        return frozenset((self.camera_id, self.lidar_id) if self.vehicle_tracker is not None
+                         else (self.camera_id,))
 
     def _calibration(self, observation: Observation) -> CameraCalibration:
         calibration = observation.calibration.get(self.camera_id)
@@ -94,7 +103,7 @@ class RuleBasedAVStack(AVStack):
             raise ValueError(f"LiDAR {self.lidar_id!r} requires LidarCalibration")
         return calibration
 
-    def reset(self, observation: Observation, past: Sequence[Observation] = ()) -> None:
+    def reset(self, observation: Observation) -> None:
         """Clear sign and vehicle tracks and reset planning for a fresh run."""
         validated_transform(self._calibration(observation).rig_from_camera)
         if self.vehicle_tracker is not None:
@@ -103,16 +112,30 @@ class RuleBasedAVStack(AVStack):
         self.tracker.reset()
         self.planner.reset(observation)
         self._last = None
+        self._latest_inputs.clear()
+
+    def ingest(self, observation: Observation) -> None:
+        """Retain the latest camera and LiDAR deliveries without perception or tracking."""
+        self._latest_inputs.update(observation)
 
     def __call__(self, observation: Observation) -> Control:
         """Range and track selected detections, then return a rig-frame driving trajectory."""
         if self._closed:
             raise RuntimeError("RuleBasedAVStack has been closed")
+        camera_due = self.camera_id in observation.sensor_data or self.camera_id in observation.deliveries
+        self.ingest(observation)
+        if not camera_due and self._last is not None:
+            tracks = () if self.vehicle_tracker is None else self.vehicle_tracker.tracks
+            command = self.planner.step(observation, self.tracker.tracks, tracks)
+            self._last = {**self._last, **self.planner.component_log}
+            return command
+        observation = self._latest_inputs.resolve(observation)
         calibration = self._calibration(observation)
         rig_from_camera = validated_transform(calibration.rig_from_camera)
         captured = read_camera_rgb(observation, self.camera_id)
         if captured is None:
             raise ValueError(f"Camera {self.camera_id!r} has no RGB image")
+        camera_sample = observation.delivered(self.camera_id)[-1]
         rig_points = None
         if self.vehicle_tracker is None:
             detected = self.detector.detect(captured[1])
@@ -126,6 +149,15 @@ class RuleBasedAVStack(AVStack):
             if points.ndim != 2 or points.shape[1] != 3 or not np.isfinite(points).all():
                 raise ValueError(f"LiDAR {self.lidar_id!r} points must be finite with shape (N, 3)")
             rig_points = points @ transform[:3, :3].T + transform[:3, 3]
+            lidar_sample = observation.delivered(self.lidar_id)[-1]
+            if lidar_sample.time_us != camera_sample.time_us:
+                camera_state, lidar_state = camera_sample.state.vehicle_state, lidar_sample.state.vehicle_state
+                world_from_camera_rig = make_pose(rotation_matrix((0., 0., np.degrees(camera_state.yaw))),
+                                                 (camera_state.x, camera_state.y, 0.))
+                world_from_lidar_rig = make_pose(rotation_matrix((0., 0., np.degrees(lidar_state.yaw))),
+                                                (lidar_state.x, lidar_state.y, 0.))
+                camera_from_lidar_rig = np.linalg.inv(world_from_camera_rig) @ world_from_lidar_rig
+                rig_points = rig_points @ camera_from_lidar_rig[:3, :3].T + camera_from_lidar_rig[:3, 3]
             detected = self.detector.detect(
                 captured[1], score_threshold=min(self.detector.score_threshold,
                                                  self.vehicle_tracker.low_score_threshold))
@@ -135,7 +167,7 @@ class RuleBasedAVStack(AVStack):
             estimate_stop_sign_position(box, calibration, self.sign_height_m)
             for box, _score in detections
         ]
-        self.tracker.update(observation.vehicle_state, rig_from_camera[:3, 3], estimates)
+        self.tracker.update(camera_sample.state.vehicle_state, rig_from_camera[:3, 3], estimates)
         tracks = self.tracker.tracks
         vehicle_detections: list[tuple[np.ndarray, float, str]] = []
         vehicle_estimates: list[dict[str, Any]] = []
@@ -158,7 +190,7 @@ class RuleBasedAVStack(AVStack):
                 scores.append(score)
                 vehicle_estimates.append({"detection_index": index,
                                           "rig_face_points_m": points.tolist()})
-            self.vehicle_tracker.update(observation.vehicle_state, observation.t, face_points, scores)
+            self.vehicle_tracker.update(camera_sample.state.vehicle_state, camera_sample.t, face_points, scores)
             vehicle_tracks = self.vehicle_tracker.tracks
         command = self.planner.step(observation, tracks, vehicle_tracks)
         self._last = {
@@ -198,6 +230,7 @@ class RuleBasedAVStack(AVStack):
         self._closed = True
         self.detector.close()
         self._last = None
+        self._latest_inputs.clear()
 
 
 def rule_based_driving_adapter(factory: Callable[[int], AVStack]) -> DrivingAdapter:

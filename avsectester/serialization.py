@@ -4,8 +4,8 @@
 JSON-compatible values. ``snapshot`` preserves independent in-memory data, including native
 wrappers. This module belongs at the bottom layer because driving adapters also snapshot
 native model results. Lazy registrations import no model or simulator during construction.
-Users register their dataclasses with ``DEFAULT_REGISTRY.register_dataclass(MyMeasurement)``;
-native encoders deliberately decode to ordinary data.
+Users register their dataclasses with ``DEFAULT_REGISTRY.register_dataclass(MyMeasurement)``.
+Native encoders deliberately decode to ordinary data.
 """
 from __future__ import annotations
 
@@ -39,6 +39,11 @@ class SerializationRegistry:
         self._native_types: dict[tuple[str, str], tuple[
             Callable[[Any], Any], Callable[[Any, Callable[[Any], Any]], Any] | None,
         ]] = {}
+        self._native_resolutions: dict[type, tuple[
+            Callable[[Any], Any] | None,
+            Callable[[Any, Callable[[Any], Any]], Any] | None,
+        ]] = {}
+        self._native_module_count = len(sys.modules)
 
     def register_dataclass(self, cls_or_path: type | str) -> None:
         """Register a dataclass, or a path imported only when that dataclass is decoded."""
@@ -73,19 +78,43 @@ class SerializationRegistry:
         if key in self._native_types:
             raise ValueError(f"Duplicate native registration: {module}:{name}")
         self._native_types[key] = encode, snapshot
+        self._native_resolutions.clear()
 
     def snapshot(self, value: Any) -> Any:
         """Take an independent snapshot, preserving native wrappers and container subclasses."""
         return _snapshot(value, {}, self)
 
+    def recording_snapshot(self, value: Any, payload_snapshot: Callable[[Any], Any]) -> Any:
+        """Snapshot with a numeric-array and byte ownership callback from a recording transport."""
+        return _snapshot(value, {}, self, payload_snapshot)
+
     def _native(self, value: Any) -> tuple[
         Callable[[Any], Any], Callable[[Any, Callable[[Any], Any]], Any] | None,
     ] | None:
-        for base in type(value).__mro__:
-            callbacks = self._native_registration(base)
-            if callbacks is not None:
-                return callbacks
-        return None
+        encode, snapshot = self._resolve_native(type(value))
+        return None if encode is None else (encode, snapshot)
+
+    def _resolve_native(self, native_type: type) -> tuple[
+        Callable[[Any], Any] | None, Callable[[Any, Callable[[Any], Any]], Any] | None,
+    ]:
+        # Lazy native registrations may resolve through an SDK module loaded after registration.
+        if self._native_module_count != len(sys.modules):
+            self._native_resolutions.clear()
+            self._native_module_count = len(sys.modules)
+        if native_type not in self._native_resolutions:
+            encode: Callable[[Any], Any] | None = None
+            snapshot: Callable[[Any, Callable[[Any], Any]], Any] | None = None
+            for base in native_type.__mro__:
+                callbacks = self._native_registration(base)
+                if callbacks is not None:
+                    if encode is None:
+                        encode = callbacks[0]
+                    if snapshot is None:
+                        snapshot = callbacks[1]
+                    if snapshot is not None:
+                        break
+            self._native_resolutions[native_type] = encode, snapshot
+        return self._native_resolutions[native_type]
 
     def _native_registration(self, native_type: type) -> tuple[
         Callable[[Any], Any], Callable[[Any, Callable[[Any], Any]], Any] | None,
@@ -102,11 +131,7 @@ class SerializationRegistry:
         return None
 
     def _snapshotter(self, value: Any) -> Callable[[Any, Callable[[Any], Any]], Any] | None:
-        for base in type(value).__mro__:
-            native = self._native_registration(base)
-            if native is not None and native[1] is not None:
-                return native[1]
-        return None
+        return self._resolve_native(type(value))[1]
 
     def encode(
         self, value: Any, *, encode_child: Callable[[Any], Any] | None = None,
@@ -212,15 +237,24 @@ class SerializationRegistry:
         return {key: child(item) for key, item in data.items()}
 
 
-def _snapshot(value: Any, memo: dict[int, Any], registry: SerializationRegistry) -> Any:
-    if value is None or isinstance(value, (str, int, float, bool, bytes)):
+def _snapshot(value: Any, memo: dict[int, Any], registry: SerializationRegistry,
+              payload_snapshot: Callable[[Any], Any] | None = None) -> Any:
+    if isinstance(value, bytes):
+        return payload_snapshot(value) if payload_snapshot is not None else value
+    if value is None or isinstance(value, (str, int, float, bool)):
         return value
     key = id(value)
+    result: Any
     if key in memo:
         return memo[key]
+    if (type(value) is np.ndarray and value.dtype.kind in "biufc"
+            and not value.dtype.fields and payload_snapshot is not None):
+        result = payload_snapshot(value)
+        memo[key] = result
+        return result
     snapshot = registry._snapshotter(value)
     if snapshot is not None:
-        result = snapshot(value, lambda child: _snapshot(child, memo, registry))
+        result = snapshot(value, lambda child: _snapshot(child, memo, registry, payload_snapshot))
         if result is value:
             raise TypeError("A Native snapshot callback must return an independent snapshot")
         memo[key] = result
@@ -233,15 +267,15 @@ def _snapshot(value: Any, memo: dict[int, Any], registry: SerializationRegistry)
         result = {}
         memo[key] = result
         for k, v in value.items():
-            result[deepcopy(k, memo)] = _snapshot(v, memo, registry)
+            result[deepcopy(k, memo)] = _snapshot(v, memo, registry, payload_snapshot)
         return result
     if type(value) is list:
         result = []
         memo[key] = result
-        result.extend(_snapshot(v, memo, registry) for v in value)
+        result.extend(_snapshot(v, memo, registry, payload_snapshot) for v in value)
         return result
     if type(value) is tuple:
-        result = tuple(_snapshot(v, memo, registry) for v in value)
+        result = tuple(_snapshot(v, memo, registry, payload_snapshot) for v in value)
         memo[key] = result
         return result
     if isinstance(value, dict):
@@ -249,17 +283,17 @@ def _snapshot(value: Any, memo: dict[int, Any], registry: SerializationRegistry)
         memo[key] = result
         result.clear()
         for k, v in value.items():
-            result[deepcopy(k, memo)] = _snapshot(v, memo, registry)
-        _snapshot_attributes(value, result, memo, registry)
+            result[deepcopy(k, memo)] = _snapshot(v, memo, registry, payload_snapshot)
+        _snapshot_attributes(value, result, memo, registry, payload_snapshot)
         return result
     if isinstance(value, list):
         result = copy(value)
         memo[key] = result
-        result[:] = [_snapshot(v, memo, registry) for v in value]
-        _snapshot_attributes(value, result, memo, registry)
+        result[:] = [_snapshot(v, memo, registry, payload_snapshot) for v in value]
+        _snapshot_attributes(value, result, memo, registry, payload_snapshot)
         return result
     if isinstance(value, tuple):
-        items = [_snapshot(v, memo, registry) for v in value]
+        items = [_snapshot(v, memo, registry, payload_snapshot) for v in value]
         if hasattr(value, "_fields"):
             result = getattr(type(value), "_make")(items)
         else:
@@ -273,20 +307,21 @@ def _snapshot(value: Any, memo: dict[int, Any], registry: SerializationRegistry)
         result = object.__new__(type(value))
         memo[key] = result
         for f in fields(value):
-            object.__setattr__(result, f.name, _snapshot(getattr(value, f.name), memo, registry))
+            object.__setattr__(result, f.name, _snapshot(getattr(value, f.name), memo, registry, payload_snapshot))
         return result
     return deepcopy(value, memo)
 
 
 def _snapshot_attributes(
     source: Any, result: Any, memo: dict[int, Any], registry: SerializationRegistry,
+    payload_snapshot: Callable[[Any], Any] | None = None,
 ) -> None:
     """Replace the attributes ``copy`` shared with ``source`` by independent snapshots."""
     state = getattr(source, "__dict__", None)
     if state:
         target = vars(result)
         for name, item in state.items():
-            target[name] = _snapshot(item, memo, registry)
+            target[name] = _snapshot(item, memo, registry, payload_snapshot)
 
 
 def _is_tensor(value: Any) -> bool:
@@ -299,11 +334,11 @@ DEFAULT_REGISTRY = SerializationRegistry()
 for _module, _names in (
     ("avsectester.data_types", (
         "ActorState", "Unavailable", "TargetSpec", "Control", "Observation", "WorldSnapshot",
-        "StateEstimate", "RecordedOutput", "Detection", "PointCloud",
+        "StateEstimate", "RecordedOutput", "Detection", "PointCloud", "DeliveredAcquisition", "TimedStateEstimate",
     )),
     ("avsectester.datasets.base", ("FrameReference",)),
     ("avsectester.closed_loop.simulators.base", ("ClockSnapshot", "SensorGeometry")),
-    ("avsectester.closed_loop.simulators.ego_dynamics", ("PlanarEgoState",)),
+    ("avsectester.closed_loop.simulators.ego_dynamics", ("PlanarEgoState", "EgoMotion")),
     ("avsectester.rendering.compositing", ("ObjectVisibility",)),
     ("avsectester.geometry.cameras", ("CameraCalibration", "PinholeCamera", "FThetaCamera", "WindshieldDistortion")),
     ("avsectester.geometry.lidars", ("LidarCalibration",)),
