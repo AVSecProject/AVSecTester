@@ -36,8 +36,9 @@ measurements do not receive another difference operation.
 
 ## Built-in metrics
 
-Physical evidence uses each sensor's latest acquisition up to the decision, regardless of input
-hooks removing its data. This includes visibility, geometry and detection-matching truth.
+Independent sensor clocks can leave decision-boundary raw observations empty. Physical
+evidence uses each sensor's latest acquisition up to the decision, regardless of input hooks
+removing its data. This includes visibility, geometry and detection-matching truth.
 `StepRecord.physical_captures` identifies these acquisitions. `ReplicaVisibility` and the visible
 condition of `SignDetection` follow this rule.
 
@@ -184,12 +185,8 @@ recorded evidence and does not require simulator startup, dataset access or mode
 Saved runs reach metrics without sensor payloads, as described in
 [recording configuration](../reference/configuration.md#recording).
 
-Sensor-dependent metrics use the latest physical acquisition's frame-end truth.
-Independent `frame_interval_us` clocks can leave decision-boundary raw observations empty.
-Use `physical_captures` for physical evidence, and `delivered_captures` or `detection_capture_id`
-for model associations. These IDs resolve to `CaptureRecord` entries.
-`force_gt` distinguishes recorded-motion intervals from driver-controlled intervals.
-See [Runtime](../reference/runtime.md#runlog) for stored payloads and timestamps.
+See [Built-in metrics](#built-in-metrics) for acquisition truth, model associations and
+force-GT exclusions, and [Runtime](../reference/runtime.md#runlog) for stored records.
 
 ## Visualize saved observations
 

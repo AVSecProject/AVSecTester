@@ -8,6 +8,8 @@ import pytest
 
 from avsectester.closed_loop.simulators.carla import CarlaSimulator
 from avsectester.closed_loop.simulators.carla.sensors import SensorAlignmentError
+from avsectester.closed_loop.simulators.base import Initialization
+from avsectester.closed_loop.timing import HistoryRequirement, SensorTiming, TimingConfiguration
 from avsectester.datasets.carla import CarlaDataset, PrescribedMotion
 from avsectester.data_types import ActorState, Control
 from tests.fakes import CarlaNativeBoundary
@@ -47,6 +49,18 @@ def test_capture_alignment(monkeypatch, carla_dataset):
             [0., 0., 1., -1.5], [0., 0., 0., 1.],
         ], atol=1e-12)
         assert observation.sensor_data["lidar"].flipy is True
+        # Payload order follows the recipe even when the camera packet arrives after the LiDAR.
+        manager = runtime.native["ego"].sensor_data_manager
+        polls = []
+        has_data = manager.has_data
+
+        def camera_arrives_late(name):
+            polls.append(name)
+            return has_data(name) and (name != "front" or polls.count("front") > 1)
+
+        monkeypatch.setattr(manager, "has_data", camera_arrives_late)
+        runtime.step(Control())
+        assert list(runtime.observe().sensor_data) == ["front", "lidar"]
     CarlaNativeBoundary(frame_offset=10).install(monkeypatch, None)
     with CarlaSimulator({"rate": 10}, settle_iters=0).create_runtime() as runtime:
         with pytest.raises(SensorAlignmentError, match="ahead"):
@@ -147,18 +161,25 @@ def test_set_actor_state(monkeypatch, carla_dataset):
             runtime.set_actor_state("missing", ActorState(pose))
 
 
-def test_native_tick_schedule(monkeypatch, carla_dataset):
-    from avsectester.closed_loop.simulators.base import Initialization
-    from avsectester.closed_loop.timing import SensorTiming, TimingConfiguration
-    from avsectester.execution.runner import ClosedLoopRunner, RunRequest
-    from tests.fakes import ConstantAVStack
-
+@pytest.fixture
+def two_tick_start(monkeypatch, carla_dataset):
     CarlaNativeBoundary().install(monkeypatch, None)
     simulator = CarlaSimulator({"rate": 20}, decision_period_us=100000, settle_iters=0)
     frames = carla_dataset.frames("scene")
     with simulator.create_runtime() as runtime:
         runtime.configure_timing(TimingConfiguration(sensors={"front": SensorTiming(50000)}))
         source = runtime.generate_frame_data(carla_dataset.scenario_start("scene", frames[0]), frames[:4])
+    start = carla_dataset.scenario_start("scene", frames[2])
+    initialization = Initialization(source.at(frames[2]),
+                                     source.resolved_scenario, source.provenance)
+    return simulator, start, initialization, source.at(frames[3])
+
+
+def test_native_tick_schedule(two_tick_start):
+    simulator, start, initialization, _ = two_tick_start
+    assert simulator.decision_ticks == 2
+    with simulator.create_runtime() as runtime:
+        runtime.reset(start, initialization)
         before = runtime.state()
         with pytest.raises(ValueError, match="base ticks"):
             runtime.advance_interval(runtime.clock.time_us + 100000, Control(),
@@ -166,10 +187,13 @@ def test_native_tick_schedule(monkeypatch, carla_dataset):
         assert runtime.state().frame == before.frame
         assert "pipeline" not in runtime.replay_scenario["ego"]
         np.testing.assert_array_equal(runtime.state().ego.pose, before.ego.pose)
-    start = carla_dataset.scenario_start("scene", frames[2])
-    initialization = Initialization(source.at(frames[2]), source.resolved_scenario, source.provenance)
+    with pytest.raises(ValueError, match="client.rate.*integer-microsecond"):
+        CarlaSimulator({"rate": 60})
+
+
+def test_recorded_tick_history(two_tick_start):
+    simulator, start, initialization, _ = two_tick_start
     with simulator.create_runtime() as runtime:
-        from avsectester.closed_loop.timing import HistoryRequirement
         runtime.configure_timing(TimingConfiguration(sensors={"front": SensorTiming(50000)}),
                                  history=HistoryRequirement(duration_us=100000, samples=2))
         runtime.reset(start, initialization)
@@ -183,39 +207,40 @@ def test_native_tick_schedule(monkeypatch, carla_dataset):
         assert acquisition.sensor_geometry["front"].sensor == "front"
         with pytest.raises(ValueError, match="insufficient replayed sensor history"):
             runtime.observe_recorded_at(-50000, ("front",))
+
+
+def test_force_gt_replays_recipe(two_tick_start):
+    simulator, start, initialization, recorded_end = two_tick_start
     with simulator.create_runtime() as runtime:
-        log = ClosedLoopRunner().run(runtime, ConstantAVStack(Control(throttle=.3)), RunRequest(
-            2, start=start, initialization=initialization,
-            timing=TimingConfiguration(planner_delay_us=100000, force_gt_duration_us=100000, sensors={"front": SensorTiming(50000)})))
-    current = [capture for capture in log.captures if capture.capture_id >= 0]
-    origin = current[0].time_us
-    assert [capture.time_us - origin for capture in current] == [0, 50000, 100000, 150000, 200000]
-    assert [step.physical_post.frame - step.physical_pre.frame for step in log.steps] == [2, 2]
-    assert [step.executed_command_issue_time_us for step in log.steps] == [None, origin]
-    assert log.steps[0].force_gt
-    assert not log.steps[1].force_gt
-    np.testing.assert_allclose(log.steps[0].physical_post.ego.pose, source.at(frames[3]).ego.pose)
+        runtime.configure_timing(TimingConfiguration(force_gt_duration_us=100000))
+        runtime.reset(start, initialization)
+        origin = runtime.clock.time_us
+        runtime.advance_interval(origin + 100000, None, force_gt=True)
+        runtime.capture_at(origin + 100000)
+        np.testing.assert_allclose(runtime.state().ego.pose, recorded_end.ego.pose)
+
+
+def test_intermediate_tick_capture(two_tick_start):
+    simulator, start, initialization, _ = two_tick_start
     with simulator.create_runtime() as runtime:
         runtime.configure_timing(TimingConfiguration())
         runtime.reset(start, initialization)
         origin = runtime.clock.time_us
+        before = runtime.state()
         runtime.advance_interval(origin + 100000, Control(throttle=.3),
                                  report_times_us=(origin + 50000,))
         middle = runtime.capture_at(origin + 50000, ())
         expected = runtime.state()
         assert middle.sensor_data == {} and middle.calibration == {}
+        assert middle.t == pytest.approx(before.t + .05)
+        assert middle.frame == before.frame + 1
         assert middle.t == expected.t and middle.frame == expected.frame
         assert middle.ego_speed == expected.ego_speed
         np.testing.assert_array_equal(middle.vehicle_state.position.x, expected.vehicle_state.position.x)
         runtime.capture_at(origin + 100000)
-    assert simulator.decision_ticks == 2
-    with pytest.raises(ValueError, match="client.rate.*integer-microsecond"):
-        CarlaSimulator({"rate": 60})
 
 
 def test_capture_selection_uses_native_tick_schedule(monkeypatch, carla_dataset):
-    from avsectester.closed_loop.timing import SensorTiming, TimingConfiguration
-
     CarlaNativeBoundary().install(monkeypatch, None)
     recipe = carla_dataset.native("scene")
     scenario = deepcopy(recipe.scenario)
@@ -246,8 +271,6 @@ def test_capture_selection_uses_native_tick_schedule(monkeypatch, carla_dataset)
 
 
 def test_capture_without_due_sensors(monkeypatch, carla_dataset):
-    from avsectester.closed_loop.timing import SensorTiming, TimingConfiguration
-
     CarlaNativeBoundary().install(monkeypatch, None)
     start = carla_dataset.scenario_start("scene", carla_dataset.frames("scene")[0])
     simulator = CarlaSimulator({"rate": 20}, decision_period_us=100000, settle_iters=0)

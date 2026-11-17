@@ -10,7 +10,9 @@ from PIL import Image
 import numpy as np
 import pytest
 
-from avsectester.data_types import Detection, Observation, PointCloud, DeliveredAcquisition, TimedStateEstimate
+from avsectester.data_types import (
+    DeliveredAcquisition, Detection, Observation, PointCloud, TimedStateEstimate,
+)
 from avsectester.closed_loop.simulators.base import SensorGeometry
 from avsectester.evaluation.visualization import (
     annotate, as_rgb, box3d_corners, camera_view, detections_view, draw_boxes3d, filmstrip,

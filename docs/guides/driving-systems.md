@@ -33,41 +33,32 @@ planar `x`, `y` and `yaw` before and after localization.
 ### Recorded input history
 
 `AVStack.history` is a `HistoryRequirement(duration_us, samples)` for the first decision.
-`duration_us` requests recorded poses on the same decision and `pose_reporting_interval_us`
-clock used during the run. Its interval ends at the origin, where every sensor's first delivered
-frame ends. Include the closest preceding pose-clock timestamp when the lower boundary lies
-between timestamps. With zero reporting interval, only decision-grid poses are requested.
-`samples` requests each sensor's recent
-frames, including its origin frame. Pose context also covers preceding frame ends for pose
-interpolation. Exposure starts extend selection's source reservation without extending delivered
-pose history. The preceding `samples - 1` payloads come from the recording,
-using that sensor's `frame_interval_us` and `shutter_duration_us`. They bypass online hooks,
-localization and sensor attack actions. Sensor environments still apply.
+`duration_us` requests recorded poses from the run origin backward on the decision and
+`pose_reporting_interval_us` clock. When the duration's lower boundary falls between pose
+timestamps, the nearest preceding one is included. The pose context also covers preceding frame
+ends. `samples` requests each sensor's recent frames, including the frame ending at the origin.
+The preceding `samples - 1` frames use that sensor's `frame_interval_us` and
+`shutter_duration_us`. Recorded context bypasses hooks, localization and sensor actions, but
+sensor environments apply.
 
-`AVStack.required_history(options)` resolves option-dependent needs before model loading.
-When the factory's `avstack_type` is an AVStack subclass, `DrivingAdapter.history` uses
-`avstack_type.required_history(factory.avstack_options)` and `decision_time_step` uses the
-type's value. Otherwise the adapter's own declarations apply. That classmethod defaults to
-the type's `history`. The constructed instance must declare the same history as its adapter.
-A mismatch raises an error rather than changing the instance. History requirements control
-selection and recorded reads. A driving system validates required inputs at its first decision.
+`AVStack.required_history(options)` resolves needs before loading a model and defaults to the
+class's `history`. When the factory declares an `AVStack` subclass, `DrivingAdapter` uses that
+type's `required_history(factory.avstack_options)` and `decision_time_step`. Otherwise the
+adapter's own declarations apply. An instance whose history differs from its adapter raises
+an error. History requirements control selection and recorded reads.
 
-The framework delivers each ended frame once. Read new frames, oldest first, with
-`observation.delivered(sensor_id)` and new poses with `observation.estimated_states()`.
-Frame estimates interpolate the model-visible pose trajectory at frame end. Use the decision
-state for planning. See [Runtime](../reference/runtime.md#delivery-and-coordinates).
+Read newly delivered frames, oldest first, through `observation.delivered(sensor_id)` and new
+pose estimates through `observation.estimated_states()`. Convert measurements with their
+frame's pose and use the decision state for planning. See
+[delivery and coordinates](../reference/runtime.md#delivery-and-coordinates).
 
-`reset(observation)` receives the first input with its recorded context. There is no separate
-history argument. Drivers retain the context they need. `AlpamayoAVStack` selects retained frames
-like AlpaSim's FrameCache. Other supplied drivers retain their latest inputs without adding old
-frames to the framework observation. A sensor
-whose due frames were all dropped is missing for that decision. Supplied drivers do not fill it
-from an earlier frame.
+`reset(observation)` receives the first input with its recorded context. Drivers cache the
+history they need. A sensor whose due frames were all dropped is missing for that decision.
+Supplied drivers do not fill a dropped input from their cache.
 
-The normal path calls `__call__` once per decision. When `skip_driver_during_force_gt` skips
-inference, the runner calls `ingest(observation)` instead. Stateful drivers can retain input
-there without predicting. Do not ingest and call the same observation twice.
-
+The runner calls `__call__` once per decision, or `ingest(observation)` when
+`skip_driver_during_force_gt` skips inference. Stateful drivers can retain input in `ingest`
+without predicting. Do not ingest and call the same observation twice.
 
 ## avstack modular pipeline (`ModularAVStack`)
 
@@ -161,7 +152,7 @@ Keep the detector options from the supplied configuration. `vehicle_labels` defa
 `[car, truck, bus]` and can select other detector class names. `lidar_id` defaults to
 `lidar_gt_top_p128`. The calibrated transform converts LiDAR points to its capture rig. When
 camera and LiDAR times differ, their capture-time model-visible poses move the points into the
-camera capture rig before projection. Same-time inputs retain their original coordinate path.
+camera capture rig before projection.
 
 With following enabled, detection uses
 `min(detector.score_threshold, vehicle_tracker.low_score_threshold)` for that call.
@@ -296,19 +287,18 @@ Component logs contain `policy`, `command`, `route_waypoints`, `navigation_comma
 Without a route, the navigation command falls back to `STRAIGHT`.
 
 Images and poses use acquisition timestamps. The stack requires 1.5 seconds of pose history
-and `(context_length - 1) * frame_subsample + 1` camera acquisitions. The defaults are
-`context_length=4` and `frame_subsample=1`. It selects every Nth frame
-backward from the newest delivered frame, then supplies them oldest first, matching AlpaSim's
-FrameCache. The planning origin is the newest image timestamp across the configured cameras.
+and a frame cache of `(context_length - 1) * frame_subsample + 1` camera acquisitions. Defaults
+are `context_length=4` and `frame_subsample=1`. Starting from the newest frame, it selects
+`context_length` frames at a stride of `frame_subsample`, then supplies them oldest first.
+The planning origin is the newest image timestamp across the configured cameras.
 Retained poses span from 1.5 seconds before that image through the current decision, including a
 preceding pose when the boundary lies between estimates. The model resamples timestamped poses
-at its own required spacing. Acquisitions need
-not be 100 ms apart. Missing context is rejected rather than fabricated.
+at its own required spacing. Acquisition intervals may vary. Missing context is rejected rather
+than fabricated.
 
 The returned trajectory preserves the model's generation-time rig frame and native waypoint
-timestamps. The controller handles reference-frame conversion, as in AlpaSim. The adapter does
-not move the trajectory to the decision rig. Native policy output, including optional reasoning,
-remains available through component logging.
+timestamps. The controller handles reference-frame conversion. Native policy output, including
+optional reasoning, remains available through component logging.
 
 ### Loading and sharing the model
 

@@ -97,6 +97,10 @@ class SensorAttackAction(AttackAction, ABC):
     actions on the same sensor may have changed, and the capture's view, whose ``data`` is
     the unchanged capture. It returns the changed data in the same representation. A one-shot
     action without a frame ending at its issuing decision receives a not_applied receipt.
+
+    Subclass this abstract class and implement ``apply``. A subclass may be an ordinary
+    class, a dataclass or a frozen dataclass. ``active_for_us`` defaults to the class
+    attribute zero. Declare it as a dataclass field to accept a duration in the constructor.
     """
 
     sensor: str

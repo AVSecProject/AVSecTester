@@ -16,7 +16,6 @@ def alpamayo_model_boundary(monkeypatch):
         def __init__(self):
             self.closed = False
             self.last_input = None
-            self.inputs = []
             self.prediction = base.ModelPrediction(
                 candidate_positions=np.array([[[1., 0., 0.], [2., 0., 0.]]]),
                 candidate_rotations=np.tile(np.eye(3), (1, 2, 1, 1)),
@@ -25,7 +24,6 @@ def alpamayo_model_boundary(monkeypatch):
 
         def predict(self, inputs):
             self.last_input = inputs
-            self.inputs.append(inputs)
             return self.prediction
 
         def close(self):

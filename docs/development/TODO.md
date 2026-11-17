@@ -13,7 +13,6 @@ Support a decision period spanning several dataset grid intervals with an explic
 stride. The current decision period must equal the dataset time grid. Segment boundaries,
 decision counts, selection tools and frame-data caching retain their current meaning.
 
-
 ## Reactive traffic
 
 - [ ] Fit AlpaSim traffic actors to the selected ground mesh instead of the height returned by
@@ -80,7 +79,7 @@ NuRec scene insertion includes LiDAR. See [Simulators](../guides/simulators.md#s
 - [ ] Establish the scope of localization attacks when CARLA/avstack perception uses physical
   sensor reference chains while tracking and planning use model-visible `vehicle_state`.
 
-See [runtime records](../reference/runtime.md#physical-and-model-visible-records).
+See [physical and model-visible records](../reference/runtime.md#physical-and-model-visible-records).
 
 ## NuRec LiDAR simulation
 

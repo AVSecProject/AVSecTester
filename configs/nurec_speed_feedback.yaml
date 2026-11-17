@@ -6,7 +6,7 @@ dataset:
   type: NuRecDataset
   options:
     usdz_paths:
-    - ../data/nurec/023b7fcc-671c-40e3-9bd2-c66b0b073fbc/023b7fcc-671c-40e3-9bd2-c66b0b073fbc.usdz
+    - ../data/nurec/26.01_release/023b7fcc-671c-40e3-9bd2-c66b0b073fbc/023b7fcc-671c-40e3-9bd2-c66b0b073fbc.usdz
     camera_id: camera_front_wide_120fov
     time_step: 0.1
 simulator:

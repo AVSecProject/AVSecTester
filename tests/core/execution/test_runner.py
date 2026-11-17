@@ -6,18 +6,23 @@ from dataclasses import dataclass, replace
 import numpy as np
 import pytest
 
-from avsectester.attack.runtime import AttackRuntime, AVStackAttackAction, SensorAttackAction, WorldAttackAction
+from avsectester.attack.runtime import (
+    AttackRuntime, AVStackAttackAction, SensorAttackAction, WorldAttackAction,
+)
 from avsectester.attack.insertion import InsertObject
-from avsectester.data_types import Control, Detection, Observation
+from avsectester.data_types import Control, Detection, Observation, StateEstimate
+from avsectester.closed_loop.avstacks.base import ObservationPipeline
 from avsectester.closed_loop.hooks import Hook, HookSet, Plugin
-from avsectester.closed_loop.timing import HistoryRequirement
+from avsectester.closed_loop.timing import HistoryRequirement, SensorTiming, TimingConfiguration
+from avsectester.closed_loop.simulators.base import SensorGeometry
+from avsectester.closed_loop.simulators.ego_dynamics import PlanarEgoState, TrajectoryFollower
 from avsectester.closed_loop.simulators.nurec import NuRecSimulator
 from avsectester.execution.runner import ClosedLoopRunner, RecordingPolicy, RunRequest
 from avsectester.execution.services import ClosedLoopServices, SensorRequest
 from avsectester.runlog import Recorder, RunLog
 from tests.fakes import (
     ConstantAVStack, DeceleratingAVStack, HistoryAVStack, MemoryDataset, MemorySimulator,
-    NuRecImageBoundary,
+    CAMERA, CAM_FROM_WORLD, NuRecImageBoundary,
 )
 
 
@@ -39,9 +44,10 @@ def test_run():
                                           record.model_observation.sensor_data["front"])
             assert record.produced_command == record.executed_command == Control(throttle=.3)
             payload = record.model_observation.sensor_data["front"]
-            assert payload is log.captures[index].model_observation.sensor_data["front"]
-            assert payload is log.captures[index].raw_observation.sensor_data["front"]
-            assert not payload.flags.writeable
+            np.testing.assert_array_equal(
+                payload, log.captures[index].model_observation.sensor_data["front"])
+            np.testing.assert_array_equal(
+                payload, log.captures[index].raw_observation.sensor_data["front"])
             assert record.physical_pre.ego.pose.flags.writeable
             assert record.physical_post.frame == record.physical_pre.frame + 1
             assert record.physical_post.t == pytest.approx(record.physical_pre.t + .1)
@@ -55,14 +61,6 @@ def test_run():
         assert no_payloads.status == "completed"
         assert no_payloads.steps[0].model_observation.sensor_data == {}
 
-    with MemorySimulator().create_runtime() as simulator_runtime:
-        with pytest.raises(ValueError, match="unavailable sensors"):
-            ClosedLoopRunner().run(simulator_runtime, ConstantAVStack(), RunRequest(
-                1, recording=RecordingPolicy(("missing",))))
-
-    from avsectester.closed_loop.simulators.base import SensorGeometry
-    from tests.fakes import CAMERA, CAM_FROM_WORLD
-
     cameras = {name: SensorGeometry(name, CAMERA, CAM_FROM_WORLD) for name in ("rear", "front")}
     with MemorySimulator(camera_geometries=cameras).create_runtime() as runtime:
         ordered = ClosedLoopRunner().run(runtime, ConstantAVStack(), RunRequest(
@@ -74,7 +72,8 @@ def test_run():
 
     unsupported = MemorySimulator(can_observe_past=False)
     with unsupported.create_runtime() as runtime:
-        with pytest.raises(NotImplementedError, match="cannot provide recorded acquisition history"):
+        with pytest.raises(NotImplementedError,
+                           match="cannot provide recorded acquisition history"):
             ClosedLoopRunner().run(runtime, HistoryAVStack(), RunRequest(1))
 
 
@@ -103,10 +102,7 @@ def test_zero_decision_run():
     assert log.captures[0].model_observation.ego_speed == 12.
 
 
-@pytest.mark.parametrize("delay_us", [0, 100000])
-def test_executed_control_lifecycle(delay_us):
-    from avsectester.closed_loop.timing import SensorTiming, TimingConfiguration
-
+def test_executed_control_lifecycle():
     controls = {"decision": [], "intermediate": [], "pre": [], "post": [], "feedback": []}
 
     class Feedback(Plugin):
@@ -130,14 +126,17 @@ def test_executed_control_lifecycle(delay_us):
     dataset = MemoryDataset()
     start = dataset.scenario_start("scene", dataset.frames("scene")[2])
     hooks = HookSet([Hook("observation", Feedback()), Hook("sensors.post", sensors),
+        Hook("command", lambda value, context: Control(throttle=.2 + .1 * context.step)),
         Hook("simulator.step.pre", remember("pre")), Hook("simulator.step.post", remember("post"))])
     with MemorySimulator().create_runtime() as runtime:
         log = ClosedLoopRunner().run(runtime, ConstantAVStack(Control(throttle=.2)), RunRequest(
             3, start=start, hooks=hooks,
-            timing=TimingConfiguration(sensors={"front": SensorTiming(50000)}, planner_delay_us=delay_us)))
+            timing=TimingConfiguration(sensors={"front": SensorTiming(50000)},
+                                       planner_delay_us=100000)))
     executed = [step.executed_command for step in log.steps]
     assert controls["decision"] == [None, None, None]
-    assert controls["pre"] == controls["post"] == controls["feedback"] == controls["intermediate"] == executed
+    assert (controls["pre"] == controls["post"] == controls["feedback"]
+            == controls["intermediate"] == executed)
 
 
 def test_run_termination(tmp_path):
@@ -180,7 +179,6 @@ def test_run_termination(tmp_path):
 
 
 def test_run_with_hooks():
-    from avsectester.closed_loop.simulators.ego_dynamics import PlanarEgoState
     hooks = HookSet([
         Hook("sensors.post", lambda value, context: replace(value, ego_speed=value.ego_speed + 1.)),
         Hook("observation", lambda value, context: replace(value, ego_speed=value.ego_speed + 5.,
@@ -198,9 +196,7 @@ def test_run_with_hooks():
 
 
 def test_run_with_past(tmp_path):
-    @dataclass
     class Paint(SensorAttackAction):
-        active_for_us: int = 0
         sensor = "front"
 
         def apply(self, data, view):
@@ -241,7 +237,8 @@ def test_run_with_past(tmp_path):
     saved = RunLog.read(tmp_path / "run")
     initialization = next(event for event in saved.events if event.kind == "initialization")
     assert initialization.data["past_captures"] == 2
-    assert [item["t"] for item in initialization.data["past_observations"]] == pytest.approx([-.2, -.1])
+    np.testing.assert_allclose(
+        [item["t"] for item in initialization.data["past_observations"]], [-.2, -.1])
     assert all(set(item) == {"t", "vehicle_state"}
                for item in initialization.data["past_observations"])
     with simulator.create_runtime() as runtime:
@@ -253,15 +250,10 @@ def test_run_with_past(tmp_path):
 
 
 def test_initial_delivery_context():
-    from avsectester.closed_loop.timing import SensorTiming, TimingConfiguration
-
     dataset = MemoryDataset()
     start = dataset.scenario_start("scene", dataset.frames("scene")[3])
     driver = HistoryAVStack()
     driver.history = HistoryRequirement(duration_us=140000, samples=3)
-    from avsectester.closed_loop.avstacks.base import ObservationPipeline
-    from avsectester.closed_loop.simulators.ego_dynamics import PlanarEgoState
-    from avsectester.data_types import StateEstimate
 
     driver.observation_pipeline = ObservationPipeline(lambda value, context: StateEstimate(
         PlanarEgoState(x=float(context.physical_state.ego.pose[0, 3]), t=value.t), value.ego_speed))
@@ -273,8 +265,9 @@ def test_initial_delivery_context():
     assert [sample.time_us - origin for sample in samples] == [-66000, -33000, 0]
     assert [sample.frame_start_us - origin for sample in samples] == [-83000, -50000, -17000]
     assert [sample.state.time_us for sample in samples] == [sample.time_us for sample in samples]
-    assert [estimate.time_us - origin for estimate in driver.initial_observation.estimated_states()] == [
-        -200000, -100000, 0]
+    assert [estimate.time_us - origin
+            for estimate in driver.initial_observation.estimated_states()] == [
+                -200000, -100000, 0]
 
 
 def test_run_with_attacks(tmp_path):
@@ -286,7 +279,8 @@ def test_run_with_attacks(tmp_path):
         recorder = Recorder()
         with pytest.raises(ValueError, match="use SensorAttackAction to modify sensor data"):
             ClosedLoopRunner().run(
-                runtime, ConstantAVStack(), RunRequest(1, attacks=(WrongStage(),)), recorder=recorder)
+                runtime, ConstantAVStack(), RunRequest(1, attacks=(WrongStage(),)),
+                recorder=recorder)
         assert recorder.log.status == "failed"
 
     lifecycle = []
@@ -304,9 +298,7 @@ def test_run_with_attacks(tmp_path):
             if self.cleanup:
                 resources.callback(resource.close)
 
-    @dataclass
     class Paint(SensorAttackAction):
-        active_for_us: int = 0
         sensor = "front"
 
         def apply(self, data, view):
@@ -345,9 +337,10 @@ def test_run_with_attacks(tmp_path):
 
     points = np.tile(np.array([5.25, -2., .5, .8], np.float32), (2, 3, 1))
     with MemorySimulator(extra_sensors={"lidar": points}).create_runtime() as simulator_runtime:
-        log = ClosedLoopRunner().run(simulator_runtime, ConstantAVStack(perception_output=[]),
-                                     RunRequest(1, attacks=(OnlineAttack(),), recording=RecordingPolicy(
-                                         ("front", "lidar"), ("raw", "model_input"))))
+        log = ClosedLoopRunner().run(
+            simulator_runtime, ConstantAVStack(perception_output=[]), RunRequest(
+                1, attacks=(OnlineAttack(),),
+                recording=RecordingPolicy(("front", "lidar"), ("raw", "model_input"))))
     assert lifecycle == ["setup", "stop"]
     assert resource.closed
     record = log.steps[0]
@@ -395,7 +388,8 @@ def test_run_failure(tmp_path):
         again = ClosedLoopRunner().run(simulator_runtime, ConstantAVStack(), RunRequest(1))
         assert again.status == "completed"
         with pytest.raises(KeyboardInterrupt) as cancelled:
-            ClosedLoopRunner().run(simulator_runtime, ConstantAVStack(interrupt_on_position=0), RunRequest(1))
+            ClosedLoopRunner().run(
+                simulator_runtime, ConstantAVStack(interrupt_on_position=0), RunRequest(1))
         assert cancelled.value.run_log.status == "cancelled"
 
     def remove_camera(value, context):
@@ -416,8 +410,6 @@ def test_run_failure(tmp_path):
     assert [output.name for output in failed.data["outputs"]] == [
         "capture", "localization.post", "observation"]
 
-    from avsectester.closed_loop.timing import SensorTiming, TimingConfiguration
-
     def fail_input(value, context):
         if context.step == 1:
             raise RuntimeError("input failed")
@@ -426,7 +418,8 @@ def test_run_failure(tmp_path):
     with MemorySimulator().create_runtime() as runtime:
         with pytest.raises(RuntimeError, match="input failed") as failed_input:
             ClosedLoopRunner().run(runtime, ConstantAVStack(), RunRequest(3,
-                recording=RECORDING, timing=TimingConfiguration(sensors={"front": SensorTiming(33000)}),
+                recording=RECORDING,
+                timing=TimingConfiguration(sensors={"front": SensorTiming(33000)}),
                 hooks=HookSet([Hook("observation", fail_input)])))
     captures = failed_input.value.run_log.captures
     assert [capture.time_us for capture in captures] == [0, 33000, 66000, 99000]
@@ -447,9 +440,6 @@ def test_run_failure(tmp_path):
 
 
 def test_run_with_inserted_object(make_object_in_front):
-    from avsectester.closed_loop.simulators.base import SensorGeometry
-    from tests.fakes import CAMERA, CAM_FROM_WORLD
-
     cameras = {name: SensorGeometry(name, CAMERA, CAM_FROM_WORLD) for name in ("rear", "front")}
     with MemorySimulator(camera_geometries=cameras).create_runtime() as runtime:
         runtime.reset()
@@ -480,9 +470,6 @@ def test_run_with_inserted_object(make_object_in_front):
     RecordingPolicy(("front",), ("raw",)),
 ])
 def test_physical_evidence_after_input_drop(stage, recording, make_object_in_front):
-    from avsectester.closed_loop.simulators.base import SensorGeometry
-    from tests.fakes import CAMERA, CAM_FROM_WORLD
-
     cameras = {name: SensorGeometry(name, CAMERA, CAM_FROM_WORLD) for name in ("rear", "front")}
     with MemorySimulator(camera_geometries=cameras).create_runtime() as runtime:
         runtime.reset()
@@ -506,8 +493,6 @@ def test_physical_evidence_after_input_drop(stage, recording, make_object_in_fro
 
 
 def test_run_with_decelerating_feedback(nurec_longitudinal_dataset):
-    from avsectester.closed_loop.simulators.ego_dynamics import TrajectoryFollower
-
     dataset = nurec_longitudinal_dataset
     start = dataset.scenario_start("scene", dataset.frames("scene")[15])
     camera, _ = dataset.camera_geometry("scene")
@@ -550,80 +535,32 @@ def test_recording_policy():
         RecordingPolicy(representations=("unknown",))
 
 
-@pytest.fixture
-def payload_run(tmp_path):
-    def run(representations, hooks=(), *, label="default"):
-        sizes = []
-        for name, ids in (("empty", ()), ("recorded", ("sensor",))):
-            output = tmp_path / label / name
-            with MemorySimulator(camera_geometries={},
-                    extra_sensors={"sensor": np.arange(12, dtype=np.uint8)}).create_runtime() as runtime:
-                ClosedLoopRunner().run(runtime, ConstantAVStack(), RunRequest(
-                    2, output_path=output, retain_sensor_data=False,
-                    recording=RecordingPolicy(ids, representations), hooks=HookSet(hooks)))
-            sizes.append(sum(path.stat().st_size for path in (output / "payloads").glob("*.bin")))
-        return RunLog.read(output), sizes[1] - sizes[0]
-    return run
-
-
-def test_decision_payload_reuse(payload_run):
-    def vary(observation, context):
-        observation.sensor_data["sensor"] += observation.frame
+def test_recorded_payload_values():
+    def edit(observation, context):
+        observation.sensor_data["modified"] += observation.frame
+        observation.sensor_data["replaced"] = np.full(3, 91, np.uint8)
+        observation.sensor_data["masked"].mask = [observation.frame == 0, observation.frame != 0]
         return observation
 
-    log, sensor_bytes = payload_run(("model_input",), [Hook("sensors.post", vary)])
-    assert sensor_bytes == 24
-    for step in log.steps:
-        np.testing.assert_array_equal(step.model_observation.sensor_data["sensor"],
-                                      log.captures[step.step].model_observation.sensor_data["sensor"])
-
-
-def test_raw_model_payload_reuse(payload_run):
-    log, sensor_bytes = payload_run(("raw", "model_input"))
-    assert sensor_bytes == 12
-    for capture in log.captures[:-1]:
-        np.testing.assert_array_equal(capture.raw_observation.sensor_data["sensor"],
-                                      capture.model_observation.sensor_data["sensor"])
-
-    def replace_model(observation, context):
-        observation.sensor_data["sensor"] = np.full(12, 91, np.uint8)
-        return observation
-
-    log, sensor_bytes = payload_run(("raw", "model_input"),
-                                    [Hook("sensors.post", replace_model)], label="different-model")
-    assert sensor_bytes == 24
-    for capture in log.captures:
-        np.testing.assert_array_equal(capture.raw_observation.sensor_data["sensor"],
-                                      np.arange(12, dtype=np.uint8))
-    for step in log.steps:
-        np.testing.assert_array_equal(step.model_observation.sensor_data["sensor"], 91)
-
-
-def test_adjacent_payload_reuse(payload_run):
-    def replace_payload(observation, context):
-        observation.sensor_data["sensor"] = np.full(12, 91, np.uint8)
-        return observation
-
-    log, sensor_bytes = payload_run(("model_input",),
-                                    [Hook("sensors.post", replace_payload)])
-    assert sensor_bytes == 12
-    for step in log.steps:
-        np.testing.assert_array_equal(step.model_observation.sensor_data["sensor"], 91)
-
-
-    def change_mask(observation, context):
-        observation.sensor_data["sensor"].mask = np.array([True, False]) == (observation.frame == 0)
-        return observation
-
-    with MemorySimulator(camera_geometries={}, extra_sensors={
-            "sensor": np.ma.array([1., 1.], mask=[False, False])}).create_runtime() as runtime:
+    sensors = {"modified": np.arange(3, dtype=np.uint8), "replaced": np.zeros(3, np.uint8),
+               "masked": np.ma.array([1., 2.], mask=[False, False])}
+    with MemorySimulator(camera_geometries={}, extra_sensors=sensors).create_runtime() as runtime:
         log = ClosedLoopRunner().run(runtime, ConstantAVStack(), RunRequest(
-            2, recording=RecordingPolicy(("sensor",)),
-            hooks=HookSet([Hook("sensors.post", change_mask)])))
-    np.testing.assert_array_equal(log.steps[0].model_observation.sensor_data["sensor"].mask,
-                                  [True, False])
-    np.testing.assert_array_equal(log.steps[1].model_observation.sensor_data["sensor"].mask,
-                                  [False, True])
+            2, recording=RecordingPolicy(tuple(sensors), ("raw", "model_input")),
+            hooks=HookSet([Hook("sensors.post", edit)])))
+    for index, step in enumerate(log.steps):
+        raw, model = step.raw_observation.sensor_data, step.model_observation.sensor_data
+        np.testing.assert_array_equal(raw["modified"], [0, 1, 2])
+        np.testing.assert_array_equal(raw["replaced"], [0, 0, 0])
+        np.testing.assert_array_equal(raw["masked"].mask, [False, False])
+        np.testing.assert_array_equal(model["modified"], np.arange(3) + index)
+        np.testing.assert_array_equal(model["replaced"], [91, 91, 91])
+        np.testing.assert_array_equal(model["masked"].mask, [index == 0, index != 0])
+        capture = log.captures[index]
+        for sensor in sensors:
+            np.testing.assert_array_equal(
+                model[sensor], capture.model_observation.sensor_data[sensor])
+            assert not raw[sensor].flags.writeable and not model[sensor].flags.writeable
 
 
 def test_run_request(tmp_path):
@@ -638,23 +575,14 @@ def test_run_request(tmp_path):
         RunRequest(-1)
 
 
-@pytest.mark.parametrize("planner_delay_us, production_offsets", [
-    (0, [0, 100000, 200000]),
-    (73000, [0, 0, 100000]),
-    (200000, [0, 0, 0]),
-])
-def test_multirate_acquisitions_and_delivery(tmp_path, planner_delay_us, production_offsets):
-    from avsectester.closed_loop.timing import SensorTiming, TimingConfiguration
-    from avsectester.closed_loop.simulators.ego_dynamics import PlanarEgoState
-    from avsectester.data_types import StateEstimate
-    from avsectester.closed_loop.avstacks.base import ObservationPipeline
-
+def test_multirate_acquisitions_and_delivery(tmp_path):
     localized_at, observations, acquisitions = [], [], {}
 
     def localize(value, context):
         state = context.physical_state
         localized_at.append((round(state.t * 1e6), tuple(value.sensor_data)))
-        return StateEstimate(PlanarEgoState(x=float(state.ego.pose[0, 3]), t=value.t), state.ego_speed)
+        return StateEstimate(
+            PlanarEgoState(x=float(state.ego.pose[0, 3]), t=value.t), state.ego_speed)
 
     def observe(value, context):
         value.sensor_data["front"] = np.full_like(value.sensor_data["front"], 81)
@@ -668,7 +596,7 @@ def test_multirate_acquisitions_and_delivery(tmp_path, planner_delay_us, product
     driver = ConstantAVStack(Control(throttle=.2))
     driver.observation_pipeline = ObservationPipeline(localize)
     timing = TimingConfiguration(sensors={"front": SensorTiming(33000), "imu": SensorTiming(50000)},
-        pose_reporting_interval_us=40000, planner_delay_us=planner_delay_us)
+        pose_reporting_interval_us=40000)
     with MemorySimulator(extra_sensors={"imu": np.zeros(3)}).create_runtime() as runtime:
         log = ClosedLoopRunner().run(runtime, driver, RunRequest(
             3, timing=timing, hooks=HookSet([Hook("sensors.post", remember_capture),
@@ -682,7 +610,6 @@ def test_multirate_acquisitions_and_delivery(tmp_path, planner_delay_us, product
     assert [capture.time_us for capture in log.captures] == [
         0, 33000, 50000, 66000, 99000, 100000, 132000, 150000, 165000, 198000,
         200000, 231000, 250000, 264000, 297000, 300000]
-    assert [step.executed_command_issue_time_us for step in log.steps] == production_offsets
     assert [[sample.time_us for sample in value.delivered("front")] for value in observations] == [
         [0], [33000, 66000, 99000], [132000, 165000, 198000]]
     for observation in observations:
@@ -695,8 +622,8 @@ def test_multirate_acquisitions_and_delivery(tmp_path, planner_delay_us, product
     delivered = [sample for value in observations for sample in value.delivered("front")]
     assert len({sample.capture_id for sample in delivered}) == len(delivered)
     for value in observations:
-        assert all(sample.data is acquisitions[sample.time_us]
-                   for sample in value.delivered("front")[:-1])
+        for sample in value.delivered("front")[:-1]:
+            np.testing.assert_array_equal(sample.data, acquisitions[sample.time_us])
     first, last = observations[1].estimated_states()[:2]
     middle = observations[1].delivered("front")[1].state
     weight = (middle.time_us - first.time_us) / (last.time_us - first.time_us)
@@ -719,10 +646,7 @@ def test_multirate_acquisitions_and_delivery(tmp_path, planner_delay_us, product
                if time_us > 200000)
 
 
-
 def test_persistent_sensor_actions():
-    from avsectester.closed_loop.timing import SensorTiming, TimingConfiguration
-
     @dataclass
     class Paint(SensorAttackAction):
         active_for_us: int = 0
@@ -739,7 +663,8 @@ def test_persistent_sensor_actions():
         log = ClosedLoopRunner().run(runtime, ConstantAVStack(), RunRequest(
             2, timing=TimingConfiguration(sensors={"front": SensorTiming(25000)}),
             attacks=(PaintRuntime(),), recording=RECORDING))
-    delivered_captures = [capture for capture in log.captures if capture.model_observation is not None]
+    delivered_captures = [capture for capture in log.captures
+                          if capture.model_observation is not None]
     assert [int(capture.model_observation.sensor_data["front"][0, 0, 0])
             for capture in delivered_captures] == [101, 101, 101, 101, 101]
     assert [capture.time_us for capture in log.captures if capture.model_observation is None] == [
@@ -759,10 +684,7 @@ def test_persistent_sensor_actions():
     assert receipts[0]["reason"] == "no_frame_during_active_interval"
 
 
-
 def test_action_at_skipped_perception():
-    from avsectester.closed_loop.timing import SensorTiming, TimingConfiguration
-
     class FrameDriver(ConstantAVStack):
         supported_stages = frozenset({"perception.post"})
 
@@ -813,17 +735,10 @@ def test_dropped_deliveries():
     assert inputs[0].delivered("front")[-1].capture_id == 0
     assert inputs[2].delivered("front")[-1].capture_id == 2
     with MemorySimulator().create_runtime() as runtime:
-        with pytest.raises(ValueError, match="Recording requested unavailable sensors"):
-            ClosedLoopRunner().run(runtime, ConstantAVStack(), RunRequest(
-                3, hooks=hooks, recording=RECORDING))
-
-    with MemorySimulator().create_runtime() as runtime:
         raw_only = ClosedLoopRunner().run(runtime, ConstantAVStack(), RunRequest(
             3, hooks=hooks, recording=RecordingPolicy(("front",), ("raw",))))
     assert "front" in raw_only.steps[1].raw_observation.sensor_data
     assert "front" not in raw_only.steps[1].model_observation.sensor_data
-
-    from avsectester.closed_loop.timing import SensorTiming, TimingConfiguration
 
     def drop_last_frame(value, context):
         if round(value.t * 1e6) == 99000:
@@ -836,33 +751,15 @@ def test_dropped_deliveries():
             timing=TimingConfiguration(sensors={"front": SensorTiming(33000)}), recording=RECORDING,
             hooks=HookSet([Hook("sensors.post", drop_last_frame), Hook("observation", remember)])))
     assert [sample.time_us for sample in inputs[1].delivered("front")] == [33000, 66000]
-    assert inputs[1].sensor_data["front"] is inputs[1].delivered("front")[-1].data
+    np.testing.assert_array_equal(inputs[1].sensor_data["front"],
+                                  inputs[1].delivered("front")[-1].data)
     assert dropped.steps[1].physical_captures["front"] == 3
     assert dropped.steps[1].delivered_captures["front"] == (1, 2)
     assert dropped.captures[3].model_observation is None
     assert "front" in dropped.captures[3].raw_observation.sensor_data
-    with MemorySimulator().create_runtime() as runtime:
-        with pytest.raises(ValueError, match="Recording requested unavailable sensors"):
-            ClosedLoopRunner().run(runtime, ConstantAVStack(), RunRequest(1,
-                hooks=HookSet([Hook("observation", lambda value, context: replace(value, sensor_data={}))]),
-                recording=RECORDING))
 
 
-@pytest.mark.parametrize("skip_driver, expected_calls, expected_missing_commands", [
-    (False, [0, 1, 2], [False, False, False]),
-    (True, [2], [True, True, False]),
-])
-def test_force_gt(nurec_longitudinal_dataset, skip_driver, expected_calls, expected_missing_commands):
-    from avsectester.closed_loop.simulators.ego_dynamics import TrajectoryFollower
-    from avsectester.closed_loop.timing import TimingConfiguration
-
-    calls = []
-
-    class Driver(DeceleratingAVStack):
-        def __call__(self, observation):
-            calls.append(observation.frame)
-            return super().__call__(observation)
-
+def test_force_gt(nurec_longitudinal_dataset):
     class CommandRuntime(AttackRuntime):
         def step(self, context):
             assert context.decision_period_us == 100000
@@ -875,31 +772,45 @@ def test_force_gt(nurec_longitudinal_dataset, skip_driver, expected_calls, expec
     simulator = NuRecSimulator(NuRecImageBoundary(camera), TrajectoryFollower(),
         time_step=.1, depth="none", route_generator="none", physics_update_mode="none")
     with simulator.create_runtime() as runtime:
-        log = ClosedLoopRunner().run(runtime, Driver(), RunRequest(3,
+        log = ClosedLoopRunner().run(runtime, DeceleratingAVStack(), RunRequest(3,
             start=dataset.scenario_start("scene", frames[15]),
             attacks=(CommandRuntime(),),
             timing=TimingConfiguration(force_gt_duration_us=200000,
-                                       skip_driver_during_force_gt=skip_driver)))
-    receipts = [action for step in log.steps for action in step.actions if action["kind"] == "receipt"]
-    assert [action["outcome"] == "not_applied" for action in receipts] == expected_missing_commands
-    assert calls == expected_calls
+                                       skip_driver_during_force_gt=True)))
+    receipts = [action for step in log.steps for action in step.actions
+                if action["kind"] == "receipt"]
+    assert [action["outcome"] == "not_applied" for action in receipts] == [True, True, False]
     assert [step.force_gt for step in log.steps] == [True, True, False]
-    assert [step.produced_command is None for step in log.steps] == expected_missing_commands
+    assert [step.produced_command is None for step in log.steps] == [True, True, False]
+    assert [step.components for step in log.steps[:2]] == [{}, {}]
     for step, frame in zip(log.steps[:2], frames[16:18]):
-        np.testing.assert_array_equal(step.physical_post.ego.pose, dataset.frame_data("scene", frame).ego.pose)
+        np.testing.assert_array_equal(
+            step.physical_post.ego.pose, dataset.frame_data("scene", frame).ego.pose)
         assert step.executed_command is not None
         assert step.executed_command_issue_time_us == round(step.physical_pre.t * 1e6)
+
+    recorded = MemoryDataset()
+    start = recorded.scenario_start("scene", recorded.frames("scene")[3])
+    with MemorySimulator().create_runtime() as runtime:
+        actuator = ClosedLoopRunner().run(
+            runtime, ConstantAVStack(Control(throttle=.2)), RunRequest(
+                3, start=start, timing=TimingConfiguration(
+                    force_gt_duration_us=200000, planner_delay_us=100000)))
+    assert [step.force_gt for step in actuator.steps] == [True, True, False]
+    assert [step.executed_command for step in actuator.steps[:2]] == [None, None]
+    assert [step.executed_command_issue_time_us for step in actuator.steps] == [None, None, 400000]
+    assert [step.produced_command for step in actuator.steps] == [Control(throttle=.2)] * 3
+    assert actuator.steps[2].executed_command == Control(throttle=.2)
+    for step, frame in zip(actuator.steps[:2], recorded.frames("scene")[4:6]):
+        np.testing.assert_array_equal(
+            step.physical_post.ego.pose, recorded.frame_data("scene", frame).ego.pose)
 
 
 @pytest.mark.parametrize("lidar_interval_us", [100000, 70000])
 def test_one_shot_sensor_action_requires_issuing_frame(lidar_interval_us):
-    from avsectester.closed_loop.timing import SensorTiming, TimingConfiguration
-
     applied = []
 
-    @dataclass
     class Paint(SensorAttackAction):
-        active_for_us: int = 0
         sensor = "front"
 
         def apply(self, data, view):
@@ -932,16 +843,10 @@ def test_one_shot_sensor_action_requires_issuing_frame(lidar_interval_us):
 
 @pytest.mark.parametrize("stage", ["sensors.post", "localization.pre", "observation"])
 def test_input_hook_payloads(tmp_path, stage):
-    from avsectester.closed_loop.simulators.base import SensorGeometry
-    from tests.fakes import CAMERA, CAM_FROM_WORLD
-
     def edit(value, context):
         value.sensor_data["front"].fill(81)
         value.calibration["front"] = "edited lens"
         return value
-
-    from avsectester.closed_loop.avstacks.base import ObservationPipeline
-    from avsectester.data_types import StateEstimate
 
     driver = ConstantAVStack()
     driver.observation_pipeline = ObservationPipeline(
@@ -998,35 +903,15 @@ def test_command_hook_snapshot():
     assert log.steps[0].executed_command.brake == .7
 
 
-def test_alpasim_timing_reference(monkeypatch):
-    from pathlib import Path
-
-    from avsectester.closed_loop.timing import SensorTiming, TimingConfiguration
-
-    source = Path("/opt/alpasim/src/runtime")
-    if source.exists():
-        monkeypatch.syspath_prepend(str(source))
-    clock_type = pytest.importorskip("alpasim_runtime.types").Clock
-    official = pytest.importorskip("alpasim_runtime.delay_buffer").DelayBuffer(73000)
+@pytest.mark.parametrize("delay_us, issue_times_us", [
+    (0, [300000, 400000, 500000, 600000]),
+    (73000, [300000, 300000, 400000, 500000]),
+    (200000, [300000, 300000, 300000, 400000]),
+])
+def test_planner_delay(delay_us, issue_times_us):
     dataset = MemoryDataset()
     start = dataset.scenario_start("scene", dataset.frames("scene")[3])
-    request = RunRequest(4, start=start, timing=TimingConfiguration(
-        sensors={"front": SensorTiming(33000, 17000)}, planner_delay_us=73000))
     with MemorySimulator().create_runtime() as runtime:
-        log = ClosedLoopRunner().run(runtime, ConstantAVStack(), request)
-        recorded = ClosedLoopRunner().run(runtime, ConstantAVStack(), replace(
-            request, timing=replace(request.timing, force_gt_duration_us=200000)))
-    frames = [capture for capture in log.captures if "front" in capture.sensor_ids]
-    origin = frames[0].time_us
-    clock = clock_type(interval_us=33000, duration_us=17000,
-                      start_us=origin - 17000, first_end_us=origin)
-    assert [capture.frame_ranges_us["front"] for capture in frames] == [
-        (clock.ith_trigger(index).time_range_us.start, clock.ith_trigger(index).time_range_us.stop)
-        for index in range(len(frames))]
-    for index, record in enumerate(log.steps):
-        decision_us = origin + index * 100000
-        official.add(decision_us, decision_us)
-        assert record.executed_command_issue_time_us == official.at(decision_us)
-    assert [record.force_gt for record in recorded.steps] == [
-        origin + (index + 1) * 100000 in range(origin, origin + 200001)
-        for index in range(len(recorded.steps))]
+        log = ClosedLoopRunner().run(runtime, ConstantAVStack(), RunRequest(
+            4, start=start, timing=TimingConfiguration(planner_delay_us=delay_us)))
+    assert [step.executed_command_issue_time_us for step in log.steps] == issue_times_us

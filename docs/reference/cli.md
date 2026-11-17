@@ -108,8 +108,7 @@ terminal summaries, statistics and unavailable values.
 
 ## NRE
 
-`nre serve CONFIG --gpu N [--name NAME] [--image IMAGE] [--cache-size 2] [--timeout 600]
-[--dry-run]`
+`nre serve CONFIG --gpu N [--name NAME] [--image IMAGE] [--cache-size 2] [--timeout 600] [--dry-run]`
 loads the configuration, starts Docker and waits for `Serving on`.
 
 | Option | Default |
@@ -146,8 +145,7 @@ dataset archives, then stops and removes that container. A missing container is 
 
 ## Trafficsim
 
-`trafficsim serve CONFIG --gpu N --models DIR [--name NAME] [--image IMAGE] [--timeout 600]
-[--dry-run]`
+`trafficsim serve CONFIG --gpu N --models DIR [--name NAME] [--image IMAGE] [--timeout 600] [--dry-run]`
 requires `NuRecDataset` and a configured `AlpaSimTraffic` with a local endpoint.
 
 | Option | Default |

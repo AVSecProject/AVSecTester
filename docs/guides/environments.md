@@ -114,19 +114,16 @@ in [Simulators](simulators.md).
 
 ## Randomness
 
-Sensor corruptions use a fresh NumPy generator. Decision-boundary captures use
-`(run_seed, grid_position, corruption_index)`, preserving the original random stream even for
-seeds above 32 bits. Intermediate captures use
-`(run_seed, grid_position, corruption_index, interval_capture_index)`.
-The last value is that camera's frame ordinal in the containing decision interval, starting at
-one for frames ending between decisions. Decision-aligned frames use the three-item seed.
-Frame ends follow `frame_interval_us`, independently of `pose_reporting_interval_us`.
-It is independent of other sensors. Pre-origin captures use the containing interval's grid
-position with floor rounding and the same camera-specific index. Corruptions run only when
-their sensor is due. An omitted camera binds to the first initial RGB camera.
-Hooks share a run-scoped NumPy
-generator initialized from the hook seed. Registration and execution order determine its
-consumption. Shared callback handlers retain their declared lifecycle.
+Sensor corruptions use a fresh NumPy generator. Frames ending at decision timestamps use
+`(run_seed, grid_position, corruption_index)`. Other frames use
+`(run_seed, grid_position, corruption_index, interval_capture_index)`, where the last value is
+that camera's frame ordinal within the decision interval, starting at one. Pre-origin frames
+use the containing interval's grid position with floor rounding and the same camera-specific
+index. Corruptions run only when their sensor is due.
+
+Hooks share a run-scoped NumPy generator initialized from the hook seed. Registration and
+execution order determine its consumption. Shared callback handlers retain their declared
+lifecycle.
 
 ## Next steps
 

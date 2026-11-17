@@ -263,31 +263,3 @@ def test_close(traffic_service, traffic_inputs, monkeypatch):
     with pytest.raises(RuntimeError, match="not open"):
         session.simulate(100000, np.eye(4), {})
     assert all(channel.closed for channel in traffic_service.channels)
-
-
-def test_alpasim_handover(traffic_service, traffic_inputs, monkeypatch):
-    """The actual session request follows AlpaSim's traffic handover expression."""
-    import ast
-    import inspect
-    from pathlib import Path
-    from types import SimpleNamespace
-
-    source = Path("/opt/alpasim/src/runtime")
-    if source.exists():
-        monkeypatch.syspath_prepend(str(source))
-    official = pytest.importorskip("alpasim_runtime.services.traffic_service")
-    assignments = (node for node in ast.walk(ast.parse(inspect.getsource(official)))
-                   if isinstance(node, ast.Assign))
-    expression = next(node.value for node in assignments
-                      if any(isinstance(target, ast.Name) and target.id == "handover_time_us"
-                             for target in node.targets))
-    expected = eval(compile(ast.Expression(expression), inspect.getfile(official), "eval"), {
-        "start_timestamp_us": traffic_inputs["start_us"],
-        "cfg": SimpleNamespace(force_gt_duration_us=500000, control_timestep_us=200000),
-    })
-    traffic = AlpaSimTraffic(traffic_service.endpoint)
-    session = traffic.open_session(**traffic_inputs, handover_us=expected)
-    try:
-        assert session.handover_time_us == traffic_service.sessions[-1].handover_time_us == expected
-    finally:
-        session.close()

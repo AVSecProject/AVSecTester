@@ -182,7 +182,9 @@ class Observation:
 
         Only the latest payload and calibration come from the observation mappings.
         Frames ending at the decision timestamp see its current state edits.
-        Stripped payloads read as None. Direct adapter calls synthesize one acquisition.
+        Stripped payloads read as None. When there are no delivery records, a sensor in
+        ``sensor_data`` produces one acquisition from the current observation. An unknown
+        sensor with neither delivery records nor sensor data raises KeyError.
         """
         acquisitions = self.deliveries.get(sensor_id, ())
         current = self._decision_state()

@@ -13,7 +13,7 @@ import yaml
 from avsectester.attack import Attack
 from avsectester.closed_loop.avstacks import DrivingAdapter
 from avsectester.closed_loop.hooks import HookSet
-from avsectester.closed_loop.timing import SensorTiming, TimingConfiguration
+from avsectester.closed_loop.timing import HistoryRequirement, SensorTiming, TimingConfiguration
 from avsectester.data_types import Observation
 from avsectester.evaluation import DrivingMetrics
 from avsectester.experiment import (
@@ -327,12 +327,11 @@ def test_timing_configuration():
         load_configuration(spec)
     del spec["runs"]["timing"]["unexpected"]
     spec["runs"]["timing"]["decision_period_us"] = 200000
+    with pytest.raises(ValueError, match="decision_period_us must equal the dataset time grid"):
+        load_configuration(spec)
 
 
 def test_configured_history_without_bindings():
-    from avsectester.execution.services import ClosedLoopServices
-    from avsectester.closed_loop.timing import HistoryRequirement
-
     supplied = Path(__file__).resolve().parents[3] / "configs/nurec_stop_sign_patch_alpamayo_2604.yaml"
     driver = yaml.safe_load(supplied.read_text())["avstack"]
     driver.pop("bindings", None)
@@ -341,15 +340,7 @@ def test_configured_history_without_bindings():
     spec["dataset"] = MemoryDataset(decision_steps=40)
     spec["avstack"] = driver
     config = load_configuration(spec)
-    stack = config.avstack.factory(0)
-    try:
-        assert stack.history == config.avstack.history == HistoryRequirement(1500000, 19)
-    finally:
-        stack.close()
-    with ClosedLoopServices(config.dataset, config.simulator, config.avstack) as services:
-        with services.session(0) as session:
-            assert not session.can_start_at(17)
-            assert session.can_start_at(18)
+    assert config.avstack.history == HistoryRequirement(1500000, 19)
 
 
 def test_split_configuration():

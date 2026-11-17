@@ -1,14 +1,13 @@
 """NuRec world composition, capture, routes and traffic protocol through public runtimes."""
 
 from dataclasses import replace
+from io import BytesIO
 import json
 import zipfile
 from functools import partial
 from types import SimpleNamespace
 
 import numpy as np
-from avsectester.validation import timestamp_to_microseconds
-from avsectester.geometry.poses import interpolate_transform
 import pytest
 
 from avsectester.attack import AttackSegment
@@ -16,12 +15,14 @@ from avsectester.attack.insertion import InsertObject
 from avsectester.closed_loop.avstacks.driving_adapter import DrivingAdapter
 from avsectester.closed_loop.simulators import UnsupportedStartError
 from avsectester.closed_loop.simulators.ego_dynamics import AlpaSimController, TrajectoryFollower
+from avsectester.closed_loop.simulators.ground_contact import constrain_to_ground
 from avsectester.closed_loop.simulators.nurec import AlpaSimTraffic, NuRecRenderer, NuRecSimulator
 from avsectester.closed_loop.timing import HistoryRequirement, SensorTiming, TimingConfiguration
 from avsectester.datasets.nurec import NuRecDataset
 from avsectester.geometry.cameras import FThetaCamera, PinholeCamera
 from avsectester.geometry.lidars import LidarCalibration
-from avsectester.geometry.poses import rotation_matrix
+from avsectester.geometry.mesh import MeshRaycaster
+from avsectester.geometry.poses import interpolate_transform, rotation_matrix
 from avsectester.data_types import Control, PointCloud, Unavailable
 from avsectester.execution.runner import RecordingPolicy
 from avsectester.execution.services import CandidateRequest, ClosedLoopServices, RenderRequest
@@ -29,6 +30,7 @@ from avsectester.closed_loop.hooks import Hook, HookSet
 from avsectester.rendering import ObjectAsset, PlacedObject, plan_composite
 from avsectester.rendering.harmonizers import ClassicHarmonizer, ExposureHarmonizer
 from avsectester.runlog import RunLog
+from avsectester.validation import timestamp_to_microseconds
 from tests.fakes import (
     CAMERA, ConstantAVStack, NuRecImageBoundary, NuRecRpcBoundary, NuRecTrafficImageBoundary,
     ResetRecordingDynamics, TrafficServiceBoundary, proto_world_pose,
@@ -73,7 +75,6 @@ def test_motion_reports(nurec_dataset, make_nurec_simulator):
         assert runtime.state().ego.pose[0, 3] != 99.
         runtime.capture_at(100000)
         assert runtime.clock.time_us == 100000
-
 
 
 def test_camera_exposure(nurec_longitudinal_dataset, monkeypatch, make_nurec_simulator):
@@ -748,7 +749,7 @@ def test_observe_recorded_at(nurec_dataset, monkeypatch, make_object_in_front, m
             np.testing.assert_array_equal(runtime.render_request("front").pose, request.pose)
             runtime.reset(nurec_dataset.scenario_start("scene", frames[0]))
             with pytest.raises(ValueError, match="precedes available source history"):
-                tuple(runtime.observe_recorded_at(-i * 100000).observation for i in range(1, 0, -1))
+                runtime.observe_recorded_at(-100000)
         setup = HookSet([Hook("simulator.setup", lambda value, context: context.simulator_runtime.insert_object(
             "start-sign", asset, world_from_object))])
         with setup.session(runtime, ConstantAVStack()).activate():
@@ -861,6 +862,7 @@ def test_intermediate_traffic_snapshot(traffic_world, tmp_path):
         runtime.configure_timing(TimingConfiguration(force_gt_duration_us=200000,
             sensors={"front": SensorTiming(frame_interval_us=50000)}))
         runtime.reset(start)
+        assert traffic_world.service.sessions[-1].handover_time_us == 3400000
         runtime.advance_interval(200000, Control(), report_times_us=(50000, 100000, 150000),
                                  force_gt=True)
         for timestamp in (50000, 100000, 150000):
@@ -1009,7 +1011,7 @@ def test_recorded_actor_filtering(traffic_recording, make_nurec_simulator):
         assert "brief" not in runtime.sensor_view("front").actors
         assert boundary.rendered[-1][1]["brief"][2, 3] == -99.
         assert boundary.probes[-1][1]["brief"][2, 3] == -99.
-        tuple(runtime.observe_recorded_at(-i * 100000).observation for i in range(1, 0, -1))
+        runtime.observe_recorded_at(-100000)
         assert boundary.rendered[-1][0] == 1400000
         assert boundary.rendered[-1][1]["brief"][2, 3] == -99.
         assert boundary.probes[-1][1]["brief"][2, 3] == -99.
@@ -1412,8 +1414,8 @@ def test_scene_insertion(nurec_longitudinal_dataset, monkeypatch, make_nurec_sim
             np.testing.assert_allclose(proto_world_pose(scene_objects[0].pose_pair.end_pose), track_pose)
             with pytest.raises(ValueError, match="object_masks"):
                 view.composite_plan((PlacedObject("sign", asset, pose),))
-            past = tuple(runtime.observe_recorded_at(-i * 100000).observation for i in range(1, 0, -1))
-            assert len(past) == 1 and np.any(past[0].sensor_data["front"][:, 8:] != 30)
+            past = runtime.observe_recorded_at(-100000).observation
+            assert np.any(past.sensor_data["front"][:, 8:] != 30)
             assert track in {item.track_id for item in boundary.lidar_requests[-1].dynamic_objects}
         checkpoint = runtime.checkpoint()
         initial_image = view.data.copy()
@@ -1436,7 +1438,7 @@ def test_scene_insertion(nurec_longitudinal_dataset, monkeypatch, make_nurec_sim
         assert changed_view.native["object_tracks"]["sign"][0] != track
         assert np.any(changed_view.data[mask] != initial_image[mask])
         # Later edits do not replace objects belonging to the recorded start.
-        tuple(runtime.observe_recorded_at(-i * 100000).observation for i in range(1, 0, -1))
+        runtime.observe_recorded_at(-100000)
         assert track in {item.track_id for item in boundary.lidar_requests[-1].dynamic_objects}
         boundary.hidden = None
         runtime.step(Control())
@@ -1533,23 +1535,9 @@ def test_scene_render_without_actors(nurec_longitudinal_dataset, monkeypatch,
         assert not boundary.lidar_requests[-1].dynamic_objects
 
 
-def test_force_gt_physics_trajectory(nurec_longitudinal_dataset, tmp_path, monkeypatch):
-    from types import SimpleNamespace
-    from pathlib import Path
-
-    for package in ("runtime", "utils"):
-        source = Path("/opt/alpasim/src") / package
-        if source.exists():
-            monkeypatch.syspath_prepend(str(source))
-    geometry = pytest.importorskip("alpasim_utils.geometry")
-    blend = pytest.importorskip("alpasim_runtime.force_gt_blend")
-    from avsectester.closed_loop.simulators.ground_contact import constrain_to_ground
-    from avsectester.geometry.mesh import MeshRaycaster
-    from avsectester.geometry.poses import rotation_to_quaternion, rotation_matrix
-    import io
+def test_force_gt_physics_trajectory(nurec_longitudinal_dataset, tmp_path):
     import trimesh
 
-    # The reconstruction boundary stays fake. Its source trajectory and public motion API are real.
     path = tmp_path / "turn.usdz"
     with zipfile.ZipFile(nurec_longitudinal_dataset.usdz_paths[0]) as source:
         entries = {name: source.read(name) for name in source.namelist()}
@@ -1577,29 +1565,25 @@ def test_force_gt_physics_trajectory(nurec_longitudinal_dataset, tmp_path, monke
     times = sorted({-17000, 0, duration, end,
         *(timestamp_to_microseconds(t) - origin for t in dataset.camera_timestamps("scene")
           if -17000 <= timestamp_to_microseconds(t) - origin <= end), *range(0, end + 1, 100000)})
-    # Official Trajectory uses unsigned timestamps, so shift the local clock to a safe epoch.
-    epoch = 1000000
     ego = [dataset.ego_state("scene", origin + t) for t in times]
-    raw = geometry.Trajectory(np.array([epoch+t for t in times], dtype=np.uint64),
-        np.array([state.pose[:3, 3] for state in ego]),
-        np.array([np.asarray(rotation_to_quaternion(state.pose[:3, :3]))[[1, 2, 3, 0]] for state in ego]))
-    mesh = trimesh.load(io.BytesIO(entries["mesh_ground.ply"]), file_type="ply", process=False)
+    mesh = trimesh.load(BytesIO(entries["mesh_ground.ply"]), file_type="ply", process=False)
     raycaster = MeshRaycaster(mesh.vertices, mesh.faces)
-    corrected = []
-    for state in ego:
+    blended = []
+    for timestamp, state in zip(times, ego):
         box, _status = constrain_to_ground(raycaster, state.box_transform(), state.extent)
-        corrected.append(box @ np.linalg.inv(np.linalg.inv(state.pose) @ state.box_transform()))
-    physical = geometry.Trajectory(raw.timestamps_us,
-        np.array([pose[:3, 3] for pose in corrected]),
-        np.array([np.asarray(rotation_to_quaternion(pose[:3, :3]))[[1, 2, 3, 0]] for pose in corrected]))
-    unbound = SimpleNamespace(render_start_timestamp_us=epoch, force_gt_duration_us=duration)
-    alphas = np.array([blend.force_gt_physics_blend_alpha(unbound, epoch+t) for t in times],
-                      dtype=np.float32)
-    expected = raw.blend(physical, alphas)
+        corrected = box @ np.linalg.inv(np.linalg.inv(state.pose) @ state.box_transform())
+        alpha = float(np.float32(np.clip(timestamp / duration, 0., 1.)))
+        blended.append(interpolate_transform(state.pose, corrected, alpha))
+
+    def interpolate(stamps, poses, timestamp):
+        index = int(np.searchsorted(stamps, timestamp))
+        if stamps[index] == timestamp:
+            return poses[index]
+        fraction = (timestamp - stamps[index - 1]) / (stamps[index] - stamps[index - 1])
+        return interpolate_transform(poses[index - 1], poses[index], fraction)
+
     timing = TimingConfiguration(force_gt_duration_us=duration, pose_reporting_interval_us=50000,
                                  sensors={"front": SensorTiming(33000, 17000)})
-    from avsectester.closed_loop.simulators.ego_dynamics import TrajectoryFollower
-
     simulator = NuRecSimulator(NuRecImageBoundary(CAMERA), TrajectoryFollower(), time_step=.1,
         min_track_duration_s=0., depth="none", route_generator="none",
         physics_update_mode="ego_only", ground_mesh="mesh_ground")
@@ -1607,28 +1591,18 @@ def test_force_gt_physics_trajectory(nurec_longitudinal_dataset, tmp_path, monke
         runtime.configure_timing(timing)
         runtime.reset(start)
         assert runtime.termination_details["ground_contact_failures"] == {}
-        reference = runtime.recorded_reference(0, 100000)
-        assert [point[2] for point in reference.trajectory] == [t for t in times if t >= 0]
         for index in range(3):
             begin, end = index * 100000, (index + 1) * 100000
             nodes = (begin, begin+50000, end)
-            poses = expected.interpolate(np.array([epoch+t for t in nodes], dtype=np.uint64))
+            poses = [interpolate(times, blended, timestamp) for timestamp in nodes]
             runtime.advance_interval(end, runtime.recorded_reference(begin, end),
                                      report_times_us=(begin+50000,), force_gt=True)
-            # Rendered frame endpoints interpolate committed reports, not native GT samples.
             for t in (begin+1000, begin+33000, begin+50000, begin+83000, end):
-                expected_pose = poses.interpolate(np.array([epoch+t], dtype=np.uint64))
+                expected_pose = interpolate(nodes, poses, t)
                 runtime.capture_at(t, ("front",) if t == begin+33000 else ())
                 state = runtime.state()
-                np.testing.assert_allclose(state.ego.pose[:3, 3], expected_pose.positions[0], atol=2e-6)
-                yaw = np.arctan2(state.ego.pose[1, 0], state.ego.pose[0, 0])
-                assert yaw == pytest.approx(expected_pose.yaws[0], abs=2e-6)
+                np.testing.assert_allclose(state.ego.pose, expected_pose, atol=2e-6)
                 if t == begin+33000:
-                    request = runtime.render_request("front")
-                    view = runtime.sensor_view("front")
-            start_pose = poses.interpolate(np.array([epoch+begin+16000], dtype=np.uint64))
-            end_pose = poses.interpolate(np.array([epoch+begin+33000], dtype=np.uint64))
-            np.testing.assert_allclose(view.native["exposure"]["world_from_rig_start"][:3, 3],
-                                       start_pose.positions[0], atol=2e-6)
-            np.testing.assert_allclose(request.pose[:3, 3], end_pose.positions[0], atol=2e-6)
+                    np.testing.assert_allclose(runtime.render_request("front").pose,
+                                               expected_pose, atol=2e-6)
             runtime.capture_at(end, ())

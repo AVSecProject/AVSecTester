@@ -29,9 +29,10 @@ def test_native_records(native_sensor_case, tmp_path, make_ego, make_detections)
         detections[0].score = .1
         payload_array(sensor.data)[:] = 0
     assert captured.components["perception"][0].score == .8
-    assert captured.raw_observation.sensor_data["sensor"] is independent.sensor_data["sensor"]
-    assert payload_array(captured.raw_observation.sensor_data["sensor"].data) is payload_array(
-        captured.model_observation.sensor_data["sensor"].data)
+    np.testing.assert_array_equal(
+        payload_array(captured.raw_observation.sensor_data["sensor"].data), original)
+    np.testing.assert_array_equal(
+        payload_array(captured.model_observation.sensor_data["sensor"].data), original)
     saved = RunLog.read(tmp_path).steps[0]
     assert saved.components["perception"]["data"][0]["score"] == .8
     restored = saved.raw_observation.sensor_data["sensor"]["data"]

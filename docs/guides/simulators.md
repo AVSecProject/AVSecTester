@@ -8,10 +8,10 @@
 
 ## `Simulator` and simulator runtime
 
-A `Simulator` stores configuration and capability declarations. Each `create_runtime(seed)` creates
-a `SimulatorRuntime` whose creator closes its world and connections, including after failures.
-Import interfaces from `avsectester.closed_loop.simulators` and concrete implementations from
-`simulators.carla`, `simulators.nurec` or `simulators.recorded`.
+A `Simulator` stores configuration and capability declarations. Each `create_runtime(seed)`
+creates a `SimulatorRuntime` whose creator closes its world and connections, including after
+failures. Import interfaces from `avsectester.closed_loop.simulators` and concrete
+implementations from `simulators.carla`, `simulators.nurec` or `simulators.recorded`.
 
 `reset` initializes a selected `ScenarioStart` and captures its first observation.
 `advance_interval` propagates one decision interval and reports intermediate physical states.
@@ -21,17 +21,16 @@ always uses the separate operations. `observe` copies the latest acquisition bat
 advancing or invoking hooks. `sensor_view` reads a sensor's latest captured viewpoint.
 `frame_range_us(sensor, end_time_us)` returns its half-open shutter or native scan interval.
 `state` copies physical ego, actors and inserted objects. See
-[Runtime](../reference/runtime.md#one-decision) for event
-order and clock meanings.
+[Runtime](../reference/runtime.md#one-decision) for event order and clock meanings.
 
 Only world settings reach reset. Sensor corruptions apply after capture. See
-[Environments](environments.md) for environment composition and [Python
-API](../reference/python-api.md) for signatures and errors.
+[Environments](environments.md) for environment composition and
+[Python API](../reference/python-api.md) for signatures and errors.
 
 ### Scenario start inputs
 
-The dataset supplies [ScenarioStart](datasets.md#dataset-interface). Attack selection metadata is
-not a simulator input.
+The dataset supplies [ScenarioStart](datasets.md#dataset-interface). Attack selection metadata
+is not a simulator input.
 
 ### Read prescribed motion
 
@@ -46,74 +45,75 @@ interval endpoint before advancing replay.
 | Recorded playback | Supported | Unsupported |
 | NuRec | Unsupported | Supported |
 
-Services reuse forward scans where advancement is supported. NuRec instead resets prescribed motion
-at each requested frame.
+Services reuse forward scans where advancement is supported. NuRec instead resets prescribed
+motion at each requested frame.
 
 ## Inserted world objects
 
 `insert_object` registers an `ObjectAsset` or `MeshAsset` under a unique ID and rigid world pose.
-`remove_object` removes it. The physical `state().objects` changes immediately, while images change
-at the next capture. Inserted objects stay separate from native actors, have zero velocity and do
-not participate in native physics or collisions. Built-in metrics still count overlap with them as a
-collision. See [Built-in metrics](evaluation.md#built-in-metrics).
+`remove_object` removes it. The physical `state().objects` changes immediately, while images
+change at the next capture. Inserted objects stay separate from native actors, have zero
+velocity and do not participate in native physics or collisions. Built-in metrics still count
+overlap with them as a collision. See [Built-in metrics](evaluation.md#built-in-metrics).
 
 **Not yet implemented.** Moving inserted objects during a run. See
 [Moving inserted objects](../development/TODO.md#moving-inserted-objects).
 
 `ObjectAsset` contains textured planes. `MeshAsset` contains colored triangle meshes and requires
-NuRec scene insertion. Both use forward-left-up axes and a bottom-center bounding box. Only base
-colors are rendered, without material, reflection or lighting simulation. Alpha values of at least
-128 are opaque. Mesh triangles used to occlude sensor-inserted content are treated as opaque
-regardless of their color alpha.
+NuRec scene insertion. Both use forward-left-up axes and a bottom-center bounding box.
+Only base colors are rendered, without material, reflection or lighting simulation.
+Alpha values of at least 128 are opaque. Mesh triangles used to occlude sensor-inserted content
+are treated as opaque regardless of their color alpha.
 
-**Not yet implemented.** Mesh composite insertion, including white-box texture optimization. See
-[TODO](../development/TODO.md#mesh-composite-insertion).
+**Not yet implemented.** Mesh composite insertion, including white-box texture optimization.
+See [TODO](../development/TODO.md#mesh-composite-insertion).
 
 **Not yet implemented.** CARLA mesh insertion. See
 [TODO](../development/TODO.md#carla-mesh-insertion).
 
-Composite insertion projects each asset into captured camera images, resolves nearest surfaces and
-applies visibility. NuRec also supports scene insertion, where NRE renders assets with the
-reconstruction into camera images and LiDAR. Set `object_insertion` to `composite` (the default) or
-`scene` on `NuRecSimulator`. The insertion actions and `harmonizer` interface are the same.
+Composite insertion projects each asset into captured camera images, resolves nearest surfaces
+and applies visibility. NuRec also supports scene insertion, where NRE renders assets with the
+reconstruction into camera images and LiDAR. Set `object_insertion` to `composite` (the default)
+or `scene` on `NuRecSimulator`. The insertion actions and `harmonizer` interface are the same.
 
 | Simulator | Insertion | Composite occlusion |
 |---|---|---|
 | CARLA | Composite | Aligned scene depth for `depth_camera`, actor cuboids for other cameras |
-| NuRec | Composite or scene | Rendered probes, or mesh/actor geometry |
+| NuRec | Composite or scene | Reconstruction visibility from rendered probes, or mesh/actor geometry |
 | Recorded playback | Composite | Actor cuboids only |
 
-Both modes describe each object's visible pixels in the captured image. `SensorView.object_masks`
-maps the same IDs as `SensorView.objects` to boolean H×W masks. Composite insertion uses the pixels
-that the composition actually assigns to each object. Scene insertion measures coverage with white
-and black asset copies and keeps coverage of at least 0.5. Each `ObjectVisibility.visible_pixels`
-equals the corresponding mask's pixel count. A projected but fully hidden object has an empty mask
-and a camera entry with zero visible pixels. An object outside a camera projection has no entry.
-Captures retain their own object membership until the next capture.
+Both modes describe each object's visible pixels in the captured image.
+`SensorView.object_masks` maps the same IDs as `SensorView.objects` to boolean H×W masks.
+Composite insertion uses the pixels that the composition actually assigns to each object.
+Scene insertion measures coverage with white and black asset copies and keeps coverage of at
+least 0.5. Each `ObjectVisibility.visible_pixels` equals the corresponding mask's pixel count.
+A projected but fully hidden object has an empty mask and a camera entry with zero visible
+pixels. An object outside a camera projection has no entry. Captures retain their own object
+membership until the next capture.
 
-`SensorView.composition` exists only for composite insertion. It records the unmodified background
-and its `CompositePlan`, whose `plan.apply(background).image` reproduces the capture. Scene
-insertion has `composition=None`. An attack can build its own differentiable plan using the captured
-camera geometry and `object_masks`. See [Optimization](optimization.md) and the [compositing
-API](../reference/python-api.md#avsectesterrenderingcompositing).
+`SensorView.composition` exists only for composite insertion. It records the unmodified
+background and its `CompositePlan`, whose `plan.apply(background).image` reproduces the capture.
+Scene insertion has `composition=None`. An attack can build its own differentiable plan using
+the captured camera geometry and `object_masks`. See [Optimization](optimization.md) and the
+[compositing API](../reference/python-api.md#avsectesterrenderingcompositing).
 
-Composite insertion combines native depth with object surface depth. Rendered visibility and scene
-insertion replace depth only at visible object pixels and preserve the rest. A view without native
-depth keeps `depth=None`.
+Composite insertion combines native depth with object surface depth. Rendered visibility and
+scene insertion replace depth only at visible object pixels and preserve the rest. A view
+without native depth keeps `depth=None`.
 
 Occlusion tolerance applies only to composite insertion. It keeps scene surfaces within the
 configured tolerance in front of an object from hiding it, for both geometry and reconstruction
 probes. See [Configuration](../reference/configuration.md#simulator) for defaults.
 
 A single-sided plane or mesh shows its front colors from behind. Add a rear face when the object
-must have a distinct back. Sensor insertion through `InsertionAttackAction` remains independent of
-world insertion.
+must have a distinct back. Sensor insertion through `InsertionAttackAction` remains independent
+of world insertion.
 
-See [Writing attacks](attacks.md#insert-a-world-object) for insertion actions and [Runtime
-records](../reference/runtime.md#runlog) for saved evidence.
+See [Writing attacks](attacks.md#insert-a-world-object) for insertion actions and
+[Runtime records](../reference/runtime.md#runlog) for saved evidence.
 
-**Not yet implemented.** CARLA scene insertion and non-camera insertion in composite mode. See
-[TODO](../development/TODO.md#inserted-objects-in-non-camera-sensors).
+**Not yet implemented.** CARLA scene insertion and non-camera insertion in composite mode.
+See [TODO](../development/TODO.md#inserted-objects-in-non-camera-sensors).
 
 ## CARLA
 
@@ -126,16 +126,15 @@ Traffic-light states are recorded under OpenDRIVE control IDs.
 Native sensors use `sensor_tick=0` and produce packets on every physics tick. The scheduler retains
 only planned acquisitions, discarding packets from other ticks. A recipe sensor with a nonzero
 `sensor_tick` is rejected. Set acquisition rates with `runs.timing.sensors`. A spinning LiDAR packet
-covers one native physics interval. Reducing its
-acquisition frequency does not concatenate packets into a longer scan.
+covers one native physics interval. Reducing its acquisition frequency does not concatenate
+packets into a longer scan. Observations list sensors in the recipe's order, independently of
+packet arrival.
 
-Frame ends follow each sensor's `frame_interval_us` and must fall on physics ticks. CARLA accepts
-`pose_reporting_interval_us`, `planner_delay_us` and `force_gt_duration_us` only at integer
-multiples of its physics tick. `shutter_duration_us` must be zero. `client.rate` must produce an
-integer number of microseconds per tick. Logical sensor names and native source IDs resolve through
-the same public runtime methods. Unknown names and off-tick requests raise `ValueError` before
-changing state. Observation and state `t` values retain native CARLA timestamps. The integer
-scheduler clock does not replace their floating representation.
+Runtime methods accept a sensor's logical name or its native source ID.
+Unknown names and off-tick requests raise `ValueError` before changing state. Timing support is
+listed in [Scheduling](../reference/configuration.md#scheduling). See
+[Simulator configuration](../reference/configuration.md#simulator) for `client.rate` constraints
+and [Runtime](../reference/runtime.md#one-decision) for timestamps.
 
 ### Selected-origin initialization
 
@@ -156,29 +155,29 @@ wrapper's `flipy` setting. See [LiDAR records](../reference/runtime.md#carla-lid
 ## NuRec
 
 NuRec requires a `ScenarioStart` from its dataset. The runtime initializes the recorded pose,
-timeline and actors, then advances ego with the selected dynamics. Camera names remain native unless
-`camera_aliases` maps them to observation names. Aliases also apply to views and calibration.
+timeline and actors, then advances ego with the selected dynamics. Camera names remain native
+unless `camera_aliases` maps them to observation names. Aliases also apply to views
+and calibration.
 
 Camera frames end on their independent `frame_interval_us` clocks. A positive
 `shutter_duration_us` renders `[frame_end_us - shutter_duration_us, frame_end_us)` using
-interpolated ego and actor poses at both endpoints, matching AlpaSim's camera request. Instantaneous
-frames use the existing one-microsecond render request. `pose_reporting_interval_us` controls the
-physical trajectory used for interpolation and is independent of camera frequency. Objects,
-coverage copies and reconstruction-visibility probes use the same frame interval and endpoint poses.
-Ego and actor motion is available over each configured shutter and scan window.
+interpolated ego and actor poses at both endpoints. Instantaneous frames use a one-microsecond
+render request. `pose_reporting_interval_us` controls the physical trajectory used for
+interpolation and is independent of camera frequency. Objects, coverage copies and
+reconstruction-visibility probes use the same frame interval and endpoint poses.
 
 NuRec provides no traffic-light states.
 
-Constructing mesh-depth or ground-contact support requires the `nurec` extra. Reset checks required
-archive meshes before connecting to NRE. Missing resources fail preflight. A manually started NRE
-must enable `--enable-editing-actors`.
+Constructing mesh-depth or ground-contact support requires the `nurec` extra.
+Reset checks required archive meshes before connecting to NRE. Missing resources fail preflight.
+A manually started NRE must enable `--enable-editing-actors`.
 
-The decision step comes from `dataset.time_step` through configuration loading. A driving system can
-require a specific step. See [Configuration](../reference/configuration.md#simulator) for the
-injection and consistency rules.
+The decision step comes from `dataset.time_step` through configuration loading. A driving system
+can require a specific step. See [Configuration](../reference/configuration.md#simulator) for
+the injection and consistency rules.
 
-NRE is required for camera rendering. See [automatic local
-services](../reference/cli.md#automatic-local-services) for CLI and Python use.
+NRE is required for camera rendering. See
+[automatic local services](../reference/cli.md#automatic-local-services) for CLI and Python use.
 
 Construction does not connect to NRE:
 
@@ -199,41 +198,44 @@ assert simulator.command_modes == frozenset({"trajectory"})
 
 ### Scene insertion
 
-Scene insertion requires `NuRecRenderer.asset_directory`. The renderer writes generated asset files
-there for NRE to read. See [Configuration](../reference/configuration.md#nurec-closed-loop-settings)
-for directory and mount settings.
+Scene insertion requires `NuRecRenderer.asset_directory`. The renderer writes generated asset
+files there for NRE to read. See
+[Configuration](../reference/configuration.md#nurec-closed-loop-settings) for directory and mount
+settings.
 
-Plane assets use 5 mm grid spacing, capped at one Gaussian per texture pixel. Grid centers with
-alpha below 128 are omitted. Colors are alpha-weighted area averages. Gaussian lateral sizes are
-twice the grid-cell dimensions. The textured asset and its white and black coverage copies share
-their Gaussian geometry. Thickness is one millimeter and opacity logit is eight, with zeroth-order
-spherical harmonics only.
+Plane assets use 5 mm grid spacing, capped at one Gaussian per texture pixel. Grid centers
+with alpha below 128 are omitted. Colors are alpha-weighted area averages. Gaussian
+lateral sizes are twice the grid-cell dimensions. The textured asset and its white and black
+coverage copies share their Gaussian geometry. Thickness is one millimeter and opacity logit
+is eight, with zeroth-order spherical harmonics only.
 
-Mesh triangles use the same grid spacing, and every nonzero-area triangle has at least one sample.
-Samples with alpha below 128 are omitted. The others become Gaussians that lie flat on their
-triangles and take their base colors. Their lateral sizes are twice the requested grid spacing.
-Textured colors are alpha-weighted averages over each Gaussian's texture footprint. Mesh assets have
-no nominal textures. See [mesh loading settings](../reference/configuration.md#mesh-assets) for file
-formats and axes.
+Mesh triangles use the same grid spacing, and every nonzero-area triangle has at least one
+sample. Samples with alpha below 128 are omitted. The others become Gaussians that lie flat on
+their triangles and take their base colors. Their lateral sizes are twice the requested grid
+spacing. Textured colors are alpha-weighted averages over each Gaussian's texture footprint.
+Mesh assets have no nominal textures. See
+[mesh loading settings](../reference/configuration.md#mesh-assets) for file formats and axes.
 
-Composite visibility probes use a one-centimeter nearest-count grid, capped at one Gaussian per
-texture pixel. Their lateral sizes are nine tenths of the grid-cell dimensions. White and black
-probes share their Gaussian geometry. Because scene-asset Gaussians are wider than their grid cells,
-image edges are slightly soft and coverage extends slightly beyond the exact asset silhouette.
+Composite visibility probes use a one-centimeter nearest-count grid, capped at one Gaussian
+per texture pixel. Their lateral sizes are nine tenths of the grid-cell dimensions. White and
+black probes share their Gaussian geometry. Because scene-asset Gaussians are wider than their
+grid cells, image edges are slightly soft and coverage extends slightly beyond the exact asset
+silhouette.
 
 NRE registers one track for each object and texture. Moving an object reuses its track. Tracks
 remain until the NRE process restarts.
 
-For each projected object, visibility requires two additional camera renders with white and black
-copies. A harmonizer also needs a background render. A differentiable harmonizer also needs a
-nominal-texture render when its object has nominal textures. These extra renders use the capture's
-request pose and bypass hooks. They add rendering work in proportion to the projected objects and
-cameras. A harmonizer also adjusts partially covered pixels at object edges, outside `object_masks`.
-With scene insertion, `render.post` receives images and point clouds that already contain the
-inserted objects. With composite insertion, the hook receives the native capture before camera
-composition.
+For each projected object, visibility requires two additional camera renders with white and
+black copies. A harmonizer also needs a background render. A differentiable harmonizer also
+needs a nominal-texture render when its object has nominal textures. These extra
+renders use the capture's request pose and bypass hooks. They add rendering work in proportion
+to the projected objects and cameras. A harmonizer also adjusts partially covered pixels at
+object edges, outside `object_masks`. With scene insertion, `render.post` receives images and
+point clouds that already contain the inserted objects. With composite insertion, the hook
+receives the native capture before camera composition.
 
-Reconstructed objects remain in the scene and can hide an inserted object placed very close to them.
+Reconstructed objects remain in the scene and can hide an inserted object placed very close
+to them.
 
 **Not yet implemented.** Removing real objects from reconstructed scenes. See
 [TODO](../development/TODO.md#remove-real-objects-from-reconstructed-scenes).
@@ -241,18 +243,19 @@ Reconstructed objects remain in the scene and can hide an inserted object placed
 Scene-inserted assets appear in LiDAR for 26.04 scenes. In 26.01 scenes, LiDAR can pass through
 inserted assets. This is a limitation of that scene release.
 
-LiDAR returns from scene-inserted assets can lie behind the asset surface. The offset is larger for
-surfaces near the ground and varies with the asset's position. NRE blends the Gaussians along each
-LiDAR ray in an approximate order, so large road Gaussians can add range from the road behind the
-asset. This is a limitation of NRE's LiDAR rendering and applies to plane and mesh assets.
+LiDAR returns from scene-inserted assets can lie behind the asset surface. The offset is larger
+for surfaces near the ground and varies with the asset's position. NRE blends the Gaussians
+along each LiDAR ray in an approximate order, so large road Gaussians can add range from the
+road behind the asset. This is a limitation of NRE's LiDAR rendering and applies to plane and
+mesh assets.
 
 ### LiDAR
 
 Set `NuRecRenderer.lidar` to a scene's logical sensor name, such as `lidar_gt_top_p128`, to collect
 LiDAR alongside the cameras. The default `None` disables LiDAR. The selected scene must contain
 exactly one LiDAR with a `row-offset-spinning` model. The sensor-to-rig transform comes from
-calibration. The calibrated spin period is the median duration of recorded LiDAR frames. See [LiDAR
-records](../reference/runtime.md#lidar-data) for the payload format.
+calibration. The calibrated spin period is the median duration of recorded LiDAR frames. See
+[LiDAR records](../reference/runtime.md#lidar-data) for the payload format.
 
 Each LiDAR scan covers `[frame_end_us - frame_interval_us, frame_end_us)`. Adjacent scans meet
 without gaps or overlap. The calibrated spin period is used only to validate `frame_interval_us` and
@@ -262,89 +265,76 @@ must differ from it by at most 1%. It does not set the scan window. LiDAR does n
 Scan endpoints use their physical ego poses and actor states. The runtime retains motion history for
 interpolation. Pre-origin endpoints come from the recording. Insufficient source support raises
 `ValueError` when the requested scan cannot be formed. Selection reserves enough preceding
-dataset steps to cover the configured LiDAR `frame_interval_us`. Decision frequency does not
-limit camera frequency.
+dataset steps to cover the configured LiDAR `frame_interval_us`.
 
 Cameras precede LiDAR in `Observation.sensor_data`. Current LiDAR captures pass through
 `render.post` with the LiDAR sensor name. They do not pass through `render.pre`, whose
-`CameraPoseRequest` is specific to cameras. A LiDAR `SensorView` has no camera geometry and uses the
-scan-end sensor transform. Supplied driving systems continue to read their configured cameras.
+`CameraPoseRequest` is specific to cameras. A LiDAR `SensorView` has no camera geometry and uses
+the scan-end sensor transform. Supplied driving systems continue to read their configured
+cameras.
 
 Reconstructed-scene defects may produce a small number of below-ground points in a scan.
 
-Supplied scenes provide no intensity. Intensity and no-return-ray simulation are **Not yet
-implemented.** See [NuRec LiDAR simulation](../development/TODO.md#nurec-lidar-simulation). Inserted
-objects appear in LiDAR with [scene insertion](#scene-insertion). Composite insertion changes camera
-images only.
+Supplied scenes provide no intensity. Intensity and no-return-ray simulation are
+**Not yet implemented.** See
+[NuRec LiDAR simulation](../development/TODO.md#nurec-lidar-simulation).
+Inserted objects appear in LiDAR with [scene insertion](#scene-insertion). Composite insertion
+changes camera images only.
 
 **Not yet implemented.** Offline renders of a dataset's first frame while LiDAR is enabled. See
 [TODO](../development/TODO.md#nurec-offline-lidar-sampling).
 
 ### Recorded past observations
 
-After reset, `observe_recorded_at(time_us, sensor_ids)` reads a negative integer offset from the run
-origin. Pass `()` to read only the recorded pose without loading or rendering sensors.
-The returned `RecordedAcquisition` contains `observation`, `physical_state`, `sensor_geometry`
-and `object_visibility`. Geometry covers only the selected cameras. A pose-only read returns
-empty geometry and visibility. NuRec
-interpolates recorded ego and actor poses between dataset grid points. CARLA retains only the
-required sensor captures and poses from its prescribed pre-roll. Recorded replay cannot supply past
-observations. History reads preserve the current world, clock and capture and reject insufficient
-source data.
+After reset, `observe_recorded_at(time_us, sensor_ids)` reads a negative integer offset from the
+run origin. Pass `()` to read only the recorded pose without loading or rendering sensors.
+NuRec interpolates recorded ego and actor poses between dataset grid points. CARLA reads the
+requested captures and poses from its prescribed pre-roll. Reads return independent values
+without changing the live world, clock or capture, and reject insufficient source data.
+See the [recorded acquisition contract](../reference/python-api.md#avsectesterclosed_loopsimulatorsbase)
+for returned fields.
 
 The [recorded-input requirement](driving-systems.md#recorded-input-history) controls selection
-and reads, including simulator observation lead time. Returned values are independent of the
-current world.
+and reads, including simulator observation lead time.
 
-Past captures use recorded ego poses and actors, including the same short-track filtering as current
-captures. Objects installed during reset or setup use those recorded poses with the configured
-insertion mode. Later insertions and actor overrides are excluded. Past captures bypass stage hooks,
-localization and sensor attack actions. Sensor corruptions use each sensor's acquisition time. The
-runner delivers this context as described in
-[driving history](driving-systems.md#recorded-input-history). See
-[initialization records](../reference/runtime.md#initialization) and
-[environment randomness](environments.md#randomness).
+Past captures use recorded ego poses and actors, with the same short-track filtering as current
+captures. Objects installed during reset or setup use recorded poses and the configured
+insertion mode. Later insertions and actor overrides are excluded. Recorded context processing
+follows [driving history](driving-systems.md#recorded-input-history).
 
 ### Navigation
 
 Map navigation matches the recorded ego path to driving lanes and extends the route through
 successors. Every capture projects the current physical ego origin onto that route and provides
-forward points in ego coordinates. Navigation expresses intent. It does not constrain the produced
-or executed command.
+forward points in ego coordinates. Navigation expresses intent. It does not constrain the
+produced or executed command.
 
-Recorded-route mode uses the recording without extension. Disabled navigation supplies no route. A
-map route needs driving lanes. Folded or inconsistent routes are rejected by `validate_start` so
-selection can record the reason. With loaded metadata, an invalid segment fails preparation.
+Recorded-route mode uses the recording without extension. Disabled navigation supplies no route.
+A map route needs driving lanes. Folded or inconsistent routes are rejected by `validate_start`
+so selection can record the reason. With loaded metadata, an invalid segment fails preparation.
 Algorithm parameters and constraints are in the [navigation API](../reference/python-api.md).
 
 ### Ground contact
 
-The runtime retains a three-dimensional ego pose. Ground contact fits the predicted box bottom to
-the selected scene mesh after each dynamics step. Rejected corrections retain the prediction.
-Termination events count failures by reason. Disabling physical updates retains the dynamics
-prediction.
+The runtime retains a three-dimensional ego pose. Ground contact fits the predicted box bottom
+to the selected scene mesh after each dynamics step. Rejected corrections retain the prediction.
+Termination events count failures by reason. Disabling physical updates retains the
+dynamics prediction.
 
-The full scene mesh may include roadside objects. A ground-only mesh avoids using those surfaces for
-ego contact where that asset is available. Ground contact is an approximate fit rather than a
-penetration solver. It does not correct traffic actors.
+The full scene mesh may include roadside objects. A ground-only mesh avoids using those surfaces
+for ego contact where that asset is available. Ground contact is an approximate fit rather than
+a penetration solver. It does not correct traffic actors.
 
-With `force_gt_duration_us`, reset prepares a recorded reference trajectory using AlpaSim's
-event-loop timestamp union. Physics corrections use `force_gt_blend` alpha and are evaluated once
-per reference node when that node is used. Nodes with zero alpha and runs without physics use
-recorded poses directly. Failure counts include only corrections actually evaluated.
-The controller follows this reference and its dynamics align to the recording during force-GT and
-at handoff.
+### Recorded motion
 
-Ego trajectory nodes are committed control targets and `pose_reporting_interval_us` reports.
-Their poses come from the blended trajectory. Frame endpoints and LiDAR scan endpoints interpolate
-these nodes with linear translation and quaternion slerp, following AlpaSim's sensorsim service.
-Movable traffic nodes contain recorded poses at control targets, following AlpaSim's physics and
-step events. Camera frames interpolate neighboring traffic nodes, as in its camera event.
-Static actors baked into the reconstruction retain native geometry.
+With `force_gt_duration_us`, the controller follows a recorded reference trajectory. Dynamics
+align to the recording during recorded motion and at handoff. With physics enabled, reference
+poses blend from recorded poses toward ground-corrected poses over that duration. Zero-weight
+poses and runs without physics use recorded poses directly.
 
-Traffic hands over at the runtime origin plus `force_gt_duration_us + decision_period_us`.
-AlpaSim applies this formula from its session start, `egomotion_context_start_us`. AVSecTester
-starts the session at the run origin.
+Frame and scan endpoints interpolate the ego's control/report poses and the actors' control
+poses. See [recorded-motion execution](../reference/runtime.md#planner-delay-and-recorded-motion)
+for command and decision semantics.
 
 ### Camera resolution
 
@@ -353,9 +343,9 @@ camera's native model raises `ValueError`.
 
 Camera exposure uses `shutter_duration_us`. Zero selects an instantaneous frame.
 
-The lens includes its f-theta model and recorded windshield distortion. Camera projection, mesh
-depth and object placement share the resulting geometry. Camera coordinate conventions and models
-are specified in the [Python API](../reference/python-api.md).
+The lens includes its f-theta model and recorded windshield distortion. Camera projection,
+mesh depth and object placement share the resulting geometry. Camera coordinate conventions
+and models are specified in the [Python API](../reference/python-api.md).
 
 ### Move recorded actors
 
@@ -363,14 +353,14 @@ Only controllable tracks can be moved by NRE. Parked tracks stay at recorded pos
 `set_actor_state` rejects them. Short controllable tracks are filtered by `min_track_duration_s`.
 Zero disables filtering.
 
-Filtered controllable tracks are absent from world snapshots, sensor actors, depth and metrics. All
-captures and probes hide their recorded render instances below the scene. Parked tracks are never
-duration-filtered.
+Filtered controllable tracks are absent from world snapshots, sensor actors, depth and metrics.
+All captures and probes hide their recorded render instances below the scene. Parked tracks are
+never duration-filtered.
 
 An accepted override changes world state immediately and camera state at the next capture. Its
 explicit world velocity advances the actor at fixed orientation until reset or another override.
-`control_actor` is unsupported. Without traffic simulation, checkpoints preserve actor overrides.
-Restoring a checkpoint creates a new capture of the restored state.
+`control_actor` is unsupported. Without traffic simulation, checkpoints preserve actor
+overrides. Restoring a checkpoint creates a new capture of the restored state.
 
 **Not yet implemented.** Checkpoint restoration with active render hooks. See
 [TODO](../development/TODO.md#nurec-checkpoint-restoration-with-active-render-hooks).
@@ -380,16 +370,17 @@ Restoring a checkpoint creates a new capture of the restored state.
 Enable `AlpaSimTraffic` through `simulator.options.traffic`. YAML, timing and history follow
 [Reactive traffic configuration](../reference/configuration.md#reactive-traffic).
 
-World actors begin with unfiltered recorded states, then use returned controllable-session poses,
-then explicit overrides. Parked tracks stay at recorded poses within recorded support. Sessions
-include duration-qualified tracks with nonempty clipped history. A first override backfills
-constant-velocity history and subsequent requests resend its complete history.
+World actors begin with unfiltered recorded states, then use returned controllable-session
+poses, then explicit overrides. Parked tracks stay at recorded poses within recorded support.
+Sessions include duration-qualified tracks with nonempty clipped history. A first override
+backfills constant-velocity history and subsequent requests resend its complete history.
 
+Traffic hands over at the run origin plus `force_gt_duration_us` plus the decision period.
 Trajectories are not smoothed. Offline candidate rollouts also require the service.
 
-**Not yet implemented.** Fitting traffic actors to the selected ground mesh, checkpointing traffic
-sessions and controlling CATK sampling through the run seed. See [Reactive
-traffic](../development/TODO.md#reactive-traffic).
+**Not yet implemented.** Fitting traffic actors to the selected ground mesh, checkpointing
+traffic sessions and controlling CATK sampling through the run seed. See
+[Reactive traffic](../development/TODO.md#reactive-traffic).
 
 ### Ego dynamics
 
@@ -397,10 +388,11 @@ traffic](../development/TODO.md#reactive-traffic).
 |---|---|---|
 | `KinematicBicycle` | Actuator | Integrates a kinematic bicycle |
 | `TrajectoryFollower` | Trajectory | Follows planned positions ideally |
-| `AlpaSimController` | Trajectory | Uses AlpaSim's controller and vehicle model |
+| `AlpaSimController` | Trajectory | Tracks a trajectory with AlpaSim's controller and vehicle model |
 
-NuRec initializes longitudinal/lateral speed, yaw rate and acceleration from the recorded trajectory
-before resetting dynamics. The three-dimensional ego geometry still comes from the dataset.
+NuRec initializes longitudinal/lateral speed, yaw rate and acceleration from the recorded
+trajectory before resetting dynamics. The three-dimensional ego geometry still comes from
+the dataset.
 
 `AlpaSimController` uses AlpaSim Ford Fusion vehicle parameters.
 
@@ -410,27 +402,18 @@ original rig-frame reference using its physical pose history. `AlpaSimController
 conversion inside the native controller. `TrajectoryFollower` uses its own bounded pose history.
 The controller tracks the full forecast and need not execute its first planned acceleration exactly.
 
-A custom dynamics component supplies `step`, with optional initialization, native reports and
+A custom dynamics component supplies `step`, with optional initialization, reports and
 recorded-motion alignment described in the
 [dynamics API](../reference/python-api.md#avsectesterclosed_loopsimulatorsego_dynamics).
-Intermediate reports follow `pose_reporting_interval_us`, independently of
-sensor clocks, matching AlpaSim's controller reporting schedule. Changing camera frequency does
-not change integration. Changing the reporting interval can change native integration steps and
-ego motion. Report timestamps come from the integer scheduler clock rather than cumulative
-floating point increments. Each runtime receives its own dynamics copy.
-
-`EgoMotion.at(time_us)` interpolates between neighboring reports and returns an independent state.
-`SimulatorRuntime.advance_interval` accepts reporting times and advances one interval. Publish a
-timestamp with `capture_at(time_us, ())`, then read physical truth with `state()` without another
-controller call. See the [dynamics API](../reference/python-api.md) for signatures and errors.
+Each runtime receives its own dynamics copy. Intermediate reports follow
+`pose_reporting_interval_us` independently of sensor clocks, and changing that interval can
+change ego motion.
 
 ### Mesh depth
 
 Mesh depth combines archived static surfaces and current actor cuboids. Calibrated camera rays keep
 the nearest hit, expressed as optical-axis depth. Missing hits are infinite. Actor extents must be
-known. Views and depth are built when needed. Only cameras containing a projected inserted object
-need depth for object composition. Reading `render_request` alone does not request depth. Views
-describe the capture time, independently of later world state.
+known. Depth is computed on demand for the captured viewpoint.
 
 Mesh content is not classified or erased when an actor moves. Archived vehicle geometry can
 therefore continue to occlude its recorded location. Cuboid silhouettes can differ from rendered
@@ -439,32 +422,30 @@ vehicles. Rendered probes instead measure the reconstruction's visibility direct
 ### Rendered-probe occlusion
 
 Opaque white and black probe copies measure whether scene content hides inserted surfaces. Only
-sufficiently opaque asset pixels contribute probes. The renderer requires `asset_directory` to be
-visible inside the NRE service. Path and mount rules are in
-[Configuration](../reference/configuration.md#nurec-closed-loop-settings).
+sufficiently opaque asset pixels contribute probes. The renderer requires `asset_directory`
+to be visible inside the NRE service. Path and mount rules are
+in [Configuration](../reference/configuration.md#nurec-closed-loop-settings).
 
-A captured `composition.plan` already contains this measured visibility. An arbitrary replacement
-object list needs a fresh render request. `SensorView.composite_plan` cannot obtain new
-reconstruction probes from a detached view. Geometry mode can build plans from its supplied depth
-and actors.
+A captured `composition.plan` already contains this measured visibility. An arbitrary
+replacement object list needs a fresh render request. `SensorView.composite_plan` cannot obtain
+new reconstruction probes from a detached view. Geometry mode can build plans from its supplied
+depth and actors.
 
 ## Recorded playback
 
-`RecordedReplaySimulator` captures supported dataset frames while ego and other actors follow their
-recorded motion. nuScenes uses a nominal scheduler period of 500000 microseconds. Observation `t`
-and `frame` preserve recorded values, including timestamp jitter. Commands do not change that
-trajectory. Only default `runs.timing` settings are supported. A configured decision period must
-equal the nominal interval. Intermediate frames, shutter exposure, pose reporting, planner delay
-and force-GT settings are rejected before replay initialization. It supports camera aliases and
-shared world-object composition. It provides no traffic-light states. Environment support follows
+`RecordedReplaySimulator` captures supported dataset frames while ego and other actors follow
+their recorded motion. Commands do not change that trajectory. nuScenes uses a nominal scheduler
+period of 500000 microseconds. Timestamp representation follows
+[Runtime](../reference/runtime.md#one-decision), and timing support is listed in
+[Scheduling](../reference/configuration.md#scheduling). It supports camera aliases and shared
+world-object composition. It provides no traffic-light states. Environment support follows
 [Configuration](../reference/configuration.md#environment).
 
 ## Write a custom simulator
 
 Subclass `Simulator` for configuration and `SimulatorRuntime` for native world operations.
 Declare supported datasets, commands and timing capabilities, then implement the native lifecycle
-hooks in the
-[simulator API contract](../reference/python-api.md#avsectesterclosed_loopsimulatorsbase).
+hooks in the [simulator API contract](../reference/python-api.md#avsectesterclosed_loopsimulatorsbase).
 [Architecture](../concepts/architecture.md#world-ownership) defines world ownership and isolation.
 
 ## Next steps

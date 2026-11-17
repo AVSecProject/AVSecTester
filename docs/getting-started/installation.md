@@ -118,9 +118,10 @@ imports this checkout without installing the `avsectester` package, which requir
 
 Obtain access to the
 [NuRec dataset](https://huggingface.co/datasets/nvidia/PhysicalAI-Autonomous-Vehicles-NuRec) and
-place the single-scene example at
-`data/nurec/023b7fcc-671c-40e3-9bd2-c66b0b073fbc/023b7fcc-671c-40e3-9bd2-c66b0b073fbc.usdz`.
-Stop-sign configurations use `data/nurec/26.01_release` or `data/nurec/26.04_release`.
+place its 26.01 and 26.04 sample sets at `data/nurec/26.01_release` and
+`data/nurec/26.04_release`. Stop-sign configurations use either release. The physical patch,
+NuRec image insertion and speed-feedback configurations use scene
+`023b7fcc-671c-40e3-9bd2-c66b0b073fbc` from the 26.01 release.
 Place the nuScenes v1.0-trainval release under `data/nuscenes`, containing `samples/`,
 `sweeps/`, `maps/` and `v1.0-trainval/`. The
 [configuration data column](../examples/README.md#configurations) lists data and weights for

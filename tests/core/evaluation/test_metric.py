@@ -14,7 +14,7 @@ from avsectester.evaluation import (
     StopLineMetrics, TreatmentPair,
     TrajectoryDeviation, UnavailableMetricValue, signed_stop_line_distances,
 )
-from avsectester.runlog import EventRecord, RunLog
+from avsectester.runlog import CaptureRecord, EventRecord, RunLog
 from avsectester.maps import ScenarioMap, StopLine
 from avsectester.rendering import ObjectVisibility
 from avsectester.implemented_attacks.stop_sign_patch_attack.metrics import (
@@ -293,8 +293,6 @@ def test_signed_stop_line_distances():
 
 
 def test_detection_acquisition_truth(make_log, make_actor, make_group):
-    from avsectester.runlog import CaptureRecord
-
     log = make_log([2.], actors={"vehicle": make_actor(40.)}, detections=[
         Detection((10., 0., 0.), (4., 2., 2.), 0., "vehicle")])
     step = log.steps[0]

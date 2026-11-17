@@ -7,12 +7,18 @@ import numpy as np
 import pytest
 
 from avsectester.closed_loop.avstacks.base import (
-    CommandCompatibilityError, ObservationPipeline, validate_command_compatibility,
+    AVStack, CommandCompatibilityError, ObservationPipeline, validate_command_compatibility,
 )
+from avsectester.closed_loop.timing import HistoryRequirement
 from avsectester.closed_loop.hooks import Hook, HookSet
 from avsectester.closed_loop.simulators.ego_dynamics import PlanarEgoState
 from avsectester.data_types import StateEstimate
 from tests.fakes import ConstantAVStack, DeceleratingAVStack, MemorySimulator
+
+
+def test_required_history():
+    assert AVStack.required_history({}) == HistoryRequirement()
+    assert ConstantAVStack.required_history({"unrelated": 1}) == ConstantAVStack.history
 
 
 def test_observation_pipeline():

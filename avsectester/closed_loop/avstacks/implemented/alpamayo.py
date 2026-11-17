@@ -18,6 +18,7 @@ import os
 import sys
 from collections import deque
 from collections.abc import Iterable, Mapping
+from inspect import signature
 from typing import Any, ClassVar
 from pathlib import Path
 
@@ -106,18 +107,14 @@ ALPASIM_CAMERA_IDS = (
 'Cameras of AlpaSim\'s Alpamayo 1.5 driver configuration.'
 
 
-_DEFAULT_CONTEXT_LENGTH = 4
-_DEFAULT_FRAME_SUBSAMPLE = 1
-
-
 class AlpamayoAVStack(AVStack):
     """Camera policy with timestamped acquisition history and model-visible navigation.
 
     The framework supplies pose history before the latest delivered image and camera captures
     for the configured context. Defaults are four context frames and a subsample factor of one.
-    Frames are selected newest-first by ``frame_subsample``, then passed oldest-first, matching
-    AlpaSim's FrameCache. Pose estimates follow the controller reporting clock.
-    AlpaSim's model resamples the timestamped pose history at its own required spacing.
+    Frames are selected newest-first by ``frame_subsample``, then passed oldest-first.
+    Pose estimates follow the controller reporting clock.
+    The model resamples the timestamped pose history at its required spacing.
     ``camera_ids`` defaults to AlpaSim's Alpamayo 1.5 cameras: front wide, front tele and both
     cross cameras.
     ``seed`` is the run seed, which configuration loading supplies. Like AlpaSim's driver, a
@@ -134,8 +131,9 @@ class AlpamayoAVStack(AVStack):
     @classmethod
     def required_history(cls, options: Mapping[str, Any]) -> HistoryRequirement:
         """Recorded pose duration and camera samples needed by the configured context."""
-        length = options.get("context_length", _DEFAULT_CONTEXT_LENGTH)
-        subsample = options.get("frame_subsample", _DEFAULT_FRAME_SUBSAMPLE)
+        defaults = signature(cls).parameters
+        length = options.get("context_length", defaults["context_length"].default)
+        subsample = options.get("frame_subsample", defaults["frame_subsample"].default)
         require_positive_integer(length, "context_length")
         require_positive_integer(subsample, "frame_subsample")
         return HistoryRequirement(duration_us=1_500_000, samples=(length - 1) * subsample + 1)
@@ -145,8 +143,8 @@ class AlpamayoAVStack(AVStack):
         checkpoint_path: str | Path | None = None,
         camera_ids: list[str] | None = None,
         device: str = "cuda:0",
-        context_length: int = _DEFAULT_CONTEXT_LENGTH,
-        frame_subsample: int = _DEFAULT_FRAME_SUBSAMPLE,
+        context_length: int = 4,
+        frame_subsample: int = 1,
         output_frequency_hz: int = 10,
         model: Any | None = None,
         seed: int | None = None,

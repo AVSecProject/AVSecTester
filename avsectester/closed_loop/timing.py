@@ -4,14 +4,38 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass, field
 from numbers import Real
-from typing import Any
+from typing import Any, NoReturn
 import math
 
 from avsectester.validation import (
     require_nonnegative_integer, require_positive_integer, timestamp_to_microseconds,
 )
+
+
+class _ReadOnlyMapping(dict):
+    """Read-only insertion-ordered mapping that pickles, deep-copies and serializes as a dict.
+
+    A shallow copy returns a writable dict, like ``dict.copy``, so snapshot tools that copy a
+    mapping and then fill it can record its contents.
+    """
+
+    def _deny_mutation(self, *args: Any, **kwargs: Any) -> NoReturn:
+        raise TypeError("Sensor timing mappings are read-only")
+
+    __setitem__ = __delitem__ = clear = pop = popitem = _deny_mutation
+    setdefault = update = __ior__ = _deny_mutation
+
+    def __reduce__(self) -> tuple[type[_ReadOnlyMapping], tuple[dict[Any, Any]]]:
+        return type(self), (dict(self),)
+
+    def __copy__(self) -> dict[Any, Any]:
+        return dict(self)
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> _ReadOnlyMapping:
+        return type(self)(deepcopy(dict(self), memo))
 
 
 def seconds_to_microseconds(seconds: float) -> int:
@@ -48,7 +72,7 @@ class SensorTiming:
         return index * self.resolved_frame_interval_us(decision_period_us)
 
     def shutter_range_us(self, index: int, decision_period_us: int) -> range:
-        """Half-open shutter interval, matching Clock.ith_trigger with first_end_us=0."""
+        """Half-open shutter interval ending at the frame's scheduled end time."""
         end = self.frame_end_us(index, decision_period_us)
         return range(end - self.shutter_duration_us, end)
 
@@ -95,7 +119,7 @@ class HistoryRequirement:
 
 @dataclass(frozen=True)
 class TimingConfiguration:
-    """AlpaSim timing parameters with defaults preserving the original decision loop."""
+    """Scheduling parameters with decision-rate frames and zero delays by default."""
     decision_period_us: int | None = None
     sensors: Mapping[str, SensorTiming] = field(default_factory=dict, hash=False)
     pose_reporting_interval_us: int = 0
@@ -117,7 +141,7 @@ class TimingConfiguration:
                 raise ValueError("Sensor timing IDs must be nonempty strings")
             if not isinstance(timing, SensorTiming):
                 raise TypeError("Sensor timing values must be SensorTiming")
-        object.__setattr__(self, "sensors", dict(self.sensors))
+        object.__setattr__(self, "sensors", _ReadOnlyMapping(self.sensors))
 
 
 def reporting_timestamps(start_us: int, end_us: int, interval_us: int) -> tuple[int, ...]:

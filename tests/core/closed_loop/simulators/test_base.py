@@ -11,10 +11,38 @@ from avsectester.data_types import Control
 from avsectester.rendering import MeshAsset, MeshPart, PlacedObject, composite_objects
 from avsectester.closed_loop.hooks import Hook, HookSet
 from avsectester.closed_loop.simulators.base import DeploymentPlan, SensorGeometry, UnsupportedStartError
+from avsectester.closed_loop.simulators.ego_dynamics import PlanarEgoState
+from avsectester.geometry.poses import rotation_matrix
 from avsectester.closed_loop.timing import TimingConfiguration
 from avsectester.closed_loop.simulators.nurec import NuRecRenderer, NuRecSimulator
 from avsectester.closed_loop.simulators.recorded import RecordedReplaySimulator
 from tests.fakes import CAMERA, CAM_FROM_WORLD, ConstantAVStack, MemoryDataset, MemorySimulator, actor_state
+
+
+def test_interpolate_vehicle_state():
+    left = actor_state((0., 0., 0.), 2.)
+    right_pose = np.eye(4)
+    right_pose[:3, :3] = rotation_matrix((0., 0., 90.))
+    right_pose[:3, 3] = (4., 2., 0.)
+    right = replace(left, pose=right_pose, velocity=(6., 0., 0.))
+    expected = np.eye(4)
+    expected[:3, :3] = rotation_matrix((0., 0., 45.))
+    expected[:3, 3] = (2., 1., 0.)
+    with MemorySimulator().create_runtime() as runtime:
+        actor = runtime.interpolate_vehicle_state(left, right, .5, 50000)
+        np.testing.assert_allclose(actor.pose, expected, atol=1e-12)
+        assert actor.velocity == (4., 0., 0.)
+        matrix = runtime.interpolate_vehicle_state(left.pose, right.pose, .5, 50000)
+        np.testing.assert_allclose(matrix, expected, atol=1e-12)
+        planar = runtime.interpolate_vehicle_state(
+            PlanarEgoState(x=0., y=0., yaw=np.deg2rad(170.), speed=2., t=0.),
+            PlanarEgoState(x=4., y=2., yaw=np.deg2rad(-170.), speed=6., t=.1), .5, 50000)
+        assert planar.x == 2. and planar.y == 1. and planar.speed == 4.
+        assert planar.yaw == pytest.approx(np.pi)
+        assert planar.t == .05
+        np.testing.assert_array_equal(left.pose, np.eye(4))
+        with pytest.raises(TypeError, match="same vehicle-state representation"):
+            runtime.interpolate_vehicle_state(left, right.pose, .5, 50000)
 
 
 def test_validate_start():
@@ -455,6 +483,11 @@ def test_observe_recorded_at(make_object_in_front):
             np.testing.assert_array_equal(runtime.observe().sensor_data["front"], current.sensor_data["front"])
             np.testing.assert_array_equal(runtime.state().ego.pose, state.ego.pose)
             assert runtime.clock.t == state.t
+            runtime.remove_object("sign")
+            runtime.insert_object("later", asset, world_from_object)
+            historical = runtime.observe_recorded_at(-100000)
+            assert historical.physical_state.objects.keys() == {"sign"}
+            np.testing.assert_array_equal(historical.observation.sensor_data["front"], pristine)
             with pytest.raises(ValueError, match="precedes available source history"):
                 runtime.observe_recorded_at(-400000)
     geometries = {sensor: SensorGeometry(sensor, CAMERA, CAM_FROM_WORLD)
@@ -463,7 +496,7 @@ def test_observe_recorded_at(make_object_in_front):
         runtime.reset(start)
         capture = runtime.observe_recorded_at(-100000, ("right", "front"))
         assert list(capture.observation.sensor_data) == ["front", "right"]
-        assert list(capture.sensor_geometry) == ["right", "front"]
+        assert capture.sensor_geometry.keys() == {"right", "front"}
     with MemorySimulator(can_observe_past=False).create_runtime() as runtime:
         runtime.reset(start)
         with pytest.raises(NotImplementedError, match="recorded acquisition history"):

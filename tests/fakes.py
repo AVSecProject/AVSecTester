@@ -6,7 +6,7 @@ doubles below replace only software and hardware outside this repository.
 """
 from __future__ import annotations
 
-from copy import deepcopy
+from copy import copy, deepcopy
 from collections import deque
 from types import ModuleType, SimpleNamespace
 import sys
@@ -19,14 +19,17 @@ import numpy as np
 from avsectester.attack import Attack
 from avsectester.attack.runtime import AttackRuntime
 from avsectester.closed_loop.avstacks.base import AVStack
-from avsectester.closed_loop.timing import HistoryRequirement
+from avsectester.closed_loop.simulators.ego_dynamics import PlanarEgoState
+from avsectester.closed_loop.timing import HistoryRequirement, TimingCapabilities
 from avsectester.data_types import (ActorState, Control, DeliveredAcquisition, Detection,
                                     Observation, TimedStateEstimate, WorldSnapshot)
 from avsectester.closed_loop.simulators.base import SensorGeometry, SensorView, Simulator, SimulatorRuntime
 from avsectester.closed_loop.simulators.nurec.renderer import Renderer
 from avsectester.datasets import Dataset, FrameData, FrameReference, ScenarioDescriptor, ScenarioStart
 from avsectester.geometry.cameras import BODY_FROM_OPTICAL, PinholeCamera
+from avsectester.geometry.poses import interpolate_transform
 from avsectester.maps import Lane, ScenarioMap, StopLine, TrafficControl
+from avsectester.serialization import DEFAULT_REGISTRY
 
 
 CAMERA = PinholeCamera(np.array([[50., 0., 50.], [0., 50., 40.], [0., 0., 1.]]), 100, 80)
@@ -178,8 +181,6 @@ class MemorySimulator(Simulator):
 
     @property
     def timing_capabilities(self):
-        from avsectester.closed_loop.timing import TimingCapabilities
-
         return TimingCapabilities(captures_between_decisions=self.captures_between_decisions,
                                   motion_reports=True, recorded_ego_motion=self.can_replay,
                                   camera_exposure=True)
@@ -249,8 +250,6 @@ class MemorySimulatorRuntime(SimulatorRuntime):
                                         if key in selected}}, ego_speed=self.speed)
 
     def _recorded_ego(self, position):
-        from avsectester.geometry.poses import interpolate_transform
-
         left = int(position)
         actor = self.source_start.recorded_ego[left]
         if position == left:
@@ -266,41 +265,30 @@ class MemorySimulatorRuntime(SimulatorRuntime):
         return self.source_start.frame.position + grid + remainder / self.decision_period_us
 
     def _recorded_pose_state(self, time_us):
-        from avsectester.closed_loop.simulators.ego_dynamics import PlanarEgoState
-
         position = self._recorded_position(time_us)
-        timestamp_us = time_us
         ego = self._recorded_ego(position)
         speed = float(np.linalg.norm(ego.velocity))
         state = PlanarEgoState(x=float(ego.pose[0, 3]), y=float(ego.pose[1, 3]),
                               yaw=float(np.arctan2(ego.pose[1, 0], ego.pose[0, 0])),
-                              speed=speed, t=timestamp_us / 1e6)
-        return WorldSnapshot(timestamp_us / 1e6, time_us // self.decision_period_us,
+                              speed=speed, t=time_us / 1e6)
+        return WorldSnapshot(time_us / 1e6, time_us // self.decision_period_us,
                              state, speed, ego=ego)
 
     def _recorded_state(self, time_us):
         return replace(self._recorded_pose_state(time_us), actors=deepcopy(self.simulator.initial_actors))
 
     def _observe_recorded(self, time_us, sensors):
-        from avsectester.closed_loop.simulators.ego_dynamics import PlanarEgoState
-
         position = self._recorded_position(time_us)
-        timestamp_us = time_us
-        ego = self._recorded_ego(position)
+        state = self._recorded_pose_state(time_us)
         selected = self.sensors if sensors is None else set(sensors)
         images = {sensor: np.full((geometry.camera.height, geometry.camera.width, 3),
                                   20 + int(position), np.uint8)
                   for sensor, geometry in self.simulator.camera_geometries.items() if sensor in selected}
-        velocity = np.asarray(ego.velocity, dtype=float)
         return Observation(
-            timestamp_us / 1e6, time_us // self.decision_period_us,
+            state.t, state.frame,
             {**images, **{key: deepcopy(value) for key, value in self.simulator.extra_sensors.items()
                          if key in selected}},
-            vehicle_state=PlanarEgoState(x=float(ego.pose[0, 3]), y=float(ego.pose[1, 3]),
-                                  yaw=float(np.arctan2(ego.pose[1, 0], ego.pose[0, 0])),
-                                  speed=float(np.linalg.norm(velocity)),
-                                  t=timestamp_us / 1e6),
-            ego_speed=float(np.linalg.norm(velocity)),
+            vehicle_state=state.vehicle_state, ego_speed=state.ego_speed,
         )
 
     def _recorded_sensor_geometry(self, time_us, sensor):
@@ -353,8 +341,6 @@ class MemorySimulatorRuntime(SimulatorRuntime):
         self.motion_end_us = self._interval.end_us
 
     def _reported_state_at(self, time_us):
-        from avsectester.geometry.poses import interpolate_transform
-
         first, last = self.motion_start, self.motion_end
         if time_us == self.motion_end_us:
             return deepcopy(last)
@@ -1309,9 +1295,6 @@ class CarlaNativeBoundary:
 
 def fake_carla_recording_registry():
     """Register fake SDK records through the same child-snapshot contract as native avstack."""
-    from copy import copy
-    from avsectester.serialization import DEFAULT_REGISTRY
-
     def snapshot(value, capture_child):
         result = copy(value)
         for name, child in vars(value).items():
@@ -1348,7 +1331,7 @@ def recorded_policy_observations(count=16, start_time=-1.5, time_step=.1, speed=
     initial = observations[origin]
     states = tuple(TimedStateEstimate(round(item.t * 1e6), item.t,
                     item.vehicle_state, item.ego_speed) for item in observations[:origin + 1])
-    samples = tuple(DeliveredAcquisition(state.time_us,  item.t, item.frame,
+    samples = tuple(DeliveredAcquisition(state.time_us, item.t, item.frame,
                    item.sensor_data["front"], item.calibration.get("front"), state,
                    item.frame - origin) for item, state in zip(observations[:origin + 1], states))
     observations[origin] = replace(initial, deliveries={"front": samples}, state_estimates=states)

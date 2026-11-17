@@ -50,6 +50,10 @@ Each runtime composites the asset into the selected captured image. This does no
 collidable actor. [Simulators](../guides/simulators.md) describes insertion and occlusion
 behavior. nuScenes uses recorded playback rather than a reactive driving world.
 
+Supplied image insertion attacks set `active_for_us` to `OnlineContext.decision_period_us`, so
+the insertion covers every due frame in the issuing decision's interval. See
+[action timing](../reference/runtime.md#attack-actions).
+
 This attack modifies only the selected camera image.
 **Not yet implemented.** Insertion into LiDAR or other non-camera sensors. See
 [Non-camera insertion](../development/TODO.md#inserted-objects-in-non-camera-sensors).

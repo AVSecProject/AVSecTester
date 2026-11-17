@@ -137,7 +137,7 @@ class SensorEnvironment:
 
         ``position`` is the containing dataset grid position. ``interval_capture_index``
         gives each due camera's own capture index within that decision interval, starting
-        at zero. Index zero uses the original three-part random seed.
+        at zero. Index zero uses the three-part random seed.
         ``available_sensors`` names the configured streams. A configured camera absent
         from this frame batch is skipped. Other missing cameras raise ``ValueError``.
         """

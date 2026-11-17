@@ -582,7 +582,7 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
                 truth, due, freeze_views=index < count)
 
     def interpolate_vehicle_state(self, left: Any, right: Any, fraction: float, time_us: int) -> Any:
-        """Interpolate native avstack physical vectors and attitude without importing them elsewhere."""
+        """Interpolate native avstack physical vectors and attitude."""
         from avsectester.geometry.poses import (
             interpolate_transform, make_pose, quaternion_to_rotation, rotation_to_quaternion,
         )
@@ -847,10 +847,14 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         ))
 
     def _aligned_sensor_data(self, frame, initial=None, sensor_ids=None):
-        """Wait for this tick's configured sensors, draining older queue entries without ticking."""
+        """Wait for this tick's configured sensors, draining older queue entries without ticking.
+
+        Payloads are returned in configured sensor order, independently of arrival order.
+        """
         manager = self.ego.sensor_data_manager
         pending = {sensor.source_identifier: sensor for sensor in self.ego.sensors.values()
                    if sensor_ids is None or sensor.source_identifier in sensor_ids}
+        order = tuple(pending)
         captured, seen = {}, {}
         for name, payload in (initial or {}).items():
             if name in pending and payload is not None:
@@ -887,7 +891,7 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
                 })
             if pending:
                 time.sleep(0.005)
-        return captured
+        return {name: captured[name] for name in order}
 
     def _apply_map_layers(self, settings: Any) -> None:
         """Load/unload named layers on CARLA's optimized maps before spawning actors."""

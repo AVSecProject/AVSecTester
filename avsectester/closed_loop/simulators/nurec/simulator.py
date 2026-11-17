@@ -365,7 +365,7 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
             raise ValueError(f"Unknown NuRec camera {camera!r}")
         if native_camera not in self._render_requests:
             try:
-                return self._captured_render_request(aliases.get(native_camera, native_camera))
+                return self._latest_render_request(aliases.get(native_camera, native_camera))
             except KeyError:
                 raise RuntimeError(f"No current render request for camera {camera!r}") from None
         return deepcopy(self._render_requests[native_camera])

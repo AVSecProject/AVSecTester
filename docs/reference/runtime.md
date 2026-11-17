@@ -25,19 +25,18 @@ sensor images.
 
 ## One decision
 
-Simulation uses an event queue ordered by `(timestamp_us, priority)`, matching AlpaSim's event
-loop. Frame events precede localization, decisions and propagation at the same timestamp.
-Computation finishes before virtual time advances. Scheduling and duration calculations use
-integer microseconds. NuRec and in-memory `t` values derive from that clock. CARLA preserves its
-native floating timestamps and recorded replay preserves dataset timestamps.
-[Scheduling](configuration.md#scheduling) owns parameter names and defaults.
+Simulation events use integer timestamps and priorities. At the same timestamp, frames precede
+localization, decisions and propagation. Computation finishes before virtual time advances.
+Scheduling and duration calculations use integer microseconds. NuRec and in-memory `t` values
+derive from that clock. CARLA preserves its native floating timestamps and recorded replay
+preserves dataset timestamps. [Scheduling](configuration.md#scheduling) owns parameter names and
+defaults.
 
 Each sensor has an independent `frame_interval_us` clock. Frames end at the origin plus integer
 multiples of that interval. A frame event occurs at its end and applies sensor actions, sensor
-environments and `sensors.post`. Delivery occurs at frame end. Localization runs
-at decision timestamps and `pose_reporting_interval_us` timestamps, using any frames that end
-exactly there. A pose timestamp may have no frames. Frame state estimates interpolate this pose
-trajectory, sharing the same estimate object when their timestamps coincide.
+environments and `sensors.post`. Localization runs at decision timestamps and
+`pose_reporting_interval_us` timestamps, using any frames that end exactly there. A pose
+timestamp may have no frames. Frame state estimates interpolate between estimated poses.
 
 At a decision timestamp:
 
@@ -49,9 +48,8 @@ At a decision timestamp:
 6. Apply command hooks and add the controller reference to the `planner_delay_us` buffer.
 7. Select the buffered reference and propagate one control interval.
 
-Intermediate frame events do not call attack `step`. Persistent sensor actions can affect
-those frames. Intermediate pose events run localization without driving inference. Sensor
-clocks do not determine the controller's integration or intermediate reporting times.
+Intermediate pose events run localization without driving inference. Sensor clocks do not
+determine the controller's integration or intermediate reporting times.
 
 ```mermaid
 flowchart LR
@@ -69,7 +67,7 @@ flowchart LR
 Feedback (`after_step` and `step.end`) uses the next decision timestamp's raw batch, containing
 only frames ending exactly then. It may contain no sensor payloads. The terminal boundary has
 physical state and any due raw frames but performs no further attack step, localization or
-driving inference. Zero-decision runs process the origin and reset the stack without advancing.
+driving inference.
 
 `SimulatorRuntime.configure_timing` sets clocks before reset. `advance_interval` propagates one
 control interval and reports poses on `pose_reporting_interval_us`. `capture_at` reads scheduled
@@ -95,15 +93,13 @@ an empty tuple, so drivers can tell a dropped sensor from one with no frame due.
 first. Read frames through `delivered(sensor_id)` and poses through `estimated_states()`.
 The latest frame reads the current payload and calibration mappings. A frame at the decision's
 pose timestamp reads the current `vehicle_state` and `ego_speed`.
-Earlier estimates stay unchanged.
-Stripped payloads read as `None`. Direct adapter calls synthesize a frame when no delivery record
-exists. Unknown sensors raise `KeyError`.
+Earlier estimates stay unchanged. Stripped payloads read as `None`. See the
+[observation API](python-api.md#avsectesterdata_types) for reading rules and errors.
 
 Convert measurements with their frame's pose, not the decision pose. Observation hooks may
 replace owner fields before inference. At a pose timestamp that also ends frames,
 `localization.pre` edits to payloads and calibration update those frames before delivery.
-Pose-only localization receives an independent raw copy. Removing a model-input sensor raises
-an error only when the recording policy selects that acquisition.
+Removing a model-input sensor raises an error when model-input recording selects its acquisition.
 Raw-only recording can retain a sensor removed from model input.
 
 `AVStack.reset(observation)` receives the first decision input. See
@@ -119,30 +115,22 @@ before it has aged by the delay. Delay does not introduce a recorded-motion star
 `executed_command_issue_time_us` identifies the selected reference's generation time.
 
 Trajectory coordinates retain their generation-time rig frame and timestamps. The controller
-resolves them against its ego trajectory, matching AlpaSim's controller reference handling.
-Actuator commands have no spatial frame.
+resolves them against its ego trajectory. Actuator commands have no spatial frame.
 
-`force_gt_duration_us` independently configures recorded motion. A decision is `force_gt` when
-its target timestamp belongs to the inclusive interval from the origin through the origin plus
-that duration. The duration must be a whole number of decision periods. The controller runs
-against recorded reference motion, then recorded dynamics and physics-blended poses override its
-output. See [NuRec ground contact](../guides/simulators.md#ground-contact) for the blend and
-traffic-session origin conventions. At ego handoff, dynamics are aligned to the recording.
+`force_gt_duration_us` configures recorded motion independently of planning delay. A decision
+is `force_gt` when its target timestamp belongs to the inclusive interval from the origin
+through the origin plus that duration.
 
-During `force_gt`, trajectory systems enqueue a recorded reference. Actuator systems enqueue
-the driver's command because they have no recorded trajectory command. Their physical motion
-still follows the recording. This is the actuator extension to AlpaSim's trajectory interface.
-With `skip_driver_during_force_gt: true`, `ingest(observation)` retains inputs without inference.
-Simulators without `trajectory` in their declared `command_modes` reject that option during a
-positive force-GT period because no command would be available to enqueue.
-Otherwise `__call__` processes them normally. Do not ingest and call the same observation twice.
-`StepRecord.force_gt` identifies recorded-motion decisions. Their `executed_command` is the
-reference actually tracked for trajectory simulators. It is `None` for actuator simulators that
-replay recorded world motion. Driving-system commands still enter the actuator delay buffer.
-`DrivingMetrics.brake_steps`, `StopImpact` and the supplied stop-sign black-box stop-command
-outcome exclude force-GT decisions. Skipping the driver produces
-empty `StepRecord.components` and `not_applied` receipts for actions targeting stages that did not
-run.
+Trajectory simulators enqueue a recorded reference and track it during `force_gt`.
+`StepRecord.executed_command` records that reference. Actuator simulators enqueue the driver's
+command but replay recorded world motion, so their `executed_command` is `None`. Skipping the
+driver produces empty `StepRecord.components` and `not_applied` receipts for actions whose
+stages did not run.
+
+See [NuRec recorded motion](../guides/simulators.md#recorded-motion) for reference trajectories
+and physics blending, [scheduling constraints](configuration.md#scheduling) for driver skipping,
+[driver ingestion](../guides/driving-systems.md#recorded-input-history) for skipped inference,
+and [evaluation](../guides/evaluation.md#built-in-metrics) for decision exclusions.
 
 ### Control visibility
 
@@ -161,20 +149,16 @@ hooks without attack `step` or sensor actions.
 | `SensorAttackAction` | Sensor capture changes, including camera, LiDAR, GNSS and IMU |
 | `AVStackAttackAction` | Driving-system values from `localization.pre` through `command` |
 
-Sensor actions chain in issue order on independent data, preserving the original capture. Native
-wrappers retain calibration and acquisition metadata. Camera buffers remain RGB uint8.
+Sensor actions, including overlapping durations, chain in issue order on independent data.
+They preserve the raw capture and native calibration and acquisition metadata. Camera buffers
+use RGB uint8.
 `SensorAttackAction.active_for_us=0` applies once to the issuing decision's capture.
-`SensorAttackAction` is an ordinary abstract base class. Subclasses may be ordinary classes or
-dataclasses, including frozen dataclasses. Declare `active_for_us` as a class attribute or a
-subclass field. `InsertionAttackAction` exposes it as a constructor field.
 If its sensor has no frame ending then, the action receives `not_applied` with reason
 `sensor_not_acquired_at_issue_time`. It does not modify a cached frame or a later acquisition.
 A positive duration applies at every due capture in `[issue_time, issue_time + duration)`.
-`None` lasts until the run ends. Actions chain by issue order, including overlapping durations.
+`None` lasts until the run ends.
 Each application has its own receipt. An action that expires or stops without encountering a due
-frame receives `not_applied`. Supplied image insertion attacks set `active_for_us` to
-`OnlineContext.decision_period_us`, covering the issuing decision's full interval.
-`OnlineContext.force_gt` reports whether that decision follows recorded motion.
+frame receives `not_applied`.
 No attack step is called at intermediate captures.
 `AVStackAttackAction` rejects `sensors.post`, which remains a normal hook stage. A requested
 `AVStack` stage not reached in that decision makes the decision fail. When some sensor had no
@@ -305,10 +289,11 @@ explicitly registered avstack-library hook.
 ## Contexts and lifecycle
 
 `OnlineContext` exposes `step`, `stage`, `sim_time`, `frame`, `decision_time_us`,
-`decision_period_us` and `force_gt`, with optional subscribed
-`observation` and `physical_state` snapshots. `record_output` writes named output during a run.
-The microsecond fields are set for decision callbacks. Setup and pre-run cleanup can
-leave them `None`. It carries no native runtime or time-advancing service.
+`decision_period_us` and `force_gt`, with optional subscribed `observation` and
+`physical_state` snapshots. `force_gt` reports whether the decision follows recorded motion.
+The microsecond fields are set for decision callbacks. Setup and pre-run cleanup can leave them
+`None`. `record_output` writes named output during a run. The context carries no native runtime
+or time-advancing service.
 Bound `AVStackAttackAction` methods also receive the actual stage value.
 
 `StageContext` exposes `step`, `stage`, `sensor`, `physical_state`, `observation`, `control`, run
@@ -369,12 +354,9 @@ record the frames they actually use in `component_log`. `physical_captures` maps
 latest physical acquisitions up to the decision, including frames removed by input hooks.
 `sensor_geometry` retains recorded cameras when any selected representation keeps them.
 `object_visibility` covers the latest physical acquisitions independently of input hooks.
-Resolve physical evidence through `RunLog.captures` using `physical_captures`.
-
 `detection_sensor` names the detection source. `detection_capture_id` associates detections with
-its latest delivered frame across decisions. Matching truth uses the source's latest physical
-acquisition. An undeclared source uses decision truth. Decisions before a named source first
-delivers are excluded. A run where it never delivers has unavailable detection evidence.
+its latest delivered frame across decisions. See
+[metric evidence](../guides/evaluation.md#built-in-metrics) for how metrics use capture IDs.
 
 `CaptureRecord` records a timestamp's due `sensor_ids`, `frame_ranges_us`,
 raw and final model observations, physical state, viewpoints and object visibility. Frame ranges
@@ -386,21 +368,20 @@ warmup captures, numbered chronologically from `-N` to `-1`. A `DeliveredAcquisi
 The model observation uses each frame's final payload, calibration and estimated pose from
 `delivered(sensor_id)` after localization and `observation` hooks. Owner-field edits apply to the
 latest frame in a sensor's delivery. Earlier frames retain their own processed values. Recording
-finalizes these inputs before stack reset or invocation, including a zero-decision run. Frames
-that do not reach a finalized decision input, including terminal feedback and interrupted input
-processing, retain selected raw data and physical metadata without a model observation.
+finalizes these inputs before stack reset or invocation. Frames that do not reach a finalized
+decision input, including terminal feedback and interrupted input processing, retain selected raw
+data and physical metadata without a model observation.
 
 The manifest stores `format_version=2`. Readers also accept version 1 logs without capture
 records. Sensor retention is applied per sensor acquisition. Both in-memory and read-back
 `StepRecord` delivery entries store metadata without their payloads. Capture records hold the
 selected acquisition payloads. Read them through `RunLog.captures` by `capture_id`.
 Geometry keys follow `recording.sensor_ids` order. Calibration mappings contain only sensors with
-a supplied calibration.
-Recorded sensor payloads can share a snapshot across raw and model input or consecutive captures.
-Shared arrays are read-only, while pose and route snapshots remain independent and writable.
-`Recorder` saves sensor payloads by reference, so callers must not modify them afterwards.
-Call `Recorder.snapshot` first when an independent copy is needed. When using `Recorder`
-directly, record captures before decisions that name their `delivered_captures`.
+a supplied calibration. Runner-recorded sensor payload arrays are read-only and may be shared
+between records. Pose and route snapshots are independent and writable. `Recorder` saves sensor
+payloads by reference, so callers must not modify them afterwards. Call `Recorder.snapshot`
+first when an independent copy is needed. When using `Recorder` directly, record captures before
+decisions that name their `delivered_captures`.
 
 Action requests and receipts distinguish requested changes from applied changes. A receipt's
 outcome is `applied` or `not_applied`, describing the action rather than its driving impact. Every

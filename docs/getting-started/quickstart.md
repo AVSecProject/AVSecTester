@@ -80,8 +80,7 @@ For NuRec, use the same command through `nurec-experiment`:
 docker compose run --rm nurec-experiment run CONFIG.yaml --prepared RESULTS_DIRECTORY
 ```
 
-See [Saved-preparation
-compatibility](../reference/configuration.md#saved-preparation-compatibility).
+See [Saved-preparation compatibility](../reference/configuration.md#saved-preparation-compatibility).
 To continue interrupted preparation or execution, use `--resume`:
 
 ```bash

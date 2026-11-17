@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from avsectester.closed_loop.simulators.recorded import RecordedReplaySimulator
-from avsectester.closed_loop.timing import TimingConfiguration
+from avsectester.closed_loop.timing import SensorTiming, TimingConfiguration
 from avsectester.data_types import Control
 from avsectester.execution.runner import ClosedLoopRunner, RunRequest
 from tests.fakes import ConstantAVStack
@@ -86,8 +86,6 @@ def test_epoch_timestamps(nuscenes_dataset):
 
 
 def test_validate_timing():
-    from avsectester.closed_loop.timing import SensorTiming
-
     simulator = RecordedReplaySimulator()
     simulator.validate_timing(TimingConfiguration())
     simulator.validate_timing(TimingConfiguration(decision_period_us=500000,

@@ -1092,7 +1092,7 @@ Alpamayo camera policy behind the common driving-system interface.
 | Name and signature | Meaning |
 |---|---|
 | `alpamayo_driving_adapter(factory)` | Bind one `policy` component (observation → Control) and no scorers. |
-| `AlpamayoAVStack(checkpoint_path: str \| Path \| None = None, camera_ids: list[str] \| None = None, device: str = "cuda:0", context_length: int = _DEFAULT_CONTEXT_LENGTH, frame_subsample: int = _DEFAULT_FRAME_SUBSAMPLE, output_frequency_hz: int = 10, model: Any \| None = None, seed: int \| None = None)` | Subclass of `AVStack`. Camera policy with timestamped acquisition history and model-visible navigation. |
+| `AlpamayoAVStack(checkpoint_path: str \| Path \| None = None, camera_ids: list[str] \| None = None, device: str = "cuda:0", context_length: int = 4, frame_subsample: int = 1, output_frequency_hz: int = 10, model: Any \| None = None, seed: int \| None = None)` | Subclass of `AVStack`. Camera policy with timestamped acquisition history and model-visible navigation. |
 | `AlpamayoAVStack.provides_detections = False` | Whether decisions expose detections compatible with detection metrics. |
 | `AlpamayoAVStack.decision_time_step: ClassVar[float \| None] = 0.1` | Decision interval in seconds. None leaves the interval unrestricted. |
 | `AlpamayoAVStack.required_history(options: Mapping[str, Any]) -> HistoryRequirement` | Recorded pose duration and camera samples needed by the configured context. |
@@ -1770,7 +1770,7 @@ Implement `_observe_recorded` for those retained ticks, and avoid sensor work fo
 
 For checkpoints, restore native state and call `_restore_clock(time_us)` before acquiring again.
 It resets the current interval, published state and sensor acquisition state to that clock.
-`_captured_render_request(sensor)` returns a detached native request for the latest acquisition
+`_latest_render_request(sensor)` returns a detached native request for the latest acquisition
 without constructing a view. It raises `KeyError` when that sensor has no acquisition.
 
 `interpolate_vehicle_state(left, right, fraction, time_us)` handles actor states, rigid matrices
@@ -1784,9 +1784,9 @@ implementation calls `_sensor_view(sensor)` immediately and retains that view. O
 defer expensive view and depth construction. `_capture_render_request(sensor)` optionally
 freezes native render-request metadata separately from the complete view. Lightweight
 `_sensor_geometry(sensor)` lets object composition reject off-image objects before building
-views or depth. All sensor slots in a capture batch share one physical-state snapshot.
-Declare all configured sensors in `sensors` and only cameras with geometry in `camera_sensors`.
-A camera without a geometric model may render but cannot supply viewpoints or object composition.
+views or depth. Declare all configured sensors in `sensors` and only cameras with geometry in
+`camera_sensors`. A camera without a geometric model may render but cannot supply viewpoints or
+object composition.
 
 `force_gt_duration_us` requires `TimingCapabilities.recorded_ego_motion`. Implement
 `_advance_force_gt_native(control)` to apply recorded motion and any native dynamics alignment.
@@ -1805,13 +1805,12 @@ Past-capable runtimes implement `_observe_recorded(time_us, sensors)`, where `ti
 integer offset from the run origin. Only the selected sensors may be read or rendered. With
 `sensors=()`, the base calls `_recorded_pose_state(time_us)` without sensor work.
 `_recorded_state` supplies physical truth. `_recorded_sensor_geometry` and `_recorded_sensor_view`
-supply camera evidence
-for start-object composition. Return independent values and preserve the live world and clock.
-The public `observe_recorded_at` returns one `RecordedAcquisition` with `observation`,
-`physical_state`, `sensor_geometry` and `object_visibility`. Geometry covers selected due cameras.
-Pose-only reads have empty geometry and visibility. `_recorded_read_complete` can release
-acquisition-only resources after that read. Recorded-input requirements are defined in
-[Driving systems](../guides/driving-systems.md#recorded-input-history).
+supply camera evidence for start-object composition. Return independent values and preserve the
+live world and clock. The public `observe_recorded_at` returns one `RecordedAcquisition` with
+`observation`, `physical_state`, `sensor_geometry` and `object_visibility`. Geometry covers
+selected due cameras. Pose-only reads have empty geometry and visibility.
+`_recorded_read_complete` can release acquisition-only resources after that read. Recorded-input
+requirements are defined in [Driving systems](../guides/driving-systems.md#recorded-input-history).
 
 `frame_range_us(sensor, end_time_us)` returns the actual shutter or scan interval. Override it
 for native scan windows that differ from a camera shutter. The runner uses the same interval
@@ -1891,7 +1890,7 @@ Configured CARLA simulations and their live native-world runtimes.
 | `CarlaSimulatorRuntime(simulator: CarlaSimulator, seed: int \| None = None)` | Subclass of `SimulatorRuntime`. One live CARLA world of a `CarlaSimulator`. |
 | `CarlaSimulatorRuntime.native: dict[str, Any]` | Borrow native world resources, invalidating cached truth before possible edits. |
 | `CarlaSimulatorRuntime.copy_observation(observation: Observation) -> Observation` | Detach mutable payloads, calibration and reference graphs in one copy operation. |
-| `CarlaSimulatorRuntime.interpolate_vehicle_state(left: Any, right: Any, fraction: float, time_us: int) -> Any` | Interpolate native avstack physical vectors and attitude without importing them elsewhere. |
+| `CarlaSimulatorRuntime.interpolate_vehicle_state(left: Any, right: Any, fraction: float, time_us: int) -> Any` | Interpolate native avstack physical vectors and attitude. |
 | `CarlaSimulatorRuntime.canonical_sensor_id(sensor: str) -> str` | Resolve an ego sensor's logical name or source ID to its observation ID. |
 <!-- api:end -->
 
@@ -2235,12 +2234,12 @@ Integer-microsecond clocks and command selection matching AlpaSim runtime.
 | `SensorTiming(frame_interval_us: int \| None = None, shutter_duration_us: int = 0)` | Independent frame interval and shutter duration, with the first frame ending at zero. |
 | `SensorTiming.resolved_frame_interval_us(decision_period_us: int) -> int` | Resolve an unspecified frame interval to the decision period. |
 | `SensorTiming.frame_end_us(index: int, decision_period_us: int) -> int` | Frame end relative to the run origin, including negative recorded context indices. |
-| `SensorTiming.shutter_range_us(index: int, decision_period_us: int) -> range` | Half-open shutter interval, matching Clock.ith_trigger with first_end_us=0. |
+| `SensorTiming.shutter_range_us(index: int, decision_period_us: int) -> range` | Half-open shutter interval ending at the frame's scheduled end time. |
 | `SensorTiming.latest_frame_index(time_us: int, decision_period_us: int) -> int` | Latest frame index whose end is not after the requested offset. |
 | `SensorTiming.frame_index_at(time_us: int, decision_period_us: int) -> int` | Index of an exact frame end, rejecting times off this sensor's clock. |
 | `TimingCapabilities(captures_between_decisions: bool = False, motion_reports: bool = False, recorded_ego_motion: bool = False, camera_exposure: bool = False, base_tick_us: int \| None = None)` | Static simulator support for exposure, intermediate poses and recorded motion. |
 | `HistoryRequirement(duration_us: int = 0, samples: int = 1)` | Recorded context supplied at decision zero, using the closed-loop pose reporting clock. |
-| `TimingConfiguration(decision_period_us: int \| None = None, sensors: Mapping[str, SensorTiming] = dict(), pose_reporting_interval_us: int = 0, planner_delay_us: int = 0, force_gt_duration_us: int = 0, skip_driver_during_force_gt: bool = False)` | AlpaSim timing parameters with defaults preserving the original decision loop. |
+| `TimingConfiguration(decision_period_us: int \| None = None, sensors: Mapping[str, SensorTiming] = dict(), pose_reporting_interval_us: int = 0, planner_delay_us: int = 0, force_gt_duration_us: int = 0, skip_driver_during_force_gt: bool = False)` | Scheduling parameters with decision-rate frames and zero delays by default. |
 | `InitialHistory(payload_times_us: Mapping[str, tuple[int, ...]], pose_times_us: tuple[int, ...], source_start_us: int)` | Recorded payload and pose offsets, with the earliest source needed for exposure. |
 | `initial_history_times(sensor_timings: Mapping[str, SensorTiming], history: HistoryRequirement, decision_period_us: int, *, pose_reporting_interval_us: int = 0) -> InitialHistory` | Recorded frame ends and pose-clock offsets needed before the run origin. |
 <!-- api:end -->
@@ -2705,6 +2704,10 @@ The online phase: one AttackRuntime per run and the attack actions it returns.
 
 #### Constraints and errors
 
+`SensorAttackAction` is an ordinary abstract base class. Subclasses may be ordinary classes or
+dataclasses, including frozen dataclasses. Declare `active_for_us` as a class attribute or a
+subclass field. `InsertionAttackAction` exposes it as a constructor field.
+
 During execution, `setup` must return a sequence of `WorldAttackAction` and `step` a sequence
 of `AttackAction`. Another return value or action type raises `TypeError`. An action the
 selected simulator and driving system cannot apply raises `UnsupportedStageError`: a
@@ -2712,9 +2715,9 @@ selected simulator and driving system cannot apply raises `UnsupportedStageError
 `sensors.post` or an unsupported stage. An `AVStackAttackAction` whose stage is skipped in that
 decision raises `RuntimeError`, unless some sensor had no frame due in that decision or the driver
 was skipped during force-GT. It then receives a `not_applied` receipt. An unknown sensor target
-raises `ValueError`. A one-shot sensor
-action without a frame ending at its issuing decision receives a `not_applied` receipt with
-reason `sensor_not_acquired_at_issue_time`. It never modifies a cached or later frame.
+raises `ValueError`. A one-shot sensor action without a frame ending at its issuing decision
+receives a `not_applied` receipt with reason `sensor_not_acquired_at_issue_time`. It never
+modifies a cached or later frame.
 
 #### See also
 
@@ -3327,8 +3330,7 @@ Validated detector/rollout optimization options and offline dispatch.
 `DetectorPatchOptimization` raises `TypeError` for an optimizer other than `PGD` and
 `ValueError` for an empty `scorer_id` or device, a `samples_per_scene` other than `"all"` or an
 integer of at least four, a
-nonpositive count, deceleration or `progress_interval`, or a `confidence_margin` outside [0, 1].
-During the offline phase, `scorer_id=None` with zero or
+nonpositive count, deceleration or `progress_interval`, or a `confidence_margin` outside [0, 1]. During the offline phase, `scorer_id=None` with zero or
 several differentiable scorers, or a scorer without `sensor_id` or `decision_threshold`, raises
 `ValueError`, and so does a training segment with fewer than four eligible frames. The closest
 trained route distance to the stop line is `d_min = v² / (2a)`, where `a` is

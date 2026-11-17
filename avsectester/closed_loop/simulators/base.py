@@ -861,7 +861,7 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
             slot = self._make_sensor_slot(sensor)
         return slot
 
-    def _captured_render_request(self, sensor: str) -> Any:
+    def _latest_render_request(self, sensor: str) -> Any:
         """Detach the latest acquired native request without building a sensor view."""
         sensor = self.canonical_sensor_id(sensor)
         if sensor not in self._sensor_slots:
@@ -1317,6 +1317,10 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
         acquisition support. Start objects are present, but online actions and hooks are absent.
         Times on the dataset grid preserve the native recorded observation exactly. An empty
         ``sensor_ids`` sequence reads only the recorded pose without loading or rendering sensors.
+        The returned RecordedAcquisition contains the observation, physical state, camera geometry
+        and inserted-object visibility. Geometry contains only the acquired optical cameras.
+        Geometry and visibility are empty for a pose-only read. Returned values are independent
+        of the live world and later recorded-history reads.
         """
         if isinstance(time_us, bool) or not isinstance(time_us, int) or time_us >= 0:
             raise ValueError("Recorded acquisition time must be negative integer microseconds")
