@@ -51,7 +51,6 @@ class OnlineContext:
     observation: Observation | None = None
     physical_state: WorldSnapshot | None = None
     decision_time_us: int | None = None
-    capture_time_us: int | None = None
     decision_period_us: int | None = None
     force_gt: bool = False
     _output_recorder: Callable[[OnlineContext, str, Any], None] | None = field(

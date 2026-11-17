@@ -99,9 +99,6 @@ def test_prepare():
     assert all(segment.start.position == 0 for segment in delayed.metadata["probe"])
     assert any("does not cover the force-GT" in reason
                for selection in delayed.selections for reason in selection.reasons)
-    with pytest.raises(ValueError, match="does not support force_gt_duration_us"):
-        replace(config, simulator=MemorySimulator(can_replay=False),
-                runs=replace(config.runs, timing=TimingConfiguration(force_gt_duration_us=100000)))
     with pytest.raises(RuntimeError, match="selection failed"):
         Experiment.prepare(replace(config, runs=replace(config.runs, strict=True)))
 

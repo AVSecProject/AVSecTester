@@ -118,8 +118,14 @@ class AlpamayoAVStack(AVStack):
     Frames are selected newest-first by ``frame_subsample``, then passed oldest-first, matching
     AlpaSim's FrameCache. Pose estimates follow the controller reporting clock.
     AlpaSim's model resamples the timestamped pose history at its own required spacing.
-    ``seed`` controls deterministic inference per run and decision. Injected models retain
-    their own determinism settings. The checkpoint is explicit or supplied by the environment.
+    ``camera_ids`` defaults to AlpaSim's Alpamayo 1.5 cameras: front wide, front tele and both
+    cross cameras.
+    ``seed`` is the run seed, which configuration loading supplies. Like AlpaSim's driver, a
+    seeded stack loads the model with ``force_determinism`` and seeds each decision from the
+    run seed and the decision count since reset. Unlike AlpaSim's ``seed + count``, the
+    derived seeds of distinct run seeds do not overlap. ``None`` leaves sampling unseeded. An
+    injected ``model`` keeps its own determinism setting.
+    The checkpoint is explicit or supplied by the environment.
     """
 
     provides_detections = False
@@ -321,11 +327,6 @@ class AlpamayoAVStack(AVStack):
             raise ValueError("Alpamayo requires finite ego poses and observation times")
         cls._timestamp(pose[3])
         return pose
-
-    @property
-    def required_sensors(self) -> frozenset[str]:
-        """Cameras required by the loaded policy configuration."""
-        return frozenset(self.camera_ids)
 
     def _history_start_us(self, latest_image_times: Iterable[int]) -> int:
         # AlpaSim anchors planning to the newest image across every configured camera.

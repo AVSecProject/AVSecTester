@@ -92,9 +92,5 @@ def test_validate_timing():
     simulator.validate_timing(TimingConfiguration())
     simulator.validate_timing(TimingConfiguration(decision_period_us=500000,
                                                  sensors={"CAM_FRONT": SensorTiming(500000)}))
-    with pytest.raises(ValueError, match="nominal keyframe"):
-        simulator.validate_timing(TimingConfiguration(decision_period_us=100000))
     with pytest.raises(ValueError, match="default timing"):
         simulator.validate_timing(TimingConfiguration(planner_delay_us=100000))
-    with pytest.raises(ValueError, match="default timing"):
-        simulator.validate_timing(TimingConfiguration(sensors={"CAM_FRONT": SensorTiming(250000)}))

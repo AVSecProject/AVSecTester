@@ -99,12 +99,12 @@ class ObservationPipeline:
             estimate = StateEstimate(seen.vehicle_state, seen.ego_speed)
         estimate = dispatcher.emit("localization.post", estimate)
         dispatcher._require(estimate, StateEstimate, "localization.post")
-        seen = self.with_estimate(seen, estimate)
+        seen = self._with_estimate(seen, estimate)
         dispatcher.observation = seen
         return seen
 
     @staticmethod
-    def with_estimate(observation: Observation, estimate: StateEstimate) -> Observation:
+    def _with_estimate(observation: Observation, estimate: StateEstimate) -> Observation:
         """Replace the model-visible pose and re-express navigation without running hooks."""
         if not isinstance(estimate, StateEstimate):
             raise TypeError("estimate must be StateEstimate")
@@ -178,11 +178,6 @@ class AVStack(_HookBindingMixin, ABC):
         Normal decisions call ``__call__`` instead. Implementations with input caches retain
         their references here. Do not ingest and call the same observation twice.
         """
-
-    @property
-    def required_sensors(self) -> frozenset[str] | None:
-        """Required delivered sensor IDs. None accepts the simulator's configured sensors."""
-        return None
 
     @property
     def command_modes(self) -> frozenset[str] | None:

@@ -74,8 +74,8 @@ driving inference. Zero-decision runs process the origin and reset the stack wit
 `SimulatorRuntime.configure_timing` sets clocks before reset. `advance_interval` propagates one
 control interval and reports poses on `pose_reporting_interval_us`. `capture_at` reads scheduled
 sensor frames using their interpolated physical start/end poses. It never adds integration
-steps. `state_at` reads interpolated physical truth. `sensor_acquisition` returns a sensor's
-latest frame view, retaining its own timestamp and truth.
+steps. Read physical truth with `state()` after publishing a timestamp with `capture_at`.
+Read captured viewpoints with `sensor_view(sensor)`.
 
 World actions returned by a decision apply at `simulator.step.pre`, before interval propagation.
 Their effects appear in later frames. `InsertObject` has zero setup ticks. Setup insertions are
@@ -94,8 +94,8 @@ an empty tuple, so drivers can tell a dropped sensor from one with no frame due.
 `state_estimates` contains new localization results through the decision timestamp, oldest
 first. Read frames through `delivered(sensor_id)` and poses through `estimated_states()`.
 The latest frame reads the current payload and calibration mappings. A frame at the decision's
-pose timestamp reads the current `vehicle_state` and `ego_speed`. Earlier estimates remain
-unchanged. These accessors compute their results directly, without cached projected state.
+pose timestamp reads the current `vehicle_state` and `ego_speed`.
+Earlier estimates stay unchanged.
 Stripped payloads read as `None`. Direct adapter calls synthesize a frame when no delivery record
 exists. Unknown sensors raise `KeyError`.
 
@@ -106,9 +106,7 @@ Pose-only localization receives an independent raw copy. Removing a model-input 
 an error only when the recording policy selects that acquisition.
 Raw-only recording can retain a sensor removed from model input.
 
-Frames are handed off once, without payload copies. The framework buffers only ended frames
-awaiting the next decision. Driving systems keep their own history. The first input contains
-recorded context, and `AVStack.reset(observation)` receives that same input. See
+`AVStack.reset(observation)` receives the first decision input. See
 [Recorded input history](../guides/driving-systems.md#recorded-input-history) for the complete
 `HistoryRequirement` contract. There is no separate history argument.
 
@@ -122,14 +120,13 @@ before it has aged by the delay. Delay does not introduce a recorded-motion star
 
 Trajectory coordinates retain their generation-time rig frame and timestamps. The controller
 resolves them against its ego trajectory, matching AlpaSim's controller reference handling.
-The runner does not spatially re-anchor them. Actuator commands have no spatial frame.
+Actuator commands have no spatial frame.
 
 `force_gt_duration_us` independently configures recorded motion. A decision is `force_gt` when
 its target timestamp belongs to the inclusive interval from the origin through the origin plus
 that duration. The duration must be a whole number of decision periods. The controller runs
 against recorded reference motion, then recorded dynamics and physics-blended poses override its
-output. Frame poses interpolate committed control and report nodes. Traffic interpolates recorded
-control nodes. See [NuRec ground contact](../guides/simulators.md#ground-contact) for the blend and
+output. See [NuRec ground contact](../guides/simulators.md#ground-contact) for the blend and
 traffic-session origin conventions. At ego handoff, dynamics are aligned to the recording.
 
 During `force_gt`, trajectory systems enqueue a recorded reference. Actuator systems enqueue
@@ -308,9 +305,9 @@ explicitly registered avstack-library hook.
 ## Contexts and lifecycle
 
 `OnlineContext` exposes `step`, `stage`, `sim_time`, `frame`, `decision_time_us`,
-`capture_time_us`, `decision_period_us` and `force_gt`, with optional subscribed
+`decision_period_us` and `force_gt`, with optional subscribed
 `observation` and `physical_state` snapshots. `record_output` writes named output during a run.
-The two microsecond fields are set for decision callbacks. Setup and pre-run cleanup can
+The microsecond fields are set for decision callbacks. Setup and pre-run cleanup can
 leave them `None`. It carries no native runtime or time-advancing service.
 Bound `AVStackAttackAction` methods also receive the actual stage value.
 
@@ -399,15 +396,11 @@ records. Sensor retention is applied per sensor acquisition. Both in-memory and 
 selected acquisition payloads. Read them through `RunLog.captures` by `capture_id`.
 Geometry keys follow `recording.sensor_ids` order. Calibration mappings contain only sensors with
 a supplied calibration.
-Within each capture, recorder snapshots share equal numeric base NumPy arrays as read-only
-values, independent of live inputs. Sharing uses bounded byte comparisons against the same source
-and the most recent candidate. Disk storage reuses recorder-owned array identities without hashes.
-Native byte payloads also share equal contents within the current capture.
-The recorder retains shared arrays until the referencing decision has been snapshotted, including
-with `retain_sensor_data=False`. Call `release_captures(capture_ids)` after that snapshot when using
-`Recorder` directly. The runner does this automatically without retaining entire observations.
-Equal content from different captures may be stored separately. Array subclasses, object arrays
-and unsupported buffer dtypes retain independent copies. Copy recorded arrays before editing them.
+Recorded sensor payloads can share a snapshot across raw and model input or consecutive captures.
+Shared arrays are read-only, while pose and route snapshots remain independent and writable.
+`Recorder` saves sensor payloads by reference, so callers must not modify them afterwards.
+Call `Recorder.snapshot` first when an independent copy is needed. When using `Recorder`
+directly, record captures before decisions that name their `delivered_captures`.
 
 Action requests and receipts distinguish requested changes from applied changes. A receipt's
 outcome is `applied` or `not_applied`, describing the action rather than its driving impact. Every

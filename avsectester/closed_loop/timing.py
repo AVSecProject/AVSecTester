@@ -1,4 +1,5 @@
 """Integer-microsecond clocks and command selection matching AlpaSim runtime."""
+
 from __future__ import annotations
 
 from collections import deque
@@ -8,7 +9,9 @@ from numbers import Real
 from typing import Any
 import math
 
-from avsectester.validation import require_nonnegative_integer, require_positive_integer, timestamp_to_microseconds
+from avsectester.validation import (
+    require_nonnegative_integer, require_positive_integer, timestamp_to_microseconds,
+)
 
 
 def seconds_to_microseconds(seconds: float) -> int:
@@ -17,11 +20,9 @@ def seconds_to_microseconds(seconds: float) -> int:
         raise ValueError("Time must be a finite number of seconds")
     value = float(seconds) * 1_000_000
     rounded = timestamp_to_microseconds(seconds)
-    if not math.isclose(value, rounded, rel_tol=0., abs_tol=1e-6):
+    if not math.isclose(value, rounded, rel_tol=0.0, abs_tol=1e-6):
         raise ValueError("Time must have integer-microsecond precision")
     return rounded
-
-
 
 
 @dataclass(frozen=True)
@@ -35,32 +36,32 @@ class SensorTiming:
             require_positive_integer(self.frame_interval_us, "frame_interval_us")
         require_nonnegative_integer(self.shutter_duration_us, "shutter_duration_us")
 
-    def interval_us(self, decision_period_us: int) -> int:
+    def resolved_frame_interval_us(self, decision_period_us: int) -> int:
         """Resolve an unspecified frame interval to the decision period."""
         require_positive_integer(decision_period_us, "decision_period_us")
         return decision_period_us if self.frame_interval_us is None else self.frame_interval_us
 
-    def capture_time_us(self, index: int, decision_period_us: int) -> int:
+    def frame_end_us(self, index: int, decision_period_us: int) -> int:
         """Frame end relative to the run origin, including negative recorded context indices."""
         if isinstance(index, bool) or not isinstance(index, int):
             raise ValueError("Frame index must be an integer")
-        return index * self.interval_us(decision_period_us)
+        return index * self.resolved_frame_interval_us(decision_period_us)
 
-    def frame_range_us(self, index: int, decision_period_us: int) -> range:
+    def shutter_range_us(self, index: int, decision_period_us: int) -> range:
         """Half-open shutter interval, matching Clock.ith_trigger with first_end_us=0."""
-        end = self.capture_time_us(index, decision_period_us)
+        end = self.frame_end_us(index, decision_period_us)
         return range(end - self.shutter_duration_us, end)
 
-    def latest_index_at_or_before(self, time_us: int, decision_period_us: int) -> int:
+    def latest_frame_index(self, time_us: int, decision_period_us: int) -> int:
         """Latest frame index whose end is not after the requested offset."""
         if isinstance(time_us, bool) or not isinstance(time_us, int):
             raise ValueError("Frame time must be integer microseconds")
-        return time_us // self.interval_us(decision_period_us)
+        return time_us // self.resolved_frame_interval_us(decision_period_us)
 
-    def capture_index_at(self, time_us: int, decision_period_us: int) -> int:
+    def frame_index_at(self, time_us: int, decision_period_us: int) -> int:
         """Index of an exact frame end, rejecting times off this sensor's clock."""
-        index = self.latest_index_at_or_before(time_us, decision_period_us)
-        if self.capture_time_us(index, decision_period_us) != time_us:
+        index = self.latest_frame_index(time_us, decision_period_us)
+        if self.frame_end_us(index, decision_period_us) != time_us:
             raise ValueError("Time is off the sensor frame clock")
         return index
 
@@ -118,30 +119,31 @@ class TimingConfiguration:
                 raise TypeError("Sensor timing values must be SensorTiming")
         object.__setattr__(self, "sensors", dict(self.sensors))
 
-    def validate_period(self, decision_period_us: int) -> None:
-        """Validate resolved frame intervals against a declared decision period."""
-        require_positive_integer(decision_period_us, "decision_period_us")
-        if self.force_gt_duration_us % decision_period_us:
-            raise ValueError("force_gt_duration_us must be a multiple of decision_period_us")
-        for clock in self.sensors.values():
-            clock.interval_us(decision_period_us)
 
-    def reporting_timestamps(self, start_us: int, end_us: int) -> tuple[int, ...]:
-        """Intermediate controller reports as in alpasim_controller.system, excluding endpoints."""
-        return _reporting_timestamps(start_us, end_us, self.pose_reporting_interval_us)
-
-    def is_force_gt(self, decision_time_us: int, origin_us: int, decision_period_us: int) -> bool:
-        """Whether the controller target lies in AlpaSim's inclusive force_gt_period."""
-        target = decision_time_us + decision_period_us
-        return target in range(origin_us, origin_us + self.force_gt_duration_us + 1)
-
-    def is_handoff(self, decision_time_us: int, origin_us: int) -> bool:
-        """Whether a decision starts exactly at the end of a positive force_gt interval."""
-        return self.force_gt_duration_us > 0 and decision_time_us == origin_us + self.force_gt_duration_us
-
-
-def _reporting_timestamps(start_us: int, end_us: int, interval_us: int) -> tuple[int, ...]:
+def reporting_timestamps(start_us: int, end_us: int, interval_us: int) -> tuple[int, ...]:
+    """Intermediate controller reports as in alpasim_controller.system, excluding endpoints."""
     return tuple(range(start_us + interval_us, end_us, interval_us)) if interval_us else ()
+
+
+def validate_decision_period(timing: TimingConfiguration, period: int) -> None:
+    """Validate resolved frame intervals against a declared decision period."""
+    require_positive_integer(period, "decision_period_us")
+    if timing.force_gt_duration_us % period:
+        raise ValueError("force_gt_duration_us must be a multiple of decision_period_us")
+    for clock in timing.sensors.values():
+        clock.resolved_frame_interval_us(period)
+
+
+def is_force_gt(timing: TimingConfiguration, decision_time_us: int, origin_us: int, period: int) -> bool:
+    """Whether the controller target lies in AlpaSim's inclusive force_gt_period."""
+    target = decision_time_us + period
+    return target in range(origin_us, origin_us + timing.force_gt_duration_us + 1)
+
+
+def is_handoff(timing: TimingConfiguration, decision_time_us: int, origin_us: int) -> bool:
+    """Whether a decision starts exactly at the end of a positive force_gt interval."""
+    return (timing.force_gt_duration_us > 0
+            and decision_time_us == origin_us + timing.force_gt_duration_us)
 
 
 class DelayBuffer:
@@ -163,15 +165,10 @@ class DelayBuffer:
             self._pending.popleft()
         return self._pending[0] if self._pending else (None, None)
 
-    def at(self, timestamp_us: int) -> Any:
-        """Read the selected command without its production timestamp."""
-        return self.item_at(timestamp_us)[1]
-
 
 @dataclass(frozen=True)
 class InitialHistory:
     """Recorded payload and pose offsets, with the earliest source needed for exposure."""
-
     payload_times_us: Mapping[str, tuple[int, ...]]
     pose_times_us: tuple[int, ...]
     source_start_us: int
@@ -187,27 +184,31 @@ def initial_history_times(sensor_timings: Mapping[str, SensorTiming], history: H
     """
     require_positive_integer(decision_period_us, "decision_period_us")
     require_nonnegative_integer(pose_reporting_interval_us, "pose_reporting_interval_us")
-    payloads = {sensor: tuple(clock.capture_time_us(index, decision_period_us)
-                             for index in range(1 - history.samples, 0))
-                for sensor, clock in sensor_timings.items()}
-    boundary = min(-history.duration_us,
-                   *(time for times in payloads.values() for time in times), 0)
-    source_start = min((boundary, *(clock.frame_range_us(index, decision_period_us).start
-        for clock in sensor_timings.values() for index in range(1 - history.samples, 1))))
+    payloads = {
+        sensor: tuple(clock.frame_end_us(index, decision_period_us)
+                      for index in range(1 - history.samples, 0))
+        for sensor, clock in sensor_timings.items()
+    }
+    boundary = min(-history.duration_us, *(time for times in payloads.values() for time in times), 0)
+    source_start = min((boundary, *(clock.shutter_range_us(index, decision_period_us).start
+                                   for clock in sensor_timings.values()
+                                   for index in range(1 - history.samples, 1))))
     if boundary == 0:
         return InitialHistory(payloads, (), source_start)
     block, remainder = divmod(boundary, decision_period_us)
     first = block * decision_period_us
     if 0 < pose_reporting_interval_us < decision_period_us:
         first += remainder // pose_reporting_interval_us * pose_reporting_interval_us
-    poses = tuple(time for start in range(block * decision_period_us, 0, decision_period_us)
-                  for time in (start, *_reporting_timestamps(start, start + decision_period_us,
-                                                             pose_reporting_interval_us))
-                  if time >= first)
+    poses = tuple(
+        time for start in range(block * decision_period_us, 0, decision_period_us)
+        for time in (start, *reporting_timestamps(
+            start, start + decision_period_us, pose_reporting_interval_us))
+        if time >= first
+    )
     return InitialHistory(payloads, poses, min(source_start, *poses))
 
 
 __all__ = [
-    "seconds_to_microseconds", "SensorTiming", "TimingCapabilities",
-    "HistoryRequirement", "TimingConfiguration", "DelayBuffer", "InitialHistory", "initial_history_times",
+    "seconds_to_microseconds", "SensorTiming", "TimingCapabilities", "HistoryRequirement",
+    "TimingConfiguration", "InitialHistory", "initial_history_times",
 ]

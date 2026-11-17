@@ -1,7 +1,7 @@
 """Simulator interfaces, whose concrete implementations are imported from their own modules."""
 
 from .base import (
-    ClockSnapshot, DeploymentPlan, FrameDataSequence, Initialization, SensorGeometry,
+    ClockSnapshot, DecisionInterval, DeploymentPlan, FrameDataSequence, Initialization, RecordedAcquisition, SensorGeometry,
     SensorView, Simulator, SimulatorRuntime, UnsupportedStartError,
 )
 
@@ -12,8 +12,10 @@ __all__ = [
     'SensorView',
     'SensorGeometry',
     'ClockSnapshot',
+    'DecisionInterval',
     'DeploymentPlan',
     'Initialization',
+    'RecordedAcquisition',
     'FrameDataSequence',
     'UnsupportedStartError',
 ]

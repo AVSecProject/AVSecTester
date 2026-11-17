@@ -17,9 +17,8 @@ Import interfaces from `avsectester.closed_loop.simulators` and concrete impleme
 `advance_interval` propagates one decision interval and reports intermediate physical states.
 `capture_at` publishes the interpolated physical state and acquires selected sensors at an integer
 frame-end timestamp. `step` is a convenience for one interval and its endpoint capture. The runner
-always uses the separate
-operations. `observe` copies the latest acquisition batch without advancing or invoking hooks.
-`sensor_acquisition` reads a sensor's own latest acquisition and viewpoint.
+always uses the separate operations. `observe` copies the latest acquisition batch without
+advancing or invoking hooks. `sensor_view` reads a sensor's latest captured viewpoint.
 `frame_range_us(sensor, end_time_us)` returns its half-open shutter or native scan interval.
 `state` copies physical ego, actors and inserted objects. See
 [Runtime](../reference/runtime.md#one-decision) for event
@@ -166,7 +165,7 @@ interpolated ego and actor poses at both endpoints, matching AlpaSim's camera re
 frames use the existing one-microsecond render request. `pose_reporting_interval_us` controls the
 physical trajectory used for interpolation and is independent of camera frequency. Objects,
 coverage copies and reconstruction-visibility probes use the same frame interval and endpoint poses.
-Motion and traffic history cover every configured shutter and scan window.
+Ego and actor motion is available over each configured shutter and scan window.
 
 NuRec provides no traffic-light states.
 
@@ -285,15 +284,17 @@ images only.
 
 After reset, `observe_recorded_at(time_us, sensor_ids)` reads a negative integer offset from the run
 origin. Pass `()` to read only the recorded pose without loading or rendering sensors.
-`recorded_state_at` and `recorded_sensor_geometry_at` expose physical truth at that offset. NuRec
+The returned `RecordedAcquisition` contains `observation`, `physical_state`, `sensor_geometry`
+and `object_visibility`. Geometry covers only the selected cameras. A pose-only read returns
+empty geometry and visibility. NuRec
 interpolates recorded ego and actor poses between dataset grid points. CARLA retains only the
 required sensor captures and poses from its prescribed pre-roll. Recorded replay cannot supply past
 observations. History reads preserve the current world, clock and capture and reject insufficient
 source data.
 
-The shared [history plan](driving-systems.md#recorded-input-history) controls selection, reads and
-simulator caches, including simulator observation lead time. A pose-only read returns an
-independent state and never renders or reads sensor data.
+The [recorded-input requirement](driving-systems.md#recorded-input-history) controls selection
+and reads, including simulator observation lead time. Returned values are independent of the
+current world.
 
 Past captures use recorded ego poses and actors, including the same short-track filtering as current
 captures. Objects installed during reset or setup use those recorded poses with the configured
@@ -409,29 +410,27 @@ original rig-frame reference using its physical pose history. `AlpaSimController
 conversion inside the native controller. `TrajectoryFollower` uses its own bounded pose history.
 The controller tracks the full forecast and need not execute its first planned acceleration exactly.
 
-A custom dynamics component supplies `step` and may supply `reset` and `command_modes`. Without
-`advance`, intermediate reports evaluate the pure `step` from the interval start at each report
-time. A controller with native reports instead supplies
-`advance(pose, control, duration_us, report_times_us)` and returns `EgoMotion` for one complete
-decision interval. Intermediate reports follow `pose_reporting_interval_us`, independently of
+A custom dynamics component supplies `step`, with optional initialization, native reports and
+recorded-motion alignment described in the
+[dynamics API](../reference/python-api.md#avsectesterclosed_loopsimulatorsego_dynamics).
+Intermediate reports follow `pose_reporting_interval_us`, independently of
 sensor clocks, matching AlpaSim's controller reporting schedule. Changing camera frequency does
 not change integration. Changing the reporting interval can change native integration steps and
 ego motion. Report timestamps come from the integer scheduler clock rather than cumulative
 floating point increments. Each runtime receives its own dynamics copy.
 
 `EgoMotion.at(time_us)` interpolates between neighboring reports and returns an independent state.
-`SimulatorRuntime.advance_interval` accepts reporting times and advances one interval.
-`state_at` reads its physical state, including actors, without another
+`SimulatorRuntime.advance_interval` accepts reporting times and advances one interval. Publish a
+timestamp with `capture_at(time_us, ())`, then read physical truth with `state()` without another
 controller call. See the [dynamics API](../reference/python-api.md) for signatures and errors.
 
 ### Mesh depth
 
 Mesh depth combines archived static surfaces and current actor cuboids. Calibrated camera rays keep
 the nearest hit, expressed as optical-axis depth. Missing hits are infinite. Actor extents must be
-known. Views and depth are built on first access and cached per sensor acquisition. Object
-composition first checks lightweight projection geometry. Only cameras containing a projected object
-need a complete view and depth. Reading `render_request` alone does not build a view. Construction
-uses saved capture-time requests, actor states and poses, never later live world state.
+known. Views and depth are built when needed. Only cameras containing a projected inserted object
+need depth for object composition. Reading `render_request` alone does not request depth. Views
+describe the capture time, independently of later world state.
 
 Mesh content is not classified or erased when an actor moves. Archived vehicle geometry can
 therefore continue to occlude its recorded location. Cuboid silhouettes can differ from rendered
@@ -462,53 +461,11 @@ shared world-object composition. It provides no traffic-light states. Environmen
 
 ## Write a custom simulator
 
-See the [simulator base module](../reference/python-api.md#avsectesterclosed_loopsimulatorsbase) for
-its Extension contract. [Architecture](../concepts/architecture.md#world-ownership) describes the
-world-claim and operation-isolation rules.
-
 Subclass `Simulator` for configuration and `SimulatorRuntime` for native world operations.
-`_native_clock()` can return lightweight native time and frame values as a `ClockSnapshot`. The
-shared runtime handles pending intervals and initialization checks. Clock reads must preserve native
-timestamp semantics without advancing the world. Declare
-dataset kinds, timing, command modes, stages, world settings, capture capabilities and identity.
-`TimingCapabilities` declares intermediate acquisitions, motion reports, native base tick, camera
-exposure and recorded ego motion. Intermediate acquisitions require motion-reporting support.
-`Simulator.decision_ticks` gives the number of native ticks per decision, or one without a base
-tick. Native tick times must be aligned before state or capture caches can be read. Dynamics with
-native reports implement `advance` for one complete interval and return `EgoMotion`, without
-re-solving their controller for every acquisition. Unsupported rates must fail explicitly. See
-[Timing](../reference/configuration.md#scheduling).
-
-To support `force_gt_duration_us`, declare `recorded_ego_motion=True` and implement
-`_advance_force_gt_native(control)`. The default delegates to `_advance_recorded_native()`.
-Trajectory simulators also provide `recorded_reference(time_us, end_us)` for the planner-delay
-buffer. `advance_interval(..., force_gt=True, coerce_dynamic_state=True)` exposes force-GT and
-handoff requirements to the native implementation. `validate_startup` checks recorded coverage
-before reset. Its default reads `ScenarioStart.recorded_ego` on the dataset grid. Override
-`_recorded_end_time_us(start)` when the recording comes from another source, such as a CARLA recipe.
-
-Declare the simulator's own recorded-history requirement in `past_steps`. If a sensor needs recorded
-data before the earliest observation, implement `observation_lead_steps_for(timing)`. The default
-uses `observation_lead_steps`. NuRec derives its LiDAR pre-roll from the configured frame interval.
-Selection and runtime start validation must reserve this timing-aware lead before sensor access.
-
-Declare all configured sensors in `sensors`. Declare only cameras with geometry in
-`camera_sensors`. A camera without a geometric model can render without supporting viewpoints or
-object composition. Native views supply
-capture data and sensor geometry. The shared runtime owns object-capture integration. A lightweight
-native `_sensor_geometry` implementation avoids image/depth work for projection-only requests.
-Override `_capture_view_builder(sensor, observation, truth)` to freeze acquisition inputs and
-return a zero-argument builder for the complete view. That builder must use only the saved
-inputs, never later world state. The default freezes `_sensor_view(sensor)` immediately, which
-is correct but does not defer construction. Override `_capture_render_request(sensor)` when
-native request metadata must be readable independently of complete views and depth.
-
-Past-capable implementations supply recorded observations, physical snapshots and camera views
-for start-object composition. `_recorded_pose_state` must avoid sensor work. The shared history
-planner uses decision and `pose_reporting_interval_us` times. After a read,
-`recorded_capture_state` and `recorded_capture_visibility` expose its truth and visibility without
-recapturing. A native implementation can release acquisition-only caches in
-`_recorded_read_complete`.
+Declare supported datasets, commands and timing capabilities, then implement the native lifecycle
+hooks in the
+[simulator API contract](../reference/python-api.md#avsectesterclosed_loopsimulatorsbase).
+[Architecture](../concepts/architecture.md#world-ownership) defines world ownership and isolation.
 
 ## Next steps
 

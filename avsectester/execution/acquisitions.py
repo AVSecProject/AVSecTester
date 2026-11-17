@@ -1,13 +1,16 @@
 """Frame delivery and pose interpolation on independent integer clocks."""
+
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from collections.abc import Mapping, Sequence
 from typing import Any
 
-from avsectester.closed_loop.timing import HistoryRequirement, SensorTiming, TimingConfiguration, initial_history_times
-from avsectester.data_types import DeliveredAcquisition, Observation, TimedStateEstimate, interpolate_state_estimate
+from avsectester.closed_loop.timing import (
+    HistoryRequirement, SensorTiming, TimingConfiguration, initial_history_times,
+)
+from avsectester.data_types import DeliveredAcquisition, Observation, TimedStateEstimate
 
 
 @dataclass(frozen=True)
@@ -24,32 +27,37 @@ class PendingAcquisition:
 
 class AcquisitionBuffer:
     def __init__(self, sensors: frozenset[str], period_us: int, origin_us: int,
-                 timing: TimingConfiguration, history: HistoryRequirement) -> None:
+                 timing: TimingConfiguration, history: HistoryRequirement, *,
+                 interpolate_vehicle_state: Callable[[Any, Any, float, int], Any]) -> None:
         self.period_us, self.origin_us, self.history = period_us, origin_us, history
+        self.interpolate_vehicle_state = interpolate_vehicle_state
         self.pose_reporting_interval_us = timing.pose_reporting_interval_us
         self.timings = {sensor: timing.sensors.get(sensor, SensorTiming()) for sensor in sorted(sensors)}
-        self.pending: dict[str, deque[PendingAcquisition]] = {sensor: deque() for sensor in sorted(sensors)}
+        self.pending: dict[str, deque[PendingAcquisition]] = {
+            sensor: deque() for sensor in sorted(sensors)
+        }
         self.states: deque[TimedStateEstimate] = deque()
         self._support: deque[TimedStateEstimate] = deque()
         self._dropped: set[str] = set()
 
     def index_at(self, sensor: str, time_us: int) -> int:
-        return self.timings[sensor].capture_index_at(time_us - self.origin_us, self.period_us)
+        return self.timings[sensor].frame_index_at(time_us - self.origin_us, self.period_us)
 
     def due_between(self, start_us: int, end_us: int) -> dict[int, tuple[str, ...]]:
         result: dict[int, list[str]] = {}
         for sensor, clock in self.timings.items():
-            first = clock.latest_index_at_or_before(start_us - self.origin_us, self.period_us)
+            first = clock.latest_frame_index(start_us - self.origin_us, self.period_us)
             first += 1
-            last = clock.latest_index_at_or_before(end_us - self.origin_us, self.period_us)
+            last = clock.latest_frame_index(end_us - self.origin_us, self.period_us)
             for index in range(first, last + 1):
-                time = self.origin_us + clock.capture_time_us(index, self.period_us)
+                time = self.origin_us + clock.frame_end_us(index, self.period_us)
                 result.setdefault(time, []).append(sensor)
         return {time: tuple(sensors) for time, sensors in sorted(result.items())}
 
     def past_times(self) -> tuple[dict[int, tuple[str, ...]], frozenset[int]]:
-        history = initial_history_times(self.timings, self.history, self.period_us,
-                                        pose_reporting_interval_us=self.pose_reporting_interval_us)
+        history = initial_history_times(
+            self.timings, self.history, self.period_us,
+            pose_reporting_interval_us=self.pose_reporting_interval_us)
         payloads, poses = history.payload_times_us, history.pose_times_us
         result: dict[int, list[str]] = {time: [] for time in poses}
         for sensor, times in payloads.items():
@@ -65,7 +73,21 @@ class AcquisitionBuffer:
         return state
 
     def state_at(self, time_us: int) -> TimedStateEstimate:
-        return interpolate_state_estimate(tuple(self._support), time_us)
+        if isinstance(time_us, bool) or not isinstance(time_us, int):
+            raise ValueError("Estimate time must be integer microseconds")
+        if not self._support:
+            raise ValueError("No state estimates are available")
+        for estimate in self._support:
+            if estimate.time_us == time_us:
+                return estimate
+        for left, right in zip(self._support, tuple(self._support)[1:]):
+            if left.time_us < time_us < right.time_us:
+                fraction = (time_us - left.time_us) / (right.time_us - left.time_us)
+                state = self.interpolate_vehicle_state(
+                    left.vehicle_state, right.vehicle_state, fraction, time_us)
+                speed = left.ego_speed + fraction * (right.ego_speed - left.ego_speed)
+                return TimedStateEstimate(time_us, time_us / 1e6, state, speed)
+        raise ValueError("Estimate time lies outside the reported pose trajectory")
 
     def append(self, observation: Observation, time_us: int, capture_id: int,
                sensor_ids: Sequence[str], *, frame_ranges: Mapping[str, range]) -> None:
@@ -80,25 +102,30 @@ class AcquisitionBuffer:
 
     def update_capture(self, observation: Observation, time_us: int, capture_id: int) -> None:
         for sensor, pending in self.pending.items():
-            if not pending or pending[-1].capture_id != capture_id or pending[-1].time_us != time_us:
+            if (not pending or pending[-1].capture_id != capture_id
+                    or pending[-1].time_us != time_us):
                 continue
             acquisition = pending.pop()
             if sensor not in observation.sensor_data:
                 self._dropped.add(sensor)
                 continue
-            pending.append(replace(acquisition, data=observation.sensor_data[sensor],
+            pending.append(replace(
+                acquisition, data=observation.sensor_data[sensor],
                 calibration=observation.calibration.get(sensor),
                 has_calibration=sensor in observation.calibration))
 
     def take_ready(self, current: Observation, time_us: int) -> Observation:
         data = {key: value for key, value in current.sensor_data.items() if key not in self.pending}
-        calibration = {key: value for key, value in current.calibration.items() if key not in self.pending}
+        calibration = {
+            key: value for key, value in current.calibration.items() if key not in self.pending
+        }
         deliveries = {}
         for sensor, pending in self.pending.items():
             ready = []
             while pending and pending[0].time_us <= time_us:
                 acquisition = pending.popleft()
-                ready.append(DeliveredAcquisition(acquisition.time_us, acquisition.t, acquisition.frame,
+                ready.append(DeliveredAcquisition(
+                    acquisition.time_us, acquisition.t, acquisition.frame,
                     acquisition.data, acquisition.calibration, self.state_at(acquisition.time_us),
                     acquisition.capture_id, frame_start_us=acquisition.frame_start_us))
             if ready:
@@ -112,16 +139,24 @@ class AcquisitionBuffer:
         # Keep only the interpolation boundary, not delivered frame payloads.
         while len(self._support) > 1 and self._support[1].time_us <= time_us:
             self._support.popleft()
-        data = {sensor: data[sensor] for sensor in dict.fromkeys((*current.sensor_data, *data)) if sensor in data}
-        calibration = {sensor: calibration[sensor] for sensor in dict.fromkeys((*current.calibration, *calibration))
-                       if sensor in calibration}
+        data = {
+            sensor: data[sensor]
+            for sensor in dict.fromkeys((*current.sensor_data, *data))
+            if sensor in data
+        }
+        calibration = {
+            sensor: calibration[sensor]
+            for sensor in dict.fromkeys((*current.calibration, *calibration))
+            if sensor in calibration
+        }
         # A due sensor whose every frame was removed is delivered as an empty tuple.
         dropped = sorted(self._dropped - deliveries.keys())
         self._dropped.clear()
-        return replace(current, sensor_data=data, calibration=calibration,
-                       deliveries={**{sensor: deliveries[sensor] for sensor in data if sensor in deliveries},
-                                   **{sensor: () for sensor in dropped}},
-                       state_estimates=tuple(states))
-
-
-
+        return replace(
+            current, sensor_data=data, calibration=calibration,
+            deliveries={
+                **{sensor: deliveries[sensor] for sensor in data if sensor in deliveries},
+                **{sensor: () for sensor in dropped},
+            },
+            state_estimates=tuple(states),
+        )

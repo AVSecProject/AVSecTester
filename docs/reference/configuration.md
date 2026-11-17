@@ -401,9 +401,7 @@ option is an error. The top-level device follows the [device rule](#device).
 History requirements, adapter precedence and instance consistency are defined in
 [Recorded input history](../guides/driving-systems.md#recorded-input-history).
 `ClosedLoopServices` rejects a driving-system period that differs from the simulator period.
-`AlpamayoAVStack` selects timestamped camera history with `frame_subsample`, independently of
-the decision period. Its supplied configurations use `frame_subsample: 1`. See
-[Past observations](../guides/simulators.md#recorded-past-observations).
+Alpamayo context selection is described in [Driving systems](../guides/driving-systems.md#alpamayo).
 
 A binding has signature `function(avstack_factory, **options) -> DrivingAdapter`. The factory
 exposes `avstack_type` and an independent read-only `avstack_options` mapping. Bindings declare
@@ -519,8 +517,7 @@ Severity is in [0, 1] and defaults to 0.5. `ColorTemp` also accepts
 
 ### Recording
 
-Python `RecordingPolicy` values are hashable. `sensor_every_n_captures` is an immutable copy of the
-supplied mapping, ordered by key. Reading by key, `.get()` and `.items()` is supported.
+Python `RecordingPolicy` values are immutable and hashable.
 
 The removed `every_n_steps` key produces a migration error. Use `every_n_captures`.
 
@@ -529,7 +526,6 @@ The removed `every_n_steps` key produces a migration error. Use `every_n_capture
 | `sensor_ids` | [] | Unique sensor names whose payloads are retained |
 | `representations` | [`model_input`] | Subset of `raw` and `model_input` |
 | `every_n_captures` | `1` | Save every Nth acquisition of each selected sensor |
-| `sensor_every_n_captures` | `{}` | Optional sensor ID to positive interval overrides |
 
 Empty `sensor_ids` retains no image payloads. State, commands, actions, outputs, available
 components and detections are recorded every decision. Reevaluation cannot recover omitted

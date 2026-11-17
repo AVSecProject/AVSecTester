@@ -76,8 +76,10 @@ def test_observation_pipeline_frame_and_pose_events():
             assert stages == ["sensors.post", "localization.post"]
             assert localized.sensor_data == {}
             assert localized.vehicle_state == pose_only.vehicle_state
+        invalid = HookSet([Hook("localization.post", lambda value, context: object())])
+        with invalid.session(runtime, avstack).activate() as dispatcher:
             with pytest.raises(TypeError, match="StateEstimate"):
-                pipeline.with_estimate(localized, None)
+                pipeline.localize(pose_only, dispatcher)
 
 
 def test_observation_pipeline_route_follows_localization():

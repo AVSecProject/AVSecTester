@@ -121,7 +121,7 @@ def test_open_session(traffic_service, traffic_inputs, monkeypatch):
     cropped = TrafficTrack("cropped", ((-100000, pose), (3000000, final)), (4., 2., 1.), "car", False)
     outside = TrafficTrack("outside", ((3000000, pose), (4000000, pose)), (4., 2., 1.), "car", True)
     args = {**traffic_inputs, "start_us": 1500000, "end_us": 2500000, "tracks": (cropped, outside),
-            "force_gt_duration_us": 500000, "decision_period_us": 200000}
+            "handover_us": 2200000}
     session = traffic.open_session(**args)
     try:
         assert session.track_ids == ("cropped",)
@@ -286,8 +286,7 @@ def test_alpasim_handover(traffic_service, traffic_inputs, monkeypatch):
         "cfg": SimpleNamespace(force_gt_duration_us=500000, control_timestep_us=200000),
     })
     traffic = AlpaSimTraffic(traffic_service.endpoint)
-    session = traffic.open_session(**traffic_inputs, force_gt_duration_us=500000,
-                                   decision_period_us=200000)
+    session = traffic.open_session(**traffic_inputs, handover_us=expected)
     try:
         assert session.handover_time_us == traffic_service.sessions[-1].handover_time_us == expected
     finally:

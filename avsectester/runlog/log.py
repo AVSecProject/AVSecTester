@@ -7,7 +7,7 @@ native types before persistence. Unknown objects are never pickled or stringifie
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, fields, replace
 import json
 import os
@@ -177,10 +177,10 @@ class RunLog:
 class Recorder:
     """Capture a run in memory and optionally stream it to Parquet.
 
-    ``record_step``, ``record_capture`` and ``record_event`` snapshot their inputs immediately.
-    Call ``snapshot`` earlier when a subsequent hook might mutate a value before
-    a complete step is available. ``retain_steps=False`` bounds disk-recorder
-    memory by the open chunk instead of retaining the full run.
+    Record methods immediately snapshot metadata. The ``sensor_data`` values in raw and
+    model observations are retained by reference and must not be modified afterwards.
+    Call ``snapshot`` first when an independent copy is needed. ``retain_steps=False`` bounds
+    disk-recorder memory by the open chunk instead of retaining the full run.
     ``retain_sensor_data=False`` retains steps whose raw and model observations have
     empty ``sensor_data``. The written records keep their sensor data. Step delivery
     payloads reference their acquisition records rather than repeating their contents.
@@ -209,13 +209,7 @@ class Recorder:
         if not retain_sensor_data and path is None:
             raise ValueError("retain_sensor_data=False requires a persistent output path")
         self.registry = registry
-        self._array_candidates: dict[tuple[Any, ...], Any] = {}
-        self._owned_arrays: dict[int, Any] = {}
         self._capture_ids: set[int] = set()
-        self._capture_scope: int | None = None
-        self._source_arrays: dict[int, tuple[Any, Any]] = {}
-        self._byte_candidates: dict[tuple[int, bytes], bytes] = {}
-        self._capture_payloads: dict[int, dict[int, Any]] = {}
         self.log = RunLog(
             metadata=self.snapshot(metadata or {}), path=Path(path) if path is not None else None
         )
@@ -231,124 +225,37 @@ class Recorder:
             self._writer.write_manifest(self.log)
 
     def snapshot(self, value: Any) -> Any:
-        """Snapshot mutable data, sharing recent equal arrays as read-only recording values.
+        """Take an independent snapshot, preserving native wrappers and mutable array semantics."""
+        return self.registry.snapshot(value)
 
-        Numeric base arrays are independent of live inputs. Identical owned or recent live arrays
-        share read-only storage. The disk writer reuses owned-array identities.
-        Native byte payloads share recent equal contents within the same capture.
-        Other arrays retain their type and deep-copy behavior. Copy an array before editing it.
-        Tensors are detached without importing torch.
-        """
-        return self.registry.recording_snapshot(value, self._payload_snapshot)
-
-    def _payload_snapshot(self, value: Any) -> Any:
-        if not isinstance(value, bytes):
-            result = self._array_snapshot(value)
-        else:
-            sample = (value if len(value) <= 256 else b"".join(
-                value[index * (len(value) - 32) // 7: index * (len(value) - 32) // 7 + 32]
-                for index in range(8)))
-            key = (len(value), sample)
-            previous = self._byte_candidates.get(key)
-            result = previous if previous is value or previous == value else value
-            self._byte_candidates[key] = result
-        if self._capture_scope is not None:
-            self._capture_payloads.setdefault(self._capture_scope, {})[id(result)] = result
-        return result
-
-    def release_captures(self, capture_ids: Iterable[int]) -> None:
-        """Release owned payload leaves after their referencing decisions have been recorded.
-
-        Captures keep arrays and native bytes alive through decision snapshot and persistence,
-        including when in-memory observations omit payloads. Call this after ``record_step`` for
-        captures whose last referencing decision is complete. Releasing an ID twice has no effect.
-        """
-        for capture_id in capture_ids:
-            self._capture_payloads.pop(capture_id, None)
-            if capture_id == self._capture_scope:
-                self._capture_scope = None
-                self._byte_candidates.clear()
-        if self._writer is not None:
-            self._writer.payloads.retain_bytes({identity for values in self._capture_payloads.values()
-                                               for identity in values})
-
-    @staticmethod
-    def _array_reference(array: Any, cache: dict[int, Any]) -> Any:
-        identity = id(array)
-
-        def release(_reference: Any) -> None:
-            cache.pop(identity, None)
-
-        return ref(array, release)
-
-    def begin_capture(self, capture_id: int) -> None:
-        """Start a capture's payload ownership scope before taking its recording snapshots."""
-        self._check_open()
-        if self._capture_scope != capture_id:
-            self._byte_candidates.clear()
-            self._capture_scope = capture_id
-
-    def _array_snapshot(self, array: Any) -> Any:
-        import numpy as np
-
-        owned = self._owned_arrays.get(id(array))
-        if owned is not None and owned() is array and not array.flags.writeable:
-            return array
-        contiguous = np.ascontiguousarray(array)
-        byte_array = contiguous.reshape(-1).view(np.uint8)
-        source = self._source_arrays.get(id(array))
-        if source is not None and source[0]() is array:
-            previous = source[1]()
-            if (previous is not None and array.dtype == previous.dtype and array.shape == previous.shape
-                    and np.array_equal(byte_array, previous.reshape(-1).view(np.uint8))):
-                return previous
-        raw = memoryview(byte_array)
-        # A small sample narrows candidates. Only exact full-byte equality permits sharing.
-        sample = (bytes(raw) if len(raw) <= 256 else b"".join(
-            bytes(raw[offset:offset + 32])
-            for offset in (index * (len(raw) - 32) // 7 for index in range(8))))
-        key = (array.dtype.str, array.shape, len(raw), sample)
-        reference = self._array_candidates.get(key)
-        previous = reference() if reference is not None else None
-        if previous is not None and np.array_equal(byte_array, previous.reshape(-1).view(np.uint8)):
-            self._source_arrays[id(array)] = (
-                self._array_reference(array, self._source_arrays), reference)
-            return previous
-        result = np.array(array, copy=True, order="C")
-        result.flags.writeable = False
-        identity = id(result)
-        owned_cache, candidate_cache = self._owned_arrays, self._array_candidates
-
-        def release(_reference: Any) -> None:
-            owned_cache.pop(identity, None)
-            candidate = candidate_cache.get(key)
-            if candidate is not None and candidate() is None:
-                candidate_cache.pop(key, None)
-
-        reference = ref(result, release)
-        self._owned_arrays[identity] = reference
-        self._array_candidates[key] = reference
-        self._source_arrays[id(array)] = (self._array_reference(array, self._source_arrays), reference)
+    def _record_snapshot(self, record: Any) -> Any:
+        result = self.snapshot(_record_payloads(record, retain_sensor_data=False))
+        for name in _OBSERVATION_FIELDS:
+            source = getattr(record, name, None)
+            if isinstance(source, Observation):
+                getattr(result, name).sensor_data = dict(source.sensor_data)
         return result
 
     def record_step(self, record: StepRecord) -> StepRecord:
-        """Append a decision record and flush a complete row group when due."""
+        """Append a decision record and flush a complete row group when due.
+
+        Sensor payloads are retained by reference and must not be modified afterwards.
+        Call ``snapshot`` first when an independent copy is needed.
+        """
         self._check_open()
         if not isinstance(record, StepRecord):
             raise TypeError("record_step requires StepRecord")
         if (not isinstance(record.step, int) or isinstance(record.step, bool)
                 or record.step <= self._last_step or record.step < 0):
             raise ValueError("Decision indices must be nonnegative and strictly increasing")
-        capture_scope, self._capture_scope = self._capture_scope, None
-        try:
-            snapshot = self.snapshot(_record_payloads(record))
-        finally:
-            self._capture_scope = capture_scope
+        snapshot = self._record_snapshot(record)
         if self._writer is not None:
             self._writer.append("steps", {f.name: getattr(snapshot, f.name) for f in fields(snapshot)})
         if self.retain_steps:
             self.log.steps.append(snapshot if self.retain_sensor_data else _record_payloads(snapshot, retain_sensor_data=False))
         self._last_step = record.step
+        if self._writer is not None:
+            self._writer.payloads.clear_bytes()
         return snapshot
 
     def record_event(self, kind: str, *, step: int | None = None, **data: Any) -> EventRecord:
@@ -362,15 +269,18 @@ class Recorder:
         return event
 
     def record_capture(self, record: CaptureRecord) -> CaptureRecord:
-        """Snapshot an acquisition batch, independently of decision recording."""
+        """Snapshot acquisition metadata and retain sensor payloads by reference.
+
+        The caller must not modify those payloads afterwards. Call ``snapshot`` first
+        when an independent copy is needed.
+        """
         self._check_open()
         if not isinstance(record, CaptureRecord):
             raise TypeError("record_capture requires CaptureRecord")
         if record.capture_id in self._capture_ids:
             raise ValueError(f"Duplicate capture_id: {record.capture_id}")
-        self.begin_capture(record.capture_id)
         self._capture_ids.add(record.capture_id)
-        snapshot = self.snapshot(_record_payloads(record))
+        snapshot = self._record_snapshot(record)
         if self._writer is not None:
             self._writer.append("captures", {f.name: getattr(snapshot, f.name) for f in fields(snapshot)})
         if self.retain_steps:
@@ -401,7 +311,6 @@ class Recorder:
                 self.log.status = previous_status
                 raise
         self._finished = True
-        self.release_captures(tuple(self._capture_payloads))
         return self.log
 
     def abort(self) -> None:
@@ -409,7 +318,6 @@ class Recorder:
         if not self._finished and self._writer is not None:
             self._writer.abort()
         self._finished = True
-        self.release_captures(tuple(self._capture_payloads))
 
     def _check_open(self) -> None:
         if self._finished:
@@ -639,9 +547,8 @@ class _PayloadWriter:
         self._contents: dict[int, tuple[Any, dict[str, Any]]] = {}
         self._byte_contents: dict[int, tuple[Any, dict[str, Any]]] = {}
 
-    def retain_bytes(self, identities: set[int]) -> None:
-        self._byte_contents = {key: value for key, value in self._byte_contents.items()
-                               if key in identities}
+    def clear_bytes(self) -> None:
+        self._byte_contents.clear()
 
     def write(self, data: memoryview, source: Any) -> dict[str, Any]:
         cache = self._byte_contents if isinstance(source, bytes) else self._contents

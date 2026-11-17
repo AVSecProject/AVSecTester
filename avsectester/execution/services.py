@@ -414,7 +414,8 @@ class ClosedLoopSession:
         """
         from avsectester.closed_loop.simulators.base import can_deploy_at
 
-        deployment_allowed = can_deploy_at(self.services.simulator.deployment_ticks(position), self.services.deployment,
+        require_nonnegative_integer(position, "position")
+        deployment_allowed = can_deploy_at(position * self.services.simulator.decision_ticks, self.services.deployment,
                                             self.services.simulator.capture_ticks)
         simulator = self.services.simulator
         adapter = self.services.driving_adapter

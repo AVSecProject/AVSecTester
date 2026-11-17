@@ -20,7 +20,9 @@ from avsectester.datasets.base import ScenarioStart
 from avsectester.data_types import Observation, WorldSnapshot
 from avsectester.geometry.cameras import BODY_FROM_OPTICAL
 from avsectester.validation import require_nonnegative_number
-from avsectester.closed_loop.timing import TimingCapabilities, TimingConfiguration
+from avsectester.closed_loop.timing import (
+    TimingCapabilities, TimingConfiguration, validate_decision_period,
+)
 
 
 class RecordedReplaySimulator(Simulator):
@@ -34,7 +36,7 @@ class RecordedReplaySimulator(Simulator):
     can_render = True
     can_replay = True
     can_insert_objects = True
-    NOMINAL_PERIOD_US = 500000
+    _NOMINAL_PERIOD_US = 500000
     'nuScenes keyframes use a nominal 500 ms scheduler interval, retaining recorded timestamps.'
 
     def __init__(self, start: ScenarioStart | None = None, *,
@@ -59,12 +61,12 @@ class RecordedReplaySimulator(Simulator):
     def validate_timing(self, timing: TimingConfiguration) -> None:
         """Require the nominal keyframe decision grid before allocating a replay."""
         super().validate_timing(timing)
-        if timing.decision_period_us not in (None, self.NOMINAL_PERIOD_US):
+        if timing.decision_period_us not in (None, self._NOMINAL_PERIOD_US):
             raise ValueError("Recorded replay decision period must match its nominal keyframe interval")
-        timing.validate_period(self.NOMINAL_PERIOD_US)
+        validate_decision_period(timing, self._NOMINAL_PERIOD_US)
         if (timing.pose_reporting_interval_us or timing.planner_delay_us
                 or timing.force_gt_duration_us or timing.skip_driver_during_force_gt
-                or any(sensor.interval_us(self.NOMINAL_PERIOD_US) != self.NOMINAL_PERIOD_US
+                or any(sensor.resolved_frame_interval_us(self._NOMINAL_PERIOD_US) != self._NOMINAL_PERIOD_US
                        or sensor.shutter_duration_us for sensor in timing.sensors.values())):
             raise ValueError("Recorded replay accepts only default timing settings")
 
@@ -83,7 +85,7 @@ class RecordedReplaySimulatorRuntime(SimulatorRuntime):
     @property
     def decision_period_us(self) -> int:
         """Nominal nuScenes keyframe interval, independent of recorded timestamp jitter."""
-        return RecordedReplaySimulator.NOMINAL_PERIOD_US
+        return RecordedReplaySimulator._NOMINAL_PERIOD_US
 
     def _initialize_world(self, start, initialization, environment):
         if environment:

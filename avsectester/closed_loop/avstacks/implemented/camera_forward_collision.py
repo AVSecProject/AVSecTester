@@ -41,11 +41,6 @@ class CameraForwardCollisionAVStack(AVStack):
         self._latest_inputs = SensorCache()
         self._last_command: Control | None = None
 
-    @property
-    def required_sensors(self) -> frozenset[str]:
-        """Selected camera, using its latest delivered capture."""
-        return frozenset((self.camera,))
-
     def _load(self) -> None:
         import avstack.modules.perception.object2dfv  # noqa: F401 - native registry
         from avstack.config import MODELS

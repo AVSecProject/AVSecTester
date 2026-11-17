@@ -133,12 +133,13 @@ class SensorEnvironment:
     def apply(self, observation: Observation, position: int, *,
               interval_capture_index: Mapping[str, int] | None = None,
               available_sensors: frozenset[str] | None = None) -> Observation:
-        """Apply corruptions to due sensors with stable sensor and acquisition-time randomness.
+        """Apply corruptions with stable sensor and acquisition-time randomness.
 
         ``position`` is the containing dataset grid position. ``interval_capture_index``
         gives each due camera's own capture index within that decision interval, starting
         at zero. Index zero uses the original three-part random seed.
-        ``available_sensors`` distinguishes a sensor not due now from an invalid sensor ID.
+        ``available_sensors`` names the configured streams. A configured camera absent
+        from this frame batch is skipped. Other missing cameras raise ``ValueError``.
         """
         result = observation
         for index, (camera, apply) in enumerate(self.corruptions):

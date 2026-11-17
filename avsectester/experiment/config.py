@@ -38,7 +38,7 @@ from avsectester.execution.runner import RecordingPolicy
 from avsectester.closed_loop.avstacks.driving_adapter import DrivingAdapter
 from avsectester.closed_loop.simulators.base import Simulator
 from avsectester.closed_loop.avstacks.base import ObservationPipeline
-from avsectester.closed_loop.timing import SensorTiming, TimingConfiguration, seconds_to_microseconds
+from avsectester.closed_loop.timing import SensorTiming, TimingConfiguration, seconds_to_microseconds, validate_decision_period
 from avsectester.datasets import Dataset
 from avsectester.evaluation.report import EvaluationConfiguration
 from avsectester.evaluation.metric import Metric
@@ -192,7 +192,7 @@ class ExperimentConfiguration:
             raise ValueError("runs.timing.decision_period_us must equal the dataset time grid. "
                              "Segment decision counts remain the difference between frame positions")
         if dataset_step is not None:
-            self.runs.timing.validate_period(seconds_to_microseconds(dataset_step))
+            validate_decision_period(self.runs.timing, seconds_to_microseconds(dataset_step))
         self.simulator.validate_timing(self.runs.timing)
         if dataset_step is not None and dataset_step != self.simulator.decision_time_step:
             raise ValueError("dataset.time_step does not match simulator.decision_time_step")
@@ -375,13 +375,12 @@ def _runs(value: Any, directory: Path, device: str | None = None) -> RunsConfigu
         if "every_n_steps" in recording:
             raise ValueError("runs.recording.every_n_steps was replaced by every_n_captures. "
                              "Recording intervals now count each sensor's acquisitions")
-        _keys(recording, {"sensor_ids", "representations", "every_n_captures", "sensor_every_n_captures"}, "runs.recording")
+        _keys(recording, {"sensor_ids", "representations", "every_n_captures"}, "runs.recording")
         recording = RecordingPolicy(
             sensor_ids=_sequence(recording.get("sensor_ids", ()), "runs.recording.sensor_ids"),
             representations=_sequence(recording.get("representations", ("model_input",)),
                                       "runs.recording.representations"),
             every_n_captures=recording.get("every_n_captures", 1),
-            sensor_every_n_captures=recording.get("sensor_every_n_captures", {}),
         )
     output = value.get("output")
     if output is not None:

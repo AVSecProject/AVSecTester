@@ -282,7 +282,7 @@ class AttackDispatcher:
                     if action.active_for_us == 0:
                         self._sensor.append((action_id, action, attack))
                     else:
-                        start = context.capture_time_us
+                        start = context.decision_time_us
                         if start is None:
                             start = timestamp_to_microseconds(context.sim_time)
                         end = None if action.active_for_us is None else start + action.active_for_us

@@ -84,10 +84,6 @@ class SerializationRegistry:
         """Take an independent snapshot, preserving native wrappers and container subclasses."""
         return _snapshot(value, {}, self)
 
-    def recording_snapshot(self, value: Any, payload_snapshot: Callable[[Any], Any]) -> Any:
-        """Snapshot with a numeric-array and byte ownership callback from a recording transport."""
-        return _snapshot(value, {}, self, payload_snapshot)
-
     def _native(self, value: Any) -> tuple[
         Callable[[Any], Any], Callable[[Any, Callable[[Any], Any]], Any] | None,
     ] | None:
@@ -237,24 +233,18 @@ class SerializationRegistry:
         return {key: child(item) for key, item in data.items()}
 
 
-def _snapshot(value: Any, memo: dict[int, Any], registry: SerializationRegistry,
-              payload_snapshot: Callable[[Any], Any] | None = None) -> Any:
+def _snapshot(value: Any, memo: dict[int, Any], registry: SerializationRegistry) -> Any:
     if isinstance(value, bytes):
-        return payload_snapshot(value) if payload_snapshot is not None else value
+        return value
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     key = id(value)
     result: Any
     if key in memo:
         return memo[key]
-    if (type(value) is np.ndarray and value.dtype.kind in "biufc"
-            and not value.dtype.fields and payload_snapshot is not None):
-        result = payload_snapshot(value)
-        memo[key] = result
-        return result
     snapshot = registry._snapshotter(value)
     if snapshot is not None:
-        result = snapshot(value, lambda child: _snapshot(child, memo, registry, payload_snapshot))
+        result = snapshot(value, lambda child: _snapshot(child, memo, registry))
         if result is value:
             raise TypeError("A Native snapshot callback must return an independent snapshot")
         memo[key] = result
@@ -267,15 +257,15 @@ def _snapshot(value: Any, memo: dict[int, Any], registry: SerializationRegistry,
         result = {}
         memo[key] = result
         for k, v in value.items():
-            result[deepcopy(k, memo)] = _snapshot(v, memo, registry, payload_snapshot)
+            result[deepcopy(k, memo)] = _snapshot(v, memo, registry)
         return result
     if type(value) is list:
         result = []
         memo[key] = result
-        result.extend(_snapshot(v, memo, registry, payload_snapshot) for v in value)
+        result.extend(_snapshot(v, memo, registry) for v in value)
         return result
     if type(value) is tuple:
-        result = tuple(_snapshot(v, memo, registry, payload_snapshot) for v in value)
+        result = tuple(_snapshot(v, memo, registry) for v in value)
         memo[key] = result
         return result
     if isinstance(value, dict):
@@ -283,17 +273,17 @@ def _snapshot(value: Any, memo: dict[int, Any], registry: SerializationRegistry,
         memo[key] = result
         result.clear()
         for k, v in value.items():
-            result[deepcopy(k, memo)] = _snapshot(v, memo, registry, payload_snapshot)
-        _snapshot_attributes(value, result, memo, registry, payload_snapshot)
+            result[deepcopy(k, memo)] = _snapshot(v, memo, registry)
+        _snapshot_attributes(value, result, memo, registry)
         return result
     if isinstance(value, list):
         result = copy(value)
         memo[key] = result
-        result[:] = [_snapshot(v, memo, registry, payload_snapshot) for v in value]
-        _snapshot_attributes(value, result, memo, registry, payload_snapshot)
+        result[:] = [_snapshot(v, memo, registry) for v in value]
+        _snapshot_attributes(value, result, memo, registry)
         return result
     if isinstance(value, tuple):
-        items = [_snapshot(v, memo, registry, payload_snapshot) for v in value]
+        items = [_snapshot(v, memo, registry) for v in value]
         if hasattr(value, "_fields"):
             result = getattr(type(value), "_make")(items)
         else:
@@ -307,21 +297,20 @@ def _snapshot(value: Any, memo: dict[int, Any], registry: SerializationRegistry,
         result = object.__new__(type(value))
         memo[key] = result
         for f in fields(value):
-            object.__setattr__(result, f.name, _snapshot(getattr(value, f.name), memo, registry, payload_snapshot))
+            object.__setattr__(result, f.name, _snapshot(getattr(value, f.name), memo, registry))
         return result
     return deepcopy(value, memo)
 
 
 def _snapshot_attributes(
     source: Any, result: Any, memo: dict[int, Any], registry: SerializationRegistry,
-    payload_snapshot: Callable[[Any], Any] | None = None,
 ) -> None:
     """Replace the attributes ``copy`` shared with ``source`` by independent snapshots."""
     state = getattr(source, "__dict__", None)
     if state:
         target = vars(result)
         for name, item in state.items():
-            target[name] = _snapshot(item, memo, registry, payload_snapshot)
+            target[name] = _snapshot(item, memo, registry)
 
 
 def _is_tensor(value: Any) -> bool:

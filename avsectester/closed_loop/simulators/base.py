@@ -13,13 +13,18 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable, Hashable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from copy import deepcopy
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields, is_dataclass, replace
+import math
+from numbers import Real
 from threading import Lock
 from typing import Any, TYPE_CHECKING
 
 from avsectester.closed_loop.hooks import _HookBindingMixin
 from avsectester.validation import timestamp_to_microseconds
-from avsectester.closed_loop.timing import HistoryRequirement, SensorTiming, TimingCapabilities, TimingConfiguration, seconds_to_microseconds
+from avsectester.closed_loop.timing import (
+    HistoryRequirement, SensorTiming, TimingCapabilities, TimingConfiguration,
+    seconds_to_microseconds, validate_decision_period,
+)
 from avsectester.closed_loop.simulators.object_composition import compose_capture
 from avsectester.data_types import ActorState
 from avsectester.datasets.base import FrameData, FrameReference, ScenarioStart
@@ -91,15 +96,15 @@ class DeploymentPlan:
         require_nonnegative_integer(self.ticks, "deployment ticks")
 
 
-def can_deploy_at(position: int, deployment: DeploymentPlan, capture_ticks: int) -> bool:
+def can_deploy_at(ticks: int, deployment: DeploymentPlan, capture_ticks: int) -> bool:
     """Whether deployment can preserve this selected decision boundary.
 
     Frame zero permits a held-origin setup. Later boundaries need enough preceding ticks
     for the shared deployment budget and the simulator's capture latency.
     """
-    require_nonnegative_integer(position, "position")
+    require_nonnegative_integer(ticks, "ticks")
     require_nonnegative_integer(capture_ticks, "capture ticks")
-    return position == 0 or position >= deployment.ticks + capture_ticks
+    return ticks == 0 or ticks >= deployment.ticks + capture_ticks
 
 
 @dataclass(frozen=True)
@@ -236,23 +241,34 @@ class UnsupportedStartError(ValueError):
 
 
 @dataclass(frozen=True)
-class SensorAcquisition:
-    """One sensor's captured observation, physical truth, view and visibility at its own time.
+class DecisionInterval:
+    """One native propagation, available to extension hooks until its endpoint is published.
 
-    The observation contains only this sensor. Values are detached from later captures.
-    Explicit native handles in ``view.native`` retain their native SDK behavior.
+    ``report_times_us`` contains intermediate report times without either endpoint.
+    ``start_state`` is physical truth after ``simulator.step.pre`` has run.
     """
 
-    time_us: int
+    start_us: int
+    end_us: int
+    report_times_us: tuple[int, ...]
+    force_gt: bool
+    coerce_dynamic_state: bool
+    start_state: WorldSnapshot
+
+
+@dataclass(frozen=True)
+class RecordedAcquisition:
+    """One recorded-history read with its observation and physical evidence.
+
+    ``sensor_geometry`` contains the acquired optical cameras. ``object_visibility`` maps
+    inserted-object IDs to camera visibility. Both mappings are empty for a pose-only read.
+    Values are detached from later live captures and recorded-history reads.
+    """
+
     observation: Observation
     physical_state: WorldSnapshot
-    view: SensorView
-    visibility: Mapping[str, ObjectVisibility] = field(default_factory=dict)
-
-    @property
-    def sensor(self) -> str:
-        """Canonical sensor ID of this acquisition."""
-        return self.view.sensor
+    sensor_geometry: Mapping[str, SensorGeometry] = field(default_factory=dict)
+    object_visibility: Mapping[str, Mapping[str, ObjectVisibility]] = field(default_factory=dict)
 
 
 @dataclass
@@ -396,10 +412,6 @@ class Simulator(ABC):
         """Recorded decision steps preceding a capture under the selected frame clocks."""
         return self.observation_lead_steps
 
-    def deployment_ticks(self, position: int) -> int:
-        """Convert a dataset frame position to the number of native deployment ticks."""
-        return position
-
     def validate_timing(self, timing: TimingConfiguration) -> None:
         """Reject unsupported clocks or startup motion without opening a simulator world."""
         if not isinstance(timing, TimingConfiguration):
@@ -421,15 +433,15 @@ class Simulator(ABC):
         period = period if period is not None else (seconds_to_microseconds(declared) if declared is not None else None)
         if period is None:
             return
-        timing.validate_period(period)
-        if (any(sensor.interval_us(period) != period for sensor in timing.sensors.values())
+        validate_decision_period(timing, period)
+        if (any(sensor.resolved_frame_interval_us(period) != period for sensor in timing.sensors.values())
                 and not capabilities.captures_between_decisions):
             raise ValueError(f"{type(self).__name__} cannot acquire between decisions")
         tick = capabilities.base_tick_us
         if tick is not None:
             values = [period, timing.pose_reporting_interval_us, timing.planner_delay_us,
                       timing.force_gt_duration_us,
-                      *(sensor.interval_us(period) for sensor in timing.sensors.values())]
+                      *(sensor.resolved_frame_interval_us(period) for sensor in timing.sensors.values())]
             if any(value % tick for value in values):
                 raise ValueError("Frame, reporting, planner delay and force-GT periods must align with simulator base ticks")
 
@@ -475,18 +487,12 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
     def __init__(self, simulator: Simulator) -> None:
         self.simulator = simulator
         self._timing = TimingConfiguration()
-        self._coerce_dynamic_state = False
         self._history_requirement = HistoryRequirement()
         self._state_cache: WorldSnapshot | None = None
         self._capture: Observation | None = None
         self._clock_time_us: int | None = None
-        self._motion_report_times: tuple[int, ...] = ()
-        self._interval_start_state: WorldSnapshot | None = None
-        self._interval_end_state: WorldSnapshot | None = None
-        self._interval_start_us: int | None = None
-        self._interval_end_us: int | None = None
-        self._pending_motion = False
-        self._pending_state: WorldSnapshot | None = None
+        self._interval: DecisionInterval | None = None
+        self._published_state: WorldSnapshot | None = None
         self._sensor_slots: dict[str, _SensorSlot] = {}
         self._objects: dict[str, PlacedObject] = {}
         self._capture_objects: dict[str, PlacedObject] = {}
@@ -496,10 +502,7 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
         self._composition_error: BaseException | None = None
         self._world_initialized = False
         self._resetting = False
-        self._stepping = False
-        self._frame_ranges: dict[str, tuple[int, range]] = {}
-        self._recorded_capture_state: WorldSnapshot | None = None
-        self._recorded_capture_visibility: dict = {}
+        self._advancing = False
         self._start: ScenarioStart | None = None
         self._deployment = DeploymentPlan()
         self._in_setup = False
@@ -593,6 +596,41 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
         """
         return deepcopy(observation)
 
+    def interpolate_vehicle_state(self, left: Any, right: Any, fraction: float, time_us: int) -> Any:
+        """Interpolate model-visible actor, rigid-matrix or planar dataclass state.
+
+        Translation and numeric motion fields interpolate linearly. Rotations take the shortest
+        arc. Extensions override this operation for their native vehicle-state representation.
+        """
+        import numpy as np
+
+        from avsectester.geometry.poses import interpolate_transform
+
+        if type(left) is not type(right):
+            raise TypeError("Pose reports must use the same vehicle-state representation")
+        if left is None:
+            return None
+        if isinstance(left, ActorState):
+            velocity = (None if left.velocity is None or right.velocity is None else
+                        tuple((1 - fraction) * a + fraction * b for a, b in zip(left.velocity, right.velocity)))
+            return replace(left, pose=interpolate_transform(left.pose, right.pose, fraction), velocity=velocity)
+        if isinstance(left, np.ndarray) and left.shape == (4, 4):
+            return interpolate_transform(left, right, fraction)
+        if is_dataclass(left) and not isinstance(left, type) and all(
+                hasattr(left, name) for name in ("x", "y", "yaw")):
+            values: dict[str, Any] = {}
+            for item in fields(left):
+                a, b = getattr(left, item.name), getattr(right, item.name)
+                if isinstance(a, Real) and isinstance(b, Real) and not isinstance(a, bool):
+                    values[item.name] = float(a) + fraction * (float(b) - float(a))
+            first_yaw, last_yaw = float(getattr(left, "yaw")), float(getattr(right, "yaw"))
+            values["yaw"] = first_yaw + fraction * math.atan2(math.sin(last_yaw - first_yaw),
+                                                            math.cos(last_yaw - first_yaw))
+            if hasattr(left, "t"):
+                values["t"] = time_us / 1e6
+            return replace(left, **values)
+        raise TypeError(f"Cannot interpolate vehicle-state type {type(left).__name__}")
+
     def close(self) -> None:
         """Release the world and native connections. Optional."""
         self._state_cache = None
@@ -603,16 +641,10 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
         self._composited_capture = None
         self._composition_error = None
         self._capture = None
-        self._frame_ranges.clear()
-        self._recorded_capture_state = None
-        self._recorded_capture_visibility.clear()
         self._clock_time_us = None
-        self._pending_motion = False
-        self._pending_state = None
+        self._interval = None
+        self._published_state = None
         self._sensor_slots.clear()
-        self._interval_start_state = self._interval_end_state = None
-        self._interval_start_us = self._interval_end_us = None
-        self._motion_report_times = ()
         self._world_initialized = False
 
     @property
@@ -659,18 +691,32 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
     @property
     def clock(self) -> ClockSnapshot:
         """Return the current ``ClockSnapshot`` containing simulator time and native frame."""
-        if not (self._world_initialized or self._resetting or self._stepping):
+        if not (self._world_initialized or self._resetting or self._advancing):
             raise RuntimeError("Reset the simulator before requesting its clock")
-        if self._pending_motion and not (self._stepping or self._resetting) and self._pending_state is not None:
-            native = ClockSnapshot(self._pending_state.t, self._pending_state.frame)
-        else:
-            native = self._native_clock()
+        reported = self._reported_interval_state()
+        native = (self._native_clock() if reported is None
+                  else ClockSnapshot(reported.t, reported.frame))
         return replace(native, scheduled_time_us=self._clock_time_us)
+
+    def _reported_interval_state(self) -> WorldSnapshot | None:
+        """Latest reported state of a pending interval, read outside reset and advance."""
+        if self._interval is None or self._advancing or self._resetting:
+            return None
+        return self._published_state
 
     def _native_clock(self) -> ClockSnapshot:
         """Read native time and frame without copying a full world snapshot when supported."""
         state = self._cached_state()
         return ClockSnapshot(state.t, state.frame)
+
+    def _restore_clock(self, time_us: int) -> None:
+        """Restore a checkpoint clock and discard interval and acquisition state."""
+        self._interval = None
+        self._published_state = None
+        self._sensor_slots.clear()
+        self._capture = None
+        self.invalidate_state()
+        self._clock_time_us = time_us
 
     def invalidate_state(self) -> None:
         """Discard cached physical truth after explicitly changing the live world.
@@ -690,7 +736,7 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
 
         Available after reset and during reset and step, so stage handlers can read it.
         """
-        if not (self._world_initialized or self._resetting or self._stepping):
+        if not (self._world_initialized or self._resetting or self._advancing):
             raise RuntimeError("Reset the simulator before requesting its state")
         objects = {}
         for object_id, placed in self._objects.items():
@@ -698,9 +744,8 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
                 placed.world_from_object.copy(), (0., 0., 0.), placed.asset.category,
                 placed.asset.extent, (0., 0., placed.asset.extent[2] / 2),
             )
-        state = (deepcopy(self._pending_state)
-                 if self._pending_motion and not (self._stepping or self._resetting) and self._pending_state is not None
-                 else deepcopy(self._cached_state()))
+        reported = self._reported_interval_state()
+        state = deepcopy(self._cached_state() if reported is None else reported)
         return replace(state, objects=objects)
 
     @property
@@ -708,29 +753,37 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
         """Static timing limits declared by this runtime's configured simulator."""
         return self.simulator.timing_capabilities
 
-    def state_at(self, time_us: int) -> WorldSnapshot:
+    @property
+    def timing(self) -> TimingConfiguration:
+        """Timing configuration selected by ``configure_timing`` for this runtime."""
+        return self._timing
+
+    @property
+    def history_requirement(self) -> HistoryRequirement:
+        """Recorded context selected by ``configure_timing`` for this runtime."""
+        return self._history_requirement
+
+    def _state_at(self, time_us: int) -> WorldSnapshot:
         """Read detached truth within the last completed motion interval without advancing."""
         if isinstance(time_us, bool) or not isinstance(time_us, int):
             raise ValueError("State time must be integer microseconds")
         self._validate_native_time(time_us)
         if time_us == self.clock.time_us:
             return self.state()
-        first, last = self._interval_start_state, self._interval_end_state
-        if (first is None or last is None or self._interval_start_us is None
-                or self._interval_end_us is None
-                or not self._interval_start_us <= time_us <= self._interval_end_us):
+        interval = self._interval
+        if interval is None or not interval.start_us <= time_us <= interval.end_us:
             raise ValueError("State time lies outside the last advanced interval")
-        if time_us == self._interval_start_us:
-            return deepcopy(first)
-        if time_us == self._interval_end_us:
-            return deepcopy(last)
+        if time_us == interval.start_us:
+            return deepcopy(interval.start_state)
+        if time_us == interval.end_us and not self.timing_capabilities.motion_reports:
+            return deepcopy(self._cached_state())
         if not self.timing_capabilities.motion_reports:
             raise ValueError(f"{type(self).__name__} cannot report intermediate motion")
         return self._reported_state_at(time_us)
 
     def _validate_native_time(self, time_us: int) -> None:
         tick = self.timing_capabilities.base_tick_us
-        origin = self._interval_start_us if self._interval_start_us is not None else self.clock.time_us
+        origin = self._interval.start_us if self._interval is not None else self.clock.time_us
         if tick is not None and (time_us - origin) % tick:
             raise ValueError("Acquisition and state times must align with simulator base ticks")
 
@@ -739,7 +792,7 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
 
     def _activate_reported_state(self, time_us: int, state: WorldSnapshot) -> None:
         """Select a reported pose for acquisition without updating the controller."""
-        if time_us != self._interval_end_us:
+        if self._interval is None or time_us != self._interval.end_us:
             raise NotImplementedError("This simulator cannot acquire intermediate reports")
 
     @property
@@ -791,11 +844,7 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
         sensor = self.canonical_sensor_id(sensor)
         if isinstance(end_time_us, bool) or not isinstance(end_time_us, int):
             raise ValueError("Frame end must be integer microseconds")
-        previous = self._frame_ranges.get(sensor)
-        if previous is None or previous[0] != end_time_us:
-            previous = (end_time_us, self._frame_range_us(sensor, end_time_us))
-            self._frame_ranges[sensor] = previous
-        return previous[1]
+        return self._frame_range_us(sensor, end_time_us)
 
     def _frame_range_us(self, sensor: str, end_time_us: int) -> range:
         timing = self._timing.sensors.get(sensor, SensorTiming())
@@ -812,19 +861,17 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
             slot = self._make_sensor_slot(sensor)
         return slot
 
+    def _captured_render_request(self, sensor: str) -> Any:
+        """Detach the latest acquired native request without building a sensor view."""
+        sensor = self.canonical_sensor_id(sensor)
+        if sensor not in self._sensor_slots:
+            raise KeyError(f"No current capture for sensor {sensor!r}")
+        return deepcopy(self._sensor_slots[sensor].render_request)
+
     def _detached_view(self, view: SensorView) -> SensorView:
         # Frozen placed objects can own harmonizer resources and remain shared.
         shared = {id(placed): placed for placed in view.objects.values()}
         return deepcopy(view, shared)
-
-    def sensor_acquisition(self, sensor: str) -> SensorAcquisition:
-        """Read a detached acquisition, including its observation, truth and native view data."""
-        slot = self._current_slot(sensor)
-        self._compose_slot(slot)
-        return SensorAcquisition(
-            slot.time_us, self.copy_observation(slot.observation), deepcopy(slot.physical_state),
-            self._detached_view(self._slot_view(slot)), deepcopy(slot.visibility),
-        )
 
     def _make_sensor_slot(self, sensor: str, truth: WorldSnapshot | None = None) -> _SensorSlot:
         assert self._capture is not None
@@ -873,7 +920,7 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
 
         if not self.can_insert_objects:
             raise NotImplementedError(f"{type(self.simulator).__name__} cannot insert objects")
-        if not (self._world_initialized or self._resetting or self._stepping):
+        if not (self._world_initialized or self._resetting or self._advancing):
             raise RuntimeError("Reset the simulator before inserting objects")
         if not self._supports_asset(asset):
             raise TypeError(
@@ -1017,15 +1064,10 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
         self.invalidate_state()
         self._world_initialized = False
         self._clock_time_us = None
-        self._pending_motion = False
-        self._pending_state = None
+        self._interval = None
+        self._published_state = None
         self._sensor_slots.clear()
-        self._interval_start_state = self._interval_end_state = None
-        self._interval_start_us = self._interval_end_us = None
         self._capture = None
-        self._frame_ranges.clear()
-        self._recorded_capture_state = None
-        self._recorded_capture_visibility.clear()
         self._objects.clear()
         self._capture_objects.clear()
         self._start_objects.clear()
@@ -1100,7 +1142,6 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
         """
         self.simulator.validate_timing(timing)
         self._timing = timing
-        self._frame_ranges.clear()
         self._history_requirement = history
 
     def advance_interval(self, time_us: int, control: Control | None, *,
@@ -1117,7 +1158,7 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
             raise ValueError("Advance time must be integer microseconds")
         if not self._world_initialized:
             raise RuntimeError("Reset the simulator before stepping")
-        if self._pending_motion:
+        if self._interval is not None:
             raise RuntimeError("Publish the previous interval endpoint before propagating again")
         if control is None or force_gt:
             if not self.timing_capabilities.recorded_ego_motion:
@@ -1136,29 +1177,26 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
             tick = self.timing_capabilities.base_tick_us
             if tick is not None and (report_time - origin_us) % tick:
                 raise ValueError("Motion report times must align with simulator base ticks")
-        self._coerce_dynamic_state = coerce_dynamic_state
-        self._motion_report_times = tuple(sorted(set(report_times_us)))
-        self._interval_end_state = None
-        self._interval_start_us, self._interval_end_us = origin_us, time_us
         self._capture = None
         self._world_initialized = False
-        self._stepping = True
+        self._advancing = True
         try:
             self._emit("simulator.step.pre", None)
-            self._interval_start_state = self.state()
+            self._interval = DecisionInterval(origin_us, time_us,
+                tuple(sorted(set(report_times_us) - {origin_us, time_us})),
+                force_gt, coerce_dynamic_state, self.state())
             if control is None or force_gt:
                 self._advance_force_gt_native(control)
             else:
                 self._advance_native(control)
             self.invalidate_state()
-            self._interval_end_state = self._completed_state()
-            self._state_cache = self._interval_end_state
-            self._completed_interval()
+            end_state = self._completed_state()
+            self._state_cache = end_state
+            self._completed_interval(end_state)
         finally:
-            self._stepping = False
+            self._advancing = False
         self._world_initialized = True
-        self._pending_motion = True
-        self._pending_state = deepcopy(self._interval_start_state)
+        self._published_state = deepcopy(self._interval.start_state)
 
     def _completed_state(self) -> WorldSnapshot:
         return self.state()
@@ -1199,7 +1237,7 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
         if isinstance(time_us, bool) or not isinstance(time_us, int):
             raise ValueError("Capture time must be integer microseconds")
         self._validate_native_time(time_us)
-        if (self._pending_motion and time_us != self._interval_end_us and sensor_ids != ()
+        if (self._interval is not None and time_us != self._interval.end_us and sensor_ids != ()
                 and not self.timing_capabilities.captures_between_decisions):
             raise ValueError(f"{type(self).__name__} cannot acquire between decisions")
 
@@ -1211,35 +1249,37 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
         self._validate_native_time(time_us)
         if time_us < self.clock.time_us:
             raise ValueError("Capture time cannot precede the current time")
-        if self._pending_motion and (time_us != self.clock.time_us or self._capture is None):
-            if time_us <= self.clock.time_us or self._interval_end_us is None or time_us > self._interval_end_us:
+        endpoint = self._interval.end_us if self._interval is not None else None
+        endpoint_truth: WorldSnapshot | None = None
+        if self._interval is not None and (time_us != self.clock.time_us or self._capture is None):
+            if time_us <= self.clock.time_us or time_us > self._interval.end_us:
                 raise ValueError("Capture time must advance within the pending interval")
             capability = (self.timing_capabilities.motion_reports if sensor_ids == ()
                           else self.timing_capabilities.captures_between_decisions)
-            if time_us != self._interval_end_us and not capability:
+            if time_us != self._interval.end_us and not capability:
                 raise ValueError(f"{type(self).__name__} cannot acquire between decisions")
-            reported = self.state_at(time_us)
+            reported = self._state_at(time_us)
             self._activate_reported_state(time_us, reported)
-            self._pending_state = reported
+            self._published_state = reported
             self._clock_time_us = time_us
             self._capture = None
-            if time_us == self._interval_end_us:
-                self._pending_motion = False
-                self._pending_state = None
+            if time_us == self._interval.end_us:
+                self._interval = None
+                self._published_state = None
                 try:
                     self._emit("simulator.step.post", None)
                 except BaseException:
                     self._world_initialized = False
                     raise
                 self.invalidate_state()
-                self._interval_end_state = self.state()
-                self._state_cache = self._interval_end_state
+                endpoint_truth = self.state()
+                self._state_cache = endpoint_truth
             self._capture = None
         elif time_us != self.clock.time_us:
             raise ValueError("This simulator can capture only at its current time")
         if self._capture is None:
             try:
-                truth = self._interval_end_state if time_us == self._interval_end_us else self.state()
+                truth = endpoint_truth if time_us == endpoint else self.state()
                 self._take_capture(sensor_ids, truth)
             except BaseException:
                 self._world_initialized = False
@@ -1270,7 +1310,7 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
     def _recorded_pose_state(self, time_us: int) -> WorldSnapshot:
         return self._recorded_state(time_us)
 
-    def observe_recorded_at(self, time_us: int, sensor_ids: Sequence[str] | None = None) -> Observation:
+    def observe_recorded_at(self, time_us: int, sensor_ids: Sequence[str] | None = None) -> RecordedAcquisition:
         """Read an acquisition before the origin without advancing the live world.
 
         Recorded poses and actors are interpolated only by simulators declaring intermediate
@@ -1291,11 +1331,10 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
             raise ValueError("Recorded acquisition precedes available source history")
         if sensor_ids is not None and not sensor_ids:
             state = self._recorded_pose_state(time_us)
-            self._recorded_capture_state = deepcopy(state)
-            self._recorded_capture_visibility = {}
-            return Observation(state.t, state.frame, vehicle_state=deepcopy(state.vehicle_state),
-                               ego_speed=state.ego_speed)
-        observation = self._observe_recorded_sensors(time_us, sensor_ids)
+            return RecordedAcquisition(
+                Observation(state.t, state.frame, vehicle_state=deepcopy(state.vehicle_state),
+                            ego_speed=state.ego_speed), deepcopy(state))
+        observation = self._observe_recorded(time_us, sensor_ids)
         visibility: dict[str, dict[str, ObjectVisibility]] = {}
         if self._start_objects:
             observation, _, visibility = compose_capture(
@@ -1308,57 +1347,27 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
             observation = replace(observation,
                 sensor_data={key: value for key, value in observation.sensor_data.items() if key in selected},
                 calibration={key: value for key, value in observation.calibration.items() if key in selected})
-        self._recorded_capture_state = self.recorded_state_at(time_us)
-        self._recorded_capture_visibility = visibility
-        self._recorded_read_complete(time_us)
-        return observation
-
-    def _recorded_read_complete(self, time_us: int) -> None:
-        """Release acquisition-only caches after transferring a recorded payload."""
-
-    @property
-    def recorded_capture_state(self) -> WorldSnapshot:
-        """Independent truth from the last recorded-history read."""
-        if self._recorded_capture_state is None:
-            raise RuntimeError("No recorded capture has been read")
-        return deepcopy(self._recorded_capture_state)
-
-    @property
-    def recorded_capture_visibility(self) -> Mapping[str, Mapping[str, ObjectVisibility]]:
-        """Inserted-object visibility from the last recorded-history read."""
-        return deepcopy(self._recorded_capture_visibility)
-
-    def recorded_state_at(self, time_us: int) -> WorldSnapshot:
-        """Read physical truth for a recorded pre-origin acquisition without advancing."""
-        if (isinstance(time_us, bool) or not isinstance(time_us, int) or time_us >= 0
-                or self._start is None or not self._world_initialized):
-            raise ValueError("Recorded state requires an initialized start and negative integer time")
-        if self._start.frame.position * self.decision_period_us + time_us < 0:
-            raise ValueError("Recorded state precedes available source history")
         state = deepcopy(self._recorded_state(time_us))
         objects = {identity: ActorState(placed.world_from_object.copy(), (0., 0., 0.),
                    placed.asset.category, placed.asset.extent, (0., 0., placed.asset.extent[2] / 2))
                    for identity, placed in self._start_objects.items()}
-        return replace(state, objects=objects)
+        state = replace(state, objects=objects)
+        geometry_sensors = observation.sensor_data if sensor_ids is None else sensor_ids
+        geometry = {sensor: deepcopy(self._recorded_sensor_geometry(time_us, sensor))
+                    for sensor in geometry_sensors
+                    if sensor in observation.sensor_data and sensor in self.camera_sensors}
+        self._recorded_read_complete(time_us)
+        return RecordedAcquisition(observation, state, geometry, visibility)
 
-    def recorded_sensor_geometry_at(self, time_us: int, sensor: str) -> SensorGeometry:
-        """Read physical camera geometry of a recorded pre-origin acquisition."""
-        if (isinstance(time_us, bool) or not isinstance(time_us, int) or time_us >= 0
-                or self._start is None or not self._world_initialized):
-            raise ValueError("Recorded geometry requires an initialized start and negative integer time")
-        if self._start.frame.position * self.decision_period_us + time_us < 0:
-            raise ValueError("Recorded geometry precedes available source history")
-        return deepcopy(self._recorded_sensor_geometry(time_us, self.canonical_sensor_id(sensor)))
+    def _recorded_read_complete(self, time_us: int) -> None:
+        """Release acquisition-only caches after transferring a recorded payload."""
 
     def _recorded_state(self, time_us: int) -> WorldSnapshot:
         raise NotImplementedError("This simulator cannot supply recorded acquisition truth")
 
-    def _observe_recorded(self, time_us: int) -> Observation:
-        """Capture one recorded decision position without hooks or changing live state."""
+    def _observe_recorded(self, time_us: int, sensors: Sequence[str] | None) -> Observation:
+        """Capture selected recorded sensors without hooks or changing live state."""
         raise NotImplementedError("This simulator cannot observe the recorded past")
-
-    def _observe_recorded_sensors(self, time_us: int, sensors: Sequence[str] | None) -> Observation:
-        return self._observe_recorded(time_us)
 
     def _recorded_sensor_geometry(self, time_us: int, sensor: str) -> SensorGeometry:
         """Camera geometry of a recorded past capture. Required to compose start objects into it."""
@@ -1413,7 +1422,7 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
             raise NotImplementedError(f"{type(self.simulator).__name__} cannot advance replay")
         if not self._world_initialized or self._dispatcher is not None:
             raise RuntimeError("Replay requires an initialized runtime without hooks")
-        if self._pending_motion:
+        if self._interval is not None:
             raise RuntimeError("Publish the pending interval endpoint before advancing replay")
         self._generating_frame_data = True
         self._clock_time_us = None
@@ -1447,7 +1456,7 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
     @abstractmethod
     def _advance_native(self, control: Control) -> None: ...
 
-    def _completed_interval(self) -> None:
+    def _completed_interval(self, end_state: WorldSnapshot) -> None:
         """Keep native motion reports needed by later acquisitions."""
 
     @abstractmethod
@@ -1533,11 +1542,12 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
 
 
 __all__ = [
+    'DecisionInterval',
     'DeploymentPlan',
     'ClockSnapshot',
     'SensorGeometry',
     'SensorView',
-    'SensorAcquisition',
+    'RecordedAcquisition',
     'Initialization',
     'FrameDataSequence',
     'UnsupportedStartError',

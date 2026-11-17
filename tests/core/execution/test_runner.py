@@ -38,6 +38,11 @@ def test_run():
             np.testing.assert_array_equal(record.raw_observation.sensor_data["front"],
                                           record.model_observation.sensor_data["front"])
             assert record.produced_command == record.executed_command == Control(throttle=.3)
+            payload = record.model_observation.sensor_data["front"]
+            assert payload is log.captures[index].model_observation.sensor_data["front"]
+            assert payload is log.captures[index].raw_observation.sensor_data["front"]
+            assert not payload.flags.writeable
+            assert record.physical_pre.ego.pose.flags.writeable
             assert record.physical_post.frame == record.physical_pre.frame + 1
             assert record.physical_post.t == pytest.approx(record.physical_pre.t + .1)
         empty = ClosedLoopRunner().run(simulator_runtime, ConstantAVStack(), RunRequest(0))
@@ -247,7 +252,7 @@ def test_run_with_past(tmp_path):
         assert avstack.initial_observation.ego_speed == 6.
 
 
-def test_delivered_history():
+def test_initial_delivery_context():
     from avsectester.closed_loop.timing import SensorTiming, TimingConfiguration
 
     dataset = MemoryDataset()
@@ -521,12 +526,9 @@ def test_recording_policy():
     pixels = np.zeros((2, 3, 3), np.uint8)
     observation = Observation(0., 0, sensor_data={"front": pixels, "other": pixels.copy()},
                               calibration={"front": "calibration"})
-    intervals = {"front": 2}
-    configured = RecordingPolicy(("front",), ("raw",), sensor_every_n_captures=intervals)
-    intervals["front"] = 9
-    assert configured.sensor_every_n_captures["front"] == 2
+    configured = RecordingPolicy(("front",), ("raw",), every_n_captures=2)
     assert pickle.loads(pickle.dumps(configured)) == configured
-    assert hash(configured) == hash(RecordingPolicy(("front",), ("raw",), sensor_every_n_captures={"front": 2}))
+    assert hash(configured) == hash(RecordingPolicy(("front",), ("raw",), every_n_captures=2))
     policy = RecordingPolicy(("front",), ("raw",), every_n_captures=2)
     captured = policy.observation(observation, 0, "raw")
     assert list(captured.sensor_data) == ["front"]
@@ -534,8 +536,7 @@ def test_recording_policy():
     assert policy.observation(observation, 1, "raw").sensor_data == {}
     assert policy.observation(observation, 2, "model_input").sensor_data == {}
     assert list(observation.sensor_data) == ["front", "other"]
-    sampled = RecordingPolicy(("front",), ("raw", "model_input"), every_n_captures=2,
-                              sensor_every_n_captures={"front": 2})
+    sampled = RecordingPolicy(("front",), ("raw", "model_input"), every_n_captures=2)
     assert sampled.observation(observation, 0, "raw").sensor_data.keys() == {"front"}
     assert sampled.observation(observation, 1, "model_input").sensor_data == {}
     assert sampled.observation(observation, 2, "model_input").sensor_data.keys() == {"front"}
@@ -547,6 +548,82 @@ def test_recording_policy():
         RecordingPolicy(every_n_captures=0)
     with pytest.raises(ValueError, match="representations"):
         RecordingPolicy(representations=("unknown",))
+
+
+@pytest.fixture
+def payload_run(tmp_path):
+    def run(representations, hooks=(), *, label="default"):
+        sizes = []
+        for name, ids in (("empty", ()), ("recorded", ("sensor",))):
+            output = tmp_path / label / name
+            with MemorySimulator(camera_geometries={},
+                    extra_sensors={"sensor": np.arange(12, dtype=np.uint8)}).create_runtime() as runtime:
+                ClosedLoopRunner().run(runtime, ConstantAVStack(), RunRequest(
+                    2, output_path=output, retain_sensor_data=False,
+                    recording=RecordingPolicy(ids, representations), hooks=HookSet(hooks)))
+            sizes.append(sum(path.stat().st_size for path in (output / "payloads").glob("*.bin")))
+        return RunLog.read(output), sizes[1] - sizes[0]
+    return run
+
+
+def test_decision_payload_reuse(payload_run):
+    def vary(observation, context):
+        observation.sensor_data["sensor"] += observation.frame
+        return observation
+
+    log, sensor_bytes = payload_run(("model_input",), [Hook("sensors.post", vary)])
+    assert sensor_bytes == 24
+    for step in log.steps:
+        np.testing.assert_array_equal(step.model_observation.sensor_data["sensor"],
+                                      log.captures[step.step].model_observation.sensor_data["sensor"])
+
+
+def test_raw_model_payload_reuse(payload_run):
+    log, sensor_bytes = payload_run(("raw", "model_input"))
+    assert sensor_bytes == 12
+    for capture in log.captures[:-1]:
+        np.testing.assert_array_equal(capture.raw_observation.sensor_data["sensor"],
+                                      capture.model_observation.sensor_data["sensor"])
+
+    def replace_model(observation, context):
+        observation.sensor_data["sensor"] = np.full(12, 91, np.uint8)
+        return observation
+
+    log, sensor_bytes = payload_run(("raw", "model_input"),
+                                    [Hook("sensors.post", replace_model)], label="different-model")
+    assert sensor_bytes == 24
+    for capture in log.captures:
+        np.testing.assert_array_equal(capture.raw_observation.sensor_data["sensor"],
+                                      np.arange(12, dtype=np.uint8))
+    for step in log.steps:
+        np.testing.assert_array_equal(step.model_observation.sensor_data["sensor"], 91)
+
+
+def test_adjacent_payload_reuse(payload_run):
+    def replace_payload(observation, context):
+        observation.sensor_data["sensor"] = np.full(12, 91, np.uint8)
+        return observation
+
+    log, sensor_bytes = payload_run(("model_input",),
+                                    [Hook("sensors.post", replace_payload)])
+    assert sensor_bytes == 12
+    for step in log.steps:
+        np.testing.assert_array_equal(step.model_observation.sensor_data["sensor"], 91)
+
+
+    def change_mask(observation, context):
+        observation.sensor_data["sensor"].mask = np.array([True, False]) == (observation.frame == 0)
+        return observation
+
+    with MemorySimulator(camera_geometries={}, extra_sensors={
+            "sensor": np.ma.array([1., 1.], mask=[False, False])}).create_runtime() as runtime:
+        log = ClosedLoopRunner().run(runtime, ConstantAVStack(), RunRequest(
+            2, recording=RecordingPolicy(("sensor",)),
+            hooks=HookSet([Hook("sensors.post", change_mask)])))
+    np.testing.assert_array_equal(log.steps[0].model_observation.sensor_data["sensor"].mask,
+                                  [True, False])
+    np.testing.assert_array_equal(log.steps[1].model_observation.sensor_data["sensor"].mask,
+                                  [False, True])
 
 
 def test_run_request(tmp_path):
@@ -572,11 +649,11 @@ def test_multirate_acquisitions_and_delivery(tmp_path, planner_delay_us, product
     from avsectester.data_types import StateEstimate
     from avsectester.closed_loop.avstacks.base import ObservationPipeline
 
-    localized_at, observations = [], []
+    localized_at, observations, acquisitions = [], [], {}
 
     def localize(value, context):
         state = context.physical_state
-        localized_at.append(round(state.t * 1e6))
+        localized_at.append((round(state.t * 1e6), tuple(value.sensor_data)))
         return StateEstimate(PlanarEgoState(x=float(state.ego.pose[0, 3]), t=value.t), state.ego_speed)
 
     def observe(value, context):
@@ -584,17 +661,27 @@ def test_multirate_acquisitions_and_delivery(tmp_path, planner_delay_us, product
         observations.append(value)
         return value
 
+    def remember_capture(value, context):
+        acquisitions[round(value.t * 1e6)] = value.sensor_data.get("front")
+        return value
+
     driver = ConstantAVStack(Control(throttle=.2))
     driver.observation_pipeline = ObservationPipeline(localize)
-    timing = TimingConfiguration(sensors={"front": SensorTiming(33000)},
+    timing = TimingConfiguration(sensors={"front": SensorTiming(33000), "imu": SensorTiming(50000)},
         pose_reporting_interval_us=40000, planner_delay_us=planner_delay_us)
-    with MemorySimulator().create_runtime() as runtime:
+    with MemorySimulator(extra_sensors={"imu": np.zeros(3)}).create_runtime() as runtime:
         log = ClosedLoopRunner().run(runtime, driver, RunRequest(
-            3, timing=timing, hooks=HookSet([Hook("observation", observe)]),
+            3, timing=timing, hooks=HookSet([Hook("sensors.post", remember_capture),
+                                           Hook("observation", observe)]),
+            environment={"sensors": [{"type": "Brightness", "camera": "front"}]},
             recording=RECORDING, output_path=tmp_path / "run"))
-    assert localized_at == [0, 40000, 80000, 100000, 140000, 180000, 200000, 240000, 280000]
+    assert [time for time, _ in localized_at] == [
+        0, 40000, 80000, 100000, 140000, 180000, 200000, 240000, 280000]
+    assert [set(sensors) for _, sensors in localized_at] == [
+        {"front", "imu"}, set(), set(), {"imu"}, set(), set(), {"imu"}, set(), set()]
     assert [capture.time_us for capture in log.captures] == [
-        0, 33000, 66000, 99000, 132000, 165000, 198000, 231000, 264000, 297000, 300000]
+        0, 33000, 50000, 66000, 99000, 100000, 132000, 150000, 165000, 198000,
+        200000, 231000, 250000, 264000, 297000, 300000]
     assert [step.executed_command_issue_time_us for step in log.steps] == production_offsets
     assert [[sample.time_us for sample in value.delivered("front")] for value in observations] == [
         [0], [33000, 66000, 99000], [132000, 165000, 198000]]
@@ -603,18 +690,34 @@ def test_multirate_acquisitions_and_delivery(tmp_path, planner_delay_us, product
             assert sample.state.time_us == sample.time_us
             assert sample.state.t == sample.t == sample.time_us / 1e6
             assert sample.state.vehicle_state.t == sample.t
+    assert [[state.time_us for state in value.estimated_states()] for value in observations] == [
+        [0], [40000, 80000, 100000], [140000, 180000, 200000]]
+    delivered = [sample for value in observations for sample in value.delivered("front")]
+    assert len({sample.capture_id for sample in delivered}) == len(delivered)
+    for value in observations:
+        assert all(sample.data is acquisitions[sample.time_us]
+                   for sample in value.delivered("front")[:-1])
+    first, last = observations[1].estimated_states()[:2]
+    middle = observations[1].delivered("front")[1].state
+    weight = (middle.time_us - first.time_us) / (last.time_us - first.time_us)
+    assert middle.vehicle_state.x == pytest.approx(
+        first.vehicle_state.x + weight * (last.vehicle_state.x - first.vehicle_state.x))
     assert log.steps[1].raw_observation.sensor_data == {}
     assert all(tuple(step.sensor_geometry) == ("front",) for step in log.steps)
     saved = RunLog.read(tmp_path / "run")
     assert saved.format_version == 2
     assert saved.steps[-1].delivered_captures == log.steps[-1].delivered_captures
-    captures = {capture.capture_id: capture for capture in saved.captures}
-    for identity in (0, 3, 6):
-        assert np.all(captures[identity].model_observation.sensor_data["front"] == 81)
-    for identity in (1, 2, 4, 5):
-        np.testing.assert_array_equal(captures[identity].model_observation.sensor_data["front"],
-                                      captures[identity].raw_observation.sensor_data["front"])
-    assert all(captures[identity].model_observation is None for identity in (7, 8, 9, 10))
+    captures = {capture.time_us: capture for capture in saved.captures}
+    for time_us in (0, 99000, 198000):
+        assert np.all(captures[time_us].model_observation.sensor_data["front"] == 81)
+    for time_us in (33000, 66000, 132000, 165000):
+        np.testing.assert_array_equal(captures[time_us].model_observation.sensor_data["front"],
+                                      acquisitions[time_us])
+        assert np.any(captures[time_us].model_observation.sensor_data["front"] !=
+                      captures[time_us].raw_observation.sensor_data["front"])
+    assert all(capture.model_observation is None for time_us, capture in captures.items()
+               if time_us > 200000)
+
 
 
 def test_persistent_sensor_actions():
@@ -630,7 +733,6 @@ def test_persistent_sensor_actions():
 
     class PaintRuntime(AttackRuntime):
         def step(self, context):
-            assert context.capture_time_us == context.decision_time_us
             return (Paint(active_for_us=150000),) if context.step == 0 else ()
 
     with MemorySimulator().create_runtime() as runtime:
@@ -691,58 +793,6 @@ def test_action_at_skipped_perception():
         with pytest.raises(RuntimeError, match="Attack actions were not applied"):
             ClosedLoopRunner().run(runtime, FrameDriver(), RunRequest(3,
                 attacks=(PerceptionAttack(),), hooks=HookSet([Hook("sensors.post", drop)])))
-
-
-def test_simultaneous_sensor_batches():
-    from avsectester.closed_loop.avstacks.base import ObservationPipeline
-    from avsectester.closed_loop.timing import SensorTiming, TimingConfiguration
-    from avsectester.data_types import StateEstimate
-
-    seen = []
-
-    def localizer(value, context):
-        seen.append((context.sim_time, tuple(value.sensor_data)))
-        return StateEstimate(value.vehicle_state, value.ego_speed)
-
-    driver = ConstantAVStack()
-    driver.observation_pipeline = ObservationPipeline(localizer)
-    with MemorySimulator(extra_sensors={"imu": np.zeros(3)}).create_runtime() as runtime:
-        log = ClosedLoopRunner().run(runtime, driver, RunRequest(
-            2, timing=TimingConfiguration(sensors={"imu": SensorTiming(50000)},
-                                       pose_reporting_interval_us=50000)))
-    assert [round(time * 1e6) for time, _ in seen] == [0, 50000, 100000, 150000]
-    assert [set(sensors) for _, sensors in seen] == [{"front", "imu"}, {"imu"}, {"front", "imu"}, {"imu"}]
-    assert len(log.steps) == 2
-
-
-def test_incremental_deliveries():
-    from avsectester.closed_loop.timing import SensorTiming, TimingConfiguration
-
-    acquisitions, inputs = {}, []
-
-    def remember_capture(value, context):
-        acquisitions[round(value.t * 1e6)] = value.sensor_data["front"]
-        return value
-
-    def remember_decision(value, context):
-        inputs.append(value)
-        return value
-
-    hooks = HookSet([Hook("sensors.post", remember_capture), Hook("observation", remember_decision)])
-    dataset = MemoryDataset()
-    start = dataset.scenario_start("scene", dataset.frames("scene")[3])
-    with MemorySimulator().create_runtime() as runtime:
-        ClosedLoopRunner().run(runtime, ConstantAVStack(), RunRequest(3, start=start, hooks=hooks,
-            timing=TimingConfiguration(sensors={"front": SensorTiming(33000)})))
-    origin = inputs[0].estimated_states()[-1].time_us
-    assert [[sample.time_us - origin for sample in value.delivered("front")]
-            for value in inputs] == [[0], [33000, 66000, 99000], [132000, 165000, 198000]]
-    assert [[state.time_us - origin for state in value.estimated_states()]
-            for value in inputs[1:]] == [[100000], [200000]]
-    delivered = [sample for value in inputs for sample in value.delivered("front")]
-    assert len({sample.capture_id for sample in delivered}) == len(delivered)
-    assert all(sample.data is acquisitions[sample.time_us]
-               for sample in delivered if sample.time_us >= origin)
 
 
 def test_dropped_deliveries():
@@ -897,13 +947,12 @@ def test_input_hook_payloads(tmp_path, stage):
     driver.observation_pipeline = ObservationPipeline(
         lambda value, context: StateEstimate(value.vehicle_state, value.ego_speed))
     cameras = {name: SensorGeometry(name, CAMERA, CAM_FROM_WORLD) for name in ("front", "right")}
-    recording = RecordingPolicy(("right", "front"), ("raw", "model_input"), every_n_captures=2,
-                                sensor_every_n_captures={"right": 4})
+    recording = RecordingPolicy(("right", "front"), ("raw", "model_input"), every_n_captures=2)
     with MemorySimulator(camera_geometries=cameras).create_runtime() as runtime:
         log = ClosedLoopRunner().run(runtime, driver, RunRequest(
             3, hooks=HookSet([Hook(stage, edit)]), recording=recording))
     assert list(log.steps[0].sensor_geometry) == ["right", "front"]
-    assert list(log.steps[2].sensor_geometry) == ["front"]
+    assert list(log.steps[2].sensor_geometry) == ["right", "front"]
     assert log.steps[1].sensor_geometry == {}
     for step in (log.steps[0], log.steps[2]):
         assert np.all(step.model_observation.sensor_data["front"] == 81)
@@ -947,3 +996,37 @@ def test_command_hook_snapshot():
     assert log.steps[0].produced_command.brake == 0.
     assert log.steps[0].executed_command.throttle == 0.
     assert log.steps[0].executed_command.brake == .7
+
+
+def test_alpasim_timing_reference(monkeypatch):
+    from pathlib import Path
+
+    from avsectester.closed_loop.timing import SensorTiming, TimingConfiguration
+
+    source = Path("/opt/alpasim/src/runtime")
+    if source.exists():
+        monkeypatch.syspath_prepend(str(source))
+    clock_type = pytest.importorskip("alpasim_runtime.types").Clock
+    official = pytest.importorskip("alpasim_runtime.delay_buffer").DelayBuffer(73000)
+    dataset = MemoryDataset()
+    start = dataset.scenario_start("scene", dataset.frames("scene")[3])
+    request = RunRequest(4, start=start, timing=TimingConfiguration(
+        sensors={"front": SensorTiming(33000, 17000)}, planner_delay_us=73000))
+    with MemorySimulator().create_runtime() as runtime:
+        log = ClosedLoopRunner().run(runtime, ConstantAVStack(), request)
+        recorded = ClosedLoopRunner().run(runtime, ConstantAVStack(), replace(
+            request, timing=replace(request.timing, force_gt_duration_us=200000)))
+    frames = [capture for capture in log.captures if "front" in capture.sensor_ids]
+    origin = frames[0].time_us
+    clock = clock_type(interval_us=33000, duration_us=17000,
+                      start_us=origin - 17000, first_end_us=origin)
+    assert [capture.frame_ranges_us["front"] for capture in frames] == [
+        (clock.ith_trigger(index).time_range_us.start, clock.ith_trigger(index).time_range_us.stop)
+        for index in range(len(frames))]
+    for index, record in enumerate(log.steps):
+        decision_us = origin + index * 100000
+        official.add(decision_us, decision_us)
+        assert record.executed_command_issue_time_us == official.at(decision_us)
+    assert [record.force_gt for record in recorded.steps] == [
+        origin + (index + 1) * 100000 in range(origin, origin + 200001)
+        for index in range(len(recorded.steps))]

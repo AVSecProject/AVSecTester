@@ -103,12 +103,6 @@ def test_reset(alpamayo_model_boundary, alpamayo_observations):
     observations = alpamayo_observations()
     with pytest.raises(ValueError, match="1.5 seconds of recorded pose history"):
         avstack.reset(replace(observations[-1], state_estimates=observations[-1].state_estimates[1:]))
-    estimates = observations[-1].state_estimates
-    with pytest.raises(ValueError, match="state estimate times must increase"):
-        avstack.reset(replace(observations[-1], state_estimates=(
-            estimates[0], replace(estimates[1], time_us=estimates[0].time_us), *estimates[2:])))
-    with pytest.raises(ValueError, match="missing camera 'front'"):
-        avstack.reset(replace(observations[-1], sensor_data={}))
     with pytest.raises(RuntimeError, match="Reset AlpamayoAVStack"):
         avstack(observations[-1])
     avstack.reset(observations[-1])

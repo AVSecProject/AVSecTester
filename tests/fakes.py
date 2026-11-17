@@ -200,7 +200,7 @@ class MemorySimulator(Simulator):
 
 
 class MemorySimulatorRuntime(SimulatorRuntime):
-    """Native operations for the shared world; the production base owns reset and step."""
+    """Native operations for the shared world. The production base owns reset and step."""
 
     def __init__(self, simulator, seed=None):
         super().__init__(simulator)
@@ -215,6 +215,9 @@ class MemorySimulatorRuntime(SimulatorRuntime):
         return self._native
 
     def _initialize_world(self, start, initialization, environment):
+        self.source_start = start
+        self.motion_start = self.motion_end = None
+        self.motion_start_us = self.motion_end_us = None
         self.position, self.distance, self.speed = 0, 0., 1.
         self.actors = deepcopy(self.simulator.initial_actors)
         self._native = {"objects": {}, "world": deepcopy(environment)}
@@ -249,10 +252,10 @@ class MemorySimulatorRuntime(SimulatorRuntime):
         from avsectester.geometry.poses import interpolate_transform
 
         left = int(position)
-        actor = self._start.recorded_ego[left]
+        actor = self.source_start.recorded_ego[left]
         if position == left:
             return actor
-        after = self._start.recorded_ego[left + 1]
+        after = self.source_start.recorded_ego[left + 1]
         fraction = position - left
         return replace(actor, pose=interpolate_transform(actor.pose, after.pose, fraction),
                        velocity=tuple((1 - fraction) * np.asarray(actor.velocity)
@@ -260,7 +263,7 @@ class MemorySimulatorRuntime(SimulatorRuntime):
 
     def _recorded_position(self, time_us):
         grid, remainder = divmod(time_us, self.decision_period_us)
-        return self._start.frame.position + grid + remainder / self.decision_period_us
+        return self.source_start.frame.position + grid + remainder / self.decision_period_us
 
     def _recorded_pose_state(self, time_us):
         from avsectester.closed_loop.simulators.ego_dynamics import PlanarEgoState
@@ -278,19 +281,21 @@ class MemorySimulatorRuntime(SimulatorRuntime):
     def _recorded_state(self, time_us):
         return replace(self._recorded_pose_state(time_us), actors=deepcopy(self.simulator.initial_actors))
 
-    def _observe_recorded(self, time_us):
+    def _observe_recorded(self, time_us, sensors):
         from avsectester.closed_loop.simulators.ego_dynamics import PlanarEgoState
 
         position = self._recorded_position(time_us)
         timestamp_us = time_us
         ego = self._recorded_ego(position)
+        selected = self.sensors if sensors is None else set(sensors)
         images = {sensor: np.full((geometry.camera.height, geometry.camera.width, 3),
                                   20 + int(position), np.uint8)
-                  for sensor, geometry in self.simulator.camera_geometries.items()}
+                  for sensor, geometry in self.simulator.camera_geometries.items() if sensor in selected}
         velocity = np.asarray(ego.velocity, dtype=float)
         return Observation(
             timestamp_us / 1e6, time_us // self.decision_period_us,
-            {**images, **deepcopy(self.simulator.extra_sensors)},
+            {**images, **{key: deepcopy(value) for key, value in self.simulator.extra_sensors.items()
+                         if key in selected}},
             vehicle_state=PlanarEgoState(x=float(ego.pose[0, 3]), y=float(ego.pose[1, 3]),
                                   yaw=float(np.arctan2(ego.pose[1, 0], ego.pose[0, 0])),
                                   speed=float(np.linalg.norm(velocity)),
@@ -314,6 +319,9 @@ class MemorySimulatorRuntime(SimulatorRuntime):
                           sensor_from_world=BODY_FROM_OPTICAL @ geometry.cam_from_world)
 
     def _state(self):
+        return self._memory_state()
+
+    def _memory_state(self):
         return WorldSnapshot((self.position * self.decision_period_us) / 1e6, self.position,
                              ego_speed=self.speed, actors=deepcopy(self.actors),
                              ego=actor_state((self.distance, 0., 0.), self.speed))
@@ -324,23 +332,33 @@ class MemorySimulatorRuntime(SimulatorRuntime):
             raise KeyboardInterrupt("memory simulation interrupted")
         if world.get("fail"):
             raise RuntimeError("memory simulation failed")
+        self.motion_start = self._memory_state()
+        self.motion_start_us = self._interval.start_us
         rain = .5 if world.get("weather") == "rain" else 1.
         self.speed = max(0., self.speed + (control.throttle * rain - control.brake) * self.simulator.time_step)
         self.distance += self.speed * self.simulator.time_step
         self.position += 1
+        self.motion_end = self._memory_state()
+        self.motion_end_us = self._interval.end_us
 
     def _advance_recorded_native(self):
+        self.motion_start = self._memory_state()
+        self.motion_start_us = self._interval.start_us
         next_position = self.position + 1
-        state = self._start.recorded_ego[next_position]
+        state = self.source_start.recorded_ego[next_position]
         self.position = next_position
         self.distance = float(state.pose[0, 3])
         self.speed = float(np.linalg.norm(state.velocity))
+        self.motion_end = self._memory_state()
+        self.motion_end_us = self._interval.end_us
 
     def _reported_state_at(self, time_us):
         from avsectester.geometry.poses import interpolate_transform
 
-        first, last = self._interval_start_state, self._interval_end_state
-        fraction = (time_us - self._interval_start_us) / (self._interval_end_us - self._interval_start_us)
+        first, last = self.motion_start, self.motion_end
+        if time_us == self.motion_end_us:
+            return deepcopy(last)
+        fraction = (time_us - self.motion_start_us) / (self.motion_end_us - self.motion_start_us)
         pose = interpolate_transform(first.ego.pose, last.ego.pose, fraction)
         speed = first.ego_speed + fraction * (last.ego_speed - first.ego_speed)
         ego = replace(first.ego, pose=pose, velocity=(speed, 0., 0.))
@@ -369,10 +387,9 @@ class MemorySimulatorRuntime(SimulatorRuntime):
         transform[:, 3] -= transform[:, 0] * self.distance
         return SensorGeometry(sensor, geometry.camera, transform)
 
-    def _sensor_view(self, sensor):
+    def _capture_view_builder(self, sensor, observation, state):
         if sensor not in self.sensors:
             raise ValueError(f"Unknown memory sensor: {sensor}")
-        observation, state = self._capture, self.state()
         data = observation.sensor_data[sensor]
         body_from_world = np.eye(4)
         body_from_world[0, 3] = -self.distance
@@ -383,11 +400,12 @@ class MemorySimulatorRuntime(SimulatorRuntime):
             body_from_world = BODY_FROM_OPTICAL @ cam_from_world
         elif not isinstance(data, np.ndarray):
             data = getattr(data, "data", data)
-        return SensorView(sensor, data, camera, cam_from_world,
+        view = SensorView(sensor, data, camera, cam_from_world,
                           state.actors,
                           state.ego, state.t, state.frame,
                           depth=deepcopy(self.simulator.sensor_depths.get(sensor)),
                           sensor_from_world=body_from_world)
+        return lambda: view
 
     def set_actor_state(self, actor_id, state):
         if actor_id not in self.actors:

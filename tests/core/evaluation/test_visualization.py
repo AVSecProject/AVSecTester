@@ -82,7 +82,7 @@ def test_sensor_view(camera_log):
     step.model_observation = None
     raw_view = sensor_view(step, "front", log=camera_log)
     assert raw_view.time == 0. and raw_view.frame == 0 and "lead" in raw_view.actors
-    np.testing.assert_array_equal(raw_view.cam_from_world, raw_transform)
+    np.testing.assert_array_equal(raw_view.cam_from_world, step.sensor_geometry["front"].cam_from_world)
     np.testing.assert_array_equal(camera_view(step, "front"), raw_observation.sensor_data["front"])
     step.model_observation = observation
     step.sensor_geometry = {}

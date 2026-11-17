@@ -6,7 +6,7 @@ import time
 from collections.abc import Mapping, Sequence
 from contextlib import ExitStack
 from copy import deepcopy
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
 import numpy as np
@@ -20,7 +20,9 @@ from avsectester.geometry.poses import MIRROR_Y, mirror_y_transform
 from avsectester.data_types import Observation, WorldSnapshot
 from avsectester.validation import require_nonnegative_integer, require_nonnegative_number
 from avsectester.validation import timestamp_to_microseconds
-from avsectester.closed_loop.timing import SensorTiming, TimingCapabilities, initial_history_times, seconds_to_microseconds
+from avsectester.closed_loop.timing import (
+    SensorTiming, TimingCapabilities, initial_history_times, seconds_to_microseconds,
+)
 
 from .conversions import _actor_state, _traffic_light_state
 from .recipe_replay import RecipeReplay, _place
@@ -31,6 +33,13 @@ from .sensors import (
     SensorAlignmentError, SensorCapture, _require_pinhole_sensor, _use_pinhole_cameras,
     decode_carla_depth, register_pinhole_camera,
 )
+
+
+@dataclass
+class _TickCapture:
+    state: WorldSnapshot
+    observation: Observation | None = None
+    views: dict[str, tuple[SensorGeometry | None, Any]] = field(default_factory=dict)
 
 
 class CarlaSimulator(Simulator):
@@ -125,9 +134,6 @@ class CarlaSimulator(Simulator):
         recipe = start.payload["recipe"]
         return timestamp_to_microseconds(recipe.decision_steps * recipe.time_step)
 
-    def deployment_ticks(self, position):
-        return position * self.decision_ticks
-
     @property
     def identity(self):
         return {**super().identity, "client": deepcopy(self.client_config),
@@ -177,12 +183,8 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         self._resources = ExitStack()
         self._recipe = None
         self._recipe_replay = None
-        self._recorded_observations = {}
-        self._recorded_states = {}
-        self._recorded_views = {}
-        self._tick_observations = {}
-        self._tick_views = {}
-        self._tick_states = {}
+        self._recorded_ticks: dict[int, _TickCapture] = {}
+        self._interval_ticks: dict[int, _TickCapture] = {}
         self._history_payload_times = {}
         self._history_pose_times = frozenset()
         self._origin_tick = 0
@@ -307,7 +309,7 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         return deepcopy(observation, memo)
 
     def _replay_position(self, start):
-        return self.simulator.deployment_ticks(start.frame.position)
+        return start.frame.position * self.simulator.decision_ticks
 
     def _resolve_scenario(self, start, initialization, environment):
         if initialization is None and start.frame.position:
@@ -382,19 +384,15 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         self._recipe_replay = RecipeReplay(self, self._recipe)
         self._origin_tick = start.frame.position * self.simulator.decision_ticks
         self._origin_clock_us = None
-        timings = {sensor: self._timing.sensors.get(sensor, SensorTiming()) for sensor in self.sensors}
+        timings = {sensor: self.timing.sensors.get(sensor, SensorTiming()) for sensor in self.sensors}
         history_plan = initial_history_times(
-            timings, self._history_requirement, self.decision_period_us,
-            pose_reporting_interval_us=self._timing.pose_reporting_interval_us)
+            timings, self.history_requirement, self.decision_period_us,
+            pose_reporting_interval_us=self.timing.pose_reporting_interval_us)
         self._history_payload_times = {sensor: frozenset(times)
                                        for sensor, times in history_plan.payload_times_us.items()}
         self._history_pose_times = frozenset(history_plan.pose_times_us)
-        self._recorded_observations = {}
-        self._recorded_states = {}
-        self._recorded_views = {}
-        self._tick_observations = {}
-        self._tick_views = {}
-        self._tick_states = {}
+        self._recorded_ticks = {}
+        self._interval_ticks = {}
         self._recipe_replay.initialize()
         # Base-world preparation ticks do not emit hooks or count as driving decisions.
         self.client.tick()
@@ -437,15 +435,15 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         self.client.tick()
         replay.after_step()
         self.invalidate_state()
-        if not self._stepping:
+        if not self._advancing:
             self._save_recorded_tick()
 
     def _due_sensors(self, offset_us):
         due = []
         for sensor in sorted(self.sensors):
-            clock = self._timing.sensors.get(sensor, SensorTiming())
+            clock = self.timing.sensors.get(sensor, SensorTiming())
             try:
-                clock.capture_index_at(offset_us, self.decision_period_us)
+                clock.frame_index_at(offset_us, self.decision_period_us)
             except ValueError:
                 continue
             due.append(sensor)
@@ -460,17 +458,21 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         if not due and offset_us not in pose_times:
             return
         truth = self.state()
-        self._recorded_states[replay.index] = truth
-        if due:
-            observation = self._observe_sensors(due)
+        self._recorded_ticks[replay.index] = self._capture_tick(truth, due, freeze_views=True)
+
+    def _capture_tick(self, truth, sensor_ids, *, freeze_views):
+        tick = _TickCapture(truth)
+        if sensor_ids:
+            tick.observation = self._observe_sensors(sensor_ids)
             previous = self._capture
-            self._capture = observation
+            self._capture = tick.observation
             try:
-                self._recorded_observations[replay.index] = observation
-                self._recorded_views[replay.index] = {
-                    sensor: self._freeze_native_view(sensor, observation, truth) for sensor in due}
+                if freeze_views:
+                    tick.views = {sensor: self._freeze_native_view(sensor, tick.observation, truth)
+                                  for sensor in sensor_ids}
             finally:
                 self._capture = previous
+        return tick
 
     def _recorded_tick_index(self, time_us):
         tick = self.timing_capabilities.base_tick_us
@@ -478,32 +480,35 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
             raise ValueError("Recorded CARLA acquisitions must align with its base tick")
         return self._origin_tick + time_us // tick
 
-    def _observe_recorded(self, time_us):
+    def _observe_recorded(self, time_us, sensors):
         index = self._recorded_tick_index(time_us)
-        if index not in self._recorded_observations:
+        tick = self._recorded_ticks.get(index)
+        if tick is None or tick.observation is None:
             raise ValueError("Selected CARLA start has insufficient replayed sensor history")
-        return self._recorded_observations.pop(index)
+        observation = tick.observation
+        tick.observation = None
+        return observation
 
     def _recorded_state(self, time_us):
         index = self._recorded_tick_index(time_us)
-        if index not in self._recorded_states:
+        if index not in self._recorded_ticks:
             raise ValueError("Selected CARLA start has insufficient replayed state history")
-        return self._recorded_states[index]
+        return self._recorded_ticks[index].state
 
     def _recorded_pose_state(self, time_us):
         return deepcopy(self._recorded_state(time_us))
 
     def _recorded_read_complete(self, time_us):
         index = self._recorded_tick_index(time_us)
-        if index in self._recorded_views:
-            self._recorded_views[index] = {sensor: (geometry, None)
-                for sensor, (geometry, _) in self._recorded_views[index].items()}
-
+        tick = self._recorded_ticks.get(index)
+        if tick is not None:
+            tick.views = {sensor: (geometry, None)
+                          for sensor, (geometry, _) in tick.views.items()}
 
     def _recorded_sensor_view(self, time_us, sensor, observation):
         index = self._recorded_tick_index(time_us)
         try:
-            builder = self._recorded_views[index][sensor][1]
+            builder = self._recorded_ticks[index].views[sensor][1]
         except KeyError as error:
             raise ValueError("Selected CARLA start has insufficient replayed sensor history") from error
         if builder is None:
@@ -513,7 +518,7 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
     def _recorded_sensor_geometry(self, time_us, sensor):
         index = self._recorded_tick_index(time_us)
         try:
-            return self._recorded_views[index][sensor][0]
+            return self._recorded_ticks[index].views[sensor][0]
         except KeyError as error:
             raise ValueError("Selected CARLA start has insufficient replayed sensor geometry") from error
 
@@ -542,7 +547,7 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
             "inserted_actor_ids": [actor.id for actor in self.client.world.get_actors()
                                    if actor.id not in self._base_actor_ids and actor.id not in base_ids],
         })
-        if not self._generating_frame_data and not self._timing.force_gt_duration_us:
+        if not self._generating_frame_data and not self.timing.force_gt_duration_us:
             # Frame data generation records the prescribed ego motion. Runs drive it.
             self._recipe_replay.release_ego()
 
@@ -557,10 +562,8 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
 
     def _advance_ticks(self, control):
         tick = self.timing_capabilities.base_tick_us
-        self._tick_observations = {}
-        self._tick_views = {}
-        self._tick_states = {}
-        origin = self._interval_start_us
+        self._interval_ticks = {}
+        origin = self._interval.start_us
         count = self.simulator.decision_ticks
         for index in range(1, count + 1):
             if control is None:
@@ -572,27 +575,52 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
                 self._recipe_replay.after_step()
             timestamp = origin + index * tick
             self.invalidate_state()
-            self._tick_states[timestamp] = self.state()
+            truth = self.state()
             due = self._due_sensors(timestamp - self._origin_clock_us)
-            if due:
-                observation = self._observe_sensors(due)
-                previous = self._capture
-                self._capture = observation
-                self._tick_observations[timestamp] = observation
-                if index < count:
-                    # Endpoint views read truth after simulator.step.post, like a decision capture.
-                    self._tick_views[timestamp] = {sensor: self._freeze_native_view(
-                        sensor, observation, self._tick_states[timestamp]) for sensor in due}
-                self._capture = previous
+            # Endpoint views read truth after simulator.step.post, like a decision capture.
+            self._interval_ticks[timestamp] = self._capture_tick(
+                truth, due, freeze_views=index < count)
+
+    def interpolate_vehicle_state(self, left: Any, right: Any, fraction: float, time_us: int) -> Any:
+        """Interpolate native avstack physical vectors and attitude without importing them elsewhere."""
+        from avsectester.geometry.poses import (
+            interpolate_transform, make_pose, quaternion_to_rotation, rotation_to_quaternion,
+        )
+
+        if not all(hasattr(left, name) for name in ("position", "attitude")):
+            return super().interpolate_vehicle_state(left, right, fraction, time_us)
+        if type(left) is not type(right):
+            raise TypeError("Pose reports must use the same vehicle-state representation")
+        result = deepcopy(left)
+        for name in ("position", "velocity", "acceleration"):
+            a, b = getattr(left, name, None), getattr(right, name, None)
+            if a is not None and b is not None:
+                getattr(result, name).x = (1 - fraction) * np.asarray(a.x) + fraction * np.asarray(b.x)
+        first, second = left.attitude.q, right.attitude.q
+        first_values = ((first.w, first.x, first.y, first.z) if hasattr(first, "w") else first)
+        second_values = ((second.w, second.x, second.y, second.z) if hasattr(second, "w") else second)
+        pose = interpolate_transform(
+            make_pose(quaternion_to_rotation(*first_values), left.position.x),
+            make_pose(quaternion_to_rotation(*second_values), right.position.x), fraction)
+        quaternion = rotation_to_quaternion(pose[:3, :3])
+        if hasattr(first, "w"):
+            result.attitude.q = type(first)(*quaternion)
+        elif isinstance(first, np.ndarray):
+            result.attitude.q = np.array(quaternion, dtype=first.dtype)
+        else:
+            result.attitude.q = type(first)(quaternion)
+        if hasattr(result, "t"):
+            result.t = time_us / 1e6
+        return result
 
     def _completed_state(self):
-        return self._tick_states[self._interval_end_us]
+        return self._interval_ticks[self._interval.end_us].state
 
     def _reported_state_at(self, time_us):
-        return deepcopy(self._tick_states[time_us])
+        return deepcopy(self._interval_ticks[time_us].state)
 
     def _activate_reported_state(self, time_us, state):
-        if time_us not in self._tick_states:
+        if time_us not in self._interval_ticks:
             raise ValueError("CARLA acquisitions must align with its base tick")
 
     def _capture_frame_data(self, frame):
@@ -680,11 +708,12 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
     def _sensor_geometry(self, sensor: str) -> SensorGeometry:
         from avsectester.geometry.cameras import PinholeCamera
 
-        if not self._stepping and not self._resetting:
-            entry = self._tick_views.get(self._clock_time_us, {}).get(sensor)
+        if not self._advancing and not self._resetting:
+            tick = self._interval_ticks.get(self.clock.time_us)
+            entry = None if tick is None else tick.views.get(sensor)
             if entry is not None:
                 return entry[0]
-        if not (self._world_initialized or self._resetting or self._stepping) or self._capture is None:
+        if not (self._world_initialized or self._resetting or self._advancing) or self._capture is None:
             raise RuntimeError("Reset the CARLA simulator before requesting camera geometry")
         rgb = self._rgb_sensor(sensor)
         optical = np.eye(4)
@@ -701,8 +730,9 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         return deepcopy(view, shared)
 
     def _capture_view_builder(self, sensor, observation, truth):
-        if not self._stepping and not self._resetting:
-            entry = self._tick_views.get(self._clock_time_us, {}).get(sensor)
+        if not self._advancing and not self._resetting:
+            tick = self._interval_ticks.get(self.clock.time_us)
+            entry = None if tick is None else tick.views.get(sensor)
             if entry is not None:
                 return entry[1]
         return self._freeze_native_view(sensor, observation, truth)[1]
@@ -716,6 +746,8 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
                                if item.source_identifier == sensor)
         name = physical_sensor.source_identifier
         payload = observation.sensor_data[name]
+        if getattr(payload, "frame", truth.frame - physical_sensor.frame0) + physical_sensor.frame0 != truth.frame:
+            raise ValueError("Sensor payload and physical world must use the same frame")
         inverse = np.asarray(physical_sensor.object.get_transform().get_inverse_matrix(), dtype=float)
         sensor_from_world = mirror_y_transform(inverse)
         native = self._native_resources()
@@ -760,12 +792,13 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         return self._observe_sensors(tuple(self.sensors))
 
     def _observe_sensors(self, sensor_ids: Sequence[str]) -> Observation:
-        if not self._stepping and not self._resetting and not self._generating_frame_data:
-            cached = self._tick_observations.get(self.clock.time_us)
-            if self.clock.time_us in self._tick_states and cached is None and sensor_ids:
+        if not self._advancing and not self._resetting and not self._generating_frame_data:
+            tick = self._interval_ticks.get(self.clock.time_us)
+            cached = None if tick is None else tick.observation
+            if tick is not None and cached is None and sensor_ids:
                 raise ValueError(f"CARLA sensors not due at this tick: {sorted(sensor_ids)}")
-            if cached is None and not sensor_ids and self.clock.time_us in self._tick_states:
-                state = self._tick_states[self.clock.time_us]
+            if cached is None and not sensor_ids and tick is not None:
+                state = tick.state
                 return Observation(t=state.t, frame=state.frame, sensor_data={}, calibration={},
                                    vehicle_state=deepcopy(state.vehicle_state), ego_speed=state.ego_speed)
             if cached is not None:
@@ -991,8 +1024,7 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
             self._history_payload_times.clear()
             self._history_pose_times = frozenset()
             self._origin_clock_us = None
-            for cache in (self._recorded_observations, self._recorded_states, self._recorded_views,
-                          self._tick_observations, self._tick_states, self._tick_views):
+            for cache in (self._recorded_ticks, self._interval_ticks):
                 cache.clear()
             super().close()
 

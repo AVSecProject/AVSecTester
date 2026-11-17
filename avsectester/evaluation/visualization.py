@@ -211,15 +211,8 @@ def _camera_model(value: Any, width: int, height: int) -> Any:
     raise ValueError("Recorded camera calibration does not contain a supported lens")
 
 
-def _capture_indexes(log: RunLog | None) -> tuple[dict[int, CaptureRecord], dict[tuple[Any, ...], CaptureRecord]]:
-    captures: dict[int, CaptureRecord] = {}
-    raw: dict[tuple[Any, ...], CaptureRecord] = {}
-    for capture in log.captures if log is not None else ():
-        captures[capture.capture_id] = capture
-        if capture.raw_observation is not None:
-            for sensor in capture.sensor_ids:
-                raw[(capture.raw_observation.t, capture.raw_observation.frame, sensor)] = capture
-    return captures, raw
+def _capture_indexes(log: RunLog | None) -> dict[int, CaptureRecord]:
+    return {capture.capture_id: capture for capture in log.captures} if log is not None else {}
 
 
 def sensor_view(record: StepRecord | CaptureRecord, camera: str | None = None, *,
@@ -229,13 +222,13 @@ def sensor_view(record: StepRecord | CaptureRecord, camera: str | None = None, *
     No simulator or native camera class is loaded. Unrecorded geometry returns None rather
     than drawing boxes with an invented extrinsic or an incorrect coordinate system.
     Supply ``log`` to resolve acquisition-time truth and geometry for frames between decisions
-    or raw-only data.
+    when model-input evidence is recorded.
     """
-    return _sensor_view(record, camera, *_capture_indexes(log))
+    return _sensor_view(record, camera, _capture_indexes(log))
 
 
 def _sensor_view(record: StepRecord | CaptureRecord, camera: str | None,
-                 captures: Mapping[int, CaptureRecord], raw_index: Mapping[tuple[Any, ...], CaptureRecord]) -> SensorView | None:
+                 captures: Mapping[int, CaptureRecord]) -> SensorView | None:
     observation = _observation(record)
     if observation is None:
         return None
@@ -244,15 +237,8 @@ def _sensor_view(record: StepRecord | CaptureRecord, camera: str | None,
         geometry_record = record
         if isinstance(record, CaptureRecord):
             physical = record.physical_state
-        elif observation is record.raw_observation:
-            capture = raw_index.get((observation.t, observation.frame, name))
-            physical = capture.physical_state if capture is not None else record.physical_pre
-            if capture is not None:
-                geometry_record = capture
-            elif (record.delivered_captures.get(name) and record.model_observation is not None
-                    and name in record.model_observation.deliveries
-                    and record.model_observation.delivered(name)[-1].t != observation.t):
-                continue
+        elif record.model_observation is None:
+            physical = record.physical_pre
         else:
             ids = record.delivered_captures.get(name, ())
             capture = captures.get(ids[-1]) if ids else None
@@ -299,8 +285,8 @@ def labels_view(record: StepRecord | CaptureRecord, camera: str | None = None, *
 def detections_view(record: StepRecord, camera: str | None = None, *, threshold: float = 0.3,
                     log: RunLog | None = None) -> np.ndarray | None:
     """Overlay StepRecord.detections. This never runs a detector or reads components."""
-    captures, raw_index = _capture_indexes(log)
-    image, view = camera_view(record, camera), _sensor_view(record, camera, captures, raw_index)
+    captures = _capture_indexes(log)
+    image, view = camera_view(record, camera), _sensor_view(record, camera, captures)
     if image is None or view is None or record.detections is None:
         return image
     capture = captures.get(record.detection_capture_id)

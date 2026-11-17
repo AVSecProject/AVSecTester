@@ -17,7 +17,9 @@ from avsectester.closed_loop.simulators.ego_dynamics import (
     EgoDynamics, EgoMotion, KinematicBicycle, PlanarEgoState, _advance_dynamics,
 )
 from avsectester.validation import timestamp_to_microseconds
-from avsectester.closed_loop.timing import SensorTiming, TimingCapabilities, TimingConfiguration, seconds_to_microseconds
+from avsectester.closed_loop.timing import (
+    SensorTiming, TimingCapabilities, TimingConfiguration, seconds_to_microseconds,
+)
 from avsectester.closed_loop.simulators.base import (
     ClockSnapshot, SensorGeometry, SensorView, Simulator, SimulatorRuntime, UnsupportedStartError, validated_camera_aliases,
 )
@@ -64,6 +66,13 @@ class _RenderTracks:
         """Detached request entries for a sensor view."""
         return deepcopy({"dynamic_objects": self.dynamic_objects, "actor_tracks": self.actor_tracks,
                          "object_tracks": dict(self.object_tracks)})
+
+
+@dataclasses.dataclass(frozen=True)
+class _CaptureRequest:
+    tracks: _RenderTracks
+    actors: Mapping[str, ActorState]
+    exposure: Mapping[str, Any] = dataclasses.field(default_factory=dict)
 
 
 @dataclasses.dataclass
@@ -231,7 +240,7 @@ class NuRecSimulator(Simulator):
         if self.renderer.lidar is None:
             return 0
         period = seconds_to_microseconds(self.time_step)
-        interval = timing.sensors.get(self.renderer.lidar, SensorTiming()).interval_us(period)
+        interval = timing.sensors.get(self.renderer.lidar, SensorTiming()).resolved_frame_interval_us(period)
         return (interval + period - 1) // period
 
     @property
@@ -242,7 +251,7 @@ class NuRecSimulator(Simulator):
     @property
     def observation_lead_steps(self) -> int:
         """One recorded step supplies the start pose for a LiDAR scan, or zero without LiDAR."""
-        return 1 if self.renderer.lidar is not None else 0
+        return self.observation_lead_steps_for(TimingConfiguration())
 
     @property
     def supported_stages(self) -> frozenset[str]:
@@ -271,7 +280,10 @@ class NuRecSimulator(Simulator):
                 "min_track_duration_s": self.min_track_duration_s,
                 "renderer": type(self.renderer).__name__,
                 "dynamics": {"type": f"{type(self.dynamics).__module__}:{type(self.dynamics).__qualname__}",
-                             "options": asdict(self.dynamics) if dataclasses.is_dataclass(self.dynamics) else {}},
+                             "options": {name: value for name, value in asdict(self.dynamics).items()
+                                         if name in {item.name for item in dataclasses.fields(self.dynamics)
+                                                     if item.init}}
+                             if dataclasses.is_dataclass(self.dynamics) else {}},
                 "endpoint": getattr(self.renderer, "endpoint", None)}
         if self.renderer.lidar is not None:
             identity["lidar"] = self.renderer.lidar
@@ -302,7 +314,7 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
         self._traffic_states: dict[str, ActorState] = {}
         self._traffic_timestamp_us: int | None = None
         self._traffic_history: deque[tuple[int, dict[str, ActorState]]] = deque()
-        self._capture_requests: dict[str, _RenderTracks] = {}
+        self._capture_requests: dict[str, _CaptureRequest] = {}
         self._nominal_assets: dict[int, tuple[ObjectAsset, ObjectAsset]] = {}
         self._mesh_raycasters: dict[str, tuple[MeshAsset, np.ndarray, Any]] = {}
         # Duck-typed renderers without ``copy`` are copied shallowly, like Renderer.copy.
@@ -318,7 +330,6 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
         self.frame = 0
         self._render_requests: dict[str, CameraPoseRequest] = {}
         self._capture_geometries: dict[str, SensorGeometry] = {}
-        self._exposure_requests: dict[str, dict[str, Any]] = {}
         self._recorded_geometry_cache: dict[tuple[int, str], SensorGeometry] = {}
         self._last_recorded_capture = None
         self._force_gt_poses = ()
@@ -327,7 +338,6 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
         self._track_datasets: dict[tuple, Any] = {}
         self._actor_states: OrderedDict[int, dict[str, ActorState]] = OrderedDict()
         self._actor_overrides: dict[str, tuple[int, ActorState]] = {}
-        self._capture_actor_states: dict[str, dict[str, ActorState]] = {}
         self._recorded_end_us: int | None = None
         self._route = RouteGenerator("none", (), None)
         self._world_from_ego: Any = None
@@ -354,19 +364,23 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
         if native_camera not in self.renderer.cameras:
             raise ValueError(f"Unknown NuRec camera {camera!r}")
         if native_camera not in self._render_requests:
-            slot = self._sensor_slots.get(aliases.get(native_camera, native_camera))
-            if slot is not None:
-                return deepcopy(slot.render_request)
-            raise RuntimeError(f"No current render request for camera {camera!r}")
+            try:
+                return self._captured_render_request(aliases.get(native_camera, native_camera))
+            except KeyError:
+                raise RuntimeError(f"No current render request for camera {camera!r}") from None
         return deepcopy(self._render_requests[native_camera])
 
     def _ego_state(self):
         """Physical three-dimensional rig pose, owned by this runtime."""
+        return self._ego_state_at(self.pose, self._world_from_ego)
+
+    def _ego_state_at(self, planar: PlanarEgoState, world_from_ego: np.ndarray) -> ActorState:
+        """Compute rig geometry and velocity without modifying the live physical pose."""
         import numpy as np
 
-        pose = self._world_from_ego.copy()
+        pose = world_from_ego.copy()
         recorded = self._start.payload["ego"]
-        velocity = pose[:3, :3] @ np.array([self.pose.speed, self.pose.lateral_speed, 0.])
+        velocity = pose[:3, :3] @ np.array([planar.speed, planar.lateral_speed, 0.])
         return ActorState(pose, tuple(float(value) for value in velocity), "vehicle",
                           recorded.extent, recorded.box_center, recorded.box_rotation)
 
@@ -440,10 +454,17 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
 
     def _actors_at(self, timestamp_us: int, *,
                    actor_overrides: Mapping[str, tuple[int, ActorState]] | None = None) -> dict[str, ActorState]:
-        import numpy as np
+        actors = self._recorded_scene_actors(timestamp_us)
+        self._apply_recorded_interval(actors, timestamp_us)
+        self._apply_traffic_states(actors, timestamp_us)
+        self._apply_actor_overrides(actors, timestamp_us, actor_overrides)
+        return actors
 
-        actors = {key: state for key, state in self._recorded_actors(timestamp_us).items()
+    def _recorded_scene_actors(self, timestamp_us: int) -> dict[str, ActorState]:
+        return {key: state for key, state in self._recorded_actors(timestamp_us).items()
                   if key not in self._filtered_tracks}
+
+    def _apply_recorded_interval(self, actors: dict[str, ActorState], timestamp_us: int) -> None:
         if self._traffic_session is None and self._start is not None:
             offset = timestamp_us - timestamp_to_microseconds(self._start.frame.timestamp)
             intervals = ([self._motion_interval] if self._motion_interval is not None else [])
@@ -458,6 +479,10 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
                     if identity in right and self._recorded_tracks.get(identity, {}).get("controllable", True):
                         actors[identity] = replace(right[identity],
                             pose=interpolate_transform(first.pose, right[identity].pose, fraction))
+
+    def _apply_traffic_states(self, actors: dict[str, ActorState], timestamp_us: int) -> None:
+        import numpy as np
+
         if timestamp_us == self._traffic_timestamp_us:
             actors.update(self._traffic_states)
         elif self._traffic_session is not None:
@@ -478,12 +503,16 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
                                           else tuple((1 - fraction) * np.asarray(left[identity].velocity)
                                                      + fraction * np.asarray(right[identity].velocity))))
                     break
+
+    def _apply_actor_overrides(self, actors: dict[str, ActorState], timestamp_us: int,
+                               actor_overrides) -> None:
+        import numpy as np
+
         overrides = self._actor_overrides if actor_overrides is None else actor_overrides
         for actor_id, (origin_us, state) in overrides.items():
             pose = state.pose.copy()
             pose[:3, 3] += np.asarray(state.velocity) * ((timestamp_us - origin_us) / 1e6)
             actors[actor_id] = dataclasses.replace(state, pose=pose)
-        return actors
 
     def set_actor_state(self, actor_id: str, state: ActorState) -> None:
         """Override a current reconstructed actor's pose and world velocity until reset.
@@ -546,8 +575,8 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
             start_us=self._timestamp_us(),
             end_us=timestamp_to_microseconds(start.payload["terminal_timestamp"]),
             ego_extent=ego.extent, ego_trajectory=trajectory, tracks=tracks,
-            force_gt_duration_us=self._timing.force_gt_duration_us,
-            decision_period_us=self.decision_period_us)
+            handover_us=self._timestamp_us() + self.timing.force_gt_duration_us
+                        + self.decision_period_us)
         self.initialization_report["traffic"] = {
             "session_uuid": self._traffic_session.uuid,
             "handover_time_us": self._traffic_session.handover_time_us,
@@ -568,7 +597,8 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
 
     def _frame_range_us(self, sensor: str, end_time_us: int) -> range:
         if sensor == getattr(self.renderer, "lidar", None):
-            interval = self._timing.sensors.get(sensor, SensorTiming()).interval_us(self.decision_period_us)
+            clock = self.timing.sensors.get(sensor, SensorTiming())
+            interval = clock.resolved_frame_interval_us(self.decision_period_us)
             return range(end_time_us - interval, end_time_us)
         return super()._frame_range_us(sensor, end_time_us)
 
@@ -613,15 +643,16 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
             "occlusion_tolerance_m": self.simulator.occlusion_tolerance_m,
         }
 
-    def _simulate_traffic(self, previous: dict[str, ActorState], *, force_gt: bool = False) -> None:
-        timestamp_us = self._timestamp_us()
+    def _simulate_traffic(self, timestamp_us: int, ego: ActorState,
+                          previous: dict[str, ActorState], *, force_gt: bool,
+                          is_endpoint: bool) -> None:
         session = self._traffic_session
         if session is None:
             raise RuntimeError("AlpaSim traffic session is closed; reset the runtime before stepping")
         current = self._actors_at(timestamp_us)
         overrides = {identity: current[identity].box_transform()
                      for identity in self._actor_overrides if identity in session.track_ids}
-        returned = session.simulate(timestamp_us, self._ego_state().box_transform(), overrides)
+        returned = session.simulate(timestamp_us, ego.box_transform(), overrides)
         if force_gt:
             states = {identity: state for identity, state in self._recorded_actors(timestamp_us).items()
                       if identity in session.track_ids and self._recorded_tracks[identity]["controllable"]}
@@ -634,9 +665,9 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
                 states[identity] = ActorState(pose, velocity, track["category"], track["extent"])
         self._traffic_states = states
         self._traffic_timestamp_us = timestamp_us
-        if not force_gt or self._state_time_us == self._interval_end_us:
+        if not force_gt or is_endpoint:
             self._traffic_history.append((timestamp_us, deepcopy(self._actors_at(timestamp_us))))
-        earliest = (timestamp_to_microseconds(self._start.frame.timestamp) + self._interval_start_us
+        earliest = (timestamp_to_microseconds(self._start.frame.timestamp) + self._interval.start_us
                     - self._sensor_motion_lookback_us())
         while len(self._traffic_history) > 2 and self._traffic_history[1][0] < earliest:
             self._traffic_history.popleft()
@@ -652,7 +683,6 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
         self._capture_requests.clear()
         self._capture_geometries.clear()
         self._recorded_geometry_cache.clear()
-        self._exposure_requests.clear()
         self._last_recorded_capture = None
         self._force_gt_poses = ()
         if initialization is not None:
@@ -670,7 +700,6 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
         self._render_requests.clear()
         self._actor_states.clear()
         self._actor_overrides.clear()
-        self._capture_actor_states.clear()
         self._recorded_end_us = None
         self._ground_contact_failures.clear()
         self._ground_contact = None
@@ -714,8 +743,8 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
                 raise TypeError("NuRec LiDAR requires LidarCalibration")
             validated_transform(calibration.rig_from_lidar)
             require_positive_number(calibration.spin_period_s, "LiDAR spin period")
-            sensor_timing = self._timing.sensors.get(lidar, SensorTiming())
-            duration = sensor_timing.interval_us(self.decision_period_us)
+            sensor_timing = self.timing.sensors.get(lidar, SensorTiming())
+            duration = sensor_timing.resolved_frame_interval_us(self.decision_period_us)
             if not math.isclose(calibration.spin_period_s, duration / 1e6,
                                 rel_tol=0., abs_tol=duration / 1e6 * .01):
                 raise ValueError("NuRec LiDAR calibration spin period must match its scheduled "
@@ -743,7 +772,7 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
             self._open_traffic_session(short_tracks)
 
     def _coerce_recorded_dynamics(self):
-        recorded = self._recorded_planar_state(self._interval_start_us)
+        recorded = self._recorded_planar_state(self._interval.start_us)
         self.pose.speed, self.pose.lateral_speed = recorded.speed, recorded.lateral_speed
         self.pose.yaw_rate, self.pose.acceleration = recorded.yaw_rate, recorded.acceleration
         coerce = getattr(self.dynamics, "coerce_dynamic_state", None)
@@ -751,7 +780,7 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
             coerce(deepcopy(self.pose))
 
     def _advance_native(self, control):
-        if self._coerce_dynamic_state:
+        if self._interval.coerce_dynamic_state:
             self._coerce_recorded_dynamics()
         self._advance_motion(control)
 
@@ -768,7 +797,8 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
             raise ValueError("Recorded reference requires increasing nonnegative integer times")
         if self._recorded_end_us is None or end_us > self._recorded_end_us:
             raise ValueError("Recorded reference exceeds source support")
-        physical = self.state_at(time_us)
+        assert time_us == self.clock.time_us
+        physical = self.state()
         assert physical.ego is not None
         anchor = np.linalg.inv(physical.ego.pose)
         horizon = min(self._recorded_end_us, time_us + FORCE_GT_REFERENCE_HORIZON_US)
@@ -782,16 +812,16 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
 
     def _advance_motion(self, control, *, recorded=False):
         duration_us = self.decision_period_us
-        if self._recorded_end_us is not None and self._interval_end_us > self._recorded_end_us:
+        if self._recorded_end_us is not None and self._interval.end_us > self._recorded_end_us:
             raise ValueError("NuRec step exceeds terminal recorded support")
         self._render_requests.clear()
         uses_traffic = self.simulator.traffic is not None
         previous_actors = self._actors_at(self._timestamp_us()) if uses_traffic else {}
         previous_yaw = self.pose.yaw
-        traffic_times = (tuple(range(self._interval_start_us + TRAFFIC_STEP_US,
-                                    self._interval_end_us + 1, TRAFFIC_STEP_US)) if uses_traffic else ())
-        report_times = tuple(sorted({self._interval_start_us, *self._motion_report_times,
-                                     self._interval_end_us}))
+        traffic_times = (tuple(range(self._interval.start_us + TRAFFIC_STEP_US,
+                                    self._interval.end_us + 1, TRAFFIC_STEP_US)) if uses_traffic else ())
+        report_times = tuple(sorted({self._interval.start_us, *self._interval.report_times_us,
+                                     self._interval.end_us}))
         if control is None:
             states = []
             for timestamp in report_times:
@@ -800,16 +830,16 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
             motion = EgoMotion(tuple(states))
         else:
             motion = _advance_dynamics(
-                self.dynamics, self.pose, control, duration_us, self._motion_report_times)
+                self.dynamics, self.pose, control, duration_us, self._interval.report_times_us)
             if recorded:
                 motion = EgoMotion(tuple(self._recorded_planar_state(timestamp)
                                                    for timestamp in report_times))
         if not isinstance(motion, EgoMotion):
             raise TypeError("Ego dynamics advance must return EgoMotion")
         self.pose = deepcopy(motion.states[-1])
-        self._state_time_us = self._interval_end_us
+        self._state_time_us = self._interval.end_us
         if recorded or control is None:
-            world_from_ego = self._recorded_ego(self._interval_end_us).pose.copy()
+            world_from_ego = self._recorded_ego(self._interval.end_us).pose.copy()
         else:
             world_from_ego = planar_rig_pose(self.pose.x, self.pose.y, self.pose.yaw,
                                          self._world_from_ego[2, 3])
@@ -829,43 +859,33 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
             self.pose.x, self.pose.y = self._world_from_ego[:2, 3]
             self.pose.yaw = math.atan2(self._world_from_ego[1, 0], self._world_from_ego[0, 0])
         self.frame += 1
-        motion = _MotionInterval(self._interval_start_us, self._interval_end_us, motion,
-                                 self._interval_start_state, None,
+        motion = _MotionInterval(self._interval.start_us, self._interval.end_us, motion,
+                                 self._interval.start_state, None,
                                  deepcopy(self._actor_overrides), follows_recording=recorded or control is None,
                                  recorded_poses=tuple(self._recorded_ego(timestamp).pose
                                                       for timestamp in report_times)
                                  if recorded or control is None else ())
         self._motion_interval = motion
         if uses_traffic:
-            final_pose, final_world = deepcopy(self.pose), self._world_from_ego.copy()
+            final_pose = self.pose
             final_ego = self._ego_state()
-            assert self._interval_start_us is not None and self._interval_end_us is not None
-            assert self._interval_start_state is not None
-            try:
-                for timestamp in traffic_times:
-                    if timestamp != self._interval_end_us:
-                        self.pose, ego = self._motion_ego(motion, timestamp, final_ego, final_pose)
-                        self._state_time_us = timestamp
-                        self._world_from_ego = ego.pose.copy()
-                    else:
-                        self.pose, self._world_from_ego = final_pose, final_world
-                        self._state_time_us = timestamp
-                    self._simulate_traffic(previous_actors, force_gt=recorded)
-                    previous_actors = self._actors_at(self._timestamp_us())
-            finally:
-                self.pose, self._world_from_ego = final_pose, final_world
-                self._state_time_us = self._interval_end_us
+            for timestamp in traffic_times:
+                ego = (self._motion_ego(motion, timestamp, final_ego, final_pose)[1]
+                       if timestamp != self._interval.end_us else final_ego)
+                timestamp_us = timestamp_to_microseconds(self._start.frame.timestamp) + timestamp
+                self._simulate_traffic(timestamp_us, ego, previous_actors,
+                    force_gt=recorded, is_endpoint=timestamp == self._interval.end_us)
+                previous_actors = self._actors_at(timestamp_us)
 
     def _reported_state_at(self, time_us: int) -> WorldSnapshot:
         return self._motion_state(self._motion_history[-1], time_us)
 
-    def _completed_interval(self) -> None:
-        assert self._interval_start_us is not None and self._interval_end_us is not None
-        assert self._interval_start_state is not None and self._interval_end_state is not None
+    def _completed_interval(self, end_state: WorldSnapshot) -> None:
+        assert self._interval is not None
         assert self._motion_interval is not None
-        self._motion_interval.final = self._interval_end_state
+        self._motion_interval.final = end_state
         self._motion_history.append(self._motion_interval)
-        earliest = self._interval_end_us - self._sensor_motion_lookback_us() - self.decision_period_us
+        earliest = self._interval.end_us - self._sensor_motion_lookback_us() - self.decision_period_us
         while len(self._motion_history) > 1 and self._motion_history[1].end_us < earliest:
             self._motion_history.popleft()
 
@@ -923,21 +943,11 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
         self._capture_geometries.clear()
 
     def _sensor_motion_lookback_us(self) -> int:
-        scan = (self._timing.sensors.get(self.renderer.lidar, SensorTiming()).interval_us(
-            self.decision_period_us) if self.renderer.lidar is not None else 0)
-        return max([scan, *(clock.shutter_duration_us for clock in self._timing.sensors.values())])
-
-    def _scan_start(self, end_time_us: int) -> tuple[np.ndarray, int, dict[str, ActorState]]:
-        start_time_us = self.frame_range_us(self.renderer.lidar, end_time_us).start
-        absolute_us = timestamp_to_microseconds(self._start.frame.timestamp) + start_time_us
-        if start_time_us < 0:
-            return self._recorded_lidar_start(timestamp_to_microseconds(self._start.frame.timestamp) + end_time_us)
-        for interval in reversed(self._motion_history):
-            if interval.start_us <= start_time_us <= interval.end_us:
-                state = self._motion_state(interval, start_time_us)
-                assert state.ego is not None
-                return state.ego.pose, absolute_us, dict(state.actors)
-        raise ValueError("No simulated ego motion covers the LiDAR scan start")
+        scan = 0
+        if self.renderer.lidar is not None:
+            clock = self.timing.sensors.get(self.renderer.lidar, SensorTiming())
+            scan = clock.resolved_frame_interval_us(self.decision_period_us)
+        return max([scan, *(clock.shutter_duration_us for clock in self.timing.sensors.values())])
 
     @property
     def sensors(self) -> frozenset[str]:
@@ -953,7 +963,7 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
                          if self.renderer.camera_model(camera) is not None)
 
     def _sensor_geometry(self, sensor: str) -> SensorGeometry:
-        if not (self._world_initialized or self._resetting or self._stepping):
+        if not (self._world_initialized or self._resetting or self._advancing):
             raise RuntimeError("Reset the NuRec simulator before requesting camera geometry")
         if sensor == self.renderer.lidar:
             raise ValueError(f"NuRec sensor {sensor!r} has no camera geometry")
@@ -987,12 +997,13 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
         native_camera = next((key for key, alias in aliases.items() if alias == sensor), sensor)
         is_lidar = sensor == self.renderer.lidar
         key = sensor if is_lidar else native_camera
-        actors = self._capture_actor_states[key]
+        captured = self._capture_requests[key]
+        actors = captured.actors
         native = {"timestamp_us": self._timestamp_us(),
-                  "dynamic_objects": self._capture_requests[key].dynamic_objects,
-                  "actor_tracks": self._capture_requests[key].actor_tracks,
-                  "object_tracks": self._capture_requests[key].object_tracks,
-                  "exposure": self._exposure_requests.get(key, {})}
+                  "dynamic_objects": captured.tracks.dynamic_objects,
+                  "actor_tracks": captured.tracks.actor_tracks,
+                  "object_tracks": captured.tracks.object_tracks,
+                  "exposure": captured.exposure}
         occlusion = self._view_occlusion()
         if is_lidar:
             calibration = self.renderer.calibration[sensor]
@@ -1037,13 +1048,13 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
     def _build_force_gt_trajectory(self) -> None:
         from avsectester.closed_loop.timing import initial_history_times
 
-        duration = self._timing.force_gt_duration_us
+        duration = self.timing.force_gt_duration_us
         if not duration:
             return
         history = initial_history_times(
-            {sensor: self._timing.sensors.get(sensor, SensorTiming()) for sensor in self.sensors},
-            self._history_requirement, self.decision_period_us,
-            pose_reporting_interval_us=self._timing.pose_reporting_interval_us)
+            {sensor: self.timing.sensors.get(sensor, SensorTiming()) for sensor in self.sensors},
+            self.history_requirement, self.decision_period_us,
+            pose_reporting_interval_us=self.timing.pose_reporting_interval_us)
         origin = timestamp_to_microseconds(self._start.frame.timestamp)
         begin = min(history.source_start_us, -self._sensor_motion_lookback_us())
         blend_end = min(duration, self._recorded_end_us)
@@ -1075,7 +1086,7 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
             if status != "successful_update":
                 self._ground_contact_failures[status] += 1
             corrected_rig = corrected @ np.linalg.inv(np.linalg.inv(ego.pose) @ ego.box_transform())
-            alpha = float(np.float32(min(1., timestamp / self._timing.force_gt_duration_us)))
+            alpha = float(np.float32(min(1., timestamp / self.timing.force_gt_duration_us)))
             self._force_gt_corrected_poses[timestamp] = interpolate_transform(pose, corrected_rig, alpha)
         return self._force_gt_corrected_poses[timestamp]
 
@@ -1120,16 +1131,6 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
         actors = {key: state for key, state in actors.items() if key not in self._filtered_tracks}
         self._last_recorded_capture = (time_us, pose, timestamp_us, actors)
         return pose, timestamp_us, actors
-
-    def _recorded_lidar_start(self, timestamp_us: int) -> tuple[np.ndarray, int, dict[str, ActorState]]:
-        """Recorded scan start pose and actors without model-visible state or live overrides."""
-        origin_us = timestamp_to_microseconds(self._start.frame.timestamp)
-        start_us = origin_us + self.frame_range_us(self.renderer.lidar, timestamp_us - origin_us).start
-        pose = self._recorded_ego(start_us - origin_us).pose
-        actors = self._tracks().actor_states(self._start.payload["scene_id"], start_us)
-        actors = {identity: state for identity, state in actors.items()
-                  if identity not in self._filtered_tracks}
-        return pose, start_us, actors
 
     def _recorded_sensor_geometry(self, time_us: int, sensor: str) -> SensorGeometry:
         cached = self._recorded_geometry_cache.get((time_us, sensor))
@@ -1316,10 +1317,7 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
             self._mesh_raycasters[placed.object_id] = cached
         return camera_depth(view.camera, view.cam_from_world, (cached[2],))
 
-    def _observe_recorded(self, time_us: int) -> Observation:
-        return self._observe_recorded_sensors(time_us, None)
-
-    def _observe_recorded_sensors(self, time_us, sensors):
+    def _observe_recorded(self, time_us: int, sensors: Sequence[str] | None) -> Observation:
         pose, timestamp_us, actors = self._recorded_capture(time_us)
         start = self._start
         assert start is not None
@@ -1343,7 +1341,8 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
                     self.renderer.cam_from_world(pose, camera))
         lidar = self.renderer.lidar
         if lidar is not None and lidar in selected:
-            start_pose, start_us, start_actors = self._recorded_lidar_start(timestamp_us)
+            start_pose, start_us, start_actors = self._recorded_capture(
+                self.frame_range_us(lidar, time_us).start)
             start_tracks = _RenderTracks(self._dynamic_objects(start_us, start_actors), object_tracks)
             sensor_data[lidar] = self.renderer.render_lidar(
                 start_pose, pose, start_us, timestamp_us,
@@ -1375,7 +1374,7 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
     def _camera_exposure(self, sensor, time_us, end_pose, end_tracks, *, recorded=False):
         import numpy as np
 
-        duration = self._timing.sensors.get(sensor, SensorTiming()).shutter_duration_us
+        duration = self.timing.sensors.get(sensor, SensorTiming()).shutter_duration_us
         if not duration:
             return {}
         start_us = time_us - duration
@@ -1397,7 +1396,7 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
         requested = set(sensor_ids)
         sensor_data = {}
         object_tracks = self._object_tracks(tuple(self._capture_objects.values()))
-        self._capture_actor_states.clear()
+        self._capture_requests.clear()
         calibration = {(aliases.get(key, key) if key in self.renderer.cameras else key): value
                        for key, value in self.renderer.calibration.items()
                        if aliases.get(key, key) in requested}
@@ -1419,22 +1418,21 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
                 self._dynamic_objects(self._timestamp_us(), actors), object_tracks)
             exposure = self._camera_exposure(aliases.get(camera, camera), self._state_time_us,
                                              request.pose, tracks)
-            self._exposure_requests[camera] = exposure
             lens = self.renderer.camera_model(request.camera)
             if lens is not None:
                 self._capture_geometries[camera] = SensorGeometry(aliases.get(camera, camera), lens,
                     self.renderer.cam_from_world(request.pose, request.camera))
             image = self.renderer.render(request.pose, self._timestamp_us(), request.camera,
                                          dynamic_objects=tracks.dynamic_objects, **exposure)
-            self._capture_requests[camera] = tracks
-            self._capture_actor_states[camera] = actors
+            self._capture_requests[camera] = _CaptureRequest(tracks, actors, exposure)
             sensor_data[aliases.get(camera, camera)] = self._emit(
                 "render.post", image, sensor=camera,
             )
         lidar = self.renderer.lidar
         if lidar is not None and lidar in requested:
             timestamp_us = self._timestamp_us()
-            start_pose, start_us, start_actors = self._scan_start(self._state_time_us)
+            start_pose, start_us, start_actors = self._trajectory_capture(
+                self.frame_range_us(lidar, self._state_time_us).start)
             actors = self._actors_at(timestamp_us)
             tracks = _RenderTracks(self._dynamic_objects(timestamp_us, actors), object_tracks)
             start_tracks = _RenderTracks(
@@ -1442,8 +1440,7 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
             cloud = self.renderer.render_lidar(
                 start_pose, self._world_from_ego, start_us, timestamp_us,
                 start_tracks.dynamic_objects, tracks.dynamic_objects)
-            self._capture_actor_states[lidar] = actors
-            self._capture_requests[lidar] = tracks
+            self._capture_requests[lidar] = _CaptureRequest(tracks, actors)
             sensor_data[lidar] = self._emit("render.post", cloud, sensor=lidar)
         return self.copy_observation(Observation(
             t=self.pose.t,
@@ -1462,11 +1459,9 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
         self._actor_states.clear()
         self._capture_geometries.clear()
         self._recorded_geometry_cache.clear()
-        self._exposure_requests.clear()
         self._last_recorded_capture = None
         self._force_gt_poses = ()
         self._force_gt_corrected_poses.clear()
-        self._capture_actor_states.clear()
         self._capture_requests.clear()
         self._traffic_states.clear()
         self._render_requests.clear()
@@ -1484,7 +1479,7 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
 
     def checkpoint(self) -> dict:
         """Capture a replay checkpoint. Active reactive-traffic sessions cannot be checkpointed."""
-        if self._pending_motion:
+        if self._interval is not None:
             raise RuntimeError("Publish the pending motion interval before checkpointing")
         if self.simulator.traffic is not None:
             raise RuntimeError("AlpaSim traffic sessions cannot be checkpointed")
@@ -1502,17 +1497,12 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
             raise RuntimeError("AlpaSim traffic sessions cannot be restored from checkpoints")
         self.pose = PlanarEgoState(**ckpt["pose"])
         self._state_time_us = ckpt["time_us"]
-        self._clock_time_us = ckpt.get("time_us", timestamp_to_microseconds(self.pose.t))
+        self._restore_clock(ckpt.get("time_us", timestamp_to_microseconds(self.pose.t)))
         self._motion_interval = None
-        self._interval_start_state = self._interval_end_state = None
-        self._interval_start_us = self._interval_end_us = None
         self._motion_history = deepcopy(ckpt.get("motion_history", deque()))
         self._force_gt_poses = deepcopy(ckpt.get("force_gt_poses", ()))
         self._force_gt_corrected_poses = deepcopy(ckpt.get("force_gt_corrected_poses", {}))
         self.invalidate_state()
-        self._pending_motion = False
-        self._pending_state = None
-        self._sensor_slots.clear()
         reset_dynamics = getattr(self.dynamics, "reset", None)
         if callable(reset_dynamics):
             reset_dynamics(deepcopy(self.pose))
@@ -1524,9 +1514,6 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
         # harmonizer's loaded model would duplicate heavyweight native resources.
         self._objects = dict(ckpt["objects"])
         self._render_requests.clear()
-        self._world_initialized = False
-        self._capture = None
-        self._world_initialized = True
         try:
             self._take_capture()
         except BaseException:

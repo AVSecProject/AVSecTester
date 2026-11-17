@@ -10,8 +10,8 @@ from __future__ import annotations
 import copy
 import math
 from numbers import Real
-from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field, fields, is_dataclass, replace
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import numpy as np
@@ -19,8 +19,7 @@ import numpy as np
 from avsectester.validation import timestamp_to_microseconds
 
 from avsectester.geometry.poses import (
-    interpolate_transform, make_pose, quaternion_to_rotation, rotation_matrix, rotation_to_quaternion,
-    validated_vector,
+    rotation_matrix, validated_vector,
 )
 
 
@@ -141,7 +140,6 @@ class DeliveredAcquisition:
     frame_start_us: int | None = None
 
 
-
 @dataclass
 class Observation:
     """One driving decision's model-visible inputs and newly delivered frames.
@@ -234,79 +232,6 @@ def without_sensor_payloads(observation: Observation, *, keep_sensor_ids: Iterab
     return replace(observation,
         sensor_data={sensor: data for sensor, data in observation.sensor_data.items() if sensor in retained},
         deliveries=deliveries)
-
-
-def interpolate_state_estimate(estimates: Sequence[TimedStateEstimate], time_us: int) -> TimedStateEstimate:
-    """Read the estimated pose trajectory at an integer timestamp without extrapolation.
-
-    Exact report times return the original estimate. Between reports, translation, speed
-    and other numeric motion fields interpolate linearly. Rotation follows the shortest
-    quaternion arc. Supports planar dataclasses, ActorState, rigid matrices and native
-    position/attitude state objects without importing a simulator SDK.
-    """
-    if isinstance(time_us, bool) or not isinstance(time_us, int):
-        raise ValueError("Estimate time must be integer microseconds")
-    if not estimates:
-        raise ValueError("No state estimates are available")
-    for estimate in estimates:
-        if estimate.time_us == time_us:
-            return estimate
-    for left, right in zip(estimates, estimates[1:]):
-        if left.time_us < time_us < right.time_us:
-            fraction = (time_us - left.time_us) / (right.time_us - left.time_us)
-            state = _interpolate_vehicle_state(left.vehicle_state, right.vehicle_state, fraction, time_us)
-            speed = left.ego_speed + fraction * (right.ego_speed - left.ego_speed)
-            return TimedStateEstimate(time_us, time_us / 1e6, state, speed)
-    raise ValueError("Estimate time lies outside the reported pose trajectory")
-
-
-def _interpolate_vehicle_state(left: Any, right: Any, fraction: float, time_us: int) -> Any:
-    if type(left) is not type(right):
-        raise TypeError("Pose reports must use the same vehicle-state representation")
-    if left is None:
-        return None
-    if isinstance(left, ActorState):
-        velocity = (None if left.velocity is None or right.velocity is None else
-                    tuple((1 - fraction) * a + fraction * b for a, b in zip(left.velocity, right.velocity)))
-        return replace(left, pose=interpolate_transform(left.pose, right.pose, fraction), velocity=velocity)
-    if isinstance(left, np.ndarray) and left.shape == (4, 4):
-        return interpolate_transform(left, right, fraction)
-    if is_dataclass(left) and not isinstance(left, type) and all(
-            hasattr(left, name) for name in ("x", "y", "yaw")):
-        values: dict[str, Any] = {}
-        for item in fields(left):
-            a, b = getattr(left, item.name), getattr(right, item.name)
-            if isinstance(a, Real) and isinstance(b, Real) and not isinstance(a, bool):
-                values[item.name] = float(a) + fraction * (float(b) - float(a))
-        first_yaw, last_yaw = float(getattr(left, "yaw")), float(getattr(right, "yaw"))
-        values["yaw"] = first_yaw + fraction * math.atan2(math.sin(last_yaw - first_yaw),
-                                                        math.cos(last_yaw - first_yaw))
-        if hasattr(left, "t"):
-            values["t"] = time_us / 1e6
-        return replace(left, **values)
-    if all(hasattr(left, name) for name in ("position", "attitude")):
-        result = copy.deepcopy(left)
-        for name in ("position", "velocity", "acceleration"):
-            a, b = getattr(left, name, None), getattr(right, name, None)
-            if a is not None and b is not None:
-                getattr(result, name).x = (1 - fraction) * np.asarray(a.x) + fraction * np.asarray(b.x)
-        first, second = left.attitude.q, right.attitude.q
-        first_values = ((first.w, first.x, first.y, first.z) if hasattr(first, "w") else first)
-        second_values = ((second.w, second.x, second.y, second.z) if hasattr(second, "w") else second)
-        pose = interpolate_transform(
-            make_pose(quaternion_to_rotation(*first_values), left.position.x),
-            make_pose(quaternion_to_rotation(*second_values), right.position.x), fraction)
-        quaternion = rotation_to_quaternion(pose[:3, :3])
-        if hasattr(first, "w"):
-            result.attitude.q = type(first)(*quaternion)
-        elif isinstance(first, np.ndarray):
-            result.attitude.q = np.array(quaternion, dtype=first.dtype)
-        else:
-            result.attitude.q = type(first)(quaternion)
-        if hasattr(result, "t"):
-            result.t = time_us / 1e6
-        return result
-    raise TypeError(f"Cannot interpolate vehicle-state type {type(left).__name__}")
 
 
 @dataclass(frozen=True)
@@ -478,8 +403,6 @@ __all__ = [
     'DeliveredAcquisition',
     'TimedStateEstimate',
     'Observation',
-    'without_sensor_payloads',
-    'interpolate_state_estimate',
     'WorldSnapshot',
     'StateEstimate',
     'RecordedOutput',

@@ -143,12 +143,12 @@ class AlpaSimTraffic:
         ego_extent: tuple[float, float, float],
         ego_trajectory: Sequence[tuple[int, np.ndarray]],
         tracks: Sequence[TrafficTrack],
-        force_gt_duration_us: int = 0, decision_period_us: int = TRAFFIC_STEP_US,
+        handover_us: int | None = None,
     ) -> TrafficSession:
         """Validate support and open a session with EGO first and clipped native tracks."""
         require_nonnegative_integer(random_seed, "random_seed")
-        require_nonnegative_integer(force_gt_duration_us, "force_gt_duration_us")
-        require_positive_integer(decision_period_us, "decision_period_us")
+        if handover_us is not None:
+            require_nonnegative_integer(handover_us, "handover_us")
         require_nonnegative_integer(start_us, "start_us")
         require_nonnegative_integer(end_us, "end_us")
         if scene_id not in self.get_available_scenes():
@@ -174,7 +174,7 @@ class AlpaSimTraffic:
             trajectory=_trajectory_message(track.trajectory), is_static=track.is_static,
             label_class=track.label_class) for track in (ego, *selected)]
         session_uuid = str(uuid.uuid4())
-        handover = start_us + force_gt_duration_us + decision_period_us
+        handover = start_us + TRAFFIC_STEP_US if handover_us is None else handover_us
         channel = grpc.insecure_channel(self.endpoint)
         try:
             _call(service.TrafficServiceStub(channel).start_session, traffic.TrafficSessionRequest(

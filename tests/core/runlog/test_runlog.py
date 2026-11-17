@@ -3,7 +3,6 @@
 from pathlib import Path
 import json
 from collections import OrderedDict, namedtuple
-from weakref import ref
 
 import numpy as np
 import pytest
@@ -18,36 +17,32 @@ from avsectester.runlog import CaptureRecord, Recorder, RunLog, StepRecord, read
 from avsectester.serialization import DEFAULT_REGISTRY
 
 
-def test_payload_deduplication(tmp_path):
+def test_record_capture(tmp_path):
     pixels = np.arange(18, dtype=np.uint8).reshape(2, 3, 3)
-    expected = pixels.copy()
-    raw = Observation(0., 0, {"front": pixels})
-    model = Observation(0., 0, {"front": pixels.copy()})
-    with Recorder(tmp_path / "shared", payload_shard_bytes=10) as recorder:
-        recorder.record_capture(CaptureRecord(0, 0, ("front",), raw, model))
-        with pytest.raises(ValueError, match="Duplicate capture_id"):
-            recorder.record_capture(CaptureRecord(0, 0, ("front",), raw, model))
-        recorder.record_step(StepRecord(0, raw_observation=raw, model_observation=model))
-    memory = recorder.log
-    stored = memory.steps[0].raw_observation.sensor_data["front"]
-    assert stored is memory.steps[0].model_observation.sensor_data["front"]
-    assert stored is memory.captures[0].raw_observation.sensor_data["front"]
-    assert not stored.flags.writeable
+    recorder = Recorder(tmp_path / "shared", payload_shard_bytes=10)
+    payload = recorder.snapshot(pixels)
+    raw = Observation(0., 0, {"front": payload}, calibration={"front": {"gain": 2}})
+    record = CaptureRecord(0, 0, ("front",), raw, raw)
+    captured = recorder.record_capture(record)
+    with pytest.raises(ValueError, match="Duplicate capture_id"):
+        recorder.record_capture(record)
+    step = recorder.record_step(StepRecord(0, raw_observation=raw, model_observation=raw))
+    raw.calibration["front"]["gain"] = 9
+    raw.ego_speed = 12.
+    record.frame_ranges_us = {"front": (1, 2)}
+    assert captured.raw_observation.sensor_data["front"] is payload
+    assert step.model_observation.sensor_data["front"] is payload
+    assert captured.raw_observation.calibration == {"front": {"gain": 2}}
+    assert step.raw_observation.calibration == {"front": {"gain": 2}}
+    assert captured.raw_observation.ego_speed == step.raw_observation.ego_speed == 0.
+    assert captured.frame_ranges_us == {}
+    recorder.finish()
     pixels.fill(0)
-    np.testing.assert_array_equal(stored, expected)
-    assert sum(path.stat().st_size for path in (tmp_path / "shared/payloads").glob("*.bin")) == expected.nbytes
+    np.testing.assert_array_equal(payload, np.arange(18, dtype=np.uint8).reshape(2, 3, 3))
+    assert payload.flags.writeable
+    assert sum(path.stat().st_size for path in (tmp_path / "shared/payloads").glob("*.bin")) == payload.nbytes
     restored = RunLog.read(tmp_path / "shared")
-    np.testing.assert_array_equal(restored.steps[0].raw_observation.sensor_data["front"], expected)
-    np.testing.assert_array_equal(restored.captures[0].model_observation.sensor_data["front"], expected)
-
-    source = np.arange(1024, dtype=np.uint8)
-    changed = source.copy()
-    aliases = recorder.snapshot({"raw": source, "model": changed})
-    assert aliases["raw"] is aliases["model"]
-    changed[50] += 1
-    updated = recorder.snapshot(changed)
-    assert updated is not aliases["raw"] and not updated.flags.writeable
-    assert updated[50] == changed[50] and aliases["raw"][50] == source[50]
+    np.testing.assert_array_equal(restored.captures[0].model_observation.sensor_data["front"], payload)
 
     objects = np.array([{"score": 1.}], dtype=object)
     masked = np.ma.masked_array([1., 2.], mask=[False, True])
@@ -67,29 +62,22 @@ def test_payload_deduplication(tmp_path):
 
 
 @pytest.mark.parametrize("representations", [("model_input",), ("raw", "model_input")])
-def test_released_capture_payloads(tmp_path, representations):
+def test_payload_retention(tmp_path, representations):
     names = {"raw": "raw_observation", "model_input": "model_observation"}
     pixels = np.arange(1200, dtype=np.uint8).reshape(20, 20, 3)
-    observations = [{names[name]: Observation(index / 10, index,
-        {"front": pixels.copy() + index}) for name in representations} for index in range(2)]
-    payloads = []
     with Recorder(tmp_path / "run", retain_sensor_data=False, chunk_steps=1) as recorder:
-        for index, observation in enumerate(observations):
-            capture = recorder.record_capture(CaptureRecord(index, index * 100000, ("front",), **observation))
-            payloads.append(ref(capture.model_observation.sensor_data["front"]))
-            del capture
-        # The original capture wrappers are gone before decision snapshots use their payloads.
-        for index, observation in enumerate(observations):
-            assert payloads[index]() is not None
-            recorder.record_step(StepRecord(index, **observation,
-                delivered_captures={"front": (index,)}))
-            recorder.release_captures((index,))
-            recorder.release_captures((index,))
-            assert payloads[index]() is None
+        for index in range(2):
+            payload = recorder.snapshot(pixels + index)
+            observations = {names[name]: Observation(index / 10, index, {"front": payload})
+                            for name in representations}
+            recorder.record_capture(CaptureRecord(index, index * 100000, ("front",), **observations))
+            recorder.record_step(StepRecord(index, **observations,
+                delivered_captures={"front": (index, None)}))
     assert sum(part.stat().st_size for part in (tmp_path / "run/payloads").glob("*.bin")) == 2 * pixels.nbytes
     assert all(step.model_observation.sensor_data == {} for step in recorder.log.steps)
     restored = RunLog.read(tmp_path / "run")
     for index, step in enumerate(restored.steps):
+        assert step.delivered_captures == {"front": (index, None)}
         np.testing.assert_array_equal(step.model_observation.sensor_data["front"], pixels + index)
         for name in representations:
             np.testing.assert_array_equal(getattr(restored.captures[index], names[name]).sensor_data["front"],
@@ -132,6 +120,7 @@ def test_record_and_read(tmp_path):
     world = WorldSnapshot(.1, 3, objects={"sign": obj})
     visibility = {"sign": {"front": ObjectVisibility("depth", (), 12)}}
     recorder = Recorder(tmp_path / "run", metadata={"seed": 4})
+    observation.sensor_data["front"] = recorder.snapshot(pixels)
     recorder.record_event("initialization", scenario="scene", clock=ClockSnapshot(.1, 4))
     estimate = TimedStateEstimate(100000, .1, np.eye(4), 2.)
     observation.vehicle_state, observation.ego_speed = estimate.vehicle_state, estimate.ego_speed
@@ -190,6 +179,14 @@ def test_record_and_read(tmp_path):
     assert capture.frame_ranges_us == {"front": (83000, 100000)}
     np.testing.assert_array_equal(capture.raw_observation.delivered("front")[-1].data, 40)
     assert capture.raw_observation.delivered("front")[-1].time_us == 100000
+    stripped = RunLog.read(memory.path, load_sensor_data=False)
+    stripped_observation = stripped.captures[0].raw_observation
+    assert stripped_observation.sensor_data == {}
+    assert stripped_observation.delivered("front")[-1].data is None
+    assert stripped_observation.delivered("front")[-1].frame_start_us == 83000
+    assert stripped_observation.delivered("front")[-1].time_us == 100000
+    np.testing.assert_array_equal(stripped_observation.vehicle_state, np.eye(4))
+    assert stripped_observation.estimated_states()[0].time_us == 100000
 
 
 @pytest.mark.parametrize("sensor,payload,calibration", [

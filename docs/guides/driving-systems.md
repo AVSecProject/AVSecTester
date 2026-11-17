@@ -49,9 +49,8 @@ When the factory's `avstack_type` is an AVStack subclass, `DrivingAdapter.histor
 `avstack_type.required_history(factory.avstack_options)` and `decision_time_step` uses the
 type's value. Otherwise the adapter's own declarations apply. That classmethod defaults to
 the type's `history`. The constructed instance must declare the same history as its adapter.
-A mismatch raises an error rather than changing the instance. `required_sensors` names required
-inputs, or is `None` to accept the configured
-sensor set. The shared history plan controls selection, recorded reads and simulator caches.
+A mismatch raises an error rather than changing the instance. History requirements control
+selection and recorded reads. A driving system validates required inputs at its first decision.
 
 The framework delivers each ended frame once. Read new frames, oldest first, with
 `observation.delivered(sensor_id)` and new poses with `observation.estimated_states()`.
@@ -59,9 +58,9 @@ Frame estimates interpolate the model-visible pose trajectory at frame end. Use 
 state for planning. See [Runtime](../reference/runtime.md#delivery-and-coordinates).
 
 `reset(observation)` receives the first input with its recorded context. There is no separate
-history argument. Drivers retain their own references. `AlpamayoAVStack` uses bounded frame
-caches matching AlpaSim's FrameCache and a timestamped pose cache. Other supplied drivers retain
-their latest input references without adding old frames to the framework observation. A sensor
+history argument. Drivers retain the context they need. `AlpamayoAVStack` selects retained frames
+like AlpaSim's FrameCache. Other supplied drivers retain their latest inputs without adding old
+frames to the framework observation. A sensor
 whose due frames were all dropped is missing for that decision. Supplied drivers do not fill it
 from an earlier frame.
 
@@ -300,11 +299,10 @@ Images and poses use acquisition timestamps. The stack requires 1.5 seconds of p
 and `(context_length - 1) * frame_subsample + 1` camera acquisitions. The defaults are
 `context_length=4` and `frame_subsample=1`. It selects every Nth frame
 backward from the newest delivered frame, then supplies them oldest first, matching AlpaSim's
-FrameCache. Each camera cache retains exactly the required sample capacity. The planning origin
-is the newest image timestamp across the configured cameras. A separate pose cache spans from
-1.5 seconds before that image through the current decision, including a preceding pose when the
-boundary lies between estimates. Both caches retain delivered references without copying
-payloads. The model resamples timestamped poses at its own required spacing. Acquisitions need
+FrameCache. The planning origin is the newest image timestamp across the configured cameras.
+Retained poses span from 1.5 seconds before that image through the current decision, including a
+preceding pose when the boundary lies between estimates. The model resamples timestamped poses
+at its own required spacing. Acquisitions need
 not be 100 ms apart. Missing context is rejected rather than fabricated.
 
 The returned trajectory preserves the model's generation-time rig frame and native waypoint

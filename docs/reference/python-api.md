@@ -312,7 +312,6 @@ Shared JSON-compatible serialization and independent in-memory snapshots.
 | `SerializationRegistry.register_dataclass(cls_or_path: type \| str) -> None` | Register a dataclass, or a path imported only when that dataclass is decoded. |
 | `SerializationRegistry.register_native(module: str, name: str, encode: Callable[[Any], Any], *, snapshot: Callable[[Any, Callable[[Any], Any]], Any] \| None = None) -> None` | Register native conversion without importing the native module. |
 | `SerializationRegistry.snapshot(value: Any) -> Any` | Take an independent snapshot, preserving native wrappers and container subclasses. |
-| `SerializationRegistry.recording_snapshot(value: Any, payload_snapshot: Callable[[Any], Any]) -> Any` | Snapshot with a numeric-array and byte ownership callback from a recording transport. |
 | `SerializationRegistry.encode(value: Any, *, encode_child: Callable[[Any], Any] \| None = None, encode_field: Callable[[str, Any], Any] \| None = None, encode_leaf: Callable[[Any], Any] \| None = None) -> Any` | Convert a registered value into tagged JSON-compatible data. |
 | `SerializationRegistry.decode(data: Any, *, decode_child: Callable[[Any], Any] \| None = None) -> Any` | Reconstruct registered dataclasses. Encoded native values remain ordinary data. |
 | `DEFAULT_REGISTRY = SerializationRegistry()` | Serialization registry with framework record types and array codecs registered. |
@@ -389,8 +388,6 @@ Data types exchanged between framework components.
 | `Observation.estimated_states() -> tuple[TimedStateEstimate, ...]` | New localization results, with current observation edits on the decision state. |
 | `Observation.delivered(sensor_id: str) -> tuple[DeliveredAcquisition, ...]` | Read this decision's incremental acquisitions with current owner-field edits. |
 | `Observation.set_calibration(sensor_id: str, calibration: Any) -> None` | Replace model-visible calibration and its native payload reference together. |
-| `without_sensor_payloads(observation: Observation, *, keep_sensor_ids: Iterable[str] = (), strip_deliveries: bool = True) -> Observation` | Select observation payload owners and optionally retain only delivery metadata. |
-| `interpolate_state_estimate(estimates: Sequence[TimedStateEstimate], time_us: int) -> TimedStateEstimate` | Read the estimated pose trajectory at an integer timestamp without extrapolation. |
 | `WorldSnapshot(t: float, frame: int, vehicle_state: Any = None, ego_speed: float = 0.0, actors: Mapping[str, Any] = dict(), ego: ActorState \| None = None, traffic_lights: Mapping[str, str] = dict(), objects: Mapping[str, ActorState] = dict())` | An independent snapshot of the simulator's actual ego state and other actors' states. |
 | `StateEstimate(vehicle_state: Any = None, ego_speed: float = 0.0)` | Model-visible ego state and speed produced by the driving system's localizer. |
 | `RecordedOutput(name: str, value: Any, step: int, stage: str, frame: int, t: float, sensor: str \| None = None)` | A named output captured by an attack, defense or localization callback. |
@@ -989,7 +986,6 @@ The driving-system interface: an Observation in, a Control out.
 | `ObservationPipeline(localizer: Any = None)` | Process driving-system inputs without changing output commands. |
 | `ObservationPipeline.capture(observation: Observation, dispatcher: HookDispatcher) -> Observation` | Process one frame batch through sensors.post without running localization. |
 | `ObservationPipeline.localize(observation: Observation, dispatcher: HookDispatcher) -> Observation` | Localize one pose timestamp, including timestamps without sensor frames. |
-| `ObservationPipeline.with_estimate(observation: Observation, estimate: StateEstimate) -> Observation` | Replace the model-visible pose and re-express navigation without running hooks. |
 | `ObservationPipeline.decision(observation: Observation, dispatcher: HookDispatcher) -> Observation` | Apply decision input hooks after selecting delivered captures and history. |
 | `ObservationPipeline.process(observation: Observation, dispatcher: HookDispatcher) -> Observation` | Process a capture followed immediately by one driving decision. |
 | `AVStack()` | The driving system: an Observation in, a Control out. |
@@ -1000,7 +996,6 @@ The driving-system interface: an Observation in, a Control out.
 | `AVStack.observation_pipeline: ObservationPipeline` | Driving-system input processing, including its localizer lifecycle. |
 | `AVStack.reset(observation: Observation) -> None` | Initialize from the first decision observation, including its recorded deliveries. |
 | `AVStack.ingest(observation: Observation) -> None` | Accept incremental input without inference when a force_gt decision skips driving. |
-| `AVStack.required_sensors: frozenset[str] \| None` | Required delivered sensor IDs. None accepts the simulator's configured sensors. |
 | `AVStack.command_modes: frozenset[str] \| None` | Possible output command representations, or None for an undeclared driving system. |
 | `AVStack.models: Mapping[str, Any]` | Loaded native models available to user handlers, named by the driving system. |
 | `AVStack.component_log() -> Mapping[str, Any] \| None` | Already-produced component outputs for the current decision, or None. |
@@ -1027,9 +1022,10 @@ command mode is not accepted by the simulator runtime. A `command` hook skips th
 
 Implement `AVStack.__call__(observation) -> Control` and return a declared command mode.
 Keep per-run history in this instance. Do not modify or advance the simulator. Declare
-`history` as a `HistoryRequirement` so adapters can read duration and acquisition count without
-constructing a model. `required_sensors` declares the input IDs. `decision_time_step` can restrict
-the decision interval. Read new acquisitions through `delivered(sensor_id)` and new localization
+recorded-input requirements as described in
+[Driving systems](../guides/driving-systems.md#recorded-input-history).
+`decision_time_step` can restrict the decision interval. Validate required sensor inputs when
+called. Read new acquisitions through `delivered(sensor_id)` and new localization
 results through `estimated_states()`. Each acquisition carries its capture-time state.
 Trajectories retain their generation-time rig frame and integer-microsecond timestamps. `detections`
 returns `None` when unsupported and an empty sequence for zero detections.
@@ -1105,7 +1101,6 @@ Alpamayo camera policy behind the common driving-system interface.
 | `AlpamayoAVStack.reset(observation: Observation) -> None` | Clear context and validate recorded inputs in the first decision's deliveries. |
 | `AlpamayoAVStack.close() -> None` | Release this driving system's references and any model it loaded itself. |
 | `AlpamayoAVStack.EPOCH_US = 10_000_000` | Timestamp offset in microseconds used by the trajectory interface. |
-| `AlpamayoAVStack.required_sensors: frozenset[str]` | Cameras required by the loaded policy configuration. |
 | `AlpamayoAVStack.ingest(observation: Observation) -> None` | Retain force_gt input deliveries and poses without running policy inference. |
 | `AlpamayoAVStack.__call__(observation: Observation) -> Control` | Ingest deliveries and infer a rig-frame trajectory from cached cameras and ego poses. |
 | `AlpamayoAVStack.component_log() -> dict[str, Any] \| None` | Already-produced policy prediction and Control under `policy` and `command`. |
@@ -1142,7 +1137,6 @@ Camera detection with the box-area forward-collision braking rule.
 | `CameraForwardCollisionAVStack.provides_detections = False` | Whether decisions expose detections compatible with detection metrics. |
 | `CameraForwardCollisionAVStack.command_modes = frozenset({"actuator"})` | Possible output command representations, or None for an undeclared driving system. |
 | `CameraForwardCollisionAVStack.supported_stages = frozenset({"perception.pre", "perception.post"})` | Return the hook stages supported by this simulator runtime or driving system. |
-| `CameraForwardCollisionAVStack.required_sensors: frozenset[str]` | Selected camera, using its latest delivered capture. |
 | `CameraForwardCollisionAVStack.detect(rgb: Any) -> list` | Return current image detections as `(xyxy, score, vehicle)` tuples. |
 | `CameraForwardCollisionAVStack.ingest(observation: Observation) -> None` | Retain delivered camera data without running the detector. |
 | `CameraForwardCollisionAVStack.__call__(observation: Observation) -> Control` | Detect the selected RGB image and choose braking from the largest image-box area. |
@@ -1341,7 +1335,6 @@ Detect and track stop signs and optional lead vehicles for route-following contr
 | `RuleBasedAVStack(detector: YOLOXDetector, tracker: StopSignTracker \| None = None, planner: RuleBasedPlanner \| None = None, camera_id: str = DEFAULT_CAMERA_ID, sign_height_m: float = .762, *, vehicle_tracker: VehicleTracker \| None = None, vehicle_labels: Sequence[str] = ("car", "truck", "bus"), lidar_id: str = DEFAULT_LIDAR_ID)` | Subclass of `AVStack`. Follow the route, stop for signs and optionally follow camera-detected vehicles. |
 | `RuleBasedAVStack.command_modes = frozenset({"trajectory"})` | Possible output command representations, or None for an undeclared driving system. |
 | `RuleBasedAVStack.provides_detections = False` | Whether decisions expose detections compatible with detection metrics. |
-| `RuleBasedAVStack.required_sensors: frozenset[str]` | Camera and, when following vehicles, the configured LiDAR. |
 | `RuleBasedAVStack.reset(observation: Observation) -> None` | Clear sign and vehicle tracks and reset planning for a fresh run. |
 | `RuleBasedAVStack.ingest(observation: Observation) -> None` | Retain the latest camera and LiDAR deliveries without perception or tracking. |
 | `RuleBasedAVStack.__call__(observation: Observation) -> Control` | Range and track selected detections, then return a rig-frame driving trajectory. |
@@ -1446,7 +1439,7 @@ World settings and deterministic sensor corruptions.
 | `validate_environment(value: Mapping[str, Any], simulator: Any) -> dict[str, Any]` | Reject unsupported world settings before opening any simulator resources. |
 | `SensorEnvironment(environment: Mapping[str, Any], seed: int = 0)` | One run's corruptions, seeded by sensor stream and integer acquisition time. |
 | `SensorEnvironment.bind(observation: Observation) -> None` | Resolve omitted camera names from the initial full capture without corrupting it. |
-| `SensorEnvironment.apply(observation: Observation, position: int, *, interval_capture_index: Mapping[str, int] \| None = None, available_sensors: frozenset[str] \| None = None) -> Observation` | Apply corruptions to due sensors with stable sensor and acquisition-time randomness. |
+| `SensorEnvironment.apply(observation: Observation, position: int, *, interval_capture_index: Mapping[str, int] \| None = None, available_sensors: frozenset[str] \| None = None) -> Observation` | Apply corruptions with stable sensor and acquisition-time randomness. |
 <!-- api:end -->
 
 #### Constraints and errors
@@ -1459,8 +1452,10 @@ severity outside [0, 1]. `validate_environment` also passes the world mapping to
 which raises for unsupported world settings.
 
 `SensorEnvironment` raises `TypeError` for a corruption without a callable `apply(rgb, rng)`.
-`SensorEnvironment.apply` raises `ValueError` for a configured camera absent from the capture,
-a capture without readable RGB, or a corruption result that is not uint8 RGB of the same shape.
+`SensorEnvironment.apply` skips an absent camera when it is listed in `available_sensors`,
+the configured streams that may not all be due in this frame batch. Other absent cameras,
+a capture without readable RGB, or a corruption result that is not uint8 RGB of the same shape
+raise `ValueError`. Omitting `available_sensors` keeps the missing-camera error.
 
 #### See also
 
@@ -1597,8 +1592,10 @@ Simulator interfaces, whose concrete implementations are imported from their own
 | `SensorView` | [SensorView](#avsectesterclosed_loopsimulatorsbase) |
 | `SensorGeometry` | [SensorGeometry](#avsectesterclosed_loopsimulatorsbase) |
 | `ClockSnapshot` | [ClockSnapshot](#avsectesterclosed_loopsimulatorsbase) |
+| `DecisionInterval` | [DecisionInterval](#avsectesterclosed_loopsimulatorsbase) |
 | `DeploymentPlan` | [DeploymentPlan](#avsectesterclosed_loopsimulatorsbase) |
 | `Initialization` | [Initialization](#avsectesterclosed_loopsimulatorsbase) |
+| `RecordedAcquisition` | [RecordedAcquisition](#avsectesterclosed_loopsimulatorsbase) |
 | `FrameDataSequence` | [FrameDataSequence](#avsectesterclosed_loopsimulatorsbase) |
 | `UnsupportedStartError` | [UnsupportedStartError](#avsectesterclosed_loopsimulatorsbase) |
 <!-- api:end -->
@@ -1614,14 +1611,14 @@ The simulator: a configuration (`Simulator`) and its live worlds (`SimulatorRunt
 
 | Name and signature | Meaning |
 |---|---|
+| `DecisionInterval(start_us: int, end_us: int, report_times_us: tuple[int, ...], force_gt: bool, coerce_dynamic_state: bool, start_state: WorldSnapshot)` | One native propagation, available to extension hooks until its endpoint is published. |
 | `DeploymentPlan(ticks: int = 0)` | Shared tick budget for all treatments, including frame data generation. |
 | `ClockSnapshot(t: float, frame: int, scheduled_time_us: int \| None = None)` | Physical simulator time and frame, never a model-visible timestamp. |
 | `ClockSnapshot.time_us: int` | Integer event time, retaining the native floating timestamp separately. |
 | `SensorGeometry(sensor: str, camera: Camera, cam_from_world: np.ndarray)` | Physical optical-camera geometry at one capture, without image or SDK handles. |
 | `SensorView(sensor: str, data: Any, camera: Camera \| None, cam_from_world: np.ndarray \| None, actors: Mapping[str, ActorState], ego: ActorState, time: float, frame: int, sensor_from_world: np.ndarray \| None = None, depth: np.ndarray \| None = None, native: Mapping[str, Any] = dict(), objects: Mapping[str, PlacedObject] = dict(), composition: ObjectComposition \| None = None, object_occlusion: str = "geometry", occlusion_tolerance_m: float = 0.1, object_masks: Mapping[str, np.ndarray] = dict())` | One sensor capture, including inserted world objects. |
 | `SensorView.composite_plan(objects: Sequence[PlacedObject]) -> CompositePlan` | Plan composing `objects` into this camera view exactly as simulator captures do. |
-| `SensorAcquisition(time_us: int, observation: Observation, physical_state: WorldSnapshot, view: SensorView, visibility: Mapping[str, ObjectVisibility] = dict())` | One sensor's captured observation, physical truth, view and visibility at its own time. |
-| `SensorAcquisition.sensor: str` | Canonical sensor ID of this acquisition. |
+| `RecordedAcquisition(observation: Observation, physical_state: WorldSnapshot, sensor_geometry: Mapping[str, SensorGeometry] = dict(), object_visibility: Mapping[str, Mapping[str, ObjectVisibility]] = dict())` | One recorded-history read with its observation and physical evidence. |
 | `Initialization(expected: FrameData, resolved_scenario: Mapping[str, Any] = dict(), provenance: Mapping[str, Any] = dict())` | Source replay inputs only. No attack origin, score or placement enters the simulator. |
 | `FrameDataSequence(frames: tuple[FrameData, ...], resolved_scenario: Mapping[str, Any], provenance: Mapping[str, Any])` | Detached generated frames and the resolved scenario and provenance that produced them. |
 | `FrameDataSequence.at(frame: FrameReference) -> FrameData` | Return frame data at the requested recorded time. |
@@ -1649,7 +1646,6 @@ The simulator: a configuration (`Simulator`) and its live worlds (`SimulatorRunt
 | `Simulator.validate_start_timing(start: ScenarioStart \| None, timing: TimingConfiguration) -> None` | Check a recorded start under the selected frame clocks without opening a world. |
 | `Simulator.decision_ticks: int` | Number of native ticks in one decision, or one without a native base tick. |
 | `Simulator.observation_lead_steps_for(timing: TimingConfiguration) -> int` | Recorded decision steps preceding a capture under the selected frame clocks. |
-| `Simulator.deployment_ticks(position: int) -> int` | Convert a dataset frame position to the number of native deployment ticks. |
 | `Simulator.validate_timing(timing: TimingConfiguration) -> None` | Reject unsupported clocks or startup motion without opening a simulator world. |
 | `Simulator.validate_startup(start: ScenarioStart \| None, duration_us: int) -> None` | Check recorded-motion support and coverage for force_gt_duration_us. |
 | `SimulatorRuntime(simulator: Simulator)` | Context manager. One live world of a `Simulator`: world state, clock, actors, sensors and sensor views. |
@@ -1668,6 +1664,7 @@ The simulator: a configuration (`Simulator`) and its live worlds (`SimulatorRunt
 | `SimulatorRuntime.validate_start(start: ScenarioStart \| None) -> None` | Check dataset and simulator constraints for a recorded scenario start. |
 | `SimulatorRuntime.validate_command(command: Control) -> None` | Reject active command fields that this simulator would silently ignore. |
 | `SimulatorRuntime.copy_observation(observation: Observation) -> Observation` | Detach the complete mutable data graph before model-visible processing. |
+| `SimulatorRuntime.interpolate_vehicle_state(left: Any, right: Any, fraction: float, time_us: int) -> Any` | Interpolate model-visible actor, rigid-matrix or planar dataclass state. |
 | `SimulatorRuntime.close() -> None` | Release the world and native connections. Optional. |
 | `SimulatorRuntime.world_key: Hashable` | Identify the mutable world owned by this runtime. |
 | `SimulatorRuntime.claim_world(owner: object) -> Iterator[None]` | Context manager. Claim the world for an owner until exit, allowing that owner's nested claims. |
@@ -1676,14 +1673,14 @@ The simulator: a configuration (`Simulator`) and its live worlds (`SimulatorRunt
 | `SimulatorRuntime.invalidate_state() -> None` | Discard cached physical truth after explicitly changing the live world. |
 | `SimulatorRuntime.state() -> WorldSnapshot` | Read detached physical state without a capture, callback or simulator tick. |
 | `SimulatorRuntime.timing_capabilities: TimingCapabilities` | Static timing limits declared by this runtime's configured simulator. |
-| `SimulatorRuntime.state_at(time_us: int) -> WorldSnapshot` | Read detached truth within the last completed motion interval without advancing. |
+| `SimulatorRuntime.timing: TimingConfiguration` | Timing configuration selected by `configure_timing` for this runtime. |
+| `SimulatorRuntime.history_requirement: HistoryRequirement` | Recorded context selected by `configure_timing` for this runtime. |
 | `SimulatorRuntime.sensors: frozenset[str]` | All sensor IDs for which this runtime can provide a current SensorView. |
 | `SimulatorRuntime.camera_sensors: frozenset[str]` | Explicit camera IDs whose current physical geometry can be recorded. |
 | `SimulatorRuntime.sensor_geometry(sensor: str) -> SensorGeometry` | Read geometry of the sensor's latest acquisition, or native geometry before capture. |
 | `SimulatorRuntime.sensor_view(sensor: str) -> SensorView` | Return a detached view of the sensor's latest capture without acquiring again. |
 | `SimulatorRuntime.canonical_sensor_id(sensor: str) -> str` | Resolve a native sensor name or configured alias to its observation ID. |
 | `SimulatorRuntime.frame_range_us(sensor: str, end_time_us: int) -> range` | Read a frame's shutter or native scan interval at its integer end timestamp. |
-| `SimulatorRuntime.sensor_acquisition(sensor: str) -> SensorAcquisition` | Read a detached acquisition, including its observation, truth and native view data. |
 | `SimulatorRuntime.insert_object(object_id: str, asset: ObjectAsset \| MeshAsset, world_from_object: np.ndarray, *, harmonizer: Harmonizer \| None = None) -> None` | Register a physical world object, visible from the next sensor capture. |
 | `SimulatorRuntime.remove_object(object_id: str) -> None` | Remove a world object. The previous capture remains unchanged. |
 | `SimulatorRuntime.object_visibility(object_id: str) -> Mapping[str, ObjectVisibility]` | Visibility of an object in the latest capture, for every camera whose image contains it. |
@@ -1698,11 +1695,7 @@ The simulator: a configuration (`Simulator`) and its live worlds (`SimulatorRunt
 | `SimulatorRuntime.recorded_reference(time_us: int, end_us: int) -> Control` | Recorded reference in the rig frame at its production time, for force-GT control. |
 | `SimulatorRuntime.capture_at(time_us: int, sensor_ids: Sequence[str] \| None = None) -> Observation` | Acquire sensors at the current integer time without advancing the world. |
 | `SimulatorRuntime.observe() -> Observation` | Return an independent copy of the current capture. Never advance or recapture. |
-| `SimulatorRuntime.observe_recorded_at(time_us: int, sensor_ids: Sequence[str] \| None = None) -> Observation` | Read an acquisition before the origin without advancing the live world. |
-| `SimulatorRuntime.recorded_capture_state: WorldSnapshot` | Independent truth from the last recorded-history read. |
-| `SimulatorRuntime.recorded_capture_visibility: Mapping[str, Mapping[str, ObjectVisibility]]` | Inserted-object visibility from the last recorded-history read. |
-| `SimulatorRuntime.recorded_state_at(time_us: int) -> WorldSnapshot` | Read physical truth for a recorded pre-origin acquisition without advancing. |
-| `SimulatorRuntime.recorded_sensor_geometry_at(time_us: int, sensor: str) -> SensorGeometry` | Read physical camera geometry of a recorded pre-origin acquisition. |
+| `SimulatorRuntime.observe_recorded_at(time_us: int, sensor_ids: Sequence[str] \| None = None) -> RecordedAcquisition` | Read an acquisition before the origin without advancing the live world. |
 | `SimulatorRuntime.start_replay(start: ScenarioStart, initialization: Initialization \| None = None, *, world: Mapping[str, Any] \| None = None, deployment: DeploymentPlan \| None = None) -> None` | Reset for reading prescribed motion, without hooks or a driving system. |
 | `SimulatorRuntime.advance_replay(count: int) -> None` | Advance prescribed motion and capture each frame, without hooks or a driver. |
 | `SimulatorRuntime.generate_frame_data(start: ScenarioStart, frames: Sequence[FrameReference], *, world: Mapping[str, Any] \| None = None, deployment: DeploymentPlan \| None = None) -> FrameDataSequence` | Record actual frame data by replaying `start`'s prescribed motion over `frames`. |
@@ -1720,16 +1713,21 @@ when a supported configuration lacks the recorded support for a particular start
 
 Implement `Simulator.create_runtime(seed)` and declare `dataset_kinds`, capabilities,
 `supported_stages`, `decision_time_step`, `command_modes`, `supported_world_settings`,
-`capture_ticks`, `past_steps` and `occlusion_tolerance_m` on the configuration class.
+`capture_ticks`, `past_steps`, `identity` and `occlusion_tolerance_m` on the configuration class.
+`timing_capabilities` declares native tick size, intermediate acquisitions, motion reports,
+camera exposure and recorded ego motion. Intermediate acquisitions require motion reports.
+`decision_ticks` gives native ticks per decision, or one without a base tick. Reject unsupported
+timing in `validate_timing` before opening a world. Configuration limits are listed in
+[Scheduling](configuration.md#scheduling).
 
 Runtime subclasses implement `_initialize_world(start, initialization, environment)`,
 `_advance_native(control)`, `_observe()` and `_state()`. Optional native lifecycle methods are
 `_sensor_view`, `_sensor_geometry`, `_capture_view_builder`, `_capture_render_request`,
 `_observe_sensors`, `_reported_state_at`,
 `_activate_reported_state`, `_completed_interval`, `_replay_tick`, `_observe_recorded`,
-`_advance_recorded_native`,
-`_observe_recorded_sensors`, `_recorded_state`, `_recorded_pose_state`, `_recorded_read_complete`,
-`_recorded_sensor_geometry`, `_recorded_sensor_view`, `_capture_frame_data`, `_hold_tick`, `_replay_position`,
+`_advance_recorded_native`, `_recorded_state`, `_recorded_pose_state`, `_recorded_read_complete`,
+`_recorded_sensor_geometry`, `_recorded_sensor_view`, `_capture_frame_data`, `_hold_tick`,
+`_replay_position`,
 `_check_initialization`, `_before_selected_capture`, `_replayed_scenario`,
 `_frame_data_provenance`, `_composite_plan`, `_compose_objects` and `_supports_asset`.
 `_supports_asset(asset)` accepts `ObjectAsset` by default. Override it to declare additional
@@ -1743,6 +1741,43 @@ a runtime without it cannot hold an origin for deployment ticks. Defining `reset
 `advance_replay` or `observe_recorded_at` in a subclass raises
 `TypeError`.
 
+`_native_clock()` may return a lightweight `ClockSnapshot` without advancing the world. Preserve
+native timestamp semantics. Validate native tick alignment before state or capture access.
+After a native change to world state, call `invalidate_state()` before exposing the new truth.
+
+`timing` and `history_requirement` are read-only runtime properties set by `configure_timing`.
+Read these properties when preparing source history or choosing native sensor ticks.
+The protected `_resetting` and `_advancing` flags indicate native reset and propagation phases.
+Subclasses may read these flags but must not assign them.
+
+Inside `_advance_native(control)`, `_advance_force_gt_native(control)` and
+`_advance_recorded_native()`, `_interval` is the immutable `DecisionInterval` for that operation.
+It supplies `start_us`, `end_us`, intermediate `report_times_us`, `force_gt`,
+`coerce_dynamic_state` and `start_state`. The start state includes changes from
+`simulator.step.pre`. The interval remains available until its endpoint is published.
+Do not modify or replace it from a subclass. `_completed_interval(end_state)` receives detached
+endpoint truth after propagation. Retain native report states there if later acquisitions need
+them. `_reported_state_at(time_us)` must support the endpoint as well as intermediate times.
+`_activate_reported_state(time_us, state)` selects that truth without running the controller again.
+
+Simulators that pre-run a source recording use `initial_history_times` with the configured
+sensor clocks, `history_requirement`, decision period and reporting interval to reserve context.
+Native-tick simulators use `SensorTiming.resolved_frame_interval_us(decision_period_us)` to
+resolve the optional interval. `frame_end_us`, `shutter_range_us`, `latest_frame_index` and
+`frame_index_at` use offsets from the run origin, including negative recorded-history offsets.
+Use these tools to select the due sensors on each native tick.
+Implement `_observe_recorded` for those retained ticks, and avoid sensor work for pose-only reads.
+
+For checkpoints, restore native state and call `_restore_clock(time_us)` before acquiring again.
+It resets the current interval, published state and sensor acquisition state to that clock.
+`_captured_render_request(sensor)` returns a detached native request for the latest acquisition
+without constructing a view. It raises `KeyError` when that sensor has no acquisition.
+
+`interpolate_vehicle_state(left, right, fraction, time_us)` handles actor states, rigid matrices
+and planar dataclasses by default. Override it for a simulator's native model-visible state.
+The acquisition pipeline calls this operation between localization reports and uses the original
+estimate at an exact report timestamp.
+
 `_capture_view_builder(sensor, observation, truth)` freezes acquisition-time inputs and returns
 a zero-argument `SensorView` builder. The builder must not read later world state. Its default
 implementation calls `_sensor_view(sensor)` immediately and retains that view. Override it to
@@ -1750,6 +1785,8 @@ defer expensive view and depth construction. `_capture_render_request(sensor)` o
 freezes native render-request metadata separately from the complete view. Lightweight
 `_sensor_geometry(sensor)` lets object composition reject off-image objects before building
 views or depth. All sensor slots in a capture batch share one physical-state snapshot.
+Declare all configured sensors in `sensors` and only cameras with geometry in `camera_sensors`.
+A camera without a geometric model may render but cannot supply viewpoints or object composition.
 
 `force_gt_duration_us` requires `TimingCapabilities.recorded_ego_motion`. Implement
 `_advance_force_gt_native(control)` to apply recorded motion and any native dynamics alignment.
@@ -1758,6 +1795,23 @@ Its default delegates to `_advance_recorded_native()`. Trajectory simulators als
 coverage before reset. Override `_recorded_end_time_us(start)` when the source is not
 `ScenarioStart.recorded_ego` on the dataset grid. Timing restrictions are listed in
 [Scheduling](configuration.md#scheduling).
+
+Declare simulator-owned recorded history in `past_steps`. Override
+`observation_lead_steps_for(timing)` when capture needs source data before an observation, such as
+a LiDAR scan start. Its default uses `observation_lead_steps`. Selection and start validation
+reserve this lead before sensor access.
+
+Past-capable runtimes implement `_observe_recorded(time_us, sensors)`, where `time_us` is an
+integer offset from the run origin. Only the selected sensors may be read or rendered. With
+`sensors=()`, the base calls `_recorded_pose_state(time_us)` without sensor work.
+`_recorded_state` supplies physical truth. `_recorded_sensor_geometry` and `_recorded_sensor_view`
+supply camera evidence
+for start-object composition. Return independent values and preserve the live world and clock.
+The public `observe_recorded_at` returns one `RecordedAcquisition` with `observation`,
+`physical_state`, `sensor_geometry` and `object_visibility`. Geometry covers selected due cameras.
+Pose-only reads have empty geometry and visibility. `_recorded_read_complete` can release
+acquisition-only resources after that read. Recorded-input requirements are defined in
+[Driving systems](../guides/driving-systems.md#recorded-input-history).
 
 `frame_range_us(sensor, end_time_us)` returns the actual shutter or scan interval. Override it
 for native scan windows that differ from a camera shutter. The runner uses the same interval
@@ -1837,6 +1891,7 @@ Configured CARLA simulations and their live native-world runtimes.
 | `CarlaSimulatorRuntime(simulator: CarlaSimulator, seed: int \| None = None)` | Subclass of `SimulatorRuntime`. One live CARLA world of a `CarlaSimulator`. |
 | `CarlaSimulatorRuntime.native: dict[str, Any]` | Borrow native world resources, invalidating cached truth before possible edits. |
 | `CarlaSimulatorRuntime.copy_observation(observation: Observation) -> Observation` | Detach mutable payloads, calibration and reference graphs in one copy operation. |
+| `CarlaSimulatorRuntime.interpolate_vehicle_state(left: Any, right: Any, fraction: float, time_us: int) -> Any` | Interpolate native avstack physical vectors and attitude without importing them elsewhere. |
 | `CarlaSimulatorRuntime.canonical_sensor_id(sensor: str) -> str` | Resolve an ego sensor's logical name or source ID to its observation ID. |
 <!-- api:end -->
 
@@ -1894,6 +1949,18 @@ history. The adapter does not clip or spatially re-anchor it.
 `PlanarEgoState.x`, `y` and `yaw` locate the ego origin in world coordinates. `speed` and
 `lateral_speed` are ego-axis velocities, `yaw_rate` is radians per second and `acceleration` is
 longitudinal meters per second squared.
+
+#### Extension contract
+
+Custom dynamics implement `step(pose, control, dt)` and may declare `command_modes` and
+`reset(state)`. Without native reports, each intermediate state evaluates the pure `step` from
+the interval start. Optional `advance(pose, control, duration_us, report_times_us)` returns
+`EgoMotion` for one complete decision interval.
+
+Optional `coerce_dynamic_state(state)` aligns internal dynamics with the supplied physical state
+without clearing reference history.
+Simulators call it before each force-GT interval and at the handoff to driver control.
+It is not required by `EgoDynamics`.
 
 #### See also
 
@@ -2106,7 +2173,7 @@ AlpaSim CATK configuration, stateless RPC and owned live traffic sessions.
 | `AlpaSimTraffic.get_metadata(*, timeout_s: float \| None = None) -> Any` | Fetch TrafficModuleMetadata over a short-lived connection. |
 | `AlpaSimTraffic.get_available_scenes(*, timeout_s: float \| None = None) -> tuple[str, ...]` | Return the scene IDs served by this endpoint. |
 | `AlpaSimTraffic.served_scenes(timeout_s: float = 2.0) -> tuple[str, ...] \| None` | Query scene support. Unavailable endpoints and deadline expiry return None. |
-| `AlpaSimTraffic.open_session(*, scene_id: str, random_seed: int, start_us: int, end_us: int, ego_extent: tuple[float, float, float], ego_trajectory: Sequence[tuple[int, np.ndarray]], tracks: Sequence[TrafficTrack], force_gt_duration_us: int = 0, decision_period_us: int = TRAFFIC_STEP_US) -> TrafficSession` | Validate support and open a session with EGO first and clipped native tracks. |
+| `AlpaSimTraffic.open_session(*, scene_id: str, random_seed: int, start_us: int, end_us: int, ego_extent: tuple[float, float, float], ego_trajectory: Sequence[tuple[int, np.ndarray]], tracks: Sequence[TrafficTrack], handover_us: int \| None = None) -> TrafficSession` | Validate support and open a session with EGO first and clipped native tracks. |
 | `TrafficSession(channel: Any, session_uuid: str, handover_time_us: int, tracks: Sequence[TrafficTrack], *, history_steps: int, rpc_timeout_s: float)` | One live CATK session, its channel and complete constant-velocity override history. |
 | `TrafficSession.record_override(track_id: str, time_us: int, world_from_box: np.ndarray, velocity: Sequence[float]) -> None` | Record an override, backfilling only its first constant-velocity history. |
 | `TrafficSession.simulate(time_query_us: int, ego_world_from_box: np.ndarray, override_world_from_box: Mapping[str, np.ndarray]) -> dict[str, np.ndarray]` | Send current EGO and full override histories. Return current movable poses. |
@@ -2139,7 +2206,6 @@ Bounded open-loop replay of recorded frames.
 | `RecordedReplaySimulator.can_render = True` | Whether arbitrary-view rendering is supported. |
 | `RecordedReplaySimulator.can_replay = True` | Whether recorded-tick replay is supported. |
 | `RecordedReplaySimulator.can_insert_objects = True` | Whether world objects can be inserted into sensor rendering. |
-| `RecordedReplaySimulator.NOMINAL_PERIOD_US = 500000` | nuScenes keyframes use a nominal 500 ms scheduler interval, retaining recorded timestamps. |
 | `RecordedReplaySimulator.create_runtime(seed: int \| None = None) -> RecordedReplaySimulatorRuntime` | A new replay. Recorded frames are fixed, so `seed` is unused. |
 | `RecordedReplaySimulator.validate_timing(timing: TimingConfiguration) -> None` | Require the nominal keyframe decision grid before allocating a replay. |
 | `RecordedReplaySimulatorRuntime(simulator: RecordedReplaySimulator)` | Subclass of `SimulatorRuntime`. One replay of recorded frames. |
@@ -2167,22 +2233,14 @@ Integer-microsecond clocks and command selection matching AlpaSim runtime.
 |---|---|
 | `seconds_to_microseconds(seconds: float) -> int` | Convert a configured duration, rejecting precision below one microsecond. |
 | `SensorTiming(frame_interval_us: int \| None = None, shutter_duration_us: int = 0)` | Independent frame interval and shutter duration, with the first frame ending at zero. |
-| `SensorTiming.interval_us(decision_period_us: int) -> int` | Resolve an unspecified frame interval to the decision period. |
-| `SensorTiming.capture_time_us(index: int, decision_period_us: int) -> int` | Frame end relative to the run origin, including negative recorded context indices. |
-| `SensorTiming.frame_range_us(index: int, decision_period_us: int) -> range` | Half-open shutter interval, matching Clock.ith_trigger with first_end_us=0. |
-| `SensorTiming.latest_index_at_or_before(time_us: int, decision_period_us: int) -> int` | Latest frame index whose end is not after the requested offset. |
-| `SensorTiming.capture_index_at(time_us: int, decision_period_us: int) -> int` | Index of an exact frame end, rejecting times off this sensor's clock. |
+| `SensorTiming.resolved_frame_interval_us(decision_period_us: int) -> int` | Resolve an unspecified frame interval to the decision period. |
+| `SensorTiming.frame_end_us(index: int, decision_period_us: int) -> int` | Frame end relative to the run origin, including negative recorded context indices. |
+| `SensorTiming.shutter_range_us(index: int, decision_period_us: int) -> range` | Half-open shutter interval, matching Clock.ith_trigger with first_end_us=0. |
+| `SensorTiming.latest_frame_index(time_us: int, decision_period_us: int) -> int` | Latest frame index whose end is not after the requested offset. |
+| `SensorTiming.frame_index_at(time_us: int, decision_period_us: int) -> int` | Index of an exact frame end, rejecting times off this sensor's clock. |
 | `TimingCapabilities(captures_between_decisions: bool = False, motion_reports: bool = False, recorded_ego_motion: bool = False, camera_exposure: bool = False, base_tick_us: int \| None = None)` | Static simulator support for exposure, intermediate poses and recorded motion. |
 | `HistoryRequirement(duration_us: int = 0, samples: int = 1)` | Recorded context supplied at decision zero, using the closed-loop pose reporting clock. |
 | `TimingConfiguration(decision_period_us: int \| None = None, sensors: Mapping[str, SensorTiming] = dict(), pose_reporting_interval_us: int = 0, planner_delay_us: int = 0, force_gt_duration_us: int = 0, skip_driver_during_force_gt: bool = False)` | AlpaSim timing parameters with defaults preserving the original decision loop. |
-| `TimingConfiguration.validate_period(decision_period_us: int) -> None` | Validate resolved frame intervals against a declared decision period. |
-| `TimingConfiguration.reporting_timestamps(start_us: int, end_us: int) -> tuple[int, ...]` | Intermediate controller reports as in alpasim_controller.system, excluding endpoints. |
-| `TimingConfiguration.is_force_gt(decision_time_us: int, origin_us: int, decision_period_us: int) -> bool` | Whether the controller target lies in AlpaSim's inclusive force_gt_period. |
-| `TimingConfiguration.is_handoff(decision_time_us: int, origin_us: int) -> bool` | Whether a decision starts exactly at the end of a positive force_gt interval. |
-| `DelayBuffer(delay_us: int)` | AlpaSim's oldest-ready command rule, retaining a lone item before its delay expires. |
-| `DelayBuffer.add(obj: Any, timestamp_us: int) -> None` | Append an item at a strictly increasing production timestamp. |
-| `DelayBuffer.item_at(timestamp_us: int) -> tuple[int \| None, Any]` | Return the oldest retained item after expiring eligible predecessors. |
-| `DelayBuffer.at(timestamp_us: int) -> Any` | Read the selected command without its production timestamp. |
 | `InitialHistory(payload_times_us: Mapping[str, tuple[int, ...]], pose_times_us: tuple[int, ...], source_start_us: int)` | Recorded payload and pose offsets, with the earliest source needed for exposure. |
 | `initial_history_times(sensor_timings: Mapping[str, SensorTiming], history: HistoryRequirement, decision_period_us: int, *, pose_reporting_interval_us: int = 0) -> InitialHistory` | Recorded frame ends and pose-clock offsets needed before the run origin. |
 <!-- api:end -->
@@ -2625,7 +2683,7 @@ The online phase: one AttackRuntime per run and the attack actions it returns.
 | Name and signature | Meaning |
 |---|---|
 | `ResultSubscription(kind: Literal["observation", "physical_state"])` | Declare a closed-loop result read by an attack runtime. |
-| `OnlineContext(step: int, stage: str, sim_time: float, frame: int, observation: Observation \| None = None, physical_state: WorldSnapshot \| None = None, decision_time_us: int \| None = None, capture_time_us: int \| None = None, decision_period_us: int \| None = None, force_gt: bool = False)` | Independent snapshots of subscribed results, with a read-only physical clock. |
+| `OnlineContext(step: int, stage: str, sim_time: float, frame: int, observation: Observation \| None = None, physical_state: WorldSnapshot \| None = None, decision_time_us: int \| None = None, decision_period_us: int \| None = None, force_gt: bool = False)` | Independent snapshots of subscribed results, with a read-only physical clock. |
 | `OnlineContext.record_output(name: str, value: Any) -> None` | Save a named copy of `value`, such as an attack decision, in this run's log. |
 | `AttackAction()` | Base of everything the online phase applies. Subclasses state where it acts. |
 | `AttackAction.receipt_details() -> Mapping[str, Any]` | Data-only evidence from the most recent application, included in its receipt. |
@@ -2708,12 +2766,10 @@ Independent run snapshots and incremental Parquet persistence.
 | `RunLog(metadata: dict[str, Any] = dict(), steps: list[StepRecord] = list(), events: list[EventRecord] = list(), status: str = "incomplete", path: Path \| None = None, captures: list[CaptureRecord] = list(), format_version: int = 2)` | Captured records, optionally backed by an incrementally written directory. |
 | `RunLog.read(path: str \| Path, *, registry: SerializationRegistry = DEFAULT_REGISTRY, load_payloads: bool = True, load_sensor_data: bool = True) -> RunLog` | Read completed parts, including those left by an interrupted writer. |
 | `Recorder(path: str \| Path \| None = None, *, metadata: dict[str, Any] \| None = None, registry: SerializationRegistry = DEFAULT_REGISTRY, chunk_steps: int = 128, chunk_bytes: int = 8 * 1024 * 1024, payload_shard_bytes: int = 64 * 1024 * 1024, retain_steps: bool = True, retain_sensor_data: bool = True)` | Context manager. Capture a run in memory and optionally stream it to Parquet. |
-| `Recorder.snapshot(value: Any) -> Any` | Snapshot mutable data, sharing recent equal arrays as read-only recording values. |
-| `Recorder.release_captures(capture_ids: Iterable[int]) -> None` | Release owned payload leaves after their referencing decisions have been recorded. |
-| `Recorder.begin_capture(capture_id: int) -> None` | Start a capture's payload ownership scope before taking its recording snapshots. |
+| `Recorder.snapshot(value: Any) -> Any` | Take an independent snapshot, preserving native wrappers and mutable array semantics. |
 | `Recorder.record_step(record: StepRecord) -> StepRecord` | Append a decision record and flush a complete row group when due. |
 | `Recorder.record_event(kind: str, *, step: int \| None = None, **data: Any) -> EventRecord` | Append a timestamped runtime event to the recording. |
-| `Recorder.record_capture(record: CaptureRecord) -> CaptureRecord` | Snapshot an acquisition batch, independently of decision recording. |
+| `Recorder.record_capture(record: CaptureRecord) -> CaptureRecord` | Snapshot acquisition metadata and retain sensor payloads by reference. |
 | `Recorder.flush() -> None` | Publish the current chunks without marking the run complete. |
 | `Recorder.finish(status: str = "completed", **details: Any) -> RunLog` | Finish recording with a valid terminal status and persist its manifest. |
 | `Recorder.abort() -> None` | Discard unpublished records and leave the persisted run incomplete. |
@@ -2760,8 +2816,8 @@ One closed-loop scheduler with independent RunLog captures.
 
 | Name and signature | Meaning |
 |---|---|
-| `RecordingPolicy(sensor_ids: tuple[str, ...] = (), representations: tuple[str, ...] = ("model_input",), every_n_captures: int = 1, sensor_every_n_captures: Mapping[str, int] = dict())` | Choose sensor payloads without sampling commands or physical state. |
-| `RecordingPolicy.observation(value: Observation, record_index: int, representation: str, *, capture_indices: Mapping[str, int] \| None = None, available_sensors: frozenset[str] \| None = None, check_available: bool = True) -> Observation` | Select due payloads by acquisition index, preserving capture metadata. |
+| `RecordingPolicy(sensor_ids: tuple[str, ...] = (), representations: tuple[str, ...] = ("model_input",), every_n_captures: int = 1)` | Choose sensor payloads without sampling commands or physical state. |
+| `RecordingPolicy.observation(value: Observation, record_index: int, representation: str) -> Observation` | Retain the selected representation's payloads at the requested recording index. |
 | `RunRequest(decision_steps: int, hooks: HookSet \| None = None, attacks: Sequence[Any] = (), recording: RecordingPolicy = RecordingPolicy(), output_path: str \| Path \| None = None, retain_steps: bool = True, retain_sensor_data: bool = True, metadata: Mapping[str, Any] = dict(), start: Any = None, initialization: Any = None, deployment: Any = None, environment: Mapping[str, Any] = dict(), terminate_when: Callable[[StepRecord], bool] \| None = None, timing: TimingConfiguration = TimingConfiguration())` | One caller-owned simulator/driving-system run, independent of experiment orchestration. |
 | `ClosedLoopRunner()` | Schedule one driving loop. Never close caller-owned simulator/driving objects. |
 | `ClosedLoopRunner.run(simulator_runtime: SimulatorRuntime, avstack: AVStack, request: RunRequest, *, recorder: Recorder \| None = None, release_owned_resources: Callable[[], None] \| None = None) -> RunLog` | Execute the requested treatment, record its decisions and close all run resources. |

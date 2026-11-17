@@ -30,10 +30,13 @@ def test_advance():
     command = Control(trajectory=[((0., 0., 0.), (1., 0., 0., 0.), 0),
                                   ((1., 0., 0.), (1., 0., 0., 0.), 100000)])
     initial = PlanarEgoState()
+    dynamics.reset(initial)
     motion = dynamics.advance(initial, command, 100000, (25000, 50000, 75000))
     assert [round(state.t * 1e6) for state in motion.states] == [0, 25000, 50000, 75000, 100000]
     assert motion.at(50000).x == pytest.approx(.5)
     assert motion.at(100000) == dynamics.step(initial, command, .1)
+    assert TrajectoryFollower().step(initial, command, .1) == motion.at(100000)
+    assert TrajectoryFollower().advance(initial, command, 100000).states[-1] == motion.at(100000)
     assert initial == PlanarEgoState()
     with pytest.raises(ValueError, match="within the motion"):
         dynamics.advance(initial, command, 100000, (200000,))
@@ -88,7 +91,7 @@ def test_trajectory_follower_delayed_reference():
             ((1., .05, 0.), (1., 0., 0., 0.), (index + 1) * 100000)])
         state = dynamics.advance(state, command, 100000).states[-1]
         assert state.t == (index + 1) / 10
-    assert state.speed == 10.012492197250381
+    assert state.speed == pytest.approx(np.hypot(1., .05) / .1, rel=1e-9)
 
 
 @pytest.mark.parametrize("acceleration,expected_speed,tolerance", [

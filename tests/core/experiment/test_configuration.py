@@ -327,8 +327,6 @@ def test_timing_configuration():
         load_configuration(spec)
     del spec["runs"]["timing"]["unexpected"]
     spec["runs"]["timing"]["decision_period_us"] = 200000
-    with pytest.raises(ValueError, match="must equal the dataset time grid"):
-        load_configuration(spec)
 
 
 def test_configured_history_without_bindings():

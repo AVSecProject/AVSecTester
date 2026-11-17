@@ -173,13 +173,14 @@ def test_native_tick_schedule(monkeypatch, carla_dataset):
         runtime.configure_timing(TimingConfiguration(sensors={"front": SensorTiming(50000)}),
                                  history=HistoryRequirement(duration_us=100000, samples=2))
         runtime.reset(start, initialization)
-        pose_only = runtime.observe_recorded_at(-100000, ())
+        pose_only = runtime.observe_recorded_at(-100000, ()).observation
         assert pose_only.sensor_data == {} and pose_only.calibration == {}
         assert pose_only.vehicle_state is not None
         pose_only.vehicle_state.position.x[0] = 999.
-        assert runtime.observe_recorded_at(-100000, ()).vehicle_state.position.x[0] != 999.
-        assert runtime.observe_recorded_at(-50000, ("front_camera",)).sensor_data.keys() == {"front"}
-        assert runtime.recorded_sensor_geometry_at(-50000, "front_camera").sensor == "front"
+        assert runtime.observe_recorded_at(-100000, ()).observation.vehicle_state.position.x[0] != 999.
+        acquisition = runtime.observe_recorded_at(-50000, ("front_camera",))
+        assert acquisition.observation.sensor_data.keys() == {"front"}
+        assert acquisition.sensor_geometry["front"].sensor == "front"
         with pytest.raises(ValueError, match="insufficient replayed sensor history"):
             runtime.observe_recorded_at(-50000, ("front",))
     with simulator.create_runtime() as runtime:
@@ -200,16 +201,14 @@ def test_native_tick_schedule(monkeypatch, carla_dataset):
         origin = runtime.clock.time_us
         runtime.advance_interval(origin + 100000, Control(throttle=.3),
                                  report_times_us=(origin + 50000,))
-        expected = runtime.state_at(origin + 50000)
         middle = runtime.capture_at(origin + 50000, ())
+        expected = runtime.state()
         assert middle.sensor_data == {} and middle.calibration == {}
         assert middle.t == expected.t and middle.frame == expected.frame
         assert middle.ego_speed == expected.ego_speed
         np.testing.assert_array_equal(middle.vehicle_state.position.x, expected.vehicle_state.position.x)
         runtime.capture_at(origin + 100000)
-    assert simulator.deployment_ticks(2) == 4
-    with pytest.raises(ValueError, match="base ticks"):
-        CarlaSimulator({"rate": 25}, decision_period_us=100000)
+    assert simulator.decision_ticks == 2
     with pytest.raises(ValueError, match="client.rate.*integer-microsecond"):
         CarlaSimulator({"rate": 60})
 
@@ -236,12 +235,7 @@ def test_capture_selection_uses_native_tick_schedule(monkeypatch, carla_dataset)
         assert runtime.canonical_sensor_id(logical_name) == "front"
         assert runtime.sensor_geometry(logical_name).sensor == "front"
         assert runtime.sensor_view(logical_name).sensor == "front"
-        assert runtime.sensor_acquisition(logical_name).observation.sensor_data.keys() == {"front"}
         assert runtime.capture_at(origin + 50000, (logical_name,)).sensor_data.keys() == {"front"}
-        with pytest.raises(ValueError, match="Unknown CARLA sensor"):
-            runtime.capture_at(origin + 50000, ("missing",))
-        with pytest.raises(ValueError, match="base ticks"):
-            runtime.state_at(origin + 75000)
         with pytest.raises(ValueError, match="base ticks"):
             runtime.capture_at(origin + 75000, ("front",))
         with pytest.raises(ValueError, match="not due.*lidar"):

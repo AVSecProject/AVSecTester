@@ -7,7 +7,7 @@ import bisect
 import os
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from itertools import pairwise
 from typing import Any, ClassVar, Protocol
 
@@ -119,6 +119,9 @@ class EgoDynamics(Protocol):
 
     An implementation may also define ``advance(pose, control, duration_us, report_times_us)``
     returning `EgoMotion` when one controller interval reports intermediate states natively.
+    Optional ``coerce_dynamic_state(state)`` aligns internal dynamics with the supplied physical
+    state without resetting reference history.
+    Simulators call it before each force-GT interval and at the handoff to driver control.
     """
 
     def reset(self, state: PlanarEgoState) -> None:
@@ -180,44 +183,33 @@ class TrajectoryFollower:
     decel: float = 4.0  # m/s^2 when coasting with no plan
     command_modes: ClassVar[frozenset[str]] = frozenset({"trajectory"})
     'Control command modes this ego-motion model accepts.'
+    _history: list[PlanarEgoState] = field(init=False, default_factory=list, repr=False)
+    _oldest_reference_us: int | None = field(init=False, default=None, repr=False)
 
     def reset(self, state: PlanarEgoState) -> None:
         """Start the physical pose history used to anchor delayed trajectory references."""
         self._history = [deepcopy(state)]
         self._oldest_reference_us = timestamp_to_microseconds(state.t)
-        self._interpolation_origin_s = state.t
-        self._reported_time_us = timestamp_to_microseconds(state.t)
 
     def advance(self, pose: PlanarEgoState, control: Control, duration_us: int,
                 report_times_us: Sequence[int] = ()) -> EgoMotion:
         """Report one interval and retain physical poses for subsequent delayed references."""
         start_us = timestamp_to_microseconds(pose.t)
-        if getattr(self, "_reported_time_us", None) != start_us:
-            self._interpolation_origin_s = pose.t
-        interpolation_pose = deepcopy(pose)
-        # Preserve the follower's numerical interpolation arithmetic independently of
-        # the scheduler clock. Every reported timestamp still comes from integer time.
-        interpolation_pose.t = self._interpolation_origin_s
-        motion = _step_motion(self, interpolation_pose, control, duration_us, report_times_us)
-        motion.states[0].t = pose.t
-        self._interpolation_origin_s += duration_us / 1e6
-        self._reported_time_us = start_us + duration_us
-        history = [state for state in getattr(self, "_history", [])
+        self._oldest_reference_us = (min(start_us, int(control.trajectory[0][2]))
+                                     if control.trajectory else start_us)
+        motion = _step_motion(self, pose, control, duration_us, report_times_us)
+        history = [state for state in self._history
                    if timestamp_to_microseconds(state.t) < start_us] + list(motion.states)
-        oldest = getattr(self, "_oldest_reference_us", start_us)
         index = max(0, bisect.bisect_right(
-            [timestamp_to_microseconds(state.t) for state in history], oldest) - 1)
+            [timestamp_to_microseconds(state.t) for state in history], self._oldest_reference_us) - 1)
         self._history = history[index:]
         return motion
 
     def _reference_anchor(self, pose: PlanarEgoState, trajectory: Sequence[Any]) -> PlanarEgoState:
-        history = getattr(self, "_history", [])
         timestamp = timestamp_to_microseconds(pose.t)
-        history = [state for state in history if timestamp_to_microseconds(state.t) < timestamp]
+        history = [state for state in self._history if timestamp_to_microseconds(state.t) < timestamp]
         history.append(deepcopy(pose))
-        self._history = history
         reference_time = int(trajectory[0][2])
-        self._oldest_reference_us = min(timestamp, reference_time)
         if reference_time >= timestamp:
             return pose
         if reference_time < timestamp_to_microseconds(history[0].t):
@@ -231,13 +223,13 @@ class TrajectoryFollower:
         validate_command_modes(control, self.command_modes)
         require_positive_number(dt, "dt")
         traj = control.trajectory or []
+        target_us = timestamp_to_microseconds(pose.t) + seconds_to_microseconds(dt)
         if not traj:
-            self._oldest_reference_us = timestamp_to_microseconds(pose.t)
             speed = max(0.0, pose.speed - self.decel * dt)
-            return PlanarEgoState(pose.x, pose.y, pose.yaw, speed, pose.t + dt,
+            return PlanarEgoState(pose.x, pose.y, pose.yaw, speed, target_us / 1e6,
                                   acceleration=(speed - pose.speed) / dt)
         anchor = self._reference_anchor(pose, traj)
-        dx, dy = self._interp_rig_xy(traj, (pose.t + dt) * 1e6, anchor.t * 1e6)
+        dx, dy = self._interp_rig_xy(traj, target_us, timestamp_to_microseconds(anchor.t))
         if anchor is not pose:
             cosine, sine = math.cos(anchor.yaw), math.sin(anchor.yaw)
             world_x = anchor.x + dx * cosine - dy * sine
@@ -253,13 +245,13 @@ class TrajectoryFollower:
             y=pose.y + dx * s + dy * c,
             yaw=yaw,
             speed=dist / dt,
-            t=pose.t + dt,
+            t=target_us / 1e6,
             yaw_rate=(yaw - pose.yaw) / dt,
             acceleration=(dist / dt - pose.speed) / dt,
         )
 
     @staticmethod
-    def _interp_rig_xy(traj: list, target_us: float, origin_us: float) -> tuple[float, float]:
+    def _interp_rig_xy(traj: list, target_us: int, origin_us: int) -> tuple[float, float]:
         pts = [(t_us, xyz[0], xyz[1]) for xyz, _quat, t_us in traj]
         if target_us <= pts[0][0]:
             # Rig-frame displacements start at the current ego position. A physics

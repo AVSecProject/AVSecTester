@@ -82,12 +82,6 @@ class RuleBasedAVStack(AVStack):
         self._last: dict[str, Any] | None = None
         self._latest_inputs = SensorCache()
 
-    @property
-    def required_sensors(self) -> frozenset[str]:
-        """Camera and, when following vehicles, the configured LiDAR."""
-        return frozenset((self.camera_id, self.lidar_id) if self.vehicle_tracker is not None
-                         else (self.camera_id,))
-
     def _calibration(self, observation: Observation) -> CameraCalibration:
         calibration = observation.calibration.get(self.camera_id)
         if not isinstance(calibration, CameraCalibration):
