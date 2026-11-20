@@ -14,6 +14,7 @@ from avsectester.implemented_attacks.patch_attack.online import (
 from avsectester.attack.insertion import PatchCompositor
 from avsectester.data_types import Control
 from avsectester.closed_loop.hooks import Hook, HookSet
+from avsectester.closed_loop.avstacks.implemented.external_control import ExternalAVStack
 from avsectester.execution.runner import ClosedLoopRunner, RunRequest
 from avsectester.closed_loop.avstacks.driving_adapter import DrivingAdapter, ScorerDescriptor
 from avsectester.execution.services import ClosedLoopServices, RenderRequest
@@ -23,18 +24,25 @@ from avsectester.geometry.projection import project_box
 from tests.fakes import CarlaNativeBoundary, ConstantAVStack, MemoryDataset, MemorySimulator, actor_state
 
 
-@pytest.mark.parametrize("options, expected_prop, expected_attributes, simulate_physics", [
+@pytest.mark.parametrize(
+    "options, expected_prop, expected_attributes, simulate_physics, avstack_type, simulator_options", [
     pytest.param({}, MESH_PROP, {"mesh_path": DEFAULT_PROP_MESH_PATH, "mass": "1"}, False,
-                 id="default-mesh"),
+                 ConstantAVStack, {}, id="default-mesh"),
     pytest.param({"prop": MESH_PROP, "prop_mesh_path": "/Game/User/Panel.Panel"}, MESH_PROP,
-                 {"mesh_path": "/Game/User/Panel.Panel", "mass": "1"}, False, id="custom-mesh"),
+                 {"mesh_path": "/Game/User/Panel.Panel", "mass": "1"}, False,
+                 ConstantAVStack, {}, id="custom-mesh"),
     pytest.param({"prop": "static.prop.streetbarrier"}, "static.prop.streetbarrier", {}, True,
-                 id="blueprint"),
+                 ConstantAVStack, {}, id="blueprint"),
+    pytest.param({}, MESH_PROP, {"mesh_path": DEFAULT_PROP_MESH_PATH, "mass": "1"}, False,
+                 ExternalAVStack, {"ego_control": "ros2", "realtime_factor": 1000.},
+                 id="external-world-patch"),
 ])
-def test_create_runtime(monkeypatch, options, expected_prop, expected_attributes, simulate_physics):
+def test_create_runtime(monkeypatch, options, expected_prop, expected_attributes, simulate_physics,
+                        avstack_type, simulator_options):
     CarlaNativeBoundary().install(monkeypatch, None)
     recipe = CarlaRecipe({"client": {"map_name": "Town03"},
-        "ego": {"type": "CarlaMobileActor", "spawn": 0, "vehicle": "vehicle.a", "sensors": []},
+        "ego": {"type": "CarlaMobileActor", "spawn": 0, "vehicle": "vehicle.a", "sensors": [],
+                "blueprint_attributes": {"role_name": "ego"}},
         "lead": {"gap": 8., "vehicle": "vehicle.b"}}, 2, .1,
         {"ego": PrescribedMotion(constant_control=Control()),
          "lead": PrescribedMotion(constant_control=Control())})
@@ -70,18 +78,20 @@ def test_create_runtime(monkeypatch, options, expected_prop, expected_attributes
         deployed.append(panel)
         return value
 
-    with CarlaSimulator({"rate": 10., "synchronous": True, "seed": 0}, settle_iters=0).create_runtime() as runtime:
-        log = ClosedLoopRunner().run(runtime, ConstantAVStack(), RunRequest(
+    simulator = CarlaSimulator({"rate": 10., "synchronous": True, "seed": 0}, settle_iters=0,
+                               **simulator_options)
+    with simulator.create_runtime() as runtime:
+        log = ClosedLoopRunner().run(runtime, avstack_type(), RunRequest(
             2, start=dataset.scenario_start("scene", frames[0]),
             attacks=(attack.create_runtime(segment, artifacts),),
-            hooks=HookSet([Hook("observation", inspect_native_panel)]),
+            hooks=HookSet([Hook("simulator.step.pre", inspect_native_panel)]),
         ))
     assert log.status == "completed"
     assert deployed and all(not panel.is_alive for panel in deployed)
     missing_host = replace(segment, user_data={**segment.user_data, "host": "absent"})
-    with CarlaSimulator({"rate": 10.}, settle_iters=0).create_runtime() as runtime:
+    with simulator.create_runtime() as runtime:
         with pytest.raises(ValueError, match="host 'absent'"):
-            ClosedLoopRunner().run(runtime, ConstantAVStack(), RunRequest(
+            ClosedLoopRunner().run(runtime, avstack_type(), RunRequest(
                 1, start=dataset.scenario_start("scene", frames[0]),
                 attacks=(attack.create_runtime(missing_host, artifacts),),
             ))

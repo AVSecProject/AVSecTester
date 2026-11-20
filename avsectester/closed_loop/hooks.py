@@ -16,7 +16,9 @@ from typing import Any, Protocol, Self, TYPE_CHECKING
 import numpy as np
 
 from avsectester.validation import require_nonnegative_integer
-from avsectester.data_types import Control, Observation, RecordedOutput, StateEstimate, WorldSnapshot
+from avsectester.data_types import (
+    Control, Observation, RecordedOutput, StateEstimate, WorldSnapshot, is_external_control,
+)
 
 if TYPE_CHECKING:
     from avsectester.closed_loop.avstacks.base import AVStack
@@ -65,6 +67,13 @@ class _HookBindingMixin:
 
 class UnsupportedStageError(ValueError):
     """A requested hook stage is supported by neither the simulator runtime nor driving system."""
+
+
+EXTERNAL_CONTROL_INPUT_ERROR = (
+    "Native sensor data is published by the simulator directly to the external driving system. "
+    "Framework observation and sensor changes do not reach the external driving system. See "
+    "docs/development/TODO.md#native-ros-2-sensor-attacks"
+)
 
 
 @dataclass
@@ -240,6 +249,13 @@ class HookSet:
         from avsectester.closed_loop.avstacks.base import validate_command_compatibility
 
         validate_command_compatibility(simulator_runtime, avstack, self)
+        if is_external_control(simulator_runtime.command_modes):
+            prohibited = {hook.stage for hook in self.hooks
+                          if not hook.stage.startswith("simulator.")}
+            if prohibited or self._observation_pipeline(avstack).localizer is not None:
+                raise UnsupportedStageError(
+                    "External control only supports simulator world hooks. "
+                    + EXTERNAL_CONTROL_INPUT_ERROR)
         available = HookDispatcher.CORE_STAGES | simulator_runtime.supported_stages | avstack.supported_stages
         if self._observation_pipeline(avstack).localizer is not None:
             available |= {"localization.pre"}

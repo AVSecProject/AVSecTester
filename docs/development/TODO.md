@@ -130,8 +130,19 @@ See [NuRec LiDAR](../guides/simulators.md#lidar) for supported capture behavior.
 
 ## Apollo and Autoware driving systems
 
-- [ ] Supply `AVStack` adapters for Baidu Apollo or Autoware that run their modules synchronously
-  with each decision, starting with CARLA.
+- [ ] Supply an `AVStack` adapter for Baidu Apollo.
+- [ ] Adapt Autoware through native ROS 2 hosting. A collaborator owns the sensor, control-topic,
+  map and background-traffic integration.
+
+## Native ROS 2 sensor attacks
+
+- [ ] Apply sensor attacks through a ROS 2 relay process that forwards the modified messages to
+  the topics subscribed to by the external driving system.
+
+## Native ROS 2 runs after the origin
+
+- [ ] Support starts after the scene origin by placing ego on the prepared trajectory at each
+  pre-roll tick.
 
 ## External benchmark integrations
 

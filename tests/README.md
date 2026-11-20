@@ -350,6 +350,41 @@ docker compose run --rm --no-deps --entrypoint python carla-experiment \
 Server setup is described in [Installation](../docs/getting-started/installation.md). The live test
 executes the public preparation, execution and evaluation workflow.
 
+### Native ROS 2 smoke
+
+Start the server with the
+[ROS 2 arguments](../docs/getting-started/installation.md#native-ros-2).
+Use a reduced copy of `carla_patch.yaml` with `ego_control: ros2`, `realtime_factor: 1.0`,
+`ExternalAVStack` and ROS-enabled sensors. Set ego's `role_name` to `hero`, `ros_name` to
+`ego` and `ros2_ackermann_control` to `"true"` through `blueprint_attributes`.
+
+Run the preparation in the experiment Python environment with the ROS 2 peer stopped.
+Check that each selected segment starts at frame zero.
+
+```python
+from avsectester.experiment import Experiment, evaluate, load_configuration
+
+configuration = load_configuration("CONFIG.yaml")
+prepared = Experiment.prepare(configuration)
+assert any(prepared.metadata.values())
+assert all(segment.start.position == 0
+           for segments in prepared.metadata.values() for segment in segments)
+```
+
+Start a ROS 2 node on the same domain that subscribes to `/clock` and a LiDAR topic and publishes
+standard `ackermann_msgs/AckermannDriveStamped` commands to `/carla/ego/ackermann_control_cmd`.
+The framework owns the world tick. In the same Python session, execute and evaluate.
+
+```python
+result = Experiment.execute(prepared)
+assert not result.failures
+report = evaluate(result, configuration)
+```
+
+Check that ego moves, the patch is mounted, step telemetry contains CARLA's applied control
+and the initialization and termination events include pacing statistics. A phantom configuration
+that modifies perception must be rejected during execution.
+
 ## Next steps
 
 Read [Contributing](../docs/development/contributing.md)

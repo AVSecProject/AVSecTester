@@ -9,7 +9,7 @@
 services:
   carla-server:
     image: carlasim/carla:1.0@sha256:39681ed1eff895b6a813587285c51b687d7739ef8eeabcf51e38771d7b5b0263
-    command: bash CarlaUnreal.sh -RenderOffScreen -nosound -carla-rpc-port=2000 -carla-packs=/packs
+    command: bash CarlaUnreal.sh -RenderOffScreen -nosound -carla-rpc-port=2000 -carla-packs=/packs ${CARLA_SERVER_ARGS:-}
     shm_size: 2gb
     network_mode: host
     environment:

@@ -16,7 +16,7 @@ from avsectester.closed_loop.environment import merge_environments, normalize_en
 from avsectester.data_types import Unavailable
 from avsectester.maps import ScenarioMap
 from avsectester.runlog import RunLog
-from avsectester.closed_loop.simulators.base import DeploymentPlan
+from avsectester.closed_loop.simulators.base import DeploymentPlan, Initialization
 
 if TYPE_CHECKING:
     from .config import ExperimentConfiguration
@@ -194,6 +194,7 @@ class PreparedExperiment:
     deployment: DeploymentPlan | None = field(default=None, kw_only=True)
     offline_reports: Mapping[str, OfflineReport] = field(default_factory=dict, kw_only=True)
     metadata_source: Mapping[str, str] | None = field(default=None, kw_only=True)
+    initializations: Mapping[str, Mapping[str, Initialization | Unavailable]] = field(default_factory=dict, kw_only=True)
 
     def __post_init__(self) -> None:
         validated_preparation(self.preparation, self.metadata)

@@ -324,12 +324,19 @@ class Detection:
             raise ValueError("Detection score must be finite")
 
 
+def is_external_control(modes: frozenset[str] | None) -> bool:
+    """Return whether explicitly empty command modes declare external control."""
+    return modes is not None and not modes
+
+
 def validate_command_modes(command: Control, modes: frozenset[str] | None) -> None:
     """Validate the fields consumed by a simulator or independently called dynamics model."""
     if not isinstance(command, Control):
         raise TypeError(f"Expected Control, got {type(command).__name__}")
     if modes is None:
         return
+    if is_external_control(modes):
+        raise ValueError("Externally controlled simulators do not accept driving commands")
     if command.trajectory is not None and "trajectory" not in modes:
         raise ValueError("Simulator does not support trajectory commands")
     active = [name for name in ("throttle", "brake", "steer") if getattr(command, name) != 0.0]
@@ -409,6 +416,7 @@ __all__ = [
     'StateEstimate',
     'RecordedOutput',
     'Detection',
+    'is_external_control',
     'validate_command_modes',
     'read_camera_rgb',
     'write_camera_rgb',

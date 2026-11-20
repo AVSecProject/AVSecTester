@@ -1,4 +1,4 @@
-"""The driving-system interface: an Observation in, a Control out.
+"""The driving-system interface: an Observation in, an optional Control out.
 
 ``AVStack`` knows nothing about how the system works: a modular perception->tracking->planning
 ->control pipeline and a single end-to-end model both satisfy it. Implementations live in
@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 import numpy as np
 
-from avsectester.data_types import Control, Detection, Observation, StateEstimate
+from avsectester.data_types import Control, Detection, Observation, StateEstimate, is_external_control
 from avsectester.closed_loop.hooks import _HookBindingMixin
 from avsectester.closed_loop.timing import HistoryRequirement
 
@@ -126,7 +126,7 @@ class ObservationPipeline:
 
 
 class AVStack(_HookBindingMixin, ABC):
-    """The driving system: an Observation in, a Control out.
+    """The driving system: an Observation in, an optional Control out.
 
     The interface knows nothing about the implementation: a modular perception->tracking->planning
     ->control pipeline and a single end-to-end model both satisfy it. Implementations adapt their
@@ -181,7 +181,7 @@ class AVStack(_HookBindingMixin, ABC):
 
     @property
     def command_modes(self) -> frozenset[str] | None:
-        """Possible output command representations, or None for an undeclared driving system."""
+        """Possible command representations, empty for external control, or None if undeclared."""
         return None
 
     @property
@@ -219,12 +219,14 @@ class AVStack(_HookBindingMixin, ABC):
         """Release driving-system resources. The default implementation owns none."""
 
     @abstractmethod
-    def __call__(self, observation: Observation) -> Control:
+    def __call__(self, observation: Observation) -> Control | None:
         """Advance driving inference once and return a command in ``command_modes``.
 
         Call after ``reset`` with the current model-visible observation. Keep per-run history
         in this instance. Do not modify or advance the simulator. Trajectories retain the
         generation-time rig frame and integer-microsecond timestamps for the controller.
+        An externally controlled system declares empty ``command_modes`` and returns None.
+        It requires a simulator that also declares empty ``command_modes``.
         """
 
 
@@ -241,6 +243,9 @@ def validate_command_compatibility(
     In that case only the final command is checked, after all handlers have run.
     """
     accepted, produced = simulator_runtime.command_modes, avstack.command_modes
+    if is_external_control(accepted) != is_external_control(produced):
+        raise CommandCompatibilityError(
+            "External control requires both simulator and AVStack to declare empty command_modes")
     if accepted is None or produced is None:
         return
     if hooks is not None and any(hook.stage == "command" for hook in hooks.hooks):

@@ -7,26 +7,117 @@ import numpy as np
 import pytest
 
 from avsectester.attack.runtime import (
-    AttackRuntime, AVStackAttackAction, SensorAttackAction, WorldAttackAction,
+    AttackRuntime, AVStackAttackAction, ResultSubscription, SensorAttackAction, WorldAttackAction,
 )
 from avsectester.attack.insertion import InsertObject
 from avsectester.data_types import Control, Detection, Observation, StateEstimate
 from avsectester.closed_loop.avstacks.base import ObservationPipeline
+from avsectester.closed_loop.avstacks.implemented.external_control import ExternalAVStack
 from avsectester.closed_loop.hooks import Hook, HookSet, Plugin
 from avsectester.closed_loop.timing import HistoryRequirement, SensorTiming, TimingConfiguration
 from avsectester.closed_loop.simulators.base import SensorGeometry
 from avsectester.closed_loop.simulators.ego_dynamics import PlanarEgoState, TrajectoryFollower
 from avsectester.closed_loop.simulators.nurec import NuRecSimulator
+from avsectester.closed_loop.simulators.carla import CarlaSimulator
+from avsectester.datasets.carla import CarlaDataset
 from avsectester.execution.runner import ClosedLoopRunner, RecordingPolicy, RunRequest
 from avsectester.execution.services import ClosedLoopServices, SensorRequest
 from avsectester.runlog import Recorder, RunLog
 from tests.fakes import (
-    ConstantAVStack, DeceleratingAVStack, HistoryAVStack, MemoryDataset, MemorySimulator,
-    CAMERA, CAM_FROM_WORLD, NuRecImageBoundary,
+    ConstantAVStack, DeceleratingAVStack, ExternallyControlledMemorySimulator, HistoryAVStack,
+    MemoryDataset, MemorySimulator,
+    CAMERA, CAM_FROM_WORLD, CarlaNativeBoundary, NuRecImageBoundary,
 )
 
 
 RECORDING = RecordingPolicy(("front",), ("raw", "model_input"))
+
+
+def test_externally_controlled_ego():
+    with ExternallyControlledMemorySimulator().create_runtime() as runtime:
+        log = ClosedLoopRunner().run(runtime, ExternalAVStack(), RunRequest(
+            2, timing=TimingConfiguration(planner_delay_us=100000)))
+    assert log.status == "completed" and len(log.steps) == 2
+    for step in log.steps:
+        assert step.produced_command is None and step.executed_command is None
+        assert step.executed_command_issue_time_us is None
+        assert step.telemetry["ego_control"] == {"throttle": .2, "brake": 0., "steer": 0.}
+        assert step.physical_post.ego.pose[0, 3] > step.physical_pre.ego.pose[0, 3]
+
+
+def test_external_control_actions():
+    applied = []
+    captured = []
+
+    class SetSpeed(WorldAttackAction):
+        def apply(self, simulator_runtime, resources):
+            simulator_runtime.control_actor("lead", Control(throttle=3.))
+
+    class WorldOnly(AttackRuntime):
+        def step(self, context):
+            return (SetSpeed(),)
+
+    class Paint(SensorAttackAction):
+        sensor = "front"
+
+        def apply(self, data, view):
+            applied.append("sensor")
+            data[:] = 37
+            return data
+
+    def change_command(value, context):
+        applied.append("command")
+        return Control(throttle=1.)
+
+    class NonWorld(AttackRuntime):
+        subscriptions = (ResultSubscription("observation"),)
+
+        def __init__(self, action):
+            self.action = action
+
+        def step(self, context):
+            captured.append(context.observation.sensor_data["front"].copy())
+            return (self.action,)
+
+    with ExternallyControlledMemorySimulator().create_runtime() as runtime:
+        log = ClosedLoopRunner().run(
+            runtime, ExternalAVStack(), RunRequest(1, attacks=(WorldOnly(),)))
+        assert log.steps[0].physical_post.actors["lead"].velocity == (3., 0., 0.)
+        for action in (Paint(), AVStackAttackAction("command", change_command)):
+            with pytest.raises(ValueError, match="do not reach the external") as failure:
+                ClosedLoopRunner().run(
+                    runtime, ExternalAVStack(), RunRequest(1, attacks=(NonWorld(action),)))
+            assert failure.value.run_log.status == "failed" and not failure.value.run_log.steps
+            assert applied == []
+            np.testing.assert_array_equal(runtime.observe().sensor_data["front"], captured[-1])
+
+
+def test_external_input_checks_before_reset(monkeypatch, carla_dataset):
+    CarlaNativeBoundary().install(monkeypatch, None)
+    recipe = carla_dataset.native("scene")
+    scenario = {**recipe.scenario, "ego": {**recipe.scenario["ego"],
+        "blueprint_attributes": {"role_name": "ego"}}}
+    dataset = CarlaDataset({"scene": replace(recipe, scenario=scenario)})
+    start = dataset.scenario_start("scene", dataset.frames("scene")[0])
+    called = []
+
+    def modify_input(value, context):
+        called.append(True)
+        value.sensor_data.clear()
+        return value
+
+    requests = (
+        RunRequest(1, start=start, hooks=HookSet([Hook("observation", modify_input)])),
+        RunRequest(1, start=start, environment={"sensors": [{"type": "Brightness"}]}),
+    )
+    simulator = CarlaSimulator({"rate": 10}, camera_warmup_s=0.,
+                               ego_control="ros2", realtime_factor=1000.)
+    for request in requests:
+        with simulator.create_runtime() as runtime:
+            with pytest.raises(ValueError, match="do not reach the external"):
+                ClosedLoopRunner().run(runtime, ExternalAVStack(), request)
+            assert runtime.native["client"] is None
+    assert called == []
 
 
 def test_run():

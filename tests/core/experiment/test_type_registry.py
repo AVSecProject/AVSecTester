@@ -3,6 +3,7 @@
 import pytest
 
 from avsectester.attack import Attack
+from avsectester.closed_loop.avstacks.implemented.external_control import ExternalAVStack
 from avsectester.attack.insertion.placement import WorldPlacement
 from avsectester.experiment.type_registry import (
     available_attacks, resolve_type,
@@ -14,6 +15,7 @@ def test_resolve_type():
     assert resolve_type("avsectester.attack.insertion.placement:WorldPlacement") is WorldPlacement
     assert resolve_type("tests.fakes:ConstantAVStack") is ConstantAVStack
     assert resolve_type("PatchAttack").__name__ == "PatchAttack"
+    assert resolve_type("ExternalAVStack") is ExternalAVStack
     with pytest.raises(ValueError, match="Available attacks"):
         resolve_type("PatchAtack")
 

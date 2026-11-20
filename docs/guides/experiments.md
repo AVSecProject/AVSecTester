@@ -50,7 +50,8 @@ supplied metadata file replaces selection. `Attack.validate_segment` checks sele
 loaded segments.
 
 After `build_metadata` returns, preparation drops segments that fail `can_start_at` or whose
-`validate_start` raises `UnsupportedStartError`. The experiment-wide budget recheck drops
+`validate_start_timing` or `validate_startup` raises `UnsupportedStartError`. The
+experiment-wide budget recheck drops
 segments that then fail `can_start_at`. Each drop records its reason. See
 [deployment tick budgets](attacks.md#online-phase).
 
@@ -58,6 +59,11 @@ Preparation uses the first configured run seed and reuses its metadata for all e
 Its environment rules are defined in [Environments](environments.md): an offline phase receives
 the merged experiment and attack environment, while selection requests an
 environment explicitly.
+
+For [native ROS 2 runs](simulators.md#native-ros-2-control), preparation also saves a clean
+origin reference for each selected scenario and execution seed. Execution reads these
+references without replaying the recipe. Resume preparation with the external controller stopped
+to refresh references after changing a recipe or adding execution seeds.
 
 `PreparedExperiment` retains all units, including those excluded from execution. Unit identity,
 the split schema and deterministic allocation are defined in

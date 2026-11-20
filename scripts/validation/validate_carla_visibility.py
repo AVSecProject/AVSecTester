@@ -1,9 +1,9 @@
 """Measure full-silhouette visibility using simulator-owned calibrated RGB/depth captures.
 
 Use a dedicated CARLA server. The recipe supplies an enlarged camera with the original focal
-length and pixel scale; the central crop represents the normal field of view. Background and
-target-present depth provide an independent silhouette reference. All captures and depth decoding
-belong to CarlaSimulatorRuntime.sensor_view, never to script-owned sensor actors or queues.
+length and pixel scale. The central crop represents the normal field of view. Background and
+target-present depth provide an independent silhouette reference within the target's projected box
+and optical-axis depth range. CarlaSimulatorRuntime.sensor_view supplies all RGB and depth captures.
 """
 from __future__ import annotations
 
@@ -14,23 +14,25 @@ import json
 import math
 from pathlib import Path
 
+import cv2
 import numpy as np
 
 from avsectester.attack.insertion.visibility import visibility_from_depth
-from avsectester.data_types import Control
 from avsectester.closed_loop.simulators.carla import CarlaSimulator
-from avsectester.data_types import ActorState
+from avsectester.closed_loop.simulators.carla.conversions import rotation_to_carla
+from avsectester.data_types import ActorState, Control
 from avsectester.datasets.carla import CarlaDataset, PrescribedMotion
 from avsectester.experiment import load_configuration
+from avsectester.geometry.poses import mirror_y_points, rotation_matrix, transform
 from avsectester.rendering.textures import CheckerboardTexture
-from avsectester.geometry.poses import rotation_matrix
-from avsectester.closed_loop.simulators.carla.conversions import rotation_to_carla
 from scripts import REPO_ROOT
 
 WIDTH, HEIGHT, SCALE = 640, 480, 3
 FOCAL = WIDTH / (2 * math.tan(math.radians(60) / 2))
 BOUNDS = (WIDTH, HEIGHT, 2 * WIDTH, 2 * HEIGHT)
 TOLERANCE = 0.0002
+BOX_MARGIN_PIXELS = 2
+BOX_DEPTH_MARGIN_M = 0.02
 
 
 def validation_configuration(path: Path, port: int, traffic_manager_port: int | None = None):
@@ -66,6 +68,7 @@ class RoadValidation:
         self.simulator_runtime = simulator_runtime
         self.world = simulator_runtime.native["world"]
         self.ego = simulator_runtime.native["actors"]["ego"]
+        self.queue_command = simulator_runtime.native["queue_command"]
         self.output = output
         self.actors = []
         self.rows = []
@@ -81,17 +84,22 @@ class RoadValidation:
     def settle(self, actor):
         import carla
 
-        actor.apply_control(carla.VehicleControl(hand_brake=True))
+        self.queue_command(carla.command.ApplyVehicleControl(actor.id, carla.VehicleControl(hand_brake=True)))
         for _ in range(60):
             self.simulator_runtime.step(Control(brake=1.0))
         if actor.get_velocity().length() > 0.02:
             raise RuntimeError("Vehicle did not settle before visibility measurement")
-        actor.set_simulate_physics(False)
+        self.queue_command(carla.command.SetSimulatePhysics(actor.id, False))
         return actor.get_transform()
 
+    def place(self, actor, transform):
+        import carla
+
+        self.queue_command(carla.command.ApplyTransform(actor.id, transform))
+
     def capture(self, ego_transform):
-        self.ego.set_transform(ego_transform)
-        # Flush asynchronous render delivery through the runtime's own aligned capture path.
+        self.place(self.ego, ego_transform)
+        # Let rendering settle through the runtime's aligned capture path.
         for _ in range(3):
             self.simulator_runtime.step(Control(brake=1.0))
         view = self.simulator_runtime.sensor_view("camera-0-0")
@@ -99,10 +107,32 @@ class RoadValidation:
             raise RuntimeError("Validation requires aligned simulator depth")
         return view
 
-    def reference(self, background, view, name):
+    def reference(self, background, view, actor, name, *, world_aligned_box=False):
         from PIL import Image
 
-        mask = background - view.depth > TOLERANCE
+        box = actor.bounding_box
+        pose = actor.get_transform()
+        if world_aligned_box:
+            import carla
+
+            # CARLA combines a static mesh's bounds in world axes and localizes its center.
+            box = carla.BoundingBox(pose.transform(box.location), box.extent)
+            pose = carla.Transform()
+        vertices = box.get_world_vertices(pose)
+        world_points = mirror_y_points([(point.x, point.y, point.z) for point in vertices])
+        camera_points = transform(view.cam_from_world, world_points)
+        near, far = camera_points[:, 2].min(), camera_points[:, 2].max()
+        if near <= 0:
+            raise RuntimeError(f"{name}: reference box crosses or lies behind the camera plane")
+        pixels = view.camera.project(camera_points)
+        hull = cv2.convexHull(np.rint(pixels).astype(np.int32))
+        projected = np.zeros(view.depth.shape, dtype=np.uint8)
+        cv2.fillConvexPoly(projected, hull, 1)
+        margin_size = 2 * BOX_MARGIN_PIXELS + 1
+        projected = cv2.dilate(projected, np.ones((margin_size, margin_size), dtype=np.uint8))
+        within_depth = ((view.depth >= near - BOX_DEPTH_MARGIN_M)
+                        & (view.depth <= far + BOX_DEPTH_MARGIN_M))
+        mask = (background - view.depth > TOLERANCE) & projected.astype(bool) & within_depth
         if (not mask.any() or mask[0].any() or mask[-1].any()
                 or mask[:, 0].any() or mask[:, -1].any()):
             raise RuntimeError(f"{name}: missing/truncated silhouette; enlarge reference camera")
@@ -175,7 +205,8 @@ def main():
             references = {}
             for key, pose in viewpoints.items():
                 view = validation.capture(pose)
-                references[key] = validation.reference(backgrounds[key], view, f"vehicle-{key}")
+                references[key] = validation.reference(
+                    backgrounds[key], view, target, f"vehicle-{key}")
                 fraction = validation.measure(f"vehicle-{key}-clear", references[key], view)
                 if key == "front":
                     assert fraction > .98
@@ -183,14 +214,17 @@ def main():
                     assert .05 < fraction < .95
                 else:
                     assert fraction == 0
-            blocker = validation.spawn("vehicle.carlamotors.carlacola", relative(8, 3.5, .6))
+            blocker = validation.spawn("vehicle.carlacola.actors", relative(8, 3.5, .6))
             blocker_transform = validation.settle(blocker)
+            blocker_box = blocker.bounding_box
+            # Put the side of the truck on the target centerline for partial occlusion.
+            partial_offset = blocker_box.extent.y - blocker_box.location.y
 
             def occlusion_cases(kind, refs):
-                for name, lateral in [("partial", 1.2), ("blocked", 0)]:
+                for name, lateral in [("partial", partial_offset), ("blocked", 0)]:
                     pose = relative(8, lateral)
                     pose.location.z = blocker_transform.location.z
-                    blocker.set_transform(pose)
+                    validation.place(blocker, pose)
                     for key in ("front", "clipped"):
                         view = validation.capture(viewpoints[key])
                         fraction = validation.measure(f"{kind}-{key}-{name}", refs[key], view)
@@ -198,7 +232,7 @@ def main():
                             assert .05 < fraction < .95
                         elif name == "blocked":
                             assert fraction < .02
-                blocker.set_transform(blocker_transform)
+                validation.place(blocker, blocker_transform)
 
             occlusion_cases("vehicle", references)
             box = target.bounding_box
@@ -215,21 +249,23 @@ def main():
             panel = CarlaPatchPanel(tuple(flip @ local), rotation_to_carla(native_rotation),
                                     CheckerboardTexture().rgba(), mesh_path=DEFAULT_PROP_MESH_PATH)
             panels = panel.apply(validation.world, target,
-                                 tick=lambda: simulator_runtime.step(Control(brake=1.0)))
+                                 tick=lambda: simulator_runtime.step(Control(brake=1.0)),
+                                 queue_command=validation.queue_command)
             validation.actors.extend(panels)
             panel_transform = panels[0].get_transform()
-            target.set_transform(relative(-30))
-            blocker.set_transform(relative(-40, 4))
+            validation.place(target, relative(-30))
+            validation.place(blocker, relative(-40, 4))
             isolated = validation.spawn(panel.prop, panel_transform,
                                         attributes={"mesh_path": panel.mesh_path})
             patch_references = {}
             for key, pose in viewpoints.items():
                 view = validation.capture(pose)
-                patch_references[key] = validation.reference(backgrounds[key], view, f"patch-{key}")
+                patch_references[key] = validation.reference(
+                    backgrounds[key], view, isolated, f"patch-{key}", world_aligned_box=True)
                 validation.measure(f"patch-{key}-isolated", patch_references[key], view)
             isolated.destroy()
-            target.set_transform(target_transform)
-            blocker.set_transform(blocker_transform)
+            validation.place(target, target_transform)
+            validation.place(blocker, blocker_transform)
             for key, pose in viewpoints.items():
                 validation.measure(f"patch-{key}-mounted", patch_references[key],
                                    validation.capture(pose))
@@ -237,7 +273,7 @@ def main():
             report = {"simulator": dict(simulator.identity), "camera_size": [WIDTH, HEIGHT],
                       "reference_size": [WIDTH * SCALE, HEIGHT * SCALE], "image_bounds": BOUNDS,
                       "focal_length_pixels": FOCAL, "depth_tolerance_m": TOLERANCE,
-                      "method": "Simulator SensorView depth; target-free full silhouette reference",
+                      "method": "Simulator SensorView depth difference within target box projection and depth",
                       "results": validation.rows}
             (args.output / "result.json").write_text(json.dumps(report, indent=2) + "\n")
         finally:

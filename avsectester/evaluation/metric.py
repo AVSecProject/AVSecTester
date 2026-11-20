@@ -183,7 +183,7 @@ class DrivingMetrics(Metric):
                 "stopped": MetricField("Final speed is at most stop_speed."),
                 "brake_steps": MetricField(
                     "Decisions whose executed command has brake > 0 and throttle = 0. "
-                    "Unavailable for trajectory commands (e.g. Alpamayo).", "decision steps"),
+                    "Unavailable without executed actuator commands.", "decision steps"),
                 "min_distance": MetricField(
                     "Smallest top-down distance between the ego bounding box and the bounding box "
                     "of any recorded actor or inserted world object over all recorded states. "

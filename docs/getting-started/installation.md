@@ -31,7 +31,8 @@ scripts/preparation/write_compose_env.sh
 The script writes `.env` with the repository path, user/group IDs, Docker socket group, Docker
 executable and GPU selections. It refuses to overwrite an existing file unless --force is
 supplied. Choose available host GPUs in `.env`: `CARLA_SERVER_GPU`, `CARLA_EXPERIMENT_GPU` and
-`NUREC_GPU` each default to 0.
+`NUREC_GPU` each default to 0. `CARLA_SERVER_ARGS` defaults to an empty string and appends
+arguments to the CARLA server command.
 
 | Compose service | Image | Purpose |
 |---|---|---|
@@ -89,6 +90,15 @@ The Python client wheel comes from the same pinned CARLA image as the server.
 CARLA uses host networking with RPC port 2000 and traffic-manager port 8000. Select the server
 and experiment host GPUs through `.env`. Model device indexes address GPUs visible in the
 experiment container. Stop the services with docker compose down.
+
+### Native ROS 2
+
+Set `CARLA_SERVER_ARGS='--ros2 --ros-domain-id=<N>'` in `.env` before starting the server.
+Replace `<N>` with an unused ROS domain ID and set `ROS_DOMAIN_ID` to the same value in the
+external driving system. Each user on a shared server must use a different domain ID.
+The external system needs network access to the server's ROS 2 topics. Configure
+`ExternalAVStack` in the experiment and see
+[native ROS 2 control](../guides/simulators.md#native-ros-2-control) for runtime behavior.
 
 ### CARLA map packs
 

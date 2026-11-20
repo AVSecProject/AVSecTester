@@ -9,11 +9,14 @@ import pytest
 from avsectester.closed_loop.avstacks.base import (
     AVStack, CommandCompatibilityError, ObservationPipeline, validate_command_compatibility,
 )
+from avsectester.closed_loop.avstacks.implemented.external_control import ExternalAVStack
 from avsectester.closed_loop.timing import HistoryRequirement
-from avsectester.closed_loop.hooks import Hook, HookSet
+from avsectester.closed_loop.hooks import Hook, HookSet, UnsupportedStageError
 from avsectester.closed_loop.simulators.ego_dynamics import PlanarEgoState
 from avsectester.data_types import StateEstimate
-from tests.fakes import ConstantAVStack, DeceleratingAVStack, MemorySimulator
+from tests.fakes import (
+    ConstantAVStack, DeceleratingAVStack, ExternallyControlledMemorySimulator, MemorySimulator,
+)
 
 
 def test_required_history():
@@ -123,3 +126,17 @@ def test_validate_command_compatibility():
             validate_command_compatibility(runtime, DeceleratingAVStack())
         hooks = HookSet([Hook("command", lambda value, context: value)])
         validate_command_compatibility(runtime, DeceleratingAVStack(), hooks)
+        with pytest.raises(CommandCompatibilityError, match="External control"):
+            validate_command_compatibility(runtime, ExternalAVStack())
+    with ExternallyControlledMemorySimulator().create_runtime() as runtime:
+        validate_command_compatibility(runtime, ExternalAVStack())
+        with pytest.raises(CommandCompatibilityError, match="External control"):
+            validate_command_compatibility(runtime, ConstantAVStack())
+
+
+def test_external_control_hooks():
+    with ExternallyControlledMemorySimulator().create_runtime() as runtime:
+        driver = ExternalAVStack()
+        HookSet([Hook("simulator.step.pre", lambda value, context: None)]).validate_stages(runtime, driver)
+        with pytest.raises(UnsupportedStageError, match="do not reach the external"):
+            HookSet([Hook("observation", lambda value, context: value)]).validate_stages(runtime, driver)

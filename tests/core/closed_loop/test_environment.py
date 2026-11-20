@@ -9,7 +9,7 @@ from avsectester.closed_loop.environment import (
 )
 from avsectester.data_types import Observation
 from avsectester.closed_loop.sensor_corruptions import GaussianNoise
-from tests.fakes import MemorySimulator
+from tests.fakes import ExternallyControlledMemorySimulator, MemorySimulator
 
 
 def test_merge_environments():
@@ -35,6 +35,10 @@ def test_validate_environment():
     assert validate_environment(environment, MemorySimulator()) == normalize_environment(environment)
     with pytest.raises(ValueError, match="does not support"):
         validate_environment({"world": {"unknown": 1}}, MemorySimulator())
+    external = ExternallyControlledMemorySimulator()
+    assert validate_environment(environment, external) == normalize_environment(environment)
+    sensor_environment = {"sensors": [{"type": "Brightness"}]}
+    assert validate_environment(sensor_environment, external) == normalize_environment(sensor_environment)
 
 
 def test_sensor_environment():

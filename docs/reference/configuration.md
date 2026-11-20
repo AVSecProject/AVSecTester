@@ -25,7 +25,7 @@ Type paths and hook imports execute Python code. Use only trusted sources.
 |---|---|
 | `dataset.type` | `CarlaDataset`, `NuRecDataset`, `NuScenesDataset` |
 | `simulator.type` | `CarlaSimulator`, `NuRecSimulator`, `RecordedReplaySimulator` |
-| `avstack.type` | `ModularAVStack`, `CameraForwardCollisionAVStack`, `AlpamayoAVStack`, `RuleBasedAVStack` |
+| `avstack.type` | `ModularAVStack`, `CameraForwardCollisionAVStack`, `AlpamayoAVStack`, `RuleBasedAVStack`, `ExternalAVStack` |
 | `evaluation.metrics[].type` | `DrivingMetrics`, `DetectionMetrics`, `TrajectoryDeviation`, `StopImpact`, `StopLineMetrics`, `ReasoningPhraseRate` |
 | `attacks.<name>.type` | Discovered `Attack` subclasses in [class-name-derived directories](../../avsectester/implemented_attacks/README.md) |
 | `environment.sensors[].type` | `GaussianNoise`, `ShotNoise`, `Fog`, `Rain`, `Snow`, `Brightness`, `LowLight`, `Contrast`, `Gamma`, `ColorTemp`, `MotionBlur`, `DefocusBlur`, `JPEGCompression`, `ChromaticAberration`, `AlbumentationsCorruption` |
@@ -248,9 +248,47 @@ number of base ticks. `runs.timing.sensors` selects acquisition ticks.
 See [CARLA capture timing](../guides/simulators.md#carla) for native sensor settings and LiDAR
 scans.
 
-`CarlaSimulator.camera_warmup_s` defaults to `4.0` seconds. It must be nonnegative and its
-product with `client.rate` must be an integer number of ticks. Warmup applies only to recipes
-with an RGB camera.
+CARLA initialization and external-control options are:
+
+| Option | Default | Accepted values or role |
+|---|---|---|
+| `camera_warmup_s` | `4.0` | Nonnegative RGB-camera warmup duration |
+| `ground_settle_s` | `2.0` | Nonnegative duration for vehicles to settle before holding |
+| `external_startup_s` | `0.0` | Nonnegative hold duration for an external driving system |
+| `ego_control` | `"framework"` | `"framework"` or `"ros2"` |
+| `realtime_factor` | `null` | Positive simulation-time to wall-time ratio for pacing closed-loop runs, required for `"ros2"` |
+
+The three durations must each correspond to an integer number of ticks at `client.rate`.
+RGB-camera warmup is omitted when the recipe has no RGB camera. The pre-origin hold uses the
+larger of the applicable camera warmup and `external_startup_s`. See
+[CARLA initialization](../guides/simulators.md#carla).
+
+In `"ros2"` mode, use `ExternalAVStack` and set the ego blueprint's `role_name` to
+`"hero"` or `"ego"`. `runs.timing.force_gt_duration_us` must be zero. See
+[native ROS 2 control](../guides/simulators.md#native-ros-2-control).
+
+Recipe ego and sensor entries accept `blueprint_attributes`, a mapping from native attribute
+names to scalar values, converted to native strings. Unknown native attributes raise an error.
+The spawned ego's attributes must match the configured values. Sensor blueprint keys that match
+constructor options are rejected. Set those values as sensor options so they also set calibration.
+Sensor entries also accept `ros: true` to enable their ROS 2 publication after spawning.
+
+```yaml
+ego:
+  blueprint_attributes:
+    role_name: hero
+    ros_name: ego
+    ros2_ackermann_control: "true"
+  sensors:
+    - type: CarlaLidar
+      name: lidar-0
+      blueprint_attributes:
+        ros_name: lidar
+      ros: true
+```
+
+Set a camera's `post_process_profile` through its `blueprint_attributes` mapping. The framework
+does not choose a profile when the attribute is omitted.
 `simulator_version` defaults to `"1.0"` and participates in saved-preparation compatibility.
 
 ### NuRec closed-loop settings

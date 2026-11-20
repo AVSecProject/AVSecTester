@@ -29,7 +29,7 @@ from avsectester.closed_loop.simulators.object_composition import compose_captur
 from avsectester.data_types import ActorState
 from avsectester.datasets.base import FrameData, FrameReference, ScenarioStart
 from avsectester.validation import require_nonnegative_integer
-from avsectester.data_types import Control, Observation, WorldSnapshot, validate_command_modes
+from avsectester.data_types import Control, Observation, WorldSnapshot, is_external_control, validate_command_modes
 
 if TYPE_CHECKING:
     import numpy as np
@@ -304,6 +304,8 @@ class Simulator(ABC):
     'Whether recorded-tick replay is supported.'
     can_observe_past: bool = False
     'Whether observations before a selected start can be reconstructed.'
+    can_start_runs_after_origin: bool = True
+    'Whether closed-loop runs can start after the scenario origin. Rendering and preparation are unaffected.'
     can_insert_objects: bool = False
     'Whether world objects can be inserted into sensor rendering.'
     supported_world_settings: frozenset[str] = frozenset()
@@ -445,12 +447,18 @@ class Simulator(ABC):
             if any(value % tick for value in values):
                 raise ValueError("Frame, reporting, planner delay and force-GT periods must align with simulator base ticks")
 
+    def _validate_run_start(self, start: ScenarioStart | None) -> None:
+        if start is not None and not self.can_start_runs_after_origin and start.frame.position > 0:
+            raise UnsupportedStartError(
+                f"{type(self).__name__} can start closed-loop runs only at the scenario origin")
+
     def validate_startup(self, start: ScenarioStart | None, duration_us: int) -> None:
-        """Check recorded-motion support and coverage for force_gt_duration_us.
+        """Check the closed-loop start and recorded-motion coverage for force_gt_duration_us.
 
         A zero duration needs no recording. Missing support raises ``ValueError`` and
-        insufficient recorded motion raises ``UnsupportedStartError``.
+        a disallowed start or insufficient recorded motion raises ``UnsupportedStartError``.
         """
+        self._validate_run_start(start)
         require_nonnegative_integer(duration_us, "startup duration")
         if not duration_us:
             return
@@ -501,6 +509,7 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
         self._object_visibility: dict[str, dict[str, ObjectVisibility]] = {}
         self._composition_error: BaseException | None = None
         self._world_initialized = False
+        self._closed_loop_run = False
         self._resetting = False
         self._advancing = False
         self._start: ScenarioStart | None = None
@@ -547,6 +556,11 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
         return self.simulator.can_insert_objects
 
     @property
+    def closed_loop_run(self) -> bool:
+        """Whether the current reset is for a closed-loop run, until reset or close."""
+        return self._closed_loop_run
+
+    @property
     def supported_world_settings(self) -> frozenset[str]:
         """World-setting keys accepted by the simulator."""
         return self.simulator.supported_world_settings
@@ -578,6 +592,10 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
     @property
     def termination_details(self) -> Mapping[str, Any]:
         """Simulator diagnostics saved with the run's termination event."""
+        return {}
+
+    def decision_telemetry(self) -> Mapping[str, Any]:
+        """Native evidence recorded at each decision without issuing a driving command."""
         return {}
 
     def validate_start(self, start: ScenarioStart | None) -> None:
@@ -633,6 +651,7 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
 
     def close(self) -> None:
         """Release the world and native connections. Optional."""
+        self._closed_loop_run = False
         self._state_cache = None
         self._objects.clear()
         self._capture_objects.clear()
@@ -1040,16 +1059,19 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
 
     def reset(self, start: ScenarioStart | None = None, initialization: Any = None, *,
               deployment: DeploymentPlan | None = None,
-              world: Mapping[str, Any] | None = None) -> None:
-        """Start a run at ``start`` or the configured origin and capture the first frame.
+              world: Mapping[str, Any] | None = None, closed_loop_run: bool = False) -> None:
+        """Initialize the world at ``start`` or the configured origin and capture the first frame.
 
         The order is native initialization, pre-roll to the deployment window, simulator.setup
         and its deployment ticks, the capture ticks, then the first capture. Read it with
-        ``observe``.
+        ``observe``. With ``closed_loop_run=True``, reject unsupported run starts before opening
+        the world and expose the run phase to setup hooks.
         """
         if start is None and initialization is not None:
             raise ValueError("An initialization plan requires ScenarioStart")
         self.validate_start(start)
+        if closed_loop_run:
+            self.simulator._validate_run_start(start)
         # The simulator owns only native world settings. Sensor environments belong to
         # the runner/services after capture. Rejecting envelopes avoids silently losing them.
         world_environment = dict(world or {})
@@ -1076,6 +1098,7 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
         self._composition_error = None
         self.initialization_report = {}
         self._start, self._deployment = start, plan
+        self._closed_loop_run = closed_loop_run
         self._resetting = True
         try:
             self._initialize_world(start, initialization, world_environment)
@@ -1117,8 +1140,11 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
         self._window_tick(self._replay_position(self._start))
         self._setup_ticks_used += 1
 
-    def step(self, control: Control) -> None:
-        """Advance one decision and capture through the scheduled simulator operations."""
+    def step(self, control: Control | None) -> None:
+        """Advance one decision and capture through the scheduled simulator operations.
+
+        External-control runtimes accept None, leaving ego control to the external system.
+        """
         endpoint = self.clock.time_us + self.decision_period_us
         self.advance_interval(endpoint, control)
         self._acquire_at(endpoint)
@@ -1152,7 +1178,8 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
         The controller runs once. The published clock remains at the last acquisition.
         ``capture_at`` publishes subsequent report times in order. Simulator step hooks
         run before propagation and when its endpoint is published, before acquisition.
-        ``control=None`` follows recorded ego motion and executes no driving command.
+        ``control=None`` follows recorded ego motion unless ``command_modes`` is empty,
+        in which case the external driving system controls propagation.
         """
         if isinstance(time_us, bool) or not isinstance(time_us, int):
             raise ValueError("Advance time must be integer microseconds")
@@ -1160,7 +1187,8 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
             raise RuntimeError("Reset the simulator before stepping")
         if self._interval is not None:
             raise RuntimeError("Publish the previous interval endpoint before propagating again")
-        if control is None or force_gt:
+        follows_recording = force_gt or (control is None and not is_external_control(self.command_modes))
+        if follows_recording:
             if not self.timing_capabilities.recorded_ego_motion:
                 raise ValueError(f"{type(self.simulator).__name__} cannot advance recorded ego motion")
         if control is not None:
@@ -1185,7 +1213,7 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
             self._interval = DecisionInterval(origin_us, time_us,
                 tuple(sorted(set(report_times_us) - {origin_us, time_us})),
                 force_gt, coerce_dynamic_state, self.state())
-            if control is None or force_gt:
+            if follows_recording:
                 self._advance_force_gt_native(control)
             else:
                 self._advance_native(control)
@@ -1458,7 +1486,7 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
                           environment: Mapping[str, Any]) -> None: ...
 
     @abstractmethod
-    def _advance_native(self, control: Control) -> None: ...
+    def _advance_native(self, control: Control | None) -> None: ...
 
     def _completed_interval(self, end_state: WorldSnapshot) -> None:
         """Keep native motion reports needed by later acquisitions."""

@@ -8,15 +8,21 @@ import pytest
 
 from avsectester.attack import AttackSegment
 from avsectester.closed_loop.avstacks.driving_adapter import DrivingAdapter
+from avsectester.closed_loop.avstacks.implemented.external_control import ExternalAVStack
 from avsectester.closed_loop.simulators import UnsupportedStartError
+from avsectester.closed_loop.simulators.carla import CarlaSimulator
 from avsectester.closed_loop.timing import HistoryRequirement, TimingConfiguration
+from avsectester.datasets.carla import CarlaDataset
 from avsectester.experiment import (
     ConfigurationMismatchError, Experiment, ExperimentConfiguration, ExperimentResult, PreparedExperiment,
     MetadataConfiguration, load_metadata, save_metadata,
     RunsConfiguration, SplitConfiguration, TreatmentConfiguration, evaluate,
 )
 from avsectester.maps import ScenarioMap
-from tests.fakes import ConstantAVStack, MemoryDataset, MemorySimulator, MinimalAttack, MetadataOnlyAttack
+from tests.fakes import (
+    CarlaNativeBoundary, ConstantAVStack, ExternallyControlledMemorySimulator, MemoryDataset, MemorySimulator,
+    MinimalAttack, MetadataOnlyAttack,
+)
 
 
 def configuration(attack, *, dataset=None, treatments=(), **options):
@@ -99,6 +105,10 @@ def test_prepare():
     assert all(segment.start.position == 0 for segment in delayed.metadata["probe"])
     assert any("does not cover the force-GT" in reason
                for selection in delayed.selections for reason in selection.reasons)
+    origin_only = Experiment.prepare(replace(config, simulator=ExternallyControlledMemorySimulator()))
+    assert [segment.start.position for segment in origin_only.metadata["probe"]] == [0, 0]
+    assert any("only at the scenario origin" in reason
+               for selection in origin_only.selections for reason in selection.reasons)
     with pytest.raises(RuntimeError, match="selection failed"):
         Experiment.prepare(replace(config, runs=replace(config.runs, strict=True)))
 
@@ -114,6 +124,44 @@ def test_prepare():
     last = next(decision for decision in skipped.selections if decision.scenario_id == "last")
     assert last.status == "not_selected"
     assert any("cannot start: synthetic route failure" in reason for reason in last.reasons)
+
+
+def test_prepared_origin_references(tmp_path, monkeypatch, carla_dataset):
+    CarlaNativeBoundary().install(monkeypatch, None)
+    recipe = carla_dataset.native("scene")
+    ego = {**recipe.scenario["ego"],
+           "blueprint_attributes": {"role_name": "hero", "ros2_ackermann_control": True}}
+    scenario = {**recipe.scenario, "ego": ego}
+    dataset = CarlaDataset({"scene": replace(recipe, scenario=scenario)})
+    simulator = CarlaSimulator({"rate": 10}, ground_settle_s=0., camera_warmup_s=0.,
+                               ego_control="ros2", realtime_factor=1000.)
+    output = tmp_path / "prepared"
+    config = ExperimentConfiguration(
+        dataset, simulator, DrivingAdapter(lambda seed: ExternalAVStack()),
+        {"probe": MinimalAttack()}, runs=RunsConfiguration(
+            treatments=(TreatmentConfiguration("clean"),), strict=True, output=output))
+    Experiment.prepare(config)
+
+    # An added execution seed can reuse selection and offline artifacts.
+    expanded = replace(config, runs=replace(config.runs, seeds=(0, 17)))
+    Experiment.prepare(expanded, resume=True)
+    execution = replace(expanded, runs=replace(expanded.runs, output=None))
+    result = Experiment.execute(PreparedExperiment.load(execution, output))
+    assert [(run.seed, run.log.status) for run in result.runs] == [(0, "completed"), (17, "completed")]
+
+    # With an external controller publishing, a replay would fail first with its own error.
+    # The origin check failing instead shows that execution used the saved references.
+    CarlaNativeBoundary(external_ego_throttle=.5).install(monkeypatch, None)
+    with pytest.raises(RuntimeError, match="External controls before the CARLA run changed"):
+        Experiment.execute(PreparedExperiment.load(execution, output))
+    CarlaNativeBoundary().install(monkeypatch, None)
+
+    moved_ego = {**ego, "spawn": 1}
+    changed = replace(config, dataset=CarlaDataset({"scene": replace(
+        recipe, scenario={**scenario, "ego": moved_ego})}),
+        runs=replace(config.runs, output=None))
+    with pytest.raises(ValueError, match="No matching prepared origin reference.*seed 0"):
+        Experiment.execute(PreparedExperiment.load(changed, output))
 
 
 def test_execute(tmp_path):

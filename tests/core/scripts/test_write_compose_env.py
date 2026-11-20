@@ -35,6 +35,7 @@ def test_write_compose_env(tmp_path):
         "AVSECTESTER_GID": str(os.getgid()), "DOCKER_GID": "996",
         "DOCKER_CLI": f"'{docker}'", "CARLA_SERVER_GPU": "0",
         "CARLA_EXPERIMENT_GPU": "0", "NUREC_GPU": "0",
+        "CARLA_SERVER_ARGS": "''",
     }
     assert first.stdout == output.read_text()
     output.write_text("local settings\n")

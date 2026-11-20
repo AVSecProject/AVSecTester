@@ -17,10 +17,10 @@ from avsectester.closed_loop.environment import (
 )
 from avsectester.closed_loop.avstacks.base import AVStack
 from avsectester.data_types import (
-    Control, Observation, RecordedOutput, WorldSnapshot, without_sensor_payloads,
+    Control, Observation, RecordedOutput, WorldSnapshot, is_external_control, without_sensor_payloads,
 )
 from avsectester.runlog import CaptureRecord, Recorder, RunLog, StepRecord
-from avsectester.closed_loop.hooks import HookSet
+from avsectester.closed_loop.hooks import EXTERNAL_CONTROL_INPUT_ERROR, HookSet
 from avsectester.closed_loop.simulators.base import DeploymentPlan, SimulatorRuntime
 from avsectester.closed_loop.timing import (
     TimingConfiguration, DelayBuffer, validate_decision_period,
@@ -348,6 +348,10 @@ class _ClosedLoopRun:
                 f"{type(self.sim).__name__} cannot provide recorded acquisition history "
                 f"observations required by {type(self.avstack).__name__}")
         validate_environment(self.request.environment, self.sim.simulator)
+        self.external_control = is_external_control(self.sim.command_modes)
+        if self.external_control and self.request.environment["sensors"]:
+            raise ValueError("External control does not support sensor environments during a run. "
+                             + EXTERNAL_CONTROL_INPUT_ERROR)
         self.hooks = self.request.hooks or HookSet()
         self.sensor_environment = SensorEnvironment(self.request.environment, seed=self.hooks.seed or 0)
         self.attack_dispatch = AttackDispatcher(
@@ -355,7 +359,7 @@ class _ClosedLoopRun:
             output_recorder=self._record_attack_output)
         # Validate before world reset or handlers acquire native resources.
         available = self.hooks.validate_stages(self.sim, self.avstack)
-        self.attack_dispatch.validate(available)
+        self.attack_dispatch.validate(available, world_only=self.external_control)
         if self.request.attacks:
             self.hooks = self.hooks.with_hooks(self.attack_dispatch.hooks)
         self.session = self.hooks.session(self.sim, self.avstack)
@@ -449,7 +453,7 @@ class _ClosedLoopRun:
                 self.request.start, self.request.timing.force_gt_duration_us)
         self.sim.reset(
             self.request.start, self.request.initialization, deployment=self.deployment,
-            world=self.request.environment["world"])
+            world=self.request.environment["world"], closed_loop_run=True)
         self.sensor_environment.bind(self.sim.observe())
         self.initial_state = self.sim.state()
         try:
@@ -658,12 +662,20 @@ class _ClosedLoopRun:
             produced = self.avstack(seen)
             detections = self.recorder.snapshot(self.avstack.detections())
             produced_record = self.recorder.snapshot(produced)
-            command = self.session.command(produced)
+            if produced is None:
+                if not self.external_control:
+                    raise TypeError("AVStack may return None only for an externally controlled simulator")
+                command = None
+            else:
+                command = self.session.command(produced)
         trajectory_reference = "trajectory" in (self.sim.command_modes or ())
         buffered = (self.sim.recorded_reference(time_us, time_us + self.period)
                     if self.force_gt and trajectory_reference else command)
-        self.command_buffer.add(buffered, time_us)
-        production_time, self.executed = self.command_buffer.item_at(time_us)
+        if self.external_control:
+            production_time, self.executed = None, None
+        else:
+            self.command_buffer.add(buffered, time_us)
+            production_time, self.executed = self.command_buffer.item_at(time_us)
         if self.force_gt and not trajectory_reference:
             production_time, self.executed = None, None
         self.attack_dispatch.finish_decision(
@@ -685,7 +697,7 @@ class _ClosedLoopRun:
                 self.avstack.component_log() or {}),
             detections=detections, detection_capture_id=detection_capture_id,
             detection_sensor=detection_sensor,
-            telemetry={"sensor_payloads": {
+            telemetry={**self.recorder.snapshot(self.sim.decision_telemetry()), "sensor_payloads": {
                 "raw": {key: "recorded" if key in raw_record.sensor_data else "not_recorded"
                         for key in self.raw.sensor_data},
                 "model_input": {key: "recorded" if key in model_record.sensor_data

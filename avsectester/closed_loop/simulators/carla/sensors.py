@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
+from inspect import Parameter, signature
 from typing import Any
 
 import numpy as np
@@ -65,6 +66,128 @@ class SensorAlignmentError(RuntimeError):
 
 
 _PINHOLE_ATTRIBUTES = {"lens_k": "0", "lens_kcube": "0", "lens_circle_multiplier": "0"}
+
+
+def validate_native_sensor_tick(value) -> None:
+    if value != 0.:
+        raise ValueError("CARLA sensors acquire every physics tick. Set sensor_tick to 0 and "
+                         "configure acquisition with runs.timing.sensors")
+
+
+def _native_attribute_values(attributes):
+    return {name: str(value).lower() if isinstance(value, bool) else str(value)
+            for name, value in attributes.items()}
+
+
+def _set_blueprint_attributes(blueprint, attributes):
+    for name, value in _native_attribute_values(attributes).items():
+        if not blueprint.has_attribute(name):
+            raise ValueError(f"CARLA blueprint {blueprint.id!r} has no attribute {name!r}")
+        blueprint.set_attribute(name, value)
+
+
+class _BlueprintWorld:
+    def __init__(self, world, attributes):
+        self.world = world
+        self.attributes = attributes
+
+    def __getattr__(self, name):
+        return getattr(self.world, name)
+
+    def try_spawn_actor(self, blueprint, transform, *args, **kwargs):
+        _set_blueprint_attributes(blueprint, self.attributes)
+        return self.world.try_spawn_actor(blueprint, transform, *args, **kwargs)
+
+
+class _BlueprintClient:
+    def __init__(self, client, attributes):
+        self.client = client
+        self.world = _BlueprintWorld(client.world, attributes)
+
+    def __getattr__(self, name):
+        return getattr(self.client, name)
+
+
+def _configured_type(name, *, sensor):
+    from avcarla.config import CARLA
+
+    registered_name = f"Configured{name}"
+    existing = CARLA.module_dict.get(registered_name)
+    if existing is not None:
+        if existing.__module__ != __name__:
+            raise ValueError(f"{registered_name} is already registered by another module")
+        return registered_name
+    original = CARLA.module_dict[name]
+    if getattr(original, "_native_blueprint_wrapper", False):
+        return name
+    if sensor:
+        constructor_options = {
+            parameter.name
+            for base in original.__mro__
+            for parameter in signature(base.__init__).parameters.values()
+            if parameter.name != "self" and parameter.kind in (
+                Parameter.POSITIONAL_ONLY, Parameter.POSITIONAL_OR_KEYWORD, Parameter.KEYWORD_ONLY)
+        }
+
+        class ConfiguredSensor(original):
+            _native_blueprint_wrapper = True
+
+            def __init__(self, *args, blueprint_attributes=None, ros=False, do_spawn=True, **kwargs):
+                self._publish_ros = ros
+                attributes = blueprint_attributes or {}
+                conflicts = attributes.keys() & constructor_options
+                if conflicts:
+                    raise ValueError(
+                        f"CARLA sensor blueprint_attributes contains constructor options "
+                        f"{sorted(conflicts)}. Use sensor options for these values because "
+                        "the constructor also determines calibration."
+                    )
+                validate_native_sensor_tick(float(attributes.get("sensor_tick", 0.)))
+                super().__init__(*args, do_spawn=False, **kwargs)
+                _set_blueprint_attributes(self.bp, attributes)
+                if do_spawn:
+                    self.spawn()
+
+            def spawn(self):
+                super().spawn()
+                if self._publish_ros:
+                    try:
+                        self.object.enable_for_ros()
+                    except BaseException:
+                        self.object.destroy()
+                        raise
+
+        configured = ConfiguredSensor
+    else:
+        class ConfiguredActor(original):
+            _native_blueprint_wrapper = True
+
+            def __init__(self, *args, client, blueprint_attributes=None, **kwargs):
+                attributes = blueprint_attributes or {}
+                super().__init__(*args, client=_BlueprintClient(client, attributes), **kwargs)
+                # Read back from the spawned actor, independently of how the base class spawned it.
+                reported = self.actor.attributes
+                for name, value in _native_attribute_values(attributes).items():
+                    if reported.get(name) != value:
+                        self.destroy()
+                        raise ValueError(
+                            f"CARLA ego attribute {name!r} does not match its configured value "
+                            f"{value!r}. Actor reported {reported.get(name)!r}.")
+
+        configured = ConfiguredActor
+    CARLA.register_module(name=registered_name)(configured)
+    return registered_name
+
+
+def configure_recipe_blueprints(scenario):
+    """Register recipe wrappers that apply native attributes before actors are spawned."""
+    ego = scenario["ego"]
+    if "blueprint_attributes" in ego:
+        ego["type"] = _configured_type(ego["type"], sensor=False)
+    for specification in ego.get("sensors", ()):
+        if "blueprint_attributes" in specification or specification.get("ros", False):
+            specification["type"] = _configured_type(specification["type"], sensor=True)
+    return scenario
 
 
 def register_pinhole_camera():

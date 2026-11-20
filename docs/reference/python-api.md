@@ -46,6 +46,7 @@
 | L2 | [`avsectester.closed_loop.avstacks.implemented`](#avsectesterclosed_loopavstacksimplemented) |
 | L2 | [`avsectester.closed_loop.avstacks.implemented.alpamayo`](#avsectesterclosed_loopavstacksimplementedalpamayo) |
 | L2 | [`avsectester.closed_loop.avstacks.implemented.camera_forward_collision`](#avsectesterclosed_loopavstacksimplementedcamera_forward_collision) |
+| L2 | [`avsectester.closed_loop.avstacks.implemented.external_control`](#avsectesterclosed_loopavstacksimplementedexternal_control) |
 | L2 | [`avsectester.closed_loop.avstacks.implemented.modular`](#avsectesterclosed_loopavstacksimplementedmodular) |
 | L2 | [`avsectester.closed_loop.avstacks.implemented.modules`](#avsectesterclosed_loopavstacksimplementedmodules) |
 | L2 | [`avsectester.closed_loop.avstacks.implemented.modules.detector`](#avsectesterclosed_loopavstacksimplementedmodulesdetector) |
@@ -392,6 +393,7 @@ Data types exchanged between framework components.
 | `StateEstimate(vehicle_state: Any = None, ego_speed: float = 0.0)` | Model-visible ego state and speed produced by the driving system's localizer. |
 | `RecordedOutput(name: str, value: Any, step: int, stage: str, frame: int, t: float, sensor: str \| None = None)` | A named output captured by an attack, defense or localization callback. |
 | `Detection(position: tuple[float, float, float], extent: tuple[float, float, float], yaw: float, category: str \| None = None, score: float \| None = None)` | One 3D detection in the capture-time true ego frame (x forward, y left, z up). |
+| `is_external_control(modes: frozenset[str] \| None) -> bool` | Return whether explicitly empty command modes declare external control. |
 | `validate_command_modes(command: Control, modes: frozenset[str] \| None) -> None` | Validate the fields consumed by a simulator or independently called dynamics model. |
 | `read_camera_rgb(observation: Observation, camera: str \| None = None) -> tuple[str, np.ndarray] \| None` | Return the selected sensor ID and H×W×3 uint8 RGB pixels, or `None` if unavailable. |
 | `write_camera_rgb(observation: Observation, key: str, rgb: np.ndarray) -> Observation` | Return an observation copy with sensor `key` replaced by pixels cast to uint8. |
@@ -979,7 +981,7 @@ Driving-system interfaces, whose implementations are imported from their own mod
 ### avsectester.closed_loop.avstacks.base
 
 <!-- api:begin module=avsectester.closed_loop.avstacks.base -->
-The driving-system interface: an Observation in, a Control out.
+The driving-system interface: an Observation in, an optional Control out.
 
 | Name and signature | Meaning |
 |---|---|
@@ -988,7 +990,7 @@ The driving-system interface: an Observation in, a Control out.
 | `ObservationPipeline.localize(observation: Observation, dispatcher: HookDispatcher) -> Observation` | Localize one pose timestamp, including timestamps without sensor frames. |
 | `ObservationPipeline.decision(observation: Observation, dispatcher: HookDispatcher) -> Observation` | Apply decision input hooks after selecting delivered captures and history. |
 | `ObservationPipeline.process(observation: Observation, dispatcher: HookDispatcher) -> Observation` | Process a capture followed immediately by one driving decision. |
-| `AVStack()` | The driving system: an Observation in, a Control out. |
+| `AVStack()` | The driving system: an Observation in, an optional Control out. |
 | `AVStack.provides_detections: bool \| None = None` | Whether decisions expose detections compatible with detection metrics. |
 | `AVStack.history: HistoryRequirement = HistoryRequirement()` | Recorded input needed at the first decision, expressed as pose duration and sample count. |
 | `AVStack.decision_time_step: ClassVar[float \| None] = None` | Decision interval in seconds. None leaves the interval unrestricted. |
@@ -996,13 +998,13 @@ The driving-system interface: an Observation in, a Control out.
 | `AVStack.observation_pipeline: ObservationPipeline` | Driving-system input processing, including its localizer lifecycle. |
 | `AVStack.reset(observation: Observation) -> None` | Initialize from the first decision observation, including its recorded deliveries. |
 | `AVStack.ingest(observation: Observation) -> None` | Accept incremental input without inference when a force_gt decision skips driving. |
-| `AVStack.command_modes: frozenset[str] \| None` | Possible output command representations, or None for an undeclared driving system. |
+| `AVStack.command_modes: frozenset[str] \| None` | Possible command representations, empty for external control, or None if undeclared. |
 | `AVStack.models: Mapping[str, Any]` | Loaded native models available to user handlers, named by the driving system. |
 | `AVStack.component_log() -> Mapping[str, Any] \| None` | Already-produced component outputs for the current decision, or None. |
 | `AVStack.detections() -> Sequence[Detection] \| None` | Current decision's ego-frame detections. None means no detection output. |
 | `AVStack.detection_sensor: str \| None` | Sensor whose latest delivered frame is associated with the model's detections. |
 | `AVStack.close() -> None` | Release driving-system resources. The default implementation owns none. |
-| `AVStack.__call__(observation: Observation) -> Control` | Abstract. Advance driving inference once and return a command in `command_modes`. |
+| `AVStack.__call__(observation: Observation) -> Control \| None` | Abstract. Advance driving inference once and return a command in `command_modes`. |
 | `AVStack.supported_stages: frozenset[str]` | Return the hook stages supported by this simulator runtime or driving system. |
 | `AVStack.native: Mapping[str, Any]` | Expose native components available to callbacks, keyed by component name. |
 | `AVStack.bind_hooks(dispatcher: StageEmitter) -> Iterator[None]` | Context manager. Bind one dispatcher for the scope. Reject an already active binding. |
@@ -1016,11 +1018,14 @@ The driving-system interface: an Observation in, a Control out.
 `transform(value, context)`. Assigning another type to `observation_pipeline` raises `TypeError`.
 `bind_hooks` raises `RuntimeError` while another dispatcher is bound.
 `validate_command_compatibility` raises `CommandCompatibilityError` when a declared AVStack
-command mode is not accepted by the simulator runtime. A `command` hook skips the check.
+command mode is not accepted by the simulator runtime. A `command` hook can convert between
+command representations, but cannot convert an external-control mode.
 
 #### Extension contract
 
-Implement `AVStack.__call__(observation) -> Control` and return a declared command mode.
+Implement `AVStack.__call__(observation) -> Control | None` and return a declared command mode.
+External control declares empty `command_modes` on both the simulator and driving system and
+returns `None`.
 Keep per-run history in this instance. Do not modify or advance the simulator. Declare
 recorded-input requirements as described in
 [Driving systems](../guides/driving-systems.md#recorded-input-history).
@@ -1135,7 +1140,7 @@ Camera detection with the box-area forward-collision braking rule.
 |---|---|
 | `CameraForwardCollisionAVStack(gpu: int = 0, camera: str = "front", area_brake: float = .03, throttle: float = .55, detector_dataset: str = "carla-vehicle", threshold: float = .3, area_max: float = .3, max_height_frac: float = .6)` | Subclass of `AVStack`. Brake for a plausible detected vehicle whose image area exceeds `area_brake`. |
 | `CameraForwardCollisionAVStack.provides_detections = False` | Whether decisions expose detections compatible with detection metrics. |
-| `CameraForwardCollisionAVStack.command_modes = frozenset({"actuator"})` | Possible output command representations, or None for an undeclared driving system. |
+| `CameraForwardCollisionAVStack.command_modes = frozenset({"actuator"})` | Possible command representations, empty for external control, or None if undeclared. |
 | `CameraForwardCollisionAVStack.supported_stages = frozenset({"perception.pre", "perception.post"})` | Return the hook stages supported by this simulator runtime or driving system. |
 | `CameraForwardCollisionAVStack.detect(rgb: Any) -> list` | Return current image detections as `(xyxy, score, vehicle)` tuples. |
 | `CameraForwardCollisionAVStack.ingest(observation: Observation) -> None` | Retain delivered camera data without running the detector. |
@@ -1145,6 +1150,19 @@ Camera detection with the box-area forward-collision braking rule.
 #### See also
 
 [Driving systems](../guides/driving-systems.md).
+
+### avsectester.closed_loop.avstacks.implemented.external_control
+
+<!-- api:begin module=avsectester.closed_loop.avstacks.implemented.external_control -->
+A driving-system placeholder for a simulator controlled by an external process.
+
+| Name and signature | Meaning |
+|---|---|
+| `ExternalAVStack()` | Subclass of `AVStack`. Represent a driving system that controls ego through the simulator from outside the framework. |
+| `ExternalAVStack.provides_detections = False` | Whether decisions expose detections compatible with detection metrics. |
+| `ExternalAVStack.command_modes = frozenset()` | Possible command representations, empty for external control, or None if undeclared. |
+| `ExternalAVStack.__call__(observation: Observation) -> None` | Accept the decision input without producing a driving command. |
+<!-- api:end -->
 
 ### avsectester.closed_loop.avstacks.implemented.modular
 
@@ -1333,7 +1351,7 @@ Detect and track stop signs and optional lead vehicles for route-following contr
 | Name and signature | Meaning |
 |---|---|
 | `RuleBasedAVStack(detector: YOLOXDetector, tracker: StopSignTracker \| None = None, planner: RuleBasedPlanner \| None = None, camera_id: str = DEFAULT_CAMERA_ID, sign_height_m: float = .762, *, vehicle_tracker: VehicleTracker \| None = None, vehicle_labels: Sequence[str] = ("car", "truck", "bus"), lidar_id: str = DEFAULT_LIDAR_ID)` | Subclass of `AVStack`. Follow the route, stop for signs and optionally follow camera-detected vehicles. |
-| `RuleBasedAVStack.command_modes = frozenset({"trajectory"})` | Possible output command representations, or None for an undeclared driving system. |
+| `RuleBasedAVStack.command_modes = frozenset({"trajectory"})` | Possible command representations, empty for external control, or None if undeclared. |
 | `RuleBasedAVStack.provides_detections = False` | Whether decisions expose detections compatible with detection metrics. |
 | `RuleBasedAVStack.reset(observation: Observation) -> None` | Clear sign and vehicle tracks and reset planning for a fresh run. |
 | `RuleBasedAVStack.ingest(observation: Observation) -> None` | Retain the latest camera and LiDAR deliveries without perception or tracking. |
@@ -1628,6 +1646,7 @@ The simulator: a configuration (`Simulator`) and its live worlds (`SimulatorRunt
 | `Simulator.can_render: bool = False` | Whether arbitrary-view rendering is supported. |
 | `Simulator.can_replay: bool = False` | Whether recorded-tick replay is supported. |
 | `Simulator.can_observe_past: bool = False` | Whether observations before a selected start can be reconstructed. |
+| `Simulator.can_start_runs_after_origin: bool = True` | Whether closed-loop runs can start after the scenario origin. Rendering and preparation are unaffected. |
 | `Simulator.can_insert_objects: bool = False` | Whether world objects can be inserted into sensor rendering. |
 | `Simulator.supported_world_settings: frozenset[str] = frozenset()` | World-setting keys accepted by the simulator. |
 | `Simulator.simulator_version = "1"` | Version identifier included in simulator compatibility summaries. |
@@ -1647,13 +1666,14 @@ The simulator: a configuration (`Simulator`) and its live worlds (`SimulatorRunt
 | `Simulator.decision_ticks: int` | Number of native ticks in one decision, or one without a native base tick. |
 | `Simulator.observation_lead_steps_for(timing: TimingConfiguration) -> int` | Recorded decision steps preceding a capture under the selected frame clocks. |
 | `Simulator.validate_timing(timing: TimingConfiguration) -> None` | Reject unsupported clocks or startup motion without opening a simulator world. |
-| `Simulator.validate_startup(start: ScenarioStart \| None, duration_us: int) -> None` | Check recorded-motion support and coverage for force_gt_duration_us. |
+| `Simulator.validate_startup(start: ScenarioStart \| None, duration_us: int) -> None` | Check the closed-loop start and recorded-motion coverage for force_gt_duration_us. |
 | `SimulatorRuntime(simulator: Simulator)` | Context manager. One live world of a `Simulator`: world state, clock, actors, sensors and sensor views. |
 | `SimulatorRuntime.dataset_kinds: tuple[str, ...]` | Dataset kinds supported by this simulator. |
 | `SimulatorRuntime.can_render: bool` | Whether arbitrary-view rendering is supported. |
 | `SimulatorRuntime.can_replay: bool` | Whether recorded-tick replay is supported. |
 | `SimulatorRuntime.can_observe_past: bool` | Whether observations before a selected start can be reconstructed. |
 | `SimulatorRuntime.can_insert_objects: bool` | Whether world objects can be inserted into sensor rendering. |
+| `SimulatorRuntime.closed_loop_run: bool` | Whether the current reset is for a closed-loop run, until reset or close. |
 | `SimulatorRuntime.supported_world_settings: frozenset[str]` | World-setting keys accepted by the simulator. |
 | `SimulatorRuntime.capture_ticks: int` | Simulator ticks consumed by a sensor capture. |
 | `SimulatorRuntime.decision_time_step: float \| None` | Decision interval in seconds. None leaves the interval unrestricted. |
@@ -1661,6 +1681,7 @@ The simulator: a configuration (`Simulator`) and its live worlds (`SimulatorRunt
 | `SimulatorRuntime.supported_stages: frozenset[str]` | Return the hook stages supported by this simulator runtime or driving system. |
 | `SimulatorRuntime.identity: Mapping[str, Any]` | Configuration identity used to check saved-preparation compatibility. |
 | `SimulatorRuntime.termination_details: Mapping[str, Any]` | Simulator diagnostics saved with the run's termination event. |
+| `SimulatorRuntime.decision_telemetry() -> Mapping[str, Any]` | Native evidence recorded at each decision without issuing a driving command. |
 | `SimulatorRuntime.validate_start(start: ScenarioStart \| None) -> None` | Check dataset and simulator constraints for a recorded scenario start. |
 | `SimulatorRuntime.validate_command(command: Control) -> None` | Reject active command fields that this simulator would silently ignore. |
 | `SimulatorRuntime.copy_observation(observation: Observation) -> Observation` | Detach the complete mutable data graph before model-visible processing. |
@@ -1686,9 +1707,9 @@ The simulator: a configuration (`Simulator`) and its live worlds (`SimulatorRunt
 | `SimulatorRuntime.object_visibility(object_id: str) -> Mapping[str, ObjectVisibility]` | Visibility of an object in the latest capture, for every camera whose image contains it. |
 | `SimulatorRuntime.control_actor(actor_id: str, control: Control) -> None` | Drive another actor with an actuator command from the next world step. |
 | `SimulatorRuntime.set_actor_state(actor_id: str, state: ActorState) -> None` | Move another actor to a canonical world state. It is visible from the next capture. |
-| `SimulatorRuntime.reset(start: ScenarioStart \| None = None, initialization: Any = None, *, deployment: DeploymentPlan \| None = None, world: Mapping[str, Any] \| None = None) -> None` | Start a run at `start` or the configured origin and capture the first frame. |
+| `SimulatorRuntime.reset(start: ScenarioStart \| None = None, initialization: Any = None, *, deployment: DeploymentPlan \| None = None, world: Mapping[str, Any] \| None = None, closed_loop_run: bool = False) -> None` | Initialize the world at `start` or the configured origin and capture the first frame. |
 | `SimulatorRuntime.setup_tick() -> None` | Advance one setup tick without requesting a driving decision. |
-| `SimulatorRuntime.step(control: Control) -> None` | Advance one decision and capture through the scheduled simulator operations. |
+| `SimulatorRuntime.step(control: Control \| None) -> None` | Advance one decision and capture through the scheduled simulator operations. |
 | `SimulatorRuntime.decision_period_us: int` | Declared decision interval in integer microseconds. |
 | `SimulatorRuntime.configure_timing(timing: TimingConfiguration, *, history: HistoryRequirement = HistoryRequirement()) -> None` | Set acquisition clocks before resetting a run. Never advance a live world. |
 | `SimulatorRuntime.advance_interval(time_us: int, control: Control \| None, *, report_times_us: Sequence[int] = (), force_gt: bool = False, coerce_dynamic_state: bool = False) -> None` | Propagate one complete decision interval, retaining reports for on-demand reads. |
@@ -1759,6 +1780,9 @@ Do not modify or replace it from a subclass. `_completed_interval(end_state)` re
 endpoint truth after propagation. Retain native report states there if later acquisitions need
 them. `_reported_state_at(time_us)` must support the endpoint as well as intermediate times.
 `_activate_reported_state(time_us, state)` selects that truth without running the controller again.
+
+An external-control runtime declares empty `command_modes` and receives `control=None` in
+`_advance_native`. It can supply native decision evidence through `decision_telemetry()`.
 
 Simulators that pre-run a source recording use `initial_history_times` with the configured
 sensor clocks, `history_requirement`, decision period and reporting interval to reserve context.
@@ -1877,7 +1901,7 @@ Configured CARLA simulations and their live native-world runtimes.
 
 | Name and signature | Meaning |
 |---|---|
-| `CarlaSimulator(client: dict, settle_iters: int = 100, *, simulator_version="1.0", depth_camera: str \| None = None, occlusion_tolerance_m: float = 0.1, decision_period_us: int \| None = None, camera_warmup_s: float = 4.0)` | Subclass of `Simulator`. CARLA runtime settings, with scene content supplied by a dataset recipe. |
+| `CarlaSimulator(client: dict, settle_iters: int = 100, *, simulator_version="1.0", depth_camera: str \| None = None, occlusion_tolerance_m: float = 0.1, decision_period_us: int \| None = None, camera_warmup_s: float = 4.0, ground_settle_s: float = 2.0, ego_control: str = "framework", realtime_factor: float \| None = None, external_startup_s: float = 0.0)` | Subclass of `Simulator`. CARLA runtime settings, with scene content supplied by a dataset recipe. |
 | `CarlaSimulator.dataset_kinds = ("CarlaDataset",)` | Dataset kinds supported by this simulator. |
 | `CarlaSimulator.capture_ticks = 1` | Simulator ticks consumed by a sensor capture. |
 | `CarlaSimulator.can_render = True` | Whether arbitrary-view rendering is supported. |
@@ -1887,8 +1911,13 @@ Configured CARLA simulations and their live native-world runtimes.
 | `CarlaSimulator.supported_world_settings = CARLA_WORLD_SETTINGS` | World-setting keys accepted by the simulator. |
 | `CarlaSimulator.validate_world_settings(world: Mapping[str, Any]) -> None` | Validate keys, native enum names, types and ranges without connecting to CARLA. |
 | `CarlaSimulator.create_runtime(seed: int \| None = None) -> CarlaSimulatorRuntime` | A new live world. An explicit run seed overrides the configured client seed. |
+| `CarlaSimulator.validate_timing(timing: TimingConfiguration) -> None` | Validate native tick alignment and exclusive external ego ownership. |
+| `CarlaSimulator.can_start_runs_after_origin: bool` | Allow a closed-loop start after the scene origin only under framework control. |
 | `CarlaSimulatorRuntime(simulator: CarlaSimulator, seed: int \| None = None)` | Subclass of `SimulatorRuntime`. One live CARLA world of a `CarlaSimulator`. |
-| `CarlaSimulatorRuntime.native: dict[str, Any]` | Borrow native world resources, invalidating cached truth before possible edits. |
+| `CarlaSimulatorRuntime.can_insert_objects: bool` | Allow framework-composited objects outside native external-control runs. |
+| `CarlaSimulatorRuntime.insert_object(object_id: str, asset: ObjectAsset \| MeshAsset, world_from_object: np.ndarray, *, harmonizer: Harmonizer \| None = None) -> None` | Insert a framework-composited object outside native ROS 2 runs. |
+| `CarlaSimulatorRuntime.termination_details: Mapping[str, Any]` | Record final tick pacing statistics when the run is paced. |
+| `CarlaSimulatorRuntime.native: dict[str, Any]` | Borrow native resources, invalidating cached truth before possible edits. |
 | `CarlaSimulatorRuntime.copy_observation(observation: Observation) -> Observation` | Detach mutable payloads, calibration and reference graphs in one copy operation. |
 | `CarlaSimulatorRuntime.interpolate_vehicle_state(left: Any, right: Any, fraction: float, time_us: int) -> Any` | Interpolate native avstack physical vectors and attitude. |
 | `CarlaSimulatorRuntime.canonical_sensor_id(sensor: str) -> str` | Resolve an ego sensor's logical name or source ID to its observation ID. |
@@ -3189,7 +3218,7 @@ Deploy calibrated image patches or native CARLA panels from explicit artifacts.
 | `MESH_PROP = "static.prop.mesh"` | Native CARLA blueprint for a mesh selected by path. |
 | `DEFAULT_PROP_MESH_PATH = "/Game/Carla/Static/Building/Props/00_LegacyAssets/SM_IronPlank01.SM_IronPlank01"` | Packaged IronPlank mesh used by default for CARLA patch panels. |
 | `CarlaPatchPanel(location: tuple, rotation: tuple, texture: np.ndarray, prop: str = DEFAULT_PROP, emissive: bool = True, mesh_path: str \| None = None)` | A native CARLA panel owned by one run, with an explicit actor-local transform. |
-| `CarlaPatchPanel.apply(world: Any, target_actor: Any, *, tick: Callable[[], Any] \| None = None, on_spawn: Callable[[Any], None] \| None = None) -> list` | Spawn the panel on `target_actor` in `world` and paint it. Return spawned actors. |
+| `CarlaPatchPanel.apply(world: Any, target_actor: Any, *, tick: Callable[[], Any] \| None = None, on_spawn: Callable[[Any], None] \| None = None, queue_command: Callable[[Any], None] \| None = None) -> list` | Spawn the panel on `target_actor` in `world` and paint it. Return spawned actors. |
 <!-- api:end -->
 
 #### See also
@@ -3506,7 +3535,7 @@ Preparation inputs, their validation, prepared metadata and per-treatment result
 | `SelectionDecision.from_dict(value: Mapping[str, Any]) -> SelectionDecision` | Restore a saved selection outcome. |
 | `SegmentUnit(index: int, segment: AttackSegment, attack_names: tuple[str, ...], part: str \| None = None)` | One canonical segment shared by all attacks that selected exactly that segment. |
 | `SegmentUnit.as_dict() -> dict[str, Any]` | Serialize this unit's index, segment identity, attack membership and split part. |
-| `PreparedExperiment(configuration: ExperimentConfiguration, metadata: Mapping[str, tuple[AttackSegment, ...]], artifacts: Mapping[str, Any], selections: tuple[SelectionDecision, ...] = (), *, preparation: Mapping[str, Any], units: tuple[SegmentUnit, ...] = (), deployment: DeploymentPlan \| None = None, offline_reports: Mapping[str, OfflineReport] = dict(), metadata_source: Mapping[str, str] \| None = None)` | Configured factories, selected metadata and artifacts, never a live simulator or session. |
+| `PreparedExperiment(configuration: ExperimentConfiguration, metadata: Mapping[str, tuple[AttackSegment, ...]], artifacts: Mapping[str, Any], selections: tuple[SelectionDecision, ...] = (), *, preparation: Mapping[str, Any], units: tuple[SegmentUnit, ...] = (), deployment: DeploymentPlan \| None = None, offline_reports: Mapping[str, OfflineReport] = dict(), metadata_source: Mapping[str, str] \| None = None, initializations: Mapping[str, Mapping[str, Initialization \| Unavailable]] = dict())` | Configured factories, selected metadata and artifacts, never a live simulator or session. |
 | `PreparedExperiment.save(directory: str \| Path) -> Path` | Save preparation metadata, artifacts and offline reports to an output directory. |
 | `PreparedExperiment.load(config: ExperimentConfiguration \| Mapping[str, Any] \| str \| Path, directory: str \| Path) -> PreparedExperiment` | Load compatible metadata and artifacts without selecting or optimizing again. |
 | `TreatmentResult(attack_name: str \| None, segment_index: int, segment: AttackSegment, treatment: str, seed: int, log: RunLog, error: str \| None = None, part: str \| None = None)` | The recorded outcome of one segment, seed and named treatment. |

@@ -6,12 +6,18 @@ import pytest
 from avsectester.closed_loop.avstacks.implemented.alpamayo import AlpamayoAVStack
 from avsectester.closed_loop.avstacks.implemented.camera_forward_collision import CameraForwardCollisionAVStack
 from avsectester.closed_loop.avstacks.implemented.modular import ModularAVStack
+from avsectester.closed_loop.avstacks.implemented.external_control import ExternalAVStack
 from avsectester.closed_loop.avstacks.implemented.modules import RuleBasedAVStack
 from avsectester.data_types import Control, Detection
 from avsectester.closed_loop.avstacks.driving_adapter import DrivingAdapter
 
 
 CASES = [
+    pytest.param(SimpleNamespace(
+        constructor=ExternalAVStack, options={}, fixtures={}, observation="camera_observation",
+        prepare=lambda request: None, component_keys=set(), no_components=True, nullable=set(),
+        categories=(), no_detections=True, command_modes=frozenset(), command_type=type(None),
+    ), id="externally-controlled"),
     pytest.param(SimpleNamespace(
         constructor=ModularAVStack, options={}, fixtures={"pipeline_cfg": "pipeline_config"},
         observation="native_observation",
@@ -61,7 +67,7 @@ def test_avstack_contract(case, request):
     avstack = adapter.factory(0)
     try:
         avstack.reset(observation)
-        assert isinstance(avstack(observation), Control)
+        assert isinstance(avstack(observation), getattr(case, "command_type", Control))
         assert avstack.command_modes == case.command_modes
         components = avstack.component_log()
         assert (components is None) == case.no_components

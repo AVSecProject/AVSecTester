@@ -8,7 +8,7 @@ import pytest
 from avsectester.attack import AttackSegment
 from avsectester.attack.insertion import InsertObject
 from avsectester.attack.runtime import SensorAttackAction
-from avsectester.data_types import Control, Observation, Unavailable
+from avsectester.data_types import Control, Observation, Unavailable, read_camera_rgb
 from avsectester.execution.frame_data_cache import FrameDataCache
 from avsectester.execution.runner import RecordingPolicy
 from avsectester.closed_loop.avstacks.driving_adapter import ComponentDescriptor, DrivingAdapter, ScorerDescriptor
@@ -16,6 +16,7 @@ from avsectester.execution.services import (
     CandidateRequest, ClosedLoopServices, RenderRequest, SensorRequest,
 )
 from avsectester.closed_loop.simulators.carla import CarlaSimulator
+from avsectester.datasets.carla import CarlaDataset
 from avsectester.closed_loop.simulators.base import DeploymentPlan
 from avsectester.closed_loop.timing import HistoryRequirement, SensorTiming, TimingConfiguration
 from avsectester.rendering import ObjectVisibility
@@ -119,6 +120,36 @@ def test_render(make_object_in_front):
         assert inserted.object_visibility["sign"]["front"] == visibility
 
 
+def test_external_render(monkeypatch, carla_dataset, make_object_in_front):
+    class Fill(SensorAttackAction):
+        sensor = "front"
+
+        def apply(self, data, view):
+            data[:] = 200
+            return data
+
+    CarlaNativeBoundary().install(monkeypatch, None)
+    recipe = carla_dataset.native("scene")
+    scenario = {**recipe.scenario, "ego": {**recipe.scenario["ego"],
+        "blueprint_attributes": {"role_name": "ego"}}}
+    dataset = CarlaDataset({"scene": replace(recipe, scenario=scenario)})
+    frame = dataset.frames("scene")[0]
+    simulator = CarlaSimulator({"rate": 10}, camera_warmup_s=0.,
+                               ego_control="ros2", realtime_factor=1000.)
+    with ClosedLoopServices(dataset, simulator) as services, services.session(3) as session:
+        plain = session.render(RenderRequest("scene", frame, "front"))
+        modified = session.render(RenderRequest("scene", frame, "front", actions=(Fill(),)))
+        np.testing.assert_array_equal(modified.view.data, plain.view.data)
+        captured = read_camera_rgb(modified.observation, "front")
+        assert captured is not None
+        assert not np.all(plain.view.data == 200)
+        np.testing.assert_array_equal(captured[1], np.full_like(captured[1], 200))
+        asset, pose = make_object_in_front(plain.view)
+        inserted = session.render(RenderRequest("scene", frame, "front", actions=(
+            InsertObject("offline", asset, pose),)))
+        assert inserted.object_visibility["offline"]["front"].visible_pixels > 0
+
+
 def test_rollout():
     data = MemoryDataset()
     frames = data.frames("scene")
@@ -167,7 +198,7 @@ def test_rollout():
 
 
 def test_can_start_at():
-    adapter = DrivingAdapter(lambda seed: HistoryAVStack(), history=HistoryRequirement(samples=3))
+    adapter =DrivingAdapter(lambda seed: HistoryAVStack(), history=HistoryRequirement(samples=3))
     with ClosedLoopServices(MemoryDataset(), MemorySimulator(capture_ticks=1), adapter,
                             deployment=DeploymentPlan(2)) as services:
         with services.session(7) as session:

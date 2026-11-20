@@ -122,13 +122,18 @@ A `CarlaDataset` supplies recipes describing map, spawns, sensors and prescribed
 recipe-bearing `ScenarioStart` and uses a dedicated server.
 
 Traffic-light states are recorded under OpenDRIVE control IDs.
+Framework actor-motion and physics changes are synchronized before each native tick.
 
-RGB appearance is determined by CARLA's post-process preset, including exposure, tone mapping
-and sensor noise. The framework does not set a post-process profile, so CARLA's default applies.
+CARLA's post-process profile determines RGB exposure, tone mapping and sensor noise. The default
+profile adds noise to each frame, so detections near a threshold can produce different commands
+in repeated runs. See [Simulator configuration](../reference/configuration.md#simulator).
+Before holding actors, `ground_settle_s` lets vehicles without prescribed trajectories settle
+with physics and gravity enabled and the handbrake applied. Their initial states retain the
+complete settled pose with zero velocity. Holding preserves that pose with gravity enabled.
 Before the scenario time origin, `camera_warmup_s` adds synchronous hold ticks with actors at
 their initial poses. These ticks do not consume the deployment tick budget and are skipped
-when the recipe has no RGB camera. Traffic-light timers advance during warmup, shifting their
-phase by the same warmup duration for every run. See
+when the recipe has no RGB camera. Pre-origin settling and hold ticks advance traffic-light
+timers by their configured durations for every run. See
 [CARLA runtime configuration](../reference/configuration.md#simulator).
 
 `Town10HD_Opt` has no map layers. A nonempty `map_layers` setting on it raises `ValueError`.
@@ -163,6 +168,42 @@ preparation and [Runtime](../reference/runtime.md) for decision order.
 Setting `depth_camera` selects an RGB camera for aligned depth and an undistorted pinhole lens.
 Other sensors keep their configured capture types. CARLA LiDAR retains native byte axes and its
 wrapper's `flipy` setting. See [LiDAR records](../reference/runtime.md#carla-lidar-data).
+
+### Native ROS 2 control
+
+With `ego_control: ros2`, CARLA publishes sensor data directly to an external ROS 2 driving
+system and accepts its control commands. The framework holds ego through initialization and
+releases it for decision zero. External subscribers receive native tick-rate sensor packets
+independently of the framework's recording clocks. See
+[Runtime](../reference/runtime.md#one-decision) for command records and telemetry.
+
+Native ROS 2 runs start at the scene origin. Selection skips later starts and records the
+reason. When a run has a prepared initialization, its actual ego pose and velocity must
+match the prepared values. Starting after the origin is **Not yet implemented.** See
+[TODO](../development/TODO.md#native-ros-2-runs-after-the-origin).
+
+Enable external control output only for execution. Preparation and rendering can reset the
+world repeatedly. CARLA continues publishing ROS messages, so subscribers see clock jumps
+and new ego actors. A control mismatch during replay raises an error if an external client
+overrides the framework's command.
+
+`realtime_factor` paces closed-loop ticks from the first hold tick onward. Preparation and
+rendering run without pacing. For a paced run, the initialization and termination events
+record the achieved speed ratio, overdue ticks and maximum delay. See
+[Simulator configuration](../reference/configuration.md#simulator) for pacing and hold options.
+
+During a run, only world actions and simulator world hooks can affect the external system.
+The runner rejects sensor environments and hooks outside simulator world stages before the
+first tick. Hook behavior cannot be classified as read-only, so this check is conservative.
+Non-world attack actions are rejected before application because observation changes only
+affect the framework's copy of the server-published data.
+Framework-composited `InsertObject` assets are unavailable during a native run. Native physical
+patch panels are supported. Offline selection and rendering can use sensor environments,
+sensor actions and framework-composited objects on their returned observations.
+Sensor attacks need a [ROS 2 relay](../development/TODO.md#native-ros-2-sensor-attacks).
+Background traffic is managed on the external-system side. The framework is the only tick
+initiator. Other clients must not tick the world. See
+[ROS 2 server setup](../getting-started/installation.md#native-ros-2).
 
 ## NuRec
 

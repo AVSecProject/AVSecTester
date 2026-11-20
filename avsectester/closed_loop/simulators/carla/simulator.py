@@ -7,13 +7,14 @@ from collections.abc import Mapping, Sequence
 from contextlib import ExitStack
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field, replace
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 import numpy as np
 
 from avsectester.closed_loop.simulators.base import (
     ClockSnapshot, Initialization, SensorGeometry, SensorView, Simulator, SimulatorRuntime,
 )
+from avsectester.closed_loop.hooks import EXTERNAL_CONTROL_INPUT_ERROR
 from avsectester.datasets.base import FrameData, SensorDataReference
 from avsectester.datasets.carla import CarlaRecipe, CARLA_WORLD_SETTINGS, validate_carla_world_settings
 from avsectester.geometry.poses import MIRROR_Y, mirror_y_transform
@@ -21,18 +22,21 @@ from avsectester.data_types import Observation, WorldSnapshot
 from avsectester.validation import require_nonnegative_integer, require_nonnegative_number
 from avsectester.validation import timestamp_to_microseconds
 from avsectester.closed_loop.timing import (
-    SensorTiming, TimingCapabilities, initial_history_times, seconds_to_microseconds,
+    SensorTiming, TimingCapabilities, TimingConfiguration, initial_history_times, seconds_to_microseconds,
 )
 
 from .conversions import _actor_state, _traffic_light_state
 from .recipe_replay import RecipeReplay, _place
 from .scenario import (
-    _destroy_actor, _destroy_npc, _spawn_config, prepare_scenario,
+    _destroy_actor, _destroy_npc, _loadable_map_name, _spawn_config, prepare_scenario,
 )
 from .sensors import (
     SensorAlignmentError, SensorCapture, _require_pinhole_sensor, _use_pinhole_cameras,
-    decode_carla_depth, register_pinhole_camera,
+    configure_recipe_blueprints, decode_carla_depth, register_pinhole_camera, validate_native_sensor_tick,
 )
+
+if TYPE_CHECKING:
+    from avsectester.rendering import Harmonizer, MeshAsset, ObjectAsset
 
 
 _MAPS_WITHOUT_LAYERS = frozenset({"Town10HD_Opt"})
@@ -56,6 +60,9 @@ class CarlaSimulator(Simulator):
     ``camera_warmup_s`` holds actors at their initial states before the scenario origin when
     RGB cameras are present. It must span a whole number of physics ticks and is separate
     from the deployment tick budget. ``camera_warmup_ticks`` is the resolved tick count.
+    ``ground_settle_s`` lets unprescribed vehicles settle under gravity before holding.
+    ``ego_control='ros2'`` delegates ego control to a native ROS 2 driver and requires
+    ``realtime_factor``. ``external_startup_s`` extends the held initialization period.
     """
 
     dataset_kinds = ("CarlaDataset",)
@@ -70,6 +77,8 @@ class CarlaSimulator(Simulator):
         self, client: dict, settle_iters: int = 100, *, simulator_version="1.0",
         depth_camera: str | None = None, occlusion_tolerance_m: float = 0.1,
         decision_period_us: int | None = None, camera_warmup_s: float = 4.0,
+        ground_settle_s: float = 2.0, ego_control: str = "framework",
+        realtime_factor: float | None = None, external_startup_s: float = 0.0,
     ) -> None:
         allowed = {"connect_ip", "connect_port", "traffic_manager_port", "rate", "synchronous",
                    "seed", "traffic_manager_seed"}
@@ -94,7 +103,16 @@ class CarlaSimulator(Simulator):
                 raise ValueError(f"client.{name} must be an integer in [1,65535]")
         require_nonnegative_integer(settle_iters, "settle_iters")
         require_nonnegative_number(occlusion_tolerance_m, "occlusion_tolerance_m")
-        require_nonnegative_number(camera_warmup_s, "camera_warmup_s")
+        if ego_control not in {"framework", "ros2"}:
+            raise ValueError("ego_control must be 'framework' or 'ros2'")
+        if realtime_factor is not None and (isinstance(realtime_factor, bool)
+                or not isinstance(realtime_factor, (int, float))
+                or not math.isfinite(realtime_factor) or realtime_factor <= 0):
+            raise ValueError("realtime_factor must be positive and finite")
+        if ego_control == "ros2" and realtime_factor is None:
+            raise ValueError("ego_control='ros2' requires realtime_factor")
+        self.ego_control = ego_control
+        self.realtime_factor = realtime_factor
         self.settle_iters = settle_iters
         self.occlusion_tolerance_m = occlusion_tolerance_m
         self.simulator_version = simulator_version
@@ -103,12 +121,16 @@ class CarlaSimulator(Simulator):
             self._base_tick_us = seconds_to_microseconds(1 / float(self.client_config["rate"]))
         except ValueError as error:
             raise ValueError("CARLA client.rate must produce an integer-microsecond base tick") from error
-        warmup_ticks = camera_warmup_s * float(self.client_config["rate"])
-        if (not math.isfinite(warmup_ticks)
-                or not math.isclose(warmup_ticks, round(warmup_ticks), rel_tol=0., abs_tol=1e-9)):
-            raise ValueError("camera_warmup_s must be a whole number of CARLA base ticks")
         self.camera_warmup_s = camera_warmup_s
-        self.camera_warmup_ticks = round(warmup_ticks)
+        self.ground_settle_s = ground_settle_s
+        self.external_startup_s = external_startup_s
+        for name, duration in (("camera_warmup", camera_warmup_s), ("ground_settle", ground_settle_s),
+                               ("external_startup", external_startup_s)):
+            require_nonnegative_number(duration, f"{name}_s")
+            ticks = duration * float(self.client_config["rate"])
+            if not math.isfinite(ticks) or not math.isclose(ticks, round(ticks), rel_tol=0., abs_tol=1e-9):
+                raise ValueError(f"{name}_s must be a whole number of CARLA base ticks")
+            setattr(self, f"{name}_ticks", round(ticks))
         self._decision_period_us = self._base_tick_us if decision_period_us is None else decision_period_us
         if decision_period_us is not None and (isinstance(decision_period_us, bool)
                 or not isinstance(decision_period_us, int) or decision_period_us <= 0):
@@ -129,9 +151,21 @@ class CarlaSimulator(Simulator):
         """A new live world. An explicit run seed overrides the configured client seed."""
         return CarlaSimulatorRuntime(self, seed)
 
+    def validate_timing(self, timing: TimingConfiguration) -> None:
+        """Validate native tick alignment and exclusive external ego ownership."""
+        super().validate_timing(timing)
+        if self.ego_control == "ros2" and timing.force_gt_duration_us:
+            raise ValueError("ego_control='ros2' rejects force_gt_duration_us because the external "
+                             "driver exclusively controls the ego after decision zero")
+
     @property
     def command_modes(self) -> frozenset[str]:
-        return frozenset({"actuator"})
+        return frozenset() if self.ego_control == "ros2" else frozenset({"actuator"})
+
+    @property
+    def can_start_runs_after_origin(self) -> bool:
+        """Allow a closed-loop start after the scene origin only under framework control."""
+        return self.ego_control != "ros2"
 
     @property
     def decision_time_step(self):
@@ -149,9 +183,12 @@ class CarlaSimulator(Simulator):
 
     @property
     def identity(self):
-        return {**super().identity, "client": deepcopy(self.client_config),
+        return {**super().identity,
+                "client": deepcopy(self.client_config),
                 "depth_camera": self.depth_camera, "start_sensor_setup_ticks": 1,
-                "camera_warmup_s": self.camera_warmup_s}
+                "camera_warmup_s": self.camera_warmup_s, "ground_settle_s": self.ground_settle_s,
+                "ego_control": self.ego_control, "realtime_factor": self.realtime_factor,
+                "external_startup_s": self.external_startup_s}
 
     def validate_start(self, start):
         if start is None:
@@ -162,11 +199,14 @@ class CarlaSimulator(Simulator):
             raise TypeError("CARLA ScenarioStart requires an explicit CarlaRecipe")
         if not math.isclose(recipe.time_step, self.decision_time_step, abs_tol=1e-9):
             raise ValueError("Dataset time_step differs from simulator decision time step")
-        if any(sensor.get("sensor_tick", 0.) != 0. for sensor in recipe.scenario["ego"].get("sensors", ())):
-            raise ValueError("CARLA sensors acquire every physics tick. Set sensor_tick to 0 and "
-                             "configure acquisition with runs.timing.sensors")
+        for sensor in recipe.scenario["ego"].get("sensors", ()):
+            validate_native_sensor_tick(sensor.get("sensor_tick", 0.))
         if start.frame.position > recipe.decision_steps:
             raise ValueError("Selected start exceeds recipe support")
+        if self.ego_control == "ros2":
+            attributes = recipe.scenario["ego"].get("blueprint_attributes", {})
+            if attributes.get("role_name") not in {"hero", "ego"}:
+                raise ValueError("ROS 2 ego blueprint_attributes.role_name must be 'hero' or 'ego'")
 
 
 class CarlaSimulatorRuntime(SimulatorRuntime):
@@ -203,6 +243,52 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         self._history_pose_times = frozenset()
         self._origin_tick = 0
         self._origin_clock_us = None
+        self._native_commands = []
+        self._pacing_started = False
+        self._last_tick_wall = None
+        self._pacing_start_wall = None
+        self._pacing_stats = {}
+
+    def _queue_native_command(self, command):
+        self._native_commands.append(command)
+
+    def _flush_native_commands(self):
+        if not self._native_commands:
+            return
+        commands, self._native_commands = self._native_commands, []
+        responses = self.client.client.apply_batch_sync(commands, False)
+        failures = [response.error for response in responses if response.has_error()]
+        if failures:
+            raise RuntimeError(f"CARLA native command failed: {'; '.join(failures)}")
+
+    def _tick(self, *, start_pacing=False):
+        factor = self.simulator.realtime_factor
+        if start_pacing and self.closed_loop_run and factor is not None and not self._pacing_started:
+            self._pacing_started = True
+            self._pacing_start_wall = time.monotonic()
+            self._pacing_stats = {"ticks": 0, "late_ticks": 0, "max_lateness_s": 0.,
+                                  "elapsed_wall_s": 0., "actual_realtime_factor": None}
+        if self._pacing_started and factor is not None and self._last_tick_wall is not None:
+            deadline = self._last_tick_wall + self.timing_capabilities.base_tick_us / 1e6 / factor
+            now = time.monotonic()
+            if now < deadline:
+                time.sleep(deadline - now)
+            else:
+                self._pacing_stats["late_ticks"] += int(now > deadline)
+                self._pacing_stats["max_lateness_s"] = max(
+                    self._pacing_stats["max_lateness_s"], now - deadline)
+        self._last_tick_wall = time.monotonic()
+        self._flush_native_commands()
+        result = self.client.world.tick()
+        if self._pacing_started:
+            stats = self._pacing_stats
+            stats["ticks"] += 1
+            stats["elapsed_wall_s"] = time.monotonic() - self._pacing_start_wall
+            if stats["elapsed_wall_s"]:
+                stats["actual_realtime_factor"] = (
+                    stats["ticks"] * self.timing_capabilities.base_tick_us
+                    / 1e6 / stats["elapsed_wall_s"])
+        return result
 
     @property
     def world_key(self) -> tuple[str, str, int]:
@@ -213,8 +299,41 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         return ("carla", host, client.get("connect_port", 2000))
 
     @property
+    def can_insert_objects(self) -> bool:
+        """Allow framework-composited objects outside native external-control runs."""
+        return not self._native_ros2_run and super().can_insert_objects
+
+    def insert_object(self, object_id: str, asset: ObjectAsset | MeshAsset, world_from_object: np.ndarray, *,
+                      harmonizer: Harmonizer | None = None) -> None:
+        """Insert a framework-composited object outside native ROS 2 runs."""
+        if self._native_ros2_run:
+            raise NotImplementedError("Framework-composited objects do not reach the external "
+                                      "driving system. " + EXTERNAL_CONTROL_INPUT_ERROR)
+        super().insert_object(object_id, asset, world_from_object, harmonizer=harmonizer)
+
+    @property
+    def _uses_native_ros2(self) -> bool:
+        return self.simulator.ego_control == "ros2"
+
+    @property
+    def _native_ros2_run(self) -> bool:
+        return self._uses_native_ros2 and self.closed_loop_run
+
+    @property
+    def termination_details(self) -> Mapping[str, Any]:
+        """Record final tick pacing statistics when the run is paced."""
+        details = dict(super().termination_details)
+        if self._pacing_stats:
+            details["realtime"] = dict(self._pacing_stats)
+        return details
+
+    @property
     def native(self) -> dict[str, Any]:
-        """Borrow native world resources, invalidating cached truth before possible edits."""
+        """Borrow native resources, invalidating cached truth before possible edits.
+
+        ``queue_command`` accepts a native ``carla.command`` for synchronous submission
+        before the next framework tick. Use it for actor edits made through native resources.
+        """
         self.invalidate_state()
         return self._native_resources()
 
@@ -231,7 +350,15 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
             "lead": self.lead,
             "npcs": tuple(self.npcs),
             "actors": actors,
+            "queue_command": self._queue_native_command,
         }
+
+    def decision_telemetry(self):
+        if not self._uses_native_ros2:
+            return {}
+        control = self.ego.actor.get_control()
+        return {"ego_control": {name: getattr(control, name) for name in (
+            "throttle", "brake", "steer", "hand_brake", "reverse", "manual_gear_shift", "gear")}}
 
     def _native_clock(self) -> ClockSnapshot:
         snapshot = self.client.world.get_snapshot()
@@ -281,12 +408,12 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         if control.trajectory is not None:
             raise ValueError("CARLA actors take actuator commands, not trajectories")
         actor = self._take_over(actor_id)
-        actor.apply_control(carla.VehicleControl(
-            throttle=control.throttle, brake=control.brake, steer=control.steer))
+        self._queue_native_command(carla.command.ApplyVehicleControl(actor.id, carla.VehicleControl(
+            throttle=control.throttle, brake=control.brake, steer=control.steer)))
         self.invalidate_state()
 
     def set_actor_state(self, actor_id, state):
-        _place(self._take_over(actor_id), state)
+        _place(self, self._take_over(actor_id), state)
         self.invalidate_state()
 
     def _take_over(self, actor_id):
@@ -298,7 +425,9 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
             raise KeyError(f"Unknown CARLA actor {actor_id!r}; available: {sorted(actors)}")
         actor = actors[actor_id]
         self._recipe_replay.release(actor_id)
-        actor.set_autopilot(False, self.client.traffic_manager_port)
+        import carla
+
+        self._queue_native_command(carla.command.SetAutopilot(actor.id, False, self.client.traffic_manager_port))
         return actor
 
     def copy_observation(self, observation: Observation) -> Observation:
@@ -338,6 +467,8 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         # come from the simulator before spawn resolution can contact a server.
         scenario.setdefault("client", {}).update(deepcopy(self.client_config))
         scenario["client"].setdefault("type", "CarlaClient")
+        if "map_name" in scenario["client"]:
+            scenario["client"]["map_name"] = _loadable_map_name(scenario["client"]["map_name"])
         from avsectester.closed_loop.environment import merge_environments
 
         recipe_world = {name: scenario[name] for name in self.supported_world_settings if name in scenario}
@@ -352,8 +483,9 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
     def _initialize_world(self, start, initialization, environment):
         from avcarla.config import CARLA
 
+        self._pacing_stats = {}
         scenario = self._resolve_scenario(start, initialization, environment)
-        self.close()
+        self._close_world()
         self._recipe = start.payload["recipe"]
         self._scenario_t0 = None
         self._trajectory_setup_ticks = 0
@@ -373,12 +505,16 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
             # and retain only the scheduler's exact source IDs and capture times.
             sensor["sensor_tick"] = 0.
         ego_cfg["pipeline"] = {"type": "SerialPipeline", "modules": []}
+        configure_recipe_blueprints({"ego": ego_cfg})
         self.ego = CARLA.build(ego_cfg, default_args={"client": self.client})
         self._resources.callback(self.ego.destroy)
         replay["ego"] = _spawn_config(replay_ego_cfg, self.ego, "vehicle")
         for spec in scenario.get("npcs", []):
             npc = CARLA.build(dict(spec), default_args={"client": self.client})
-            npc.actor.set_autopilot(False, self.client.traffic_manager_port)
+            import carla
+
+            self._queue_native_command(carla.command.SetAutopilot(
+                npc.actor.id, False, self.client.traffic_manager_port))
             self.npcs.append(npc)
             self._resources.callback(_destroy_npc, npc)
             replay["npcs"].append(_spawn_config(spec, npc, "npc_type"))
@@ -409,12 +545,15 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         self._interval_ticks = {}
         self._recipe_replay.initialize()
         # Base-world preparation ticks do not emit hooks or count as driving decisions.
-        self.client.tick()
+        self._tick()
+        for _ in range(self.simulator.ground_settle_ticks):
+            self._tick()
         self._trajectory_setup_ticks = self._recipe_replay.activate()
         self._hold_tick()
-        if self.camera_sensors:
-            for _ in range(self.simulator.camera_warmup_ticks):
-                self._hold_tick()
+        hold_ticks = max(self.simulator.camera_warmup_ticks if self.camera_sensors else 0,
+                         self.simulator.external_startup_ticks)
+        for _ in range(hold_ticks):
+            self._hold_tick()
         self._recipe_replay.finish_holding()
         self._scenario_t0 = self.client.world.get_snapshot().timestamp.elapsed_seconds
         self._base_actor_ids = {actor.id for actor in self.client.world.get_actors()}
@@ -448,8 +587,16 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
     def _replay_tick(self):
         replay = self._recipe_replay
         replay.before_step()
-        self.ego.apply_control(replay.ego_command())
-        self.client.tick()
+        expected = self._queue_ego_control(replay.ego_command())
+        self._tick()
+        if self._uses_native_ros2:
+            actual = self.ego.actor.get_control()
+            if (any(np.float32(getattr(actual, name)) != np.float32(getattr(expected, name))
+                    for name in ("throttle", "brake", "steer"))
+                    or actual.hand_brake != expected.hand_brake or actual.reverse != expected.reverse):
+                raise RuntimeError("An external client controlled the ego during CARLA replay. "
+                                   "The external system must not publish controls during "
+                                   "preparation and rendering.")
         replay.after_step()
         self.invalidate_state()
         if not self._advancing:
@@ -541,7 +688,7 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
 
     def _hold_tick(self):
         self._recipe_replay.hold_origin()
-        self.client.tick()
+        self._tick(start_pacing=True)
 
     def _before_selected_capture(self, position):
         if position == 0:
@@ -549,12 +696,33 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         self._origin_clock_us = timestamp_to_microseconds(
             self.client.world.get_snapshot().timestamp.elapsed_seconds)
         self._recipe_replay.finish_holding()
+        if self._native_ros2_run:
+            import carla
+
+            self._recipe_replay.release_ego()
+            self._queue_native_command(carla.command.SetSimulatePhysics(self.ego.actor.id, True))
+            self._queue_native_command(carla.command.SetEnableGravity(self.ego.actor.id, True))
+            self._queue_native_command(carla.command.ApplyVehicleControl(self.ego.actor.id, carla.VehicleControl()))
+            self._flush_native_commands()
 
     def _check_initialization(self, initialization):
+        """Check the replay plan and the ROS 2 run's ego state when given a reference.
+
+        A reset without initialization has no expected ego state to compare.
+        """
         actual = self._capture_frame_data(self._start.frame)
         if initialization is not None:
             if initialization.provenance.get("deployment_ticks", 0) != self._deployment.ticks:
                 raise ValueError("Reference and run must share the deployment tick plan")
+            if self._native_ros2_run:
+                expected_ego = initialization.expected.ego
+                if expected_ego is None:
+                    raise ValueError("ROS 2 run initialization requires an expected ego state")
+                assert actual.ego is not None
+                if (not np.allclose(actual.ego.pose, expected_ego.pose, rtol=0., atol=1e-5)
+                        or not np.allclose(actual.ego.velocity, expected_ego.velocity, rtol=0., atol=1e-5)):
+                    raise RuntimeError("External controls before the CARLA run changed the ego's "
+                                       "initial state from the prepared reference.")
         base_ids = {actor.id for actor in self._native_resources()["actors"].values()}
         self.initialization_report.update({
             "start_frame": asdict(self._start.frame), "pre_roll_steps": self._start.frame.position,
@@ -564,7 +732,10 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
             "inserted_actor_ids": [actor.id for actor in self.client.world.get_actors()
                                    if actor.id not in self._base_actor_ids and actor.id not in base_ids],
         })
-        if not self._generating_frame_data and not self.timing.force_gt_duration_us:
+        if self._pacing_started:
+            self.initialization_report["realtime"] = dict(self._pacing_stats)
+        if (not self._generating_frame_data and not self.timing.force_gt_duration_us
+                and not self._uses_native_ros2):
             # Frame data generation records the prescribed ego motion. Runs drive it.
             self._recipe_replay.release_ego()
 
@@ -583,12 +754,13 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         origin = self._interval.start_us
         count = self.simulator.decision_ticks
         for index in range(1, count + 1):
-            if control is None:
+            if control is None and self._recipe_replay.pre_roll:
                 self._replay_tick()
             else:
                 self._recipe_replay.before_step()
-                self.ego.apply_control(control)
-                self.client.tick()
+                if control is not None:
+                    self._queue_ego_control(control)
+                self._tick()
                 self._recipe_replay.after_step()
             timestamp = origin + index * tick
             self.invalidate_state()
@@ -597,6 +769,16 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
             # Endpoint views read truth after simulator.step.post, like a decision capture.
             self._interval_ticks[timestamp] = self._capture_tick(
                 truth, due, freeze_views=index < count)
+
+    def _queue_ego_control(self, control):
+        import carla
+
+        command = carla.VehicleControl(
+            throttle=float(control.throttle), brake=float(control.brake), steer=float(control.steer),
+            hand_brake=bool(getattr(control, "hand_brake", False)),
+            reverse=bool(getattr(control, "reverse", False)))
+        self._queue_native_command(carla.command.ApplyVehicleControl(self.ego.actor.id, command))
+        return command
 
     def interpolate_vehicle_state(self, left: Any, right: Any, fraction: float, time_us: int) -> Any:
         """Interpolate native avstack physical vectors and attitude."""
@@ -963,7 +1145,7 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
             state = carla.VehicleLightState.NONE
             for flag in flags:
                 state |= getattr(carla.VehicleLightState, flag)
-            actor.set_light_state(carla.VehicleLightState(state))
+            self._queue_native_command(carla.command.SetVehicleLightState(actor.id, carla.VehicleLightState(state)))
 
     def _apply_road_friction(self, settings: Any) -> None:
         """Set wheel friction multipliers, preserving the other vehicle physics settings."""
@@ -983,7 +1165,9 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
             for wheel in wheels:
                 wheel.friction_force_multiplier = float(multiplier)
             physics.wheels = wheels
-            actor.apply_physics_control(physics)
+            import carla
+
+            self._queue_native_command(carla.command.ApplyVehiclePhysicsControl(actor.id, physics))
 
     def _apply_weather(self, weather: Any) -> None:
         """Set the world weather (the CARLA-native, world-level augmentation tier). ``weather`` is a
@@ -1028,10 +1212,16 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         if lead is None:
             raise RuntimeError(f"could not spawn lead vehicle {gap} m ahead (spawn point blocked)")
         self._resources.callback(_destroy_actor, lead)
-        world.tick()
+        self._tick()
         return lead
 
     def close(self) -> None:
+        try:
+            self._close_world()
+        finally:
+            super().close()
+
+    def _close_world(self) -> None:
         # ExitStack attempts every callback even if one fails. Never retain stale actors for reset.
         try:
             self._resources.close()
@@ -1048,9 +1238,11 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
             self._history_payload_times.clear()
             self._history_pose_times = frozenset()
             self._origin_clock_us = None
+            self._native_commands.clear()
+            self._pacing_started = False
+            self._last_tick_wall = self._pacing_start_wall = None
             for cache in (self._recorded_ticks, self._interval_ticks):
                 cache.clear()
-            super().close()
 
 
 __all__ = [

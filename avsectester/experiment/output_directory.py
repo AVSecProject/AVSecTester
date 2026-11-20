@@ -146,7 +146,9 @@ def _preparation_manifest(prepared: PreparedExperiment,
             "selections": [item.as_dict() for item in prepared.selections],
             "units": [unit.as_dict() for unit in prepared.units],
             "deployment_ticks": None if prepared.deployment is None else prepared.deployment.ticks,
-            "metadata_source": prepared.metadata_source}
+            "metadata_source": prepared.metadata_source,
+            **({"initializations": DEFAULT_REGISTRY.encode(prepared.initializations)}
+               if prepared.initializations else {})}
 
 
 def save_preparation_progress(prepared: PreparedExperiment, directory: str | Path,
@@ -408,7 +410,8 @@ def load_prepared(configuration: ExperimentConfiguration,
     return PreparedExperiment(configuration, saved.metadata, artifacts, saved.selections,
                               preparation=saved.preparation, units=saved.units, deployment=saved.deployment,
                               offline_reports=_load_offline_reports(tuple(configuration.attacks), root),
-                              metadata_source=saved.metadata_source)
+                              metadata_source=saved.metadata_source,
+                              initializations=DEFAULT_REGISTRY.decode(manifest.get("initializations", {})))
 
 
 def load_preparation_progress(configuration: ExperimentConfiguration,

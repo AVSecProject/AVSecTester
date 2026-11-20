@@ -11,7 +11,7 @@ from avsectester.data_types import ActorState, Control
 from .conversions import rotation_to_carla
 
 
-def _place(actor, state):
+def _place(runtime, actor, state):
     import carla
 
     pose = mirror_y_transform(np.asarray(state.pose, dtype=float))
@@ -19,11 +19,13 @@ def _place(actor, state):
         raise ValueError("Prescribed CARLA pose must be a finite 4x4 matrix")
     pitch, yaw, roll = rotation_to_carla(pose[:3, :3])
     rotation = carla.Rotation(pitch=pitch, yaw=yaw, roll=roll)
-    actor.set_transform(carla.Transform(carla.Location(*pose[:3, 3]), rotation))
-    actor.set_target_velocity(carla.Vector3D(*mirror_y_points(state.velocity)))
+    runtime._queue_native_command(carla.command.ApplyTransform(
+        actor.id, carla.Transform(carla.Location(*pose[:3, 3]), rotation)))
+    runtime._queue_native_command(carla.command.ApplyTargetVelocity(
+        actor.id, carla.Vector3D(*mirror_y_points(state.velocity))))
 
 
-def _trajectory_tick(actor, state, dt):
+def _trajectory_tick(runtime, actor, state, dt, *, enable_gravity=False):
     """Apply the desired next state through a physics tick, retaining measured velocity.
 
     CARLA reports zero velocity for a teleported actor with physics disabled. Place the
@@ -34,13 +36,13 @@ def _trajectory_tick(actor, state, dt):
 
     pose = np.asarray(state.pose, dtype=float).copy()
     pose[:3, 3] -= np.asarray(state.velocity) * dt
-    actor.set_simulate_physics(True)
+    runtime._queue_native_command(carla.command.SetSimulatePhysics(actor.id, True))
     # A prescribed 3-D path already specifies its vertical motion. Adding gravity here
     # would change its declared velocity by g*dt on every tick (even for a level path).
-    actor.set_enable_gravity(False)
-    actor.apply_control(carla.VehicleControl())
-    actor.set_target_angular_velocity(carla.Vector3D())
-    _place(actor, replace(state, pose=pose))
+    runtime._queue_native_command(carla.command.SetEnableGravity(actor.id, enable_gravity))
+    runtime._queue_native_command(carla.command.ApplyVehicleControl(actor.id, carla.VehicleControl()))
+    runtime._queue_native_command(carla.command.ApplyTargetAngularVelocity(actor.id, carla.Vector3D()))
+    _place(runtime, actor, replace(state, pose=pose))
 
 
 class RecipeReplay:
@@ -58,36 +60,54 @@ class RecipeReplay:
         import carla
         for name, spec in self.recipe.motion.items():
             actor = self.simulator_runtime.native["actors"][name]
-            actor.set_autopilot(False, self.simulator_runtime.client.traffic_manager_port)
+            self.simulator_runtime._queue_native_command(carla.command.SetAutopilot(
+                actor.id, False, self.simulator_runtime.client.traffic_manager_port))
             if spec.trajectory:
-                actor.set_simulate_physics(False)
-                _place(actor, spec.trajectory[0])
+                self.simulator_runtime._queue_native_command(carla.command.SetSimulatePhysics(actor.id, False))
+                _place(self.simulator_runtime, actor, spec.trajectory[0])
             else:
-                actor.apply_control(carla.VehicleControl(brake=1.0))
+                self.simulator_runtime._queue_native_command(carla.command.SetSimulatePhysics(actor.id, True))
+                self.simulator_runtime._queue_native_command(carla.command.SetEnableGravity(actor.id, True))
+                self.simulator_runtime._queue_native_command(carla.command.ApplyVehicleControl(
+                    actor.id, carla.VehicleControl(brake=1.0, hand_brake=True)))
         self.origins = None
 
     def activate(self):
+        import carla
+
         trajectories = {name: spec for name, spec in self.recipe.motion.items() if spec.trajectory}
         if trajectories:
             for name, spec in trajectories.items():
-                _trajectory_tick(self.simulator_runtime.native["actors"][name], spec.trajectory[0], self.tick_s)
-            self.simulator_runtime.client.tick()
+                _trajectory_tick(self.simulator_runtime, self.simulator_runtime.native["actors"][name],
+                                 spec.trajectory[0], self.tick_s)
+            self.simulator_runtime._tick()
         self.origins = {}
         for name, actor in self.simulator_runtime.native["actors"].items():
             v = actor.get_velocity()
-            self.origins[name] = ActorState(mirror_y_transform(np.asarray(actor.get_transform().get_matrix())),
+            transform = actor.get_transform()
+            motion = self.recipe.motion.get(name)
+            if self.simulator_runtime.simulator.ground_settle_ticks and motion and not motion.trajectory:
+                v = carla.Vector3D()
+            self.origins[name] = ActorState(mirror_y_transform(np.asarray(transform.get_matrix())),
                                            tuple(mirror_y_points((v.x, v.y, v.z))))
         return int(bool(trajectories))
 
     def hold_origin(self):
         for name, state in self.origins.items():
             if name not in self.released:
-                _trajectory_tick(self.simulator_runtime.native["actors"][name], state, self.tick_s)
+                # Gravity balances the suspension of a vehicle held at its settled pose.
+                enable_gravity = bool(self.simulator_runtime.simulator.ground_settle_ticks
+                                      and not self.recipe.motion[name].trajectory)
+                _trajectory_tick(self.simulator_runtime, self.simulator_runtime.native["actors"][name],
+                                 state, self.tick_s, enable_gravity=enable_gravity)
 
     def finish_holding(self):
+        import carla
+
         for name, spec in self.recipe.motion.items():
             if not spec.trajectory:
-                self.simulator_runtime.native["actors"][name].set_enable_gravity(True)
+                actor = self.simulator_runtime.native["actors"][name]
+                self.simulator_runtime._queue_native_command(carla.command.SetEnableGravity(actor.id, True))
 
     def before_step(self):
         if self.index >= self.recipe.decision_steps * self.ticks_per_decision:
@@ -108,12 +128,12 @@ class RecipeReplay:
                         pose=interpolate_transform(state.pose, after.pose, fraction),
                         velocity=tuple((1 - fraction) * np.asarray(state.velocity)
                                        + fraction * np.asarray(after.velocity)))
-                _trajectory_tick(actor, state, self.tick_s)
+                _trajectory_tick(self.simulator_runtime, actor, state, self.tick_s)
             elif identity != "ego":
                 control = motion.controls[self.index // self.ticks_per_decision]
-                actor.apply_control(carla.VehicleControl(
-                    throttle=control.throttle, brake=control.brake, steer=control.steer,
-                ))
+                self.simulator_runtime._queue_native_command(carla.command.ApplyVehicleControl(
+                    actor.id, carla.VehicleControl(
+                        throttle=control.throttle, brake=control.brake, steer=control.steer)))
 
     def after_step(self):
         self.index += 1
@@ -127,12 +147,17 @@ class RecipeReplay:
         self.released.add(identity)
         motion = self.recipe.motion.get(identity)
         if motion is not None and motion.trajectory:
+            import carla
+
             actor = self.simulator_runtime.native["actors"][identity]
-            actor.set_simulate_physics(True)
-            actor.set_enable_gravity(True)
+            self.simulator_runtime._queue_native_command(carla.command.SetSimulatePhysics(actor.id, True))
+            self.simulator_runtime._queue_native_command(carla.command.SetEnableGravity(actor.id, True))
 
     def release_ego(self):
+        import carla
+
         self.pre_roll = False
         if self.recipe.motion["ego"].trajectory:
-            self.simulator_runtime.ego.actor.set_simulate_physics(True)
-            self.simulator_runtime.ego.actor.set_enable_gravity(True)
+            actor = self.simulator_runtime.ego.actor
+            self.simulator_runtime._queue_native_command(carla.command.SetSimulatePhysics(actor.id, True))
+            self.simulator_runtime._queue_native_command(carla.command.SetEnableGravity(actor.id, True))

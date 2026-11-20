@@ -194,6 +194,12 @@ def test_driving_metrics(make_log, make_actor, make_group):
     assert values["overlap"]["min_distance"] == 0. and values["overlap"]["collision"] is True
     assert all(isinstance(values["apart"][name], UnavailableMetricValue)
                for name in ("min_distance", "collision"))
+    external = make_log([2., 1.])
+    for step in external.steps:
+        step.produced_command = step.executed_command = None
+    measured = DrivingMetrics().evaluate(make_group({"external": external}))["external"]
+    assert isinstance(measured["brake_steps"], UnavailableMetricValue)
+    assert measured["final_speed"] == 1.
 
 
 def test_force_gt_metrics(make_log, make_group, make_pair, sign_group):

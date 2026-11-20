@@ -9,6 +9,11 @@ from typing import Any
 import numpy as np
 
 
+def _loadable_map_name(name):
+    """Use a server map name rather than the asset path reported by native snapshots."""
+    return name.rsplit("/", 1)[-1] if isinstance(name, str) else name
+
+
 def resolve_scenario_seed(scenario: dict) -> dict:
     """Copy a scene and supply a missing client seed without contacting CARLA."""
     resolved = deepcopy(scenario)
@@ -27,6 +32,8 @@ def prepare_scenario(scenario: dict) -> dict:
 
     resolved = resolve_scenario_seed(scenario)
     config = resolved["client"]
+    if "map_name" in config:
+        config["map_name"] = _loadable_map_name(config["map_name"])
     if config.get("traffic_manager_seed") is None:
         config["traffic_manager_seed"] = config["seed"]
     if config.get("reset_world") is False:
@@ -36,6 +43,8 @@ def prepare_scenario(scenario: dict) -> dict:
     client = CARLA.build(deepcopy(config))
     try:
         config.update(client.scene_settings())
+        if "map_name" in config:
+            config["map_name"] = _loadable_map_name(config["map_name"])
         rng = np.random.RandomState(config["seed"])
         blueprints = list(client.world.get_blueprint_library().filter("vehicle"))
         sorted_blueprints = sorted(blueprints, key=lambda bp: bp.id)

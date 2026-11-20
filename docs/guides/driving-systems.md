@@ -8,9 +8,9 @@
 
 ## `AVStack` interface
 
-`AVStack` receives an `Observation` and returns a `Control`. It declares supported command
-modes, stages and optional recorded-input requirements. The simulator and driving system must
-agree on commands and decision timing.
+`AVStack` receives an `Observation` and returns a `Control`. An externally controlled ego uses
+`None` instead. It declares supported command modes, stages and optional recorded-input
+requirements. The simulator and driving system must agree on commands and decision timing.
 See [Configuration](../reference/configuration.md#driving-specification).
 
 Interfaces live in `avsectester.closed_loop.avstacks`. Supplied implementations live below
@@ -352,6 +352,10 @@ Implement `AVStack` in a user package and reference it as
 `type: my_project.driving:CustomAVStack`. Declare required history, compatible command modes and
 optional decision timing. A separate binding factory exposes components or scorers when the
 experiment needs them.
+
+Use `ExternalAVStack` to represent a driving system that runs outside the framework and controls
+ego through the simulator. It declares empty command modes and returns `None`. For CARLA setup
+and runtime restrictions, see [native ROS 2 control](simulators.md#native-ros-2-control).
 
 A minimal actuator policy needs no simulator connection:
 

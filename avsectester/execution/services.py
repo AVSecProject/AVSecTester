@@ -25,7 +25,7 @@ from avsectester.data_types import Unavailable
 from avsectester.validation import require_nonnegative_integer
 from avsectester.closed_loop.environment import SensorEnvironment, normalize_environment, validate_environment
 from avsectester.data_types import Observation
-from avsectester.execution.frame_data_cache import FrameDataCache
+from avsectester.execution.frame_data_cache import FrameDataCache, frame_data_source_key
 from avsectester.closed_loop.simulators.base import Initialization, FrameDataSequence
 from avsectester.runlog import Recorder, RunLog, StepRecord
 from avsectester.closed_loop.hooks import HookSet
@@ -387,10 +387,8 @@ class ClosedLoopSession:
         dataset = self.services.dataset
         frames = tuple(dataset.frames(scenario))
         start = self._scenario_start(scenario, frames[0], environment)
-        key = FrameDataCache.key(start, {
-            **self.services.simulator.identity, "environment": dict(environment),
-            "deployment_ticks": deployment.ticks,
-        }, self.seed)
+        key = frame_data_source_key(
+            start, self.services.simulator.identity, environment, deployment.ticks, self.seed)
 
         def generate() -> FrameDataSequence:
             with self._operation() as resources:
@@ -410,7 +408,8 @@ class ClosedLoopSession:
         Required history is the larger of the simulator's own history and the driving
         system's history plus the simulator's observation lead steps.
         Before live sensors are known, selection also reserves the default sensor cadence.
-        Recorded context requires a declared dataset time grid.
+        Recorded context requires a declared dataset time grid. Simulator-specific run-start
+        rules are checked by ``Simulator.validate_startup``.
         """
         from avsectester.closed_loop.simulators.base import can_deploy_at
 

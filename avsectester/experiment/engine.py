@@ -13,17 +13,17 @@ from typing import Any
 
 from avsectester.attack import AttackSegment, OfflineContext, OfflineReport
 from avsectester.datasets import ScenarioStart
-from avsectester.data_types import Unavailable
+from avsectester.data_types import Unavailable, is_external_control
 from avsectester.validation import require_nonnegative_integer
 from avsectester.attack.runtime import AttackRuntime
 from avsectester.closed_loop.environment import merge_environments, validate_environment
-from avsectester.execution.frame_data_cache import FrameDataCache
+from avsectester.execution.frame_data_cache import FrameDataCache, frame_data_source_key
 from avsectester.closed_loop.hooks import HookSet
 from avsectester.execution.runner import ClosedLoopRunner, RunRequest
 from avsectester.execution.services import (
     ClosedLoopServices, create_avstack, create_simulator_runtime, ensure_fresh, stop_unstarted_attacks,
 )
-from avsectester.closed_loop.simulators.base import DeploymentPlan, UnsupportedStartError
+from avsectester.closed_loop.simulators.base import DeploymentPlan, Initialization, UnsupportedStartError
 from avsectester.runlog import Recorder, RunLog
 from avsectester.maps import ScenarioMap
 
@@ -261,6 +261,51 @@ def _validate(configuration: ExperimentConfiguration, resume: bool) -> _Validati
     return _Validation()
 
 
+def _uses_prepared_references(config: ExperimentConfiguration) -> bool:
+    # An external controller runs during execution, so execution must not replay the recipe.
+    return is_external_control(config.simulator.command_modes)
+
+
+def _prepare_origin_references(prepared: PreparedExperiment, cache: FrameDataCache) -> PreparedExperiment:
+    config = prepared.configuration
+    if not _uses_prepared_references(config) or not prepared.units:
+        return prepared
+    deployment = prepared.deployment
+    if deployment is None:
+        raise ValueError("Preparing origin references requires the shared deployment plan")
+    starts = {unit.segment.scenario_id: unit.segment.start for unit in prepared.units}
+    initializations = {scene: dict(values) for scene, values in prepared.initializations.items()}
+    changed = False
+    # Complete the reference scan before an external controller is allowed to publish.
+    with ClosedLoopServices(
+        config.dataset, config.simulator, frame_data_cache=cache, deployment=deployment,
+        timing=config.runs.timing,
+    ) as services:
+        for seed in config.runs.seeds:
+            with services.session(seed) as session:
+                for scene, frame in starts.items():
+                    start = config.dataset.scenario_start(scene, frame)
+                    if start.kind != "CarlaDataset":
+                        continue
+                    key = frame_data_source_key(
+                        start, config.simulator.identity, config.runs.environment, deployment.ticks, seed)
+                    entries = initializations.setdefault(scene, {})
+                    cached = entries.get(str(seed))
+                    if isinstance(cached, Initialization) and cached.provenance.get("source_key") == key:
+                        continue
+                    config.simulator.validate_startup(start, config.runs.timing.force_gt_duration_us)
+                    try:
+                        reference = session.initialization(start, config.runs.environment)
+                        assert reference is not None
+                        entries[str(seed)] = replace(reference, provenance={**reference.provenance, "source_key": key})
+                    except Exception as error:
+                        if config.runs.strict:
+                            raise
+                        entries[str(seed)] = Unavailable(f"{type(error).__name__}: {error}")
+                    changed = True
+    return replace(prepared, initializations=initializations) if changed else prepared
+
+
 class Experiment:
     """The fixed build_metadata → run_offline → online experiment workflow.
 
@@ -286,9 +331,12 @@ class Experiment:
         configuration = load_configuration(config)
         validated = _validate(configuration, resume)
         output = configuration.runs.output
-        if validated.prepared is not None:
-            return validated.prepared
         cache = FrameDataCache()
+        if validated.prepared is not None:
+            prepared = _prepare_origin_references(validated.prepared, cache)
+            if prepared is not validated.prepared and output is not None:
+                prepared.save(output)
+            return prepared
         seed = configuration.runs.seeds[0]
         if validated.progress is not None:
             prepared, completed_names = validated.progress
@@ -371,6 +419,7 @@ class Experiment:
             completed.append(name)
             if output is not None:
                 save_completed_artifact(prepared, name, output, completed)
+        prepared = _prepare_origin_references(prepared, cache)
         if output is not None:
             prepared.save(output)
         return prepared
@@ -535,6 +584,18 @@ class _Execution:
         start = config.dataset.scenario_start(segment.scenario_id, segment.start)
         initialization = None
         if start.kind == "CarlaDataset":
+            if _uses_prepared_references(config):
+                reference = self.prepared.initializations.get(start.scenario_id, {}).get(str(group.seed))
+                if isinstance(reference, Unavailable):
+                    raise RuntimeError(f"Preparing the origin reference failed: {reference.reason}")
+                key = frame_data_source_key(
+                    start, config.simulator.identity, config.runs.environment, deployment.ticks, group.seed)
+                if not isinstance(reference, Initialization) or reference.provenance.get("source_key") != key:
+                    raise ValueError(
+                        f"No matching prepared origin reference for {start.scenario_id!r} and seed {group.seed}. "
+                        "Resume preparation with the external controller stopped."
+                    )
+                return start, reference
             # Resolve this seed's actual spawns once. The cache key includes the recipe,
             # simulator, seed, base environment and the shared deployment window.
             with ClosedLoopServices(

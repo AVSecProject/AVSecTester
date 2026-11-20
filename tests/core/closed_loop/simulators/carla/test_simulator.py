@@ -63,7 +63,8 @@ def test_capture_alignment(monkeypatch, carla_dataset):
         runtime.step(Control())
         assert list(runtime.observe().sensor_data) == ["front", "lidar"]
     CarlaNativeBoundary(frame_offset=10).install(monkeypatch, None)
-    with CarlaSimulator({"rate": 10}, settle_iters=0, camera_warmup_s=0.).create_runtime() as runtime:
+    with CarlaSimulator({"rate": 10}, settle_iters=0, camera_warmup_s=0.,
+                        ground_settle_s=0.).create_runtime() as runtime:
         with pytest.raises(SensorAlignmentError, match="ahead"):
             runtime.reset(start)
 
@@ -171,6 +172,28 @@ def test_scene_choices_follow_the_run_seed(monkeypatch, carla_dataset):
     np.testing.assert_allclose(origins[0][1], origins[1][1])
 
 
+def test_cached_scenarios_across_maps(monkeypatch, carla_dataset):
+    CarlaNativeBoundary().install(monkeypatch, None)
+    recipe = carla_dataset.native("scene")
+    cached = []
+    simulator = CarlaSimulator({"rate": 10}, settle_iters=0, camera_warmup_s=0.)
+    with simulator.create_runtime() as runtime:
+        for name in ("Town03_Opt", "Town10HD_Opt"):
+            scenario = deepcopy(recipe.scenario)
+            scenario["client"]["map_name"] = name
+            dataset = CarlaDataset({"scene": replace(recipe, scenario=scenario)})
+            start = dataset.scenario_start("scene", dataset.frames("scene")[0])
+            source = runtime.generate_frame_data(start, (start.frame,))
+            resolved = deepcopy(source.resolved_scenario)
+            assert resolved["client"]["map_name"] == name
+            # Saved native names may also be asset-relative.
+            resolved["client"]["map_name"] = f"Carla/Maps/{name}"
+            cached.append((start, Initialization(source.at(start.frame), resolved, source.provenance)))
+        for start, initialization in reversed(cached):
+            runtime.reset(start, initialization)
+            assert runtime.replay_scenario["client"]["map_name"] in {"Town03_Opt", "Town10HD_Opt"}
+
+
 def test_control_actor(monkeypatch, carla_dataset):
     CarlaNativeBoundary().install(monkeypatch, None)
     recipe = carla_dataset.native("scene")
@@ -208,12 +231,168 @@ def test_set_actor_state(monkeypatch, carla_dataset):
         pose[:3, 3] = (12., -3., 1.2)
         runtime.set_actor_state("npc:0", replace(runtime.state().actors["npc:0"],
                                                  pose=pose, velocity=(2., .5, 0.)))
+        runtime.step(Control())
         # CARLA's y axis points to the right of the canonical frame.
         location, velocity = native.get_transform().location, native.get_velocity()
-        assert (location.x, location.y, location.z) == pytest.approx((12., 3., 1.2))
+        assert (location.x, location.y, location.z) == pytest.approx((12.2, 3., 1.2))
         assert (velocity.x, velocity.y, velocity.z) == pytest.approx((2., -.5, 0.))
         with pytest.raises(KeyError, match="Unknown CARLA actor 'missing'"):
             runtime.set_actor_state("missing", ActorState(pose))
+
+
+def test_synchronous_actor_updates(monkeypatch, carla_dataset):
+    CarlaNativeBoundary().install(monkeypatch, None)
+    start = carla_dataset.scenario_start("scene", carla_dataset.frames("scene")[0])
+    with CarlaSimulator({"rate": 10}, settle_iters=0, camera_warmup_s=0.).create_runtime() as runtime:
+        runtime.reset(start, world={"road_friction": {"friction_force_multiplier": .7}})
+        native = runtime.native
+        first = len(native["world"].command_events)
+        runtime.step(Control(throttle=.5))
+        events = native["world"].command_events
+        assert [event[0] for event in events[first:]] == ["batch", "tick"]
+        assert all(event[1] and event[2] is False for event in events if event[0] == "batch")
+        assert native["world"].direct_actor_updates == []
+        assert native["ego"].actor.get_control().throttle == .5
+        frame = runtime.clock.frame
+        native["client"].command_error = "actor rejected command"
+        with pytest.raises(RuntimeError, match="actor rejected command"):
+            runtime.step(Control(throttle=.3))
+        assert native["world"].get_snapshot().frame == frame
+
+
+def test_ground_settling(monkeypatch, carla_dataset):
+    start = carla_dataset.scenario_start("scene", carla_dataset.frames("scene")[0])
+    CarlaNativeBoundary(ground_height=-.3, ground_offset=(.4, -.3, 7.)).install(monkeypatch, None)
+    results = []
+    for duration in (0., .2):
+        simulator = CarlaSimulator({"rate": 10}, settle_iters=0, camera_warmup_s=0.,
+                                   ground_settle_s=duration)
+        with simulator.create_runtime() as runtime:
+            runtime.reset(start)
+            results.append((runtime.clock.frame, runtime.state().ego.pose.copy(),
+                            runtime.native["ego"].actor.enable_gravity))
+            assert simulator.identity["ground_settle_s"] == duration
+            born = runtime.replay_scenario["ego"]["spawn_transform"]["location"]
+            assert born["x"] == 0. and born["y"] == 0.
+    assert results[1][0] == results[0][0] + 2
+    np.testing.assert_allclose(results[0][1][:2, 3], (0., 0.))
+    np.testing.assert_allclose(results[1][1][:3, 3], (.4, .3, -.3))
+    pose = results[1][1]
+    assert np.rad2deg(np.arctan2(pose[1, 0], pose[0, 0])) == pytest.approx(-7.)
+    assert results[0][2] is False and results[1][2] is True
+    with pytest.raises(ValueError, match="whole number"):
+        CarlaSimulator({"rate": 10}, ground_settle_s=.15)
+
+
+def test_realtime_pacing(monkeypatch, carla_dataset):
+    class Clock:
+        def __init__(self):
+            self.now, self.waits = 0., []
+
+        def monotonic(self):
+            return self.now
+
+        def sleep(self, duration):
+            self.waits.append(duration)
+            self.now += duration
+
+    clock = Clock()
+    monkeypatch.setattr("avsectester.closed_loop.simulators.carla.simulator.time", clock)
+    CarlaNativeBoundary().install(monkeypatch, None)
+    start = carla_dataset.scenario_start("scene", carla_dataset.frames("scene")[0])
+    simulator = CarlaSimulator({"rate": 10}, settle_iters=0, camera_warmup_s=0.,
+                               external_startup_s=.2, realtime_factor=2.)
+    with simulator.create_runtime() as runtime:
+        runtime.reset(start)
+        assert clock.waits == []
+        assert "realtime" not in runtime.initialization_report
+        assert "realtime" not in runtime.termination_details
+        runtime.reset(start, closed_loop_run=True)
+        stats = runtime.initialization_report["realtime"]
+        assert stats["ticks"] == 4
+        assert stats["elapsed_wall_s"] == pytest.approx(.2)
+        assert stats["actual_realtime_factor"] == pytest.approx(2.)
+        assert stats["late_ticks"] == 0 and stats["max_lateness_s"] == 0.
+        np.testing.assert_allclose(clock.waits, [.05, .05, .05, .05])
+        clock.now += .1
+        runtime.step(Control())
+        assert runtime.initialization_report["realtime"]["late_ticks"] == 0
+        assert runtime.initialization_report["realtime"]["ticks"] == 4
+        final = runtime.termination_details["realtime"]
+        assert final["late_ticks"] == 1 and final["ticks"] == 5
+        assert final["max_lateness_s"] == pytest.approx(.05)
+    assert runtime.termination_details["realtime"] == final
+    with pytest.raises(ValueError, match="positive and finite"):
+        CarlaSimulator({}, realtime_factor=0.)
+
+
+def test_external_ego_control(monkeypatch, carla_dataset, make_object_in_front):
+    clock = SimpleNamespace(monotonic=lambda: 0., sleep=lambda duration: None)
+    monkeypatch.setattr("avsectester.closed_loop.simulators.carla.simulator.time", clock)
+    CarlaNativeBoundary().install(monkeypatch, None)
+    recipe = carla_dataset.native("scene")
+    scenario = deepcopy(recipe.scenario)
+    scenario["ego"]["blueprint_attributes"] = {"role_name": "ego", "ros2_ackermann_control": True}
+    trajectory = []
+    for index in range(recipe.decision_steps + 1):
+        pose = np.eye(4)
+        pose[0, 3] = index * .1
+        trajectory.append(ActorState(pose, (1., 0., 0.)))
+    datasets = (
+        CarlaDataset({"scene": replace(recipe, scenario=scenario)}),
+        CarlaDataset({"scene": replace(recipe, scenario=scenario,
+            motion={"ego": PrescribedMotion(trajectory=tuple(trajectory))})}),
+    )
+    simulator = CarlaSimulator({"rate": 10}, settle_iters=0, camera_warmup_s=0.,
+                               ego_control="ros2", realtime_factor=1.)
+    assert not simulator.can_start_runs_after_origin
+    assert CarlaSimulator({}).can_start_runs_after_origin
+    initializations = []
+    for dataset in datasets:
+        frames = dataset.frames("scene")
+        start = dataset.scenario_start("scene", frames[0])
+        with simulator.create_runtime() as runtime:
+            source = runtime.generate_frame_data(start, frames[:2])
+            initialization = Initialization(source.at(frames[0]), source.resolved_scenario, source.provenance)
+            initializations.append(initialization)
+            runtime.reset(start, initialization)
+            native = runtime.native
+            assert runtime.command_modes == frozenset()
+            assert runtime.can_insert_objects is True
+            asset, transform = make_object_in_front(runtime.sensor_view("front"))
+            runtime.insert_object("offline", asset, transform)
+            runtime.remove_object("offline")
+            assert native["ego"].actor.attributes["role_name"] == "ego"
+            runtime.reset(start, initialization, closed_loop_run=True)
+            native = runtime.native
+            assert not runtime.can_insert_objects
+            with pytest.raises(NotImplementedError, match="Framework-composited objects do not reach"):
+                runtime.insert_object("framework_only", asset, transform)
+            first = len(native["world"].command_events)
+            runtime.step(None)
+            queued = [command for event in native["world"].command_events[first:] if event[0] == "batch"
+                      for command in event[1]]
+            assert all(command.actor_id != native["ego"].actor.id for command in queued)
+            assert runtime.decision_telemetry()["ego_control"]["throttle"] == 0.
+    frames = datasets[0].frames("scene")
+    start = datasets[0].scenario_start("scene", frames[0])
+    initialization = initializations[0]
+    CarlaNativeBoundary(external_ego_throttle=.5).install(monkeypatch, None)
+    with simulator.create_runtime() as runtime:
+        with pytest.raises(RuntimeError, match="external client controlled the ego during CARLA replay"):
+            runtime.generate_frame_data(start, frames[:2])
+        runtime.start_replay(start, initialization)
+        assert "front" in runtime.observe().sensor_data
+        with pytest.raises(RuntimeError, match="external client controlled the ego during CARLA replay"):
+            runtime.advance_replay(1)
+        with pytest.raises(RuntimeError, match="External controls before the CARLA run changed"):
+            runtime.reset(start, initialization, closed_loop_run=True)
+    with pytest.raises(ValueError, match="requires realtime_factor"):
+        CarlaSimulator({}, ego_control="ros2")
+    with pytest.raises(ValueError, match="role_name"):
+        simulator.validate_start(carla_dataset.scenario_start("scene", carla_dataset.frames("scene")[0]))
+    with pytest.raises(ValueError, match="exclusively controls the ego"):
+        simulator.validate_timing(TimingConfiguration(force_gt_duration_us=100000))
 
 
 @pytest.fixture

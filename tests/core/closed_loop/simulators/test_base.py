@@ -16,7 +16,10 @@ from avsectester.geometry.poses import rotation_matrix
 from avsectester.closed_loop.timing import TimingConfiguration
 from avsectester.closed_loop.simulators.nurec import NuRecRenderer, NuRecSimulator
 from avsectester.closed_loop.simulators.recorded import RecordedReplaySimulator
-from tests.fakes import CAMERA, CAM_FROM_WORLD, ConstantAVStack, MemoryDataset, MemorySimulator, actor_state
+from tests.fakes import (
+    CAMERA, CAM_FROM_WORLD, ConstantAVStack, ExternallyControlledMemorySimulator, MemoryDataset,
+    MemorySimulator, actor_state,
+)
 
 
 def test_interpolate_vehicle_state():
@@ -69,6 +72,10 @@ def test_validate_startup():
         simulator.validate_startup(start, 300000)
     with pytest.raises(ValueError, match="does not support force_gt_duration_us"):
         MemorySimulator(can_replay=False).validate_timing(TimingConfiguration(force_gt_duration_us=100000))
+    origin_only = ExternallyControlledMemorySimulator()
+    origin_only.validate_startup(dataset.scenario_start("scene", dataset.frames("scene")[0]), 0)
+    with pytest.raises(UnsupportedStartError, match="only at the scenario origin"):
+        origin_only.validate_startup(start, 0)
 
 
 def test_reset():
@@ -83,6 +90,14 @@ def test_reset():
         assert simulator_runtime.clock.t == 0.
         with pytest.raises(ValueError, match="does not support"):
             simulator_runtime.reset(world={"sensors": []})
+    with ExternallyControlledMemorySimulator().create_runtime() as runtime:
+        origin, later = (data.scenario_start("scene", frames[position]) for position in (0, 3))
+        runtime.reset(origin, closed_loop_run=True)
+        assert runtime.closed_loop_run
+        with pytest.raises(UnsupportedStartError, match="only at the scenario origin"):
+            runtime.reset(later, closed_loop_run=True)
+        runtime.reset(later)
+        assert not runtime.closed_loop_run and runtime.observe().frame == 3
 
 
 def test_step():

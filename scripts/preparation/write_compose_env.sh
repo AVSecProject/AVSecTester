@@ -31,6 +31,7 @@ dotenv_path() {
   printf 'DOCKER_GID=%s\n' "$docker_gid"
   printf 'DOCKER_CLI=%s\n' "$(dotenv_path "$docker_cli")"
   printf 'CARLA_SERVER_GPU=0\nCARLA_EXPERIMENT_GPU=0\nNUREC_GPU=0\n'
+  printf "CARLA_SERVER_ARGS=''\n"
 } > "$temporary"
 mv -- "$temporary" "$destination"
 cat -- "$destination"

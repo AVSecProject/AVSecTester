@@ -153,6 +153,14 @@ def validate_carla_world_settings(settings: Mapping[str, Any]) -> None:
         validators[name](value)
 
 
+def _validate_blueprint_attributes(specification, name):
+    attributes = specification.get("blueprint_attributes", {})
+    if (not isinstance(attributes, Mapping)
+            or any(not isinstance(key, str) or not key for key in attributes)
+            or any(not isinstance(value, (str, bool, int, float)) for value in attributes.values())):
+        raise ValueError(f"{name}.blueprint_attributes must map nonempty names to scalar values")
+
+
 @dataclass(frozen=True)
 class PrescribedMotion:
     """One control sequence, trajectory, or constant actuator control.
@@ -200,7 +208,12 @@ class PrescribedMotion:
 
 @dataclass(frozen=True)
 class CarlaRecipe:
-    """Serializable CARLA world, ego and recorded-actor scenario recipe."""
+    """Serializable CARLA world, ego and recorded-actor scenario recipe.
+
+    Ego and sensor specifications accept ``blueprint_attributes`` for native blueprint
+    settings. Unknown attribute names raise ``ValueError`` when actors are built.
+    Sensors with ``ros=True`` enable native ROS publication after spawning.
+    """
     scenario: dict
     decision_steps: int
     time_step: float
@@ -214,6 +227,12 @@ class CarlaRecipe:
         if not math.isfinite(self.time_step) or self.time_step <= 0:
             raise ValueError("time_step must be positive and finite")
         scenario = deepcopy(self.scenario)
+        ego = scenario.get("ego", {})
+        _validate_blueprint_attributes(ego, "ego")
+        for sensor in ego.get("sensors", ()):
+            _validate_blueprint_attributes(sensor, "sensor")
+            if not isinstance(sensor.get("ros", False), bool):
+                raise ValueError("sensor.ros must be a boolean")
         world_names = CARLA_WORLD_SETTINGS
         validate_carla_world_settings({name: value for name, value in scenario.items()
                                        if name in world_names})

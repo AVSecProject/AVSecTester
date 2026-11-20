@@ -13,6 +13,7 @@ import numpy as np
 
 from avsectester.datasets.base import ScenarioStart
 from avsectester.closed_loop.simulators import FrameDataSequence
+from avsectester.closed_loop.environment import normalize_environment
 
 
 def fingerprint(value: Any) -> str:
@@ -61,6 +62,15 @@ class FrameDataCache:
     def get(self, key: str) -> FrameDataSequence:
         """Return a copy of the cached sequence. Raise ``KeyError`` when the key is absent."""
         return deepcopy(self._sequences[key])
+
+
+def frame_data_source_key(start: ScenarioStart, simulator_identity: Mapping[str, Any],
+                          environment: Mapping[str, Any], deployment_ticks: int, seed: int) -> str:
+    """Identify the source of a generated frame sequence and its saved start reference."""
+    return FrameDataCache.key(start, {
+        **simulator_identity, "environment": normalize_environment(environment),
+        "deployment_ticks": deployment_ticks,
+    }, seed)
 
 
 __all__ = [

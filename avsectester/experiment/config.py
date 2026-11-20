@@ -549,8 +549,8 @@ def _avstack(value: Any, directory: Path, device: str | None = None) -> DrivingA
     modes = spec.get("command_modes")
     if modes is not None:
         modes = frozenset(_sequence(modes, "command_modes"))
-        if not modes or modes - {"actuator", "trajectory"}:
-            raise ValueError("command_modes must contain actuator and/or trajectory")
+        if modes - {"actuator", "trajectory"}:
+            raise ValueError("command_modes must contain actuator and/or trajectory, or be empty")
 
     # A constructor that declares ``seed`` receives the run seed. Configuring it is an error.
     try:

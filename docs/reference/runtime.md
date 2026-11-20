@@ -117,6 +117,12 @@ before it has aged by the delay. Delay does not introduce a recorded-motion star
 Trajectory coordinates retain their generation-time rig frame and timestamps. The controller
 resolves them against its ego trajectory. Actuator commands have no spatial frame.
 
+When both simulator and driving system declare no command modes, the driver returns `None`.
+This bypasses the delay buffer and records both produced and executed commands as `None`.
+CARLA native ROS 2 control records the server's applied control in `telemetry.ego_control`.
+Metrics requiring executed commands, including `brake_steps`, are unavailable. See
+[native ROS 2 control](../guides/simulators.md#native-ros-2-control).
+
 `force_gt_duration_us` configures recorded motion independently of planning delay. A decision
 is `force_gt` when its target timestamp belongs to the inclusive interval from the origin
 through the origin plus that duration.

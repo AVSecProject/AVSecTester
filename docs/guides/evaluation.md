@@ -76,7 +76,8 @@ parameters and unavailable conditions. The default set and YAML validation are d
 [evaluation configuration](../reference/configuration.md#evaluation).
 
 `DrivingMetrics` uses executed actuator commands for `brake_steps`. Trajectory commands do not
-provide that evidence. Collision is bird's-eye oriented-box overlap, not a native
+provide that evidence. External control records no executed command, so command-dependent
+measurements are unavailable. Collision is bird's-eye oriented-box overlap, not a native
 collision-sensor event. `TrajectoryDeviation` compares true ego positions at equal decision
 indices, without time or route alignment.
 

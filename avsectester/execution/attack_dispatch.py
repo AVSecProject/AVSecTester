@@ -16,7 +16,9 @@ from avsectester.attack.runtime import (
     AttackAction, AttackRuntime, AVStackAttackAction, OnlineContext, ResultSubscription,
     SensorAttackAction, WorldAttackAction,
 )
-from avsectester.closed_loop.hooks import Hook, StageContext, UnsupportedStageError
+from avsectester.closed_loop.hooks import (
+    EXTERNAL_CONTROL_INPUT_ERROR, Hook, StageContext, UnsupportedStageError,
+)
 from avsectester.data_types import Observation
 
 if TYPE_CHECKING:
@@ -127,6 +129,7 @@ class AttackDispatcher:
             require_nonnegative_integer(ticks, "AttackRuntime.setup_ticks")
             self._subscriptions[id(attack)] = frozenset(item.kind for item in subscriptions)
         self._available: frozenset[str] | None = None
+        self._world_only = False
         self._started: list[AttackRuntime] = []
         self._resources = ExitStack()
         self._last_context: OnlineContext | None = None
@@ -151,13 +154,18 @@ class AttackDispatcher:
     def started(self) -> bool:
         return bool(self._started) and not self._stopped
 
-    def validate(self, available_stages: Iterable[str]) -> None:
+    def validate(self, available_stages: Iterable[str], *, world_only: bool = False) -> None:
         self._available = frozenset(available_stages)
+        self._world_only = world_only
 
     def _check_actions(self, actions: Iterable[AttackAction]) -> None:
         assert self._available is not None
         for action in actions:
             _category(action)
+            if self._world_only and not isinstance(action, WorldAttackAction):
+                raise UnsupportedStageError(
+                    "External control only supports WorldAttackAction during a run. "
+                    + EXTERNAL_CONTROL_INPUT_ERROR)
             if isinstance(action, WorldAttackAction) and "simulator.step.pre" not in self._available:
                 raise UnsupportedStageError("This simulator cannot apply world attack actions")
             if isinstance(action, AVStackAttackAction):
@@ -179,7 +187,8 @@ class AttackDispatcher:
         hooks = []
         if "simulator.setup" in self._available:
             hooks.append(Hook("simulator.setup", _SetupHook(self)))
-        hooks.extend(Hook(stage, self._at_stage) for stage in _STAGE_ORDER if stage in self._available)
+        if not self._world_only:
+            hooks.extend(Hook(stage, self._at_stage) for stage in _STAGE_ORDER if stage in self._available)
         if "simulator.step.pre" in self._available:
             hooks.append(Hook("simulator.step.pre", self._at_world_step))
         return tuple(hooks)
@@ -249,7 +258,10 @@ class AttackDispatcher:
             actions = attack.setup(self._for_attack(attack, context))
             if actions is None:
                 raise TypeError("AttackRuntime.setup must return a sequence of actions, not None")
-            for action in tuple(actions):
+            actions = tuple(actions)
+            if self._world_only:
+                self._check_actions(actions)
+            for action in actions:
                 if not isinstance(action, WorldAttackAction):
                     raise TypeError("AttackRuntime.setup returns only WorldAttackAction instances")
                 action_id = self._request(action, context, attack, "setup")

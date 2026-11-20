@@ -129,6 +129,8 @@ def test_validate_command_modes():
     trajectory = [((0., 0., 0.), (1., 0., 0., 0.), 0)]
     assert validate_command_modes(Control(trajectory=trajectory), frozenset({"trajectory"})) is None
     assert validate_command_modes(Control(throttle=.5), None) is None
+    with pytest.raises(ValueError, match="Externally controlled"):
+        validate_command_modes(Control(), frozenset())
     with pytest.raises(ValueError, match="trajectory commands"):
         validate_command_modes(Control(trajectory=trajectory), frozenset({"actuator"}))
     with pytest.raises(ValueError, match="actuator command fields"):

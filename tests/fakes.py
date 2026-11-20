@@ -413,6 +413,28 @@ class MemorySimulatorRuntime(SimulatorRuntime):
         self.native["objects"].clear()
 
 
+class ExternallyControlledMemorySimulator(MemorySimulator):
+    """A world whose ego motion comes from an external controller."""
+
+    command_modes = frozenset()
+    can_start_runs_after_origin = False
+
+    def create_runtime(self, seed=None):
+        return ExternallyControlledMemoryRuntime(self, seed)
+
+
+class ExternallyControlledMemoryRuntime(MemorySimulatorRuntime):
+    """Model an external controller through the simulator extension contract."""
+
+    def _advance_native(self, control):
+        if control is not None:
+            raise ValueError("External control does not accept framework commands")
+        super()._advance_native(Control(throttle=.2))
+
+    def decision_telemetry(self):
+        return {"ego_control": {"throttle": .2, "brake": 0., "steer": 0.}}
+
+
 class ConstantAVStack(AVStack):
     """A deterministic driver exposing one actual component-stage boundary."""
 
@@ -945,6 +967,8 @@ class CarlaActor:
             location=CarlaVector(.2, 0., .7), rotation=SimpleNamespace(roll=0., pitch=0., yaw=0.))
         self.physics = SimpleNamespace(wheels=[SimpleNamespace(friction_force_multiplier=2.)])
         self.simulate_physics = True
+        self.enable_gravity = True
+        self.ros_enabled = False
         self.destroyed = False
         self.light_state = None
         self.attached_to = None
@@ -969,33 +993,46 @@ class CarlaActor:
         return self.velocity
 
     def set_transform(self, transform):
+        self.world.actor_update(self, "set_transform")
         self.transform = transform
 
     def set_target_velocity(self, velocity):
+        self.world.actor_update(self, "set_target_velocity")
         self.velocity = velocity
 
     def set_target_angular_velocity(self, velocity):
-        pass
+        self.world.actor_update(self, "set_target_angular_velocity")
 
     def set_simulate_physics(self, enabled):
+        self.world.actor_update(self, "set_simulate_physics")
         self.simulate_physics = enabled
 
     def set_enable_gravity(self, enabled):
-        pass
+        self.world.actor_update(self, "set_enable_gravity")
+        self.enable_gravity = enabled
 
     def set_autopilot(self, enabled, port):
-        pass
+        self.world.actor_update(self, "set_autopilot")
 
     def apply_control(self, control):
+        self.world.actor_update(self, "apply_control")
         self.control = control
+
+    def get_control(self):
+        return self.control
+
+    def enable_for_ros(self):
+        self.ros_enabled = True
 
     def get_physics_control(self):
         return self.physics
 
     def apply_physics_control(self, physics):
+        self.world.actor_update(self, "apply_physics_control")
         self.physics = physics
 
     def set_light_state(self, state):
+        self.world.actor_update(self, "set_light_state")
         self.light_state = state
 
     def destroy(self):
@@ -1054,7 +1091,8 @@ class CarlaImageData(SimpleNamespace):
 
 
 class CarlaMobileActor:
-    def __init__(self, client, specification, include_rgb=True):
+    def __init__(self, client, specification=None, include_rgb=True, **options):
+        specification = options if specification is None else specification
         self.client = client
         self.specification = deepcopy(specification)
         spawn = specification.get("spawn", 0)
@@ -1063,9 +1101,9 @@ class CarlaMobileActor:
             transform = CarlaTransform(CarlaVector(**spec["location"]), SimpleNamespace(**spec["rotation"]))
         else:
             transform = CarlaTransform(CarlaVector(float(spawn) * 3, 0., 0.))
-        self.actor = CarlaActor(client.world, len(client.world.actors) + 1,
-            specification.get("vehicle", specification.get("npc_type", "vehicle.test")), transform)
-        client.world.actors.append(self.actor)
+        blueprint = client.world.get_blueprint_library().find(
+            specification.get("vehicle", specification.get("npc_type", "vehicle.test")))
+        self.actor = client.world.try_spawn_actor(blueprint, transform)
         self.spawn_transform = transform
         self.reference = SimpleNamespace(x=np.zeros(3), q=np.array([1., 0., 0., 0.]))
         self.timestamp = 0.
@@ -1082,7 +1120,14 @@ class CarlaMobileActor:
             self.sensors.clear()
             self.sensor_data_manager.data.clear()
         for sensor_config in specification.get("sensors", ()):
-            if sensor_config["type"] == "CarlaLidar":
+            if sensor_config["type"].startswith("Configured"):
+                from avcarla.config import CARLA
+
+                sensor = CARLA.build(sensor_config, default_args={"client": client, "parent": self})
+                key = "top_lidar" if "Lidar" in sensor_config["type"] else "front_camera"
+                self.sensors[key] = sensor
+                self.sensor_data_manager.data.setdefault(sensor.source_identifier, deque())
+            elif sensor_config["type"] == "CarlaLidar":
                 def lidar_transform():
                     location = self.actor.get_transform().location
                     return CarlaTransform(CarlaVector(location.x + 1., location.y + 2., 1.5),
@@ -1131,6 +1176,27 @@ class CarlaMobileActor:
         self.actor.destroy()
 
 
+class CarlaNativeSensor:
+    def __init__(self, client, parent, *, do_spawn=True, name="front", **options):
+        self.client, self.parent = client, parent
+        self.source_identifier = "lidar" if "lidar" in name.lower() else "front"
+        kind = "sensor.lidar.ray_cast" if self.source_identifier == "lidar" else "sensor.camera.rgb"
+        self.bp = client.world.get_blueprint_library().find(kind)
+        for key, value in {"image_size_x": "16", "image_size_y": "12", "fov": "90",
+                           "lens_k": "0", "lens_kcube": "0", "lens_circle_multiplier": "0"}.items():
+            self.bp.set_attribute(key, value)
+        self.reference = SimpleNamespace(as_carla_transform=lambda local=True: CarlaTransform())
+        self.frame0, self.t0 = 0, 0.
+        self.imsize = (12, 16)
+        self.P = np.array([[8., 0., 8., 0.], [0., 8., 6., 0.], [0., 0., 1., 0.]])
+        if do_spawn:
+            self.spawn()
+
+    def spawn(self):
+        self.object = self.client.world.spawn_actor(
+            self.bp, CarlaTransform(), attach_to=self.parent.actor)
+
+
 class CarlaBlueprint:
     """CARLA actor blueprint fields consumed by sensor construction."""
 
@@ -1141,9 +1207,14 @@ class CarlaBlueprint:
     def set_attribute(self, name, value):
         self.attributes[name] = str(value)
 
+    def has_attribute(self, name):
+        return name in {"role_name", "ros_name", "ros2_ackermann_control", "post_process_profile",
+                        "image_size_x", "image_size_y", "fov", "sensor_tick", "mass", "mesh_path"}
+
 
 class CarlaWorld:
-    def __init__(self, config, frame_offset=0):
+    def __init__(self, config, frame_offset=0, ground_height=None, ground_offset=(0., 0., 0.),
+                 external_ego_throttle=None, ego_attribute_overrides=None):
         self.frame, self.time = 0, 0.
         self.dt = 1 / config.get("rate", 10.)
         self.actors, self.vehicles = [], []
@@ -1151,6 +1222,17 @@ class CarlaWorld:
         self.config, self.frame_offset = config, frame_offset
         self.weather = None
         self.layers = []
+        self.ground_height = ground_height
+        self.ground_offset = ground_offset
+        self.external_ego_throttle = external_ego_throttle
+        self.ego_attribute_overrides = ego_attribute_overrides or {}
+        self.command_events = []
+        self.direct_actor_updates = []
+        self.applying_batch = False
+
+    def actor_update(self, actor, operation):
+        if not self.applying_batch:
+            self.direct_actor_updates.append((actor.id, operation))
 
     def get_snapshot(self):
         return SimpleNamespace(frame=self.frame,
@@ -1158,9 +1240,29 @@ class CarlaWorld:
             find=lambda identity: next((actor for actor in self.actors if actor.id == identity), None))
 
     def tick(self):
+        self.command_events.append(("tick", self.frame + 1))
         self.frame += 1
         self.time += self.dt
         for actor in self.actors:
+            if (self.ground_height is not None and actor.type_id.startswith("vehicle.")
+                    and actor.simulate_physics and actor.enable_gravity):
+                location, rotation = actor.transform.location, actor.transform.rotation
+                if location.z > self.ground_height:
+                    location.z = max(self.ground_height, location.z - .1)
+                    if location.z == self.ground_height:
+                        dx, dy, dyaw = self.ground_offset
+                        location.x += dx
+                        location.y += dy
+                        rotation.yaw += dyaw
+                        rotation.pitch = 2.
+                        rotation.roll = -1.
+            if (self.external_ego_throttle is not None
+                    and actor.attributes.get("role_name") in {"hero", "ego"}
+                    and actor.attributes.get("ros2_ackermann_control") == "true"):
+                # Native ROS control arrives after the framework batch and before movement.
+                actor.control = SimpleNamespace(
+                    throttle=self.external_ego_throttle, brake=0., steer=0., hand_brake=False,
+                    reverse=False, manual_gear_shift=False, gear=1)
             speed = max(0., actor.velocity.x + (actor.control.throttle - actor.control.brake) * self.dt)
             actor.velocity = CarlaVector(speed, actor.velocity.y, actor.velocity.z)
             actor.transform.location.x += speed * self.dt
@@ -1195,7 +1297,10 @@ class CarlaWorld:
         return actor
 
     def try_spawn_actor(self, blueprint, transform):
-        return self.spawn_actor(blueprint, transform)
+        actor = self.spawn_actor(blueprint, transform)
+        if actor.type_id.startswith("vehicle."):
+            actor.attributes.update(self.ego_attribute_overrides)
+        return actor
 
     def get_names_of_all_objects(self):
         return [f"object-{actor.id}" for actor in self.actors
@@ -1222,17 +1327,38 @@ class CarlaWorld:
 
 
 class CarlaNativeClient:
-    def __init__(self, config, frame_offset=0):
+    def __init__(self, config, **world_options):
+        map_name = config.get("map_name", "")
+        if isinstance(map_name, str) and "/" in map_name:
+            raise RuntimeError(f"Map not found: {map_name}")
         self.config = config
-        self.world = CarlaWorld(config, frame_offset)
+        self.world = CarlaWorld(config, **world_options)
+        self.client = self
+        self.command_error = None
         self.spawn_points = [CarlaTransform(CarlaVector(i * 3, 0, 0)) for i in range(6)]
         self.traffic_manager_port = config.get("traffic_manager_port", 8000)
 
     def scene_settings(self):
-        return {}
+        name = self.config.get("map_name")
+        return {"map_name": f"Carla/Maps/{name.rsplit('/', 1)[-1]}"} if name else {}
 
     def tick(self):
         return self.world.tick()
+
+    def apply_batch_sync(self, commands, do_tick):
+        self.world.command_events.append(("batch", tuple(commands), do_tick))
+        results = []
+        self.world.applying_batch = True
+        try:
+            for command in commands:
+                actor = next(actor for actor in self.world.actors if actor.id == command.actor_id)
+                error = self.command_error
+                if error is None:
+                    getattr(actor, command.method)(*command.arguments)
+                results.append(SimpleNamespace(error=error, has_error=lambda error=error: error is not None))
+        finally:
+            self.world.applying_batch = False
+        return results
 
     def close(self):
         pass
@@ -1249,10 +1375,14 @@ class CarlaTexture:
 class CarlaNativeBoundary:
     """Registry/client boundary used by the real CARLA simulator, without a server."""
 
-    def __init__(self, frame_offset=0, include_rgb=True):
-        self.frame_offset = frame_offset
+    def __init__(self, frame_offset=0, include_rgb=True, ground_height=None, *, ground_offset=(0., 0., 0.),
+                 external_ego_throttle=None, ego_attribute_overrides=None):
         self.include_rgb = include_rgb
-        self.module_dict = {}
+        self.world_options = dict(frame_offset=frame_offset, ground_height=ground_height,
+                                  ground_offset=ground_offset, external_ego_throttle=external_ego_throttle,
+                                  ego_attribute_overrides=ego_attribute_overrides)
+        self.module_dict = {"CarlaMobileActor": CarlaMobileActor, "CarlaRgbCamera": CarlaNativeSensor,
+                            "CarlaLidar": CarlaNativeSensor}
 
     def get(self, name):
         return self.module_dict.get(name)
@@ -1268,7 +1398,12 @@ class CarlaNativeBoundary:
 
     def build(self, config, default_args=None):
         if default_args is None:
-            return CarlaNativeClient(config, self.frame_offset)
+            return CarlaNativeClient(config, **self.world_options)
+        if config["type"] in self.module_dict:
+            options = {key: value for key, value in config.items() if key != "type"}
+            if "parent" not in default_args:
+                options["include_rgb"] = self.include_rgb
+            return self.module_dict[config["type"]](**default_args, **options)
         return CarlaMobileActor(default_args["client"], config, self.include_rgb)
 
     def install(self, monkeypatch, rgb_camera):
@@ -1287,8 +1422,17 @@ class CarlaNativeBoundary:
         from enum import IntFlag
         carla.VehicleLightState = IntFlag("VehicleLightState", {
             "NONE": 0, "Position": 1, "LowBeam": 2, "HighBeam": 4, "Brake": 8})
-        carla.VehicleControl = lambda throttle=0., brake=0., steer=0.: SimpleNamespace(
-            throttle=throttle, brake=brake, steer=steer)
+        carla.VehicleControl = lambda throttle=0., brake=0., steer=0., hand_brake=False, reverse=False, manual_gear_shift=False, gear=0: SimpleNamespace(
+            throttle=throttle, brake=brake, steer=steer, hand_brake=hand_brake, reverse=reverse,
+            manual_gear_shift=manual_gear_shift, gear=gear)
+        methods = {"ApplyTransform": "set_transform", "ApplyTargetVelocity": "set_target_velocity",
+            "ApplyTargetAngularVelocity": "set_target_angular_velocity",
+            "SetSimulatePhysics": "set_simulate_physics", "SetEnableGravity": "set_enable_gravity",
+            "ApplyVehicleControl": "apply_control", "SetAutopilot": "set_autopilot",
+            "ApplyVehiclePhysicsControl": "apply_physics_control", "SetVehicleLightState": "set_light_state"}
+        carla.command = SimpleNamespace(**{name: (lambda actor_id, *arguments, method=method:
+            SimpleNamespace(actor_id=actor_id, method=method, arguments=arguments))
+            for name, method in methods.items()})
         carla.WeatherParameters = lambda **values: SimpleNamespace(**values)
         carla.MapLayer = SimpleNamespace(Buildings="Buildings")
         carla.TrafficLightState = SimpleNamespace(Red="Red", Yellow="Yellow", Green="Green", Off="Off",

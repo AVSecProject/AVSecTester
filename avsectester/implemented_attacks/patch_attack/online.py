@@ -72,11 +72,14 @@ class CarlaPatchPanel:
         self, world: Any, target_actor: Any, *,
         tick: Callable[[], Any] | None = None,
         on_spawn: Callable[[Any], None] | None = None,
+        queue_command: Callable[[Any], None] | None = None,
     ) -> list:
         """Spawn the panel on ``target_actor`` in ``world`` and paint it. Return spawned actors.
 
         ``static.prop.mesh`` requires a nonempty ``mesh_path``. Other blueprints require
         ``mesh_path=None``. Invalid combinations raise ``ValueError`` before spawning.
+        ``queue_command`` submits physics changes through the caller's native command queue.
+        Its commands must be flushed by ``tick``. Omit it for direct SDK use.
         """
         import carla
 
@@ -102,7 +105,10 @@ class CarlaPatchPanel:
         if self.prop == MESH_PROP:
             # Zero mass treats a relative transform as a world transform. Mass one permits
             # attachment, but physics must be disabled to prevent falling and rotation.
-            prop.set_simulate_physics(False)
+            if queue_command is None:
+                prop.set_simulate_physics(False)
+            else:
+                queue_command(carla.command.SetSimulatePhysics(prop.id, False))
         (tick or world.tick)()  # let the prop register as a nameable StaticMeshActor
         new_names = list(set(world.get_names_of_all_objects()) - names_before)
         if not new_names:
@@ -182,7 +188,8 @@ class PatchWorldAttackAction(WorldAttackAction):
             prop=self.attack.prop, emissive=self.attack.emissive,
             mesh_path=self.attack.prop_mesh_path)
         panel.apply(world, actors[host_id], tick=simulator_runtime.setup_tick,
-                    on_spawn=lambda created: resources.callback(_destroy_panel, created))
+                    on_spawn=lambda created: resources.callback(_destroy_panel, created),
+                    queue_command=native.get("queue_command"))
 
 
 def _destroy_panel(actor):
