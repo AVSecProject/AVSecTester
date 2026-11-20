@@ -205,6 +205,9 @@ optional checkout or model package is absent. `avsectester:nurec` provides AlpaS
 AlpaSim-dependent tests.
 
 Offline tests do not start simulator services or require model weights or a GPU.
+CI uses the PyPI `carla==0.9.16` client. The CARLA experiment image uses the CARLA 1.0 wheel
+bundled with its pinned server image. Run the native test suite with both clients when changing
+CARLA compatibility.
 
 ## Offline checks
 

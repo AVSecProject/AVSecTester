@@ -70,9 +70,11 @@ class RoadValidation:
         self.actors = []
         self.rows = []
 
-    def spawn(self, blueprint, transform):
-        actor = self.world.spawn_actor(self.world.get_blueprint_library().find(blueprint),
-                                       transform)
+    def spawn(self, blueprint, transform, *, attributes=None):
+        blueprint = self.world.get_blueprint_library().find(blueprint)
+        for name, value in (attributes or {}).items():
+            blueprint.set_attribute(name, value)
+        actor = self.world.spawn_actor(blueprint, transform)
         self.actors.append(actor)
         return actor
 
@@ -144,7 +146,9 @@ def main():
     args = parser.parse_args()
     import carla
 
-    from avsectester.implemented_attacks.patch_attack.online import CarlaPatchPanel
+    from avsectester.implemented_attacks.patch_attack.online import (
+        CarlaPatchPanel, DEFAULT_PROP_MESH_PATH,
+    )
 
     dataset, simulator, scenario_id = validation_configuration(
         args.config, args.port, args.traffic_manager_port)
@@ -209,14 +213,15 @@ def main():
             mounting = np.array([[0., 0., 1.], [0., -1., 0.], [1., 0., 0.]])
             native_rotation = flip @ box_rotation @ rotation_matrix((0., 0., 180.)) @ flip @ mounting
             panel = CarlaPatchPanel(tuple(flip @ local), rotation_to_carla(native_rotation),
-                                    CheckerboardTexture().rgba())
+                                    CheckerboardTexture().rgba(), mesh_path=DEFAULT_PROP_MESH_PATH)
             panels = panel.apply(validation.world, target,
                                  tick=lambda: simulator_runtime.step(Control(brake=1.0)))
             validation.actors.extend(panels)
             panel_transform = panels[0].get_transform()
             target.set_transform(relative(-30))
             blocker.set_transform(relative(-40, 4))
-            isolated = validation.spawn(panel.prop, panel_transform)
+            isolated = validation.spawn(panel.prop, panel_transform,
+                                        attributes={"mesh_path": panel.mesh_path})
             patch_references = {}
             for key, pose in viewpoints.items():
                 view = validation.capture(pose)

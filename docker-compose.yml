@@ -1,4 +1,4 @@
-# End-to-end environment: a CARLA 0.9.16 server + the AVSecTester GPU image (defaults to a shell).
+# End-to-end environment: a pinned CARLA 1.0 server + the AVSecTester GPU experiment shell.
 #   ./scripts/preparation/fetch_models.sh          # once, on the host: pulls carla-vehicle weights → ./models
 #   scripts/preparation/write_compose_env.sh     # once; edit GPU selections in .env
 #   docker compose up -d --build       # start CARLA + the idle experiment shell
@@ -8,12 +8,14 @@
 # Model links are created by the Dockerfile. Containers use the GPU selections from .env.
 services:
   carla-server:
-    image: carlasim/carla:0.9.16
-    command: ./CarlaUE4.sh -RenderOffScreen -nosound -carla-rpc-port=2000
+    image: carlasim/carla:1.0@sha256:39681ed1eff895b6a813587285c51b687d7739ef8eeabcf51e38771d7b5b0263
+    command: bash CarlaUnreal.sh -RenderOffScreen -nosound -carla-rpc-port=2000 -carla-packs=/packs
     shm_size: 2gb
     network_mode: host
     environment:
       - NVIDIA_VISIBLE_DEVICES=${CARLA_SERVER_GPU:-0}
+    volumes:
+      - ./data/carla_content_packs:/packs:ro
 
   carla-experiment:
     build: {context: ., target: carla}

@@ -56,9 +56,17 @@ training segments and configured scorer. See [Optimization](../guides/optimizati
 
 ## Online phase
 
-The runtime receives the explicit texture artifact. CARLA uses a native physical prop. NuRec
-composites into the selected camera capture. Their geometry and occlusion behavior are described
-in [Simulators](../guides/simulators.md).
+The runtime receives the explicit texture artifact. CARLA defaults to `static.prop.mesh` with
+the packaged IronPlank asset specified by `DEFAULT_PROP_MESH_PATH` in the
+[panel API](../reference/python-api.md#avsectesterimplemented_attackspatch_attackonline).
+Set `PatchAttack.prop_mesh_path` to select another mesh. Other prop blueprints require
+`prop_mesh_path=None`. The installation orientation is calibrated for the default mesh and is
+not guaranteed for other meshes or props. The default mesh's native UV mapping crops the right
+edge of the texture.
+NuRec composites into the selected camera capture. Their geometry and occlusion behavior are
+described in [Simulators](../guides/simulators.md).
+The CARLA mesh requires the mounted AdditionalMaps pack on both maps, including `Town10HD_Opt`.
+See [CARLA map packs](../getting-started/installation.md#carla-map-packs).
 
 Scaling a CARLA prop mesh to arbitrary requested panel dimensions is **Not yet implemented.**
 See [CARLA physical patches](../development/TODO.md#carla-physical-patches).

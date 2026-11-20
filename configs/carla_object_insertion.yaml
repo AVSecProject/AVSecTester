@@ -10,14 +10,14 @@ dataset:
           decision_steps: 60
           scenario:
             client:
-              map_name: Town03
+              map_name: Town03_Opt
             ego:
               type: CarlaMobileActor
-              spawn: 0
+              spawn: 20
               vehicle: vehicle.tesla.model3
               autopilot: false
               destination: null
-              sensors:
+              sensors: &ego_sensors
               - type: CarlaRgbCamera
                 name: camera-0
                 source_ID: 0
@@ -30,11 +30,11 @@ dataset:
                 rotation_frequency: 20
                 sensor_tick: 0.0
                 range: 70.0
-            lead:
+            lead: &lead_vehicle
               gap: 25.0
               vehicle: vehicle.tesla.model3
             npcs: []
-          motion:
+          motion: &actor_motion
             ego:
               type: avsectester.datasets.carla:PrescribedMotion
               options:
@@ -49,6 +49,24 @@ dataset:
                   type: avsectester.data_types:Control
                   options:
                     brake: 1.0
+      town10hd_lead:
+        type: avsectester.datasets.carla:CarlaRecipe
+        options:
+          time_step: 0.05
+          decision_steps: 60
+          scenario:
+            client:
+              map_name: Town10HD_Opt
+            ego:
+              type: CarlaMobileActor
+              spawn: 22
+              vehicle: vehicle.tesla.model3
+              autopilot: false
+              destination: null
+              sensors: *ego_sensors
+            lead: *lead_vehicle
+            npcs: []
+          motion: *actor_motion
 simulator:
   type: CarlaSimulator
   options:

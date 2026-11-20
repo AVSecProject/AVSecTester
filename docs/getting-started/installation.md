@@ -35,7 +35,7 @@ supplied. Choose available host GPUs in `.env`: `CARLA_SERVER_GPU`, `CARLA_EXPER
 
 | Compose service | Image | Purpose |
 |---|---|---|
-| `carla-server` | carlasim/carla:0.9.16 | CARLA server |
+| `carla-server` | carlasim/carla:1.0, pinned by digest in Compose | CARLA server |
 | `carla-experiment` | avsectester:carla | CARLA driving-system environment |
 | `nurec-experiment` | avsectester:nurec | NuRec, AlpaSim controller and Alpamayo environment |
 
@@ -71,7 +71,8 @@ Docker socket and CLI to start sibling containers.
 
 ## CARLA environment
 
-Fetch the avstack CARLA and nuScenes perception checkpoints and build the experiment image:
+Prepare the [CARLA map packs](#carla-map-packs), fetch the avstack CARLA and nuScenes
+perception checkpoints, then build the experiment image:
 
 ```bash
 scripts/preparation/fetch_models.sh
@@ -83,19 +84,47 @@ docker compose exec carla-experiment avsectester version
 The image provides the native avstack and detector dependencies. Model files live under
 `models/checkpoints`, `models/work_dirs` and `models/work_dirs_2d`.
 Dockerfile creates the corresponding links inside the image.
+The Python client wheel comes from the same pinned CARLA image as the server.
 
 CARLA uses host networking with RPC port 2000 and traffic-manager port 8000. Select the server
 and experiment host GPUs through `.env`. Model device indexes address GPUs visible in the
 experiment container. Stop the services with docker compose down.
 
+### CARLA map packs
+
+`Town10HD_Opt` is included in the server image. `Town03_Opt` requires the matching
+[AdditionalMaps package](https://downloads.carlasim.com/Linux/AdditionalMaps_1.0.tar.gz).
+Extract the package into a directory outside the checkout, then link it for Compose:
+
+```bash
+mkdir -p /srv/carla/maps
+tar xzf AdditionalMaps_1.0.tar.gz -C /srv/carla/maps
+mkdir -p data
+ln -s /srv/carla/maps data/carla_content_packs
+```
+
+Validate the extracted pack against the pinned server image:
+
+```bash
+docker run --rm -e NVIDIA_VISIBLE_DEVICES=void \
+  -v /srv/carla/maps:/packs:ro --entrypoint python3 \
+  carlasim/carla:1.0@sha256:39681ed1eff895b6a813587285c51b687d7739ef8eeabcf51e38771d7b5b0263 \
+  /workspace/Tools/carla_pack.py inspect /packs/AdditionalMaps --server /workspace
+```
+
+Compose mounts this directory read-only at `/packs` and passes `-carla-packs=/packs` to CARLA.
+Content packs and exported semantic maps are separate: `data/carla_content_packs` contains
+the mounted packs, while `data/carla_maps` contains exported OpenDRIVE files. See
+[CARLA content packs](https://carla-ue5.readthedocs.io/en/latest/map_content_packs/).
+
 ### CARLA semantic maps
 
-Map export is optional. With `carla-server` running, export Town03 and set the dataset's
+Map export is optional. With `carla-server` running, export both configured maps and set
 `dataset.options.map_directory: ../data/carla_maps`:
 
 ```bash
 docker compose exec carla-experiment python -m scripts.preparation.export_carla_maps \
-  --host 127.0.0.1 --port 2000 --town Town03 --output data/carla_maps
+  --host 127.0.0.1 --port 2000 --town Town03_Opt Town10HD_Opt --output data/carla_maps
 ```
 
 The files are written into the mounted checkout. Map use and unavailable-map behavior are

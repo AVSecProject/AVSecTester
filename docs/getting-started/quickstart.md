@@ -8,8 +8,10 @@
 
 ## Run a CARLA comparison
 
-Select the available CARLA server and experiment GPUs in the Compose settings described in
-[Installation](installation.md). Copy the configuration first:
+Complete [Installation](installation.md), including the matching AdditionalMaps content pack,
+and select available CARLA server and experiment GPUs in the Compose settings.
+The supplied CARLA configurations contain `Town03_Opt` and `Town10HD_Opt` recipes.
+Copy the configuration first:
 
 ```bash
 cp configs/carla_phantom.yaml configs/my_carla.yaml

@@ -123,6 +123,18 @@ recipe-bearing `ScenarioStart` and uses a dedicated server.
 
 Traffic-light states are recorded under OpenDRIVE control IDs.
 
+RGB appearance is determined by CARLA's post-process preset, including exposure, tone mapping
+and sensor noise. The framework does not set a post-process profile, so CARLA's default applies.
+Before the scenario time origin, `camera_warmup_s` adds synchronous hold ticks with actors at
+their initial poses. These ticks do not consume the deployment tick budget and are skipped
+when the recipe has no RGB camera. Traffic-light timers advance during warmup, shifting their
+phase by the same warmup duration for every run. See
+[CARLA runtime configuration](../reference/configuration.md#simulator).
+
+`Town10HD_Opt` has no map layers. A nonempty `map_layers` setting on it raises `ValueError`.
+The native adapter's ParkedVehicles unload request has no effect on this map, so its parked
+roadside vehicles remain in the scene. Layer settings are supported on `Town03_Opt`.
+
 Native sensors use `sensor_tick=0` and produce packets on every physics tick. The scheduler retains
 only planned acquisitions, discarding packets from other ticks. A recipe sensor with a nonzero
 `sensor_tick` is rejected. Set acquisition rates with `runs.timing.sensors`. A spinning LiDAR packet

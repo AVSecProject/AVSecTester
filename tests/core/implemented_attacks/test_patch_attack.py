@@ -8,6 +8,9 @@ from avsectester.attack import AttackSegment, OfflineContext, OnlineContext
 from avsectester.attack.optimization import PGD, NES
 from avsectester.implemented_attacks.patch_attack import PatchAttack
 from avsectester.implemented_attacks.patch_attack.offline import PatchOptimization
+from avsectester.implemented_attacks.patch_attack.online import (
+    CarlaPatchPanel, DEFAULT_PROP_MESH_PATH, MESH_PROP,
+)
 from avsectester.attack.insertion import PatchCompositor
 from avsectester.data_types import Control
 from avsectester.closed_loop.hooks import Hook, HookSet
@@ -20,7 +23,15 @@ from avsectester.geometry.projection import project_box
 from tests.fakes import CarlaNativeBoundary, ConstantAVStack, MemoryDataset, MemorySimulator, actor_state
 
 
-def test_create_runtime(monkeypatch):
+@pytest.mark.parametrize("options, expected_prop, expected_attributes, simulate_physics", [
+    pytest.param({}, MESH_PROP, {"mesh_path": DEFAULT_PROP_MESH_PATH, "mass": "1"}, False,
+                 id="default-mesh"),
+    pytest.param({"prop": MESH_PROP, "prop_mesh_path": "/Game/User/Panel.Panel"}, MESH_PROP,
+                 {"mesh_path": "/Game/User/Panel.Panel", "mass": "1"}, False, id="custom-mesh"),
+    pytest.param({"prop": "static.prop.streetbarrier"}, "static.prop.streetbarrier", {}, True,
+                 id="blueprint"),
+])
+def test_create_runtime(monkeypatch, options, expected_prop, expected_attributes, simulate_physics):
     CarlaNativeBoundary().install(monkeypatch, None)
     recipe = CarlaRecipe({"client": {"map_name": "Town03"},
         "ego": {"type": "CarlaMobileActor", "spawn": 0, "vehicle": "vehicle.a", "sensors": []},
@@ -29,7 +40,9 @@ def test_create_runtime(monkeypatch):
          "lead": PrescribedMotion(constant_control=Control())})
     dataset = CarlaDataset({"scene": recipe})
     frames = dataset.frames("scene")
-    attack = PatchAttack(decision_steps=2, assets=np.full((3, 4, 4), [0, 255, 0, 255], np.uint8))
+    attack = PatchAttack(decision_steps=2, assets=np.full((3, 4, 4), [0, 255, 0, 255], np.uint8),
+                        **options)
+    assert attack.configuration_parameters()["prop_mesh_path"] == expected_attributes.get("mesh_path")
     artifacts = np.full((3, 4, 4), [255, 0, 0, 255], np.uint8)
     segment = AttackSegment("scene", frames[0], frames[2], user_data={
         "host": "lead", "placement": {"anchor": "rear_center", "offset_m": [-.01, 0., 0.]},
@@ -45,6 +58,9 @@ def test_create_runtime(monkeypatch):
         assert len(panels) == 1
         panel = panels[0]
         assert panel.is_alive
+        assert panel.type_id == expected_prop
+        assert panel.attributes == expected_attributes
+        assert panel.simulate_physics == simulate_physics
         assert panel.attached_to is context.simulator_runtime.native["actors"]["lead"]
         transform = panel.get_transform()
         np.testing.assert_allclose([transform.location.x, transform.location.y, transform.location.z],
@@ -69,6 +85,33 @@ def test_create_runtime(monkeypatch):
                 1, start=dataset.scenario_start("scene", frames[0]),
                 attacks=(attack.create_runtime(missing_host, artifacts),),
             ))
+
+
+def test_prop_mesh_path_requires_mesh_blueprint():
+    with pytest.raises(ValueError, match="prop_mesh_path is only supported"):
+        PatchAttack(decision_steps=2, prop="static.prop.streetbarrier",
+                    prop_mesh_path=DEFAULT_PROP_MESH_PATH)
+
+
+def test_carla_patch_panel(monkeypatch, carla_dataset):
+    CarlaNativeBoundary().install(monkeypatch, None)
+    start = carla_dataset.scenario_start("scene", carla_dataset.frames("scene")[0])
+    panel = CarlaPatchPanel((0., 0., 1.), (0., 0., 0.),
+                            np.full((3, 4, 4), 255, np.uint8), mesh_path=DEFAULT_PROP_MESH_PATH)
+    with CarlaSimulator({"rate": 10.}, settle_iters=0).create_runtime() as runtime:
+        runtime.reset(start)
+        native = runtime.native
+        actors = panel.apply(native["world"], native["actors"]["ego"])
+        try:
+            assert len(actors) == 1 and actors[0].is_alive
+            with pytest.raises(ValueError, match="requires a nonempty mesh_path"):
+                replace(panel, mesh_path=None).apply(native["world"], native["actors"]["ego"])
+            with pytest.raises(ValueError, match="mesh_path is only supported"):
+                replace(panel, prop="static.prop.streetbarrier").apply(
+                    native["world"], native["actors"]["ego"])
+        finally:
+            for actor in actors:
+                actor.destroy()
 
 
 @pytest.mark.parametrize("algorithm", [

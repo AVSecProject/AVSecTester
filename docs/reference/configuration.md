@@ -248,6 +248,11 @@ number of base ticks. `runs.timing.sensors` selects acquisition ticks.
 See [CARLA capture timing](../guides/simulators.md#carla) for native sensor settings and LiDAR
 scans.
 
+`CarlaSimulator.camera_warmup_s` defaults to `4.0` seconds. It must be nonnegative and its
+product with `client.rate` must be an integer number of ticks. Warmup applies only to recipes
+with an RGB camera.
+`simulator_version` defaults to `"1.0"` and participates in saved-preparation compatibility.
+
 ### NuRec closed-loop settings
 
 `NuRecSimulator` requires a renderer and a non-null `time_step`. The loader supplies the latter
@@ -484,6 +489,12 @@ attack environments are copied when loaded.
 CARLA world settings accept `weather` as a preset name or parameter mapping, `lighting`,
 `map_layers` and `road_friction`. NuRec and recorded playback reject every nonempty
 world setting.
+
+`road_friction` requires a positive `friction_force_multiplier` and accepts an optional `actors`
+list of stable actor IDs. The multiplier sets each selected vehicle wheel's native friction
+force multiplier. Omitting `road_friction` preserves each wheel's vehicle-blueprint value.
+Unknown keys are rejected.
+A nonempty `map_layers` mapping is rejected on maps without layers, including `Town10HD_Opt`.
 
 Environment YAML has `world` and `sensors` keys. The base is `runs.environment`, with optional
 attack and treatment overrides. [Environments](../guides/environments.md) describes merge and

@@ -1877,7 +1877,7 @@ Configured CARLA simulations and their live native-world runtimes.
 
 | Name and signature | Meaning |
 |---|---|
-| `CarlaSimulator(client: dict, settle_iters: int = 100, *, simulator_version="0.9.16", depth_camera: str \| None = None, occlusion_tolerance_m: float = 0.1, decision_period_us: int \| None = None)` | Subclass of `Simulator`. CARLA runtime settings, with scene content supplied by a dataset recipe. |
+| `CarlaSimulator(client: dict, settle_iters: int = 100, *, simulator_version="1.0", depth_camera: str \| None = None, occlusion_tolerance_m: float = 0.1, decision_period_us: int \| None = None, camera_warmup_s: float = 4.0)` | Subclass of `Simulator`. CARLA runtime settings, with scene content supplied by a dataset recipe. |
 | `CarlaSimulator.dataset_kinds = ("CarlaDataset",)` | Dataset kinds supported by this simulator. |
 | `CarlaSimulator.capture_ticks = 1` | Simulator ticks consumed by a sensor capture. |
 | `CarlaSimulator.can_render = True` | Whether arbitrary-view rendering is supported. |
@@ -3147,7 +3147,7 @@ Connect patch selection, optional optimization and online deployment.
 
 | Name and signature | Meaning |
 |---|---|
-| `PatchAttack(*, decision_steps, assets: np.ndarray \| str \| Path \| Texture \| None = None, candidate_hosts=None, hosts_per_window=1, sensor="front", width_m=1.0, height_m=0.5, anchor="rear_center", offset_m=(-0.01, 0.0, 0.0), orientation=None, max_distance=None, min_visible_fraction=0.0, max_windows=None, keep_tail=False, optimization=None, prop=DEFAULT_PROP, emissive=True, compositor=None)` | Subclass of `Attack`. Select the best visible hosts per time window, then deploy one patch artifact. |
+| `PatchAttack(*, decision_steps, assets: np.ndarray \| str \| Path \| Texture \| None = None, candidate_hosts=None, hosts_per_window=1, sensor="front", width_m=1.0, height_m=0.5, anchor="rear_center", offset_m=(-0.01, 0.0, 0.0), orientation=None, max_distance=None, min_visible_fraction=0.0, max_windows=None, keep_tail=False, optimization=None, prop=DEFAULT_PROP, prop_mesh_path: str \| None = None, emissive=True, compositor=None)` | Subclass of `Attack`. Select the best visible hosts per time window, then deploy one patch artifact. |
 | `PatchAttack.placement_for(host)` | Resolve patch placement on the selected host actor. |
 | `PatchAttack.selected_placement(segment)` | Rebuild this attack's host-local placement from its data-only metadata. |
 | `PatchAttack.insertion(artifacts, *, host=None, placement=None)` | Build a patch insertion using the selected host and prepared texture. |
@@ -3186,7 +3186,9 @@ Deploy calibrated image patches or native CARLA panels from explicit artifacts.
 
 | Name and signature | Meaning |
 |---|---|
-| `CarlaPatchPanel(location: tuple, rotation: tuple, texture: np.ndarray, prop: str = DEFAULT_PROP, emissive: bool = True)` | A native CARLA panel owned by one run, with an explicit actor-local transform. |
+| `MESH_PROP = "static.prop.mesh"` | Native CARLA blueprint for a mesh selected by path. |
+| `DEFAULT_PROP_MESH_PATH = "/Game/Carla/Static/Building/Props/00_LegacyAssets/SM_IronPlank01.SM_IronPlank01"` | Packaged IronPlank mesh used by default for CARLA patch panels. |
+| `CarlaPatchPanel(location: tuple, rotation: tuple, texture: np.ndarray, prop: str = DEFAULT_PROP, emissive: bool = True, mesh_path: str \| None = None)` | A native CARLA panel owned by one run, with an explicit actor-local transform. |
 | `CarlaPatchPanel.apply(world: Any, target_actor: Any, *, tick: Callable[[], Any] \| None = None, on_spawn: Callable[[Any], None] \| None = None) -> list` | Spawn the panel on `target_actor` in `world` and paint it. Return spawned actors. |
 <!-- api:end -->
 

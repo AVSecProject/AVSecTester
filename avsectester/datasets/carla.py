@@ -113,11 +113,11 @@ def _validate_lighting(settings: Any) -> None:
 def _validate_road_friction(settings: Any) -> None:
     if settings is None:
         return
-    settings = _settings_mapping(settings, {"tire_friction", "actors"}, "road_friction")
-    value = settings.get("tire_friction")
-    _finite_number(value, "road_friction.tire_friction", 0)
+    settings = _settings_mapping(settings, {"friction_force_multiplier", "actors"}, "road_friction")
+    value = settings.get("friction_force_multiplier")
+    _finite_number(value, "road_friction.friction_force_multiplier", 0)
     if value == 0:
-        raise ValueError("road_friction.tire_friction must be positive")
+        raise ValueError("road_friction.friction_force_multiplier must be positive")
     if "actors" in settings:
         _name_list(settings["actors"], None, "road_friction.actors")
 
@@ -281,7 +281,8 @@ class CarlaDataset(Dataset):
         recipe = self._recipes[scenario_id]
         map_name = recipe.scenario.get("client", {}).get("map_name")
         usage = ("Export maps with python scripts/preparation/export_carla_maps.py "
-                 "--town Town03 --output <directory>, then set CarlaDataset.map_directory")
+                 "--town Town03_Opt Town10HD_Opt --output <directory>, "
+                 "then set CarlaDataset.map_directory")
         if not map_name:
             return Unavailable(f"The CARLA recipe has no map_name. {usage}")
         if self.map_directory is None:

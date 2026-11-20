@@ -14,7 +14,22 @@ from avsectester.attack.insertion.placement import AttachedPlacement
 from avsectester.geometry.poses import rotation_matrix
 from avsectester.closed_loop.simulators.carla.conversions import rotation_to_carla
 
-DEFAULT_PROP = "static.prop.ironplank"
+MESH_PROP = "static.prop.mesh"
+"""Native CARLA blueprint for a mesh selected by path."""
+DEFAULT_PROP = MESH_PROP
+DEFAULT_PROP_MESH_PATH = (
+    "/Game/Carla/Static/Building/Props/00_LegacyAssets/SM_IronPlank01.SM_IronPlank01"
+)
+"""Packaged IronPlank mesh used by default for CARLA patch panels."""
+
+
+def _check_mesh_path(prop: str, mesh_path: str | None, name: str) -> None:
+    """Require a mesh path for the mesh blueprint and none for every other blueprint."""
+    if prop == MESH_PROP:
+        if not isinstance(mesh_path, str) or not mesh_path.strip():
+            raise ValueError(f"{MESH_PROP} requires a nonempty {name}")
+    elif mesh_path is not None:
+        raise ValueError(f"{name} is only supported for {MESH_PROP}")
 
 
 def to_carla_texture(rgba: np.ndarray) -> Any:
@@ -51,29 +66,43 @@ class CarlaPatchPanel:
     texture: np.ndarray
     prop: str = DEFAULT_PROP
     emissive: bool = True
+    mesh_path: str | None = None
 
     def apply(
         self, world: Any, target_actor: Any, *,
         tick: Callable[[], Any] | None = None,
         on_spawn: Callable[[Any], None] | None = None,
     ) -> list:
-        """Spawn the panel on ``target_actor`` in ``world`` and paint it. Return spawned actors."""
+        """Spawn the panel on ``target_actor`` in ``world`` and paint it. Return spawned actors.
+
+        ``static.prop.mesh`` requires a nonempty ``mesh_path``. Other blueprints require
+        ``mesh_path=None``. Invalid combinations raise ``ValueError`` before spawning.
+        """
         import carla
 
+        _check_mesh_path(self.prop, self.mesh_path, "mesh_path")
         bl = world.get_blueprint_library()
         hits = bl.filter(self.prop)
         if not hits:
             raise ValueError(f"patch prop {self.prop!r} not in the CARLA blueprint library")
+        blueprint = hits[0]
+        if self.prop == MESH_PROP:
+            blueprint.set_attribute("mesh_path", self.mesh_path)
+            blueprint.set_attribute("mass", "1")
         rel = carla.Transform(
             carla.Location(x=self.location[0], y=self.location[1], z=self.location[2]),
             carla.Rotation(pitch=self.rotation[0], yaw=self.rotation[1], roll=self.rotation[2]),
         )
         names_before = set(world.get_names_of_all_objects())
         prop = world.spawn_actor(
-            hits[0], rel, attach_to=target_actor, attachment_type=carla.AttachmentType.Rigid
+            blueprint, rel, attach_to=target_actor, attachment_type=carla.AttachmentType.Rigid
         )
         if on_spawn is not None:
             on_spawn(prop)  # register ownership before any later deployment operation can fail
+        if self.prop == MESH_PROP:
+            # Zero mass treats a relative transform as a world transform. Mass one permits
+            # attachment, but physics must be disabled to prevent falling and rotation.
+            prop.set_simulate_physics(False)
         (tick or world.tick)()  # let the prop register as a nameable StaticMeshActor
         new_names = list(set(world.get_names_of_all_objects()) - names_before)
         if not new_names:
@@ -144,13 +173,14 @@ class PatchWorldAttackAction(WorldAttackAction):
         position = np.asarray(host.box_center) + box_rotation @ placement.local_position(host.extent)
         rotation = box_rotation @ rotation_matrix(self.insertion.orientation.rotation_deg)
         flip = np.diag([1., -1., 1.])
-        # The prop's native XY plane is mounted vertically. This fixed installation
-        # correction maps the canonical +X-front plane onto that native mesh.
+        # Calibrated for IronPlank, whose face has native +Z normal and +X texture-up.
+        # Mount +Z toward canonical +X, +X upward, and +Y toward canonical -Y.
         correction = np.array([[0., 0., 1.], [0., -1., 0.], [1., 0., 0.]])
         native_rotation = flip @ rotation @ flip @ correction
         panel = CarlaPatchPanel(location=tuple(flip @ position),
             rotation=rotation_to_carla(native_rotation), texture=self.texture,
-            prop=self.attack.prop, emissive=self.attack.emissive)
+            prop=self.attack.prop, emissive=self.attack.emissive,
+            mesh_path=self.attack.prop_mesh_path)
         panel.apply(world, actors[host_id], tick=simulator_runtime.setup_tick,
                     on_spawn=lambda created: resources.callback(_destroy_panel, created))
 
@@ -164,5 +194,7 @@ def _destroy_panel(actor):
 
 
 __all__ = [
+    'MESH_PROP',
+    'DEFAULT_PROP_MESH_PATH',
     'CarlaPatchPanel',
 ]

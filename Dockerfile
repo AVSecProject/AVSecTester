@@ -2,7 +2,7 @@
 # CARLA simulation. The experiment environment uses CUDA 12.1; installation instructions are in
 # docs/getting-started/installation.md.
 #
-# Usually built via docker-compose.yml (which also runs a CARLA 0.9.16 server):
+# Usually built via docker-compose.yml (which also runs a CARLA 1.0 server):
 #   scripts/preparation/write_compose_env.sh
 #   docker compose up --build carla-server carla-experiment
 # Standalone build:
@@ -103,6 +103,18 @@ RUN uv python install 3.11.13 \
 ENV PATH="/opt/venv/bin:${PATH}"
 
 WORKDIR /app
+
+# 1. torch + torchvision (cu121)
+RUN python -m pip install --no-cache-dir torch==2.1.0 torchvision==0.16.0 \
+      --index-url https://download.pytorch.org/whl/cu121
+# 2. mmcv 2.1.0 prebuilt wheel for torch2.1.0/cu121 (no compile) + mmengine
+RUN python -m pip install --no-cache-dir mmcv==2.1.0 \
+      -f https://download.openmmlab.com/mmcv/dist/cu121/torch2.1.0/index.html "mmengine>=0.10"
+# 3. mmdet 3.2.0 + mmdet3d 1.4.0 (all caps satisfied → no patch); keep numpy<2 (deps may pull numpy>=2)
+RUN python -m pip install --no-cache-dir --no-deps mmdet==3.2.0 mmdet3d==1.4.0 \
+ && python -m pip install --no-cache-dir "numpy==1.26.4" "scikit-image>=0.21,<0.24" "pandas>=2,<3" \
+      pycocotools terminaltables plyfile tensorboard networkx
+
 COPY . /app
 # name-shim symlinks avcarla's metadata expects (avstack-core/api are our submodule names)
 RUN ln -sf avstack-core third_party/lib-avstack-core && ln -sf avstack-api third_party/lib-avstack-api
@@ -117,21 +129,14 @@ RUN rm -rf third_party/avstack-core/third_party/mmdetection3d/checkpoints \
  && ln -s /app/models/checkpoints third_party/avstack-core/third_party/mmdetection/checkpoints \
  && ln -s /app/models/work_dirs_2d third_party/avstack-core/third_party/mmdetection/work_dirs
 
-# 1. torch + torchvision (cu121)
-RUN python -m pip install --no-cache-dir torch==2.1.0 torchvision==0.16.0 \
-      --index-url https://download.pytorch.org/whl/cu121
-# 2. mmcv 2.1.0 prebuilt wheel for torch2.1.0/cu121 (no compile) + mmengine
-RUN python -m pip install --no-cache-dir mmcv==2.1.0 \
-      -f https://download.openmmlab.com/mmcv/dist/cu121/torch2.1.0/index.html "mmengine>=0.10"
-# 3. mmdet 3.2.0 + mmdet3d 1.4.0 (all caps satisfied → no patch); keep numpy<2 (deps may pull numpy>=2)
-RUN python -m pip install --no-cache-dir --no-deps mmdet==3.2.0 mmdet3d==1.4.0 \
- && python -m pip install --no-cache-dir "numpy==1.26.4" "scikit-image>=0.21,<0.24" "pandas>=2,<3" \
-      pycocotools terminaltables plyfile tensorboard networkx
-# 4. avstack packages + CARLA 0.9.16 client
+# 4. avstack packages + the Python client shipped with the pinned CARLA server
+COPY --from=carlasim/carla:1.0@sha256:39681ed1eff895b6a813587285c51b687d7739ef8eeabcf51e38771d7b5b0263 /workspace/PythonAPI/carla/dist/carla-1.0-cp311-cp311-linux_x86_64.whl /tmp/
 RUN python -m pip install --no-cache-dir -e third_party/avstack-core -c constraints.txt \
  && python -m pip install --no-cache-dir -e third_party/avstack-api  --no-deps \
  && python -m pip install --no-cache-dir -e third_party/lib-avstack-carla --no-deps \
- && python -m pip install --no-cache-dir "carla==0.9.16" pygame ipywidgets nuscenes-devkit lyft-dataset-sdk==0.0.8 -c constraints.txt
+ && python -m pip install --no-cache-dir --no-deps /tmp/carla-1.0-cp311-cp311-linux_x86_64.whl \
+ && python -m pip install --no-cache-dir pygame ipywidgets nuscenes-devkit lyft-dataset-sdk==0.0.8 six==1.17.0 -c constraints.txt \
+ && rm /tmp/carla-1.0-cp311-cp311-linux_x86_64.whl
 # 5. AVSecTester (includes the pinned Parquet dependency from pyproject.toml;
 # plots are part of reports; augment adds Albumentations and nurec adds mesh ray casting).
 # Torch 2.1 and MMEngine use pkg_resources, which newer setuptools versions remove.

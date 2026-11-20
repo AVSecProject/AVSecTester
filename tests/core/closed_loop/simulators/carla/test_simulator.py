@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 from dataclasses import replace
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -11,7 +12,7 @@ from avsectester.closed_loop.simulators.carla.sensors import SensorAlignmentErro
 from avsectester.closed_loop.simulators.base import Initialization
 from avsectester.closed_loop.timing import HistoryRequirement, SensorTiming, TimingConfiguration
 from avsectester.datasets.carla import CarlaDataset, PrescribedMotion
-from avsectester.data_types import ActorState, Control
+from avsectester.data_types import ActorState, Control, Observation
 from tests.fakes import CarlaNativeBoundary
 
 
@@ -62,7 +63,7 @@ def test_capture_alignment(monkeypatch, carla_dataset):
         runtime.step(Control())
         assert list(runtime.observe().sensor_data) == ["front", "lidar"]
     CarlaNativeBoundary(frame_offset=10).install(monkeypatch, None)
-    with CarlaSimulator({"rate": 10}, settle_iters=0).create_runtime() as runtime:
+    with CarlaSimulator({"rate": 10}, settle_iters=0, camera_warmup_s=0.).create_runtime() as runtime:
         with pytest.raises(SensorAlignmentError, match="ahead"):
             runtime.reset(start)
 
@@ -87,7 +88,8 @@ def test_world_settings(monkeypatch, carla_dataset):
     start = dataset.scenario_start("scene", dataset.frames("scene")[0])
     with CarlaSimulator({"rate": 10}, settle_iters=0).create_runtime() as runtime:
         runtime.reset(start, world={"weather": {"precipitation": 60.},
-            "road_friction": {"tire_friction": .7}, "map_layers": {"unload": ["Buildings"]},
+            "road_friction": {"friction_force_multiplier": .7},
+            "map_layers": {"unload": ["Buildings"]},
             "lighting": {"vehicle_lights": {"ego": ["Position", "LowBeam"]}}})
         native = runtime.native
         assert native["world"].weather.precipitation == 60.
@@ -95,9 +97,62 @@ def test_world_settings(monkeypatch, carla_dataset):
         assert native["ego"].actor.light_state == (carla.VehicleLightState.Position
                                                    | carla.VehicleLightState.LowBeam)
         assert native["world"].layers == [("unload", "Buildings")]
-        assert native["ego"].actor.get_physics_control().wheels[0].tire_friction == .7
-        with pytest.raises(ValueError, match="road_friction.tire_friction"):
-            runtime.reset(start, world={"road_friction": {"tire_friction": 0}})
+        assert native["ego"].actor.get_physics_control().wheels[0].friction_force_multiplier == .7
+        with pytest.raises(ValueError, match="road_friction supports only"):
+            runtime.reset(start, world={"road_friction": {"tire_friction": .7}})
+    scenario = deepcopy(dataset.native("scene").scenario)
+    scenario["client"]["map_name"] = "Town10HD_Opt"
+    unlayered = CarlaDataset({"scene": replace(dataset.native("scene"), scenario=scenario)})
+    start = unlayered.scenario_start("scene", unlayered.frames("scene")[0])
+    with CarlaSimulator({"rate": 10}, settle_iters=0).create_runtime() as runtime:
+        with pytest.raises(ValueError, match="unsupported.*Town10HD_Opt"):
+            runtime.reset(start, world={"map_layers": {"unload": ["Buildings"]}})
+
+
+@pytest.mark.parametrize("module_name", ["carla", "carla.libcarla"])
+def test_copy_native_sdk_capture(module_name):
+    def cannot_copy(self, memo):
+        raise TypeError("Native SDK captures cannot be deep-copied")
+
+    capture_type = type("NativeCapture", (), {
+        "__module__": module_name, "__deepcopy__": cannot_copy, "raw_data": b"capture"})
+    capture = capture_type()
+    wrapper = SimpleNamespace(data=capture, edits=[0])
+    observation = Observation(0., 0, {"native": capture, "wrapped": wrapper})
+    with CarlaSimulator({}).create_runtime() as runtime:
+        copied = runtime.copy_observation(observation)
+    assert copied.sensor_data["native"] is capture
+    assert copied.sensor_data["wrapped"].data is capture
+    copied.sensor_data["wrapped"].edits.append(1)
+    assert wrapper.edits == [0]
+
+
+def test_camera_warmup(monkeypatch, carla_dataset):
+    start = carla_dataset.scenario_start("scene", carla_dataset.frames("scene")[0])
+    results = []
+    for warmup, expected_ticks in ((0., 0), (.2, 2)):
+        CarlaNativeBoundary().install(monkeypatch, None)
+        simulator = CarlaSimulator({"rate": 10}, settle_iters=0, camera_warmup_s=warmup)
+        assert simulator.camera_warmup_ticks == expected_ticks
+        with simulator.create_runtime() as runtime:
+            runtime.reset(start)
+            report = runtime.initialization_report
+            assert report["deployment_ticks"] == 0
+            assert report["actual"]["scenario_t0"] == pytest.approx(runtime.observe().t)
+            assert report["actual"]["actual_scenario_time"] == 0.
+            results.append(runtime.clock)
+    assert results[1].frame == results[0].frame + 2
+    assert results[1].t == pytest.approx(results[0].t + .2)
+
+    CarlaNativeBoundary(include_rgb=False).install(monkeypatch, None)
+    with CarlaSimulator({"rate": 10}, settle_iters=0, camera_warmup_s=.2).create_runtime() as runtime:
+        runtime.reset(start)
+        assert runtime.camera_sensors == set()
+        assert runtime.clock.frame == results[0].frame
+    with pytest.raises(ValueError, match="camera_warmup_s"):
+        CarlaSimulator({"rate": 10}, camera_warmup_s=-1.)
+    with pytest.raises(ValueError, match="whole number"):
+        CarlaSimulator({"rate": 10}, camera_warmup_s=.15)
 
 
 def test_scene_choices_follow_the_run_seed(monkeypatch, carla_dataset):

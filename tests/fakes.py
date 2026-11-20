@@ -943,7 +943,8 @@ class CarlaActor:
         self.control = SimpleNamespace(throttle=0., brake=0., steer=0.)
         self.bounding_box = SimpleNamespace(extent=CarlaVector(2., 1., .7),
             location=CarlaVector(.2, 0., .7), rotation=SimpleNamespace(roll=0., pitch=0., yaw=0.))
-        self.physics = SimpleNamespace(wheels=[SimpleNamespace(tire_friction=2.)])
+        self.physics = SimpleNamespace(wheels=[SimpleNamespace(friction_force_multiplier=2.)])
+        self.simulate_physics = True
         self.destroyed = False
         self.light_state = None
         self.attached_to = None
@@ -977,7 +978,7 @@ class CarlaActor:
         pass
 
     def set_simulate_physics(self, enabled):
-        pass
+        self.simulate_physics = enabled
 
     def set_enable_gravity(self, enabled):
         pass
@@ -1053,7 +1054,7 @@ class CarlaImageData(SimpleNamespace):
 
 
 class CarlaMobileActor:
-    def __init__(self, client, specification):
+    def __init__(self, client, specification, include_rgb=True):
         self.client = client
         self.specification = deepcopy(specification)
         spawn = specification.get("spawn", 0)
@@ -1077,6 +1078,9 @@ class CarlaMobileActor:
             object=native_camera, reference=SimpleNamespace(as_carla_transform=lambda local=True: CarlaTransform()),
             imsize=(12, 16), P=np.array([[8., 0., 8., 0.],
              [0., 8., 6., 0.], [0., 0., 1., 0.]]))}
+        if not include_rgb:
+            self.sensors.clear()
+            self.sensor_data_manager.data.clear()
         for sensor_config in specification.get("sensors", ()):
             if sensor_config["type"] == "CarlaLidar":
                 def lidar_transform():
@@ -1109,12 +1113,13 @@ class CarlaMobileActor:
         # Identical physical scenes have identical pixels even when reset setup ticks
         # give their captures different native clock/frame metadata.
         color = int(round(self.actor.transform.location.x * 1000)) % 255
-        sensor = self.sensors["front_camera"]
-        payload = CarlaImageData(frame=frame - sensor.frame0 + frame_offset,
-            timestamp=timestamp - sensor.t0,
-            data=np.full((12, 16, 3), color, np.uint8),
-            calibration=SimpleNamespace(reference=SimpleNamespace(reference=self.reference)))
-        self.sensor_data_manager.data["front"].append(payload)
+        if "front_camera" in self.sensors:
+            sensor = self.sensors["front_camera"]
+            payload = CarlaImageData(frame=frame - sensor.frame0 + frame_offset,
+                timestamp=timestamp - sensor.t0,
+                data=np.full((12, 16, 3), color, np.uint8),
+                calibration=SimpleNamespace(reference=SimpleNamespace(reference=self.reference)))
+            self.sensor_data_manager.data["front"].append(payload)
         if "top_lidar" in self.sensors:
             lidar = self.sensors["top_lidar"]
             payload = SimpleNamespace(frame=frame - lidar.frame0 + frame_offset,
@@ -1207,7 +1212,7 @@ class CarlaWorld:
         self.weather = weather
 
     def get_map(self):
-        return SimpleNamespace(name="Town03_Opt")
+        return SimpleNamespace(name=self.config.get("map_name", "Town03_Opt"))
 
     def unload_map_layer(self, layer):
         self.layers.append(("unload", layer))
@@ -1244,8 +1249,9 @@ class CarlaTexture:
 class CarlaNativeBoundary:
     """Registry/client boundary used by the real CARLA simulator, without a server."""
 
-    def __init__(self, frame_offset=0):
+    def __init__(self, frame_offset=0, include_rgb=True):
         self.frame_offset = frame_offset
+        self.include_rgb = include_rgb
         self.module_dict = {}
 
     def get(self, name):
@@ -1263,7 +1269,7 @@ class CarlaNativeBoundary:
     def build(self, config, default_args=None):
         if default_args is None:
             return CarlaNativeClient(config, self.frame_offset)
-        return CarlaMobileActor(default_args["client"], config)
+        return CarlaMobileActor(default_args["client"], config, self.include_rgb)
 
     def install(self, monkeypatch, rgb_camera):
         if rgb_camera is not None:

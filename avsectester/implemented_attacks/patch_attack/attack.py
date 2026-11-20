@@ -17,7 +17,9 @@ from avsectester.rendering.textures import load_rgba_image
 from avsectester.attack.insertion.compositor import PatchCompositor
 from .metabuilder import build_metadata
 from .offline import PatchOptimization, run_offline
-from .online import DEFAULT_PROP, PatchAttackRuntime
+from .online import (
+    DEFAULT_PROP, DEFAULT_PROP_MESH_PATH, MESH_PROP, PatchAttackRuntime, _check_mesh_path,
+)
 
 
 class PatchAttack(Attack):
@@ -29,6 +31,11 @@ class PatchAttack(Attack):
     ``anchor`` and ``offset_m`` specify a box-local mounting point. A selected
     host is assigned only when constructing its actual ``AttachedPlacement``. CARLA native
     mesh dimensions must match the declared plane dimensions.
+
+    ``prop`` defaults to ``static.prop.mesh``. For that blueprint, ``prop_mesh_path`` selects
+    the mesh and defaults to ``DEFAULT_PROP_MESH_PATH`` from the online module. Other
+    blueprints require ``prop_mesh_path=None``. The installation orientation is calibrated
+    for the default IronPlank mesh and is not guaranteed for other meshes or props.
     """
 
     def __init__(self, *, decision_steps, assets: np.ndarray | str | Path | Texture | None = None,
@@ -36,7 +43,8 @@ class PatchAttack(Attack):
                  sensor="front", width_m=1.0, height_m=0.5, anchor="rear_center", offset_m=(-0.01, 0.0, 0.0),
                  orientation=None,
                  max_distance=None, min_visible_fraction=0.0, max_windows=None, keep_tail=False,
-                 optimization=None, prop=DEFAULT_PROP, emissive=True, compositor=None):
+                 optimization=None, prop=DEFAULT_PROP, prop_mesh_path: str | None = None,
+                 emissive=True, compositor=None):
         validate_segment_options(decision_steps, None, keep_tail)
         if max_windows is not None:
             require_positive_integer(max_windows, "max_windows")
@@ -69,11 +77,15 @@ class PatchAttack(Attack):
             raise TypeError("optimization must be PatchOptimization")
         if not isinstance(prop, str) or not prop:
             raise ValueError("prop must be a nonempty CARLA blueprint name")
+        if prop == MESH_PROP and prop_mesh_path is None:
+            prop_mesh_path = DEFAULT_PROP_MESH_PATH
+        _check_mesh_path(prop, prop_mesh_path, "prop_mesh_path")
         if not isinstance(emissive, bool):
             raise TypeError("emissive must be boolean")
         if compositor is not None and not isinstance(compositor, PatchCompositor):
             raise TypeError("compositor must be PatchCompositor")
         self.optimization, self.prop, self.emissive, self.compositor = optimization, prop, emissive, compositor
+        self.prop_mesh_path = prop_mesh_path
         self.assets = PlaneAsset(rgba, self.width_m, self.height_m).texture
 
     def placement_for(self, host):

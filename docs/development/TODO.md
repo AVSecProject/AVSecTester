@@ -107,6 +107,15 @@ See [NuRec LiDAR](../guides/simulators.md#lidar) for supported capture behavior.
   that differ from its mesh.
 - [ ] Validate CARLA's texture sampling on the prop against the differentiable optimization
   model.
+- [ ] Account for the default IronPlank mesh's right-edge UV cropping in the patch optimization
+  model and evaluation, using the region actually displayed.
+
+## CARLA 1.0 validation
+
+- [ ] Validate detector performance on CARLA 1.0 camera and LiDAR data before using it to
+  compare attack impact. Retrain the detector if needed.
+- [ ] Change CI's Python client pin from `carla==0.9.16` to `carla==1.0` when CARLA 1.0 is
+  published on PyPI.
 
 ## Sim-to-real fidelity
 

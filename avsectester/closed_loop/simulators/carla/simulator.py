@@ -35,6 +35,9 @@ from .sensors import (
 )
 
 
+_MAPS_WITHOUT_LAYERS = frozenset({"Town10HD_Opt"})
+
+
 @dataclass
 class _TickCapture:
     state: WorldSnapshot
@@ -50,6 +53,9 @@ class CarlaSimulator(Simulator):
     Stock RGB cameras
     are then replaced by undistorted ``PinholeRgbCamera`` sensors matching the pinhole
     projection. Custom RGB classes are kept and must expose zero lens distortion.
+    ``camera_warmup_s`` holds actors at their initial states before the scenario origin when
+    RGB cameras are present. It must span a whole number of physics ticks and is separate
+    from the deployment tick budget. ``camera_warmup_ticks`` is the resolved tick count.
     """
 
     dataset_kinds = ("CarlaDataset",)
@@ -61,9 +67,9 @@ class CarlaSimulator(Simulator):
     supported_world_settings = CARLA_WORLD_SETTINGS
 
     def __init__(
-        self, client: dict, settle_iters: int = 100, *, simulator_version="0.9.16",
+        self, client: dict, settle_iters: int = 100, *, simulator_version="1.0",
         depth_camera: str | None = None, occlusion_tolerance_m: float = 0.1,
-        decision_period_us: int | None = None,
+        decision_period_us: int | None = None, camera_warmup_s: float = 4.0,
     ) -> None:
         allowed = {"connect_ip", "connect_port", "traffic_manager_port", "rate", "synchronous",
                    "seed", "traffic_manager_seed"}
@@ -88,6 +94,7 @@ class CarlaSimulator(Simulator):
                 raise ValueError(f"client.{name} must be an integer in [1,65535]")
         require_nonnegative_integer(settle_iters, "settle_iters")
         require_nonnegative_number(occlusion_tolerance_m, "occlusion_tolerance_m")
+        require_nonnegative_number(camera_warmup_s, "camera_warmup_s")
         self.settle_iters = settle_iters
         self.occlusion_tolerance_m = occlusion_tolerance_m
         self.simulator_version = simulator_version
@@ -96,6 +103,12 @@ class CarlaSimulator(Simulator):
             self._base_tick_us = seconds_to_microseconds(1 / float(self.client_config["rate"]))
         except ValueError as error:
             raise ValueError("CARLA client.rate must produce an integer-microsecond base tick") from error
+        warmup_ticks = camera_warmup_s * float(self.client_config["rate"])
+        if (not math.isfinite(warmup_ticks)
+                or not math.isclose(warmup_ticks, round(warmup_ticks), rel_tol=0., abs_tol=1e-9)):
+            raise ValueError("camera_warmup_s must be a whole number of CARLA base ticks")
+        self.camera_warmup_s = camera_warmup_s
+        self.camera_warmup_ticks = round(warmup_ticks)
         self._decision_period_us = self._base_tick_us if decision_period_us is None else decision_period_us
         if decision_period_us is not None and (isinstance(decision_period_us, bool)
                 or not isinstance(decision_period_us, int) or decision_period_us <= 0):
@@ -137,7 +150,8 @@ class CarlaSimulator(Simulator):
     @property
     def identity(self):
         return {**super().identity, "client": deepcopy(self.client_config),
-                "depth_camera": self.depth_camera, "start_sensor_setup_ticks": 1}
+                "depth_camera": self.depth_camera, "start_sensor_setup_ticks": 1,
+                "camera_warmup_s": self.camera_warmup_s}
 
     def validate_start(self, start):
         if start is None:
@@ -302,7 +316,7 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
             for candidate in (payload, getattr(payload, "data", None)):
                 if (
                     candidate is not None
-                    and type(candidate).__module__.startswith("carla.")
+                    and type(candidate).__module__.split(".", 1)[0] == "carla"
                     and hasattr(candidate, "raw_data")
                 ):
                     memo[id(candidate)] = candidate
@@ -398,6 +412,9 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         self.client.tick()
         self._trajectory_setup_ticks = self._recipe_replay.activate()
         self._hold_tick()
+        if self.camera_sensors:
+            for _ in range(self.simulator.camera_warmup_ticks):
+                self._hold_tick()
         self._recipe_replay.finish_holding()
         self._scenario_t0 = self.client.world.get_snapshot().timestamp.elapsed_seconds
         self._base_actor_ids = {actor.id for actor in self.client.world.get_actors()}
@@ -901,7 +918,10 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         import carla
 
         world = self.client.world
-        if not world.get_map().name.rsplit("/", 1)[-1].endswith("_Opt"):
+        map_name = world.get_map().name.rsplit("/", 1)[-1]
+        if map_name in _MAPS_WITHOUT_LAYERS:
+            raise ValueError(f"map_layers is unsupported on CARLA map {map_name}")
+        if not map_name.endswith("_Opt"):
             raise ValueError("map_layers requires a CARLA _Opt map")
         for action in ("unload", "load"):
             layers = settings.get(action, [])
@@ -946,11 +966,11 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
             actor.set_light_state(carla.VehicleLightState(state))
 
     def _apply_road_friction(self, settings: Any) -> None:
-        """Set tire friction on selected vehicles, preserving their other physics settings."""
+        """Set wheel friction multipliers, preserving the other vehicle physics settings."""
         validate_carla_world_settings({"road_friction": settings})
         if settings is None:
             return
-        coefficient = settings["tire_friction"]
+        multiplier = settings["friction_force_multiplier"]
         actors = {name: actor for name, actor in self._native_resources()["actors"].items()
                   if actor.type_id.startswith("vehicle.")}
         selected = settings.get("actors", list(actors))
@@ -961,7 +981,7 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
             physics = actor.get_physics_control()
             wheels = physics.wheels
             for wheel in wheels:
-                wheel.tire_friction = float(coefficient)
+                wheel.friction_force_multiplier = float(multiplier)
             physics.wheels = wheels
             actor.apply_physics_control(physics)
 
