@@ -408,6 +408,48 @@ def test_checkpoint(nurec_dataset, monkeypatch, make_nurec_simulator):
         runtime.capture_at(end, ())
 
 
+def test_moving_object_checkpoint(nurec_dataset, make_object_in_front, make_nurec_simulator):
+    dataset = nurec_dataset
+    start = dataset.scenario_start("scene", dataset.frames("scene")[3])
+    simulator = make_nurec_simulator(NuRecImageBoundary(CAMERA), depth="none",
+                                     object_occlusion="geometry", physics_update_mode="none")
+    with simulator.create_runtime() as runtime:
+        runtime.reset(start)
+        asset, pose = make_object_in_front(runtime.sensor_view("front"))
+
+        def setup(value, context):
+            context.simulator_runtime.insert_object("sign", asset, pose, velocity=(2., 0., 0.))
+
+        def move(value, context):
+            world = context.simulator_runtime
+            target = pose.copy()
+            target[1, 3] += .4 + world.clock.time_us / 1e6
+            world.move_object("sign", target)
+
+        hooks = HookSet([Hook("simulator.setup", setup), Hook("simulator.step.pre", move)])
+        with hooks.session(runtime, ConstantAVStack()).activate():
+            runtime.reset(start)
+            runtime.step(Control())
+            checkpoint = runtime.checkpoint()
+            saved = runtime.state().objects["sign"]
+            recorded = runtime.observe_recorded_at(-100000).physical_state.objects["sign"]
+            runtime.step(Control())
+            expected = runtime.state().objects["sign"]
+        runtime.reset(start)
+        runtime.restore(checkpoint)
+        restored = runtime.state().objects["sign"]
+        np.testing.assert_array_equal(restored.pose, saved.pose)
+        assert restored.velocity == saved.velocity
+        past = runtime.observe_recorded_at(-100000).physical_state.objects["sign"]
+        np.testing.assert_array_equal(past.pose, recorded.pose)
+        assert past.velocity == recorded.velocity
+        with hooks.session(runtime, ConstantAVStack()).activate():
+            runtime.step(Control())
+        actual = runtime.state().objects["sign"]
+        np.testing.assert_array_equal(actual.pose, expected.pose)
+        assert actual.velocity == expected.velocity
+
+
 def test_set_actor_state(nurec_usdz_path, monkeypatch, make_object_in_front, make_nurec_simulator):
     boundary = NuRecRpcBoundary().install(monkeypatch)
     dataset = NuRecDataset([nurec_usdz_path], time_step=.1)
@@ -1443,6 +1485,135 @@ def test_scene_insertion(nurec_longitudinal_dataset, monkeypatch, make_nurec_sim
         boundary.hidden = None
         runtime.step(Control())
         np.testing.assert_array_equal(runtime.sensor_view("front").object_masks["sign"], True)
+
+
+def test_moving_composite_insertion(nurec_dataset, make_nurec_simulator, make_object_in_front):
+    dataset = nurec_dataset
+    start = dataset.scenario_start("scene", dataset.frames("scene")[3])
+    simulator = make_nurec_simulator(NuRecImageBoundary(CAMERA), depth="none",
+                                     object_occlusion="geometry", physics_update_mode="none")
+    with simulator.create_runtime() as runtime:
+        runtime.configure_timing(TimingConfiguration(sensors={
+            "front": SensorTiming(shutter_duration_us=50000),
+        }))
+        runtime.reset(start)
+        clean = runtime.sensor_view("front")
+        asset, pose = make_object_in_front(clean)
+        runtime.insert_object("sign", asset, pose)
+        target = pose.copy()
+        target[1, 3] += .8
+
+        def move(value, context):
+            context.simulator_runtime.move_object("sign", target)
+
+        hooks = HookSet([Hook("simulator.step.pre", move)])
+        with hooks.session(runtime, ConstantAVStack()).activate():
+            runtime.step(Control())
+        view = runtime.sensor_view("front")
+        end_only = plan_composite(view.camera, view.cam_from_world,
+                                  (PlacedObject("sign", asset, target),)).apply(clean.data)
+        np.testing.assert_array_equal(view.data, end_only.image)
+        np.testing.assert_array_equal(view.object_masks["sign"], end_only.object_masks["sign"])
+        midpoint = interpolate_transform(pose, target, .5)
+        shutter_start = plan_composite(view.camera, view.cam_from_world,
+                                       (PlacedObject("sign", asset, midpoint),)).apply(clean.data)
+        assert np.any(view.data != shutter_start.image)
+
+
+def test_moving_scene_insertion(nurec_longitudinal_dataset, monkeypatch, make_nurec_simulator,
+                                make_object_in_front, tmp_path):
+    boundary = NuRecRpcBoundary().install(monkeypatch)
+    dataset = nurec_longitudinal_dataset
+    start = dataset.scenario_start("scene", dataset.frames("scene")[3])
+    start = replace(start, payload={**start.payload,
+                    "ego": replace(start.payload["ego"], velocity=(0., 0., 0.))})
+    lidar = "lidar_gt_top_p128"
+    renderer = NuRecRenderer(cameras=["front"], lidar=lidar, asset_directory=tmp_path)
+    simulator = make_nurec_simulator(renderer, object_insertion="scene", depth="none",
+                                     physics_update_mode="none", route_generator="none")
+    timing = TimingConfiguration(sensors={"front": SensorTiming(shutter_duration_us=50000)})
+    with simulator.create_runtime() as runtime:
+        runtime.configure_timing(timing)
+        runtime.reset(start)
+        asset, pose = make_object_in_front(runtime.sensor_view("front"))
+        surface = asset.surfaces[0]
+        asset = replace(asset, surfaces=(replace(surface, nominal_texture=np.full_like(
+            surface.texture, [180, 180, 180, 255])),))
+        target = pose.copy()
+        target[1, 3] += .4
+        stationary = pose.copy()
+        stationary[1, 3] += 1.5
+
+        def setup(value, context):
+            world = context.simulator_runtime
+            world.insert_object("moving", asset, pose, velocity=(2., 0., 0.),
+                                harmonizer=ExposureHarmonizer(reference="under", feather_sigma=0))
+            world.insert_object("stationary", asset, stationary)
+
+        def move(value, context):
+            context.simulator_runtime.move_object("moving", target)
+
+        hooks = HookSet([Hook("simulator.setup", setup), Hook("simulator.step.pre", move)])
+        with hooks.session(runtime, ConstantAVStack()).activate():
+            runtime.reset(start)
+            origin = timestamp_to_microseconds(start.frame.timestamp)
+            view = runtime.sensor_view("front")
+            moving_track, initial_track_pose = view.native["object_tracks"]["moving"]
+            static_track, static_track_pose = view.native["object_tracks"]["stationary"]
+
+            def find(rgb_end, track_id):
+                return [item for request in boundary.requests
+                        if hasattr(request, "camera_intrinsics") and request.frame_end_us == rgb_end
+                        and {moving_track, static_track} <= {obj.track_id for obj in request.dynamic_objects}
+                        for item in request.dynamic_objects if item.track_id == track_id][-1]
+
+            def check(object_track, start_xyz, end_xyz):
+                expected_start = initial_track_pose.copy()
+                expected_start[:3, 3] += start_xyz
+                expected_end = initial_track_pose.copy()
+                expected_end[:3, 3] += end_xyz
+                np.testing.assert_allclose(proto_world_pose(object_track.pose_pair.start_pose),
+                                           expected_start, atol=1e-12)
+                np.testing.assert_allclose(proto_world_pose(object_track.pose_pair.end_pose),
+                                           expected_end, atol=1e-12)
+
+            check(find(origin, moving_track), [-.1, 0., 0.], [0., 0., 0.])
+            static = find(origin, static_track)
+            np.testing.assert_array_equal(proto_world_pose(static.pose_pair.start_pose),
+                                          proto_world_pose(static.pose_pair.end_pose))
+            np.testing.assert_allclose(proto_world_pose(static.pose_pair.end_pose), static_track_pose)
+
+            runtime.observe_recorded_at(-100000)
+            check(find(origin - 100000, moving_track), [-.3, 0., 0.], [-.2, 0., 0.])
+            scan = boundary.lidar_requests[-1]
+            check(next(item for item in scan.dynamic_objects if item.track_id == moving_track),
+                  [-.4, 0., 0.], [-.2, 0., 0.])
+
+            runtime.step(Control())
+            view = runtime.sensor_view("front")
+            assert view.object_masks["moving"].any()
+            end = origin + 100000
+            check(find(end, moving_track), [0., .2, 0.], [0., .4, 0.])
+            scan = boundary.lidar_requests[-1]
+            check(next(item for item in scan.dynamic_objects if item.track_id == moving_track),
+                  [0., 0., 0.], [0., .4, 0.])
+
+            # A coverage probe substitutes the moving object's track and retains the other object.
+            requests = [request for request in boundary.requests if hasattr(request, "camera_intrinsics")
+                        and request.frame_end_us == end]
+            probes = [item for request in requests
+                      if static_track in {item.track_id for item in request.dynamic_objects}
+                      for item in request.dynamic_objects if item.track_id.startswith("avsectester_coverage_")]
+            assert probes
+            for probe in probes:
+                check(probe, [0., .2, 0.], [0., .4, 0.])
+            # Nominal rendering substitutes a different texture and follows the same pose pair.
+            nominal = [item for request in requests for item in request.dynamic_objects
+                       if item.track_id.startswith("avsectester_scene_")
+                       and item.track_id not in {moving_track, static_track}]
+            assert nominal
+            for item in nominal:
+                check(item, [0., .2, 0.], [0., .4, 0.])
 
 
 @pytest.mark.parametrize("harmonizer", [

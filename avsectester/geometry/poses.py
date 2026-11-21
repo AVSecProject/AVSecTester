@@ -7,8 +7,11 @@ from numpy.typing import ArrayLike
 
 
 def validated_vector(value: ArrayLike, name: str) -> np.ndarray:
-    """Return a finite three-dimensional vector, rejecting invalid shapes or values."""
-    array = np.asarray(value, dtype=float)
+    """Return a finite three-dimensional vector. Any other value raises ``ValueError``."""
+    try:
+        array = np.asarray(value, dtype=float)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ValueError(f"{name} must contain three finite numbers") from error
     if array.shape != (3,) or not np.isfinite(array).all():
         raise ValueError(f"{name} must contain three finite numbers")
     return array

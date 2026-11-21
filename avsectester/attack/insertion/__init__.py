@@ -4,7 +4,7 @@ from .assets import (
     ResolvedInsertion, resolve_insertion,
 )
 from .compositor import PatchCompositor, render_resolved
-from .action import InsertObject, InsertionAttackAction
+from .action import InsertObject, InsertionAttackAction, MoveObject
 from .types import Visibility, VisibilityEvidence
 from .visibility import (
     CuboidVisibilityEstimator, DepthVisibilityEstimator, visibility_from_depth, visibility_from_masks,
@@ -20,6 +20,7 @@ __all__ = [
     'PatchCompositor',
     'render_resolved',
     'InsertObject',
+    'MoveObject',
     'InsertionAttackAction',
     'Visibility',
     'VisibilityEvidence',

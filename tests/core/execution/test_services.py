@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from avsectester.attack import AttackSegment
-from avsectester.attack.insertion import InsertObject
+from avsectester.attack.insertion import InsertObject, MoveObject
 from avsectester.attack.runtime import SensorAttackAction
 from avsectester.data_types import Control, Observation, Unavailable, read_camera_rgb
 from avsectester.execution.frame_data_cache import FrameDataCache
@@ -118,6 +118,10 @@ def test_render(make_object_in_front):
         np.testing.assert_array_equal(unmodified.view.data, plain.view.data)
         assert unmodified.object_visibility == {}
         assert inserted.object_visibility["sign"]["front"] == visibility
+        with pytest.raises(RuntimeError, match=r"simulator\.step\.pre"):
+            session.render(RenderRequest("scene", frame, "front", actions=(
+                InsertObject("sign", asset, world_from_object), MoveObject("sign", world_from_object),
+            )))
 
 
 def test_external_render(monkeypatch, carla_dataset, make_object_in_front):

@@ -220,9 +220,9 @@ class Renderer(ABC):
     def render_object_coverage(
         self, world_from_rig: np.ndarray, timestamp_us: int, camera: str,
         placed: PlacedObject, dynamic_objects=(), *, frame_start_us: int | None = None,
-        world_from_rig_start=None, dynamic_objects_start=None,
+        world_from_rig_start=None, dynamic_objects_start=None, placed_start: PlacedObject | None = None,
     ) -> np.ndarray:
-        """Visible image coverage of one object, with values between zero and one."""
+        """Visible coverage of one object, optionally at a different exposure-start placement."""
         raise NotImplementedError(f"{type(self).__name__} cannot render object coverage")
 
     def camera_model(self, camera: str | None = None) -> Camera | None:
@@ -684,12 +684,13 @@ class NuRecRenderer(Renderer):
     def render_object_coverage(
         self, world_from_rig: np.ndarray, timestamp_us: int, camera: str,
         placed: PlacedObject, dynamic_objects=(), *, frame_start_us: int | None = None,
-        world_from_rig_start=None, dynamic_objects_start=None,
+        world_from_rig_start=None, dynamic_objects_start=None, placed_start: PlacedObject | None = None,
     ) -> np.ndarray:
         """Return visible object coverage from pure-white and pure-black scene copies.
 
         Copies have the scene asset's grid and use the ordinary camera image quality.
         The caller lists actors and all other scene objects, excluding this object.
+        ``placed_start`` supplies the object's exposure-start pose when it differs from ``placed``.
         """
         import numpy as np
 
@@ -699,11 +700,15 @@ class NuRecRenderer(Renderer):
         for color in ("white", "black"):
             gaussian, track_id = self._coverage_copy(placed.asset, color)
             pose = placed.world_from_object @ gaussian.object_from_track
+            starts = None
+            if dynamic_objects_start is not None or placed_start is not None:
+                start_pose = (pose if placed_start is None else
+                              placed_start.world_from_object @ gaussian.object_from_track)
+                others = dynamic_objects if dynamic_objects_start is None else dynamic_objects_start
+                starts = (*others, (track_id, start_pose))
             images.append(self._render_image(world_from_rig, timestamp_us, camera,
                 (*dynamic_objects, (track_id, pose)), self.image_quality, frame_start_us=frame_start_us,
-                world_from_rig_start=world_from_rig_start,
-                dynamic_objects_start=(None if dynamic_objects_start is None else
-                                       (*dynamic_objects_start, (track_id, pose)))))
+                world_from_rig_start=world_from_rig_start, dynamic_objects_start=starts))
         return np.clip((images[0].astype(float) - images[1]).mean(axis=2) / 255, 0., 1.)
 
     def _write_asset(self, asset: GaussianAsset, filename: str) -> None:

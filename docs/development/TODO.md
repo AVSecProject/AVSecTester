@@ -42,11 +42,10 @@ See [reactive traffic](../guides/simulators.md#reactive-traffic) for supported b
 
 NuRec scene insertion includes LiDAR. See [Simulators](../guides/simulators.md#scene-insertion).
 
-## Moving inserted objects
+## Ground and traffic interaction for inserted objects
 
-- [ ] Let attacks move an inserted object during a run, for example along a route, and record its
-  velocity. Inserted objects currently keep one world pose and zero velocity.
-- [ ] Use the object's poses at the start and end of each LiDAR scan in NuRec scene insertion.
+- [ ] Fit inserted object poses to the ground surface.
+- [ ] Make inserted objects visible to the traffic model.
 
 ## Remove real objects from reconstructed scenes
 

@@ -369,6 +369,97 @@ def test_insert_object(make_object_in_front):
             simulator_runtime.remove_object("sign")
 
 
+def test_move_object(make_object_in_front):
+    dataset = MemoryDataset()
+    start = dataset.scenario_start("scene", dataset.frames("scene")[3])
+    with MemorySimulator(actors={}).create_runtime() as runtime:
+        runtime.reset(start)
+        asset, pose = make_object_in_front(runtime.sensor_view("front"))
+        velocity = (2., 0., 0.)
+        first_target = pose.copy()
+        first_target[:3, 3] += (1., 0., 0.)
+        first_target[:3, :3] = rotation_matrix((0., 0., 60.)) @ pose[:3, :3]
+        last_target = first_target.copy()
+        last_target[:3, 3] += (2., 0., 0.)
+
+        def setup(value, context):
+            context.simulator_runtime.insert_object("sign", asset, pose, velocity=velocity)
+
+        def move(value, context):
+            sim = context.simulator_runtime
+            if sim.clock.time_us == origin:
+                with pytest.raises(KeyError, match="Unknown inserted object"):
+                    sim.move_object("missing", first_target)
+                with pytest.raises(ValueError, match="rigid pose"):
+                    sim.move_object("sign", np.zeros((4, 4)))
+                sim.move_object("sign", first_target)
+                with pytest.raises(ValueError, match="already has a move"):
+                    sim.move_object("sign", last_target)
+                sim.insert_object("new", asset, pose)
+                sim.move_object("new", first_target)
+            elif sim.clock.time_us == origin + 200000:
+                sim.move_object("sign", last_target)
+
+        def post(value, context):
+            with pytest.raises(RuntimeError, match="simulator.step.pre"):
+                context.simulator_runtime.move_object("sign", first_target)
+
+        hooks = HookSet([Hook("simulator.setup", setup), Hook("simulator.step.pre", move),
+                         Hook("simulator.step.post", post)])
+        with hooks.session(runtime, ConstantAVStack()).activate():
+            runtime.reset(start)
+            origin = runtime.clock.time_us
+            at_origin = runtime.state().objects["sign"]
+            np.testing.assert_array_equal(at_origin.pose, pose)
+            assert at_origin.velocity == velocity
+            with pytest.raises(RuntimeError, match="simulator.step.pre"):
+                runtime.move_object("sign", first_target)
+            with pytest.raises(ValueError, match="velocity must contain three finite"):
+                runtime.insert_object("invalid", asset, pose, velocity=(0., 0., np.inf))
+
+            runtime.advance_interval(origin + 100000, Control())
+            runtime.capture_at(origin + 50000, ())
+            runtime.capture_at(origin + 50000, ("front",))
+            expected_middle = pose.copy()
+            expected_middle[:3, :3] = rotation_matrix((0., 0., 30.)) @ pose[:3, :3]
+            expected_middle[:3, 3] += (.5, 0., 0.)
+            middle = runtime.state().objects["sign"]
+            np.testing.assert_allclose(middle.pose, expected_middle, atol=1e-12)
+            assert middle.velocity == pytest.approx((10., 0., 0.))
+            np.testing.assert_allclose(runtime.sensor_view("front").objects["sign"].world_from_object,
+                                       expected_middle, atol=1e-12)
+            runtime.capture_at(origin + 100000)
+            assert runtime.state().objects.keys() == {"sign", "new"}
+            for arrived in runtime.state().objects.values():
+                np.testing.assert_array_equal(arrived.pose, first_target)
+                assert arrived.velocity == pytest.approx((10., 0., 0.))
+            runtime.remove_object("new")
+
+            runtime.step(Control())
+            parked = runtime.state().objects["sign"]
+            np.testing.assert_array_equal(parked.pose, first_target)
+            assert parked.velocity == (0., 0., 0.)
+            runtime.advance_interval(origin + 300000, Control())
+            runtime.capture_at(origin + 250000, ())
+            restarted = runtime.state().objects["sign"]
+            np.testing.assert_allclose(restarted.pose[:3, 3], first_target[:3, 3] + (1., 0., 0.))
+            assert restarted.velocity == pytest.approx((20., 0., 0.))
+            runtime.capture_at(origin + 300000)
+
+            historical_capture = runtime.observe_recorded_at(-100000)
+            assert historical_capture.physical_state.objects.keys() == {"sign"}
+            historical = historical_capture.physical_state.objects["sign"]
+            expected_past = pose.copy()
+            expected_past[:3, 3] -= (.2, 0., 0.)
+            np.testing.assert_array_equal(historical.pose, expected_past)
+            assert historical.velocity == velocity
+
+    with MemorySimulator(can_insert_objects=False).create_runtime() as runtime:
+        runtime.reset()
+        with pytest.raises(NotImplementedError, match="cannot insert objects"):
+            runtime.move_object("sign", first_target)
+
+
 def test_insert_object_with_depth(make_object_in_front):
     depth = np.full((CAMERA.height, CAMERA.width), np.inf)
     with MemorySimulator(sensor_depths={"front": depth}).create_runtime() as runtime:

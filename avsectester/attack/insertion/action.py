@@ -1,13 +1,14 @@
 """World-object and captured-image insertion actions for user attacks."""
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from contextlib import ExitStack
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 import logging
 
 from avsectester.attack.runtime import SensorAttackAction, WorldAttackAction
+from avsectester.geometry.poses import validated_transform, validated_vector
 from .assets import Insertion, resolve_insertion
 from .compositor import PatchCompositor, render_resolved
 from .visibility import CuboidVisibilityEstimator, DepthVisibilityEstimator
@@ -29,22 +30,25 @@ class InsertObject(WorldAttackAction):
     The object's origin is its bottom center. ``world_from_object`` maps that
     right-handed object frame (+X front, +Y left, +Z up) into the world.
     Setup insertion is visible in the first capture. Step insertion is visible in the next.
+    ``velocity`` is a world-frame vector in m/s for times up to the insertion anchor.
     """
 
     object_id: str
     asset: ObjectAsset | MeshAsset
     world_from_object: np.ndarray
     harmonizer: Harmonizer | None = None
+    velocity: Sequence[float] | np.ndarray = (0., 0., 0.)
 
     def __post_init__(self) -> None:
         from avsectester.rendering import PlacedObject
 
         placed = PlacedObject(self.object_id, self.asset, self.world_from_object, self.harmonizer)
         self.world_from_object = placed.world_from_object
+        self.velocity = tuple(float(component) for component in validated_vector(self.velocity, "velocity"))
 
     def apply(self, simulator_runtime: SimulatorRuntime, resources: ExitStack) -> None:
         simulator_runtime.insert_object(self.object_id, self.asset, self.world_from_object,
-                                        harmonizer=self.harmonizer)
+                                        harmonizer=self.harmonizer, velocity=self.velocity)
 
         def remove_if_present() -> None:
             try:
@@ -58,8 +62,25 @@ class InsertObject(WorldAttackAction):
     def receipt_details(self) -> Mapping[str, Any]:
         return {
             "object_id": self.object_id, "asset_category": self.asset.category,
-            "world_from_object": self.world_from_object.copy(),
+            "world_from_object": self.world_from_object.copy(), "velocity": self.velocity,
         }
+
+
+@dataclass
+class MoveObject(WorldAttackAction):
+    """Set an inserted object's end pose for the next simulator interval."""
+
+    object_id: str
+    world_from_object: np.ndarray
+
+    def __post_init__(self) -> None:
+        self.world_from_object = validated_transform(self.world_from_object)
+
+    def apply(self, simulator_runtime: SimulatorRuntime, resources: ExitStack) -> None:
+        simulator_runtime.move_object(self.object_id, self.world_from_object)
+
+    def receipt_details(self) -> Mapping[str, Any]:
+        return {"object_id": self.object_id, "world_from_object": self.world_from_object.copy()}
 
 
 @dataclass
@@ -114,5 +135,6 @@ class InsertionAttackAction(SensorAttackAction):
 
 __all__ = [
     'InsertObject',
+    'MoveObject',
     'InsertionAttackAction',
 ]

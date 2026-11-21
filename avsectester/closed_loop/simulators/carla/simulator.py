@@ -7,7 +7,7 @@ from collections.abc import Mapping, Sequence
 from contextlib import ExitStack
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field, replace
-from typing import Any, TYPE_CHECKING
+from typing import Any
 
 import numpy as np
 
@@ -34,10 +34,6 @@ from .sensors import (
     SensorAlignmentError, SensorCapture, _require_pinhole_sensor, _use_pinhole_cameras,
     configure_recipe_blueprints, decode_carla_depth, register_pinhole_camera, validate_native_sensor_tick,
 )
-
-if TYPE_CHECKING:
-    from avsectester.rendering import Harmonizer, MeshAsset, ObjectAsset
-
 
 _MAPS_WITHOUT_LAYERS = frozenset({"Town10HD_Opt"})
 
@@ -303,13 +299,11 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         """Allow framework-composited objects outside native external-control runs."""
         return not self._native_ros2_run and super().can_insert_objects
 
-    def insert_object(self, object_id: str, asset: ObjectAsset | MeshAsset, world_from_object: np.ndarray, *,
-                      harmonizer: Harmonizer | None = None) -> None:
-        """Insert a framework-composited object outside native ROS 2 runs."""
+    def _require_object_insertion(self) -> None:
         if self._native_ros2_run:
             raise NotImplementedError("Framework-composited objects do not reach the external "
                                       "driving system. " + EXTERNAL_CONTROL_INPUT_ERROR)
-        super().insert_object(object_id, asset, world_from_object, harmonizer=harmonizer)
+        super()._require_object_insertion()
 
     @property
     def _uses_native_ros2(self) -> bool:

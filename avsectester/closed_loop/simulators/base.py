@@ -10,12 +10,14 @@ It also owns the process-local reservation of the simulated world and its read-o
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from bisect import bisect_left
 from collections.abc import Callable, Hashable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 import math
 from numbers import Real
+from operator import itemgetter
 from threading import Lock
 from typing import Any, TYPE_CHECKING
 
@@ -28,6 +30,7 @@ from avsectester.closed_loop.timing import (
 from avsectester.closed_loop.simulators.object_composition import compose_capture
 from avsectester.data_types import ActorState
 from avsectester.datasets.base import FrameData, FrameReference, ScenarioStart
+from avsectester.geometry.poses import interpolate_transform, validated_transform, validated_vector
 from avsectester.validation import require_nonnegative_integer
 from avsectester.data_types import Control, Observation, WorldSnapshot, is_external_control, validate_command_modes
 
@@ -271,6 +274,59 @@ class RecordedAcquisition:
     object_visibility: Mapping[str, Mapping[str, ObjectVisibility]] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class _InsertedObject:
+    placed: PlacedObject
+    velocity: tuple[float, float, float]
+    anchor_us: int | None = None
+    nodes: tuple[tuple[int, np.ndarray], ...] = ()
+
+    def anchored_at(self, time_us: int) -> _InsertedObject:
+        return replace(self, anchor_us=time_us, nodes=((time_us, self.placed.world_from_object),))
+
+    def pose_at(self, time_us: int) -> np.ndarray:
+        initial_pose = self.placed.world_from_object
+        if self.anchor_us is None or time_us == self.anchor_us:
+            return initial_pose
+        if time_us < self.anchor_us:
+            if not any(self.velocity):
+                return initial_pose
+            pose = initial_pose.copy()
+            elapsed = (time_us - self.anchor_us) / 1e6
+            pose[:3, 3] += tuple(elapsed * speed for speed in self.velocity)
+            return pose
+        if time_us >= self.nodes[-1][0]:
+            return self.nodes[-1][1]
+        right = bisect_left(self.nodes, time_us, key=itemgetter(0))
+        end, target = self.nodes[right]
+        start, origin = self.nodes[right - 1]
+        if time_us == end or origin is target:
+            return target
+        return interpolate_transform(origin, target, (time_us - start) / (end - start))
+
+    def velocity_at(self, time_us: int) -> tuple[float, float, float]:
+        if self.anchor_us is None or time_us <= self.anchor_us:
+            return self.velocity
+        if time_us > self.nodes[-1][0]:
+            return (0., 0., 0.)
+        right = bisect_left(self.nodes, time_us, key=itemgetter(0))
+        end, target = self.nodes[right]
+        start, origin = self.nodes[right - 1]
+        x, y, z = (target[:3, 3] - origin[:3, 3]) / ((end - start) / 1e6)
+        return (float(x), float(y), float(z))
+
+    def placed_at(self, time_us: int) -> PlacedObject:
+        pose = self.pose_at(time_us)
+        if pose is self.placed.world_from_object:
+            return self.placed
+        return replace(self.placed, world_from_object=pose)
+
+    def state_at(self, time_us: int) -> ActorState:
+        asset = self.placed.asset
+        return ActorState(self.pose_at(time_us).copy(), self.velocity_at(time_us), asset.category,
+                          asset.extent, (0., 0., asset.extent[2] / 2))
+
+
 @dataclass
 class _SensorSlot:
     time_us: int
@@ -502,9 +558,12 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
         self._interval: DecisionInterval | None = None
         self._published_state: WorldSnapshot | None = None
         self._sensor_slots: dict[str, _SensorSlot] = {}
-        self._objects: dict[str, PlacedObject] = {}
+        self._objects: dict[str, _InsertedObject] = {}
+        self._capture_object_records: dict[str, _InsertedObject] = {}
         self._capture_objects: dict[str, PlacedObject] = {}
-        self._start_objects: dict[str, PlacedObject] = {}
+        self._start_objects: dict[str, _InsertedObject] = {}
+        self._object_origin_time_us: int | None = None
+        self._object_move_interval: tuple[int, int] | None = None
         self._composited_capture: Observation | None = None
         self._object_visibility: dict[str, dict[str, ObjectVisibility]] = {}
         self._composition_error: BaseException | None = None
@@ -622,8 +681,6 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
         """
         import numpy as np
 
-        from avsectester.geometry.poses import interpolate_transform
-
         if type(left) is not type(right):
             raise TypeError("Pose reports must use the same vehicle-state representation")
         if left is None:
@@ -654,8 +711,11 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
         self._closed_loop_run = False
         self._state_cache = None
         self._objects.clear()
+        self._capture_object_records.clear()
         self._capture_objects.clear()
         self._start_objects.clear()
+        self._object_origin_time_us = None
+        self._object_move_interval = None
         self._object_visibility.clear()
         self._composited_capture = None
         self._composition_error = None
@@ -733,6 +793,8 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
         self._interval = None
         self._published_state = None
         self._sensor_slots.clear()
+        self._capture_object_records.clear()
+        self._capture_objects.clear()
         self._capture = None
         self.invalidate_state()
         self._clock_time_us = time_us
@@ -758,11 +820,15 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
         if not (self._world_initialized or self._resetting or self._advancing):
             raise RuntimeError("Reset the simulator before requesting its state")
         objects = {}
-        for object_id, placed in self._objects.items():
-            objects[object_id] = ActorState(
-                placed.world_from_object.copy(), (0., 0., 0.), placed.asset.category,
-                placed.asset.extent, (0., 0., placed.asset.extent[2] / 2),
-            )
+        if self._objects:
+            if self._object_origin_time_us is None:
+                # Setup insertions have no time anchor until the origin capture.
+                time_us = 0
+            elif self._advancing and self._interval is not None:
+                time_us = self._interval.start_us
+            else:
+                time_us = self.clock.time_us
+            objects = {identity: item.state_at(time_us) for identity, item in self._objects.items()}
         reported = self._reported_interval_state()
         state = deepcopy(self._cached_state() if reported is None else reported)
         return replace(state, objects=objects)
@@ -932,13 +998,39 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
 
         return isinstance(asset, ObjectAsset)
 
-    def insert_object(self, object_id: str, asset: ObjectAsset | MeshAsset, world_from_object: np.ndarray, *,
-                      harmonizer: Harmonizer | None = None) -> None:
-        """Register a physical world object, visible from the next sensor capture."""
-        from avsectester.rendering import PlacedObject
-
+    def _require_object_insertion(self) -> None:
         if not self.can_insert_objects:
             raise NotImplementedError(f"{type(self.simulator).__name__} cannot insert objects")
+
+    def _objects_at(self, time_us: int) -> dict[str, PlacedObject]:
+        """Evaluate the live world's inserted objects at a scheduled time."""
+        return {identity: item.placed_at(time_us) for identity, item in self._objects.items()}
+
+    def _capture_objects_at(self, time_us: int) -> dict[str, PlacedObject]:
+        """Evaluate the current batch's inserted objects at a second time during acquisition."""
+        return {identity: item.placed_at(time_us)
+                for identity, item in self._capture_object_records.items()}
+
+    def _start_objects_at(self, time_us: int) -> dict[str, PlacedObject]:
+        """Evaluate the objects present at the origin using their initial motion."""
+        return {identity: item.placed_at(time_us) for identity, item in self._start_objects.items()}
+
+    def _recorded_object_time_us(self, time_us: int) -> int:
+        """Convert a recorded offset relative to the origin to the runtime object clock."""
+        assert self._object_origin_time_us is not None
+        return self._object_origin_time_us + time_us
+
+    def insert_object(self, object_id: str, asset: ObjectAsset | MeshAsset, world_from_object: np.ndarray, *,
+                      harmonizer: Harmonizer | None = None,
+                      velocity: Sequence[float] | np.ndarray = (0., 0., 0.)) -> None:
+        """Register a physical world object, visible from the next sensor capture.
+
+        Velocity is a finite world-frame three-vector in meters per second. It describes motion
+        up to the insertion time, or up to the origin capture for objects inserted during reset.
+        """
+        from avsectester.rendering import PlacedObject
+
+        self._require_object_insertion()
         if not (self._world_initialized or self._resetting or self._advancing):
             raise RuntimeError("Reset the simulator before inserting objects")
         if not self._supports_asset(asset):
@@ -949,13 +1041,38 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
         placed = PlacedObject(object_id, asset, world_from_object, harmonizer)
         if object_id in self._objects:
             raise ValueError(f"Object {object_id!r} is already inserted")
-        self._objects[object_id] = placed
+        vx, vy, vz = map(float, validated_vector(velocity, "velocity"))
+        item = _InsertedObject(placed, (vx, vy, vz))
+        if self._object_origin_time_us is not None:
+            item = item.anchored_at(self.clock.time_us)
+        self._objects[object_id] = item
+        self.invalidate_state()
+
+    def move_object(self, object_id: str, world_from_object: np.ndarray) -> None:
+        """Set an inserted object's end pose once during ``simulator.step.pre``.
+
+        Raises ``NotImplementedError`` when object insertion is unsupported, ``RuntimeError``
+        outside this stage, ``KeyError`` for an unknown object and ``ValueError`` for an invalid
+        pose or another move of the same object in this interval.
+        """
+        self._require_object_insertion()
+        if self._object_move_interval is None:
+            raise RuntimeError("move_object is only available during simulator.step.pre")
+        start_us, end_us = self._object_move_interval
+        if object_id not in self._objects:
+            raise KeyError(f"Unknown inserted object {object_id!r}")
+        item = self._objects[object_id]
+        nodes = item.nodes
+        if nodes[-1][0] == end_us:
+            raise ValueError(f"Object {object_id!r} already has a move in this interval")
+        if nodes[-1][0] < start_us:
+            nodes += ((start_us, item.pose_at(start_us)),)
+        self._objects[object_id] = replace(item, nodes=(*nodes, (end_us, validated_transform(world_from_object))))
         self.invalidate_state()
 
     def remove_object(self, object_id: str) -> None:
         """Remove a world object. The previous capture remains unchanged."""
-        if not self.can_insert_objects:
-            raise NotImplementedError(f"{type(self.simulator).__name__} cannot insert objects")
+        self._require_object_insertion()
         if object_id not in self._objects:
             raise KeyError(f"Unknown inserted object {object_id!r}")
         del self._objects[object_id]
@@ -978,10 +1095,15 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
         self._compose_capture()
         return deepcopy(self._object_visibility[object_id])
 
+    def _snapshot_capture_objects(self) -> None:
+        # Render hooks may edit the live world during native acquisition.
+        self._capture_object_records = dict(self._objects)
+        self._capture_objects = self._objects_at(self.clock.time_us) if self._objects else {}
+
     def _take_capture(self, sensor_ids: Sequence[str] | None = None,
                       truth: WorldSnapshot | None = None) -> None:
         """Acquire native sensor data once and snapshot the objects visible to that capture."""
-        self._capture_objects = dict(self._objects)
+        self._snapshot_capture_objects()
         self._composited_capture = None
         self._object_visibility = {identity: {} for identity in self._capture_objects}
         self._composition_error = None
@@ -1091,8 +1213,11 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
         self._sensor_slots.clear()
         self._capture = None
         self._objects.clear()
+        self._capture_object_records.clear()
         self._capture_objects.clear()
         self._start_objects.clear()
+        self._object_origin_time_us = None
+        self._object_move_interval = None
         self._composited_capture = None
         self._object_visibility.clear()
         self._composition_error = None
@@ -1119,8 +1244,12 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
                 self._window_tick(position)
             self._before_selected_capture(position)
             self.invalidate_state()
+            origin_us = self.clock.time_us
+            self._object_origin_time_us = origin_us
+            self._objects = {identity: item.anchored_at(origin_us)
+                             for identity, item in self._objects.items()}
             self._take_capture()
-            self._start_objects = dict(self._capture_objects)
+            self._start_objects = dict(self._capture_object_records)
             self._world_initialized = True
             try:
                 self._check_initialization(initialization)
@@ -1209,7 +1338,12 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
         self._world_initialized = False
         self._advancing = True
         try:
-            self._emit("simulator.step.pre", None)
+            # Only simulator.step.pre can set object poses at this interval's end.
+            self._object_move_interval = (origin_us, time_us)
+            try:
+                self._emit("simulator.step.pre", None)
+            finally:
+                self._object_move_interval = None
             self._interval = DecisionInterval(origin_us, time_us,
                 tuple(sorted(set(report_times_us) - {origin_us, time_us})),
                 force_gt, coerce_dynamic_state, self.state())
@@ -1316,7 +1450,7 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
             missing = (self.sensors if sensor_ids is None else set(sensor_ids)) - self._capture.sensor_data.keys()
             if missing:
                 previous = self._capture
-                self._capture_objects = dict(self._objects)
+                self._snapshot_capture_objects()
                 self._capture = self._observe_sensors(tuple(sorted(missing)))
                 truth = self.state()
                 for sensor in self._capture.sensor_data.keys() & self.sensors:
@@ -1367,10 +1501,12 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
                 Observation(state.t, state.frame, vehicle_state=deepcopy(state.vehicle_state),
                             ego_speed=state.ego_speed), deepcopy(state))
         observation = self._observe_recorded(time_us, sensor_ids)
+        object_time_us = self._recorded_object_time_us(time_us)
         visibility: dict[str, dict[str, ObjectVisibility]] = {}
         if self._start_objects:
             observation, _, visibility = compose_capture(
-                observation, self._start_objects, self.camera_sensors & observation.sensor_data.keys(),
+                observation, self._start_objects_at(object_time_us),
+                self.camera_sensors & observation.sensor_data.keys(),
                 lambda sensor: self._recorded_sensor_geometry(time_us, sensor),
                 lambda sensor: self._recorded_sensor_view(time_us, sensor, observation),
                 self._compose_objects)
@@ -1380,9 +1516,8 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
                 sensor_data={key: value for key, value in observation.sensor_data.items() if key in selected},
                 calibration={key: value for key, value in observation.calibration.items() if key in selected})
         state = deepcopy(self._recorded_state(time_us))
-        objects = {identity: ActorState(placed.world_from_object.copy(), (0., 0., 0.),
-                   placed.asset.category, placed.asset.extent, (0., 0., placed.asset.extent[2] / 2))
-                   for identity, placed in self._start_objects.items()}
+        objects = {identity: item.state_at(object_time_us)
+                   for identity, item in self._start_objects.items()}
         state = replace(state, objects=objects)
         geometry_sensors = observation.sensor_data if sensor_ids is None else sensor_ids
         geometry = {sensor: deepcopy(self._recorded_sensor_geometry(time_us, sensor))

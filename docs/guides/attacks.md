@@ -188,7 +188,7 @@ supplies snapshots and a clock, rather than a service that advances the world.
 Choose `WorldAttackAction` for physical-world changes, `SensorAttackAction` for sensor-data
 replacement, and `AVStackAttackAction` for a driving-system stage value. The
 [Runtime reference](../reference/runtime.md) describes their application order and stage semantics.
-For insertion, `InsertObject` is a `WorldAttackAction`. `InsertionAttackAction` is a
+For insertion, `InsertObject` and `MoveObject` are world actions. `InsertionAttackAction` is a
 `SensorAttackAction`. Object coordinates use +X forward, +Y left and +Z up.
 
 Placement tools belong to `attack.insertion`, not the dataset. A `SensorView` supplies camera
@@ -228,6 +228,18 @@ with MemorySimulator().create_runtime() as simulator_runtime:
     assert "demo_stop_sign" in log.steps[0].physical_pre.objects
     assert not simulator_runtime.state().objects
 assert log.status == "completed"
+```
+
+Return `MoveObject` from `step` with the object's target pose at the next decision. See
+[Moving inserted objects](../reference/runtime.md#moving-inserted-objects) for timing and history.
+
+```python
+from avsectester.attack.insertion import MoveObject
+
+def step(self, context):
+    target = world_from_object.copy()
+    target[0, 3] += 0.2 * (context.step + 1)
+    return [MoveObject("demo_stop_sign", target)]
 ```
 
 `ObjectAsset` uses a bottom-center local origin. Convert a map feature's reference point before

@@ -366,8 +366,10 @@ def test_external_ego_control(monkeypatch, carla_dataset, make_object_in_front):
             runtime.reset(start, initialization, closed_loop_run=True)
             native = runtime.native
             assert not runtime.can_insert_objects
-            with pytest.raises(NotImplementedError, match="Framework-composited objects do not reach"):
-                runtime.insert_object("framework_only", asset, transform)
+            for edit in (lambda: runtime.insert_object("framework_only", asset, transform),
+                         lambda: runtime.remove_object("framework_only")):
+                with pytest.raises(NotImplementedError, match="Framework-composited objects do not reach"):
+                    edit()
             first = len(native["world"].command_events)
             runtime.step(None)
             queued = [command for event in native["world"].command_events[first:] if event[0] == "batch"

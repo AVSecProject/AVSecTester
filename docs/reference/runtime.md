@@ -79,6 +79,24 @@ World actions returned by a decision apply at `simulator.step.pre`, before inter
 Their effects appear in later frames. `InsertObject` has zero setup ticks. Setup insertions are
 present in the first capture. Framework objects remain separate in `WorldSnapshot.objects`.
 
+### Moving inserted objects
+
+`MoveObject` and `SimulatorRuntime.move_object` set the inserted object's pose at the end of
+the interval beginning at `simulator.step.pre`. Within the interval, translation is linear and
+rotation uses spherical interpolation. In an interval without a move, the object stays in place.
+
+At a movement endpoint, the recorded velocity is the velocity of the segment that arrived
+there. Within a segment, velocity is its displacement divided by its duration. After the last
+node, it is zero. At insertion and earlier, the velocity is the world-frame vector supplied to
+`InsertObject` or `insert_object`, which defaults to zero.
+
+An object inserted during reset is anchored to the origin capture. Earlier frames use its
+insertion orientation and its position extrapolated backward from the origin with the initial
+velocity. Objects inserted during a run are absent from the recorded history preceding it.
+
+Offline rendering has no decision interval. Supply the object's pose for each requested frame
+with `InsertObject`.
+
 ### Delivery and coordinates
 
 `Observation.t`, `vehicle_state`, `ego_speed` and `route` describe the decision timestamp.
@@ -393,7 +411,8 @@ Action requests and receipts distinguish requested changes from applied changes.
 outcome is `applied` or `not_applied`, describing the action rather than its driving impact. Every
 receipt has a `details` mapping, empty when there is no detail. `InsertionAttackAction` adds
 `rendered`, `reason`, `occlusion_source` and `ignored_occluders`. `InsertObject` records
-`object_id`, `asset_category` and `world_from_object`.
+`object_id`, `asset_category`, `world_from_object` and `velocity`. `MoveObject` records
+`object_id` and the interval's target `world_from_object`.
 
 `StepRecord.object_visibility`, the initialization event and `RenderResult.object_visibility`
 use object ID → camera name → `ObjectVisibility`. `ObjectVisibility` contains `occlusion_source`,

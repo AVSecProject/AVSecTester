@@ -53,11 +53,10 @@ motion at each requested frame.
 `insert_object` registers an `ObjectAsset` or `MeshAsset` under a unique ID and rigid world pose.
 `remove_object` removes it. The physical `state().objects` changes immediately, while images
 change at the next capture. Inserted objects stay separate from native actors, have zero
-velocity and do not participate in native physics or collisions. Built-in metrics still count
-overlap with them as a collision. See [Built-in metrics](evaluation.md#built-in-metrics).
-
-**Not yet implemented.** Moving inserted objects during a run. See
-[Moving inserted objects](../development/TODO.md#moving-inserted-objects).
+velocity when stationary and are excluded from native physics, collisions and traffic models.
+Built-in metrics count overlap with them as a collision. See
+[Built-in metrics](evaluation.md#built-in-metrics) and
+[Moving inserted objects](../reference/runtime.md#moving-inserted-objects).
 
 `ObjectAsset` contains textured planes. `MeshAsset` contains colored triangle meshes and requires
 NuRec scene insertion. Both use forward-left-up axes and a bottom-center bounding box.
@@ -75,6 +74,8 @@ Composite insertion projects each asset into captured camera images, resolves ne
 and applies visibility. NuRec also supports scene insertion, where NRE renders assets with the
 reconstruction into camera images and LiDAR. Set `object_insertion` to `composite` (the default)
 or `scene` on `NuRecSimulator`. The insertion actions and `harmonizer` interface are the same.
+NuRec scene insertion uses the pose at each end of the shutter or scan window. Composite
+insertion uses the pose at the capture timestamp.
 
 | Simulator | Insertion | Composite occlusion |
 |---|---|---|

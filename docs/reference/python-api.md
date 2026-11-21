@@ -267,7 +267,7 @@ Canonical world/actor poses in meters and right-handed x-forward, y-left, z-up a
 | Name and signature | Meaning |
 |---|---|
 | `MIRROR_Y = np.diag([1., -1., 1., 1.])` | Homogeneous transform that reverses the Y coordinate. |
-| `validated_vector(value: ArrayLike, name: str) -> np.ndarray` | Return a finite three-dimensional vector, rejecting invalid shapes or values. |
+| `validated_vector(value: ArrayLike, name: str) -> np.ndarray` | Return a finite three-dimensional vector. Any other value raises `ValueError`. |
 | `validated_transform(value: ArrayLike) -> np.ndarray` | Return an independent, read-only right-handed rigid transform. |
 | `rotation_matrix(rotation_deg: ArrayLike) -> np.ndarray` | Return Rz(yaw) @ Ry(pitch) @ Rx(roll) for right-handed degree angles. |
 | `mirror_y_points(points: ArrayLike) -> np.ndarray` | Mirror the y component of points or vectors with trailing coordinate dimension three. |
@@ -1702,7 +1702,8 @@ The simulator: a configuration (`Simulator`) and its live worlds (`SimulatorRunt
 | `SimulatorRuntime.sensor_view(sensor: str) -> SensorView` | Return a detached view of the sensor's latest capture without acquiring again. |
 | `SimulatorRuntime.canonical_sensor_id(sensor: str) -> str` | Resolve a native sensor name or configured alias to its observation ID. |
 | `SimulatorRuntime.frame_range_us(sensor: str, end_time_us: int) -> range` | Read a frame's shutter or native scan interval at its integer end timestamp. |
-| `SimulatorRuntime.insert_object(object_id: str, asset: ObjectAsset \| MeshAsset, world_from_object: np.ndarray, *, harmonizer: Harmonizer \| None = None) -> None` | Register a physical world object, visible from the next sensor capture. |
+| `SimulatorRuntime.insert_object(object_id: str, asset: ObjectAsset \| MeshAsset, world_from_object: np.ndarray, *, harmonizer: Harmonizer \| None = None, velocity: Sequence[float] \| np.ndarray = (0., 0., 0.)) -> None` | Register a physical world object, visible from the next sensor capture. |
+| `SimulatorRuntime.move_object(object_id: str, world_from_object: np.ndarray) -> None` | Set an inserted object's end pose once during `simulator.step.pre`. |
 | `SimulatorRuntime.remove_object(object_id: str) -> None` | Remove a world object. The previous capture remains unchanged. |
 | `SimulatorRuntime.object_visibility(object_id: str) -> Mapping[str, ObjectVisibility]` | Visibility of an object in the latest capture, for every camera whose image contains it. |
 | `SimulatorRuntime.control_actor(actor_id: str, control: Control) -> None` | Drive another actor with an actuator command from the next world step. |
@@ -1915,7 +1916,6 @@ Configured CARLA simulations and their live native-world runtimes.
 | `CarlaSimulator.can_start_runs_after_origin: bool` | Allow a closed-loop start after the scene origin only under framework control. |
 | `CarlaSimulatorRuntime(simulator: CarlaSimulator, seed: int \| None = None)` | Subclass of `SimulatorRuntime`. One live CARLA world of a `CarlaSimulator`. |
 | `CarlaSimulatorRuntime.can_insert_objects: bool` | Allow framework-composited objects outside native external-control runs. |
-| `CarlaSimulatorRuntime.insert_object(object_id: str, asset: ObjectAsset \| MeshAsset, world_from_object: np.ndarray, *, harmonizer: Harmonizer \| None = None) -> None` | Insert a framework-composited object outside native ROS 2 runs. |
 | `CarlaSimulatorRuntime.termination_details: Mapping[str, Any]` | Record final tick pacing statistics when the run is paced. |
 | `CarlaSimulatorRuntime.native: dict[str, Any]` | Borrow native resources, invalidating cached truth before possible edits. |
 | `CarlaSimulatorRuntime.copy_observation(observation: Observation) -> Observation` | Detach mutable payloads, calibration and reference graphs in one copy operation. |
@@ -2077,7 +2077,7 @@ NuRec camera and LiDAR rendering at the native RPC boundary.
 | `Renderer.render_lidar(world_from_rig_start: np.ndarray, world_from_rig_end: np.ndarray, start_us: int, end_us: int, dynamic_objects_start: Sequence[tuple[str, np.ndarray]] = (), dynamic_objects_end: Sequence[tuple[str, np.ndarray]] = ()) -> PointCloud` | Render one scan of `lidar` in the sensor frame at its ending pose and timestamp. |
 | `Renderer.render_scene_visibility(world_from_rig: np.ndarray, timestamp_us: int, camera: str, objects: Sequence[PlacedObject], dynamic_objects=(), *, occlusion_tolerance_m: float = 0., frame_start_us: int \| None = None, world_from_rig_start=None, dynamic_objects_start=None) -> np.ndarray` | Pixels where the reconstructed scene does not hide `objects` in this capture. |
 | `Renderer.scene_object_tracks(objects: Sequence[PlacedObject]) -> tuple[tuple[str, np.ndarray], ...]` | Register scene-rendered assets and return their track IDs and world poses. |
-| `Renderer.render_object_coverage(world_from_rig: np.ndarray, timestamp_us: int, camera: str, placed: PlacedObject, dynamic_objects=(), *, frame_start_us: int \| None = None, world_from_rig_start=None, dynamic_objects_start=None) -> np.ndarray` | Visible image coverage of one object, with values between zero and one. |
+| `Renderer.render_object_coverage(world_from_rig: np.ndarray, timestamp_us: int, camera: str, placed: PlacedObject, dynamic_objects=(), *, frame_start_us: int \| None = None, world_from_rig_start=None, dynamic_objects_start=None, placed_start: PlacedObject \| None = None) -> np.ndarray` | Visible coverage of one object, optionally at a different exposure-start placement. |
 | `Renderer.camera_model(camera: str \| None = None) -> Camera \| None` | Optical camera model, or None when this renderer supplies no geometry. |
 | `Renderer.cam_from_world(world_from_rig: np.ndarray, camera: str \| None = None) -> np.ndarray` | World-to-optical-camera transform for the rendered pose. |
 | `Renderer.close() -> None` | Release renderer resources. The default implementation has no effect. |
@@ -2094,7 +2094,7 @@ NuRec camera and LiDAR rendering at the native RPC boundary.
 | `NuRecRenderer.render_lidar(world_from_rig_start: np.ndarray, world_from_rig_end: np.ndarray, start_us: int, end_us: int, dynamic_objects_start: Sequence[tuple[str, np.ndarray]] = (), dynamic_objects_end: Sequence[tuple[str, np.ndarray]] = ()) -> PointCloud` | Render a scan in the LiDAR frame at its ending pose and timestamp. |
 | `NuRecRenderer.render_scene_visibility(world_from_rig: np.ndarray, timestamp_us: int, camera: str, objects: Sequence[PlacedObject], dynamic_objects=(), *, occlusion_tolerance_m: float = 0., frame_start_us: int \| None = None, world_from_rig_start=None, dynamic_objects_start=None) -> np.ndarray` | Pixels where the reconstructed scene does not hide `objects` in an NRE render. |
 | `NuRecRenderer.scene_object_tracks(objects: Sequence[PlacedObject]) -> tuple[tuple[str, np.ndarray], ...]` | Register textured scene assets and return their requested world-pose track entries. |
-| `NuRecRenderer.render_object_coverage(world_from_rig: np.ndarray, timestamp_us: int, camera: str, placed: PlacedObject, dynamic_objects=(), *, frame_start_us: int \| None = None, world_from_rig_start=None, dynamic_objects_start=None) -> np.ndarray` | Return visible object coverage from pure-white and pure-black scene copies. |
+| `NuRecRenderer.render_object_coverage(world_from_rig: np.ndarray, timestamp_us: int, camera: str, placed: PlacedObject, dynamic_objects=(), *, frame_start_us: int \| None = None, world_from_rig_start=None, dynamic_objects_start=None, placed_start: PlacedObject \| None = None) -> np.ndarray` | Return visible object coverage from pure-white and pure-black scene copies. |
 <!-- api:end -->
 
 #### Constraints and errors
@@ -2350,6 +2350,7 @@ Public assets, calibrated compositing, visibility and actions for user attacks.
 | `PatchCompositor` | [PatchCompositor](#avsectesterattackinsertioncompositor) |
 | `render_resolved` | [render_resolved](#avsectesterattackinsertioncompositor) |
 | `InsertObject` | [InsertObject](#avsectesterattackinsertionaction) |
+| `MoveObject` | [MoveObject](#avsectesterattackinsertionaction) |
 | `InsertionAttackAction` | [InsertionAttackAction](#avsectesterattackinsertionaction) |
 | `Visibility` | [Visibility](#avsectesterattackinsertiontypes) |
 | `VisibilityEvidence` | [VisibilityEvidence](#avsectesterattackinsertiontypes) |
@@ -2370,7 +2371,8 @@ World-object and captured-image insertion actions for user attacks.
 
 | Name and signature | Meaning |
 |---|---|
-| `InsertObject(object_id: str, asset: ObjectAsset \| MeshAsset, world_from_object: np.ndarray, harmonizer: Harmonizer \| None = None)` | Subclass of `WorldAttackAction`. Insert a world-object asset through the simulator's supported sensors. |
+| `InsertObject(object_id: str, asset: ObjectAsset \| MeshAsset, world_from_object: np.ndarray, harmonizer: Harmonizer \| None = None, velocity: Sequence[float] \| np.ndarray = (0., 0., 0.))` | Subclass of `WorldAttackAction`. Insert a world-object asset through the simulator's supported sensors. |
+| `MoveObject(object_id: str, world_from_object: np.ndarray)` | Subclass of `WorldAttackAction`. Set an inserted object's end pose for the next simulator interval. |
 | `InsertionAttackAction(sensor: str, insertion: Insertion, compositor: PatchCompositor \| None = None, active_for_us: int \| None = 0)` | Subclass of `SensorAttackAction`. Render explicit planes with aligned depth when present, otherwise actor cuboids. |
 | `InsertionAttackAction.resolve(view)` | Resolve the insertion asset, pose and placement for the current sensor geometry. |
 | `InsertionAttackAction.evidence(view, resolved=None)` | Return insertion placement and visibility evidence for the action record. |

@@ -95,5 +95,6 @@ def test_validated_transform():
 
 def test_validated_vector():
     np.testing.assert_array_equal(validated_vector([1., 2., 3.], "point"), [1., 2., 3.])
-    with pytest.raises(ValueError, match="three finite"):
-        validated_vector([1., np.nan, 3.], "point")
+    for invalid in ([1., np.nan, 3.], [1., 2.], ["x", 2., 3.], [1., object(), 3.], [10 ** 400, 0., 0.]):
+        with pytest.raises(ValueError, match="point must contain three finite"):
+            validated_vector(invalid, "point")
