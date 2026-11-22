@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 from dataclasses import replace
+import gc
 from types import SimpleNamespace
 
 import numpy as np
@@ -326,15 +327,21 @@ def test_realtime_pacing(monkeypatch, carla_dataset):
                                camera_warmup_s=0., external_startup_s=.1, realtime_factor=2.)
     delays = iter((.037, 0., .086))
     delay_hook = Hook("simulator.step.pre", lambda value, context: clock.advance(next(delays)))
+    frozen_before = gc.get_freeze_count()
+    callbacks_before = tuple(gc.callbacks)
     with simulator.create_runtime() as runtime:
         runtime.reset(start)
         assert clock.waits == []
+        assert gc.get_freeze_count() == frozen_before
+        assert tuple(gc.callbacks) == callbacks_before
         assert "realtime" not in runtime.initialization_report
         assert "realtime" not in runtime.termination_details
         assert "pacing" not in runtime.interval_telemetry()
         log = ClosedLoopRunner().run(runtime, ConstantAVStack(),
                                      RunRequest(3, start=start, hooks=HookSet((delay_hook,))))
         stats = runtime.initialization_report["realtime"]
+        assert stats["gc_preexisting_frozen_objects"] == frozen_before
+        assert stats["gc_frozen_objects"] > frozen_before
         assert stats["ticks"] == 4
         assert stats["elapsed_wall_s"] == pytest.approx(.09)
         assert stats["actual_realtime_factor"] == pytest.approx(.2 / .09)
@@ -345,6 +352,7 @@ def test_realtime_pacing(monkeypatch, carla_dataset):
         assert stats["world_tick_s"] == pytest.approx(world_tick)
         assert stats["command_s"] == pytest.approx(command)
         assert stats["framework_s"] == {"mean": 0., "p95": 0., "max": 0.}
+        assert set(stats["gc_s"]) == {"mean", "p95", "max"}
         assert [len(step.telemetry["pacing"]) for step in log.steps] == [2, 2, 2]
         samples = [sample for step in log.steps for sample in step.telemetry["pacing"]]
         expected = [
@@ -357,10 +365,13 @@ def test_realtime_pacing(monkeypatch, carla_dataset):
         ]
         for sample, (framework, sleep, behind, resynchronized) in zip(samples, expected):
             assert sample["resynchronized"] is resynchronized
-            assert sample == pytest.approx({
+            timing = {
                 "framework_s": framework, "sleep_s": sleep, "behind_schedule_s": behind,
                 "resynchronized": resynchronized, "command_s": .005, "world_tick_s": .01,
-            })
+            }
+            assert {key: sample[key] for key in timing} == pytest.approx(timing)
+            assert sample["gc_s"] >= 0.
+            assert type(sample["full_collections"]) is int and sample["full_collections"] >= 0
         final = runtime.termination_details["realtime"]
         assert final["ticks"] == 10 and final["behind_ticks"] == 3
         assert final["resynchronizations"] == 1
@@ -376,9 +387,35 @@ def test_realtime_pacing(monkeypatch, carla_dataset):
         assert post["world_tick_s"] == pytest.approx(world_tick)
         assert post["command_s"] == pytest.approx(command)
         assert post["framework_s"] == pytest.approx({"mean": .0205, "p95": .07375, "max": .086})
+        gc_durations = [sample["gc_s"] for sample in samples]
+        assert post["gc_s"] == pytest.approx({
+            "mean": np.mean(gc_durations), "p95": np.percentile(gc_durations, 95),
+            "max": max(gc_durations),
+        })
+        assert final["gc_s"]["max"] == max(stats["gc_s"]["max"], post["gc_s"]["max"])
+        assert post["full_collections"] == sum(sample["full_collections"] for sample in samples)
+        assert final["full_collections"] == stats["full_collections"] + post["full_collections"]
         termination = next(event for event in log.events if event.kind == "termination")
         assert termination.data["realtime"] == final
     assert runtime.termination_details["realtime"] == final
+    assert gc.get_freeze_count() == 0
+    assert tuple(gc.callbacks) == callbacks_before
+
+    # Closing also releases objects that were frozen before the run.
+    gc.freeze()
+    try:
+        preexisting = gc.get_freeze_count()
+        with simulator.create_runtime() as runtime:
+            runtime.reset(start, closed_loop_run=True)
+            realtime = runtime.initialization_report["realtime"]
+            # Frozen objects that are released leave the permanent generation.
+            assert 0 < realtime["gc_preexisting_frozen_objects"] <= preexisting
+            assert realtime["gc_frozen_objects"] >= gc.get_freeze_count() > 0
+        assert gc.get_freeze_count() == 0
+        assert tuple(gc.callbacks) == callbacks_before
+    finally:
+        gc.unfreeze()
+
     with pytest.raises(ValueError, match="positive and finite"):
         CarlaSimulator({}, realtime_factor=0.)
 
@@ -479,15 +516,22 @@ def test_hosted_driver_lifecycle(hosted_start, monkeypatch):
     start, frames = hosted_start
     system = FakeExternalDrivingSystem(ready_at_s=.8)
     settings = _hosted_simulator(system)
+    frozen_before = gc.get_freeze_count()
+    callbacks_before = tuple(gc.callbacks)
     with settings.create_runtime() as runtime:
         source = runtime.generate_frame_data(start, frames)
         initialization = Initialization(source.at(frames[0]), source.resolved_scenario,
                                         source.provenance)
         runtime.start_replay(start, initialization)
         assert not system.sessions
+        assert gc.get_freeze_count() == frozen_before
+        assert tuple(gc.callbacks) == callbacks_before
         assert runtime.native["world"].get_publish_tf() is False
         runtime.reset(start, initialization, closed_loop_run=True)
         assert runtime.initialization_report["world_settings"]["publish_tf"] is False
+        realtime = runtime.initialization_report["realtime"]
+        assert realtime["gc_preexisting_frozen_objects"] == frozen_before
+        assert realtime["gc_frozen_objects"] >= gc.get_freeze_count() > frozen_before
         session = system.sessions[-1]
         report = runtime.initialization_report["external_driving_system"]
         assert report["ready_s"] >= .8
@@ -499,6 +543,8 @@ def test_hosted_driver_lifecycle(hosted_start, monkeypatch):
         runtime.step(None)
         assert runtime.decision_telemetry()["external_driving_system"] == {"mode": "AUTONOMOUS"}
     assert runtime.termination_details["external_driving_system"]["stopped"]
+    assert gc.get_freeze_count() == 0
+    assert tuple(gc.callbacks) == callbacks_before
     assert settings.identity["external_driving_system"] == {
         "type": "FakeExternalDrivingSystem", "ready_at_s": .8,
     }
@@ -507,6 +553,19 @@ def test_hosted_driver_lifecycle(hosted_start, monkeypatch):
         with _hosted_simulator(failing_system).create_runtime() as failed:
             failed.reset(start, initialization, closed_loop_run=True)
     assert failed.termination_details["external_driving_system"]["stopped"]
+    assert gc.get_freeze_count() == 0
+    assert tuple(gc.callbacks) == callbacks_before
+
+    wrong_ego = replace(initialization.expected.ego, velocity=(1., 0., 0.))
+    wrong_origin = replace(initialization, expected=replace(initialization.expected, ego=wrong_ego))
+    with settings.create_runtime() as failed:
+        with pytest.raises(RuntimeError, match="External controls before the CARLA run changed"):
+            failed.reset(start, wrong_origin, closed_loop_run=True)
+        assert failed.initialization_report["realtime"]["gc_frozen_objects"] > 0
+        assert gc.get_freeze_count() > 0
+    assert gc.get_freeze_count() == 0
+    assert tuple(gc.callbacks) == callbacks_before
+
     failing_system = FakeExternalDrivingSystem(run_error="Driver disconnected")
     with pytest.raises(RuntimeError, match="Driver disconnected"):
         with _hosted_simulator(failing_system).create_runtime() as failed:

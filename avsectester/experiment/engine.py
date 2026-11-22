@@ -36,7 +36,7 @@ from .models import (
 )
 from .output_directory import (
     run_directory, load_preparation_progress, save_preparation_progress, save_completed_artifact,
-    recorded_data_equal, offline_report_directory, incomplete_offline_report_directory,
+    recorded_data_equal, offline_report_directory, incomplete_offline_report_directory, read_treatment_log,
 )
 
 
@@ -523,7 +523,7 @@ class _Execution:
         if log is None:
             recorder = None
             try:
-                recorder = Recorder(path=destination, metadata=metadata)
+                recorder = Recorder(path=destination, metadata=metadata, retain_steps=destination is None)
                 recorder.record_event("failure", error_type=type(error).__name__, message=str(error))
                 log = recorder.finish(status="failed")
             except Exception as storage_error:
@@ -618,6 +618,7 @@ class _Execution:
                     group.decision_steps, hooks=treatment.hooks,
                     attacks=(treatment.attack_runtime,) if treatment.attack_runtime is not None else (),
                     recording=config.runs.recording, output_path=destination,
+                    retain_steps=destination is None,
                     retain_sensor_data=destination is None, metadata=metadata,
                     start=deepcopy(start), initialization=deepcopy(initialization),
                     deployment=deployment, environment=metadata["environment"],
@@ -649,7 +650,7 @@ class _Execution:
             if self.resume and destination is not None and (destination.exists() or destination.is_symlink()):
                 retained = None
                 try:
-                    log = RunLog.read(destination, load_sensor_data=False)
+                    log = RunLog.read(destination, load_records=False)
                     expected, _ = self._description(group, specification, self.deployment)
                     if log.status == "completed" and all(
                         key in log.metadata and recorded_data_equal(log.metadata[key], value)
@@ -714,6 +715,12 @@ class _Execution:
                 steps = min(steps, self.configuration.runs.decision_steps)
             for seed in self.configuration.runs.seeds:
                 self._run_group(_Group(unit.attack_names, unit.index, unit.segment, seed, steps, unit.part))
+        # Restore evidence only after the last treatment has released its runtime.
+        for index, result in enumerate(self.runs):
+            if result.log.path is not None:
+                log, stored_error = read_treatment_log(result.log.path, result.log.metadata)
+                error = result.error if result.error is not None else stored_error
+                self.runs[index] = replace(result, log=log, error=error)
         return ExperimentResult(tuple(self.runs), self.prepared.selections, scenario_maps=scenario_maps)
 
 

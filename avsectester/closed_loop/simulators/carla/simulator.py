@@ -1,6 +1,7 @@
 """Configured CARLA simulations and their live native-world runtimes."""
 from __future__ import annotations
 
+import gc
 import math
 import time
 from array import array
@@ -9,6 +10,7 @@ from contextlib import ExitStack
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field, replace
 from itertools import groupby
+from threading import RLock
 from typing import Any
 
 import numpy as np
@@ -65,17 +67,47 @@ class _TickPacing:
         self.world_ticks = array("d")
         self.framework = array("d")
         self.commands = array("d")
+        self.gc_durations = array("d")
+        self.full_collections = array("q")
         self.origin: tuple[int, float] | None = None
+        # The recorder thread can collect while the main thread is pacing ticks.
+        self._gc_lock = RLock()
+        self._gc_start: float | None = None
+        self._gc_elapsed = 0.
+        self._gc_full_collections = 0
 
     def mark_origin(self) -> None:
         self.origin = len(self.behind_schedule), self.end_wall
 
-    def append(self, end_wall: float, sample: Mapping[str, float | bool]) -> None:
+    def on_gc(self, phase: str, info: dict[str, int]) -> None:
+        with self._gc_lock:
+            if phase == "start":
+                self._gc_start = time.monotonic()
+            elif self._gc_start is not None:
+                self._gc_elapsed += time.monotonic() - self._gc_start
+                self._gc_full_collections += int(info["generation"] == 2)
+                self._gc_start = None
+
+    def tick_end(self) -> tuple[float, float, int]:
+        """Sample and reset the GC totals at the world tick's return."""
+        with self._gc_lock:
+            end_wall = time.monotonic()
+            elapsed, full = self._gc_elapsed, self._gc_full_collections
+            if self._gc_start is not None:
+                elapsed += end_wall - self._gc_start
+                self._gc_start = end_wall
+            self._gc_elapsed = 0.
+            self._gc_full_collections = 0
+        return end_wall, elapsed, full
+
+    def append(self, end_wall: float, sample: Mapping[str, float | int | bool]) -> None:
         self.end_wall = end_wall
         self.behind_schedule.append(sample["behind_schedule_s"])
         self.world_ticks.append(sample["world_tick_s"])
         self.framework.append(sample["framework_s"])
         self.commands.append(sample["command_s"])
+        self.gc_durations.append(sample["gc_s"])
+        self.full_collections.append(sample["full_collections"])
 
     def summary(self, tick_us: int, *, post_origin: bool = False) -> dict[str, Any]:
         start, start_wall = (self.origin if post_origin else None) or (0, self.start_wall)
@@ -91,6 +123,8 @@ class _TickPacing:
             "world_tick_s": self._distribution(np.asarray(self.world_ticks)[start:]),
             "framework_s": self._distribution(np.asarray(self.framework)[start:]),
             "command_s": self._distribution(np.asarray(self.commands)[start:]),
+            "gc_s": self._distribution(np.asarray(self.gc_durations)[start:]),
+            "full_collections": int(np.asarray(self.full_collections)[start:].sum()),
         }
 
     @staticmethod
@@ -326,7 +360,7 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         self._native_commands = []
         self._last_tick_end_wall: float | None = None
         self._pacing: _TickPacing | None = None
-        self._interval_pacing: list[dict[str, float | bool]] = []
+        self._interval_pacing: list[dict[str, float | int | bool]] = []
         self._external_session: ExternalDrivingSession | None = None
         self._external_report: dict[str, Any] | None = None
 
@@ -347,6 +381,9 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         entry_wall = time.monotonic() if factor is not None and self.closed_loop_run else None
         if start_pacing and entry_wall is not None and self._pacing is None:
             self._pacing = _TickPacing(entry_wall)
+            on_gc = self._pacing.on_gc
+            gc.callbacks.append(on_gc)
+            self._resources.callback(gc.callbacks.remove, on_gc)
         pacing = self._pacing
         sleep_s = framework_s = 0.
         if pacing is not None:
@@ -361,11 +398,10 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         self._flush_native_commands()
         tick_start = time.monotonic() if pacing is not None else None
         result = self.client.world.tick()
-        if entry_wall is not None:
-            self._last_tick_end_wall = time.monotonic()
         if pacing is not None:
-            end_wall = self._last_tick_end_wall
-            assert end_wall is not None and command_start is not None and tick_start is not None
+            end_wall, gc_s, full_collections = pacing.tick_end()
+            self._last_tick_end_wall = end_wall
+            assert command_start is not None and tick_start is not None
             assert factor is not None
             pacing.next_start += self.timing_capabilities.base_tick_us / 1e6 / factor
             behind = max(0., end_wall - pacing.next_start)
@@ -376,10 +412,13 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
                 "sleep_s": sleep_s, "command_s": tick_start - command_start,
                 "world_tick_s": end_wall - tick_start, "framework_s": framework_s,
                 "behind_schedule_s": behind, "resynchronized": resynchronized,
+                "gc_s": gc_s, "full_collections": full_collections,
             }
             pacing.append(end_wall, sample)
             if self._advancing:
                 self._interval_pacing.append(sample)
+        elif entry_wall is not None:
+            self._last_tick_end_wall = time.monotonic()
         return result
 
     @property
@@ -869,6 +908,15 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
             self.client.world.get_snapshot().timestamp.elapsed_seconds)
         if self._pacing is not None:
             self._pacing.mark_origin()
+            preexisting = gc.get_freeze_count()
+            gc.freeze()
+            # Some interpreters start with frozen objects. Unfreezing them is harmless, while
+            # keeping this run's objects frozen would leak them across runs in one process.
+            self._resources.callback(gc.unfreeze)
+            self.initialization_report["realtime"] = {
+                "gc_preexisting_frozen_objects": preexisting,
+                "gc_frozen_objects": gc.get_freeze_count(),
+            }
         self._recipe_replay.finish_holding()
         if self._native_ros2_run:
             import carla
@@ -914,8 +962,8 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
                                    if actor.id not in self._base_actor_ids and actor.id not in base_ids],
         })
         if self._pacing is not None:
-            self.initialization_report["realtime"] = self._pacing.summary(
-                self.timing_capabilities.base_tick_us)
+            self.initialization_report["realtime"].update(
+                self._pacing.summary(self.timing_capabilities.base_tick_us))
         if self._external_session is not None:
             self.initialization_report["external_driving_system"] = dict(
                 self._external_session.report())

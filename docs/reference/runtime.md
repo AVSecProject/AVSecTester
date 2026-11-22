@@ -167,6 +167,11 @@ Before a tick, it waits until the scheduled start. After the tick, it advances t
 one pacing interval and checks how far the run has fallen behind. Lags up to 50 ms can be
 recovered on subsequent ticks. A lag above 50 ms resets the scheduled start to the current time.
 
+At the origin, paced runs move the process's tracked Python objects into the permanent garbage
+collection generation, so full collections during the run skip them. Closing the runtime
+unfreezes the whole permanent generation, including objects frozen before the run. This lets
+later runs in the same process reclaim objects that became unused.
+
 - `sleep_s` is the time spent waiting for the scheduled start.
 - `command_s` is the time spent sending the queued native commands.
 - `world_tick_s` is the duration of the CARLA world's tick call.
@@ -175,6 +180,9 @@ recovered on subsequent ticks. A lag above 50 ms resets the scheduled start to t
 - `behind_schedule_s` is the positive lag after the tick and before any resynchronization.
   It is zero when the tick finishes on or ahead of schedule.
 - `resynchronized` is true when this tick resets the schedule.
+- `gc_s` is the time spent in Python garbage collection between successive world tick returns.
+  The first sample counts collections from the start of pacing.
+- `full_collections` counts generation 2 collections completed in that interval.
 
 The initialization and termination events include `realtime` statistics from the first
 paced hold tick. They report `ticks`, `behind_ticks`, `resynchronizations`,
@@ -182,8 +190,10 @@ paced hold tick. They report `ticks`, `behind_ticks`, `resynchronizations`,
 `behind_ticks` when its `behind_schedule_s` is positive. The initialization statistics cover
 setup through the origin. The termination statistics include setup and execution, and
 `realtime.post_origin` covers execution from the origin tick's return. Each group reports
-`world_tick_s`, `framework_s` and `command_s` with `mean`, `p95` and `max` in seconds.
-These values are null when the group has no samples.
+`world_tick_s`, `framework_s`, `command_s` and `gc_s` with `mean`, `p95` and `max` in seconds.
+These values are null when the group has no samples. `full_collections` is the sum for the group.
+The initialization event records `gc_preexisting_frozen_objects` immediately before the freeze
+and `gc_frozen_objects` immediately after it.
 
 ### Control visibility
 
@@ -482,6 +492,9 @@ number of batches that waited as `recording.backpressure_wait_s` and
 publishing completion metadata. A background write failure surfaces on the next recorder
 operation with the original exception as its cause. Aborting discards waiting batches.
 Published parts remain readable and readers ignore `*.open` files.
+
+`RunLog.read(load_records=False)` reads the manifest for the metadata, status and format version.
+The returned log keeps its path and has empty steps, events and captures.
 
 `SerializationRegistry` handles JSON-compatible encoding and independent in-memory snapshots.
 Registered dataclasses reconstruct on read. Native values decode to ordinary data. Import and

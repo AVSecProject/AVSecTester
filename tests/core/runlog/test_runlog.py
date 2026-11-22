@@ -162,6 +162,10 @@ def test_record_and_read(tmp_path):
     memory = recorder.finish()
     decoded = RunLog.read(memory.path)
     assert decoded.status == "completed" and decoded.metadata == {"seed": 4}
+    manifest = RunLog.read(memory.path, load_records=False)
+    assert manifest.metadata == decoded.metadata and manifest.status == decoded.status
+    assert manifest.path == decoded.path and manifest.format_version == decoded.format_version
+    assert not (manifest.steps or manifest.events or manifest.captures)
     assert [event.kind for event in decoded.events] == ["initialization", "termination"]
     assert decoded.events[0].data["clock"] == ClockSnapshot(.1, 4)
     step, = decoded.steps

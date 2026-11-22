@@ -103,6 +103,10 @@ environment overrides.
 runs. `selection_errors` lists selection errors. The `runs.strict` setting raises the first error.
 See [Run settings](../reference/configuration.md#run-settings).
 
+With `runs.output` set, execution streams records to disk. After all treatments finish,
+`Experiment.execute` reads back the saved logs for the returned result without loading sensor
+payloads from observations.
+
 ## Save and reuse selected metadata
 
 Loading validates dataset type, scenario and frame membership, decision windows, each attack's
@@ -138,8 +142,9 @@ controlled by the attack. See
 ## Resume interrupted work
 
 Prepare with `resume=True` to reuse saved selection and completed offline phases. Execute with
-`resume=True` to retain completed runs whose expected metadata matches. Missing, failed or
-mismatched runs are retried individually. An already complete group needs no new initialization.
+`resume=True` to retain runs whose manifest reports completion and matches the expected
+metadata. Missing, failed or mismatched runs are retried individually. An already complete group
+needs no new initialization.
 
 Execution resume compares `attack_name`, `segment_index`, `part`, the complete `segment`,
 `treatment`, `seed`, `environment`, `decision_steps`, `selected_decision_steps`

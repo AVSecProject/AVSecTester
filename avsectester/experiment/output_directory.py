@@ -432,6 +432,31 @@ def load_preparation_progress(configuration: ExperimentConfiguration,
             completed)
 
 
+def read_treatment_log(path: Path, metadata: dict[str, Any], *, runs_root: Path | None = None,
+                       expected_segment: AttackSegment | None = None) -> tuple[RunLog, str | None]:
+    """Restore a treatment's evidence and derive its error from the saved log."""
+    try:
+        if runs_root is not None and not path.resolve().is_relative_to(runs_root.resolve()):
+            raise ValueError(f"Run manifest escapes the run output directory: {path}")
+        log = RunLog.read(path, load_sensor_data=False)
+        if expected_segment is not None:
+            data = log.metadata
+            if any(type(data.get(key)) is not type(value) or data.get(key) != value
+                   for key, value in metadata.items()):
+                raise ValueError(f"Run identity metadata and output directory disagree: {path}")
+            if not recorded_data_equal(data.get("segment"), asdict(expected_segment)):
+                raise ValueError(f"Run segment metadata differs from the saved preparation: {path}")
+        failure = next((event for event in reversed(log.events) if event.kind == "failure"), None)
+        if failure is not None:
+            return log, f"{failure.data.get('error_type', 'Error')}: {failure.data.get('message', '')}"
+        if log.status != "completed":
+            return log, f"Run ended with status {log.status}"
+        return log, None
+    except Exception as read_error:
+        error = f"Run read failed: {type(read_error).__name__}: {read_error}"
+        return RunLog(metadata=metadata, status="failed", path=path), error
+
+
 def load_result(directory: str | Path, configuration: ExperimentConfiguration) -> ExperimentResult:
     """Read results without loading artifacts, driving models or simulator runtimes.
 
@@ -473,25 +498,8 @@ def load_result(directory: str | Path, configuration: ExperimentConfiguration) -
             log = RunLog(metadata=description, status="incomplete", path=path)
             runs.append(TreatmentResult(name, index, segment, treatment, seed, log, message, unit.part))
             continue
-        try:
-            if not path.resolve().is_relative_to(destination.resolve()):
-                raise ValueError(f"Run manifest escapes the run output directory: {path}")
-            log = RunLog.read(path, load_sensor_data=False)
-            data = log.metadata
-            if any(type(data.get(key)) is not type(value) or data.get(key) != value
-                   for key, value in description.items()):
-                raise ValueError(f"Run identity metadata and output directory disagree: {path}")
-            if not recorded_data_equal(data.get("segment"), asdict(segment)):
-                raise ValueError(f"Run segment metadata differs from the saved preparation: {path}")
-            errors = [event.data for event in log.events if event.kind == "failure"]
-            error = None
-            if errors:
-                error = f"{errors[-1].get('error_type', 'Error')}: {errors[-1].get('message', '')}"
-            elif log.status != "completed":
-                error = f"Run ended with status {log.status}"
-        except Exception as read_error:
-            error = f"Run read failed: {type(read_error).__name__}: {read_error}"
-            log = RunLog(metadata=description, status="failed", path=path)
+        log, error = read_treatment_log(path, description, runs_root=destination,
+                                        expected_segment=segment)
         runs.append(TreatmentResult(name, index, segment, treatment, seed, log, error, unit.part))
     scenario_ids = tuple(dict.fromkeys(
         segment.scenario_id for segments in prepared.metadata.values() for segment in segments

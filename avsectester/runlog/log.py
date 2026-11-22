@@ -143,6 +143,7 @@ class RunLog:
         registry: SerializationRegistry = DEFAULT_REGISTRY,
         load_payloads: bool = True,
         load_sensor_data: bool = True,
+        load_records: bool = True,
     ) -> RunLog:
         """Read completed parts, including those left by an interrupted writer.
 
@@ -152,6 +153,9 @@ class RunLog:
         ``load_sensor_data=False`` reads raw and model observations with empty
         ``sensor_data`` and leaves their recorded payloads on disk. Acquisition times,
         poses and calibration remain available in ``deliveries`` without its payloads.
+        ``load_records=False`` reads the manifest metadata, status and format version
+        without reading any step, event or capture records. ``load_payloads`` also
+        controls whether binary values referenced by the manifest metadata are loaded.
         """
         root = Path(path)
         manifest = _read_manifest(root)
@@ -162,6 +166,8 @@ class RunLog:
             path=root,
             format_version=manifest.get("format_version", 1),
         )
+        if not load_records:
+            return log
         for row in read_table(root).to_pylist():
             if not load_sensor_data:
                 row = {key: _without_encoded_sensor_data(value)

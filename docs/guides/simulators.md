@@ -190,9 +190,9 @@ overrides the framework's command.
 
 `realtime_factor` paces closed-loop ticks from the first hold tick onward. Preparation and
 rendering run without pacing. The official Autoware schedule lets ticks recover from short
-delays and resynchronizes after longer ones. See the
-[runtime log](../reference/runtime.md#carla-tick-pacing) for the threshold, per-decision timing
-and post-origin statistics.
+delays and resynchronizes after longer ones. Paced runs freeze Python objects at the origin.
+See [CARLA tick pacing](../reference/runtime.md#carla-tick-pacing) for timing and garbage
+collection records.
 
 During a run, only world actions and simulator world hooks can affect the external system.
 The runner rejects sensor environments and hooks outside simulator world stages before the

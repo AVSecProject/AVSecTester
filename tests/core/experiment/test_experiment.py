@@ -1,9 +1,10 @@
 """Preparation and execution are tested as complete public workflows."""
 
-from dataclasses import replace
+from dataclasses import asdict, replace
 import json
 import hashlib
 
+import numpy as np
 import pytest
 
 from avsectester.attack import AttackSegment
@@ -226,6 +227,14 @@ def test_multiple_attacks(tmp_path):
     assert set(result.groups) == {(0, 0)}
     clean_directories = list((tmp_path / "results" / "runs").glob("segment-*/seed-*/clean"))
     assert clean_directories == [tmp_path / "results" / "runs" / "segment-00000" / "seed-0" / "clean"]
+    saved = ExperimentResult.load(config.runs.output, config)
+    logs = {run.treatment: run.log for run in saved.runs}
+    for run in result.runs:
+        assert len(run.log.steps) == 2 and run.log.events and run.log.captures
+        np.testing.assert_equal(asdict(run.log), asdict(logs[run.treatment]))
+    report = evaluate(result, config)
+    assert not report.metric_errors
+    assert report.as_dict() == evaluate(saved, config).as_dict()
 
 
 def test_split(tmp_path):
@@ -433,7 +442,9 @@ def test_execute_resume(tmp_path):
     assert {run.treatment for run in completed.runs} == {"clean", "failed", "interrupted", "pending"}
     all_manifests = {path: path.read_bytes() for path in base.glob("*/manifest.json")}
     assert all_manifests
-    Experiment.execute(recovered, resume=True)
+    resumed = Experiment.execute(recovered, resume=True)
+    for run in resumed.runs:
+        assert len(run.log.steps) == 2 and run.log.events and run.log.captures
     assert {path: path.read_bytes() for path in base.glob("*/manifest.json")} == all_manifests
     assert retained_file.read_text() == "preserve completed directory"
 
