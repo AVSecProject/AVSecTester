@@ -572,7 +572,8 @@ class _ClosedLoopRun:
         try:
             record = self.recorder.record_step(replace(
                 self.pending, physical_post=self.recorder.snapshot(self.pre_state),
-                actions=self._actions(), outputs=self.session.outputs))
+                actions=self._actions(), outputs=self.session.outputs,
+                telemetry={**self.pending.telemetry, **self.sim.interval_telemetry()}))
         except BaseException as error:
             if feedback_error is not None:
                 feedback_error.add_note(f"Completed decision logging also failed: {error!r}")

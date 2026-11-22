@@ -189,9 +189,10 @@ and new ego actors. A control mismatch during replay raises an error if an exter
 overrides the framework's command.
 
 `realtime_factor` paces closed-loop ticks from the first hold tick onward. Preparation and
-rendering run without pacing. For a paced run, the initialization and termination events
-record the achieved speed ratio, overdue ticks and maximum delay. See
-[Simulator configuration](../reference/configuration.md#simulator) for pacing and hold options.
+rendering run without pacing. The official Autoware schedule lets ticks recover from short
+delays and resynchronizes after longer ones. See the
+[runtime log](../reference/runtime.md#carla-tick-pacing) for the threshold, per-decision timing
+and post-origin statistics.
 
 During a run, only world actions and simulator world hooks can affect the external system.
 The runner rejects sensor environments and hooks outside simulator world stages before the
@@ -219,9 +220,12 @@ after each subsequent tick and stops it before destroying the sensor rig. See
 [runtime records](../reference/runtime.md#one-decision) for telemetry and event data.
 
 The [Town10HD example](../../configs/carla_autoware.yaml) hosts Autoware with native ROS 2.
-It uses the official sensor rig, camera profile, launch and CARLA overrides. Each run gets a
-fresh container and a new traffic-light source. Readiness waits for ADAPI, localization, pose
-agreement, clean distortion diagnostics, route acceptance and autonomous availability.
+The managed system selects whether CARLA publishes TF. Autoware supplies its own TF, so CARLA
+publishes none. Unmanaged ROS 2 control uses CARLA's default TF publication.
+The example uses the official sensor rig, camera profile, launch and CARLA overrides.
+Each run gets a fresh container and a new traffic-light source. Readiness waits for ADAPI,
+localization, pose agreement, clean distortion diagnostics, route acceptance and autonomous
+mode availability.
 Localization requests, pose checks and goal requests can retry. A goal is published again
 when no route follows it. Autonomous engagement uses one request once the session is ready.
 Missing override files fail startup. The framework sets the traffic-light phase at the origin

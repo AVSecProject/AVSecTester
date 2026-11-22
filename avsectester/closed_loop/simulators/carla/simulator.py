@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import math
 import time
+from array import array
 from collections.abc import Mapping, Sequence
 from contextlib import ExitStack
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field, replace
+from itertools import groupby
 from typing import Any
 
 import numpy as np
@@ -16,10 +18,14 @@ from avsectester.closed_loop.simulators.base import (
 )
 from avsectester.closed_loop.hooks import EXTERNAL_CONTROL_INPUT_ERROR
 from avsectester.datasets.base import FrameData, SensorDataReference
-from avsectester.datasets.carla import CarlaRecipe, CARLA_WORLD_SETTINGS, validate_carla_world_settings
+from avsectester.datasets.carla import (
+    CARLA_WORLD_SETTINGS, CARLA_CLIENT_RUNTIME_SETTINGS, CARLA_CLIENT_SUBSTEP_SETTINGS,
+    CarlaRecipe, PrescribedMotion, validate_carla_world_settings,
+)
 from avsectester.geometry.poses import MIRROR_Y, mirror_y_transform
-from avsectester.data_types import Observation, WorldSnapshot
+from avsectester.data_types import Control, Observation, WorldSnapshot
 from avsectester.validation import require_nonnegative_integer, require_nonnegative_number
+from avsectester.validation import require_positive_integer, require_positive_number
 from avsectester.validation import timestamp_to_microseconds
 from avsectester.closed_loop.timing import (
     SensorTiming, TimingCapabilities, TimingConfiguration, initial_history_times, seconds_to_microseconds,
@@ -39,6 +45,8 @@ from .sensors import (
 )
 
 _MAPS_WITHOUT_LAYERS = frozenset({"Town10HD_Opt"})
+# Default acceptable_lag in CARLA's autoware_demo.py.
+_RESYNC_LAG_S = 0.05
 
 
 @dataclass
@@ -46,6 +54,51 @@ class _TickCapture:
     state: WorldSnapshot
     observation: Observation | None = None
     views: dict[str, tuple[SensorGeometry | None, Any]] = field(default_factory=dict)
+
+
+class _TickPacing:
+    """Collect wall-clock samples for the initialization and termination summaries."""
+
+    def __init__(self, start_wall: float) -> None:
+        self.start_wall = self.end_wall = self.next_start = start_wall
+        self.behind_schedule = array("d")
+        self.world_ticks = array("d")
+        self.framework = array("d")
+        self.commands = array("d")
+        self.origin: tuple[int, float] | None = None
+
+    def mark_origin(self) -> None:
+        self.origin = len(self.behind_schedule), self.end_wall
+
+    def append(self, end_wall: float, sample: Mapping[str, float | bool]) -> None:
+        self.end_wall = end_wall
+        self.behind_schedule.append(sample["behind_schedule_s"])
+        self.world_ticks.append(sample["world_tick_s"])
+        self.framework.append(sample["framework_s"])
+        self.commands.append(sample["command_s"])
+
+    def summary(self, tick_us: int, *, post_origin: bool = False) -> dict[str, Any]:
+        start, start_wall = (self.origin if post_origin else None) or (0, self.start_wall)
+        elapsed = self.end_wall - start_wall
+        behind = np.asarray(self.behind_schedule)[start:]
+        return {
+            "ticks": len(behind),
+            "behind_ticks": int(np.count_nonzero(behind)),
+            "resynchronizations": int(np.count_nonzero(behind > _RESYNC_LAG_S)),
+            "max_behind_schedule_s": float(behind.max()) if len(behind) else 0.,
+            "elapsed_wall_s": elapsed,
+            "actual_realtime_factor": len(behind) * tick_us / 1e6 / elapsed if elapsed else None,
+            "world_tick_s": self._distribution(np.asarray(self.world_ticks)[start:]),
+            "framework_s": self._distribution(np.asarray(self.framework)[start:]),
+            "command_s": self._distribution(np.asarray(self.commands)[start:]),
+        }
+
+    @staticmethod
+    def _distribution(samples: np.ndarray) -> dict[str, float | None]:
+        if not len(samples):
+            return {"mean": None, "p95": None, "max": None}
+        return {"mean": float(samples.mean()), "p95": float(np.percentile(samples, 95)),
+                "max": float(samples.max())}
 
 
 class CarlaSimulator(Simulator):
@@ -81,9 +134,7 @@ class CarlaSimulator(Simulator):
         realtime_factor: float | None = None, external_startup_s: float = 0.0,
         external_driving_system: ExternalDrivingSystem | None = None,
     ) -> None:
-        allowed = {"connect_ip", "connect_port", "traffic_manager_port", "rate", "synchronous",
-                   "seed", "traffic_manager_seed"}
-        unknown = set(client) - allowed
+        unknown = set(client) - CARLA_CLIENT_RUNTIME_SETTINGS
         if unknown:
             raise ValueError(f"CARLA client only accepts runtime settings: {sorted(unknown)}")
         self.client_config = deepcopy(client)
@@ -95,6 +146,13 @@ class CarlaSimulator(Simulator):
             raise ValueError("CARLA client rate must be positive and finite")
         if self.client_config["synchronous"] is not True:
             raise ValueError("CARLA requires synchronous operation")
+        if "substepping" in client and not isinstance(client["substepping"], bool):
+            raise ValueError("client.substepping must be a boolean")
+        if "max_substep_delta_time" in client:
+            require_positive_number(
+                client["max_substep_delta_time"], "client.max_substep_delta_time")
+        if "max_substeps" in client:
+            require_positive_integer(client["max_substeps"], "client.max_substeps")
         for name in ("seed", "traffic_manager_seed"):
             if self.client_config.get(name) is not None:
                 require_nonnegative_integer(self.client_config[name], f"client.{name}")
@@ -199,10 +257,16 @@ class CarlaSimulator(Simulator):
         if self.ego_control == "ros2":
             # Prepared references must include the phase after the origin reset.
             identity["reset_traffic_lights"] = True
+            identity["publish_tf"] = self._ros2_publish_tf
         system = self.external_driving_system
         if system is not None:
             identity["external_driving_system"] = {"type": type(system).__name__, **system.identity}
         return identity
+
+    @property
+    def _ros2_publish_tf(self) -> bool:
+        system = self.external_driving_system
+        return True if system is None else system.carla_publishes_tf
 
     def validate_start(self, start):
         if start is None:
@@ -260,10 +324,9 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         self._origin_tick = 0
         self._origin_clock_us = None
         self._native_commands = []
-        self._pacing_started = False
-        self._last_tick_wall = None
-        self._pacing_start_wall = None
-        self._pacing_stats = {}
+        self._last_tick_end_wall: float | None = None
+        self._pacing: _TickPacing | None = None
+        self._interval_pacing: list[dict[str, float | bool]] = []
         self._external_session: ExternalDrivingSession | None = None
         self._external_report: dict[str, Any] | None = None
 
@@ -281,31 +344,42 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
 
     def _tick(self, *, start_pacing=False):
         factor = self.simulator.realtime_factor
-        if start_pacing and self.closed_loop_run and factor is not None and not self._pacing_started:
-            self._pacing_started = True
-            self._pacing_start_wall = time.monotonic()
-            self._pacing_stats = {"ticks": 0, "late_ticks": 0, "max_lateness_s": 0.,
-                                  "elapsed_wall_s": 0., "actual_realtime_factor": None}
-        if self._pacing_started and factor is not None and self._last_tick_wall is not None:
-            deadline = self._last_tick_wall + self.timing_capabilities.base_tick_us / 1e6 / factor
-            now = time.monotonic()
-            if now < deadline:
-                time.sleep(deadline - now)
-            else:
-                self._pacing_stats["late_ticks"] += int(now > deadline)
-                self._pacing_stats["max_lateness_s"] = max(
-                    self._pacing_stats["max_lateness_s"], now - deadline)
-        self._last_tick_wall = time.monotonic()
+        entry_wall = time.monotonic() if factor is not None and self.closed_loop_run else None
+        if start_pacing and entry_wall is not None and self._pacing is None:
+            self._pacing = _TickPacing(entry_wall)
+        pacing = self._pacing
+        sleep_s = framework_s = 0.
+        if pacing is not None:
+            assert entry_wall is not None
+            if self._last_tick_end_wall is not None:
+                framework_s = entry_wall - self._last_tick_end_wall
+            if entry_wall < pacing.next_start:
+                sleep_start = time.monotonic()
+                time.sleep(pacing.next_start - entry_wall)
+                sleep_s = time.monotonic() - sleep_start
+        command_start = time.monotonic() if pacing is not None else None
         self._flush_native_commands()
+        tick_start = time.monotonic() if pacing is not None else None
         result = self.client.world.tick()
-        if self._pacing_started:
-            stats = self._pacing_stats
-            stats["ticks"] += 1
-            stats["elapsed_wall_s"] = time.monotonic() - self._pacing_start_wall
-            if stats["elapsed_wall_s"]:
-                stats["actual_realtime_factor"] = (
-                    stats["ticks"] * self.timing_capabilities.base_tick_us
-                    / 1e6 / stats["elapsed_wall_s"])
+        if entry_wall is not None:
+            self._last_tick_end_wall = time.monotonic()
+        if pacing is not None:
+            end_wall = self._last_tick_end_wall
+            assert end_wall is not None and command_start is not None and tick_start is not None
+            assert factor is not None
+            pacing.next_start += self.timing_capabilities.base_tick_us / 1e6 / factor
+            behind = max(0., end_wall - pacing.next_start)
+            resynchronized = behind > _RESYNC_LAG_S
+            if resynchronized:
+                pacing.next_start = end_wall
+            sample = {
+                "sleep_s": sleep_s, "command_s": tick_start - command_start,
+                "world_tick_s": end_wall - tick_start, "framework_s": framework_s,
+                "behind_schedule_s": behind, "resynchronized": resynchronized,
+            }
+            pacing.append(end_wall, sample)
+            if self._advancing:
+                self._interval_pacing.append(sample)
         return result
 
     @property
@@ -339,8 +413,12 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
     def termination_details(self) -> Mapping[str, Any]:
         """Record tick pacing and hosted driving-system evidence when available."""
         details = dict(super().termination_details)
-        if self._pacing_stats:
-            details["realtime"] = dict(self._pacing_stats)
+        if self._pacing is not None:
+            tick_us = self.timing_capabilities.base_tick_us
+            details["realtime"] = self._pacing.summary(tick_us)
+            if self._pacing.origin is not None:
+                details["realtime"]["post_origin"] = self._pacing.summary(
+                    tick_us, post_origin=True)
         if self._external_session is not None:
             details["external_driving_system"] = dict(self._external_session.report())
         elif self._external_report is not None:
@@ -382,6 +460,12 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         if self._external_session is not None:
             telemetry["external_driving_system"] = dict(self._external_session.telemetry())
         return telemetry
+
+    def interval_telemetry(self) -> Mapping[str, Any]:
+        """Return wall-clock pacing samples in native tick order for the completed interval."""
+        if self._pacing is None:
+            return {}
+        return {"pacing": [dict(sample) for sample in self._interval_pacing]}
 
     def _native_clock(self) -> ClockSnapshot:
         snapshot = self.client.world.get_snapshot()
@@ -503,11 +587,36 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
             _use_pinhole_cameras(scenario)
         return scenario
 
+    def _configure_world_settings(self, client_config):
+        world = self.client.world
+        native = world.get_settings()
+        requested = {"synchronous_mode": client_config["synchronous"],
+                     "fixed_delta_seconds": 1. / client_config["rate"]}
+        requested.update((name, client_config[name]) for name in CARLA_CLIENT_SUBSTEP_SETTINGS
+                         if name in client_config)
+        actual = {name: getattr(native, name) for name in (
+            "synchronous_mode", "fixed_delta_seconds", *CARLA_CLIENT_SUBSTEP_SETTINGS)}
+        if self._uses_native_ros2:
+            requested["publish_tf"] = self.simulator._ros2_publish_tf
+            world.set_publish_tf(requested["publish_tf"])
+            actual["publish_tf"] = world.get_publish_tf()
+        for name, value in requested.items():
+            observed = actual[name]
+            matches = observed == value
+            if name in {"fixed_delta_seconds", "max_substep_delta_time"} and observed is not None:
+                # The SDK can return these settings at native floating-point precision.
+                matches = math.isclose(observed, value, rel_tol=1e-7)
+            if not matches:
+                raise RuntimeError(
+                    f"CARLA world setting {name} differs from the requested value: "
+                    f"expected {value!r}, got {observed!r}")
+        return actual
+
     def _initialize_world(self, start, initialization, environment):
         from avcarla.config import CARLA
 
         self._close_world()
-        self._pacing_stats = {}
+        self._pacing = None
         self._external_report = None
         scenario = self._resolve_scenario(start, initialization, environment)
         self._recipe = start.payload["recipe"]
@@ -524,6 +633,7 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         replay["npcs"] = []
         self.client = CARLA.build(client_config)
         self._resources.callback(self.client.close)
+        self.initialization_report["world_settings"] = self._configure_world_settings(client_config)
         self._apply_map_layers(scenario.get("map_layers"))
         ego_cfg = deepcopy(scenario["ego"])
         replay_ego_cfg = deepcopy(ego_cfg)
@@ -757,6 +867,8 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
             self._scenario_t0 = self.client.world.get_snapshot().timestamp.elapsed_seconds
         self._origin_clock_us = timestamp_to_microseconds(
             self.client.world.get_snapshot().timestamp.elapsed_seconds)
+        if self._pacing is not None:
+            self._pacing.mark_origin()
         self._recipe_replay.finish_holding()
         if self._native_ros2_run:
             import carla
@@ -797,12 +909,13 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
             "start_frame": asdict(self._start.frame), "pre_roll_steps": self._start.frame.position,
             "deployment_ticks": self._deployment.ticks,
             "resolved_scenario": deepcopy(self.replay_scenario),
-            "motion": asdict(self._recipe)["motion"], "actual": actual.provenance,
+            "motion": self._compact_motion(self._recipe.motion), "actual": actual.provenance,
             "inserted_actor_ids": [actor.id for actor in self.client.world.get_actors()
                                    if actor.id not in self._base_actor_ids and actor.id not in base_ids],
         })
-        if self._pacing_started:
-            self.initialization_report["realtime"] = dict(self._pacing_stats)
+        if self._pacing is not None:
+            self.initialization_report["realtime"] = self._pacing.summary(
+                self.timing_capabilities.base_tick_us)
         if self._external_session is not None:
             self.initialization_report["external_driving_system"] = dict(
                 self._external_session.report())
@@ -810,6 +923,29 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
                 and not self._uses_native_ros2):
             # Frame data generation records the prescribed ego motion. Runs drive it.
             self._recipe_replay.release_ego()
+
+    @staticmethod
+    def _compact_motion(motions: Mapping[str, PrescribedMotion]) -> dict[str, Any]:
+        def control_key(control: Control):
+            # Preserve scalar types and signed zeros when coalescing actuator values.
+            if type(control) is not Control:
+                return id(control)
+            return tuple((type(value), value, math.copysign(1., value))
+                         for value in (control.throttle, control.steer, control.brake))
+
+        report = {}
+        for actor, motion in motions.items():
+            if motion.trajectory:
+                report[actor] = {"trajectory": asdict(motion)["trajectory"]}
+                continue
+            runs = []
+            for _, run in groupby(motion.controls, key=control_key):
+                control = next(run)
+                # Custom control subclasses retain the previous plain-data representation.
+                value = deepcopy(control) if type(control) is Control else asdict(control)
+                runs.append({"control": value, "count": 1 + sum(1 for _ in run)})
+            report[actor] = {"control_runs": runs}
+        return report
 
     @staticmethod
     def _check_traffic_light_initialization(expected, actual):
@@ -840,6 +976,7 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
     def _advance_ticks(self, control):
         tick = self.timing_capabilities.base_tick_us
         self._interval_ticks = {}
+        self._interval_pacing.clear()
         origin = self._interval.start_us
         count = self.simulator.decision_ticks
         for index in range(1, count + 1):
@@ -1341,8 +1478,8 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
             self._history_pose_times = frozenset()
             self._origin_clock_us = None
             self._native_commands.clear()
-            self._pacing_started = False
-            self._last_tick_wall = self._pacing_start_wall = None
+            self._last_tick_end_wall = None
+            self._interval_pacing.clear()
             for cache in (self._recorded_ticks, self._interval_ticks):
                 cache.clear()
 

@@ -657,6 +657,10 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
         """Native evidence recorded at each decision without issuing a driving command."""
         return {}
 
+    def interval_telemetry(self) -> Mapping[str, Any]:
+        """Native evidence from a completed decision interval, read after endpoint capture."""
+        return {}
+
     def validate_start(self, start: ScenarioStart | None) -> None:
         """Check dataset and simulator constraints for a recorded scenario start."""
         self.simulator.validate_start_timing(start, self._timing)

@@ -146,6 +146,8 @@ simulator:
       traffic_manager_port: 8000
       rate: 20.0
       synchronous: true
+      # The official Autoware integration validates this fixed-rate setup without physics substeps.
+      substepping: false
       seed: 0
     ego_control: ros2
     realtime_factor: 1.0
@@ -180,8 +182,13 @@ runs:
   - name: relocation
     attack_name: relocation
   seeds: [0]
+  timing:
+    sensors:
+      # Autoware does not consume this recording camera. Acquire it only when saving a frame.
+      camera-0-0:
+        frame_interval_us: 1000000
   recording:
     sensor_ids: [camera-0-0]
     representations: [model_input]
-    every_n_captures: 20
+    every_n_captures: 1
   output: ../results/carla_autoware

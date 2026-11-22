@@ -7,12 +7,15 @@ native types before persistence. Unknown objects are never pickled or stringifie
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, fields, replace
 import json
 import os
 from pathlib import Path
 import sys
+from threading import Condition, Thread
+from time import monotonic
 from typing import Any, TYPE_CHECKING
 from weakref import ref
 
@@ -180,14 +183,15 @@ class Recorder:
     Record methods immediately snapshot metadata. The ``sensor_data`` values in raw and
     model observations are retained by reference and must not be modified afterwards.
     Call ``snapshot`` first when an independent copy is needed. ``retain_steps=False`` bounds
-    disk-recorder memory by the open chunk instead of retaining the full run.
+    disk-recorder memory by the open chunk and the write backlog.
     ``retain_sensor_data=False`` retains steps whose raw and model observations have
     empty ``sensor_data``. The written records keep their sensor data. Step delivery
     payloads reference their acquisition records rather than repeating their contents.
 
-    A directory must be empty. ``finish`` publishes the last chunks before the
-    final manifest. ``abort`` leaves completed chunks readable and discards the
-    current chunks. Neither method closes caller-owned simulator/model resources.
+    A directory must be empty. A background writer publishes completed chunks in order.
+    Recording waits if two chunks are already queued. ``finish`` waits for publication
+    before finalizing the manifest. ``abort`` discards pending chunks and leaves completed
+    chunks readable. Neither method closes caller-owned simulator/model resources.
     """
 
     def __init__(
@@ -209,6 +213,7 @@ class Recorder:
         if not retain_sensor_data and path is None:
             raise ValueError("retain_sensor_data=False requires a persistent output path")
         self.registry = registry
+        self._writer: _Writer | None = None
         self._capture_ids: set[int] = set()
         self.log = RunLog(
             metadata=self.snapshot(metadata or {}), path=Path(path) if path is not None else None
@@ -222,10 +227,19 @@ class Recorder:
             if self.log.path is not None else None
         )
         if self._writer is not None:
-            self._writer.write_manifest(self.log)
+            try:
+                self._writer.write_manifest(self.log)
+            except BaseException as error:
+                try:
+                    self._writer.close()
+                except BaseException as cleanup:
+                    error.add_note(f"RunLog writer cleanup also failed: {cleanup!r}")
+                raise
 
     def snapshot(self, value: Any) -> Any:
         """Take an independent snapshot, preserving native wrappers and mutable array semantics."""
+        if self._writer is not None:
+            self._writer.check_error()
         return self.registry.snapshot(value)
 
     def _record_snapshot(self, record: Any) -> Any:
@@ -237,7 +251,7 @@ class Recorder:
         return result
 
     def record_step(self, record: StepRecord) -> StepRecord:
-        """Append a decision record and flush a complete row group when due.
+        """Append a decision record and queue a complete row group when due.
 
         Sensor payloads are retained by reference and must not be modified afterwards.
         Call ``snapshot`` first when an independent copy is needed.
@@ -288,7 +302,7 @@ class Recorder:
         return snapshot
 
     def flush(self) -> None:
-        """Publish the current chunks without marking the run complete."""
+        """Wait for publication of all recorded chunks without marking the run complete."""
         self._check_open()
         if self._writer is not None:
             self._writer.flush()
@@ -299,6 +313,13 @@ class Recorder:
             return self.log
         if status not in {"completed", "failed", "cancelled"}:
             raise ValueError("Final status must be completed, failed or cancelled")
+        if self._writer is not None:
+            # Retain the open chunk so the termination event joins it at the usual boundary.
+            self._writer.wait()
+            details["recording"] = {
+                "backpressure_wait_s": self._writer.backpressure_wait_s,
+                "backpressure_batches": self._writer.backpressure_batches,
+            }
         self.record_event("termination", status=status, **details)
         if self._writer is not None:
             self._writer.flush()
@@ -310,32 +331,38 @@ class Recorder:
             except BaseException:
                 self.log.status = previous_status
                 raise
+            self._writer.close()
         self._finished = True
         return self.log
 
     def abort(self) -> None:
-        """Discard unpublished records and leave the persisted run incomplete."""
-        if not self._finished and self._writer is not None:
-            self._writer.abort()
-        self._finished = True
+        """Discard pending chunks and leave published records readable."""
+        try:
+            if not self._finished and self._writer is not None:
+                self._writer.close()
+        finally:
+            self._finished = True
 
     def _check_open(self) -> None:
         if self._finished:
             raise RuntimeError("Recorder is already closed")
+        if self._writer is not None:
+            self._writer.check_error()
 
     def __enter__(self) -> Recorder:
+        self._check_open()
         return self
 
     def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
-        if exc_type is None:
-            self.finish()
-        else:
-            try:
+        try:
+            if exc_type is None:
+                self.finish()
+            else:
                 status = "cancelled" if issubclass(exc_type, (KeyboardInterrupt, SystemExit)) else "failed"
                 self.finish(status, error_type=exc_type.__name__, error=str(exc))
-            finally:
-                if not self._finished:
-                    self.abort()
+        finally:
+            if not self._finished:
+                self.abort()
 
 
 def read_table(
@@ -544,6 +571,7 @@ class _PayloadWriter:
         self._handle: Any = None
         self._size = 0
         self._open: Path | None = None
+        self._sealed: list[Path] = []
         self._contents: dict[int, tuple[Any, dict[str, Any]]] = {}
         self._byte_contents: dict[int, tuple[Any, dict[str, Any]]] = {}
 
@@ -571,30 +599,44 @@ class _PayloadWriter:
             self._size += length
             offset += length
             if self._size == self.limit:
-                self.publish()
+                self.seal_shard()
         reference = {"nbytes": len(data), "chunks": chunks}
         identity = id(source)
         owner = source if isinstance(source, bytes) else ref(source, lambda _ref: cache.pop(identity, None))
         cache[identity] = (owner, reference)
         return reference
 
-    def publish(self) -> None:
+    def seal_shard(self) -> None:
         if self._handle is None:
             return
-        self._handle.flush()
-        os.fsync(self._handle.fileno())
         self._handle.close()
         self._handle = None
         assert self._open is not None
-        os.replace(self._open, self._open.with_suffix(""))
+        self._sealed.append(self._open)
         self.index += 1
         self._open = None
 
+    @property
+    def has_sealed_shards(self) -> bool:
+        return bool(self._sealed)
+
+    def take_shards(self) -> list[Path]:
+        shards, self._sealed = self._sealed, []
+        return shards
+
     def abort(self) -> None:
-        if self._handle is not None:
-            self._handle.close()
-            self._handle = None
+        handle, self._handle = self._handle, None
+        self._sealed.clear()
+        if handle is not None:
+            handle.close()
         # Open files are intentionally ignored by recovery, like a killed process.
+
+
+@dataclass
+class _WriteBatch:
+    records: dict[str, list[dict[str, Any]]]
+    shards: list[Path]
+    manifest: dict[str, Any] | None = None
 
 
 class _Writer:
@@ -616,17 +658,96 @@ class _Writer:
         self.manifest: dict[str, Any] = {}
         self.schemas: dict[str, Any] = {}
         self.buffer_size = 0
+        self.backpressure_wait_s = 0.
+        self.backpressure_batches = 0
+        self._condition = Condition()
+        self._pending: deque[_WriteBatch] = deque()
+        self._writing = False
+        self._stopping = False
+        self._error: BaseException | None = None
+        self._thread = Thread(target=self._write_loop, name=f"avsectester-runlog-{root.name}",
+                              daemon=True)
+        self._thread.start()
 
     def append(self, stream: str, record: dict[str, Any]) -> None:
         encoded = {name: self.encoder.encode(value) for name, value in record.items()}
         self.buffers[stream].append(encoded)
         self.buffer_size += _memory_size(encoded)
         if len(self.buffers[stream]) >= self.rows or self.buffer_size >= self.size:
-            self.flush()
+            self._submit()
 
     def flush(self) -> None:
+        self._submit()
+        self.wait()
+
+    def check_error(self) -> None:
+        if self._error is not None:
+            raise RuntimeError("RunLog background write failed") from self._error
+
+    def wait(self) -> None:
+        with self._condition:
+            while self._pending or self._writing:
+                self._condition.wait()
+        try:
+            self.check_error()
+        except RuntimeError as error:
+            try:
+                self.close()
+            except BaseException as cleanup:
+                error.add_note(f"RunLog writer cleanup also failed: {cleanup!r}")
+            raise
+
+    def _submit(self, manifest: dict[str, Any] | None = None) -> None:
+        self.payloads.seal_shard()
+        if not self.buffer_size and not self.payloads.has_sealed_shards and manifest is None:
+            return
+        buffers: dict[str, list[dict[str, Any]]] = {"steps": [], "events": [], "captures": []}
+        with self._condition:
+            if len(self._pending) == 2:
+                start = monotonic()
+                while len(self._pending) == 2:
+                    self._condition.wait()
+                self.backpressure_wait_s += monotonic() - start
+                self.backpressure_batches += 1
+            self.check_error()
+            # Keep the records and sealed shards together if the producer is interrupted waiting.
+            self._pending.append(_WriteBatch(self.buffers, self.payloads.take_shards(), manifest))
+            self.buffers = buffers
+            self.buffer_size = 0
+            self._condition.notify_all()
+
+    def _write_loop(self) -> None:
+        while True:
+            with self._condition:
+                while not self._pending and not self._stopping:
+                    self._condition.wait()
+                if self._stopping:
+                    return
+                batch = self._pending.popleft()
+                self._writing = True
+                self._condition.notify_all()
+            try:
+                self._write_batch(batch)
+            except BaseException as error:
+                with self._condition:
+                    self._error = error
+                    self._pending.clear()
+                    self._writing = False
+                    self._condition.notify_all()
+                return
+            del batch
+            with self._condition:
+                self._writing = False
+                self._condition.notify_all()
+
+    def _write_batch(self, batch: _WriteBatch) -> None:
+        # A published record part may only reference published payload shards.
+        for path in batch.shards:
+            with path.open("rb") as handle:
+                os.fsync(handle.fileno())
+            os.replace(path, path.with_suffix(""))
         tables = {}
-        for stream, records in self.buffers.items():
+        for stream, records in batch.records.items():
             if records:
                 try:
                     table = self.pa.Table.from_pylist(records)
@@ -638,8 +759,6 @@ class _Writer:
                     raise TypeError("RunLog values need consistent typed registered records") from exc
                 tables[stream] = table
                 self.schemas[stream] = schema
-        # Finalize all referenced payloads before publishing any record part.
-        self.payloads.publish()
         for stream, table in tables.items():
             part = self.root / stream / f"part-{self.counts[stream]:05d}.parquet"
             pending = part.with_suffix(".parquet.open")
@@ -651,24 +770,19 @@ class _Writer:
             self.rows_written[stream] += table.num_rows
             if stream == "steps":
                 self.last_durable_step = table["step"][-1].as_py()
-            self.buffers[stream].clear()
-        self.buffer_size = 0
-        if tables:
+        if batch.manifest is not None:
+            self.manifest = batch.manifest
+        if tables or batch.manifest is not None:
             # This remains an incomplete checkpoint until finish publishes the
             # final status. Recovery also scans parts in case a process exits
             # after their rename but before this checkpoint is replaced.
             self._publish_manifest()
 
     def write_manifest(self, log: RunLog) -> None:
-        metadata = self.encoder.encode(log.metadata)
-        self.payloads.publish()
-        previous = self.manifest
-        self.manifest = {"status": log.status, "metadata": metadata, "format_version": log.format_version}
-        try:
-            self._publish_manifest()
-        except BaseException:
-            self.manifest = previous
-            raise
+        self.wait()
+        self._submit({"status": log.status, "metadata": self.encoder.encode(log.metadata),
+                      "format_version": log.format_version})
+        self.wait()
 
     def _publish_manifest(self) -> None:
         manifest = {
@@ -686,7 +800,12 @@ class _Writer:
             os.fsync(handle.fileno())
         os.replace(pending, self.root / "manifest.json")
 
-    def abort(self) -> None:
+    def close(self) -> None:
+        with self._condition:
+            self._stopping = True
+            self._pending.clear()
+            self._condition.notify_all()
+        self._thread.join()
         self.payloads.abort()
         self.buffers = {"steps": [], "events": [], "captures": []}
         self.buffer_size = 0

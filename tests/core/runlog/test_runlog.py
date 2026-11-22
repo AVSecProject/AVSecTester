@@ -77,7 +77,8 @@ def test_snapshot():
 def test_payload_retention(tmp_path, representations):
     names = {"raw": "raw_observation", "model_input": "model_observation"}
     pixels = np.arange(1200, dtype=np.uint8).reshape(20, 20, 3)
-    with Recorder(tmp_path / "run", retain_sensor_data=False, chunk_steps=1) as recorder:
+    with Recorder(tmp_path / "run", retain_sensor_data=False, chunk_steps=1,
+                  payload_shard_bytes=512) as recorder:
         for index in range(2):
             payload = recorder.snapshot(pixels + index)
             observations = {names[name]: Observation(index / 10, index, {"front": payload})
@@ -88,6 +89,12 @@ def test_payload_retention(tmp_path, representations):
                 delivered_captures={"front": (index, None)}))
     assert all(step.model_observation.sensor_data == {} for step in recorder.log.steps)
     restored = RunLog.read(tmp_path / "run")
+    assert [record.step for record in restored.steps] == [0, 1]
+    assert [record.capture_id for record in restored.captures] == [0, 1]
+    assert [record.kind for record in restored.events] == ["termination"]
+    manifest = json.loads((tmp_path / "run" / "manifest.json").read_text())
+    assert manifest["step_parts"] == manifest["capture_parts"] == 2
+    assert manifest["event_parts"] == 1
     for index, step in enumerate(restored.steps):
         assert step.delivered_captures == {"front": (index, None)}
         np.testing.assert_array_equal(step.model_observation.sensor_data["front"], pixels + index)
@@ -281,15 +288,19 @@ def test_failed_run_status(tmp_path):
 
 
 def test_chunks_and_schema_evolution(tmp_path):
-    recorder = Recorder(tmp_path / "run", chunk_steps=1, retain_steps=False)
+    recorder = Recorder(tmp_path / "run", chunk_steps=2, retain_steps=False)
     recorder.record_step(StepRecord(0, components={"score": 1}))
-    recorder.record_step(StepRecord(1, components={"score": 2., "trajectory": [(1., 2.)]}))
+    recorder.record_step(StepRecord(1, components={"score": 2}))
+    recorder.record_step(StepRecord(2, components={"score": 3., "trajectory": [(1., 2.)]}))
+    recorder.record_step(StepRecord(3, components={"score": 4.}))
+    recorder.flush()
+    recorder.record_step(StepRecord(4, components={"image": np.ones((2, 3), np.uint8)}))
     recorder.abort()
     recovered = RunLog.read(tmp_path / "run")
     assert recovered.status == "incomplete"
-    assert [step.step for step in recovered.steps] == [0, 1]
+    assert [step.step for step in recovered.steps] == [0, 1, 2, 3]
     assert recovered.steps[0].components["score"] == 1
-    assert recovered.steps[1].components["trajectory"] == [(1., 2.)]
+    assert recovered.steps[2].components["trajectory"] == [(1., 2.)]
     with pytest.raises(ValueError, match="positive"):
         Recorder(chunk_steps=0)
 
@@ -334,10 +345,31 @@ def test_record_without_path():
         Recorder(retain_steps=False)
 
 
-def test_finish():
-    recorder = Recorder()
+def test_finish(tmp_path):
+    recorder = Recorder(tmp_path / "completed")
     with pytest.raises(ValueError, match="Final status"):
         recorder.finish("unknown")
     log = recorder.finish("failed", error="a sensor stopped")
     assert log.status == "failed" and log.events[-1].data["error"] == "a sensor stopped"
+    stats = log.events[-1].data["recording"]
+    assert stats == {"backpressure_wait_s": 0., "backpressure_batches": 0}
+    assert RunLog.read(log.path).events[-1].data["recording"] == stats
     assert recorder.finish() is log
+
+    directory = tmp_path / "blocked"
+    recorder = Recorder(directory, chunk_steps=1)
+    pending_part = directory / "steps" / "part-00000.parquet.open"
+    pending_part.mkdir()
+    try:
+        recorder.record_step(StepRecord(0))
+        with pytest.raises(RuntimeError, match="RunLog background write failed") as failure:
+            recorder.finish()
+        assert isinstance(failure.value.__cause__, OSError)
+        assert pending_part.name in str(failure.value.__cause__)
+        with pytest.raises(RuntimeError, match="RunLog background write failed") as repeated:
+            recorder.record_event("failure")
+        assert repeated.value.__cause__ is failure.value.__cause__
+    finally:
+        recorder.abort()
+    recovered = RunLog.read(directory)
+    assert recovered.status == "incomplete" and not recovered.steps

@@ -283,6 +283,10 @@ def test_carla_recipe():
         CarlaRecipe({"ego": {}, "lead": {"gap": 8}}, 2, .1, recipe.motion)
     with pytest.raises(ValueError, match="runtime settings"):
         CarlaRecipe({"ego": {}, "client": {"seed": 1}}, 2, .1, recipe.motion)
+    with pytest.raises(ValueError, match="max_substep_delta_time, max_substeps, substepping"):
+        CarlaRecipe({"ego": {}, "client": {
+            "substepping": False, "max_substep_delta_time": .01, "max_substeps": 10,
+        }}, 2, .1, recipe.motion)
 
 
 def test_carla_recipe_ros_configuration():

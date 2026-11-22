@@ -248,6 +248,15 @@ number of base ticks. `runs.timing.sensors` selects acquisition ticks.
 See [CARLA capture timing](../guides/simulators.md#carla) for native sensor settings and LiDAR
 scans.
 
+The physics substep options belong to `CarlaSimulator.client`. A recipe's `client` may not
+set them.
+
+| Client option | Native default | Accepted values |
+|---|---|---|
+| `substepping` | `true` | Boolean |
+| `max_substep_delta_time` | `0.01` | Positive finite seconds |
+| `max_substeps` | `10` | Positive integer |
+
 CARLA initialization and external-control options are:
 
 | Option | Default | Accepted values or role |
@@ -256,10 +265,11 @@ CARLA initialization and external-control options are:
 | `ground_settle_s` | `2.0` | Nonnegative duration for vehicles to settle before holding |
 | `external_startup_s` | `0.0` | Nonnegative fixed hold duration for an unmanaged external system |
 | `ego_control` | `"framework"` | `"framework"` or `"ros2"` |
-| `realtime_factor` | `null` | Positive simulation-time to wall-time ratio for pacing closed-loop runs, required for `"ros2"` |
+| `realtime_factor` | `null` | Positive simulation-time to wall-time ratio on the cumulative pacing schedule, required for `"ros2"` |
 | `external_driving_system` | `null` | Lifecycle plugin for `ego_control: ros2` |
 
 The three durations must each correspond to an integer number of ticks at `client.rate`.
+See [CARLA tick pacing](runtime.md#carla-tick-pacing) for catch-up and resynchronization.
 RGB-camera warmup is omitted when the recipe has no RGB camera. The hold uses the larger of the
 applicable camera warmup and `external_startup_s`. An `external_driving_system` then extends it
 until its session is ready, so it cannot be combined with `external_startup_s`. See

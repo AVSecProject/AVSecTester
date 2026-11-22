@@ -1701,6 +1701,7 @@ The simulator: a configuration (`Simulator`) and its live worlds (`SimulatorRunt
 | `SimulatorRuntime.identity: Mapping[str, Any]` | Configuration identity used to check saved-preparation compatibility. |
 | `SimulatorRuntime.termination_details: Mapping[str, Any]` | Simulator diagnostics saved with the run's termination event. |
 | `SimulatorRuntime.decision_telemetry() -> Mapping[str, Any]` | Native evidence recorded at each decision without issuing a driving command. |
+| `SimulatorRuntime.interval_telemetry() -> Mapping[str, Any]` | Native evidence from a completed decision interval, read after endpoint capture. |
 | `SimulatorRuntime.validate_start(start: ScenarioStart \| None) -> None` | Check dataset and simulator constraints for a recorded scenario start. |
 | `SimulatorRuntime.validate_command(command: Control) -> None` | Reject active command fields that this simulator would silently ignore. |
 | `SimulatorRuntime.copy_observation(observation: Observation) -> Observation` | Detach the complete mutable data graph before model-visible processing. |
@@ -1894,6 +1895,7 @@ Autoware lifecycle hosting for native CARLA ROS 2.
 | Name and signature | Meaning |
 |---|---|
 | `AutowareDrivingSystem(*, gpu: int, ros_domain_id: int, autoware_data_directory: str \| Path, assets_directory: str \| Path, dds_directory: str \| Path, work_directory: str \| Path, image: str = _DEFAULT_IMAGE, launch_arguments: Mapping[str, str \| int \| float \| bool] \| None = None, startup_timeout_s: float = 300.0, engage_timeout_s: float = 10.0, localization_tolerance_m: float = 0.5, localization_tolerance_deg: float = 5.0, distortion_check_s: float = 12.0)` | Host a local Autoware image as a separate container for each CARLA run. |
+| `AutowareDrivingSystem.carla_publishes_tf: bool` | Disable CARLA's transforms as in the official `autoware_demo.py`. |
 | `AutowareDrivingSystem.identity: dict[str, Any]` | Return result-affecting Autoware settings for preparation compatibility. |
 | `AutowareDrivingSystem.start(context: ExternalDrivingContext) -> ExternalDrivingSession` | Start one Autoware session asynchronously and return its readiness interface. |
 <!-- api:end -->
@@ -1928,6 +1930,7 @@ Lifecycle of a driving system hosted beside a CARLA world.
 | `ExternalDrivingSession.report() -> Mapping[str, Any]` | Return detached session evidence, available after stop. |
 | `ExternalDrivingSession.stop() -> None` | Release all session resources. Repeated calls are safe. |
 | `ExternalDrivingSystem` | Reusable configuration for a hosted native ROS 2 driver. |
+| `ExternalDrivingSystem.carla_publishes_tf: bool` | Whether CARLA publishes ROS transform frames for this driving system. |
 | `ExternalDrivingSystem.identity: Mapping[str, Any]` | Settings that affect the prepared reference and run results. |
 | `ExternalDrivingSystem.start(context: ExternalDrivingContext) -> ExternalDrivingSession` | Create a new session and begin startup without blocking CARLA ticks. |
 <!-- api:end -->
@@ -1972,6 +1975,7 @@ Configured CARLA simulations and their live native-world runtimes.
 | `CarlaSimulatorRuntime.can_insert_objects: bool` | Allow framework-composited objects outside native external-control runs. |
 | `CarlaSimulatorRuntime.termination_details: Mapping[str, Any]` | Record tick pacing and hosted driving-system evidence when available. |
 | `CarlaSimulatorRuntime.native: dict[str, Any]` | Borrow native resources, invalidating cached truth before possible edits. |
+| `CarlaSimulatorRuntime.interval_telemetry() -> Mapping[str, Any]` | Return wall-clock pacing samples in native tick order for the completed interval. |
 | `CarlaSimulatorRuntime.copy_observation(observation: Observation) -> Observation` | Detach mutable payloads, calibration and reference graphs in one copy operation. |
 | `CarlaSimulatorRuntime.interpolate_vehicle_state(left: Any, right: Any, fraction: float, time_us: int) -> Any` | Interpolate native avstack physical vectors and attitude. |
 | `CarlaSimulatorRuntime.canonical_sensor_id(sensor: str) -> str` | Resolve an ego sensor's logical name or source ID to its observation ID. |
@@ -2867,12 +2871,12 @@ Independent run snapshots and incremental Parquet persistence.
 | `RunLog.read(path: str \| Path, *, registry: SerializationRegistry = DEFAULT_REGISTRY, load_payloads: bool = True, load_sensor_data: bool = True) -> RunLog` | Read completed parts, including those left by an interrupted writer. |
 | `Recorder(path: str \| Path \| None = None, *, metadata: dict[str, Any] \| None = None, registry: SerializationRegistry = DEFAULT_REGISTRY, chunk_steps: int = 128, chunk_bytes: int = 8 * 1024 * 1024, payload_shard_bytes: int = 64 * 1024 * 1024, retain_steps: bool = True, retain_sensor_data: bool = True)` | Context manager. Capture a run in memory and optionally stream it to Parquet. |
 | `Recorder.snapshot(value: Any) -> Any` | Take an independent snapshot, preserving native wrappers and mutable array semantics. |
-| `Recorder.record_step(record: StepRecord) -> StepRecord` | Append a decision record and flush a complete row group when due. |
+| `Recorder.record_step(record: StepRecord) -> StepRecord` | Append a decision record and queue a complete row group when due. |
 | `Recorder.record_event(kind: str, *, step: int \| None = None, **data: Any) -> EventRecord` | Append a timestamped runtime event to the recording. |
 | `Recorder.record_capture(record: CaptureRecord) -> CaptureRecord` | Snapshot acquisition metadata and retain sensor payloads by reference. |
-| `Recorder.flush() -> None` | Publish the current chunks without marking the run complete. |
+| `Recorder.flush() -> None` | Wait for publication of all recorded chunks without marking the run complete. |
 | `Recorder.finish(status: str = "completed", **details: Any) -> RunLog` | Finish recording with a valid terminal status and persist its manifest. |
-| `Recorder.abort() -> None` | Discard unpublished records and leave the persisted run incomplete. |
+| `Recorder.abort() -> None` | Discard pending chunks and leave published records readable. |
 | `read_table(path: str \| Path, columns: Sequence[str] \| None = None, *, stream: str = "steps") -> Any` | Read selected top-level columns without loading arrays or other columns. |
 <!-- api:end -->
 

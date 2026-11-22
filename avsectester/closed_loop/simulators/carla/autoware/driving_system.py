@@ -111,6 +111,11 @@ class AutowareDrivingSystem:
         self.distortion_check_s = distortion_check_s
 
     @property
+    def carla_publishes_tf(self) -> bool:
+        """Disable CARLA's transforms as in the official `autoware_demo.py`."""
+        return False
+
+    @property
     def identity(self) -> dict[str, Any]:
         """Return result-affecting Autoware settings for preparation compatibility."""
         return {

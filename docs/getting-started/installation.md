@@ -142,6 +142,9 @@ $compose up -d carla-experiment
 $compose exec carla-experiment avsectester run configs/carla_autoware.yaml
 ```
 
+The example uses single-step physics at the configured tick rate. Its framework RGB camera
+captures and records once per second. Autoware uses the separate ROS sensor rig.
+
 Without the profile, cameras that request it fall back silently to CARLA's appearance for an
 unknown profile.
 

@@ -7,13 +7,15 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from avsectester.closed_loop.hooks import Hook, HookSet
 from avsectester.closed_loop.simulators.carla import CarlaSimulator
 from avsectester.closed_loop.simulators.carla.sensors import SensorAlignmentError
 from avsectester.closed_loop.simulators.base import Initialization
 from avsectester.closed_loop.timing import HistoryRequirement, SensorTiming, TimingConfiguration
 from avsectester.datasets.carla import CarlaDataset, PrescribedMotion
 from avsectester.data_types import ActorState, Control, Observation
-from tests.fakes import CarlaNativeBoundary, FakeExternalDrivingSystem
+from avsectester.execution.runner import ClosedLoopRunner, RunRequest
+from tests.fakes import CarlaNativeBoundary, ConstantAVStack, FakeExternalDrivingSystem
 
 
 def test_capture_alignment(monkeypatch, carla_dataset):
@@ -87,7 +89,10 @@ def test_world_settings(monkeypatch, carla_dataset):
     CarlaNativeBoundary().install(monkeypatch, None)
     dataset = carla_dataset
     start = dataset.scenario_start("scene", dataset.frames("scene")[0])
-    with CarlaSimulator({"rate": 10}, settle_iters=0).create_runtime() as runtime:
+    client = {"rate": 10, "substepping": False, "max_substep_delta_time": .005, "max_substeps": 12}
+    simulator = CarlaSimulator(client, settle_iters=0)
+    assert all(simulator.identity["client"][name] == value for name, value in client.items())
+    with simulator.create_runtime() as runtime:
         runtime.reset(start, world={"weather": {"precipitation": 60.},
             "road_friction": {"friction_force_multiplier": .7},
             "map_layers": {"unload": ["Buildings"]},
@@ -99,6 +104,10 @@ def test_world_settings(monkeypatch, carla_dataset):
                                                    | carla.VehicleLightState.LowBeam)
         assert native["world"].layers == [("unload", "Buildings")]
         assert native["ego"].actor.get_physics_control().wheels[0].friction_force_multiplier == .7
+        assert runtime.initialization_report["world_settings"] == {
+            "synchronous_mode": True, "fixed_delta_seconds": .1,
+            "substepping": False, "max_substep_delta_time": .005, "max_substeps": 12,
+        }
         with pytest.raises(ValueError, match="road_friction supports only"):
             runtime.reset(start, world={"road_friction": {"tire_friction": .7}})
     scenario = deepcopy(dataset.native("scene").scenario)
@@ -108,6 +117,15 @@ def test_world_settings(monkeypatch, carla_dataset):
     with CarlaSimulator({"rate": 10}, settle_iters=0).create_runtime() as runtime:
         with pytest.raises(ValueError, match="unsupported.*Town10HD_Opt"):
             runtime.reset(start, world={"map_layers": {"unload": ["Buildings"]}})
+    CarlaNativeBoundary(world_settings_overrides={"substepping": True}).install(monkeypatch, None)
+    with simulator.create_runtime() as runtime, pytest.raises(RuntimeError, match="substepping"):
+        runtime.reset(start)
+    with pytest.raises(ValueError, match="substepping must be a boolean"):
+        CarlaSimulator({"substepping": 0})
+    with pytest.raises(ValueError, match="max_substep_delta_time must be a positive number"):
+        CarlaSimulator({"max_substep_delta_time": float("inf")})
+    with pytest.raises(ValueError, match="max_substeps must be a positive integer"):
+        CarlaSimulator({"max_substeps": 1.5})
 
 
 @pytest.mark.parametrize("module_name", ["carla", "carla.libcarla"])
@@ -294,33 +312,72 @@ def test_realtime_pacing(monkeypatch, carla_dataset):
 
         def sleep(self, duration):
             self.waits.append(duration)
+            self.advance(duration)
+
+        def advance(self, duration):
             self.now += duration
 
     clock = Clock()
     monkeypatch.setattr("avsectester.closed_loop.simulators.carla.simulator.time", clock)
-    CarlaNativeBoundary().install(monkeypatch, None)
+    CarlaNativeBoundary(tick_callback=lambda: clock.advance(.01),
+                        batch_callback=lambda: clock.advance(.005)).install(monkeypatch, None)
     start = carla_dataset.scenario_start("scene", carla_dataset.frames("scene")[0])
-    simulator = CarlaSimulator({"rate": 10}, settle_iters=0, camera_warmup_s=0.,
-                               external_startup_s=.2, realtime_factor=2.)
+    simulator = CarlaSimulator({"rate": 20}, decision_period_us=100000, settle_iters=0,
+                               camera_warmup_s=0., external_startup_s=.1, realtime_factor=2.)
+    delays = iter((.037, 0., .086))
+    delay_hook = Hook("simulator.step.pre", lambda value, context: clock.advance(next(delays)))
     with simulator.create_runtime() as runtime:
         runtime.reset(start)
         assert clock.waits == []
         assert "realtime" not in runtime.initialization_report
         assert "realtime" not in runtime.termination_details
-        runtime.reset(start, closed_loop_run=True)
+        assert "pacing" not in runtime.interval_telemetry()
+        log = ClosedLoopRunner().run(runtime, ConstantAVStack(),
+                                     RunRequest(3, start=start, hooks=HookSet((delay_hook,))))
         stats = runtime.initialization_report["realtime"]
         assert stats["ticks"] == 4
-        assert stats["elapsed_wall_s"] == pytest.approx(.2)
-        assert stats["actual_realtime_factor"] == pytest.approx(2.)
-        assert stats["late_ticks"] == 0 and stats["max_lateness_s"] == 0.
-        np.testing.assert_allclose(clock.waits, [.05, .05, .05, .05])
-        clock.now += .1
-        runtime.step(Control())
-        assert runtime.initialization_report["realtime"]["late_ticks"] == 0
-        assert runtime.initialization_report["realtime"]["ticks"] == 4
+        assert stats["elapsed_wall_s"] == pytest.approx(.09)
+        assert stats["actual_realtime_factor"] == pytest.approx(.2 / .09)
+        assert stats["behind_ticks"] == 0 and stats["max_behind_schedule_s"] == 0.
+        assert stats["resynchronizations"] == 0
+        world_tick = {"mean": .01, "p95": .01, "max": .01}
+        command = {"mean": .005, "p95": .005, "max": .005}
+        assert stats["world_tick_s"] == pytest.approx(world_tick)
+        assert stats["command_s"] == pytest.approx(command)
+        assert stats["framework_s"] == {"mean": 0., "p95": 0., "max": 0.}
+        assert [len(step.telemetry["pacing"]) for step in log.steps] == [2, 2, 2]
+        samples = [sample for step in log.steps for sample in step.telemetry["pacing"]]
+        expected = [
+            (.037, 0., .017, False),
+            (0., 0., .007, False),
+            (0., 0., 0., False),
+            (0., .003, 0., False),
+            (.086, 0., .066, True),
+            (0., 0., 0., False),
+        ]
+        for sample, (framework, sleep, behind, resynchronized) in zip(samples, expected):
+            assert sample["resynchronized"] is resynchronized
+            assert sample == pytest.approx({
+                "framework_s": framework, "sleep_s": sleep, "behind_schedule_s": behind,
+                "resynchronized": resynchronized, "command_s": .005, "world_tick_s": .01,
+            })
         final = runtime.termination_details["realtime"]
-        assert final["late_ticks"] == 1 and final["ticks"] == 5
-        assert final["max_lateness_s"] == pytest.approx(.05)
+        assert final["ticks"] == 10 and final["behind_ticks"] == 3
+        assert final["resynchronizations"] == 1
+        assert final["max_behind_schedule_s"] == pytest.approx(.066)
+        assert final["actual_realtime_factor"] == pytest.approx(.5 / .306)
+        assert final["command_s"] == pytest.approx(command)
+        post = final["post_origin"]
+        assert post["ticks"] == 6 and post["behind_ticks"] == 3
+        assert post["resynchronizations"] == 1
+        assert post["max_behind_schedule_s"] == pytest.approx(.066)
+        assert post["elapsed_wall_s"] == pytest.approx(.216)
+        assert post["actual_realtime_factor"] == pytest.approx(.3 / .216)
+        assert post["world_tick_s"] == pytest.approx(world_tick)
+        assert post["command_s"] == pytest.approx(command)
+        assert post["framework_s"] == pytest.approx({"mean": .0205, "p95": .07375, "max": .086})
+        termination = next(event for event in log.events if event.kind == "termination")
+        assert termination.data["realtime"] == final
     assert runtime.termination_details["realtime"] == final
     with pytest.raises(ValueError, match="positive and finite"):
         CarlaSimulator({}, realtime_factor=0.)
@@ -329,7 +386,8 @@ def test_realtime_pacing(monkeypatch, carla_dataset):
 def test_external_ego_control(monkeypatch, carla_dataset, make_object_in_front):
     clock = SimpleNamespace(monotonic=lambda: 0., sleep=lambda duration: None)
     monkeypatch.setattr("avsectester.closed_loop.simulators.carla.simulator.time", clock)
-    CarlaNativeBoundary().install(monkeypatch, None)
+    # The server can retain a disabled TF setting from a previous hosted run.
+    CarlaNativeBoundary(publish_tf=False).install(monkeypatch, None)
     recipe = carla_dataset.native("scene")
     scenario = deepcopy(recipe.scenario)
     scenario["ego"]["blueprint_attributes"] = {"role_name": "ego", "ros2_ackermann_control": True}
@@ -357,6 +415,8 @@ def test_external_ego_control(monkeypatch, carla_dataset, make_object_in_front):
             initializations.append(initialization)
             runtime.reset(start, initialization)
             native = runtime.native
+            assert native["world"].get_publish_tf() is True
+            assert runtime.initialization_report["world_settings"]["publish_tf"] is True
             assert runtime.command_modes == frozenset()
             assert runtime.can_insert_objects is True
             asset, transform = make_object_in_front(runtime.sensor_view("front"))
@@ -415,7 +475,7 @@ def _hosted_simulator(system):
                           realtime_factor=100., external_driving_system=system)
 
 
-def test_hosted_driver_lifecycle(hosted_start):
+def test_hosted_driver_lifecycle(hosted_start, monkeypatch):
     start, frames = hosted_start
     system = FakeExternalDrivingSystem(ready_at_s=.8)
     settings = _hosted_simulator(system)
@@ -425,7 +485,9 @@ def test_hosted_driver_lifecycle(hosted_start):
                                         source.provenance)
         runtime.start_replay(start, initialization)
         assert not system.sessions
+        assert runtime.native["world"].get_publish_tf() is False
         runtime.reset(start, initialization, closed_loop_run=True)
+        assert runtime.initialization_report["world_settings"]["publish_tf"] is False
         session = system.sessions[-1]
         report = runtime.initialization_report["external_driving_system"]
         assert report["ready_s"] >= .8
@@ -460,6 +522,9 @@ def test_hosted_driver_lifecycle(hosted_start):
     with pytest.raises(ValueError, match="external_startup_s applies only without"):
         CarlaSimulator({"rate": 10}, ego_control="ros2", realtime_factor=1.,
                        external_startup_s=1., external_driving_system=system)
+    CarlaNativeBoundary(world_settings_overrides={"publish_tf": True}).install(monkeypatch, None)
+    with settings.create_runtime() as runtime, pytest.raises(RuntimeError, match="publish_tf"):
+        runtime.reset(start)
 
 
 def test_traffic_light_origin_after_readiness_hold(hosted_start):
@@ -566,6 +631,10 @@ def test_force_gt_replays_recipe(two_tick_start):
     with simulator.create_runtime() as runtime:
         runtime.configure_timing(TimingConfiguration(force_gt_duration_us=100000))
         runtime.reset(start, initialization)
+        runs = runtime.initialization_report["motion"]["ego"]["control_runs"]
+        assert [run["count"] for run in runs] == [4]
+        controls = tuple(run["control"] for run in runs for _ in range(run["count"]))
+        assert controls == start.payload["recipe"].motion["ego"].controls
         origin = runtime.clock.time_us
         runtime.advance_interval(origin + 100000, None, force_gt=True)
         runtime.capture_at(origin + 100000)

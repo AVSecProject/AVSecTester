@@ -63,6 +63,11 @@ class ExternalDrivingSystem(Protocol):
     """Reusable configuration for a hosted native ROS 2 driver."""
 
     @property
+    def carla_publishes_tf(self) -> bool:
+        """Whether CARLA publishes ROS transform frames for this driving system."""
+        ...
+
+    @property
     def identity(self) -> Mapping[str, Any]:
         """Settings that affect the prepared reference and run results."""
         ...

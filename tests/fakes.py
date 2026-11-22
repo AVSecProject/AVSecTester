@@ -1073,6 +1073,10 @@ class FakeExternalDrivingSystem:
     def identity(self):
         return {"ready_at_s": self.ready_at_s}
 
+    @property
+    def carla_publishes_tf(self):
+        return False
+
     def start(self, context):
         session = FakeExternalDrivingSession(context, self.ready_at_s, self.startup_error,
                                              self.run_error)
@@ -1280,7 +1284,8 @@ class CarlaBlueprint:
 
 class CarlaWorld:
     def __init__(self, config, frame_offset=0, ground_height=None, ground_offset=(0., 0., 0.),
-                 external_ego_throttle=None, ego_attribute_overrides=None):
+                 external_ego_throttle=None, ego_attribute_overrides=None, tick_callback=None,
+                 publish_tf=True, world_settings_overrides=None):
         self.frame, self.time = 0, 0.
         self.dt = 1 / config.get("rate", 10.)
         self.actors, self.vehicles = [], []
@@ -1292,6 +1297,9 @@ class CarlaWorld:
         self.ground_offset = ground_offset
         self.external_ego_throttle = external_ego_throttle
         self.ego_attribute_overrides = ego_attribute_overrides or {}
+        self.tick_callback = tick_callback
+        self.publish_tf = publish_tf
+        self.world_settings_overrides = world_settings_overrides or {}
         self.command_events = []
         self.direct_actor_updates = []
         self.destroyed_ids = []
@@ -1306,6 +1314,22 @@ class CarlaWorld:
         return SimpleNamespace(frame=self.frame,
             timestamp=SimpleNamespace(elapsed_seconds=self.time),
             find=lambda identity: next((actor for actor in self.actors if actor.id == identity), None))
+
+    def get_settings(self):
+        settings = {"synchronous_mode": self.config.get("synchronous", True),
+                    "fixed_delta_seconds": self.dt,
+                    "substepping": self.config.get("substepping", True),
+                    "max_substep_delta_time": self.config.get("max_substep_delta_time", .01),
+                    "max_substeps": self.config.get("max_substeps", 10)}
+        return SimpleNamespace(**{
+            name: self.world_settings_overrides.get(name, value) for name, value in settings.items()
+        })
+
+    def set_publish_tf(self, enabled):
+        self.publish_tf = enabled
+
+    def get_publish_tf(self):
+        return self.world_settings_overrides.get("publish_tf", self.publish_tf)
 
     def tick(self):
         self.command_events.append(("tick", self.frame + 1))
@@ -1352,6 +1376,8 @@ class CarlaWorld:
                 actor.capture_callback(SimpleNamespace(
                     frame=self.frame, timestamp=self.time, width=width, height=height,
                     raw_data=bgra.tobytes()))
+        if self.tick_callback is not None:
+            self.tick_callback()
         return self.frame
 
     def reset_all_traffic_lights(self):
@@ -1404,7 +1430,7 @@ class CarlaWorld:
 
 
 class CarlaNativeClient:
-    def __init__(self, config, **world_options):
+    def __init__(self, config, *, batch_callback=None, **world_options):
         map_name = config.get("map_name", "")
         if isinstance(map_name, str) and "/" in map_name:
             raise RuntimeError(f"Map not found: {map_name}")
@@ -1412,6 +1438,7 @@ class CarlaNativeClient:
         self.world = CarlaWorld(config, **world_options)
         self.client = self
         self.command_error = None
+        self.batch_callback = batch_callback
         self.spawn_points = [CarlaTransform(CarlaVector(i * 3, 0, 0)) for i in range(6)]
         self.traffic_manager_port = config.get("traffic_manager_port", 8000)
 
@@ -1435,6 +1462,8 @@ class CarlaNativeClient:
                 results.append(SimpleNamespace(error=error, has_error=lambda error=error: error is not None))
         finally:
             self.world.applying_batch = False
+        if self.batch_callback is not None:
+            self.batch_callback()
         return results
 
     def close(self):
@@ -1453,11 +1482,15 @@ class CarlaNativeBoundary:
     """Registry/client boundary used by the real CARLA simulator, without a server."""
 
     def __init__(self, frame_offset=0, include_rgb=True, ground_height=None, *, ground_offset=(0., 0., 0.),
-                 external_ego_throttle=None, ego_attribute_overrides=None):
+                 external_ego_throttle=None, ego_attribute_overrides=None, tick_callback=None,
+                 batch_callback=None, publish_tf=True, world_settings_overrides=None):
         self.include_rgb = include_rgb
+        self.batch_callback = batch_callback
         self.world_options = dict(frame_offset=frame_offset, ground_height=ground_height,
                                   ground_offset=ground_offset, external_ego_throttle=external_ego_throttle,
-                                  ego_attribute_overrides=ego_attribute_overrides)
+                                  ego_attribute_overrides=ego_attribute_overrides,
+                                  tick_callback=tick_callback, publish_tf=publish_tf,
+                                  world_settings_overrides=world_settings_overrides)
         self.module_dict = {"CarlaMobileActor": CarlaMobileActor, "CarlaRgbCamera": CarlaNativeSensor,
                             "CarlaLidar": CarlaNativeSensor}
 
@@ -1475,7 +1508,8 @@ class CarlaNativeBoundary:
 
     def build(self, config, default_args=None):
         if default_args is None:
-            return CarlaNativeClient(config, **self.world_options)
+            return CarlaNativeClient(
+                config, batch_callback=self.batch_callback, **self.world_options)
         if config["type"] in self.module_dict:
             options = {key: value for key, value in config.items() if key != "type"}
             if "parent" not in default_args:

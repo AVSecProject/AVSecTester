@@ -159,6 +159,32 @@ and physics blending, [scheduling constraints](configuration.md#scheduling) for 
 [driver ingestion](../guides/driving-systems.md#recorded-input-history) for skipped inference,
 and [evaluation](../guides/evaluation.md#built-in-metrics) for decision exclusions.
 
+### CARLA tick pacing
+
+When pacing is enabled, each decision's `telemetry.pacing` lists the ticks in its completed
+interval in execution order. CARLA follows the official Autoware demo's cumulative schedule.
+Before a tick, it waits until the scheduled start. After the tick, it advances the schedule by
+one pacing interval and checks how far the run has fallen behind. Lags up to 50 ms can be
+recovered on subsequent ticks. A lag above 50 ms resets the scheduled start to the current time.
+
+- `sleep_s` is the time spent waiting for the scheduled start.
+- `command_s` is the time spent sending the queued native commands.
+- `world_tick_s` is the duration of the CARLA world's tick call.
+- `framework_s` is the time from the previous world tick's return to the next pacing check.
+  It includes inter-tick capture, driving and recording work.
+- `behind_schedule_s` is the positive lag after the tick and before any resynchronization.
+  It is zero when the tick finishes on or ahead of schedule.
+- `resynchronized` is true when this tick resets the schedule.
+
+The initialization and termination events include `realtime` statistics from the first
+paced hold tick. They report `ticks`, `behind_ticks`, `resynchronizations`,
+`max_behind_schedule_s`, `elapsed_wall_s` and `actual_realtime_factor`. A tick counts toward
+`behind_ticks` when its `behind_schedule_s` is positive. The initialization statistics cover
+setup through the origin. The termination statistics include setup and execution, and
+`realtime.post_origin` covers execution from the origin tick's return. Each group reports
+`world_tick_s`, `framework_s` and `command_s` with `mean`, `p95` and `max` in seconds.
+These values are null when the group has no samples.
+
 ### Control visibility
 
 At a decision boundary, feedback for the preceding interval finishes before `control` is
@@ -438,9 +464,24 @@ decision. NuRec termination includes `ground_contact_failures`, counts by reject
 reason. A run ended by its `terminate_when` predicate records `terminated_by_condition: true`.
 `RunLog.status` distinguishes `completed`, `failed`, `cancelled` and `incomplete` runs.
 
+The CARLA initialization report's `world_settings` records the native synchronization,
+fixed step and substep values, plus `publish_tf` in ROS 2 mode. The report's `motion` describes
+the prescribed motion by actor. An actor with prescribed controls has `control_runs`, a list of
+consecutive runs with `control` and `count` fields. Repeating each control by its count
+recovers the full sequence. An actor with a prescribed trajectory has `trajectory`, which lists
+every prescribed state.
+
 Parquet stores typed scalar and nested values. Large arrays occupy payload shards. Payloads
-publish before referring record parts. Completion metadata publishes last. A crash leaves
-published parts readable and may lose an open part. Readers ignore `*.open` files.
+publish before referring record parts. Snapshots and encoding happen while recording. The
+background writer publishes sealed batches in order. Two batches can wait for the writer.
+Recording blocks when this queue is full. Termination reports the wait in seconds and the
+number of batches that waited as `recording.backpressure_wait_s` and
+`recording.backpressure_batches` for disk-backed logs.
+
+`Recorder.flush()` waits for all submitted batches. Finishing drains the writer before
+publishing completion metadata. A background write failure surfaces on the next recorder
+operation with the original exception as its cause. Aborting discards waiting batches.
+Published parts remain readable and readers ignore `*.open` files.
 
 `SerializationRegistry` handles JSON-compatible encoding and independent in-memory snapshots.
 Registered dataclasses reconstruct on read. Native values decode to ordinary data. Import and

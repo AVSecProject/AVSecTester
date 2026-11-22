@@ -20,6 +20,13 @@ if TYPE_CHECKING:
     from avsectester.maps import ScenarioMap
 
 
+CARLA_CLIENT_SUBSTEP_SETTINGS = ("substepping", "max_substep_delta_time", "max_substeps")
+CARLA_CLIENT_RUNTIME_SETTINGS = frozenset({
+    "connect_ip", "connect_port", "traffic_manager_port", "rate", "synchronous",
+    "seed", "traffic_manager_seed", *CARLA_CLIENT_SUBSTEP_SETTINGS,
+})
+
+
 # A curated set of built-in ``carla.WeatherParameters`` presets for world-level robustness sweeps
 # (pass one as the scenario ``weather`` key). Validation accepts the full native preset set
 # below. This curated sequence gives robustness sweeps a smaller clear-to-adverse spread.
@@ -281,10 +288,7 @@ class CarlaRecipe:
         client = scenario.get("client", {})
         if not isinstance(client, Mapping):
             raise TypeError("Recipe scenario.client must be a mapping")
-        forbidden = set(client) & {
-            "connect_ip", "connect_port", "traffic_manager_port", "rate", "synchronous",
-            "seed", "traffic_manager_seed",
-        }
+        forbidden = set(client) & CARLA_CLIENT_RUNTIME_SETTINGS
         if forbidden:
             raise ValueError(
                 "Recipe client contains simulator runtime settings: " + ", ".join(sorted(forbidden))
