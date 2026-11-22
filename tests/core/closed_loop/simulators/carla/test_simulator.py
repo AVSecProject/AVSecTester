@@ -13,7 +13,7 @@ from avsectester.closed_loop.simulators.base import Initialization
 from avsectester.closed_loop.timing import HistoryRequirement, SensorTiming, TimingConfiguration
 from avsectester.datasets.carla import CarlaDataset, PrescribedMotion
 from avsectester.data_types import ActorState, Control, Observation
-from tests.fakes import CarlaNativeBoundary
+from tests.fakes import CarlaNativeBoundary, FakeExternalDrivingSystem
 
 
 def test_capture_alignment(monkeypatch, carla_dataset):
@@ -395,6 +395,122 @@ def test_external_ego_control(monkeypatch, carla_dataset, make_object_in_front):
         simulator.validate_start(carla_dataset.scenario_start("scene", carla_dataset.frames("scene")[0]))
     with pytest.raises(ValueError, match="exclusively controls the ego"):
         simulator.validate_timing(TimingConfiguration(force_gt_duration_us=100000))
+
+
+@pytest.fixture
+def hosted_start(monkeypatch, carla_dataset):
+    CarlaNativeBoundary().install(monkeypatch, None)
+    recipe = carla_dataset.native("scene")
+    scenario = deepcopy(recipe.scenario)
+    scenario["ego"]["blueprint_attributes"] = {"role_name": "ego", "ros2_autoware_control": True}
+    scenario["ego_goal"] = {"x": 4., "y": -6., "yaw_deg": -10.}
+    dataset = CarlaDataset({"scene": replace(recipe, scenario=scenario)})
+    frames = dataset.frames("scene")
+    return dataset.scenario_start("scene", frames[0]), frames[:2]
+
+
+def _hosted_simulator(system):
+    return CarlaSimulator({"rate": 10, "connect_ip": "localhost", "connect_port": 24880},
+                          ground_settle_s=0., camera_warmup_s=0., ego_control="ros2",
+                          realtime_factor=100., external_driving_system=system)
+
+
+def test_hosted_driver_lifecycle(hosted_start):
+    start, frames = hosted_start
+    system = FakeExternalDrivingSystem(ready_at_s=.8)
+    settings = _hosted_simulator(system)
+    with settings.create_runtime() as runtime:
+        source = runtime.generate_frame_data(start, frames)
+        initialization = Initialization(source.at(frames[0]), source.resolved_scenario,
+                                        source.provenance)
+        runtime.start_replay(start, initialization)
+        assert not system.sessions
+        runtime.reset(start, initialization, closed_loop_run=True)
+        session = system.sessions[-1]
+        report = runtime.initialization_report["external_driving_system"]
+        assert report["ready_s"] >= .8
+        assert report["engaged_s"] == runtime.clock.t
+        assert report["engaged_s"] > report["ready_s"]
+        assert session.context.host == "localhost" and session.context.port == 24880
+        assert session.context.ego_goal == {"x": 4., "y": -6., "yaw_deg": -10.}
+        np.testing.assert_array_equal(session.pose, runtime.state().ego.pose)
+        runtime.step(None)
+        assert runtime.decision_telemetry()["external_driving_system"] == {"mode": "AUTONOMOUS"}
+    assert runtime.termination_details["external_driving_system"]["stopped"]
+    assert settings.identity["external_driving_system"] == {
+        "type": "FakeExternalDrivingSystem", "ready_at_s": .8,
+    }
+    failing_system = FakeExternalDrivingSystem(startup_error="Driver startup timed out")
+    with pytest.raises(TimeoutError, match="Driver startup timed out"):
+        with _hosted_simulator(failing_system).create_runtime() as failed:
+            failed.reset(start, initialization, closed_loop_run=True)
+    assert failed.termination_details["external_driving_system"]["stopped"]
+    failing_system = FakeExternalDrivingSystem(run_error="Driver disconnected")
+    with pytest.raises(RuntimeError, match="Driver disconnected"):
+        with _hosted_simulator(failing_system).create_runtime() as failed:
+            failed.reset(start, initialization, closed_loop_run=True)
+            failed.step(None)
+    assert failed.termination_details["external_driving_system"]["stopped"]
+    resolved = deepcopy(initialization.resolved_scenario)
+    resolved["client"]["reset_world"] = False
+    with _hosted_simulator(system).create_runtime() as unreloaded:
+        with pytest.raises(ValueError, match="requires client.reset_world"):
+            unreloaded.reset(start, replace(initialization, resolved_scenario=resolved),
+                             closed_loop_run=True)
+    with pytest.raises(ValueError, match="external_startup_s applies only without"):
+        CarlaSimulator({"rate": 10}, ego_control="ros2", realtime_factor=1.,
+                       external_startup_s=1., external_driving_system=system)
+
+
+def test_traffic_light_origin_after_readiness_hold(hosted_start):
+    start, frames = hosted_start
+    system = FakeExternalDrivingSystem(ready_at_s=1.)
+    with _hosted_simulator(system).create_runtime() as runtime:
+        source = runtime.generate_frame_data(start, frames)
+        expected = source.at(frames[0])
+        reference = Initialization(expected, source.resolved_scenario, source.provenance)
+        runtime.reset(start, reference, closed_loop_run=True)
+        prepared = expected.provenance["traffic_lights"]
+        assert runtime.clock.t >= 1.
+        assert runtime.clock.t > expected.provenance["native_timestamp"]
+        assert runtime.initialization_report["actual"]["traffic_lights"] == prepared
+        altered = {**expected.provenance, "traffic_lights": {
+            "signal-1": {**prepared["signal-1"], "elapsed_s": 2.},
+        }}
+        with pytest.raises(RuntimeError, match="traffic light 'signal-1' phase differs"):
+            runtime.reset(start, replace(reference, expected=replace(expected, provenance=altered)),
+                          closed_loop_run=True)
+
+
+def test_ros_rig_uses_native_attachments_and_ticks(monkeypatch, carla_dataset):
+    CarlaNativeBoundary().install(monkeypatch, None)
+    recipe = carla_dataset.native("scene")
+    scenario = deepcopy(recipe.scenario)
+    transform = {"location": {"x": .9, "y": 0., "z": 2.},
+                 "rotation": {"pitch": 0., "yaw": 0., "roll": 0.}}
+    rig = scenario["ego"]["ros_rig"] = [
+        {"name": "base", "parent": "ego", "blueprint": "util.actor.empty",
+         "blueprint_attributes": {"ros_name": "sensor_kit_base_link"},
+         "transform": transform, "ros": False},
+        {"name": "lidar", "parent": "base", "blueprint": "sensor.lidar.ray_cast",
+         "blueprint_attributes": {"sensor_tick": .1, "ros_name": "lidar"},
+         "transform": transform, "ros": True},
+    ]
+    dataset = CarlaDataset({"scene": replace(recipe, scenario=scenario)})
+    start = dataset.scenario_start("scene", dataset.frames("scene")[0])
+    with CarlaSimulator({"rate": 10}).create_runtime() as runtime:
+        runtime.reset(start)
+        native = runtime.native
+        world, ego = native["world"], native["ego"].actor
+        base = next(actor for actor in world.get_actors() if actor.type_id == "util.actor.empty")
+        lidar = next(actor for actor in world.get_actors() if actor.type_id == "sensor.lidar.ray_cast")
+        assert base.attached_to.id == ego.id and lidar.attached_to.id == base.id
+        assert base.attributes["ros_name"] == "sensor_kit_base_link" and not base.ros_enabled
+        assert lidar.attributes == {"sensor_tick": "0.1", "ros_name": "lidar"}
+        assert lidar.ros_enabled and lidar.get_transform().location.z == 2.
+        assert runtime.sensors == {"front"} and "lidar" not in runtime.observe().sensor_data
+        assert runtime.replay_scenario["ego"]["ros_rig"] == rig
+    assert world.destroyed_ids == [lidar.id, base.id, ego.id]
 
 
 @pytest.fixture

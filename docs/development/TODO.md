@@ -130,8 +130,10 @@ See [NuRec LiDAR](../guides/simulators.md#lidar) for supported capture behavior.
 ## Apollo and Autoware driving systems
 
 - [ ] Supply an `AVStack` adapter for Baidu Apollo.
-- [ ] Adapt Autoware through native ROS 2 hosting. A collaborator owns the sensor, control-topic,
-  map and background-traffic integration.
+- [x] Host Autoware in LiDAR mode on CARLA through native ROS 2.
+- [ ] Add Autoware camera fusion, including forwarding the required image topics.
+- [ ] Generate Autoware maps for additional CARLA towns.
+- [ ] Evaluate repeated Autoware runs and the distribution of their outcomes.
 
 ## Native ROS 2 sensor attacks
 

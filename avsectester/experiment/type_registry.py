@@ -34,6 +34,7 @@ _BUILTINS = {
     "NuRecDataset": "avsectester.datasets.nurec:NuRecDataset",
     "NuScenesDataset": "avsectester.datasets.nuscenes:NuScenesDataset",
     "CarlaSimulator": "avsectester.closed_loop.simulators.carla:CarlaSimulator",
+    "AutowareDrivingSystem": "avsectester.closed_loop.simulators.carla.autoware:AutowareDrivingSystem",
     "NuRecSimulator": "avsectester.closed_loop.simulators.nurec:NuRecSimulator",
     "RecordedReplaySimulator": "avsectester.closed_loop.simulators.recorded:RecordedReplaySimulator",
     "ModularAVStack": "avsectester.closed_loop.avstacks.implemented.modular:ModularAVStack",

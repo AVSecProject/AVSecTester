@@ -285,6 +285,26 @@ def test_carla_recipe():
         CarlaRecipe({"ego": {}, "client": {"seed": 1}}, 2, .1, recipe.motion)
 
 
+def test_carla_recipe_ros_configuration():
+    transform = {"location": {"x": 0., "y": 0., "z": 2.},
+                 "rotation": {"pitch": 0., "yaw": 0., "roll": 0.}}
+    rig = [
+        {"name": "base", "parent": "ego", "blueprint": "util.actor.empty",
+         "transform": transform, "ros": False},
+        {"name": "lidar", "parent": "base", "blueprint": "sensor.lidar.ray_cast",
+         "transform": transform, "blueprint_attributes": {"sensor_tick": .1}, "ros": True},
+    ]
+    goal = {"x": -1.16, "y": -28.37, "yaw_deg": -.16}
+    motion = {"ego": PrescribedMotion(constant_control=Control(brake=1.))}
+    recipe = CarlaRecipe({"ego": {"ros_rig": rig}, "ego_goal": goal}, 2, .1, motion)
+    assert recipe.scenario["ego"]["ros_rig"] == rig
+    assert recipe.scenario["ego_goal"] == goal
+    with pytest.raises(ValueError, match="earlier rig actor"):
+        CarlaRecipe({"ego": {"ros_rig": list(reversed(rig))}}, 2, .1, motion)
+    with pytest.raises(ValueError, match=r"ego_goal\.yaw_deg.*finite"):
+        CarlaRecipe({"ego": {}, "ego_goal": {**goal, "yaw_deg": float("nan")}}, 2, .1, motion)
+
+
 def test_frame_reference():
     reference = FrameReference("scene", 2, "native-2", .2)
     assert reference.scenario_id == "scene" and reference.position == 2

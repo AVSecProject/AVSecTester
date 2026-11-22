@@ -23,6 +23,7 @@ services:
     depends_on: [carla-server]
     network_mode: host
     user: "${AVSECTESTER_UID:?Run scripts/preparation/write_compose_env.sh}:${AVSECTESTER_GID:?Run scripts/preparation/write_compose_env.sh}"
+    group_add: ["${DOCKER_GID:?Run scripts/preparation/write_compose_env.sh}"]
     environment:
       - NVIDIA_VISIBLE_DEVICES=${CARLA_EXPERIMENT_GPU:-0}
       - PYTHONPATH=${AVSECTESTER_ROOT:?Run scripts/preparation/write_compose_env.sh}
@@ -30,6 +31,8 @@ services:
     volumes:
       - "${AVSECTESTER_ROOT:?Run scripts/preparation/write_compose_env.sh}:${AVSECTESTER_ROOT:?Run scripts/preparation/write_compose_env.sh}"
       - ./models:/app/models          # share fetched weights with the host
+      - /var/run/docker.sock:/var/run/docker.sock
+      - "${DOCKER_CLI:?Run scripts/preparation/write_compose_env.sh}:/usr/bin/docker:ro"
     working_dir: "${AVSECTESTER_ROOT:?Run scripts/preparation/write_compose_env.sh}"
     stdin_open: true
     tty: true

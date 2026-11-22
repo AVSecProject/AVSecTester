@@ -55,13 +55,16 @@
 | L2 | [`avsectester.closed_loop.avstacks.implemented.modules.stack`](#avsectesterclosed_loopavstacksimplementedmodulesstack) |
 | L2 | [`avsectester.closed_loop.avstacks.implemented.modules.tracker`](#avsectesterclosed_loopavstacksimplementedmodulestracker) |
 | L2 | [`avsectester.closed_loop.avstacks.implemented.scorers`](#avsectesterclosed_loopavstacksimplementedscorers) |
+| L2 | [`avsectester.closed_loop.docker_containers`](#avsectesterclosed_loopdocker_containers) |
 | L2 | [`avsectester.closed_loop.environment`](#avsectesterclosed_loopenvironment) |
 | L2 | [`avsectester.closed_loop.hooks`](#avsectesterclosed_loophooks) |
 | L2 | [`avsectester.closed_loop.sensor_corruptions`](#avsectesterclosed_loopsensor_corruptions) |
 | L2 | [`avsectester.closed_loop.simulators`](#avsectesterclosed_loopsimulators) |
 | L2 | [`avsectester.closed_loop.simulators.base`](#avsectesterclosed_loopsimulatorsbase) |
 | L2 | [`avsectester.closed_loop.simulators.carla`](#avsectesterclosed_loopsimulatorscarla) |
+| L2 | [`avsectester.closed_loop.simulators.carla.autoware`](#avsectesterclosed_loopsimulatorscarlaautoware) |
 | L2 | [`avsectester.closed_loop.simulators.carla.conversions`](#avsectesterclosed_loopsimulatorscarlaconversions) |
+| L2 | [`avsectester.closed_loop.simulators.carla.external_driving_system`](#avsectesterclosed_loopsimulatorscarlaexternal_driving_system) |
 | L2 | [`avsectester.closed_loop.simulators.carla.sensors`](#avsectesterclosed_loopsimulatorscarlasensors) |
 | L2 | [`avsectester.closed_loop.simulators.carla.simulator`](#avsectesterclosed_loopsimulatorscarlasimulator) |
 | L2 | [`avsectester.closed_loop.simulators.ego_dynamics`](#avsectesterclosed_loopsimulatorsego_dynamics) |
@@ -75,6 +78,7 @@
 | L2 | [`avsectester.closed_loop.simulators.recorded`](#avsectesterclosed_loopsimulatorsrecorded) |
 | L2 | [`avsectester.closed_loop.timing`](#avsectesterclosed_looptiming) |
 | L3 | [`avsectester.attack`](#avsectesterattack) |
+| L3 | [`avsectester.attack.actor_actions`](#avsectesterattackactor_actions) |
 | L3 | [`avsectester.attack.attack`](#avsectesterattackattack) |
 | L3 | [`avsectester.attack.insertion`](#avsectesterattackinsertion) |
 | L3 | [`avsectester.attack.insertion.action`](#avsectesterattackinsertionaction) |
@@ -104,6 +108,8 @@
 | L5 | [`avsectester.evaluation.report`](#avsectesterevaluationreport) |
 | L5 | [`avsectester.evaluation.visualization`](#avsectesterevaluationvisualization) |
 | L6 | [`avsectester.implemented_attacks`](#avsectesterimplemented_attacks) |
+| L6 | [`avsectester.implemented_attacks.actor_relocation_attack`](#avsectesterimplemented_attacksactor_relocation_attack) |
+| L6 | [`avsectester.implemented_attacks.actor_relocation_attack.attack`](#avsectesterimplemented_attacksactor_relocation_attackattack) |
 | L6 | [`avsectester.implemented_attacks.object_insertion_attack`](#avsectesterimplemented_attacksobject_insertion_attack) |
 | L6 | [`avsectester.implemented_attacks.object_insertion_attack.assets`](#avsectesterimplemented_attacksobject_insertion_attackassets) |
 | L6 | [`avsectester.implemented_attacks.object_insertion_attack.attack`](#avsectesterimplemented_attacksobject_insertion_attackattack) |
@@ -1445,6 +1451,19 @@ center lies inside it.
 
 [Driving systems](../guides/driving-systems.md).
 
+### avsectester.closed_loop.docker_containers
+
+<!-- api:begin module=avsectester.closed_loop.docker_containers -->
+Manage local service containers through the Docker command-line interface.
+
+| Name and signature | Meaning |
+|---|---|
+| `launch_container(command: list[str], name: str, *, prepare: Callable[[], Any] \| None = None) -> str` | Run detached Docker argv under unique ownership labels and return its container ID. |
+| `remove_exited_container(name: str) -> bool` | Remove a stopped container that this user's earlier AVSecTester start left under `name`. |
+| `start_container(command: list[str], *, name: str, ready_log: str, timeout_s: float, readiness: Callable[[float], Any] \| None = None, prepare: Callable[[], Any] \| None = None, log: Callable[[str], Any]) -> str` | Start an absent local container and return its immutable Docker identity. |
+| `stop_container(name: str) -> None` | Stop and remove one explicitly named container, reporting either failure. |
+<!-- api:end -->
+
 ### avsectester.closed_loop.environment
 
 <!-- api:begin module=avsectester.closed_loop.environment -->
@@ -1858,11 +1877,26 @@ CARLA simulator configuration and live-world runtime.
 |---|---|
 | `CarlaSimulator` | [CarlaSimulator](#avsectesterclosed_loopsimulatorscarlasimulator) |
 | `CarlaSimulatorRuntime` | [CarlaSimulatorRuntime](#avsectesterclosed_loopsimulatorscarlasimulator) |
+| `ExternalDrivingContext` | [ExternalDrivingContext](#avsectesterclosed_loopsimulatorscarlaexternal_driving_system) |
+| `ExternalDrivingSession` | [ExternalDrivingSession](#avsectesterclosed_loopsimulatorscarlaexternal_driving_system) |
+| `ExternalDrivingSystem` | [ExternalDrivingSystem](#avsectesterclosed_loopsimulatorscarlaexternal_driving_system) |
 <!-- api:end -->
 
 #### See also
 
 [Simulators](../guides/simulators.md).
+
+### avsectester.closed_loop.simulators.carla.autoware
+
+<!-- api:begin module=avsectester.closed_loop.simulators.carla.autoware -->
+Autoware lifecycle hosting for native CARLA ROS 2.
+
+| Name and signature | Meaning |
+|---|---|
+| `AutowareDrivingSystem(*, gpu: int, ros_domain_id: int, autoware_data_directory: str \| Path, assets_directory: str \| Path, dds_directory: str \| Path, work_directory: str \| Path, image: str = _DEFAULT_IMAGE, launch_arguments: Mapping[str, str \| int \| float \| bool] \| None = None, startup_timeout_s: float = 300.0, engage_timeout_s: float = 10.0, localization_tolerance_m: float = 0.5, localization_tolerance_deg: float = 5.0, distortion_check_s: float = 12.0)` | Host a local Autoware image as a separate container for each CARLA run. |
+| `AutowareDrivingSystem.identity: dict[str, Any]` | Return result-affecting Autoware settings for preparation compatibility. |
+| `AutowareDrivingSystem.start(context: ExternalDrivingContext) -> ExternalDrivingSession` | Start one Autoware session asynchronously and return its readiness interface. |
+<!-- api:end -->
 
 ### avsectester.closed_loop.simulators.carla.conversions
 
@@ -1877,6 +1911,26 @@ Convert native CARLA actors, signal states and rotations to canonical world reco
 #### See also
 
 [Simulators](../guides/simulators.md).
+
+### avsectester.closed_loop.simulators.carla.external_driving_system
+
+<!-- api:begin module=avsectester.closed_loop.simulators.carla.external_driving_system -->
+Lifecycle of a driving system hosted beside a CARLA world.
+
+| Name and signature | Meaning |
+|---|---|
+| `ExternalDrivingContext(host: str, port: int, map_name: str, ego_goal: Mapping[str, float], tick_hz: float)` | Running server, canonical-world goal and native tick rate for one session. |
+| `ExternalDrivingSession` | One hosted driving system's live session. |
+| `ExternalDrivingSession.poll(ego_pose: np.ndarray, sim_time: float) -> bool` | Advance readiness without blocking. Raise if startup fails or times out. |
+| `ExternalDrivingSession.engage() -> None` | Request control at the first capture without blocking. |
+| `ExternalDrivingSession.check() -> None` | Raise if engagement or the running system fails. |
+| `ExternalDrivingSession.telemetry() -> Mapping[str, Any]` | Return the latest driver state for a decision record. |
+| `ExternalDrivingSession.report() -> Mapping[str, Any]` | Return detached session evidence, available after stop. |
+| `ExternalDrivingSession.stop() -> None` | Release all session resources. Repeated calls are safe. |
+| `ExternalDrivingSystem` | Reusable configuration for a hosted native ROS 2 driver. |
+| `ExternalDrivingSystem.identity: Mapping[str, Any]` | Settings that affect the prepared reference and run results. |
+| `ExternalDrivingSystem.start(context: ExternalDrivingContext) -> ExternalDrivingSession` | Create a new session and begin startup without blocking CARLA ticks. |
+<!-- api:end -->
 
 ### avsectester.closed_loop.simulators.carla.sensors
 
@@ -1902,7 +1956,7 @@ Configured CARLA simulations and their live native-world runtimes.
 
 | Name and signature | Meaning |
 |---|---|
-| `CarlaSimulator(client: dict, settle_iters: int = 100, *, simulator_version="1.0", depth_camera: str \| None = None, occlusion_tolerance_m: float = 0.1, decision_period_us: int \| None = None, camera_warmup_s: float = 4.0, ground_settle_s: float = 2.0, ego_control: str = "framework", realtime_factor: float \| None = None, external_startup_s: float = 0.0)` | Subclass of `Simulator`. CARLA runtime settings, with scene content supplied by a dataset recipe. |
+| `CarlaSimulator(client: dict, settle_iters: int = 100, *, simulator_version="1.0", depth_camera: str \| None = None, occlusion_tolerance_m: float = 0.1, decision_period_us: int \| None = None, camera_warmup_s: float = 4.0, ground_settle_s: float = 2.0, ego_control: str = "framework", realtime_factor: float \| None = None, external_startup_s: float = 0.0, external_driving_system: ExternalDrivingSystem \| None = None)` | Subclass of `Simulator`. CARLA runtime settings, with scene content supplied by a dataset recipe. |
 | `CarlaSimulator.dataset_kinds = ("CarlaDataset",)` | Dataset kinds supported by this simulator. |
 | `CarlaSimulator.capture_ticks = 1` | Simulator ticks consumed by a sensor capture. |
 | `CarlaSimulator.can_render = True` | Whether arbitrary-view rendering is supported. |
@@ -1916,7 +1970,7 @@ Configured CARLA simulations and their live native-world runtimes.
 | `CarlaSimulator.can_start_runs_after_origin: bool` | Allow a closed-loop start after the scene origin only under framework control. |
 | `CarlaSimulatorRuntime(simulator: CarlaSimulator, seed: int \| None = None)` | Subclass of `SimulatorRuntime`. One live CARLA world of a `CarlaSimulator`. |
 | `CarlaSimulatorRuntime.can_insert_objects: bool` | Allow framework-composited objects outside native external-control runs. |
-| `CarlaSimulatorRuntime.termination_details: Mapping[str, Any]` | Record final tick pacing statistics when the run is paced. |
+| `CarlaSimulatorRuntime.termination_details: Mapping[str, Any]` | Record tick pacing and hosted driving-system evidence when available. |
 | `CarlaSimulatorRuntime.native: dict[str, Any]` | Borrow native resources, invalidating cached truth before possible edits. |
 | `CarlaSimulatorRuntime.copy_observation(observation: Observation) -> Observation` | Detach mutable payloads, calibration and reference graphs in one copy operation. |
 | `CarlaSimulatorRuntime.interpolate_vehicle_state(left: Any, right: Any, fraction: float, time_us: int) -> Any` | Interpolate native avstack physical vectors and attitude. |
@@ -2301,6 +2355,18 @@ Attack contracts, runtime actions and structured offline reports.
 #### See also
 
 [Implement an attack](../guides/attacks.md).
+
+### avsectester.attack.actor_actions
+
+<!-- api:begin module=avsectester.attack.actor_actions -->
+World actions that operate on actors already in the simulator.
+
+| Name and signature | Meaning |
+|---|---|
+| `SetActorState(actor_id: str, state: ActorState)` | Subclass of `WorldAttackAction`. Set the world pose and velocity of an existing non-ego actor. |
+| `SetActorState.apply(simulator_runtime: SimulatorRuntime, resources: ExitStack) -> None` | Apply the actor state using the simulator's native motion interface. |
+| `SetActorState.receipt_details() -> Mapping[str, Any]` | Return the actor ID, world-frame pose and velocity that were requested. |
+<!-- api:end -->
 
 ### avsectester.attack.attack
 
@@ -3099,6 +3165,26 @@ No exports. Import from submodules.
 #### See also
 
 [Implement an attack](../guides/attacks.md).
+
+### avsectester.implemented_attacks.actor_relocation_attack
+
+<!-- api:begin module=avsectester.implemented_attacks.actor_relocation_attack -->
+Relocate an existing non-ego actor at a closed-loop decision.
+
+| Name and signature | Meaning |
+|---|---|
+| `ActorRelocationAttack` | [ActorRelocationAttack](#avsectesterimplemented_attacksactor_relocation_attackattack) |
+<!-- api:end -->
+
+### avsectester.implemented_attacks.actor_relocation_attack.attack
+
+<!-- api:begin module=avsectester.implemented_attacks.actor_relocation_attack.attack -->
+Select the scene origin and configure an online actor relocation.
+
+| Name and signature | Meaning |
+|---|---|
+| `ActorRelocationAttack(actor_id: str, x: float, y: float, z: float, yaw_deg: float, decision: int)` | Subclass of `Attack`. Move a non-ego actor instantly at the given zero-based decision. |
+<!-- api:end -->
 
 ### avsectester.implemented_attacks.object_insertion_attack
 

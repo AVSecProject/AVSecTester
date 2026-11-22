@@ -100,6 +100,51 @@ The external system needs network access to the server's ROS 2 topics. Configure
 `ExternalAVStack` in the experiment and see
 [native ROS 2 control](../guides/simulators.md#native-ros-2-control) for runtime behavior.
 
+#### Managed Autoware
+
+Use the pinned Autoware 1.9.0 image on the Docker host:
+
+```text
+ghcr.io/autowarefoundation/autoware@sha256:1db2988caa5dc5bae41548a8d556d0b57f55eb4dd63685426d94fd9c7a786034
+```
+
+Prepare model data with the CARLA package's official installer. Run this from
+`PythonAPI/examples/av_stacks/autoware` in the CARLA package:
+
+```bash
+./install/install_autoware.sh --docker --distro jazzy --version 1.9.0
+```
+
+Point `autoware_data_directory` to the host directory containing `ml_models`. Autoware
+writes TensorRT caches to this directory as root. The framework uses the local image.
+
+Choose an unused ROS domain and prepare the bridge and assets from the checkout:
+
+```bash
+scripts/preparation/setup_carla_ros2_network.sh 94
+scripts/preparation/extract_carla_autoware_assets.sh
+```
+
+The network script prints the `.env` entries for CARLA and writes DDS profiles under
+`data/carla_ros2`. An idle container keeps the user-owned bridge active.
+The extraction script verifies official CARLA assets under `data/carla_autoware`. It also
+writes the camera profile that the official demo generates for its ROS cameras.
+Keep the assets, DDS profiles and per-run work directory under the checkout so the
+experiment process and Docker host see matching paths.
+
+Set the printed values in `.env` and configure the same ROS domain in the experiment.
+Start Compose with the DDS overlay and the Autoware overlay, which mounts the camera profile
+into the server:
+
+```bash
+compose="docker compose -f docker-compose.yml -f docker-compose.ros2.yml -f docker-compose.autoware.yml"
+$compose up -d carla-experiment
+$compose exec carla-experiment avsectester run configs/carla_autoware.yaml
+```
+
+Without the profile, cameras that request it fall back silently to CARLA's appearance for an
+unknown profile.
+
 ### CARLA map packs
 
 `Town10HD_Opt` is included in the server image. `Town03_Opt` requires the matching

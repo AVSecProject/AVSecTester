@@ -191,6 +191,11 @@ replacement, and `AVStackAttackAction` for a driving-system stage value. The
 For insertion, `InsertObject` and `MoveObject` are world actions. `InsertionAttackAction` is a
 `SensorAttackAction`. Object coordinates use +X forward, +Y left and +Z up.
 
+`ActorRelocationAttack` validates the world-action path by instantly moving an existing
+non-ego actor to a fixed pose with zero velocity. See the
+[managed Autoware example](../examples/README.md) and
+[`SetActorState` receipts](../reference/runtime.md#runlog).
+
 Placement tools belong to `attack.insertion`, not the dataset. A `SensorView` supplies camera
 geometry, actor poses and available depth for sensor composition. See
 [Image insertion](../examples/image-insertion.md) and

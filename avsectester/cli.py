@@ -5,15 +5,18 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 import shlex
+import shutil
 from typing import Any, NoReturn, TYPE_CHECKING
 
 import typer
 import yaml  # type: ignore[import-untyped]
 
 from avsectester import __version__
+from avsectester.closed_loop.docker_containers import (
+    remove_exited_container, start_container, stop_container,
+)
 from avsectester.closed_loop.simulators.nurec.server import (
-    DEFAULT_NRE_IMAGE, DEFAULT_TRAFFIC_IMAGE, local_services, remove_exited_container,
-    start_container, stop_container,
+    DEFAULT_NRE_IMAGE, DEFAULT_TRAFFIC_IMAGE, local_services,
 )
 from avsectester.experiment import (
     ConfigurationMismatchError, Experiment, ExperimentConfiguration, ExperimentResult,
@@ -284,6 +287,10 @@ def _start_service(command: list[str], *, name: str, service: str, timeout: floa
     if dry_run:
         typer.echo(shlex.join(command))
         return
+    if shutil.which("docker") is None:
+        typer.echo(f"{service} startup error: Docker is not available on PATH; "
+                   "use --dry-run to print the command", err=True)
+        raise typer.Exit(1)
     try:
         if remove_exited_container(name):
             typer.echo(f"Removed exited {service} container: {name}")

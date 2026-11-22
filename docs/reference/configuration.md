@@ -254,13 +254,15 @@ CARLA initialization and external-control options are:
 |---|---|---|
 | `camera_warmup_s` | `4.0` | Nonnegative RGB-camera warmup duration |
 | `ground_settle_s` | `2.0` | Nonnegative duration for vehicles to settle before holding |
-| `external_startup_s` | `0.0` | Nonnegative hold duration for an external driving system |
+| `external_startup_s` | `0.0` | Nonnegative fixed hold duration for an unmanaged external system |
 | `ego_control` | `"framework"` | `"framework"` or `"ros2"` |
 | `realtime_factor` | `null` | Positive simulation-time to wall-time ratio for pacing closed-loop runs, required for `"ros2"` |
+| `external_driving_system` | `null` | Lifecycle plugin for `ego_control: ros2` |
 
 The three durations must each correspond to an integer number of ticks at `client.rate`.
-RGB-camera warmup is omitted when the recipe has no RGB camera. The pre-origin hold uses the
-larger of the applicable camera warmup and `external_startup_s`. See
+RGB-camera warmup is omitted when the recipe has no RGB camera. The hold uses the larger of the
+applicable camera warmup and `external_startup_s`. An `external_driving_system` then extends it
+until its session is ready, so it cannot be combined with `external_startup_s`. See
 [CARLA initialization](../guides/simulators.md#carla).
 
 In `"ros2"` mode, use `ExternalAVStack` and set the ego blueprint's `role_name` to
@@ -290,6 +292,40 @@ ego:
 Set a camera's `post_process_profile` through its `blueprint_attributes` mapping. The framework
 does not choose a profile when the attribute is omitted.
 `simulator_version` defaults to `"1.0"` and participates in saved-preparation compatibility.
+
+#### Managed CARLA driving systems
+
+`scenario.ego_goal` supplies `x`, `y` and `yaw_deg` in the framework world frame. It uses meters
+and degrees. These values are already in Autoware map coordinates.
+
+`scenario.ego.ros_rig` lists attached actors separate from framework sensors. Each entry declares
+a unique `name`, a `blueprint` and a `parent` of `ego` or an earlier entry. Its `transform`
+contains `location: {x, y, z}` and `rotation: {pitch, yaw, roll}` in native CARLA coordinates
+relative to the parent. Use `blueprint_attributes` for native attributes, including
+`sensor_tick`, and `ros: true` to enable ROS publication.
+
+Configure `AutowareDrivingSystem` under `external_driving_system`:
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `image` | Pinned Autoware 1.9.0 image | Local Docker image. See [Installation](../getting-started/installation.md#managed-autoware) |
+| `gpu` | required | Host GPU index |
+| `ros_domain_id` | required | Domain used by the CARLA server |
+| `autoware_data_directory` | required | Writable model directory on the Docker host |
+| `assets_directory` | required | Extracted official CARLA Autoware assets |
+| `dds_directory` | required | Directory containing `cyclonedds.xml` |
+| `work_directory` | required | Per-run logs and traffic signal files |
+| `launch_arguments` | `vehicle_model: sample_vehicle`, `sensor_model: awsim_sensor_kit`, `perception_mode: lidar` | Autoware launch arguments to override or extend |
+| `startup_timeout_s` | `300.0` | Positive readiness timeout in wall seconds |
+| `engage_timeout_s` | `10.0` | Positive autonomous-mode timeout in simulation seconds |
+| `localization_tolerance_m` | `0.5` | Maximum planar localization error in meters |
+| `localization_tolerance_deg` | `5.0` | Maximum localization heading error in degrees |
+| `distortion_check_s` | `12.0` | Diagnostic check window in wall seconds |
+
+The plugin fixes `simulator_type`, `launch_simulator_interface`, `rviz` and `map_path`.
+Preparation compatibility includes the image, launch arguments, configuration override version,
+check thresholds and timeouts. See
+[managed runtime behavior](../guides/simulators.md#managed-external-driving-systems).
 
 ### NuRec closed-loop settings
 

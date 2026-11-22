@@ -1037,6 +1037,7 @@ class CarlaActor:
 
     def destroy(self):
         self.destroyed = True
+        self.world.destroyed_ids.append(self.id)
 
 
 class CarlaTrafficLight(CarlaActor):
@@ -1044,6 +1045,7 @@ class CarlaTrafficLight(CarlaActor):
         super().__init__(world, actor_id, "traffic.traffic_light")
         self.signal_id = signal_id
         self.state = state
+        self.elapsed_s = 0.
 
     def get_opendrive_id(self):
         return self.signal_id
@@ -1053,6 +1055,69 @@ class CarlaTrafficLight(CarlaActor):
 
     def set_state(self, state):
         self.state = state
+
+    def get_elapsed_time(self):
+        return self.elapsed_s
+
+
+class FakeExternalDrivingSystem:
+    """A hosted driver with simulated readiness and a detached lifecycle report."""
+
+    def __init__(self, ready_at_s=.7, *, startup_error=None, run_error=None):
+        self.ready_at_s = ready_at_s
+        self.startup_error = startup_error
+        self.run_error = run_error
+        self.sessions = []
+
+    @property
+    def identity(self):
+        return {"ready_at_s": self.ready_at_s}
+
+    def start(self, context):
+        session = FakeExternalDrivingSession(context, self.ready_at_s, self.startup_error,
+                                             self.run_error)
+        self.sessions.append(session)
+        return session
+
+
+class FakeExternalDrivingSession:
+    def __init__(self, context, ready_at_s, startup_error, run_error):
+        self.context = context
+        self.ready_at_s = ready_at_s
+        self.startup_error = startup_error
+        self.run_error = run_error
+        self.ready_s = self.engaged_s = None
+        self.sim_time = None
+        self.pose = None
+        self.advanced = self.stopped = False
+
+    def poll(self, ego_pose, sim_time):
+        self.pose = ego_pose.copy()
+        self.sim_time = sim_time
+        if self.sim_time < self.ready_at_s:
+            return False
+        if self.startup_error:
+            raise TimeoutError(self.startup_error)
+        if self.ready_s is None:
+            self.ready_s = sim_time
+        return True
+
+    def engage(self):
+        self.engaged_s = self.sim_time
+
+    def check(self):
+        if self.run_error:
+            raise RuntimeError(self.run_error)
+        self.advanced = True
+
+    def telemetry(self):
+        return {"mode": "AUTONOMOUS" if self.advanced else "STOP"}
+
+    def report(self):
+        return {"ready_s": self.ready_s, "engaged_s": self.engaged_s, "stopped": self.stopped}
+
+    def stop(self):
+        self.stopped = True
 
 
 class CarlaSensorManager:
@@ -1208,8 +1273,9 @@ class CarlaBlueprint:
         self.attributes[name] = str(value)
 
     def has_attribute(self, name):
-        return name in {"role_name", "ros_name", "ros2_ackermann_control", "post_process_profile",
-                        "image_size_x", "image_size_y", "fov", "sensor_tick", "mass", "mesh_path"}
+        return name in {"role_name", "ros_name", "ros_topic_name", "ros2_ackermann_control",
+                        "ros2_autoware_control", "post_process_profile", "image_size_x", "image_size_y",
+                        "fov", "sensor_tick", "mass", "mesh_path"}
 
 
 class CarlaWorld:
@@ -1228,6 +1294,8 @@ class CarlaWorld:
         self.ego_attribute_overrides = ego_attribute_overrides or {}
         self.command_events = []
         self.direct_actor_updates = []
+        self.destroyed_ids = []
+        self.traffic_reset_pending = False
         self.applying_batch = False
 
     def actor_update(self, actor, operation):
@@ -1244,6 +1312,11 @@ class CarlaWorld:
         self.frame += 1
         self.time += self.dt
         for actor in self.actors:
+            if isinstance(actor, CarlaTrafficLight):
+                if self.traffic_reset_pending:
+                    actor.set_state("Red")
+                    actor.elapsed_s = 0.
+                actor.elapsed_s += self.dt
             if (self.ground_height is not None and actor.type_id.startswith("vehicle.")
                     and actor.simulate_physics and actor.enable_gravity):
                 location, rotation = actor.transform.location, actor.transform.rotation
@@ -1266,6 +1339,7 @@ class CarlaWorld:
             speed = max(0., actor.velocity.x + (actor.control.throttle - actor.control.brake) * self.dt)
             actor.velocity = CarlaVector(speed, actor.velocity.y, actor.velocity.z)
             actor.transform.location.x += speed * self.dt
+        self.traffic_reset_pending = False
         for actor in self.vehicles:
             actor.capture(self.frame, self.time, self.frame_offset)
         for actor in self.actors:
@@ -1279,6 +1353,9 @@ class CarlaWorld:
                     frame=self.frame, timestamp=self.time, width=width, height=height,
                     raw_data=bgra.tobytes()))
         return self.frame
+
+    def reset_all_traffic_lights(self):
+        self.traffic_reset_pending = True
 
     def get_actors(self):
         return list(self.actors)
@@ -1695,6 +1772,7 @@ with open(os.environ["DOCKER_CALLS"], "a") as stream:
     stream.write(json.dumps(args) + "\n")
 root = Path(os.environ["DOCKER_STATE"])
 mode = os.environ.get("DOCKER_MODE", "ready")
+autoware_mode = os.environ.get("DOCKER_AUTOWARE_MODE")
 def read(p):
     try:return json.loads(p.read_text())
     except (ValueError, FileNotFoundError):return None
@@ -1717,6 +1795,75 @@ if args[0] == "run":
                                        "labels":labels,"running":mode!="exit"}))
     print(identity)
     raise SystemExit(1 if mode == "race" else 0)
+if autoware_mode and args[:2] == ["image", "inspect"]:
+    if autoware_mode == "missing-image":
+        print("No such image", file=sys.stderr)
+        raise SystemExit(1)
+    print("id-local-image")
+    raise SystemExit(0)
+if autoware_mode and args[0] == "exec":
+    import time
+
+    if args[-1].endswith("apply_carla_overrides.py"):
+        print("Applied CARLA overrides")
+        raise SystemExit(0)
+    interactive = args[1] == "-i"
+    path = locate(args[4] if interactive else args[1])
+    if not interactive:
+        print("Started an Autoware process", flush=True)
+        while (current := read(path)) and current["running"]:
+            time.sleep(.05)
+        raise SystemExit(0)
+
+    def event(kind, **fields):
+        print(json.dumps({"event": kind, **fields}), flush=True)
+
+    event("connected")
+    if autoware_mode != "no-lidar":
+        event("lidar")
+    event("discovery", initialize=True, autonomous=autoware_mode != "no-adapi",
+          goal_subscriber=autoware_mode != "no-goal-subscriber")
+    event("mode", mode=1, available=False, in_transition=False)
+    event("mrm", state=1, behavior=1)
+    retries = goals = 0
+    for line in sys.stdin:
+        command = json.loads(line)
+        kind = command["call"]
+        request_id = command["id"]
+        if kind == "initialize":
+            retries += 1
+            if autoware_mode == "init-rejected" or (autoware_mode == "retry" and retries == 1):
+                event("result", id=request_id, success=False, message="GNSS fix unavailable")
+                continue
+            event("result", id=request_id, success=True)
+            if autoware_mode != "uninitialized":
+                event("localization", state=3)
+            event("pose", x=-1.425, y=2.0 if autoware_mode == "bad-pose" else 0.0, yaw_rad=0.0)
+            if autoware_mode == "distortion":
+                time.sleep(.2)
+                event("distortion", name="distortion_corrector", message="missing point time")
+        elif kind == "goal":
+            goals += 1
+            accepted = autoware_mode != "goal-rejected"
+            event("result", id=request_id, success=accepted,
+                  message="" if accepted else "no route")
+            # A retry run loses its first published goal before routing receives it.
+            lost = autoware_mode == "retry" and goals == 1
+            if accepted and autoware_mode != "no-route" and not lost:
+                event("route", state=2)
+                event("mode", mode=1, available=autoware_mode != "unavailable",
+                      in_transition=False)
+        elif kind == "engage":
+            accepted = autoware_mode != "engage-rejected"
+            event("result", id=request_id, success=accepted,
+                  message="" if accepted else "mode transition rejected")
+            if accepted and autoware_mode != "engage-timeout":
+                event("mode", mode=2, available=True, in_transition=False)
+                time.sleep(.05)
+                event("route", state=3)
+        else:
+            raise ValueError(kind)
+    raise SystemExit(0)
 p=locate(args[-1]);data=read(p)
 if isinstance(data,bool):data={"id":"seed-"+p.name,"owner":"","running":data}
 if args[0] == "inspect":
@@ -1753,3 +1900,27 @@ elif args[0] == "rm":
     monkeypatch.setenv("DOCKER_STATE", str(state))
     monkeypatch.setenv("DOCKER_CALLS", str(calls))
     return state, calls
+
+
+def autoware_process_boundary(tmp_path, monkeypatch):
+    """Fake the Docker daemon, traffic source process and JSON-speaking ROS adapter."""
+    state, calls = docker_process_boundary(tmp_path, monkeypatch)
+    monkeypatch.setenv("DOCKER_AUTOWARE_MODE", "ready")
+    assets = tmp_path / "assets"
+    official = assets / "run"
+    official.mkdir(parents=True)
+    (official / "carla_traffic_light_state_source.py").write_text(
+        "import time\nwhile True:\n    time.sleep(1)\n")
+    (official / "autoware_traffic_light_state_publisher.py").touch()
+    town = assets / "map_tools/maps/Town10HD"
+    town.mkdir(parents=True)
+    for filename in ("lanelet2_map.osm", "pointcloud_map.pcd", "map_projector_info.yaml"):
+        (town / filename).touch()
+    dds = tmp_path / "dds"
+    dds.mkdir()
+    (dds / "cyclonedds.xml").touch()
+    data = tmp_path / "autoware_data"
+    data.mkdir()
+    options = {"assets_directory": assets, "dds_directory": dds,
+               "autoware_data_directory": data, "work_directory": tmp_path / "runs"}
+    return state, calls, options

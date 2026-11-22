@@ -86,6 +86,15 @@ def _set_blueprint_attributes(blueprint, attributes):
         blueprint.set_attribute(name, value)
 
 
+def _verify_blueprint_attributes(actor, attributes, description):
+    reported = actor.attributes
+    for name, value in _native_attribute_values(attributes).items():
+        if reported.get(name) != value:
+            raise ValueError(
+                f"CARLA {description} attribute {name!r} does not match its configured value "
+                f"{value!r}. Actor reported {reported.get(name)!r}.")
+
+
 class _BlueprintWorld:
     def __init__(self, world, attributes):
         self.world = world
@@ -166,13 +175,11 @@ def _configured_type(name, *, sensor):
                 attributes = blueprint_attributes or {}
                 super().__init__(*args, client=_BlueprintClient(client, attributes), **kwargs)
                 # Read back from the spawned actor, independently of how the base class spawned it.
-                reported = self.actor.attributes
-                for name, value in _native_attribute_values(attributes).items():
-                    if reported.get(name) != value:
-                        self.destroy()
-                        raise ValueError(
-                            f"CARLA ego attribute {name!r} does not match its configured value "
-                            f"{value!r}. Actor reported {reported.get(name)!r}.")
+                try:
+                    _verify_blueprint_attributes(self.actor, attributes, "ego")
+                except ValueError:
+                    self.destroy()
+                    raise
 
         configured = ConfiguredActor
     CARLA.register_module(name=registered_name)(configured)

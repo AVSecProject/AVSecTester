@@ -9,6 +9,12 @@
 ## Preparation
 
 -  [write_compose_env.sh](preparation/write_compose_env.sh) writes local Compose settings.
+-  [setup_carla_ros2_network.sh](preparation/setup_carla_ros2_network.sh) prepares the local
+  DDS bridge and server settings. Follow
+  [Native ROS 2](../docs/getting-started/installation.md#native-ros-2).
+-  [extract_carla_autoware_assets.sh](preparation/extract_carla_autoware_assets.sh) verifies
+  and extracts the official Autoware map, traffic-light scripts and camera profile from the
+  local CARLA image.
 -  [fetch_models.sh](preparation/fetch_models.sh) downloads avstack's CARLA and
   nuScenes checkpoints.
 -  [export_carla_maps.py](preparation/export_carla_maps.py) exports OpenDRIVE maps. Follow

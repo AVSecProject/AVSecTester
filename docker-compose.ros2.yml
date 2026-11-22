@@ -1,0 +1,12 @@
+# Optional DDS profile for a CARLA server with native ROS 2 enabled.
+services:
+  carla-server:
+    environment:
+      - FASTRTPS_DEFAULT_PROFILES_FILE
+    volumes:
+      - type: bind
+        source: ${CARLA_FASTDDS_PROFILE_HOST:?Run scripts/preparation/setup_carla_ros2_network.sh}
+        target: /dds/fastdds_profile.xml
+        read_only: true
+        bind:
+          create_host_path: false

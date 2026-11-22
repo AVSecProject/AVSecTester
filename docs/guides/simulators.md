@@ -206,6 +206,29 @@ Background traffic is managed on the external-system side. The framework is the 
 initiator. Other clients must not tick the world. See
 [ROS 2 server setup](../getting-started/installation.md#native-ros-2).
 
+### Managed external driving systems
+
+In closed-loop runs, CARLA reloads the world and spawns the recipe's ROS rig before starting a
+new external driving session. Preparation and rendering spawn the same rig without starting
+the session. CARLA holds ego and keeps ticking until the session reports readiness. It resets
+traffic lights before the origin capture in preparation and execution. The origin check compares
+each light's state and elapsed phase time with the prepared reference.
+
+CARLA requests autonomous mode when it releases ego at decision zero. It checks the session
+after each subsequent tick and stops it before destroying the sensor rig. See
+[runtime records](../reference/runtime.md#one-decision) for telemetry and event data.
+
+The [Town10HD example](../../configs/carla_autoware.yaml) hosts Autoware with native ROS 2.
+It uses the official sensor rig, camera profile, launch and CARLA overrides. Each run gets a
+fresh container and a new traffic-light source. Readiness waits for ADAPI, localization, pose
+agreement, clean distortion diagnostics, route acceptance and autonomous availability.
+Localization requests, pose checks and goal requests can retry. A goal is published again
+when no route follows it. Autonomous engagement uses one request once the session is ready.
+Missing override files fail startup. The framework sets the traffic-light phase at the origin
+and keeps responsibility for pacing, actor control during setup and the run's decision limit.
+See [installation](../getting-started/installation.md#managed-autoware) and
+[configuration](../reference/configuration.md#managed-carla-driving-systems).
+
 ## NuRec
 
 NuRec requires a `ScenarioStart` from its dataset. The runtime initializes the recorded pose,

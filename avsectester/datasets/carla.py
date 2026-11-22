@@ -161,6 +161,43 @@ def _validate_blueprint_attributes(specification, name):
         raise ValueError(f"{name}.blueprint_attributes must map nonempty names to scalar values")
 
 
+def _validate_ros_rig(rig: Any) -> None:
+    name = "ego.ros_rig"
+    if not isinstance(rig, list):
+        raise ValueError(f"{name} must be a list of attached actors")
+    parents = {"ego"}
+    for index, actor in enumerate(rig):
+        path = f"{name}[{index}]"
+        actor = _settings_mapping(
+            actor, {"name", "blueprint", "parent", "transform", "blueprint_attributes", "ros"}, path)
+        identity = actor.get("name")
+        if not isinstance(identity, str) or not identity or identity in parents:
+            raise ValueError(f"{path}.name must be nonempty and unique")
+        parent = actor.get("parent")
+        if not isinstance(parent, str) or parent not in parents:
+            raise ValueError(f"{path}.parent must be ego or an earlier rig actor")
+        blueprint = actor.get("blueprint")
+        if not isinstance(blueprint, str) or not blueprint:
+            raise ValueError(f"{path}.blueprint must be a nonempty CARLA blueprint name")
+        if not isinstance(actor.get("ros", False), bool):
+            raise ValueError(f"{path}.ros must be a boolean")
+        _validate_blueprint_attributes(actor, path)
+        transform = _settings_mapping(actor.get("transform"), {"location", "rotation"},
+                                      f"{path}.transform")
+        _validate_pose_fields(transform.get("location"), {"x", "y", "z"}, f"{path}.transform.location")
+        _validate_pose_fields(transform.get("rotation"), {"pitch", "yaw", "roll"},
+                              f"{path}.transform.rotation")
+        parents.add(identity)
+
+
+def _validate_pose_fields(value: Any, fields: set[str], name: str) -> None:
+    values = _settings_mapping(value, fields, name)
+    if set(values) != fields:
+        raise ValueError(f"{name} requires {', '.join(sorted(fields))}")
+    for axis, value in values.items():
+        _finite_number(value, f"{name}.{axis}", -math.inf)
+
+
 @dataclass(frozen=True)
 class PrescribedMotion:
     """One control sequence, trajectory, or constant actuator control.
@@ -213,6 +250,8 @@ class CarlaRecipe:
     Ego and sensor specifications accept ``blueprint_attributes`` for native blueprint
     settings. Unknown attribute names raise ``ValueError`` when actors are built.
     Sensors with ``ros=True`` enable native ROS publication after spawning.
+    ``ego.ros_rig`` lists attached actors in parent-first order in native CARLA coordinates.
+    ``ego_goal`` specifies the hosted driver's target in framework world coordinates.
     """
     scenario: dict
     decision_steps: int
@@ -233,6 +272,9 @@ class CarlaRecipe:
             _validate_blueprint_attributes(sensor, "sensor")
             if not isinstance(sensor.get("ros", False), bool):
                 raise ValueError("sensor.ros must be a boolean")
+        _validate_ros_rig(ego.get("ros_rig", []))
+        if "ego_goal" in scenario:
+            _validate_pose_fields(scenario["ego_goal"], {"x", "y", "yaw_deg"}, "ego_goal")
         world_names = CARLA_WORLD_SETTINGS
         validate_carla_world_settings({name: value for name, value in scenario.items()
                                        if name in world_names})

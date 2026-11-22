@@ -1,0 +1,11 @@
+# Official camera profile for the managed Autoware sensor rig.
+# Run scripts/preparation/extract_carla_autoware_assets.sh first.
+services:
+  carla-server:
+    volumes:
+      - type: bind
+        source: ./data/carla_autoware/postprocess/autoware_demo.json
+        target: /workspace/CarlaUnreal/Content/Carla/Config/PostProcess/autoware_demo.json
+        read_only: true
+        bind:
+          create_host_path: false

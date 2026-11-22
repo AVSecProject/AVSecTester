@@ -8,6 +8,8 @@ from typing import Any
 
 import numpy as np
 
+from .sensors import _set_blueprint_attributes, _verify_blueprint_attributes
+
 
 def _loadable_map_name(name):
     """Use a server map name rather than the asset path reported by native snapshots."""
@@ -94,6 +96,29 @@ def _destroy_actor(actor):
         actor.destroy()
     except Exception:
         logging.getLogger(__name__).warning("Could not destroy CARLA actor", exc_info=True)
+
+
+def _spawn_ros_rig(world, ego, specifications, resources):
+    """Spawn the native ROS hierarchy independently of framework acquisitions."""
+    if not specifications:
+        return
+    import carla
+
+    blueprint_library = world.get_blueprint_library()
+    parents = {"ego": ego}
+    for spec in specifications:
+        blueprint = blueprint_library.find(spec["blueprint"])
+        attrs = spec.get("blueprint_attributes", {})
+        _set_blueprint_attributes(blueprint, attrs)
+        pose = spec["transform"]
+        transform = carla.Transform(carla.Location(**pose["location"]),
+                                    carla.Rotation(**pose["rotation"]))
+        actor = world.spawn_actor(blueprint, transform, attach_to=parents[spec["parent"]])
+        resources.callback(_destroy_actor, actor)
+        _verify_blueprint_attributes(actor, attrs, f"ROS rig actor {spec['name']!r}")
+        if spec.get("ros", False):
+            actor.enable_for_ros()
+        parents[spec["name"]] = actor
 
 
 def _spawn_config(spec: dict, actor: Any, vehicle_field: str) -> dict:

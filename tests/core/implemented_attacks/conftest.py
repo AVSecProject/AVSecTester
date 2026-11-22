@@ -25,6 +25,11 @@ def memory_dataset():
 
 
 @pytest.fixture
+def two_decision_dataset():
+    return MemoryDataset(decision_steps=2)
+
+
+@pytest.fixture
 def stop_approach_dataset():
     return StopApproachDataset(stop_approach_map())
 

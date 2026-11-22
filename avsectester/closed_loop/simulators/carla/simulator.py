@@ -26,9 +26,12 @@ from avsectester.closed_loop.timing import (
 )
 
 from .conversions import _actor_state, _traffic_light_state
+from .external_driving_system import (
+    ExternalDrivingContext, ExternalDrivingSession, ExternalDrivingSystem,
+)
 from .recipe_replay import RecipeReplay, _place
 from .scenario import (
-    _destroy_actor, _destroy_npc, _loadable_map_name, _spawn_config, prepare_scenario,
+    _destroy_actor, _destroy_npc, _loadable_map_name, _spawn_config, _spawn_ros_rig, prepare_scenario,
 )
 from .sensors import (
     SensorAlignmentError, SensorCapture, _require_pinhole_sensor, _use_pinhole_cameras,
@@ -58,7 +61,8 @@ class CarlaSimulator(Simulator):
     from the deployment tick budget. ``camera_warmup_ticks`` is the resolved tick count.
     ``ground_settle_s`` lets unprescribed vehicles settle under gravity before holding.
     ``ego_control='ros2'`` delegates ego control to a native ROS 2 driver and requires
-    ``realtime_factor``. ``external_startup_s`` extends the held initialization period.
+    ``realtime_factor``. ``external_startup_s`` extends the fixed hold before the origin.
+    ``external_driving_system`` manages a native ROS 2 driver during closed-loop runs.
     """
 
     dataset_kinds = ("CarlaDataset",)
@@ -75,6 +79,7 @@ class CarlaSimulator(Simulator):
         decision_period_us: int | None = None, camera_warmup_s: float = 4.0,
         ground_settle_s: float = 2.0, ego_control: str = "framework",
         realtime_factor: float | None = None, external_startup_s: float = 0.0,
+        external_driving_system: ExternalDrivingSystem | None = None,
     ) -> None:
         allowed = {"connect_ip", "connect_port", "traffic_manager_port", "rate", "synchronous",
                    "seed", "traffic_manager_seed"}
@@ -107,7 +112,13 @@ class CarlaSimulator(Simulator):
             raise ValueError("realtime_factor must be positive and finite")
         if ego_control == "ros2" and realtime_factor is None:
             raise ValueError("ego_control='ros2' requires realtime_factor")
+        if external_driving_system is not None and ego_control != "ros2":
+            raise ValueError("external_driving_system requires ego_control='ros2'")
+        if external_driving_system is not None and external_startup_s:
+            raise ValueError("external_startup_s applies only without external_driving_system, "
+                             "which holds until the session is ready")
         self.ego_control = ego_control
+        self.external_driving_system = external_driving_system
         self.realtime_factor = realtime_factor
         self.settle_iters = settle_iters
         self.occlusion_tolerance_m = occlusion_tolerance_m
@@ -179,12 +190,19 @@ class CarlaSimulator(Simulator):
 
     @property
     def identity(self):
-        return {**super().identity,
-                "client": deepcopy(self.client_config),
-                "depth_camera": self.depth_camera, "start_sensor_setup_ticks": 1,
-                "camera_warmup_s": self.camera_warmup_s, "ground_settle_s": self.ground_settle_s,
-                "ego_control": self.ego_control, "realtime_factor": self.realtime_factor,
-                "external_startup_s": self.external_startup_s}
+        identity = {**super().identity,
+                    "client": deepcopy(self.client_config),
+                    "depth_camera": self.depth_camera, "start_sensor_setup_ticks": 1,
+                    "camera_warmup_s": self.camera_warmup_s, "ground_settle_s": self.ground_settle_s,
+                    "ego_control": self.ego_control, "realtime_factor": self.realtime_factor,
+                    "external_startup_s": self.external_startup_s}
+        if self.ego_control == "ros2":
+            # Prepared references must include the phase after the origin reset.
+            identity["reset_traffic_lights"] = True
+        system = self.external_driving_system
+        if system is not None:
+            identity["external_driving_system"] = {"type": type(system).__name__, **system.identity}
+        return identity
 
     def validate_start(self, start):
         if start is None:
@@ -203,6 +221,8 @@ class CarlaSimulator(Simulator):
             attributes = recipe.scenario["ego"].get("blueprint_attributes", {})
             if attributes.get("role_name") not in {"hero", "ego"}:
                 raise ValueError("ROS 2 ego blueprint_attributes.role_name must be 'hero' or 'ego'")
+            if self.external_driving_system is not None and "ego_goal" not in recipe.scenario:
+                raise ValueError("A hosted CARLA driving system requires scenario.ego_goal")
 
 
 class CarlaSimulatorRuntime(SimulatorRuntime):
@@ -244,6 +264,8 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         self._last_tick_wall = None
         self._pacing_start_wall = None
         self._pacing_stats = {}
+        self._external_session: ExternalDrivingSession | None = None
+        self._external_report: dict[str, Any] | None = None
 
     def _queue_native_command(self, command):
         self._native_commands.append(command)
@@ -315,10 +337,14 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
 
     @property
     def termination_details(self) -> Mapping[str, Any]:
-        """Record final tick pacing statistics when the run is paced."""
+        """Record tick pacing and hosted driving-system evidence when available."""
         details = dict(super().termination_details)
         if self._pacing_stats:
             details["realtime"] = dict(self._pacing_stats)
+        if self._external_session is not None:
+            details["external_driving_system"] = dict(self._external_session.report())
+        elif self._external_report is not None:
+            details["external_driving_system"] = dict(self._external_report)
         return details
 
     @property
@@ -351,8 +377,11 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         if not self._uses_native_ros2:
             return {}
         control = self.ego.actor.get_control()
-        return {"ego_control": {name: getattr(control, name) for name in (
+        telemetry = {"ego_control": {name: getattr(control, name) for name in (
             "throttle", "brake", "steer", "hand_brake", "reverse", "manual_gear_shift", "gear")}}
+        if self._external_session is not None:
+            telemetry["external_driving_system"] = dict(self._external_session.telemetry())
+        return telemetry
 
     def _native_clock(self) -> ClockSnapshot:
         snapshot = self.client.world.get_snapshot()
@@ -477,14 +506,18 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
     def _initialize_world(self, start, initialization, environment):
         from avcarla.config import CARLA
 
-        self._pacing_stats = {}
-        scenario = self._resolve_scenario(start, initialization, environment)
         self._close_world()
+        self._pacing_stats = {}
+        self._external_report = None
+        scenario = self._resolve_scenario(start, initialization, environment)
         self._recipe = start.payload["recipe"]
         self._scenario_t0 = None
         self._trajectory_setup_ticks = 0
         client_config = scenario["client"]
         client_config.setdefault("reset_world", True)
+        if (self.simulator.external_driving_system is not None
+                and client_config["reset_world"] is not True):
+            raise ValueError("A hosted CARLA driving system requires client.reset_world")
         client_config.setdefault("strict_spawn", False)
         replay = deepcopy(scenario)
         replay["client"]["strict_spawn"] = True
@@ -494,6 +527,7 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         self._apply_map_layers(scenario.get("map_layers"))
         ego_cfg = deepcopy(scenario["ego"])
         replay_ego_cfg = deepcopy(ego_cfg)
+        ros_rig = ego_cfg.pop("ros_rig", ())
         for sensor in ego_cfg.get("sensors", ()):
             # Native sensor_tick can shift its phase by a physics tick. Acquire every tick
             # and retain only the scheduler's exact source IDs and capture times.
@@ -502,6 +536,7 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         configure_recipe_blueprints({"ego": ego_cfg})
         self.ego = CARLA.build(ego_cfg, default_args={"client": self.client})
         self._resources.callback(self.ego.destroy)
+        _spawn_ros_rig(self.client.world, self.ego.actor, ros_rig, self._resources)
         replay["ego"] = _spawn_config(replay_ego_cfg, self.ego, "vehicle")
         for spec in scenario.get("npcs", []):
             npc = CARLA.build(dict(spec), default_args={"client": self.client})
@@ -538,6 +573,7 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         self._recorded_ticks = {}
         self._interval_ticks = {}
         self._recipe_replay.initialize()
+        self._start_external_session(scenario)
         # Base-world preparation ticks do not emit hooks or count as driving decisions.
         self._tick()
         for _ in range(self.simulator.ground_settle_ticks):
@@ -548,10 +584,42 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
                          self.simulator.external_startup_ticks)
         for _ in range(hold_ticks):
             self._hold_tick()
+        if self._external_session is not None:
+            while not self._poll_external_session():
+                self._hold_tick()
+        if self._uses_native_ros2:
+            self.client.world.reset_all_traffic_lights()
+            self._hold_tick()
         self._recipe_replay.finish_holding()
         self._scenario_t0 = self.client.world.get_snapshot().timestamp.elapsed_seconds
         self._base_actor_ids = {actor.id for actor in self.client.world.get_actors()}
         self._save_recorded_tick()
+
+    def _start_external_session(self, scenario):
+        system = self.simulator.external_driving_system
+        if system is None or not self._native_ros2_run:
+            return
+        client = self.client_config
+        context = ExternalDrivingContext(
+            str(client.get("connect_ip", "127.0.0.1")), client.get("connect_port", 2000),
+            _loadable_map_name(self.client.world.get_map().name), dict(scenario["ego_goal"]),
+            float(client["rate"]),
+        )
+        session = system.start(context)
+        self._external_session = session
+        self._resources.callback(self._stop_external_session, session)
+
+    def _poll_external_session(self) -> bool:
+        assert self._external_session is not None
+        pose = mirror_y_transform(np.asarray(self.ego.actor.get_transform().get_matrix()))
+        return self._external_session.poll(pose, self._native_clock().t)
+
+    def _stop_external_session(self, session: ExternalDrivingSession) -> None:
+        try:
+            session.stop()
+        finally:
+            self._external_session = None
+            self._external_report = dict(session.report())
 
     def _initialize_sensors(self):
         """Create the aligned depth camera, if configured, before the first capture."""
@@ -693,11 +761,16 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         if self._native_ros2_run:
             import carla
 
+            session = self._external_session
+            if session is not None and not self._poll_external_session():
+                raise RuntimeError("Hosted CARLA driving system lost readiness before ego release")
             self._recipe_replay.release_ego()
             self._queue_native_command(carla.command.SetSimulatePhysics(self.ego.actor.id, True))
             self._queue_native_command(carla.command.SetEnableGravity(self.ego.actor.id, True))
             self._queue_native_command(carla.command.ApplyVehicleControl(self.ego.actor.id, carla.VehicleControl()))
             self._flush_native_commands()
+            if session is not None:
+                session.engage()
 
     def _check_initialization(self, initialization):
         """Check the replay plan and the ROS 2 run's ego state when given a reference.
@@ -717,6 +790,8 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
                         or not np.allclose(actual.ego.velocity, expected_ego.velocity, rtol=0., atol=1e-5)):
                     raise RuntimeError("External controls before the CARLA run changed the ego's "
                                        "initial state from the prepared reference.")
+                self._check_traffic_light_initialization(
+                    initialization.expected.provenance, actual.provenance)
         base_ids = {actor.id for actor in self._native_resources()["actors"].values()}
         self.initialization_report.update({
             "start_frame": asdict(self._start.frame), "pre_roll_steps": self._start.frame.position,
@@ -728,10 +803,30 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         })
         if self._pacing_started:
             self.initialization_report["realtime"] = dict(self._pacing_stats)
+        if self._external_session is not None:
+            self.initialization_report["external_driving_system"] = dict(
+                self._external_session.report())
         if (not self._generating_frame_data and not self.timing.force_gt_duration_us
                 and not self._uses_native_ros2):
             # Frame data generation records the prescribed ego motion. Runs drive it.
             self._recipe_replay.release_ego()
+
+    @staticmethod
+    def _check_traffic_light_initialization(expected, actual):
+        reference = expected.get("traffic_lights")
+        sampled = actual["traffic_lights"]
+        if reference is None:
+            raise ValueError("ROS 2 run initialization requires prepared traffic light states")
+        if sampled.keys() != reference.keys():
+            raise RuntimeError("CARLA traffic light IDs differ from the prepared reference")
+        for name, phase in sampled.items():
+            prior = reference[name]
+            if (phase["state"] != prior["state"]
+                    or not math.isclose(phase["elapsed_s"], prior["elapsed_s"],
+                                        rel_tol=0., abs_tol=1e-5)):
+                raise RuntimeError(
+                    f"CARLA traffic light {name!r} phase differs from the prepared reference: "
+                    f"expected {prior}, got {phase}.")
 
     def _advance_native(self, control):
         if self._recipe_replay.pre_roll:
@@ -756,6 +851,8 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
                     self._queue_ego_control(control)
                 self._tick()
                 self._recipe_replay.after_step()
+            if self._external_session is not None:
+                self._external_session.check()
             timestamp = origin + index * tick
             self.invalidate_state()
             truth = self.state()
@@ -842,14 +939,25 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
                 {"native_frame": int(payload.frame + sensor.frame0),
                  "native_timestamp": acquisition, "observation_frame": observation.frame},
             )
-        return FrameData(frame, actors, sensors, {
+        provenance = {
             "kind": "generated", "native_frame": observation.frame,
             "native_timestamp": observation.t, "scenario_t0": scenario_t0,
             "actual_scenario_time": actual_time,
             "actor_mapping": aliases, "required_sensors": required_sensors,
             "trajectory_setup_ticks": self._trajectory_setup_ticks,
             "start_sensor_setup_ticks": 1,
-        }, ego=_actor_state(self.ego.actor, self.ego.actor.type_id))
+        }
+        if self._uses_native_ros2:
+            provenance["traffic_lights"] = {
+                str(actor.get_opendrive_id()): {
+                    "state": _traffic_light_state(actor.get_state()),
+                    "elapsed_s": float(actor.get_elapsed_time()),
+                }
+                for actor in self.client.world.get_actors()
+                if actor.type_id == "traffic.traffic_light"
+            }
+        return FrameData(frame, actors, sensors, provenance,
+                         ego=_actor_state(self.ego.actor, self.ego.actor.type_id))
 
     def _replayed_scenario(self):
         return deepcopy(self.replay_scenario)

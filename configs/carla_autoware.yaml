@@ -1,0 +1,187 @@
+# Set the host model directory, ROS domain and GPU for your deployment.
+dataset:
+  type: CarlaDataset
+  options:
+    recipes:
+      town10hd_autoware:
+        type: avsectester.datasets.carla:CarlaRecipe
+        options:
+          time_step: 0.05
+          decision_steps: 4800
+          scenario:
+            client:
+              map_name: Town10HD_Opt
+              randomize_lights: false
+              disable_static_actors: false
+            ego:
+              type: CarlaMobileActor
+              spawn: 24
+              vehicle: vehicle.lincoln.mkz
+              autopilot: false
+              destination: null
+              blueprint_attributes:
+                role_name: ego
+                ros2_autoware_control: true
+                ros_topic_name: /carla/input
+              sensors:
+              - type: CarlaRgbCamera
+                name: camera-0
+                source_ID: 0
+                image_size_x: 640
+                image_size_y: 360
+                fov: 90
+                sensor_tick: 0.0
+              ros_rig:
+              - name: base_link
+                blueprint: util.actor.empty
+                parent: ego
+                transform:
+                  location: {x: -1.397067904472351, y: 0.0, z: 0.0}
+                  rotation: &no_rotation {pitch: 0.0, yaw: 0.0, roll: 0.0}
+                blueprint_attributes: &rig_frame {ros_name: sensor_kit_base_link}
+                ros: false
+              - name: sensor_kit
+                blueprint: util.actor.empty
+                parent: base_link
+                transform:
+                  location: {x: 0.9, y: 0.0, z: 2.0}
+                  rotation: {pitch: -0.8594366908073425, yaw: 2.085566282272339, roll: -0.0572957806289196}
+                blueprint_attributes: *rig_frame
+                ros: false
+              - name: lidar_top
+                blueprint: sensor.lidar.ray_cast
+                parent: sensor_kit
+                transform:
+                  location: &no_translation {x: 0.0, y: 0.0, z: 0.0}
+                  rotation: {pitch: 0.0, yaw: -90.24085235595703, roll: 0.0}
+                blueprint_attributes:
+                  channels: 16
+                  range: 100.0
+                  upper_fov: 10.0
+                  lower_fov: -20.0
+                  points_per_second: 288000
+                  sensor_tick: 0.1
+                  rotation_frequency: 10.0
+                  dropoff_general_rate: 0.0
+                  dropoff_zero_intensity: 0.0
+                  ros_name: velodyne_top
+                  ros_topic_name: /sensing/lidar/top/pointcloud_raw_ex
+                ros: true
+              - name: traffic_light_camera
+                blueprint: sensor.camera.rgb
+                parent: sensor_kit
+                transform:
+                  location: {x: 0.05, y: -0.0175, z: -0.1}
+                  rotation: *no_rotation
+                blueprint_attributes:
+                  fov: 90.0
+                  image_size_x: 1920
+                  image_size_y: 1080
+                  sensor_tick: 0.1
+                  post_process_profile: autoware_demo
+                  ros_name: traffic_light_left_camera/camera_optical_link
+                  ros_topic_name: /sensing/camera/traffic_light
+                ros: true
+              - name: front_camera
+                blueprint: sensor.camera.rgb
+                parent: sensor_kit
+                transform:
+                  location: {x: 0.3, y: 0.0, z: -0.3}
+                  rotation: *no_rotation
+                blueprint_attributes:
+                  fov: 90.0
+                  image_size_x: 1280
+                  image_size_y: 720
+                  sensor_tick: 0.1
+                  post_process_profile: autoware_demo
+                  ros_name: front_camera/camera_optical_link
+                  ros_topic_name: /sensing/camera/front
+                ros: true
+              - name: imu
+                blueprint: sensor.other.imu
+                parent: ego
+                transform:
+                  location: {x: -0.4970678687095642, y: 0.0, z: 2.0}
+                  rotation: {pitch: 0.8594366908073425, yaw: -177.9144287109375, roll: -179.9427032470703}
+                blueprint_attributes:
+                  sensor_tick: 0.03333333333333333
+                  ros_name: tamagawa/imu_link
+                  ros_topic_name: /sensing/imu/tamagawa/imu_raw
+                ros: true
+              - name: gnss
+                blueprint: sensor.other.autoware_gnss
+                parent: sensor_kit
+                transform:
+                  location: {x: -0.1, y: 0.0, z: -0.2}
+                  rotation: *no_rotation
+                blueprint_attributes: {sensor_tick: 0.0, ros_name: map, ros_topic_name: /sensing/gnss}
+                ros: true
+              - name: vehicle_status
+                blueprint: sensor.other.vehicle_status
+                parent: base_link
+                transform: {location: *no_translation, rotation: *no_rotation}
+                ros: false
+            ego_goal: {x: -1.16, y: -28.37, yaw_deg: -0.16}
+            npcs:
+            - type: CarlaNpc
+              spawn: 0
+              npc_type: vehicle.lincoln.mkz
+              spawn_transform:
+                location: {x: 99.38441467285156, y: -6.305729389190674, z: 0.5999999642372131}
+                rotation: {pitch: 0.0, yaw: 90.3907241821289, roll: 0.0}
+          motion:
+            ego: &stationary
+              type: avsectester.datasets.carla:PrescribedMotion
+              options:
+                constant_control:
+                  type: avsectester.data_types:Control
+                  options: {brake: 1.0}
+            npc:0: *stationary
+simulator:
+  type: CarlaSimulator
+  options:
+    client:
+      connect_ip: 127.0.0.1
+      connect_port: 2000
+      traffic_manager_port: 8000
+      rate: 20.0
+      synchronous: true
+      seed: 0
+    ego_control: ros2
+    realtime_factor: 1.0
+    external_driving_system:
+      type: AutowareDrivingSystem
+      options:
+        gpu: 0
+        ros_domain_id: 94
+        autoware_data_directory: /srv/autoware/autoware_data
+        assets_directory: ../data/carla_autoware
+        dds_directory: ../data/carla_ros2
+        work_directory: ../data/carla_autoware/runs
+avstack:
+  type: ExternalAVStack
+attacks:
+  relocation:
+    type: ActorRelocationAttack
+    options:
+      actor_id: npc:0
+      x: -18.095823287963867
+      y: -28.318666458129883
+      z: -0.12348140776157379
+      yaw_deg: 0.08254081755876541
+      decision: 100
+evaluation:
+  metrics:
+  - type: DrivingMetrics
+  - type: StopImpact
+runs:
+  treatments:
+  - name: clean
+  - name: relocation
+    attack_name: relocation
+  seeds: [0]
+  recording:
+    sensor_ids: [camera-0-0]
+    representations: [model_input]
+    every_n_captures: 20
+  output: ../results/carla_autoware

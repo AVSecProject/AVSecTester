@@ -138,6 +138,9 @@ resolves them against its ego trajectory. Actuator commands have no spatial fram
 When both simulator and driving system declare no command modes, the driver returns `None`.
 This bypasses the delay buffer and records both produced and executed commands as `None`.
 CARLA native ROS 2 control records the server's applied control in `telemetry.ego_control`.
+Managed Autoware records the latest mode, route, localization and MRM state in
+`telemetry.external_driving_system`. Initialization records the readiness timeline.
+Termination records engagement and arrival times and paths to the session logs.
 Metrics requiring executed commands, including `brake_steps`, are unavailable. See
 [native ROS 2 control](../guides/simulators.md#native-ros-2-control).
 
@@ -413,6 +416,9 @@ receipt has a `details` mapping, empty when there is no detail. `InsertionAttack
 `rendered`, `reason`, `occlusion_source` and `ignored_occluders`. `InsertObject` records
 `object_id`, `asset_category`, `world_from_object` and `velocity`. `MoveObject` records
 `object_id` and the interval's target `world_from_object`.
+
+`SetActorState` is a world action for a named non-ego actor. It applies a world-frame pose and
+velocity before the next capture. Its receipt records `actor_id`, `pose` and `velocity`.
 
 `StepRecord.object_visibility`, the initialization event and `RenderResult.object_visibility`
 use object ID → camera name → `ObjectVisibility`. `ObjectVisibility` contains `occlusion_source`,

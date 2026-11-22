@@ -385,6 +385,11 @@ Check that ego moves, the patch is mounted, step telemetry contains CARLA's appl
 and the initialization and termination events include pacing statistics. A phantom configuration
 that modifies perception must be rejected during execution.
 
+For the managed Autoware smoke, follow [Managed Autoware](../docs/getting-started/installation.md#managed-autoware).
+Use a copy of the Town10HD configuration. During preparation, check that no Autoware container
+starts. Execute clean and relocation once from the prepared origin. Check the readiness timeline,
+mode and route telemetry, actor pose and action receipt, and container teardown.
+
 ## Next steps
 
 Read [Contributing](../docs/development/contributing.md)

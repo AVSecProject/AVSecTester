@@ -23,38 +23,43 @@ ATTACKS = [
     pytest.param("PatchAttack", {
         "decision_steps": 2, "assets": CheckerboardTexture(size=8), "max_windows": 1,
         "compositor": PatchCompositor(),
-    }, {"hosts_per_window": 0}, "default_driving_options", "memory_dataset", "memory_simulator",
+    }, {"hosts_per_window": 0}, "default_driving_options", "memory_dataset", "memory_simulator", True,
         id="patch"),
     pytest.param("ObjectInsertionAttack", {
         "decision_steps": 2, "max_segments": 1,
         "assets": PlaneAsset(np.full((8, 8, 4), [240, 20, 20, 255], np.uint8), 1., 1.),
         "placement": WorldPlacement((7., 0., 1.)), "compositor": PatchCompositor(),
     }, {"min_visible_fraction": 2.}, "default_driving_options", "memory_dataset",
-        "memory_simulator", id="object-insertion"),
+        "memory_simulator", True, id="object-insertion"),
     pytest.param("PhantomInjectionAttack", {"decision_steps": 2, "max_segments": 1},
-                 {"score": 2.}, "native_driving_options", "memory_dataset", "memory_simulator",
+                 {"score": 2.}, "native_driving_options", "memory_dataset", "memory_simulator", True,
                  id="phantom-injection"),
     pytest.param("SpeedFeedbackAttack", {
         "decision_steps": 2, "target_speed": 4., "initial_bias": .5, "max_segments": 1,
-    }, {"max_bias": -1.}, "default_driving_options", "memory_dataset", "memory_simulator",
+    }, {"max_bias": -1.}, "default_driving_options", "memory_dataset", "memory_simulator", True,
         id="speed-feedback"),
     pytest.param("StopSignPatchAttack", {"approach_m": 3., "min_approach_m": 0., "hold_steps": 1},
                  {"initial_patch": "red"}, "default_driving_options",
-                 "stop_approach_dataset", "memory_simulator", id="stop-sign-patch"),
+                 "stop_approach_dataset", "memory_simulator", True, id="stop-sign-patch"),
     pytest.param("VehicleInsertionAttack", {
         "asset": MeshAsset((MeshPart(
             np.array([[0., -1., 0.], [0., 1., 0.], [0., 0., 2.]]), np.array([[0, 1, 2]]),
             color=np.array([240, 20, 20, 255], np.uint8)),), (0., 2., 2.), "vehicle"),
         "distance_m": 3., "time_ahead_s": .25, "decision_steps": 2, "max_segments": 1,
     }, {"time_ahead_s": -1.}, "default_driving_options", "nurec_longitudinal_dataset",
-        "nurec_scene_simulator", id="vehicle-insertion"),
+        "nurec_scene_simulator", True, id="vehicle-insertion"),
+    pytest.param("ActorRelocationAttack", {
+        "actor_id": "lead", "x": 8., "y": -1., "z": 0., "yaw_deg": 15., "decision": 1,
+    }, {"decision": -1}, "default_driving_options", "two_decision_dataset", "memory_simulator",
+        False, id="actor-relocation"),
 ]
 
 
 @pytest.mark.parametrize(
-    "attack_type,options,invalid,driving_options_fixture,dataset_fixture,simulator_fixture", ATTACKS)
+    "attack_type,options,invalid,driving_options_fixture,dataset_fixture,simulator_fixture,"
+    "history_eligible", ATTACKS)
 def test_implemented_attack(attack_type, options, invalid, driving_options_fixture, dataset_fixture,
-                            simulator_fixture, request, tmp_path):
+                            simulator_fixture, history_eligible, request, tmp_path):
     configuration = {
         "dataset": request.getfixturevalue(dataset_fixture),
         "simulator": request.getfixturevalue(simulator_fixture),
@@ -76,7 +81,8 @@ def test_implemented_attack(attack_type, options, invalid, driving_options_fixtu
     history_driver = DrivingAdapter(lambda seed: configured.avstack.factory(seed), history=HistoryRequirement(samples=2))
     with ClosedLoopServices(configured.dataset, configured.simulator, history_driver) as services:
         eligible = attack.build_metadata(services.scenario("scene", seed=0))
-        assert eligible and all(segment.start.position >= 1 for segment in eligible)
+        assert bool(eligible) == history_eligible
+        assert all(segment.start.position >= 1 for segment in eligible)
     attack.save_artifacts(artifacts, tmp_path)
     restored = attack.load_artifacts(tmp_path)
     segment = metadata[0]
@@ -98,7 +104,7 @@ def test_implemented_attack(attack_type, options, invalid, driving_options_fixtu
                                       original.model_observation.sensor_data["front"])
         assert loaded.model_observation.ego_speed == original.model_observation.ego_speed
         assert loaded.executed_command == original.executed_command
-        assert loaded.actions == original.actions
+        np.testing.assert_equal(loaded.actions, original.actions)
     configuration["attacks"]["attack"]["options"] = {**options, **invalid}
     with pytest.raises((ValueError, TypeError)):
         load_configuration(configuration)

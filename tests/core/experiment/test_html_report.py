@@ -1,6 +1,7 @@
 """HTML renderers consume saved reports and public prepared experiment records."""
 from dataclasses import replace
 from html import unescape
+import json
 import re
 
 import numpy as np
@@ -183,6 +184,16 @@ def test_write_evaluation_html(tmp_path):
     check_links(path)
     path.unlink()
     assert without_time(write_evaluation_html(tmp_path).read_text()) == without_time(text)
+    assert "hosted driving system" not in text
+    manifest_path = tmp_path / "prepared.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["configuration"]["simulator"]["external_driving_system"] = {
+        "type": "AutowareDrivingSystem",
+    }
+    manifest_path.write_text(json.dumps(manifest))
+    hosted_report = write_evaluation_html(tmp_path).read_text()
+    assert (">hosted driving system</td><td>"
+            '<span title="AutowareDrivingSystem">AutowareDrivingSystem</span>') in hosted_report
 
     selection = re.search(r'<section id="selection">(.*?)</section>', text, re.S).group(1)
     assert "<th>attack</th>" in selection and "<th>status</th>" in selection

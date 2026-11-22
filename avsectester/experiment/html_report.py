@@ -352,17 +352,25 @@ def _experiment_setup(report: Mapping[str, Any], manifest: Mapping[str, Any]) ->
     if not experiment:
         return []
     decision_steps = experiment.get("decision_steps")
-    content = [_table(["setting", "value"], [
+    settings = [
         ["dataset type", _type_name(experiment.get("dataset_type"))],
         ["scenarios considered", experiment.get("scenarios_considered")],
         ["simulator type", _type_name(experiment.get("simulator_type"))],
         ["AVStack type", _type_name(experiment.get("avstack_type"))],
+    ]
+    configuration = manifest.get("configuration", {})
+    simulator = configuration.get("simulator")
+    hosted = simulator.get("external_driving_system") if isinstance(simulator, Mapping) else None
+    if isinstance(hosted, Mapping) and hosted.get("type"):
+        settings.append(["hosted driving system", _type_name(hosted["type"])])
+    settings.extend([
         ["seeds", ", ".join(str(seed) for seed in experiment.get("seeds", []))],
         ["decision steps", "full segment" if decision_steps is None else decision_steps],
         ["executed parts", ", ".join(experiment.get("executed_parts", []))],
         ["comparison groups", experiment.get("comparison_groups")],
-    ])]
-    specifications = manifest.get("configuration", {}).get("attacks", {})
+    ])
+    content = [_table(["setting", "value"], settings)]
+    specifications = configuration.get("attacks", {})
     content.append(_table(["treatment", "attack", "attack type"], [
         [row["treatment"], row.get("attack") or "none",
          _type_name(specifications.get(row.get("attack"), {}).get("type", row.get("attack_type")))
