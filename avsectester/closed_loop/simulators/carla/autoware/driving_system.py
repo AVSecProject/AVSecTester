@@ -1,5 +1,5 @@
 """Own an Autoware process group and run ADAPI readiness checks for each CARLA run."""
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 import json
 import math
@@ -18,11 +18,15 @@ import uuid
 
 import numpy as np
 
+import avsectester
 from avsectester.closed_loop.docker_containers import launch_container, stop_container
+from avsectester.closed_loop.ros_interception.channel import RelayChannel
+from avsectester.closed_loop.ros_interception.declaration import InterceptionDeclaration, private_topic
 from avsectester.closed_loop.simulators.carla.external_driving_system import (
     ExternalDrivingContext,
     ExternalDrivingSession,
 )
+from avsectester.closed_loop.simulators.messages import MessageChannel
 from avsectester.validation import (
     require_nonnegative_integer,
     require_nonnegative_number,
@@ -30,6 +34,9 @@ from avsectester.validation import (
 )
 
 from .container.apply_carla_overrides import OVERRIDE_VERSION
+from .interception import (
+    INTERCEPTION_VERSION, OPERATION_MODE_TOPIC, interception_declaration, launch_changes, validate_topics,
+)
 
 
 _DEFAULT_IMAGE = ("ghcr.io/autowarefoundation/autoware@sha256:"
@@ -40,9 +47,17 @@ _DEFAULT_LAUNCH = {
     "perception_mode": "lidar",
 }
 _FIXED_LAUNCH = {"simulator_type": "carla", "launch_simulator_interface": "false", "rviz": "false"}
+_MOUNTED_DDS = "/dds"
+_CYCLONEDDS_URI = f"file://{_MOUNTED_DDS}/cyclonedds.xml"
+_UNICAST_DDS_URI = f"{_CYCLONEDDS_URI},<General><AllowMulticast>spdp</AllowMulticast></General>"
 _MOUNTED_ADAPTER = "/avsectester-adapter"
 _MOUNTED_RUN = "/avsectester-run"
 _MOUNTED_PUBLISHER = "/avsectester-publisher.py"
+# The relay runs as a module of the read-only framework package, which imports only NumPy.
+_MOUNTED_SOURCE = "/avsectester-src"
+_RELAY_MODULE = "avsectester.closed_loop.ros_interception.relay"
+_RELAY_SOCKET = "interception.sock"
+_REWRITE_SPEC = "interception-rewrites.json"
 _SETUP = (
     'for s in /opt/autoware/setup.bash /opt/ros/*/setup.bash; do '
     '[ -f "$s" ] && source "$s" && break; done; exec "$@"'
@@ -66,6 +81,8 @@ class AutowareDrivingSystem:
 
     The assets, DDS and work directories must be visible under the same paths to the
     experiment and Docker host. The writable model directory is a Docker host path.
+    Modified topics redirect supported producers. Observed topics are read on their public
+    names. Both options default to empty.
     """
 
     def __init__(
@@ -75,7 +92,8 @@ class AutowareDrivingSystem:
         launch_arguments: Mapping[str, str | int | float | bool] | None = None,
         startup_timeout_s: float = 300.0, engage_timeout_s: float = 10.0,
         localization_tolerance_m: float = 0.5, localization_tolerance_deg: float = 5.0,
-        distortion_check_s: float = 12.0,
+        distortion_check_s: float = 12.0, modified_topics: Sequence[str] = (),
+        observed_topics: Sequence[str] = (),
     ) -> None:
         """Configure the Autoware image, host mounts, launch arguments and readiness checks."""
         require_nonnegative_integer(gpu, "gpu")
@@ -109,6 +127,12 @@ class AutowareDrivingSystem:
         self.localization_tolerance_m = localization_tolerance_m
         self.localization_tolerance_deg = localization_tolerance_deg
         self.distortion_check_s = distortion_check_s
+        self.modified_topics, self.observed_topics = validate_topics(modified_topics, observed_topics)
+        self._interception = interception_declaration(self.modified_topics, self.observed_topics)
+        _, intercepted_arguments = launch_changes(self.modified_topics)
+        conflict = self.launch_arguments.keys() & intercepted_arguments.keys()
+        if conflict:
+            raise ValueError(f"Interception supplies Autoware launch argument {sorted(conflict)[0]!r}")
 
     @property
     def carla_publishes_tf(self) -> bool:
@@ -118,7 +142,7 @@ class AutowareDrivingSystem:
     @property
     def identity(self) -> dict[str, Any]:
         """Return result-affecting Autoware settings for preparation compatibility."""
-        return {
+        identity = {
             "image": self.image,
             "launch_arguments": dict(self.launch_arguments),
             "override_version": OVERRIDE_VERSION,
@@ -128,6 +152,16 @@ class AutowareDrivingSystem:
             "localization_tolerance_deg": self.localization_tolerance_deg,
             "distortion_check_s": self.distortion_check_s,
         }
+        if self._interception is not None:
+            identity.update(modified_topics=list(self.modified_topics),
+                            observed_topics=list(self.observed_topics),
+                            interception_version=INTERCEPTION_VERSION)
+        return identity
+
+    @property
+    def interception(self) -> InterceptionDeclaration | None:
+        """Return the selected ROS topic stages and their routing requirements."""
+        return self._interception
 
     def start(self, context: ExternalDrivingContext) -> ExternalDrivingSession:
         """Start one Autoware session asynchronously and return its readiness interface."""
@@ -192,13 +226,28 @@ class _AutowareProcessGroup:
         self._created_directory = False
         self._processes: dict[str, subprocess.Popen[bytes]] = {}
         self._identity: str | None = None
+        declaration = system.interception
+        self._relay_configurations = (
+            declaration.relay_configurations(startup_timeout_s=system.startup_timeout_s)
+            if declaration is not None else []
+        )
+        self.interception_channel: RelayChannel | None = None
+        if self._relay_configurations:
+            self.directory.mkdir(parents=True, exist_ok=False)
+            self._created_directory = True
+            self.interception_channel = RelayChannel(self.directory / _RELAY_SOCKET,
+                                                     relay_count=len(self._relay_configurations))
+            for configuration in self._relay_configurations:
+                role = configuration["role"]
+                self.logs[f"interception_{role}"] = self.directory / f"interception-{role}.log"
         self._thread = Thread(target=self._run, name=self.name, daemon=True)
         self._thread.start()
 
     def _launch(self) -> None:
         system = self.system
-        self.directory.mkdir(parents=True, exist_ok=False)
-        self._created_directory = True
+        if not self._created_directory:
+            self.directory.mkdir(parents=True, exist_ok=False)
+            self._created_directory = True
         map_directory = system.assets_directory / "map_tools" / "maps" / self.town
         source = system.assets_directory / "run" / "carla_traffic_light_state_source.py"
         publisher = system.assets_directory / "run" / "autoware_traffic_light_state_publisher.py"
@@ -214,18 +263,23 @@ class _AutowareProcessGroup:
             return
         mounted_map = f"/maps/{self.town}"
         adapter_directory = Path(__file__).resolve().parent / "container"
+        relay_mount: list[str] = []
+        if system.interception is not None:
+            package = Path(avsectester.__file__).resolve().parent
+            relay_mount = _mount(package, f"{_MOUNTED_SOURCE}/{package.name}")
         command = [
             "docker", "run", "--pull=never", "-d", "--name", self.name,
             "--network", "host", "--gpus", f"device={system.gpu}",
             "-e", "RMW_IMPLEMENTATION=rmw_cyclonedds_cpp",
-            "-e", "CYCLONEDDS_URI=file:///dds/cyclonedds.xml",
+            "-e", f"CYCLONEDDS_URI={_CYCLONEDDS_URI}",
             "-e", f"ROS_DOMAIN_ID={system.ros_domain_id}",
-            *_mount(system.dds_directory, "/dds"),
+            *_mount(system.dds_directory, _MOUNTED_DDS),
             *_mount(map_directory, mounted_map),
             *_mount(publisher, _MOUNTED_PUBLISHER),
             *_mount(adapter_directory, _MOUNTED_ADAPTER),
             *_mount(self.directory, _MOUNTED_RUN),
             *_mount(system.autoware_data_directory, "/root/autoware_data", writable=True),
+            *relay_mount,
             "--entrypoint", "bash", system.image, "-c", "sleep infinity",
         ]
         self._identity = launch_container(command, name=self.name)
@@ -240,11 +294,16 @@ class _AutowareProcessGroup:
         if self.close_requested.is_set():
             return
 
+        launch = {**system.launch_arguments, **_FIXED_LAUNCH, "map_path": mounted_map}
+        adapter = ["python3", "-u", f"{_MOUNTED_ADAPTER}/adapter.py"]
+        if system.interception is not None:
+            launch.update(self._launch_relays())
+            if OPERATION_MODE_TOPIC in system.modified_topics:
+                adapter.extend(("--raw-operation-mode-topic", private_topic(OPERATION_MODE_TOPIC)))
         signal_file = "traffic_light_states.json"
         self._process("traffic_source", [sys.executable, "-I", "-u", str(source),
                       "--host", self.context.host, "--port", str(self.context.port),
                       "--map", str(lanelet), "--output", str(self.directory / signal_file)])
-        launch = {**system.launch_arguments, **_FIXED_LAUNCH, "map_path": mounted_map}
         self._process("autoware", self._container_command([
             "ros2", "launch", "autoware_launch", "e2e_simulator.launch.xml",
             *(f"{key}:={value}" for key, value in launch.items()),
@@ -252,16 +311,44 @@ class _AutowareProcessGroup:
         self._process("traffic_publisher", self._container_command([
             "python3", "-u", _MOUNTED_PUBLISHER, "--input", f"{_MOUNTED_RUN}/{signal_file}",
         ]))
-        self._process("adapter", self._container_command([
-            "python3", "-u", f"{_MOUNTED_ADAPTER}/adapter.py",
-        ], interactive=True), interactive=True)
+        self._process("adapter", self._container_command(adapter, interactive=True), interactive=True)
 
-    def _container_command(self, command: list[str], *, interactive: bool = False) -> list[str]:
+    def _launch_relays(self) -> dict[str, str]:
+        identity = self._identity
+        assert identity is not None
+        edits, arguments = launch_changes(self.system.modified_topics)
+        if edits:
+            (self.directory / _REWRITE_SPEC).write_text(json.dumps(edits))
+            rewrite = _exec(["exec", identity, "python3", f"{_MOUNTED_ADAPTER}/apply_interception.py",
+                             f"{_MOUNTED_RUN}/{_REWRITE_SPEC}"])
+            log = self.directory / "interception-overrides.log"
+            self.logs["interception_overrides"] = log
+            log.write_text(rewrite.stdout + rewrite.stderr)
+            _require_success(rewrite, "Applying Autoware interception launch overrides failed")
+        for configuration in self._relay_configurations:
+            role = configuration["role"]
+            filename = f"interception-{role}.json"
+            (self.directory / filename).write_text(json.dumps(configuration))
+            environment = {"CYCLONEDDS_URI": _UNICAST_DDS_URI} if role == "forwarding" else None
+            self._process(f"interception_{role}", self._container_command([
+                "python3", "-u", "-m", _RELAY_MODULE,
+                "--socket", f"{_MOUNTED_RUN}/{_RELAY_SOCKET}",
+                "--configuration", f"{_MOUNTED_RUN}/{filename}",
+            ], workdir=_MOUNTED_SOURCE, environment=environment))
+        return arguments
+
+    def _container_command(self, command: list[str], *, interactive: bool = False,
+                           workdir: str | None = None,
+                           environment: Mapping[str, str] | None = None) -> list[str]:
         identity = self._identity
         assert identity is not None
         args = ["docker", "exec"]
         if interactive:
             args += ["-i", "-e", "RCUTILS_LOGGING_USE_STDOUT=0"]
+        if workdir is not None:
+            args += ["-w", workdir]
+        for key, value in (environment or {}).items():
+            args += ["-e", f"{key}={value}"]
         return [*args, identity, "bash", "-c", _SETUP, "avsectester-autoware", *command]
 
     def _process(self, name: str, command: list[str], *, interactive: bool = False) -> None:
@@ -276,8 +363,10 @@ class _AutowareProcessGroup:
     def _tail_logs(self, count: int) -> str:
         return "\n".join(f"{self.logs[name].name}:\n{content}"
                          for name in ("overrides", "autoware", "traffic_source",
-                                      "traffic_publisher", "adapter")
-                         if (content := _tail(self.logs[name], count)))
+                                      "traffic_publisher", "adapter",
+                                      "interception_overrides", "interception_forwarding",
+                                      "interception_observation")
+                         if name in self.logs and (content := _tail(self.logs[name], count)))
 
     def _check_processes(self) -> None:
         for name, process in self._processes.items():
@@ -363,6 +452,11 @@ class _AutowareProcessGroup:
                         pass
                 if process.stdout is not None:
                     process.stdout.close()
+        if self.interception_channel is not None:
+            try:
+                self.interception_channel.close()
+            except Exception as error:
+                errors.append(f"Closing ROS interception channel: {error}")
         if errors:
             self.cleanup_error = RuntimeError("\n".join(errors))
 
@@ -417,6 +511,7 @@ class _AutowareSession:
             "route_state": None, "localization_state": None, "mrm_state": None, "mrm_behavior": None,
         }
         self._errors: list[str] = []
+        self._uses_raw_mode = OPERATION_MODE_TOPIC in system.modified_topics
         self._engage_request: dict[str, Any] | None = None
         self._engage_ack: dict[str, Any] | None = None
         self._engage_confirmation: dict[str, Any] | None = None
@@ -424,6 +519,10 @@ class _AutowareSession:
         self._ticks_since_engage = 0
         self._stopped = False
         self._process_group = _AutowareProcessGroup(system, context, town)
+
+    @property
+    def interception_channel(self) -> MessageChannel | None:
+        return self._process_group.interception_channel
 
     def _time(self) -> dict[str, Any]:
         return {"wall_time": datetime.now(timezone.utc).isoformat(),
@@ -488,8 +587,13 @@ class _AutowareSession:
             elif kind == "discovery":
                 self._discovery = event
             elif kind == "mode":
-                self._state.update(mode=event["mode"], autonomous_available=event["available"],
-                                   in_transition=event["in_transition"])
+                self._state["autonomous_available"] = event["available"]
+                if not self._uses_raw_mode or self._engage_request is None:
+                    self._state.update(mode=event["mode"], in_transition=event["in_transition"])
+            elif kind == "raw_mode":
+                self._state["operation_mode_state"] = event["raw"]
+                if self._uses_raw_mode and self._engage_request is not None:
+                    self._state.update(mode=event["mode"], in_transition=event["in_transition"])
             elif kind == "localization":
                 self._state["localization_state"] = event["state"]
             elif kind == "route":
@@ -572,8 +676,9 @@ class _AutowareSession:
     def poll(self, ego_pose: np.ndarray, sim_time: float) -> bool:
         self._sim_time = sim_time
         self._drain()
+        relay_ready = self._check_relay()
         self._raise_failure()
-        if self._phase == "ready":
+        if self._phase == "ready" and relay_ready:
             return True
         now = time.monotonic()
         startup_expired = now >= self._started + self._system.startup_timeout_s
@@ -582,7 +687,9 @@ class _AutowareSession:
             self._fail("No /sensing/lidar/top/pointcloud_raw_ex messages. "
                        "Check the ROS domain ID and DDS network.")
         elif startup_expired:
-            if self._phase == "wait for route SET":
+            if self._phase == "ready" and not relay_ready:
+                self._fail("ROS interception graph did not become ready before startup timed out")
+            elif self._phase == "wait for route SET":
                 self._fail(f"Goal rejected: route did not become SET after {self._goal_attempts} "
                            "goal requests before startup timed out")
             else:
@@ -591,18 +698,32 @@ class _AutowareSession:
                 self._fail(f"Startup timed out after {self._system.startup_timeout_s:g} s{detail}")
         self._raise_failure()
         self._readiness(ego_pose, now)
-        return self._phase == "ready"
+        return self._phase == "ready" and relay_ready
+
+    def _check_relay(self) -> bool:
+        channel = self._process_group.interception_channel
+        if channel is None:
+            return True
+        try:
+            channel.check()
+        except (OSError, RuntimeError) as error:
+            self._fail(str(error))
+        return channel.ready
 
     def engage(self) -> None:
         self._drain()
+        relay_ready = self._check_relay()
         self._raise_failure()
-        if self._phase != "ready":
+        if self._phase != "ready" or not relay_ready:
             raise RuntimeError("Autoware must be ready before requesting autonomous mode")
         self._phase = "engage autonomous mode"
         self._engage_request = self._time()
+        if self._uses_raw_mode:
+            self._state.update(mode=None, in_transition=None)
         self._send("engage")
 
     def check(self) -> None:
+        self._check_relay()
         if self._engage_request is None:
             self._drain()
             self._raise_failure()

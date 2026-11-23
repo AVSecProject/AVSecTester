@@ -3,20 +3,27 @@
 from copy import deepcopy
 from dataclasses import replace
 import gc
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event, Thread
+from time import monotonic, sleep, time_ns
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
+from avsectester.attack.runtime import AttackRuntime, AVStackAttackAction, SensorAttackAction
+from avsectester.closed_loop.avstacks.implemented.external_control import ExternalAVStack
 from avsectester.closed_loop.hooks import Hook, HookSet
+from avsectester.closed_loop.ros_interception.channel import RelayChannel, RelayConnection
+from avsectester.closed_loop.ros_interception.declaration import InterceptedTopic, InterceptionDeclaration
 from avsectester.closed_loop.simulators.carla import CarlaSimulator
 from avsectester.closed_loop.simulators.carla.sensors import SensorAlignmentError
 from avsectester.closed_loop.simulators.base import Initialization
 from avsectester.closed_loop.timing import HistoryRequirement, SensorTiming, TimingConfiguration
 from avsectester.datasets.carla import CarlaDataset, PrescribedMotion
-from avsectester.data_types import ActorState, Control, Observation
-from avsectester.execution.runner import ClosedLoopRunner, RunRequest
-from tests.fakes import CarlaNativeBoundary, ConstantAVStack, FakeExternalDrivingSystem
+from avsectester.data_types import ActorState, Control, Observation, RosMessage
+from avsectester.execution.runner import ClosedLoopRunner, RecordingPolicy, RunRequest
+from tests.fakes import CarlaNativeBoundary, CarlaWorld, ConstantAVStack, FakeExternalDrivingSystem
 
 
 def test_capture_alignment(monkeypatch, carla_dataset):
@@ -510,6 +517,403 @@ def _hosted_simulator(system):
     return CarlaSimulator({"rate": 10, "connect_ip": "localhost", "connect_port": 24880},
                           ground_settle_s=0., camera_warmup_s=0., ego_control="ros2",
                           realtime_factor=100., external_driving_system=system)
+
+
+def _imu_rig_start(start, *names):
+    recipe = start.payload["recipe"]
+    scenario = deepcopy(recipe.scenario)
+    scenario["ego"]["ros_rig"] = [{
+        "name": name, "parent": "ego", "blueprint": "sensor.other.imu", "ros": True,
+        "blueprint_attributes": {"ros_topic_name": f"/{name}"},
+        "transform": {"location": {"x": 1., "y": 0., "z": 0.},
+                      "rotation": {"roll": 0., "pitch": 0., "yaw": 0.}},
+    } for name in names]
+    dataset = CarlaDataset({"scene": replace(recipe, scenario=scenario)})
+    return dataset.scenario_start("scene", dataset.frames("scene")[0])
+
+
+class _Increase(SensorAttackAction):
+    sensor = "imu"
+
+    def __init__(self, duration, increment):
+        self.active_for_us, self.increment = duration, increment
+
+    def apply(self, value, view):
+        assert view.sensor == self.sensor and view.frame >= 0
+        assert view.sensor_from_world.shape == (4, 4)
+        value.fields["count"] += self.increment
+        return value
+
+
+def test_intercepted_messages(hosted_start, tmp_path, monkeypatch):
+    start = _imu_rig_start(hosted_start[0], "imu", "quiet_imu")
+    topics = ("/imu", "/trajectory", "/silent", "/quiet_imu", "/clean")
+    published, engaged, observed_ready = Event(), Event(), Event()
+    forwarding_started, observation_started = Event(), Event()
+    types = ("sensor_msgs/msg/Imu", "autoware_planning_msgs/msg/Trajectory",
+             "std_msgs/msg/Bool", "sensor_msgs/msg/Imu", "std_msgs/msg/Bool")
+    peers = []
+    advanced = []
+
+    class Peer(FakeExternalDrivingSystem):
+        interception = InterceptionDeclaration(tuple(
+            InterceptedTopic(topic, kind, ("/driver",), sensor)
+            for topic, kind, sensor in zip(topics, types, ("imu", None, None, "quiet_imu", None))),
+            observed_topics=("/public",))
+
+        def start(self, context):
+            session = super().start(context)
+            channel = RelayChannel(tmp_path / "msg.sock", relay_count=2)
+            forwarder, observer = RelayConnection(channel.path), RelayConnection(channel.path)
+            peers.extend((forwarder, observer))
+            original_stop, original_engage = session.stop, session.engage
+            responses = []
+
+            def forward():
+                finishing = False
+                while forwarder.wait(3.):
+                    for packet in forwarder.drain():
+                        if packet["kind"] == "reply":
+                            responses.append(packet)
+                            forwarder.send({"kind": "published", "id": packet["id"], "sent_ns": time_ns()})
+                        elif packet["kind"] == "origin":
+                            forwarding_started.set()
+                        elif packet["kind"] == "finish":
+                            finishing = True
+                    if len(responses) == 5:
+                        published.set()
+                    if finishing and len(responses) == 5:
+                        forwarder.send({"kind": "statistics", "role": "forwarding", "topics": {
+                            "/imu": {"pre_origin_messages": 7, "messages": 2, "post_run_messages": 0},
+                        }, "tf": {"paired": 3}})
+                        forwarder.flush(2.)
+                        return
+
+            def observe_peer():
+                while observer.wait(3.):
+                    for packet in observer.drain():
+                        if packet["kind"] == "origin":
+                            observation_started.set()
+                        if packet["kind"] == "finish":
+                            # This subscription frame crossed the runner's terminal boundary.
+                            observer.send({"kind": "observed", "topic": "/public", "type": types[0],
+                                           "fields": {"count": 99}, "received_ns": time_ns()})
+                            observer.send({"kind": "statistics", "role": "observation", "topics": {
+                                "/public": {"pre_origin_messages": 10, "messages": 2,
+                                            "post_run_messages": 0},
+                            }, "tf": {}})
+                            observer.flush(2.)
+                            return
+
+            workers = [Thread(target=target) for target in (forward, observe_peer)]
+            for worker in workers:
+                worker.start()
+
+            def engage():
+                original_engage()
+                for peer in peers:
+                    peer.send({"kind": "ready"})
+                    peer.flush(2.)
+                deadline = monotonic() + 2.
+                while not channel.ready and monotonic() < deadline:
+                    sleep(.001)
+                assert channel.ready
+                engaged.set()
+
+            def stop():
+                for worker in workers:
+                    worker.join(3.)
+                forwarder.close()
+                observer.close()
+                channel.close()
+                original_stop()
+
+            session.interception_channel = channel
+            session.engage = engage
+            session.stop = stop
+            session.replies = responses
+            return session
+
+    class Missing(_Increase):
+        sensor = "quiet_imu"
+
+    class Inject(AttackRuntime):
+        def step(self, context):
+            return (_Increase(0, 10), _Increase(50_000, 20), _Increase(None, 30), Missing(0, 1),
+                    AVStackAttackAction("/trajectory", lambda value, _: replace(value, fields={"count": 9})),
+                    AVStackAttackAction("/silent", lambda value, _: value))
+
+    def observe(value, context):
+        assert isinstance(value, RosMessage) and context.step == 0
+        context.record_output("intercepted_count", value.fields["count"])
+        return replace(value, fields={"count": value.fields["count"] + 1})
+
+    def observe_public(value, context):
+        context.record_output("public_count", value.fields["count"])
+        observed_ready.set()
+        return value
+
+    original_tick = CarlaWorld.tick
+
+    def tick(world):
+        if engaged.is_set():
+            assert not advanced
+            assert forwarding_started.wait(2.) and observation_started.wait(2.)
+            forwarder, observer = peers
+            for identity, index in enumerate((0, 0, 1, 1, 4)):
+                forwarder.send({"kind": "message", "id": identity, "topic": topics[index],
+                                "type": types[index], "fields": {"count": identity},
+                                "stamp_ns": identity, "received_ns": time_ns()})
+            assert published.wait(2.)
+            observer.send({"kind": "observed", "topic": "/public", "type": types[0],
+                           "fields": {"count": 10}, "received_ns": time_ns()})
+            assert observed_ready.wait(2.), "Messages must be processed while CARLA is still stepping"
+            advanced.append(True)
+        return original_tick(world)
+
+    monkeypatch.setattr(CarlaWorld, "tick", tick)
+    config = _hosted_simulator(Peer())
+    recording = RecordingPolicy(topics=("/imu", "/public"))
+    request = RunRequest(1, start=start,
+                         hooks=HookSet((Hook("/imu", observe), Hook("/public", observe_public))),
+                         attacks=(Inject(),), recording=recording)
+    with config.create_runtime() as runtime:
+        log = ClosedLoopRunner().run(runtime, ExternalAVStack(), request)
+    imu = [record for record in log.messages if record.topic == "/imu"]
+    assert [item.original.fields["count"] for item in imu] == [0, 1]
+    assert [item.forwarded.fields["count"] for item in imu] == [61, 52]
+    modified = [record for record in log.messages if record.modifiable]
+    assert len(modified) == 5 and all(record.step == 0 for record in modified)
+    untouched, = [record for record in modified if not record.modified]
+    assert untouched.topic == "/clean" and untouched.relay_sent_ns is not None
+    observed, = [record for record in log.messages if not record.modifiable]
+    assert observed.topic == "/public" and observed.step == 0 and observed.relay_sent_ns is None
+    assert observed.original == RosMessage(types[0], {"count": 10})
+    replies = config.external_driving_system.sessions[-1].replies
+    assert [item.get("fields", {}).get("count") for item in replies] == [61, 52, 9, 9, None]
+    receipts = [action for action in log.steps[0].actions if action["kind"] == "receipt"]
+    assert [item["outcome"] for item in receipts] == ["applied"] * 7 + ["not_applied"] * 2
+    assert {item["reason"] for item in receipts[-2:]} == {
+        "stage_not_executed", "sensor_not_acquired_at_issue_time",
+    }
+    assert [item.value for item in log.steps[0].outputs] == [60, 51, 10]
+    assert "message_s" not in log.steps[0].telemetry["pacing"][0]
+    statistics = log.events[-1].data["interception"]
+    assert statistics["tf"] == {"paired": 3}
+    assert statistics["topics"]["/imu"]["messages"] == 2
+    assert statistics["topics"]["/public"] == {
+        "pre_origin_messages": 10, "messages": 1, "post_run_messages": 1,
+    }
+
+
+def _invalid_message_type(value, context):
+    return replace(value, type="std_msgs/msg/String")
+
+
+def _replace_readonly_message(value, context):
+    return replace(value)
+
+
+def _raise_message_error(value, context):
+    raise ValueError("relay hook sentinel")
+
+
+@pytest.mark.parametrize(("hook", "message"), [
+    pytest.param(Hook("/imu", _invalid_message_type), "/imu.*must return RosMessage", id="message_type"),
+    pytest.param(Hook("/public", _replace_readonly_message), "/public.*read-only",
+                 id="observation_replacement"),
+    pytest.param(Hook("/imu", _raise_message_error), "/imu.*relay hook sentinel", id="hook_exception"),
+])
+def test_intercepted_message_callback_failure_records_completed_decision(
+    hosted_start, tmp_path, monkeypatch, hook, message,
+):
+    start = _imu_rig_start(hosted_start[0], "imu")
+    invoked = Event()
+    peers = []
+    advanced = []
+
+    class Peer(FakeExternalDrivingSystem):
+        interception = InterceptionDeclaration((
+            InterceptedTopic("/imu", "sensor_msgs/msg/Imu", ("/driver",), "imu"),
+        ), observed_topics=("/public",))
+
+        def start(self, context):
+            session = super().start(context)
+            channel = RelayChannel(tmp_path / "failure.sock")
+            peer = RelayConnection(channel.path)
+            peers.append((session, peer))
+            original_stop, original_poll = session.stop, session.poll
+            peer.send({"kind": "ready"})
+
+            def poll(pose, simulation_time):
+                return original_poll(pose, simulation_time) and channel.ready
+
+            def stop():
+                channel.close()
+                peer.close()
+                original_stop()
+
+            session.interception_channel = channel
+            session.poll, session.stop = poll, stop
+            return session
+
+    def invoke(value, context):
+        try:
+            return hook.handler(value, context)
+        finally:
+            invoked.set()
+
+    original_tick = CarlaWorld.tick
+
+    def tick(world):
+        if peers and peers[0][0].engaged_s is not None:
+            assert not advanced
+            peer = peers[0][1]
+            assert peer.wait(2.)
+            assert [frame["kind"] for frame in peer.drain()] == ["origin"]
+            common = {"type": "sensor_msgs/msg/Imu", "fields": {}, "received_ns": time_ns()}
+            peer.send({**common, "kind": "message", "topic": "/imu", "id": 0})
+            peer.send({**common, "kind": "observed", "topic": "/public"})
+            assert invoked.wait(2.)
+            advanced.append(True)
+        return original_tick(world)
+
+    monkeypatch.setattr(CarlaWorld, "tick", tick)
+    request = RunRequest(2, start=start, hooks=HookSet((Hook(hook.stage, invoke),)))
+    with _hosted_simulator(Peer()).create_runtime() as runtime:
+        with pytest.raises(RuntimeError, match=message) as caught:
+            ClosedLoopRunner().run(runtime, ExternalAVStack(), request)
+    log = caught.value.run_log
+    assert log.status == "failed"
+    complete, = log.steps
+    assert complete.step == 0
+    assert advanced == [True]
+    failure, = (event for event in log.events if event.kind == "failure")
+    assert failure.data["message"] == str(caught.value)
+
+
+def test_message_and_world_callbacks_are_serialized(hosted_start):
+    class Peer(FakeExternalDrivingSystem):
+        interception = InterceptionDeclaration((), observed_topics=("/input",))
+
+    entering = Event()
+    attempted = Event()
+    message_entered = Event()
+    received = []
+
+    def world(value, context):
+        entering.set()
+        assert attempted.wait(2.)
+        assert not message_entered.wait(.1)
+        received.append("world")
+        return value
+
+    def message(value, context):
+        message_entered.set()
+        received.append("message")
+        return value
+
+    with _hosted_simulator(Peer()).create_runtime() as runtime:
+        runtime.reset(hosted_start[0])
+        dispatcher = HookSet((
+            Hook("simulator.step.pre", world),
+            Hook("/input", message),
+        )).session(runtime, ExternalAVStack())
+        state = runtime.state()
+
+        def receive():
+            assert entering.wait(2.)
+            attempted.set()
+            return dispatcher.emit_message(
+                "/input", RosMessage("std_msgs/msg/Bool", {"data": True}), state, step=0, outputs=[])
+
+        with dispatcher.activate(), ThreadPoolExecutor(max_workers=1) as executor:
+            reply = executor.submit(receive)
+            dispatcher.emit("simulator.step.pre", None)
+            assert reply.result(timeout=2.).fields == {"data": True}
+    assert received == ["world", "message"]
+
+
+def test_messages_use_the_actions_active_while_the_tick_is_blocked(hosted_start, tmp_path, monkeypatch):
+    start = _imu_rig_start(hosted_start[0], "imu")
+    sent, replies, engaged = [], [], []
+    received = Event()
+
+    class Peer(FakeExternalDrivingSystem):
+        interception = InterceptionDeclaration(
+            (InterceptedTopic("/imu", "sensor_msgs/msg/Imu", ("/carla",), "imu"),))
+
+        def start(self, context):
+            session = super().start(context)
+            channel = RelayChannel(tmp_path / "boundary.sock")
+            peer = RelayConnection(channel.path)
+            original_engage, original_stop = session.engage, session.stop
+
+            def respond():
+                finishing = False
+                while peer.wait(3.):
+                    for packet in peer.drain():
+                        if packet["kind"] == "reply":
+                            replies.append(packet)
+                            received.set()
+                            peer.send({"kind": "published", "id": packet["id"], "sent_ns": time_ns()})
+                        finishing |= packet["kind"] == "finish"
+                    if finishing and len(replies) == len(sent):
+                        peer.send({"kind": "statistics", "topics": {}, "tf": {}})
+                        peer.flush(2.)
+                        return
+
+            worker = Thread(target=respond)
+            worker.start()
+
+            def engage():
+                original_engage()
+                peer.send({"kind": "ready"})
+                peer.flush(2.)
+                while not channel.ready:
+                    sleep(.001)
+                engaged.append(peer)
+
+            def stop():
+                worker.join(3.)
+                peer.close()
+                channel.close()
+                original_stop()
+
+            session.interception_channel = channel
+            session.engage, session.stop = engage, stop
+            return session
+
+    original_tick = CarlaWorld.tick
+
+    def tick(world):
+        result = original_tick(world)
+        if engaged:
+            # CARLA publishes sensor data while the tick runs, before the client regains control.
+            peer = engaged[0]
+            sent.append(len(sent))
+            peer.send({"kind": "message", "id": sent[-1], "topic": "/imu", "type": "sensor_msgs/msg/Imu",
+                       "fields": {"count": 0}, "stamp_ns": world.frame, "received_ns": time_ns()})
+            peer.flush(2.)
+            assert received.wait(2.), "Framework must reply before the tick returns"
+            received.clear()
+        return result
+
+    monkeypatch.setattr(CarlaWorld, "tick", tick)
+
+    class EachDecision(AttackRuntime):
+        def step(self, context):
+            return (_Increase(0, 10 * (context.step + 1)),)
+
+    request = RunRequest(2, start=start, attacks=(EachDecision(),), recording=RecordingPolicy(topics=("/imu",)))
+    with _hosted_simulator(Peer()).create_runtime() as runtime:
+        log = ClosedLoopRunner().run(runtime, ExternalAVStack(), request)
+    assert len(sent) == 2
+    assert [(record.step, record.forwarded.fields["count"]) for record in log.messages] == [(0, 10), (1, 20)]
+    assert [packet.get("fields", {}).get("count") for packet in replies] == [10, 20]
+    receipts = [(step.step, action["outcome"], action["reason"]) for step in log.steps
+                for action in step.actions if action["kind"] == "receipt"]
+    assert receipts == [(0, "applied", None), (1, "applied", None)]
 
 
 def test_hosted_driver_lifecycle(hosted_start, monkeypatch):

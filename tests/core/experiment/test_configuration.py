@@ -454,6 +454,13 @@ def test_hook_and_treatment_configuration(tmp_path):
             runtime.reset()
             assert session.observe(Observation(0., 0, ego_speed=2.)).ego_speed == 5.
 
+    topic = "/planning/trajectory"
+    spec["hooks"][0]["stage"] = topic
+    assert load_configuration(spec).hooks(7).hooks[0].stage == topic
+    spec["runs"]["recording"] = {"topics": [topic]}
+    with pytest.raises(ValueError, match="recording.topics requires modified or observed topics"):
+        load_configuration(spec)
+
 
 def test_metric_configuration():
     spec = specification()

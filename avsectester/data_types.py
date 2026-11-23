@@ -39,6 +39,19 @@ class PointCloud:
 
 
 @dataclass(frozen=True)
+class RosMessage:
+    """One ROS message as its interface type and ordinary field values.
+
+    The type is a qualified ROS name such as ``sensor_msgs/msg/PointCloud2``.
+    Nested ROS messages are mappings. Numeric sequences use NumPy arrays.
+    No ROS runtime or generated message class is needed to read or replace these values.
+    """
+
+    type: str
+    fields: dict[str, Any]
+
+
+@dataclass(frozen=True)
 class ActorState:
     """An actor's world-from-origin pose, world velocity and optional bounding-box geometry.
 
@@ -405,6 +418,7 @@ def write_sensor_data(observation: Observation, sensor: str, data: Any) -> Obser
 
 __all__ = [
     'PointCloud',
+    'RosMessage',
     'ActorState',
     'Unavailable',
     'TargetSpec',

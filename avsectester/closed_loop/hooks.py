@@ -11,13 +11,14 @@ from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import ExitStack, contextmanager
 from copy import copy, deepcopy
 from dataclasses import dataclass, field, replace
+from threading import RLock
 from typing import Any, Protocol, Self, TYPE_CHECKING
 
 import numpy as np
 
 from avsectester.validation import require_nonnegative_integer
 from avsectester.data_types import (
-    Control, Observation, RecordedOutput, StateEstimate, WorldSnapshot, is_external_control,
+    Control, Observation, RecordedOutput, RosMessage, StateEstimate, WorldSnapshot, is_external_control,
 )
 
 if TYPE_CHECKING:
@@ -72,7 +73,7 @@ class UnsupportedStageError(ValueError):
 EXTERNAL_CONTROL_INPUT_ERROR = (
     "Native sensor data is published by the simulator directly to the external driving system. "
     "Framework observation and sensor changes do not reach the external driving system. See "
-    "docs/development/TODO.md#native-ros-2-sensor-attacks"
+    "docs/guides/simulators.md#managed-ros-topics"
 )
 
 
@@ -205,10 +206,6 @@ class Hook:
             raise TypeError("Hook handler must be callable or provide transform(value, context)")
 
 
-def _invoke(handler: Any, value: Any, context: StageContext) -> Any:
-    return getattr(handler, "transform", handler)(value, context)
-
-
 class HookSet:
     """Reusable ordered hooks, independent of the driving system's ObservationPipeline.
 
@@ -251,10 +248,11 @@ class HookSet:
         validate_command_compatibility(simulator_runtime, avstack, self)
         if is_external_control(simulator_runtime.command_modes):
             prohibited = {hook.stage for hook in self.hooks
-                          if not hook.stage.startswith("simulator.")}
+                          if not hook.stage.startswith("simulator.")
+                          and hook.stage not in simulator_runtime.message_stages}
             if prohibited or self._observation_pipeline(avstack).localizer is not None:
                 raise UnsupportedStageError(
-                    "External control only supports simulator world hooks. "
+                    "External control supports world hooks and configured ROS topic stages. "
                     + EXTERNAL_CONTROL_INPUT_ERROR)
         available = HookDispatcher.CORE_STAGES | simulator_runtime.supported_stages | avstack.supported_stages
         if self._observation_pipeline(avstack).localizer is not None:
@@ -287,6 +285,7 @@ class HookDispatcher:
 
     def __init__(self, hook_set: HookSet, simulator_runtime: SimulatorRuntime, avstack: AVStack) -> None:
         self.hook_set = hook_set
+        self.callback_lock = RLock()
         self.context = RunContext(simulator_runtime, avstack, np.random.default_rng(hook_set.seed))
         self.observation_pipeline = hook_set._observation_pipeline(avstack)
         self.step = 0
@@ -318,10 +317,11 @@ class HookDispatcher:
             for handler in self.participants:
                 close = getattr(handler, "close", None)
                 if close is not None:
-                    resources.callback(close)
+                    resources.callback(self._close_participant, close)
                 reset = getattr(handler, "reset", None)
                 if reset is not None:
-                    reset(self.context)
+                    with self.callback_lock:
+                        reset(self.context)
             self._active = True
             yield self
         except BaseException as error:
@@ -336,6 +336,15 @@ class HookDispatcher:
                     raise
                 failure.add_note(f"Hook cleanup also failed: {error!r}")
 
+    def _close_participant(self, close: Callable[[], None]) -> None:
+        with self.callback_lock:
+            close()
+
+    def invoke(self, handler: Any, value: Any, context: StageContext) -> Any:
+        """Invoke a stage handler while holding the session's callback lock."""
+        with self.callback_lock:
+            return getattr(handler, "transform", handler)(value, context)
+
     def stage_context(self, stage: str, sensor: str | None = None) -> StageContext:
         """Capture current physical state and model-visible values for a callback."""
         physical_state = self.context.simulator_runtime.state()
@@ -349,7 +358,11 @@ class HookDispatcher:
         """Snapshot a named output. Reject recording outside an active dispatcher scope."""
         if not self._active:
             raise RuntimeError("Outputs can only be recorded from an active hook callback")
-        self.outputs.append(RecordedOutput(
+        self._record_output(self.outputs, context, name, value)
+
+    @staticmethod
+    def _record_output(outputs: list[RecordedOutput], context: StageContext, name: str, value: Any) -> None:
+        outputs.append(RecordedOutput(
             name=name, value=deepcopy(value), step=context.step, stage=context.stage,
             frame=context.physical_state.frame, t=context.sim_time, sensor=context.sensor,
         ))
@@ -366,6 +379,33 @@ class HookDispatcher:
 
     def emit(self, stage: str, value: Any, sensor: str | None = None) -> Any:
         """Transform a value through the supported stage's ordered callbacks."""
+        return self._emit_value(stage, value, sensor)
+
+    def emit_message(self, stage: str, value: RosMessage, state: WorldSnapshot, *, step: int,
+                     outputs: list[RecordedOutput]) -> RosMessage:
+        """Run native message hooks using the active decision and detached physical state."""
+        specification = self.context.simulator_runtime.message_stages.get(stage)
+        if specification is None:
+            raise UnsupportedStageError(f"Message stage is not configured: {stage!r}")
+
+        def record(context: StageContext, name: str, datum: Any) -> None:
+            self._record_output(outputs, context, name, datum)
+
+        for handler in self._handlers.get(stage, ()):
+            context = StageContext(self.context, step, stage, deepcopy(state), specification.sensor,
+                                   _output_recorder=record)
+            supplied = value if specification.modifiable else deepcopy(value)
+            result = self.invoke(handler, supplied, context)
+            if not specification.modifiable:
+                if result is not supplied:
+                    raise TypeError(f"{stage} is read-only. Return the input RosMessage.")
+            elif not isinstance(result, RosMessage) or result.type != value.type:
+                raise TypeError(f"{stage} handlers must return RosMessage({value.type!r}, ...)")
+            else:
+                value = result
+        return value
+
+    def _emit_value(self, stage: str, value: Any, sensor: str | None) -> Any:
         if stage not in self.available:
             raise ValueError(f"Emitted an unsupported stage: {stage!r}")
         # Context describes the current input, including replacements by earlier handlers.
@@ -374,7 +414,8 @@ class HookDispatcher:
         elif isinstance(value, Control):
             self.control = value
         for handler in self._handlers.get(stage, ()):
-            value = _invoke(handler, value, self.stage_context(stage, sensor))
+            context = self.stage_context(stage, sensor)
+            value = self.invoke(handler, value, context)
             expected = {
                 "sensors.post": Observation,
                 "localization.pre": Observation,
@@ -420,10 +461,12 @@ class HookDispatcher:
                 # Feedback is observational. One plugin's bookkeeping must not
                 # change another plugin's raw measurement or executed command.
                 context = self.stage_context("step.end")
-                callback(replace(
+                context = replace(
                     context,
                     observation=self.context.simulator_runtime.copy_observation(self.observation),
-                ))
+                )
+                with self.callback_lock:
+                    callback(context)
 
     @staticmethod
     def _require(value: Any, expected: type, stage: str) -> None:

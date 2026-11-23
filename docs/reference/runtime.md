@@ -69,6 +69,11 @@ only frames ending exactly then. It may contain no sensor payloads. The terminal
 physical state and any due raw frames but performs no further attack step, localization or
 driving inference.
 
+`RunRequest.terminate_when` receives the completed decision before the runner writes it.
+The predicate runs under the decision handoff lock and returns true to end the run at that
+boundary. The runner stores a separate snapshot of the record with any `not_applied` message
+receipts added when the interval closes.
+
 `SimulatorRuntime.configure_timing` sets clocks before reset. `advance_interval` propagates one
 control interval and reports poses on `pose_reporting_interval_us`. `capture_at` reads scheduled
 sensor frames using their interpolated physical start/end poses. It never adds integration
@@ -349,6 +354,47 @@ and `simulator.step.*` handlers return `None`. A component pre-hook returns
 `CallInputs(args, kwargs)`. A post-hook returns the replacement output. `NativeHook` adapts an
 explicitly registered avstack-library hook.
 
+### ROS message stages
+
+Hosted drivers can use original ROS topic names as message stages. See
+[managed ROS topics](../guides/simulators.md#managed-ros-topics) for topic selection and startup
+forwarding. After the final decision, the relay forwards messages on modifiable topics
+unchanged and counts all received messages.
+
+The channel reads and processes messages on the same thread. A single reentrant lock
+serializes user callbacks with message processing and decision handoff. Messages arriving
+during a callback wait for the lock. The channel writes replies directly to the relay that
+sent the message. The runner checks processing and channel failures at each decision
+boundary and at run completion.
+
+For a modifiable message, processing saves the original value, applies any raw sensor
+actions, then runs the topic hooks and `AVStackAttackAction` handlers in stage order. A
+replacement must be a `RosMessage` of the same ROS type. Messages on modifiable topics use
+the same processing path during the run. The relay publishes the original serialized
+message when unchanged.
+Hooks on observed topics can read and record the value. Each hook must return its input object.
+Edits to that copy stay within the hook.
+
+A `RosMessage` contains its qualified ROS type and a mapping of fields. Nested messages use
+mappings and numerical sequences use NumPy arrays. `PointCloud2.data` is a structured array
+with the original point fields, offsets and data types. A modified cloud's dimensions and row
+stride are derived from this array. `OccupancyGrid.data` is an `int8` array matching the map
+dimensions.
+
+The active decision when processing starts supplies `StageContext.step`. The arrival time and
+`physical_state` come from the latest completed CARLA tick snapshot available to the thread.
+A raw sensor action receives the rig's sensor view placed using ego's pose in that snapshot.
+Use `record_output` to attach evidence to the owning decision. Message hooks cannot perform
+world operations.
+
+A topic's `AVStackAttackAction` applies to every message processed while its decision is active.
+`SensorAttackAction.active_for_us=0` applies to the first processed message from that sensor
+while its decision is active. If a decision ends without a match, the corresponding receipt
+is `not_applied` with reason `stage_not_executed` or `sensor_not_acquired_at_issue_time`.
+A positive sensor duration applies to arrivals in `[issue, issue + duration)`. A duration of
+`None` lasts through the run. Each application has a receipt with the stage and arrival time.
+See [RunLog](#runlog) for message timing and payload records.
+
 ## Contexts and lifecycle
 
 `OnlineContext` exposes `step`, `stage`, `sim_time`, `frame`, `decision_time_us`,
@@ -428,6 +474,31 @@ warmup captures, numbered chronologically from `-N` to `-1`. A `DeliveredAcquisi
 `None` means the acquisition was not produced by the scheduler. `RunLog.captures` and
 `read_table(..., stream="captures")` expose this stream separately from decisions.
 
+Runs with modifiable or observed ROS topics store messages in `RunLog.messages` and
+`read_table(..., stream="messages")`. Each `MessageRecord` stores the original topic, ROS type,
+decision, optional header timestamp, simulation arrival time and whether the message changed.
+`modifiable` marks the messages on the relay path. Other messages come from read-only
+subscriptions and have an empty `relay_sent_ns`.
+
+The wall-clock fields `relay_received_ns`, `framework_received_ns` and `processing_started_ns`
+mark reception at the relay, reception at the framework, and the start of processing.
+`processing_s` records processing duration. For modifiable topics, `relay_sent_ns` marks
+publication of the result. These fields separate relay-to-framework transfer, callback lock
+wait, processing, and return through the relay. [`recording.topics`](configuration.md#recording)
+selects payloads to store. An unchanged message stores only `original`. A changed message
+stores both `original` and `forwarded`. Metadata-only records omit both values.
+`RunLog.read(load_sensor_data=False)` reads the metadata without these payloads.
+Logs without a message stream have an empty message list.
+
+The termination event combines the forwarding and observation counts in `interception`.
+Each topic reports `pre_origin_messages` received during startup and reset before the origin,
+`messages` handled during decisions and `post_run_messages` received after message processing
+ends. Use the counts to compare message delivery against a native run. The summary also
+includes `modified_messages` and `max_queue_length`. For messages republished by the relay,
+`latency_ns` reports the receive-to-publish `mean`, `p95` and `max`. Topics without a relay
+publication have an empty latency summary. TF statistics record forwarded and modified
+transforms, timestamp matches and fallbacks to the latest pose correction.
+
 The model observation uses each frame's final payload, calibration and estimated pose from
 `delivered(sensor_id)` after localization and `observation` hooks. Owner-field edits apply to the
 latest frame in a sensor's delivery. Earlier frames retain their own processed values. Recording
@@ -494,7 +565,7 @@ operation with the original exception as its cause. Aborting discards waiting ba
 Published parts remain readable and readers ignore `*.open` files.
 
 `RunLog.read(load_records=False)` reads the manifest for the metadata, status and format version.
-The returned log keeps its path and has empty steps, events and captures.
+The returned log keeps its path and has empty steps, events, captures and messages.
 
 `SerializationRegistry` handles JSON-compatible encoding and independent in-memory snapshots.
 Registered dataclasses reconstruct on read. Native values decode to ordinary data. Import and
@@ -536,6 +607,7 @@ recorder signatures are in the [Python API](python-api.md).
 
 Unsupported environments are rejected during validation. Unsupported hook stages and command
 modes fail each run at its start, producing exit 1. A failing decision stops
-attack runtimes, records unapplied actions and cleans run resources. A requested action without
-an applied receipt is not evidence of an applied change. An incomplete log is not a
-completed run.
+attack runtimes, records unapplied actions and cleans run resources. If decision handoff raises
+an error, the runner writes the completed decision before raising the error. A requested
+action without an applied receipt is not evidence of an applied change. An incomplete log is
+not a completed run.

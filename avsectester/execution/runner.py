@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from copy import deepcopy
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from dataclasses import asdict, dataclass, field, fields, is_dataclass, replace
 import math
 from pathlib import Path
@@ -17,29 +17,36 @@ from avsectester.closed_loop.environment import (
 )
 from avsectester.closed_loop.avstacks.base import AVStack
 from avsectester.data_types import (
-    Control, Observation, RecordedOutput, WorldSnapshot, is_external_control, without_sensor_payloads,
+    Control, Observation, RecordedOutput, WorldSnapshot,
+    is_external_control, without_sensor_payloads,
 )
 from avsectester.runlog import CaptureRecord, Recorder, RunLog, StepRecord
 from avsectester.closed_loop.hooks import EXTERNAL_CONTROL_INPUT_ERROR, HookSet
-from avsectester.closed_loop.simulators.base import DeploymentPlan, SimulatorRuntime
+from avsectester.closed_loop.simulators.base import (
+    DeploymentPlan, SimulatorRuntime,
+)
 from avsectester.closed_loop.timing import (
     TimingConfiguration, DelayBuffer, validate_decision_period,
     reporting_timestamps, is_force_gt, is_handoff,
 )
+from avsectester.closed_loop.simulators.messages import require_absolute_topic
 from avsectester.execution.scheduler import EventQueue
 from avsectester.execution.acquisitions import AcquisitionBuffer
 
 if TYPE_CHECKING:
     from avsectester.attack.runtime import OnlineContext
+    from avsectester.closed_loop.simulators.messages import MessageStage
+    from avsectester.execution.message_processor import MessageProcessor
 
 
 @dataclass(frozen=True)
 class RecordingPolicy:
-    """Choose sensor payloads without sampling commands or physical state."""
+    """Choose sensor and native ROS message payloads to save."""
 
     sensor_ids: tuple[str, ...] = ()
     representations: tuple[str, ...] = ("model_input",)
     every_n_captures: int = 1
+    topics: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         require_positive_integer(self.every_n_captures, "every_n_captures")
@@ -47,6 +54,18 @@ class RecordingPolicy:
             raise ValueError("representations must contain raw and/or model_input")
         if len(set(self.sensor_ids)) != len(self.sensor_ids):
             raise ValueError("sensor_ids must be unique")
+        if isinstance(self.topics, str):
+            raise ValueError("recording.topics must contain absolute ROS topic names")
+        for topic in self.topics:
+            require_absolute_topic(topic)
+        if len(set(self.topics)) != len(self.topics):
+            raise ValueError("recording.topics must be unique")
+
+    def validate_topics(self, message_stages: Mapping[str, MessageStage]) -> None:
+        """Require each recorded topic to have a configured native message stage."""
+        unavailable = set(self.topics) - message_stages.keys()
+        if unavailable:
+            raise ValueError(f"recording.topics requires modified or observed topics: {sorted(unavailable)}")
 
     def observation(self, value: Observation, record_index: int, representation: str) -> Observation:
         """Retain the selected representation's payloads at the requested recording index."""
@@ -60,7 +79,9 @@ class RecordingPolicy:
 class RunRequest:
     """One caller-owned simulator/driving-system run, independent of experiment orchestration.
 
-    ``terminate_when`` receives each recorded decision and ends a successful run when true.
+    ``terminate_when`` receives each completed decision and ends a successful run when true.
+    It sees the decision's contents before recording, except for unapplied message-action
+    receipts added when the interval closes. A handoff error still records the completed decision.
     ``retain_steps`` and ``retain_sensor_data`` choose what the returned log keeps in memory,
     as in ``Recorder``. Setting either to False requires ``output_path``.
     """
@@ -307,6 +328,7 @@ class _ClosedLoopRun:
         self.release_owned_resources = release_owned_resources
         self.resources_released = False
         self.current_step = -1
+        self.messages: MessageProcessor | None = None
         self.terminated_by_condition = False
         self.flush_capture_records: Callable[[], Any] | None = None
         self.origin_us: int
@@ -349,6 +371,8 @@ class _ClosedLoopRun:
                 f"observations required by {type(self.avstack).__name__}")
         validate_environment(self.request.environment, self.sim.simulator)
         self.external_control = is_external_control(self.sim.command_modes)
+        self.message_stages = self.sim.message_stages
+        self.request.recording.validate_topics(self.message_stages)
         if self.external_control and self.request.environment["sensors"]:
             raise ValueError("External control does not support sensor environments during a run. "
                              + EXTERNAL_CONTROL_INPUT_ERROR)
@@ -359,16 +383,19 @@ class _ClosedLoopRun:
             output_recorder=self._record_attack_output)
         # Validate before world reset or handlers acquire native resources.
         available = self.hooks.validate_stages(self.sim, self.avstack)
-        self.attack_dispatch.validate(available, world_only=self.external_control)
+        self.attack_dispatch.validate(available, world_only=self.external_control,
+                                      message_stages=self.message_stages)
         if self.request.attacks:
             self.hooks = self.hooks.with_hooks(self.attack_dispatch.hooks)
         self.session = self.hooks.session(self.sim, self.avstack)
+        self.attack_dispatch.bind_callback_lock(self.session.callback_lock)
         self.deployment = self.request.deployment or DeploymentPlan(self.hooks.setup_ticks)
         if self.deployment.ticks < self.hooks.setup_ticks:
             raise ValueError("Deployment plan is shorter than the participants require")
         self.recorder = self._supplied_recorder or Recorder(
             path=self.request.output_path, retain_steps=self.request.retain_steps,
             retain_sensor_data=self.request.retain_sensor_data,
+            record_messages=bool(self.message_stages),
             metadata={
                 **dict(self.request.metadata),
                 "avstack_type": type(self.avstack).__name__,
@@ -379,9 +406,27 @@ class _ClosedLoopRun:
                     "sensor_ids": list(self.request.recording.sensor_ids),
                     "representations": list(self.request.recording.representations),
                     "every_n_captures": self.request.recording.every_n_captures,
+                    **({"topics": list(self.request.recording.topics)} if self.message_stages else {}),
                 },
             },
         )
+
+    def _start_messages(self) -> None:
+        if not self.message_stages:
+            return
+        from avsectester.execution.message_processor import MessageProcessor
+
+        channel = self.sim.message_channel
+        if channel is None:
+            raise RuntimeError("The simulator did not provide its configured ROS message channel")
+        self.messages = MessageProcessor(channel, self.sim, self.session, self.attack_dispatch,
+                                         frozenset(self.request.recording.topics))
+        self.messages.start(has_decisions=bool(self.request.decision_steps))
+
+    def _record_messages(self) -> None:
+        if self.messages is not None:
+            for record in self.messages.drain_records():
+                self.recorder.record_message(record)
 
     def _actions(self) -> list[dict[str, Any]]:
         records = self.attack_dispatch.records()
@@ -415,11 +460,12 @@ class _ClosedLoopRun:
         if failure is not None:
             raise failure
 
-    def _context(self, stage: str, observation: Observation | None = None) -> OnlineContext:
+    def _context(self, stage: str, observation: Observation | None = None, *,
+                 step: int | None = None) -> OnlineContext:
         from avsectester.attack.runtime import OnlineContext
 
         clock = self.sim.clock
-        step = max(self.current_step, 0)
+        step = max(self.current_step, 0) if step is None else step
         period = self.decision_period_us
         decision_time = self.origin_us + step * (period or 0)
         return OnlineContext(
@@ -549,42 +595,98 @@ class _ClosedLoopRun:
         self.pre_state = self.sim.state()
         offset = time_us - self.origin_us
         decision, remainder = divmod(offset, self.period)
-        if remainder == 0 and self.pending is not None:
-            self._finish_step()
+        if remainder == 0:
+            if self.pending is not None:
+                next_step = decision if decision < self.request.decision_steps else None
+                self._finish_step(next_step)
+            elif self.request.decision_steps:
+                context = self._context("step", self.raw, step=0)
+                with self.session.callback_lock:
+                    self._check_messages()
+                    if self.request.attacks:
+                        self.attack_dispatch.issue_step(context, self.attack_dispatch.plan_step(context))
+                    self._switch_decision(0)
         self.terminal = 0 < self.request.decision_steps <= decision or self.terminated_by_condition
-        if remainder == 0 and not self.terminal:
-            self.current_step = decision if self.request.decision_steps else -1
-            self.session.step, self.session.control = decision, None
-            if self.request.attacks and self.request.decision_steps:
-                self.attack_dispatch.step(self._context("step", self.raw))
-                self.attack_dispatch.discard_missing_sensor_actions(self.raw, self.sim)
+        if remainder == 0 and not self.terminal and self.request.attacks and self.request.decision_steps:
+            self.attack_dispatch.discard_missing_sensor_actions(self.raw, self.sim)
 
-    def _finish_step(self) -> None:
+    def _check_messages(self) -> None:
+        if self.messages is not None:
+            self.messages.check()
+
+    def _switch_decision(self, step: int | None) -> None:
+        if step is not None:
+            self.current_step = step
+            self.session.step, self.session.control = step, None
+        if self.messages is not None:
+            self.messages.switch(step)
+
+    def _finish_step(self, next_step: int | None) -> None:
         assert self.raw is not None
         assert self.pending is not None
-        if self.request.attacks:
-            self.attack_dispatch.record_end(self._context("step.end", self.raw))
-        feedback_error = None
-        try:
+        failure: BaseException | None = None
+
+        @contextmanager
+        def preserve_failure(operation: str) -> Iterator[None]:
+            nonlocal failure
+            try:
+                yield
+            except BaseException as error:
+                if failure is None:
+                    failure = error
+                elif error is not failure:
+                    failure.add_note(f"{operation} also failed: {error!r}")
+
+        with preserve_failure("Step feedback"):
             self.session.after_step(self.raw)
-        except BaseException as error:
-            feedback_error = error
         try:
-            record = self.recorder.record_step(replace(
-                self.pending, physical_post=self.recorder.snapshot(self.pre_state),
-                actions=self._actions(), outputs=self.session.outputs,
-                telemetry={**self.pending.telemetry, **self.sim.interval_telemetry()}))
+            record = replace(self.pending, physical_post=self.recorder.snapshot(self.pre_state),
+                             telemetry={**self.pending.telemetry, **self.sim.interval_telemetry()})
+            finishing = self._context("step.end", self.raw) if self.request.attacks else None
+            upcoming = (self._context("step", self.raw, step=next_step)
+                        if next_step is not None and self.request.attacks else None)
+            with self.session.callback_lock:
+                record = replace(record, actions=self._actions(), outputs=list(self.session.outputs))
+                with preserve_failure("Message processing"):
+                    self._check_messages()
+                predicate = self.request.terminate_when
+                if failure is None and predicate is not None:
+                    with preserve_failure("Termination predicate"):
+                        self.terminated_by_condition = predicate(record)
+                output_count = len(self.session.outputs)
+                planned = []
+                if failure is None and not self.terminated_by_condition and upcoming is not None:
+                    with preserve_failure("Next decision planning"):
+                        planned = self.attack_dispatch.plan_step(upcoming)
+                if failure is not None or self.terminated_by_condition:
+                    upcoming = next_step = None
+                # Planning outputs belong to the next decision or, on failure, its cleanup.
+                next_outputs = self.session.outputs[output_count:]
+                if finishing is not None:
+                    with preserve_failure("Message interval finalization"):
+                        self.attack_dispatch.finish_interval(finishing, final=next_step is None)
+                    with preserve_failure("Attack handoff"):
+                        self.attack_dispatch.record_end(finishing)
+                    record = replace(record, actions=self._actions())
+                self._drain()
+                self.session.outputs.extend(next_outputs)
+                if failure is None and upcoming is not None:
+                    with preserve_failure("Next decision installation"):
+                        self.attack_dispatch.issue_step(upcoming, planned)
+                with preserve_failure("Decision transition"):
+                    self._switch_decision(next_step if failure is None else None)
+            with preserve_failure("Message recording"):
+                self._record_messages()
+            with preserve_failure("Decision recording"):
+                self.recorder.record_step(record)
         except BaseException as error:
-            if feedback_error is not None:
-                feedback_error.add_note(f"Completed decision logging also failed: {error!r}")
-                raise feedback_error
+            if failure is not None and error is not failure:
+                failure.add_note(f"Decision handoff also failed: {error!r}")
+                raise failure from error
             raise
-        self._drain()
         self.pending = None
-        if feedback_error is not None:
-            raise feedback_error
-        if self.request.terminate_when is not None and self.request.terminate_when(record):
-            self.terminated_by_condition = True
+        if failure is not None:
+            raise failure
 
     def _on_frame(self, time_us: int, sensors: Sequence[str]) -> None:
         assert self.raw is not None
@@ -784,8 +886,22 @@ class ClosedLoopRunner:
                     run._prepare()
                     run._read_history()
                     run._initialize_events()
+                    run._start_messages()
+                    if run.messages is not None:
+                        run_resources.callback(run.messages.close)
                     run._loop()
+                    run._check_messages()
+                    if run.messages is not None:
+                        run.messages.finish()
+                        run.messages.close()
+                        run._record_messages()
                 except BaseException as error:
+                    if run.messages is not None:
+                        run.messages.close()
+                        try:
+                            run._record_messages()
+                        except BaseException as cleanup:
+                            error.add_note(f"Message logging also failed: {cleanup!r}")
                     if run.attack_dispatch.started:
                         try:
                             run._cleanup_attacks()
@@ -797,6 +913,8 @@ class ClosedLoopRunner:
                         run._cleanup_attacks()
             run._release()
             termination_details = dict(run.sim.termination_details)
+            if run.messages is not None and run.messages.statistics is not None:
+                termination_details["interception"] = run.messages.statistics
             if run.terminated_by_condition:
                 termination_details["terminated_by_condition"] = True
             if run.flush_capture_records is not None:

@@ -2,6 +2,7 @@
 
 The host owns sequencing, deadlines and readiness checks.
 """
+import argparse
 import json
 import math
 from queue import Empty, Queue
@@ -22,7 +23,11 @@ from nav_msgs.msg import Odometry
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, qos_profile_sensor_data
+from rosidl_runtime_py.convert import message_to_ordereddict
 from sensor_msgs.msg import PointCloud2
+
+
+_API_OPERATION_MODE = "/api/operation_mode/state"
 
 
 def _emit(event: str, **fields: Any) -> None:
@@ -42,11 +47,13 @@ def _read_commands(inbox: Queue[dict[str, Any] | None]) -> None:
 
 
 class _Adapter(Node):
-    def __init__(self) -> None:
+    def __init__(self, raw_operation_mode_topic: str | None = None) -> None:
         super().__init__("avsectester_autoware_adapter")
         state_qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
-        self.create_subscription(OperationModeState, "/api/operation_mode/state", self._mode,
-                                 state_qos)
+        self.create_subscription(OperationModeState, _API_OPERATION_MODE, self._mode, state_qos)
+        if raw_operation_mode_topic is not None:
+            self.create_subscription(OperationModeState, raw_operation_mode_topic,
+                                     self._raw_mode, state_qos)
         self.create_subscription(LocalizationInitializationState,
                                  "/api/localization/initialization_state", self._localization,
                                  state_qos)
@@ -68,6 +75,10 @@ class _Adapter(Node):
         _emit("mode", mode=_enum(message.mode),
               available=bool(message.is_autonomous_mode_available),
               in_transition=bool(message.is_in_transition))
+
+    def _raw_mode(self, message: OperationModeState) -> None:
+        _emit("raw_mode", mode=_enum(message.mode), in_transition=bool(message.is_in_transition),
+              raw=message_to_ordereddict(message))
 
     def _localization(self, message: LocalizationInitializationState) -> None:
         _emit("localization", state=_enum(message.state))
@@ -149,8 +160,11 @@ class _Adapter(Node):
 
 
 def main() -> None:
-    rclpy.init()
-    node = _Adapter()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--raw-operation-mode-topic")
+    options, ros_args = parser.parse_known_args()
+    rclpy.init(args=[sys.argv[0], *ros_args])
+    node = _Adapter(options.raw_operation_mode_topic)
     inbox: Queue[dict[str, Any] | None] = Queue()
     Thread(target=_read_commands, args=(inbox,), daemon=True).start()
     _emit("connected")

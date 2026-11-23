@@ -1,6 +1,6 @@
 """Selection and preparation use isolated public service sessions."""
 
-from dataclasses import replace
+from dataclasses import fields, replace
 
 import numpy as np
 import pytest
@@ -21,6 +21,7 @@ from avsectester.closed_loop.simulators.base import DeploymentPlan
 from avsectester.closed_loop.timing import HistoryRequirement, SensorTiming, TimingConfiguration
 from avsectester.rendering import ObjectVisibility
 from avsectester.maps import ScenarioMap
+from avsectester.serialization import DEFAULT_REGISTRY
 from tests.fakes import (
     CarlaNativeBoundary, ConstantAVStack, HistoryAVStack, MemoryDataset, MemorySimulator, MinimalAttack,
 )
@@ -179,7 +180,12 @@ def test_rollout():
         limited = session.rollout(replace(request, terminate_when=terminate))
         assert limited.status == "completed"
         assert len(limited.steps) == 1
-        assert received == limited.steps
+        received_step, = received
+        saved_step = limited.steps[0]
+        for item in fields(saved_step):
+            actual = DEFAULT_REGISTRY.encode(getattr(received_step, item.name))
+            expected = DEFAULT_REGISTRY.encode(getattr(saved_step, item.name))
+            assert actual == expected, item.name
         assert limited.steps[0].physical_post.frame == 2
         with pytest.raises(ValueError, match="seed must match"):
             session.rollout(replace(request, seed=8))

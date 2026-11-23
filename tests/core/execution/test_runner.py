@@ -241,8 +241,7 @@ def test_run_termination(tmp_path):
             stopped.append(context.stage)
 
     def terminate(record):
-        assert recorder.log.steps[-1] is record
-        received.append(record.step)
+        received.append(record)
         return record.step == 2
 
     request = RunRequest(5, attacks=(ActiveAttack(),), terminate_when=terminate)
@@ -253,7 +252,11 @@ def test_run_termination(tmp_path):
         )
         assert resource.closed
         assert stopped == ["stop"]
-        assert received == [0, 1, 2]
+        assert [record.step for record in received] == [0, 1, 2]
+        assert [record.actions for record in received] == [record.actions for record in log.steps]
+        assert [record.outputs for record in received] == [record.outputs for record in log.steps]
+        assert [record.executed_command for record in received] == [
+            record.executed_command for record in log.steps]
         assert log.status == "completed"
         assert [step.step for step in log.steps] == [0, 1, 2]
         saved = RunLog.read(tmp_path / "terminated")
@@ -267,6 +270,52 @@ def test_run_termination(tmp_path):
         assert full.status == "completed"
         assert len(full.steps) == 5
         assert all("terminated_by_condition" not in event.data for event in full.events)
+
+
+@pytest.mark.parametrize("failing_callback", ["after_step", "terminate_when", "plan_step"])
+def test_run_records_completed_decision_on_handoff_failure(failing_callback):
+    failure = RuntimeError("decision handoff failed")
+    planned = []
+
+    def fail():
+        raise failure
+
+    callbacks = dict.fromkeys(("after_step", "terminate_when", "plan_step"), lambda: None)
+    callbacks[failing_callback] = fail
+
+    class Feedback(Plugin):
+        def transform(self, observation, context):
+            return observation
+
+        def after_step(self, context):
+            callbacks["after_step"]()
+
+    class Plan(AttackRuntime):
+        def step(self, context):
+            if context.step > 0:
+                planned.append(context.step)
+                context.record_output("planned_step", context.step)
+                callbacks["plan_step"]()
+            return ()
+
+    def terminate(record):
+        callbacks["terminate_when"]()
+        return False
+
+    request = RunRequest(2, hooks=HookSet((Hook("observation", Feedback()),)),
+                         attacks=(Plan(),), terminate_when=terminate)
+    with MemorySimulator().create_runtime() as runtime:
+        with pytest.raises(RuntimeError, match="decision handoff failed") as caught:
+            ClosedLoopRunner().run(runtime, ConstantAVStack(), request)
+    assert caught.value is failure
+    log = caught.value.run_log
+    assert log.status == "failed"
+    complete, = log.steps
+    assert complete.step == 0
+    assert not any(output.name == "planned_step" for output in complete.outputs)
+    cleanup, = (event for event in log.events if event.kind == "attack_cleanup")
+    assert [output.value for output in cleanup.data["outputs"]
+            if output.name == "planned_step"] == planned
 
 
 def test_run_with_hooks():

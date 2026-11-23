@@ -202,6 +202,7 @@ class ExperimentConfiguration:
         if dataset_step is not None:
             validate_decision_period(self.runs.timing, seconds_to_microseconds(dataset_step))
         self.simulator.validate_timing(self.runs.timing)
+        self.runs.recording.validate_topics(self.simulator.message_stages)
         if dataset_step is not None and dataset_step != self.simulator.decision_time_step:
             raise ValueError("dataset.time_step does not match simulator.decision_time_step")
         if self.split is not None and not isinstance(self.split, SplitConfiguration):
@@ -383,12 +384,13 @@ def _runs(value: Any, directory: Path, device: str | None = None) -> RunsConfigu
         if "every_n_steps" in recording:
             raise ValueError("runs.recording.every_n_steps was replaced by every_n_captures. "
                              "Recording intervals now count each sensor's acquisitions")
-        _keys(recording, {"sensor_ids", "representations", "every_n_captures"}, "runs.recording")
+        _keys(recording, {"sensor_ids", "representations", "every_n_captures", "topics"}, "runs.recording")
         recording = RecordingPolicy(
             sensor_ids=_sequence(recording.get("sensor_ids", ()), "runs.recording.sensor_ids"),
             representations=_sequence(recording.get("representations", ("model_input",)),
                                       "runs.recording.representations"),
             every_n_captures=recording.get("every_n_captures", 1),
+            topics=_sequence(recording.get("topics", ()), "runs.recording.topics"),
         )
     output = value.get("output")
     if output is not None:
@@ -623,7 +625,9 @@ def _hooks(value: Any, directory: Path, device: str | None = None) -> HookConfig
         if not isinstance(entry, Mapping):
             raise TypeError("Each hook must be Hook or a mapping")
         _keys(entry, {"stage", "type", "options", "native_hook", "imports"}, "hook")
-        stage = _name(entry.get("stage"), "Hook stage")
+        raw_stage = entry.get("stage")
+        stage = (raw_stage if isinstance(raw_stage, str) and raw_stage.startswith("/")
+                 else _name(raw_stage, "Hook stage"))
         imports = _sequence(entry.get("imports", ()), "hook imports")
         for module in imports:
             if not isinstance(module, str) or not module:

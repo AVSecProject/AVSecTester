@@ -32,11 +32,14 @@ from avsectester.data_types import ActorState
 from avsectester.datasets.base import FrameData, FrameReference, ScenarioStart
 from avsectester.geometry.poses import interpolate_transform, validated_transform, validated_vector
 from avsectester.validation import require_nonnegative_integer
-from avsectester.data_types import Control, Observation, WorldSnapshot, is_external_control, validate_command_modes
+from avsectester.data_types import (
+    Control, Observation, WorldSnapshot, is_external_control, validate_command_modes,
+)
 
 if TYPE_CHECKING:
     import numpy as np
 
+    from avsectester.closed_loop.simulators.messages import MessageChannel, MessageStage
     from avsectester.geometry.cameras import Camera
     from avsectester.rendering import (
         CompositePlan, CompositeResult, Harmonizer, MeshAsset, ObjectAsset, ObjectComposition, ObjectVisibility, PlacedObject,
@@ -416,6 +419,11 @@ class Simulator(ABC):
         return frozenset({"simulator.setup", "simulator.step.pre", "simulator.step.post"})
 
     @property
+    def message_stages(self) -> Mapping[str, MessageStage]:
+        """Declare native message stages by their public topic names."""
+        return {}
+
+    @property
     def identity(self) -> Mapping[str, Any]:
         """Configuration identity used to check saved-preparation compatibility."""
         identity = {"simulator": type(self).__name__, "version": self.simulator_version,
@@ -644,6 +652,26 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
     @property
     def supported_stages(self) -> frozenset[str]:
         return self.simulator.supported_stages
+
+    @property
+    def message_stages(self) -> Mapping[str, MessageStage]:
+        """Native message stages declared by the configured simulator."""
+        return self.simulator.message_stages
+
+    @property
+    def message_channel(self) -> MessageChannel | None:
+        """Transport for native message stages in this open run, if configured."""
+        return None
+
+    @property
+    def message_snapshot(self) -> tuple[int, WorldSnapshot] | None:
+        """Latest completed native step's clock and detached state for message processing."""
+        return None
+
+    @property
+    def message_sensor_poses(self) -> Mapping[str, np.ndarray]:
+        """Fixed ego-relative transforms of the native sensors used by message stages."""
+        return {}
 
     @property
     def identity(self) -> Mapping[str, Any]:

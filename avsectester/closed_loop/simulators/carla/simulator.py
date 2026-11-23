@@ -19,6 +19,10 @@ from avsectester.closed_loop.simulators.base import (
     ClockSnapshot, Initialization, SensorGeometry, SensorView, Simulator, SimulatorRuntime,
 )
 from avsectester.closed_loop.hooks import EXTERNAL_CONTROL_INPUT_ERROR
+from avsectester.closed_loop.ros_interception.declaration import (
+    InterceptionDeclaration, private_topic,
+)
+from avsectester.closed_loop.simulators.messages import MessageChannel, MessageStage
 from avsectester.datasets.base import FrameData, SensorDataReference
 from avsectester.datasets.carla import (
     CARLA_WORLD_SETTINGS, CARLA_CLIENT_RUNTIME_SETTINGS, CARLA_CLIENT_SUBSTEP_SETTINGS,
@@ -135,6 +139,11 @@ class _TickPacing:
                 "max": float(samples.max())}
 
 
+def _interception(system: ExternalDrivingSystem | None) -> InterceptionDeclaration | None:
+    # Hosted systems implement the protocol structurally and may omit the optional member.
+    return getattr(system, "interception", None)
+
+
 class CarlaSimulator(Simulator):
     """CARLA runtime settings, with scene content supplied by a dataset recipe.
 
@@ -207,6 +216,8 @@ class CarlaSimulator(Simulator):
             raise ValueError("ego_control='ros2' requires realtime_factor")
         if external_driving_system is not None and ego_control != "ros2":
             raise ValueError("external_driving_system requires ego_control='ros2'")
+        if _interception(external_driving_system) is not None and realtime_factor is None:
+            raise ValueError("ROS interception requires pacing through realtime_factor")
         if external_driving_system is not None and external_startup_s:
             raise ValueError("external_startup_s applies only without external_driving_system, "
                              "which holds until the session is ready")
@@ -303,6 +314,16 @@ class CarlaSimulator(Simulator):
         system = self.external_driving_system
         return True if system is None else system.carla_publishes_tf
 
+    @property
+    def message_stages(self) -> Mapping[str, MessageStage]:
+        """Configured message stages, keyed by their original ROS topic name."""
+        interception = _interception(self.external_driving_system)
+        return {} if interception is None else interception.stages
+
+    @property
+    def supported_stages(self) -> frozenset[str]:
+        return super().supported_stages | frozenset(self.message_stages)
+
     def validate_start(self, start):
         if start is None:
             raise ValueError("CARLA reset requires ScenarioStart")
@@ -364,6 +385,9 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         self._interval_pacing: list[dict[str, float | int | bool]] = []
         self._external_session: ExternalDrivingSession | None = None
         self._external_report: dict[str, Any] | None = None
+        self._message_channel: MessageChannel | None = None
+        self._rig_poses: dict[str, np.ndarray] = {}
+        self._message_snapshot: tuple[int, WorldSnapshot] | None = None
 
     def _queue_native_command(self, command):
         self._native_commands.append(command)
@@ -464,6 +488,18 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         elif self._external_report is not None:
             details["external_driving_system"] = dict(self._external_report)
         return details
+
+    @property
+    def message_channel(self) -> MessageChannel | None:
+        return self._message_channel
+
+    @property
+    def message_snapshot(self) -> tuple[int, WorldSnapshot] | None:
+        return self._message_snapshot
+
+    @property
+    def message_sensor_poses(self) -> Mapping[str, np.ndarray]:
+        return self._rig_poses
 
     @property
     def native(self) -> dict[str, Any]:
@@ -678,6 +714,22 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         ego_cfg = deepcopy(scenario["ego"])
         replay_ego_cfg = deepcopy(ego_cfg)
         ros_rig = ego_cfg.pop("ros_rig", ())
+        raw_topics = {topic: stage.sensor for topic, stage in self.message_stages.items()
+                      if self._native_ros2_run and stage.modifiable and stage.sensor is not None}
+        raw_sensors = set(raw_topics.values())
+        if raw_sensors:
+            for spec in ros_rig:
+                if spec["name"] not in raw_sensors:
+                    continue
+                attrs = spec["blueprint_attributes"]
+                original = attrs["ros_topic_name"]
+                topics = {topic for topic, sensor in raw_topics.items() if sensor == spec["name"]}
+                if not topics or not all(topic == original or topic.startswith(f"{original}/") for topic in topics):
+                    raise ValueError(f"ROS rig sensor {spec['name']!r} does not publish configured topics: {topics}")
+                attrs["ros_topic_name"] = private_topic(original)
+            missing = raw_sensors - {spec["name"] for spec in ros_rig}
+            if missing:
+                raise ValueError(f"ROS rig lacks intercepted sensors: {sorted(missing)}")
         for sensor in ego_cfg.get("sensors", ()):
             # Native sensor_tick can shift its phase by a physics tick. Acquire every tick
             # and retain only the scheduler's exact source IDs and capture times.
@@ -686,7 +738,8 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         configure_recipe_blueprints({"ego": ego_cfg})
         self.ego = CARLA.build(ego_cfg, default_args={"client": self.client})
         self._resources.callback(self.ego.destroy)
-        _spawn_ros_rig(self.client.world, self.ego.actor, ros_rig, self._resources)
+        self._rig_poses = _spawn_ros_rig(self.client.world, self.ego.actor, ros_rig, self._resources,
+                                        record_poses=bool(raw_sensors))
         replay["ego"] = _spawn_config(replay_ego_cfg, self.ego, "vehicle")
         for spec in scenario.get("npcs", []):
             npc = CARLA.build(dict(spec), default_args={"client": self.client})
@@ -758,6 +811,11 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         session = system.start(context)
         self._external_session = session
         self._resources.callback(self._stop_external_session, session)
+        if self.message_stages:
+            channel = session.interception_channel
+            if channel is None:
+                raise RuntimeError("The hosted driver did not provide its ROS interception channel")
+            self._message_channel = channel
 
     def _poll_external_session(self) -> bool:
         assert self._external_session is not None
@@ -938,6 +996,9 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
 
         A reset without initialization has no expected ego state to compare.
         """
+        if self.message_channel is not None:
+            assert self._origin_clock_us is not None
+            self._message_snapshot = self._origin_clock_us, self.state()
         actual = self._capture_frame_data(self._start.frame)
         if initialization is not None:
             if initialization.provenance.get("deployment_ticks", 0) != self._deployment.ticks:
@@ -1029,6 +1090,7 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         origin = self._interval.start_us
         count = self.simulator.decision_ticks
         for index in range(1, count + 1):
+            timestamp = origin + index * tick
             if control is None and self._recipe_replay.pre_roll:
                 self._replay_tick()
             else:
@@ -1039,9 +1101,10 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
                 self._recipe_replay.after_step()
             if self._external_session is not None:
                 self._external_session.check()
-            timestamp = origin + index * tick
             self.invalidate_state()
             truth = self.state()
+            if self.message_channel is not None:
+                self._message_snapshot = timestamp, truth
             due = self._due_sensors(timestamp - self._origin_clock_us)
             # Endpoint views read truth after simulator.step.post, like a decision capture.
             self._interval_ticks[timestamp] = self._capture_tick(
@@ -1529,6 +1592,9 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
             self._native_commands.clear()
             self._last_tick_end_wall = None
             self._interval_pacing.clear()
+            self._message_channel = None
+            self._message_snapshot = None
+            self._rig_poses = {}
             for cache in (self._recorded_ticks, self._interval_ticks):
                 cache.clear()
 

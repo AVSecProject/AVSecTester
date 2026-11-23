@@ -201,6 +201,44 @@ geometry, actor poses and available depth for sensor composition. See
 [Image insertion](../examples/image-insertion.md) and
 [Physical patch](../examples/physical-patch.md) for the supplied deployment paths.
 
+### Hosted Autoware messages
+
+In a hosted CARLA experiment, add `/sensing/imu/tamagawa/imu_raw` and `/planning/trajectory`
+to the driver's `modified_topics` for these actions. `SensorAttackAction.sensor` names the rig
+entry. `AVStackAttackAction.stage` names the original output topic. Return the actions from
+`AttackRuntime.step`. Both receive and return `RosMessage` objects. For read-only hooks, add
+the topic to `observed_topics`.
+
+User callbacks run serially with message-stage hooks and actions. Time spent in a callback can
+delay messages waiting to be processed. See
+[message-stage timing](../reference/runtime.md#ros-message-stages).
+
+```python
+from avsectester.attack import AVStackAttackAction, SensorAttackAction
+from avsectester.data_types import RosMessage
+
+
+class IncreaseImuUncertainty(SensorAttackAction):
+    sensor = "imu"
+
+    def apply(self, data, view):
+        covariance = data.fields["angular_velocity_covariance"]
+        if covariance[0] < 0:
+            return data
+        return RosMessage(data.type, {**data.fields, "angular_velocity_covariance": 2 * covariance})
+
+
+def stationary_trajectory(message, context):
+    points = [{**point, "longitudinal_velocity_mps": 0.0} for point in message.fields["points"]]
+    return RosMessage(message.type, {**message.fields, "points": points})
+
+
+actions = [
+    IncreaseImuUncertainty(),
+    AVStackAttackAction("/planning/trajectory", stationary_trajectory),
+]
+```
+
 ## Insert a world object
 
 Return `InsertObject` from setup to include an object in the first capture. The action registers

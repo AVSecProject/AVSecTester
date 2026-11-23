@@ -201,15 +201,13 @@ collection records.
 Repeat runs with asynchronous driving systems and read treatment effects alongside within-treatment
 variation and [the noise floor](evaluation.md#reports-and-statistics).
 
-During a run, only world actions and simulator world hooks can affect the external system.
-The runner rejects sensor environments and hooks outside simulator world stages before the
-first tick. Hook behavior cannot be classified as read-only, so this check is conservative.
-Non-world attack actions are rejected before application because observation changes only
-affect the framework's copy of the server-published data.
+World actions and simulator world hooks can affect the external system. Hosted Autoware can
+also [observe or modify ROS topics](#managed-ros-topics). The runner rejects sensor
+environments and hooks on other non-world stages because changes to a framework observation do
+not reach native subscribers.
 Framework-composited `InsertObject` assets are unavailable during a native run. Native physical
 patch panels are supported. Offline selection and rendering can use sensor environments,
 sensor actions and framework-composited objects on their returned observations.
-Sensor attacks need a [ROS 2 relay](../development/TODO.md#native-ros-2-sensor-attacks).
 Background traffic is managed on the external-system side. The framework is the only tick
 initiator. Other clients must not tick the world. See
 [ROS 2 server setup](../getting-started/installation.md#native-ros-2).
@@ -239,6 +237,57 @@ Missing override files fail startup. The framework sets the traffic-light phase 
 and keeps responsibility for pacing, actor control during setup and the run's decision limit.
 See [installation](../getting-started/installation.md#managed-autoware) and
 [configuration](../reference/configuration.md#managed-carla-driving-systems).
+
+#### Managed ROS topics
+
+During closed-loop execution, each entry in `modified_topics` has its producers publish to a
+private topic prefixed with `/avsectester/intercepted`. The forwarding process republishes the
+processed message on its original topic for every subscriber. Its topic data uses unicast to
+avoid fragmenting large multicast messages across the bridge. Before engagement, the process
+checks that the private topic has the expected producers and matching QoS, and that it is the
+public topic's sole publisher.
+
+The observation process subscribes to the public topics listed in `observed_topics` using the
+container's DDS settings. The subscriptions use best-effort reliability, volatile durability
+and a keep-last queue that retains recent samples when processing falls behind. Existing
+publishers and subscribers keep their native data path.
+
+The framework starts message processing after simulator reset and before the decision loop.
+Before that point, forwarded topics pass through unchanged and both processes count receipts
+during startup and reset. Messages processed before the first actions are issued belong to
+the first decision without those actions.
+
+The pinned Autoware 1.9.0 integration supports modifying these topics individually.
+
+| Layer | Modifiable topics |
+| --- | --- |
+| `sensors` | `/sensing/lidar/top/pointcloud_raw_ex`, `/sensing/imu/tamagawa/imu_raw`, `/sensing/gnss/pose_with_covariance` |
+| `sensing` | `/sensing/lidar/concatenated/pointcloud`, `/sensing/imu/imu_data`, `/sensing/vehicle_velocity_converter/twist_with_covariance` |
+| `localization` | `/localization/kinematic_state`, `/localization/acceleration` |
+| `perception` | `/perception/object_recognition/objects`, `/perception/obstacle_segmentation/pointcloud`, `/perception/occupancy_grid_map/map`, `/perception/traffic_light_recognition/traffic_signals` |
+| `planning` | `/planning/trajectory` |
+| `control` | `/control/command/control_cmd`, `/control/trajectory_follower/lateral/predicted_trajectory`, `/system/operation_mode/state` |
+
+- Selecting `/sensing/gnss/pose_with_covariance` redirects both GNSS covariance producers.
+  The relay also forwards the companion `/sensing/gnss/pose` unchanged.
+- Selecting `/localization/kinematic_state` projects odometry changes onto the EKF's `map` to
+  `base_link` transform at the same timestamp. Replacement odometry preserves its timestamp.
+  Each transform waits for matching odometry and uses the latest correction if a later sample
+  arrives first or the wait expires. Other TF publishers keep their native topics.
+- Selecting `/system/operation_mode/state` sends the processed state to ADAPI and other native
+  subscribers. Readiness and the engagement request use ADAPI during startup forwarding.
+  After the origin, the framework confirms engagement using the original private mode state.
+  The telemetry `autonomous_available` comes from ADAPI. Post-origin `mode` and
+  `in_transition` come from the original private state when this topic is modifiable.
+
+Forwarding adds latency. A node driven by the CARLA simulation clock may process a message
+a simulation step later. All treatments in an experiment share the same forwarding settings
+for comparison. See
+[message-stage timing](../reference/runtime.md#ros-message-stages).
+
+Vehicle status and clock provide the physical and time references. Modification is available for
+the listed topics. Other layer boundaries and diagnostic inputs can be observed when they
+publish a message type.
 
 ## NuRec
 

@@ -19,8 +19,11 @@ from time import monotonic
 from typing import Any, TYPE_CHECKING
 from weakref import ref
 
-from avsectester.data_types import Detection, Observation, without_sensor_payloads
-from avsectester.serialization import DEFAULT_REGISTRY, SerializationRegistry
+from avsectester.data_types import Detection, Observation, RosMessage, without_sensor_payloads
+from avsectester.serialization import (
+    DEFAULT_REGISTRY, SerializationRegistry, array_dtype_fields, decode_array,
+)
+from avsectester.structured_arrays import item_bytes
 
 if TYPE_CHECKING:
     from avsectester.closed_loop.simulators.base import SensorGeometry
@@ -123,6 +126,39 @@ class EventRecord:
     data: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class MessageRecord:
+    """One message processed at a modifiable or observed ROS topic.
+
+    The arrival time is on the simulation clock. The source stamp is the message header time,
+    if available. Wall-clock times in nanoseconds mark when the relay received the message,
+    when the framework read it and began processing it, and, for modifiable topics, when the
+    relay published the result. Processing is in seconds. Stored unchanged messages use
+    ``original`` and leave ``forwarded`` empty. Both payloads are empty when only metadata is
+    recorded.
+    """
+
+    topic: str
+    type: str
+    step: int
+    stamp_ns: int | None
+    arrival_time_us: int
+    relay_received_ns: int
+    framework_received_ns: int
+    processing_started_ns: int
+    processing_s: float
+    relay_sent_ns: int | None
+    modified: bool
+    original: RosMessage | None = None
+    forwarded: RosMessage | None = None
+    modifiable: bool = True
+
+
+_STREAM_RECORDS = {"steps": StepRecord, "events": EventRecord,
+                   "captures": CaptureRecord, "messages": MessageRecord}
+_MESSAGE_PAYLOADS = ("original", "forwarded")
+
+
 @dataclass
 class RunLog:
     """Captured records, optionally backed by an incrementally written directory."""
@@ -134,6 +170,7 @@ class RunLog:
     path: Path | None = None
     captures: list[CaptureRecord] = field(default_factory=list)
     format_version: int = 2
+    messages: list[MessageRecord] = field(default_factory=list)
 
     @classmethod
     def read(
@@ -153,8 +190,9 @@ class RunLog:
         ``load_sensor_data=False`` reads raw and model observations with empty
         ``sensor_data`` and leaves their recorded payloads on disk. Acquisition times,
         poses and calibration remain available in ``deliveries`` without its payloads.
+        It reads ROS message metadata without the original and forwarded values.
         ``load_records=False`` reads the manifest metadata, status and format version
-        without reading any step, event or capture records. ``load_payloads`` also
+        without reading any step, event, capture or message records. ``load_payloads`` also
         controls whether binary values referenced by the manifest metadata are loaded.
         """
         root = Path(path)
@@ -180,6 +218,11 @@ class RunLog:
                 row = {key: _without_encoded_sensor_data(value)
                        if key in _OBSERVATION_FIELDS else value for key, value in row.items()}
             log.captures.append(CaptureRecord(**{key: decoder.decode(value) for key, value in row.items()}))
+        if (root / "messages").is_dir():
+            columns = None if load_sensor_data else [f.name for f in fields(MessageRecord)
+                                                       if f.name not in _MESSAGE_PAYLOADS]
+            for row in read_table(root, columns=columns, stream="messages").to_pylist():
+                log.messages.append(MessageRecord(**{key: decoder.decode(value) for key, value in row.items()}))
         return log
 
 
@@ -193,6 +236,8 @@ class Recorder:
     ``retain_sensor_data=False`` retains steps whose raw and model observations have
     empty ``sensor_data``. The written records keep their sensor data. Step delivery
     payloads reference their acquisition records rather than repeating their contents.
+    ``record_messages=True`` enables ROS message records, including optional payloads.
+    With ``retain_sensor_data=False``, message bodies are kept only in the written records.
 
     A directory must be empty. A background writer publishes completed chunks in order.
     Recording waits if two chunks are already queued. ``finish`` waits for publication
@@ -211,6 +256,7 @@ class Recorder:
         payload_shard_bytes: int = 64 * 1024 * 1024,
         retain_steps: bool = True,
         retain_sensor_data: bool = True,
+        record_messages: bool = False,
     ) -> None:
         if chunk_steps <= 0 or chunk_bytes <= 0 or payload_shard_bytes <= 0:
             raise ValueError("Chunk limits must be positive")
@@ -226,10 +272,12 @@ class Recorder:
         )
         self.retain_steps = retain_steps
         self.retain_sensor_data = retain_sensor_data
+        self._record_messages = record_messages
         self._finished = False
         self._last_step = -1
         self._writer = (
-            _Writer(self.log.path, self.registry, chunk_steps, chunk_bytes, payload_shard_bytes)
+            _Writer(self.log.path, self.registry, chunk_steps, chunk_bytes, payload_shard_bytes,
+                    record_messages=record_messages)
             if self.log.path is not None else None
         )
         if self._writer is not None:
@@ -305,6 +353,21 @@ class Recorder:
             self._writer.append("captures", {f.name: getattr(snapshot, f.name) for f in fields(snapshot)})
         if self.retain_steps:
             self.log.captures.append(snapshot if self.retain_sensor_data else _record_payloads(snapshot, retain_sensor_data=False))
+        return snapshot
+
+    def record_message(self, record: MessageRecord) -> MessageRecord:
+        """Snapshot and append one intercepted message to an enabled message stream."""
+        self._check_open()
+        if not self._record_messages:
+            raise ValueError("Recording messages requires record_messages=True")
+        if not isinstance(record, MessageRecord):
+            raise TypeError("record_message requires MessageRecord")
+        snapshot: MessageRecord = self.snapshot(record)
+        if self._writer is not None:
+            self._writer.append("messages", {f.name: getattr(snapshot, f.name) for f in fields(snapshot)})
+        if self.retain_steps:
+            self.log.messages.append(snapshot if self.retain_sensor_data else
+                                     replace(snapshot, original=None, forwarded=None))
         return snapshot
 
     def flush(self) -> None:
@@ -386,11 +449,11 @@ def read_table(
     pa, pq = _arrow()
     root = Path(path)
     _read_manifest(root)
-    if stream not in {"steps", "events", "captures"}:
-        raise ValueError("stream must be steps, events or captures")
+    if stream not in _STREAM_RECORDS:
+        raise ValueError("stream must be steps, events, captures or messages")
     parts = sorted((root / stream).glob("part-*.parquet"))
     if not parts:
-        record_type = {"steps": StepRecord, "events": EventRecord, "captures": CaptureRecord}[stream]
+        record_type = _STREAM_RECORDS[stream]
         known = {f.name for f in fields(record_type)}
         wanted = list(columns) if columns is not None else [f.name for f in fields(record_type)]
         unknown = set(wanted) - known
@@ -414,7 +477,8 @@ def read_table(
         table = pq.read_table(part, columns=available)
         for name in wanted:
             if name not in table.column_names:
-                table = table.append_column(name, pa.nulls(table.num_rows, type=schema.field(name).type))
+                column = pa.nulls(table.num_rows, type=schema.field(name).type)
+                table = table.append_column(name, column)
         table = table.select(wanted)
         if not table.schema.equals(selected):
             try:
@@ -484,6 +548,11 @@ class _Encoder:
         return {_TAG: "dynamic", "kind": kind, kind: encoded}
 
     def encode(self, value: Any) -> Any:
+        if isinstance(value, RosMessage):
+            # Topic bodies have unrelated field types. Keep their shape records inside a
+            # scalar so different ROS interfaces can share a chunk without a union schema.
+            return {_TAG: "ros_message", "type": value.type,
+                    "body": json.dumps(self.encode(value.fields), separators=(",", ":"))}
         encoded = self.registry.encode(
             value, encode_child=self.encode, encode_field=self._record_field,
             encode_leaf=self._payload_value,
@@ -499,10 +568,16 @@ class _Encoder:
             return {_TAG: "bytes", **self.payloads.write(memoryview(value), value)}
         import numpy as np
 
-        array = np.ascontiguousarray(value)
+        if not value.dtype.fields:
+            array = np.ascontiguousarray(value)
+            data = memoryview(array.reshape(-1)).cast("B")
+        elif value.flags.c_contiguous:
+            data = memoryview(value.reshape(-1).view(np.uint8))
+        else:
+            data = memoryview(item_bytes(value))
         return {
-            _TAG: "array", "dtype": value.dtype.str, "shape": list(value.shape),
-            **self.payloads.write(memoryview(array.reshape(-1)).cast("B"), value),
+            _TAG: "array", **array_dtype_fields(value), "shape": list(value.shape),
+            **self.payloads.write(data, value),
         }
 
     def _record_field(self, name: str, value: Any) -> Any:
@@ -528,11 +603,9 @@ class _Decoder:
             data = self._payload(value)
             if tag == "bytes":
                 return data
-            import numpy as np
-            dtype = np.dtype(value["dtype"])
-            if dtype.hasobject or dtype.fields:
-                raise ValueError("Unsafe array dtype in RunLog payload")
-            return np.frombuffer(data, dtype=dtype).reshape(value["shape"]).copy()
+            return decode_array(data, value, "RunLog payload")
+        if tag == "ros_message":
+            return RosMessage(value["type"], self.decode(json.loads(value["body"])))
         if tag == "dynamic":
             kind = value["kind"]
             if kind == "null":
@@ -646,20 +719,22 @@ class _WriteBatch:
 
 
 class _Writer:
-    def __init__(self, root: Path, registry: SerializationRegistry, rows: int, size: int, shard: int) -> None:
+    def __init__(self, root: Path, registry: SerializationRegistry, rows: int, size: int, shard: int,
+                 *, record_messages: bool) -> None:
         self.pa, self.pq = _arrow()
         root.mkdir(parents=True, exist_ok=True)
         if any(root.iterdir()):
             raise FileExistsError(f"RunLog output directory must be empty: {root}")
-        for name in ("steps", "events", "captures", "payloads"):
+        self.streams = ("steps", "events", "captures") + (("messages",) if record_messages else ())
+        for name in (*self.streams, "payloads"):
             (root / name).mkdir()
         self.root = root
         self.rows, self.size = rows, size
         self.payloads = _PayloadWriter(root, shard)
         self.encoder = _Encoder(registry, self.payloads)
-        self.buffers: dict[str, list[dict[str, Any]]] = {"steps": [], "events": [], "captures": []}
-        self.counts = {"steps": 0, "events": 0, "captures": 0}
-        self.rows_written = {"steps": 0, "events": 0, "captures": 0}
+        self.buffers: dict[str, list[dict[str, Any]]] = {name: [] for name in self.streams}
+        self.counts = dict.fromkeys(self.streams, 0)
+        self.rows_written = dict.fromkeys(self.streams, 0)
         self.last_durable_step: int | None = None
         self.manifest: dict[str, Any] = {}
         self.schemas: dict[str, Any] = {}
@@ -707,7 +782,7 @@ class _Writer:
         self.payloads.seal_shard()
         if not self.buffer_size and not self.payloads.has_sealed_shards and manifest is None:
             return
-        buffers: dict[str, list[dict[str, Any]]] = {"steps": [], "events": [], "captures": []}
+        buffers: dict[str, list[dict[str, Any]]] = {name: [] for name in self.streams}
         with self._condition:
             if len(self._pending) == 2:
                 start = monotonic()
@@ -813,7 +888,7 @@ class _Writer:
             self._condition.notify_all()
         self._thread.join()
         self.payloads.abort()
-        self.buffers = {"steps": [], "events": [], "captures": []}
+        self.buffers = {name: [] for name in self.streams}
         self.buffer_size = 0
 
 
@@ -830,6 +905,7 @@ __all__ = [
     'StepRecord',
     'CaptureRecord',
     'EventRecord',
+    'MessageRecord',
     'RunLog',
     'Recorder',
     'read_table',

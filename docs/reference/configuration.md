@@ -326,6 +326,8 @@ Configure `AutowareDrivingSystem` under `external_driving_system`:
 | `dds_directory` | required | Directory containing `cyclonedds.xml` |
 | `work_directory` | required | Per-run logs and traffic signal files |
 | `launch_arguments` | `vehicle_model: sample_vehicle`, `sensor_model: awsim_sensor_kit`, `perception_mode: lidar` | Autoware launch arguments to override or extend |
+| `modified_topics` | `[]` | Absolute names from the [modifiable topic list](../guides/simulators.md#managed-ros-topics) |
+| `observed_topics` | `[]` | Absolute names of topics to subscribe to for read-only processing |
 | `startup_timeout_s` | `300.0` | Positive readiness timeout in wall seconds |
 | `engage_timeout_s` | `10.0` | Positive autonomous-mode timeout in simulation seconds |
 | `localization_tolerance_m` | `0.5` | Maximum planar localization error in meters |
@@ -334,8 +336,14 @@ Configure `AutowareDrivingSystem` under `external_driving_system`:
 
 The plugin fixes `simulator_type`, `launch_simulator_interface`, `rviz` and `map_path`.
 Preparation compatibility includes the image, launch arguments, configuration override version,
-check thresholds and timeouts. See
-[managed runtime behavior](../guides/simulators.md#managed-external-driving-systems).
+check thresholds and timeouts. When topics are configured, it also includes both topic lists
+and the producer rewrite version. The lists must be disjoint and require paced execution.
+Each observed topic must resolve to a single message type at startup. See
+[managed ROS topics](../guides/simulators.md#managed-ros-topics).
+
+`modified_topics`, `observed_topics` and `recording.topics` require absolute ROS topic names.
+Each slash-separated component starts with an ASCII letter or underscore and contains only
+ASCII letters, digits and underscores.
 
 ### NuRec closed-loop settings
 
@@ -608,11 +616,16 @@ Python `RecordingPolicy` values are immutable and hashable.
 | `sensor_ids` | [] | Unique sensor names whose payloads are retained |
 | `representations` | [`model_input`] | Subset of `raw` and `model_input` |
 | `every_n_captures` | `1` | Save every Nth acquisition of each selected sensor |
+| `topics` | `[]` | Original names of modifiable or observed ROS topics whose payloads are saved |
 
 Empty `sensor_ids` retains no image payloads. State, commands, actions, outputs, available
 components and detections are recorded every decision. Reevaluation cannot recover omitted
 sensor payloads. With an output directory, recorded sensor payloads stay on disk. Logs in
 experiment results then have empty observation `sensor_data`, and `RunLog.read(path)` loads it.
+
+`topics` accepts names from `modified_topics` and `observed_topics` on the hosted driver.
+Configured topics outside this list keep metadata only. See the
+[message record](runtime.md#runlog) for their saved fields.
 
 ```yaml
 runs:

@@ -1831,8 +1831,13 @@ if args[0] == "run":
     labels=dict(args[i+1].split("=",1) for i,a in enumerate(args) if a=="--label")
     if mode=="race":labels["avsectester.service-owner"]="someone-else"
     identity="id-"+uuid.uuid4().hex
-    (root/name).write_text(json.dumps({"id":identity,"owner":labels.get("avsectester.service-owner",""),
-                                       "labels":labels,"running":mode!="exit"}))
+    state = {"id":identity,"owner":labels.get("avsectester.service-owner",""),
+             "labels":labels,"running":mode!="exit"}
+    if autoware_mode:
+        for i, arg in enumerate(args[:-1]):
+            if arg == "--mount" and ",target=/avsectester-run," in args[i + 1]:
+                state["autoware_run"] = args[i + 1].split("source=", 1)[1].split(",target=", 1)[0]
+    (root/name).write_text(json.dumps(state))
     print(identity)
     raise SystemExit(1 if mode == "race" else 0)
 if autoware_mode and args[:2] == ["image", "inspect"]:
@@ -1847,8 +1852,27 @@ if autoware_mode and args[0] == "exec":
     if args[-1].endswith("apply_carla_overrides.py"):
         print("Applied CARLA overrides")
         raise SystemExit(0)
+    if any(arg.endswith("/apply_interception.py") for arg in args):
+        print("Applied ROS interception rewrites")
+        raise SystemExit(0)
     interactive = args[1] == "-i"
-    path = locate(args[4] if interactive else args[1])
+    identity_index = 1
+    while args[identity_index] in {"-i", "-w", "-e"}:
+        identity_index += 1 if args[identity_index] == "-i" else 2
+    path = locate(args[identity_index])
+    if "avsectester.closed_loop.ros_interception.relay" in args:
+        import socket
+        from avsectester.closed_loop.ros_interception.wire import send_frame
+        directory = os.open(read(path)["autoware_run"], os.O_DIRECTORY)
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+                connection.connect(f"/proc/self/fd/{directory}/interception.sock")
+                send_frame(connection, {"kind": "ready"})
+                while (current := read(path)) and current["running"]:
+                    time.sleep(.05)
+        finally:
+            os.close(directory)
+        raise SystemExit(0)
     if not interactive:
         print("Started an Autoware process", flush=True)
         while (current := read(path)) and current["running"]:
@@ -1858,12 +1882,22 @@ if autoware_mode and args[0] == "exec":
     def event(kind, **fields):
         print(json.dumps({"event": kind, **fields}), flush=True)
 
+    def mode_event(mode, available, *, in_transition=False, raw_mode=None,
+                   raw_available=None, raw_in_transition=None):
+        if "--raw-operation-mode-topic" in args:
+            raw = {"mode": mode if raw_mode is None else raw_mode,
+                   "stamp": {"sec": 20, "nanosec": 0},
+                   "is_autonomous_mode_available": available if raw_available is None else raw_available,
+                   "is_in_transition": in_transition if raw_in_transition is None else raw_in_transition}
+            event("raw_mode", mode=raw["mode"], in_transition=raw["is_in_transition"], raw=raw)
+        event("mode", mode=mode, available=available, in_transition=in_transition)
+
     event("connected")
     if autoware_mode != "no-lidar":
         event("lidar")
     event("discovery", initialize=True, autonomous=autoware_mode != "no-adapi",
           goal_subscriber=autoware_mode != "no-goal-subscriber")
-    event("mode", mode=1, available=False, in_transition=False)
+    mode_event(1, False)
     event("mrm", state=1, behavior=1)
     retries = goals = 0
     for line in sys.stdin:
@@ -1891,14 +1925,19 @@ if autoware_mode and args[0] == "exec":
             lost = autoware_mode == "retry" and goals == 1
             if accepted and autoware_mode != "no-route" and not lost:
                 event("route", state=2)
-                event("mode", mode=1, available=autoware_mode != "unavailable",
-                      in_transition=False)
+                if autoware_mode == "interception-mode-disagreement":
+                    mode_event(1, True, raw_mode=0, raw_available=False, raw_in_transition=True)
+                else:
+                    mode_event(1, autoware_mode != "unavailable")
         elif kind == "engage":
             accepted = autoware_mode != "engage-rejected"
             event("result", id=request_id, success=accepted,
                   message="" if accepted else "mode transition rejected")
             if accepted and autoware_mode != "engage-timeout":
-                event("mode", mode=2, available=True, in_transition=False)
+                if autoware_mode == "interception-mode-disagreement":
+                    mode_event(1, True, in_transition=True, raw_mode=2, raw_in_transition=False)
+                else:
+                    mode_event(2, True)
                 time.sleep(.05)
                 event("route", state=3)
         else:

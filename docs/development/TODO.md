@@ -137,19 +137,13 @@ See [NuRec LiDAR](../guides/simulators.md#lidar) for supported capture behavior.
 
 ## Native ROS 2 sensor attacks
 
-- [ ] Apply sensor attacks through a ROS 2 relay process that forwards the modified messages to
+- [x] Apply sensor attacks through a ROS 2 relay process that forwards the modified messages to
   the topics subscribed to by the external driving system.
 
 ## Native ROS 2 runs after the origin
 
 - [ ] Support starts after the scene origin by placing ego on the prepared trajectory at each
   pre-roll tick.
-
-## Memory of large experiments
-
-- [ ] Bound evaluation memory by total step count. Execution reads every saved run back at once,
-  and each step stores the native ego state in both physical snapshots as well as `ego`.
-- [ ] Limit memory that native thread pools leave in allocator arenas during hosted runs.
 
 ## External benchmark integrations
 

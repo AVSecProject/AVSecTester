@@ -11,7 +11,7 @@ import pytest
 
 from avsectester.data_types import (
     ActorState, Control, Detection, DeliveredAcquisition, Observation, PointCloud,
-    RecordedOutput, TimedStateEstimate, WorldSnapshot,
+    RecordedOutput, RosMessage, TimedStateEstimate, WorldSnapshot,
 )
 from avsectester.closed_loop.simulators.base import ClockSnapshot
 from avsectester.geometry import (
@@ -20,7 +20,7 @@ from avsectester.geometry import (
 from avsectester.geometry.cameras import BODY_FROM_OPTICAL
 from avsectester.geometry.lidars import LidarCalibration
 from avsectester.rendering import ObjectVisibility
-from avsectester.runlog import CaptureRecord, Recorder, RunLog, StepRecord, read_table
+from avsectester.runlog import CaptureRecord, MessageRecord, Recorder, RunLog, StepRecord, read_table
 from avsectester.serialization import DEFAULT_REGISTRY
 
 
@@ -47,6 +47,63 @@ def test_record_capture(tmp_path):
     restored = RunLog.read(tmp_path / "shared")
     np.testing.assert_array_equal(
         restored.captures[0].model_observation.sensor_data["front"], payload)
+
+
+def test_record_message(tmp_path):
+    dtype = np.dtype({"names": ["x", "returns"], "formats": [">f4", ("<i2", (2,))],
+                      "offsets": [0, 8], "itemsize": 16})
+    slots = bytearray(range(96))
+    data = np.frombuffer(slots, dtype=dtype)[::2]
+    cloud_bytes = bytes(slots[:16] + slots[32:48] + slots[64:80])
+    cloud = RosMessage("sensor_msgs/msg/PointCloud2", {"data": data, "header": {"frame_id": "lidar"}})
+    grid = RosMessage("nav_msgs/msg/OccupancyGrid", {"data": np.array([1, -1], dtype=np.int8)})
+    output = RosMessage(grid.type, {"data": np.array([0, -1], dtype=np.int8)})
+    imu = RosMessage("sensor_msgs/msg/Imu", {"header": {"frame_id": "imu"}})
+    records = (
+        MessageRecord("/cloud", cloud.type, 0, 5, 10, 100, 120, 130, .001, 200, False, cloud),
+        MessageRecord("/grid", grid.type, 0, 6, 10, 200, 220, 230, .002, 300, True, grid, output),
+        MessageRecord("/metadata", imu.type, 1, None, 11, 300, 320, 330, .003, 400, True),
+        MessageRecord(
+            "/imu", imu.type, 1, None, 11, 400, 420, 430, .004, None, False, imu,
+            modifiable=False,
+        ),
+    )
+    baseline = tmp_path / "without_interception"
+    with Recorder(baseline) as recorder:
+        with pytest.raises(ValueError, match="record_messages=True"):
+            recorder.record_message(records[0])
+    assert not (baseline / "messages").exists()
+    assert RunLog.read(baseline).messages == []
+
+    path = tmp_path / "with_interception"
+    with Recorder(path, record_messages=True, retain_sensor_data=False, chunk_steps=2) as recorder:
+        captured = [recorder.record_message(record) for record in records]
+        data["x"] = 0
+        assert captured[0].original.fields["data"].tobytes() == cloud_bytes
+        assert all(item.original is None and item.forwarded is None for item in recorder.log.messages)
+
+    assert set(json.loads((path / "manifest.json").read_text())) == set(
+        json.loads((baseline / "manifest.json").read_text()))
+    assert RunLog.read(path, load_records=False).messages == []
+    metadata = RunLog.read(path, load_sensor_data=False).messages
+    assert [(item.topic, item.modifiable, item.modified, item.relay_sent_ns) for item in metadata] == [
+        ("/cloud", True, False, 200), ("/grid", True, True, 300),
+        ("/metadata", True, True, 400), ("/imu", False, False, None),
+    ]
+    assert all(item.original is None and item.forwarded is None for item in metadata)
+    original, changed, omitted, observed = RunLog.read(path).messages
+    assert original.topic == "/cloud" and original.forwarded is None
+    assert original.original.type == cloud.type
+    assert original.original.fields["header"] == cloud.fields["header"]
+    restored = original.original.fields["data"]
+    assert restored.dtype == dtype and restored.tobytes() == cloud_bytes and restored.flags.writeable
+    np.testing.assert_array_equal(changed.original.fields["data"], [1, -1])
+    np.testing.assert_array_equal(changed.forwarded.fields["data"], [0, -1])
+    assert omitted == records[2]
+    assert observed == records[3]
+    assert read_table(path, ["topic", "step"], stream="messages").to_pydict() == {
+        "topic": ["/cloud", "/grid", "/metadata", "/imu"], "step": [0, 0, 1, 1],
+    }
 
 
 def test_snapshot():

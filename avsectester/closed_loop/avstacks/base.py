@@ -84,14 +84,12 @@ class ObservationPipeline:
 
     def localize(self, observation: Observation, dispatcher: HookDispatcher) -> Observation:
         """Localize one pose timestamp, including timestamps without sensor frames."""
-        from avsectester.closed_loop.hooks import _invoke
-
         seen = observation
         dispatcher.observation = seen
         if self.localizer is not None:
             seen = dispatcher.emit("localization.pre", seen)
             dispatcher._require(seen, Observation, "localization.pre")
-            estimate = _invoke(self.localizer, seen, dispatcher.stage_context("localization"))
+            estimate = dispatcher.invoke(self.localizer, seen, dispatcher.stage_context("localization"))
             dispatcher._require(estimate, StateEstimate, "localizer")
             # The localizer may reuse its state. Downstream handlers receive a copy.
             estimate = deepcopy(estimate)

@@ -20,6 +20,7 @@
 | L0 | [`avsectester.geometry.poses`](#avsectestergeometryposes) |
 | L0 | [`avsectester.geometry.projection`](#avsectestergeometryprojection) |
 | L0 | [`avsectester.serialization`](#avsectesterserialization) |
+| L0 | [`avsectester.structured_arrays`](#avsectesterstructured_arrays) |
 | L0 | [`avsectester.type_paths`](#avsectestertype_paths) |
 | L0 | [`avsectester.validation`](#avsectestervalidation) |
 | L0′ | [`avsectester.data_types`](#avsectesterdata_types) |
@@ -58,17 +59,24 @@
 | L2 | [`avsectester.closed_loop.docker_containers`](#avsectesterclosed_loopdocker_containers) |
 | L2 | [`avsectester.closed_loop.environment`](#avsectesterclosed_loopenvironment) |
 | L2 | [`avsectester.closed_loop.hooks`](#avsectesterclosed_loophooks) |
+| L2 | [`avsectester.closed_loop.ros_interception.channel`](#avsectesterclosed_loopros_interceptionchannel) |
+| L2 | [`avsectester.closed_loop.ros_interception.declaration`](#avsectesterclosed_loopros_interceptiondeclaration) |
+| L2 | [`avsectester.closed_loop.ros_interception.projection`](#avsectesterclosed_loopros_interceptionprojection) |
+| L2 | [`avsectester.closed_loop.ros_interception.ros_messages`](#avsectesterclosed_loopros_interceptionros_messages) |
+| L2 | [`avsectester.closed_loop.ros_interception.wire`](#avsectesterclosed_loopros_interceptionwire) |
 | L2 | [`avsectester.closed_loop.sensor_corruptions`](#avsectesterclosed_loopsensor_corruptions) |
 | L2 | [`avsectester.closed_loop.simulators`](#avsectesterclosed_loopsimulators) |
 | L2 | [`avsectester.closed_loop.simulators.base`](#avsectesterclosed_loopsimulatorsbase) |
 | L2 | [`avsectester.closed_loop.simulators.carla`](#avsectesterclosed_loopsimulatorscarla) |
 | L2 | [`avsectester.closed_loop.simulators.carla.autoware`](#avsectesterclosed_loopsimulatorscarlaautoware) |
+| L2 | [`avsectester.closed_loop.simulators.carla.autoware.container.apply_interception`](#avsectesterclosed_loopsimulatorscarlaautowarecontainerapply_interception) |
 | L2 | [`avsectester.closed_loop.simulators.carla.conversions`](#avsectesterclosed_loopsimulatorscarlaconversions) |
 | L2 | [`avsectester.closed_loop.simulators.carla.external_driving_system`](#avsectesterclosed_loopsimulatorscarlaexternal_driving_system) |
 | L2 | [`avsectester.closed_loop.simulators.carla.sensors`](#avsectesterclosed_loopsimulatorscarlasensors) |
 | L2 | [`avsectester.closed_loop.simulators.carla.simulator`](#avsectesterclosed_loopsimulatorscarlasimulator) |
 | L2 | [`avsectester.closed_loop.simulators.ego_dynamics`](#avsectesterclosed_loopsimulatorsego_dynamics) |
 | L2 | [`avsectester.closed_loop.simulators.ground_contact`](#avsectesterclosed_loopsimulatorsground_contact) |
+| L2 | [`avsectester.closed_loop.simulators.messages`](#avsectesterclosed_loopsimulatorsmessages) |
 | L2 | [`avsectester.closed_loop.simulators.navigation`](#avsectesterclosed_loopsimulatorsnavigation) |
 | L2 | [`avsectester.closed_loop.simulators.nurec`](#avsectesterclosed_loopsimulatorsnurec) |
 | L2 | [`avsectester.closed_loop.simulators.nurec.renderer`](#avsectesterclosed_loopsimulatorsnurecrenderer) |
@@ -338,6 +346,18 @@ returns its input. `decode` raises `TypeError` for an unregistered dataclass pat
 
 [Runtime reference](runtime.md).
 
+### avsectester.structured_arrays
+
+<!-- api:begin module=avsectester.structured_arrays -->
+Byte-exact copies and data descriptions of NumPy arrays, including record arrays.
+
+| Name and signature | Meaning |
+|---|---|
+| `describe_dtype(dtype: np.dtype[Any]) -> str \| dict[str, Any]` | Describe a dtype as JSON data, including record offsets, titles, item size and subarrays. |
+| `dtype_from_description(description: Any) -> np.dtype[Any]` | Rebuild a dtype described by `describe_dtype`. Object dtypes are rejected. |
+| `item_bytes(array: np.ndarray[Any, Any]) -> bytes` | Copy every array item in row order, including the padding inside record items. |
+<!-- api:end -->
+
 ### avsectester.type_paths
 
 <!-- api:begin module=avsectester.type_paths -->
@@ -384,6 +404,7 @@ Data types exchanged between framework components.
 | Name and signature | Meaning |
 |---|---|
 | `PointCloud(points: np.ndarray, intensity: np.ndarray \| None = None)` | One LiDAR scan in the sensor frame at the end of the scan. |
+| `RosMessage(type: str, fields: dict[str, Any])` | One ROS message as its interface type and ordinary field values. |
 | `ActorState(pose: Any, velocity: tuple[float, float, float] \| None = None, category: str \| None = None, extent: tuple[float, float, float] \| None = None, box_center: tuple[float, float, float] = (0.0, 0.0, 0.0), box_rotation: tuple[float, float, float] = (0.0, 0.0, 0.0))` | An actor's world-from-origin pose, world velocity and optional bounding-box geometry. |
 | `ActorState.box_transform() -> np.ndarray` | World-from-box-center transform, including local roll/pitch/yaw degree rotation. |
 | `Unavailable(reason: str)` | A dataset cannot supply the requested evidence, with an explicit reason. |
@@ -1533,10 +1554,12 @@ Ordered attack and defense callbacks with per-run lifecycle management.
 | `HookDispatcher(hook_set: HookSet, simulator_runtime: SimulatorRuntime, avstack: AVStack)` | One bound run. Simulator runtimes and driving systems publish their stages through `emit`. |
 | `HookDispatcher.CORE_STAGES = frozenset({"sensors.post", "localization.post", "observation", "command"})` | Framework stages available independently of native simulator and driving-system stages. |
 | `HookDispatcher.activate() -> Iterator[HookDispatcher]` | Context manager. Bind the simulator runtime and driving system. Reset participants and close them on exit. |
+| `HookDispatcher.invoke(handler: Any, value: Any, context: StageContext) -> Any` | Invoke a stage handler while holding the session's callback lock. |
 | `HookDispatcher.stage_context(stage: str, sensor: str \| None = None) -> StageContext` | Capture current physical state and model-visible values for a callback. |
 | `HookDispatcher.record_output(context: StageContext, name: str, value: Any) -> None` | Snapshot a named output. Reject recording outside an active dispatcher scope. |
 | `HookDispatcher.drain_outputs() -> list[RecordedOutput]` | Transfer recorded outputs to a consumer without retaining the run's history. |
 | `HookDispatcher.emit(stage: str, value: Any, sensor: str \| None = None) -> Any` | Transform a value through the supported stage's ordered callbacks. |
+| `HookDispatcher.emit_message(stage: str, value: RosMessage, state: WorldSnapshot, *, step: int, outputs: list[RecordedOutput]) -> RosMessage` | Run native message hooks using the active decision and detached physical state. |
 | `HookDispatcher.observe(observation: Observation) -> Observation` | Apply the driving system's ObservationPipeline with this run's ordered hooks. |
 | `HookDispatcher.command(control: Control) -> Control` | Apply command hooks and validate the resulting command against the simulator. |
 | `HookDispatcher.after_step(observation: Observation) -> None` | Notify participants with independent copies of the next raw measurement. |
@@ -1575,6 +1598,91 @@ that budget.
 #### See also
 
 [Runtime reference](runtime.md).
+
+### avsectester.closed_loop.ros_interception.channel
+
+<!-- api:begin module=avsectester.closed_loop.ros_interception.channel -->
+Local relay socket transport for framed messages.
+
+| Name and signature | Meaning |
+|---|---|
+| `RelayChannel(path: Path, *, relay_count: int = 1)` | Subclass of `MessageChannel`. Listen for a fixed set of relays on a run-owned Unix socket path. |
+| `RelayChannel.start(handler: Callable[[dict[str, Any]], Mapping[str, Any] \| None]) -> None` | Install the handler for frames requiring processing. |
+| `RelayChannel.send(frame: Mapping[str, Any]) -> None` | Queue a control frame once every expected relay is connected. |
+| `RelayChannel.check() -> None` | Raise the first saved relay or transport failure. |
+| `RelayChannel.ready: bool` | Whether all expected relays have connected and reported readiness. |
+| `RelayChannel.relay_count: int` | Number of relays that have connected to this channel. |
+| `RelayChannel.close() -> None` | Release all relay connections and unlink the owned listener path. |
+| `RelayConnection(path: Path, *, notify: Callable[[], None] \| None = None)` | Connect to the framework and optionally notify the relay of frames and failures. |
+| `RelayConnection.check() -> None` | Raise a stored stream or framing failure on the caller thread. |
+| `RelayConnection.wait(timeout: float \| None = None) -> bool` | Wait for a frame, failure or closure, with an optional timeout in seconds. |
+| `RelayConnection.drain() -> list[dict[str, Any]]` | Return currently queued frames in stream order without waiting for more. |
+| `RelayConnection.send(frame: Mapping[str, Any]) -> None` | Queue a frame without blocking on socket I/O. |
+| `RelayConnection.flush(timeout: float) -> None` | Wait for previous outgoing frames to reach the socket. |
+| `RelayConnection.close() -> None` | Stop both workers and release the connected socket. |
+<!-- api:end -->
+
+### avsectester.closed_loop.ros_interception.declaration
+
+<!-- api:begin module=avsectester.closed_loop.ros_interception.declaration -->
+What a hosted ROS 2 driving system routes through the framework's relay.
+
+| Name and signature | Meaning |
+|---|---|
+| `PRIVATE_NAMESPACE = "/avsectester/intercepted"` | Namespace of the private topics that redirected producers publish to. |
+| `InterceptedTopic(name: str, type: str, publishers: tuple[str, ...], sensor: str \| None = None, passthrough: bool = False)` | One original topic whose producers publish on its private topic. |
+| `InterceptionDeclaration(topics: tuple[InterceptedTopic, ...], projection: PoseProjection \| None = None, observed_topics: tuple[str, ...] = (), observed_sensors: tuple[tuple[str, str], ...] = ())` | Redirected and observed topics and an optional pose projection for a hosted driver. |
+| `InterceptionDeclaration.stages: dict[str, MessageStage]` | Message stages keyed by original topic, including read-only observations. |
+| `InterceptionDeclaration.relay_configurations(*, startup_timeout_s: float) -> list[dict[str, Any]]` | Return one relay configuration per active role, forwarding before observation. |
+| `PoseProjection(pose_topic: str, publisher: str, parent_frame: str, child_frame: str)` | Apply each pose topic change to one transform pair of a redirected TF publisher. |
+| `PoseProjection.private_topic: str` | Private topic carrying the redirected publisher's TF messages. |
+| `private_topic(name: str) -> str` | Return the private ingress name for an absolute ROS topic name. |
+<!-- api:end -->
+
+### avsectester.closed_loop.ros_interception.projection
+
+<!-- api:begin module=avsectester.closed_loop.ros_interception.projection -->
+Timestamp pairing and rigid transforms for a projected ROS frame pair.
+
+| Name and signature | Meaning |
+|---|---|
+| `Pose(position: Vector, rotation: Quaternion)` | A position and its orientation as an xyzw quaternion. |
+| `PoseDelta(original: Pose, replacement: Pose, rotation: np.ndarray, translation: np.ndarray)` | Rigid displacement of a pose from one channel to its replacement. |
+| `PoseDelta.between(original: Pose, replacement: Pose) -> PoseDelta \| None` | Compute replacement times inverse original. None is an exact identity. |
+| `PoseDelta.apply(pose: Pose) -> Pose` | Apply the displacement without re-rounding an exact copy of the original. |
+| `Projected(message: T, pairs: tuple[tuple[PoseDelta \| None, bool], ...])` | Subclass of `Generic`. A queued TF message and the matched or fallback pose correction for each target. |
+| `ProjectionQueue(timeout_s: float)` | Subclass of `Generic`. Preserve TF order and pair each selected transform with the pose of its header stamp. |
+| `ProjectionQueue.pose(stamp_ns: int, delta: PoseDelta \| None) -> None` | Supply a pose correction at its original ROS header timestamp in nanoseconds. |
+| `ProjectionQueue.enqueue(message: T, stamps: Sequence[int], now: float) -> None` | Queue a TF message along with the timestamps of selected transforms. |
+| `ProjectionQueue.next_deadline: float \| None` | Monotonic deadline of the first queued TF message, if any. |
+| `ProjectionQueue.waiting: bool` | Whether any TF messages still need to be published. |
+| `ProjectionQueue.drain(now: float) -> list[Projected[T]]` | Return queued messages ready for publication at the supplied monotonic time. |
+<!-- api:end -->
+
+### avsectester.closed_loop.ros_interception.ros_messages
+
+<!-- api:begin module=avsectester.closed_loop.ros_interception.ros_messages -->
+Translate ROS message fields into NumPy buffers in the relay process.
+
+| Name and signature | Meaning |
+|---|---|
+| `OCCUPANCY_GRID = "nav_msgs/msg/OccupancyGrid"` | The ROS type name for an occupancy grid. |
+| `POINT_CLOUD = "sensor_msgs/msg/PointCloud2"` | The ROS type name for a structured point cloud. |
+| `header_stamp_ns(message: Any) -> int \| None` | Read a header or direct ROS stamp where the type provides one. |
+| `publishable_fields(fields: dict[str, Any], type_name: str) -> dict[str, Any]` | Prepare fields for ROS assignment after a payload replacement. |
+| `to_fields(message: Any, type_name: str) -> dict[str, Any]` | Read ROS fields, including fields and row strides of structured clouds. |
+<!-- api:end -->
+
+### avsectester.closed_loop.ros_interception.wire
+
+<!-- api:begin module=avsectester.closed_loop.ros_interception.wire -->
+Frame JSON data and NumPy buffers on a byte stream shared by the framework and its relay.
+
+| Name and signature | Meaning |
+|---|---|
+| `receive_frame(stream: socket.socket) -> dict[str, Any]` | Read one complete frame. The decoded arrays own writable receive storage. |
+| `send_frame(stream: socket.socket, message: Mapping[str, Any]) -> None` | Send one framed mapping. Array bytes remain separate from the JSON header. |
+<!-- api:end -->
 
 ### avsectester.closed_loop.sensor_corruptions
 
@@ -1679,6 +1787,7 @@ The simulator: a configuration (`Simulator`) and its live worlds (`SimulatorRunt
 | `Simulator.timing_capabilities: TimingCapabilities` | Declare native timing limits without opening a world. |
 | `Simulator.command_modes: frozenset[str] \| None` | Command representations consumed by this simulator, or None if undeclared. |
 | `Simulator.supported_stages: frozenset[str]` | Hook stages supported by the component. |
+| `Simulator.message_stages: Mapping[str, MessageStage]` | Declare native message stages by their public topic names. |
 | `Simulator.identity: Mapping[str, Any]` | Configuration identity used to check saved-preparation compatibility. |
 | `Simulator.validate_world_settings(settings: Mapping[str, Any]) -> None` | Check world-setting names and values without creating a live world. |
 | `Simulator.validate_start(start: ScenarioStart \| None) -> None` | Reject a scenario start this simulator cannot reset to, before any world exists. |
@@ -1699,6 +1808,10 @@ The simulator: a configuration (`Simulator`) and its live worlds (`SimulatorRunt
 | `SimulatorRuntime.decision_time_step: float \| None` | Decision interval in seconds. None leaves the interval unrestricted. |
 | `SimulatorRuntime.command_modes: frozenset[str] \| None` | Control command modes this simulator runtime accepts, or None when undeclared. |
 | `SimulatorRuntime.supported_stages: frozenset[str]` | Return the hook stages supported by this simulator runtime or driving system. |
+| `SimulatorRuntime.message_stages: Mapping[str, MessageStage]` | Native message stages declared by the configured simulator. |
+| `SimulatorRuntime.message_channel: MessageChannel \| None` | Transport for native message stages in this open run, if configured. |
+| `SimulatorRuntime.message_snapshot: tuple[int, WorldSnapshot] \| None` | Latest completed native step's clock and detached state for message processing. |
+| `SimulatorRuntime.message_sensor_poses: Mapping[str, np.ndarray]` | Fixed ego-relative transforms of the native sensors used by message stages. |
 | `SimulatorRuntime.identity: Mapping[str, Any]` | Configuration identity used to check saved-preparation compatibility. |
 | `SimulatorRuntime.termination_details: Mapping[str, Any]` | Simulator diagnostics saved with the run's termination event. |
 | `SimulatorRuntime.decision_telemetry() -> Mapping[str, Any]` | Native evidence recorded at each decision without issuing a driving command. |
@@ -1895,10 +2008,21 @@ Autoware lifecycle hosting for native CARLA ROS 2.
 
 | Name and signature | Meaning |
 |---|---|
-| `AutowareDrivingSystem(*, gpu: int, ros_domain_id: int, autoware_data_directory: str \| Path, assets_directory: str \| Path, dds_directory: str \| Path, work_directory: str \| Path, image: str = _DEFAULT_IMAGE, launch_arguments: Mapping[str, str \| int \| float \| bool] \| None = None, startup_timeout_s: float = 300.0, engage_timeout_s: float = 10.0, localization_tolerance_m: float = 0.5, localization_tolerance_deg: float = 5.0, distortion_check_s: float = 12.0)` | Host a local Autoware image as a separate container for each CARLA run. |
+| `AutowareDrivingSystem(*, gpu: int, ros_domain_id: int, autoware_data_directory: str \| Path, assets_directory: str \| Path, dds_directory: str \| Path, work_directory: str \| Path, image: str = _DEFAULT_IMAGE, launch_arguments: Mapping[str, str \| int \| float \| bool] \| None = None, startup_timeout_s: float = 300.0, engage_timeout_s: float = 10.0, localization_tolerance_m: float = 0.5, localization_tolerance_deg: float = 5.0, distortion_check_s: float = 12.0, modified_topics: Sequence[str] = (), observed_topics: Sequence[str] = ())` | Host a local Autoware image as a separate container for each CARLA run. |
 | `AutowareDrivingSystem.carla_publishes_tf: bool` | Disable CARLA's transforms as in the official `autoware_demo.py`. |
 | `AutowareDrivingSystem.identity: dict[str, Any]` | Return result-affecting Autoware settings for preparation compatibility. |
+| `AutowareDrivingSystem.interception: InterceptionDeclaration \| None` | Return the selected ROS topic stages and their routing requirements. |
 | `AutowareDrivingSystem.start(context: ExternalDrivingContext) -> ExternalDrivingSession` | Start one Autoware session asynchronously and return its readiness interface. |
+<!-- api:end -->
+
+### avsectester.closed_loop.simulators.carla.autoware.container.apply_interception
+
+<!-- api:begin module=avsectester.closed_loop.simulators.carla.autoware.container.apply_interception -->
+Redirect selected Autoware outputs in the writable layer of a run container.
+
+| Name and signature | Meaning |
+|---|---|
+| `apply_rewrites(specification: Path, root: Path) -> None` | Require each producer definition exactly once before writing any launch file. |
 <!-- api:end -->
 
 ### avsectester.closed_loop.simulators.carla.conversions
@@ -1924,6 +2048,7 @@ Lifecycle of a driving system hosted beside a CARLA world.
 |---|---|
 | `ExternalDrivingContext(host: str, port: int, map_name: str, ego_goal: Mapping[str, float], tick_hz: float)` | Running server, canonical-world goal and native tick rate for one session. |
 | `ExternalDrivingSession` | One hosted driving system's live session. |
+| `ExternalDrivingSession.interception_channel: MessageChannel \| None` | Return the message channel when this session intercepts topics. |
 | `ExternalDrivingSession.poll(ego_pose: np.ndarray, sim_time: float) -> bool` | Advance readiness without blocking. Raise if startup fails or times out. |
 | `ExternalDrivingSession.engage() -> None` | Request control at the first capture without blocking. |
 | `ExternalDrivingSession.check() -> None` | Raise if engagement or the running system fails. |
@@ -1933,6 +2058,7 @@ Lifecycle of a driving system hosted beside a CARLA world.
 | `ExternalDrivingSystem` | Reusable configuration for a hosted native ROS 2 driver. |
 | `ExternalDrivingSystem.carla_publishes_tf: bool` | Whether CARLA publishes ROS transform frames for this driving system. |
 | `ExternalDrivingSystem.identity: Mapping[str, Any]` | Settings that affect the prepared reference and run results. |
+| `ExternalDrivingSystem.interception: InterceptionDeclaration \| None` | Modified outputs, read-only observations and any pose projection for the relay. |
 | `ExternalDrivingSystem.start(context: ExternalDrivingContext) -> ExternalDrivingSession` | Create a new session and begin startup without blocking CARLA ticks. |
 <!-- api:end -->
 
@@ -1973,6 +2099,7 @@ Configured CARLA simulations and their live native-world runtimes.
 | `CarlaSimulator.create_runtime(seed: int \| None = None) -> CarlaSimulatorRuntime` | A new live world. An explicit run seed overrides the configured client seed. |
 | `CarlaSimulator.validate_timing(timing: TimingConfiguration) -> None` | Validate native tick alignment and exclusive external ego ownership. |
 | `CarlaSimulator.can_start_runs_after_origin: bool` | Allow a closed-loop start after the scene origin only under framework control. |
+| `CarlaSimulator.message_stages: Mapping[str, MessageStage]` | Configured message stages, keyed by their original ROS topic name. |
 | `CarlaSimulatorRuntime(simulator: CarlaSimulator, seed: int \| None = None)` | Subclass of `SimulatorRuntime`. One live CARLA world of a `CarlaSimulator`. |
 | `CarlaSimulatorRuntime.can_insert_objects: bool` | Allow framework-composited objects outside native external-control runs. |
 | `CarlaSimulatorRuntime.termination_details: Mapping[str, Any]` | Record tick pacing and hosted driving-system evidence when available. |
@@ -2075,6 +2202,22 @@ degrees are rejected. Status is `successful_update`, `insufficient_intersections
 #### See also
 
 [Simulators](../guides/simulators.md).
+
+### avsectester.closed_loop.simulators.messages
+
+<!-- api:begin module=avsectester.closed_loop.simulators.messages -->
+Message stages and their transport contract for simulator integrations.
+
+| Name and signature | Meaning |
+|---|---|
+| `MessageChannel()` | Exchange framed messages with relays owned by the simulator. |
+| `MessageChannel.start(handler: Callable[[dict[str, Any]], Mapping[str, Any] \| None]) -> None` | Abstract. Deliver incoming message frames on the transport readers. |
+| `MessageChannel.send(frame: Mapping[str, Any]) -> None` | Abstract. Queue a control frame without blocking on I/O. |
+| `MessageChannel.check() -> None` | Abstract. Raise the first saved relay or transport failure. |
+| `MessageChannel.relay_count: int` | Abstract. Number of connected relays expected to report terminal statistics. |
+| `MessageStage(sensor: str \| None = None, modifiable: bool = True)` | One message topic's callback capabilities. |
+| `require_absolute_topic(name: str) -> None` | Require an absolute topic whose components start with a letter or underscore. |
+<!-- api:end -->
 
 ### avsectester.closed_loop.simulators.navigation
 
@@ -2849,6 +2992,7 @@ The run log: one record of everything captured during a run, with Parquet persis
 |---|---|
 | `CaptureRecord` | [CaptureRecord](#avsectesterrunloglog) |
 | `EventRecord` | [EventRecord](#avsectesterrunloglog) |
+| `MessageRecord` | [MessageRecord](#avsectesterrunloglog) |
 | `Recorder` | [Recorder](#avsectesterrunloglog) |
 | `RunLog` | [RunLog](#avsectesterrunloglog) |
 | `StepRecord` | [StepRecord](#avsectesterrunloglog) |
@@ -2869,13 +3013,15 @@ Independent run snapshots and incremental Parquet persistence.
 | `StepRecord(step: int, raw_observation: Any = None, model_observation: Any = None, physical_pre: Any = None, physical_post: Any = None, produced_command: Any = None, executed_command: Any = None, components: dict[str, Any] = dict(), detections: Sequence[Detection] \| None = None, sensor_geometry: Mapping[str, SensorGeometry] = dict(), object_visibility: Mapping[str, Mapping[str, ObjectVisibility]] = dict(), actions: list[Any] = list(), outputs: list[Any] = list(), telemetry: dict[str, Any] = dict(), executed_command_issue_time_us: int \| None = None, delivered_captures: Mapping[str, tuple[int, ...]] = dict(), physical_captures: Mapping[str, int] = dict(), detection_capture_id: int \| None = None, detection_sensor: str \| None = None, force_gt: bool = False)` | One decision, with independently captured physical and model-visible data. |
 | `CaptureRecord(capture_id: int, time_us: int, sensor_ids: tuple[str, ...], raw_observation: Any = None, model_observation: Any = None, physical_state: Any = None, sensor_geometry: Mapping[str, Any] = dict(), object_visibility: Mapping[str, Any] = dict(), frame_ranges_us: Mapping[str, tuple[int, int]] = dict())` | One acquisition timestamp and its due sensors. |
 | `EventRecord(kind: str, step: int \| None = None, data: dict[str, Any] = dict())` | An initialization, termination or other non-step event. |
-| `RunLog(metadata: dict[str, Any] = dict(), steps: list[StepRecord] = list(), events: list[EventRecord] = list(), status: str = "incomplete", path: Path \| None = None, captures: list[CaptureRecord] = list(), format_version: int = 2)` | Captured records, optionally backed by an incrementally written directory. |
+| `MessageRecord(topic: str, type: str, step: int, stamp_ns: int \| None, arrival_time_us: int, relay_received_ns: int, framework_received_ns: int, processing_started_ns: int, processing_s: float, relay_sent_ns: int \| None, modified: bool, original: RosMessage \| None = None, forwarded: RosMessage \| None = None, modifiable: bool = True)` | One message processed at a modifiable or observed ROS topic. |
+| `RunLog(metadata: dict[str, Any] = dict(), steps: list[StepRecord] = list(), events: list[EventRecord] = list(), status: str = "incomplete", path: Path \| None = None, captures: list[CaptureRecord] = list(), format_version: int = 2, messages: list[MessageRecord] = list())` | Captured records, optionally backed by an incrementally written directory. |
 | `RunLog.read(path: str \| Path, *, registry: SerializationRegistry = DEFAULT_REGISTRY, load_payloads: bool = True, load_sensor_data: bool = True, load_records: bool = True) -> RunLog` | Read completed parts, including those left by an interrupted writer. |
-| `Recorder(path: str \| Path \| None = None, *, metadata: dict[str, Any] \| None = None, registry: SerializationRegistry = DEFAULT_REGISTRY, chunk_steps: int = 128, chunk_bytes: int = 8 * 1024 * 1024, payload_shard_bytes: int = 64 * 1024 * 1024, retain_steps: bool = True, retain_sensor_data: bool = True)` | Context manager. Capture a run in memory and optionally stream it to Parquet. |
+| `Recorder(path: str \| Path \| None = None, *, metadata: dict[str, Any] \| None = None, registry: SerializationRegistry = DEFAULT_REGISTRY, chunk_steps: int = 128, chunk_bytes: int = 8 * 1024 * 1024, payload_shard_bytes: int = 64 * 1024 * 1024, retain_steps: bool = True, retain_sensor_data: bool = True, record_messages: bool = False)` | Context manager. Capture a run in memory and optionally stream it to Parquet. |
 | `Recorder.snapshot(value: Any) -> Any` | Take an independent snapshot, preserving native wrappers and mutable array semantics. |
 | `Recorder.record_step(record: StepRecord) -> StepRecord` | Append a decision record and queue a complete row group when due. |
 | `Recorder.record_event(kind: str, *, step: int \| None = None, **data: Any) -> EventRecord` | Append a timestamped runtime event to the recording. |
 | `Recorder.record_capture(record: CaptureRecord) -> CaptureRecord` | Snapshot acquisition metadata and retain sensor payloads by reference. |
+| `Recorder.record_message(record: MessageRecord) -> MessageRecord` | Snapshot and append one intercepted message to an enabled message stream. |
 | `Recorder.flush() -> None` | Wait for publication of all recorded chunks without marking the run complete. |
 | `Recorder.finish(status: str = "completed", **details: Any) -> RunLog` | Finish recording with a valid terminal status and persist its manifest. |
 | `Recorder.abort() -> None` | Discard pending chunks and leave published records readable. |
@@ -2922,7 +3068,8 @@ One closed-loop scheduler with independent RunLog captures.
 
 | Name and signature | Meaning |
 |---|---|
-| `RecordingPolicy(sensor_ids: tuple[str, ...] = (), representations: tuple[str, ...] = ("model_input",), every_n_captures: int = 1)` | Choose sensor payloads without sampling commands or physical state. |
+| `RecordingPolicy(sensor_ids: tuple[str, ...] = (), representations: tuple[str, ...] = ("model_input",), every_n_captures: int = 1, topics: tuple[str, ...] = ())` | Choose sensor and native ROS message payloads to save. |
+| `RecordingPolicy.validate_topics(message_stages: Mapping[str, MessageStage]) -> None` | Require each recorded topic to have a configured native message stage. |
 | `RecordingPolicy.observation(value: Observation, record_index: int, representation: str) -> Observation` | Retain the selected representation's payloads at the requested recording index. |
 | `RunRequest(decision_steps: int, hooks: HookSet \| None = None, attacks: Sequence[Any] = (), recording: RecordingPolicy = RecordingPolicy(), output_path: str \| Path \| None = None, retain_steps: bool = True, retain_sensor_data: bool = True, metadata: Mapping[str, Any] = dict(), start: Any = None, initialization: Any = None, deployment: Any = None, environment: Mapping[str, Any] = dict(), terminate_when: Callable[[StepRecord], bool] \| None = None, timing: TimingConfiguration = TimingConfiguration())` | One caller-owned simulator/driving-system run, independent of experiment orchestration. |
 | `ClosedLoopRunner()` | Schedule one driving loop. Never close caller-owned simulator/driving objects. |

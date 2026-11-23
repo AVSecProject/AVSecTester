@@ -8,6 +8,8 @@ from typing import Any
 
 import numpy as np
 
+from avsectester.geometry.poses import mirror_y_transform
+
 from .sensors import _set_blueprint_attributes, _verify_blueprint_attributes
 
 
@@ -98,14 +100,15 @@ def _destroy_actor(actor):
         logging.getLogger(__name__).warning("Could not destroy CARLA actor", exc_info=True)
 
 
-def _spawn_ros_rig(world, ego, specifications, resources):
+def _spawn_ros_rig(world, ego, specifications, resources, *, record_poses=False):
     """Spawn the native ROS hierarchy independently of framework acquisitions."""
     if not specifications:
-        return
+        return {}
     import carla
 
     blueprint_library = world.get_blueprint_library()
     parents = {"ego": ego}
+    poses = {"ego": np.eye(4)} if record_poses else {}
     for spec in specifications:
         blueprint = blueprint_library.find(spec["blueprint"])
         attrs = spec.get("blueprint_attributes", {})
@@ -119,6 +122,9 @@ def _spawn_ros_rig(world, ego, specifications, resources):
         if spec.get("ros", False):
             actor.enable_for_ros()
         parents[spec["name"]] = actor
+        if record_poses:
+            poses[spec["name"]] = poses[spec["parent"]] @ mirror_y_transform(np.asarray(transform.get_matrix()))
+    return poses
 
 
 def _spawn_config(spec: dict, actor: Any, vehicle_field: str) -> dict:

@@ -13,16 +13,48 @@ import base64
 from collections.abc import Callable, Mapping
 from copy import copy, deepcopy
 from dataclasses import fields, is_dataclass
+import json
 from pathlib import Path
 import sys
 from typing import Any
 
 import numpy as np
 
+from avsectester.structured_arrays import describe_dtype, dtype_from_description, item_bytes
 from avsectester.type_paths import import_type_path, split_type_path
 
 _TAG = "_avsectester_type"
 _KEYS = "_avsectester_keys"
+
+
+def array_dtype_fields(array: np.ndarray[Any, Any]) -> dict[str, str]:
+    """Return the encoded dtype fields of an array payload, as RunLog payloads also store them."""
+    if not array.dtype.fields:
+        return {"dtype": array.dtype.str}
+    # A separate scalar keeps primitive array encodings unchanged and permits mixed payloads
+    # in one Parquet column. Explicit offsets and item size preserve PointCloud2 padding.
+    return {"structured_dtype": json.dumps(describe_dtype(array.dtype), separators=(",", ":"))}
+
+
+def array_bytes(array: np.ndarray[Any, Any]) -> bytes:
+    """Return the bytes stored for an array payload, keeping record padding."""
+    return item_bytes(array) if array.dtype.fields else np.ascontiguousarray(array).tobytes()
+
+
+def decode_array(raw: bytes, value: Mapping[str, Any], context: str) -> np.ndarray[Any, Any]:
+    """Rebuild an array payload from its bytes and ``array_dtype_fields`` metadata."""
+    if value.get("structured_dtype") is None:
+        dtype = np.dtype(value["dtype"])
+        if dtype.hasobject or dtype.fields:
+            raise ValueError(f"Unsafe array dtype in {context}")
+        return np.frombuffer(raw, dtype=dtype).reshape(value["shape"]).copy()
+    dtype = dtype_from_description(json.loads(value["structured_dtype"]))
+    if dtype.fields is None:
+        raise ValueError(f"Unsafe array dtype in {context}")
+    if dtype.itemsize == 0 and not raw:
+        return np.empty(value["shape"], dtype=dtype)
+    # Copy the buffer, not the record items, to keep every padding byte.
+    return np.frombuffer(bytearray(raw), dtype=dtype).reshape(value["shape"])
 
 
 class SerializationRegistry:
@@ -150,12 +182,12 @@ class SerializationRegistry:
         if isinstance(value, np.generic):
             return child(value.item())
         if isinstance(value, np.ndarray):
-            if value.dtype.hasobject or value.dtype.fields:
-                raise TypeError("Object/structured arrays require an explicit native registration")
+            if value.dtype.hasobject:
+                raise TypeError("Object arrays require an explicit native registration")
             if encode_leaf is not None:
                 return encode_leaf(value)
-            return {_TAG: "array", "dtype": value.dtype.str, "shape": list(value.shape),
-                    "data": base64.b64encode(np.ascontiguousarray(value).tobytes()).decode("ascii")}
+            return {_TAG: "array", **array_dtype_fields(value), "shape": list(value.shape),
+                    "data": base64.b64encode(array_bytes(value)).decode("ascii")}
         if isinstance(value, bytes):
             if encode_leaf is not None:
                 return encode_leaf(value)
@@ -224,10 +256,7 @@ class SerializationRegistry:
             raw = base64.b64decode(data["data"], validate=True)
             if tag == "bytes":
                 return raw
-            dtype = np.dtype(data["dtype"])
-            if dtype.hasobject or dtype.fields:
-                raise ValueError("Unsafe array dtype in serialized data")
-            return np.frombuffer(raw, dtype=dtype).reshape(data["shape"]).copy()
+            return decode_array(raw, data, "serialized data")
         if tag is not None:
             raise ValueError(f"Unknown serialized encoding: {tag!r}")
         return {key: child(item) for key, item in data.items()}
@@ -251,6 +280,12 @@ def _snapshot(value: Any, memo: dict[int, Any], registry: SerializationRegistry)
         return result
     if _is_tensor(value):
         result = value.detach().clone()
+        memo[key] = result
+        return result
+    if (type(value) is np.ndarray and value.dtype.fields is not None and not value.dtype.hasobject
+            and value.dtype.itemsize):
+        raw = bytearray(item_bytes(value))
+        result = np.frombuffer(raw, dtype=value.dtype).reshape(value.shape)
         memo[key] = result
         return result
     if type(value) is dict:
@@ -323,7 +358,8 @@ DEFAULT_REGISTRY = SerializationRegistry()
 for _module, _names in (
     ("avsectester.data_types", (
         "ActorState", "Unavailable", "TargetSpec", "Control", "Observation", "WorldSnapshot",
-        "StateEstimate", "RecordedOutput", "Detection", "PointCloud", "DeliveredAcquisition", "TimedStateEstimate",
+        "StateEstimate", "RecordedOutput", "Detection", "PointCloud", "RosMessage", "DeliveredAcquisition",
+        "TimedStateEstimate",
     )),
     ("avsectester.datasets.base", ("FrameReference", "FrameData", "SensorDataReference")),
     ("avsectester.closed_loop.simulators.base", ("ClockSnapshot", "SensorGeometry", "Initialization")),

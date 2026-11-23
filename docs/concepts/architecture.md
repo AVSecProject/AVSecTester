@@ -64,22 +64,24 @@ Paths are relative to `avsectester/`.
 
 | Directory | Responsibility |
 |---|---|
-| `./` | Shared records, validation, serialization, type paths and CLI entry points |
+| `./` | Shared records, validation, serialization, array copies, type paths and CLI entry points |
 | `geometry/` | Camera models, LiDAR calibration, poses, projection and ray/mesh geometry |
 | `datasets/` | Stateless recordings and recipes |
 | `maps/` | Semantic records and map readers |
 | `rendering/` | Assets, surfaces, textures, harmonizers and composition |
 | `closed_loop/` | Hooks, environments and sensor corruptions |
+| `closed_loop/ros_interception/` | ROS declarations, socket transport, forwarding and observation processes, message conversion and pose projection |
 | `closed_loop/simulators/` | Contracts, recorded playback, dynamics, navigation, ground contact and object composition |
-| `closed_loop/simulators/carla/` | CARLA world and sensor integration |
+| `closed_loop/simulators/messages.py` | Message-stage and relay transport contracts for simulators |
+| `closed_loop/simulators/carla/` | CARLA world and sensor integration, including physical snapshots and rig geometry |
 | `closed_loop/simulators/nurec/` | NuRec rendering, `traffic.py` sessions and `server.py` local services |
 | `closed_loop/avstacks/` | Driving interfaces and `DrivingAdapter` |
 | `closed_loop/avstacks/implemented/` | Supplied driving systems, including `modules/` |
 | `attack/` | `Attack` contracts and structured `offline_report` outputs |
 | `attack/insertion/` | Assets, placement, visibility and insertion actions |
 | `attack/optimization/` | Optimization interfaces, algorithms and scorer bindings |
-| `runlog/` | Recording and reading steps, events and payloads |
-| `execution/` | Runner, services and frame-data caching |
+| `runlog/` | Recording and reading steps, events, captures and native messages |
+| `execution/` | Runner, services, frame-data caching and native message processing |
 | `evaluation/` | Metrics, comparison groups, reports and plots |
 | `implemented_attacks/` | One concrete attack per `snake_case` class directory |
 | `experiment/` | Configuration, preparation, execution and saved outputs |
@@ -95,7 +97,7 @@ The declared type-only exception below permits annotations without a runtime dep
 
 | Layer | Modules | Allowed internal imports |
 |---|---|---|
-| L0 | `geometry/`, `validation.py`, `type_paths.py`, `serialization.py` | L0 |
+| L0 | `geometry/`, `validation.py`, `type_paths.py`, `structured_arrays.py`, `serialization.py` | L0 |
 | L0′ | `data_types.py` | L0–L0′ |
 | L1 | `datasets/`, `maps/`, `rendering/` | L0–L1 |
 | L2 | `closed_loop/` | L0–L2 |
@@ -111,6 +113,7 @@ The declared type-only exception below permits annotations without a runtime dep
 | `avsectester.attack.attack` | `avsectester.execution.services` | `TYPE_CHECKING` |
 
 Map readers do not depend on datasets. Rendering does not depend on simulators or attacks.
+Within L2, the ROS socket transport implements the simulator's message channel contract.
 Generic attack tools do not import concrete attacks, and concrete attacks do not import one
 another. Optional SDK, model and GPU imports stay inside their owning implementations.
 
