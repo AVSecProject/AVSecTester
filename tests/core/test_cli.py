@@ -69,6 +69,21 @@ def test_run(tmp_path):
     assert "supplied" in invalid.output and "metadata.load" in invalid.output
     assert not (no_selector_path.parent / "results").exists()
 
+    failure_path = write_configuration(tmp_path / "repeated-failure")
+    failure_spec = yaml.safe_load(failure_path.read_text())
+    failure_spec["simulator"]["type"] = "tests.fakes:RepeatedRunMemorySimulator"
+    failure_spec["attacks"]["probe"]["options"] = {"max_segments": 1}
+    failure_spec["runs"].update(repeats=2, treatments=[
+        {"name": "clean"},
+        {"name": "broken", "attack_name": "probe", "environment": {"world": {"fail": True}}},
+    ])
+    failure_path.write_text(yaml.safe_dump(failure_spec))
+    failed = runner.invoke(cli.app, ["run", str(failure_path)])
+    assert failed.exit_code == 1, failed.output
+    for repeat in (0, 1):
+        destination = failure_path.parent / f"results/runs/segment-00000/seed-0/repeat-{repeat}/broken"
+        assert f"Failed run: {destination}: RuntimeError: memory simulation failed" in failed.output
+
 
 def test_run_prepared(tmp_path):
     path = write_configuration(tmp_path)

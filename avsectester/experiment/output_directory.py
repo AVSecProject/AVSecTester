@@ -32,6 +32,17 @@ if TYPE_CHECKING:
 
 _SEGMENT_PREFIX = "segment-"
 _SEED_PREFIX = "seed-"
+_REPEAT_PREFIX = "repeat-"
+
+
+def stored_repeat(repeats: int, repeat: int) -> int | None:
+    """Return the repeat index to persist for experiments with multiple repeats."""
+    return repeat if repeats > 1 else None
+
+
+def is_repeat_directory_name(name: str) -> bool:
+    """Whether a name has the form of a repeat directory, which treatment names must avoid."""
+    return name.startswith(_REPEAT_PREFIX) and name.removeprefix(_REPEAT_PREFIX).isdigit()
 
 
 def runs_directory(root: Path) -> Path:
@@ -39,25 +50,42 @@ def runs_directory(root: Path) -> Path:
     return Path(root) / "runs"
 
 
-def run_directory(root: Path, segment_index: int, seed: int, treatment: str) -> Path:
-    """Return one shared segment-unit/seed/treatment run directory."""
-    return runs_directory(root) / f"{_SEGMENT_PREFIX}{segment_index:05d}" / f"{_SEED_PREFIX}{seed}" / treatment
+def run_directory(root: Path, segment_index: int, seed: int, treatment: str,
+                  repeat: int | None = None) -> Path:
+    """Return the directory for one treatment run, with a repeat level when supplied."""
+    directory = runs_directory(root) / f"{_SEGMENT_PREFIX}{segment_index:05d}" / f"{_SEED_PREFIX}{seed}"
+    if repeat is not None:
+        directory /= f"{_REPEAT_PREFIX}{repeat}"
+    return directory / treatment
 
 
-def saved_run_directories(root: Path) -> tuple[tuple[tuple[int, int, str], Path], ...]:
-    """List new-layout manifests as ((segment_index, seed, treatment), directory)."""
+def saved_run_directories(root: Path) -> tuple[tuple[tuple[int, int, int | None, str], Path], ...]:
+    """List saved runs as ((segment_index, seed, stored_repeat, treatment), directory)."""
     found = []
-    pattern = f"{_SEGMENT_PREFIX}*/{_SEED_PREFIX}*/*/manifest.json"
-    for manifest in sorted(runs_directory(root).glob(pattern)):
+    runs = runs_directory(root)
+    pattern = f"{_SEGMENT_PREFIX}*/{_SEED_PREFIX}*"
+    manifests = [*runs.glob(f"{pattern}/*/manifest.json"),
+                 *runs.glob(f"{pattern}/{_REPEAT_PREFIX}*/*/manifest.json")]
+    for manifest in sorted(manifests):
         directory = manifest.parent
+        segment_dir, seed_dir, *repeat_dir, treatment = directory.relative_to(runs).parts
         try:
-            key = (int(directory.parent.parent.name.removeprefix(_SEGMENT_PREFIX)),
-                   int(directory.parent.name.removeprefix(_SEED_PREFIX)), directory.name)
+            index = int(segment_dir.removeprefix(_SEGMENT_PREFIX))
+            seed = int(seed_dir.removeprefix(_SEED_PREFIX))
+            repeat = int(repeat_dir[0].removeprefix(_REPEAT_PREFIX)) if repeat_dir else None
         except ValueError:
             continue
-        if run_directory(root, *key) == directory:
-            found.append((key, directory))
+        if run_directory(root, index, seed, treatment, repeat) == directory:
+            found.append(((index, seed, repeat, treatment), directory))
     return tuple(found)
+
+
+def evaluation_plot_filename(segment_index: int, seed: int, repeat: int | None = None) -> str:
+    """Name the plot for one segment, seed and optional stored repeat."""
+    name = f"{_SEGMENT_PREFIX}{segment_index:05d}-{_SEED_PREFIX}{seed}"
+    if repeat is not None:
+        name += f"-{_REPEAT_PREFIX}{repeat}"
+    return f"{name}.png"
 
 
 class ConfigurationMismatchError(ValueError):
@@ -470,37 +498,45 @@ def load_result(directory: str | Path, configuration: ExperimentConfiguration) -
     root = Path(directory)
     config = load_configuration(configuration)
     prepared = load_prepared_metadata(config, root)
-    expected: dict[tuple[int, int, str], tuple[SegmentUnit, str | None, Path]] = {}
+    expected: dict[tuple[int, int, int | None, str], tuple[SegmentUnit, str | None, Path]] = {}
     for unit in prepared.units:
         if config.split is not None and unit.part not in config.split.execute:
             continue
         for seed in config.runs.seeds:
-            for treatment_config in config.runs.treatments:
-                name = treatment_config.attack_name
-                if name is not None and name not in unit.attack_names:
-                    continue
-                key = unit.index, seed, treatment_config.name
-                expected[key] = unit, name, run_directory(root, *key)
+            for repeat_index in range(config.runs.repeats):
+                repeat = stored_repeat(config.runs.repeats, repeat_index)
+                for treatment_config in config.runs.treatments:
+                    name = treatment_config.attack_name
+                    if name is not None and name not in unit.attack_names:
+                        continue
+                    treatment = treatment_config.name
+                    expected[unit.index, seed, repeat, treatment] = (
+                        unit, name, run_directory(root, unit.index, seed, treatment, repeat)
+                    )
     destination = runs_directory(root)
     known_treatments = {item.name for item in config.runs.treatments}
     notices = tuple(
-        f"Skipping saved run for removed treatment: {path}" if key[2] not in known_treatments
+        f"Skipping saved run for removed treatment: {path}" if key[3] not in known_treatments
         else f"Skipping saved run that the saved preparation does not expect: {path}"
         for key, path in saved_run_directories(root) if key not in expected
     )
     runs: list[TreatmentResult] = []
-    for (index, seed, treatment), (unit, name, path) in expected.items():
+    for (index, seed, repeat, treatment), (unit, name, path) in expected.items():
         segment = unit.segment
         description = {"attack_name": name, "segment_index": index, "seed": seed,
                        "treatment": treatment, "part": unit.part}
+        if repeat is not None:
+            description["repeat"] = repeat
         if not (path / "manifest.json").is_file():
             message = "Expected run has no saved manifest; execution did not finish this treatment"
             log = RunLog(metadata=description, status="incomplete", path=path)
-            runs.append(TreatmentResult(name, index, segment, treatment, seed, log, message, unit.part))
+            runs.append(TreatmentResult(name, index, segment, treatment, seed, log, message, unit.part,
+                                        repeat=repeat or 0))
             continue
         log, error = read_treatment_log(path, description, runs_root=destination,
                                         expected_segment=segment)
-        runs.append(TreatmentResult(name, index, segment, treatment, seed, log, error, unit.part))
+        runs.append(TreatmentResult(name, index, segment, treatment, seed, log, error, unit.part,
+                                    repeat=repeat or 0))
     scenario_ids = tuple(dict.fromkeys(
         segment.scenario_id for segments in prepared.metadata.values() for segment in segments
     ))

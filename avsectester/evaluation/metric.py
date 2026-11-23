@@ -47,7 +47,7 @@ TreatmentMeasurements: TypeAlias = Mapping[str, FieldMeasurements]
 
 @dataclass(frozen=True)
 class ComparisonGroup:
-    """Completed treatments sharing one segment unit and seed, plus its saved scenario map.
+    """Completed treatments sharing a segment unit, seed and repeat, plus its saved scenario map.
 
     ``scenario_map`` comes from the experiment result. Metric evaluation never queries datasets.
     """
@@ -59,11 +59,15 @@ class ComparisonGroup:
         default_factory=lambda: Unavailable("No saved scenario map is available"),
     )
     treatment_attacks: Mapping[str, str | None] = field(default_factory=dict)
+    repeat: int = 0
 
 
 @dataclass(frozen=True)
 class TreatmentPair:
-    """A completed pair in configuration order. Differences are defined as B minus A."""
+    """A completed pair in treatment order or, within one treatment, in repeat order.
+
+    Differences are defined as B minus A.
+    """
 
     treatment_a: str
     treatment_b: str

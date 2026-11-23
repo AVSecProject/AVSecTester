@@ -97,11 +97,27 @@ state, with cleanup on success, failure or interruption. The
 [treatment schema](../reference/configuration.md#run-settings) defines how to enable attacks and
 environment overrides.
 
+### Repeating treatments
+
+With [`runs.repeats`](../reference/configuration.md#run-settings), each unit and seed runs all
+applicable treatments in configuration order, then repeats that sequence. All rounds share
+the seed, start and prepared reference. Each run creates its own attack runtime and hooks.
+Only simulators that declare [`can_repeat_runs`](simulators.md), currently CARLA, accept more
+than one repeat. NuRec runs once per treatment, unit and seed.
+
+Repeated runs add a zero-based `repeat-R` directory between `seed-S` and the treatment
+directory and record `repeat: R` in run metadata. Single runs use the treatment directory
+directly under `seed-S` and omit the metadata field.
+
 ## Results and failures
 
 `ExperimentResult.runs` holds every treatment result. `failures` lists failed or incomplete
 runs. `selection_errors` lists selection errors. The `runs.strict` setting raises the first error.
 See [Run settings](../reference/configuration.md#run-settings).
+
+`TreatmentResult.repeat` is the zero-based repeat number and defaults to zero.
+`TreatmentResult.group` and the keys of `ExperimentResult.groups` are
+`(segment_index, seed, repeat)`. Each key identifies one comparison group.
 
 With `runs.output` set, execution streams records to disk. After all treatments finish,
 `Experiment.execute` reads back the saved logs for the returned result without loading sensor
@@ -147,8 +163,9 @@ metadata. Missing, failed or mismatched runs are retried individually. An alread
 needs no new initialization.
 
 Execution resume compares `attack_name`, `segment_index`, `part`, the complete `segment`,
-`treatment`, `seed`, `environment`, `decision_steps`, `selected_decision_steps`
-and `deployment_ticks`.
+`treatment`, `seed`, `environment`, `decision_steps`, `selected_decision_steps`,
+`deployment_ticks` and, for repeated experiments, `repeat`. The repeat count does not change
+preparation compatibility.
 
 An interrupted offline phase leaves progress and a partial failed report. Resuming archives that
 attack's report directory before restarting its offline phase. The

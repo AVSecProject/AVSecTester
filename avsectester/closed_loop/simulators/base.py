@@ -364,6 +364,8 @@ class Simulator(ABC):
     'Whether closed-loop runs can start after the scenario origin. Rendering and preparation are unaffected.'
     can_insert_objects: bool = False
     'Whether world objects can be inserted into sensor rendering.'
+    can_repeat_runs: bool = False
+    'Whether a treatment may run repeatedly because outcomes at fixed settings can vary.'
     supported_world_settings: frozenset[str] = frozenset()
     'World-setting keys accepted by the simulator.'
     simulator_version = "1"

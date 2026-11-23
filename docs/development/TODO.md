@@ -133,7 +133,7 @@ See [NuRec LiDAR](../guides/simulators.md#lidar) for supported capture behavior.
 - [x] Host Autoware in LiDAR mode on CARLA through native ROS 2.
 - [ ] Add Autoware camera fusion, including forwarding the required image topics.
 - [ ] Generate Autoware maps for additional CARLA towns.
-- [ ] Evaluate repeated Autoware runs and the distribution of their outcomes.
+- [x] Evaluate repeated Autoware runs and the distribution of their outcomes.
 
 ## Native ROS 2 sensor attacks
 
@@ -144,6 +144,12 @@ See [NuRec LiDAR](../guides/simulators.md#lidar) for supported capture behavior.
 
 - [ ] Support starts after the scene origin by placing ego on the prepared trajectory at each
   pre-roll tick.
+
+## Memory of large experiments
+
+- [ ] Bound evaluation memory by total step count. Execution reads every saved run back at once,
+  and each step stores the native ego state in both physical snapshots as well as `ego`.
+- [ ] Limit memory that native thread pools leave in allocator arenas during hosted runs.
 
 ## External benchmark integrations
 

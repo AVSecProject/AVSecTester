@@ -68,6 +68,9 @@ def test_format_summary(report):
     text = report.format_summary()
     assert "1.2346 ± 0.1000" in text and "n = 3" in text
     assert "0.6667" in text and "2 of 3 groups" in text
+    metric_values["DrivingMetrics.final_speed"].update(min=1., median=1.25, max=1.5)
+    text = report.format_summary()
+    assert "median 1.2500 [1.0000, 1.5000]" in text
     metric_values["DrivingMetrics.final_speed"] = {"mean": -1e-6, "std": 0., "count": 1}
     assert "-0.0000" not in report.format_summary()
     assert "0.0000" in report.format_summary()
@@ -107,7 +110,7 @@ def test_save(report, tmp_path):
         reader = csv.DictReader(stream)
         assert reader.fieldnames == [
             "part", "treatment", "groups", "total_groups", "failed_runs", "field", "kind",
-            "count", "mean", "std", "true_fraction",
+            "count", "mean", "std", "true_fraction", "min", "median", "max", "true_count",
         ]
         treatments = list(reader)
     assert len(treatments) == sum(len(row["metrics"]) for row in data["treatment_summaries"])
@@ -121,6 +124,7 @@ def test_save(report, tmp_path):
         "failed_runs": "0", "field": "DrivingMetrics.final_speed", "kind": "number",
         "count": "1", "mean": str(statistics["DrivingMetrics.final_speed"]["mean"]),
         "std": str(statistics["DrivingMetrics.final_speed"]["std"]), "true_fraction": "",
+        "min": "", "median": "", "max": "", "true_count": "",
     }
     assert proportion["kind"] == "proportion"
     assert proportion["count"] == str(statistics["DrivingMetrics.stopped"]["count"])
@@ -132,6 +136,7 @@ def test_save(report, tmp_path):
         assert reader.fieldnames == [
             "part", "treatment_a", "treatment_b", "groups", "total_groups", "measurement",
             "field", "kind", "count", "mean", "std", "true_fraction",
+            "min", "median", "max", "true_count",
         ]
         pairs = list(reader)
     assert len(pairs) == sum(
@@ -141,8 +146,25 @@ def test_save(report, tmp_path):
         "part": "", "treatment_a": "clean", "treatment_b": "attacked", "groups": "0",
         "total_groups": "1", "measurement": "paired_difference",
         "field": "DrivingMetrics.final_speed", "kind": "number", "count": "0",
-        "mean": "", "std": "", "true_fraction": "",
+        "mean": "", "std": "", "true_fraction": "", "min": "", "median": "", "max": "", "true_count": "",
     }]
+    repeat_path = tmp_path / "repeat_pair.csv"
+    assert not repeat_path.exists()
+    report.repeats = 2
+    report.groups[0]["repeat"] = 0
+    report.repeat_pairs.append({
+        "part": None, "segment_index": 0, "scenario_id": "scene", "seed": 0, "treatment": "clean",
+        "repeat_a": 0, "repeat_b": 1, "metrics": {"TrajectoryDeviation.final_deviation": 0.},
+        "reasons": {}, "metric_types": {"TrajectoryDeviation.final_deviation": "number"},
+    })
+    report.save(tmp_path)
+    with (tmp_path / "runs.csv").open() as stream:
+        assert next(csv.DictReader(stream))["repeat"] == "0"
+    with repeat_path.open() as stream:
+        pairs = list(csv.DictReader(stream))
+    assert pairs == [{"part": "", "segment_index": "0", "scenario_id": "scene", "seed": "0",
+                      "treatment": "clean", "repeat_a": "0", "repeat_b": "1",
+                      "TrajectoryDeviation.final_deviation": "0.0"}]
 
 
 def test_summarize():
@@ -180,13 +202,17 @@ def test_summarize():
     assert np.isclose(clean["metrics"]["speed"]["std"], np.sqrt(2 / 3))
     assert clean["metrics"]["speed"]["std_ddof"] == 0
     assert (attacked["groups"], attacked["total_groups"], attacked["failed_runs"]) == (2, 3, 1)
-    assert attacked["metrics"]["stopped"] == {"kind": "proportion", "count": 2, "true_fraction": .5}
+    assert attacked["metrics"]["stopped"] == {
+        "kind": "proportion", "count": 2, "true_fraction": .5, "true_count": 1,
+    }
     pair, = report.pair_summaries
     assert (pair["groups"], pair["total_groups"]) == (2, 3)
     assert pair["deltas"]["stopped"]["kind"] == "number"
     assert pair["deltas"]["stopped"]["mean"] == .5
     assert pair["metrics"]["separation"]["mean"] == 3.
-    assert pair["metrics"]["missing_flag"] == {"kind": "proportion", "count": 0, "true_fraction": None}
+    assert pair["metrics"]["missing_flag"] == {
+        "kind": "proportion", "count": 0, "true_fraction": None, "true_count": 0,
+    }
 
     for group in report.groups:
         group["part"] = "train"

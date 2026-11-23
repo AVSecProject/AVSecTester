@@ -203,6 +203,9 @@ Checkpoint and retry behavior follow
   evaluation_report.html
 ```
 
+Repeated experiments add the [repeat directory level](../guides/experiments.md#repeating-treatments)
+and produce `evaluation/repeat_pair.csv` when the report contains repeat pairs.
+
 Each attack directory holds the selected segments in `metadata.json`, its artifacts in
 `artifacts/` and its offline report in `offline_report/`. The `artifacts/` directory is created
 only when the offline phase returns a value other than `None`. A failed or interrupted offline

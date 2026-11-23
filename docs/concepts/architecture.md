@@ -41,7 +41,7 @@ The [Python API](../reference/python-api.md) lists public modules and contracts.
 | Segment | A scenario window with attack-owned `user_data` |
 | Unit | A distinct segment, including its complete `user_data` |
 | Treatment | A named attack/environment setting |
-| Comparison group | A unit and seed with the applicable treatments |
+| Comparison group | A unit, seed and repeat with the applicable treatments |
 | Offline phase | Preparation of artifacts before execution. It may be a no-op |
 | Online phase | An `AttackRuntime`'s setup, step and stop lifecycle. It may be a no-op |
 | Attack action | A modification requested by an attacker |

@@ -1667,6 +1667,7 @@ The simulator: a configuration (`Simulator`) and its live worlds (`SimulatorRunt
 | `Simulator.can_observe_past: bool = False` | Whether observations before a selected start can be reconstructed. |
 | `Simulator.can_start_runs_after_origin: bool = True` | Whether closed-loop runs can start after the scenario origin. Rendering and preparation are unaffected. |
 | `Simulator.can_insert_objects: bool = False` | Whether world objects can be inserted into sensor rendering. |
+| `Simulator.can_repeat_runs: bool = False` | Whether a treatment may run repeatedly because outcomes at fixed settings can vary. |
 | `Simulator.supported_world_settings: frozenset[str] = frozenset()` | World-setting keys accepted by the simulator. |
 | `Simulator.simulator_version = "1"` | Version identifier included in simulator compatibility summaries. |
 | `Simulator.capture_ticks = 0` | Simulator ticks consumed by a sensor capture. |
@@ -1966,6 +1967,7 @@ Configured CARLA simulations and their live native-world runtimes.
 | `CarlaSimulator.can_replay = True` | Whether recorded-tick replay is supported. |
 | `CarlaSimulator.can_insert_objects = True` | Whether world objects can be inserted into sensor rendering. |
 | `CarlaSimulator.can_observe_past = True` | Whether observations before a selected start can be reconstructed. |
+| `CarlaSimulator.can_repeat_runs = True` | Whether a treatment may run repeatedly because outcomes at fixed settings can vary. |
 | `CarlaSimulator.supported_world_settings = CARLA_WORLD_SETTINGS` | World-setting keys accepted by the simulator. |
 | `CarlaSimulator.validate_world_settings(world: Mapping[str, Any]) -> None` | Validate keys, native enum names, types and ranges without connecting to CARLA. |
 | `CarlaSimulator.create_runtime(seed: int \| None = None) -> CarlaSimulatorRuntime` | A new live world. An explicit run seed overrides the configured client seed. |
@@ -3030,8 +3032,8 @@ Evaluate ordered recorded run groups independently of experiment configurations.
 
 | Name and signature | Meaning |
 |---|---|
-| `RunGroup(segment_index: int, segment: AttackSegment, seed: int, logs: Mapping[str, RunLog], errors: Mapping[str, str] = dict(), scenario_map: ScenarioMap \| Unavailable = Unavailable("No saved scenario map is available"), treatment_attacks: Mapping[str, str \| None] = dict(), part: str \| None = None)` | Ordered treatment logs sharing a segment and seed, including unsuccessful runs. |
-| `evaluate_groups(groups: Sequence[RunGroup], metrics: Sequence[Metric], *, notes: Sequence[str] = ()) -> EvaluationReport` | Evaluate run metrics and each treatment pair in the supplied group and log order. |
+| `RunGroup(segment_index: int, segment: AttackSegment, seed: int, logs: Mapping[str, RunLog], errors: Mapping[str, str] = dict(), scenario_map: ScenarioMap \| Unavailable = Unavailable("No saved scenario map is available"), treatment_attacks: Mapping[str, str \| None] = dict(), part: str \| None = None, repeat: int = 0)` | Ordered treatment logs sharing a segment, seed and repeat, including unsuccessful runs. |
+| `evaluate_groups(groups: Sequence[RunGroup], metrics: Sequence[Metric], *, notes: Sequence[str] = (), repeats: int = 1) -> EvaluationReport` | Evaluate run metrics and each treatment pair in the supplied group and log order. |
 <!-- api:end -->
 
 #### Constraints and errors
@@ -3057,8 +3059,8 @@ Metrics computed from recorded logs, without live simulators or driving models.
 | `FieldMeasurements = Mapping[str, MetricScalar]` | Mapping from unprefixed metric fields to scalar measurements. |
 | `TreatmentMeasurements = Mapping[str, FieldMeasurements]` | Mapping from treatment names to their field measurements. |
 | `UnavailableMetricValue(reason: str, value_type: Literal["number", "boolean"] = "number")` | A missing scalar and its reason. The value_type preserves unavailable boolean fields. |
-| `ComparisonGroup(segment: AttackSegment, seed: int, runs: Mapping[str, RunLog], scenario_map: ScenarioMap \| Unavailable = Unavailable("No saved scenario map is available"), treatment_attacks: Mapping[str, str \| None] = dict())` | Completed treatments sharing one segment unit and seed, plus its saved scenario map. |
-| `TreatmentPair(treatment_a: str, treatment_b: str, log_a: RunLog, log_b: RunLog)` | A completed pair in configuration order. Differences are defined as B minus A. |
+| `ComparisonGroup(segment: AttackSegment, seed: int, runs: Mapping[str, RunLog], scenario_map: ScenarioMap \| Unavailable = Unavailable("No saved scenario map is available"), treatment_attacks: Mapping[str, str \| None] = dict(), repeat: int = 0)` | Completed treatments sharing a segment unit, seed and repeat, plus its saved scenario map. |
+| `TreatmentPair(treatment_a: str, treatment_b: str, log_a: RunLog, log_b: RunLog)` | A completed pair in treatment order or, within one treatment, in repeat order. |
 | `MetricField(description: str, unit: str \| None = None)` | Meaning, calculation and missing-evidence conditions of one scalar field. |
 | `MetricDescription(summary: str, fields: Mapping[str, MetricField])` | A metric summary and fields keyed exactly as returned by evaluate. |
 | `Metric()` | Evaluate recorded data, returning scalars or UnavailableMetricValue values with reasons. |
@@ -3107,12 +3109,12 @@ Offline report records, formatting and statistics for recorded measurements.
 | Name and signature | Meaning |
 |---|---|
 | `EvaluationConfiguration(metrics: tuple[Metric, ...] \| None = None)` | Metrics for the whole experiment. None chooses one data-aware default metric set. |
-| `EvaluationReport(groups: list[dict[str, Any]] = list(), treatment_summaries: list[dict[str, Any]] = list(), pair_summaries: list[dict[str, Any]] = list(), selections: list[dict[str, Any]] = list(), metrics: list[dict[str, Any]] = list(), notes: list[str] = list(), metric_errors: list[dict[str, Any]] = list(), path: Path \| None = None, experiment: dict[str, Any] = dict())` | Per-run and per-pair measurements, missing reasons and population statistics. |
+| `EvaluationReport(groups: list[dict[str, Any]] = list(), treatment_summaries: list[dict[str, Any]] = list(), pair_summaries: list[dict[str, Any]] = list(), selections: list[dict[str, Any]] = list(), metrics: list[dict[str, Any]] = list(), notes: list[str] = list(), metric_errors: list[dict[str, Any]] = list(), path: Path \| None = None, experiment: dict[str, Any] = dict(), repeats: int = 1, repeat_pairs: list[dict[str, Any]] = list())` | Per-run and per-pair measurements, missing reasons and population statistics. |
 | `EvaluationReport.summarize() -> None` | Rebuild treatment and pair population statistics from the recorded group rows. |
 | `EvaluationReport.record_error(source: str, error: Exception, **context: Any) -> None` | Record an evaluation failure and its group or pair context without losing results. |
 | `EvaluationReport.as_dict() -> dict[str, Any]` | Return JSON-compatible report data, independent of live experiment objects. |
 | `EvaluationReport.format_summary() -> str` | Format every metric class by part and treatment, followed by report explanations. |
-| `EvaluationReport.save(directory: str \| Path) -> Path` | Write report.json, runs.csv, treatment_summary.csv and pair_summary.csv. |
+| `EvaluationReport.save(directory: str \| Path) -> Path` | Write evaluation report.json and the accompanying run, pair and summary CSVs. |
 <!-- api:end -->
 
 #### Constraints and errors
@@ -3531,7 +3533,7 @@ Construct experiment objects from Python mappings or YAML files.
 | `TreatmentConfiguration(name: str, attack_name: str \| None = None, environment: Mapping[str, Any] = dict())` | One attack, or an unattacked run, with explicit environment overrides. |
 | `MetadataConfiguration(save: Path \| None = None, load: Path \| None = None)` | Save selected units or load one shared dataset-specific metadata file. |
 | `SplitConfiguration(train_segments: int, validation_segments: int = 0, seed: int = 0, execute: tuple[str, ...] = ("test",))` | Random segment-unit partition sizes and independently selectable execution parts. |
-| `RunsConfiguration(treatments: tuple[TreatmentConfiguration, ...] = (), seeds: tuple[int, ...] = (0,), decision_steps: int \| None = None, environment: Mapping[str, Any] = dict(), recording: RecordingPolicy = RecordingPolicy(), output: Path \| None = None, strict: bool = False, timing: TimingConfiguration = TimingConfiguration())` | What to run on the configured components, and how to record and handle those runs. |
+| `RunsConfiguration(treatments: tuple[TreatmentConfiguration, ...] = (), seeds: tuple[int, ...] = (0,), decision_steps: int \| None = None, environment: Mapping[str, Any] = dict(), recording: RecordingPolicy = RecordingPolicy(), output: Path \| None = None, strict: bool = False, timing: TimingConfiguration = TimingConfiguration(), repeats: int = 1)` | What to run on the configured components, and how to record and handle those runs. |
 | `ExperimentConfiguration(dataset: Dataset, simulator: Simulator, avstack: DrivingAdapter, attacks: Mapping[str, Attack] = dict(), hooks: HookConfiguration = None, evaluation: EvaluationConfiguration = EvaluationConfiguration(), runs: RunsConfiguration = RunsConfiguration(), split: SplitConfiguration \| None = None, metadata: MetadataConfiguration = MetadataConfiguration())` | Reusable components and run settings. Every run owns fresh driving and simulator state. |
 | `ExperimentConfiguration.configuration_summary: dict[str, Any]` | Describe compatibility on demand, when saving or loading prepared results. |
 | `ExperimentConfiguration.describe_configuration(*, scenarios: Sequence[str] \| None = None, metadata_sha256: str \| None = None) -> dict[str, Any]` | Describe preparation inputs without requiring dataset access. |
@@ -3630,10 +3632,10 @@ Preparation inputs, their validation, prepared metadata and per-treatment result
 | `PreparedExperiment(configuration: ExperimentConfiguration, metadata: Mapping[str, tuple[AttackSegment, ...]], artifacts: Mapping[str, Any], selections: tuple[SelectionDecision, ...] = (), *, preparation: Mapping[str, Any], units: tuple[SegmentUnit, ...] = (), deployment: DeploymentPlan \| None = None, offline_reports: Mapping[str, OfflineReport] = dict(), metadata_source: Mapping[str, str] \| None = None, initializations: Mapping[str, Mapping[str, Initialization \| Unavailable]] = dict())` | Configured factories, selected metadata and artifacts, never a live simulator or session. |
 | `PreparedExperiment.save(directory: str \| Path) -> Path` | Save preparation metadata, artifacts and offline reports to an output directory. |
 | `PreparedExperiment.load(config: ExperimentConfiguration \| Mapping[str, Any] \| str \| Path, directory: str \| Path) -> PreparedExperiment` | Load compatible metadata and artifacts without selecting or optimizing again. |
-| `TreatmentResult(attack_name: str \| None, segment_index: int, segment: AttackSegment, treatment: str, seed: int, log: RunLog, error: str \| None = None, part: str \| None = None)` | The recorded outcome of one segment, seed and named treatment. |
-| `TreatmentResult.group: tuple[int, int]` | Comparison-group key containing the segment index and seed. |
+| `TreatmentResult(attack_name: str \| None, segment_index: int, segment: AttackSegment, treatment: str, seed: int, log: RunLog, error: str \| None = None, part: str \| None = None, repeat: int = 0)` | The recorded outcome of a named treatment for one segment, seed and repeat. |
+| `TreatmentResult.group: tuple[int, int, int]` | Comparison-group key containing the segment index, seed and repeat index. |
 | `ExperimentResult(runs: tuple[TreatmentResult, ...] = (), selections: tuple[SelectionDecision, ...] = (), notices: tuple[str, ...] = (), scenario_maps: Mapping[str, ScenarioMap \| Unavailable] = dict())` | Treatment runs, selection outcomes and saved maps for scenarios with selected segments. |
-| `ExperimentResult.groups: dict[tuple[int, int], dict[str, RunLog]]` | Group treatment results by segment index and seed. |
+| `ExperimentResult.groups: dict[tuple[int, int, int], dict[str, RunLog]]` | Group treatment results by segment index, seed and repeat index. |
 | `ExperimentResult.failures: tuple[TreatmentResult, ...]` | Failed or incomplete treatment runs. |
 | `ExperimentResult.selection_errors: tuple[SelectionDecision, ...]` | Selection decisions whose status is error. |
 | `ExperimentResult.load(output: str \| Path, configuration: ExperimentConfiguration) -> ExperimentResult` | Read results without loading artifacts, driving models or simulator runtimes. |

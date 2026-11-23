@@ -23,6 +23,10 @@ advancing or invoking hooks. `sensor_view` reads a sensor's latest captured view
 `state` copies physical ego, actors and inserted objects. See
 [Runtime](../reference/runtime.md#one-decision) for event order and clock meanings.
 
+The `can_repeat_runs` capability allows multiple runs of the same treatment at the same seed and
+start. CARLA declares it because its outcomes can vary, for example with asynchronous driving
+systems.
+
 Only world settings reach reset. Sensor corruptions apply after capture. See
 [Environments](environments.md) for environment composition and
 [Python API](../reference/python-api.md) for signatures and errors.
@@ -193,6 +197,9 @@ rendering run without pacing. The official Autoware schedule lets ticks recover 
 delays and resynchronizes after longer ones. Paced runs freeze Python objects at the origin.
 See [CARLA tick pacing](../reference/runtime.md#carla-tick-pacing) for timing and garbage
 collection records.
+
+Repeat runs with asynchronous driving systems and read treatment effects alongside within-treatment
+variation and [the noise floor](evaluation.md#reports-and-statistics).
 
 During a run, only world actions and simulator world hooks can affect the external system.
 The runner rejects sensor environments and hooks outside simulator world stages before the

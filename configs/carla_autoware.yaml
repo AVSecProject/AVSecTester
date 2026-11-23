@@ -182,6 +182,8 @@ runs:
   - name: relocation
     attack_name: relocation
   seeds: [0]
+  # Repeat the asynchronous driving system to observe variation in its outcomes.
+  repeats: 5
   timing:
     sensors:
       # Autoware does not consume this recording camera. Acquire it only when saving a frame.

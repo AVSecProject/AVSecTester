@@ -13,7 +13,7 @@ from typing import Any
 from avsectester import __version__
 from avsectester.evaluation.report import format_number, format_statistic
 
-from .output_directory import offline_report_directory
+from .output_directory import evaluation_plot_filename, offline_report_directory
 
 
 _STYLE = """
@@ -271,9 +271,10 @@ def _metric_specs(report: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 
 def _observed_fields(report: Mapping[str, Any], kind: str) -> list[str]:
-    key = "deltas" if kind == "delta" else "metrics"
+    keys = ("deltas", "mean_differences") if kind == "delta" else ("metrics",)
     summaries = report.get("pair_summaries" if kind != "run" else "treatment_summaries", [])
-    return list(dict.fromkeys(field for row in summaries for field in (row.get(key) or {})))
+    return list(dict.fromkeys(field for row in summaries for key in keys
+                              for field in (row.get(key) or {})))
 
 
 def _sections(report: Mapping[str, Any], kind: str) -> list[tuple[dict[str, Any], list[str]]]:
@@ -333,9 +334,18 @@ def _field_type(report: Mapping[str, Any], name: str) -> str:
     return "number"
 
 
-def _statistic(statistic: Mapping[str, Any]) -> _Html:
+def _statistic(statistic: Mapping[str, Any], *, reverse: bool = False) -> _Html:
+    if reverse:
+        reflected = {"mean": "mean", "median": "median", "min": "max", "max": "min"}
+        statistic = {**statistic, **{field: -float(statistic[source])
+                                    for field, source in reflected.items()
+                                    if statistic.get(source) is not None}}
     lines = format_statistic(statistic).splitlines()
-    return _Html(escape(lines[0]) + (f"<small>{escape(lines[1])}</small>" if len(lines) > 1 else ""))
+    return _Html(escape(lines[0]) + "".join(f"<small>{escape(line)}</small>" for line in lines[1:]))
+
+
+def _repeated(report: Mapping[str, Any]) -> bool:
+    return report.get("repeats", 1) > 1
 
 
 def _part_title(part: str | None) -> str:
@@ -363,8 +373,10 @@ def _experiment_setup(report: Mapping[str, Any], manifest: Mapping[str, Any]) ->
     hosted = simulator.get("external_driving_system") if isinstance(simulator, Mapping) else None
     if isinstance(hosted, Mapping) and hosted.get("type"):
         settings.append(["hosted driving system", _type_name(hosted["type"])])
+    settings.append(["seeds", ", ".join(str(seed) for seed in experiment.get("seeds", []))])
+    if _repeated(report):
+        settings.append(["repeats", report["repeats"]])
     settings.extend([
-        ["seeds", ", ".join(str(seed) for seed in experiment.get("seeds", []))],
         ["decision steps", "full segment" if decision_steps is None else decision_steps],
         ["executed parts", ", ".join(experiment.get("executed_parts", []))],
         ["comparison groups", experiment.get("comparison_groups")],
@@ -381,6 +393,7 @@ def _experiment_setup(report: Mapping[str, Any], manifest: Mapping[str, Any]) ->
 
 def _run_status(report: Mapping[str, Any]) -> list[str]:
     groups = report.get("groups", [])
+    repeated = _repeated(report)
     parts = list(dict.fromkeys(group.get("part") for group in groups))
     result = []
     for part in parts:
@@ -393,13 +406,16 @@ def _run_status(report: Mapping[str, Any]) -> list[str]:
             for treatment, row in group.get("treatments", {}).items():
                 statuses.setdefault(treatment, Counter())[row["status"]] += 1
                 if row["status"] != "completed":
-                    failed.append([treatment, group["segment_index"], group["seed"], row.get("error")])
+                    repeat = [group.get("repeat")] if repeated else []
+                    failed.append([treatment, group["segment_index"], group["seed"], *repeat,
+                                   row.get("error")])
         result.append(_table(["treatment", "completed", "failed", "total"], [
             [treatment, counts["completed"], sum(counts.values()) - counts["completed"], sum(counts.values())]
             for treatment, counts in statuses.items()]))
         if failed:
+            repeat_column = ["repeat"] if repeated else []
             result.append("<h4>Failed or incomplete runs</h4>" +
-                          _table(["treatment", "segment", "seed", "error"], failed))
+                          _table(["treatment", "segment", "seed", *repeat_column, "error"], failed))
     return result
 
 
@@ -436,6 +452,14 @@ def _results(report: Mapping[str, Any]) -> list[str]:
     return result
 
 
+def _mean_difference(pair: Mapping[str, Any], field: str, *, reverse: bool) -> _Html:
+    value = pair.get("mean_differences", {}).get(field)
+    reason = pair.get("mean_difference_reasons", {}).get(field)
+    if reverse and value is not None:
+        value = -value
+    return _Html(escape(format_number(value)) + (f"<small>{escape(reason)}</small>" if reason else ""))
+
+
 def _pairs(report: Mapping[str, Any]) -> list[str]:
     pairs = report.get("pair_summaries", [])
     if not pairs:
@@ -443,40 +467,56 @@ def _pairs(report: Mapping[str, Any]) -> list[str]:
     result: list[str] = []
     for part in dict.fromkeys(row.get("part") for row in pairs):
         rows = [row for row in pairs if row.get("part") == part]
+        cross_treatment = {frozenset((row["treatment_a"], row["treatment_b"])): row
+                           for row in rows if row["treatment_a"] != row["treatment_b"]}
         treatments = list(dict.fromkeys(
             [row["treatment"] for row in report.get("treatment_summaries", []) if row.get("part") == part] +
             [name for row in rows for name in (row["treatment_a"], row["treatment_b"])]))
         result.append(f"<h3>{escape(_part_title(part))}</h3>")
-        for specification, fields in _sections(report, "delta"):
+        delta_sections = _sections(report, "delta") if cross_treatment else []
+        for specification, fields in delta_sections:
             result.append(f"<h4>{_type_name(specification.get('type') or specification['label'])}</h4>")
             for index, reference in enumerate(treatments):
                 others = [name for name in treatments if name != reference]
+                comparisons = [cross_treatment.get(frozenset((reference, other)), {})
+                               for other in others]
                 result.append(f"<details{' open' if index == 0 else ''}><summary>"
                               f"Differences from {escape(reference)}</summary><p>"
                               "Each column shows B − A within comparison groups, where A is "
                               f"{escape(reference)}.</p>")
-                measurements = []
-                for name in fields:
-                    values = []
-                    for other in others:
-                        pair: dict[str, Any] = next((row for row in rows if
-                                     {row["treatment_a"], row["treatment_b"]} == {reference, other}), {})
-                        statistic = dict((pair.get("deltas") or {}).get(name, {}))
-                        if pair.get("treatment_b") == reference and statistic.get("mean") is not None:
-                            statistic["mean"] = -float(statistic["mean"])
-                        values.append(_statistic(statistic))
-                    measurements.append([_field_link(specification, name),
-                                         _field_description(specification, name).get("unit"), *values])
-                result.append(_table(["measurement", "unit", *others], measurements))
+                headers = ["measurement", "unit", *others]
+                labels = [[_field_link(specification, name),
+                           _field_description(specification, name).get("unit")] for name in fields]
+                result.append(_table(headers, [
+                    [*label, *[_statistic((pair.get("deltas") or {}).get(name, {}),
+                                         reverse=pair.get("treatment_b") == reference)
+                               for pair in comparisons]]
+                    for name, label in zip(fields, labels)]))
+                if _repeated(report):
+                    result.append("<h4>Differences between treatment means</h4>"
+                                  "<p>B − A across all completed runs for each treatment.</p>")
+                    result.append(_table(headers, [
+                        [*label, *[_mean_difference(pair, name,
+                                                    reverse=pair.get("treatment_b") == reference)
+                                   for pair in comparisons]]
+                        for name, label in zip(fields, labels)]))
                 result.append("</details>")
         result.append("<h4>Pair metrics</h4>")
         pair_sections = _sections(report, "pair")
         if not pair_sections:
             result.append('<p class="none">None</p>')
+        pair_labels = []
+        for row in rows:
+            label = f"{row['treatment_a']} vs {row['treatment_b']}"
+            if row["treatment_a"] == row["treatment_b"]:
+                label += " (between repeats)"
+                if row["groups"] == 0:
+                    label += " — no completed pairs"
+            pair_labels.append(label)
         for specification, fields in pair_sections:
             result.append(f"<details><summary>{_type_name(specification.get('type') or specification['label'])}"
                           "</summary>" + _table(
-                ["measurement", "unit", *[f"{row['treatment_a']} vs {row['treatment_b']}" for row in rows]],
+                ["measurement", "unit", *pair_labels],
                 [[_field_link(specification, name), _field_description(specification, name).get("unit"),
                   *[_statistic((row.get("metrics") or {}).get(name, {})) for row in rows]] for name in fields]))
             result.append("</details>")
@@ -488,8 +528,12 @@ def _group_details(root: Path, report: Mapping[str, Any], manifest: Mapping[str,
     result = []
     for group in report.get("groups", []):
         index, seed = group["segment_index"], group["seed"]
+        repeat = group.get("repeat")
+        repeat_title = "" if repeat is None else f" · repeat {repeat}"
+        reason_id = f"reason-{index}-{seed}" + ("" if repeat is None else f"-repeat-{repeat}")
+        reason_id = escape(reason_id, quote=True)
         unit = units.get(index, {})
-        title = (f"Segment {index} · seed {seed} · {group['scenario_id']} · "
+        title = (f"Segment {index} · seed {seed}{repeat_title} · {group['scenario_id']} · "
                  f"frames {unit.get('start', '—')}–{unit.get('stop', '—')} · "
                  f"{group.get('part') or 'no split'}")
         result.append(f"<details><summary>{escape(title)}</summary>")
@@ -512,17 +556,17 @@ def _group_details(root: Path, report: Mapping[str, Any], manifest: Mapping[str,
                         key = (_field_name(specification, name), reason)
                         reasons.setdefault(key, []).append(treatment)
                         number = list(reasons).index(key) + 1
-                        value = _Html(f'—<sup><a href="#reason-{index}-{seed}-{number}">[{number}]</a></sup>')
+                        value = _Html(f'—<sup><a href="#{reason_id}-{number}">[{number}]</a></sup>')
                     values.append(value)
                 rows.append([_field_link(specification, name),
                              _field_description(specification, name).get("unit"), *values])
         result.append(_table(["measurement", "unit", *treatments], rows))
         if reasons:
             result.append('<ol class="footnotes">' + "".join(
-                f'<li id="reason-{index}-{seed}-{number}">{escape(field)} '
+                f'<li id="{reason_id}-{number}">{escape(field)} '
                 f"({escape(', '.join(names))}): {escape(reason)}</li>"
                 for number, ((field, reason), names) in enumerate(reasons.items(), start=1)) + "</ol>")
-        filename = f"evaluation/plots/segment-{index:05d}-seed-{seed}.png"
+        filename = f"evaluation/plots/{evaluation_plot_filename(index, seed, repeat)}"
         if (root / filename).is_file():
             result.append(_image(filename, "Ego speed (m/s) after each decision. A second panel with the "
                                  "executed actuator brake appears only when the runs used actuator commands."))
@@ -558,12 +602,15 @@ def write_evaluation_html(output_root: str | Path) -> Path:
     root = Path(output_root)
     report = _load(root / "evaluation" / "report.json")
     manifest = _manifest(root)
-    body = [_header([
+    links = [
         ("offline_report.html", "Offline report"), ("evaluation/report.json", "Evaluation JSON"),
         ("evaluation/runs.csv", "Runs CSV"),
         ("evaluation/treatment_summary.csv", "Treatment summary CSV"),
         ("evaluation/pair_summary.csv", "Pair summary CSV"),
-    ])]
+    ]
+    if _repeated(report):
+        links.append(("evaluation/repeat_pair.csv", "Repeat pairs CSV"))
+    body = [_header(links)]
     sections = [
         ("experiment-setup", "Experiment setup"),
         ("run-status", "Run status"), ("metric-definitions", "Metric definitions"),
@@ -582,10 +629,14 @@ def write_evaluation_html(output_root: str | Path) -> Path:
     body.append(_section("group-details", "Group details", _group_details(root, report, manifest)))
     body.append(_section("selection", "Selection", _selection(report, manifest)))
     errors = report.get("metric_errors", [])
+    repeat_fields = ([("repeat", "repeat"), ("repeat_a", "repeat A"), ("repeat_b", "repeat B")]
+                     if _repeated(report) else [])
     error_content = ["<h3>Metric errors</h3>" + _table(
-        ["metric", "error", "part", "segment", "seed", "treatment"],
+        ["metric", "error", "part", "segment", "seed", "treatment",
+         *[label for _, label in repeat_fields]],
         [[_type_name(row.get("metric")), row.get("error"), row.get("part"), row.get("segment_index"),
-          row.get("seed"), row.get("treatment")] for row in errors])]
+          row.get("seed"), row.get("treatment"), *[row.get(key) for key, _ in repeat_fields]]
+         for row in errors])]
     notes = report.get("notes", [])
     error_content.append("<h3>Notes</h3>" + (
         "<ul>" + "".join(f"<li>{escape(str(note))}</li>" for note in notes) + "</ul>"

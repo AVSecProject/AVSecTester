@@ -1,4 +1,5 @@
 """HTML renderers consume saved reports and public prepared experiment records."""
+from copy import deepcopy
 from dataclasses import replace
 from html import unescape
 import json
@@ -207,3 +208,44 @@ def test_write_evaluation_html(tmp_path):
     loaded_text = write_evaluation_html(loaded).read_text()
     assert (f"Metadata loaded from {loaded.resolve()}/selected&lt;signs&gt;.json "
             "(4 segments). No selection was run.") in loaded_text
+
+    report.repeats = 2
+    first = report.groups[0]
+    first["repeat"] = 0
+    second = deepcopy(first)
+    second["repeat"] = 1
+    second["treatments"]["clean"]["metrics"][speed] = 5.123456
+    second["treatments"]["attack"].update(status="failed", metrics={}, error="lost camera")
+    second["comparisons"][0].update(status="failed", deltas={}, metrics={})
+    report.groups.append(second)
+    report.repeat_pairs = [{
+        "part": "test", "segment_index": 3, "scenario_id": "scene", "seed": 2,
+        "treatment": "clean", "repeat_a": 0, "repeat_b": 1, "metrics": {impact: True},
+        "reasons": {}, "metric_types": {impact: "boolean"},
+    }]
+    report.record_error("StopImpact", RuntimeError("repeat-pair error"),
+                        part="test", segment_index=3, seed=2, treatment="clean",
+                        repeat_a=0, repeat_b=1)
+    report.summarize()
+    report.save(evaluation)
+    for repeat in (0, 1):
+        Image.fromarray(np.zeros((3, 4, 3), np.uint8)).save(
+            plots / f"segment-00003-seed-2-repeat-{repeat}.png")
+    text = write_evaluation_html(tmp_path).read_text()
+    assert "<td>repeats</td><td>2</td>" in text
+    assert "<th>seed</th><th>repeat</th><th>error</th>" in text
+    assert "<td>attack</td><td>3</td><td>2</td><td>1</td><td>lost camera</td>" in text
+    assert "<th>clean vs attack</th><th>clean vs clean (between repeats)</th>" in text
+    assert "Differences between treatment means" in text
+    assert "<td>-3.2222</td>" in text and "<td>3.2222</td>" in text
+    assert "<th>treatment</th><th>repeat</th><th>repeat A</th><th>repeat B</th>" in text
+    assert ("<td>RuntimeError: repeat-pair error</td><td>test</td><td>3</td><td>2</td>"
+            "<td>clean</td><td>—</td><td>0</td><td>1</td>") in text
+    assert 'href="evaluation/repeat_pair.csv"' in text
+    for repeat in (0, 1):
+        assert f"Segment 3 · seed 2 · repeat {repeat} · scene" in text
+        assert f'src="evaluation/plots/segment-00003-seed-2-repeat-{repeat}.png"' in text
+        assert f'<sup><a href="#reason-3-2-repeat-{repeat}-' in text
+    identifiers = re.findall(r' id="([^"]+)"', text)
+    assert len(identifiers) == len(set(identifiers))
+    check_links(path)

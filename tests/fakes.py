@@ -200,6 +200,12 @@ class MemorySimulator(Simulator):
         return MemorySimulatorRuntime(self, seed)
 
 
+class RepeatedRunMemorySimulator(MemorySimulator):
+    """The memory simulator with repeat support enabled for experiment tests."""
+
+    can_repeat_runs = True
+
+
 class MemorySimulatorRuntime(SimulatorRuntime):
     """Native operations for the shared world. The production base owns reset and step."""
 

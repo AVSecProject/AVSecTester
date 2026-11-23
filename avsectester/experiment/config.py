@@ -43,6 +43,7 @@ from avsectester.datasets import Dataset
 from avsectester.evaluation.report import EvaluationConfiguration
 from avsectester.evaluation.metric import Metric
 from . import configuration_summary, type_registry
+from .output_directory import is_repeat_directory_name
 
 
 HookConfiguration: TypeAlias = HookSet | Callable[[int], HookSet] | None
@@ -59,6 +60,8 @@ class TreatmentConfiguration:
 
     def __post_init__(self) -> None:
         _name(self.name, "Treatment name")
+        if is_repeat_directory_name(self.name):
+            raise ValueError(f"Treatment name {self.name!r} is reserved for repeat directories")
         if self.attack_name is not None:
             _name(self.attack_name, "Treatment attack")
         object.__setattr__(self, "environment", _environment_override(self.environment))
@@ -131,6 +134,7 @@ class RunsConfiguration:
     output: Path | None = None
     strict: bool = False
     timing: TimingConfiguration = field(default_factory=TimingConfiguration)
+    repeats: int = 1
 
     def __post_init__(self) -> None:
         from avsectester.closed_loop.environment import normalize_environment
@@ -147,6 +151,7 @@ class RunsConfiguration:
             raise ValueError("seeds must not contain duplicates")
         if self.decision_steps is not None:
             require_positive_integer(self.decision_steps, "decision_steps")
+        require_positive_integer(self.repeats, "runs.repeats")
         if not isinstance(self.recording, RecordingPolicy):
             raise TypeError("recording must be RecordingPolicy")
         if not isinstance(self.timing, TimingConfiguration):
@@ -186,6 +191,9 @@ class ExperimentConfiguration:
                                ("metadata", MetadataConfiguration)):
             if not isinstance(getattr(self, name), expected):
                 raise TypeError(f"{name} must be {expected.__name__}")
+        if self.runs.repeats > 1 and not self.simulator.can_repeat_runs:
+            raise ValueError(f"{type(self.simulator).__name__} does not support repeated runs "
+                             "(can_repeat_runs is False). Set runs.repeats to 1")
         dataset_step = getattr(self.dataset, "time_step", None)
         if (dataset_step is not None and self.runs.timing.decision_period_us is not None
                 and self.runs.timing.decision_period_us != seconds_to_microseconds(dataset_step)):
@@ -368,8 +376,8 @@ def _runs(value: Any, directory: Path, device: str | None = None) -> RunsConfigu
         return value
     if not isinstance(value, Mapping):
         raise TypeError("runs must be a mapping or RunsConfiguration")
-    _keys(value, {"treatments", "seeds", "decision_steps", "environment", "recording", "output", "strict", "timing"},
-          "runs")
+    _keys(value, {"treatments", "seeds", "decision_steps", "environment", "recording", "output",
+                  "strict", "timing", "repeats"}, "runs")
     recording = value.get("recording", RecordingPolicy())
     if isinstance(recording, Mapping):
         if "every_n_steps" in recording:
@@ -392,6 +400,7 @@ def _runs(value: Any, directory: Path, device: str | None = None) -> RunsConfigu
         environment=_configured_environment(value.get("environment", {}), directory, device),
         recording=recording, output=output, strict=value.get("strict", False),
         timing=_timing(value.get("timing", {})),
+        repeats=value.get("repeats", 1),
     )
 
 

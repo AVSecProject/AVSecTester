@@ -3,6 +3,7 @@
 from dataclasses import asdict, replace
 import json
 import hashlib
+from shutil import copytree
 
 import numpy as np
 import pytest
@@ -10,6 +11,7 @@ import pytest
 from avsectester.attack import AttackSegment
 from avsectester.closed_loop.avstacks.driving_adapter import DrivingAdapter
 from avsectester.closed_loop.avstacks.implemented.external_control import ExternalAVStack
+from avsectester.closed_loop.hooks import Hook, HookSet
 from avsectester.closed_loop.simulators import UnsupportedStartError
 from avsectester.closed_loop.simulators.carla import CarlaSimulator
 from avsectester.closed_loop.timing import HistoryRequirement, TimingConfiguration
@@ -22,7 +24,7 @@ from avsectester.experiment import (
 from avsectester.maps import ScenarioMap
 from tests.fakes import (
     CarlaNativeBoundary, ConstantAVStack, ExternallyControlledMemorySimulator, MemoryDataset, MemorySimulator,
-    MinimalAttack, MetadataOnlyAttack,
+    MinimalAttack, MetadataOnlyAttack, RepeatedRunMemorySimulator,
 )
 
 
@@ -224,7 +226,8 @@ def test_multiple_attacks(tmp_path):
         (None, "clean"), ("green", "green"), ("green", "green_rain"), ("blue", "blue"),
     }
     assert all(run.log.status == "completed" for run in result.runs)
-    assert set(result.groups) == {(0, 0)}
+    assert set(result.groups) == {(0, 0, 0)}
+    assert all(run.repeat == 0 and "repeat" not in run.log.metadata for run in result.runs)
     clean_directories = list((tmp_path / "results" / "runs").glob("segment-*/seed-*/clean"))
     assert clean_directories == [tmp_path / "results" / "runs" / "segment-00000" / "seed-0" / "clean"]
     saved = ExperimentResult.load(config.runs.output, config)
@@ -449,6 +452,60 @@ def test_execute_resume(tmp_path):
     assert retained_file.read_text() == "preserve completed directory"
 
 
+def test_repeated_runs(tmp_path):
+    starts = []
+
+    def record_start(value, context):
+        starts.append(context.simulator_runtime.native["world"]["weather"])
+        if len(starts) == 3:
+            raise KeyboardInterrupt
+        return value
+
+    output = tmp_path / "repeat-runs"
+    default = replace(configuration(MinimalAttack(max_segments=1), output=output, treatments=(
+        TreatmentConfiguration("clean", environment={"world": {"weather": "clear"}}),
+        TreatmentConfiguration("attacked", "probe", environment={"world": {"weather": "rain"}}),
+    )), simulator=RepeatedRunMemorySimulator(), hooks=HookSet((Hook("simulator.setup", record_start),)))
+    Experiment.prepare(default)
+    preparation = (output / "prepared.json").read_bytes()
+    config = replace(default, runs=replace(default.runs, repeats=2))
+    prepared = PreparedExperiment.load(config, output)
+    with pytest.raises(KeyboardInterrupt):
+        Experiment.execute(prepared)
+    assert starts == ["clear", "rain", "clear"]
+    root = output / "runs" / "segment-00000" / "seed-0"
+    completed = {path: path.read_bytes() for path in root.glob("repeat-0/*/manifest.json")}
+    assert set(completed) == {root / "repeat-0" / name / "manifest.json"
+                              for name in ("clean", "attacked")}
+
+    result = Experiment.execute(prepared, resume=True)
+    assert [(run.repeat, run.treatment) for run in result.runs] == [
+        (0, "clean"), (0, "attacked"), (1, "clean"), (1, "attacked"),
+    ]
+    assert starts == ["clear", "rain", "clear", "clear", "rain"]
+    assert (output / "prepared.json").read_bytes() == preparation
+    assert all(path.read_bytes() == prior for path, prior in completed.items())
+    assert set(result.groups) == {(0, 0, 0), (0, 0, 1)}
+    for run in result.runs:
+        assert run.log.status == "completed"
+        assert run.log.path == root / f"repeat-{run.repeat}" / run.treatment
+        assert run.log.metadata["repeat"] == run.repeat
+        assert run.log.metadata["seed"] == run.seed == 0
+        if run.treatment == "attacked":
+            assert [out.value["decision"] for step in run.log.steps for out in step.outputs
+                    if out.name == "progress"] == [0, 1]
+
+    extra = root / "repeat-2" / "clean"
+    copytree(root / "repeat-1" / "clean", extra)
+    copytree(root / "repeat-1" / "clean", root / "repeat-01" / "clean")
+    loaded = ExperimentResult.load(output, config)
+    assert [(run.group, run.treatment) for run in loaded.runs] == [
+        (run.group, run.treatment) for run in result.runs
+    ]
+    assert loaded.notices == (f"Skipping saved run that the saved preparation does not expect: {extra}",)
+    assert not loaded.failures
+
+
 def test_execute_resume_revalidates_run_settings(tmp_path):
     config = configuration(MinimalAttack(max_segments=1), output=tmp_path / "resume", treatments=(
         TreatmentConfiguration("clean"), TreatmentConfiguration("pending", "probe")))
@@ -588,7 +645,7 @@ def test_metadata(tmp_path):
     assert all(unit.attack_names == ("one", "two") for unit in loaded.units)
     assert loaded.selections == ()
     result = Experiment.execute(loaded)
-    assert set(result.groups) == {(0, 0), (1, 0)}
+    assert set(result.groups) == {(0, 0, 0), (1, 0, 0)}
     assert all(set(runs) == {"clean", "one", "two"}
                for runs in result.groups.values())
     partitioned = Experiment.prepare(replace(

@@ -17,6 +17,7 @@ from avsectester.attack import AttackSegment
 from avsectester.data_types import Unavailable
 from avsectester.maps import ScenarioMap
 from avsectester.runlog import RunLog
+from avsectester.validation import require_positive_integer
 
 from .metric import (
     ComparisonGroup, Metric, MetricDescription, MetricField, PairMetric, TreatmentPair, UnavailableMetricValue,
@@ -26,7 +27,7 @@ from .report import EvaluationReport, _json_data
 
 @dataclass(frozen=True)
 class RunGroup:
-    """Ordered treatment logs sharing a segment and seed, including unsuccessful runs.
+    """Ordered treatment logs sharing a segment, seed and repeat, including unsuccessful runs.
 
     ``logs`` preserves the caller's treatment order. ``errors`` supplies execution or
     reading failures separately from the logs. RunGroup contains every run;
@@ -44,23 +45,34 @@ class RunGroup:
     )
     treatment_attacks: Mapping[str, str | None] = field(default_factory=dict)
     part: str | None = None
+    repeat: int = 0
 
 
 def evaluate_groups(
     groups: Sequence[RunGroup], metrics: Sequence[Metric], *, notes: Sequence[str] = (),
+    repeats: int = 1,
 ) -> EvaluationReport:
     """Evaluate run metrics and each treatment pair in the supplied group and log order.
 
     Failed and incomplete logs remain in the report with their errors; metrics receive
     completed logs only. Pair differences are B minus A, and each pair metric is evaluated
     once per completed unordered pair. Metric failures are recorded without discarding
-    other measurements. The caller chooses metrics and owns all output files.
+    other measurements. With ``repeats`` above one, each group's ``repeat`` must be below
+    ``repeats`` and unique within its part, segment and seed. Pair metrics then also compare
+    the completed repeats of each treatment. The caller chooses metrics and owns all output files.
     """
-    report = EvaluationReport(notes=list(notes))
+    require_positive_integer(repeats, "repeats")
+    repeated = repeats > 1
+    if repeated:
+        identities = [(group.part, group.segment_index, group.seed, group.repeat) for group in groups]
+        if any(not 0 <= group.repeat < repeats for group in groups) or len(set(identities)) != len(identities):
+            raise ValueError("RunGroup.repeat must be below repeats and unique within a part, segment and seed")
+    report = EvaluationReport(notes=list(notes), repeats=repeats)
     labels = {type(metric): (type(metric).__name__
                             if sum(type(item).__name__ == type(metric).__name__ for item in metrics) == 1
                             else f"{type(metric).__module__}:{type(metric).__qualname__}")
               for metric in metrics}
+    pair_metrics = [(metric, labels[type(metric)]) for metric in metrics if isinstance(metric, PairMetric)]
     for metric in metrics:
         label = labels[type(metric)]
         try:
@@ -75,9 +87,11 @@ def evaluate_groups(
     for source in groups:
         complete = {name: log for name, log in source.logs.items() if log.status == "completed"}
         group = ComparisonGroup(source.segment, source.seed, complete,
-                                source.scenario_map, source.treatment_attacks)
+                                source.scenario_map, source.treatment_attacks, repeat=source.repeat)
         context = {"segment_index": source.segment_index, "seed": source.seed, "part": source.part,
                    "treatment_attacks": {name: source.treatment_attacks.get(name) for name in source.logs}}
+        if repeated:
+            context["repeat"] = source.repeat
         treatments: dict[str, dict[str, Any]] = {
             name: {"status": log.status, "error": source.errors.get(name),
                    "metrics": {}, "reasons": {}, "metric_types": {}}
@@ -122,22 +136,46 @@ def evaluate_groups(
                     pair_row["reasons"][f"delta.{name}"] = pair_row["reason"] or "One run measurement is unavailable"
             if completed:
                 pair = TreatmentPair(first, second, complete[first], complete[second])
-                for metric in metrics:
-                    if not isinstance(metric, PairMetric):
-                        continue
-                    try:
-                        values, reasons, kinds = _measurements(metric.evaluate(pair), metric, labels[type(metric)])
-                        pair_row["metrics"].update(values)
-                        pair_row["reasons"].update(reasons)
-                        pair_row["metric_types"].update(kinds)
-                    except Exception as error:
-                        report.record_error(type(metric).__name__, error, treatment_a=first,
-                                            treatment_b=second, **context)
+                _evaluate_pair(report, pair, pair_metrics, pair_row,
+                               treatment_a=first, treatment_b=second, **context)
             comparisons.append(pair_row)
         report.groups.append({**context, "scenario_id": group.segment.scenario_id,
                               "treatments": treatments, "comparisons": comparisons})
+    if repeated:
+        _evaluate_repeat_pairs(report, groups, pair_metrics)
     report.summarize()
     return report
+
+
+def _evaluate_pair(report: EvaluationReport, pair: TreatmentPair,
+                   metrics: Sequence[tuple[PairMetric, str]], row: dict[str, Any],
+                   **context: Any) -> None:
+    for metric, label in metrics:
+        try:
+            values, reasons, kinds = _measurements(metric.evaluate(pair), metric, label)
+            row["metrics"].update(values)
+            row["reasons"].update(reasons)
+            row["metric_types"].update(kinds)
+        except Exception as error:
+            report.record_error(type(metric).__name__, error, **context)
+
+
+def _evaluate_repeat_pairs(report: EvaluationReport, groups: Sequence[RunGroup],
+                           metrics: Sequence[tuple[PairMetric, str]]) -> None:
+    treatments: dict[tuple[str | None, int, str, int, str], list[tuple[int, RunLog]]] = {}
+    for group in groups:
+        for treatment, log in group.logs.items():
+            if log.status == "completed":
+                identity = (group.part, group.segment_index, group.segment.scenario_id, group.seed, treatment)
+                treatments.setdefault(identity, []).append((group.repeat, log))
+    for (part, index, scenario, seed, treatment), runs in treatments.items():
+        for (repeat_a, log_a), (repeat_b, log_b) in itertools.combinations(sorted(
+                runs, key=lambda item: item[0]), 2):
+            context ={"part": part, "segment_index": index, "scenario_id": scenario, "seed": seed,
+                       "treatment": treatment, "repeat_a": repeat_a, "repeat_b": repeat_b}
+            row: dict[str, Any] = {**context, "metrics": {}, "reasons": {}, "metric_types": {}}
+            _evaluate_pair(report, TreatmentPair(treatment, treatment, log_a, log_b), metrics, row, **context)
+            report.repeat_pairs.append(row)
 
 
 def _numeric(value: Any) -> bool:

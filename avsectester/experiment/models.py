@@ -224,7 +224,7 @@ class PreparedExperiment:
 
 @dataclass(frozen=True)
 class TreatmentResult:
-    """The recorded outcome of one segment, seed and named treatment."""
+    """The recorded outcome of a named treatment for one segment, seed and repeat."""
 
     attack_name: str | None
     segment_index: int
@@ -234,11 +234,12 @@ class TreatmentResult:
     log: RunLog
     error: str | None = None
     part: str | None = None
+    repeat: int = 0
 
     @property
-    def group(self) -> tuple[int, int]:
-        """Comparison-group key containing the segment index and seed."""
-        return self.segment_index, self.seed
+    def group(self) -> tuple[int, int, int]:
+        """Comparison-group key containing the segment index, seed and repeat index."""
+        return self.segment_index, self.seed, self.repeat
 
 
 @dataclass(frozen=True)
@@ -255,9 +256,9 @@ class ExperimentResult:
     scenario_maps: Mapping[str, ScenarioMap | Unavailable] = field(default_factory=dict)
 
     @property
-    def groups(self) -> dict[tuple[int, int], dict[str, RunLog]]:
-        """Group treatment results by segment index and seed."""
-        result: dict[tuple[int, int], dict[str, RunLog]] = {}
+    def groups(self) -> dict[tuple[int, int, int], dict[str, RunLog]]:
+        """Group treatment results by segment index, seed and repeat index."""
+        result: dict[tuple[int, int, int], dict[str, RunLog]] = {}
         for run in self.runs:
             result.setdefault(run.group, {})[run.treatment] = run.log
         return result

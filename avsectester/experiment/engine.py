@@ -35,7 +35,7 @@ from .models import (
     preparation_record, treatment_applies, build_units, segment_key,
 )
 from .output_directory import (
-    run_directory, load_preparation_progress, save_preparation_progress, save_completed_artifact,
+    run_directory, stored_repeat, load_preparation_progress, save_preparation_progress, save_completed_artifact,
     recorded_data_equal, offline_report_directory, incomplete_offline_report_directory, read_treatment_log,
 )
 
@@ -446,6 +446,7 @@ class _Group:
     seed: int
     decision_steps: int
     part: str | None
+    repeat: int
 
 
 @dataclass(frozen=True)
@@ -503,9 +504,10 @@ class _Execution:
             treatment.environment,
         )
         destination = None
+        repeat = stored_repeat(config.runs.repeats, group.repeat)
         if config.runs.output is not None:
             destination = run_directory(config.runs.output, group.index,
-                                        group.seed, treatment.name)
+                                        group.seed, treatment.name, repeat)
         metadata: dict[str, Any] = {
             "attack_name": treatment.attack_name, "segment_index": group.index, "part": group.part,
             "segment": asdict(group.segment), "treatment": treatment.name, "seed": group.seed,
@@ -514,6 +516,8 @@ class _Execution:
         }
         if deployment is not None:
             metadata["deployment_ticks"] = deployment.ticks
+        if repeat is not None:
+            metadata["repeat"] = repeat
         return metadata, destination
 
     def _failed(self, group: _Group, treatment: TreatmentConfiguration, error: Exception,
@@ -536,7 +540,7 @@ class _Execution:
                 log = RunLog(metadata=metadata, status="failed")
         self.runs.append(TreatmentResult(
             treatment.attack_name, group.index, group.segment, treatment.name, group.seed, log,
-            f"{type(error).__name__}: {error}", part=group.part,
+            f"{type(error).__name__}: {error}", part=group.part, repeat=group.repeat,
         ))
         if self.configuration.runs.strict:
             raise error
@@ -629,7 +633,7 @@ class _Execution:
                                              release_owned_resources=resources.close)
             self.runs.append(TreatmentResult(
                 treatment.configuration.attack_name, group.index, group.segment, treatment.configuration.name,
-                group.seed, log, part=group.part,
+                group.seed, log, part=group.part, repeat=group.repeat,
             ))
         except BaseException as error:
             if not runner_owns_attack:
@@ -639,14 +643,16 @@ class _Execution:
             self._failed(group, treatment.configuration, error, deployment)
 
     def _run_group(self, group: _Group) -> None:
-        configurations = tuple(t for t in self.configuration.runs.treatments
+        runs = self.configuration.runs
+        repeat = stored_repeat(runs.repeats, group.repeat)
+        configurations = tuple(t for t in runs.treatments
                                if t.attack_name is None or t.attack_name in group.attack_names)
         pending_configurations = []
         for specification in configurations:
             destination = None
-            if self.configuration.runs.output is not None:
-                destination = run_directory(self.configuration.runs.output, group.index,
-                                            group.seed, specification.name)
+            if runs.output is not None:
+                destination = run_directory(runs.output, group.index,
+                                            group.seed, specification.name, repeat)
             if self.resume and destination is not None and (destination.exists() or destination.is_symlink()):
                 retained = None
                 try:
@@ -657,7 +663,8 @@ class _Execution:
                         for key, value in expected.items()
                     ):
                         retained = TreatmentResult(specification.attack_name, group.index, group.segment,
-                                                   specification.name, group.seed, log, part=group.part)
+                                                   specification.name, group.seed, log, part=group.part,
+                                                   repeat=group.repeat)
                 except Exception:
                     pass
                 if retained is not None:
@@ -695,6 +702,7 @@ class _Execution:
                 raise
 
     def run(self) -> ExperimentResult:
+        runs = self.configuration.runs
         scenario_maps: dict[str, ScenarioMap | Unavailable] = {}
         for segments in self.prepared.metadata.values():
             for segment in segments:
@@ -703,18 +711,20 @@ class _Execution:
                     if not isinstance(scenario_map, (ScenarioMap, Unavailable)):
                         raise TypeError("Dataset.scenario_map must return ScenarioMap or Unavailable")
                     scenario_maps[segment.scenario_id] = scenario_map
-        if self.configuration.runs.output is not None:
+        if runs.output is not None:
             from .output_directory import save_scenario_maps
 
-            save_scenario_maps(scenario_maps, self.configuration.runs.output)
+            save_scenario_maps(scenario_maps, runs.output)
         for unit in self.prepared.units:
             if self.configuration.split is not None and unit.part not in self.configuration.split.execute:
                 continue
             steps = unit.segment.decision_steps
-            if self.configuration.runs.decision_steps is not None:
-                steps = min(steps, self.configuration.runs.decision_steps)
-            for seed in self.configuration.runs.seeds:
-                self._run_group(_Group(unit.attack_names, unit.index, unit.segment, seed, steps, unit.part))
+            if runs.decision_steps is not None:
+                steps = min(steps, runs.decision_steps)
+            for seed in runs.seeds:
+                for repeat in range(runs.repeats):
+                    self._run_group(_Group(unit.attack_names, unit.index, unit.segment, seed,
+                                           steps, unit.part, repeat))
         # Restore evidence only after the last treatment has released its runtime.
         for index, result in enumerate(self.runs):
             if result.log.path is not None:

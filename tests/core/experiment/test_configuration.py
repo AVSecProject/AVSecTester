@@ -167,6 +167,7 @@ def test_load_configuration(tmp_path):
     assert [(item.name, item.attack_name) for item in loaded.runs.treatments] == [
         ("clean", None), ("probe", "probe"),
     ]
+    assert loaded.runs.repeats == 1
     assert load_configuration(loaded) is loaded
 
     attack_directory = tmp_path / "definitions"
@@ -202,6 +203,22 @@ def test_load_configuration(tmp_path):
     with pytest.raises(ValueError, match="references unknown attack"):
         load_configuration({**specification(), "runs": {"treatments": [
             {"name": "unknown", "attack_name": "absent"}]}})
+
+    for repeats in (0, -1, True):
+        with pytest.raises(ValueError, match="runs.repeats must be a positive integer"):
+            load_configuration({**specification(), "runs": {"repeats": repeats}})
+    repeated = {**specification(), "runs": {"repeats": 2}}
+    with pytest.raises(ValueError, match="MemorySimulator does not support repeated runs"):
+        load_configuration(repeated)
+    repeated["simulator"] = {"type": "NuRecSimulator", "options": {"renderer": {"type": "NuRecRenderer"}}}
+    with pytest.raises(ValueError, match="NuRecSimulator does not support repeated runs"):
+        load_configuration(repeated)
+    repeated["simulator"] = {"type": "CarlaSimulator", "options": {"client": {"rate": 10.}}}
+    assert load_configuration(repeated).runs.repeats == 2
+    repeated["simulator"] = {"type": "tests.fakes:RepeatedRunMemorySimulator"}
+    assert load_configuration(repeated).runs.repeats == 2
+    with pytest.raises(ValueError, match="'repeat-0' is reserved for repeat directories"):
+        load_configuration({**specification(), "runs": {"treatments": [{"name": "repeat-0"}]}})
 
 
 def test_configuration_device():

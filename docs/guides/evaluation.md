@@ -18,8 +18,10 @@ follow the [CLI evaluate command](../reference/cli.md#evaluate).
 
 ## Comparison groups
 
-Every unattacked treatment runs once per unit and seed. An attacked treatment runs only in units
-selected by its attack. All applicable treatments in a group are compared pairwise.
+Every unattacked treatment runs for each unit, seed and repeat. An attacked treatment runs only
+in units selected by its attack. All applicable treatments in a group are compared pairwise.
+In repeated experiments, two runs with the same repeat number are independent samples.
+The number groups them for reporting.
 
 The [architecture terms](../concepts/architecture.md#terms) define units and comparison groups.
 `RunGroup` retains all supplied logs in their order, including failed, cancelled and incomplete
@@ -114,26 +116,38 @@ decisions as the denominator and is unavailable if any decision lacks text.
 ## Reports and statistics
 
 Boolean values display as `yes` or `no`, floats with four decimal places, and unavailable or
-nonfinite values as an em dash (—). Numeric summaries use `mean ± std` and `n = k`, omitting the
-standard deviation for one observation. Boolean summaries show the true fraction and
-`x of K groups`. HTML pages contain inline styling without scripts or external resources. Saved
-images and CSV files are linked relative to the page. JSON and CSV retain full precision.
+nonfinite values as an em dash (—). Numeric summaries show `mean ± std` with the population
+standard deviation (ddof=0), the median and range, and `n = k`. A single observation shows only
+its value and `n = 1`. Boolean summaries show the true fraction and `x of K groups`. HTML pages
+contain inline styling without scripts or external resources. Saved images and CSV files are
+linked relative to the page. JSON and CSV retain full precision.
 
 Treatment summaries group measurements by part and treatment. Pair summaries group by part and
-treatment pair. Numeric summaries use the mean and population standard deviation (ddof=0), with
-a separate available-group count for each field. Boolean summaries use the true fraction.
-`Unavailable` values are excluded from that field's denominator.
+treatment pair. Each field has its own count of available values, and `Unavailable` values are
+excluded from it. `runs.csv` and group details list every run, with its repeat number in repeated
+experiments.
 
 `treatment_summary.csv` is a long table with one row per part, treatment and measurement field.
 `pair_summary.csv` has one row per part, treatment pair, measurement type and field.
 Its `measurement` column is `paired_difference` for treatment B minus treatment A, with booleans
-represented as 0 and 1, or `pair_metric` for a `PairMetric` result. Numeric fields retain mean and
-standard deviation. Boolean fields retain the true fraction. Unused statistical cells are empty.
+represented as 0 and 1, or `pair_metric` for a `PairMetric` result. In repeated experiments,
+`mean_difference` rows hold the difference of treatment means in `mean` or the reason for its
+absence in `reason`. Numeric rows fill the mean, standard deviation, median, minimum and maximum.
+Boolean rows fill the true fraction and true count. Unused statistical cells are empty.
 Both CSVs contain the summaries from `report.json` and preserve full numeric precision.
 
-Paired differences are computed inside each group before aggregation. `PairMetric` measurements
-are summarized separately. Statistics do not infer an attack-success label. See the
-[example interpretation rule](../examples/README.md#attack-impact).
+Paired differences are computed inside each group before aggregation. In repeated experiments,
+`mean_differences` also reports B's mean minus A's mean across each side's completed runs, using
+true fractions for booleans. It is unavailable with a reason if either side lacks values. The two
+means can use a different set of runs from the within-group differences. Statistics do not infer
+an attack-success label. See the [example interpretation rule](../examples/README.md#attack-impact).
+
+For each treatment, the **noise floor** measures every pair of completed repeats within the same
+part, segment and seed using the configured `PairMetric` implementations. `repeat_pairs` and
+`repeat_pair.csv` list the pair measurements. The same-treatment rows in `pair_summaries` and
+the HTML pair metric table show their distributions alongside the between-treatment results.
+Read outcomes of asynchronous driving systems alongside their within-treatment variation.
+The framework reports descriptive statistics without significance tests or confidence intervals.
 
 The HTML report presents experiment setup, metric definitions, run status, per-part results,
 paired differences and group details. Group details retain unavailable reasons and saved plots.
@@ -217,6 +231,7 @@ for constraints.
 
 Use `RunGroup` and `evaluate_groups` directly when logs are already in memory. They require
 neither `Experiment` nor a dataset. Save the returned report when persistent files are needed.
+For repeated runs, pass `repeats` and give each group its zero-based `repeat`.
 
 <!-- runnable -->
 ```python

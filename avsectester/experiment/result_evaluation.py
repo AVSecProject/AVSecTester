@@ -15,6 +15,7 @@ from avsectester.data_types import Unavailable
 
 from .configuration_summary import type_name
 from .html_report import write_evaluation_html
+from .output_directory import evaluation_plot_filename, stored_repeat
 
 if TYPE_CHECKING:
     from .config import ExperimentConfiguration
@@ -42,12 +43,13 @@ def evaluate(result: ExperimentResult, configuration: ExperimentConfiguration) -
         metrics, notes = _default_metrics(result)
     else:
         metrics = configuration.evaluation.metrics
-    grouped: dict[tuple[int, int], list[TreatmentResult]] = defaultdict(list)
+    repeats = configuration.runs.repeats
+    grouped: dict[tuple[int, int, int], list[TreatmentResult]] = defaultdict(list)
     for run in result.runs:
         grouped[run.group].append(run)
     order = {item.name: index for index, item in enumerate(configuration.runs.treatments)}
     groups = []
-    for (segment_index, seed), original in grouped.items():
+    for (segment_index, seed, repeat), original in grouped.items():
         runs = sorted(original, key=lambda run: order[run.treatment])
         segment = runs[0].segment
         groups.append(RunGroup(
@@ -57,8 +59,9 @@ def evaluate(result: ExperimentResult, configuration: ExperimentConfiguration) -
             errors={run.treatment: run.error for run in runs if run.error is not None},
             scenario_map=result.scenario_maps.get(
                 segment.scenario_id, Unavailable("No saved scenario map is available")),
+            repeat=repeat,
         ))
-    report = evaluate_groups(groups, metrics, notes=notes)
+    report = evaluate_groups(groups, metrics, notes=notes, repeats=repeats)
     report.selections = [item.as_dict() for item in result.selections]
     avstack_type = getattr(configuration.avstack.factory, "avstack_type", None)
     scenarios = {item.scenario_id for item in result.selections}
@@ -90,13 +93,18 @@ def evaluate(result: ExperimentResult, configuration: ExperimentConfiguration) -
             shutil.rmtree(plots)
         plots.mkdir()
         for group in groups:
+            stored = stored_repeat(repeats, group.repeat)
+            context = {"part": group.part, "segment_index": group.segment_index, "seed": group.seed}
+            title = f"Segment {group.segment_index}, seed {group.seed}"
+            if stored is not None:
+                context["repeat"] = stored
+                title += f", repeat {stored}"
             try:
                 plot_group({name: log for name, log in group.logs.items() if log.status == "completed"},
-                           plots / f"segment-{group.segment_index:05d}-seed-{group.seed}.png",
-                           title=f"Segment {group.segment_index}, seed {group.seed}")
+                           plots / evaluation_plot_filename(group.segment_index, group.seed, stored),
+                           title=title)
             except Exception as error:
-                report.record_error("plot_group", error, part=group.part,
-                                    segment_index=group.segment_index, seed=group.seed)
+                report.record_error("plot_group", error, **context)
         report.save(destination)
         write_evaluation_html(Path(configuration.runs.output))
     return report

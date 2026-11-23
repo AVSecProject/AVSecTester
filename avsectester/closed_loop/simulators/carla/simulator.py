@@ -158,6 +158,7 @@ class CarlaSimulator(Simulator):
     can_replay = True
     can_insert_objects = True
     can_observe_past = True
+    can_repeat_runs = True
     supported_world_settings = CARLA_WORLD_SETTINGS
 
     def __init__(

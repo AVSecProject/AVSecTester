@@ -23,7 +23,7 @@ from avsectester.experiment import (
     PreparedExperiment, load_configuration,
 )
 from avsectester.experiment.engine import validate_configuration_environment
-from avsectester.experiment.output_directory import run_directory
+from avsectester.experiment.output_directory import run_directory, stored_repeat
 from avsectester.validation import require_positive_number
 
 if TYPE_CHECKING:
@@ -81,7 +81,8 @@ def _print_report(report: Any, result: ExperimentResult,
     for failure in result.failures:
         assert configuration.runs.output is not None
         destination = run_directory(configuration.runs.output, failure.segment_index,
-                                    failure.seed, failure.treatment)
+                                    failure.seed, failure.treatment,
+                                    stored_repeat(configuration.runs.repeats, failure.repeat))
         typer.echo(f"Failed run: {destination}: {failure.error or failure.log.status}", err=True)
     for selection in result.selection_errors:
         typer.echo(f"Selection error: {selection.attack_name}/{selection.scenario_id}: {selection.error}",

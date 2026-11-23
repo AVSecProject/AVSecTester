@@ -35,7 +35,11 @@ class EvaluationConfiguration:
 
 @dataclass
 class EvaluationReport:
-    """Per-run and per-pair measurements, missing reasons and population statistics."""
+    """Per-run and per-pair measurements, missing reasons and population statistics.
+
+    With ``repeats`` above one, group rows carry their repeat number, ``repeat_pairs`` holds
+    pair metrics between repeats of one treatment, and pair summaries add mean differences.
+    """
 
     groups: list[dict[str, Any]] = field(default_factory=list)
     treatment_summaries: list[dict[str, Any]] = field(default_factory=list)
@@ -46,6 +50,8 @@ class EvaluationReport:
     metric_errors: list[dict[str, Any]] = field(default_factory=list)
     path: Path | None = None
     experiment: dict[str, Any] = field(default_factory=dict)
+    repeats: int = 1
+    repeat_pairs: list[dict[str, Any]] = field(default_factory=list)
 
     def summarize(self) -> None:
         """Rebuild treatment and pair population statistics from the recorded group rows."""
@@ -69,6 +75,27 @@ class EvaluationReport:
              "deltas": _summarize_rows(rows, "deltas"), "metrics": _summarize_rows(rows, "metrics")}
             for (part, first, second), rows in pairs.items()
         ]
+        if self.repeats > 1:
+            metrics = {(row["part"], row["treatment"]): row["metrics"]
+                       for row in self.treatment_summaries}
+            declared_fields = [
+                f"{specification['label']}.{name}"
+                for specification in self.metrics if specification.get("kind") == "run"
+                for name in specification.get("fields", {})
+            ]
+            for row in self.pair_summaries:
+                row.update(_mean_differences(row, metrics, declared_fields))
+            repeat_pairs: dict[tuple[str | None, str], list[dict[str, Any]]] = {
+                identity: [] for identity in treatments}
+            for row in self.repeat_pairs:
+                repeat_pairs[row["part"], row["treatment"]].append(row)
+            # Same-treatment rows summarize pair metrics between repeats. They have no deltas.
+            self.pair_summaries.extend(
+                {"part": part, "treatment_a": treatment, "treatment_b": treatment,
+                 "groups": len(rows), "total_groups": len(rows), "deltas": {},
+                 "metrics": _summarize_rows(rows, "metrics")}
+                for (part, treatment), rows in repeat_pairs.items()
+            )
 
     def record_error(self, source: str, error: Exception, **context: Any) -> None:
         """Record an evaluation failure and its group or pair context without losing results."""
@@ -78,13 +105,22 @@ class EvaluationReport:
 
     def as_dict(self) -> dict[str, Any]:
         """Return JSON-compatible report data, independent of live experiment objects."""
+        statistics = {"std_ddof": 0, "groups": "completed runs or completed treatment pairs",
+                      "deltas": "treatment B minus treatment A. Booleans use 0 and 1."}
+        repeated: dict[str, Any] = {}
+        if self.repeats > 1:
+            repeated = {"repeats": self.repeats, "repeat_pairs": self.repeat_pairs}
+            statistics |= {
+                "mean_differences": "mean of treatment B's completed runs minus mean of treatment A's. "
+                                    "Booleans use true fractions.",
+                "repeat_pairs": "pair metrics between completed repeats of one treatment in a part, segment "
+                                "and seed. Same-treatment pair summaries count these pairs as groups.",
+            }
         return _json_data({
             "groups": self.groups, "treatment_summaries": self.treatment_summaries,
             "pair_summaries": self.pair_summaries, "selections": self.selections,
             "metrics": self.metrics, "notes": self.notes, "metric_errors": self.metric_errors,
-            "experiment": self.experiment,
-            "statistics": {"std_ddof": 0, "groups": "completed runs or completed treatment pairs",
-                           "deltas": "treatment B minus treatment A. Booleans use 0 and 1."},
+            "experiment": self.experiment, **repeated, "statistics": statistics,
         })
 
     def format_summary(self) -> str:
@@ -132,7 +168,7 @@ class EvaluationReport:
         return "\n".join(lines) if lines else "No treatment runs were recorded."
 
     def save(self, directory: str | Path) -> Path:
-        """Write report.json, runs.csv, treatment_summary.csv and pair_summary.csv.
+        """Write evaluation report.json and the accompanying run, pair and summary CSVs.
 
         Metric names prefix fields to protect identities. CSV values retain full precision.
         """
@@ -142,20 +178,23 @@ class EvaluationReport:
             json.dumps(self.as_dict(), indent=2, allow_nan=False) + "\n", encoding="utf-8")
         fields = list(dict.fromkeys(name for group in self.groups for row in group["treatments"].values()
                                     for name in row["metrics"]))
+        repeated = self.repeats > 1
+        group_columns = ["part", "segment_index", "scenario_id", "seed"]
+        run_columns = group_columns + (["repeat"] if repeated else [])
         with (destination / "runs.csv").open("w", newline="", encoding="utf-8") as stream:
             writer = csv.DictWriter(stream, fieldnames=[
-                "part", "segment_index", "scenario_id", "seed", "treatment", "attack_name", "status", "error", *fields,
+                *run_columns, "treatment", "attack_name", "status", "error", *fields,
             ])
             writer.writeheader()
             for group in self.groups:
                 for name, row in group["treatments"].items():
-                    writer.writerow({key: group[key] for key in (
-                        "part", "segment_index", "scenario_id", "seed",
-                    )} | {"treatment": name, "attack_name": group["treatment_attacks"].get(name),
+                    writer.writerow({key: group.get(key) for key in run_columns}
+                                    | {"treatment": name, "attack_name": group["treatment_attacks"].get(name),
                          "status": row["status"], "error": row["error"] or ""}
                                     | _json_data(row["metrics"]))
         statistic_columns = [
             "field", "kind", "count", "mean", "std", "true_fraction",
+            "min", "median", "max", "true_count",
         ]
         treatment_columns = [
             "part", "treatment", "groups", "total_groups", "failed_runs",
@@ -176,7 +215,8 @@ class EvaluationReport:
             "w", newline="", encoding="utf-8",
         ) as stream:
             writer = csv.DictWriter(
-                stream, fieldnames=pair_columns + ["measurement"] + statistic_columns,
+                stream, fieldnames=pair_columns + ["measurement"] + statistic_columns
+                + (["reason"] if repeated else []),
             )
             writer.writeheader()
             for summary in self.pair_summaries:
@@ -186,6 +226,23 @@ class EvaluationReport:
                     for name, statistic in summary[key].items():
                         writer.writerow(identity | {"measurement": measurement, "field": name}
                                         | _csv_statistic(statistic))
+                # Same-treatment rows have no mean differences.
+                for name, difference in summary.get("mean_differences", {}).items():
+                    writer.writerow(identity | {
+                        "measurement": "mean_difference", "field": name, "kind": "number",
+                        "mean": difference, "reason": summary["mean_difference_reasons"].get(name),
+                    })
+        repeat_path = destination / "repeat_pair.csv"
+        if repeated:
+            identities = group_columns + ["treatment", "repeat_a", "repeat_b"]
+            pair_fields = list(dict.fromkeys(name for row in self.repeat_pairs for name in row["metrics"]))
+            with repeat_path.open("w", newline="", encoding="utf-8") as stream:
+                writer = csv.DictWriter(stream, fieldnames=identities + pair_fields)
+                writer.writeheader()
+                for row in self.repeat_pairs:
+                    writer.writerow({key: row[key] for key in identities} | _json_data(row["metrics"]))
+        else:
+            repeat_path.unlink(missing_ok=True)
         self.path = destination
         return destination
 
@@ -197,7 +254,29 @@ def _csv_statistic(statistic: Mapping[str, Any]) -> dict[str, Any]:
         "mean": None if proportion else statistic.get("mean"),
         "std": None if proportion else statistic.get("std"),
         "true_fraction": statistic.get("true_fraction") if proportion else None,
+        "min": statistic.get("min"), "median": statistic.get("median"), "max": statistic.get("max"),
+        "true_count": statistic.get("true_count") if proportion else None,
     })
+
+
+def _mean_differences(pair: Mapping[str, Any],
+                      treatment_metrics: Mapping[tuple[str | None, str], dict[str, Any]],
+                      declared_fields: Sequence[str]) -> dict[str, Any]:
+    first, second = pair["treatment_a"], pair["treatment_b"]
+    a, b = (treatment_metrics[pair["part"], name] for name in (first, second))
+    differences: dict[str, float | None] = {}
+    reasons = {}
+    for name in dict.fromkeys([*a, *b, *declared_fields]):
+        left, right = (entries.get(name, {}) for entries in (a, b))
+        value_a = left.get("true_fraction" if left.get("kind") == "proportion" else "mean")
+        value_b = right.get("true_fraction" if right.get("kind") == "proportion" else "mean")
+        if value_a is not None and value_b is not None:
+            differences[name] = value_b - value_a
+            continue
+        differences[name] = None
+        missing = [treatment for treatment, value in ((first, value_a), (second, value_b)) if value is None]
+        reasons[name] = f"No completed measurement for {' or '.join(missing)}"
+    return {"mean_differences": differences, "mean_difference_reasons": reasons}
 
 
 def _table(rows: Sequence[Sequence[str]]) -> list[str]:
@@ -229,17 +308,26 @@ def format_number(value: Any) -> str:
 
 
 def format_statistic(statistic: Mapping[str, Any]) -> str:
-    """Format population statistics on two lines, with available-group counts below the value."""
+    """Format population statistics with available-group counts below the measurement.
+
+    One numeric observation shows only its value. Larger samples add the standard deviation
+    and, when recorded, the median and range.
+    """
     value = (statistic.get("true_fraction") if statistic.get("kind") == "proportion"
              else statistic.get("mean"))
     if value is None:
         return "—"
     count = statistic.get("count", 0)
     if statistic.get("kind") == "proportion":
-        return f"{format_number(float(value))}\n{round(value * count)} of {count} groups"
-    mean = format_number(float(value))
-    spread = f" ± {format_number(float(statistic['std']))}" if count >= 2 and statistic.get("std") is not None else ""
-    return f"{mean}{spread}\nn = {count}"
+        true_count = statistic.get("true_count", round(value * count))
+        return f"{format_number(float(value))}\n{true_count} of {count} groups"
+    lines = [format_number(float(value))]
+    if count >= 2 and statistic.get("std") is not None:
+        lines[0] += f" ± {format_number(float(statistic['std']))}"
+        if statistic.get("median") is not None:
+            median, minimum, maximum = (format_number(statistic[key]) for key in ("median", "min", "max"))
+            lines.append(f"median {median} [{minimum}, {maximum}]")
+    return "\n".join([*lines, f"n = {count}"])
 
 
 def _json_data(value: Any) -> Any:
@@ -259,11 +347,15 @@ def _json_data(value: Any) -> Any:
 def _statistics(values: Sequence[Any], kind: str) -> dict[str, Any]:
     samples = [value for value in values if value is not None]
     if kind == "boolean":
+        true_count = int(sum(samples))
         return {"kind": "proportion", "count": len(samples),
-                "true_fraction": sum(samples) / len(samples) if samples else None}
+                "true_fraction": true_count / len(samples) if samples else None, "true_count": true_count}
     return {"kind": "number", "count": len(samples),
             "mean": float(np.mean(samples)) if samples else None,
-            "std": float(np.std(samples, ddof=0)) if samples else None, "std_ddof": 0}
+            "std": float(np.std(samples, ddof=0)) if samples else None, "std_ddof": 0,
+            "min": float(min(samples)) if samples else None,
+            "median": float(np.median(samples)) if samples else None,
+            "max": float(max(samples)) if samples else None}
 
 
 def _summarize_rows(rows: Sequence[dict[str, Any]], key: str) -> dict[str, Any]:

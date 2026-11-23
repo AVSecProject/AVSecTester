@@ -548,6 +548,7 @@ Run controls belong under `runs`, represented in Python by frozen `RunsConfigura
 |---|---|---|
 | `treatments` | `clean` plus one treatment per attack | Named runs with optional `attack_name` and environment |
 | `seeds` | [0] | Nonempty unique nonnegative integers |
+| `repeats` | `1` | Positive integer. Values above one require simulator support, currently CARLA. See [Repeating treatments](../guides/experiments.md#repeating-treatments) |
 | `decision_steps` | `null` | Optional positive upper bound per selected segment |
 | `environment` | empty | Shared world and sensor settings |
 | `recording` | defaults below | Sensor payload retention |
@@ -556,8 +557,8 @@ Run controls belong under `runs`, represented in Python by frozen `RunsConfigura
 | `timing` | default clocks | [Scheduling](#scheduling) rates and delays |
 
 Attack and treatment names must be nonempty, contain no path separators and differ from
-`.` and `..`. Treatment names
-must be unique. A treatment without `attack_name` has no enabled attack. Otherwise that field
+`.` and `..`. Treatment names must be unique and must not have the form `repeat-<n>`, which
+names [repeat directories](../guides/experiments.md#repeating-treatments). A treatment without `attack_name` has no enabled attack. Otherwise that field
 must reference a configured attack. Group membership is defined
 in [Evaluation](../guides/evaluation.md#comparison-groups).
 
