@@ -54,7 +54,7 @@ document. Elsewhere use one sentence and a link.
 | Decision order, hook stages, action semantics, record types and `RunLog` | [Runtime reference](../reference/runtime.md) |
 | Signatures, errors, formulas, map formats and custom-component extension contracts | [Python API reference](../reference/python-api.md) |
 | Terms, package roles, dependency layers, architecture figure, isolation and world ownership | [Architecture](../concepts/architecture.md) |
-| Supported dataset, simulator and driving-system combinations | [Architecture](../concepts/architecture.md) |
+| Simulation options, their limitations and supported dataset, simulator and driving-system combinations | [Architecture](../concepts/architecture.md) |
 | Installation, images, Compose, `.env` and model/trafficsim weights | [Installation](../getting-started/installation.md) |
 | First CARLA and NuRec runs | [Quickstart](../getting-started/quickstart.md) |
 | Simulator behavior: insertion, occlusion, past observations, traffic, dynamics and navigation | [Simulators](../guides/simulators.md) |

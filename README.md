@@ -53,9 +53,11 @@ The [documentation index](docs/README.md) lists the full reading paths.
 
 ## Status
 
-The framework supplies CARLA closed-loop simulation, NuRec closed-loop reconstruction with
-optional reactive traffic, and recorded nuScenes playback. Driving systems include
-`ModularAVStack`, `CameraForwardCollisionAVStack`, `AlpamayoAVStack` and `RuleBasedAVStack`.
+Choose a [simulation option](docs/concepts/architecture.md#simulation-options): AlpaSim + NuRec,
+CARLA + CARLA scenarios or CARLA + NuRec. The framework supplies CARLA closed-loop simulation,
+NuRec closed-loop reconstruction with optional reactive traffic, and recorded nuScenes playback.
+Driving systems include `ModularAVStack`, `CameraForwardCollisionAVStack`, `AlpamayoAVStack` and
+`RuleBasedAVStack`.
 CARLA experiments can [host Autoware](docs/examples/hosted-autoware.md) in LiDAR mode with native
 ROS 2 and read, modify and record its ROS topics. See the
 [supported combinations](docs/concepts/architecture.md#supported-configurations).

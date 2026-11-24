@@ -2,11 +2,41 @@
 
 > **Audience:** Experiment authors and contributors.
 >
-> **Outcome:** Understand framework components, dependency layers and isolation.
+> **Outcome:** Choose a simulation option and understand framework components, dependency layers
+> and isolation.
 >
 > **Prerequisites:** None.
 
 ![Framework architecture](../assets/architecture.png)
+
+## Simulation options
+
+Each option is named after its simulator, which owns physics and the clock, and its scenes.
+AlpaSim in these names is the framework's runtime ported from AlpaSim, not AlpaSim itself.
+
+| Option | Simulator | Scenes | Rendering | Strengths |
+|---|---|---|---|---|
+| AlpaSim + NuRec | AlpaSim | Real-world drives reconstructed with NuRec | NuRec | Real-world data and the lightest setup. Suits AI model research and fits end-to-end and custom modular driving systems best |
+| CARLA + CARLA scenarios | CARLA | Scenarios built on CARLA maps | CARLA | The most customizable scenarios, built on any CARLA map. Hosts Autoware through CARLA's official native ROS 2 integration for research on asynchronous driving systems |
+| CARLA + NuRec | CARLA | Real-world drives reconstructed with NuRec | NuRec | Real-world appearance with CARLA's simulation: physics for every vehicle and interactive traffic from the Traffic Manager or Scenic |
+
+[Supported configurations](#supported-configurations) lists the driving systems of each option.
+
+### CARLA + NuRec limitations
+
+CARLA builds the world from the OpenDRIVE map of each NuRec scene and drives vehicles on that road
+surface, not on the reconstructed ground.
+
+- Some scenes cannot be used because CARLA rejects their OpenDRIVE map or crashes while building
+  the world. Repairing the map recovers some of them.
+- Where the OpenDRIVE road surface departs from the reconstructed ground, the ego's height, roll
+  and pitch shift the rendered camera views. These errors are larger than in AlpaSim + NuRec.
+- In some scenes the ego cannot spawn, leaves the road or overturns.
+- The OpenDRIVE map lacks many lanes of the recorded lane map. CARLA's waypoints, Traffic Manager
+  routes and spawn checks do not work where lanes are missing.
+- Vehicles use the closest CARLA blueprint, so their collision and obstacle shapes differ from the
+  recorded vehicles. Vehicles longer than every blueprint, such as trucks with trailers, are
+  shortened.
 
 ## Components
 

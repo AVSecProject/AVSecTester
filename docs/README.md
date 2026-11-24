@@ -8,6 +8,7 @@ before extending the framework.
 
 | Goal | Reading path |
 |---|---|
+| Choose a simulation option | Architecture → Quickstart |
 | Execute a supplied experiment | Quickstart → Examples → CLI |
 | Run CARLA with hosted Autoware | Installation → Hosted Autoware → Simulators |
 | Write an attack | Architecture → Attacks → Optimization |
@@ -21,7 +22,7 @@ before extending the framework.
 |---|---|
 | [Installation](getting-started/installation.md) | Images, Compose, weights and data |
 | [Quickstart](getting-started/quickstart.md) | First CARLA and NuRec runs |
-| [Architecture](concepts/architecture.md) | Terms, components, layers and isolation |
+| [Architecture](concepts/architecture.md) | Simulation options, terms, components, layers and isolation |
 | [Datasets](guides/datasets.md) | Timelines, frame data and semantic maps |
 | [Experiments](guides/experiments.md) | Prepare, execute, resume and saved maps |
 | [Attacks](guides/attacks.md) | Selection, offline and online phases |
